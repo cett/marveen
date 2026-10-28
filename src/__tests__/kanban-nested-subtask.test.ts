@@ -36,71 +36,71 @@ beforeEach(() => {
 // ── depth computation on create ──────────────────────────────────────────────
 
 describe('createKanbanCard: depth', () => {
-  it('assigns depth 0 to a top-level card', () => {
-    createKanbanCard({ id: 'card-a', title: 'Root' })
+  it('assigns depth 0 to a top-level card', async () => {
+    await createKanbanCard({ id: 'card-a', title: 'Root' })
     expect(getKanbanCard('card-a')!.depth).toBe(0)
   })
 
-  it('assigns depth 1 to a direct subtask', () => {
-    createKanbanCard({ id: 'card-a', title: 'Root' })
-    createKanbanCard({ id: 'card-b', title: 'Child', parent_id: 'card-a' })
+  it('assigns depth 1 to a direct subtask', async () => {
+    await createKanbanCard({ id: 'card-a', title: 'Root' })
+    await createKanbanCard({ id: 'card-b', title: 'Child', parent_id: 'card-a' })
     expect(getKanbanCard('card-b')!.depth).toBe(1)
   })
 
-  it('assigns depth 2 to a sub-subtask', () => {
-    createKanbanCard({ id: 'card-a', title: 'Root' })
-    createKanbanCard({ id: 'card-b', title: 'Child', parent_id: 'card-a' })
-    createKanbanCard({ id: 'card-c', title: 'Grandchild', parent_id: 'card-b' })
+  it('assigns depth 2 to a sub-subtask', async () => {
+    await createKanbanCard({ id: 'card-a', title: 'Root' })
+    await createKanbanCard({ id: 'card-b', title: 'Child', parent_id: 'card-a' })
+    await createKanbanCard({ id: 'card-c', title: 'Grandchild', parent_id: 'card-b' })
     expect(getKanbanCard('card-c')!.depth).toBe(2)
   })
 
-  it('throws when trying to create a card at depth 3', () => {
-    createKanbanCard({ id: 'card-a', title: 'Root' })
-    createKanbanCard({ id: 'card-b', title: 'Child', parent_id: 'card-a' })
-    createKanbanCard({ id: 'card-c', title: 'Grandchild', parent_id: 'card-b' })
-    expect(() =>
+  it('throws when trying to create a card at depth 3', async () => {
+    await createKanbanCard({ id: 'card-a', title: 'Root' })
+    await createKanbanCard({ id: 'card-b', title: 'Child', parent_id: 'card-a' })
+    await createKanbanCard({ id: 'card-c', title: 'Grandchild', parent_id: 'card-b' })
+    await expect(
       createKanbanCard({ id: 'card-d', title: 'Great-grandchild', parent_id: 'card-c' })
-    ).toThrow(/max depth/)
+    ).rejects.toThrow(/max depth/)
   })
 
-  it('throws when parent card does not exist', () => {
-    expect(() =>
+  it('throws when parent card does not exist', async () => {
+    await expect(
       createKanbanCard({ id: 'card-b', title: 'Orphan', parent_id: 'nonexistent' })
-    ).toThrow(/not found/)
+    ).rejects.toThrow(/not found/)
   })
 })
 
 // ── getSubtree ────────────────────────────────────────────────────────────────
 
 describe('getSubtree', () => {
-  it('returns only the root when it has no children', () => {
-    createKanbanCard({ id: 'card-a', title: 'Solo' })
+  it('returns only the root when it has no children', async () => {
+    await createKanbanCard({ id: 'card-a', title: 'Solo' })
     const tree = getSubtree('card-a')
     expect(tree).toHaveLength(1)
     expect(tree[0].id).toBe('card-a')
   })
 
-  it('returns root + 2 direct children ordered by depth then sort_order', () => {
-    createKanbanCard({ id: 'card-a', title: 'Root' })
-    createKanbanCard({ id: 'card-b', title: 'Child 1', parent_id: 'card-a' })
-    createKanbanCard({ id: 'card-c', title: 'Child 2', parent_id: 'card-a' })
+  it('returns root + 2 direct children ordered by depth then sort_order', async () => {
+    await createKanbanCard({ id: 'card-a', title: 'Root' })
+    await createKanbanCard({ id: 'card-b', title: 'Child 1', parent_id: 'card-a' })
+    await createKanbanCard({ id: 'card-c', title: 'Child 2', parent_id: 'card-a' })
     const tree = getSubtree('card-a')
     expect(tree.map(c => c.id)).toEqual(['card-a', 'card-b', 'card-c'])
   })
 
-  it('returns a 3-level tree in correct order', () => {
-    createKanbanCard({ id: 'card-a', title: 'Root' })
-    createKanbanCard({ id: 'card-b', title: 'Child', parent_id: 'card-a' })
-    createKanbanCard({ id: 'card-c', title: 'Grandchild', parent_id: 'card-b' })
+  it('returns a 3-level tree in correct order', async () => {
+    await createKanbanCard({ id: 'card-a', title: 'Root' })
+    await createKanbanCard({ id: 'card-b', title: 'Child', parent_id: 'card-a' })
+    await createKanbanCard({ id: 'card-c', title: 'Grandchild', parent_id: 'card-b' })
     const tree = getSubtree('card-a')
     expect(tree.map(c => c.id)).toEqual(['card-a', 'card-b', 'card-c'])
     expect(tree.map(c => c.depth)).toEqual([0, 1, 2])
   })
 
-  it('returns only subtree of the given root, not siblings', () => {
-    createKanbanCard({ id: 'card-a', title: 'Root A' })
-    createKanbanCard({ id: 'card-b', title: 'Root B' })
-    createKanbanCard({ id: 'card-c', title: 'Child of A', parent_id: 'card-a' })
+  it('returns only subtree of the given root, not siblings', async () => {
+    await createKanbanCard({ id: 'card-a', title: 'Root A' })
+    await createKanbanCard({ id: 'card-b', title: 'Root B' })
+    await createKanbanCard({ id: 'card-c', title: 'Child of A', parent_id: 'card-a' })
     const tree = getSubtree('card-a')
     expect(tree.map(c => c.id)).not.toContain('card-b')
     expect(tree).toHaveLength(2)
@@ -110,21 +110,21 @@ describe('getSubtree', () => {
 // ── getSubtreeHeight ──────────────────────────────────────────────────────────
 
 describe('getSubtreeHeight', () => {
-  it('returns 0 for a leaf card', () => {
-    createKanbanCard({ id: 'card-a', title: 'Leaf' })
+  it('returns 0 for a leaf card', async () => {
+    await createKanbanCard({ id: 'card-a', title: 'Leaf' })
     expect(getSubtreeHeight('card-a')).toBe(0)
   })
 
-  it('returns 1 for a card with only direct children', () => {
-    createKanbanCard({ id: 'card-a', title: 'Root' })
-    createKanbanCard({ id: 'card-b', title: 'Child', parent_id: 'card-a' })
+  it('returns 1 for a card with only direct children', async () => {
+    await createKanbanCard({ id: 'card-a', title: 'Root' })
+    await createKanbanCard({ id: 'card-b', title: 'Child', parent_id: 'card-a' })
     expect(getSubtreeHeight('card-a')).toBe(1)
   })
 
-  it('returns 2 for a card with grandchildren', () => {
-    createKanbanCard({ id: 'card-a', title: 'Root' })
-    createKanbanCard({ id: 'card-b', title: 'Child', parent_id: 'card-a' })
-    createKanbanCard({ id: 'card-c', title: 'Grandchild', parent_id: 'card-b' })
+  it('returns 2 for a card with grandchildren', async () => {
+    await createKanbanCard({ id: 'card-a', title: 'Root' })
+    await createKanbanCard({ id: 'card-b', title: 'Child', parent_id: 'card-a' })
+    await createKanbanCard({ id: 'card-c', title: 'Grandchild', parent_id: 'card-b' })
     expect(getSubtreeHeight('card-a')).toBe(2)
   })
 })
@@ -132,12 +132,12 @@ describe('getSubtreeHeight', () => {
 // ── deleteKanbanCard: promote to grandparent ──────────────────────────────────
 
 describe('deleteKanbanCard: promote children to grandparent', () => {
-  it('promotes children to grandparent when deleting a mid-level card', () => {
-    createKanbanCard({ id: 'card-a', title: 'Grandparent' })
-    createKanbanCard({ id: 'card-b', title: 'Parent', parent_id: 'card-a' })
-    createKanbanCard({ id: 'card-c', title: 'Child', parent_id: 'card-b' })
+  it('promotes children to grandparent when deleting a mid-level card', async () => {
+    await createKanbanCard({ id: 'card-a', title: 'Grandparent' })
+    await createKanbanCard({ id: 'card-b', title: 'Parent', parent_id: 'card-a' })
+    await createKanbanCard({ id: 'card-c', title: 'Child', parent_id: 'card-b' })
 
-    deleteKanbanCard('card-b')
+    await deleteKanbanCard('card-b')
 
     const child = getKanbanCard('card-c')
     expect(child).toBeDefined()
@@ -145,11 +145,11 @@ describe('deleteKanbanCard: promote children to grandparent', () => {
     expect(child!.depth).toBe(1)
   })
 
-  it('promotes children to top-level when deleting a top-level card', () => {
-    createKanbanCard({ id: 'card-a', title: 'Parent' })
-    createKanbanCard({ id: 'card-b', title: 'Child', parent_id: 'card-a' })
+  it('promotes children to top-level when deleting a top-level card', async () => {
+    await createKanbanCard({ id: 'card-a', title: 'Parent' })
+    await createKanbanCard({ id: 'card-b', title: 'Child', parent_id: 'card-a' })
 
-    deleteKanbanCard('card-a')
+    await deleteKanbanCard('card-a')
 
     const child = getKanbanCard('card-b')
     expect(child).toBeDefined()
@@ -157,13 +157,13 @@ describe('deleteKanbanCard: promote children to grandparent', () => {
     expect(child!.depth).toBe(0)
   })
 
-  it('cascades depth on grandchildren when promoting', () => {
-    createKanbanCard({ id: 'card-a', title: 'Root' })
-    createKanbanCard({ id: 'card-b', title: 'Mid', parent_id: 'card-a' })
-    createKanbanCard({ id: 'card-c', title: 'Child of Mid', parent_id: 'card-b' })
+  it('cascades depth on grandchildren when promoting', async () => {
+    await createKanbanCard({ id: 'card-a', title: 'Root' })
+    await createKanbanCard({ id: 'card-b', title: 'Mid', parent_id: 'card-a' })
+    await createKanbanCard({ id: 'card-c', title: 'Child of Mid', parent_id: 'card-b' })
 
     // Delete card-a (top-level). card-b becomes top-level, card-c goes to depth 1.
-    deleteKanbanCard('card-a')
+    await deleteKanbanCard('card-a')
 
     const mid = getKanbanCard('card-b')
     expect(mid!.parent_id).toBeNull()
@@ -178,10 +178,10 @@ describe('deleteKanbanCard: promote children to grandparent', () => {
 // ── reparentKanbanCard ────────────────────────────────────────────────────────
 
 describe('reparentKanbanCard', () => {
-  it('reparents a leaf card to a different top-level parent', () => {
-    createKanbanCard({ id: 'card-a', title: 'Root A' })
-    createKanbanCard({ id: 'card-b', title: 'Root B' })
-    createKanbanCard({ id: 'card-c', title: 'Child of A', parent_id: 'card-a' })
+  it('reparents a leaf card to a different top-level parent', async () => {
+    await createKanbanCard({ id: 'card-a', title: 'Root A' })
+    await createKanbanCard({ id: 'card-b', title: 'Root B' })
+    await createKanbanCard({ id: 'card-c', title: 'Child of A', parent_id: 'card-a' })
 
     const result = reparentKanbanCard('card-c', 'card-b')
     expect(result.ok).toBe(true)
@@ -191,9 +191,9 @@ describe('reparentKanbanCard', () => {
     expect(c.depth).toBe(1)
   })
 
-  it('reparents to top-level (null parent)', () => {
-    createKanbanCard({ id: 'card-a', title: 'Root' })
-    createKanbanCard({ id: 'card-b', title: 'Child', parent_id: 'card-a' })
+  it('reparents to top-level (null parent)', async () => {
+    await createKanbanCard({ id: 'card-a', title: 'Root' })
+    await createKanbanCard({ id: 'card-b', title: 'Child', parent_id: 'card-a' })
 
     const result = reparentKanbanCard('card-b', null)
     expect(result.ok).toBe(true)
@@ -202,11 +202,11 @@ describe('reparentKanbanCard', () => {
     expect(b.depth).toBe(0)
   })
 
-  it('cascades depth to grandchildren after reparent', () => {
-    createKanbanCard({ id: 'card-a', title: 'Root A' })
-    createKanbanCard({ id: 'card-b', title: 'Root B' })
-    createKanbanCard({ id: 'card-c', title: 'Child of A', parent_id: 'card-a' })
-    createKanbanCard({ id: 'card-d', title: 'Grandchild', parent_id: 'card-c' })
+  it('cascades depth to grandchildren after reparent', async () => {
+    await createKanbanCard({ id: 'card-a', title: 'Root A' })
+    await createKanbanCard({ id: 'card-b', title: 'Root B' })
+    await createKanbanCard({ id: 'card-c', title: 'Child of A', parent_id: 'card-a' })
+    await createKanbanCard({ id: 'card-d', title: 'Grandchild', parent_id: 'card-c' })
 
     // card-c (depth 1) moves under card-b (depth 0) -> card-c stays depth 1, card-d depth 2
     reparentKanbanCard('card-c', 'card-b')
@@ -215,12 +215,12 @@ describe('reparentKanbanCard', () => {
     expect(getKanbanCard('card-d')!.depth).toBe(2)
   })
 
-  it('rejects when move would push grandchildren beyond depth 2', () => {
-    createKanbanCard({ id: 'card-a', title: 'Root A' })
-    createKanbanCard({ id: 'card-b', title: 'Child of A', parent_id: 'card-a' })
-    createKanbanCard({ id: 'card-c', title: 'Grandchild', parent_id: 'card-b' })
-    createKanbanCard({ id: 'card-d', title: 'Root D' })
-    createKanbanCard({ id: 'card-e', title: 'Child of D', parent_id: 'card-d' })
+  it('rejects when move would push grandchildren beyond depth 2', async () => {
+    await createKanbanCard({ id: 'card-a', title: 'Root A' })
+    await createKanbanCard({ id: 'card-b', title: 'Child of A', parent_id: 'card-a' })
+    await createKanbanCard({ id: 'card-c', title: 'Grandchild', parent_id: 'card-b' })
+    await createKanbanCard({ id: 'card-d', title: 'Root D' })
+    await createKanbanCard({ id: 'card-e', title: 'Child of D', parent_id: 'card-d' })
 
     // Try reparenting card-b (which has card-c as grandchild) under card-e (depth 1).
     // Result: card-b -> depth 2, card-c -> depth 3. Blocked.
@@ -232,14 +232,14 @@ describe('reparentKanbanCard', () => {
     }
   })
 
-  it('rejects self-parenting', () => {
-    createKanbanCard({ id: 'card-a', title: 'Solo' })
+  it('rejects self-parenting', async () => {
+    await createKanbanCard({ id: 'card-a', title: 'Solo' })
     const result = reparentKanbanCard('card-a', 'card-a')
     expect(result.ok).toBe(false)
   })
 
-  it('rejects when target parent does not exist', () => {
-    createKanbanCard({ id: 'card-a', title: 'Solo' })
+  it('rejects when target parent does not exist', async () => {
+    await createKanbanCard({ id: 'card-a', title: 'Solo' })
     const result = reparentKanbanCard('card-a', 'nonexistent')
     expect(result.ok).toBe(false)
     if (!result.ok) {
@@ -252,26 +252,26 @@ describe('reparentKanbanCard', () => {
 // ── updateKanbanCard: depth cascade ──────────────────────────────────────────
 
 describe('updateKanbanCard: depth cascade on parent_id change', () => {
-  it('updates depth when parent_id is changed', () => {
-    createKanbanCard({ id: 'card-a', title: 'Root A' })
-    createKanbanCard({ id: 'card-b', title: 'Root B' })
-    createKanbanCard({ id: 'card-c', title: 'Child of A', parent_id: 'card-a' })
+  it('updates depth when parent_id is changed', async () => {
+    await createKanbanCard({ id: 'card-a', title: 'Root A' })
+    await createKanbanCard({ id: 'card-b', title: 'Root B' })
+    await createKanbanCard({ id: 'card-c', title: 'Child of A', parent_id: 'card-a' })
 
-    updateKanbanCard('card-c', { parent_id: 'card-b' })
+    await updateKanbanCard('card-c', { parent_id: 'card-b' })
 
     expect(getKanbanCard('card-c')!.parent_id).toBe('card-b')
     expect(getKanbanCard('card-c')!.depth).toBe(1)
   })
 
-  it('rejects reparent that would cause depth violation', () => {
-    createKanbanCard({ id: 'card-a', title: 'Root' })
-    createKanbanCard({ id: 'card-b', title: 'Child', parent_id: 'card-a' })
-    createKanbanCard({ id: 'card-c', title: 'Grandchild', parent_id: 'card-b' })
-    createKanbanCard({ id: 'card-d', title: 'Root D' })
-    createKanbanCard({ id: 'card-e', title: 'Child of D', parent_id: 'card-d' })
+  it('rejects reparent that would cause depth violation', async () => {
+    await createKanbanCard({ id: 'card-a', title: 'Root' })
+    await createKanbanCard({ id: 'card-b', title: 'Child', parent_id: 'card-a' })
+    await createKanbanCard({ id: 'card-c', title: 'Grandchild', parent_id: 'card-b' })
+    await createKanbanCard({ id: 'card-d', title: 'Root D' })
+    await createKanbanCard({ id: 'card-e', title: 'Child of D', parent_id: 'card-d' })
 
     // Moving card-b (has grandchild card-c) under card-e (depth 1) would put card-c at depth 3.
-    const ok = updateKanbanCard('card-b', { parent_id: 'card-e' })
+    const ok = await updateKanbanCard('card-b', { parent_id: 'card-e' })
     expect(ok).toBe(false)
     // Depth must be unchanged.
     expect(getKanbanCard('card-b')!.depth).toBe(1)
@@ -281,10 +281,10 @@ describe('updateKanbanCard: depth cascade on parent_id change', () => {
 // ── propagateStatus ───────────────────────────────────────────────────────────
 
 describe('propagateStatus: auto status propagation', () => {
-  it('auto-sets parent to done when all children are done', () => {
-    createKanbanCard({ id: 'card-a', title: 'Parent', status: 'in_progress' })
-    createKanbanCard({ id: 'card-b', title: 'Child 1', parent_id: 'card-a', status: 'in_progress' })
-    createKanbanCard({ id: 'card-c', title: 'Child 2', parent_id: 'card-a', status: 'in_progress' })
+  it('auto-sets parent to done when all children are done', async () => {
+    await createKanbanCard({ id: 'card-a', title: 'Parent', status: 'in_progress' })
+    await createKanbanCard({ id: 'card-b', title: 'Child 1', parent_id: 'card-a', status: 'in_progress' })
+    await createKanbanCard({ id: 'card-c', title: 'Child 2', parent_id: 'card-a', status: 'in_progress' })
 
     moveKanbanCard('card-b', 'done', 0, 'test')
     propagateStatus('card-b')
@@ -297,9 +297,9 @@ describe('propagateStatus: auto status propagation', () => {
     expect(getKanbanCard('card-a')!.status).toBe('done')
   })
 
-  it('records an auto event on parent when auto-completing', () => {
-    createKanbanCard({ id: 'card-a', title: 'Parent', status: 'in_progress' })
-    createKanbanCard({ id: 'card-b', title: 'Only Child', parent_id: 'card-a', status: 'planned' })
+  it('records an auto event on parent when auto-completing', async () => {
+    await createKanbanCard({ id: 'card-a', title: 'Parent', status: 'in_progress' })
+    await createKanbanCard({ id: 'card-b', title: 'Only Child', parent_id: 'card-a', status: 'planned' })
 
     moveKanbanCard('card-b', 'done', 0, 'test')
     propagateStatus('card-b')
@@ -310,9 +310,9 @@ describe('propagateStatus: auto status propagation', () => {
     expect(autoEvent!.from_status).toBe('in_progress')
   })
 
-  it('reverts done parent to in_progress when a child is un-done', () => {
-    createKanbanCard({ id: 'card-a', title: 'Parent', status: 'in_progress' })
-    createKanbanCard({ id: 'card-b', title: 'Only Child', parent_id: 'card-a', status: 'planned' })
+  it('reverts done parent to in_progress when a child is un-done', async () => {
+    await createKanbanCard({ id: 'card-a', title: 'Parent', status: 'in_progress' })
+    await createKanbanCard({ id: 'card-b', title: 'Only Child', parent_id: 'card-a', status: 'planned' })
 
     // Auto-complete parent
     moveKanbanCard('card-b', 'done', 0, 'test')
@@ -325,10 +325,10 @@ describe('propagateStatus: auto status propagation', () => {
     expect(getKanbanCard('card-a')!.status).toBe('in_progress')
   })
 
-  it('bubbles propagation up through 3 levels', () => {
-    createKanbanCard({ id: 'card-a', title: 'Grandparent', status: 'in_progress' })
-    createKanbanCard({ id: 'card-b', title: 'Parent', parent_id: 'card-a', status: 'in_progress' })
-    createKanbanCard({ id: 'card-c', title: 'Child', parent_id: 'card-b', status: 'planned' })
+  it('bubbles propagation up through 3 levels', async () => {
+    await createKanbanCard({ id: 'card-a', title: 'Grandparent', status: 'in_progress' })
+    await createKanbanCard({ id: 'card-b', title: 'Parent', parent_id: 'card-a', status: 'in_progress' })
+    await createKanbanCard({ id: 'card-c', title: 'Child', parent_id: 'card-b', status: 'planned' })
 
     moveKanbanCard('card-c', 'done', 0, 'test')
     propagateStatus('card-c')
@@ -339,8 +339,8 @@ describe('propagateStatus: auto status propagation', () => {
     expect(getKanbanCard('card-a')!.status).toBe('done')
   })
 
-  it('does not propagate when card is top-level (no parent)', () => {
-    createKanbanCard({ id: 'card-a', title: 'Solo', status: 'in_progress' })
+  it('does not propagate when card is top-level (no parent)', async () => {
+    await createKanbanCard({ id: 'card-a', title: 'Solo', status: 'in_progress' })
     moveKanbanCard('card-a', 'done', 0, 'test')
     propagateStatus('card-a')  // should be a no-op (no parent)
     expect(getKanbanCard('card-a')!.status).toBe('done')

@@ -10,9 +10,9 @@ beforeEach(() => {
 })
 
 describe('searchKanbanCards', () => {
-  it('matches "#N" against the exact rowid', () => {
-    createKanbanCard({ id: 'aaaa1111', title: 'first card' })
-    createKanbanCard({ id: 'bbbb2222', title: 'second card' })
+  it('matches "#N" against the exact rowid', async () => {
+    await createKanbanCard({ id: 'aaaa1111', title: 'first card' })
+    await createKanbanCard({ id: 'bbbb2222', title: 'second card' })
 
     const results = searchKanbanCards({ q: '#2' })
 
@@ -21,15 +21,15 @@ describe('searchKanbanCards', () => {
     expect(results[0].seq).toBe(2)
   })
 
-  it('does not treat a bare number (no #) as a rowid match', () => {
-    createKanbanCard({ id: 'aaaa1111', title: 'card one' })
+  it('does not treat a bare number (no #) as a rowid match', async () => {
+    await createKanbanCard({ id: 'aaaa1111', title: 'card one' })
 
     expect(searchKanbanCards({ q: '1' })).toHaveLength(0)
   })
 
-  it('matches a 4+ char hex prefix against the id', () => {
-    createKanbanCard({ id: 'cafe1234', title: 'hex prefix target' })
-    createKanbanCard({ id: 'deadbeef', title: 'other card' })
+  it('matches a 4+ char hex prefix against the id', async () => {
+    await createKanbanCard({ id: 'cafe1234', title: 'hex prefix target' })
+    await createKanbanCard({ id: 'deadbeef', title: 'other card' })
 
     const results = searchKanbanCards({ q: 'cafe' })
 
@@ -37,9 +37,9 @@ describe('searchKanbanCards', () => {
     expect(results[0].id).toBe('cafe1234')
   })
 
-  it('matches title substring case-insensitively', () => {
-    createKanbanCard({ id: 'aaaa1111', title: 'Telepítő javítás' })
-    createKanbanCard({ id: 'bbbb2222', title: 'Unrelated card' })
+  it('matches title substring case-insensitively', async () => {
+    await createKanbanCard({ id: 'aaaa1111', title: 'Telepítő javítás' })
+    await createKanbanCard({ id: 'bbbb2222', title: 'Unrelated card' })
 
     const results = searchKanbanCards({ q: 'telepítő' })
 
@@ -47,19 +47,19 @@ describe('searchKanbanCards', () => {
     expect(results[0].id).toBe('aaaa1111')
   })
 
-  it('matches project and assignee substrings', () => {
-    createKanbanCard({ id: 'aaaa1111', title: 'x', project: 'Marveen dev' })
-    createKanbanCard({ id: 'bbbb2222', title: 'y', assignee: 'agent-a' })
-    createKanbanCard({ id: 'cccc3333', title: 'z' })
+  it('matches project and assignee substrings', async () => {
+    await createKanbanCard({ id: 'aaaa1111', title: 'x', project: 'Marveen dev' })
+    await createKanbanCard({ id: 'bbbb2222', title: 'y', assignee: 'agent-a' })
+    await createKanbanCard({ id: 'cccc3333', title: 'z' })
 
     expect(searchKanbanCards({ q: 'Marveen' }).map((c) => c.id)).toEqual(['aaaa1111'])
     expect(searchKanbanCards({ q: 'agent-a' }).map((c) => c.id)).toEqual(['bbbb2222'])
   })
 
-  it('ranks active cards before archived ones for the same match, most recent first within each group', () => {
-    createKanbanCard({ id: 'aaaa1111', title: 'shared term one' })
-    createKanbanCard({ id: 'bbbb2222', title: 'shared term two' })
-    createKanbanCard({ id: 'cccc3333', title: 'shared term three' })
+  it('ranks active cards before archived ones for the same match, most recent first within each group', async () => {
+    await createKanbanCard({ id: 'aaaa1111', title: 'shared term one' })
+    await createKanbanCard({ id: 'bbbb2222', title: 'shared term two' })
+    await createKanbanCard({ id: 'cccc3333', title: 'shared term three' })
     // Stagger updated_at so the recency ordering within the active group is
     // deterministic -- createKanbanCard stamps all three with "now" (same
     // second), which leaves ties broken arbitrarily by SQLite otherwise.
@@ -75,8 +75,8 @@ describe('searchKanbanCards', () => {
     expect(results.map((c) => c.archived)).toEqual([false, false, true])
   })
 
-  it('includes archived cards in the results (unlike the plain active-board list)', () => {
-    createKanbanCard({ id: 'aaaa1111', title: 'archived target' })
+  it('includes archived cards in the results (unlike the plain active-board list)', async () => {
+    await createKanbanCard({ id: 'aaaa1111', title: 'archived target' })
     archiveKanbanCard('aaaa1111')
 
     const results = searchKanbanCards({ q: 'archived target' })
@@ -85,17 +85,17 @@ describe('searchKanbanCards', () => {
     expect(results[0].archived).toBe(true)
   })
 
-  it('respects the limit', () => {
+  it('respects the limit', async () => {
     for (let i = 0; i < 5; i++) {
-      createKanbanCard({ id: `card${i}000`, title: 'bulk match' })
+      await createKanbanCard({ id: `card${i}000`, title: 'bulk match' })
     }
 
     expect(searchKanbanCards({ q: 'bulk match', limit: 2 })).toHaveLength(2)
   })
 
-  it('scopes results to the given tenant when tenantId is set', () => {
-    createKanbanCard({ id: 'aaaa1111', title: 'tenant scoped card', tenant_id: 'eszter' })
-    createKanbanCard({ id: 'bbbb2222', title: 'tenant scoped card', tenant_id: 'default' })
+  it('scopes results to the given tenant when tenantId is set', async () => {
+    await createKanbanCard({ id: 'aaaa1111', title: 'tenant scoped card', tenant_id: 'eszter' })
+    await createKanbanCard({ id: 'bbbb2222', title: 'tenant scoped card', tenant_id: 'default' })
 
     const scoped = searchKanbanCards({ q: 'tenant scoped', tenantId: 'eszter' })
     expect(scoped.map((c) => c.id)).toEqual(['aaaa1111'])

@@ -558,7 +558,7 @@ async function main(): Promise<void> {
   retireGroup5StateFiles()
 
   // Turns the ledger hooks spooled while the dashboard was down.
-  flushLedgerSpool()
+  await flushLedgerSpool()
 
   if (IS_ISOLATED_MODE) {
     // Isolated mode: serve the web dashboard only, no background tasks or agent management.
@@ -583,8 +583,8 @@ async function main(): Promise<void> {
   }).catch(err => logger.warn({ err }, 'Workspace doc embedding backfill hiba (Ollama nem elerheto)'))
 
   // Memory decay (24h cycle)
-  runDecaySweep()
-  decayInterval = setInterval(runDecaySweep, 24 * 60 * 60 * 1000)
+  await runDecaySweep()
+  decayInterval = setInterval(() => { runDecaySweep().catch((err) => logger.warn({ err }, 'Memory decay sweep failed')) }, 24 * 60 * 60 * 1000)
 
   // Scheduled-task run snapshot retention: hourly cadence, 7-day age
   // cutoff with a per-task floor of the most recent 20 (see
@@ -654,7 +654,7 @@ async function main(): Promise<void> {
   if (shouldBootHeartbeatAgent({ respawnEnabled: RESPAWN_ENABLED, agentEnabled: HEARTBEAT_AGENT_ENABLED })) {
     ensureHeartbeatAgent()
     logger.info({ agent: HEARTBEAT_AGENT_NAME }, 'Heartbeat agent scaffold ensured (channel-less, dashboard-hidden)')
-    const heartbeatStart = startAgentProcess(HEARTBEAT_AGENT_NAME)
+    const heartbeatStart = await startAgentProcess(HEARTBEAT_AGENT_NAME)
     if (heartbeatStart.ok) {
       logger.info({ agent: HEARTBEAT_AGENT_NAME }, 'Heartbeat agent started')
     } else if (heartbeatStart.error === 'conflict') {

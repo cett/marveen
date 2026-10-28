@@ -21,7 +21,7 @@ import * as wsDb from '../db/workspace.js'
 const tenantFault = vi.hoisted(() => ({ on: false }))
 vi.mock('../db/write-tenant.js', async (importOriginal) => {
   const orig = await importOriginal<typeof import('../db/write-tenant.js')>()
-  return { ...orig, resolveWriteTenant: (a: string | null | undefined) => { if (tenantFault.on) throw new Error('tenant lookup failed'); return orig.resolveWriteTenant(a) } }
+  return { ...orig, resolveWriteTenant: async (a: string | null | undefined) => { if (tenantFault.on) throw new Error('tenant lookup failed'); return orig.resolveWriteTenant(a) } }
 })
 
 vi.mock('../config.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../config.js')>()), MAIN_AGENT_ID: 'main-agent' }))
@@ -233,8 +233,8 @@ describe('enforce: which endpoints refuse what (T0 matrix)', () => {
   })
 
   it('memories: a shared row by id is readable, another agent\'s private row and its sub-routes are not', async () => {
-    const shared = saveAgentMemory('beta', 'for all', 'shared').id
-    const priv = saveAgentMemory('beta', 'private', 'warm').id
+    const shared = (await saveAgentMemory('beta', 'for all', 'shared')).id
+    const priv = (await saveAgentMemory('beta', 'private', 'warm')).id
     expect((await send('alpha', 'GET', `/api/memories/${shared}`)).refusal).toBeNull()
     expect((await send('alpha', 'GET', `/api/memories/${priv}`)).refusal?.target).toBe('beta')
     expect((await send('alpha', 'GET', `/api/memories/${shared}/detail`)).refusal?.target).toBe('beta')

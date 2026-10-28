@@ -92,7 +92,7 @@ export function clearRestartFailures(name: string): void {
 }
 
 /** Count one failed restart; the third in a row raises exactly one message, further ones stay quiet until a success resets the series. */
-export function noteRestartFailure(name: string, err: unknown): void {
+export async function noteRestartFailure(name: string, err: unknown): Promise<void> {
   const entry = restartFailures.get(name) ?? { count: 0, alerted: false }
   entry.count += 1
   restartFailures.set(name, entry)
@@ -106,7 +106,7 @@ export function noteRestartFailure(name: string, err: unknown): void {
       // The patient's own queue is no alert sink (main-agent delivery is pull-based): use the channel.
       notifyChannel(text).catch(() => {})
     } else {
-      createAgentMessage(name, MAIN_AGENT_ID, text, 'context-guard restart failure alert')
+      await createAgentMessage(name, MAIN_AGENT_ID, text, 'context-guard restart failure alert')
     }
   } catch (alertErr) {
     logger.warn({ err: alertErr, name }, 'context-guard: restart-failure alert could not be raised')
@@ -405,7 +405,7 @@ function measurePct(name: string, cfgLimit: number | null): number | null {
   return tokens / limit
 }
 
-function performRestart(name: string): void {
+async function performRestart(name: string): Promise<void> {
   if (name === MAIN_AGENT_ID) {
     // Platform-correct main-session restart. This was a hardcoded
     // `/bin/launchctl kickstart`, which exists only on macOS: on Linux every
@@ -424,7 +424,7 @@ function performRestart(name: string): void {
     const res = hardRestartMarveenChannels()
     if (!res.ok) throw new Error(res.error ?? 'main channels hard restart failed')
   } else {
-    restartAgentProcess(name, { fresh: true })
+    await restartAgentProcess(name, { fresh: true })
   }
 }
 
@@ -605,9 +605,9 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
         // ride in the just-written HANDOFF.md to be recovered on the next
         // launch (see claude-plan-handoff-marker.ts). Must run before
         // performRestart, while the DB row this reads still exists.
-        appendActivePlanMarkerToHandoff(name)
+        await appendActivePlanMarkerToHandoff(name)
         try {
-          performRestart(name)
+          await performRestart(name)
         } catch (err) {
           // guardStates was advanced to the post-restart phase BEFORE this
           // switch, so a failed restart would otherwise be filed as a completed
@@ -617,7 +617,7 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
           // claim the restart on the message queue.
           guardStates.set(name, state)
           logger.error({ err, name, reason: decision.reason }, 'context-guard: restart FAILED -- state rolled back for retry')
-          noteRestartFailure(name, err)
+          await noteRestartFailure(name, err)
           break
         }
         clearRestartFailures(name)
@@ -630,7 +630,7 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
           reason: decision.reason,
         })
         try {
-          createAgentMessage(
+          await createAgentMessage(
             name,
             MAIN_AGENT_ID,
             `[CONTEXT-GUARD] Ujrainditottam a(z) "${name}" agentet -- ok: ${decision.reason}` +

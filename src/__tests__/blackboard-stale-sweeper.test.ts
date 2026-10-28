@@ -104,7 +104,7 @@ describe('getActiveBlackboardAgentIds', () => {
 describe('markBlackboardStale with tier thresholds', () => {
   const NOW = Math.floor(Date.now() / 1000)
 
-  it('marks a row stale when elapsed time exceeds its tier threshold', () => {
+  it('marks a row stale when elapsed time exceeds its tier threshold', async () => {
     const db = getDb()
     // orchestrator tier: 120 min = 7200 sec; 121 min elapsed -> stale
     db.prepare(
@@ -114,14 +114,14 @@ describe('markBlackboardStale with tier thresholds', () => {
       "INSERT OR IGNORE INTO fleet_blackboard (id, agent_id, status, summary, updated_at) VALUES (?,?,?,?,?)",
     ).run('bb-orch2', 'agent-orch2', 'active', 'long task', NOW - 121 * 60)
 
-    const marked = markBlackboardStale({ 'agent-orch2': 120 * 60 }, 60 * 60, 120 * 60, NOW)
+    const marked = await markBlackboardStale({ 'agent-orch2': 120 * 60 }, 60 * 60, 120 * 60, NOW)
     expect(marked).toBeGreaterThanOrEqual(1)
 
     const row = db.prepare("SELECT status FROM fleet_blackboard WHERE id = ?").get('bb-orch2') as { status: string }
     expect(row.status).toBe('stale')
   })
 
-  it('does not mark a row stale when elapsed time is below the threshold', () => {
+  it('does not mark a row stale when elapsed time is below the threshold', async () => {
     const db = getDb()
     // short-running tier: 15 min = 900 sec; only 10 min elapsed -> not stale
     db.prepare(
@@ -131,21 +131,21 @@ describe('markBlackboardStale with tier thresholds', () => {
       "INSERT OR IGNORE INTO fleet_blackboard (id, agent_id, status, summary, updated_at) VALUES (?,?,?,?,?)",
     ).run('bb-short2', 'agent-short2', 'active', 'quick task', NOW - 10 * 60)
 
-    const marked = markBlackboardStale({ 'agent-short2': 15 * 60 }, 60 * 60, 120 * 60, NOW)
+    const marked = await markBlackboardStale({ 'agent-short2': 15 * 60 }, 60 * 60, 120 * 60, NOW)
     expect(marked).toBe(0)
 
     const row = db.prepare("SELECT status FROM fleet_blackboard WHERE id = ?").get('bb-short2') as { status: string }
     expect(row.status).toBe('active')
   })
 
-  it('applies default threshold to agents not in thresholdsByAgent map', () => {
+  it('applies default threshold to agents not in thresholdsByAgent map', async () => {
     const db = getDb()
     // No tier entry, falls through to defaultThresholdSec=60*60; 61 min elapsed -> stale
     db.prepare(
       "INSERT OR IGNORE INTO fleet_blackboard (id, agent_id, status, summary, updated_at) VALUES (?,?,?,?,?)",
     ).run('bb-defagent', 'agent-nomap', 'active', 'unknown task', NOW - 61 * 60)
 
-    const marked = markBlackboardStale({}, 60 * 60, 120 * 60, NOW)
+    const marked = await markBlackboardStale({}, 60 * 60, 120 * 60, NOW)
     expect(marked).toBeGreaterThanOrEqual(1)
 
     const row = db.prepare("SELECT status FROM fleet_blackboard WHERE id = ?").get('bb-defagent') as { status: string }
@@ -161,7 +161,7 @@ describe('markBlackboardStale with tier thresholds', () => {
 describe('markBlackboardStale with assigned rows', () => {
   const NOW = Math.floor(Date.now() / 1000)
 
-  it('marks an assigned row stale using assignedThresholdSec, ignoring the tier map', () => {
+  it('marks an assigned row stale using assignedThresholdSec, ignoring the tier map', async () => {
     const db = getDb()
     // Give the agent an orchestrator tier (120 min) so we can prove the
     // assigned threshold (here set to a short 20 min) wins for this row,
@@ -173,33 +173,33 @@ describe('markBlackboardStale with assigned rows', () => {
       "INSERT OR IGNORE INTO fleet_blackboard (id, agent_id, status, summary, updated_at) VALUES (?,?,?,?,?)",
     ).run('bb-assigned1', 'agent-assigned1', 'assigned', 'delegated, not picked up', NOW - 21 * 60)
 
-    const marked = markBlackboardStale({ 'agent-assigned1': 120 * 60 }, 60 * 60, 20 * 60, NOW)
+    const marked = await markBlackboardStale({ 'agent-assigned1': 120 * 60 }, 60 * 60, 20 * 60, NOW)
     expect(marked).toBeGreaterThanOrEqual(1)
 
     const row = db.prepare("SELECT status FROM fleet_blackboard WHERE id = ?").get('bb-assigned1') as { status: string }
     expect(row.status).toBe('stale')
   })
 
-  it('does not mark an assigned row stale when below assignedThresholdSec', () => {
+  it('does not mark an assigned row stale when below assignedThresholdSec', async () => {
     const db = getDb()
     db.prepare(
       "INSERT OR IGNORE INTO fleet_blackboard (id, agent_id, status, summary, updated_at) VALUES (?,?,?,?,?)",
     ).run('bb-assigned2', 'agent-assigned2', 'assigned', 'delegated, fresh', NOW - 5 * 60)
 
-    const marked = markBlackboardStale({}, 60 * 60, 20 * 60, NOW)
+    const marked = await markBlackboardStale({}, 60 * 60, 20 * 60, NOW)
     expect(marked).toBe(0)
 
     const row = db.prepare("SELECT status FROM fleet_blackboard WHERE id = ?").get('bb-assigned2') as { status: string }
     expect(row.status).toBe('assigned')
   })
 
-  it('never marks an assigned row as done -- only stale', () => {
+  it('never marks an assigned row as done -- only stale', async () => {
     const db = getDb()
     db.prepare(
       "INSERT OR IGNORE INTO fleet_blackboard (id, agent_id, status, summary, updated_at) VALUES (?,?,?,?,?)",
     ).run('bb-assigned3', 'agent-assigned3', 'assigned', 'delegated, stuck', NOW - 200 * 60)
 
-    markBlackboardStale({}, 60 * 60, 20 * 60, NOW)
+    await markBlackboardStale({}, 60 * 60, 20 * 60, NOW)
 
     const row = db.prepare("SELECT status FROM fleet_blackboard WHERE id = ?").get('bb-assigned3') as { status: string }
     expect(row.status).toBe('stale')
@@ -216,42 +216,42 @@ describe('markBlackboardStale with agents whose scheduled run is in flight', () 
       'INSERT OR REPLACE INTO fleet_blackboard (id, agent_id, status, summary, updated_at) VALUES (?,?,?,?,?)',
     ).run(id, agent, status, 'scheduled-task', NOW - ageMin * 60)
 
-  it('leaves the active row of an in-flight agent alone even far past its threshold', () => {
+  it('leaves the active row of an in-flight agent alone even far past its threshold', async () => {
     insert('bb-inflight-1', 'agent-inflight-1', 'active', 300)
-    markBlackboardStale({ 'agent-inflight-1': 15 * 60 }, 60 * 60, 120 * 60, NOW, new Set(['agent-inflight-1']))
+    await markBlackboardStale({ 'agent-inflight-1': 15 * 60 }, 60 * 60, 120 * 60, NOW, new Set(['agent-inflight-1']))
     expect(statusOf('bb-inflight-1')).toBe('active')
   })
 
-  it('still marks the same row stale once the agent is no longer in flight', () => {
+  it('still marks the same row stale once the agent is no longer in flight', async () => {
     insert('bb-inflight-2', 'agent-inflight-2', 'active', 300)
-    markBlackboardStale({ 'agent-inflight-2': 15 * 60 }, 60 * 60, 120 * 60, NOW, new Set(['agent-someone-else']))
+    await markBlackboardStale({ 'agent-inflight-2': 15 * 60 }, 60 * 60, 120 * 60, NOW, new Set(['agent-someone-else']))
     expect(statusOf('bb-inflight-2')).toBe('stale')
   })
 
-  it('without the argument behaves as before (nothing exempt)', () => {
+  it('without the argument behaves as before (nothing exempt)', async () => {
     insert('bb-inflight-3', 'agent-inflight-3', 'active', 300)
-    markBlackboardStale({ 'agent-inflight-3': 15 * 60 }, 60 * 60, 120 * 60, NOW)
+    await markBlackboardStale({ 'agent-inflight-3': 15 * 60 }, 60 * 60, 120 * 60, NOW)
     expect(statusOf('bb-inflight-3')).toBe('stale')
   })
 
-  it('exempts only the in-flight agent: another agent\'s overdue row is still marked', () => {
+  it('exempts only the in-flight agent: another agent\'s overdue row is still marked', async () => {
     insert('bb-inflight-4a', 'agent-inflight-4a', 'active', 300)
     insert('bb-inflight-4b', 'agent-inflight-4b', 'active', 300)
-    markBlackboardStale({}, 60 * 60, 120 * 60, NOW, new Set(['agent-inflight-4a']))
+    await markBlackboardStale({}, 60 * 60, 120 * 60, NOW, new Set(['agent-inflight-4a']))
     expect(statusOf('bb-inflight-4a')).toBe('active')
     expect(statusOf('bb-inflight-4b')).toBe('stale')
   })
 
-  it('does not exempt an assigned row (delegated work that never started)', () => {
+  it('does not exempt an assigned row (delegated work that never started)', async () => {
     insert('bb-inflight-5', 'agent-inflight-5', 'assigned', 300)
-    markBlackboardStale({}, 60 * 60, 20 * 60, NOW, new Set(['agent-inflight-5']))
+    await markBlackboardStale({}, 60 * 60, 20 * 60, NOW, new Set(['agent-inflight-5']))
     expect(statusOf('bb-inflight-5')).toBe('stale')
   })
 
-  it('writes no history row and does not touch updated_at for the exempt row', () => {
+  it('writes no history row and does not touch updated_at for the exempt row', async () => {
     insert('bb-inflight-6', 'agent-inflight-6', 'active', 300)
     const before = getDb().prepare("SELECT COUNT(*) AS n FROM fleet_blackboard_history WHERE agent_id = ?").get('agent-inflight-6') as { n: number }
-    markBlackboardStale({}, 60 * 60, 120 * 60, NOW, new Set(['agent-inflight-6']))
+    await markBlackboardStale({}, 60 * 60, 120 * 60, NOW, new Set(['agent-inflight-6']))
     const after = getDb().prepare("SELECT COUNT(*) AS n FROM fleet_blackboard_history WHERE agent_id = ?").get('agent-inflight-6') as { n: number }
     expect(after.n).toBe(before.n)
     const row = getDb().prepare('SELECT updated_at FROM fleet_blackboard WHERE id = ?').get('bb-inflight-6') as { updated_at: number }

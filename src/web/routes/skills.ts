@@ -673,7 +673,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
   const fleetReadable = (skillId: string, skillTenant: string): boolean =>
     fleetAgent && skillTenant === 'fleet' && (skillId.startsWith('global/') || isOwnAgentSkill(skillId))
   // Phase T2 shadow counter: a skill write this narrowing refuses is counted (never changes the answer).
-  const countFleetSkillDenial = (skillId: string): void => recordFleetSkillWriteDenied(req, ctx.tokenAgentId, method, path, skillId)
+  const countFleetSkillDenial = async (skillId: string): Promise<void> => recordFleetSkillWriteDenied(req, ctx.tokenAgentId, method, path, skillId)
 
   // Skill ids contain '/' ("global/<dir>", "agent/<id>/<dir>"), so clients send
   // them percent-encoded (encodeURIComponent) as ONE path segment; the raw
@@ -703,7 +703,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
   }
 
   if (sqlSkillsBase && method === 'POST') {
-    if (fleetAgent) { countFleetSkillDenial(''); json(res, { error: 'forbidden', hint: 'A fleet agent token changes its own agent skills only (PUT agent/<name>/<skill>)' }, 403); return true }
+    if (fleetAgent) { await countFleetSkillDenial(''); json(res, { error: 'forbidden', hint: 'A fleet agent token changes its own agent skills only (PUT agent/<name>/<skill>)' }, 403); return true }
     if (!isAdmin && !callerTenantId) { json(res, { error: 'forbidden', hint: 'No tenant scope' }, 403); return true }
     const body = await readBody(req)
     let parsed: { name?: string; description?: string; content?: string; is_global?: boolean } = {}
@@ -750,7 +750,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     // the PUT (admin only, fleet tenant): the skill writers are DB-first, so an agent that
     // has the content must be able to create the row, not just patch an existing one.
     const createSpec = existing ? null : fileBackedSkillSpec(id)
-    if (fleetAgent && !isOwnAgentSkill(id)) { countFleetSkillDenial(id); json(res, { error: 'forbidden', hint: 'A fleet agent token changes its own agent skills only' }, 403); return true }
+    if (fleetAgent && !isOwnAgentSkill(id)) { await countFleetSkillDenial(id); json(res, { error: 'forbidden', hint: 'A fleet agent token changes its own agent skills only' }, 403); return true }
     if (!existing && !(createSpec && (isAdmin || isOwnAgentSkill(id)))) { json(res, { error: 'not_found' }, 404); return true }
     if (existing && !isAdmin && !fleetAgent && callerTenantId !== existing.tenant_id) { json(res, { error: 'not_found' }, 404); return true }
     const body = await readBody(req)
@@ -783,7 +783,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
   if (sqlSkillIdMatch && method === 'DELETE') {
     const id = decodeSegment(sqlSkillIdMatch[1])
     if (id === null) return badSegment()
-    if (fleetAgent && !isOwnAgentSkill(id)) { countFleetSkillDenial(id); json(res, { error: 'forbidden', hint: 'A fleet agent token changes its own agent skills only' }, 403); return true }
+    if (fleetAgent && !isOwnAgentSkill(id)) { await countFleetSkillDenial(id); json(res, { error: 'forbidden', hint: 'A fleet agent token changes its own agent skills only' }, 403); return true }
     const existing = getSkill(id)
     if (!existing) { json(res, { error: 'not_found' }, 404); return true }
     if (!isAdmin && !fleetAgent && callerTenantId !== existing.tenant_id) { json(res, { error: 'not_found' }, 404); return true }
@@ -831,7 +831,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
         return true
       }
 
-      if (!canWrite) { if (fleetAgent) countFleetSkillDenial(id); json(res, { error: 'not_found' }, 404); return true }
+      if (!canWrite) { if (fleetAgent) await countFleetSkillDenial(id); json(res, { error: 'not_found' }, 404); return true }
 
       if (method === 'DELETE') {
         const f = getSkillFile(id, rel)

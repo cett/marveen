@@ -58,8 +58,8 @@ export async function tryHandleTokenShadow(ctx: RouteContext): Promise<boolean> 
   json(res, {
     days,
     from_day: filter.fromDay,
-    totals: totalsByTokenShadowCategory(filter),
-    rows: queryTokenShadow({ ...filter, limit }),
+    totals: await totalsByTokenShadowCategory(filter),
+    rows: await queryTokenShadow({ ...filter, limit }),
   })
   return true
 }

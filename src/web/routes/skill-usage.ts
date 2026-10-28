@@ -39,7 +39,7 @@ export async function tryHandleSkillUsage(ctx: RouteContext): Promise<boolean> {
       }
     }
     if (denyForeignAgent(ctx, data.agent_id)) return true
-    logSkillUsage(data.agent_id, data.skill_name, data.trigger_type, data.session_id, data.source)
+    await logSkillUsage(data.agent_id, data.skill_name, data.trigger_type, data.session_id, data.source)
     json(res, { ok: true })
     return true
   }

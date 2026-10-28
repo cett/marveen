@@ -53,7 +53,7 @@ import { join } from 'node:path'
 import { STORE_DIR, MAIN_AGENT_ID } from '../config.js'
 import { initDatabase as connectionInitDatabase, db } from './connection.js'
 import { backfillImportShadowRows, initVecSupport, migrateExistingEmbeddingsToBLOB } from './vector.js'
-import { replaceClaudePlanRows, activatePlanForAgent, type ClaudePlanType } from './claude-plans.js'
+import { replaceClaudePlanRowsSync, activatePlanForAgentSync, type ClaudePlanType } from './claude-plans.js'
 import { migrateConfigOverridesToSystemConfig, migrateGroup5StateFromFiles, getSystemConfig, setSystemConfigSync } from './system-config.js'
 import { migrateScheduleLastRunFromFile } from './tasks.js'
 import { importAgentSettingsFromFile, type AgentSettingKey } from './agent-settings.js'
@@ -83,7 +83,11 @@ export function initDatabase(dbPathOverride?: string): void {
   // Create shadow rows in memories for any import_memories entries that lack
   // them. Must run after initVecSupport so that vec0 is loaded and the
   // vec_memories virtual table exists before the backfill inserts into it.
-  void backfillImportShadowRows().catch(err => logger.warn({ err }, 'Import shadow backfill failed'))
+  try {
+    backfillImportShadowRows()
+  } catch (err) {
+    logger.warn({ err }, 'Import shadow backfill failed')
+  }
 
   // One-time seed of the claude_plans_registry / agent_active_plans DB mirror
   // from the two JSON side-cars (#886). UNLIKE migrateTaskRunsFromJson in
@@ -404,7 +408,7 @@ function seedClaudePlansRegistryMirror(): void {
       try {
         const raw = JSON.parse(readFileSync(plansPath, 'utf-8'))
         if (Array.isArray(raw)) {
-          const plans: Parameters<typeof replaceClaudePlanRows>[0] = []
+          const plans: Parameters<typeof replaceClaudePlanRowsSync>[0] = []
           for (const entry of raw) {
             if (!entry || typeof entry !== 'object') continue
             const o = entry as Record<string, unknown>
@@ -418,7 +422,7 @@ function seedClaudePlansRegistryMirror(): void {
               expectedEmail: isNonEmptyString(o.expectedEmail) ? o.expectedEmail : undefined,
             })
           }
-          replaceClaudePlanRows(plans)
+          replaceClaudePlanRowsSync(plans)
         }
       } catch (err) {
         logger.warn({ err }, 'claude-plans-registry mirror seed: failed to read/parse claude-plans.json, skipping')
@@ -442,7 +446,7 @@ function seedClaudePlansRegistryMirror(): void {
             // claude-plans.json since the state file was last written) throws
             // here. Per-entry try/catch so one stale reference cannot abort
             // the whole seed (and therefore initDatabase()) on upgrade.
-            try { activatePlanForAgent(agentId, planId, 'manual') }
+            try { activatePlanForAgentSync(agentId, planId, 'manual') }
             catch (err) { logger.warn({ err, agentId, planId }, 'claude-plans-registry mirror seed: skipping stale activePlanByAgent entry') }
           }
         }

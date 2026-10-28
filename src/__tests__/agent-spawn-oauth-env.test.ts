@@ -108,9 +108,9 @@ const TOKEN_EXPORT = `export CLAUDE_CODE_OAUTH_TOKEN="$(cat '/fixture/store/.cla
 const PREFIX = 'export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN'
 const COMMON = 'export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false && export CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 && export DISABLE_AUTOUPDATER=1 && '
 
-function launch(): string {
+async function launch(): Promise<string> {
   h.commands.length = 0
-  const res = startAgentProcess('agent-a')
+  const res = await startAgentProcess('agent-a')
   expect(res.ok).toBe(true)
   expect(h.commands).toHaveLength(1)
   return h.commands[0]
@@ -131,26 +131,26 @@ afterEach(() => {
 })
 
 describe('launch command of the agent types that are not touched', () => {
-  it('a Claude agent on the shared login with a fleet token: isolated dir, fleet token, no unset of it', () => {
-    const cmd = launch()
+  it('a Claude agent on the shared login with a fleet token: isolated dir, fleet token, no unset of it', async () => {
+    const cmd = await launch()
     expect(cmd).toBe(`${PREFIX} && ${COMMON}export CLAUDE_CONFIG_DIR="/fixture/isolated/agent-a" && ${TOKEN_EXPORT}cd "${join(h.agentRoot, 'agent-a')}" && /fixture/bin/claude --dangerously-skip-permissions --model 'claude-sonnet-5-5'`)
   })
 
-  it('a Claude agent with a config dir of its own: that dir, no fleet token', () => {
+  it('a Claude agent with a config dir of its own: that dir, no fleet token', async () => {
     h.configDir = '/fixture/plan-a'
-    const cmd = launch()
+    const cmd = await launch()
     expect(cmd).toBe(`${PREFIX} && ${COMMON}export CLAUDE_CONFIG_DIR="/fixture/plan-a" && cd "${join(h.agentRoot, 'agent-a')}" && /fixture/bin/claude --dangerously-skip-permissions --model 'claude-sonnet-5-5'`)
   })
 
-  it('a Claude agent without a fleet token stays on the shared login', () => {
+  it('a Claude agent without a fleet token stays on the shared login', async () => {
     h.fleetToken = false
-    const cmd = launch()
+    const cmd = await launch()
     expect(cmd).toBe(`${PREFIX} && ${COMMON}cd "${join(h.agentRoot, 'agent-a')}" && /fixture/bin/claude --dangerously-skip-permissions --model 'claude-sonnet-5-5'`)
   })
 
-  it('a non-Claude model keeps getting the fleet token exactly as before', () => {
+  it('a non-Claude model keeps getting the fleet token exactly as before', async () => {
     h.model = 'fixture-local-model'
-    const cmd = launch()
+    const cmd = await launch()
     expect(cmd).toBe(`${PREFIX} && ${COMMON}${TOKEN_EXPORT}cd "${join(h.agentRoot, 'agent-a')}" && /fixture/bin/claude --dangerously-skip-permissions --model 'fixture-local-model'`)
   })
 })
@@ -158,48 +158,48 @@ describe('launch command of the agent types that are not touched', () => {
 describe('an authMode api agent never gets the fleet OAuth token', () => {
   const dirOf = () => join(h.agentRoot, 'agent-a')
 
-  it('exports its own key, no token, and unsets one inherited from the tmux environment', () => {
+  it('exports its own key, no token, and unsets one inherited from the tmux environment', async () => {
     h.authMode = 'api'
     h.apiKey = 'fixture-api-key'
-    const cmd = launch()
+    const cmd = await launch()
     expect(cmd).toBe(`${PREFIX} CLAUDE_CODE_OAUTH_TOKEN && ${COMMON}export ANTHROPIC_API_KEY="fixture-api-key" && cd "${dirOf()}" && /fixture/bin/claude --dangerously-skip-permissions --model 'claude-sonnet-5-5'`)
     expect(cmd).not.toContain('export CLAUDE_CODE_OAUTH_TOKEN')
   })
 
-  it('a channel agent in the isolated dir authenticates from its key, not the fleet token', () => {
+  it('a channel agent in the isolated dir authenticates from its key, not the fleet token', async () => {
     h.authMode = 'api'
     h.apiKey = 'fixture-api-key'
     h.hasChannel = true
-    const cmd = launch()
+    const cmd = await launch()
     expect(cmd).toContain(`export CLAUDE_CONFIG_DIR="/fixture/isolated/agent-a" && `)
     expect(cmd).toContain('export ANTHROPIC_API_KEY="fixture-api-key" && ')
     expect(cmd).not.toContain('export CLAUDE_CODE_OAUTH_TOKEN')
     expect(cmd).toContain('DISCORD_BOT_TOKEN CLAUDE_CODE_OAUTH_TOKEN &&')
   })
 
-  it('unsets an inherited token also when there is no fleet token', () => {
+  it('unsets an inherited token also when there is no fleet token', async () => {
     h.authMode = 'api'
     h.apiKey = 'fixture-api-key'
     h.fleetToken = false
-    expect(launch()).toContain('DISCORD_BOT_TOKEN CLAUDE_CODE_OAUTH_TOKEN &&')
+    expect(await launch()).toContain('DISCORD_BOT_TOKEN CLAUDE_CODE_OAUTH_TOKEN &&')
   })
 
-  it('an api agent with its own config dir keeps the dir and its key, and still unsets the token', () => {
+  it('an api agent with its own config dir keeps the dir and its key, and still unsets the token', async () => {
     h.authMode = 'api'
     h.apiKey = 'fixture-api-key'
     h.configDir = '/fixture/plan-a'
-    const cmd = launch()
+    const cmd = await launch()
     expect(cmd).toContain('export CLAUDE_CONFIG_DIR="/fixture/plan-a" && ')
     expect(cmd).toContain('export ANTHROPIC_API_KEY="fixture-api-key" && ')
     expect(cmd).toContain('DISCORD_BOT_TOKEN CLAUDE_CODE_OAUTH_TOKEN &&')
     expect(cmd).not.toContain('export CLAUDE_CODE_OAUTH_TOKEN')
   })
 
-  it('without a vault key it starts with no credential, fail closed, and warns with the agent name', () => {
+  it('without a vault key it starts with no credential, fail closed, and warns with the agent name', async () => {
     h.authMode = 'api'
     h.apiKey = ''
     logWarn.mockClear()
-    const cmd = launch()
+    const cmd = await launch()
     expect(cmd).not.toContain('export CLAUDE_CODE_OAUTH_TOKEN')
     expect(cmd).not.toContain('ANTHROPIC_API_KEY')
     expect(cmd).toContain('DISCORD_BOT_TOKEN CLAUDE_CODE_OAUTH_TOKEN &&')
@@ -208,21 +208,21 @@ describe('an authMode api agent never gets the fleet OAuth token', () => {
     expect(warned[0][0]).toEqual({ name: 'agent-a' })
   })
 
-  it('with a vault key, or for another authMode, there is no such warning', () => {
+  it('with a vault key, or for another authMode, there is no such warning', async () => {
     logWarn.mockClear()
     h.authMode = 'api'
     h.apiKey = 'fixture-api-key'
-    launch()
+    await launch()
     h.authMode = 'shared'
     h.apiKey = ''
-    launch()
+    await launch()
     expect(logWarn.mock.calls.filter((c) => String(c[1]).includes('no API key in the vault'))).toEqual([])
   })
 
-  it('the api rule needs a Claude model: a non-Claude agent marked api is launched as any other', () => {
+  it('the api rule needs a Claude model: a non-Claude agent marked api is launched as any other', async () => {
     h.authMode = 'api'
     h.model = 'fixture-local-model'
-    const cmd = launch()
+    const cmd = await launch()
     expect(cmd).toContain(TOKEN_EXPORT)
     expect(cmd).not.toContain('DISCORD_BOT_TOKEN CLAUDE_CODE_OAUTH_TOKEN')
   })

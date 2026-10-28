@@ -134,7 +134,7 @@ export interface AgentMessage {
   envelope: string | null
 }
 
-export function createAgentMessage(
+export async function createAgentMessage(
   from: string,
   to: string,
   content: string,
@@ -145,7 +145,7 @@ export function createAgentMessage(
   // true = `tenantId` is final, even when it is 'default': a reply that belongs to an existing message
   // (the [Eredmény] notice) must not pick up whatever tenant the executor happens to be serving now.
   pinTenant: boolean = false,
-): AgentMessage {
+): Promise<AgentMessage> {
   // The one choke point of the JS writers: nobody but the server's own sender may open a line with a
   // server-only marker (the approval notices). Throws ReservedMarkerError; the HTTP routes check first
   // and answer 400, an internal caller's own try/catch logs it.
@@ -153,12 +153,12 @@ export function createAgentMessage(
   const now = Math.floor(Date.now() / 1000)
   // A delegation inherits the tenant of the request the sending agent is serving; an explicit non-default
   // tenant (partner sends) and messages for federated recipients are left as given.
-  if (!pinTenant && tenantId === 'default' && !to.includes('/')) tenantId = getDelegationTenant(from, now)
+  if (!pinTenant && tenantId === 'default' && !to.includes('/')) tenantId = await getDelegationTenant(from, now)
   const { id } = db.prepare(
     'INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at, origin_note, trace_id, span_id, parent_span_id, tenant_id, envelope) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id'
   ).get(from, to, content, 'pending', now, originNote ?? null, traceCtx?.trace_id ?? null, traceCtx?.span_id ?? null, traceCtx?.parent_span_id ?? null, tenantId, envelope ?? null) as { id: number }
   try {
-    writeAgentAuditLog({ agent_id: from, entity: 'message', action: 'create', entity_id: id, detail: { to, preview: content.slice(0, 80) } })
+    await writeAgentAuditLog({ agent_id: from, entity: 'message', action: 'create', entity_id: id, detail: { to, preview: content.slice(0, 80) } })
   } catch { /* audit failure must not abort message creation */ }
   return {
     id,
@@ -634,13 +634,13 @@ export function pruneAgentMessages(): number {
 // (their scheduled run is still in flight and the runner closes the row).
 // Returns how many rows were marked. Called by the blackboard-stale-sweeper on
 // a background interval.
-export function markBlackboardStale(
+export async function markBlackboardStale(
   thresholdsByAgent: Record<string, number>,
   defaultThresholdSec: number,
   assignedThresholdSec: number,
   nowSec = Math.floor(Date.now() / 1000),
   skipActiveAgentIds: ReadonlySet<string> = new Set(),
-): number {
+): Promise<number> {
   const rows = db.prepare(
     `SELECT id, agent_id, task_ref, summary, updated_at, status FROM fleet_blackboard WHERE status IN ('active', 'assigned')`,
   ).all() as { id: string; agent_id: string; task_ref: string | null; summary: string; updated_at: number; status: string }[]
@@ -658,7 +658,7 @@ export function markBlackboardStale(
       // #886: a blackboard row going stale means the agent behind it is
       // presumed dead -- drop any plan binding with it (design section 3A),
       // rather than let it look "active" forever.
-      try { deactivatePlanForAgent(row.agent_id) } catch { /* best-effort, never blocks the sweep */ }
+      try { await deactivatePlanForAgent(row.agent_id) } catch { /* best-effort, never blocks the sweep */ }
       marked++
     }
   }
@@ -722,7 +722,7 @@ export function resolveAgentTenant(agent_id: string): string {
 // 'blocked' -- a done/active row has no live block to describe. resolved_by
 // is never stored on the live row; it is only carried into the history
 // entry, and only on the actual blocked -> non-blocked transition.
-export function upsertBlackboard(
+export async function upsertBlackboard(
   agent_id: string,
   data: {
     task_ref?: string | null
@@ -732,7 +732,7 @@ export function upsertBlackboard(
     blocked_reason?: string | null
     resolved_by?: string | null
   },
-): BlackboardRow {
+): Promise<BlackboardRow> {
   const existing = db.prepare('SELECT * FROM fleet_blackboard WHERE agent_id = ?').get(agent_id) as BlackboardRow | undefined
   const id = existing?.id ?? randomUUID().replace(/-/g, '').slice(0, 8)
   const tenant_id = resolveAgentTenant(agent_id)
@@ -771,7 +771,7 @@ export function upsertBlackboard(
   // same as the history write above -- a repeated no-op 'done' upsert must
   // not matter here.
   if (changed && row.status === 'done') {
-    try { deactivatePlanForAgent(row.agent_id) } catch { /* best-effort */ }
+    try { await deactivatePlanForAgent(row.agent_id) } catch { /* best-effort */ }
   }
   return row
 }

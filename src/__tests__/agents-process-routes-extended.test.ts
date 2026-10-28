@@ -7,9 +7,9 @@ vi.mock('../web/channel-monitor.js', () => ({
   hardRestartMarveenChannels: vi.fn().mockReturnValue({ ok: true }),
 }))
 vi.mock('../web/agent-process.js', () => ({
-  startAgentProcess: vi.fn().mockReturnValue({ ok: true }),
-  stopAgentProcess: vi.fn().mockReturnValue({ ok: true }),
-  restartAgentProcess: vi.fn().mockReturnValue({ ok: true }),
+  startAgentProcess: vi.fn().mockResolvedValue({ ok: true }),
+  stopAgentProcess: vi.fn().mockResolvedValue({ ok: true }),
+  restartAgentProcess: vi.fn().mockResolvedValue({ ok: true }),
   getAgentProcessInfo: vi.fn().mockReturnValue({ running: false, pid: null }),
 }))
 vi.mock('../web/manual-restart-gate.js', async (importOriginal) => ({
@@ -252,7 +252,7 @@ describe('agents-process routes -- extended coverage', () => {
     })
 
     it('returns 409 when startAgentProcess returns conflict (already running)', async () => {
-      vi.mocked(startAgentProcess).mockReturnValueOnce({ ok: false, error: 'conflict', hint: 'Agent is already running' })
+      vi.mocked(startAgentProcess).mockResolvedValueOnce({ ok: false, error: 'conflict', hint: 'Agent is already running' })
       const { ctx, statusCode, responseBody } = makeCtx({ method: 'POST', path: '/api/agents/agent-a/start', body: '{}' })
       expect(await tryHandleAgentsProcess(ctx)).toBe(true)
       expect(statusCode()).toBe(409)
@@ -272,7 +272,7 @@ describe('agents-process routes -- extended coverage', () => {
     })
 
     it('returns 409 when stopAgentProcess returns conflict (agent not running)', async () => {
-      vi.mocked(stopAgentProcess).mockReturnValueOnce({ ok: false, error: 'conflict', hint: 'agent is not running, nothing to stop' })
+      vi.mocked(stopAgentProcess).mockResolvedValueOnce({ ok: false, error: 'conflict', hint: 'agent is not running, nothing to stop' })
       const { ctx, statusCode, responseBody } = makeCtx({ method: 'POST', path: '/api/agents/agent-a/stop' })
       expect(await tryHandleAgentsProcess(ctx)).toBe(true)
       expect(statusCode()).toBe(409)
@@ -429,11 +429,11 @@ describe('agents-process routes -- extended coverage', () => {
     beforeEach(() => {
       vi.mocked(addDesiredAgent).mockClear()
       // Reset to the happy-path default between tests in this block.
-      vi.mocked(startAgentProcess).mockReturnValue({ ok: true })
+      vi.mocked(startAgentProcess).mockResolvedValue({ ok: true })
     })
 
     it('calls addDesiredAgent when startAgentProcess returns conflict', async () => {
-      vi.mocked(startAgentProcess).mockReturnValueOnce({
+      vi.mocked(startAgentProcess).mockResolvedValueOnce({
         ok: false,
         error: 'conflict',
         hint: 'Agent is already running',
@@ -444,7 +444,7 @@ describe('agents-process routes -- extended coverage', () => {
     })
 
     it('does NOT call addDesiredAgent when startAgentProcess returns a non-conflict error', async () => {
-      vi.mocked(startAgentProcess).mockReturnValueOnce({ ok: false, error: 'not_found' })
+      vi.mocked(startAgentProcess).mockResolvedValueOnce({ ok: false, error: 'not_found' })
       const { ctx } = makeCtx({ method: 'POST', path: '/api/agents/agent-b/start', body: '{}' })
       await tryHandleAgentsProcess(ctx)
       expect(vi.mocked(addDesiredAgent)).not.toHaveBeenCalled()

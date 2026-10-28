@@ -70,11 +70,11 @@ export async function resolveApiToken(bearer: string): Promise<ApiTokenResult> {
 // work the agent is doing right now (a fresh agent_tenant_context for a shared agent, the one tenant
 // of an agent that serves only one, 'default' for a fleet-internal one). A shared agent without a
 // fresh context has no tenant to name: the result carries tenantContextMissing and the gate refuses.
-function resolveFleetAgentToken(found: Extract<ApiTokenResult, { found: true }>): AuthResult {
+async function resolveFleetAgentToken(found: Extract<ApiTokenResult, { found: true }>): Promise<AuthResult> {
   const agentId = found.agentId
   // The table CHECK keeps this from happening; a row without an agent would be a token of nobody.
   if (!agentId) return { kind: 'none' }
-  const tenantId = resolveWriteTenant(agentId)
+  const tenantId = await resolveWriteTenant(agentId)
   if (tenantId === null) {
     return { kind: 'token', role: 'fleet_agent', tokenName: found.name, agentId, tenantContextMissing: true }
   }

@@ -26,7 +26,7 @@ function mcpServerAndToolFromToolName(toolName: string): { server: string; tool:
 // otel_spans requires both (agent_id is NOT NULL, span_id is part of the
 // primary key) -- such a call is logged and dropped rather than stored, a
 // deliberate behavior change from the old table (which accepted nulls).
-export function logToolCall(
+export async function logToolCall(
   sessionId: string,
   toolName: string,
   inputSummary: string | null,
@@ -34,7 +34,7 @@ export function logToolCall(
   agentId: string | null = null,
   traceId: string | null = null,
   durationMs: number | null = null,
-): void {
+): Promise<void> {
   if (!traceId || !agentId) {
     logger.warn({ sessionId, toolName, traceId, agentId }, 'logToolCall: missing trace_id or agent_id, skipping tool.call span')
     return
@@ -42,7 +42,7 @@ export function logToolCall(
   const endMs = Date.now()
   const startMs = typeof durationMs === 'number' ? endMs - durationMs : endMs
   const mcp = mcpServerAndToolFromToolName(toolName)
-  upsertOtelSpan({
+  await upsertOtelSpan({
     trace_id: sessionId,
     span_id: traceId,
     parent_span_id: null,
@@ -208,13 +208,13 @@ export interface SkillUsageStatRow {
 // Returns true when a row was written, false when the 60 s dedup swallowed it. A missing source (an old
 // hook) is stored as NULL but deduped under its derived legacy value, so the Skill-tool row and the
 // SKILL.md-read row of one invocation (different triggers) never swallow each other.
-export function logSkillUsage(
+export async function logSkillUsage(
   agentId: string,
   skillName: string,
   triggerType: SkillUsageTrigger,
   sessionId?: string | null,
   source?: SkillUsageSource | null,
-): boolean {
+): Promise<boolean> {
   const now = Math.floor(Date.now() / 1000)
   const effectiveSource = source ?? (triggerType === 'tool_call' ? 'skill_tool' : 'read_tool')
   const dup = db.prepare(
@@ -226,7 +226,7 @@ export function logSkillUsage(
   if (dup) return false
   db.prepare(
     'INSERT INTO skill_usage (agent_id, skill_name, trigger_type, session_id, created_at, source, tenant_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
-  ).run(agentId, skillName, triggerType, sessionId ?? null, now, source ?? null, resolveWriteTenant(agentId))
+  ).run(agentId, skillName, triggerType, sessionId ?? null, now, source ?? null, await resolveWriteTenant(agentId))
   return true
 }
 
@@ -319,7 +319,7 @@ export interface HookAuditLogEntry {
   trigger_source: 'watchdog' | 'compact-monitor' | null
 }
 
-export function insertHookAuditLog(entry: {
+export async function insertHookAuditLog(entry: {
   agent_id?: string | null
   hook_type: string
   verdict: string
@@ -328,7 +328,7 @@ export function insertHookAuditLog(entry: {
   reason?: string | null
   session_id?: string | null
   trigger_source?: string | null
-}): void {
+}): Promise<void> {
   const now = Math.floor(Date.now() / 1000)
   db.prepare(
     'INSERT INTO hook_audit_log (ts, agent_id, hook_type, verdict, tool_name, content_hash, reason, session_id, trigger_source, tenant_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
@@ -342,7 +342,7 @@ export function insertHookAuditLog(entry: {
     entry.reason ?? null,
     entry.session_id ?? null,
     entry.trigger_source ?? null,
-    resolveWriteTenant(entry.agent_id),
+    await resolveWriteTenant(entry.agent_id),
   )
 }
 
@@ -428,14 +428,14 @@ export interface StoreFileAuditRow {
 /** The actor name the dashboard's own routes use for the store writes they announce. */
 export const STORE_DASHBOARD_ACTOR = 'dashboard'
 
-export function logStoreFileEvent(
+export async function logStoreFileEvent(
   relPath: string,
   eventType: string,
   isSensitive: number,
   fileSize: number | null,
   agent: string | null = null,
   tenantId?: string | null,
-): void {
+): Promise<void> {
   const now = Math.floor(Date.now() / 1000)
   // The store holds fleet files (configs, logs, handoffs); a file is a tenant's only when the route
   // that wrote it says so. An explicit tenantId wins, null included (fleet scope). Without one the
@@ -443,7 +443,7 @@ export function logStoreFileEvent(
   // fall into 'default'. A direct write nobody announced has no actor and stays NULL.
   const tenant = tenantId !== undefined
     ? tenantId
-    : agent === null || agent === STORE_DASHBOARD_ACTOR ? null : resolveWriteTenant(agent)
+    : agent === null || agent === STORE_DASHBOARD_ACTOR ? null : await resolveWriteTenant(agent)
   db.prepare(
     'INSERT INTO store_file_audit (rel_path, event_type, is_sensitive, file_size, agent, created_at, tenant_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
   ).run(relPath, eventType, isSensitive, fileSize, agent, now, tenant)
@@ -504,13 +504,13 @@ export interface AgentAuditLogRow {
   created_at: number
 }
 
-export function writeAgentAuditLog(opts: {
+export async function writeAgentAuditLog(opts: {
   agent_id: string
   entity: 'memory' | 'kanban' | 'message' | 'agent' | 'blackboard' | 'approval' | 'schedule'
   action: 'create' | 'update' | 'delete' | 'pii_scrub_bypass' | 'pii_scrub_attempt_denied' | 'reserved_marker_denied' | 'skip_not_live' | 'timeout_sweep' | 'mass_skip' | 'skip_tenant_mismatch' | 'review_requested' | 'activate' | 'toggle' | 'retarget' | 'envelope_hash_mismatch' | 'consume' | 'create_refused'
   entity_id?: string | number | null
   detail?: Record<string, unknown> | null
-}): void {
+}): Promise<void> {
   db.prepare(
     'INSERT INTO agent_audit_log (agent_id, entity, action, entity_id, detail, tenant_id) VALUES (?, ?, ?, ?, ?, ?)'
   ).run(
@@ -519,7 +519,7 @@ export function writeAgentAuditLog(opts: {
     opts.action,
     opts.entity_id != null ? String(opts.entity_id) : null,
     opts.detail != null ? JSON.stringify(opts.detail) : null,
-    resolveWriteTenant(opts.agent_id),
+    await resolveWriteTenant(opts.agent_id),
   )
 }
 
@@ -952,7 +952,7 @@ export function summarizeRbacShadowRows(f: Pick<ShadowLogFilter, 'from' | 'to' |
 }
 
 /** Admin-console audit row; `entity` is fixed to 'admin' and the actor is a dashboard user name. */
-export function writeAdminAuditLog(actor: string, action: string, targetId: string | number, detail: Record<string, unknown>): void {
+export async function writeAdminAuditLog(actor: string, action: string, targetId: string | number, detail: Record<string, unknown>): Promise<void> {
   db.prepare('INSERT INTO agent_audit_log (agent_id, entity, action, entity_id, detail, tenant_id) VALUES (?, ?, ?, ?, ?, ?)')
-    .run(actor, 'admin', action, String(targetId), JSON.stringify(detail), dashboardUserTenant(actor))
+    .run(actor, 'admin', action, String(targetId), JSON.stringify(detail), await dashboardUserTenant(actor))
 }

@@ -15,8 +15,8 @@ beforeAll(() => { initDatabase(':memory:') }) // fresh, isolated schema'd DB
 // persists as status='failed' plus refused_reason, and no_session_at is a
 // timestamp on an otherwise still-pending row.
 describe('markMessageRefused', () => {
-  it('sets status=failed and refused_reason, distinct from a plain failure', () => {
-    const msg = createAgentMessage('agent-a', 'agent-b', 'do the thing')
+  it('sets status=failed and refused_reason, distinct from a plain failure', async () => {
+    const msg = await createAgentMessage('agent-a', 'agent-b', 'do the thing')
     expect(markMessageRefused(msg.id, 'not my job')).toBe(true)
     const row = getAgentMessage(msg.id)
     expect(row?.status).toBe('failed')
@@ -30,16 +30,16 @@ describe('markMessageRefused', () => {
 })
 
 describe('markMessageNoSession', () => {
-  it('stamps no_session_at on a pending row without changing its status', () => {
-    const msg = createAgentMessage('agent-a', 'agent-c', 'ping')
+  it('stamps no_session_at on a pending row without changing its status', async () => {
+    const msg = await createAgentMessage('agent-a', 'agent-c', 'ping')
     expect(markMessageNoSession(msg.id)).toBe(true)
     const row = getAgentMessage(msg.id)
     expect(row?.status).toBe('pending')
     expect(row?.no_session_at).not.toBeNull()
   })
 
-  it('keeps the FIRST timestamp on repeated calls (COALESCE)', () => {
-    const msg = createAgentMessage('agent-a', 'agent-d', 'ping again')
+  it('keeps the FIRST timestamp on repeated calls (COALESCE)', async () => {
+    const msg = await createAgentMessage('agent-a', 'agent-d', 'ping again')
     markMessageNoSession(msg.id)
     const first = getAgentMessage(msg.id)?.no_session_at
     markMessageNoSession(msg.id)
@@ -47,8 +47,8 @@ describe('markMessageNoSession', () => {
     expect(second).toBe(first)
   })
 
-  it('is a no-op once the row is no longer pending', () => {
-    const msg = createAgentMessage('agent-a', 'agent-e', 'ping once more')
+  it('is a no-op once the row is no longer pending', async () => {
+    const msg = await createAgentMessage('agent-a', 'agent-e', 'ping once more')
     expect(markMessageDelivered(msg.id)).toBe(true)
     expect(markMessageNoSession(msg.id)).toBe(false)
     expect(getAgentMessage(msg.id)?.no_session_at).toBeNull()
@@ -58,14 +58,14 @@ describe('markMessageNoSession', () => {
 // envelope is a plain additive column, same shape as
 // refused_reason/no_session_at above -- round-trip it against the real db.
 describe('createAgentMessage envelope', () => {
-  it('is null when not passed', () => {
-    const msg = createAgentMessage('agent-a', 'agent-b', 'no envelope here')
+  it('is null when not passed', async () => {
+    const msg = await createAgentMessage('agent-a', 'agent-b', 'no envelope here')
     expect(msg.envelope).toBeNull()
     expect(getAgentMessage(msg.id)?.envelope).toBeNull()
   })
 
-  it('persists a passed envelope string on both the return value and the live row', () => {
-    const msg = createAgentMessage('agent-a', 'agent-b', 'with envelope', null, null, 'default', '{"branch":"feat/x"}')
+  it('persists a passed envelope string on both the return value and the live row', async () => {
+    const msg = await createAgentMessage('agent-a', 'agent-b', 'with envelope', null, null, 'default', '{"branch":"feat/x"}')
     expect(msg.envelope).toBe('{"branch":"feat/x"}')
     expect(getAgentMessage(msg.id)?.envelope).toBe('{"branch":"feat/x"}')
   })

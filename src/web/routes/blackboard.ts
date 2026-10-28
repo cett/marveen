@@ -59,7 +59,7 @@ export function computeBlackboardSignal(
 
 // tenantId: null means unfiltered (admin, sees every tenant including shared
 // '_multi_' agents); a string narrows to that tenant's own rows only.
-function listBlackboardWithSignals(limit = 10, tenantId: string | null = null): BlackboardRowWithSignal[] {
+async function listBlackboardWithSignals(limit = 10, tenantId: string | null = null): Promise<BlackboardRowWithSignal[]> {
   const rows = listBlackboardRows(limit, tenantId)
 
   if (!rows.length) return []
@@ -84,7 +84,7 @@ function listBlackboardWithSignals(limit = 10, tenantId: string | null = null): 
   const lastChangedMap = new Map(histRows.map((r) => [r.agent_id, r.last_changed_at]))
 
   const nowSec = Math.floor(Date.now() / 1000)
-  const activePlanMap = listActivePlansForAgents(agentIds)
+  const activePlanMap = await listActivePlansForAgents(agentIds)
 
   return rows.map((row) => ({
     ...row,
@@ -103,14 +103,14 @@ function listBlackboard(limit = 10): BlackboardRow[] {
   return listBlackboardRows(limit)
 }
 
-function patchBlackboard(id: string, data: {
+async function patchBlackboard(id: string, data: {
   status?: string
   summary?: string
   task_ref?: string | null
   blocked_by?: string | null
   blocked_reason?: string | null
   resolved_by?: string | null
-}): BlackboardRow | undefined {
+}): Promise<BlackboardRow | undefined> {
   const row = getBlackboardRowById(id)
   if (!row) return undefined
   const status = data.status ?? row.status
@@ -141,7 +141,7 @@ function patchBlackboard(id: string, data: {
   // #886: same "done means no live plan claim" rule as upsertBlackboard --
   // PATCH is the other write path that can flip a row to 'done'.
   if (changed && updated.status === 'done') {
-    try { deactivatePlanForAgent(updated.agent_id) } catch { /* best-effort */ }
+    try { await deactivatePlanForAgent(updated.agent_id) } catch { /* best-effort */ }
   }
   return updated
 }
@@ -174,7 +174,7 @@ export async function tryHandleBlackboard(ctx: RouteContext): Promise<boolean> {
   }
 
   if (path === '/api/blackboard' && method === 'GET') {
-    json(res, listBlackboardWithSignals(10, readTenantId))
+    json(res, await listBlackboardWithSignals(10, readTenantId))
     return true
   }
 
@@ -214,9 +214,9 @@ export async function tryHandleBlackboard(ctx: RouteContext): Promise<boolean> {
     }
     try {
       const hadExisting = blackboardRowExistsForAgent(agent_id)
-      const row = upsertBlackboard(agent_id, { task_ref, status, summary, blocked_by, blocked_reason, resolved_by })
+      const row = await upsertBlackboard(agent_id, { task_ref, status, summary, blocked_by, blocked_reason, resolved_by })
       try {
-        writeAgentAuditLog({ agent_id, entity: 'blackboard', action: hadExisting ? 'update' : 'create', entity_id: row.id, detail: { status, task_ref } })
+        await writeAgentAuditLog({ agent_id, entity: 'blackboard', action: hadExisting ? 'update' : 'create', entity_id: row.id, detail: { status, task_ref } })
       } catch { /* audit failure must not abort the write */ }
       json(res, { ok: true, row })
     } catch (err) {
@@ -244,7 +244,7 @@ export async function tryHandleBlackboard(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'limit_exceeded', field: 'summary', hint: 'summary max 500 chars' }, 400)
       return true
     }
-    const updated = patchBlackboard(id, {
+    const updated = await patchBlackboard(id, {
       status: body.status !== undefined ? String(body.status) : undefined,
       summary: body.summary !== undefined ? String(body.summary) : undefined,
       task_ref: Object.prototype.hasOwnProperty.call(body, 'task_ref') ? (body.task_ref as string | null) : undefined,
@@ -254,7 +254,7 @@ export async function tryHandleBlackboard(ctx: RouteContext): Promise<boolean> {
     })
     if (!updated) { json(res, { error: 'not_found', hint: 'not found' }, 404); return true }
     try {
-      writeAgentAuditLog({ agent_id: updated.agent_id, entity: 'blackboard', action: 'update', entity_id: updated.id, detail: { status: updated.status, task_ref: updated.task_ref } })
+      await writeAgentAuditLog({ agent_id: updated.agent_id, entity: 'blackboard', action: 'update', entity_id: updated.id, detail: { status: updated.status, task_ref: updated.task_ref } })
     } catch { /* audit failure must not abort the write */ }
     json(res, { ok: true, row: updated })
     return true

@@ -107,24 +107,24 @@ describe('buildKanbanContext', () => {
 })
 
 describe('saveConversationTurn', () => {
-  it('skips a short message (<=20 chars)', () => {
-    saveConversationTurn('chat-1', 'remember this', 'ok')
+  it('skips a short message (<=20 chars)', async () => {
+    await saveConversationTurn('chat-1', 'remember this', 'ok')
     expect(mockSaveMemory).not.toHaveBeenCalled()
   })
 
-  it('skips a slash-command message regardless of length', () => {
-    saveConversationTurn('chat-1', '/status a very long slash command message', 'ok')
+  it('skips a slash-command message regardless of length', async () => {
+    await saveConversationTurn('chat-1', '/status a very long slash command message', 'ok')
     expect(mockSaveMemory).not.toHaveBeenCalled()
   })
 
-  it('skips a trivial acknowledgement even when padded past 20 chars by whitespace', () => {
-    saveConversationTurn('chat-1', '   koszi                ', 'ok')
+  it('skips a trivial acknowledgement even when padded past 20 chars by whitespace', async () => {
+    await saveConversationTurn('chat-1', '   koszi                ', 'ok')
     expect(mockSaveMemory).not.toHaveBeenCalled()
   })
 
-  it('saves a semantic memory for a long message matching the preference/fact pattern', () => {
+  it('saves a semantic memory for a long message matching the preference/fact pattern', async () => {
     const userMsg = 'Fontos, hogy mindig magyarul valaszolj nekem mostantol kezdve'
-    saveConversationTurn('chat-1', userMsg, 'Rendben, magyarul valaszolok.')
+    await saveConversationTurn('chat-1', userMsg, 'Rendben, magyarul valaszolok.')
 
     expect(mockSaveMemory).toHaveBeenCalledTimes(1)
     const [chatId, content, sector] = mockSaveMemory.mock.calls[0]
@@ -134,21 +134,21 @@ describe('saveConversationTurn', () => {
     expect(content).toContain('Rendben, magyarul valaszolok.')
   })
 
-  it('does not save a long message that matches neither the semantic nor the skip pattern', () => {
+  it('does not save a long message that matches neither the semantic nor the skip pattern', async () => {
     const userMsg = 'Milyen idő lesz holnap Budapesten, kell-e esernyő?'
-    saveConversationTurn('chat-1', userMsg, 'Napos lesz.')
+    await saveConversationTurn('chat-1', userMsg, 'Napos lesz.')
     expect(mockSaveMemory).not.toHaveBeenCalled()
   })
 })
 
 describe('runDecaySweep', () => {
-  it('runs every prune/decay step and logs a combined summary', () => {
+  it('runs every prune/decay step and logs a combined summary', async () => {
     vi.mocked(db.pruneTokenUsage).mockReturnValue({ pruned: 3 } as unknown as ReturnType<typeof db.pruneTokenUsage>)
     vi.mocked(db.pruneBlackboardHistory).mockReturnValue(2 as unknown as ReturnType<typeof db.pruneBlackboardHistory>)
     vi.mocked(db.pruneConversationLog).mockReturnValue(1 as unknown as ReturnType<typeof db.pruneConversationLog>)
     vi.mocked(db.pruneAgentMessages).mockReturnValue(4 as unknown as ReturnType<typeof db.pruneAgentMessages>)
 
-    runDecaySweep()
+    await runDecaySweep()
 
     expect(db.decayMemories).toHaveBeenCalledTimes(1)
     expect(db.pruneAuditLogs).toHaveBeenCalledTimes(1)
@@ -167,11 +167,11 @@ describe('runDailyDigest', () => {
   const now = Math.floor(Date.now() / 1000)
 
   function memory(id: number, content: string, ageSeconds: number) {
-    return { id, content, created_at: now - ageSeconds } as unknown as ReturnType<typeof db.getMemoriesForChat>[number]
+    return { id, content, created_at: now - ageSeconds } as unknown as Awaited<ReturnType<typeof db.getMemoriesForChat>>[number]
   }
 
   it('skips digest generation when fewer than 2 memories were recorded today', async () => {
-    mockGetMemoriesForChat.mockReturnValue([memory(1, 'only one thing happened', 3600)])
+    mockGetMemoriesForChat.mockResolvedValue([memory(1, 'only one thing happened', 3600)])
 
     const result = await runDailyDigest('chat-1')
 
@@ -181,7 +181,7 @@ describe('runDailyDigest', () => {
   })
 
   it('ignores memories older than 24h when counting today\'s activity', async () => {
-    mockGetMemoriesForChat.mockReturnValue([
+    mockGetMemoriesForChat.mockResolvedValue([
       memory(1, 'today A', 3600),
       memory(2, 'yesterday B', 2 * 86400),
       memory(3, 'yesterday C', 3 * 86400),
@@ -194,7 +194,7 @@ describe('runDailyDigest', () => {
   })
 
   it('generates and saves a digest as an episodic memory when there is enough activity', async () => {
-    mockGetMemoriesForChat.mockReturnValue([
+    mockGetMemoriesForChat.mockResolvedValue([
       memory(1, 'worked on the coverage series', 3600),
       memory(2, 'opened a pull request', 7200),
     ])
@@ -212,7 +212,7 @@ describe('runDailyDigest', () => {
   })
 
   it('returns null without saving when the sub-agent produces no text', async () => {
-    mockGetMemoriesForChat.mockReturnValue([
+    mockGetMemoriesForChat.mockResolvedValue([
       memory(1, 'worked on A', 3600),
       memory(2, 'worked on B', 7200),
     ])
@@ -225,7 +225,7 @@ describe('runDailyDigest', () => {
   })
 
   it('returns null and logs an error when the sub-agent invocation throws', async () => {
-    mockGetMemoriesForChat.mockReturnValue([
+    mockGetMemoriesForChat.mockResolvedValue([
       memory(1, 'worked on A', 3600),
       memory(2, 'worked on B', 7200),
     ])

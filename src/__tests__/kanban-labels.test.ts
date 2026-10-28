@@ -34,8 +34,8 @@ describe('label registry CRUD', () => {
     expect(updateLabel('nope', { name: 'x' })).toBe(false)
   })
 
-  it('deletes a label and its card associations (no dangling join rows)', () => {
-    createKanbanCard({ id: 'card-a', title: 'Card A' })
+  it('deletes a label and its card associations (no dangling join rows)', async () => {
+    await createKanbanCard({ id: 'card-a', title: 'Card A' })
     createLabel({ id: 'lbl-a', name: 'bug', color: '#3b82f6' })
     addLabelToCard('card-a', 'lbl-a')
     expect(getLabelsForCard('card-a')).toHaveLength(1)
@@ -51,9 +51,9 @@ describe('label registry CRUD', () => {
 })
 
 describe('card <-> label associations', () => {
-  beforeEach(() => {
-    createKanbanCard({ id: 'card-a', title: 'Card A' })
-    createKanbanCard({ id: 'card-b', title: 'Card B' })
+  beforeEach(async () => {
+    await createKanbanCard({ id: 'card-a', title: 'Card A' })
+    await createKanbanCard({ id: 'card-b', title: 'Card B' })
     createLabel({ id: 'lbl-bug', name: 'bug', color: '#3b82f6' })
     createLabel({ id: 'lbl-q2', name: 'q2', color: '#10b981' })
   })
@@ -93,9 +93,9 @@ describe('card <-> label associations', () => {
     expect(map.has('card-c')).toBe(false)
   })
 
-  it('drops a card label association when the card is deleted', () => {
+  it('drops a card label association when the card is deleted', async () => {
     addLabelToCard('card-a', 'lbl-bug')
-    expect(deleteKanbanCard('card-a')).toBe(true)
+    expect(await deleteKanbanCard('card-a')).toBe(true)
     // The label itself must survive -- only the association is gone.
     expect(getLabel('lbl-bug')).toBeDefined()
     expect(getLabelsForAllCards().has('card-a')).toBe(false)

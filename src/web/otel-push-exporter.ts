@@ -282,26 +282,26 @@ async function exportMetrics(cfg: ExportConfig): Promise<boolean> {
 // that, and nothing here ever writes to an audit table.
 async function exportLogs(cfg: ExportConfig): Promise<boolean> {
   if (!due('logs')) return false
-  const batch = mapLogBatch(getOtelLogBatch(LOG_BATCH_LIMIT), getOtelLogHashSalt())
+  const batch = mapLogBatch(await getOtelLogBatch(LOG_BATCH_LIMIT), await getOtelLogHashSalt())
   if (batch.records.length === 0) return false
 
   const url = `${cfg.endpoint}/v1/logs`
   const payload = logsToOtelJson(batch.records, cfg.serviceNamespace, serviceInstanceId())
   const result = await postJson(url, cfg.headers, payload)
-  const advance = () => {
+  const advance = async () => {
     for (const source of OTEL_LOG_SOURCES) {
       const id = batch.cursors[source]
-      if (id !== undefined) setOtelLogCursor(source, id)
+      if (id !== undefined) await setOtelLogCursor(source, id)
     }
   }
   if (result.kind === 'ok') {
     recordSuccess('logs', result.rejected, result.message, url)
-    advance()
+    await advance()
     return true
   }
   if (result.kind === 'permanent') {
     recordPermanent('logs', result.status, batch.records.length, url)
-    advance()
+    await advance()
     return true
   }
   recordFailure('logs', result, url)
@@ -355,7 +355,7 @@ async function exportAppLogs(cfg: ExportConfig): Promise<void> {
 // silent series (Prometheus staleness) never sees them vanish. A failed send is not counted as another
 // failure: the next tick tries once more.
 async function exportRegistryMetrics(cfg: ExportConfig): Promise<void> {
-  const metrics = collectRegistryMetrics()
+  const metrics = await collectRegistryMetrics()
   if (metrics.length === 0) return
   const payload = registryMetricsToOtelJson(metrics, cfg.serviceNamespace, readOtelExportOptions())
   await postJson(`${cfg.endpoint}/v1/metrics`, cfg.headers, payload)

@@ -127,11 +127,11 @@ export function formatStuckSessionAlert(
 }
 
 // Exported for tests.
-export function notifyOrchestratorOfStuckSession(agent: string, session: string, stuckMs: number, pendingCount: number, paneState: PaneState | null): void {
+export async function notifyOrchestratorOfStuckSession(agent: string, session: string, stuckMs: number, pendingCount: number, paneState: PaneState | null): Promise<void> {
   try {
     const alert = formatStuckSessionAlert(agent, MAIN_AGENT_ID, session, stuckMs, pendingCount, paneState)
     if (!alert) return
-    createAgentMessage('system', MAIN_AGENT_ID, alert)
+    await createAgentMessage('system', MAIN_AGENT_ID, alert)
     logger.info({ agent, session, stuckMs, pendingCount, paneState }, 'session-stuck surfaced to orchestrator')
   } catch (err) {
     logger.warn({ err, agent }, 'Failed to enqueue session-stuck notification')
@@ -139,14 +139,14 @@ export function notifyOrchestratorOfStuckSession(agent: string, session: string,
 }
 
 // Exported for tests.
-export function notifyOrchestratorOfFailedHandoff(msg: AgentMessage, reason: string): void {
+export async function notifyOrchestratorOfFailedHandoff(msg: AgentMessage, reason: string): Promise<void> {
   try {
     // A failed message to the main agent can't happen (pull model), but guard
     // anyway so we never loop a notification back onto itself.
     if (msg.to_agent === MAIN_AGENT_ID) return
     // One line, for the same reason as the backlog summary: this notice is sent as `system`.
     const preview = oneLine(msg.content ?? '').slice(0, 220)
-    createAgentMessage(
+    await createAgentMessage(
       'system',
       MAIN_AGENT_ID,
       `[handoff-failure] Inter-agent message (id ${msg.id}) ${msg.from_agent} -> ${msg.to_agent} could NOT be delivered: ${reason}. Consider re-sending or checking the target agent. Content preview: ${preview}`,
@@ -171,9 +171,9 @@ const MAIN_AGENT_WAKEUP_COOLDOWN_MS = 45 * 1000
 // refuses to forward a qualified sender), so it can never cross the bridge or
 // loop. Fired only once, right after the terminal markMessageFailed.
 // Exported for tests.
-export function notifyDelegationFailed(msg: AgentMessage, error: string): void {
+export async function notifyDelegationFailed(msg: AgentMessage, error: string): Promise<void> {
   try {
-    createAgentMessage(
+    await createAgentMessage(
       'system',
       msg.from_agent,
       `A(z) ${msg.to_agent} címre küldött föderált üzeneted (#${msg.id}) véglegesen meghiúsult: ${error.slice(0, 200)}. ` +
@@ -276,7 +276,7 @@ async function stampTraceOnMessage(msg: AgentMessage, nowMs: number): Promise<{ 
     // (spansToOtelJson -> parseAttributes) carries which message this span
     // belongs to, instead of every inter-agent span exporting bare.
     const attributes: InterAgentSpanAttributes = { msg_id: msg.id, from: msg.from_agent, to: msg.to_agent }
-    upsertOtelSpan({ trace_id, span_id, parent_span_id, agent_id: msg.from_agent, operation, start_ms: nowMs, attributes: JSON.stringify(attributes) })
+    await upsertOtelSpan({ trace_id, span_id, parent_span_id, agent_id: msg.from_agent, operation, start_ms: nowMs, attributes: JSON.stringify(attributes) })
   }
   return { trace_id, span_id, parent_span_id }
 }
@@ -319,7 +319,7 @@ export async function deliverFederatedBatch(federated: AgentMessage[], now: numb
       // Status-guarded: only bounce a notice when THIS call closed a still-
       // pending row (a concurrent disable/removal purge may have failed it).
       if (markPendingFederatedFailed(msg.id, 'Abandoned: peer unreachable for full retry window')) {
-        notifyDelegationFailed(msg, 'a társ a teljes türelmi ablakban elérhetetlen volt')
+        await notifyDelegationFailed(msg, 'a társ a teljes türelmi ablakban elérhetetlen volt')
       } else {
         logger.warn({ id: msg.id }, 'markPendingFederatedFailed affected 0 rows (already closed concurrently)')
       }
@@ -357,7 +357,7 @@ export async function deliverFederatedBatch(federated: AgentMessage[], now: numb
       // Status-guarded: bounce the failure notice only if this call closed a
       // still-pending row (not a row a concurrent purge already failed).
       if (markPendingFederatedFailed(msg.id, result.error)) {
-        notifyDelegationFailed(msg, result.error)
+        await notifyDelegationFailed(msg, result.error)
       } else {
         logger.warn({ id: msg.id }, 'markPendingFederatedFailed affected 0 rows (already closed concurrently)')
       }
@@ -403,7 +403,7 @@ let batchedMsgIdsThisTick: Set<number> = new Set()
  * Only called from the reconnect pre-pass, once per reconnect cycle per agent.
  * Exported for tests.
  */
-export function batchDeliverBacklog(agent: string, agentPending: AgentMessage[], now: number): void {
+export async function batchDeliverBacklog(agent: string, agentPending: AgentMessage[], now: number): Promise<void> {
   // Split: messages older than BATCH_AGE_MS get batched; recent ones stay for
   // individual delivery. The age threshold is measured against the message's
   // own created_at, not the youngest in the batch.
@@ -449,7 +449,7 @@ export function batchDeliverBacklog(agent: string, agentPending: AgentMessage[],
   }
   // Create ONE new pending message with the summary. It will be picked up by
   // the router on the next tick and delivered normally (or via PULL if main agent).
-  createAgentMessage('system', agent, summaryContent)
+  await createAgentMessage('system', agent, summaryContent)
   logger.info({
     agent,
     batchedCount: old.length,
@@ -515,7 +515,7 @@ export async function runMessageRouterTick(): Promise<void> {
           if (oldestAge > RECONNECT_BATCH_AGE_MS) {
             logger.warn({ agent, pendingCount: agentPending.length, oldestAgeMs: oldestAge },
               'message-router: reconnect-backlog batch — summarizing old messages')
-            batchDeliverBacklog(agent, agentPending, now)
+            await batchDeliverBacklog(agent, agentPending, now)
             agentBatchedThisReconnect.add(agent)
           }
         }
@@ -590,7 +590,7 @@ export async function runMessageRouterTick(): Promise<void> {
           logger.warn({ id: msg.id }, 'markMessageFailed affected 0 rows (deleted concurrently?)')
         }
         recordMessageFailure(msg, 'abandoned')
-        notifyOrchestratorOfFailedHandoff(msg, 'target session was absent for the entire retry window')
+        await notifyOrchestratorOfFailedHandoff(msg, 'target session was absent for the entire retry window')
         routerInjectFailures.delete(msg.id)
         routerLoggedMisses.delete(msg.id)
         routerNoSessionStamped.delete(msg.id)
@@ -644,7 +644,7 @@ export async function runMessageRouterTick(): Promise<void> {
             // stall to the main agent's inbox so it can run the delivery-stall
             // diagnosis (pane state, full context, restart). The escalation-window
             // reset below doubles as the notification cooldown.
-            notifyOrchestratorOfStuckSession(msg.to_agent, session, stuckMs, pendingMsgCount, paneState)
+            await notifyOrchestratorOfStuckSession(msg.to_agent, session, stuckMs, pendingMsgCount, paneState)
             // Reset timer so we don't spam every tick; re-escalate after another window.
             agentStuckSince.set(msg.to_agent, now)
           } else {
@@ -778,7 +778,7 @@ export async function runMessageRouterTick(): Promise<void> {
           logger.warn({ id: msg.id }, 'markMessageFailed affected 0 rows (deleted concurrently?)')
         }
         recordMessageFailure(msg, 'inject_failed')
-        notifyOrchestratorOfFailedHandoff(msg, `tmux inject failed ${failCount}x`)
+        await notifyOrchestratorOfFailedHandoff(msg, `tmux inject failed ${failCount}x`)
         routerInjectFailures.delete(msg.id)
         routerLoggedMisses.delete(msg.id)
       }

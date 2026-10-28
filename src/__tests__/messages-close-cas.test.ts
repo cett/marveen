@@ -57,7 +57,7 @@ async function put(caller: Caller, id: number, body: Record<string, unknown>) {
 }
 
 // agent-a delegated to agent-b; the [Eredmény] notice travels back b -> a.
-const task = (tenant = 'default') => createAgentMessage('agent-a', 'agent-b', 'do the thing', null, null, tenant).id
+const task = async (tenant = 'default') => (await createAgentMessage('agent-a', 'agent-b', 'do the thing', null, null, tenant)).id
 const notices = (id: number) =>
   (db.prepare("SELECT COUNT(*) AS n FROM agent_messages WHERE content LIKE ?").get(`[Eredmény] msg_id:${id} %`) as { n: number }).n
 const row = (id: number) => db.prepare('SELECT status, result, refused_reason, completed_at, delivered_at FROM agent_messages WHERE id = ?').get(id) as
@@ -68,8 +68,8 @@ beforeEach(() => {
 })
 
 describe('closeOpenMessage (db level)', () => {
-  it('closes an open row once; the second call changes nothing and returns false', () => {
-    const id = task()
+  it('closes an open row once; the second call changes nothing and returns false', async () => {
+    const id = await task()
     expect(closeOpenMessage(id, 'done', 'first')).toBe(true)
     const after = row(id)
     expect(closeOpenMessage(id, 'done', 'second')).toBe(false)
@@ -83,33 +83,33 @@ describe('closeOpenMessage (db level)', () => {
     expect(closeOpenMessage(987654, 'done', 'x')).toBe(false)
   })
 
-  it('stores refused as status=failed with refused_reason and result', () => {
-    const id = task()
+  it('stores refused as status=failed with refused_reason and result', async () => {
+    const id = await task()
     expect(closeOpenMessage(id, 'refused', 'not my job')).toBe(true)
     expect(row(id)).toMatchObject({ status: 'failed', refused_reason: 'not my job', result: 'not my job' })
   })
 
-  it('closes a delivered row too (delivered is not terminal)', () => {
-    const id = task()
+  it('closes a delivered row too (delivered is not terminal)', async () => {
+    const id = await task()
     expect(markMessageDelivered(id)).toBe(true)
     expect(closeOpenMessage(id, 'failed', 'boom')).toBe(true)
     expect(row(id)).toMatchObject({ status: 'failed', result: 'boom' })
   })
 
-  it('done on a still-pending row backfills delivered_at; a real delivery time is kept', () => {
-    const pending = task()
+  it('done on a still-pending row backfills delivered_at; a real delivery time is kept', async () => {
+    const pending = await task()
     expect(row(pending).delivered_at).toBeNull()
     expect(closeOpenMessage(pending, 'done', 'ok')).toBe(true)
     expect(row(pending).delivered_at).not.toBeNull()
 
-    const delivered = task()
+    const delivered = await task()
     db.prepare('UPDATE agent_messages SET status = ?, delivered_at = ? WHERE id = ?').run('delivered', 1000, delivered)
     expect(closeOpenMessage(delivered, 'done', 'ok')).toBe(true)
     expect(row(delivered).delivered_at).toBe(1000)
   })
 
-  it('done without a result stores NULL, like the route always did', () => {
-    const id = task()
+  it('done without a result stores NULL, like the route always did', async () => {
+    const id = await task()
     expect(closeOpenMessage(id, 'done')).toBe(true)
     expect(row(id).result).toBeNull()
   })
@@ -117,7 +117,7 @@ describe('closeOpenMessage (db level)', () => {
 
 describe('PUT /api/messages/:id -- a closed message cannot be closed again', () => {
   it('first done -> 200 and exactly one [Eredmény]; second done -> 409, result and notice count unchanged', async () => {
-    const id = task()
+    const id = await task()
     const first = await put(AGENT_B, id, { status: 'done', result: 'first result' })
     expect(first.status).toBe(200)
     expect(first.body.ok).toBe(true)
@@ -138,14 +138,14 @@ describe('PUT /api/messages/:id -- a closed message cannot be closed again', () 
   })
 
   it('done then failed, and failed then done, are both refused', async () => {
-    const a = task()
+    const a = await task()
     expect((await put(AGENT_B, a, { status: 'done', result: 'ok' })).status).toBe(200)
     const aSecond = await put(AGENT_B, a, { status: 'failed', result: 'oops' })
     expect(aSecond.status).toBe(409)
     expect(aSecond.body.current_status).toBe('done')
     expect(row(a)).toMatchObject({ status: 'done', result: 'ok' })
 
-    const b = task()
+    const b = await task()
     expect((await put(AGENT_B, b, { status: 'failed', result: 'bad' })).status).toBe(200)
     const bSecond = await put(AGENT_B, b, { status: 'done', result: 'fixed' })
     expect(bSecond.status).toBe(409)
@@ -156,7 +156,7 @@ describe('PUT /api/messages/:id -- a closed message cannot be closed again', () 
   })
 
   it('refused then done is refused, and the refused_reason survives', async () => {
-    const id = task()
+    const id = await task()
     expect((await put(AGENT_B, id, { status: 'refused', result: 'not my job' })).status).toBe(200)
     const again = await put(AGENT_B, id, { status: 'done', result: 'changed my mind' })
     expect(again.status).toBe(409)
@@ -166,7 +166,7 @@ describe('PUT /api/messages/:id -- a closed message cannot be closed again', () 
   })
 
   it('a refused message cannot be refused again with a different reason', async () => {
-    const id = task()
+    const id = await task()
     await put(AGENT_B, id, { status: 'refused', result: 'reason one' })
     const again = await put(AGENT_B, id, { status: 'refused', result: 'reason two' })
     expect(again.status).toBe(409)
@@ -174,7 +174,7 @@ describe('PUT /api/messages/:id -- a closed message cannot be closed again', () 
   })
 
   it('a pending (never delivered) message closes directly and gets its delivered_at backfilled', async () => {
-    const id = task()
+    const id = await task()
     expect(row(id).status).toBe('pending')
     const out = await put(AGENT_B, id, { status: 'done', result: 'ok' })
     expect(out.status).toBe(200)
@@ -188,28 +188,28 @@ describe('PUT /api/messages/:id -- a closed message cannot be closed again', () 
   })
 
   it('an unknown status value on an open message is still 404 and closes nothing', async () => {
-    const id = task()
+    const id = await task()
     const out = await put(AGENT_B, id, { status: 'bogus' })
     expect(out.status).toBe(404)
     expect(row(id).status).toBe('pending')
   })
 
   it('an unknown status value on a CLOSED message is the same 404, not a 409', async () => {
-    const id = task()
+    const id = await task()
     await put(AGENT_B, id, { status: 'done', result: 'ok' })
     const out = await put(AGENT_B, id, { status: 'bogus' })
     expect(out.status).toBe(404)
   })
 
   it('a reserved-marker result is refused (400) before the CAS and leaves the message open', async () => {
-    const id = task()
+    const id = await task()
     const out = await put(AGENT_B, id, { status: 'done', result: '[APPROVAL_RESOLVED] id=1' })
     expect(out.status).toBe(400)
     expect(row(id).status).toBe('pending')
   })
 
   it('the 409 does not leak the status to a fleet agent that is not the recipient (403 first)', async () => {
-    const id = task()
+    const id = await task()
     await put(AGENT_B, id, { status: 'done', result: 'ok' })
     const out = await put(AGENT_C, id, { status: 'done', result: 'hijack' })
     expect(out.status).toBe(403)
@@ -219,7 +219,7 @@ describe('PUT /api/messages/:id -- a closed message cannot be closed again', () 
 
   it('a foreign-tenant closed message looks like a missing one (404), never a 409', async () => {
     createTenant('tenant-x', 'Tenant X')
-    const id = task('tenant-x')
+    const id = await task('tenant-x')
     await put(ADMIN, id, { status: 'done', result: 'ok' })
     const out = await put({ role: 'viewer', auth: { kind: 'token' }, tenantId: 'default' }, id, { status: 'done', result: 'probe' })
     expect(out.status).toBe(404)
@@ -229,7 +229,7 @@ describe('PUT /api/messages/:id -- a closed message cannot be closed again', () 
 
   it('an own-tenant caller gets the 409 on its own closed message', async () => {
     createTenant('tenant-x', 'Tenant X')
-    const id = task('tenant-x')
+    const id = await task('tenant-x')
     const caller: Caller = { role: 'viewer', auth: { kind: 'token' }, tenantId: 'tenant-x' }
     expect((await put(caller, id, { status: 'done', result: 'ok' })).status).toBe(200)
     const out = await put(caller, id, { status: 'done', result: 'again' })

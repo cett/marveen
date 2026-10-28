@@ -41,16 +41,16 @@ export function scheduleActor(ctx: RouteContext): ScheduleActor {
   return { agentId: claimedAgent ? `claimed:${claimedAgent}` : 'unknown', actorKind: 'other', claimedAgent }
 }
 
-export function auditScheduleWrite(
+export async function auditScheduleWrite(
   ctx: RouteContext,
   action: ScheduleAuditAction,
   name: string,
   tenant: string,
   detail: Record<string, unknown> = {},
-): void {
+): Promise<void> {
   const actor = scheduleActor(ctx)
   try {
-    writeAgentAuditLog({
+    await writeAgentAuditLog({
       agent_id: actor.agentId,
       entity: 'schedule',
       action,
@@ -73,14 +73,14 @@ export function resetReviewNotifyThrottle(): void {
   lastNotified.clear()
 }
 
-export function notifyScheduleReview(opts: {
+export async function notifyScheduleReview(opts: {
   name: string
   tenant: string
   reason: 'edited' | 'created' | 'retargeted'
   changed?: ReadonlyArray<string>
   by: string
   now?: number
-}): boolean {
+}): Promise<boolean> {
   const now = opts.now ?? Date.now()
   const key = `${opts.name}:${opts.reason}`
   const last = lastNotified.get(key)
@@ -94,7 +94,7 @@ export function notifyScheduleReview(opts: {
     `by=${opts.by}`,
   ]
   try {
-    createAgentMessage('system', MAIN_AGENT_ID, parts.join(' '))
+    await createAgentMessage('system', MAIN_AGENT_ID, parts.join(' '))
     lastNotified.set(key, now)
     return true
   } catch (err) {

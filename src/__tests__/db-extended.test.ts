@@ -35,10 +35,10 @@ afterAll(() => {
 // --- Skill Usage ---
 
 describe('logSkillUsage / getSkillUsageRows / getSkillUsageStats', () => {
-  it('logSkillUsage inserts a row', () => {
-    logSkillUsage('test-agent-d', 'fleet-dashboard-api', 'tool_call', 'sess-abc')
-    logSkillUsage('test-agent-d', 'fleet-dashboard-api', 'skill_read', null)
-    logSkillUsage('test-agent-d', 'skill-factory', 'tool_call')
+  it('logSkillUsage inserts a row', async () => {
+    await logSkillUsage('test-agent-d', 'fleet-dashboard-api', 'tool_call', 'sess-abc')
+    await logSkillUsage('test-agent-d', 'fleet-dashboard-api', 'skill_read', null)
+    await logSkillUsage('test-agent-d', 'skill-factory', 'tool_call')
     const rows = getSkillUsageRows({ agentId: 'test-agent-d' })
     expect(rows.length).toBeGreaterThanOrEqual(3)
     expect(rows[0].skill_name).toBeDefined()
@@ -93,9 +93,9 @@ describe('logConfigChange / getRecentConfigChanges', () => {
 // --- Store File Audit ---
 
 describe('logStoreFileEvent / getRecentStoreFileEvents', () => {
-  it('inserts and retrieves store file events', () => {
-    logStoreFileEvent('test/myfile.json', 'create', 0, 1024, 'test-agent-d')
-    logStoreFileEvent('test/secret.key', 'create', 1, 256, null)
+  it('inserts and retrieves store file events', async () => {
+    await logStoreFileEvent('test/myfile.json', 'create', 0, 1024, 'test-agent-d')
+    await logStoreFileEvent('test/secret.key', 'create', 1, 256, null)
     const events = getRecentStoreFileEvents(100)
     const mine = events.find(e => e.rel_path === 'test/myfile.json')
     expect(mine).toBeDefined()
@@ -304,7 +304,7 @@ describe('pruneConversationLog / pruneAgentMessages', () => {
 
 describe('stampMessageTrace', () => {
   it('stamps trace on a pending message', async () => {
-    const msg = createAgentMessage('test-from', 'test-to', 'trace test')
+    const msg = await createAgentMessage('test-from', 'test-to', 'trace test')
     const ok = await stampMessageTrace(msg.id, 'trace-test-001', 'span-001', null)
     expect(ok).toBe(true)
     // Second stamp on same message returns false (already has trace_id)
@@ -334,8 +334,8 @@ describe('expireTimedOutApprovals', () => {
 describe('upsertOtelSpan / closeOtelSpan / getOtelTrace / listOtelTraces', () => {
   const traceId = 'trace-test-otel-1'
 
-  it('upsertOtelSpan inserts a new span', () => {
-    upsertOtelSpan({
+  it('upsertOtelSpan inserts a new span', async () => {
+    await upsertOtelSpan({
       trace_id: traceId,
       span_id: 'span-a',
       parent_span_id: null,
@@ -350,8 +350,8 @@ describe('upsertOtelSpan / closeOtelSpan / getOtelTrace / listOtelTraces', () =>
     expect(trace[0].status).toBe('running')
   })
 
-  it('upsertOtelSpan updates existing span on conflict', () => {
-    upsertOtelSpan({
+  it('upsertOtelSpan updates existing span on conflict', async () => {
+    await upsertOtelSpan({
       trace_id: traceId,
       span_id: 'span-a',
       parent_span_id: null,
@@ -367,8 +367,8 @@ describe('upsertOtelSpan / closeOtelSpan / getOtelTrace / listOtelTraces', () =>
     expect(trace[0].end_ms).not.toBeNull()
   })
 
-  it('closeOtelSpan updates the span status and end_ms', () => {
-    upsertOtelSpan({
+  it('closeOtelSpan updates the span status and end_ms', async () => {
+    await upsertOtelSpan({
       trace_id: traceId,
       span_id: 'span-b',
       parent_span_id: 'span-a',

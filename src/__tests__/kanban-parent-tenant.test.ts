@@ -80,8 +80,8 @@ beforeEach(async () => {
   }
   cardDefault = 'card-default'
   cardAcme = 'card-acme'
-  createKanbanCard({ id: cardDefault, title: 'Default card', assignee: 'beta', tenant_id: 'default' })
-  createKanbanCard({ id: cardAcme, title: 'Acme card', tenant_id: 'acme' })
+  await createKanbanCard({ id: cardDefault, title: 'Default card', assignee: 'beta', tenant_id: 'default' })
+  await createKanbanCard({ id: cardAcme, title: 'Acme card', tenant_id: 'acme' })
 })
 
 
@@ -90,9 +90,9 @@ const childrenOf = (id: string) => getDb().prepare('SELECT id, tenant_id FROM ka
 const SUBTASKS = { subtasks: [{ title: 'sub 1', description: 'd', assignee: null, priority: 'normal' }] }
 
 describe('PATCH /api/kanban/:id/parent holds the tenant line', () => {
-  beforeEach(() => {
-    createKanbanCard({ id: 'parent-default', title: 'Parent', tenant_id: 'default' })
-    createKanbanCard({ id: 'parent-acme', title: 'Parent', tenant_id: 'acme' })
+  beforeEach(async () => {
+    await createKanbanCard({ id: 'parent-default', title: 'Parent', tenant_id: 'default' })
+    await createKanbanCard({ id: 'parent-acme', title: 'Parent', tenant_id: 'acme' })
   })
 
   it('a fleet token and a tenant user move their own tenant\'s card under their own tenant\'s parent (200)', async () => {

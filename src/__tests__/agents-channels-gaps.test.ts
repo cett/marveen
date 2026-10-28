@@ -68,8 +68,8 @@ vi.mock('../web/telegram.js', () => ({
 }))
 vi.mock('../web/agent-process.js', () => ({
   isAgentRunning: vi.fn().mockReturnValue(false),
-  startAgentProcess: vi.fn().mockReturnValue({ ok: true }),
-  stopAgentProcess: vi.fn().mockReturnValue({ ok: true }),
+  startAgentProcess: vi.fn().mockResolvedValue({ ok: true }),
+  stopAgentProcess: vi.fn().mockResolvedValue({ ok: true }),
   agentSessionName: vi.fn().mockImplementation((n: string) => `agent-${n}`),
   sendPromptToSession: vi.fn().mockResolvedValue(undefined),
   capturePane: vi.fn().mockReturnValue(null),

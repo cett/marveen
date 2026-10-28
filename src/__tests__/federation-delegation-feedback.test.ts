@@ -87,7 +87,7 @@ describe('delegation failure feedback (L5)', () => {
   it('bounces an ABANDONED federated task back to the sender as a local system notice', async () => {
     // Age it well past the 60-min default abandon window; the abandon branch
     // fires with NO network attempt.
-    const old = createAgentMessage('localboss', 'teodor/kutato', 'please research X')
+    const old = await createAgentMessage('localboss', 'teodor/kutato', 'please research X')
     const now = old.created_at * 1000 + 2 * 60 * 60 * 1000 // +2h
     await deliverFederatedBatch([getAgentMessage(old.id)!], now)
 
@@ -103,7 +103,7 @@ describe('delegation failure feedback (L5)', () => {
 
   it('does NOT bounce a second notice when the row was already closed concurrently (status-guarded)', async () => {
     // Distinct sender: the in-memory DB is shared across tests (no per-test reset).
-    const old = createAgentMessage('boss2', 'teodor/kutato', 'research Y')
+    const old = await createAgentMessage('boss2', 'teodor/kutato', 'research Y')
     const now = old.created_at * 1000 + 2 * 60 * 60 * 1000
     // First pass: abandons + one notice.
     await deliverFederatedBatch([getAgentMessage(old.id)!], now)

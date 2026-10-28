@@ -412,7 +412,7 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
     }
 
     try {
-      writeAgentAuditLog({ agent_id: 'system', entity: 'agent', action: 'create', entity_id: name, detail: { model, profileId } })
+      await writeAgentAuditLog({ agent_id: 'system', entity: 'agent', action: 'create', entity_id: name, detail: { model, profileId } })
     } catch { /* audit failure must not abort agent creation */ }
 
     // Notifications are deliberately OUTSIDE the try above. They used to sit
@@ -430,7 +430,7 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
       for (const target of [MAIN_AGENT_ID, ...runningAgents]) {
         // The description is caller-written free text inside a message that goes out as `system`, which
         // the marker filter trusts: one line, so no line of it can start with a server-only marker.
-        createAgentMessage('system', target, `Uj csapattag erkezett: ${name}. Leirasa: ${oneLine(description)}. Udv neki ha legkozelebb beszeltek!`)
+        await createAgentMessage('system', target, `Uj csapattag erkezett: ${name}. Leirasa: ${oneLine(description)}. Udv neki ha legkozelebb beszeltek!`)
       }
     } catch (err) {
       logger.warn({ err, name }, 'Agent created, but the team notification failed')
@@ -959,7 +959,7 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
     // agent dir, and the agent "returns" as an empty draft that still reports
     // running=true. stopAgentProcess() reads config from the dir for its orphan
     // reap, so it must run while the dir still exists.
-    if (isAgentRunning(name)) stopAgentProcess(name)
+    if (isAgentRunning(name)) await stopAgentProcess(name)
     // Clear the desired run-state so the reconciler stops trying to start a
     // non-existent agent (#857). A stale entry also starts a same-named new
     // agent immediately on next create -- unasked.
@@ -972,7 +972,7 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
     await forgetChannel(name)
     cleanupTeamReferences(name)
     try {
-      writeAgentAuditLog({ agent_id: 'system', entity: 'agent', action: 'delete', entity_id: name })
+      await writeAgentAuditLog({ agent_id: 'system', entity: 'agent', action: 'delete', entity_id: name })
     } catch { /* audit failure must not abort agent deletion */ }
     json(res, { ok: true })
     return true

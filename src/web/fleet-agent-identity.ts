@@ -90,17 +90,17 @@ const DECLARED_ID_AUDIT_MAX = 128
  * The operator's token (it names no agent), a dashboard session and a federation peer are untouched.
  * Writes the 403 and returns true when the request must stop.
  */
-export function denyAgentBoundAdminForeign(
+export async function denyAgentBoundAdminForeign(
   ctx: Pick<RouteContext, 'role' | 'auth' | 'tokenAgentId' | 'res'>,
   agentId: string,
-): boolean {
+): Promise<boolean> {
   const ownId = agentBoundAdminId(ctx)
   if (!ownId) return false
   if (sanitizeAgentIdent(agentId).toLowerCase() === sanitizeAgentIdent(ownId).toLowerCase()) return false
   // The declared id is whatever the caller sent, so the audit row keeps its first 128 characters and its length.
   const declared = agentId.trim()
   try {
-    writeAgentAuditLog({
+    await writeAgentAuditLog({
       agent_id: ownId, entity: 'approval', action: 'create_refused',
       detail: {
         declared_agent_id: declared.slice(0, DECLARED_ID_AUDIT_MAX), declared_agent_id_len: declared.length,

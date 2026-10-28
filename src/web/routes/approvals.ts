@@ -101,11 +101,11 @@ async function notifyAboutNewRequest(approval: Approval): Promise<void> {
     return
   }
   if (!APPROVAL_HUMAN_ONLY_ENFORCE || !await isHumanOnlyApproval(approval)) {
-    notifyMainAgent(approval)
+    await notifyMainAgent(approval)
     return
   }
   // The main agent asking for itself does not need to be told about its own request.
-  if (approval.agent_id !== MAIN_AGENT_ID) sendSystemMessage(MAIN_AGENT_ID, humanOnlyRequestLine(approval), approval)
+  if (approval.agent_id !== MAIN_AGENT_ID) await sendSystemMessage(MAIN_AGENT_ID, humanOnlyRequestLine(approval), approval)
   void notifyOwnerOfHumanOnlyRequest(approval).then(async (delivered) => {
     if (delivered) return
     logger.warn({ approvalId: approval.id }, 'The owner could not be told about a human-only approval request')
@@ -114,28 +114,28 @@ async function notifyAboutNewRequest(approval: Approval): Promise<void> {
     } catch (err) {
       logger.warn({ err, approvalId: approval.id }, 'Could not journal an unreached owner')
     }
-    sendSystemMessage(MAIN_AGENT_ID, ownerUnreachedLine(approval), approval)
+    await sendSystemMessage(MAIN_AGENT_ID, ownerUnreachedLine(approval), approval)
   })
 }
 
 /** Tell the requester how its human-only request was decided (enforcement on). Best effort. */
 async function notifyRequester(approval: Approval | undefined): Promise<void> {
   if (!approval || !await isHumanOnlyApproval(approval) || !APPROVAL_HUMAN_ONLY_ENFORCE) return
-  sendSystemMessage(approval.agent_id, approvalResolvedLine(approval), approval)
+  await sendSystemMessage(approval.agent_id, approvalResolvedLine(approval), approval)
 }
 
-function sendSystemMessage(to: string, content: string, approval: Approval): void {
+async function sendSystemMessage(to: string, content: string, approval: Approval): Promise<void> {
   try {
-    createAgentMessage('system', to, content)
+    await createAgentMessage('system', to, content)
   } catch (err) {
     // Non-fatal: the approval stands regardless; these notices are best-effort
     logger.warn({ err, approvalId: approval.id, to }, 'Failed to send an approval notice')
   }
 }
 
-function notifyMainAgent(approval: Approval): void {
+async function notifyMainAgent(approval: Approval): Promise<void> {
   try {
-    createAgentMessage('system', MAIN_AGENT_ID, approvalRequestLine(approval))
+    await createAgentMessage('system', MAIN_AGENT_ID, approvalRequestLine(approval))
   } catch (err) {
     // Non-fatal: the approval is created regardless; main-agent notification is best-effort
     logger.warn({ err, approvalId: approval.id }, 'Failed to notify main agent of approval request')
@@ -148,7 +148,7 @@ export function startApprovalTimeoutSweeper(): NodeJS.Timeout {
       const expired = await expireTimedOutApprovals()
       if (expired > 0) {
         logger.info({ expired }, 'Approval timeout sweep: expired pending approvals')
-        writeAgentAuditLog({ agent_id: 'system', entity: 'approval', action: 'timeout_sweep', detail: { expired } })
+        await writeAgentAuditLog({ agent_id: 'system', entity: 'approval', action: 'timeout_sweep', detail: { expired } })
       }
     } catch (err) {
       logger.warn({ err }, 'Approval timeout sweep failed')
@@ -213,7 +213,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     // A fleet_agent asks for approval as itself, in the tenant it is serving (never one it names).
     if (denyForeignAgent(ctx, agent_id.trim())) return true
     // An agent-bound admin token (the main agent's) asks as the agent it names, never as another one.
-    if (denyAgentBoundAdminForeign(ctx, agent_id.trim())) return true
+    if (await denyAgentBoundAdminForeign(ctx, agent_id.trim())) return true
     const requestTenant: string | null =
       ctx.role === 'fleet_agent' ? (ctx.tenantId ?? null) : (typeof tenant_id === 'string' ? tenant_id.trim() || null : null)
 
@@ -247,7 +247,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       })
       await notifyAboutNewRequest(approval)
       try {
-        writeAgentAuditLog({ agent_id: approval.agent_id, entity: 'approval', action: 'create', entity_id: approval.id, detail: { category: approval.category } })
+        await writeAgentAuditLog({ agent_id: approval.agent_id, entity: 'approval', action: 'create', entity_id: approval.id, detail: { category: approval.category } })
       } catch { /* audit failure must not abort the write */ }
       logger.info({ id, agent_id, category }, 'Approval request created')
       json(res, approval, 201)
@@ -294,7 +294,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     if (typeof content_hash === 'string' && content_hash !== parsed.hash) {
       // The payload is not the mail the requester thinks it hashed: a parity fault, or a tampered request.
       try {
-        writeAgentAuditLog({ agent_id: requester, entity: 'approval', action: 'envelope_hash_mismatch', detail: { client_hash_prefix: content_hash.slice(0, 12), server_hash_prefix: parsed.hash.slice(0, 12) } })
+        await writeAgentAuditLog({ agent_id: requester, entity: 'approval', action: 'envelope_hash_mismatch', detail: { client_hash_prefix: content_hash.slice(0, 12), server_hash_prefix: parsed.hash.slice(0, 12) } })
       } catch { /* audit failure must not change the refusal */ }
       json(res, { error: 'invalid_value', field: 'content_hash', code: 'hash_mismatch', hint: 'content_hash does not match the hash the server computes from action_payload' }, 400)
       return true
@@ -329,7 +329,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     const approval = opened.approval
     await notifyAboutNewRequest(approval)
     try {
-      writeAgentAuditLog({ agent_id: approval.agent_id, entity: 'approval', action: 'create', entity_id: approval.id, detail: { category: approval.category } })
+      await writeAgentAuditLog({ agent_id: approval.agent_id, entity: 'approval', action: 'create', entity_id: approval.id, detail: { category: approval.category } })
     } catch { /* audit failure must not abort the write */ }
     logger.info({ id: approval.id, agent_id: requester, category: approval.category }, 'Approval request created')
     json(res, approval, 201)
@@ -509,7 +509,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     const approval = await getApproval(idMatch[1])
     await notifyRequester(approval)
     try {
-      writeAgentAuditLog({ agent_id: effectiveResolvedBy, entity: 'approval', action: 'update', entity_id: idMatch[1], detail: { status, requested_by: approval?.agent_id ?? null, ...(declared && declared !== effectiveResolvedBy ? { declared_resolved_by: declared } : {}) } })
+      await writeAgentAuditLog({ agent_id: effectiveResolvedBy, entity: 'approval', action: 'update', entity_id: idMatch[1], detail: { status, requested_by: approval?.agent_id ?? null, ...(declared && declared !== effectiveResolvedBy ? { declared_resolved_by: declared } : {}) } })
     } catch { /* audit failure must not abort the write */ }
     logger.info({ id: idMatch[1], status, resolved_by: effectiveResolvedBy }, 'Approval resolved')
     json(res, approval)

@@ -51,8 +51,8 @@ export async function tryHandleSkillSync(ctx: RouteContext): Promise<boolean> {
 
   // A fleet_agent token writes back only the skills of its own agent (see the header comment).
   const fleetAgent = ctx.role === 'fleet_agent'
-  const refuseFleet = (skillId: string): true => {
-    recordFleetSkillWriteDenied(req, ctx.tokenAgentId, method, path, skillId)
+  const refuseFleet = async (skillId: string): Promise<true> => {
+    await recordFleetSkillWriteDenied(req, ctx.tokenAgentId, method, path, skillId)
     json(res, { error: 'forbidden', hint: 'A fleet agent token writes back its own agent skills only (agent/<name>/<skill>)' }, 403)
     return true
   }

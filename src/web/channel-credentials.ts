@@ -326,7 +326,7 @@ export async function checkChannelDrift(
     const started = await recordChannelDriftCheck(agentId, CHANNEL_PROVIDER, state, nowSec)
     if (started) {
       logger.warn({ agent: agentId, state }, 'channel-credentials: drift between the channel files and the adopted record')
-      recordTokenShadow(
+      await recordTokenShadow(
         { method: 'SWEEP', route: '/channel-credentials/drift', client: 'none', caller: agentId, callerSource: 'none' },
         { category: CHANNEL_DRIFT_CATEGORY, target: state },
         nowSec,

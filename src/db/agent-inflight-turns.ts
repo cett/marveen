@@ -14,7 +14,7 @@
 // restart; the TTL and the single consume bound it.
 
 import { createHash } from 'node:crypto'
-import { db } from './connection.js'
+import { dbx } from './facade.js'
 import { getServedTenantIds } from './agents.js'
 import { resolveWriteTenant } from './write-tenant.js'
 
@@ -81,7 +81,7 @@ export interface BeginInput {
 }
 
 /** Records the start of a turn; replaces the agent's previous row (a new prompt supersedes it). */
-export function beginInflightTurn(agentId: string, input: BeginInput): InflightTurn {
+export async function beginInflightTurn(agentId: string, input: BeginInput): Promise<InflightTurn> {
   const now = input.now ?? Math.floor(Date.now() / 1000)
   const head = input.head.slice(0, INFLIGHT_HEAD_MAX)
   const turn: InflightTurn = {
@@ -96,29 +96,27 @@ export function beginInflightTurn(agentId: string, input: BeginInput): InflightT
     prompt_hash: input.prompt_hash,
     started_at: now,
     consumed_at: null,
-    tenant_id: resolveWriteTenant(agentId),
+    tenant_id: await resolveWriteTenant(agentId),
   }
   // Orphans of agents that never came back go on every begin; one indexed DELETE on a tiny table.
-  sweepInflightTurns(now)
-  db.prepare(
-    `INSERT INTO agent_inflight_turns
+  await sweepInflightTurns(now)
+  await dbx.run(`INSERT INTO agent_inflight_turns
        (agent_id, turn_id, source, msg_id, preview, prompt_hash, started_at, consumed_at, tenant_id)
      VALUES (@agent_id, @turn_id, @source, @msg_id, @preview, @prompt_hash, @started_at, NULL, @tenant_id)
      ON CONFLICT(agent_id) DO UPDATE SET
        turn_id = excluded.turn_id, source = excluded.source, msg_id = excluded.msg_id,
        preview = excluded.preview, prompt_hash = excluded.prompt_hash,
-       started_at = excluded.started_at, consumed_at = NULL, tenant_id = excluded.tenant_id`,
-  ).run(turn)
+       started_at = excluded.started_at, consumed_at = NULL, tenant_id = excluded.tenant_id`, turn)
   return turn
 }
 
 /** The turn finished: drop the agent's row. Returns true when there was one. */
-export function endInflightTurn(agentId: string): boolean {
-  return db.prepare('DELETE FROM agent_inflight_turns WHERE agent_id = ?').run(agentId).changes > 0
+export async function endInflightTurn(agentId: string): Promise<boolean> {
+  return (await dbx.run('DELETE FROM agent_inflight_turns WHERE agent_id = ?', agentId)).changes > 0
 }
 
-function readTurn(agentId: string): InflightTurn | null {
-  return (db.prepare('SELECT * FROM agent_inflight_turns WHERE agent_id = ?').get(agentId) as InflightTurn | undefined) ?? null
+async function readTurn(agentId: string): Promise<InflightTurn | null> {
+  return (await dbx.get<InflightTurn>('SELECT * FROM agent_inflight_turns WHERE agent_id = ?', agentId)) ?? null
 }
 
 /** Pure decision: does this row mean "the previous turn was cut off"? */
@@ -161,12 +159,12 @@ export function buildInflightInjection(turn: InflightTurn): string {
 }
 
 /** What the SessionStart hook asks for. Does NOT consume: the hook consumes after it printed. */
-export function inflightReplay(
+export async function inflightReplay(
   agentId: string,
   source: string,
   now: number = Math.floor(Date.now() / 1000),
-): { additionalContext: string | null; turn_id: string | null } {
-  const turn = readTurn(agentId)
+): Promise<{ additionalContext: string | null; turn_id: string | null }> {
+  const turn = await readTurn(agentId)
   if (!turn || !shouldReplayInflightTurn(turn, source, now)) return { additionalContext: null, turn_id: null }
   // Decided again NOW, not only at begin: the agent may have been enabled for a second tenant since the
   // row was written, and the preview it holds is then one tenant's text for a session that may serve both.
@@ -176,13 +174,11 @@ export function inflightReplay(
 
 /** Marks the named turn as offered. Returns false when it is not the agent's current turn or was
  *  consumed already (a late or repeated consume is harmless). */
-export function consumeInflightTurn(agentId: string, turnId: string, now: number = Math.floor(Date.now() / 1000)): boolean {
-  return db.prepare(
-    'UPDATE agent_inflight_turns SET consumed_at = ? WHERE agent_id = ? AND turn_id = ? AND consumed_at IS NULL',
-  ).run(now, agentId, turnId).changes > 0
+export async function consumeInflightTurn(agentId: string, turnId: string, now: number = Math.floor(Date.now() / 1000)): Promise<boolean> {
+  return (await dbx.run('UPDATE agent_inflight_turns SET consumed_at = ? WHERE agent_id = ? AND turn_id = ? AND consumed_at IS NULL', now, agentId, turnId)).changes > 0
 }
 
 /** Drops rows past the TTL (orphans of agents that never came back). Returns how many. */
-export function sweepInflightTurns(now: number = Math.floor(Date.now() / 1000)): number {
-  return db.prepare('DELETE FROM agent_inflight_turns WHERE started_at < ?').run(now - INFLIGHT_TURN_TTL_SECONDS).changes
+export async function sweepInflightTurns(now: number = Math.floor(Date.now() / 1000)): Promise<number> {
+  return (await dbx.run('DELETE FROM agent_inflight_turns WHERE started_at < ?', now - INFLIGHT_TURN_TTL_SECONDS)).changes
 }

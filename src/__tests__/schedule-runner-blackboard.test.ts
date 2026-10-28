@@ -5,7 +5,7 @@ import {
 } from '../web/schedule-runner.js'
 
 vi.mock('../db.js', () => ({
-  upsertBlackboard: vi.fn().mockReturnValue({ status: 'done', summary: '', task_ref: null }),
+  upsertBlackboard: vi.fn().mockResolvedValue({ status: 'done', summary: '', task_ref: null }),
   findBlackboardRowByAgent: vi.fn(),
 }))
 
@@ -149,7 +149,7 @@ describe('applyBlackboardDone: task_ref passthrough to upsertBlackboard', () => 
     vi.mocked(findBlackboardRowByAgent).mockReset()
   })
 
-  it('passes non-null task_ref from snapshot to upsertBlackboard (regression guard)', () => {
+  it('passes non-null task_ref from snapshot to upsertBlackboard (regression guard)', async () => {
     // The active row was written with task_ref='card-abc'. The runner snapshots it.
     // On clear, applyBlackboardDone must pass that task_ref to the done upsert.
     // Without the fix (task_ref omitted from the call), upsertBlackboard receives
@@ -159,7 +159,7 @@ describe('applyBlackboardDone: task_ref passthrough to upsertBlackboard', () => 
       { status: 'active', summary: 'kanban-task', task_ref: 'card-abc', updated_at: 0, agent_id: 'agent-a' } as any,
     )
 
-    applyBlackboardDone({ ...BASE_ENTRY, blackboardSnapshot: snapshot })
+    await applyBlackboardDone({ ...BASE_ENTRY, blackboardSnapshot: snapshot })
 
     expect(upsertBlackboard).toHaveBeenCalledWith('agent-a', {
       status: 'done',
@@ -168,24 +168,24 @@ describe('applyBlackboardDone: task_ref passthrough to upsertBlackboard', () => 
     })
   })
 
-  it('skips upsertBlackboard when sawTurn is false', () => {
-    applyBlackboardDone({ ...BASE_ENTRY, sawTurn: false, blackboardSnapshot: { status: 'active', summary: 'x', task_ref: null } })
+  it('skips upsertBlackboard when sawTurn is false', async () => {
+    await applyBlackboardDone({ ...BASE_ENTRY, sawTurn: false, blackboardSnapshot: { status: 'active', summary: 'x', task_ref: null } })
     expect(upsertBlackboard).not.toHaveBeenCalled()
   })
 
-  it('skips upsertBlackboard when snapshot is missing', () => {
-    applyBlackboardDone({ ...BASE_ENTRY, blackboardSnapshot: undefined })
+  it('skips upsertBlackboard when snapshot is missing', async () => {
+    await applyBlackboardDone({ ...BASE_ENTRY, blackboardSnapshot: undefined })
     expect(upsertBlackboard).not.toHaveBeenCalled()
   })
 
-  it('skips upsertBlackboard when current row does not match snapshot', () => {
+  it('skips upsertBlackboard when current row does not match snapshot', async () => {
     const snapshot = { status: 'active', summary: 'kanban-task', task_ref: 'card-abc' }
     // Agent changed the summary mid-run.
     vi.mocked(findBlackboardRowByAgent).mockReturnValue(
       { status: 'active', summary: 'different-summary', task_ref: 'card-abc', updated_at: 0, agent_id: 'agent-a' } as any,
     )
 
-    applyBlackboardDone({ ...BASE_ENTRY, blackboardSnapshot: snapshot })
+    await applyBlackboardDone({ ...BASE_ENTRY, blackboardSnapshot: snapshot })
     expect(upsertBlackboard).not.toHaveBeenCalled()
   })
 
@@ -195,50 +195,50 @@ describe('applyBlackboardDone: task_ref passthrough to upsertBlackboard', () => 
   describe('a row the stale sweeper got to first', () => {
     const snapshot = { status: 'active', summary: 'kanban-task', task_ref: 'card-abc' }
 
-    it('closes a stale row whose summary and task_ref are still the runner\'s own', () => {
+    it('closes a stale row whose summary and task_ref are still the runner\'s own', async () => {
       vi.mocked(findBlackboardRowByAgent).mockReturnValue(
         { status: 'stale', summary: 'kanban-task', task_ref: 'card-abc', updated_at: 0, agent_id: 'agent-a' } as any,
       )
-      applyBlackboardDone({ ...BASE_ENTRY, blackboardSnapshot: snapshot })
+      await applyBlackboardDone({ ...BASE_ENTRY, blackboardSnapshot: snapshot })
       expect(upsertBlackboard).toHaveBeenCalledTimes(1)
       expect(upsertBlackboard).toHaveBeenCalledWith('agent-a', { status: 'done', summary: 'kanban-task', task_ref: 'card-abc' })
     })
 
-    it('closes a stale row with a null task_ref too', () => {
+    it('closes a stale row with a null task_ref too', async () => {
       vi.mocked(findBlackboardRowByAgent).mockReturnValue(
         { status: 'stale', summary: 'kanban-task', task_ref: null, updated_at: 0, agent_id: 'agent-a' } as any,
       )
-      applyBlackboardDone({ ...BASE_ENTRY, blackboardSnapshot: { ...snapshot, task_ref: null } })
+      await applyBlackboardDone({ ...BASE_ENTRY, blackboardSnapshot: { ...snapshot, task_ref: null } })
       expect(upsertBlackboard).toHaveBeenCalledWith('agent-a', { status: 'done', summary: 'kanban-task', task_ref: null })
     })
 
-    it('leaves a stale row alone when the agent changed the summary', () => {
+    it('leaves a stale row alone when the agent changed the summary', async () => {
       vi.mocked(findBlackboardRowByAgent).mockReturnValue(
         { status: 'stale', summary: 'agent wrote this', task_ref: 'card-abc', updated_at: 0, agent_id: 'agent-a' } as any,
       )
-      applyBlackboardDone({ ...BASE_ENTRY, blackboardSnapshot: snapshot })
+      await applyBlackboardDone({ ...BASE_ENTRY, blackboardSnapshot: snapshot })
       expect(upsertBlackboard).not.toHaveBeenCalled()
     })
 
-    it('leaves a stale row alone when the task_ref differs', () => {
+    it('leaves a stale row alone when the task_ref differs', async () => {
       vi.mocked(findBlackboardRowByAgent).mockReturnValue(
         { status: 'stale', summary: 'kanban-task', task_ref: 'card-other', updated_at: 0, agent_id: 'agent-a' } as any,
       )
-      applyBlackboardDone({ ...BASE_ENTRY, blackboardSnapshot: snapshot })
+      await applyBlackboardDone({ ...BASE_ENTRY, blackboardSnapshot: snapshot })
       expect(upsertBlackboard).not.toHaveBeenCalled()
     })
 
-    it.each(['done', 'blocked', 'assigned'])('still leaves a %s row alone (only stale is forgiven)', (status) => {
+    it.each(['done', 'blocked', 'assigned'])('still leaves a %s row alone (only stale is forgiven)', async (status) => {
       vi.mocked(findBlackboardRowByAgent).mockReturnValue(
         { status, summary: 'kanban-task', task_ref: 'card-abc', updated_at: 0, agent_id: 'agent-a' } as any,
       )
-      applyBlackboardDone({ ...BASE_ENTRY, blackboardSnapshot: snapshot })
+      await applyBlackboardDone({ ...BASE_ENTRY, blackboardSnapshot: snapshot })
       expect(upsertBlackboard).not.toHaveBeenCalled()
     })
 
-    it('does nothing when the agent has no row at all', () => {
+    it('does nothing when the agent has no row at all', async () => {
       vi.mocked(findBlackboardRowByAgent).mockReturnValue(undefined)
-      applyBlackboardDone({ ...BASE_ENTRY, blackboardSnapshot: snapshot })
+      await applyBlackboardDone({ ...BASE_ENTRY, blackboardSnapshot: snapshot })
       expect(upsertBlackboard).not.toHaveBeenCalled()
     })
   })

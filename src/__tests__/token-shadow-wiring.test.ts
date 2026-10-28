@@ -61,7 +61,7 @@ async function request(rawToken: string | null, method: string, path: string, bo
   const auth = await resolveAuth(req, url, url.pathname, method, 'the-file-token', true)
   if (auth.kind === 'none') { out.status = 401; return out }
   if (auth.kind === 'token' && auth.tenantContextMissing) {
-    recordTenantContextRefusal(req, auth, method, url.pathname)
+    await recordTenantContextRefusal(req, auth, method, url.pathname)
     out.status = 403; out.body = { error: 'forbidden', hint: 'no fresh tenant context' }; return out
   }
   const decision = checkPermission(auth, method, url.pathname)
@@ -243,7 +243,7 @@ describe('wiring in the production request pipeline (source level; booting the s
   })
 
   it('readBody reports the finished body to the observer and survives a throwing one', () => {
-    expect(HELPERS).toMatch(/requestBodyObserver\(req, body\)/)
-    expect(HELPERS).toMatch(/try \{ requestBodyObserver\(req, body\) \} catch/)
+    expect(HELPERS).toMatch(/requestBodyObserver\?\.\(req, body\)/)
+    expect(HELPERS).toMatch(/try \{ observed = requestBodyObserver\?\.\(req, body\) \} catch/)
   })
 })

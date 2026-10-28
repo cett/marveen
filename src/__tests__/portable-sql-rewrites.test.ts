@@ -29,30 +29,30 @@ const seedOpts = {
 }
 
 describe('RETURNING id replaces lastInsertRowid', () => {
-  it('createAgentMessage returns the row id and ids increase', () => {
-    const a = createAgentMessage('a', 'rw-' + Math.random(), 'x')
-    const b = createAgentMessage('a', 'rw-' + Math.random(), 'y')
+  it('createAgentMessage returns the row id and ids increase', async () => {
+    const a = await createAgentMessage('a', 'rw-' + Math.random(), 'x')
+    const b = await createAgentMessage('a', 'rw-' + Math.random(), 'y')
     expect(Number.isInteger(a.id)).toBe(true)
     expect(b.id).toBeGreaterThan(a.id)
     const row = getDb().prepare('SELECT content FROM agent_messages WHERE id = ?').get(b.id) as { content: string }
     expect(row.content).toBe('y')
   })
 
-  it('addKanbanComment returns the id of the comment it wrote', () => {
-    createKanbanCard({ id: 'rw-card', title: 'rw card' })
+  it('addKanbanComment returns the id of the comment it wrote', async () => {
+    await createKanbanCard({ id: 'rw-card', title: 'rw card' })
     const c = addKanbanComment('rw-card', 'someone', 'hello')
     const row = getDb().prepare('SELECT content FROM kanban_comments WHERE id = ?').get(c.id) as { content: string }
     expect(row.content).toBe('hello')
   })
 
-  it('upsertMemoryLink returns the same id when the link is updated', () => {
-    const m1 = saveAgentMemory('agent-a', 'link source', 'hot').id
-    const m2 = saveAgentMemory('agent-a', 'link target', 'hot').id
-    const first = upsertMemoryLink(m1, m2, 'semantic', 0.4)
+  it('upsertMemoryLink returns the same id when the link is updated', async () => {
+    const m1 = (await saveAgentMemory('agent-a', 'link source', 'hot')).id
+    const m2 = (await saveAgentMemory('agent-a', 'link target', 'hot')).id
+    const first = await upsertMemoryLink(m1, m2, 'semantic', 0.4)
     // An unrelated insert in between moves lastInsertRowid on; the upsert must
     // still report the link's own row.
-    saveAgentMemory('agent-a', 'unrelated insert', 'hot')
-    const again = upsertMemoryLink(m1, m2, 'semantic', 0.9)
+    await saveAgentMemory('agent-a', 'unrelated insert', 'hot')
+    const again = await upsertMemoryLink(m1, m2, 'semantic', 0.9)
     expect(again).toBe(first)
     const row = getDb().prepare('SELECT weight FROM memory_links WHERE id = ?').get(first) as { weight: number }
     expect(row.weight).toBe(0.9)
@@ -60,9 +60,9 @@ describe('RETURNING id replaces lastInsertRowid', () => {
 })
 
 describe('ON CONFLICT DO NOTHING keeps the insert-if-absent behaviour', () => {
-  it('addLabelToCard twice leaves one row', () => {
+  it('addLabelToCard twice leaves one row', async () => {
     const db = getDb()
-    createKanbanCard({ id: 'rw-label-card', title: 'label card' })
+    await createKanbanCard({ id: 'rw-label-card', title: 'label card' })
     db.prepare("INSERT INTO labels (id, name, color, created_at) VALUES ('rw-l', 'rw-l', '#fff', 1)").run()
     addLabelToCard('rw-label-card', 'rw-l')
     addLabelToCard('rw-label-card', 'rw-l')
@@ -118,16 +118,16 @@ describe('fleet import: a row the table would reject is skipped', () => {
 })
 
 describe('failPendingFederatedMessages without instr()', () => {
-  const pending = (to: string) => createAgentMessage('local-a', to, 'pending ' + to).id
+  const pending = async (to: string) => (await createAgentMessage('local-a', to, 'pending ' + to)).id
   const status = (id: number) =>
     (getDb().prepare('SELECT status FROM agent_messages WHERE id = ?').get(id) as { status: string }).status
 
   it("a peer id with '_' is a literal, and case does not matter", async () => {
     const { failPendingFederatedMessages } = await import('../db.js')
-    const teodor = pending('teodor/agent-x')
-    const teUnderscore = pending('te_dor/agent-x')
-    const upper = pending('Teodor/Agent-Y')
-    const local = pending('local-agent')
+    const teodor = await pending('teodor/agent-x')
+    const teUnderscore = await pending('te_dor/agent-x')
+    const upper = await pending('Teodor/Agent-Y')
+    const local = await pending('local-agent')
     const failed = failPendingFederatedMessages('teodor', 'peer gone')
     expect(failed.sort()).toEqual([teodor, upper].sort())
     expect(status(teodor)).toBe('failed')
@@ -138,8 +138,8 @@ describe('failPendingFederatedMessages without instr()', () => {
 
   it('no peer id fails every pending qualified message and nothing else', async () => {
     const { failPendingFederatedMessages } = await import('../db.js')
-    const other = pending('other-peer/agent-z')
-    const local = pending('local-agent-2')
+    const other = await pending('other-peer/agent-z')
+    const local = await pending('local-agent-2')
     expect(failPendingFederatedMessages(undefined, 'all gone')).toContain(other)
     expect(status(other)).toBe('failed')
     expect(status(local)).toBe('pending')

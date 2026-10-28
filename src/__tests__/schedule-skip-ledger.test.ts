@@ -336,7 +336,7 @@ describe('the runner wires the ledger into every tick', () => {
   })
 
   it('raises the mass-skip alert off the scan result', () => {
-    expect(SRC).toMatch(/if \(skipScan\.alert\) sendMassSkipAlert\(/)
+    expect(SRC).toMatch(/if \(skipScan\.alert\) await sendMassSkipAlert\(/)
   })
 
   it('seeds the skip tracker baseline from the DB rows, not from the tick task list', () => {

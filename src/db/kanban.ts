@@ -102,7 +102,7 @@ export function getKanbanCard(id: string): KanbanCard | undefined {
   return db.prepare(`SELECT ${KANBAN_SEQ_COLUMN}, * FROM kanban_cards WHERE id = ?`).get(id) as KanbanCard | undefined
 }
 
-export function createKanbanCard(card: {
+export interface NewKanbanCard {
   id: string
   title: string
   description?: string
@@ -113,7 +113,21 @@ export function createKanbanCard(card: {
   parent_id?: string
   due_date?: number | string | null
   tenant_id?: string
-}): void {
+}
+
+/** What createKanbanCard audits once its rows are written (the audit write itself is asynchronous). */
+export interface KanbanCreateAudit {
+  agent_id: string
+  entity_id: string
+  detail: { title: string; status: string; priority: string }
+}
+
+/**
+ * The synchronous half of createKanbanCard: it writes the rows and returns the audit entry. It is the one to call
+ * inside a synchronous (better-sqlite3) transaction, where an `await` would end the transaction early; the caller
+ * writes the entry with writeKanbanCreateAudit after the commit.
+ */
+export function insertKanbanCardRows(card: NewKanbanCard): KanbanCreateAudit {
   const now = Math.floor(Date.now() / 1000)
   const status = card.status ?? 'planned'
   const dueDate = card.due_date === undefined ? null : parseKanbanDueDate(card.due_date)
@@ -155,9 +169,18 @@ export function createKanbanCard(card: {
       ).run(card.id, null, status, card.assignee ?? null, now)
     }
   })()
+  return { agent_id: card.assignee || 'system', entity_id: card.id, detail: { title: card.title, status, priority: card.priority ?? 'normal' } }
+}
+
+/** Best effort: an audit failure must not abort card creation. */
+export async function writeKanbanCreateAudit(entry: KanbanCreateAudit): Promise<void> {
   try {
-    writeAgentAuditLog({ agent_id: card.assignee || 'system', entity: 'kanban', action: 'create', entity_id: card.id, detail: { title: card.title, status, priority: card.priority ?? 'normal' } })
+    await writeAgentAuditLog({ agent_id: entry.agent_id, entity: 'kanban', action: 'create', entity_id: entry.entity_id, detail: entry.detail })
   } catch { /* audit failure must not abort card creation */ }
+}
+
+export async function createKanbanCard(card: NewKanbanCard): Promise<void> {
+  await writeKanbanCreateAudit(insertKanbanCardRows(card))
 }
 
 /**
@@ -201,7 +224,7 @@ export function kanbanWriteClearsDispatch(nextStatus: string): boolean {
   return nextStatus !== 'in_progress'
 }
 
-export function updateKanbanCard(id: string, fields: Partial<Omit<KanbanCard, 'id' | 'created_at'>>, actor?: KanbanAuditActor): boolean {
+export async function updateKanbanCard(id: string, fields: Partial<Omit<KanbanCard, 'id' | 'created_at'>>, actor?: KanbanAuditActor): Promise<boolean> {
   const card = getKanbanCard(id)
   if (!card) return false
   if ('due_date' in fields) {
@@ -244,7 +267,7 @@ export function updateKanbanCard(id: string, fields: Partial<Omit<KanbanCard, 'i
     try {
       // The audit row names whoever made the edit; the assignee is only the fallback for a caller nobody can name
       // (a script on the shared token), because an agent that edits another agent's card is not the assignee.
-      writeAgentAuditLog({
+      await writeAgentAuditLog({
         agent_id: actor?.id ?? (f.assignee || 'system'),
         entity: 'kanban',
         action: 'update',
@@ -538,7 +561,7 @@ export function listKanbanProjects(tenantId?: string | null): string[] {
   return rows.map(r => r.project)
 }
 
-export function deleteKanbanCard(id: string): boolean {
+export async function deleteKanbanCard(id: string): Promise<boolean> {
   // Wrapped in a transaction to ensure atomicity. Steps in FK-safe order:
   //   1. Delete comments referencing this card (FK: kanban_comments.card_id).
   //   2. Delete this card's label associations (FK: kanban_card_labels.card_id).
@@ -554,7 +577,7 @@ export function deleteKanbanCard(id: string): boolean {
   const grandparentDepth = grandparentId ? (getKanbanCard(grandparentId)?.depth ?? 0) : -1
   const now = Math.floor(Date.now() / 1000)
 
-  return db.transaction(() => {
+  const deleted = db.transaction(() => {
     db.prepare('DELETE FROM kanban_comments WHERE card_id = ?').run(id)
     db.prepare('DELETE FROM kanban_card_labels WHERE card_id = ?').run(id)
     const children = db.prepare('SELECT id FROM kanban_cards WHERE parent_id = ?').all(id) as { id: string }[]
@@ -565,14 +588,15 @@ export function deleteKanbanCard(id: string): boolean {
       )
       cascadeDepth(child.id, newChildDepth)
     }
-    const deleted = db.prepare('DELETE FROM kanban_cards WHERE id = ?').run(id).changes > 0
-    if (deleted) {
-      try {
-        writeAgentAuditLog({ agent_id: card.assignee || 'system', entity: 'kanban', action: 'delete', entity_id: id, detail: { title: card.title } })
-      } catch { /* audit failure must not abort card deletion */ }
-    }
-    return deleted
-  })() as boolean
+    return db.prepare('DELETE FROM kanban_cards WHERE id = ?').run(id).changes > 0
+  })()
+  // After the commit, not inside the synchronous transaction (an await there would end it early).
+  if (deleted) {
+    try {
+      await writeAgentAuditLog({ agent_id: card.assignee || 'system', entity: 'kanban', action: 'delete', entity_id: id, detail: { title: card.title } })
+    } catch { /* audit failure must not abort card deletion */ }
+  }
+  return deleted
 }
 
 export function getKanbanComments(cardId: string): KanbanComment[] {

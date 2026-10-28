@@ -167,7 +167,7 @@ async function runCommandTaskInner(task: ScheduledTask, now: number): Promise<vo
   // Two separate guards: a failing metric must not cost the span, nor the other way round.
   try { recordScheduleRunDuration(task.name, (endedMs - startedMs) / 1000, ok) } catch { /* telemetry is never fatal to the task */ }
   try {
-    upsertOtelSpan({
+    await upsertOtelSpan({
       trace_id: `schedule-${task.name}-${startedMs}`, span_id: 'run', parent_span_id: null,
       agent_id: task.agent || 'system', operation: 'schedule.run', start_ms: startedMs, end_ms: endedMs,
       status: ok ? 'ok' : 'error',
@@ -177,7 +177,7 @@ async function runCommandTaskInner(task: ScheduledTask, now: number): Promise<vo
   const { next, action } = evaluateCommandResult(map[task.name], outcome, failThreshold, now)
   map[task.name] = next
   persist()
-  try { appendTaskRun(task.name, task.agent || "system") } catch { /* non-fatal */ }
+  try { await appendTaskRun(task.name, task.agent || "system") } catch { /* non-fatal */ }
   logger.info({ task: task.name, ok, outcome, detail, fails: next.fails, action }, "command task ran")
 
   if (action === "none") return

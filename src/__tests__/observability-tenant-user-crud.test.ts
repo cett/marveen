@@ -229,8 +229,8 @@ describe('partner senders', () => {
 describe('queryOtelSpans', () => {
   beforeEach(() => { initDatabase(':memory:') })
 
-  function span(overrides: Partial<Parameters<typeof upsertOtelSpan>[0]> = {}) {
-    upsertOtelSpan({
+  async function span(overrides: Partial<Parameters<typeof upsertOtelSpan>[0]> = {}) {
+    await upsertOtelSpan({
       trace_id: 'trace-1',
       span_id: `span-${Math.random()}`,
       parent_span_id: null,
@@ -242,31 +242,31 @@ describe('queryOtelSpans', () => {
     })
   }
 
-  it('returns spans ordered by start_ms ascending', () => {
-    span({ span_id: 's1', start_ms: 300 })
-    span({ span_id: 's2', start_ms: 100 })
-    span({ span_id: 's3', start_ms: 200 })
+  it('returns spans ordered by start_ms ascending', async () => {
+    await span({ span_id: 's1', start_ms: 300 })
+    await span({ span_id: 's2', start_ms: 100 })
+    await span({ span_id: 's3', start_ms: 200 })
     const rows = queryOtelSpans({})
     expect(rows.map((r) => r.span_id)).toEqual(['s2', 's3', 's1'])
   })
 
-  it('filters by agent', () => {
-    span({ span_id: 'a1', agent_id: 'alice' })
-    span({ span_id: 'a2', agent_id: 'carol' })
+  it('filters by agent', async () => {
+    await span({ span_id: 'a1', agent_id: 'alice' })
+    await span({ span_id: 'a2', agent_id: 'carol' })
     const rows = queryOtelSpans({ agent: 'alice' })
     expect(rows.map((r) => r.span_id)).toEqual(['a1'])
   })
 
-  it('filters by fromMs/toMs range (inclusive)', () => {
-    span({ span_id: 'r1', start_ms: 100 })
-    span({ span_id: 'r2', start_ms: 200 })
-    span({ span_id: 'r3', start_ms: 300 })
+  it('filters by fromMs/toMs range (inclusive)', async () => {
+    await span({ span_id: 'r1', start_ms: 100 })
+    await span({ span_id: 'r2', start_ms: 200 })
+    await span({ span_id: 'r3', start_ms: 300 })
     const rows = queryOtelSpans({ fromMs: 150, toMs: 250 })
     expect(rows.map((r) => r.span_id)).toEqual(['r2'])
   })
 
-  it('caps the limit at 5000 even when a larger limit is requested', () => {
-    span({ span_id: 'cap1' })
+  it('caps the limit at 5000 even when a larger limit is requested', async () => {
+    await span({ span_id: 'cap1' })
     const rows = queryOtelSpans({ limit: 999999 })
     expect(rows.length).toBe(1) // proves the query still ran (cap didn't throw/break it)
   })

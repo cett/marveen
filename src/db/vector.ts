@@ -8,6 +8,7 @@ import { TOOL_TIMEOUTS } from '../tool-timeouts.js'
 import { rerank } from '../reranker.js'
 import { stripMarkup } from '../web/import-utils.js'
 import { db, tryLoadVecExtension, vecExtensionLoaded } from './connection.js'
+import { dbx, type SqlOps } from './facade.js'
 import { Memory, reRankByRecency, searchAgentMemories } from './memory.js'
 import { Tenant } from './observability.js'
 import { ArtifactPointer } from './sessions.js'
@@ -91,25 +92,24 @@ async function vectorSearch(
   // (entries whose backing memories row was deleted or never backfilled), so an
   // ANN hit set is unreliable for cross-fleet searches. BLOB full-scan is the
   // safe path because it reads directly from the source of truth.
+  // @sqlite-only: the sqlite-vec `vec0` virtual table (MATCH / k); the PostgreSQL phase moves it to pgvector (D4).
   if (vecExtensionLoaded && !crossAgent) {
     try {
       // ANN path: over-fetch by RERANK_FACTOR to give the reranker headroom.
       const queryBlob = floatsToBlob(queryEmbedding)
       // k must be SQLITE_INTEGER; JS numbers bind as SQLITE_FLOAT in better-sqlite3.
-      const annRows = db.prepare(`
+      const annRows = (await dbx.all(`
         SELECT memory_id, distance
         FROM vec_memories
         WHERE embedding MATCH ?
           AND k = ?
         ORDER BY distance
-      `).all(queryBlob, BigInt(limit * RERANK_FACTOR)) as { memory_id: number; distance: number }[]
+      `, queryBlob, BigInt(limit * RERANK_FACTOR))) as { memory_id: number; distance: number }[]
 
       if (annRows.length > 0) {
         const ids = annRows.map(r => r.memory_id)
         const placeholders = ids.map(() => '?').join(',')
-        const memories = db.prepare(
-          `SELECT * FROM memories WHERE id IN (${placeholders}) AND (agent_id = ? OR category = 'shared')${tc}`
-        ).all([...ids, agentId, ...tp]) as Memory[]
+        const memories = await dbx.all<Memory>(`SELECT * FROM memories WHERE id IN (${placeholders}) AND (agent_id = ? OR category = 'shared')${tc}`, ...ids, agentId, ...tp)
 
         const distMap = new Map(annRows.map(r => [r.memory_id, r.distance]))
         // Pipeline step 2: recency boost -- reorder by (proximity * decay) so
@@ -132,8 +132,8 @@ async function vectorSearch(
     // crossAgent (link-building) ranks by pure cosine -- see the scoring note below.
     // crossAgent: skip agent_id/shared filter (same reason as ANN path above).
     const rows = crossAgent
-      ? (db.prepare("SELECT * FROM memories WHERE embedding_blob IS NOT NULL OR embedding IS NOT NULL").all() as Memory[])
-      : (db.prepare(`SELECT * FROM memories WHERE (embedding_blob IS NOT NULL OR embedding IS NOT NULL) AND (agent_id = ? OR category = 'shared')${tc}`).all(agentId, ...tp) as Memory[])
+      ? (await dbx.all<Memory>("SELECT * FROM memories WHERE embedding_blob IS NOT NULL OR embedding IS NOT NULL"))
+      : (await dbx.all<Memory>(`SELECT * FROM memories WHERE (embedding_blob IS NOT NULL OR embedding IS NOT NULL) AND (agent_id = ? OR category = 'shared')${tc}`, agentId, ...tp))
 
     const scored = rows.map(m => {
       try {
@@ -171,7 +171,7 @@ export async function hybridSearch(agentId: string, query: string, limit: number
   const k = 60 // RRF constant
 
   // FTS5 results
-  const ftsResults = searchAgentMemories(agentId, query, limit * 2, tenantId)
+  const ftsResults = await searchAgentMemories(agentId, query, limit * 2, tenantId)
 
   // Vector results
   const queryEmbedding = await generateEmbedding(query)
@@ -197,7 +197,7 @@ export async function hybridSearch(agentId: string, query: string, limit: number
   const topIds = [...scores.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([id]) => id)
   for (const srcId of topIds) {
     const srcScore = scores.get(srcId) ?? 0
-    const neighbors = getMemoryNeighbors(srcId, 5)
+    const neighbors = await getMemoryNeighbors(srcId, 5)
     for (const { memory, weight } of neighbors) {
       if (byId.has(memory.id)) continue  // already in result set, don't double-add
       const neighborScore = srcScore * weight * LINK_TRAVERSAL_DECAY
@@ -227,15 +227,15 @@ export async function hybridSearch(agentId: string, query: string, limit: number
 }
 
 export async function backfillEmbeddings(): Promise<number> {
-  const rows = db.prepare('SELECT id, content, keywords FROM memories WHERE embedding_blob IS NULL').all() as { id: number; content: string; keywords: string | null }[]
+  const rows = (await dbx.all('SELECT id, content, keywords FROM memories WHERE embedding_blob IS NULL')) as { id: number; content: string; keywords: string | null }[]
   let count = 0
   for (const row of rows) {
     const text = row.content + (row.keywords ? ' ' + row.keywords : '')
     const emb = await generateEmbedding(text)
     if (emb) {
       const blob = floatsToBlob(emb)
-      db.prepare('UPDATE memories SET embedding_blob = ? WHERE id = ?').run(blob, row.id)
-      syncVecMemoryEmbeddingUpdate(row.id, blob)
+      await dbx.run('UPDATE memories SET embedding_blob = ? WHERE id = ?', blob, row.id)
+      await syncVecMemoryEmbeddingUpdate(row.id, blob)
       count++
     }
     // Small delay to not overwhelm Ollama
@@ -250,7 +250,8 @@ export async function backfillEmbeddings(): Promise<number> {
 // one (memory_shadow_id IS NULL).  Called after initVecSupport() so that vec0
 // is loaded when the application-level vec sync (syncVecMemoryEmbeddingUpdate)
 // runs during embedding backfill.
-export async function backfillImportShadowRows(): Promise<number> {
+// @boot-sync-twin
+export function backfillImportShadowRows(): number {
   type ImportRow = { id: string; content: string; keywords: string | null; updated_at: number }
   const pending = db
     .prepare('SELECT id, content, keywords, updated_at FROM import_memories WHERE memory_shadow_id IS NULL')
@@ -325,40 +326,41 @@ export interface MemoryLink {
  */
 export const WEIGHT_ROUNDING_TOLERANCE = 1e-9
 
-export function upsertMemoryLink(
+export async function upsertMemoryLink(
   srcId: number,
   dstId: number,
   linkType: MemoryLink['link_type'],
   rawWeight: number,
-): number {
+  // The transaction handle when the caller writes several links in one dbx.tx: the statement then runs on it.
+  h: SqlOps = dbx,
+): Promise<number> {
   const weight = rawWeight > 1 && rawWeight <= 1 + WEIGHT_ROUNDING_TOLERANCE ? 1 : rawWeight
-  const stmt = db.prepare(
+  // RETURNING gives the row's own id on the update path too (lastInsertRowid
+  // would be whatever this connection inserted last).
+  const row = await h.get<{ id: number }>(
     `INSERT INTO memory_links (src_id, dst_id, link_type, weight)
      VALUES (?, ?, ?, ?)
      ON CONFLICT(src_id, dst_id, link_type) DO UPDATE SET weight = excluded.weight, last_traversed_at = unixepoch()
-     RETURNING id`
+     RETURNING id`,
+    srcId, dstId, linkType, weight,
   )
-  // RETURNING gives the row's own id on the update path too (lastInsertRowid
-  // would be whatever this connection inserted last).
-  return (stmt.get(srcId, dstId, linkType, weight) as { id: number }).id
+  return row!.id
 }
 
 /**
  * Return the 1-hop neighbors reachable from srcId, ordered by weight desc.
  * Updates last_traversed_at on the traversed edges.
  */
-export function getMemoryNeighbors(srcId: number, limit = 10): { memory: Memory; weight: number }[] {
+export async function getMemoryNeighbors(srcId: number, limit = 10): Promise<{ memory: Memory; weight: number }[]> {
   // Touch traversal timestamp
-  db.prepare('UPDATE memory_links SET last_traversed_at = unixepoch() WHERE src_id = ?').run(srcId)
+  await dbx.run('UPDATE memory_links SET last_traversed_at = unixepoch() WHERE src_id = ?', srcId)
 
-  const rows = db.prepare(
-    `SELECT m.*, ml.weight
+  const rows = (await dbx.all(`SELECT m.*, ml.weight
      FROM memory_links ml
      JOIN memories m ON m.id = ml.dst_id
      WHERE ml.src_id = ?
      ORDER BY ml.weight DESC
-     LIMIT ?`
-  ).all(srcId, limit) as (Memory & { weight: number })[]
+     LIMIT ?`, srcId, limit)) as (Memory & { weight: number })[]
 
   return rows.map(r => ({ memory: r, weight: r.weight }))
 }
@@ -371,20 +373,16 @@ export function getMemoryNeighbors(srcId: number, limit = 10): { memory: Memory;
  * Return all memory_links where either endpoint is in the given id set.
  * Used by the dashboard graph to fetch edges for a loaded set of memories.
  */
-export function getLinksForMemories(ids: number[]): MemoryLink[] {
+export async function getLinksForMemories(ids: number[]): Promise<MemoryLink[]> {
   if (ids.length === 0) return []
   const placeholders = ids.map(() => '?').join(',')
-  return db.prepare(
-    `SELECT * FROM memory_links
+  return dbx.all<MemoryLink>(`SELECT * FROM memory_links
      WHERE src_id IN (${placeholders}) OR dst_id IN (${placeholders})
-     ORDER BY weight DESC`
-  ).all(...ids, ...ids) as MemoryLink[]
+     ORDER BY weight DESC`, ...ids, ...ids)
 }
 
-export function pruneMemoryLinks(weightThreshold = 0.1): number {
-  const result = db.prepare(
-    `DELETE FROM memory_links WHERE weight < ?`
-  ).run(weightThreshold) as { changes: number }
+export async function pruneMemoryLinks(weightThreshold = 0.1): Promise<number> {
+  const result = (await dbx.run(`DELETE FROM memory_links WHERE weight < ?`, weightThreshold)) as { changes: number }
   return result.changes
 }
 
@@ -393,10 +391,10 @@ export function pruneMemoryLinks(weightThreshold = 0.1): number {
  * neighbors. Skips if no embedding available. Returns link count created.
  */
 export async function linkToNeighbors(memoryId: number, maxNeighbors = 5, similarityThreshold = 0.75): Promise<number> {
-  const row = db.prepare('SELECT embedding_blob FROM memories WHERE id = ?').get(memoryId) as { embedding_blob: Buffer | null } | undefined
+  const row = await dbx.get<{ embedding_blob: Buffer | null }>('SELECT embedding_blob FROM memories WHERE id = ?', memoryId)
   if (!row?.embedding_blob) return 0
 
-  const agentRow = db.prepare('SELECT agent_id FROM memories WHERE id = ?').get(memoryId) as { agent_id: string | null } | undefined
+  const agentRow = await dbx.get<{ agent_id: string | null }>('SELECT agent_id FROM memories WHERE id = ?', memoryId)
   if (!agentRow?.agent_id) return 0
 
   const queryVec = blobToFloats(row.embedding_blob)
@@ -412,7 +410,7 @@ export async function linkToNeighbors(memoryId: number, maxNeighbors = 5, simila
   const wanted: { id: number; sim: number }[] = []
   for (const candidate of candidates) {
     if (candidate.id === memoryId) continue
-    const candBlob = db.prepare('SELECT embedding_blob FROM memories WHERE id = ?').get(candidate.id) as { embedding_blob: Buffer | null } | undefined
+    const candBlob = await dbx.get<{ embedding_blob: Buffer | null }>('SELECT embedding_blob FROM memories WHERE id = ?', candidate.id)
     if (!candBlob?.embedding_blob) continue
     const sim = cosineSimilarity(queryVec, blobToFloats(candBlob.embedding_blob))
     // NaN (a zero vector on either side) and sim <= 0 (a caller threshold of 0 or below) are no link: the table
@@ -423,10 +421,10 @@ export async function linkToNeighbors(memoryId: number, maxNeighbors = 5, simila
   }
   // All of this memory's links or none: a failing write rolls back the links already written for it, so a memory
   // reported as failed never keeps half its neighbours.
-  const writeAll = db.transaction((items: { id: number; sim: number }[]) => {
-    for (const w of items) upsertMemoryLink(memoryId, w.id, 'semantic', w.sim)
+  // Every statement runs on the transaction handle, none on dbx; the embedding and the neighbour search are above.
+  await dbx.tx(async (tx) => {
+    for (const w of wanted) await upsertMemoryLink(memoryId, w.id, 'semantic', w.sim, tx)
   })
-  writeAll(wanted)
   return wanted.length
 }
 
@@ -469,10 +467,8 @@ export async function runLinkMaintenance(opts: {
   const cutoff = Math.floor(Date.now() / 1000) - maxAge
 
   // Step 1: backfill embeddings for memories updated recently that lack one
-  const needsEmbed = db.prepare(
-    `SELECT id, content, keywords FROM memories
-     WHERE embedding_blob IS NULL AND updated_at >= ?`
-  ).all(cutoff) as { id: number; content: string; keywords: string | null }[]
+  const needsEmbed = (await dbx.all(`SELECT id, content, keywords FROM memories
+     WHERE embedding_blob IS NULL AND updated_at >= ?`, cutoff)) as { id: number; content: string; keywords: string | null }[]
 
   let reembedded = 0
   for (const row of needsEmbed) {
@@ -480,16 +476,14 @@ export async function runLinkMaintenance(opts: {
     const emb = await generateEmbedding(text)
     if (emb) {
       const blob = floatsToBlob(emb)
-      db.prepare('UPDATE memories SET embedding_blob = ? WHERE id = ?').run(blob, row.id)
-      syncVecMemoryEmbeddingUpdate(row.id, blob)
+      await dbx.run('UPDATE memories SET embedding_blob = ? WHERE id = ?', blob, row.id)
+      await syncVecMemoryEmbeddingUpdate(row.id, blob)
       reembedded++
     }
   }
 
   // Step 2: re-link memories with embedding updated recently
-  const toLink = db.prepare(
-    `SELECT id FROM memories WHERE embedding_blob IS NOT NULL AND updated_at >= ?`
-  ).all(cutoff) as { id: number }[]
+  const toLink = (await dbx.all(`SELECT id FROM memories WHERE embedding_blob IS NOT NULL AND updated_at >= ?`, cutoff)) as { id: number }[]
 
   // One memory whose links cannot be written must not stop the run for all the others (and keep the nightly
   // maintenance failing): it is logged and counted, the run goes on.
@@ -505,14 +499,12 @@ export async function runLinkMaintenance(opts: {
   }
 
   // Step 3: prune decayed links
-  const linksPruned = pruneMemoryLinks(weightThreshold)
+  const linksPruned = await pruneMemoryLinks(weightThreshold)
 
   // Step 4: count orphans (have embedding, 0 outgoing semantic links)
-  const orphanRow = db.prepare(
-    `SELECT COUNT(*) AS c FROM memories
+  const orphanRow = (await dbx.get(`SELECT COUNT(*) AS c FROM memories
      WHERE embedding_blob IS NOT NULL
-       AND id NOT IN (SELECT DISTINCT src_id FROM memory_links WHERE link_type = 'semantic')`
-  ).get() as { c: number }
+       AND id NOT IN (SELECT DISTINCT src_id FROM memory_links WHERE link_type = 'semantic')`)) as { c: number }
   const orphans = orphanRow.c
 
   const memoriesAttempted = toLink.length
@@ -525,6 +517,7 @@ export async function runLinkMaintenance(opts: {
  * and immediately null out the TEXT column to reclaim space. Runs synchronously
  * inside a single transaction so it is safe to call at startup after migrations.
  */
+// @sqlite-only: boot-time and synchronous on the raw handle (db/index.ts calls it before the facade serves anything).
 export function migrateExistingEmbeddingsToBLOB(): number {
   const rows = db.prepare(
     'SELECT id, embedding FROM memories WHERE embedding IS NOT NULL AND embedding_blob IS NULL'
@@ -557,21 +550,41 @@ export function migrateExistingEmbeddingsToBLOB(): number {
 // These replace the three DROP'd triggers (vec_memories_ai/au/ad). Call them
 // wherever the application writes to `memories` so the ANN index stays in sync
 // without requiring vec0 to be loaded on every database connection.
-export function syncVecMemoryDelete(id: number): void {
+// @sqlite-only: writes the sqlite-vec `vec0` table (the PostgreSQL phase moves it to pgvector, D4). Inside a dbx.tx
+// body the call joins the open transaction (same connection, the lock does not wait in the body), so a rollback of
+// that transaction takes the vec entry delete with it, provided the call is awaited inside the body.
+export async function syncVecMemoryDelete(id: number): Promise<void> {
+  if (!vecExtensionLoaded) return
+  try {
+    await dbx.run('DELETE FROM vec_memories WHERE memory_id = ?', BigInt(id))
+  } catch { /* vec0 unavailable at runtime -- no-op */ }
+}
+
+// @sqlite-only, raw handle: the one caller is deleteTenant (observability.ts), whose transaction is still a
+// synchronous better-sqlite3 one until it moves onto dbx.tx. An awaited call in that body would let the
+// transaction commit at the first await, so the delete runs on the same raw connection, in the transaction.
+// That move removes this function and awaits syncVecMemoryDelete inside the dbx.tx body.
+export function deleteVecMemoryOnRawHandle(id: number): void {
   if (!vecExtensionLoaded) return
   try {
     db.prepare('DELETE FROM vec_memories WHERE memory_id = ?').run(BigInt(id))
   } catch { /* vec0 unavailable at runtime -- no-op */ }
 }
 
-export function syncVecMemoryEmbeddingUpdate(id: number, embeddingBlob: Buffer): void {
+// @sqlite-only: see syncVecMemoryDelete.
+export async function syncVecMemoryEmbeddingUpdate(id: number, embeddingBlob: Buffer): Promise<void> {
   if (!vecExtensionLoaded) return
   try {
-    db.prepare('DELETE FROM vec_memories WHERE memory_id = ?').run(BigInt(id))
-    db.prepare('INSERT OR IGNORE INTO vec_memories(memory_id, embedding) VALUES(?, ?)').run(BigInt(id), embeddingBlob)
+    // One transaction: two overlapping updates of the same memory cannot interleave their delete and insert, and a
+    // failing insert keeps the previous vec entry instead of leaving none.
+    await dbx.tx(async (tx) => {
+      await tx.run('DELETE FROM vec_memories WHERE memory_id = ?', BigInt(id))
+      await tx.run('INSERT OR IGNORE INTO vec_memories(memory_id, embedding) VALUES(?, ?)', BigInt(id), embeddingBlob)
+    })
   } catch { /* vec0 unavailable at runtime -- no-op */ }
 }
 
+// @sqlite-only: boot-time and synchronous on the raw handle; creates the vec0 virtual tables and the artifact trigger.
 export function initVecSupport(): void {
   // Drop any leftover sync triggers first so stale triggers never fire against
   // a missing virtual table (e.g. when the extension failed to load this run).
@@ -646,6 +659,7 @@ export function initVecSupport(): void {
  * Returns ArtifactPointer list (no content) sorted by similarity score.
  * Returns empty array when sqlite-vec is unavailable or Ollama is unreachable.
  */
+// @sqlite-only: vec0 MATCH on vec_artifacts.
 export async function searchArtifactsByVector(
   query: string,
   limit = 10
@@ -656,21 +670,19 @@ export async function searchArtifactsByVector(
 
   try {
     const queryBlob = floatsToBlob(queryEmbedding)
-    const annRows = db.prepare(`
+    const annRows = (await dbx.all(`
       SELECT artifact_rowid, distance
       FROM vec_artifacts
       WHERE embedding MATCH ?
         AND k = ?
       ORDER BY distance
-    `).all(queryBlob, BigInt(limit)) as { artifact_rowid: number; distance: number }[]
+    `, queryBlob, BigInt(limit))) as { artifact_rowid: number; distance: number }[]
 
     if (annRows.length === 0) return []
 
     const rowids = annRows.map(r => r.artifact_rowid)
     const placeholders = rowids.map(() => '?').join(',')
-    const rows = db.prepare(
-      `SELECT rowid, id, title, kind, created_at FROM artifacts WHERE rowid IN (${placeholders})`
-    ).all(...rowids) as { rowid: number; id: string; title: string; kind: string; created_at: number }[]
+    const rows = (await dbx.all(`SELECT rowid, id, title, kind, created_at FROM artifacts WHERE rowid IN (${placeholders})`, ...rowids)) as { rowid: number; id: string; title: string; kind: string; created_at: number }[]
 
     const distMap = new Map(annRows.map(r => [r.artifact_rowid, r.distance]))
     return rows

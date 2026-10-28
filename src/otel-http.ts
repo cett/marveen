@@ -107,7 +107,7 @@ export interface HttpRequestFacts {
   nowMs?: number
 }
 
-export function recordHttpRequest(f: HttpRequestFacts): void {
+export async function recordHttpRequest(f: HttpRequestFacts): Promise<void> {
   try {
     const refused = f.status >= 400 && f.status < 500
     const route = httpRouteTemplate(f.path, refused)
@@ -119,7 +119,7 @@ export function recordHttpRequest(f: HttpRequestFacts): void {
       const startMs = Math.max(0, endMs - Math.round(f.seconds * 1000))
       const traceId = (f.authenticated ? traceIdFromTraceparent(f.traceparent) : null) ?? randomBytes(16).toString('hex')
       const spanId = randomBytes(8).toString('hex')
-      upsertOtelSpan({
+      await upsertOtelSpan({
         trace_id: traceId, span_id: spanId, parent_span_id: null, agent_id: f.agentId || 'dashboard',
         operation: 'http.server', start_ms: startMs, attributes: JSON.stringify({ http_method: method, http_route: route, http_status: status }),
       })
@@ -148,7 +148,8 @@ export function instrumentHttpRequest(req: http.IncomingMessage, res: http.Serve
   res.once('close', () => {
     if (!res.writableFinished) return
     if (isEventStream(req, res)) return
-    recordHttpRequest({
+    // recordHttpRequest catches its own failures; a close handler cannot wait for it.
+    void recordHttpRequest({
       method, path, status: res.statusCode, seconds: Number(process.hrtime.bigint() - t0) / 1e9,
       traceparent: req.headers['traceparent'],
       authenticated: trust.authenticated,

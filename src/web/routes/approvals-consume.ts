@@ -100,9 +100,9 @@ async function readUseBody(ctx: RouteContext, needCategory: boolean): Promise<Us
 }
 
 /** Every use attempt leaves an audit row, refused or not; a failure to write it changes no answer. */
-function auditUse(principal: string, via: 'id' | 'claim', outcome: ConsumeOutcome | ClaimOutcome, id: string | undefined, hash: string): void {
+async function auditUse(principal: string, via: 'id' | 'claim', outcome: ConsumeOutcome | ClaimOutcome, id: string | undefined, hash: string): Promise<void> {
   try {
-    writeAgentAuditLog({
+    await writeAgentAuditLog({
       agent_id: principal, entity: 'approval', action: 'consume', entity_id: id ?? (outcome.approval ? outcome.approval.id : undefined),
       detail: {
         via, outcome: outcome.ok ? (outcome.replayed ? 'replayed' : 'adopted' in outcome && outcome.adopted ? 'adopted' : 'consumed') : outcome.reason,
@@ -145,7 +145,7 @@ async function handleUse(ctx: RouteContext, id: string | null): Promise<true> {
   const outcome = id !== null
     ? await consumeApproval({ ...common, id })
     : await claimApproval({ ...common, category: body.category as string, ...(body.mode === 'send' ? { mode: 'send' as const } : {}) })
-  auditUse(principal, id !== null ? 'id' : 'claim', outcome, id ?? undefined, body.content_hash)
+  await auditUse(principal, id !== null ? 'id' : 'claim', outcome, id ?? undefined, body.content_hash)
 
   if (outcome.ok) {
     logger.info({ id: outcome.approval.id, agent: principal, replayed: outcome.replayed }, 'Approval used up')

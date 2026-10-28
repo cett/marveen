@@ -15,8 +15,8 @@ beforeEach(() => {
 })
 
 describe('insertHookAuditLog / listHookAuditLog', () => {
-  it('stores and retrieves a deny entry with all fields', () => {
-    insertHookAuditLog({
+  it('stores and retrieves a deny entry with all fields', async () => {
+    await insertHookAuditLog({
       agent_id: 'agent-a',
       hook_type: 'PostToolUse',
       verdict: 'deny',
@@ -41,8 +41,8 @@ describe('insertHookAuditLog / listHookAuditLog', () => {
     expect(typeof rows[0].id).toBe('number')
   })
 
-  it('accepts null/omitted optional fields', () => {
-    insertHookAuditLog({ hook_type: 'PreToolUse', verdict: 'deny' })
+  it('accepts null/omitted optional fields', async () => {
+    await insertHookAuditLog({ hook_type: 'PreToolUse', verdict: 'deny' })
     const rows = listHookAuditLog()
     expect(rows).toHaveLength(1)
     expect(rows[0].agent_id).toBeNull()
@@ -52,30 +52,30 @@ describe('insertHookAuditLog / listHookAuditLog', () => {
     expect(rows[0].session_id).toBeNull()
   })
 
-  it('filters by verdict', () => {
-    insertHookAuditLog({ hook_type: 'PostToolUse', verdict: 'deny', reason: 'r1' })
-    insertHookAuditLog({ hook_type: 'PostToolUse', verdict: 'allow', reason: 'r2' })
+  it('filters by verdict', async () => {
+    await insertHookAuditLog({ hook_type: 'PostToolUse', verdict: 'deny', reason: 'r1' })
+    await insertHookAuditLog({ hook_type: 'PostToolUse', verdict: 'allow', reason: 'r2' })
 
     const denies = listHookAuditLog({ verdict: 'deny' })
     expect(denies).toHaveLength(1)
     expect(denies[0].reason).toBe('r1')
   })
 
-  it('filters by agent_id', () => {
-    insertHookAuditLog({ hook_type: 'PostToolUse', verdict: 'deny', agent_id: 'agent-a' })
-    insertHookAuditLog({ hook_type: 'PostToolUse', verdict: 'deny', agent_id: 'agent-b' })
+  it('filters by agent_id', async () => {
+    await insertHookAuditLog({ hook_type: 'PostToolUse', verdict: 'deny', agent_id: 'agent-a' })
+    await insertHookAuditLog({ hook_type: 'PostToolUse', verdict: 'deny', agent_id: 'agent-b' })
 
     const rows = listHookAuditLog({ agent_id: 'agent-a' })
     expect(rows).toHaveLength(1)
     expect(rows[0].agent_id).toBe('agent-a')
   })
 
-  it('orders newest first', () => {
+  it('orders newest first', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
-    insertHookAuditLog({ hook_type: 'PostToolUse', verdict: 'deny', reason: 'first' })
+    await insertHookAuditLog({ hook_type: 'PostToolUse', verdict: 'deny', reason: 'first' })
     vi.setSystemTime(new Date('2026-01-01T00:01:00Z'))
-    insertHookAuditLog({ hook_type: 'PostToolUse', verdict: 'deny', reason: 'second' })
+    await insertHookAuditLog({ hook_type: 'PostToolUse', verdict: 'deny', reason: 'second' })
 
     // Query while still under the same fake "now" -- sinceSecs is relative to
     // Date.now(), so switching back to real time here would compare the
@@ -85,32 +85,32 @@ describe('insertHookAuditLog / listHookAuditLog', () => {
     expect(rows.map(r => r.reason)).toEqual(['second', 'first'])
   })
 
-  it('excludes entries older than sinceSecs', () => {
+  it('excludes entries older than sinceSecs', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
-    insertHookAuditLog({ hook_type: 'PostToolUse', verdict: 'deny', reason: 'old' })
+    await insertHookAuditLog({ hook_type: 'PostToolUse', verdict: 'deny', reason: 'old' })
     vi.setSystemTime(new Date('2026-01-01T02:00:00Z'))
-    insertHookAuditLog({ hook_type: 'PostToolUse', verdict: 'deny', reason: 'recent' })
+    await insertHookAuditLog({ hook_type: 'PostToolUse', verdict: 'deny', reason: 'recent' })
 
     const rows = listHookAuditLog({ sinceSecs: 3600 })
     vi.useRealTimers()
     expect(rows.map(r => r.reason)).toEqual(['recent'])
   })
 
-  it('caps limit at 1000', () => {
-    for (let i = 0; i < 5; i++) insertHookAuditLog({ hook_type: 'PostToolUse', verdict: 'deny', reason: `r${i}` })
+  it('caps limit at 1000', async () => {
+    for (let i = 0; i < 5; i++) await insertHookAuditLog({ hook_type: 'PostToolUse', verdict: 'deny', reason: `r${i}` })
     const rows = listHookAuditLog({ limit: 5000 })
     expect(rows).toHaveLength(5) // fewer rows than the cap; cap just doesn't truncate below actual count
   })
 })
 
 describe('pruneHookAuditLog', () => {
-  it('deletes entries older than the cutoff, keeps recent ones', () => {
+  it('deletes entries older than the cutoff, keeps recent ones', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2025-11-01T00:00:00Z'))
-    insertHookAuditLog({ hook_type: 'PostToolUse', verdict: 'deny', reason: 'ancient' })
+    await insertHookAuditLog({ hook_type: 'PostToolUse', verdict: 'deny', reason: 'ancient' })
     vi.setSystemTime(new Date('2026-01-31T00:00:00Z'))
-    insertHookAuditLog({ hook_type: 'PostToolUse', verdict: 'deny', reason: 'recent' })
+    await insertHookAuditLog({ hook_type: 'PostToolUse', verdict: 'deny', reason: 'recent' })
 
     pruneHookAuditLog(30 * 86400)
     const rows = listHookAuditLog({ sinceSecs: 365 * 86400 })

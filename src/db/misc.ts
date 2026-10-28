@@ -23,7 +23,7 @@ export async function createBackgroundTaskAtomic(id: string, agentId: string, pr
   const result = await dbx.tx(async (tx) => {
     const running = ((await tx.get("SELECT COUNT(*) as c FROM background_tasks WHERE agent_id = ? AND status = 'running'", agentId)) as { c: number }).c
     if (running >= maxConcurrent) return null
-    await tx.run('INSERT INTO background_tasks (id, agent_id, prompt, status, tmux_session, started_at, tenant_id) VALUES (?, ?, ?, ?, ?, ?, ?)', id, agentId, prompt, 'running', tmuxSession, now, resolveWriteTenant(agentId))
+    await tx.run('INSERT INTO background_tasks (id, agent_id, prompt, status, tmux_session, started_at, tenant_id) VALUES (?, ?, ?, ?, ?, ?, ?)', id, agentId, prompt, 'running', tmuxSession, now, await resolveWriteTenant(agentId))
     return { id, agent_id: agentId, prompt, status: 'running' as const, tmux_session: tmuxSession, started_at: now, finished_at: null, output: null }
   })
   return result

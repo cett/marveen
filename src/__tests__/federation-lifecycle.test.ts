@@ -72,11 +72,11 @@ afterAll(() => {
 })
 
 describe('failPendingFederatedMessages (db helper)', () => {
-  it('fails ONLY pending qualified rows; per-peer scoping is exact-prefix (no LIKE underscore wildcard)', () => {
-    const pTeodor = createAgentMessage('a', 'teodor/x', 'p1')
-    const pUnderscore = createAgentMessage('a', 'te_dor/x', 'p2') // '_' would be a LIKE wildcard
-    const pLocal = createAgentMessage('a', 'localagent', 'p3')
-    const delivered = createAgentMessage('a', 'teodor/y', 'p4')
+  it('fails ONLY pending qualified rows; per-peer scoping is exact-prefix (no LIKE underscore wildcard)', async () => {
+    const pTeodor = await createAgentMessage('a', 'teodor/x', 'p1')
+    const pUnderscore = await createAgentMessage('a', 'te_dor/x', 'p2') // '_' would be a LIKE wildcard
+    const pLocal = await createAgentMessage('a', 'localagent', 'p3')
+    const delivered = await createAgentMessage('a', 'teodor/y', 'p4')
     markMessageDelivered(delivered.id)
 
     const failed = failPendingFederatedMessages('te_dor', 'peer removed')
@@ -90,9 +90,9 @@ describe('failPendingFederatedMessages (db helper)', () => {
     expect(getAgentMessage(pTeodor.id)?.result).toBe('disabled')
   })
 
-  it('per-peer scoping is case-insensitive (L1): pre-normalization uppercase rows are purged too', () => {
-    const upper = createAgentMessage('a', 'Teodor/x', 'legacy row')
-    const other = createAgentMessage('a', 'cecil/x', 'other peer')
+  it('per-peer scoping is case-insensitive (L1): pre-normalization uppercase rows are purged too', async () => {
+    const upper = await createAgentMessage('a', 'Teodor/x', 'legacy row')
+    const other = await createAgentMessage('a', 'cecil/x', 'other peer')
     const failed = failPendingFederatedMessages('teodor', 'peer removed')
     expect(failed).toEqual([upper.id])
     expect(getAgentMessage(other.id)?.status).toBe('pending')
@@ -101,14 +101,14 @@ describe('failPendingFederatedMessages (db helper)', () => {
 })
 
 describe('markMessageDelivered status guard', () => {
-  it('refuses to flip a non-pending row (concurrent bulk-fail vs in-flight send)', () => {
-    const msg = createAgentMessage('a', 'teodor/x', 'race')
+  it('refuses to flip a non-pending row (concurrent bulk-fail vs in-flight send)', async () => {
+    const msg = await createAgentMessage('a', 'teodor/x', 'race')
     failPendingFederatedMessages('teodor', 'Federation removed while pending')
     expect(markMessageDelivered(msg.id)).toBe(false)
     expect(getAgentMessage(msg.id)?.status).toBe('failed')
     expect(getAgentMessage(msg.id)?.result).toBe('Federation removed while pending')
 
-    const done = createAgentMessage('a', 'b', 'done-first')
+    const done = await createAgentMessage('a', 'b', 'done-first')
     markMessageDone(done.id, 'ok')
     expect(markMessageDelivered(done.id)).toBe(false)
   })
@@ -216,8 +216,8 @@ describe('peer lifecycle endpoints', () => {
         { id: 'cecil', baseUrl: 'https://c.example', inboundToken: 'c'.repeat(64) },
       ],
     })
-    const mine = createAgentMessage('a', 'teodor/x', 'to-removed-peer')
-    const other = createAgentMessage('a', 'cecil/x', 'to-kept-peer')
+    const mine = await createAgentMessage('a', 'teodor/x', 'to-removed-peer')
+    const other = await createAgentMessage('a', 'cecil/x', 'to-kept-peer')
     const del = await call('DELETE', '/api/federation/peers/teodor')
     expect(del.statusCode).toBe(200)
     expect(getFederationConfig().peers.map((p) => p.id)).toEqual(['cecil'])
@@ -229,7 +229,7 @@ describe('peer lifecycle endpoints', () => {
 describe('master switch + full removal', () => {
   it('POST /enabled false is LOSSLESS for config but deterministic for the queue', async () => {
     await writeConfigFile({ enabled: true, systemId: 'localsys', peers: [{ id: 'teodor', baseUrl: 'https://mini.example', inboundToken: IN_TOKEN, outboundToken: OUT_TOKEN }] })
-    const q = createAgentMessage('a', 'teodor/x', 'queued')
+    const q = await createAgentMessage('a', 'teodor/x', 'queued')
     const off = await call('POST', '/api/federation/enabled', { enabled: false })
     expect(off.json.enabled).toBe(false)
     expect((off.json.peers as unknown[]).length).toBe(1) // peers survive
@@ -297,7 +297,7 @@ describe('master switch + full removal', () => {
   it('POST /remove purges files, queue and answers idempotently', async () => {
     await writeConfigFile({ enabled: true, systemId: 'localsys', peers: [{ id: 'teodor', baseUrl: 'https://mini.example', inboundToken: IN_TOKEN }] })
     writeFileSync(join(TMP, '.federation-token'), 'legacy'.repeat(11))
-    const q = createAgentMessage('a', 'teodor/x', 'queued-at-removal')
+    const q = await createAgentMessage('a', 'teodor/x', 'queued-at-removal')
     const rm = await call('POST', '/api/federation/remove')
     expect(rm.json.ok).toBe(true)
     expect(getFederationConfigRaw()).toBeUndefined()

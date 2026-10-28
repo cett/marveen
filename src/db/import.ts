@@ -94,8 +94,8 @@ async function deleteShadowMemories(shadowIds: number[]): Promise<void> {
 
 // The ANN index (vec0) is written through the raw handle of vector.ts, not through the facade, so it is kept
 // OUT of the transaction bodies below: the callers drop the entries once the transaction has committed.
-function dropVecEntries(shadowIds: number[]): void {
-  for (const id of shadowIds) syncVecMemoryDelete(id)
+async function dropVecEntries(shadowIds: number[]): Promise<void> {
+  for (const id of shadowIds) await syncVecMemoryDelete(id)
 }
 
 /** Delete a source and its shadow memories. False when the source was absent
@@ -111,7 +111,7 @@ export async function deleteImportSource(id: string): Promise<boolean> {
     return ids
   })
   if (!shadowIds) return false
-  dropVecEntries(shadowIds)
+  await dropVecEntries(shadowIds)
   return true
 }
 
@@ -128,7 +128,7 @@ export async function wipeImportMemories(sourceId?: string): Promise<number> {
     await deleteShadowMemories(ids)
     return { shadowIds: ids, changes: deleted }
   })
-  dropVecEntries(shadowIds)
+  await dropVecEntries(shadowIds)
   return changes
 }
 
@@ -280,6 +280,6 @@ export async function upsertImportMemory(
     await dbx.run('UPDATE import_memories SET memory_shadow_id = ? WHERE id = ?', sr.id, id)
     return 'added'
   })
-  if (staleVecId !== null) syncVecMemoryDelete(staleVecId)
+  if (staleVecId !== null) await syncVecMemoryDelete(staleVecId)
   return result
 }

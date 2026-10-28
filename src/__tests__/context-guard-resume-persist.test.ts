@@ -362,19 +362,19 @@ describe('consecutive restart failures raise one message', () => {
 
   it('2 failures: none; the 3rd: exactly one; the 4th and 5th: no more', async () => {
     const runner = await bootDashboard()
-    runner.noteRestartFailure('boni', boom)
-    runner.noteRestartFailure('boni', boom)
+    await runner.noteRestartFailure('boni', boom)
+    await runner.noteRestartFailure('boni', boom)
     expect(alertCalls()).toHaveLength(0)
-    runner.noteRestartFailure('boni', boom)
+    await runner.noteRestartFailure('boni', boom)
     expect(alertCalls()).toHaveLength(1)
-    runner.noteRestartFailure('boni', boom)
-    runner.noteRestartFailure('boni', boom)
+    await runner.noteRestartFailure('boni', boom)
+    await runner.noteRestartFailure('boni', boom)
     expect(alertCalls()).toHaveLength(1)
   })
 
   it('the message names the agent, the count and a short path-free reason, to the main agent', async () => {
     const runner = await bootDashboard()
-    for (let i = 0; i < 3; i++) runner.noteRestartFailure('boni', boom)
+    for (let i = 0; i < 3; i++) await runner.noteRestartFailure('boni', boom)
     const [from, to, text] = alertCalls()[0] as [string, string, string]
     expect(from).toBe('boni')
     expect(to).toBe('marveen')
@@ -387,26 +387,26 @@ describe('consecutive restart failures raise one message', () => {
 
   it('a success resets the series: three more failures alert again', async () => {
     const runner = await bootDashboard()
-    for (let i = 0; i < 3; i++) runner.noteRestartFailure('boni', boom)
+    for (let i = 0; i < 3; i++) await runner.noteRestartFailure('boni', boom)
     runner.clearRestartFailures('boni')
-    runner.noteRestartFailure('boni', boom)
-    runner.noteRestartFailure('boni', boom)
+    await runner.noteRestartFailure('boni', boom)
+    await runner.noteRestartFailure('boni', boom)
     expect(alertCalls()).toHaveLength(1)
-    runner.noteRestartFailure('boni', boom)
+    await runner.noteRestartFailure('boni', boom)
     expect(alertCalls()).toHaveLength(2)
   })
 
   it('agents count separately', async () => {
     const runner = await bootDashboard()
-    runner.noteRestartFailure('boni', boom)
-    runner.noteRestartFailure('boni', boom)
-    runner.noteRestartFailure('other', boom)
+    await runner.noteRestartFailure('boni', boom)
+    await runner.noteRestartFailure('boni', boom)
+    await runner.noteRestartFailure('other', boom)
     expect(alertCalls()).toHaveLength(0)
   })
 
   it('the main agent is told on the channel, not in its own queue', async () => {
     const runner = await bootDashboard()
-    for (let i = 0; i < 3; i++) runner.noteRestartFailure('marveen', boom)
+    for (let i = 0; i < 3; i++) await runner.noteRestartFailure('marveen', boom)
     expect(h.notifyChannel).toHaveBeenCalledTimes(1)
     expect(alertCalls()).toHaveLength(0)
   })

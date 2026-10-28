@@ -122,7 +122,7 @@ describe('recordApprovalEvent', () => {
 
 describe('stampMessageTrace', () => {
   it('leaves a message that is no longer pending alone', async () => {
-    const msg = createAgentMessage('from-a', 'to-b', 'hello')
+    const msg = await createAgentMessage('from-a', 'to-b', 'hello')
     expect(markMessageDelivered(msg.id)).toBe(true)
     expect(await stampMessageTrace(msg.id, 'trace-1', 'span-1', null)).toBe(false)
     const row = db.prepare('SELECT trace_id FROM agent_messages WHERE id = ?').get(msg.id) as { trace_id: string | null }
@@ -130,7 +130,7 @@ describe('stampMessageTrace', () => {
   })
 
   it('of two overlapping stamps on one pending message exactly one wins, and the message keeps its trace', async () => {
-    const msg = createAgentMessage('from-a', 'to-b', 'hello')
+    const msg = await createAgentMessage('from-a', 'to-b', 'hello')
     const results = await Promise.all([
       stampMessageTrace(msg.id, 'trace-1', 'span-1', null),
       stampMessageTrace(msg.id, 'trace-2', 'span-2', 'root'),

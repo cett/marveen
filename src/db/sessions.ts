@@ -125,7 +125,7 @@ export async function appendDailyLog(agentId: string, content: string): Promise<
   // Budapest calendar day, not UTC -- otherwise an entry written 00:00-02:00
   // local time lands on the previous day and the "ma" recall query misses it.
   const today = appLocalDate()
-  await dbx.run('INSERT INTO daily_logs (agent_id, date, content, created_at, tenant_id) VALUES (?, ?, ?, ?, ?)', agentId, today, content, now, resolveWriteTenant(agentId))
+  await dbx.run('INSERT INTO daily_logs (agent_id, date, content, created_at, tenant_id) VALUES (?, ?, ?, ?, ?)', agentId, today, content, now, await resolveWriteTenant(agentId))
 }
 
 export async function getDailyLog(agentId: string, date: string): Promise<{ id: number; content: string; created_at: number }[]> {

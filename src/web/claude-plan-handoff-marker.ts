@@ -38,9 +38,9 @@ function handoffPathFor(name: string): string {
 // Best-effort, called right before a context-guard restart. Never throws --
 // a failure here must not block the restart itself. No-op when the agent
 // has no active plan binding or no HANDOFF.md was written this cycle.
-export function appendActivePlanMarkerToHandoff(name: string): void {
+export async function appendActivePlanMarkerToHandoff(name: string): Promise<void> {
   try {
-    const plan = getActivePlanForAgent(name)
+    const plan = await getActivePlanForAgent(name)
     if (!plan) return
     const path = handoffPathFor(name)
     if (!existsSync(path)) return
@@ -54,13 +54,13 @@ export function appendActivePlanMarkerToHandoff(name: string): void {
 
 // Best-effort, called at agent launch. Never throws -- a failure here must
 // not block the launch itself. No-op when HANDOFF.md carries no marker.
-export function recoverActivePlanFromHandoff(name: string): void {
+export async function recoverActivePlanFromHandoff(name: string): Promise<void> {
   try {
     const path = handoffPathFor(name)
     if (!existsSync(path)) return
     const match = MARKER_RE.exec(readFileSync(path, 'utf-8'))
     if (!match) return
-    activatePlanForAgent(name, match[1], 'handoff-recovery')
+    await activatePlanForAgent(name, match[1], 'handoff-recovery')
   } catch (err) {
     logger.warn({ err, name }, 'handoff active-plan marker: recovery failed (non-fatal)')
   }

@@ -3,7 +3,7 @@
 // to open the database file themselves; they now go through
 // /api/conversation-ledger, which calls these helpers.
 
-import { db } from './connection.js'
+import { dbx } from './facade.js'
 import { getServedTenantIds } from './agents.js'
 import { getChannelBindingTenant, getServingTenant } from './tenant-channel-bindings.js'
 
@@ -51,32 +51,28 @@ export const LEDGER_RECENT_MAX = 200
 /** Idempotent on (agent_id, chat_id, direction, message_id): a repeat of the
  *  same inbound/outbound is ignored. A NULL message_id never conflicts (NULL
  *  != NULL in SQL). Returns true when a row was inserted. */
-export function logLedgerTurn(turn: LedgerTurnInput): boolean {
+export async function logLedgerTurn(turn: LedgerTurnInput): Promise<boolean> {
   const createdAt = turn.created_at ?? Math.floor(Date.now() / 1000)
   const ts = turn.ts ?? (turn.direction === 'out' ? new Date(createdAt * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z') : null)
   // The tenant comes from the chat's channel binding, resolved here and not taken from the caller
   // or from agent_tenant_context: the capture hook and the tenant-context hook both run on
   // UserPromptSubmit in no guaranteed order, so the context row may still hold the PREVIOUS prompt's
   // tenant. An unbound chat is NULL (unknown), not 'default'.
-  const tenantId = getChannelBindingTenant(turn.agent_id, LEDGER_CHANNEL, turn.chat_id)
-  const info = db.prepare(
-    `INSERT INTO conversation_log
+  const tenantId = await getChannelBindingTenant(turn.agent_id, LEDGER_CHANNEL, turn.chat_id)
+  const info = await dbx.run(`INSERT INTO conversation_log
        (agent_id, chat_id, direction, message_id, text, ts, created_at, tenant_id)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT DO NOTHING`,
-  ).run(turn.agent_id, turn.chat_id, turn.direction, turn.message_id ?? null, turn.text ?? null, ts, createdAt, tenantId)
+     ON CONFLICT DO NOTHING`, turn.agent_id, turn.chat_id, turn.direction, turn.message_id ?? null, turn.text ?? null, ts, createdAt, tenantId)
   return info.changes > 0
 }
 
 /** The last `limit` turns for the agent, oldest-first. */
-export function recentLedgerTurns(agentId: string, limit = LEDGER_RECENT_DEFAULT): LedgerTurn[] {
+export async function recentLedgerTurns(agentId: string, limit = LEDGER_RECENT_DEFAULT): Promise<LedgerTurn[]> {
   // Replay runs at SessionStart, when no prompt has set a tenant context yet. A shared agent would
   // hand one tenant's turns to a session that may serve the other, so it gets nothing.
   if (isSharedLedgerAgent(agentId)) return []
-  const rows = db.prepare(
-    `SELECT direction, chat_id, text, ts FROM conversation_log
-       WHERE agent_id = ? ORDER BY created_at DESC, id DESC LIMIT ?`,
-  ).all(agentId, limit) as LedgerTurn[]
+  const rows = await dbx.all<LedgerTurn>(`SELECT direction, chat_id, text, ts FROM conversation_log
+       WHERE agent_id = ? ORDER BY created_at DESC, id DESC LIMIT ?`, agentId, limit)
   return rows.reverse()
 }
 
@@ -87,27 +83,23 @@ export function recentLedgerTurns(agentId: string, limit = LEDGER_RECENT_DEFAULT
  * agent_tenant_context): without a context, or with a stale/unknown one, there is no answer rather
  * than a guess across tenants. Rows of other tenants (and unresolved NULL rows) are invisible to it.
  */
-export function openLedgerQuestion(agentId: string): LedgerOpenQuestion | null {
+export async function openLedgerQuestion(agentId: string): Promise<LedgerOpenQuestion | null> {
   let tenantFilter = ''
   const params: (string | number)[] = [agentId]
   if (isSharedLedgerAgent(agentId)) {
-    const tenant = getServingTenant(agentId)
+    const tenant = await getServingTenant(agentId)
     if (tenant === null) return null
     tenantFilter = ' AND tenant_id = ?'
     params.push(tenant)
   }
-  const row = db.prepare(
-    `SELECT chat_id, message_id, text, ts, created_at, id FROM conversation_log
+  const row = await dbx.get<(LedgerOpenQuestion & { id: number })>(`SELECT chat_id, message_id, text, ts, created_at, id FROM conversation_log
        WHERE agent_id = ? AND direction = 'in'${tenantFilter}
-       ORDER BY created_at DESC, id DESC LIMIT 1`,
-  ).get(...params) as (LedgerOpenQuestion & { id: number }) | undefined
+       ORDER BY created_at DESC, id DESC LIMIT 1`, ...params)
   if (!row) return null
-  const laterOut = db.prepare(
-    `SELECT 1 FROM conversation_log
+  const laterOut = await dbx.get(`SELECT 1 FROM conversation_log
        WHERE agent_id = ? AND direction = 'out'${tenantFilter}
          AND (created_at > ? OR (created_at = ? AND id > ?))
-       LIMIT 1`,
-  ).get(...params, row.created_at, row.created_at, row.id)
+       LIMIT 1`, ...params, row.created_at, row.created_at, row.id)
   if (laterOut) return null
   const { id: _id, ...question } = row
   return question

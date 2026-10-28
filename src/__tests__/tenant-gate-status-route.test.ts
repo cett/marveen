@@ -63,7 +63,7 @@ describe('GET /api/admin/tenant-gate-status', () => {
     setTenantAgentAvailability('beta', 'm1', true)
     setTenantAgentAvailability('acme', 's1', true)
     expect((await getTenantGateStatus()).multi_tenant_agents).toEqual([{ agent_id: 'm1', tenant_count: 2, has_binding: false }])
-    setChannelBinding('m1', 'telegram', '1', 'acme', 'admin')
+    await setChannelBinding('m1', 'telegram', '1', 'acme', 'admin')
     expect((await getTenantGateStatus()).multi_tenant_agents).toEqual([{ agent_id: 'm1', tenant_count: 2, has_binding: true }])
   })
 

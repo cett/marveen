@@ -84,12 +84,12 @@ beforeEach(async () => {
   initDatabase(':memory:')
   createTenant('acme', 'Acme')
   await insertApiToken({ tokenHash: sha('tok-alpha'), name: 'fleet:alpha', role: 'fleet_agent', tenantId: 'default', createdAt: NOW() - 10, expiresAt: null, agentId: 'alpha' })
-  createKanbanCard({ id: DEFAULT_CARD, title: 'Default card', assignee: 'beta', tenant_id: 'default' })
-  createKanbanCard({ id: ACME_CARD, title: 'Acme card', assignee: 'beta', tenant_id: 'acme' })
-  createKanbanCard({ id: ACME_ARCHIVED, title: 'Acme archived', tenant_id: 'acme' })
+  await createKanbanCard({ id: DEFAULT_CARD, title: 'Default card', assignee: 'beta', tenant_id: 'default' })
+  await createKanbanCard({ id: ACME_CARD, title: 'Acme card', assignee: 'beta', tenant_id: 'acme' })
+  await createKanbanCard({ id: ACME_ARCHIVED, title: 'Acme archived', tenant_id: 'acme' })
   archiveKanbanCard(ACME_ARCHIVED)
-  createKanbanCard({ id: 'acme-child', title: 'Acme child', parent_id: ACME_CARD, tenant_id: 'acme' })
-  createKanbanCard({ id: 'default-child', title: 'Default child', parent_id: DEFAULT_CARD, tenant_id: 'default' })
+  await createKanbanCard({ id: 'acme-child', title: 'Acme child', parent_id: ACME_CARD, tenant_id: 'acme' })
+  await createKanbanCard({ id: 'default-child', title: 'Default child', parent_id: DEFAULT_CARD, tenant_id: 'default' })
   createLabel({ id: 'lbl-acme', name: 'acme-label', color: '#3b82f6', tenant_id: 'acme' })
   createLabel({ id: 'lbl-default', name: 'default-label', color: '#10b981', tenant_id: 'default' })
   addLabelToCard(ACME_CARD, 'lbl-acme')
@@ -202,7 +202,7 @@ describe('move: the orderedIds column list is cut down to the caller\'s own tena
   const sortOrder = (id: string) => (getDb().prepare('SELECT sort_order FROM kanban_cards WHERE id = ?').get(id) as { sort_order: number }).sort_order
 
   it("a foreign card id in orderedIds keeps its sort_order, the own cards are renumbered", async () => {
-    createKanbanCard({ id: 'default-b', title: 'Default b', tenant_id: 'default' })
+    await createKanbanCard({ id: 'default-b', title: 'Default b', tenant_id: 'default' })
     getDb().prepare('UPDATE kanban_cards SET sort_order = 777 WHERE id = ?').run(ACME_CARD)
     const res = await callAs(await alpha(), 'POST', `/api/kanban/${DEFAULT_CARD}/move`, {
       status: 'waiting', sort_order: 0, orderedIds: ['default-b', ACME_CARD, DEFAULT_CARD],
@@ -231,7 +231,7 @@ describe('PATCH /parent and breakdown/accept: the references and the tenant of w
   })
 
   it('an own card moves under an own parent and detaches again (200); an admin may cross', async () => {
-    createKanbanCard({ id: 'parent-default', title: 'P', tenant_id: 'default' })
+    await createKanbanCard({ id: 'parent-default', title: 'P', tenant_id: 'default' })
     expect((await callAs(await alpha(), 'PATCH', `/api/kanban/${DEFAULT_CARD}/parent`, { parent_id: 'parent-default' })).status).toBe(200)
     expect(tree(DEFAULT_CARD).parent_id).toBe('parent-default')
     expect((await callAs(await alpha(), 'PATCH', `/api/kanban/${DEFAULT_CARD}/parent`, { parent_id: null })).status).toBe(200)
@@ -273,8 +273,8 @@ describe('POST /api/kanban: a parent_id in the body is held to the caller\'s ten
 // can carry one). The label registry lives under the same prefix, so the path-id gate must not wave `labels`
 // through for the card routes.
 describe('a card with the id "labels" is held to its tenant like any other card', () => {
-  beforeEach(() => {
-    createKanbanCard({ id: 'labels', title: 'Acme labels card', tenant_id: 'acme' })
+  beforeEach(async () => {
+    await createKanbanCard({ id: 'labels', title: 'Acme labels card', tenant_id: 'acme' })
     addKanbanComment('labels', 'someone', 'secret labels comment')
     // A label on the card, so that a detach through the loose registry shape (DELETE
     // /api/kanban/labels/labels/<labelId>, which is a card route) would have something to remove.
@@ -382,7 +382,7 @@ describe('an own card keeps working', () => {
 
   it('breakdown of an own card reaches the generator', async () => {
     expect((await callAs(acmeUser(), 'POST', `/api/kanban/${ACME_CARD}/breakdown`)).status).toBe(409) // it already has a child
-    createKanbanCard({ id: 'lonely', title: 'Lonely', tenant_id: 'acme' })
+    await createKanbanCard({ id: 'lonely', title: 'Lonely', tenant_id: 'acme' })
     expect((await callAs(acmeUser(), 'POST', '/api/kanban/lonely/breakdown')).status).toBe(200)
     expect(generateBreakdown).toHaveBeenCalledTimes(1)
   })

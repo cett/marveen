@@ -44,7 +44,7 @@ export async function tryHandleHookAudit(ctx: RouteContext): Promise<boolean> {
     }
     // A fleet_agent token records the verdicts of its own agent (an omitted agent_id is the token's).
     if (data.agent_id && denyForeignAgent(ctx, data.agent_id)) return true
-    insertHookAuditLog({
+    await insertHookAuditLog({
       agent_id: actingAgentId(ctx, data.agent_id, '') || null,
       hook_type: data.hook_type,
       verdict: data.verdict,

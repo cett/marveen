@@ -116,7 +116,7 @@ export async function tryHandleAutonomy(ctx: RouteContext): Promise<boolean> {
       if (hasHumanOnly) {
         await setAutonomyCategoryHumanOnly(key, human_only as boolean, 'dashboard')
         try {
-          writeAgentAuditLog({
+          await writeAgentAuditLog({
             agent_id: ctx.auth?.user ?? ctx.auth?.tokenName ?? 'system',
             entity: 'approval',
             action: 'update',
@@ -128,7 +128,7 @@ export async function tryHandleAutonomy(ctx: RouteContext): Promise<boolean> {
       if (hasTimeout) {
         await setAutonomyCategoryTimeout(key, timeout_minutes as number | null, 'dashboard')
         try {
-          writeAgentAuditLog({
+          await writeAgentAuditLog({
             agent_id: ctx.auth?.user ?? ctx.auth?.tokenName ?? 'system',
             entity: 'approval',
             action: 'update',
