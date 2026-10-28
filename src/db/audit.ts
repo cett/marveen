@@ -215,13 +215,19 @@ export async function logSkillUsage(
 ): Promise<boolean> {
   const now = Math.floor(Date.now() / 1000)
   const effectiveSource = source ?? (triggerType === 'tool_call' ? 'skill_tool' : 'read_tool')
-  const dup = await dbx.get(`SELECT 1 FROM skill_usage
-     WHERE agent_id = ? AND skill_name = ? AND session_id IS ? AND created_at >= ?
-       AND COALESCE(source, ${LEGACY_SOURCE_SQL}) = ?
-     LIMIT 1`, agentId, skillName, sessionId ?? null, now - SKILL_USAGE_DEDUP_SECS, effectiveSource)
-  if (dup) return false
-  await dbx.run('INSERT INTO skill_usage (agent_id, skill_name, trigger_type, session_id, created_at, source, tenant_id) VALUES (?, ?, ?, ?, ?, ?, ?)', agentId, skillName, triggerType, sessionId ?? null, now, source ?? null, await resolveWriteTenant(agentId))
-  return true
+  // The tenant is resolved first: the dedup check and the insert are ONE statement. As a SELECT followed by an
+  // INSERT with an await between them, two concurrent calls for the same invocation both saw no row and both
+  // wrote one (the sync driver made that sequence atomic before the facade).
+  const tenantId = await resolveWriteTenant(agentId)
+  const res = await dbx.run(`INSERT INTO skill_usage (agent_id, skill_name, trigger_type, session_id, created_at, source, tenant_id)
+     SELECT ?, ?, ?, ?, ?, ?, ?
+      WHERE NOT EXISTS (
+        SELECT 1 FROM skill_usage
+         WHERE agent_id = ? AND skill_name = ? AND session_id IS ? AND created_at >= ?
+           AND COALESCE(source, ${LEGACY_SOURCE_SQL}) = ?)`,
+    agentId, skillName, triggerType, sessionId ?? null, now, source ?? null, tenantId,
+    agentId, skillName, sessionId ?? null, now - SKILL_USAGE_DEDUP_SECS, effectiveSource)
+  return res.changes > 0
 }
 
 export async function getSkillUsageRows(opts: {

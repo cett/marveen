@@ -15,7 +15,7 @@
 
 import { logger } from '../logger.js'
 import type http from 'node:http'
-import { applyRbacGate, resolveRole, resolveTenantId } from './authz.js'
+import { applyRbacGate, checkPermission, resolveRole, resolveTenantId } from './authz.js'
 import type { RbacMode } from './authz.js'
 import { resolveRequiredPermission } from './rbac.js'
 import type { AuthResult } from './auth-gate.js'
@@ -122,18 +122,17 @@ export async function runRbacGate(
   mode: RbacMode,
 ): Promise<boolean> {
   let wouldDeny = false
-  const passed = applyRbacGate(
-    auth, method, path, res, mode,
-    async (reason) => {
-      wouldDeny = true
-      logger.warn({ path, method, authKind: auth.kind, reason, outcome: 'would-deny' }, 'rbac:shadow')
-      await recordRbacDecision(auth, method, path, 'would-deny', reason)
-    },
-    async (reason) => {
-      logger.warn({ path, method, authKind: auth.kind, reason, outcome: 'denied' }, 'rbac:enforce')
-      await recordRbacDecision(auth, method, path, 'denied', reason)
-    },
-  )
+  // The decision is taken first and its row is written BEFORE a refusal goes out (a refusal is recorded
+  // durably; applyRbacGate's hooks are synchronous, so they cannot await a write). recordRbacDecision
+  // never throws, so a failed write cannot change the decision applyRbacGate takes below.
+  const decision = checkPermission(auth, method, path)
+  if (!decision.allowed) {
+    const outcome = mode === 'enforce' ? 'denied' : 'would-deny'
+    wouldDeny = outcome === 'would-deny'
+    logger.warn({ path, method, authKind: auth.kind, reason: decision.reason, outcome }, wouldDeny ? 'rbac:shadow' : 'rbac:enforce')
+    await recordRbacDecision(auth, method, path, outcome, decision.reason)
+  }
+  const passed = applyRbacGate(auth, method, path, res, mode)
   if (!passed) return false
   if (resolveRole(auth) !== 'admin' && !wouldDeny) {
     if (mode === 'shadow') {
@@ -163,7 +162,7 @@ async function pruneShadowLogThrottled(nowSec: number): Promise<void> {
 export const MAX_LIMIT = SHADOW_MAX_LIMIT
 export const DEFAULT_LIMIT = SHADOW_DEFAULT_LIMIT
 
-export async function queryShadowLog(f: ShadowLogFilter): Promise<ReturnType<typeof queryRbacShadowRows>> {
+export async function queryShadowLog(f: ShadowLogFilter): ReturnType<typeof queryRbacShadowRows> {
   return queryRbacShadowRows(f)
 }
 

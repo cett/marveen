@@ -106,9 +106,7 @@ describe('recordRbacDecision', () => {
     const { logger } = await import('../logger.js')
     const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined)
     db.exec('DROP TABLE rbac_shadow_log')
-    let ok: boolean | undefined
-    expect(() => { ok = log.recordRbacDecision(session('viewer'), 'GET', '/api/memories', 'permitted', '', NOW) }).not.toThrow()
-    expect(ok).toBe(false)
+    await expect(log.recordRbacDecision(session('viewer'), 'GET', '/api/memories', 'permitted', '', NOW)).resolves.toBe(false)
     expect(warn).toHaveBeenCalledWith(expect.objectContaining({ decision: 'permitted' }), expect.stringContaining('insert failed'))
   })
 })
