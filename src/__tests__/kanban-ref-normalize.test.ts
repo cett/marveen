@@ -5,9 +5,9 @@ import { normalizeKanbanRefs, type SeqLookup } from '../web/kanban-ref-normalize
 // known 8-char id maps to a seq, anything else returns null. Keeps the test
 // hermetic so the DB doesn't get involved.
 function lookupOf(rows: Record<string, number>): SeqLookup {
-  return async (idPrefix) => {
+  return (idPrefix) => {
     const v = rows[idPrefix.toLowerCase()]
-    return v == null ? null : v
+    return Promise.resolve(v == null ? null : v)
   }
 }
 
@@ -67,14 +67,14 @@ describe('normalizeKanbanRefs', () => {
 describe('normalizeKanbanRefs with an asynchronous lookup', () => {
   it('looks every distinct token up once, in order of appearance', async () => {
     const calls: string[] = []
-    const lookup: SeqLookup = async (p) => { calls.push(p); return p === '2ea7f8d9' ? 75 : null }
+    const lookup: SeqLookup = (p) => { calls.push(p); return Promise.resolve(p === '2ea7f8d9' ? 75 : null) }
     await expect(normalizeKanbanRefs('#2ea7f8d9 then #cb5080e5 then #2EA7F8D9 again', lookup))
       .resolves.toBe('#75 then #cb5080e5 then #75 again')
     expect(calls).toEqual(['2ea7f8d9', 'cb5080e5'])
   })
 
   it('does not swallow a failing lookup (the content is never persisted half rewritten)', async () => {
-    const lookup: SeqLookup = async () => { throw new Error('lookup down') }
+    const lookup: SeqLookup = () => Promise.reject(new Error('lookup down'))
     await expect(normalizeKanbanRefs('see #2ea7f8d9', lookup)).rejects.toThrow('lookup down')
   })
 })
