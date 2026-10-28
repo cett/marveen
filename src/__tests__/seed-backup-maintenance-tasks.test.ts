@@ -176,7 +176,7 @@ describe('seeding into the schedules DB', () => {
 
     const task = io.listScheduledTasksFromFiles().find(t => t.name === 'memory-maintenance')
     expect(task).toBeDefined()
-    expect(seedIfAbsent('memory-maintenance', {
+    expect(await seedIfAbsent('memory-maintenance', {
       prompt: task!.prompt, description: task!.description, schedule: task!.schedule, agent: task!.agent,
       type: task!.type ?? 'task', enabled: task!.enabled, tenant_id: null,
       skip_if_busy: false, force_send: false,

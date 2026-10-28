@@ -121,7 +121,7 @@ let skipped = 0
 
 for (const s of skills) {
   try {
-    const seeded = seedSkillIfAbsent({
+    const seeded = await seedSkillIfAbsent({
       id:          s.id,
       name:        s.name,
       description: s.description,
@@ -144,6 +144,6 @@ for (const s of skills) {
 console.log(`\nDone: ${inserted} newly inserted, ${skipped} already existed (preserved).`)
 
 // Companion files (scripts/, references/) next to the fleet skills go into skill_files, insert-if-absent.
-const companions = importSkillCompanionFilesFromDisk()
+const companions = await importSkillCompanionFilesFromDisk()
 console.log(`Companion files: ${companions.seeded} newly inserted, ${companions.skipped} already in the DB, ${companions.errors} error(s).`)
-console.log(`DB now has ${countSkills()} skill rows.`)
+console.log(`DB now has ${await countSkills()} skill rows.`)
