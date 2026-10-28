@@ -248,13 +248,19 @@ export async function promoteIdeaToKanban(
 /**
  * The tenants the audit rows of a transaction are stamped with, resolved BEFORE the transaction opens: the lookup
  * reads through the facade, which inside the transaction body would run on another connection once the backend
- * pools. An agent whose lookup fails is left out of the map; its audit then resolves the tenant itself, inside its
- * savepoint, and a failure there stays best effort like every kanban audit.
+ * pools. The audit write inside the body gets the value as an explicit parameter and never looks it up itself. An
+ * agent whose lookup fails gets null (the unknown tenant, visibly NULL like every unresolved writer): a lookup
+ * failure must neither abort the card change nor move the lookup into the body.
  */
 async function resolveAuditTenants(agentIds: string[]): Promise<Map<string, string | null>> {
   const tenants = new Map<string, string | null>()
   for (const id of new Set(agentIds)) {
-    try { tenants.set(id, await resolveWriteTenant(id)) } catch { /* resolved at write time instead */ }
+    try {
+      tenants.set(id, await resolveWriteTenant(id))
+    } catch (err) {
+      logger.warn({ err, agentId: id }, 'kanban: audit tenant lookup failed, the audit row is stamped with an unknown tenant')
+      tenants.set(id, null)
+    }
   }
   return tenants
 }

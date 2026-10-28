@@ -91,17 +91,30 @@ describe('the tenant of the audit rows of a kanban transaction is resolved befor
     expect(auditTenants('delete')).toEqual(['default'])
   })
 
-  it('a failing tenant lookup stays best effort: the subtasks are written, the call does not reject', async () => {
+  it('a failing tenant lookup stays best effort: the subtask is written with an unknown-tenant audit row, no lookup runs in the body', async () => {
     await createKanbanCard({ id: 'p1', title: 'Parent' })
+    let open = 0
+    const realTx = dbx.tx.bind(dbx) as (fn: (tx: never) => Promise<unknown>) => Promise<unknown>
+    vi.spyOn(dbx, 'tx').mockImplementation((async (fn: (tx: never) => Promise<unknown>) => {
+      open++
+      try { return await realTx(fn) } finally { open-- }
+    }) as never)
+    let lookupsInBody = 0
     for (const m of ['get', 'run', 'all'] as const) {
       const real = dbx[m].bind(dbx) as (...a: unknown[]) => Promise<unknown>
       vi.spyOn(dbx, m).mockImplementation((async (sql: string, ...a: unknown[]) => {
-        if (/FROM (tenants|tenant_agent_availability|agent_tenant_context)/.test(sql)) throw new Error('lookup down')
+        if (/FROM (tenants|tenant_agent_availability|agent_tenant_context)/.test(sql)) {
+          if (open > 0) lookupsInBody++
+          throw new Error('lookup down')
+        }
         return real(sql, ...a)
       }) as never)
     }
     const ids = await createKanbanSubtasks('p1', [{ title: 'A' }], 'bot')
     expect(ids).toHaveLength(1)
+    expect(lookupsInBody).toBe(0)
     expect((db.prepare('SELECT COUNT(*) AS c FROM kanban_cards WHERE parent_id = ?').get('p1') as { c: number }).c).toBe(1)
+    // the parent's own create row (written before the lookup broke) is 'default', the subtask's is unknown
+    expect(auditTenants('create')).toEqual(['default', null])
   })
 })
