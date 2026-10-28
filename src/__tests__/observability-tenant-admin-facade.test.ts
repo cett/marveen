@@ -147,6 +147,18 @@ describe('deleteTenant: one transaction on the tx handle', () => {
     expect(rows('dashboard_users', 'tenant_id', 'gone')).toBe(0)
   })
 
+  it('deletes the kanban children of its cards explicitly (not only through the foreign-key cascade)', async () => {
+    await createTenant('gone', 'Gone')
+    seedTenantRows('gone')
+    getDb().prepare("INSERT INTO labels (id, name, color, created_at, tenant_id) VALUES ('lb', 'l', '#fff', 0, 'gone')").run()
+    getDb().prepare("INSERT INTO kanban_card_labels (card_id, label_id, created_at) VALUES ('kc-gone', 'lb', 0)").run()
+    getDb().pragma('foreign_keys = OFF') // the cascade would mask a missing explicit delete
+    await deleteTenant('gone')
+    expect(rows('kanban_comments', 'card_id', 'kc-gone')).toBe(0)
+    expect(rows('kanban_card_labels', 'card_id', 'kc-gone')).toBe(0)
+    expect(rows('kanban_cards', 'tenant_id', 'gone')).toBe(0)
+  })
+
   it('a failure on the last statement rolls everything back: approvals still pending, rows still there, no file step', async () => {
     await createTenant('gone', 'Gone')
     seedTenantRows('gone')
