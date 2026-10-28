@@ -185,13 +185,12 @@ describe('syncVecMemoryDelete', () => {
 })
 
 describe('deleteTenant', () => {
-  it('stays a synchronous transaction (a promise body would commit at its first await) and drops rows and vec entries together', async (ctx) => {
+  it('drops the memory rows and their vec entries together, in one transaction', async (ctx) => {
     if (!vecExtensionLoaded) ctx.skip()
     await createTenant('gone', 'Gone')
     const id = addMemory('m', { tenant: 'gone', tilt: 0.2 })
     const keep = addMemory('k', { tenant: 'default', tilt: 0.3 })
-    const result = deleteTenant('gone')
-    expect(result).not.toBeInstanceOf(Promise)
+    const result = await deleteTenant('gone')
     expect(result.memoriesDeleted).toBe(1)
     expect(memoryExists(id)).toBe(false)
     expect(vecExists(id)).toBe(false)
@@ -204,7 +203,7 @@ describe('deleteTenant', () => {
     await createTenant('gone', 'Gone')
     const id = addMemory('m', { tenant: 'gone', tilt: 0.2 })
     db.exec("CREATE TRIGGER tenant_delete_blocked BEFORE DELETE ON tenants BEGIN SELECT RAISE(ABORT, 'blocked'); END")
-    expect(() => deleteTenant('gone')).toThrow(/blocked/)
+    await expect(deleteTenant('gone')).rejects.toThrow(/blocked/)
     expect(memoryExists(id)).toBe(true)
     expect(vecExists(id)).toBe(true)
   })

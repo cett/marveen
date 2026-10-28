@@ -800,7 +800,7 @@ describe('POST /api/messages: #924 audit principal resolves from the auth gate, 
 
   it('partner-tenant rejected sender: audit entry carries the scoped-token principal (null for a plain tenant token)', async () => {
     const db = await import('../db.js')
-    vi.mocked(db.isAuthorizedPartnerSender).mockReturnValueOnce(false)
+    vi.mocked(db.isAuthorizedPartnerSender).mockResolvedValueOnce(false)
     const { ctx, out } = makeCtx('POST', '/api/messages', {
       from: 'unknown-partner-agent', to: 'agent-b', content: 'hi',
     }, { role: 'viewer', tenantId: 'partner-1', auth: { kind: 'token', tenantId: 'partner-1' } as any })
@@ -816,7 +816,7 @@ describe('POST /api/messages: #924 audit principal resolves from the auth gate, 
 
   it('partner-tenant accepted create: audit entry carries the principal alongside the allowlist authorization', async () => {
     const db = await import('../db.js')
-    vi.mocked(db.isAuthorizedPartnerSender).mockReturnValueOnce(true)
+    vi.mocked(db.isAuthorizedPartnerSender).mockResolvedValueOnce(true)
     vi.mocked(db.createAgentMessage).mockResolvedValueOnce({ id: 206, from_agent: 'partner-agent', to_agent: 'agent-b', origin_note: null } as any)
     const { ctx, out } = makeCtx('POST', '/api/messages', {
       from: 'partner-agent', to: 'agent-b', content: 'hi',

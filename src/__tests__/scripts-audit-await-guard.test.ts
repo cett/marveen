@@ -1,7 +1,7 @@
 // The command-line scripts under scripts/ and tools/ call the converted db modules outside of src/, where the async
 // lint does not look and a lost `await` is no type error: an audit row written by a script (a break-glass password
 // reset) would be a floating Promise, lost if the process exits first. This reads those sources and fails on a call of
-// any exported async function of src/db/audit.ts or src/db/agents.ts that is not awaited, returned or explicitly
+// any exported async function of src/db/audit.ts, agents.ts or observability.ts that is not awaited, returned or explicitly
 // voided on its line. A module joins the list in MODULES when it moves onto the facade.
 import { describe, expect, it } from 'vitest'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
@@ -22,7 +22,7 @@ function sourceFiles(dir: string): string[] {
   return out
 }
 
-const MODULES = ['audit.ts', 'agents.ts']
+const MODULES = ['audit.ts', 'agents.ts', 'observability.ts']
 
 const auditExports = MODULES.flatMap(mod =>
   [...readFileSync(join(ROOT, 'src', 'db', mod), 'utf-8').matchAll(/^export async function (\w+)/gm)].map(m => m[1]!))
@@ -44,9 +44,10 @@ export function floatingAuditCalls(source: string, names: string[]): Array<{ lin
 }
 
 describe('scripts and tools call the converted modules with await', () => {
-  it('the exported function list is read from src/db/audit.ts and src/db/agents.ts', () => {
+  it('the exported function list is read from src/db/audit.ts, agents.ts and observability.ts', () => {
     expect(auditExports).toEqual(expect.arrayContaining(['writeAgentAuditLog', 'logConfigChange', 'pruneAuditLogs']))
     expect(auditExports).toEqual(expect.arrayContaining(['upsertBlackboard', 'claimPendingForAgent', 'setTenantAgentAvailability']))
+    expect(auditExports).toEqual(expect.arrayContaining(['updateTenant', 'getTenant', 'deleteTenant']))
   })
 
   it('the scanner flags a floating call and accepts awaited, returned and voided ones', () => {
@@ -61,7 +62,7 @@ describe('scripts and tools call the converted modules with await', () => {
     expect(floatingAuditCalls(src, auditExports)).toEqual([{ line: 1, text: 'logConfigChange("k", null, "v", "cli")' }])
   })
 
-  it('no file under scripts/ or tools/ has a floating call of an audit or agents function', () => {
+  it('no file under scripts/ or tools/ has a floating call of an audit, agents or observability function', () => {
     const found: string[] = []
     for (const dir of ['scripts', 'tools']) {
       for (const file of sourceFiles(join(ROOT, dir))) {

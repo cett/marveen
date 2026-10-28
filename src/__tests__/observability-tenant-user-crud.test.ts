@@ -59,9 +59,9 @@ describe('tenant CRUD', () => {
     const { getTenantForMainAgent } = await import('../db.js')
     await createTenant('withmain', 'With Main')
     await updateTenant('withmain', { main_agent_id: 'bob' })
-    expect(getTenantForMainAgent('bob')?.id).toBe('withmain')
+    expect((await getTenantForMainAgent('bob'))?.id).toBe('withmain')
     await updateTenant('withmain', { disabled: true })
-    expect(getTenantForMainAgent('bob')).toBeUndefined()
+    expect(await getTenantForMainAgent('bob')).toBeUndefined()
   })
 
   it('updateTenant returns null for a nonexistent tenant', async () => {
@@ -87,13 +87,13 @@ describe('tenant CRUD', () => {
     expect(updated).toMatchObject({ display_name: 'E2', main_agent_id: 'alice' })
   })
 
-  it('deleteTenant refuses to delete the default tenant', () => {
-    expect(() => deleteTenant('default')).toThrow('Cannot delete the default tenant')
+  it('deleteTenant refuses to delete the default tenant', async () => {
+    await expect(deleteTenant('default')).rejects.toThrow('Cannot delete the default tenant')
   })
 
   it('deleteTenant removes an empty tenant and reports zero deletions', async () => {
     await createTenant('empty-tenant', 'Empty')
-    const result = deleteTenant('empty-tenant')
+    const result = await deleteTenant('empty-tenant')
     expect(result).toMatchObject({ memoriesDeleted: 0, secretsDeleted: 0, scheduleNames: [], exclusiveAgents: [] })
     expect(await getTenant('empty-tenant')).toBeUndefined()
   })
@@ -106,7 +106,7 @@ describe('tenant CRUD', () => {
     const retry = d.prepare("INSERT INTO pending_task_retries (task_name, agent_name, first_attempt, last_attempt) VALUES (?, 'agent-a', 1, 1)")
     retry.run('acme-job'); retry.run('other-job')
 
-    const result = deleteTenant('acme-s')
+    const result = await deleteTenant('acme-s')
 
     expect([...result.scheduleNames].sort()).toEqual(['acme-job', 'acme-job-2'])
     expect(d.prepare("SELECT id FROM schedules WHERE tenant_id = 'acme-s'").all()).toEqual([])
@@ -119,7 +119,7 @@ describe('tenant CRUD', () => {
     await createTenant('cascade', 'Cascade')
     await provisionDashboardUser('u1', 'hash', 'admin', 'cascade')
     await createPartnerSender('sender-1', 'cascade', 'Sender One', 'alice')
-    deleteTenant('cascade')
+    await deleteTenant('cascade')
     expect(await listDashboardUsersFiltered({ tenantId: 'cascade' })).toEqual([])
     expect(await listPartnerSenders('cascade')).toEqual([])
   })
@@ -166,22 +166,22 @@ describe('dashboard user CRUD', () => {
     expect(scoped.map((u) => u.username)).toEqual(['t2-user'])
   })
 
-  it('adminPatchDashboardUser returns null for a missing id', async () => {
-    expect(await adminPatchDashboardUser(999999, { role: 'admin' })).toBeNull()
+  it('adminPatchDashboardUser answers not_found for a missing id', async () => {
+    expect(await adminPatchDashboardUser(999999, { role: 'admin' })).toEqual({ status: 'not_found' })
   })
 
   it('adminPatchDashboardUser updates role, email, display_name and tenant_id independently', async () => {
     await createTenant('t3', 'T3')
     const u = await provisionDashboardUser('dana', 'h', 'viewer', null)
     const patched = await adminPatchDashboardUser(u.id, { role: 'admin', tenant_id: 't3', email: 'dana@x.com', display_name: 'Dana' })
-    expect(patched).toMatchObject({ role: 'admin', tenant_id: 't3', email: 'dana@x.com', display_name: 'Dana' })
+    expect(patched).toMatchObject({ status: 'updated', user: { role: 'admin', tenant_id: 't3', email: 'dana@x.com', display_name: 'Dana' } })
   })
 
   it('adminPatchDashboardUser can clear tenant_id and email back to null', async () => {
     const u = await provisionDashboardUser('erin', 'h', 'viewer', null, 'erin@x.com')
     const patched = await adminPatchDashboardUser(u.id, { tenant_id: null, email: null })
-    expect(patched?.tenant_id).toBeNull()
-    expect(patched?.email).toBeNull()
+    expect(patched.status === 'updated' ? patched.user.tenant_id : 'not updated').toBeNull()
+    expect(patched.status === 'updated' ? patched.user.email : 'not updated').toBeNull()
   })
 
   it('countActiveAdmins counts only non-disabled admins', async () => {

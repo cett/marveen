@@ -74,7 +74,7 @@ describe('tenant channel bindings', () => {
     await dbMod.setChannelBinding('agent-a', 'telegram', '2', 'beta', 'admin')
     const ctx = dbMod.getDb().prepare("INSERT INTO agent_tenant_context (agent_id, tenant_id, status) VALUES (?, ?, 'bound')")
     ctx.run('agent-a', 'acme'); ctx.run('agent-b', 'beta')
-    dbMod.deleteTenant('acme')
+    await dbMod.deleteTenant('acme')
     expect(await dbMod.getChannelBindingTenant('agent-a', 'telegram', '1')).toBeNull()
     expect(await dbMod.getChannelBindingTenant('agent-a', 'telegram', '2')).toBe('beta')
     // an agent's recorded active context must not keep naming a deleted tenant

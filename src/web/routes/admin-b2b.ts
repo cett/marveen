@@ -41,6 +41,7 @@ import {
 import { listDeviceKeys, assignDeviceKeyTenant } from '../auth-device-keys.js'
 import { readBody, json } from '../http-helpers.js'
 import { hashPassword } from '../password-hash.js'
+import { secretsExistForTenant } from '../vault.js'
 import { sanitizeAgentIdent } from '../../prompt-safety.js'
 import { isKnownAgent, listAgentNames } from '../agent-config.js'
 import { getHighRiskMcpServersForAgent } from '../mcp-risk-policy.js'
@@ -99,6 +100,9 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
     }
     const existing = await getTenant(id)
     if (existing) { json(res, { error: 'conflict', hint: 'Tenant ID already exists' }, 409); return true }
+    // A delete whose vault write failed after its commit leaves the entries of that id in vault.json: a new tenant
+    // with the id would inherit them. The delete has to be repeated first (DELETE on the id purges them).
+    if (secretsExistForTenant(id)) { json(res, { error: 'conflict', field: 'id', hint: 'The vault still holds secrets of a deleted tenant with this ID: repeat the delete first' }, 409); return true }
 
     const tenant = await createTenant(id, displayName)
     await auditAdmin(ctx, 'admin.tenant.create', id, { display_name: displayName })
@@ -158,7 +162,9 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
       return true
     }
     const existing = await getTenant(tenantId)
-    if (!existing) { json(res, { error: 'not_found', field: 'id', hint: 'Tenant not found' }, 404); return true }
+    // No tenant row but vault entries of that id: the earlier delete committed and its vault write failed. The
+    // delete is idempotent, so repeating it purges the entries (deleteTenant matches no row and does the file step).
+    if (!existing && !secretsExistForTenant(tenantId)) { json(res, { error: 'not_found', field: 'id', hint: 'Tenant not found' }, 404); return true }
     const result = await deleteTenant(tenantId)
     // The tenant's schedules are gone from the table; their file mirror must go too, or an
     // empty-table re-seed would bring them back.

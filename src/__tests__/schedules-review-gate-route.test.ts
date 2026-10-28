@@ -75,7 +75,7 @@ vi.mock('../db.js', () => ({
   upsertSchedule: vi.fn(),
   activateSchedule: (...a: unknown[]) => mockActivateSchedule(...a),
   // Tenant lookups behind the create/edit rules: every tenant exists, every agent is a fleet agent.
-  getTenant: vi.fn((id: string) => ({ id, disabled_at: null })),
+  getTenant: vi.fn((id: string) => Promise.resolve({ id, disabled_at: null })),
   getTenantsForAgent: vi.fn().mockResolvedValue([]),
   agentServesTenant: vi.fn().mockReturnValue(true),
   getServingTenant: vi.fn().mockReturnValue(null),

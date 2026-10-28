@@ -4,6 +4,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { EventEmitter } from 'node:events'
 import type { RouteContext } from '../web/routes/types.js'
 
+vi.mock('../web/vault.js', () => ({ secretsExistForTenant: vi.fn().mockReturnValue(false) }))
 vi.mock('../db.js', () => ({
   getDb: vi.fn().mockReturnValue({ prepare: vi.fn().mockReturnValue({ run: vi.fn(), get: vi.fn(), all: vi.fn().mockReturnValue([]) }) }),
   getTenant: vi.fn(),
@@ -46,7 +47,7 @@ const PUT = { agent_id: 'agent-a', channel: 'telegram', external_id: '111', tena
 beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(isKnownAgent).mockReturnValue(true)
-  vi.mocked(db.getTenant).mockReturnValue(TENANT as any)
+  vi.mocked(db.getTenant).mockResolvedValue(TENANT as any)
   vi.mocked(db.agentBelongsToTenant).mockResolvedValue(true)
   vi.mocked(db.setChannelBinding).mockResolvedValue(REC as any)
 })
@@ -71,11 +72,11 @@ describe('PUT /api/admin/channel-bindings', () => {
   })
 
   it('missing, disabled or unknown tenant -> 404', async () => {
-    vi.mocked(db.getTenant).mockReturnValue(undefined)
+    vi.mocked(db.getTenant).mockResolvedValue(undefined)
     let r = makeCtx('PUT', '/api/v1/admin/channel-bindings', PUT)
     await tryHandleAdminB2b(r.ctx)
     expect(r.out.status).toBe(404)
-    vi.mocked(db.getTenant).mockReturnValue({ ...TENANT, disabled_at: 5 } as any)
+    vi.mocked(db.getTenant).mockResolvedValue({ ...TENANT, disabled_at: 5 } as any)
     r = makeCtx('PUT', '/api/v1/admin/channel-bindings', PUT)
     await tryHandleAdminB2b(r.ctx)
     expect(r.out.status).toBe(404)
@@ -94,7 +95,7 @@ describe('PUT /api/admin/channel-bindings', () => {
   })
 
   it('the default tenant needs no availability row', async () => {
-    vi.mocked(db.getTenant).mockReturnValue({ ...TENANT, id: 'default' } as any)
+    vi.mocked(db.getTenant).mockResolvedValue({ ...TENANT, id: 'default' } as any)
     vi.mocked(db.agentBelongsToTenant).mockResolvedValue(false)
     const { ctx, out } = makeCtx('PUT', '/api/v1/admin/channel-bindings', { ...PUT, tenant_id: 'default' })
     await tryHandleAdminB2b(ctx)
