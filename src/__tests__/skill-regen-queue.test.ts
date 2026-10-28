@@ -81,7 +81,7 @@ describe('skill file writers run one at a time', () => {
       await slow.promise
       return snapshot
     })
-    getSkillMock.mockImplementation(async () => current)
+    getSkillMock.mockImplementation(() => Promise.resolve(current))
 
     const bulk = regenSkillFilesFromSQL(false, true)
     await settle()
@@ -103,9 +103,9 @@ describe('skill file writers run one at a time', () => {
       order.push('bulk-done')
       return [row('# bulk')]
     })
-    getSkillMock.mockImplementation(async () => {
+    getSkillMock.mockImplementation(() => {
       order.push('single-read')
-      return row('# single')
+      return Promise.resolve(row('# single'))
     })
 
     const bulk = regenSkillFilesFromSQL(false, true)
@@ -136,9 +136,9 @@ describe('skill file writers run one at a time', () => {
       await first.promise
       return row('# first')
     })
-    getSkillMock.mockImplementationOnce(async () => {
+    getSkillMock.mockImplementationOnce(() => {
       reads.push('second')
-      return row('# second')
+      return Promise.resolve(row('# second'))
     })
 
     const a = regenSingleSkillFile(ID, true)

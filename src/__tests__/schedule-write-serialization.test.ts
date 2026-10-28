@@ -36,7 +36,7 @@ vi.mock('../db.js', () => ({
     rows.set(id, { id, ...opts, enabled: opts.enabled ? 1 : 0, skip_if_busy: opts.skip_if_busy ? 1 : 0, force_send: opts.force_send ? 1 : 0, created_at: 1, updated_at: 1 })
     return { ...rows.get(id) }
   }),
-  listSchedulesFromDb: vi.fn(async () => []),
+  listSchedulesFromDb: vi.fn(() => Promise.resolve([])),
   deleteSchedule: vi.fn(),
   setScheduleEnabled: vi.fn(),
   patchSchedule: vi.fn(),
@@ -72,7 +72,7 @@ describe('createKeyedSerializer', () => {
     const log: string[] = []
     let release: () => void = () => {}
     const slow = s.run('one', () => new Promise<void>(resolve => { release = resolve }).then(() => { log.push('one done') }))
-    await s.run('two', async () => { log.push('two done') })
+    await s.run('two', () => { log.push('two done'); return Promise.resolve() })
     expect(log).toEqual(['two done'])
     release()
     await slow
@@ -81,15 +81,15 @@ describe('createKeyedSerializer', () => {
 
   it('a failing caller rejects for itself only: the next caller of the key still runs', async () => {
     const s = createKeyedSerializer()
-    const first = s.run('k', async () => { throw new Error('boom') })
-    const second = s.run('k', async () => 'ok')
+    const first = s.run('k', () => Promise.reject(new Error('boom')))
+    const second = s.run('k', () => Promise.resolve('ok'))
     await expect(first).rejects.toThrow('boom')
     await expect(second).resolves.toBe('ok')
   })
 
   it('is re-entrant: code running under a key can take the same key again without deadlocking', async () => {
     const s = createKeyedSerializer()
-    const out = await s.run('k', async () => s.run('k', async () => 'inner'))
+    const out = await s.run('k', () => s.run('k', () => Promise.resolve('inner')))
     expect(out).toBe('inner')
   })
 
@@ -98,7 +98,7 @@ describe('createKeyedSerializer', () => {
     const log: string[] = []
     let release: () => void = () => {}
     const holder = s.run('b', () => new Promise<void>(resolve => { release = resolve }))
-    const outer = s.run('a', async () => { await s.run('b', async () => { log.push('b entered') }) })
+    const outer = s.run('a', async () => { await s.run('b', () => { log.push('b entered'); return Promise.resolve() }) })
     await tick()
     expect(log).toEqual([])
     release()
