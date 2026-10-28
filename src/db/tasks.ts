@@ -415,6 +415,7 @@ export async function clearScheduleLastRunIfMatches(id: string, expectedLastRunA
 // resurrected as new schedule rows -- inventing prompt/schedule/agent values
 // for a soft-deleted schedule would pollute the live admin UI with rows that
 // have no other content.
+// @boot-sync-twin
 export function migrateScheduleLastRunFromFile(entries: Record<string, unknown>): number {
   let migrated = 0
   const stmt = db.prepare('UPDATE schedules SET last_run_at = ? WHERE id = ? AND last_run_at IS NULL')

@@ -31,6 +31,8 @@ const BOOT_SYNC_TWINS: Readonly<Record<string, readonly string[]>> = {
   activatePlanForAgentSync: ['db/claude-plans.ts', 'db/index.ts'],
   // Boot-only, on the raw handle (no facade call before initDatabase returns); it has no asynchronous counterpart.
   backfillImportShadowRows: ['db/vector.ts', 'db/index.ts'],
+  // Boot-only, on the raw handle: the tasks module is on the facade, this one-time import of the last-run file is not.
+  migrateScheduleLastRunFromFile: ['db/tasks.ts', 'db/index.ts'],
 }
 
 // Several files cross-reference a twin by name in a doc comment, which is not a call.
