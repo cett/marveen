@@ -5,7 +5,7 @@ import { CHANNEL_PROVIDER } from '../config.js'
 import { logger } from '../logger.js'
 import { notifyChannel } from '../notify.js'
 import { decideSubmitFollowup, detectPaneState, detectsPastePlaceholder, idleConsideringDimGhost, paneLooksIdle, paneShowsContextSaturation, parkedClearSequence, parkedInputRowCount, parkedInputText, shouldClearTruncatedPreamble, stripGhostSuggestion } from '../pane-state.js'
-import { makeLazyBinResolver } from '../platform.js'
+import { makeLazyBinResolver, tmuxBin } from '../platform.js'
 import { agentDir, readAgentChannelProvider, readAgentRemoteHost } from './agent-config.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { tryAcquireSessionSendLane, type SendLockMode, withSessionSendLock } from './session-send-lock.js'
@@ -16,7 +16,7 @@ import { join } from 'node:path'
 import { resolveAgentProvider } from './agent-process-config.js'
 import { dismissModelConsentDialogIfPresent, dismissResumeSummaryModalIfPresent, dismissSurveyModalIfPresent } from './agent-process-identity.js'
 
-export const tmuxBin = makeLazyBinResolver('tmux')
+export { tmuxBin }
 export const claudeBin = makeLazyBinResolver('claude')
 
 // Shared async pacing helper. Replaces the blocking synchronous `/bin/sleep`
