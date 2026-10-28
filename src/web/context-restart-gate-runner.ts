@@ -551,6 +551,25 @@ export function persistentBlockAlertText(a: {
 
 // ---- Gate check for one agent -----------------------------------------------
 
+/**
+ * The two db signals of one gate check. A failed stats lookup is null (the caller counts it as a pending
+ * outbound message: fail-closed), a failed open-question lookup is false.
+ */
+export async function readGateDbSignals(
+  name: string,
+  nowMs: number,
+  staleCutoffMs: number,
+): Promise<{ dispatchedStats: Awaited<ReturnType<typeof getDispatchedPendingStats>> | null; openQuestion: boolean }> {
+  let dispatchedStats: Awaited<ReturnType<typeof getDispatchedPendingStats>> | null = null
+  try { dispatchedStats = await getDispatchedPendingStats(name, nowMs, staleCutoffMs, { coordinatorAgentId: MAIN_AGENT_ID }) }
+  catch { dispatchedStats = null }
+
+  let openQuestion = false
+  try { openQuestion = await hasOpenInboundQuestion(agentIdForLedger(name), { nowMs, staleCutoffMs }) }
+  catch { openQuestion = false }
+  return { dispatchedStats, openQuestion }
+}
+
 async function checkAgent(name: string, nowMs: number): Promise<void> {
   const cfg = readGateConfig(name)
   if (!cfg.enabled) return   // fast-exit without touching state
@@ -571,13 +590,7 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
   const { tokens: contextTokens, unmeasurableReason } =
     readContextTokensDetailed(workingDir, configDirFor(name), { sessionStartMs })
 
-  let dispatchedStats: Awaited<ReturnType<typeof getDispatchedPendingStats>> | null = null
-  try { dispatchedStats = await getDispatchedPendingStats(name, nowMs, cfg.staleCutoffMs, { coordinatorAgentId: MAIN_AGENT_ID }) }
-  catch { dispatchedStats = null }
-
-  let openQuestion = false
-  try { openQuestion = await hasOpenInboundQuestion(agentIdForLedger(name), { nowMs, staleCutoffMs: cfg.staleCutoffMs }) }
-  catch { openQuestion = false }
+  const { dispatchedStats, openQuestion } = await readGateDbSignals(name, nowMs, cfg.staleCutoffMs)
 
   const liveTaskState = hasLiveTaskStateFile(name, nowMs)
 

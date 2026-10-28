@@ -7,6 +7,8 @@ import {
   getAgentConversationThreads, upsertBlackboard, markBlackboardStale, findBlackboardRowByAgent,
   listBlackboardHistory, setTenantAgentAvailability, resolveAgentOwningTenantId, resolveAgentOwningTenantIdSync,
 } from '../db.js'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { useTestDb } from './helpers/with-test-db.js'
 
 useTestDb()
@@ -255,5 +257,13 @@ describe('resolveAgentOwningTenantIdSync: the boot twin agrees with the asynchro
     expect(resolveAgentOwningTenantIdSync('coordinator')).toBe('beta')
     expect(resolveAgentOwningTenantIdSync('worker')).toBe('acme')
     expect(resolveAgentOwningTenantIdSync('off')).toBe('default')
+  })
+})
+
+describe('the boot import of the agent settings uses the twin', () => {
+  it('db/index.ts stamps the imported rows with the synchronous resolver, never the asynchronous one', () => {
+    const text = readFileSync(join(import.meta.dirname, '..', 'db', 'index.ts'), 'utf-8')
+    expect(text).toMatch(/importAgentSettingsFromFile\(key, raw as Record<string, unknown>, resolveAgentOwningTenantIdSync\)/)
+    expect(text).not.toMatch(/\bresolveAgentOwningTenantId\b(?!Sync)/)
   })
 })

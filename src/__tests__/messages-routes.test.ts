@@ -125,10 +125,15 @@ describe('tryHandleMessages', () => {
   })
 
   it('GET /api/messages/threads returns thread list', async () => {
+    const db = await import('../db.js')
+    const threads = [{ agent: 'agent-b', count: 2, lastMessage: null }]
+    vi.mocked(db.getAgentConversationThreads).mockResolvedValueOnce(threads)
     const { ctx, out } = makeCtx('GET', '/api/messages/threads?agent=agent-a')
     const handled = await tryHandleMessages(ctx)
     expect(handled).toBe(true)
     expect(out.status).toBe(200)
+    // the settled rows are serialized, not the pending Promise (which JSON-encodes as {})
+    expect(out.body).toEqual(threads)
   })
 
   it('POST /api/messages allows owner as sender even though isKnownAgent returns false', async () => {
