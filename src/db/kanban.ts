@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { getEffectiveSettingValue } from '../settings-store.js'
 import { writeAgentAuditLog } from './audit.js'
+import { updateIdeaWithStatusLog } from './misc.js'
 import { logger } from '../logger.js'
 import { dbx } from './facade.js'
 
@@ -208,6 +209,37 @@ export async function createKanbanSubtasks(
     for (const entry of audits) await auditInSavepoint(() => writeKanbanCreateAudit(entry), 'kanban create', entry.entity_id)
     return ids
   })
+}
+
+class IdeaGoneError extends Error {}
+
+/**
+ * Promoting an idea: the new cards (the first one is the card the idea points at, the rest hang under it) and the
+ * idea's status change with its log row are ONE transaction, so a failing second step leaves no orphan card and a
+ * failing card leaves the idea untouched. The creation audits are written inside it, each in its own savepoint
+ * (a failing audit is logged, it never takes a card with it). Returns false, with nothing written, when the idea row
+ * is gone by the time its update runs.
+ */
+export async function promoteIdeaToKanban(
+  ideaId: string,
+  cards: NewKanbanCard[],
+  idea: { from: string | null; actor: string; note: string },
+): Promise<boolean> {
+  if (cards.length === 0) throw new Error('promoteIdeaToKanban needs at least one card')
+  try {
+    await dbx.tx(async () => {
+      const audits: KanbanCreateAudit[] = []
+      for (const card of cards) audits.push(await insertKanbanCardRows(card))
+      // TODO(phase2): the idea write joins this transaction through the ambient connection; pass the tx handle.
+      const changed = await updateIdeaWithStatusLog(ideaId, { status: 'kanban', kanban_id: cards[0].id }, { from: idea.from, to: 'kanban', actor: idea.actor, note: idea.note })
+      if (!changed) throw new IdeaGoneError()
+      for (const entry of audits) await auditInSavepoint(() => writeKanbanCreateAudit(entry), 'kanban create', entry.entity_id)
+    })
+    return true
+  } catch (err) {
+    if (err instanceof IdeaGoneError) return false
+    throw err
+  }
 }
 
 /** Runs one audit write in its own savepoint: a failure is logged, rolls back only itself and is never rethrown. */

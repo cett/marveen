@@ -190,7 +190,9 @@ describe('updateIdeaWithStatusLog is awaited by every caller', () => {
     it(`${label}: a rejected idea+log write is not answered ok`, async () => {
       const id = await createIdea('tenant-a', 'idea')
       if (startStatus !== 'new') await dbMod.updateIdea(id, { status: startStatus as 'kanban' })
-      vi.mocked(dbMod.updateIdeaWithStatusLog).mockRejectedValueOnce(new Error('db down'))
+      // promote and promote-breakdown reach the idea write through promoteIdeaToKanban (one transaction with the cards)
+      const target = label.startsWith('promote') ? 'promoteIdeaToKanban' : 'updateIdeaWithStatusLog'
+      vi.mocked(dbMod[target]).mockRejectedValueOnce(new Error('db down'))
       const { ctx, out } = makeCtx(method, pathOf(id), body, { role: 'agent', tenantId: 'tenant-a' })
 
       await expect(tryHandleIdeas(ctx)).rejects.toThrow('db down')
@@ -215,5 +217,9 @@ describe('updateIdeaWithStatusLog is awaited by every caller', () => {
 
 vi.mock('../db.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../db.js')>()
-  return { ...actual, updateIdeaWithStatusLog: vi.fn(actual.updateIdeaWithStatusLog) }
+  return {
+    ...actual,
+    updateIdeaWithStatusLog: vi.fn(actual.updateIdeaWithStatusLog),
+    promoteIdeaToKanban: vi.fn(actual.promoteIdeaToKanban),
+  }
 })

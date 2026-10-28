@@ -2,13 +2,15 @@
 // without a yield now holds because the write is one statement or one transaction. Real in-memory database.
 //   - the dispatch guard is claimed by ONE conditional UPDATE: of two dispatchers only one wins;
 //   - the auto-breakdown (subtasks + parent comment) is one transaction: a failing subtask leaves nothing;
+//   - promoting an idea (the cards and the idea's status change) is one transaction: a failing second step leaves
+//     no orphan card, a failing card leaves the idea untouched;
 //   - the delete and the breakdown audits run in the same transaction, each in a savepoint: a failing audit is
 //     logged and rolls back only itself, the card change stays.
 
 import { describe, it, expect, beforeEach } from 'vitest'
 import {
   initDatabase, createKanbanCard, getKanbanCard, getKanbanComments, getChildCards, deleteKanbanCard,
-  createKanbanSubtasks, markKanbanCardDispatched, releaseKanbanCardDispatch, markScheduledTaskKanbanWaiting, moveKanbanCard,
+  createKanbanSubtasks, promoteIdeaToKanban, createIdea, getIdeaById, getIdeaStatusLog, markKanbanCardDispatched, releaseKanbanCardDispatch, markScheduledTaskKanbanWaiting, moveKanbanCard,
 } from '../db.js'
 import { db } from '../db/connection.js'
 
@@ -131,5 +133,54 @@ describe('markScheduledTaskKanbanWaiting (the fire-timeout watchdog)', () => {
     await createKanbanCard({ id: 'c2', title: 'other-task', status: 'in_progress' })
     await Promise.all([moveKanbanCard('c2', 'done', 0, 'owner'), markScheduledTaskKanbanWaiting('other-task')])
     expect((await getKanbanCard('c2'))?.status).toBe('done')
+  })
+})
+
+describe('promoteIdeaToKanban (promote and promote-breakdown)', () => {
+  const cardCount = () => (db.prepare('SELECT COUNT(*) AS c FROM kanban_cards').get() as { c: number }).c
+  const seedIdea = () => createIdea({ id: 'i1', title: 'Idea', description: null, category: 'x', status: 'new', source: 'test', kanban_id: null, impact: null, effort: null, tenant_id: 'default' })
+  const log = { from: 'new', actor: 'bot', note: 'promote:detail' }
+  const parent = { id: 'p1', title: 'Parent' }
+  const children = [{ id: 'k1', title: 'First', parent_id: 'p1' }, { id: 'k2', title: 'Second', parent_id: 'p1' }]
+
+  it('writes the cards, points the idea at the first one and logs exactly one status change', async () => {
+    await seedIdea()
+    expect(await promoteIdeaToKanban('i1', [parent, ...children], log)).toBe(true)
+    expect(cardCount()).toBe(3)
+    expect((await getChildCards('p1')).map((c) => c.id).sort()).toEqual(['k1', 'k2'])
+    const idea = await getIdeaById('i1')
+    expect([idea?.status, idea?.kanban_id]).toEqual(['kanban', 'p1'])
+    expect(await getIdeaStatusLog('i1')).toHaveLength(1)
+    expect(auditRows('kanban', 'create')).toBe(3)
+  })
+
+  it('leaves no orphan card when the idea write fails after the cards were written', async () => {
+    await seedIdea()
+    db.exec(`CREATE TRIGGER fail_idea BEFORE UPDATE ON idea_box BEGIN SELECT RAISE(ABORT, 'idea blocked'); END`)
+    await expect(promoteIdeaToKanban('i1', [parent], log)).rejects.toThrow(/idea blocked/)
+    expect(cardCount()).toBe(0)
+    expect((await getIdeaById('i1'))?.status).toBe('new')
+  })
+
+  it('leaves no parent, no child and an untouched idea when one child fails', async () => {
+    await seedIdea()
+    db.exec(`CREATE TRIGGER fail_second BEFORE INSERT ON kanban_cards WHEN NEW.title = 'Second' BEGIN SELECT RAISE(ABORT, 'insert blocked'); END`)
+    await expect(promoteIdeaToKanban('i1', [parent, ...children], log)).rejects.toThrow(/insert blocked/)
+    expect(cardCount()).toBe(0)
+    expect(await getIdeaStatusLog('i1')).toHaveLength(0)
+    expect((await getIdeaById('i1'))?.kanban_id).toBeNull()
+  })
+
+  it('keeps the cards and the idea change when an audit write fails', async () => {
+    await seedIdea()
+    blockAuditWrites()
+    expect(await promoteIdeaToKanban('i1', [parent, ...children], log)).toBe(true)
+    expect(cardCount()).toBe(3)
+    expect((await getIdeaById('i1'))?.status).toBe('kanban')
+  })
+
+  it('returns false and writes no card for an idea that is gone', async () => {
+    expect(await promoteIdeaToKanban('gone', [parent], log)).toBe(false)
+    expect(cardCount()).toBe(0)
   })
 })
