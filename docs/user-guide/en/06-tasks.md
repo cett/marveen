@@ -80,7 +80,7 @@ A command task runs a raw shell command (`bash -lc`) on the server. There is no 
 | Setting | Meaning |
 |---------|---------|
 | `command` | The shell command to run |
-| `timeoutMs` | Time limit in milliseconds (default 10000) |
+| `timeoutMs` | Time limit in milliseconds (default 10000). It counts the time the computer was awake: a sleep in the middle of a run is not charged to the command |
 | `failThreshold` | Consecutive failures before an alert is sent (default 2) |
 
 How it behaves:
@@ -93,7 +93,7 @@ How it behaves:
 
 ### Health file and failure alerts
 
-Every run updates `store/command-task-health.json`, which holds one entry per command task: the number of consecutive failures, whether an alert has already been sent, the last status (`ok`, `findings` or `fail`) and the time of the last run (milliseconds since the epoch).
+Every run updates `store/command-task-health.json`, which holds one entry per command task: the number of consecutive failures, whether an alert has already been sent, the last status (`ok`, `findings` or `fail`), the time of the last run (milliseconds since the epoch) and `lastDetail`, why the last run ended as it did (the exit code with the start of the error output, or the timeout).
 
 - A success resets the failure counter.
 - When the counter reaches `failThreshold`, one Telegram alert goes to the owner with the failure detail. Further failures do not repeat the alert.
