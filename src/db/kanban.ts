@@ -208,7 +208,7 @@ export async function createKanbanSubtasks(
       ids.push(id)
     }
     await addKanbanComment(parentId, actor, `Auto-breakdown: ${ids.length} subtask létrehozva (${ids.join(', ')})`, tx)
-    for (const entry of audits) await auditInSavepoint(tx, () => writeKanbanCreateAudit(entry, tenants.get(entry.agent_id)), 'kanban create', entry.entity_id)
+    for (const entry of audits) await auditInSavepoint(tx, () => writeKanbanCreateAudit(entry, tenants.get(entry.agent_id) ?? null), 'kanban create', entry.entity_id)
     return ids
   })
 }
@@ -236,7 +236,7 @@ export async function promoteIdeaToKanban(
       // TODO(phase2): the idea write joins this transaction through the ambient connection; pass the tx handle.
       const changed = await updateIdeaWithStatusLog(ideaId, { status: 'kanban', kanban_id: cards[0].id }, { from: idea.from, to: 'kanban', actor: idea.actor, note: idea.note })
       if (!changed) throw new IdeaGoneError()
-      for (const entry of audits) await auditInSavepoint(tx, () => writeKanbanCreateAudit(entry, tenants.get(entry.agent_id)), 'kanban create', entry.entity_id)
+      for (const entry of audits) await auditInSavepoint(tx, () => writeKanbanCreateAudit(entry, tenants.get(entry.agent_id) ?? null), 'kanban create', entry.entity_id)
     })
     return true
   } catch (err) {
@@ -670,7 +670,7 @@ export async function deleteKanbanCard(id: string): Promise<boolean> {
   const grandparentDepth = grandparentId ? ((await getKanbanCard(grandparentId))?.depth ?? 0) : -1
   const now = Math.floor(Date.now() / 1000)
   const auditAgent = card.assignee || 'system'
-  const auditTenant = (await resolveAuditTenants([auditAgent])).get(auditAgent)
+  const auditTenant = (await resolveAuditTenants([auditAgent])).get(auditAgent) ?? null
 
   const deleted = await dbx.tx(async (tx) => {
     await tx.run('DELETE FROM kanban_comments WHERE card_id = ?', id)
