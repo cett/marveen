@@ -165,7 +165,23 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
     // No tenant row but vault entries of that id: the earlier delete committed and its vault write failed. The
     // delete is idempotent, so repeating it purges the entries (deleteTenant matches no row and does the file step).
     if (!existing && !secretsExistForTenant(tenantId)) { json(res, { error: 'not_found', field: 'id', hint: 'Tenant not found' }, 404); return true }
-    const result = await deleteTenant(tenantId)
+    let result: Awaited<ReturnType<typeof deleteTenant>>
+    try {
+      result = await deleteTenant(tenantId)
+    } catch (err) {
+      // The vault write failed AFTER the commit: the rows are gone, so a repeated delete cannot find the schedule
+      // names again. The file mirror and the audit row do not depend on the vault outcome: do them here, then fail.
+      const committed = (err as { tenantDeleteSqlResult?: { memoriesDeleted: number; scheduleNames?: string[]; purged?: Record<string, number>; exclusiveAgents?: string[] } } | null)?.tenantDeleteSqlResult
+      if (committed) {
+        try {
+          const removed = removeScheduledTaskFiles(committed.scheduleNames ?? [])
+          await auditAdmin(ctx, 'admin.tenant.delete', tenantId, { memories_deleted: committed.memoriesDeleted, secrets_deleted: 0, vault_purge_failed: true, schedules_deleted: committed.scheduleNames?.length ?? 0, schedule_mirrors_removed: removed, purged: committed.purged, exclusive_agents: committed.exclusiveAgents })
+        } catch (followUp) {
+          logger.error({ err: followUp, tenantId }, 'tenant delete: file mirror cleanup or audit failed after a vault purge failure')
+        }
+      }
+      throw err
+    }
     // The tenant's schedules are gone from the table; their file mirror must go too, or an
     // empty-table re-seed would bring them back.
     const mirrorsRemoved = removeScheduledTaskFiles(result.scheduleNames ?? [])

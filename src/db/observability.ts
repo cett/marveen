@@ -682,7 +682,9 @@ export async function deleteTenant(tenantId: string): Promise<TenantDeleteResult
     secretsDeleted = purgeSecretsForTenant(tenantId)
   } catch (err) {
     logger.error({ err, tenantId }, 'tenant deleted but its vault.json entries could not be purged: repeat the delete to remove them')
-    throw err
+    // The committed part travels with the error: the schedule names exist only in this result (a repeated delete
+    // finds no rows), and the caller still has to remove their file mirror and write the audit row.
+    throw Object.assign(err instanceof Error ? err : new Error(String(err)), { tenantDeleteSqlResult: sqlResult })
   }
 
   return { ...sqlResult, secretsDeleted }

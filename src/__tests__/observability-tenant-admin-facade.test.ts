@@ -249,6 +249,19 @@ describe('deleteTenant: the vault file step', () => {
     expect(second.memoriesDeleted).toBe(0)
   })
 
+  it('the vault error carries the committed part, so the caller can still remove the schedule mirrors', async () => {
+    await createTenant('gone', 'Gone')
+    seedTenantRows('gone')
+    getDb().prepare("INSERT INTO schedules (id, prompt, schedule, agent, tenant_id) VALUES ('job-gone', 'p', '* * * * *', 'agent-a', 'gone')").run()
+    purge.fn.mockImplementationOnce(() => { throw new Error('vault write failed') })
+    const err = await deleteTenant('gone').catch((e: unknown) => e) as Error & { tenantDeleteSqlResult?: { memoriesDeleted: number; scheduleNames: string[] } }
+    expect(err.message).toBe('vault write failed')
+    expect(err.tenantDeleteSqlResult).toMatchObject({ memoriesDeleted: 1, scheduleNames: ['job-gone'] })
+    // the repeat finds no schedule rows any more: the names are only on the first error
+    purge.fn.mockReturnValueOnce(0)
+    expect((await deleteTenant('gone')).scheduleNames).toEqual([])
+  })
+
   it('two concurrent deletes of the same tenant both resolve; the rows are counted once', async () => {
     await createTenant('gone', 'Gone')
     seedTenantRows('gone')
