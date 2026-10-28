@@ -12,7 +12,7 @@ import { db, dbx } from '../db.js'
 import {
   deleteRbacShadowRowsBefore, insertHookAuditLog, insertRbacShadowRow, logConfigChange, logSkillUsage,
   logStoreFileEvent, pruneAuditLogs, pruneHookAuditLog, pruneOtelSpans, pruneTokenUsage,
-  writeAdminAuditLog, writeAgentAuditLog,
+  queryAuditLog, writeAdminAuditLog, writeAgentAuditLog,
 } from '../db/audit.js'
 import { logger } from '../logger.js'
 import { recordRbacDecision, resetPruneThrottleForTests, runRbacGate } from '../web/rbac-shadow-log.js'
@@ -292,5 +292,67 @@ describe('runRbacGate: the decision row is written before a refusal goes out, an
     vi.restoreAllMocks()
     slowDriver()
     expect(await recordRbacDecision(viewer, 'GET', '/api/memories', 'permitted')).toBe(true)
+  })
+})
+
+describe('queryAuditLog: the total of every source is a number (a lost await would concatenate a Promise)', () => {
+  const SOURCES = ['config', 'idea', 'store', 'diary', 'agent', 'hook'] as const
+
+  async function seedOneRowPerSource() {
+    await logConfigChange('some.key', 'old', 'new', 'actor-a')
+    db.prepare("INSERT INTO idea_status_log (idea_id, from_status, to_status, actor, created_at) VALUES ('i', NULL, 'new', 'u', ?)").run(NOW)
+    await logStoreFileEvent('dir/file.md', 'create', 0, 12, 'agent-a', 'tenant-a')
+    db.prepare("INSERT INTO daily_logs (agent_id, date, content, created_at) VALUES ('agent-a', '2026-10-28', 'c', ?)").run(NOW)
+    db.prepare("INSERT INTO memories (chat_id, agent_id, content, sector, category, keywords, created_at, accessed_at) VALUES ('chat-a', 'agent-a', 'm', 'semantic', 'warm', 'k', ?, ?)").run(NOW, NOW)
+    await writeAgentAuditLog({ agent_id: 'agent-a', entity: 'agent', action: 'create', entity_id: 'x' })
+    await insertHookAuditLog({ agent_id: 'agent-a', hook_type: 'PreToolUse', verdict: 'allow' })
+  }
+
+  // the diary source reads two tables (daily_logs and memories)
+  it.each(SOURCES)('%s: total is the row count as a number and every row comes back', async (source) => {
+    await seedOneRowPerSource()
+    const expected = source === 'diary' ? 2 : 1
+    const res = await queryAuditLog({ sources: [source], limit: 10 })
+    expect(res.total).toBe(expected)
+    expect(res.entries).toHaveLength(expected)
+  })
+
+  it('all sources together: total is the sum', async () => {
+    await seedOneRowPerSource()
+    const res = await queryAuditLog({ sources: [], limit: 50 })
+    expect(res.total).toBe(8)
+    expect(res.entries).toHaveLength(8)
+  })
+})
+
+describe('prune statements: a failure of any one statement reaches the caller', () => {
+  /** The driver fails only the statement that starts with `prefix`; every other statement runs. */
+  function failOnly(prefix: string) {
+    const real = dbx.run.bind(dbx)
+    return vi.spyOn(dbx, 'run').mockImplementation(async (sql: string, ...params: unknown[]) => {
+      if (sql.trimStart().startsWith(prefix)) throw new Error('statement down')
+      return real(sql, ...params)
+    })
+  }
+
+  it.each([
+    'DELETE FROM config_change_log', 'DELETE FROM idea_status_log', 'DELETE FROM store_file_audit',
+    'DELETE FROM agent_audit_log', 'DELETE FROM hook_audit_log', 'DELETE FROM otel_spans',
+  ])('pruneAuditLogs rejects when `%s` fails', async (prefix) => {
+    failOnly(prefix)
+    await expect(pruneAuditLogs()).rejects.toThrow('statement down')
+  })
+
+  it('pruneHookAuditLog rejects when its DELETE fails', async () => {
+    failOnly('DELETE FROM hook_audit_log')
+    await expect(pruneHookAuditLog()).rejects.toThrow('statement down')
+  })
+
+  it.each([
+    'INSERT INTO token_usage_daily', 'INSERT INTO token_usage_monthly', 'DELETE FROM token_usage WHERE',
+    'DELETE FROM token_usage_daily', 'DELETE FROM token_usage_monthly',
+  ])('pruneTokenUsage rejects when `%s` fails', async (prefix) => {
+    failOnly(prefix)
+    await expect(pruneTokenUsage()).rejects.toThrow('statement down')
   })
 })
