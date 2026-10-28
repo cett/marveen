@@ -854,5 +854,5 @@ export const removeGeneratedTenantSkillFilesForAgent = serialized(removeGenerate
 export const regenTenantSkillFiles = serialized(regenTenantSkillFilesLocked)
 // The two removers are in the queue as well: a single regen that already read the row would otherwise write the
 // file back after the delete route removed it, and the file of a deleted skill would stay on disk.
-export const removeGeneratedSkillFile = serialized(async (id: string, content: string, tenantId: string, files: SkillFileRow[] = []) => removeGeneratedSkillFileLocked(id, content, tenantId, files))
-export const removeGeneratedCompanionFile = serialized(async (id: string, relPath: string, content: Buffer, tenantId: string) => removeGeneratedCompanionFileLocked(id, relPath, content, tenantId))
+export const removeGeneratedSkillFile = serialized((id: string, content: string, tenantId: string, files: SkillFileRow[] = []) => Promise.resolve().then(() => removeGeneratedSkillFileLocked(id, content, tenantId, files)))
+export const removeGeneratedCompanionFile = serialized((id: string, relPath: string, content: Buffer, tenantId: string) => Promise.resolve().then(() => removeGeneratedCompanionFileLocked(id, relPath, content, tenantId)))
