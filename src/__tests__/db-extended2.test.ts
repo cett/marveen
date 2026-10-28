@@ -113,23 +113,23 @@ describe('memory functions', () => {
     await saveAgentMemory('db2-test-touch', 'Touchable memory', 'hot', '')
     const all = getDb().prepare("SELECT id FROM memories WHERE agent_id = 'db2-test-touch'").all() as { id: number }[]
     if (all.length > 0) {
-      expect(() => touchMemory(all[0].id)).not.toThrow()
+      await expect(touchMemory(all[0].id)).resolves.toBeUndefined()
     }
   })
 
-  it('touchMemoriesAccessed with empty ids is a no-op', () => {
-    expect(() => touchMemoriesAccessed([])).not.toThrow()
+  it('touchMemoriesAccessed with empty ids is a no-op', async () => {
+    await expect(touchMemoriesAccessed([])).resolves.toBeUndefined()
   })
 
-  it('touchMemoriesAccessed updates accessed_at for given ids', () => {
+  it('touchMemoriesAccessed updates accessed_at for given ids', async () => {
     const all = getDb().prepare("SELECT id FROM memories WHERE agent_id = 'db2-test-touch'").all() as { id: number }[]
     if (all.length > 0) {
-      expect(() => touchMemoriesAccessed(all.map(r => r.id))).not.toThrow()
+      await expect(touchMemoriesAccessed(all.map(r => r.id))).resolves.toBeUndefined()
     }
   })
 
-  it('decayMemories runs without throwing', () => {
-    expect(() => decayMemories()).not.toThrow()
+  it('decayMemories runs without throwing', async () => {
+    await expect(decayMemories()).resolves.toBeUndefined()
   })
 
   it('getMemoriesForChat returns memories', async () => {

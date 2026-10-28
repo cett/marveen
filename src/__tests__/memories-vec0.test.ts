@@ -42,8 +42,8 @@ describe('memories: vec0-free write path', () => {
     expect(getDb().prepare('SELECT content FROM memories WHERE id = ?').get(id)).toEqual({ content: 'content for embedding-free save' })
   })
 
-  it('syncVecMemoryDelete is a no-op (does not throw) without vec0', () => {
-    expect(() => syncVecMemoryDelete(9999)).not.toThrow()
+  it('syncVecMemoryDelete is a no-op (does not reject) without vec0', async () => {
+    await expect(syncVecMemoryDelete(9999)).resolves.toBeUndefined()
   })
 
   it('no vec_memories_ai/au/ad triggers exist in DB', () => {

@@ -75,8 +75,8 @@ describe('memories', () => {
     expect(mems[0].sector).toBe('episodic')
   })
 
-  it('leepulesi soprest vegrehajt hiba nelkul', () => {
-    expect(() => decayMemories()).not.toThrow()
+  it('leepulesi soprest vegrehajt hiba nelkul', async () => {
+    await expect(decayMemories()).resolves.toBeUndefined()
   })
 
   it('recentMemories tenant filter is SQL-level (not post-LIMIT application filter)', async () => {

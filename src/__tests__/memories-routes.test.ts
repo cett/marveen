@@ -391,4 +391,23 @@ describe('tryHandleMemories -- tenant isolation for scoped callers', () => {
     expect(out.status).toBe(404)
     expect(db.deleteMemoryRow).not.toHaveBeenCalled()
   })
+
+  it('DELETE /api/memories/:id binds the caller\'s tenant in the delete itself: a row that changed hands after the check is a 404', async () => {
+    // The owner check passes (the row is acme's), the statement bound to acme then finds nothing to delete.
+    vi.mocked(db.getMemoryOwnerRow).mockResolvedValueOnce({ agent_id: 'agent-a', tenant_id: 'acme', category: 'warm' })
+    vi.mocked(db.deleteMemoryRow).mockResolvedValueOnce(0)
+    const { ctx, out } = makeScopedCtx('DELETE', '/api/memories/1', 'acme')
+    await tryHandleMemories(ctx)
+    expect(db.deleteMemoryRow).toHaveBeenCalledWith(1, 'acme')
+    expect(out.status).toBe(404)
+  })
+
+  it('DELETE /api/memories/:id by an admin deletes by id alone (no tenant bound)', async () => {
+    vi.mocked(db.getMemoryOwnerRow).mockResolvedValueOnce({ agent_id: 'agent-a', tenant_id: 'other', category: 'warm' })
+    vi.mocked(db.deleteMemoryRow).mockResolvedValueOnce(1)
+    const { ctx, out } = makeCtx('DELETE', '/api/memories/1')
+    await tryHandleMemories(ctx)
+    expect(db.deleteMemoryRow).toHaveBeenCalledWith(1, undefined)
+    expect(out.status).toBe(200)
+  })
 })
