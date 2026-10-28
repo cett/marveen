@@ -166,7 +166,7 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
     // tenantId === null -- see RouteContext). Same rule as /api/team/graph via
     // agent-tenant-scope.ts.
     const visible = await visibleAgentSet(ctx)
-    const list = listAgentSummaries()
+    const list = await listAgentSummaries()
     jsonMaybeGzip(req, res, visible === null
       ? list
       : list.filter(a => visible.has(a.name)).map(a => scopeTenantFieldsToCaller(a, ctx)))

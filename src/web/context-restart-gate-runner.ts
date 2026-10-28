@@ -571,15 +571,13 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
   const { tokens: contextTokens, unmeasurableReason } =
     readContextTokensDetailed(workingDir, configDirFor(name), { sessionStartMs })
 
-  const dispatchedStats = (async () => {
-    try { return await getDispatchedPendingStats(name, nowMs, cfg.staleCutoffMs, { coordinatorAgentId: MAIN_AGENT_ID }) }
-    catch { return null }
-  })()
+  let dispatchedStats: Awaited<ReturnType<typeof getDispatchedPendingStats>> | null = null
+  try { dispatchedStats = await getDispatchedPendingStats(name, nowMs, cfg.staleCutoffMs, { coordinatorAgentId: MAIN_AGENT_ID }) }
+  catch { dispatchedStats = null }
 
-  const openQuestion = (async () => {
-    try { return await hasOpenInboundQuestion(agentIdForLedger(name), { nowMs, staleCutoffMs: cfg.staleCutoffMs }) }
-    catch { return false }
-  })()
+  let openQuestion = false
+  try { openQuestion = await hasOpenInboundQuestion(agentIdForLedger(name), { nowMs, staleCutoffMs: cfg.staleCutoffMs }) }
+  catch { openQuestion = false }
 
   const liveTaskState = hasLiveTaskStateFile(name, nowMs)
 

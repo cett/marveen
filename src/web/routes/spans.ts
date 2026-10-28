@@ -108,7 +108,12 @@ export async function tryHandleSpans(ctx: RouteContext): Promise<boolean> {
   if (path === '/api/traces' && method === 'GET') {
     const limit = Math.min(parseInt(url.searchParams.get('limit') ?? '50'), 200)
     let traces = listOtelTraces(limit)
-    if (!isAdmin) traces = traces.filter(t => resolveAgentTenant(t.root_agent) === callerTenant)
+    if (!isAdmin) {
+      // resolveAgentTenant is asynchronous: resolve every root agent first, then filter on the plain values
+      // (a Promise returned from a filter callback is always truthy).
+      const tenants = await Promise.all(traces.map(t => resolveAgentTenant(t.root_agent)))
+      traces = traces.filter((_, i) => tenants[i] === callerTenant)
+    }
     json(res, traces)
     return true
   }
@@ -150,7 +155,10 @@ export async function tryHandleSpans(ctx: RouteContext): Promise<boolean> {
     let spans = queryOtelSpans({ agent: agentParam, fromMs, toMs, limit })
     // No agent filter supplied: a non-admin caller gets their own tenant's
     // spans only, never the whole fleet's.
-    if (!agentParam && !isAdmin) spans = spans.filter(s => resolveAgentTenant(s.agent_id) === callerTenant)
+    if (!agentParam && !isAdmin) {
+      const tenants = await Promise.all(spans.map(s => resolveAgentTenant(s.agent_id)))
+      spans = spans.filter((_, i) => tenants[i] === callerTenant)
+    }
     const payload = spansToOtelJson(spans, undefined, readOtelExportOptions())
     res.writeHead(200, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify(payload))

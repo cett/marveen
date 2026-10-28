@@ -425,7 +425,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
   // Admin may pass ?tenant= to narrow to a specific tenant.
   if (path === '/api/messages/threads' && method === 'GET') {
     const adminTenantFilter = isAdmin ? (url.searchParams.get('tenant') || undefined) : undefined
-    json(res, getAgentConversationThreads(isAdmin ? adminTenantFilter : effectiveTenantId))
+    json(res, await getAgentConversationThreads(isAdmin ? adminTenantFilter : effectiveTenantId))
     return true
   }
 

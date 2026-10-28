@@ -348,8 +348,8 @@ export async function getAgentDetail(name: string, redactMcp = false): Promise<A
   }
 }
 
-export function listAgentSummaries(): AgentSummary[] {
-  return listAgentNames().map(getAgentSummary)
+export async function listAgentSummaries(): Promise<AgentSummary[]> {
+  return Promise.all(listAgentNames().map(name => getAgentSummary(name)))
 }
 
 // Shared guard: returns true when the agent exists, false (+ 404 response) when

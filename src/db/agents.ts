@@ -215,20 +215,21 @@ export async function getPendingBacklogByAgent(): Promise<AgentBacklog[]> {
 // leaves a reason, so the log can still answer "was this actually delivered?"
 // afterwards. Without it the only way to clear a backlog is raw SQL, which is
 // how the queue got 24 rows claiming delivery they never had.
-export function closeMessagesWithoutDelivery(ids: number[], reason: string): number {
+export async function closeMessagesWithoutDelivery(ids: number[], reason: string): Promise<number> {
   if (!ids.length) return 0
   const now = Math.floor(Date.now() / 1000)
   const note = `closed-without-delivery: ${reason}`
-  const stmt = db.prepare(
-    `UPDATE agent_messages SET status = 'delivered', delivered_at = ?, result = ?
-      WHERE id = ? AND status = 'pending'`,
-  )
-  const run = db.transaction((rows: number[]) => {
+  return dbx.tx(async (tx) => {
     let n = 0
-    for (const id of rows) n += stmt.run(now, note, id).changes
+    for (const id of ids) {
+      n += (await tx.run(
+        `UPDATE agent_messages SET status = 'delivered', delivered_at = ?, result = ?
+          WHERE id = ? AND status = 'pending'`,
+        now, note, id,
+      )).changes
+    }
     return n
   })
-  return run(ids)
 }
 
 // Supplementary result text WITHOUT a status change. The federation bridge
@@ -473,11 +474,11 @@ export interface AgentThread {
 // message. Drives the dashboard sidebar. Recency is computed per-peer (max
 // created_at) so a rarely-active peer's last message is never hidden behind the
 // global recency window (the bug the JS-filter path had). Sorted newest-first.
-export function getAgentConversationThreads(tenantId?: string): AgentThread[] {
+export async function getAgentConversationThreads(tenantId?: string): Promise<AgentThread[]> {
   const tc = tenantId ? ' WHERE tenant_id = ?' : ''
   const tp = tenantId ? [tenantId] : []
   const countTc = tenantId ? ' AND m.tenant_id = ?' : ''
-  const parties = db.prepare(`
+  const parties = await dbx.all<{ agent: string; count: number }>(`
     WITH parties AS (
       SELECT from_agent AS agent FROM agent_messages${tc}
       UNION
@@ -486,19 +487,19 @@ export function getAgentConversationThreads(tenantId?: string): AgentThread[] {
     SELECT p.agent AS agent,
       (SELECT COUNT(*) FROM agent_messages m WHERE (m.from_agent = p.agent OR m.to_agent = p.agent)${countTc}) AS count
     FROM parties p
-  `).all(...tp, ...tp, ...tp) as { agent: string; count: number }[]
+  `, ...tp, ...tp, ...tp)
 
-  const lastStmt = tenantId
-    ? db.prepare('SELECT * FROM agent_messages WHERE (from_agent = ? OR to_agent = ?) AND tenant_id = ? ORDER BY created_at DESC, id DESC LIMIT 1')
-    : db.prepare('SELECT * FROM agent_messages WHERE from_agent = ? OR to_agent = ? ORDER BY created_at DESC, id DESC LIMIT 1')
+  const lastSql = tenantId
+    ? 'SELECT * FROM agent_messages WHERE (from_agent = ? OR to_agent = ?) AND tenant_id = ? ORDER BY created_at DESC, id DESC LIMIT 1'
+    : 'SELECT * FROM agent_messages WHERE from_agent = ? OR to_agent = ? ORDER BY created_at DESC, id DESC LIMIT 1'
 
   const system = new Set<string>(CHAT_SYSTEM_AGENTS)
   const threads: AgentThread[] = []
   for (const p of parties) {
     if (!p.agent || system.has(p.agent)) continue
     const lastMessage = (tenantId
-      ? lastStmt.get(p.agent, p.agent, tenantId)
-      : lastStmt.get(p.agent, p.agent)) as AgentMessage | undefined ?? null
+      ? await dbx.get<AgentMessage>(lastSql, p.agent, p.agent, tenantId)
+      : await dbx.get<AgentMessage>(lastSql, p.agent, p.agent)) ?? null
     threads.push({ agent: p.agent, count: p.count, lastMessage })
   }
   threads.sort((a, b) => {
@@ -791,6 +792,17 @@ export async function resolveAgentOwningTenantId(agentId: string): Promise<strin
   const primary = getTenantForMainAgent(agentId)
   if (primary) return primary.id
   return (await getTenantsForAgent(agentId))[0] ?? 'default'
+}
+
+/** Boot-only twin of resolveAgentOwningTenantId for the one-time agent_settings file import (db/index.ts), which
+ *  runs before initDatabase returns and cannot await. Same two lookups on the raw handle, in the same order, so an
+ *  imported row is stamped with the tenant the asynchronous resolver would pick -- keep the two in step. */
+// @boot-sync-twin
+export function resolveAgentOwningTenantIdSync(agentId: string): string {
+  const main = db.prepare('SELECT id FROM tenants WHERE main_agent_id = ? AND disabled_at IS NULL').get(agentId) as { id: string } | undefined
+  if (main) return main.id
+  const row = db.prepare('SELECT tenant_id FROM tenant_agent_availability WHERE agent_id = ? AND enabled = 1').get(agentId) as { tenant_id: string } | undefined
+  return row?.tenant_id ?? 'default'
 }
 
 /** Whether `tenantId` may manage (read/write) agentId's per-agent settings

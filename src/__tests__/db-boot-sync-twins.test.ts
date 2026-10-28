@@ -18,6 +18,8 @@ const BOOT_SYNC_TWINS: Readonly<Record<string, readonly string[]>> = {
   migrateCostBudgetsFromFile: ['db/cost-budgets.ts', 'db/index.ts'],
   migrateVaultBindingsFromFile: ['db/vault-bindings.ts', 'db/index.ts'],
   importAgentSettingsFromFile: ['db/agent-settings.ts', 'db/index.ts'],
+  // Boot-only, on the raw handle: the one-time agent_settings file import stamps each row with the owning tenant.
+  resolveAgentOwningTenantIdSync: ['db/agents.ts', 'db/index.ts'],
   importAgentStateFromFile: ['db/agent-state.ts', 'db/index.ts'],
   getAgentStateSync: ['db/agent-state.ts', 'db/index.ts'],
   setAgentStateSync: ['db/agent-state.ts', 'db/index.ts'],

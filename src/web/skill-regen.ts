@@ -555,11 +555,14 @@ async function tenantSkillQualifiers(row: SkillRow): Promise<string[]> {
   const agents = new Set<string>()
   for (const t of tenants) for (const a of await getEnabledAgentsForTenant(t)) agents.add(a)
   // The main agent's skills dir is the project-wide one, not a tenant's own.
-  return [...agents].filter(a =>
-    a !== MAIN_AGENT_ID && SAFE_SEGMENT.test(a) && isDir(join(AGENTS_BASE_DIR, a)) &&
+  const qualifiers: string[] = []
+  for (const a of agents) {
+    if (a === MAIN_AGENT_ID || !SAFE_SEGMENT.test(a) || !isDir(join(AGENTS_BASE_DIR, a))) continue
     // An agent shared by several tenants would expose this tenant's skill (and its companion
     // scripts) to requests of the other tenants: shared agents are DB-only, always.
-    getTenantsForAgent(a).length === 1)
+    if ((await getTenantsForAgent(a)).length === 1) qualifiers.push(a)
+  }
+  return qualifiers
 }
 
 /** Agents that hold a generated copy right now: the qualifiers that are running. */
