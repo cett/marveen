@@ -277,7 +277,7 @@ describe('getTokenSummary', () => {
 
   it('returns per-agent summaries with correct aggregations', async () => {
     const { getTokenSummary } = await import('../web/token-usage.js')
-    const summaries = getTokenSummary(baseTs - 1, baseTs + 7200)
+    const summaries = await getTokenSummary(baseTs - 1, baseTs + 7200)
 
     const main = summaries.find(s => s.agent === 'test-main')
     const samu = summaries.find(s => s.agent === 'test-samu')
@@ -296,7 +296,7 @@ describe('getTokenSummary', () => {
   it('respects time range filters', async () => {
     const { getTokenSummary } = await import('../web/token-usage.js')
     // Only first two entries (baseTs and baseTs+60)
-    const summaries = getTokenSummary(baseTs, baseTs + 100)
+    const summaries = await getTokenSummary(baseTs, baseTs + 100)
     const main = summaries.find(s => s.agent === 'test-main')
     expect(main).toBeDefined()
     expect(main!.totalCalls).toBe(2)
@@ -304,7 +304,7 @@ describe('getTokenSummary', () => {
 
   it('returns empty array when no data in range', async () => {
     const { getTokenSummary } = await import('../web/token-usage.js')
-    const summaries = getTokenSummary(0, 1)
+    const summaries = await getTokenSummary(0, 1)
     expect(summaries).toEqual([])
   })
 })
@@ -314,7 +314,7 @@ describe('getTokenTimeline', () => {
 
   it('buckets data by specified interval', async () => {
     const { getTokenTimeline } = await import('../web/token-usage.js')
-    const timeline = getTokenTimeline(60, baseTs - 1, baseTs + 7200)
+    const timeline = await getTokenTimeline(60, baseTs - 1, baseTs + 7200)
 
     expect(timeline.length).toBeGreaterThan(0)
     for (const bucket of timeline) {
@@ -328,7 +328,7 @@ describe('getTokenTimeline', () => {
 
   it('filters by agent', async () => {
     const { getTokenTimeline } = await import('../web/token-usage.js')
-    const timeline = getTokenTimeline(60, baseTs - 1, baseTs + 7200, 'test-samu')
+    const timeline = await getTokenTimeline(60, baseTs - 1, baseTs + 7200, 'test-samu')
 
     for (const bucket of timeline) {
       expect(bucket.agent).toBe('test-samu')
@@ -337,7 +337,7 @@ describe('getTokenTimeline', () => {
 
   it('inputTokens includes cache tokens', async () => {
     const { getTokenTimeline } = await import('../web/token-usage.js')
-    const timeline = getTokenTimeline(60, baseTs - 1, baseTs + 7200, 'test-samu')
+    const timeline = await getTokenTimeline(60, baseTs - 1, baseTs + 7200, 'test-samu')
     const samBucket = timeline[0]
     // test-samu has input=3000+cache_read=1000+cache_creation=200 in first entry
     expect(samBucket.inputTokens).toBeGreaterThanOrEqual(4200)
@@ -349,7 +349,7 @@ describe('getTokenDetails', () => {
 
   it('returns details ordered by timestamp DESC', async () => {
     const { getTokenDetails } = await import('../web/token-usage.js')
-    const details = getTokenDetails({ from: baseTs - 1, to: baseTs + 7200 })
+    const details = await getTokenDetails({ from: baseTs - 1, to: baseTs + 7200 })
 
     expect(details.length).toBeGreaterThan(0)
     for (let i = 1; i < details.length; i++) {
@@ -359,7 +359,7 @@ describe('getTokenDetails', () => {
 
   it('filters by agent', async () => {
     const { getTokenDetails } = await import('../web/token-usage.js')
-    const details = getTokenDetails({ agent: 'test-samu', from: baseTs - 1, to: baseTs + 7200 })
+    const details = await getTokenDetails({ agent: 'test-samu', from: baseTs - 1, to: baseTs + 7200 })
 
     expect(details.length).toBe(2)
     for (const d of details) {
@@ -369,7 +369,7 @@ describe('getTokenDetails', () => {
 
   it('filters by minTokens', async () => {
     const { getTokenDetails } = await import('../web/token-usage.js')
-    const details = getTokenDetails({ minTokens: 2000, from: baseTs - 1, to: baseTs + 7200 })
+    const details = await getTokenDetails({ minTokens: 2000, from: baseTs - 1, to: baseTs + 7200 })
 
     for (const d of details) {
       // SELECT * returns snake_case DB column names
@@ -381,8 +381,8 @@ describe('getTokenDetails', () => {
 
   it('respects limit and offset', async () => {
     const { getTokenDetails } = await import('../web/token-usage.js')
-    const page1 = getTokenDetails({ limit: 2, offset: 0, from: baseTs - 1, to: baseTs + 7200 })
-    const page2 = getTokenDetails({ limit: 2, offset: 2, from: baseTs - 1, to: baseTs + 7200 })
+    const page1 = await getTokenDetails({ limit: 2, offset: 0, from: baseTs - 1, to: baseTs + 7200 })
+    const page2 = await getTokenDetails({ limit: 2, offset: 2, from: baseTs - 1, to: baseTs + 7200 })
 
     expect(page1.length).toBe(2)
     expect(page2.length).toBeGreaterThan(0)
@@ -391,7 +391,7 @@ describe('getTokenDetails', () => {
 
   it('full-text search via q parameter', async () => {
     const { getTokenDetails } = await import('../web/token-usage.js')
-    const details = getTokenDetails({ q: 'samu', from: baseTs - 1, to: baseTs + 7200 })
+    const details = await getTokenDetails({ q: 'samu', from: baseTs - 1, to: baseTs + 7200 })
 
     expect(details.length).toBeGreaterThan(0)
     for (const d of details) {
@@ -404,7 +404,7 @@ describe('getTokenDetails', () => {
     const { getTokenDetails } = await import('../web/token-usage.js')
     // The route caps at 500, but the function itself accepts what's passed.
     // We verify the route handler in a separate test, but ensure the function works.
-    const details = getTokenDetails({ limit: 1000, from: baseTs - 1, to: baseTs + 7200 })
+    const details = await getTokenDetails({ limit: 1000, from: baseTs - 1, to: baseTs + 7200 })
     expect(details.length).toBeLessThanOrEqual(1000)
   })
 })
@@ -446,7 +446,7 @@ describe('correlateWithKanban', () => {
     `).run('test-kanban-1', 'Test Task', 'in_progress', 'normal', 'test-main', 'test-project', baseTs, baseTs)
 
     const { correlateWithKanban } = await import('../web/token-usage.js')
-    correlateWithKanban()
+    await correlateWithKanban()
 
     const rows = db.prepare(
       "SELECT task_title, project FROM token_usage WHERE agent = 'test-main' AND task_title IS NOT NULL",
