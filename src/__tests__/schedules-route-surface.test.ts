@@ -61,7 +61,7 @@ const mockGetScheduleFromDb = vi.fn()
 vi.mock('../db.js', () => ({
   listPendingTaskRetries: vi.fn().mockResolvedValue([]),
   deletePendingTaskRetryById: vi.fn().mockResolvedValue(true),
-  listTaskRunHistory: vi.fn().mockReturnValue([]),
+  listTaskRunHistory: vi.fn().mockResolvedValue([]),
   countSchedules: (...a: unknown[]) => mockCountSchedules(...a),
   getScheduleFromDb: (...a: unknown[]) => mockGetScheduleFromDb(...a),
   listSchedulesFromDb: vi.fn().mockResolvedValue([]),
@@ -328,7 +328,7 @@ describe('GET /api/schedules/pending', () => {
 
 describe('GET /api/schedules/:name/runs -- success', () => {
   it('returns the run history verbatim', async () => {
-    mockListTaskRunHistory.mockReturnValue([{ id: 1, status: 'success' } as never])
+    mockListTaskRunHistory.mockResolvedValue([{ id: 1, status: 'success' } as never])
     const { ctx, out } = makeCtx('GET', '/api/schedules/my-task/runs')
     await tryHandleSchedules(ctx)
     expect(out.status).toBe(200)

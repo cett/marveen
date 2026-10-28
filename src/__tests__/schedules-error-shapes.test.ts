@@ -56,7 +56,7 @@ vi.mock('../web/atomic-write.js', () => ({
 vi.mock('../db.js', () => ({
   listPendingTaskRetries: vi.fn().mockResolvedValue([]),
   deletePendingTaskRetryById: vi.fn().mockResolvedValue(false),
-  listTaskRunHistory: vi.fn().mockReturnValue([]),
+  listTaskRunHistory: vi.fn().mockResolvedValue([]),
   // Schedules DB layer (SQL-backed): default to 0 so tests use the file-based path
   countSchedules:    vi.fn().mockResolvedValue(0),
   getScheduleFromDb: vi.fn().mockResolvedValue(undefined),

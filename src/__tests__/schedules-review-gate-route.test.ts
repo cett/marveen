@@ -65,7 +65,7 @@ const mockActivateSchedule = vi.fn()
 vi.mock('../db.js', () => ({
   listPendingTaskRetries: vi.fn().mockResolvedValue([]),
   deletePendingTaskRetryById: vi.fn().mockResolvedValue(true),
-  listTaskRunHistory: vi.fn().mockReturnValue([]),
+  listTaskRunHistory: vi.fn().mockResolvedValue([]),
   countSchedules: (...a: unknown[]) => mockCountSchedules(...a),
   getScheduleFromDb: (...a: unknown[]) => mockGetScheduleFromDb(...a),
   listSchedulesFromDb: vi.fn().mockResolvedValue([]),

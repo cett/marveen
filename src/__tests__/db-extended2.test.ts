@@ -445,13 +445,13 @@ describe('kanban extended functions', () => {
 describe('task run functions', () => {
   it('appendTaskRun inserts a run entry', async () => {
     await appendTaskRun('db2-task-heartbeat', 'agent-a', 'fired')
-    const history = listTaskRunHistory('db2-task-heartbeat', 10)
+    const history = await listTaskRunHistory('db2-task-heartbeat', 10)
     expect(history.length).toBeGreaterThanOrEqual(1)
     expect(history[0].status).toBe('fired')
   })
 
-  it('listTaskRunHistory returns tokens_est as null or number', () => {
-    const history = listTaskRunHistory('db2-task-heartbeat', 10)
+  it('listTaskRunHistory returns tokens_est as null or number', async () => {
+    const history = await listTaskRunHistory('db2-task-heartbeat', 10)
     expect(history[0].tokens_est === null || typeof history[0].tokens_est === 'number').toBe(true)
   })
 })

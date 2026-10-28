@@ -87,25 +87,25 @@ export async function appendTaskRun(name: string, agent: string, status = 'fired
   await dbx.run('DELETE FROM task_runs WHERE ts < ?', now - TASK_RUN_TTL_MS)
 }
 
-export function listTaskRunHistory(name: string, limit: number): TaskRunHistoryEntry[] {
-  const rows = db.prepare(
-    'SELECT ts, status, agent FROM task_runs WHERE name = ? ORDER BY ts DESC LIMIT ?'
-  ).all(name, limit) as { ts: number; status: string; agent: string }[]
-
-  // token_usage.timestamp is in seconds; task_runs.ts is in ms -- divide by 1000
-  const tokenStmt = db.prepare(
-    `SELECT COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens), 0) as total
-     FROM token_usage WHERE agent = ? AND timestamp >= ? AND timestamp < ?`
-  )
+export async function listTaskRunHistory(name: string, limit: number): Promise<TaskRunHistoryEntry[]> {
+  const rows = await dbx.all(
+    'SELECT ts, status, agent FROM task_runs WHERE name = ? ORDER BY ts DESC LIMIT ?',
+    name, limit,
+  ) as { ts: number; status: string; agent: string }[]
 
   // Rows are DESC (newest first). For each run, approximate token usage as
   // the sum for that agent in the window [ts, next_newer_ts) capped at 1 hour.
-  return rows.map((row, i) => {
+  // token_usage.timestamp is in seconds; task_runs.ts is in ms -- divide by 1000
+  return Promise.all(rows.map(async (row, i) => {
     const newerTs = i > 0 ? rows[i - 1].ts : undefined
     const windowEnd = newerTs !== undefined ? Math.min(row.ts + 3600000, newerTs) : row.ts + 3600000
-    const tokenRow = tokenStmt.get(row.agent, Math.floor(row.ts / 1000), Math.floor(windowEnd / 1000)) as { total: number }
+    const tokenRow = await dbx.get(
+      `SELECT COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens), 0) as total
+       FROM token_usage WHERE agent = ? AND timestamp >= ? AND timestamp < ?`,
+      row.agent, Math.floor(row.ts / 1000), Math.floor(windowEnd / 1000),
+    ) as { total: number }
     return { ts: row.ts, status: row.status, tokens_est: tokenRow.total > 0 ? tokenRow.total : null }
-  })
+  }))
 }
 
 // tenantId, when provided, narrows the count to runs of schedules that belong to that
