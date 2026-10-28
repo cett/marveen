@@ -122,7 +122,7 @@ describe('runLinkMaintenance', () => {
   })
 })
 
-describe('upsertMemoryLink: the rounding tolerance is narrow', async () => {
+describe('upsertMemoryLink: the rounding tolerance is narrow', () => {
   it('stores a weight within the tolerance above 1 as 1', async () => {
     const a = addMemory('a', OVER_ONE)
     const b = addMemory('b', OVER_ONE)

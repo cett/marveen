@@ -37,7 +37,7 @@ function insertMemoryWithEmbedding(content: string, floats?: number[]): number {
   return id
 }
 
-describe('upsertMemoryLink', async () => {
+describe('upsertMemoryLink', () => {
   it('creates a new link and returns a row id', async () => {
     const src = insertMemoryWithEmbedding('src memory')
     const dst = insertMemoryWithEmbedding('dst memory')

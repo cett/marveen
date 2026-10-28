@@ -25,7 +25,7 @@ const blobOf = (floats: number[]): Buffer => Buffer.from(new Float32Array(floats
 
 /** The embedding endpoint answers the same vector for every text. */
 function stubEmbeddings(floats: number[]): void {
-  vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({ embedding: floats }) })))
+  vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve({ embedding: floats }) })))
 }
 
 function addMemory(content: string, o: { agent?: string; category?: string; tenant?: string; chat?: string; keywords?: string } = {}): number {
@@ -180,7 +180,7 @@ describe('the vector paths', () => {
 
   it('the embedding endpoint answer is read: no embedding means FTS only, and nothing is thrown', async () => {
     const id = addMemory('walrus colony')
-    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({}) })))
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve({}) })))
     expect((await hybridSearch('agent-r', 'walrus', 5)).map((m) => m.id)).toEqual([id])
   })
 })
