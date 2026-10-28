@@ -7,6 +7,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { RouteContext } from '../web/routes/types.js'
 
+// The home directory stays pinned to the test's temp dir even after a test ended, so a write that a dropped await
+// delays past the test lands in that leftover dir and never in the real ~/.claude.
+vi.mock('node:os', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:os')>()
+  return { ...actual, homedir: () => tmp || '/nonexistent-starter-test-home' }
+})
 vi.mock('../config.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../config.js')>()),
   MAIN_AGENT_ID: 'main-agent',

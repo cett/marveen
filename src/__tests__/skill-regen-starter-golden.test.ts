@@ -2,7 +2,7 @@
 // fixture are byte-identical to what the synchronous-db version wrote (the golden file was produced by running
 // this same test on the commit before the tasks facade conversion, with GOLDEN_WRITE=1). A change to the
 // golden file is a change of what lands on disk and has to be deliberate.
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
@@ -12,6 +12,12 @@ const GOLDEN = join(__dirname, 'golden', 'skill-regen-starter.golden.json')
 
 const { state } = vi.hoisted(() => ({ state: { home: '', project: '' } }))
 
+// The home directory is pinned to the test's own temp dir for the whole file, not through process.env: a write that
+// runs after a test ended (a dropped await) lands in the leftover temp dir, never in the real ~/.claude.
+vi.mock('node:os', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:os')>()
+  return { ...actual, homedir: () => state.home || '/nonexistent-golden-test-home' }
+})
 vi.mock('../config.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../config.js')>()),
   get PROJECT_ROOT() { return state.project },
@@ -48,6 +54,9 @@ afterEach(() => {
   delete process.env['MARVEEN_STORE_DIR']
   rmSync(state.home, { recursive: true, force: true })
 })
+
+// state.home keeps pointing at the (removed) temp dir, so a late write recreates files there; clean those up too.
+afterAll(() => { rmSync(state.home, { recursive: true, force: true }) })
 
 /** Every file under the roots, as relative path -> mode + content (base64, so binary bytes count too). */
 function snapshot(roots: string[]): Record<string, { mode: string; content: string }> {
