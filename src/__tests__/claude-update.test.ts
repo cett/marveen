@@ -215,27 +215,27 @@ describe('ensureClaudeUpdateTask', () => {
     mkdirSync(join(tmp, 'store'), { recursive: true })
   })
 
-  it('inserts the weekly Monday 06:00 command task once, pointing at the install dir', () => {
-    expect(mod.ensureClaudeUpdateTask(join(tmp, 'store'), '/opt/marveen', 'main-agent')).toBe(true)
-    expect(dbMod.getScheduleFromDb('claude-update')).toMatchObject({
+  it('inserts the weekly Monday 06:00 command task once, pointing at the install dir', async () => {
+    expect(await mod.ensureClaudeUpdateTask(join(tmp, 'store'), '/opt/marveen', 'main-agent')).toBe(true)
+    expect(await dbMod.getScheduleFromDb('claude-update')).toMatchObject({
       type: 'command', prompt: '', enabled: 1, agent: 'main-agent', schedule: '0 6 * * 1',
       timeout_ms: 600000, fail_threshold: 1, status: 'live', tenant_id: 'default',
       command: "bash '/opt/marveen/scripts/claude-update.sh'",
     })
     // the marker keeps a deliberate deletion from coming back at the next boot
-    dbMod.deleteSchedule('claude-update')
-    expect(mod.ensureClaudeUpdateTask(join(tmp, 'store'), '/opt/marveen', 'main-agent')).toBe(false)
-    expect(dbMod.getScheduleFromDb('claude-update')).toBeUndefined()
+    await dbMod.deleteSchedule('claude-update')
+    expect(await mod.ensureClaudeUpdateTask(join(tmp, 'store'), '/opt/marveen', 'main-agent')).toBe(false)
+    expect(await dbMod.getScheduleFromDb('claude-update')).toBeUndefined()
   })
 
-  it('never overwrites a row the operator already has', () => {
-    dbMod.upsertSchedule('claude-update', {
+  it('never overwrites a row the operator already has', async () => {
+    await dbMod.upsertSchedule('claude-update', {
       prompt: '', description: 'mine', schedule: '30 5 * * 2', agent: 'someone', type: 'command', enabled: false,
       skip_if_busy: false, force_send: false, command: 'bash /srv/my-update.sh', timeout_ms: 1000, fail_threshold: 3,
       status: 'live', tenant_id: null,
     })
-    const before = { ...dbMod.getScheduleFromDb('claude-update') }
-    expect(mod.ensureClaudeUpdateTask(join(tmp, 'store'), '/opt/marveen', 'main-agent')).toBe(false)
-    expect(dbMod.getScheduleFromDb('claude-update')).toEqual(before)
+    const before = { ...await dbMod.getScheduleFromDb('claude-update') }
+    expect(await mod.ensureClaudeUpdateTask(join(tmp, 'store'), '/opt/marveen', 'main-agent')).toBe(false)
+    expect(await dbMod.getScheduleFromDb('claude-update')).toEqual(before)
   })
 })

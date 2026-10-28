@@ -14,12 +14,12 @@ beforeEach(() => {
 })
 afterEach(() => rmSync(store, { recursive: true, force: true }))
 
-const seed = (): boolean => ensureDailyLogSummaryTask(store, '/opt/install', 'main-agent', 3420)
+const seed = async (): Promise<boolean> => ensureDailyLogSummaryTask(store, '/opt/install', 'main-agent', 3420)
 
 describe('ensureDailyLogSummaryTask', () => {
-  it('inserts a live command task for the main agent in the default tenant, at 22:30, without an LLM prompt', () => {
-    expect(seed()).toBe(true)
-    expect(getScheduleFromDb(DAILY_LOG_SUMMARY_TASK)).toMatchObject({
+  it('inserts a live command task for the main agent in the default tenant, at 22:30, without an LLM prompt', async () => {
+    expect(await seed()).toBe(true)
+    expect(await getScheduleFromDb(DAILY_LOG_SUMMARY_TASK)).toMatchObject({
       type: 'command',
       schedule: '30 22 * * *',
       agent: 'main-agent',
@@ -38,24 +38,24 @@ describe('ensureDailyLogSummaryTask', () => {
     expect(dailyLogSummaryCommand('/a b', 4000, 'zed')).toBe("export DASHBOARD_BASE_URL='http://localhost:4000'; python3 '/a b/scripts/daily-log-summary.py' zed")
   })
 
-  it('seeds once: a second start inserts nothing', () => {
-    expect(seed()).toBe(true)
-    expect(seed()).toBe(false)
+  it('seeds once: a second start inserts nothing', async () => {
+    expect(await seed()).toBe(true)
+    expect(await seed()).toBe(false)
   })
 
-  it('does not bring the task back after the operator deleted it', () => {
-    seed()
-    deleteSchedule(DAILY_LOG_SUMMARY_TASK)
-    expect(seed()).toBe(false)
-    expect(getScheduleFromDb(DAILY_LOG_SUMMARY_TASK)).toBeUndefined()
+  it('does not bring the task back after the operator deleted it', async () => {
+    await seed()
+    await deleteSchedule(DAILY_LOG_SUMMARY_TASK)
+    expect(await seed()).toBe(false)
+    expect(await getScheduleFromDb(DAILY_LOG_SUMMARY_TASK)).toBeUndefined()
   })
 
-  it('leaves an operator-changed row as it is, and still settles the marker', () => {
-    seed()
-    patchSchedule(DAILY_LOG_SUMMARY_TASK, { schedule: '0 23 * * *', enabled: false })
+  it('leaves an operator-changed row as it is, and still settles the marker', async () => {
+    await seed()
+    await patchSchedule(DAILY_LOG_SUMMARY_TASK, { schedule: '0 23 * * *', enabled: false })
     rmSync(join(store, 'daily-log-summary.seeded'))
-    expect(seed()).toBe(false)
-    expect(getScheduleFromDb(DAILY_LOG_SUMMARY_TASK)).toMatchObject({ schedule: '0 23 * * *', enabled: 0 })
+    expect(await seed()).toBe(false)
+    expect(await getScheduleFromDb(DAILY_LOG_SUMMARY_TASK)).toMatchObject({ schedule: '0 23 * * *', enabled: 0 })
     expect(existsSync(join(store, 'daily-log-summary.seeded'))).toBe(true)
   })
 })

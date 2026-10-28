@@ -121,7 +121,7 @@ describe('tenant channel bindings', () => {
       expect(await dbMod.getDelegationTenant('agent-a')).toBe('acme')
       const msg = await dbMod.createAgentMessage('agent-a', 'agent-b', 'do it')
       expect(msg.tenant_id).toBe('acme')
-      expect(dbMod.getAgentMessage(msg.id)?.tenant_id).toBe('acme')
+      expect((await dbMod.getAgentMessage(msg.id))?.tenant_id).toBe('acme')
     })
 
     it('the tenant\'s main agent needs no availability row', async () => {
@@ -158,7 +158,7 @@ describe('tenant channel bindings', () => {
       // ... a pinned 'default' (reply to a fleet message) does not, and a pinned partner tenant stays as given
       const pinnedDefault = await dbMod.createAgentMessage('agent-a', 'agent-b', 'x', null, null, 'default', null, true)
       expect(pinnedDefault.tenant_id).toBe('default')
-      expect(dbMod.getAgentMessage(pinnedDefault.id)?.tenant_id).toBe('default')
+      expect((await dbMod.getAgentMessage(pinnedDefault.id))?.tenant_id).toBe('default')
       expect((await dbMod.createAgentMessage('agent-a', 'agent-b', 'x', null, null, 'beta', null, true)).tenant_id).toBe('beta')
     })
 

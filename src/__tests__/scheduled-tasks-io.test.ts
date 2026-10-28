@@ -120,16 +120,16 @@ describe('scheduled-tasks-io', () => {
   })
 
   describe('listScheduledTasks', () => {
-    it('lists tasks from the scheduled-tasks directory', () => {
-      const tasks = listScheduledTasks()
+    it('lists tasks from the scheduled-tasks directory', async () => {
+      const tasks = await listScheduledTasks()
       expect(Array.isArray(tasks)).toBe(true)
       expect(tasks.some(t => t.name === 'test-task')).toBe(true)
     })
   })
 
   describe('writeScheduledTask', () => {
-    it('creates a new task with provided data', () => {
-      writeScheduledTask('new-test-task', {
+    it('creates a new task with provided data', async () => {
+      await writeScheduledTask('new-test-task', {
         description: 'New task',
         prompt: 'Do new things',
         schedule: '0 8 * * 1',
@@ -163,7 +163,7 @@ describe('scheduled-tasks-io', () => {
         created_at: 1700000000, updated_at: 1700000000,
       } as any)
 
-      writeScheduledTask('tenant-task', { enabled: false })
+      await writeScheduledTask('tenant-task', { enabled: false })
 
       expect(vi.mocked(db.upsertSchedule)).toHaveBeenCalledWith(
         'tenant-task',
@@ -187,12 +187,12 @@ describe('scheduled-tasks-io', () => {
       } as any)
 
       try {
-        writeScheduledTask('tenant-task-2', { tenantId: 'tenant-b' })
+        await writeScheduledTask('tenant-task-2', { tenantId: 'tenant-b' })
         expect(vi.mocked(db.upsertSchedule)).toHaveBeenLastCalledWith(
           'tenant-task-2', expect.objectContaining({ tenant_id: 'tenant-b' }),
         )
         // No tenant is not a state a task can be written into: null keeps the stored tenant.
-        writeScheduledTask('tenant-task-2', { tenantId: null })
+        await writeScheduledTask('tenant-task-2', { tenantId: null })
         expect(vi.mocked(db.upsertSchedule)).toHaveBeenLastCalledWith(
           'tenant-task-2', expect.objectContaining({ tenant_id: 'tenant-a' }),
         )
@@ -262,8 +262,8 @@ describe('scheduled-tasks-io', () => {
   })
 
   describe('writeScheduledTask -- status round-trip (file-mode)', () => {
-    it('writes and reads back a draft status', () => {
-      writeScheduledTask('roundtrip-draft', {
+    it('writes and reads back a draft status', async () => {
+      await writeScheduledTask('roundtrip-draft', {
         description: 'x', prompt: 'y', schedule: '0 9 * * *', agent: 'marveen',
         enabled: true, type: 'task', status: 'draft',
       })
@@ -272,8 +272,8 @@ describe('scheduled-tasks-io', () => {
       expect(isTaskLive(task!)).toBe(false)
     })
 
-    it('writes and reads back a pending_review status', () => {
-      writeScheduledTask('roundtrip-pending', {
+    it('writes and reads back a pending_review status', async () => {
+      await writeScheduledTask('roundtrip-pending', {
         description: 'x', prompt: 'y', schedule: '0 9 * * *', agent: 'marveen',
         enabled: true, type: 'task', status: 'pending_review',
       })
@@ -282,8 +282,8 @@ describe('scheduled-tasks-io', () => {
       expect(isTaskLive(task!)).toBe(false)
     })
 
-    it('omitting status on create defaults to live', () => {
-      writeScheduledTask('roundtrip-default', {
+    it('omitting status on create defaults to live', async () => {
+      await writeScheduledTask('roundtrip-default', {
         description: 'x', prompt: 'y', schedule: '0 9 * * *', agent: 'marveen', enabled: true, type: 'task',
       })
       const task = readScheduledTask('roundtrip-default')
@@ -291,13 +291,13 @@ describe('scheduled-tasks-io', () => {
       expect(isTaskLive(task!)).toBe(true)
     })
 
-    it('an edit that omits status preserves the existing draft status (does not silently activate)', () => {
-      writeScheduledTask('roundtrip-preserve', {
+    it('an edit that omits status preserves the existing draft status (does not silently activate)', async () => {
+      await writeScheduledTask('roundtrip-preserve', {
         description: 'x', prompt: 'y', schedule: '0 9 * * *', agent: 'marveen',
         enabled: true, type: 'task', status: 'draft',
       })
       // Simulate an unrelated edit (e.g. the toggle route) that never mentions status.
-      writeScheduledTask('roundtrip-preserve', { enabled: false })
+      await writeScheduledTask('roundtrip-preserve', { enabled: false })
       const task = readScheduledTask('roundtrip-preserve')
       expect(task!.status).toBe('draft')
       expect(isTaskLive(task!)).toBe(false)

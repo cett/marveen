@@ -56,55 +56,55 @@ beforeEach(() => {
 })
 
 describe('generation', () => {
-  it('a single regen writes the companion files (nested dirs, exec bit) even when SKILL.md is unchanged', () => {
-    regenSingleSkillFile(SID)                       // SKILL.md only
+  it('a single regen writes the companion files (nested dirs, exec bit) even when SKILL.md is unchanged', async () => {
+    await regenSingleSkillFile(SID)                       // SKILL.md only
     put('scripts/run.sh', '#!/bin/sh\n', 0o755)
     put('references/deep/n.md', 'notes')
-    expect(regenSingleSkillFile(SID)).toEqual({ written: true, skipped: false, reason: null })
+    expect(await regenSingleSkillFile(SID)).toEqual({ written: true, skipped: false, reason: null })
     expect(readFileSync(join(dir(), 'scripts/run.sh'), 'utf-8')).toBe('#!/bin/sh\n')
     expect(statSync(join(dir(), 'scripts/run.sh')).mode & 0o777).toBe(0o755)
     expect(readFileSync(join(dir(), 'references/deep/n.md'), 'utf-8')).toBe('notes')
-    expect(regenSingleSkillFile(SID)).toEqual({ written: false, skipped: true, reason: 'content_equal' })
+    expect(await regenSingleSkillFile(SID)).toEqual({ written: false, skipped: true, reason: 'content_equal' })
   })
 
-  it('the bulk startup regen generates them too, and counts them', () => {
+  it('the bulk startup regen generates them too, and counts them', async () => {
     put('scripts/a.py', 'print(1)\n')
-    const res = regenSkillFilesFromSQL(false, true)
+    const res = await regenSkillFilesFromSQL(false, true)
     expect(res).toEqual({ enabled: true, written: 2, skipped: 0, errors: 0 })   // SKILL.md + 1 companion
     expect(readFileSync(join(dir(), 'scripts/a.py'), 'utf-8')).toBe('print(1)\n')
   })
 
-  it('restores a drifted companion file from the DB, and repairs a wrong mode', () => {
+  it('restores a drifted companion file from the DB, and repairs a wrong mode', async () => {
     put('scripts/a.sh', 'good\n', 0o755)
-    regenSingleSkillFile(SID)
+    await regenSingleSkillFile(SID)
     writeFileSync(join(dir(), 'scripts/a.sh'), 'tampered\n')
-    regenSingleSkillFile(SID)
+    await regenSingleSkillFile(SID)
     expect(readFileSync(join(dir(), 'scripts/a.sh'), 'utf-8')).toBe('good\n')
     chmodSync(join(dir(), 'scripts/a.sh'), 0o600)
-    regenSingleSkillFile(SID)
+    await regenSingleSkillFile(SID)
     expect(statSync(join(dir(), 'scripts/a.sh')).mode & 0o777).toBe(0o755)
   })
 
-  it('never writes through a symlinked directory, and reports the error', () => {
-    regenSingleSkillFile(SID)
+  it('never writes through a symlinked directory, and reports the error', async () => {
+    await regenSingleSkillFile(SID)
     const outside = join(FAKE_HOME, 'outside'); mkdirSync(outside, { recursive: true })
     symlinkSync(outside, join(dir(), 'scripts'))
     put('scripts/pwn.sh', 'x')
-    expect(regenSingleSkillFile(SID).reason).toBe('write_error')
+    expect((await regenSingleSkillFile(SID)).reason).toBe('write_error')
     expect(existsSync(join(outside, 'pwn.sh'))).toBe(false)
   })
 
-  it('a DB row with an unsafe path is an error, not a write outside the skill dir', () => {
+  it('a DB row with an unsafe path is an error, not a write outside the skill dir', async () => {
     put('../escape.txt', 'x')
-    expect(regenSingleSkillFile(SID).reason).toBe('write_error')
+    expect((await regenSingleSkillFile(SID)).reason).toBe('write_error')
     expect(existsSync(join(FAKE_HOME, '.claude', 'skills', 'escape.txt'))).toBe(false)
   })
 })
 
 describe('removal', () => {
-  it('skill delete removes byte-equal companion files and the directory, keeps edited and untracked files', () => {
+  it('skill delete removes byte-equal companion files and the directory, keeps edited and untracked files', async () => {
     put('scripts/a.sh', 'a\n'); put('scripts/b.sh', 'b\n')
-    regenSingleSkillFile(SID)
+    await regenSingleSkillFile(SID)
     writeFileSync(join(dir(), 'scripts/b.sh'), 'edited\n')
     writeFileSync(join(dir(), 'notes.txt'), 'mine')
     const rows = [...files.values()]
@@ -132,30 +132,30 @@ describe('importSkillCompanionFilesFromDisk (disk -> DB, insert-if-absent)', () 
     symlinkSync(outside, join(dir(), 'link.txt'))
   }
 
-  it('imports real files with their exec bit, skipping SKILL.md, symlinks and tool caches', () => {
+  it('imports real files with their exec bit, skipping SKILL.md, symlinks and tool caches', async () => {
     seedDisk()
-    const r = importSkillCompanionFilesFromDisk()
+    const r = await importSkillCompanionFilesFromDisk()
     expect(r).toEqual({ seeded: 2, skipped: 0, errors: 0 })
     expect([...files.values()].map(f => f.rel_path).sort()).toEqual(['notes.md', 'scripts/run.sh'])
     expect(files.get(fk(SID, 'scripts/run.sh')).mode).toBe(0o755)
   })
 
-  it('never overwrites a DB file, so a later disk edit cannot win over the DB', () => {
+  it('never overwrites a DB file, so a later disk edit cannot win over the DB', async () => {
     seedDisk()
     put('notes.md', 'DB version')
-    importSkillCompanionFilesFromDisk()
+    await importSkillCompanionFilesFromDisk()
     expect(files.get(fk(SID, 'notes.md')).content.toString()).toBe('DB version')
   })
 
-  it('a second run imports nothing new', () => {
+  it('a second run imports nothing new', async () => {
     seedDisk()
-    importSkillCompanionFilesFromDisk()
-    expect(importSkillCompanionFilesFromDisk()).toEqual({ seeded: 0, skipped: 2, errors: 0 })
+    await importSkillCompanionFilesFromDisk()
+    expect(await importSkillCompanionFilesFromDisk()).toEqual({ seeded: 0, skipped: 2, errors: 0 })
   })
 
-  it('leaves non-fleet (tenant) skills and skills without a file alone', () => {
+  it('leaves non-fleet (tenant) skills and skills without a file alone', async () => {
     store.set('acme-x', { id: 'acme-x', name: 'x', description: '', content: 'c', tenant_id: 'acme', is_global: 0 })
     store.set('global/nofile', { id: 'global/nofile', name: 'nofile', description: '', content: 'c', tenant_id: 'fleet', is_global: 1 })
-    expect(importSkillCompanionFilesFromDisk()).toEqual({ seeded: 0, skipped: 0, errors: 0 })
+    expect(await importSkillCompanionFilesFromDisk()).toEqual({ seeded: 0, skipped: 0, errors: 0 })
   })
 })

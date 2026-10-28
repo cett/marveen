@@ -45,7 +45,7 @@ function frontmatterField(content: string, field: string): string {
  * global/<name> row equal to the refreshed file on disk. Removes the marker
  * when every entry was handled; keeps it (for the next start) when one failed.
  */
-export function applySeedSkillRefreshMarker(markerPath = join(STORE_DIR, SEED_REFRESH_MARKER)): SeedRefreshResult {
+export async function applySeedSkillRefreshMarker(markerPath = join(STORE_DIR, SEED_REFRESH_MARKER)): Promise<SeedRefreshResult> {
   const out: SeedRefreshResult = { applied: 0, unchanged: 0, errors: 0 }
   if (!existsSync(markerPath)) return out
 
@@ -57,14 +57,14 @@ export function applySeedSkillRefreshMarker(markerPath = join(STORE_DIR, SEED_RE
       if (!file || !existsSync(file)) { out.errors++; logger.warn({ name }, 'Seed skill refresh: file missing or name unsafe'); continue }
       const content = stripGeneratedHeader(readFileSync(file, 'utf-8'))
       const description = frontmatterField(content, 'description')
-      const row = getSkill(id)
+      const row = await getSkill(id)
       if (!row) {
-        seedSkillIfAbsent({ id, name, description, content, tenant_id: 'fleet', is_global: true })
+        await seedSkillIfAbsent({ id, name, description, content, tenant_id: 'fleet', is_global: true })
         out.applied++
       } else if (row.content === content && row.description === description) {
         out.unchanged++
       } else {
-        updateSkill(id, { description, content })
+        await updateSkill(id, { description, content })
         out.applied++
       }
     } catch (err) {

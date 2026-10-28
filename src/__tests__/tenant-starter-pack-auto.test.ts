@@ -68,31 +68,31 @@ async function request(method: string, path: string, body: object) {
 const createTenant = (id: string) => request('POST', '/api/admin/tenants', { id, display_name: id.toUpperCase() })
 const setAvailability = (tenant: string, agent: string, enabled: boolean) =>
   request('PUT', '/api/admin/agent-availability', { tenant_id: tenant, agent_id: agent, enabled })
-const starter = (tenant: string) => dbMod.getScheduleFromDb(`${tenant}-starter-daily-summary`)
+const starter = async (tenant: string) => dbMod.getScheduleFromDb(`${tenant}-starter-daily-summary`)
 const marker = (tenant: string) => pack.starterPackIsPending(tenant)
 
 describe('starter task for a new tenant', () => {
   it('a tenant created without an agent has no task yet and is marked pending', async () => {
     expect((await createTenant('fresh')).status).toBe(201)
-    expect(starter('fresh')).toBeUndefined()
+    expect(await starter('fresh')).toBeUndefined()
     expect(marker('fresh')).toBe(true)
   })
 
   it('the first usable agent that is enabled brings the draft + disabled task, and the marker goes', async () => {
     await createTenant('fresh')
     expect((await setAvailability('fresh', 'solo-one', true)).status).toBe(200)
-    expect(starter('fresh')).toMatchObject({ tenant_id: 'fresh', agent: 'solo-one', status: 'draft', enabled: 0, type: 'task' })
+    expect(await starter('fresh')).toMatchObject({ tenant_id: 'fresh', agent: 'solo-one', status: 'draft', enabled: 0, type: 'task' })
     expect(marker('fresh')).toBe(false)
   })
 
   it('a task an admin deleted afterwards is not brought back by a later availability change', async () => {
     await createTenant('fresh')
     await setAvailability('fresh', 'solo-one', true)
-    expect(starter('fresh')).toBeDefined()
-    dbMod.deleteSchedule('fresh-starter-daily-summary')
+    expect(await starter('fresh')).toBeDefined()
+    await dbMod.deleteSchedule('fresh-starter-daily-summary')
     // The first success settled the marker: the deleted task is not brought back by the next change.
     await setAvailability('fresh', 'solo-two', true)
-    expect(starter('fresh')).toBeUndefined()
+    expect(await starter('fresh')).toBeUndefined()
   })
 
   it('does not decide between two agents enabled before any task existed: it waits', async () => {
@@ -100,21 +100,21 @@ describe('starter task for a new tenant', () => {
     dbMod.setTenantAgentAvailability('duo', 'solo-one', true)
     dbMod.setTenantAgentAvailability('duo', 'solo-two', true)
     await setAvailability('duo', 'solo-one', true)
-    expect(starter('duo')).toBeUndefined()
+    expect(await starter('duo')).toBeUndefined()
     expect(marker('duo')).toBe(true)
   })
 
   it('a tenant from before (no marker) is never given a task by an availability change', async () => {
     expect(marker('old')).toBe(false)
     await setAvailability('old', 'old-one', true)
-    expect(starter('old')).toBeUndefined()
+    expect(await starter('old')).toBeUndefined()
   })
 
   it('a refused availability change creates nothing and keeps the tenant pending', async () => {
     await createTenant('fresh')
     const r = await request('PUT', '/api/admin/agent-availability', { tenant_id: 'fresh', agent_id: 'no-such-agent', enabled: true })
     expect(r.status).not.toBe(200)
-    expect(starter('fresh')).toBeUndefined()
+    expect(await starter('fresh')).toBeUndefined()
     expect(marker('fresh')).toBe(true)
   })
 })

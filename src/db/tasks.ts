@@ -3,6 +3,7 @@
 
 import { AgentMessage } from './agents.js'
 import { db } from './connection.js'
+import { dbx } from './facade.js'
 import { resolveWriteTenant } from './write-tenant.js'
 import { countScheduleRun } from '../otel-signals.js'
 import { stripGeneratedHeader } from '../skill-header.js'
@@ -20,62 +21,52 @@ export interface ScheduledTask {
   created_at: number
 }
 
-export function createTask(
+export async function createTask(
   id: string,
   chatId: string,
   prompt: string,
   schedule: string,
   nextRun: number
-): void {
-  db.prepare(
-    'INSERT INTO scheduled_tasks (id, chat_id, prompt, schedule, next_run, created_at) VALUES (?, ?, ?, ?, ?, ?)'
-  ).run(id, chatId, prompt, schedule, nextRun, Math.floor(Date.now() / 1000))
+): Promise<void> {
+  await dbx.run('INSERT INTO scheduled_tasks (id, chat_id, prompt, schedule, next_run, created_at) VALUES (?, ?, ?, ?, ?, ?)', id, chatId, prompt, schedule, nextRun, Math.floor(Date.now() / 1000))
 }
 
-export function getDueTasks(): ScheduledTask[] {
+export async function getDueTasks(): Promise<ScheduledTask[]> {
   const now = Math.floor(Date.now() / 1000)
-  return db
-    .prepare("SELECT * FROM scheduled_tasks WHERE status = 'active' AND next_run <= ?")
-    .all(now) as ScheduledTask[]
+  return dbx.all<ScheduledTask>("SELECT * FROM scheduled_tasks WHERE status = 'active' AND next_run <= ?", now)
 }
 
-export function updateTaskAfterRun(id: string, nextRun: number, result: string): void {
+export async function updateTaskAfterRun(id: string, nextRun: number, result: string): Promise<void> {
   const now = Math.floor(Date.now() / 1000)
-  db.prepare(
-    'UPDATE scheduled_tasks SET last_run = ?, next_run = ?, last_result = ? WHERE id = ?'
-  ).run(now, nextRun, result, id)
+  await dbx.run('UPDATE scheduled_tasks SET last_run = ?, next_run = ?, last_result = ? WHERE id = ?', now, nextRun, result, id)
 }
 
-export function listTasks(): ScheduledTask[] {
-  return db
-    .prepare('SELECT * FROM scheduled_tasks ORDER BY created_at DESC')
-    .all() as ScheduledTask[]
+export async function listTasks(): Promise<ScheduledTask[]> {
+  return dbx.all<ScheduledTask>('SELECT * FROM scheduled_tasks ORDER BY created_at DESC')
 }
 
-export function deleteTask(id: string): boolean {
-  return db.prepare('DELETE FROM scheduled_tasks WHERE id = ?').run(id).changes > 0
+export async function deleteTask(id: string): Promise<boolean> {
+  return (await dbx.run('DELETE FROM scheduled_tasks WHERE id = ?', id)).changes > 0
 }
 
-export function pauseTask(id: string): boolean {
+export async function pauseTask(id: string): Promise<boolean> {
   return (
-    db.prepare("UPDATE scheduled_tasks SET status = 'paused' WHERE id = ?").run(id).changes > 0
+    (await dbx.run("UPDATE scheduled_tasks SET status = 'paused' WHERE id = ?", id)).changes > 0
   )
 }
 
-export function resumeTask(id: string): boolean {
+export async function resumeTask(id: string): Promise<boolean> {
   return (
-    db.prepare("UPDATE scheduled_tasks SET status = 'active' WHERE id = ?").run(id).changes > 0
+    (await dbx.run("UPDATE scheduled_tasks SET status = 'active' WHERE id = ?", id)).changes > 0
   )
 }
 
-export function getTask(id: string): ScheduledTask | undefined {
-  return db.prepare('SELECT * FROM scheduled_tasks WHERE id = ?').get(id) as
-    | ScheduledTask
-    | undefined
+export async function getTask(id: string): Promise<ScheduledTask | undefined> {
+  return dbx.get<| ScheduledTask>('SELECT * FROM scheduled_tasks WHERE id = ?', id)
 }
 
-export function updateTask(id: string, prompt: string, schedule: string, nextRun: number): boolean {
-  return db.prepare('UPDATE scheduled_tasks SET prompt = ?, schedule = ?, next_run = ? WHERE id = ?').run(prompt, schedule, nextRun, id).changes > 0
+export async function updateTask(id: string, prompt: string, schedule: string, nextRun: number): Promise<boolean> {
+  return (await dbx.run('UPDATE scheduled_tasks SET prompt = ?, schedule = ?, next_run = ? WHERE id = ?', prompt, schedule, nextRun, id)).changes > 0
 }
 
 export interface TaskRunEntry { name: string; agent: string; ts: number; status: string }
@@ -88,12 +79,12 @@ export async function appendTaskRun(name: string, agent: string, status = 'fired
   const now = Date.now()
   // A scheduled run belongs to the tenant of its schedule; a name with no schedule row (an ad-hoc
   // or legacy task) falls back to the tenant the agent is working for.
-  const schedule = db.prepare('SELECT tenant_id FROM schedules WHERE id = ?').get(name) as { tenant_id: string | null } | undefined
+  const schedule = await dbx.get<{ tenant_id: string | null }>('SELECT tenant_id FROM schedules WHERE id = ?', name)
   const tenantId = schedule?.tenant_id ?? await resolveWriteTenant(agent)
-  db.prepare('INSERT INTO task_runs (name, agent, ts, status, tenant_id) VALUES (?, ?, ?, ?, ?)').run(name, agent, now, status, tenantId)
+  await dbx.run('INSERT INTO task_runs (name, agent, ts, status, tenant_id) VALUES (?, ?, ?, ?, ?)', name, agent, now, status, tenantId)
   countScheduleRun(name, status)
   // Opportunistic TTL prune: cheap indexed DELETE, keeps the table bounded.
-  db.prepare('DELETE FROM task_runs WHERE ts < ?').run(now - TASK_RUN_TTL_MS)
+  await dbx.run('DELETE FROM task_runs WHERE ts < ?', now - TASK_RUN_TTL_MS)
 }
 
 export function listTaskRunHistory(name: string, limit: number): TaskRunHistoryEntry[] {
@@ -121,7 +112,7 @@ export function listTaskRunHistory(name: string, limit: number): TaskRunHistoryE
 // tenant (schedules.tenant_id, matched by task name). The run's agent says nothing about
 // the tenant: a shared agent serves several. A run whose schedule has since been deleted
 // belongs to no tenant, so it only shows in the unfiltered, fleet-wide count.
-export function countTaskRunsBetween(fromTs: number, toTs?: number, tenantId?: string): number {
+export async function countTaskRunsBetween(fromTs: number, toTs?: number, tenantId?: string): Promise<number> {
   const conditions = ['ts >= ?']
   const params: (number | string)[] = [fromTs]
   if (toTs !== undefined) { conditions.push('ts < ?'); params.push(toTs) }
@@ -129,18 +120,16 @@ export function countTaskRunsBetween(fromTs: number, toTs?: number, tenantId?: s
     conditions.push('name IN (SELECT id FROM schedules WHERE tenant_id = ?)')
     params.push(tenantId)
   }
-  const row = db.prepare(`SELECT COUNT(*) as c FROM task_runs WHERE ${conditions.join(' AND ')}`).get(...params) as { c: number }
+  const row = (await dbx.get(`SELECT COUNT(*) as c FROM task_runs WHERE ${conditions.join(' AND ')}`, ...params)) as { c: number }
   return row.c
 }
 
-export function getAgentMessage(id: number): AgentMessage | undefined {
-  return db.prepare('SELECT * FROM agent_messages WHERE id = ?').get(id) as AgentMessage | undefined
+export async function getAgentMessage(id: number): Promise<AgentMessage | undefined> {
+  return dbx.get<AgentMessage>('SELECT * FROM agent_messages WHERE id = ?', id)
 }
 
-export function getActiveScheduledTaskCount(): { count: number; nextRun: number | null } {
-  const row = db
-    .prepare("SELECT COUNT(*) as count, MIN(next_run) as next_run FROM scheduled_tasks WHERE status = 'active'")
-    .get() as { count: number; next_run: number | null }
+export async function getActiveScheduledTaskCount(): Promise<{ count: number; nextRun: number | null }> {
+  const row = (await dbx.get("SELECT COUNT(*) as count, MIN(next_run) as next_run FROM scheduled_tasks WHERE status = 'active'")) as { count: number; next_run: number | null }
   return { count: row.count, nextRun: row.next_run }
 }
 
@@ -161,18 +150,18 @@ export interface PendingTaskRetryRow {
  * insert, false if a row already existed. Used for the first "busy" hit
  * from the cron loop.
  */
-export function insertPendingTaskRetryIfNew(
+export async function insertPendingTaskRetryIfNew(
   taskName: string,
   agentName: string,
   now: number,
   reason: string,
-): boolean {
-  return db.prepare(`
+): Promise<boolean> {
+  return (await dbx.run(`
     INSERT INTO pending_task_retries
       (task_name, agent_name, first_attempt, last_attempt, attempt_count, last_reason)
     VALUES (?, ?, ?, ?, 1, ?)
     ON CONFLICT DO NOTHING
-  `).run(taskName, agentName, now, now, reason).changes > 0
+  `, taskName, agentName, now, now, reason)).changes > 0
 }
 
 /**
@@ -181,71 +170,59 @@ export function insertPendingTaskRetryIfNew(
  * operator cancelled the row between a tick loading it and this call).
  * Used from the retry loop so a cancelled row isn't silently re-created.
  */
-export function updatePendingTaskRetry(
+export async function updatePendingTaskRetry(
   taskName: string,
   agentName: string,
   now: number,
   reason: string,
-): boolean {
-  return db.prepare(`
+): Promise<boolean> {
+  return (await dbx.run(`
     UPDATE pending_task_retries
        SET last_attempt = ?,
            attempt_count = attempt_count + 1,
            last_reason = ?
      WHERE task_name = ? AND agent_name = ?
-  `).run(now, reason, taskName, agentName).changes > 0
+  `, now, reason, taskName, agentName)).changes > 0
 }
 
 /** Back-compat shim used by tests written against the original upsert
  * semantics. Internal code should use the explicit insert-if-new /
  * update-if-exists pair above. */
-export function upsertPendingTaskRetry(
+export async function upsertPendingTaskRetry(
   taskName: string,
   agentName: string,
   now: number,
   reason: string,
-): void {
-  if (!updatePendingTaskRetry(taskName, agentName, now, reason)) {
-    insertPendingTaskRetryIfNew(taskName, agentName, now, reason)
+): Promise<void> {
+  if (!await updatePendingTaskRetry(taskName, agentName, now, reason)) {
+    await insertPendingTaskRetryIfNew(taskName, agentName, now, reason)
   }
 }
 
 /** Clear the alert timestamp so the next tick is free to re-alert. Used
  * when a Telegram send failed after we stamped the row optimistically. */
-export function clearPendingTaskRetryAlert(taskName: string, agentName: string): boolean {
-  return db
-    .prepare('UPDATE pending_task_retries SET alert_sent_at = NULL WHERE task_name = ? AND agent_name = ?')
-    .run(taskName, agentName).changes > 0
+export async function clearPendingTaskRetryAlert(taskName: string, agentName: string): Promise<boolean> {
+  return (await dbx.run('UPDATE pending_task_retries SET alert_sent_at = NULL WHERE task_name = ? AND agent_name = ?', taskName, agentName)).changes > 0
 }
 
-export function listPendingTaskRetries(): PendingTaskRetryRow[] {
-  return db
-    .prepare('SELECT * FROM pending_task_retries ORDER BY first_attempt ASC')
-    .all() as PendingTaskRetryRow[]
+export async function listPendingTaskRetries(): Promise<PendingTaskRetryRow[]> {
+  return dbx.all<PendingTaskRetryRow>('SELECT * FROM pending_task_retries ORDER BY first_attempt ASC')
 }
 
-export function getPendingTaskRetry(taskName: string, agentName: string): PendingTaskRetryRow | undefined {
-  return db
-    .prepare('SELECT * FROM pending_task_retries WHERE task_name = ? AND agent_name = ?')
-    .get(taskName, agentName) as PendingTaskRetryRow | undefined
+export async function getPendingTaskRetry(taskName: string, agentName: string): Promise<PendingTaskRetryRow | undefined> {
+  return dbx.get<PendingTaskRetryRow>('SELECT * FROM pending_task_retries WHERE task_name = ? AND agent_name = ?', taskName, agentName)
 }
 
-export function deletePendingTaskRetry(taskName: string, agentName: string): boolean {
-  return db
-    .prepare('DELETE FROM pending_task_retries WHERE task_name = ? AND agent_name = ?')
-    .run(taskName, agentName).changes > 0
+export async function deletePendingTaskRetry(taskName: string, agentName: string): Promise<boolean> {
+  return (await dbx.run('DELETE FROM pending_task_retries WHERE task_name = ? AND agent_name = ?', taskName, agentName)).changes > 0
 }
 
-export function deletePendingTaskRetryById(id: number): boolean {
-  return db
-    .prepare('DELETE FROM pending_task_retries WHERE id = ?')
-    .run(id).changes > 0
+export async function deletePendingTaskRetryById(id: number): Promise<boolean> {
+  return (await dbx.run('DELETE FROM pending_task_retries WHERE id = ?', id)).changes > 0
 }
 
-export function markPendingTaskRetryAlert(taskName: string, agentName: string, ts: number): boolean {
-  return db
-    .prepare('UPDATE pending_task_retries SET alert_sent_at = ? WHERE task_name = ? AND agent_name = ? AND alert_sent_at IS NULL')
-    .run(ts, taskName, agentName).changes > 0
+export async function markPendingTaskRetryAlert(taskName: string, agentName: string, ts: number): Promise<boolean> {
+  return (await dbx.run('UPDATE pending_task_retries SET alert_sent_at = ? WHERE task_name = ? AND agent_name = ? AND alert_sent_at IS NULL', ts, taskName, agentName)).changes > 0
 }
 
 export interface ScheduleRow {
@@ -274,23 +251,22 @@ export interface ScheduleRow {
   updated_at: number
 }
 
-export function countSchedules(): number {
-  const row = db.prepare('SELECT COUNT(*) as n FROM schedules').get() as { n: number }
+export async function countSchedules(): Promise<number> {
+  const row = (await dbx.get('SELECT COUNT(*) as n FROM schedules')) as { n: number }
   return row.n
 }
 
 /** Schedules of one tenant, or every schedule when no tenant is given (an unfiltered admin view, the runner). */
-export function listSchedulesFromDb(opts: { tenantId?: string | null } = {}): ScheduleRow[] {
+export async function listSchedulesFromDb(opts: { tenantId?: string | null } = {}): Promise<ScheduleRow[]> {
   if (opts.tenantId !== undefined && opts.tenantId !== null) {
     // Only this tenant's tasks (tenant_id is NOT NULL since migration 0076).
-    return db.prepare('SELECT * FROM schedules WHERE tenant_id = ? ORDER BY created_at DESC')
-      .all(opts.tenantId) as ScheduleRow[]
+    return dbx.all<ScheduleRow>('SELECT * FROM schedules WHERE tenant_id = ? ORDER BY created_at DESC', opts.tenantId)
   }
-  return db.prepare('SELECT * FROM schedules ORDER BY created_at DESC').all() as ScheduleRow[]
+  return dbx.all<ScheduleRow>('SELECT * FROM schedules ORDER BY created_at DESC')
 }
 
-export function getScheduleFromDb(id: string): ScheduleRow | undefined {
-  return db.prepare('SELECT * FROM schedules WHERE id = ?').get(id) as ScheduleRow | undefined
+export async function getScheduleFromDb(id: string): Promise<ScheduleRow | undefined> {
+  return dbx.get<ScheduleRow>('SELECT * FROM schedules WHERE id = ?', id)
 }
 
 export interface UpsertScheduleOpts {
@@ -315,9 +291,9 @@ export interface UpsertScheduleOpts {
   created_at?: number
 }
 
-export function upsertSchedule(id: string, opts: UpsertScheduleOpts): ScheduleRow {
+export async function upsertSchedule(id: string, opts: UpsertScheduleOpts): Promise<ScheduleRow> {
   const now = Math.floor(Date.now() / 1000)
-  db.prepare(`
+  await dbx.run(`
     INSERT INTO schedules (
       id, prompt, description, schedule, agent, type, enabled, tenant_id,
       skip_if_busy, force_send, target_session, command, timeout_ms, fail_threshold,
@@ -349,8 +325,7 @@ export function upsertSchedule(id: string, opts: UpsertScheduleOpts): ScheduleRo
       requires                 = excluded.requires,
       status                   = excluded.status,
       updated_at               = excluded.updated_at
-  `).run(
-    id, opts.prompt, opts.description, opts.schedule, opts.agent,
+  `, id, opts.prompt, opts.description, opts.schedule, opts.agent,
     opts.type, opts.enabled ? 1 : 0, opts.tenant_id ?? 'default',
     opts.skip_if_busy ? 1 : 0, opts.force_send ? 1 : 0,
     opts.target_session ?? null, opts.command ?? null,
@@ -359,7 +334,7 @@ export function upsertSchedule(id: string, opts: UpsertScheduleOpts): ScheduleRo
     opts.stuck_after_minutes ?? null, opts.requires ?? null, opts.status ?? 'live',
     opts.created_at ?? now, now,
   )
-  return db.prepare('SELECT * FROM schedules WHERE id = ?').get(id) as ScheduleRow
+  return (await dbx.get('SELECT * FROM schedules WHERE id = ?', id)) as ScheduleRow
 }
 
 const PATCH_SCHEDULE_ALLOWED_COLS = new Set([
@@ -373,16 +348,16 @@ const PATCH_SCHEDULE_ALLOWED_COLS = new Set([
 // human-admin-only PUT /api/schedules/:name/activate route performs --
 // separate from patchSchedule so the activation path can never accidentally
 // touch any other column.
-export function activateSchedule(id: string): ScheduleRow | null {
-  const existing = getScheduleFromDb(id)
+export async function activateSchedule(id: string): Promise<ScheduleRow | null> {
+  const existing = await getScheduleFromDb(id)
   if (!existing) return null
   const now = Math.floor(Date.now() / 1000)
-  db.prepare("UPDATE schedules SET status = 'live', updated_at = ? WHERE id = ?").run(now, id)
-  return db.prepare('SELECT * FROM schedules WHERE id = ?').get(id) as ScheduleRow
+  await dbx.run("UPDATE schedules SET status = 'live', updated_at = ? WHERE id = ?", now, id)
+  return (await dbx.get('SELECT * FROM schedules WHERE id = ?', id)) as ScheduleRow
 }
 
-export function patchSchedule(id: string, patch: Partial<Omit<UpsertScheduleOpts, 'created_at'>>): ScheduleRow | null {
-  const existing = getScheduleFromDb(id)
+export async function patchSchedule(id: string, patch: Partial<Omit<UpsertScheduleOpts, 'created_at'>>): Promise<ScheduleRow | null> {
+  const existing = await getScheduleFromDb(id)
   if (!existing) return null
   const now = Math.floor(Date.now() / 1000)
   const sets: string[] = ['updated_at = ?']
@@ -395,17 +370,17 @@ export function patchSchedule(id: string, patch: Partial<Omit<UpsertScheduleOpts
     vals.push(boolCols.has(col) && typeof v === 'boolean' ? (v ? 1 : 0) : (v ?? null))
   }
   vals.push(id)
-  db.prepare(`UPDATE schedules SET ${sets.join(', ')} WHERE id = ?`).run(...vals)
-  return db.prepare('SELECT * FROM schedules WHERE id = ?').get(id) as ScheduleRow
+  await dbx.run(`UPDATE schedules SET ${sets.join(', ')} WHERE id = ?`, ...vals)
+  return (await dbx.get('SELECT * FROM schedules WHERE id = ?', id)) as ScheduleRow
 }
 
-export function deleteSchedule(id: string): boolean {
-  return db.prepare('DELETE FROM schedules WHERE id = ?').run(id).changes > 0
+export async function deleteSchedule(id: string): Promise<boolean> {
+  return (await dbx.run('DELETE FROM schedules WHERE id = ?', id)).changes > 0
 }
 
-export function setScheduleEnabled(id: string, enabled: boolean): boolean {
+export async function setScheduleEnabled(id: string, enabled: boolean): Promise<boolean> {
   const now = Math.floor(Date.now() / 1000)
-  return db.prepare('UPDATE schedules SET enabled = ?, updated_at = ? WHERE id = ?').run(enabled ? 1 : 0, now, id).changes > 0
+  return (await dbx.run('UPDATE schedules SET enabled = ?, updated_at = ? WHERE id = ?', enabled ? 1 : 0, now, id)).changes > 0
 }
 
 // Migration 0057: replaces the schedule-runner's in-memory scheduleLastRun
@@ -415,18 +390,16 @@ export function setScheduleEnabled(id: string, enabled: boolean): boolean {
 // expected and harmless when the runner fires a schedule id that has since
 // been deleted from the table -- same as the old file-backed map, which
 // happily kept stamps for ids with no corresponding schedule.
-export function updateScheduleLastRun(id: string, lastRunAt: number, result: string | null = null): boolean {
-  return db.prepare('UPDATE schedules SET last_run_at = ?, last_run_result = ? WHERE id = ?')
-    .run(lastRunAt, result, id).changes > 0
+export async function updateScheduleLastRun(id: string, lastRunAt: number, result: string | null = null): Promise<boolean> {
+  return (await dbx.run('UPDATE schedules SET last_run_at = ?, last_run_result = ? WHERE id = ?', lastRunAt, result, id)).changes > 0
 }
 
 // Conditional clear used by the 'lost injection' rollback path: only clears
 // if last_run_at still equals the stamp this caller itself wrote (nothing
 // newer has fired in the meantime). Atomic in SQL, replacing the old
 // Map.get-then-delete + file-persist pair.
-export function clearScheduleLastRunIfMatches(id: string, expectedLastRunAt: number): boolean {
-  return db.prepare('UPDATE schedules SET last_run_at = NULL, last_run_result = NULL WHERE id = ? AND last_run_at = ?')
-    .run(id, expectedLastRunAt).changes > 0
+export async function clearScheduleLastRunIfMatches(id: string, expectedLastRunAt: number): Promise<boolean> {
+  return (await dbx.run('UPDATE schedules SET last_run_at = NULL, last_run_result = NULL WHERE id = ? AND last_run_at = ?', id, expectedLastRunAt)).changes > 0
 }
 
 // One-time import of store/schedule-last-run.json into the last_run_at
@@ -454,13 +427,13 @@ export function migrateScheduleLastRunFromFile(entries: Record<string, unknown>)
 // in the DB. Safe to run on every boot -- never overwrites hand-edited rows.
 const SCHEDULE_TYPES = ['task', 'heartbeat', 'command']
 
-export function seedScheduleIfAbsent(id: string, opts: UpsertScheduleOpts): boolean {
+export async function seedScheduleIfAbsent(id: string, opts: UpsertScheduleOpts): Promise<boolean> {
   // The options come from task files on disk. A row the table would reject
   // (NOT NULL schedule/agent, CHECK on type) is skipped like an existing one;
   // ON CONFLICT DO NOTHING only absorbs key conflicts, not constraint errors.
   if (opts.schedule == null || opts.agent == null || !SCHEDULE_TYPES.includes(opts.type)) return false
   const now = opts.created_at ?? Math.floor(Date.now() / 1000)
-  const result = db.prepare(`
+  const result = await dbx.run(`
     INSERT INTO schedules (
       id, prompt, description, schedule, agent, type, enabled, tenant_id,
       skip_if_busy, force_send, target_session, command, timeout_ms, fail_threshold,
@@ -468,8 +441,7 @@ export function seedScheduleIfAbsent(id: string, opts: UpsertScheduleOpts): bool
       created_at, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT DO NOTHING
-  `).run(
-    id, opts.prompt, opts.description, opts.schedule, opts.agent,
+  `, id, opts.prompt, opts.description, opts.schedule, opts.agent,
     opts.type, opts.enabled ? 1 : 0, opts.tenant_id ?? 'default',
     opts.skip_if_busy ? 1 : 0, opts.force_send ? 1 : 0,
     opts.target_session ?? null, opts.command ?? null,
@@ -504,46 +476,43 @@ export interface CreateSkillOpts {
   created_by?: string | null
 }
 
-export function createSkill(opts: CreateSkillOpts): SkillRow {
+export async function createSkill(opts: CreateSkillOpts): Promise<SkillRow> {
   opts = { ...opts, content: stripGeneratedHeader(opts.content) }
   const now = Math.floor(Date.now() / 1000)
-  db.prepare(`
+  await dbx.run(`
     INSERT INTO skills (id, name, description, content, tenant_id, is_global, created_by, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    opts.id, opts.name, opts.description ?? '', opts.content,
+  `, opts.id, opts.name, opts.description ?? '', opts.content,
     opts.tenant_id, opts.is_global ? 1 : 0, opts.created_by ?? null, now, now,
   )
-  return getSkill(opts.id) as SkillRow
+  return await getSkill(opts.id) as SkillRow
 }
 
-export function getSkill(id: string): SkillRow | undefined {
-  return db.prepare('SELECT * FROM skills WHERE id = ?').get(id) as SkillRow | undefined
+export async function getSkill(id: string): Promise<SkillRow | undefined> {
+  return dbx.get<SkillRow>('SELECT * FROM skills WHERE id = ?', id)
 }
 
 /** True when the agent has an enabled availability row for one of the tenants (skill-sync's qualification check). */
-export function agentHasEnabledAvailability(agentId: string, tenantIds: readonly string[]): boolean {
+export async function agentHasEnabledAvailability(agentId: string, tenantIds: readonly string[]): Promise<boolean> {
   if (tenantIds.length === 0) return false
   const placeholders = tenantIds.map(() => '?').join(',')
-  return db
-    .prepare(`SELECT 1 FROM tenant_agent_availability WHERE agent_id = ? AND enabled = 1 AND tenant_id IN (${placeholders})`)
-    .get(agentId, ...tenantIds) !== undefined
+  return await dbx.get(`SELECT 1 FROM tenant_agent_availability WHERE agent_id = ? AND enabled = 1 AND tenant_id IN (${placeholders})`, agentId, ...tenantIds) !== undefined
 }
 
 /** Write-back of an edited SKILL.md: sets the content of an existing skill row (the caller strips the generated header). */
-export function setSkillContent(skillId: string, content: string, now: number): void {
-  db.prepare('UPDATE skills SET content = ?, updated_at = ? WHERE id = ?').run(content, now, skillId)
+export async function setSkillContent(skillId: string, content: string, now: number): Promise<void> {
+  await dbx.run('UPDATE skills SET content = ?, updated_at = ? WHERE id = ?', content, now, skillId)
 }
 
 /** Write-back of a SKILL.md that has no row yet: creates it as a fleet skill (global/... ids are global). */
-export function insertFleetSkillFromFile(skillId: string, name: string, content: string, isGlobal: boolean, now: number): void {
-  db.prepare(`
+export async function insertFleetSkillFromFile(skillId: string, name: string, content: string, isGlobal: boolean, now: number): Promise<void> {
+  await dbx.run(`
     INSERT INTO skills (id, name, description, content, tenant_id, is_global, created_by, created_at, updated_at)
     VALUES (?, ?, '', ?, 'fleet', ?, NULL, ?, ?)
-  `).run(skillId, name, content, isGlobal ? 1 : 0, now, now)
+  `, skillId, name, content, isGlobal ? 1 : 0, now, now)
 }
 
-export function updateSkill(id: string, patch: { name?: string; description?: string; content?: string; is_global?: boolean }): SkillRow | undefined {
+export async function updateSkill(id: string, patch: { name?: string; description?: string; content?: string; is_global?: boolean }): Promise<SkillRow | undefined> {
   const now = Math.floor(Date.now() / 1000)
   const sets: string[] = ['updated_at = ?']
   const vals: unknown[] = [now]
@@ -552,13 +521,13 @@ export function updateSkill(id: string, patch: { name?: string; description?: st
   if (patch.content !== undefined)     { sets.push('content = ?');     vals.push(stripGeneratedHeader(patch.content)) }
   if (patch.is_global !== undefined)   { sets.push('is_global = ?');   vals.push(patch.is_global ? 1 : 0) }
   vals.push(id)
-  const changes = db.prepare(`UPDATE skills SET ${sets.join(', ')} WHERE id = ?`).run(...vals).changes
-  return changes > 0 ? getSkill(id) : undefined
+  const changes = (await dbx.run(`UPDATE skills SET ${sets.join(', ')} WHERE id = ?`, ...vals)).changes
+  return changes > 0 ? await getSkill(id) : undefined
 }
 
-export function deleteSkill(id: string): boolean {
-  db.prepare('DELETE FROM skill_files WHERE skill_id = ?').run(id)
-  return db.prepare('DELETE FROM skills WHERE id = ?').run(id).changes > 0
+export async function deleteSkill(id: string): Promise<boolean> {
+  await dbx.run('DELETE FROM skill_files WHERE skill_id = ?', id)
+  return (await dbx.run('DELETE FROM skills WHERE id = ?', id)).changes > 0
 }
 
 // --- skill companion files (migration 0063, rules in src/skill-files.ts) ---
@@ -572,41 +541,41 @@ export interface SkillFileRow {
   updated_at: number
 }
 
-export function listSkillFiles(skillId: string): SkillFileRow[] {
-  return db.prepare('SELECT * FROM skill_files WHERE skill_id = ? ORDER BY rel_path').all(skillId) as SkillFileRow[]
+export async function listSkillFiles(skillId: string): Promise<SkillFileRow[]> {
+  return dbx.all<SkillFileRow>('SELECT * FROM skill_files WHERE skill_id = ? ORDER BY rel_path', skillId)
 }
 
-export function getSkillFile(skillId: string, relPath: string): SkillFileRow | undefined {
-  return db.prepare('SELECT * FROM skill_files WHERE skill_id = ? AND rel_path = ?').get(skillId, relPath) as SkillFileRow | undefined
+export async function getSkillFile(skillId: string, relPath: string): Promise<SkillFileRow | undefined> {
+  return dbx.get<SkillFileRow>('SELECT * FROM skill_files WHERE skill_id = ? AND rel_path = ?', skillId, relPath)
 }
 
 /** Upsert one companion file. The caller has normalized rel_path and checked the size. */
-export function putSkillFile(skillId: string, relPath: string, content: Buffer, mode?: number): SkillFileRow {
+export async function putSkillFile(skillId: string, relPath: string, content: Buffer, mode?: number): Promise<SkillFileRow> {
   const now = Math.floor(Date.now() / 1000)
-  db.prepare(`
+  await dbx.run(`
     INSERT INTO skill_files (skill_id, rel_path, content, mode, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?)
     ON CONFLICT(skill_id, rel_path) DO UPDATE SET content = excluded.content, mode = excluded.mode, updated_at = excluded.updated_at
-  `).run(skillId, relPath, content, sanitizeSkillFileMode(mode), now, now)
-  return getSkillFile(skillId, relPath) as SkillFileRow
+  `, skillId, relPath, content, sanitizeSkillFileMode(mode), now, now)
+  return await getSkillFile(skillId, relPath) as SkillFileRow
 }
 
 /** Insert only when the (skill, path) pair is absent: never overwrites the DB. Returns true when inserted. */
-export function seedSkillFileIfAbsent(skillId: string, relPath: string, content: Buffer, mode?: number): boolean {
+export async function seedSkillFileIfAbsent(skillId: string, relPath: string, content: Buffer, mode?: number): Promise<boolean> {
   const now = Math.floor(Date.now() / 1000)
-  return db.prepare(`
+  return (await dbx.run(`
     INSERT INTO skill_files (skill_id, rel_path, content, mode, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?)
     ON CONFLICT DO NOTHING
-  `).run(skillId, relPath, content, sanitizeSkillFileMode(mode), now, now).changes > 0
+  `, skillId, relPath, content, sanitizeSkillFileMode(mode), now, now)).changes > 0
 }
 
-export function deleteSkillFile(skillId: string, relPath: string): boolean {
-  return db.prepare('DELETE FROM skill_files WHERE skill_id = ? AND rel_path = ?').run(skillId, relPath).changes > 0
+export async function deleteSkillFile(skillId: string, relPath: string): Promise<boolean> {
+  return (await dbx.run('DELETE FROM skill_files WHERE skill_id = ? AND rel_path = ?', skillId, relPath)).changes > 0
 }
 
-export function countSkillFiles(skillId: string): number {
-  return (db.prepare('SELECT COUNT(*) AS n FROM skill_files WHERE skill_id = ?').get(skillId) as { n: number }).n
+export async function countSkillFiles(skillId: string): Promise<number> {
+  return ((await dbx.get('SELECT COUNT(*) AS n FROM skill_files WHERE skill_id = ?', skillId)) as { n: number }).n
 }
 
 /**
@@ -617,8 +586,8 @@ export function countSkillFiles(skillId: string): number {
  * Fleet skills (tenant_id = 'fleet') are NOT included unless explicitly
  * granted. Pass callerTenantId = 'fleet' (admin) to see fleet skills.
  */
-export function listSkillsForTenant(callerTenantId: string): SkillRow[] {
-  return db.prepare(`
+export async function listSkillsForTenant(callerTenantId: string): Promise<SkillRow[]> {
+  return dbx.all<SkillRow>(`
     SELECT s.* FROM skills s
     WHERE s.tenant_id = ?
     UNION
@@ -626,12 +595,12 @@ export function listSkillsForTenant(callerTenantId: string): SkillRow[] {
     JOIN skill_tenant_access sta ON sta.skill_id = s.id
     WHERE sta.tenant_id = ?
     ORDER BY name
-  `).all(callerTenantId, callerTenantId) as SkillRow[]
+  `, callerTenantId, callerTenantId)
 }
 
 /** Admin: list all skills regardless of tenant. */
-export function listAllSkills(): SkillRow[] {
-  return db.prepare('SELECT * FROM skills ORDER BY tenant_id, name').all() as SkillRow[]
+export async function listAllSkills(): Promise<SkillRow[]> {
+  return dbx.all<SkillRow>('SELECT * FROM skills ORDER BY tenant_id, name')
 }
 
 export interface SkillTenantAccessRow {
@@ -641,26 +610,26 @@ export interface SkillTenantAccessRow {
   granted_at: number
 }
 
-export function grantSkillAccess(skillId: string, tenantId: string, grantedBy?: string): void {
+export async function grantSkillAccess(skillId: string, tenantId: string, grantedBy?: string): Promise<void> {
   const now = Math.floor(Date.now() / 1000)
-  db.prepare(`
+  await dbx.run(`
     INSERT INTO skill_tenant_access (skill_id, tenant_id, granted_by, granted_at)
     VALUES (?, ?, ?, ?)
     ON CONFLICT(skill_id, tenant_id) DO NOTHING
-  `).run(skillId, tenantId, grantedBy ?? null, now)
+  `, skillId, tenantId, grantedBy ?? null, now)
 }
 
-export function revokeSkillAccess(skillId: string, tenantId: string): boolean {
-  return db.prepare('DELETE FROM skill_tenant_access WHERE skill_id = ? AND tenant_id = ?').run(skillId, tenantId).changes > 0
+export async function revokeSkillAccess(skillId: string, tenantId: string): Promise<boolean> {
+  return (await dbx.run('DELETE FROM skill_tenant_access WHERE skill_id = ? AND tenant_id = ?', skillId, tenantId)).changes > 0
 }
 
-export function listSkillAccess(skillId: string): SkillTenantAccessRow[] {
-  return db.prepare('SELECT * FROM skill_tenant_access WHERE skill_id = ?').all(skillId) as SkillTenantAccessRow[]
+export async function listSkillAccess(skillId: string): Promise<SkillTenantAccessRow[]> {
+  return dbx.all<SkillTenantAccessRow>('SELECT * FROM skill_tenant_access WHERE skill_id = ?', skillId)
 }
 
 // ON CONFLICT DO NOTHING: materialize a file-based skill only if no row with this id
 // exists yet. Safe to run repeatedly -- never overwrites hand-edited DB rows.
-export function seedSkillIfAbsent(opts: {
+export async function seedSkillIfAbsent(opts: {
   id: string
   name: string
   description: string
@@ -668,33 +637,33 @@ export function seedSkillIfAbsent(opts: {
   tenant_id: string
   is_global: boolean
   created_at?: number
-}): boolean {
+}): Promise<boolean> {
   // File-derived input: a row the table would reject (NOT NULL name/content/tenant_id)
   // is skipped, since ON CONFLICT DO NOTHING only absorbs key conflicts.
   if (opts.name == null || opts.content == null || opts.tenant_id == null) return false
   const now = opts.created_at ?? Math.floor(Date.now() / 1000)
-  const result = db.prepare(`
+  const result = await dbx.run(`
     INSERT INTO skills (id, name, description, content, tenant_id, is_global, created_by, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)
     ON CONFLICT DO NOTHING
-  `).run(opts.id, opts.name, opts.description, stripGeneratedHeader(opts.content), opts.tenant_id, opts.is_global ? 1 : 0, now, now)
+  `, opts.id, opts.name, opts.description, stripGeneratedHeader(opts.content), opts.tenant_id, opts.is_global ? 1 : 0, now, now)
   return result.changes > 0
 }
 
-export function countSkills(): number {
-  return (db.prepare('SELECT COUNT(*) AS n FROM skills').get() as { n: number }).n
+export async function countSkills(): Promise<number> {
+  return ((await dbx.get('SELECT COUNT(*) AS n FROM skills')) as { n: number }).n
 }
 
 /** Skills owned locally by one agent (id prefix 'agent/<agentId>/', per materialize-skills.ts's ID scheme). */
-export function listAgentOwnedSkills(agentId: string): SkillRow[] {
-  return db.prepare(`
+export async function listAgentOwnedSkills(agentId: string): Promise<SkillRow[]> {
+  return dbx.all<SkillRow>(`
     SELECT * FROM skills WHERE id LIKE ? ORDER BY name
-  `).all(`agent/${agentId}/%`) as SkillRow[]
+  `, `agent/${agentId}/%`)
 }
 
 /** Global fleet skills (~/.claude/skills), inherited by every agent. */
-export function listGlobalFleetSkills(): SkillRow[] {
-  return db.prepare(`
+export async function listGlobalFleetSkills(): Promise<SkillRow[]> {
+  return dbx.all<SkillRow>(`
     SELECT * FROM skills WHERE is_global = 1 AND tenant_id = 'fleet' ORDER BY name
-  `).all() as SkillRow[]
+  `)
 }

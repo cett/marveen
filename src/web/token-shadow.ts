@@ -374,7 +374,7 @@ const WATCHED: readonly WatchSpec[] = [
   {
     prefix: '/api/schedules', kind: 'unscoped', paramSeg: 0, paramName: ':name',
     paramLiterals: new Set(['tick-status', 'agents', 'expand-questions', 'expand-prompt', 'pending']),
-    owner: (p) => getScheduleFromDb(p)?.agent,
+    owner: async (p) => (await getScheduleFromDb(p))?.agent,
     queryKeys: AGENT_QUERY, bodyKeys: ['agent'], bodyMaxBytes: SCHEDULE_BODY_MAX_BYTES, enforce: 'any', omittedMain: { who: 'always', on: 'write', bodyKey: 'agent' },
   },
 ]

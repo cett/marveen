@@ -55,9 +55,9 @@ beforeEach(async () => {
   dbMod.setTenantAgentAvailability('default', 'shared-agent', true)
 
   const base = { description: 'Daily', prompt: 'Summarise the day', schedule: '0 9 * * *', enabled: true, skip_if_busy: false, force_send: false }
-  dbMod.upsertSchedule('t-live', { ...base, agent: 'tenant-agent', type: 'task', tenant_id: 'tenant-b', status: 'live' })
-  dbMod.upsertSchedule('t-draft', { ...base, agent: 'tenant-agent', type: 'task', tenant_id: 'tenant-b', status: 'draft' })
-  dbMod.upsertSchedule('t-other', { ...base, agent: 'fleet-agent', type: 'task', tenant_id: 'default', status: 'live' })
+  await dbMod.upsertSchedule('t-live', { ...base, agent: 'tenant-agent', type: 'task', tenant_id: 'tenant-b', status: 'live' })
+  await dbMod.upsertSchedule('t-draft', { ...base, agent: 'tenant-agent', type: 'task', tenant_id: 'tenant-b', status: 'draft' })
+  await dbMod.upsertSchedule('t-other', { ...base, agent: 'fleet-agent', type: 'task', tenant_id: 'default', status: 'live' })
 })
 
 afterEach(() => {
@@ -88,7 +88,7 @@ async function call(method: string, pathAndQuery: string, body: object | undefin
 }
 const put = (name: string, body: object, who: Principal) => call('PUT', `/api/schedules/${name}`, body, who)
 
-const stored = (name: string) => dbMod.getScheduleFromDb(name)!
+const stored = async (name: string) => (await dbMod.getScheduleFromDb(name))!
 const newTask = (name: string, extra: object = {}) => ({
   name, prompt: 'do it', schedule: '0 9 * * *', agent: 'tenant-agent', type: 'task', ...extra,
 })
@@ -103,10 +103,10 @@ describe('a non-admin account with no tenant', () => {
   })
 
   it('cannot write', async () => {
-    const before = stored('t-other')
+    const before = await stored('t-other')
     expect((await call('PUT', '/api/schedules/t-other', { prompt: 'x' }, session('agent', null))).status).toBe(403)
     expect((await call('POST', '/api/schedules/t-other/toggle', undefined, session('agent', null))).status).toBe(403)
-    expect(stored('t-other')).toEqual(before)
+    expect(await stored('t-other')).toEqual(before)
   })
 })
 
@@ -115,13 +115,13 @@ describe('writes on the default tenant stay with the admins', () => {
     ['a tenant session', session('agent', 'default')],
     ['a scoped token', token('default')],
   ])('%s is refused, in every verb, and the row does not move', async (_n, who) => {
-    const before = stored('t-other')
+    const before = await stored('t-other')
     expect((await put('t-other', { prompt: 'x' }, who)).status).toBe(403)
     expect((await call('POST', '/api/schedules/t-other/toggle', undefined, who)).status).toBe(403)
     expect((await call('DELETE', '/api/schedules/t-other', undefined, who)).status).toBe(403)
     expect((await call('POST', '/api/schedules', newTask('mine', { agent: 'fleet-agent' }), who)).status).toBe(403)
-    expect(stored('t-other')).toEqual(before)
-    expect(dbMod.getScheduleFromDb('mine')).toBeUndefined()
+    expect(await stored('t-other')).toEqual(before)
+    expect(await dbMod.getScheduleFromDb('mine')).toBeUndefined()
   })
 
   it('but it can still read its tenant, and a human admin or the shared token can still write', async () => {
@@ -134,19 +134,19 @@ describe('writes on the default tenant stay with the admins', () => {
 describe('a device key', () => {
   it('can read but never write', async () => {
     expect((await call('GET', '/api/schedules', undefined, device)).status).toBe(200)
-    const before = stored('t-live')
+    const before = await stored('t-live')
     expect((await put('t-live', { prompt: 'x' }, device)).status).toBe(403)
     expect((await call('POST', '/api/schedules/t-live/toggle', undefined, device)).status).toBe(403)
     expect((await call('POST', '/api/schedules', newTask('dev-made'), device)).status).toBe(403)
-    expect(stored('t-live')).toEqual(before)
+    expect(await stored('t-live')).toEqual(before)
   })
 })
 
 describe('only a signed-in user or an API token writes', () => {
   it('a federation principal is refused even with a tenant', async () => {
-    const before = stored('t-live')
+    const before = await stored('t-live')
     expect((await put('t-live', { prompt: 'x' }, federation)).status).toBe(403)
-    expect(stored('t-live')).toEqual(before)
+    expect(await stored('t-live')).toEqual(before)
   })
 
   it.each([
@@ -165,20 +165,20 @@ describe('only a signed-in user or an API token writes', () => {
 
 describe('cap on tasks waiting for review per tenant', () => {
   const cap = 20
-  const seedDrafts = (n: number, status: 'draft' | 'pending_review' | 'live' = 'draft') => {
+  const seedDrafts = async (n: number, status: 'draft' | 'pending_review' | 'live' = 'draft') => {
     const base = { description: 'd', prompt: 'p', schedule: '0 9 * * *', enabled: true, skip_if_busy: false, force_send: false }
-    for (let i = 0; i < n; i++) dbMod.upsertSchedule(`bulk-${status}-${i}`, { ...base, agent: 'tenant-agent', type: 'task', tenant_id: 'tenant-b', status })
+    for (let i = 0; i < n; i++) await dbMod.upsertSchedule(`bulk-${status}-${i}`, { ...base, agent: 'tenant-agent', type: 'task', tenant_id: 'tenant-b', status })
   }
   const tenantUser = session('agent', 'tenant-b')
 
   it('the 21st draft is refused with 400 limit_exceeded and nothing is written', async () => {
-    seedDrafts(cap - 1) // + the t-draft seeded in beforeEach = 20
+    await seedDrafts(cap - 1) // + the t-draft seeded in beforeEach = 20
     expect((await call('POST', '/api/schedules', newTask('one-more'), tenantUser)).status).toBe(400)
-    expect(dbMod.getScheduleFromDb('one-more')).toBeUndefined()
+    expect(await dbMod.getScheduleFromDb('one-more')).toBeUndefined()
   })
 
   it('the refusal names the limit, and a task deleted frees a slot', async () => {
-    seedDrafts(cap - 1)
+    await seedDrafts(cap - 1)
     const refused = await call('POST', '/api/schedules', newTask('one-more'), tenantUser)
     expect(refused.body).toMatchObject({ error: 'limit_exceeded' })
     expect(String(refused.body['hint'])).toContain(String(cap))
@@ -187,12 +187,12 @@ describe('cap on tasks waiting for review per tenant', () => {
   })
 
   it('a held (pending_review) task counts the same as a draft', async () => {
-    seedDrafts(cap, 'pending_review')
+    await seedDrafts(cap, 'pending_review')
     expect((await call('POST', '/api/schedules', newTask('one-more'), tenantUser)).status).toBe(400)
   })
 
   it('live tasks do not count', async () => {
-    seedDrafts(cap + 5, 'live')
+    await seedDrafts(cap + 5, 'live')
     expect((await call('POST', '/api/schedules', newTask('fits'), tenantUser)).status).toBe(200)
   })
 
@@ -200,25 +200,25 @@ describe('cap on tasks waiting for review per tenant', () => {
     dbMod.createTenant('tenant-c', 'Tenant C')
     dbMod.updateTenant('tenant-c', { main_agent_id: 'tenant-agent' })
     dbMod.setTenantAgentAvailability('tenant-c', 'tenant-agent', true)
-    seedDrafts(cap)
+    await seedDrafts(cap)
     expect((await call('POST', '/api/schedules', newTask('other-tenant'), session('agent', 'tenant-c'))).status).toBe(200)
   })
 
   it('a human admin creating a live task is not subject to it', async () => {
-    seedDrafts(cap)
+    await seedDrafts(cap)
     const out = await call('POST', '/api/schedules', newTask('by-admin', { tenant_id: 'tenant-b' }), human)
     expect(out.status).toBe(200)
     expect(out.body).toMatchObject({ status: 'live' })
   })
 
   it('an agent on the shared token creating a draft for the tenant is', async () => {
-    seedDrafts(cap)
+    await seedDrafts(cap)
     const out = await call('POST', '/api/schedules', newTask('by-agent', { tenant_id: 'tenant-b' }), sharedToken)
     expect(out.status).toBe(400)
   })
 
   it('editing a task the tenant already has is never blocked by the cap', async () => {
-    seedDrafts(cap)
+    await seedDrafts(cap)
     expect((await put('t-live', { prompt: 'edited' }, tenantUser)).status).toBe(200)
   })
 })

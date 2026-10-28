@@ -337,58 +337,58 @@ describe('background task functions', () => {
 describe('scheduled task functions', () => {
   const taskId = 'db2-sched-1'
 
-  it('createTask + getTask roundtrip', () => {
+  it('createTask + getTask roundtrip', async () => {
     const nextRun = Math.floor(Date.now() / 1000) + 3600
-    createTask(taskId, 'db2-test-chat', 'daily check', '0 9 * * *', nextRun)
-    const t = getTask(taskId)
+    await createTask(taskId, 'db2-test-chat', 'daily check', '0 9 * * *', nextRun)
+    const t = await getTask(taskId)
     expect(t?.id).toBe(taskId)
     expect(t?.status).toBe('active')
   })
 
-  it('listTasks returns the created task', () => {
-    const tasks = listTasks()
+  it('listTasks returns the created task', async () => {
+    const tasks = await listTasks()
     expect(tasks.some(t => t.id === taskId)).toBe(true)
   })
 
-  it('getDueTasks returns tasks with next_run in the past', () => {
+  it('getDueTasks returns tasks with next_run in the past', async () => {
     const pastRun = Math.floor(Date.now() / 1000) - 60
-    createTask('db2-sched-due', 'db2-test-chat', 'overdue', '* * * * *', pastRun)
-    const due = getDueTasks()
+    await createTask('db2-sched-due', 'db2-test-chat', 'overdue', '* * * * *', pastRun)
+    const due = await getDueTasks()
     expect(due.some(t => t.id === 'db2-sched-due')).toBe(true)
   })
 
-  it('updateTaskAfterRun updates last_run and next_run', () => {
+  it('updateTaskAfterRun updates last_run and next_run', async () => {
     const newNext = Math.floor(Date.now() / 1000) + 7200
-    updateTaskAfterRun(taskId, newNext, 'success')
-    const t = getTask(taskId)
+    await updateTaskAfterRun(taskId, newNext, 'success')
+    const t = await getTask(taskId)
     expect(t?.next_run).toBe(newNext)
     expect(t?.last_result).toBe('success')
   })
 
-  it('pauseTask pauses and resumeTask resumes', () => {
-    const paused = pauseTask(taskId)
+  it('pauseTask pauses and resumeTask resumes', async () => {
+    const paused = await pauseTask(taskId)
     expect(paused).toBe(true)
-    expect(getTask(taskId)?.status).toBe('paused')
-    const resumed = resumeTask(taskId)
+    expect((await getTask(taskId))?.status).toBe('paused')
+    const resumed = await resumeTask(taskId)
     expect(resumed).toBe(true)
-    expect(getTask(taskId)?.status).toBe('active')
+    expect((await getTask(taskId))?.status).toBe('active')
   })
 
-  it('updateTask changes prompt and schedule', () => {
+  it('updateTask changes prompt and schedule', async () => {
     const newNext = Math.floor(Date.now() / 1000) + 3600
-    const ok = updateTask(taskId, 'new prompt', '0 10 * * *', newNext)
+    const ok = await updateTask(taskId, 'new prompt', '0 10 * * *', newNext)
     expect(ok).toBe(true)
-    expect(getTask(taskId)?.prompt).toBe('new prompt')
+    expect((await getTask(taskId))?.prompt).toBe('new prompt')
   })
 
-  it('deleteTask removes the task', () => {
-    const ok = deleteTask('db2-sched-due')
+  it('deleteTask removes the task', async () => {
+    const ok = await deleteTask('db2-sched-due')
     expect(ok).toBe(true)
-    expect(getTask('db2-sched-due')).toBeUndefined()
+    expect(await getTask('db2-sched-due')).toBeUndefined()
   })
 
-  it('getActiveScheduledTaskCount returns count and nextRun', () => {
-    const result = getActiveScheduledTaskCount()
+  it('getActiveScheduledTaskCount returns count and nextRun', async () => {
+    const result = await getActiveScheduledTaskCount()
     expect(typeof result.count).toBe('number')
     // nextRun is null if no active tasks, or a number
     expect(result.nextRun === null || typeof result.nextRun === 'number').toBe(true)

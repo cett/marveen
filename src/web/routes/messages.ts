@@ -496,7 +496,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // ('default' = the fleet's own). A foreign row answers exactly like a missing
     // one (404, same body) so ids cannot be probed across tenants. A row's
     // tenant_id never changes after insert, so checking before the UPDATE is safe.
-    const existing = getAgentMessage(id)
+    const existing = await getAgentMessage(id)
     if (!isAdmin) {
       if (existing && (existing.tenant_id ?? 'default') !== effectiveTenantId) {
         await writeAgentAuditLog({ agent_id: ctx.agentId ?? authPrincipal(ctx) ?? 'unknown', entity: 'message', action: 'update', entity_id: id,
@@ -541,7 +541,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     if (newStatus === 'done' || newStatus === 'failed' || newStatus === 'refused') {
       ok = closeOpenMessage(id, newStatus, result)
       if (!ok) {
-        const current = getAgentMessage(id)
+        const current = await getAgentMessage(id)
         if (current && (current.status === 'done' || current.status === 'failed')) {
           // Tenant (404) and recipient (403) were checked above, so this answer never reveals the status
           // of a message the caller may not touch. Logged: it is the signal of a deliberate re-close.

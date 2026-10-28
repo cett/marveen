@@ -426,9 +426,9 @@ async function sendMassSkipAlert(held: string[], taskCount: number): Promise<voi
     .catch(err => logger.warn({ err }, 'schedule-runner: mass-skip alert send failed'))
 }
 
-function recordScheduleLastRun(taskName: string, when: number, result: string): void {
+async function recordScheduleLastRun(taskName: string, when: number, result: string): Promise<void> {
   try {
-    updateScheduleLastRun(taskName, when, result)
+    await updateScheduleLastRun(taskName, when, result)
   } catch (err) {
     logger.warn({ err, task: taskName }, 'schedule-runner: failed to persist last-run stamp')
   }
@@ -1143,7 +1143,7 @@ async function attemptFireTask(
     // Claude Code queue it). All non-forceSend tasks keep the gate ON.
     await sendPromptToSession(session, fullPrompt, host, { waitForIdle: !task.forceSend })
     recordDelivery(session, fullPrompt)
-    recordScheduleLastRun(task.name, now, lateCatchUpMs != null ? 'fired_late' : 'fired')
+    await recordScheduleLastRun(task.name, now, lateCatchUpMs != null ? 'fired_late' : 'fired')
     // A lateCatchUpMs value means this tick only matched because of the
     // enlarged first-run catch-up window (see startScheduleRunner), i.e. the
     // task missed its normal tick (e.g. the process was down/restarting at
@@ -1224,7 +1224,7 @@ async function attemptFireTask(
             // top of the still-parked prompt), and the age-threshold alert
             // names a long-stuck one. Without this a swallowed-Enter giveup
             // is a run-log row that says 'fired' for a task that never ran.
-            insertPendingTaskRetryIfNew(task.name, agentName, now, 'giveup')
+            await insertPendingTaskRetryIfNew(task.name, agentName, now, 'giveup')
             return 'done'
           }
           if (action === 'reinject') {
@@ -1258,7 +1258,7 @@ async function attemptFireTask(
             // be parked and this chain will never look again. Same shape as
             // the 'giveup' action above, so it gets the same compensation --
             // otherwise the skip budget is a second silent-lost-task exit.
-            insertPendingTaskRetryIfNew(task.name, agentName, now, 'lane-busy')
+            await insertPendingTaskRetryIfNew(task.name, agentName, now, 'lane-busy')
             return
           }
           logger.info({ task: task.name, session, attempt, laneBusySkips }, 'Post-send resubmit skipped: a delivery is in flight into this pane (fail-closed)')
@@ -1304,7 +1304,7 @@ export async function runScheduledTaskNow(
   taskName: string,
   opts: { allowDisabled?: boolean; allowNotLive?: boolean } = {},
 ): Promise<{ ok: boolean; result?: string; error?: string; hint?: string }> {
-  const task = listScheduledTasks().find(t => t.name === taskName)
+  const task = (await listScheduledTasks()).find(t => t.name === taskName)
   if (!task) return { ok: false, error: 'not_found', hint: 'Schedule not found' }
   // allowDisabled: for on-demand-only tasks that are intentionally kept
   // enabled:false so the cron never fires them, but a guarded endpoint can
@@ -1325,7 +1325,7 @@ export async function runScheduledTaskNow(
   // the target agent's pane, or park a pending retry when that pane is busy.
   if (task.type === 'command') {
     void runCommandTask(task, now)
-    recordScheduleLastRun(task.name, now, 'command')
+    await recordScheduleLastRun(task.name, now, 'command')
     return { ok: true, result: 'command: started (outcome in store/command-task-health.json)' }
   }
 
@@ -1342,7 +1342,7 @@ export async function runScheduledTaskNow(
     // redundant cron ticks, but an explicit run-now must not be dropped.
     if (result === 'starting' || result === 'busy' || result === 'mcp-missing' || result === 'first-run') {
       const reason = result === 'mcp-missing' ? mcpMissingReason(task.name, agentName) : result
-      insertPendingTaskRetryIfNew(task.name, agentName, now, reason)
+      await insertPendingTaskRetryIfNew(task.name, agentName, now, reason)
     }
     summary.push(`${agentName}: ${result}`)
   }
@@ -1380,11 +1380,11 @@ function sendCatchUpSummary(
 // want to be pinged over Telegram about a scheduler-internal retry loop, only
 // about things that need their attention. The stamp/claim and reason
 // classification stay exactly as before; only the delivery channel changed.
-function sendPendingRetryAlert(view: PendingRetryView, nowMs: number): void {
+async function sendPendingRetryAlert(view: PendingRetryView, nowMs: number): Promise<void> {
   // Stamp first. If another tick raced us, markPendingTaskRetryAlert
   // returns false (the WHERE alert_sent_at IS NULL guards it) and we
   // skip the log entirely -- one line per stuck occurrence, not one per tick.
-  const claimed = markPendingTaskRetryAlert(view.taskName, view.agentName, nowMs)
+  const claimed = await markPendingTaskRetryAlert(view.taskName, view.agentName, nowMs)
   if (!claimed) return
 
   const ageMinutes = Math.floor(view.ageMs / 60000)
@@ -1506,7 +1506,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
     }
     tickRunning = true
     try {
-    const tasks = listScheduledTasks()
+    const tasks = await listScheduledTasks()
     const now = Date.now()
     // Scan the real interval elapsed since the previous tick (30 min on the
     // first tick), not a fixed 60s window -- a late/dropped tick must not let a
@@ -1562,8 +1562,8 @@ export function startScheduleRunner(): NodeJS.Timeout {
           'Scheduled injection never started a turn (session accepted the keystrokes but stayed idle) -- recording as lost and re-queueing',
         )
         await appendTaskRun(entry.taskName, entry.agentName, 'lost')
-        clearScheduleLastRunIfMatches(entry.taskName, entry.injectedAt)
-        insertPendingTaskRetryIfNew(entry.taskName, entry.agentName, now, 'lost-injection')
+        await clearScheduleLastRunIfMatches(entry.taskName, entry.injectedAt)
+        await insertPendingTaskRetryIfNew(entry.taskName, entry.agentName, now, 'lost-injection')
         taskInflightMap.delete(key)
       }
     }
@@ -1574,14 +1574,14 @@ export function startScheduleRunner(): NodeJS.Timeout {
     // occurrence's window has passed a busy-at-noon task would never run that
     // day without this queue. We NEVER abandon -- the operator can cancel from
     // the UI if a retry has become obsolete.
-    const pendingRows = listPendingTaskRetries()
+    const pendingRows = await listPendingTaskRetries()
     const pendingKeys = new Set<string>()
     for (const row of pendingRows) {
       // Locate the task definition. If it was deleted meanwhile, drop the
       // retry silently -- nothing to fire.
       const taskDef = tasks.find(t => t.name === row.task_name)
       if (!taskDef) {
-        deletePendingTaskRetry(row.task_name, row.agent_name)
+        await deletePendingTaskRetry(row.task_name, row.agent_name)
         continue
       }
       // Honor the operator's disable action: if the task was toggled off
@@ -1592,7 +1592,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
           await writeAgentAuditLog({ agent_id: 'scheduler', entity: 'schedule', action: 'skip_not_live',
             entity_id: row.task_name, detail: { reason: 'retry_dropped', cause: !taskDef.enabled ? 'disabled' : 'not_live' } })
         } catch { /* audit failure must not block the tick */ }
-        deletePendingTaskRetry(row.task_name, row.agent_name)
+        await deletePendingTaskRetry(row.task_name, row.agent_name)
         continue
       }
 
@@ -1605,7 +1605,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
       // was first scheduled (e.g. kanban cards already processed).
       const retryPc = runPreCheck(taskDef)
       if (retryPc.skip) {
-        deletePendingTaskRetry(row.task_name, row.agent_name)
+        await deletePendingTaskRetry(row.task_name, row.agent_name)
         await appendTaskRun(row.task_name, row.agent_name, 'skipped')
         continue
       }
@@ -1613,7 +1613,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
       const view = toPendingRetryView(row, now)
       const result = await attemptFireTask(taskDef, row.agent_name, now, retryPc.prefix)
       if (result === 'fired') {
-        deletePendingTaskRetry(row.task_name, row.agent_name)
+        await deletePendingTaskRetry(row.task_name, row.agent_name)
         continue
       }
       // 'missing' used to DELETE the retry row here -- a silent abandonment
@@ -1635,8 +1635,8 @@ export function startScheduleRunner(): NodeJS.Timeout {
       // in that case, do not re-insert (the operator's cancel wins) and
       // do not alert.
       const reason = result === 'mcp-missing' ? mcpMissingReason(row.task_name, row.agent_name) : result
-      const stillPresent = updatePendingTaskRetry(row.task_name, row.agent_name, now, reason)
-      if (stillPresent && view.alertDue) sendPendingRetryAlert(view, now)
+      const stillPresent = await updatePendingTaskRetry(row.task_name, row.agent_name, now, reason)
+      if (stillPresent && view.alertDue) await sendPendingRetryAlert(view, now)
 
       // SCHEDPARK814 stale-parked-input janitor. A 'busy' verdict that keeps
       // repeating past the threshold is the one case worth a second look: the
@@ -1702,7 +1702,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
     if (now - lastConfigSyncMs >= CONFIG_ENABLED_SYNC_INTERVAL_MS) {
       lastConfigSyncMs = now
       try {
-        const fixed = syncTaskConfigEnabledFromDb()
+        const fixed = await syncTaskConfigEnabledFromDb()
         if (fixed.length) logger.warn({ fixed }, 'schedule-runner: task-config.json enabled had drifted from the DB -- rewritten from the DB')
       } catch (err) {
         logger.warn({ err }, 'schedule-runner: task-config enabled sync failed')
@@ -1768,7 +1768,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
       // does not double-run them on a dashboard restart.
       if (task.type === 'command') {
         void runCommandTask(task, now)
-        recordScheduleLastRun(task.name, now, 'command')
+        await recordScheduleLastRun(task.name, now, 'command')
         continue
       }
 
@@ -1800,7 +1800,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
           { task: task.name, reason: quota.reason, pressure: quota.pressure },
           'Quota gate: holding back a background task until the window recovers',
         )
-        recordScheduleLastRun(task.name, now, 'skipped_quota')
+        await recordScheduleLastRun(task.name, now, 'skipped_quota')
         for (const agentName of targetAgents) await appendTaskRun(task.name, agentName, 'skipped')
         continue
       }
@@ -1809,7 +1809,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
       // state (DB, filesystem) that does not vary by target agent.
       const cronPc = runPreCheck(task)
       if (cronPc.skip) {
-        recordScheduleLastRun(task.name, now, 'skipped_precheck')
+        await recordScheduleLastRun(task.name, now, 'skipped_precheck')
         for (const agentName of targetAgents) {
           await appendTaskRun(task.name, agentName, 'skipped')
         }
@@ -1828,7 +1828,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
           // NOT drop it (that flag is for genuinely-busy short-cadence tasks;
           // here we deliberately woke the agent for its scheduled run). The
           // pending-retry loop then sends as soon as Claude has booted.
-          insertPendingTaskRetryIfNew(task.name, agentName, now, 'starting')
+          await insertPendingTaskRetryIfNew(task.name, agentName, now, 'starting')
         } else if (result === 'busy') {
           // A forceSend task only ever reports 'busy' from the context-
           // saturation deferral inside attemptFireTask -- every other busy
@@ -1850,20 +1850,20 @@ export function startScheduleRunner(): NodeJS.Timeout {
           // First encounter -- insert a new pending row. If somehow a
           // row already exists (race with a just-cancelled retry), do
           // nothing so the cancel wins the tiebreak.
-          insertPendingTaskRetryIfNew(task.name, agentName, now, 'busy')
+          await insertPendingTaskRetryIfNew(task.name, agentName, now, 'busy')
         } else if (result === 'mcp-missing') {
           // Deliberately NOT honoring skipIfBusy here: dropping a tick because
           // a required MCP is dead would be exactly the silent starvation this
           // pre-check exists to eliminate. The retry row keeps the task alive
           // until the server returns, and the alert names the dead server.
-          insertPendingTaskRetryIfNew(task.name, agentName, now, mcpMissingReason(task.name, agentName))
+          await insertPendingTaskRetryIfNew(task.name, agentName, now, mcpMissingReason(task.name, agentName))
         } else if (result === 'first-run') {
           // Also exempt from skipIfBusy: a session parked on a first-run
           // dialog (fresh install) never frees up between ticks the way a
           // busy one does, so dropping ticks would starve the task with no
           // trace. The retry row keeps it alive and the aged alert names the
           // actual blocker instead of a generic "busy".
-          insertPendingTaskRetryIfNew(task.name, agentName, now, 'first-run')
+          await insertPendingTaskRetryIfNew(task.name, agentName, now, 'first-run')
         }
       }
     }

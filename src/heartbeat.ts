@@ -296,7 +296,7 @@ async function collectData(): Promise<HeartbeatData> {
     Promise.resolve(collectKanban()),
     Promise.resolve(collectSystem()),
   ])
-  const tasks = getActiveScheduledTaskCount()
+  const tasks = await getActiveScheduledTaskCount()
   return { timestamp: new Date(), calendar, kanban, system, tasks }
 }
 

@@ -252,8 +252,8 @@ describe('PUT /api/messages/:id -- the outcome text', () => {
       expect(out.body.code).toBe('reserved_marker')
       expect(out.body.field).toBe('result')
     }
-    expect(getAgentMessage(id)?.status).toBe('pending')
-    expect(getAgentMessage(id)?.result).toBeNull()
+    expect((await getAgentMessage(id))?.status).toBe('pending')
+    expect((await getAgentMessage(id))?.result).toBeNull()
     expect(inbox('agent-b')).toEqual([])
     expect(auditActions()).toBe(3)
   })
@@ -265,7 +265,7 @@ describe('PUT /api/messages/:id -- the outcome text', () => {
       expect(out.status, status).toBe(400)
       expect(out.body.code).toBe('reserved_marker')
     }
-    expect(getAgentMessage(id)?.status).toBe('pending')
+    expect((await getAgentMessage(id))?.status).toBe('pending')
   })
 
   it('refuses it for the shared token and a human session as well', async () => {
@@ -274,14 +274,14 @@ describe('PUT /api/messages/:id -- the outcome text', () => {
       const out = await put(caller, id, { status: 'done', result: RESOLVED })
       expect(out.status).toBe(400)
     }
-    expect(getAgentMessage(id)?.status).toBe('pending')
+    expect((await getAgentMessage(id))?.status).toBe('pending')
   })
 
   it('closes the message and sends the notice for an ordinary result, a mid-line mention included', async () => {
     const id = await makeRequest()
     const out = await put(AGENT_A_TOKEN, id, { status: 'done', result: `handled, the ${RESOLVED} line was not needed` })
     expect(out.status).toBe(200)
-    expect(getAgentMessage(id)?.status).toBe('done')
+    expect((await getAgentMessage(id))?.status).toBe('done')
     const notice = inbox('agent-b')
     expect(notice).toHaveLength(1)
     expect(notice[0]).toContain('[Eredmény]')

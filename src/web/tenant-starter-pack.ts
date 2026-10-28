@@ -133,8 +133,8 @@ function emptyResult(tenantId: string, name: string, state: StarterState, agent:
 }
 
 /** The tenant's starter row, only when it really is this tenant's (same name, same tenant_id). */
-function ownStarterRow(tenantId: string, name: string) {
-  const row = getScheduleFromDb(name)
+async function ownStarterRow(tenantId: string, name: string) {
+  const row = await getScheduleFromDb(name)
   if (!row) return { row: undefined, conflict: false }
   return row.tenant_id === tenantId ? { row, conflict: false } : { row: undefined, conflict: true }
 }
@@ -149,14 +149,14 @@ export async function createStarterPack(
   opts: { agentId?: string } = {},
 ): Promise<{ ok: true; result: StarterResult } | { ok: false; error: 'tenant_unavailable' | 'ambiguous' | 'not_serving' | 'shared' | 'name_conflict'; name: string }> {
   const name = starterTaskName(tenantId)
-  const { row, conflict } = ownStarterRow(tenantId, name)
+  const { row, conflict } = await ownStarterRow(tenantId, name)
   if (conflict) return { ok: false, error: 'name_conflict', name }
   if (row) return { ok: true, result: await reconcileStarterPack(ctx, tenantId, { explicitAgent: opts.agentId, existed: true }) }
 
   const resolved = await resolveStarterAgent(tenantId, opts.agentId)
   if (!resolved.agent) return { ok: false, error: resolved.reason as 'tenant_unavailable' | 'ambiguous' | 'not_serving' | 'shared', name }
   const template = loadStarterTemplate(tenantId, resolved.agent)
-  writeScheduledTask(name, {
+  await writeScheduledTask(name, {
     description: template.description,
     prompt: template.prompt,
     schedule: template.schedule,
@@ -249,7 +249,7 @@ export interface StarterDescription {
 /** Read-only view for the admin UI: the task row, and what the next create or reconcile would do. */
 export async function describeStarterPack(tenantId: string): Promise<StarterDescription> {
   const name = starterTaskName(tenantId)
-  const { row } = ownStarterRow(tenantId, name)
+  const { row } = await ownStarterRow(tenantId, name)
   const resolution = await resolveStarterAgent(tenantId)
   if (!row) return { tenant_id: tenantId, name, exists: false, state: 'absent', task: null, resolution }
   const plan = await planStarter(tenantId, row.agent)
@@ -270,7 +270,7 @@ export async function reconcileStarterPack(
   opts: { explicitAgent?: string; existed?: boolean } = {},
 ): Promise<StarterResult> {
   const name = starterTaskName(tenantId)
-  const { row } = ownStarterRow(tenantId, name)
+  const { row } = await ownStarterRow(tenantId, name)
   if (!row) return emptyResult(tenantId, name, 'absent', null)
 
   const current = row.agent
@@ -281,7 +281,7 @@ export async function reconcileStarterPack(
   if (plan.kind === 'ok') return result
 
   if (plan.kind === 'retarget') {
-    writeScheduledTask(name, { agent: plan.agent, status: 'draft', enabled: false })
+    await writeScheduledTask(name, { agent: plan.agent, status: 'draft', enabled: false })
     await auditScheduleWrite(ctx, 'retarget', name, tenantId, { from: current, to: plan.agent, starter_pack: true })
     if (!isHumanAdmin(ctx)) {
       await notifyScheduleReview({ name, tenant: tenantId, reason: 'retargeted', by: scheduleActor(ctx).agentId })
@@ -295,7 +295,7 @@ export async function reconcileStarterPack(
   result.state = 'needs_agent'
   result.reason = plan.reason
   if (row.status !== 'draft' || row.enabled !== 0) {
-    writeScheduledTask(name, { status: 'draft', enabled: false })
+    await writeScheduledTask(name, { status: 'draft', enabled: false })
     await auditScheduleWrite(ctx, 'retarget', name, tenantId, { from: current, to: null, parked: true, reason: plan.reason, starter_pack: true })
   }
   return result

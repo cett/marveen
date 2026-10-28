@@ -36,43 +36,43 @@ const baseOpts = {
 }
 
 describe('activateSchedule', () => {
-  it('returns null for a schedule id that does not exist', () => {
-    expect(activateSchedule('test-activate-nonexistent')).toBeNull()
+  it('returns null for a schedule id that does not exist', async () => {
+    expect(await activateSchedule('test-activate-nonexistent')).toBeNull()
   })
 
-  it('flips a draft schedule to live and leaves other columns untouched', () => {
+  it('flips a draft schedule to live and leaves other columns untouched', async () => {
     const id = 'test-activate-draft'
-    upsertSchedule(id, { ...baseOpts, status: 'draft' })
-    expect(getScheduleFromDb(id)!.status).toBe('draft')
+    await upsertSchedule(id, { ...baseOpts, status: 'draft' })
+    expect((await getScheduleFromDb(id))!.status).toBe('draft')
 
-    const activated = activateSchedule(id)
+    const activated = await activateSchedule(id)
     expect(activated).not.toBeNull()
     expect(activated!.status).toBe('live')
     expect(activated!.prompt).toBe('do the thing')
     expect(activated!.schedule).toBe('0 9 * * *')
-    expect(getScheduleFromDb(id)!.status).toBe('live')
+    expect((await getScheduleFromDb(id))!.status).toBe('live')
   })
 
-  it('flips a pending_review schedule to live', () => {
+  it('flips a pending_review schedule to live', async () => {
     const id = 'test-activate-pending'
-    upsertSchedule(id, { ...baseOpts, status: 'pending_review' })
-    const activated = activateSchedule(id)
+    await upsertSchedule(id, { ...baseOpts, status: 'pending_review' })
+    const activated = await activateSchedule(id)
     expect(activated!.status).toBe('live')
   })
 
-  it('is idempotent: activating an already-live schedule keeps it live', () => {
+  it('is idempotent: activating an already-live schedule keeps it live', async () => {
     const id = 'test-activate-already-live'
-    upsertSchedule(id, { ...baseOpts, status: 'live' })
-    const activated = activateSchedule(id)
+    await upsertSchedule(id, { ...baseOpts, status: 'live' })
+    const activated = await activateSchedule(id)
     expect(activated!.status).toBe('live')
   })
 
   it('bumps updated_at', async () => {
     const id = 'test-activate-updated-at'
-    const created = upsertSchedule(id, { ...baseOpts, status: 'draft' })
+    const created = await upsertSchedule(id, { ...baseOpts, status: 'draft' })
     // Ensure a distinct second boundary so updated_at (unix seconds) can move.
     await new Promise(r => setTimeout(r, 1100))
-    const activated = activateSchedule(id)
+    const activated = await activateSchedule(id)
     expect(activated!.updated_at).toBeGreaterThan(created.updated_at)
   })
 })

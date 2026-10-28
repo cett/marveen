@@ -480,8 +480,8 @@ describe('GET /api/overview — agents.list lastActive', () => {
 
 describe('GET /api/overview — skills tenant scoping', () => {
   it('admin with ?tenant filter counts only that tenant\'s own + granted skills', async () => {
-    createSkill({ id: 'sk-a', name: 'Skill A', content: 'x', tenant_id: 'tenant-a' })
-    createSkill({ id: 'sk-b', name: 'Skill B', content: 'x', tenant_id: 'tenant-b' })
+    await createSkill({ id: 'sk-a', name: 'Skill A', content: 'x', tenant_id: 'tenant-a' })
+    await createSkill({ id: 'sk-b', name: 'Skill B', content: 'x', tenant_id: 'tenant-b' })
 
     const { ctx, out } = fakeCtx('/api/overview?tenant=tenant-a', 'GET', { role: 'admin' })
     await tryHandleOverview(ctx)
@@ -491,7 +491,7 @@ describe('GET /api/overview — skills tenant scoping', () => {
   })
 
   it('admin without ?tenant filter falls back to the fleet-wide filesystem count', async () => {
-    createSkill({ id: 'sk-a', name: 'Skill A', content: 'x', tenant_id: 'tenant-a' })
+    await createSkill({ id: 'sk-a', name: 'Skill A', content: 'x', tenant_id: 'tenant-a' })
 
     const { ctx, out } = fakeCtx('/api/overview', 'GET', { role: 'admin' })
     await tryHandleOverview(ctx)

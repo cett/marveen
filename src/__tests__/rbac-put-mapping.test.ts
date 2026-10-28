@@ -232,7 +232,7 @@ describe('PUT /api/messages/:id by role', () => {
   it('a fleet token closes a message addressed to its own agent (200)', async () => {
     const r = await callAs(await tokenAuth('tok-alpha'), 'PUT', `/api/messages/${toAlpha}`, { status: 'done', result: 'ok' })
     expect(r.status).toBe(200)
-    expect(getAgentMessage(toAlpha)?.status).toBe('done')
+    expect((await getAgentMessage(toAlpha))?.status).toBe('done')
   })
 
   it("a fleet token cannot close, fail or refuse a colleague's message (403) and the message stays open", async () => {
@@ -240,8 +240,8 @@ describe('PUT /api/messages/:id by role', () => {
       const r = await callAs(await tokenAuth('tok-alpha'), 'PUT', `/api/messages/${toBeta}`, { status, result: 'not mine' })
       expect(r.status, status).toBe(403)
     }
-    expect(getAgentMessage(toBeta)?.status).not.toBe('done')
-    expect(getAgentMessage(toBeta)?.status).not.toBe('failed')
+    expect((await getAgentMessage(toBeta))?.status).not.toBe('done')
+    expect((await getAgentMessage(toBeta))?.status).not.toBe('failed')
   })
 
   it('the refusal is audited with the reason', async () => {
@@ -253,7 +253,7 @@ describe('PUT /api/messages/:id by role', () => {
 
   it("another tenant's message is a 404 even for its recipient's name, and stays open", async () => {
     expect((await callAs(await tokenAuth('tok-alpha'), 'PUT', `/api/messages/${inAcme}`, { status: 'done' })).status).toBe(404)
-    expect(getAgentMessage(inAcme)?.status).not.toBe('done')
+    expect((await getAgentMessage(inAcme))?.status).not.toBe('done')
   })
 
   it('the shared admin token and an admin session still close any message', async () => {

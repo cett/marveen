@@ -104,8 +104,8 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
     // they're meaningless in a tenant-scoped view and excluded rather than
     // mis-attributed to 'default'.
     const tenantScope = effectiveTenantId ?? undefined
-    const schedToday = countTaskRunsBetween(startTs, undefined, tenantScope)
-    const schedYesterday = countTaskRunsBetween(yesterday, startTs, tenantScope)
+    const schedToday = await countTaskRunsBetween(startTs, undefined, tenantScope)
+    const schedYesterday = await countTaskRunsBetween(yesterday, startTs, tenantScope)
     const userTurns = effectiveTenantId ? 0 : countUserTurns(startTs)
     const userTurnsPrev = effectiveTenantId ? 0 : countUserTurns(yesterday, startTs)
     const tasksToday = schedToday + userTurns
@@ -120,7 +120,7 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
       // tenant-aware source, so a narrowed tenant view counts from there
       // instead of the filesystem scan used for the fleet-wide total below.
       const startSec = Math.floor(startTs / 1000)
-      const tenantSkills = listSkillsForTenant(effectiveTenantId)
+      const tenantSkills = await listSkillsForTenant(effectiveTenantId)
       skillCount = tenantSkills.length
       skillsToday = tenantSkills.filter((s) => s.updated_at >= startSec).length
     } else {

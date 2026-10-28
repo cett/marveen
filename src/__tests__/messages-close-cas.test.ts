@@ -224,7 +224,7 @@ describe('PUT /api/messages/:id -- a closed message cannot be closed again', () 
     const out = await put({ role: 'viewer', auth: { kind: 'token' }, tenantId: 'default' }, id, { status: 'done', result: 'probe' })
     expect(out.status).toBe(404)
     expect(out.body.error).toBe('not_found')
-    expect(getAgentMessage(id)?.result).toBe('ok')
+    expect((await getAgentMessage(id))?.result).toBe('ok')
   })
 
   it('an own-tenant caller gets the 409 on its own closed message', async () => {

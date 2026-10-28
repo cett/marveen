@@ -590,16 +590,16 @@ function extractSkillDescription(content: string): string {
 // Skills are stored in SQL and mirrored to disk as the generated cache the
 // Claude Code loader reads. Export from SQL so a snapshot reflects the latest
 // content even if the on-disk mirror hasn't been regenerated yet.
-function listGlobalSkillsFromSQL(): SkillExport[] {
+async function listGlobalSkillsFromSQL(): Promise<SkillExport[]> {
   const prefix = 'global/'
-  return listAllSkills()
+  return (await listAllSkills())
     .filter(r => r.tenant_id === 'fleet' && r.id.startsWith(prefix))
     .map(r => ({ name: r.id.slice(prefix.length), skillMd: r.content }))
 }
 
-function listAgentSkillsFromSQL(agentId: string): SkillExport[] {
+async function listAgentSkillsFromSQL(agentId: string): Promise<SkillExport[]> {
   const prefix = `agent/${agentId}/`
-  return listAllSkills()
+  return (await listAllSkills())
     .filter(r => r.tenant_id === 'fleet' && r.id.startsWith(prefix))
     .map(r => ({ name: r.id.slice(prefix.length), skillMd: r.content }))
 }
@@ -670,11 +670,11 @@ function exportMainAgent(
   }
 }
 
-function exportAgent(
+async function exportAgent(
   name: string,
   bindingLookup: Map<string, Map<string, Map<string, string>>>,
   withSecrets: boolean,
-): AgentExport {
+): Promise<AgentExport> {
   const dir = join(AGENTS_BASE_DIR, name)
   const claudeDir = join(dir, '.claude')
   const mcpPath = join(dir, '.mcp.json')
@@ -725,7 +725,7 @@ function exportAgent(
     channelsAccess,
     avatar,
     avatarExt,
-    agentSkills: listAgentSkillsFromSQL(name),
+    agentSkills: await listAgentSkillsFromSQL(name),
   }
 }
 
@@ -803,7 +803,7 @@ export async function exportFleet(options: { vaultPassword?: string } = {}): Pro
 
   const mainAgent = exportMainAgent(bindingLookup, withSecrets)
   const agents = listAgentNames().map(name => exportAgent(name, bindingLookup, withSecrets))
-  const skills = listGlobalSkillsFromSQL()
+  const skills = await listGlobalSkillsFromSQL()
   const scheduledTasks = exportScheduledTasks()
 
   // Export ALL memories and daily_logs across every agent_id
@@ -1729,7 +1729,7 @@ async function runImportFleet(
 
       // The SQL side of the skill files staged above. A failure is the import's failure (it used to be logged and
       // swallowed, which let a file and its row drift apart).
-      for (const seed of skillSeeds) seedSkillIfAbsent(seed)
+      for (const seed of skillSeeds) await seedSkillIfAbsent(seed)
 
       // The row-level policy (required fields, enums, forced values) lives here; the SQL itself is in
       // db/fleet-transfer.ts.

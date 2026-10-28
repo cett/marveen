@@ -81,13 +81,13 @@ describe('failPendingFederatedMessages (db helper)', () => {
 
     const failed = failPendingFederatedMessages('te_dor', 'peer removed')
     expect(failed).toEqual([pUnderscore.id]) // teodor/x must NOT be swept
-    expect(getAgentMessage(pTeodor.id)?.status).toBe('pending')
-    expect(getAgentMessage(pLocal.id)?.status).toBe('pending')
-    expect(getAgentMessage(delivered.id)?.status).toBe('delivered') // history untouched
+    expect((await getAgentMessage(pTeodor.id))?.status).toBe('pending')
+    expect((await getAgentMessage(pLocal.id))?.status).toBe('pending')
+    expect((await getAgentMessage(delivered.id))?.status).toBe('delivered') // history untouched
 
     const all = failPendingFederatedMessages(undefined, 'disabled')
     expect(all).toEqual([pTeodor.id]) // only the remaining pending qualified row
-    expect(getAgentMessage(pTeodor.id)?.result).toBe('disabled')
+    expect((await getAgentMessage(pTeodor.id))?.result).toBe('disabled')
   })
 
   it('per-peer scoping is case-insensitive (L1): pre-normalization uppercase rows are purged too', async () => {
@@ -95,7 +95,7 @@ describe('failPendingFederatedMessages (db helper)', () => {
     const other = await createAgentMessage('a', 'cecil/x', 'other peer')
     const failed = failPendingFederatedMessages('teodor', 'peer removed')
     expect(failed).toEqual([upper.id])
-    expect(getAgentMessage(other.id)?.status).toBe('pending')
+    expect((await getAgentMessage(other.id))?.status).toBe('pending')
     failPendingFederatedMessages(undefined, 'cleanup')
   })
 })
@@ -105,8 +105,8 @@ describe('markMessageDelivered status guard', () => {
     const msg = await createAgentMessage('a', 'teodor/x', 'race')
     failPendingFederatedMessages('teodor', 'Federation removed while pending')
     expect(markMessageDelivered(msg.id)).toBe(false)
-    expect(getAgentMessage(msg.id)?.status).toBe('failed')
-    expect(getAgentMessage(msg.id)?.result).toBe('Federation removed while pending')
+    expect((await getAgentMessage(msg.id))?.status).toBe('failed')
+    expect((await getAgentMessage(msg.id))?.result).toBe('Federation removed while pending')
 
     const done = await createAgentMessage('a', 'b', 'done-first')
     markMessageDone(done.id, 'ok')
@@ -221,8 +221,8 @@ describe('peer lifecycle endpoints', () => {
     const del = await call('DELETE', '/api/federation/peers/teodor')
     expect(del.statusCode).toBe(200)
     expect(getFederationConfig().peers.map((p) => p.id)).toEqual(['cecil'])
-    expect(getAgentMessage(mine.id)?.status).toBe('failed')
-    expect(getAgentMessage(other.id)?.status).toBe('pending')
+    expect((await getAgentMessage(mine.id))?.status).toBe('failed')
+    expect((await getAgentMessage(other.id))?.status).toBe('pending')
   })
 })
 
@@ -233,7 +233,7 @@ describe('master switch + full removal', () => {
     const off = await call('POST', '/api/federation/enabled', { enabled: false })
     expect(off.json.enabled).toBe(false)
     expect((off.json.peers as unknown[]).length).toBe(1) // peers survive
-    expect(getAgentMessage(q.id)?.status).toBe('failed') // queue is deterministic
+    expect((await getAgentMessage(q.id))?.status).toBe('failed') // queue is deterministic
 
     const on = await call('POST', '/api/federation/enabled', { enabled: true })
     expect(on.json.enabled).toBe(true)
@@ -303,7 +303,7 @@ describe('master switch + full removal', () => {
     expect(getFederationConfigRaw()).toBeUndefined()
     expect(existsSync(join(TMP, '.federation-token'))).toBe(false)
     expect(getFederationConfig().enabled).toBe(false)
-    expect(getAgentMessage(q.id)?.status).toBe('failed')
+    expect((await getAgentMessage(q.id))?.status).toBe('failed')
     const again = await call('POST', '/api/federation/remove')
     expect(again.json.ok).toBe(true)
   })
