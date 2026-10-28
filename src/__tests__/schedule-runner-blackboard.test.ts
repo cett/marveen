@@ -237,7 +237,7 @@ describe('applyBlackboardDone: task_ref passthrough to upsertBlackboard', () => 
     })
 
     it('does nothing when the agent has no row at all', async () => {
-      vi.mocked(findBlackboardRowByAgent).mockReturnValue(undefined)
+      vi.mocked(findBlackboardRowByAgent).mockResolvedValue(undefined)
       await applyBlackboardDone({ ...BASE_ENTRY, blackboardSnapshot: snapshot })
       expect(upsertBlackboard).not.toHaveBeenCalled()
     })

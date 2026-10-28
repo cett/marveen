@@ -62,7 +62,7 @@ describe('inbox-nudge-watcher tick()', () => {
   afterEach(() => { vi.useRealTimers() })
 
   it('empty inbox: no session/send calls at all', async () => {
-    mGetPending.mockReturnValue([])
+    mGetPending.mockResolvedValue([])
     await tick()
     expect(mSessionExists).not.toHaveBeenCalled()
     expect(mSend).not.toHaveBeenCalled()

@@ -192,7 +192,7 @@ describe('POST: which tenant owns the task', () => {
         setContext('shared-agent', 'tenant-b', 'bound')
       }],
     ])('a shared agent with %s: 400 tenant_required, nothing is written', async (_label, arrange) => {
-      arrange()
+      await arrange()
       const out = await post('s3', 'shared-agent', { agent: 'shared-agent' })
       expect(out.status).toBe(400)
       expect(out.body).toMatchObject({ error: 'tenant_required', field: 'tenant_id' })

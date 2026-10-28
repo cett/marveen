@@ -63,7 +63,7 @@ describe('getAgentConversationThreads', () => {
     await createAgentMessage(a, 'marveen', 't1')
     await createAgentMessage('marveen', a, 't2')
     const last = await createAgentMessage(a, 'marveen', 't3-last')
-    const threads = getAgentConversationThreads()
+    const threads = await getAgentConversationThreads()
     const row = threads.find(t => t.agent === a)
     expect(row).toBeDefined()
     expect(row!.count).toBe(3)
@@ -75,7 +75,7 @@ describe('getAgentConversationThreads', () => {
     const a = 'tthread-withsys'
     await createAgentMessage('heartbeat', a, 'hb-to-peer')
     await createAgentMessage(a, 'channel-coordinator', 'peer-to-coord')
-    const threads = getAgentConversationThreads()
+    const threads = await getAgentConversationThreads()
     const agents = threads.map(t => t.agent)
     // system agents never appear as their own thread row
     expect(agents).not.toContain('heartbeat')
@@ -92,7 +92,7 @@ describe('getAgentConversationThreads', () => {
     const newer = 'tthread-newer'
     await createAgentMessage(older, 'marveen', 'old')
     await createAgentMessage(newer, 'marveen', 'new')
-    const threads = getAgentConversationThreads()
+    const threads = await getAgentConversationThreads()
     const iOlder = threads.findIndex(t => t.agent === older)
     const iNewer = threads.findIndex(t => t.agent === newer)
     expect(iNewer).toBeGreaterThanOrEqual(0)

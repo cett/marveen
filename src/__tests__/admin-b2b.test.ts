@@ -486,7 +486,7 @@ describe('GET /api/v1/admin/agent-availability', () => {
   it('returns matrix with all known agents, deny-by-default', async () => {
     vi.mocked(db.getTenant).mockReturnValue(SAMPLE_TENANT)
     vi.mocked(agentConfig.listAgentNames).mockReturnValue(['jarvis', 'zack'])
-    vi.mocked(db.listTenantAgentAvailability).mockReturnValue([
+    vi.mocked(db.listTenantAgentAvailability).mockResolvedValue([
       { tenant_id: 'acme-corp', agent_id: 'jarvis', enabled: 1, updated_at: 1787000000 },
     ])
     const { ctx, out } = makeCtx('GET', '/api/v1/admin/agent-availability?tenant_id=acme-corp')
@@ -522,7 +522,7 @@ describe('PUT /api/v1/admin/agent-availability', () => {
     vi.mocked(db.getTenant).mockReturnValue(SAMPLE_TENANT)
     vi.mocked(agentConfig.isKnownAgent).mockReturnValue(true)
     const updatedRow = { tenant_id: 'acme-corp', agent_id: 'jarvis', enabled: 1 as const, updated_at: 1787000001 }
-    vi.mocked(db.setTenantAgentAvailability).mockReturnValue(updatedRow)
+    vi.mocked(db.setTenantAgentAvailability).mockResolvedValue(updatedRow)
     const { ctx, out } = makeCtx('PUT', '/api/v1/admin/agent-availability', { tenant_id: 'acme-corp', agent_id: 'jarvis', enabled: true })
     await tryHandleAdminB2b(ctx)
     expect(out.status).toBe(200)
@@ -534,7 +534,7 @@ describe('PUT /api/v1/admin/agent-availability', () => {
   it('re-reconciles the tenant skill files of the tenants the agent serves after an availability change, and survives a failing regen', async () => {
     vi.mocked(db.getTenant).mockReturnValue(SAMPLE_TENANT)
     vi.mocked(agentConfig.isKnownAgent).mockReturnValue(true)
-    vi.mocked(db.setTenantAgentAvailability).mockReturnValue({ tenant_id: 'acme-corp', agent_id: 'demo-agent', enabled: 0 as const, updated_at: 1787000002 })
+    vi.mocked(db.setTenantAgentAvailability).mockResolvedValue({ tenant_id: 'acme-corp', agent_id: 'demo-agent', enabled: 0 as const, updated_at: 1787000002 })
     vi.mocked(skillRegen.regenTenantSkillFilesForAgentChange).mockClear()
     const a = makeCtx('PUT', '/api/v1/admin/agent-availability', { tenant_id: 'acme-corp', agent_id: 'demo-agent', enabled: false })
     await tryHandleAdminB2b(a.ctx)
@@ -633,7 +633,7 @@ describe('PUT /api/v1/admin/agent-availability -- fleet-only agents MCP risk gat
   beforeEach(() => {
     vi.mocked(db.getTenant).mockReturnValue(SAMPLE_TENANT)
     vi.mocked(agentConfig.isKnownAgent).mockReturnValue(true)
-    vi.mocked(db.setTenantAgentAvailability).mockReturnValue({ tenant_id: 'acme-corp', agent_id: 'agent-a', enabled: 1, updated_at: 1787000000 })
+    vi.mocked(db.setTenantAgentAvailability).mockResolvedValue({ tenant_id: 'acme-corp', agent_id: 'agent-a', enabled: 1, updated_at: 1787000000 })
   })
 
   it('enables an agent with no high-risk MCP servers directly (no confirmation needed)', async () => {
@@ -674,7 +674,7 @@ describe('PUT /api/v1/admin/agent-availability -- fleet-only agents MCP risk gat
 
   it('does not gate when disabling an agent, even if it carries high-risk MCP servers', async () => {
     vi.mocked(mcpRiskPolicy.getHighRiskMcpServersForAgent).mockReturnValue(['github'])
-    vi.mocked(db.setTenantAgentAvailability).mockReturnValue({ tenant_id: 'acme-corp', agent_id: 'agent-b', enabled: 0, updated_at: 1787000000 })
+    vi.mocked(db.setTenantAgentAvailability).mockResolvedValue({ tenant_id: 'acme-corp', agent_id: 'agent-b', enabled: 0, updated_at: 1787000000 })
     const { ctx, out } = makeCtx('PUT', '/api/v1/admin/agent-availability', { tenant_id: 'acme-corp', agent_id: 'agent-b', enabled: false })
     await tryHandleAdminB2b(ctx)
     expect(out.status).toBe(200)

@@ -162,16 +162,16 @@ describe('getAgentDetail', () => {
 })
 
 describe('listAgentSummaries', () => {
-  it('returns an array of summaries for all agents', () => {
-    const summaries = listAgentSummaries()
+  it('returns an array of summaries for all agents', async () => {
+    const summaries = await listAgentSummaries()
     expect(Array.isArray(summaries)).toBe(true)
     expect(summaries.length).toBe(2)
     expect(summaries[0].name).toBe('agent-d')
     expect(summaries[1].name).toBe('agent-f')
   })
 
-  it('each summary has required fields', () => {
-    const summaries = listAgentSummaries()
+  it('each summary has required fields', async () => {
+    const summaries = await listAgentSummaries()
     for (const s of summaries) {
       expect(s.name).toBeTruthy()
       expect(typeof s.running).toBe('boolean')

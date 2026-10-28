@@ -224,7 +224,7 @@ describe('POST /api/messages: error codes are snake_case machine tokens', () => 
   // Strict equality so restoring the old prose string fails immediately.
   it('PUT /api/messages/:id not found → not_found (not a prose sentence)', async () => {
     const { closeOpenMessage } = await import('../db.js')
-    vi.mocked(closeOpenMessage).mockReturnValueOnce(false)
+    vi.mocked(closeOpenMessage).mockResolvedValueOnce(false)
     const { ctx, out } = makeCtx('PUT', '/api/messages/99999', { status: 'done' })
     await tryHandleMessages(ctx)
     expect(out.status).toBe(404)
@@ -267,7 +267,7 @@ describe('POST /api/messages: assign:true delivery hook', () => {
   beforeEach(async () => {
     const db = await import('../db.js')
     const { isKnownAgent } = await import('../web/agent-config.js')
-    vi.mocked(db.findBlackboardRowByAgent).mockReturnValue(undefined)
+    vi.mocked(db.findBlackboardRowByAgent).mockResolvedValue(undefined)
     vi.mocked(db.upsertBlackboard).mockClear()
     // Reset isKnownAgent: an earlier test queues a mockReturnValueOnce(false) that
     // does not get consumed (the owner path bypasses the check). Without this reset
@@ -324,7 +324,7 @@ describe('POST /api/messages: assign:true delivery hook', () => {
 
   it('assign:true skipped when recipient already has an active row', async () => {
     const db = await import('../db.js')
-    vi.mocked(db.findBlackboardRowByAgent).mockReturnValueOnce({
+    vi.mocked(db.findBlackboardRowByAgent).mockResolvedValueOnce({
       id: 'abc', agent_id: 'agent-c', task_ref: null, status: 'active', summary: 'already working', updated_at: 0, tenant_id: 'default', blocked_by: null, blocked_reason: null,
     })
     vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 45, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
@@ -363,7 +363,7 @@ describe('POST /api/messages: handoff envelope', () => {
   beforeEach(async () => {
     const db = await import('../db.js')
     const { isKnownAgent } = await import('../web/agent-config.js')
-    vi.mocked(db.findBlackboardRowByAgent).mockReturnValue(undefined)
+    vi.mocked(db.findBlackboardRowByAgent).mockResolvedValue(undefined)
     vi.mocked(db.upsertBlackboard).mockClear()
     vi.mocked(db.createAgentMessage).mockClear()
     vi.mocked(isKnownAgent).mockReset()
@@ -446,7 +446,7 @@ describe('POST /api/messages: complete:true delivery hook', () => {
   beforeEach(async () => {
     const db = await import('../db.js')
     const { isKnownAgent } = await import('../web/agent-config.js')
-    vi.mocked(db.findBlackboardRowByAgent).mockReturnValue(undefined)
+    vi.mocked(db.findBlackboardRowByAgent).mockResolvedValue(undefined)
     vi.mocked(db.upsertBlackboard).mockClear()
     vi.mocked(isKnownAgent).mockReset()
     vi.mocked(isKnownAgent).mockReturnValue(true)
@@ -454,7 +454,7 @@ describe('POST /api/messages: complete:true delivery hook', () => {
 
   it('complete:true closes the sender\'s assigned row to done', async () => {
     const db = await import('../db.js')
-    vi.mocked(db.findBlackboardRowByAgent).mockReturnValueOnce({
+    vi.mocked(db.findBlackboardRowByAgent).mockResolvedValueOnce({
       id: 'abc', agent_id: 'agent-b', task_ref: '#867', status: 'assigned', summary: 'Working on it', updated_at: 0, tenant_id: 'default', blocked_by: null, blocked_reason: null,
     })
     vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 50, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
@@ -477,7 +477,7 @@ describe('POST /api/messages: complete:true delivery hook', () => {
 
   it('complete:true closes the sender\'s active row to done', async () => {
     const db = await import('../db.js')
-    vi.mocked(db.findBlackboardRowByAgent).mockReturnValueOnce({
+    vi.mocked(db.findBlackboardRowByAgent).mockResolvedValueOnce({
       id: 'abc', agent_id: 'agent-b', task_ref: null, status: 'active', summary: 'Working on it', updated_at: 0, tenant_id: 'default', blocked_by: null, blocked_reason: null,
     })
     vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 51, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
@@ -499,7 +499,7 @@ describe('POST /api/messages: complete:true delivery hook', () => {
 
   it('complete:true closes the sender\'s blocked row to done', async () => {
     const db = await import('../db.js')
-    vi.mocked(db.findBlackboardRowByAgent).mockReturnValueOnce({
+    vi.mocked(db.findBlackboardRowByAgent).mockResolvedValueOnce({
       id: 'abc', agent_id: 'agent-b', task_ref: null, status: 'blocked', summary: 'Waiting for auth', updated_at: 0, tenant_id: 'default', blocked_by: 'agent-c', blocked_reason: 'auth expired',
     })
     vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 56, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
@@ -526,7 +526,7 @@ describe('POST /api/messages: complete:true delivery hook', () => {
     const db = await import('../db.js')
     // No mockReturnValueOnce here: without complete:true the row is never read,
     // and an unconsumed once-value would leak into the next test.
-    vi.mocked(db.findBlackboardRowByAgent).mockReturnValue({
+    vi.mocked(db.findBlackboardRowByAgent).mockResolvedValue({
       id: 'abc', agent_id: 'agent-b', task_ref: null, status: 'blocked', summary: 'Waiting for auth', updated_at: 0, tenant_id: 'default', blocked_by: null, blocked_reason: null,
     })
     vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 57, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
@@ -542,7 +542,7 @@ describe('POST /api/messages: complete:true delivery hook', () => {
 
   it('complete:true is a no-op when the sender row is already stale', async () => {
     const db = await import('../db.js')
-    vi.mocked(db.findBlackboardRowByAgent).mockReturnValueOnce({
+    vi.mocked(db.findBlackboardRowByAgent).mockResolvedValueOnce({
       id: 'abc', agent_id: 'agent-b', task_ref: null, status: 'stale', summary: 'Old task', updated_at: 0, tenant_id: 'default', blocked_by: null, blocked_reason: null,
     })
     vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 52, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
@@ -559,7 +559,7 @@ describe('POST /api/messages: complete:true delivery hook', () => {
 
   it('complete:true is a no-op when the sender row is already done', async () => {
     const db = await import('../db.js')
-    vi.mocked(db.findBlackboardRowByAgent).mockReturnValueOnce({
+    vi.mocked(db.findBlackboardRowByAgent).mockResolvedValueOnce({
       id: 'abc', agent_id: 'agent-b', task_ref: null, status: 'done', summary: 'Old task', updated_at: 0, tenant_id: 'default', blocked_by: null, blocked_reason: null,
     })
     vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 53, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
@@ -576,7 +576,7 @@ describe('POST /api/messages: complete:true delivery hook', () => {
 
   it('complete:true does not error when the sender has no blackboard row', async () => {
     const db = await import('../db.js')
-    vi.mocked(db.findBlackboardRowByAgent).mockReturnValueOnce(undefined)
+    vi.mocked(db.findBlackboardRowByAgent).mockResolvedValueOnce(undefined)
     vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 54, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
     const { ctx, out } = makeCtx('POST', '/api/messages', {
       from: 'agent-b',
@@ -591,7 +591,7 @@ describe('POST /api/messages: complete:true delivery hook', () => {
 
   it('complete omitted: no blackboard row touched', async () => {
     const db = await import('../db.js')
-    vi.mocked(db.findBlackboardRowByAgent).mockReturnValueOnce({
+    vi.mocked(db.findBlackboardRowByAgent).mockResolvedValueOnce({
       id: 'abc', agent_id: 'agent-b', task_ref: null, status: 'assigned', summary: 'Working on it', updated_at: 0, tenant_id: 'default', blocked_by: null, blocked_reason: null,
     })
     vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 55, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
@@ -906,7 +906,7 @@ describe('POST /api/messages: #924 audit principal resolves from the auth gate, 
     it('a foreign-tenant message looks exactly like a missing one (no id probing)', async () => {
       const foreign = await put('done', msg('other'), { role: 'viewer', tenantId: 'acme' })
       const db = await import('../db.js')
-      vi.mocked(db.closeOpenMessage).mockReturnValueOnce(false)
+      vi.mocked(db.closeOpenMessage).mockResolvedValueOnce(false)
       const missing = await put('done', null, { role: 'viewer', tenantId: 'acme' })
       expect(foreign.out.status).toBe(404)
       expect(missing.out.status).toBe(404)

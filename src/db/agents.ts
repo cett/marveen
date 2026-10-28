@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto'
 import { writeAgentAuditLog } from './audit.js'
 import { deactivatePlanForAgent } from './claude-plans.js'
 import { db } from './connection.js'
-import { dbx } from './facade.js'
+import { dbx, type SqlOps } from './facade.js'
 import { getDelegationTenant } from './tenant-channel-bindings.js'
 import { KanbanCard } from './kanban.js'
 import { Tenant, getTenantForMainAgent, COMPLETION_REPORT_PREFIX } from './observability.js'
@@ -532,8 +532,8 @@ export async function insertBlackboardHistory(entry: {
   blocked_by?: string | null
   blocked_reason?: string | null
   resolved_by?: string | null
-}): Promise<void> {
-  await dbx.run('INSERT INTO fleet_blackboard_history (agent_id, task_ref, status, summary, tenant_id, blocked_by, blocked_reason, resolved_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', entry.agent_id, entry.task_ref, entry.status, entry.summary, await resolveAgentTenant(entry.agent_id),
+}, ops: SqlOps = dbx): Promise<void> {
+  await ops.run('INSERT INTO fleet_blackboard_history (agent_id, task_ref, status, summary, tenant_id, blocked_by, blocked_reason, resolved_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', entry.agent_id, entry.task_ref, entry.status, entry.summary, await resolveAgentTenant(entry.agent_id, ops),
     entry.blocked_by ?? null, entry.blocked_reason ?? null, entry.resolved_by ?? null,
   )
 }
@@ -606,7 +606,10 @@ export async function markBlackboardStale(
     if (row.status === 'active' && skipActiveAgentIds.has(row.agent_id)) continue
     const threshold = row.status === 'assigned' ? assignedThresholdSec : (thresholdsByAgent[row.agent_id] ?? defaultThresholdSec)
     if (nowSec - row.updated_at > threshold) {
-      await dbx.run(`UPDATE fleet_blackboard SET status = 'stale', updated_at = ? WHERE id = ?`, nowSec, row.id)
+      // Compare-and-set on the row as it was read: an agent that posted (or closed its row) since the SELECT
+      // keeps its post, the sweep neither overwrites it nor records a stale entry or drops the plan binding.
+      const res = await dbx.run(`UPDATE fleet_blackboard SET status = 'stale', updated_at = ? WHERE id = ? AND status = ? AND updated_at = ?`, nowSec, row.id, row.status, row.updated_at)
+      if (res.changes === 0) continue
       await insertBlackboardHistory({ agent_id: row.agent_id, task_ref: row.task_ref, status: 'stale', summary: row.summary })
       // #886: a blackboard row going stale means the agent behind it is
       // presumed dead -- drop any plan binding with it (design section 3A),
@@ -656,8 +659,8 @@ export async function findBlackboardRowByAgent(agent_id: string): Promise<Blackb
 //   1 enabled row  -> that tenant
 //   2+ enabled rows -> '_multi_' sentinel: never matches a real ctx.tenantId,
 //     so the row is admin-only visible (see tryHandleBlackboard tenant filter).
-export async function resolveAgentTenant(agent_id: string): Promise<string> {
-  const rows = (await dbx.all('SELECT tenant_id FROM tenant_agent_availability WHERE agent_id = ? AND enabled = 1', agent_id)) as { tenant_id: string }[]
+export async function resolveAgentTenant(agent_id: string, ops: SqlOps = dbx): Promise<string> {
+  const rows = (await ops.all('SELECT tenant_id FROM tenant_agent_availability WHERE agent_id = ? AND enabled = 1', agent_id)) as { tenant_id: string }[]
   if (rows.length === 0) return 'default'
   if (rows.length === 1) return rows[0]!.tenant_id
   return '_multi_'
@@ -675,22 +678,43 @@ export async function resolveAgentTenant(agent_id: string): Promise<string> {
 // entry, and only on the actual blocked -> non-blocked transition.
 export async function upsertBlackboard(
   agent_id: string,
-  data: {
-    task_ref?: string | null
-    status?: string
-    summary: string
-    blocked_by?: string | null
-    blocked_reason?: string | null
-    resolved_by?: string | null
-  },
+  data: BlackboardUpsertData,
 ): Promise<BlackboardRow> {
-  const existing = await dbx.get<BlackboardRow>('SELECT * FROM fleet_blackboard WHERE agent_id = ?', agent_id)
+  const { row, changed } = await dbx.tx(async (tx) => writeBlackboardRow(tx, agent_id, data), { mode: 'immediate' })
+  // #886: an agent reporting itself 'done' no longer has a live claim on its
+  // plan binding either (design section 3A). Only on an actual transition,
+  // same as the history write -- a repeated no-op 'done' upsert must
+  // not matter here. After the commit: best-effort, never inside the lock.
+  if (changed && row.status === 'done') {
+    try { await deactivatePlanForAgent(row.agent_id) } catch { /* best-effort */ }
+  }
+  return row
+}
+
+interface BlackboardUpsertData {
+  task_ref?: string | null
+  status?: string
+  summary: string
+  blocked_by?: string | null
+  blocked_reason?: string | null
+  resolved_by?: string | null
+}
+
+// The read, the write and the history entry are ONE transaction: two overlapped first posts of the same agent
+// used to read "no row", pick two ids, and the loser's `SELECT ... WHERE id = ?` found nothing. The
+// transaction lock puts the second call behind the first, so it sees the first one's row and updates it.
+async function writeBlackboardRow(
+  tx: SqlOps,
+  agent_id: string,
+  data: BlackboardUpsertData,
+): Promise<{ row: BlackboardRow; changed: boolean }> {
+  const existing = await tx.get<BlackboardRow>('SELECT * FROM fleet_blackboard WHERE agent_id = ?', agent_id)
   const id = existing?.id ?? randomUUID().replace(/-/g, '').slice(0, 8)
-  const tenant_id = await resolveAgentTenant(agent_id)
+  const tenant_id = await resolveAgentTenant(agent_id, tx)
   const status = data.status ?? 'active'
   const blockedBy = status === 'blocked' ? (data.blocked_by ?? existing?.blocked_by ?? null) : null
   const blockedReason = status === 'blocked' ? (data.blocked_reason ?? existing?.blocked_reason ?? null) : null
-  await dbx.run(`
+  await tx.run(`
     INSERT INTO fleet_blackboard (id, agent_id, task_ref, status, summary, updated_at, tenant_id, blocked_by, blocked_reason)
     VALUES (?, ?, ?, ?, ?, unixepoch(), ?, ?, ?)
     ON CONFLICT(agent_id) DO UPDATE SET
@@ -702,7 +726,7 @@ export async function upsertBlackboard(
       blocked_by     = excluded.blocked_by,
       blocked_reason = excluded.blocked_reason
   `, id, agent_id, data.task_ref ?? null, status, data.summary, tenant_id, blockedBy, blockedReason)
-  const row = (await dbx.get('SELECT * FROM fleet_blackboard WHERE id = ?', id)) as BlackboardRow
+  const row = (await tx.get('SELECT * FROM fleet_blackboard WHERE agent_id = ?', agent_id)) as BlackboardRow
   const changed = !existing ||
     existing.status !== row.status ||
     existing.summary !== row.summary ||
@@ -715,16 +739,9 @@ export async function upsertBlackboard(
       agent_id: row.agent_id, task_ref: row.task_ref, status: row.status, summary: row.summary,
       blocked_by: row.blocked_by, blocked_reason: row.blocked_reason,
       resolved_by: resolving ? (data.resolved_by ?? null) : null,
-    })
+    }, tx)
   }
-  // #886: an agent reporting itself 'done' no longer has a live claim on its
-  // plan binding either (design section 3A). Only on an actual transition,
-  // same as the history write above -- a repeated no-op 'done' upsert must
-  // not matter here.
-  if (changed && row.status === 'done') {
-    try { await deactivatePlanForAgent(row.agent_id) } catch { /* best-effort */ }
-  }
-  return row
+  return { row, changed }
 }
 
 // ── Tenant-agent availability (deny-by-default opt-in matrix) ─────────────────
@@ -744,17 +761,20 @@ export async function listTenantAgentAvailability(tenantId: string): Promise<Ten
 /** Upsert a (tenant, agent) availability row. Returns the new row. */
 export async function setTenantAgentAvailability(tenantId: string, agentId: string, enabled: boolean): Promise<TenantAgentAvailability> {
   const now = Math.floor(Date.now() / 1000)
-  await dbx.run(`
-    INSERT INTO tenant_agent_availability (tenant_id, agent_id, enabled, updated_at)
-    VALUES (?, ?, ?, ?)
-    ON CONFLICT(tenant_id, agent_id) DO UPDATE SET
-      enabled    = excluded.enabled,
-      updated_at = excluded.updated_at
-  `, tenantId, agentId, enabled ? 1 : 0, now)
-  // Disabling the agent for the tenant ends its use-time context for that tenant at once (the skill gate
-  // fails closed until the agent's next prompt re-resolves the source).
-  if (!enabled) await dbx.run('DELETE FROM agent_tenant_context WHERE agent_id = ? AND tenant_id = ?', agentId, tenantId)
-  return (await dbx.get('SELECT tenant_id, agent_id, enabled, updated_at FROM tenant_agent_availability WHERE tenant_id = ? AND agent_id = ?', tenantId, agentId)) as TenantAgentAvailability
+  // The availability row and the context delete are one step: a disabled agent never keeps its use-time context.
+  return dbx.tx(async (tx) => {
+    await tx.run(`
+      INSERT INTO tenant_agent_availability (tenant_id, agent_id, enabled, updated_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(tenant_id, agent_id) DO UPDATE SET
+        enabled    = excluded.enabled,
+        updated_at = excluded.updated_at
+    `, tenantId, agentId, enabled ? 1 : 0, now)
+    // Disabling the agent for the tenant ends its use-time context for that tenant at once (the skill gate
+    // fails closed until the agent's next prompt re-resolves the source).
+    if (!enabled) await tx.run('DELETE FROM agent_tenant_context WHERE agent_id = ? AND tenant_id = ?', agentId, tenantId)
+    return (await tx.get('SELECT tenant_id, agent_id, enabled, updated_at FROM tenant_agent_availability WHERE tenant_id = ? AND agent_id = ?', tenantId, agentId)) as TenantAgentAvailability
+  })
 }
 
 /** Check if an agent is explicitly enabled for a tenant. */

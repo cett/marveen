@@ -35,7 +35,7 @@ describe('delivered rows always carry a timestamp', () => {
     const m1 = await createAgentMessage('a', target, 'elavult')
     const m2 = await createAgentMessage('b', target, 'szintén elavult')
 
-    expect(closeMessagesWithoutDelivery([m1.id, m2.id], 'stale backlog after restart')).toBe(2)
+    expect(await closeMessagesWithoutDelivery([m1.id, m2.id], 'stale backlog after restart')).toBe(2)
 
     for (const id of [m1.id, m2.id]) {
       const row = await getAgentMessage(id)
@@ -52,7 +52,7 @@ describe('delivered rows always carry a timestamp', () => {
     await markMessageDelivered(m.id)
     const before = await getAgentMessage(m.id)
 
-    expect(closeMessagesWithoutDelivery([m.id], 'késői takarítás')).toBe(0)
+    expect(await closeMessagesWithoutDelivery([m.id], 'késői takarítás')).toBe(0)
 
     const after = await getAgentMessage(m.id)
     expect(after?.delivered_at).toBe(before?.delivered_at)

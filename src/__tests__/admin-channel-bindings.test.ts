@@ -47,7 +47,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(isKnownAgent).mockReturnValue(true)
   vi.mocked(db.getTenant).mockReturnValue(TENANT as any)
-  vi.mocked(db.agentBelongsToTenant).mockReturnValue(true)
+  vi.mocked(db.agentBelongsToTenant).mockResolvedValue(true)
   vi.mocked(db.setChannelBinding).mockResolvedValue(REC as any)
 })
 
@@ -86,7 +86,7 @@ describe('PUT /api/admin/channel-bindings', () => {
   })
 
   it('an agent that does not belong to the tenant cannot be bound to it (409)', async () => {
-    vi.mocked(db.agentBelongsToTenant).mockReturnValue(false)
+    vi.mocked(db.agentBelongsToTenant).mockResolvedValue(false)
     const { ctx, out } = makeCtx('PUT', '/api/v1/admin/channel-bindings', PUT)
     await tryHandleAdminB2b(ctx)
     expect(out.status).toBe(409)
@@ -95,7 +95,7 @@ describe('PUT /api/admin/channel-bindings', () => {
 
   it('the default tenant needs no availability row', async () => {
     vi.mocked(db.getTenant).mockReturnValue({ ...TENANT, id: 'default' } as any)
-    vi.mocked(db.agentBelongsToTenant).mockReturnValue(false)
+    vi.mocked(db.agentBelongsToTenant).mockResolvedValue(false)
     const { ctx, out } = makeCtx('PUT', '/api/v1/admin/channel-bindings', { ...PUT, tenant_id: 'default' })
     await tryHandleAdminB2b(ctx)
     expect(out.status).toBe(200)

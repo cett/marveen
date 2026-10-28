@@ -3,6 +3,7 @@ import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import { callerMayActAs } from '../fleet-agent-identity.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
+import { withBlackboardLock } from '../blackboard-lock.js'
 import type { RouteContext } from './types.js'
 
 // Signal values attached to each blackboard row in the GET response.
@@ -213,8 +214,12 @@ export async function tryHandleBlackboard(ctx: RouteContext): Promise<boolean> {
       }
     }
     try {
-      const hadExisting = await blackboardRowExistsForAgent(agent_id)
-      const row = await upsertBlackboard(agent_id, { task_ref, status, summary, blocked_by, blocked_reason, resolved_by })
+      // Under the agent's blackboard lock, like the other check-then-write sequences on its row (message
+      // assignment, the done write of a scheduled run).
+      const { hadExisting, row } = await withBlackboardLock(agent_id, async () => ({
+        hadExisting: await blackboardRowExistsForAgent(agent_id),
+        row: await upsertBlackboard(agent_id, { task_ref, status, summary, blocked_by, blocked_reason, resolved_by }),
+      }))
       try {
         await writeAgentAuditLog({ agent_id, entity: 'blackboard', action: hadExisting ? 'update' : 'create', entity_id: row.id, detail: { status, task_ref } })
       } catch { /* audit failure must not abort the write */ }

@@ -23,6 +23,7 @@ import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
 import { claimsServerSender, findReservedMarker, reservedMarkerRefusal } from '../../server-markers.js'
 import { parseQualifiedId, formatQualifiedId } from '../federation/address.js'
 import { getFederationConfig } from '../federation/config.js'
+import { withBlackboardLock } from '../blackboard-lock.js'
 import type { RouteContext } from './types.js'
 
 // Should closing a message produce a reverse "[Eredmény]" notification to its sender?
@@ -379,14 +380,18 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // notifications are sent without assign:true and produce no row.
     // Federated recipients are skipped (no local row).
     if (assign === true && !storedTo.includes('/')) {
-      const existing = await findBlackboardRowByAgent(storedTo)
-      if (!existing || (existing.status !== 'active' && existing.status !== 'blocked')) {
-        await upsertBlackboard(storedTo, {
-          status: 'assigned',
-          summary: normalizedContent.slice(0, 100),
-          task_ref: null,
-        })
-      }
+      // Check and write under the agent's blackboard lock: two overlapped assignments (or an assignment and the
+      // recipient's own post) must not both judge the old row.
+      await withBlackboardLock(storedTo, async () => {
+        const existing = await findBlackboardRowByAgent(storedTo)
+        if (!existing || (existing.status !== 'active' && existing.status !== 'blocked')) {
+          await upsertBlackboard(storedTo, {
+            status: 'assigned',
+            summary: normalizedContent.slice(0, 100),
+            task_ref: null,
+          })
+        }
+      })
     }
     // Symmetric completion hook: complete:true closes the SENDER's own
     // 'assigned'/'active'/'blocked' row to 'done' (nothing else clears a
@@ -395,14 +400,16 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // reclaimed it or it was never opened, and the TTL sweep stays as the
     // safety net either way.
     if (complete === true) {
-      const senderRow = await findBlackboardRowByAgent(from.trim())
-      if (senderRow && (senderRow.status === 'assigned' || senderRow.status === 'active' || senderRow.status === 'blocked')) {
-        await upsertBlackboard(senderRow.agent_id, {
-          status: 'done',
-          summary: senderRow.summary,
-          task_ref: senderRow.task_ref,
-        })
-      }
+      await withBlackboardLock(from.trim(), async () => {
+        const senderRow = await findBlackboardRowByAgent(from.trim())
+        if (senderRow && (senderRow.status === 'assigned' || senderRow.status === 'active' || senderRow.status === 'blocked')) {
+          await upsertBlackboard(senderRow.agent_id, {
+            status: 'done',
+            summary: senderRow.summary,
+            task_ref: senderRow.task_ref,
+          })
+        }
+      })
     }
     // Warn-only homoglyph check, same contract as memories / daily-log / the kanban triggers. The
     // inter-agent queue is the busiest of those paths, and agents search it with `content LIKE`: one
