@@ -8,7 +8,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import {
   initDatabase, createKanbanCard, getKanbanCard, getKanbanComments, getChildCards, deleteKanbanCard,
-  createKanbanSubtasks, markKanbanCardDispatched, releaseKanbanCardDispatch,
+  createKanbanSubtasks, markKanbanCardDispatched, releaseKanbanCardDispatch, markScheduledTaskKanbanWaiting, moveKanbanCard,
 } from '../db.js'
 import { db } from '../db/connection.js'
 
@@ -107,5 +107,29 @@ describe('deleteKanbanCard and its audit', () => {
   it('writes no audit row for a card that does not exist', async () => {
     expect(await deleteKanbanCard('nope')).toBe(false)
     expect(auditRows('kanban', 'delete')).toBe(0)
+  })
+})
+
+describe('markScheduledTaskKanbanWaiting (the fire-timeout watchdog)', () => {
+  it('moves the active card with that title to waiting and returns its id', async () => {
+    await createKanbanCard({ id: 'c1', title: 'nightly-backup', status: 'in_progress' })
+    expect(await markScheduledTaskKanbanWaiting('nightly-backup')).toBe('c1')
+    expect((await getKanbanCard('c1'))?.status).toBe('waiting')
+  })
+
+  it('returns null when no active card has that title', async () => {
+    expect(await markScheduledTaskKanbanWaiting('nope')).toBeNull()
+  })
+
+  it('does not drag a card back into waiting when it left its status meanwhile (compare-and-set)', async () => {
+    await createKanbanCard({ id: 'c1', title: 'nightly-backup', status: 'in_progress' })
+    // The CAS the watchdog relies on: a move that expects the status it read is refused for a card that moved on.
+    await moveKanbanCard('c1', 'done', 0, 'owner')
+    expect(await moveKanbanCard('c1', 'waiting', 0, 'scheduler', undefined, { expectedStatus: 'in_progress' })).toBe(false)
+    expect((await getKanbanCard('c1'))?.status).toBe('done')
+    // Overlapping with a move to done, the watchdog either runs first (the done move wins afterwards) or loses the CAS.
+    await createKanbanCard({ id: 'c2', title: 'other-task', status: 'in_progress' })
+    await Promise.all([moveKanbanCard('c2', 'done', 0, 'owner'), markScheduledTaskKanbanWaiting('other-task')])
+    expect((await getKanbanCard('c2'))?.status).toBe('done')
   })
 })

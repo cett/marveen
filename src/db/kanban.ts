@@ -692,8 +692,10 @@ export async function markScheduledTaskKanbanWaiting(taskName: string): Promise<
   if (!card) return null
   const maxResult = (await dbx.get("SELECT MAX(sort_order) as m FROM kanban_cards WHERE status = 'waiting' AND archived_at IS NULL")) as { m: number | null }
   const sortOrder = (maxResult.m ?? 0) + 100
-  await moveKanbanCard(card.id, 'waiting', sortOrder, 'scheduler')
-  return card.id
+  // Compare-and-set on the status that was read: a card the owner moved (to done, say) while the sort order was
+  // computed is not dragged back into waiting by the watchdog; the mark then reports "no card".
+  const moved = await moveKanbanCard(card.id, 'waiting', sortOrder, 'scheduler', undefined, { expectedStatus: card.status })
+  return moved ? card.id : null
 }
 
 export async function addKanbanComment(cardId: string, author: string, content: string): Promise<KanbanComment> {
