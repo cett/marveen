@@ -10,7 +10,7 @@ import { EventEmitter } from 'node:events'
 import { createHash } from 'node:crypto'
 import type http from 'node:http'
 import {
-  initDatabase, getDb, createTenant, insertApiToken, createKanbanCard, moveKanbanCard, updateKanbanCard,
+  initDatabase, getDb, dbx, createTenant, insertApiToken, createKanbanCard, moveKanbanCard, updateKanbanCard,
   propagateStatus, markScheduledTaskKanbanWaiting, markKanbanCardDispatched, kanbanWriteClearsDispatch,
 } from '../db.js'
 import { updateTenantKanbanCard, insertTenantKanbanCard } from '../db/tenant-scoped.js'
@@ -277,7 +277,20 @@ describe('the route: leave and come back wakes the assignee again, once per stay
     expect(sentMessages()).toBe(2)
   })
 
-  it('two overlapping moves into in_progress send exactly one assignment (the claim is one conditional UPDATE)', async () => {
+  it('a dispatcher whose read of the card is stale (the other one claimed meanwhile) sends nothing: the claim is the guard', async () => {
+    // The state after the winning dispatcher: in_progress and stamped. This dispatcher read the card BEFORE that
+    // stamp, which the stale read below reproduces deterministically (a real overlap only hits the window by timing).
+    await inProgressStamped()
+    const realGet = dbx.get.bind(dbx) as (sql: string, ...a: unknown[]) => Promise<unknown>
+    vi.spyOn(dbx, 'get').mockImplementation((async (sql: string, ...a: unknown[]) => {
+      const row = await realGet(sql, ...a)
+      return row && /FROM kanban_cards WHERE id = \?/.test(sql) ? { ...(row as object), dispatched_at: null } : row
+    }) as never)
+    expect((await move(CARD, { status: 'in_progress', actor: 'agent-a' })).status).toBe(200)
+    expect(sentMessages()).toBe(0)
+  })
+
+  it('two overlapping moves into in_progress send exactly one assignment', async () => {
     const auth = await admin()
     const results = await Promise.all([
       callAs(auth, 'POST', `/api/kanban/${CARD}/move`, { status: 'in_progress', actor: 'agent-a' }),
