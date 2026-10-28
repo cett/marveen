@@ -134,7 +134,7 @@ describe('tryHandleSkills', () => {
 
   it('GET /api/skills/:name derives agents coverage from SQL agent/* rows, not the filesystem', async () => {
     const { listAllSkills } = await import('../db.js')
-    ;(listAllSkills as any).mockReturnValueOnce([
+    ;(listAllSkills as any).mockResolvedValueOnce([
       { id: 'agent/known-agent/my-skill', name: 'my-skill', description: '', content: '', tenant_id: 'fleet', is_global: 0, created_by: null, created_at: 0, updated_at: 0 },
       { id: 'agent/other-agent/other-skill', name: 'other-skill', description: '', content: '', tenant_id: 'fleet', is_global: 0, created_by: null, created_at: 0, updated_at: 0 },
       { id: 'global/my-skill', name: 'my-skill', description: '', content: '', tenant_id: 'fleet', is_global: 1, created_by: null, created_at: 0, updated_at: 0 },

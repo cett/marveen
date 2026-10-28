@@ -125,7 +125,7 @@ describe('tryHandleSkills SQL endpoints', () => {
   describe('GET /api/skills/sql', () => {
     it('admin sees all skills', async () => {
       const { getSkill, listAllSkills } = await import('../db.js')
-      ;(listAllSkills as any).mockReturnValueOnce([
+      ;(listAllSkills as any).mockResolvedValueOnce([
         { id: 'fleet-test', name: 'Test', description: '', content: '', tenant_id: 'fleet', is_global: 0 },
       ])
       const { ctx, out } = makeCtx('GET', '/api/skills/sql', undefined, { role: 'admin' })
@@ -144,7 +144,7 @@ describe('tryHandleSkills SQL endpoints', () => {
 
     it('tenant user sees tenant-scoped skills', async () => {
       const { listSkillsForTenant } = await import('../db.js')
-      ;(listSkillsForTenant as any).mockReturnValueOnce([
+      ;(listSkillsForTenant as any).mockResolvedValueOnce([
         { id: 'tenant-skill', name: 'Tenant', description: '', content: '', tenant_id: 'acme', is_global: 0 },
       ])
       const { ctx, out } = makeCtx('GET', '/api/skills/sql', undefined, { role: 'user', tenantId: 'acme' })
@@ -165,7 +165,7 @@ describe('tryHandleSkills SQL endpoints', () => {
 
     it('admin creates skill', async () => {
       const { createSkill } = await import('../db.js')
-      ;(createSkill as any).mockReturnValueOnce({ id: 'fleet-new', name: 'New', description: '', content: '', tenant_id: 'fleet', is_global: 0 })
+      ;(createSkill as any).mockResolvedValueOnce({ id: 'fleet-new', name: 'New', description: '', content: '', tenant_id: 'fleet', is_global: 0 })
       const { ctx, out } = makeCtx('POST', '/api/skills/sql', { name: 'New', content: '# New Skill', description: 'A skill' }, { role: 'admin' })
       expect(await tryHandleSkills(ctx)).toBe(true)
       expect(out.status).toBe(201)
@@ -175,7 +175,7 @@ describe('tryHandleSkills SQL endpoints', () => {
 
     it('tenant user creates tenant-scoped skill', async () => {
       const { createSkill } = await import('../db.js')
-      ;(createSkill as any).mockReturnValueOnce({ id: 'acme-skill', name: 'TenantSkill', description: '', content: '', tenant_id: 'acme', is_global: 0 })
+      ;(createSkill as any).mockResolvedValueOnce({ id: 'acme-skill', name: 'TenantSkill', description: '', content: '', tenant_id: 'acme', is_global: 0 })
       const { ctx, out } = makeCtx('POST', '/api/skills/sql', { name: 'TenantSkill', content: '# X', description: 'Desc' }, { role: 'user', tenantId: 'acme' })
       expect(await tryHandleSkills(ctx)).toBe(true)
       expect(out.status).toBe(201)
@@ -207,7 +207,7 @@ describe('tryHandleSkills SQL endpoints', () => {
 
     it('POST /api/skills/sql rejects conflict on duplicate', async () => {
       const { getSkill } = await import('../db.js')
-      ;(getSkill as any).mockReturnValueOnce({ id: 'fleet-dup', name: 'Dup' })
+      ;(getSkill as any).mockResolvedValueOnce({ id: 'fleet-dup', name: 'Dup' })
       const { ctx, out } = makeCtx('POST', '/api/skills/sql', { name: 'Dup', content: '# Dup' }, { role: 'admin' })
       expect(await tryHandleSkills(ctx)).toBe(true)
       expect(out.status).toBe(409)
@@ -218,7 +218,7 @@ describe('tryHandleSkills SQL endpoints', () => {
   describe('GET /api/skills/sql/:id', () => {
     it('admin gets any skill', async () => {
       const { getSkill } = await import('../db.js')
-      ;(getSkill as any).mockReturnValueOnce({ id: 'fleet-skill', name: 'Skill', tenant_id: 'fleet' })
+      ;(getSkill as any).mockResolvedValueOnce({ id: 'fleet-skill', name: 'Skill', tenant_id: 'fleet' })
       const { ctx, out } = makeCtx('GET', '/api/skills/sql/fleet-skill', undefined, { role: 'admin' })
       expect(await tryHandleSkills(ctx)).toBe(true)
       expect(out.status).toBe(200)
@@ -227,7 +227,7 @@ describe('tryHandleSkills SQL endpoints', () => {
 
     it('non-admin gets only tenant-scoped skill', async () => {
       const { getSkill } = await import('../db.js')
-      ;(getSkill as any).mockReturnValueOnce({ id: 'acme-skill', name: 'Skill', tenant_id: 'acme' })
+      ;(getSkill as any).mockResolvedValueOnce({ id: 'acme-skill', name: 'Skill', tenant_id: 'acme' })
       const { ctx, out } = makeCtx('GET', '/api/skills/sql/acme-skill', undefined, { role: 'user', tenantId: 'acme' })
       expect(await tryHandleSkills(ctx)).toBe(true)
       expect(out.status).toBe(200)
@@ -235,7 +235,7 @@ describe('tryHandleSkills SQL endpoints', () => {
 
     it('non-admin cannot access other tenant skill', async () => {
       const { getSkill } = await import('../db.js')
-      ;(getSkill as any).mockReturnValueOnce({ id: 'other-skill', name: 'Skill', tenant_id: 'other' })
+      ;(getSkill as any).mockResolvedValueOnce({ id: 'other-skill', name: 'Skill', tenant_id: 'other' })
       const { ctx, out } = makeCtx('GET', '/api/skills/sql/other-skill', undefined, { role: 'user', tenantId: 'acme' })
       expect(await tryHandleSkills(ctx)).toBe(true)
       expect(out.status).toBe(404)
@@ -243,7 +243,7 @@ describe('tryHandleSkills SQL endpoints', () => {
 
     it('returns 404 for non-existent skill', async () => {
       const { getSkill } = await import('../db.js')
-      ;(getSkill as any).mockReturnValueOnce(null)
+      ;(getSkill as any).mockResolvedValueOnce(null)
       const { ctx, out } = makeCtx('GET', '/api/skills/sql/ghost', undefined, { role: 'admin' })
       expect(await tryHandleSkills(ctx)).toBe(true)
       expect(out.status).toBe(404)
@@ -260,8 +260,8 @@ describe('tryHandleSkills SQL endpoints', () => {
   describe('PUT /api/skills/sql/:id', () => {
     it('admin updates skill', async () => {
       const { getSkill, updateSkill } = await import('../db.js')
-      ;(getSkill as any).mockReturnValueOnce({ id: 'fleet-skill', tenant_id: 'fleet' })
-      ;(updateSkill as any).mockReturnValueOnce({ id: 'fleet-skill', name: 'Updated' })
+      ;(getSkill as any).mockResolvedValueOnce({ id: 'fleet-skill', tenant_id: 'fleet' })
+      ;(updateSkill as any).mockResolvedValueOnce({ id: 'fleet-skill', name: 'Updated' })
       const { ctx, out } = makeCtx('PUT', '/api/skills/sql/fleet-skill', { name: 'Updated', content: '# Updated' }, { role: 'admin' })
       expect(await tryHandleSkills(ctx)).toBe(true)
       expect(out.status).toBe(200)
@@ -270,8 +270,8 @@ describe('tryHandleSkills SQL endpoints', () => {
 
     it('tenant user updates own skill', async () => {
       const { getSkill, updateSkill } = await import('../db.js')
-      ;(getSkill as any).mockReturnValueOnce({ id: 'acme-skill', tenant_id: 'acme' })
-      ;(updateSkill as any).mockReturnValueOnce({ id: 'acme-skill' })
+      ;(getSkill as any).mockResolvedValueOnce({ id: 'acme-skill', tenant_id: 'acme' })
+      ;(updateSkill as any).mockResolvedValueOnce({ id: 'acme-skill' })
       const { ctx, out } = makeCtx('PUT', '/api/skills/sql/acme-skill', { content: '# Updated' }, { role: 'user', tenantId: 'acme' })
       expect(await tryHandleSkills(ctx)).toBe(true)
       expect(out.status).toBe(200)
@@ -279,7 +279,7 @@ describe('tryHandleSkills SQL endpoints', () => {
 
     it('tenant user cannot update other tenant skill', async () => {
       const { getSkill } = await import('../db.js')
-      ;(getSkill as any).mockReturnValueOnce({ id: 'other-skill', tenant_id: 'other' })
+      ;(getSkill as any).mockResolvedValueOnce({ id: 'other-skill', tenant_id: 'other' })
       const { ctx, out } = makeCtx('PUT', '/api/skills/sql/other-skill', { content: '# Try' }, { role: 'user', tenantId: 'acme' })
       expect(await tryHandleSkills(ctx)).toBe(true)
       expect(out.status).toBe(404)
@@ -287,7 +287,7 @@ describe('tryHandleSkills SQL endpoints', () => {
 
     it('non-admin cannot set is_global', async () => {
       const { getSkill } = await import('../db.js')
-      ;(getSkill as any).mockReturnValueOnce({ id: 'acme-skill', tenant_id: 'acme' })
+      ;(getSkill as any).mockResolvedValueOnce({ id: 'acme-skill', tenant_id: 'acme' })
       const { ctx, out } = makeCtx('PUT', '/api/skills/sql/acme-skill', { is_global: true }, { role: 'user', tenantId: 'acme' })
       expect(await tryHandleSkills(ctx)).toBe(true)
       expect(out.status).toBe(403)
@@ -295,7 +295,7 @@ describe('tryHandleSkills SQL endpoints', () => {
 
     it('PUT returns 404 for non-existent skill', async () => {
       const { getSkill } = await import('../db.js')
-      ;(getSkill as any).mockReturnValueOnce(null)
+      ;(getSkill as any).mockResolvedValueOnce(null)
       const { ctx, out } = makeCtx('PUT', '/api/skills/sql/ghost', { content: '# X' }, { role: 'admin' })
       expect(await tryHandleSkills(ctx)).toBe(true)
       expect(out.status).toBe(404)
@@ -306,8 +306,8 @@ describe('tryHandleSkills SQL endpoints', () => {
   describe('DELETE /api/skills/sql/:id', () => {
     it('admin deletes skill', async () => {
       const { getSkill, deleteSkill } = await import('../db.js')
-      ;(getSkill as any).mockReturnValueOnce({ id: 'fleet-skill', tenant_id: 'fleet' })
-      ;(deleteSkill as any).mockReturnValueOnce(true)
+      ;(getSkill as any).mockResolvedValueOnce({ id: 'fleet-skill', tenant_id: 'fleet' })
+      ;(deleteSkill as any).mockResolvedValueOnce(true)
       const { ctx, out } = makeCtx('DELETE', '/api/skills/sql/fleet-skill', undefined, { role: 'admin' })
       expect(await tryHandleSkills(ctx)).toBe(true)
       expect(out.status).toBe(200)
@@ -316,8 +316,8 @@ describe('tryHandleSkills SQL endpoints', () => {
 
     it('tenant user deletes own skill', async () => {
       const { getSkill, deleteSkill } = await import('../db.js')
-      ;(getSkill as any).mockReturnValueOnce({ id: 'acme-skill', tenant_id: 'acme' })
-      ;(deleteSkill as any).mockReturnValueOnce(true)
+      ;(getSkill as any).mockResolvedValueOnce({ id: 'acme-skill', tenant_id: 'acme' })
+      ;(deleteSkill as any).mockResolvedValueOnce(true)
       const { ctx, out } = makeCtx('DELETE', '/api/skills/sql/acme-skill', undefined, { role: 'user', tenantId: 'acme' })
       expect(await tryHandleSkills(ctx)).toBe(true)
       expect(out.status).toBe(200)
@@ -325,7 +325,7 @@ describe('tryHandleSkills SQL endpoints', () => {
 
     it('tenant user cannot delete other tenant skill', async () => {
       const { getSkill } = await import('../db.js')
-      ;(getSkill as any).mockReturnValueOnce({ id: 'other-skill', tenant_id: 'other' })
+      ;(getSkill as any).mockResolvedValueOnce({ id: 'other-skill', tenant_id: 'other' })
       const { ctx, out } = makeCtx('DELETE', '/api/skills/sql/other-skill', undefined, { role: 'user', tenantId: 'acme' })
       expect(await tryHandleSkills(ctx)).toBe(true)
       expect(out.status).toBe(404)
@@ -333,7 +333,7 @@ describe('tryHandleSkills SQL endpoints', () => {
 
     it('DELETE returns 404 for non-existent skill', async () => {
       const { getSkill } = await import('../db.js')
-      ;(getSkill as any).mockReturnValueOnce(null)
+      ;(getSkill as any).mockResolvedValueOnce(null)
       const { ctx, out } = makeCtx('DELETE', '/api/skills/sql/ghost', undefined, { role: 'admin' })
       expect(await tryHandleSkills(ctx)).toBe(true)
       expect(out.status).toBe(404)
@@ -344,8 +344,8 @@ describe('tryHandleSkills SQL endpoints', () => {
   describe('GET /api/skills/sql/:id/access', () => {
     it('admin only can list access', async () => {
       const { getSkill, listSkillAccess } = await import('../db.js')
-      ;(getSkill as any).mockReturnValueOnce({ id: 'fleet-skill' })
-      ;(listSkillAccess as any).mockReturnValueOnce([{ tenant_id: 'acme' }])
+      ;(getSkill as any).mockResolvedValueOnce({ id: 'fleet-skill' })
+      ;(listSkillAccess as any).mockResolvedValueOnce([{ tenant_id: 'acme' }])
       const { ctx, out } = makeCtx('GET', '/api/skills/sql/fleet-skill/access', undefined, { role: 'admin' })
       expect(await tryHandleSkills(ctx)).toBe(true)
       expect(out.status).toBe(200)
@@ -360,7 +360,7 @@ describe('tryHandleSkills SQL endpoints', () => {
 
     it('GET /access returns 404 for missing skill', async () => {
       const { getSkill } = await import('../db.js')
-      ;(getSkill as any).mockReturnValueOnce(null)
+      ;(getSkill as any).mockResolvedValueOnce(null)
       const { ctx, out } = makeCtx('GET', '/api/skills/sql/ghost/access', undefined, { role: 'admin' })
       expect(await tryHandleSkills(ctx)).toBe(true)
       expect(out.status).toBe(404)
@@ -370,8 +370,8 @@ describe('tryHandleSkills SQL endpoints', () => {
   describe('POST /api/skills/sql/:id/access', () => {
     it('admin grants access', async () => {
       const { getSkill, grantSkillAccess } = await import('../db.js')
-      ;(getSkill as any).mockReturnValueOnce({ id: 'fleet-skill' })
-      ;(grantSkillAccess as any).mockReturnValueOnce(true)
+      ;(getSkill as any).mockResolvedValueOnce({ id: 'fleet-skill' })
+      ;(grantSkillAccess as any).mockResolvedValueOnce(true)
       const { regenSingleSkillFile } = await import('../web/skill-regen.js')
       ;(regenSingleSkillFile as any).mockClear()
       const { ctx, out } = makeCtx('POST', '/api/skills/sql/fleet-skill/access', { tenant_id: 'new-tenant' }, { role: 'admin' })
@@ -389,7 +389,7 @@ describe('tryHandleSkills SQL endpoints', () => {
 
     it('POST /access rejects missing tenant_id', async () => {
       const { getSkill } = await import('../db.js')
-      ;(getSkill as any).mockReturnValueOnce({ id: 'fleet-skill' })
+      ;(getSkill as any).mockResolvedValueOnce({ id: 'fleet-skill' })
       const { ctx, out } = makeCtx('POST', '/api/skills/sql/fleet-skill/access', { }, { role: 'admin' })
       expect(await tryHandleSkills(ctx)).toBe(true)
       expect(out.status).toBe(400)
@@ -397,7 +397,7 @@ describe('tryHandleSkills SQL endpoints', () => {
 
     it('POST /access returns 404 for missing skill', async () => {
       const { getSkill } = await import('../db.js')
-      ;(getSkill as any).mockReturnValueOnce(null)
+      ;(getSkill as any).mockResolvedValueOnce(null)
       const { ctx, out } = makeCtx('POST', '/api/skills/sql/ghost/access', { tenant_id: 'acme' }, { role: 'admin' })
       expect(await tryHandleSkills(ctx)).toBe(true)
       expect(out.status).toBe(404)
@@ -407,7 +407,7 @@ describe('tryHandleSkills SQL endpoints', () => {
   describe('DELETE /api/skills/sql/:id/access/:tenantId', () => {
     it('admin revokes access', async () => {
       const { revokeSkillAccess } = await import('../db.js')
-      ;(revokeSkillAccess as any).mockReturnValueOnce(true)
+      ;(revokeSkillAccess as any).mockResolvedValueOnce(true)
       const { regenSingleSkillFile } = await import('../web/skill-regen.js')
       ;(regenSingleSkillFile as any).mockClear()
       const { ctx, out } = makeCtx('DELETE', '/api/skills/sql/fleet-skill/access/acme', undefined, { role: 'admin' })
@@ -425,7 +425,7 @@ describe('tryHandleSkills SQL endpoints', () => {
 
     it('DELETE /access returns 404 when revoke fails', async () => {
       const { revokeSkillAccess } = await import('../db.js')
-      ;(revokeSkillAccess as any).mockReturnValueOnce(false)
+      ;(revokeSkillAccess as any).mockResolvedValueOnce(false)
       const { ctx, out } = makeCtx('DELETE', '/api/skills/sql/fleet-skill/access/ghost', undefined, { role: 'admin' })
       expect(await tryHandleSkills(ctx)).toBe(true)
       expect(out.status).toBe(404)
@@ -436,7 +436,7 @@ describe('tryHandleSkills SQL endpoints', () => {
   describe('/api/v1 endpoint aliases', () => {
     it('GET /api/v1/skills/sql works (legacy alias)', async () => {
       const { listAllSkills } = await import('../db.js')
-      ;(listAllSkills as any).mockReturnValueOnce([])
+      ;(listAllSkills as any).mockResolvedValueOnce([])
       const { ctx, out } = makeCtx('GET', '/api/v1/skills/sql', undefined, { role: 'admin' })
       expect(await tryHandleSkills(ctx)).toBe(true)
       expect(out.status).toBe(200)
@@ -444,7 +444,7 @@ describe('tryHandleSkills SQL endpoints', () => {
 
     it('POST /api/v1/skills/sql works (legacy alias)', async () => {
       const { createSkill } = await import('../db.js')
-      ;(createSkill as any).mockReturnValueOnce({ id: 'test', name: 'Test', description: '', content: '', tenant_id: 'fleet', is_global: 0 })
+      ;(createSkill as any).mockResolvedValueOnce({ id: 'test', name: 'Test', description: '', content: '', tenant_id: 'fleet', is_global: 0 })
       const { ctx, out } = makeCtx('POST', '/api/v1/skills/sql', { name: 'Test', content: '# Test' }, { role: 'admin' })
       expect(await tryHandleSkills(ctx)).toBe(true)
       expect(out.status).toBe(201)
@@ -452,7 +452,7 @@ describe('tryHandleSkills SQL endpoints', () => {
 
     it('GET /api/v1/skills/sql/:id works (legacy alias)', async () => {
       const { getSkill } = await import('../db.js')
-      ;(getSkill as any).mockReturnValueOnce({ id: 'test-skill', tenant_id: 'fleet' })
+      ;(getSkill as any).mockResolvedValueOnce({ id: 'test-skill', tenant_id: 'fleet' })
       const { ctx, out } = makeCtx('GET', '/api/v1/skills/sql/test-skill', undefined, { role: 'admin' })
       expect(await tryHandleSkills(ctx)).toBe(true)
       expect(out.status).toBe(200)
@@ -481,7 +481,7 @@ describe('tryHandleSkills SQL endpoints', () => {
 
     it('PUT /api/skills/sql/:id handles invalid JSON', async () => {
       const { getSkill } = await import('../db.js')
-      ;(getSkill as any).mockReturnValueOnce({ id: 'test', tenant_id: 'fleet' })
+      ;(getSkill as any).mockResolvedValueOnce({ id: 'test', tenant_id: 'fleet' })
 
       const buf = Buffer.from('bad json')
       const req = new EventEmitter() as any
