@@ -560,17 +560,6 @@ export async function syncVecMemoryDelete(id: number): Promise<void> {
   } catch { /* vec0 unavailable at runtime -- no-op */ }
 }
 
-// @sqlite-only, raw handle: the one caller is deleteTenant (observability.ts), whose transaction is still a
-// synchronous better-sqlite3 one until it moves onto dbx.tx. An awaited call in that body would let the
-// transaction commit at the first await, so the delete runs on the same raw connection, in the transaction.
-// That move removes this function and awaits syncVecMemoryDelete inside the dbx.tx body.
-export function deleteVecMemoryOnRawHandle(id: number): void {
-  if (!vecExtensionLoaded) return
-  try {
-    db.prepare('DELETE FROM vec_memories WHERE memory_id = ?').run(BigInt(id))
-  } catch { /* vec0 unavailable at runtime -- no-op */ }
-}
-
 // @sqlite-only: see syncVecMemoryDelete.
 export async function syncVecMemoryEmbeddingUpdate(id: number, embeddingBlob: Buffer): Promise<void> {
   if (!vecExtensionLoaded) return

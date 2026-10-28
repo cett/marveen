@@ -5,7 +5,7 @@ import { db, vecExtensionLoaded } from './connection.js'
 import { dbx } from './facade.js'
 import { Memory, MemoryVersion } from './memory.js'
 import { DashboardUser, DashboardUserPublic } from './sessions.js'
-import { deleteVecMemoryOnRawHandle } from './vector.js'
+import { syncVecMemoryDelete } from './vector.js'
 import { resolveWriteTenant } from './write-tenant.js'
 import { reloadAgentSettingsCache } from './agent-settings-cache.js'
 import { purgeSecretsForTenant } from '../web/vault.js'
@@ -422,8 +422,6 @@ export async function getTenantForMainAgent(agentId: string): Promise<Tenant | u
 }
 
 export async function updateTenant(id: string, patch: { display_name?: string; disabled?: boolean; main_agent_id?: string }): Promise<Tenant | null> {
-  const existing = await getTenant(id)
-  if (!existing) return null
   const now = Math.floor(Date.now() / 1000)
   const fields: string[] = []
   const params: unknown[] = []
@@ -441,15 +439,22 @@ export async function updateTenant(id: string, patch: { display_name?: string; d
   } else if (patch.disabled === false) {
     fields.push('disabled_at = NULL')
   }
-  if (fields.length === 0) return existing
   params.push(id)
-  await dbx.run(`UPDATE tenants SET ${fields.join(', ')} WHERE id = ?`, ...params)
-  // Disabling the tenant or changing its main agent ends the use-time tenant context of every agent that was
-  // serving it (the skill gate fails closed until each agent's next prompt re-resolves the source).
-  if (patch.disabled === true || (patch.main_agent_id !== undefined && patch.main_agent_id !== existing.main_agent_id)) {
-    await dbx.run('DELETE FROM agent_tenant_context WHERE tenant_id = ?', id)
-  }
-  return (await dbx.get('SELECT * FROM tenants WHERE id = ?', id)) as Tenant
+  // The read of the old row, the update and the context drop are ONE transaction: a crash or a failure between the
+  // last two would leave a disabled tenant (or one with a new main agent) with the use-time context of its old
+  // state, which the skill gate trusts, and the "main agent changed" decision must see the row it overwrites.
+  return dbx.tx(async (tx): Promise<Tenant | null> => {
+    const existing = await tx.get<Tenant>('SELECT * FROM tenants WHERE id = ?', id)
+    if (!existing) return null
+    if (fields.length === 0) return existing
+    await tx.run(`UPDATE tenants SET ${fields.join(', ')} WHERE id = ?`, ...params)
+    // Disabling the tenant or changing its main agent ends the use-time tenant context of every agent that was
+    // serving it (the skill gate fails closed until each agent's next prompt re-resolves the source).
+    if (patch.disabled === true || (patch.main_agent_id !== undefined && patch.main_agent_id !== existing.main_agent_id)) {
+      await tx.run('DELETE FROM agent_tenant_context WHERE tenant_id = ?', id)
+    }
+    return (await tx.get('SELECT * FROM tenants WHERE id = ?', id)) as Tenant
+  })
 }
 
 // Tables whose rows belong to a tenant by a plain `tenant_id` column and are purged with one
@@ -524,152 +529,160 @@ export interface TenantDeleteResult {
 //      (the agents exclusive to the tenant are read BEFORE this step, the step erases the evidence).
 //  14. Drop vault_ssh_servers (child of vault_ssh_keys by FK direction).
 //  15. Drop vault_ssh_keys.
-//  16. Purge vault.json secrets -- the one non-transactional step (file I/O,
-//      not part of the SQLite transaction), placed right before the final
-//      tenant-row delete so if it throws, that last SQL statement never
-//      runs and the whole SQL transaction rolls back consistently.
-//  17. Drop the tenant row itself.
+//  16. Drop the tenant row itself.
 // The tenant-keyed leftovers (TENANT_PURGE_SIMPLE_TABLES, import_audit_log before import_sources)
 // and the agent-keyed rows (agent_settings, agent_state, fleet_blackboard) are cleaned right before
 // step 16. An agent-keyed row tagged with this tenant is deleted when its agent is exclusive to the
 // tenant, and re-tagged to `default` when the agent also serves another tenant (its configuration
 // outlives the tenant). The rollup tables token_usage_daily / _monthly carry tenant_id and are purged with the rest.
+//
+// Steps 0-16 are ONE dbx.tx and every statement in it runs on the tx handle (the approvals included: they are
+// on the facade like every other table), so a failure anywhere rolls the whole SQL part back. The transaction
+// body holds the facade lock: it has no file I/O. The one file step, the vault.json purge, runs AFTER the
+// commit. Consequence: if the vault write fails (disk full, permission), the SQL part is already committed,
+// the tenant row is gone and the promise rejects with the file error; its secrets stay in vault.json until a
+// second call of this function (idempotent: every delete matches nothing, the purge runs again) removes them.
+// The reverse order would delete the secrets of a tenant that a failed transaction then keeps.
 // The 'default' tenant is permanently guarded and throws if passed.
-export function deleteTenant(tenantId: string): TenantDeleteResult {
+export async function deleteTenant(tenantId: string): Promise<TenantDeleteResult> {
   if (tenantId === 'default') throw new Error('Cannot delete the default tenant')
 
-  const result = db.transaction((): TenantDeleteResult => {
+  const sqlResult = await dbx.tx(async (tx): Promise<Omit<TenantDeleteResult, 'secretsDeleted'>> => {
     // 0. Agents exclusive to this tenant: exactly one enabled availability row, and it is this tenant's
     //    (the same reading as resolveAgentTenant). Must run before step 13 deletes the availability rows.
     const exclusiveAgents = (
-      db.prepare(
+      await tx.all<{ agent_id: string }>(
         `SELECT agent_id FROM tenant_agent_availability
           WHERE tenant_id = ? AND enabled = 1
             AND (SELECT COUNT(*) FROM tenant_agent_availability o WHERE o.agent_id = tenant_agent_availability.agent_id AND o.enabled = 1) = 1
           ORDER BY agent_id`,
-      ).all(tenantId) as { agent_id: string }[]
+        tenantId,
+      )
     ).map((r) => r.agent_id)
     const purged: Record<string, number> = {}
 
     // 1. Reject pending approvals
-    db.prepare(
+    await tx.run(
       "UPDATE approvals SET status = 'rejected', resolved_at = unixepoch() WHERE tenant_id = ? AND status = 'pending'",
-    ).run(tenantId)
+      tenantId,
+    )
 
     // 2. Revoke api_tokens (tombstone -- keep row for audit, mark revoked)
-    db.prepare('UPDATE api_tokens SET revoked_at = unixepoch() WHERE tenant_id = ? AND revoked_at IS NULL').run(tenantId)
+    await tx.run('UPDATE api_tokens SET revoked_at = unixepoch() WHERE tenant_id = ? AND revoked_at IS NULL', tenantId)
 
     // 3. Drop identity/access rows
-    db.prepare('DELETE FROM dashboard_users WHERE tenant_id = ?').run(tenantId)
-    db.prepare('DELETE FROM partner_senders WHERE tenant_id = ?').run(tenantId)
-    db.prepare('DELETE FROM device_keys WHERE tenant_id = ?').run(tenantId)
+    await tx.run('DELETE FROM dashboard_users WHERE tenant_id = ?', tenantId)
+    await tx.run('DELETE FROM partner_senders WHERE tenant_id = ?', tenantId)
+    await tx.run('DELETE FROM device_keys WHERE tenant_id = ?', tenantId)
 
     // 4. Drop all approvals, and their journal
-    db.prepare('DELETE FROM approval_events WHERE tenant_id = ?').run(tenantId)
-    db.prepare('DELETE FROM approvals WHERE tenant_id = ?').run(tenantId)
+    await tx.run('DELETE FROM approval_events WHERE tenant_id = ?', tenantId)
+    await tx.run('DELETE FROM approvals WHERE tenant_id = ?', tenantId)
 
     // 5. Drop messages and import memories
-    db.prepare('DELETE FROM agent_messages WHERE tenant_id = ?').run(tenantId)
-    db.prepare('DELETE FROM import_memories WHERE tenant_id = ?').run(tenantId)
+    await tx.run('DELETE FROM agent_messages WHERE tenant_id = ?', tenantId)
+    await tx.run('DELETE FROM import_memories WHERE tenant_id = ?', tenantId)
 
     // 6. Drop kanban (child tables before parent)
     const cardIds = (
-      db.prepare('SELECT id FROM kanban_cards WHERE tenant_id = ?').all(tenantId) as { id: string }[]
+      await tx.all<{ id: string }>('SELECT id FROM kanban_cards WHERE tenant_id = ?', tenantId)
     ).map((r) => r.id)
     if (cardIds.length > 0) {
       const ph = cardIds.map(() => '?').join(', ')
-      db.prepare(`DELETE FROM kanban_card_labels WHERE card_id IN (${ph})`).run(...cardIds)
-      db.prepare(`DELETE FROM kanban_card_events  WHERE card_id IN (${ph})`).run(...cardIds)
-      db.prepare(`DELETE FROM kanban_comments     WHERE card_id IN (${ph})`).run(...cardIds)
+      await tx.run(`DELETE FROM kanban_card_labels WHERE card_id IN (${ph})`, ...cardIds)
+      await tx.run(`DELETE FROM kanban_card_events  WHERE card_id IN (${ph})`, ...cardIds)
+      await tx.run(`DELETE FROM kanban_comments     WHERE card_id IN (${ph})`, ...cardIds)
     }
-    db.prepare('DELETE FROM kanban_cards WHERE tenant_id = ?').run(tenantId)
+    await tx.run('DELETE FROM kanban_cards WHERE tenant_id = ?', tenantId)
 
-    // 7. Drop memories -- row-by-row to keep vec0 index in sync (same connection, safe inside tx)
+    // 7. Drop memories -- row-by-row to keep vec0 index in sync. syncVecMemoryDelete is awaited INSIDE the
+    //    body: it joins this transaction (same connection), so a rollback takes the vec entry delete with it.
     const memIds = (
-      db.prepare('SELECT id FROM memories WHERE tenant_id = ?').all(tenantId) as { id: number }[]
+      await tx.all<{ id: number }>('SELECT id FROM memories WHERE tenant_id = ?', tenantId)
     ).map((r) => r.id)
     for (const id of memIds) {
-      deleteVecMemoryOnRawHandle(id)
-      db.prepare('DELETE FROM memories WHERE id = ?').run(id)
+      await syncVecMemoryDelete(id)
+      await tx.run('DELETE FROM memories WHERE id = ?', id)
     }
 
     // 8. Drop artifacts (vec_artifacts kept in sync by the vec_artifacts_ad DELETE trigger)
-    db.prepare('DELETE FROM artifacts WHERE tenant_id = ?').run(tenantId)
+    await tx.run('DELETE FROM artifacts WHERE tenant_id = ?', tenantId)
 
     // 9. Drop schedules, with the retries still pending for them (a retry of a task that no
     //    longer exists would be re-injected into its agent). The names go back to the caller:
     //    the file mirror under ~/.claude/scheduled-tasks is outside this transaction.
     const scheduleNames = (
-      db.prepare('SELECT id FROM schedules WHERE tenant_id = ?').all(tenantId) as { id: string }[]
+      await tx.all<{ id: string }>('SELECT id FROM schedules WHERE tenant_id = ?', tenantId)
     ).map((r) => r.id)
-    db.prepare('DELETE FROM pending_task_retries WHERE task_name IN (SELECT id FROM schedules WHERE tenant_id = ?)').run(tenantId)
-    db.prepare('DELETE FROM schedules WHERE tenant_id = ?').run(tenantId)
+    await tx.run('DELETE FROM pending_task_retries WHERE task_name IN (SELECT id FROM schedules WHERE tenant_id = ?)', tenantId)
+    await tx.run('DELETE FROM schedules WHERE tenant_id = ?', tenantId)
 
     // 10 & 11. Drop skill_tenant_access before skills (foreign_keys is on by default, so the order matters;
     //          explicit two-pass: access grants TO this tenant, then grants FROM its skills).
-    db.prepare('DELETE FROM skill_tenant_access WHERE tenant_id = ?').run(tenantId)
+    await tx.run('DELETE FROM skill_tenant_access WHERE tenant_id = ?', tenantId)
     const skillIds = (
-      db.prepare('SELECT id FROM skills WHERE tenant_id = ?').all(tenantId) as { id: string }[]
+      await tx.all<{ id: string }>('SELECT id FROM skills WHERE tenant_id = ?', tenantId)
     ).map((r) => r.id)
     if (skillIds.length > 0) {
       const ph = skillIds.map(() => '?').join(', ')
-      db.prepare(`DELETE FROM skill_tenant_access WHERE skill_id IN (${ph})`).run(...skillIds)
-      db.prepare(`DELETE FROM skill_files WHERE skill_id IN (${ph})`).run(...skillIds)
+      await tx.run(`DELETE FROM skill_tenant_access WHERE skill_id IN (${ph})`, ...skillIds)
+      await tx.run(`DELETE FROM skill_files WHERE skill_id IN (${ph})`, ...skillIds)
     }
-    db.prepare('DELETE FROM skills WHERE tenant_id = ?').run(tenantId)
+    await tx.run('DELETE FROM skills WHERE tenant_id = ?', tenantId)
 
     // 12. Drop workspace_docs -- vec_workspace_docs has no trigger, sync manually before main delete.
+    // @sqlite-only: the sqlite-vec `vec0` table (the PostgreSQL phase moves it to pgvector).
     if (vecExtensionLoaded) {
-      try { db.prepare('DELETE FROM vec_workspace_docs WHERE tenant_id = ?').run(tenantId) } catch { /* vec0 unavailable */ }
+      try { await tx.run('DELETE FROM vec_workspace_docs WHERE tenant_id = ?', tenantId) } catch { /* vec0 unavailable */ }
     }
-    db.prepare('DELETE FROM workspace_docs WHERE tenant_id = ?').run(tenantId)
+    await tx.run('DELETE FROM workspace_docs WHERE tenant_id = ?', tenantId)
 
     // 13. Drop tenant_agent_availability (foreign_keys is on by default; the explicit delete is redundant with the cascade but harmless)
-    db.prepare('DELETE FROM tenant_agent_availability WHERE tenant_id = ?').run(tenantId)
-    db.prepare('DELETE FROM tenant_channel_bindings WHERE tenant_id = ?').run(tenantId)
-    db.prepare('DELETE FROM agent_tenant_context WHERE tenant_id = ?').run(tenantId)
+    await tx.run('DELETE FROM tenant_agent_availability WHERE tenant_id = ?', tenantId)
+    await tx.run('DELETE FROM tenant_channel_bindings WHERE tenant_id = ?', tenantId)
+    await tx.run('DELETE FROM agent_tenant_context WHERE tenant_id = ?', tenantId)
 
     // 14 & 15. Drop the vault SSH pool (child before parent by FK direction;
     //          foreign_keys is on by default, same as steps 10/13).
-    db.prepare('DELETE FROM vault_ssh_servers WHERE tenant_id = ?').run(tenantId)
-    db.prepare('DELETE FROM vault_ssh_keys WHERE tenant_id = ?').run(tenantId)
+    await tx.run('DELETE FROM vault_ssh_servers WHERE tenant_id = ?', tenantId)
+    await tx.run('DELETE FROM vault_ssh_keys WHERE tenant_id = ?', tenantId)
 
     // 15b. Tenant-keyed leftovers. import_audit_log goes before import_sources on purpose: the FK would
     //      cascade it, but a silent cascade is how 0041 once lost audit rows, so it is explicit and counted.
-    purged.import_audit_log = db.prepare('DELETE FROM import_audit_log WHERE tenant_id = ?').run(tenantId).changes
-    purged.import_sources = db.prepare('DELETE FROM import_sources WHERE tenant_id = ?').run(tenantId).changes
+    purged.import_audit_log = (await tx.run('DELETE FROM import_audit_log WHERE tenant_id = ?', tenantId)).changes
+    purged.import_sources = (await tx.run('DELETE FROM import_sources WHERE tenant_id = ?', tenantId)).changes
     // A label of this tenant can still be linked from a card of another tenant (links made before
     // labels carried a tenant): drop those links before the label rows go.
-    db.prepare('DELETE FROM kanban_card_labels WHERE label_id IN (SELECT id FROM labels WHERE tenant_id = ?)').run(tenantId)
+    await tx.run('DELETE FROM kanban_card_labels WHERE label_id IN (SELECT id FROM labels WHERE tenant_id = ?)', tenantId)
     for (const table of TENANT_PURGE_SIMPLE_TABLES) {
-      purged[table] = db.prepare(`DELETE FROM ${table} WHERE tenant_id = ?`).run(tenantId).changes
+      purged[table] = (await tx.run(`DELETE FROM ${table} WHERE tenant_id = ?`, tenantId)).changes
     }
 
     // 15c. Agent-keyed rows tagged with this tenant: exclusive agent -> delete, anyone else -> re-tag.
     const exclusivePh = exclusiveAgents.map(() => '?').join(', ')
     for (const table of TENANT_PURGE_AGENT_KEYED_TABLES) {
       purged[table] = exclusiveAgents.length > 0
-        ? db.prepare(`DELETE FROM ${table} WHERE tenant_id = ? AND agent_id IN (${exclusivePh})`).run(tenantId, ...exclusiveAgents).changes
+        ? (await tx.run(`DELETE FROM ${table} WHERE tenant_id = ? AND agent_id IN (${exclusivePh})`, tenantId, ...exclusiveAgents)).changes
         : 0
-      purged[`${table}_retagged`] = db.prepare(`UPDATE ${table} SET tenant_id = 'default' WHERE tenant_id = ?`).run(tenantId).changes
+      purged[`${table}_retagged`] = (await tx.run(`UPDATE ${table} SET tenant_id = 'default' WHERE tenant_id = ?`, tenantId)).changes
     }
 
-    // 16. Purge vault.json secrets (non-transactional file I/O -- see comment above)
-    const secretsDeleted = purgeSecretsForTenant(tenantId)
+    // 16. Drop the tenant row
+    await tx.run('DELETE FROM tenants WHERE id = ?', tenantId)
 
-    // 17. Drop the tenant row
-    db.prepare('DELETE FROM tenants WHERE id = ?').run(tenantId)
+    return { memoriesDeleted: memIds.length, scheduleNames, purged, exclusiveAgents }
+  })
 
-    return { memoriesDeleted: memIds.length, secretsDeleted, scheduleNames, purged, exclusiveAgents }
-  })()
-
-  // agent_settings is one of TENANT_PURGE_AGENT_KEYED_TABLES above, written on the raw connection
-  // inside the transaction, bypassing the synchronous write-through cache (agent-settings-cache.ts).
-  // Reload it now the transaction has committed -- database first, then the cache, same rule as every
-  // other writer of that table.
+  // agent_settings is one of TENANT_PURGE_AGENT_KEYED_TABLES above, written in the transaction,
+  // bypassing the synchronous write-through cache (agent-settings-cache.ts). Reload it now the
+  // transaction has committed -- database first, then the cache, same rule as every other writer of
+  // that table. No await between the commit and the reload except the promise hop of dbx.tx itself.
   reloadAgentSettingsCache()
 
-  return result
+  // The one non-SQL step, after the commit (see the header): the vault.json entries of the tenant.
+  const secretsDeleted = purgeSecretsForTenant(tenantId)
+
+  return { ...sqlResult, secretsDeleted }
 }
 
 // ── B2B Dashboard user provisioning ──────────────────────────────────────────
@@ -722,9 +735,27 @@ export interface AdminUserPatch {
   display_name?: string | null
 }
 
-export async function adminPatchDashboardUser(id: number, patch: AdminUserPatch): Promise<DashboardUser | null> {
-  const existing = await getDashboardUserById(id)
-  if (!existing) return null
+export type AdminPatchOutcome =
+  | { status: 'updated'; user: DashboardUser }
+  | { status: 'last_admin' }
+  | { status: 'not_found' }
+
+/**
+ * The patch that takes an active admin out of the active-admin count: a role other than admin, or disabled.
+ * Only such a patch carries the last-admin condition.
+ */
+function patchLeavesAdmin(patch: AdminUserPatch): boolean {
+  return (patch.role !== undefined && patch.role !== 'admin') || patch.disabled === true
+}
+
+/**
+ * One conditional UPDATE ... RETURNING decides and writes: a patch that makes the last active admin a non-admin or
+ * disabled matches no row (the count condition is evaluated by the same statement that writes, so two concurrent
+ * demotions of the two remaining admins cannot both pass: exactly one changes a row). The same compare-and-set as
+ * deleteDashboardUserKeepingLastAdmin (sessions.ts), for the role change and the disabled flag together.
+ * 'last_admin' and 'not_found' are told apart by a read AFTER the refused write; only the answer depends on it.
+ */
+export async function adminPatchDashboardUser(id: number, patch: AdminUserPatch): Promise<AdminPatchOutcome> {
   const now = Math.floor(Date.now() / 1000)
   const fields: string[] = ['updated_at = ?']
   const params: unknown[] = [now]
@@ -735,8 +766,12 @@ export async function adminPatchDashboardUser(id: number, patch: AdminUserPatch)
   if ('email' in patch) { fields.push('email = ?'); params.push(patch.email ?? null) }
   if ('display_name' in patch) { fields.push('display_name = ?'); params.push(patch.display_name ?? null) }
   params.push(id)
-  await dbx.run(`UPDATE dashboard_users SET ${fields.join(', ')} WHERE id = ?`, ...params)
-  return await getDashboardUserById(id) ?? null
+  const guard = patchLeavesAdmin(patch)
+    ? " AND NOT (role = 'admin' AND disabled = 0 AND (SELECT COUNT(*) FROM dashboard_users WHERE role = 'admin' AND disabled = 0) <= 1)"
+    : ''
+  const user = await dbx.get<DashboardUser>(`UPDATE dashboard_users SET ${fields.join(', ')} WHERE id = ?${guard} RETURNING *`, ...params)
+  if (user) return { status: 'updated', user }
+  return (await dbx.get('SELECT 1 AS present FROM dashboard_users WHERE id = ?', id)) ? { status: 'last_admin' } : { status: 'not_found' }
 }
 
 export async function countActiveAdmins(): Promise<number> {
@@ -771,8 +806,12 @@ export async function listPartnerSenders(tenantId?: string): Promise<PartnerSend
 }
 
 export async function createPartnerSender(senderId: string, tenantId: string, displayName: string, createdBy: string): Promise<PartnerSender> {
-  await dbx.run('INSERT INTO partner_senders (sender_id, tenant_id, display_name, created_by) VALUES (?, ?, ?, ?)', senderId, tenantId, displayName, createdBy)
-  return (await dbx.get('SELECT sender_id, tenant_id, display_name, created_by, created_at, disabled_at FROM partner_senders WHERE sender_id = ? AND tenant_id = ?', senderId, tenantId)) as PartnerSender
+  // One statement: the row the caller gets back is the row this INSERT wrote (a separate read-back could meet a
+  // concurrent disable or tenant delete and return nothing). A duplicate key rejects with the driver's constraint error.
+  return (await dbx.get(
+    'INSERT INTO partner_senders (sender_id, tenant_id, display_name, created_by) VALUES (?, ?, ?, ?) RETURNING sender_id, tenant_id, display_name, created_by, created_at, disabled_at',
+    senderId, tenantId, displayName, createdBy,
+  )) as PartnerSender
 }
 
 export async function disablePartnerSender(senderId: string, tenantId: string): Promise<boolean> {

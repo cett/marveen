@@ -159,7 +159,7 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
     }
     const existing = await getTenant(tenantId)
     if (!existing) { json(res, { error: 'not_found', field: 'id', hint: 'Tenant not found' }, 404); return true }
-    const result = deleteTenant(tenantId)
+    const result = await deleteTenant(tenantId)
     // The tenant's schedules are gone from the table; their file mirror must go too, or an
     // empty-table re-seed would bring them back.
     const mirrorsRemoved = removeScheduledTaskFiles(result.scheduleNames ?? [])
@@ -333,8 +333,12 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
       }
     }
 
-    const updated = await adminPatchDashboardUser(userId, patch)
-    if (!updated) { json(res, { error: 'not_found', field: 'userId', hint: 'User not found' }, 404); return true }
+    // The checks above are fast paths; the UPDATE itself refuses to take the last active admin out of the admin set
+    // (compare-and-set), for the role change as well as the disabled flag.
+    const outcome = await adminPatchDashboardUser(userId, patch)
+    if (outcome.status === 'last_admin') { json(res, { error: 'forbidden', hint: 'Cannot remove the last administrator' }, 403); return true }
+    if (outcome.status === 'not_found') { json(res, { error: 'not_found', field: 'userId', hint: 'User not found' }, 404); return true }
+    const updated = outcome.user
     await auditAdmin(ctx, 'admin.user.update', userId, { username: existing.username, ...patch, password_hash: patch.password_hash ? '[redacted]' : undefined })
     json(res, userToPublic(updated))
     return true

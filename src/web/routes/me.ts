@@ -98,11 +98,13 @@ export async function tryHandleMe(ctx: RouteContext): Promise<boolean> {
       return true
     }
 
-    const updated = await adminPatchDashboardUser(user.id, patch)
-    if (!updated) {
+    // The patch holds display_name / email only, so it never carries the last-admin condition: 'last_admin' cannot come back.
+    const outcome = await adminPatchDashboardUser(user.id, patch)
+    if (outcome.status !== 'updated') {
       json(res, { error: 'not_found', field: 'user' }, 404)
       return true
     }
+    const updated = outcome.user
 
     json(res, {
       username: updated.username,

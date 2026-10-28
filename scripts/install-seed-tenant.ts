@@ -27,14 +27,14 @@ function usage(): never {
   process.exit(2)
 }
 
-function main(): void {
+async function main(): Promise<void> {
   const mainAgentId = arg('main-agent-id')
   if (!mainAgentId) usage()
   const displayName = arg('display-name')?.trim()
 
   initDatabase()
 
-  const existing = getTenant('default')
+  const existing = await getTenant('default')
   if (!existing) {
     process.stderr.write("install-seed-tenant: 'default' tenant not found -- did migrations run?\n")
     process.exit(1)
@@ -43,7 +43,7 @@ function main(): void {
   const patch: { main_agent_id: string; display_name?: string } = { main_agent_id: mainAgentId }
   if (displayName) patch.display_name = displayName
 
-  updateTenant('default', patch)
+  await updateTenant('default', patch)
   process.stdout.write(
     `install-seed-tenant: default tenant main_agent_id=${mainAgentId}` +
       (patch.display_name ? ` display_name="${patch.display_name}"` : '') +
@@ -51,4 +51,7 @@ function main(): void {
   )
 }
 
-main()
+main().catch((err) => {
+  process.stderr.write(`install-seed-tenant: ${err instanceof Error ? err.message : String(err)}\n`)
+  process.exit(1)
+})
