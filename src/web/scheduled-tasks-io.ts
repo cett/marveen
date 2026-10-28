@@ -334,11 +334,11 @@ export function rowToTask(row: ScheduleRow): ScheduledTask {
  * Returns the names of the tasks whose file was rewritten.
  */
 export async function syncTaskConfigEnabledFromDb(
-  rows: ReadonlyArray<Pick<ScheduleRow, 'id' | 'enabled'>> = await listSchedulesFromDb(),
+  rows?: ReadonlyArray<Pick<ScheduleRow, 'id' | 'enabled'>>,
   dir: string = SCHEDULED_TASKS_DIR,
 ): Promise<string[]> {
   const fixed: string[] = []
-  for (const row of rows) {
+  for (const row of rows ?? await listSchedulesFromDb()) {
     const configPath = join(dir, row.id, 'task-config.json')
     let config: Record<string, unknown>
     try {

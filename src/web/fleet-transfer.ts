@@ -802,7 +802,7 @@ export async function exportFleet(options: { vaultPassword?: string } = {}): Pro
   const bindingLookup = withSecrets ? new Map() : await buildBindingLookup()
 
   const mainAgent = exportMainAgent(bindingLookup, withSecrets)
-  const agents = listAgentNames().map(name => exportAgent(name, bindingLookup, withSecrets))
+  const agents = await Promise.all(listAgentNames().map(name => exportAgent(name, bindingLookup, withSecrets)))
   const skills = await listGlobalSkillsFromSQL()
   const scheduledTasks = exportScheduledTasks()
 
@@ -1686,10 +1686,9 @@ async function runImportFleet(
     // Phase 2: ONE transaction holds every database write of the import -- the settings, the skill rows and the
     // per-row imports -- so a failure anywhere rolls all of it back. The body holds only `dbx` calls (the modules
     // below are on the facade, so each joins the ambient transaction and a nested one becomes a savepoint) and pure
-    // row policy: no file I/O, no network, no timer, no LLM, no vault. The one exception to "only dbx" is
-    // seedSkillIfAbsent(), which still writes on the raw connection: on the single SQLite connection that
-    // statement runs inside the open transaction and is rolled back with it (docs/db-facade.md), which a test pins.
-    // Rows are written in the same order the pre-transaction block used.
+    // row policy: no file I/O, no network, no timer, no LLM, no vault. seedSkillIfAbsent() is on the facade too
+    // (db/tasks.ts), so the skill rows roll back with the rest. Rows are written in the same order the
+    // pre-transaction block used.
     const importTx = () => inFleetImportTransaction(async () => {
       // DB-backed -- upsert each imported row into autonomy_categories (not a file write). Upsert rather than
       // replace-all: a category that only exists on the target fleet (not in the imported snapshot) is left

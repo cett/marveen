@@ -405,6 +405,10 @@ async function sendTenantMismatchAlert(task: ScheduledTask): Promise<void> {
 // Skip ledger (schedule-skip-ledger.ts): one task_runs row per held occurrence
 // and one deduped alert per mass-skip event. Lives for the process.
 const skipTracker = createSkipTracker()
+// The tracker seeds its baseline from the DB on its first scan only. The DB read
+// is async, the tracker's dependency is not: the tick resolves it ahead of that
+// first scan and hands the tracker the settled names.
+let skipBaselineSeeded = false
 
 // How often the DB -> task-config.json `enabled` mirror is reconciled while the
 // process runs (it always runs once at startup too).
@@ -1680,6 +1684,13 @@ export function startScheduleRunner(): NodeJS.Timeout {
     // part of a mass disable) leaves a task_runs row instead of vanishing with
     // the tick window, and a mass skip alerts once. Must never break the tick.
     try {
+      let dbRunnable: string[] = []
+      if (!skipBaselineSeeded) {
+        skipBaselineSeeded = true
+        // a failed read leaves the tracker without a baseline, as the sync version did
+        try { dbRunnable = await listDbRunnableTaskNames() }
+        catch (err) { logger.warn({ err }, 'schedule-runner: skip ledger baseline read failed (no baseline)') }
+      }
       const skipScan = skipTracker.scan(tasks, fromMs, now, {
         cronPrevOccurrence: (schedule, from, to) => cronPrevOccurrence(schedule, from, to),
         targets: t => t.agent === 'all'
@@ -1689,7 +1700,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
         appendTaskRun: (name, agent, status) => {
           appendTaskRun(name, agent, status).catch((err: unknown) => logger.warn({ err, name }, 'schedule-runner: skip ledger row not written'))
         },
-        dbRunnable: listDbRunnableTaskNames,
+        dbRunnable: () => dbRunnable,
         tenantMismatch: t => tenantMismatch.has(t.name),
       })
       if (skipScan.alert) await sendMassSkipAlert(skipScan.massHeld, tasks.length)

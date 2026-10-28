@@ -618,8 +618,11 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     // A retry belongs to the tenant of its schedule; one whose schedule is gone, or in
     // another tenant, is not a tenant caller's to see.
     const scope = effectiveTenant(ctx)
-    const rows = (await listPendingTaskRetries())
-      .filter(r => scope === null || scheduleTenantMatches(scope, getScheduleFromDb(r.task_name)))
+    const pending = await listPendingTaskRetries()
+    // the schedule row is read per retry, so the tenant check settles before the filter (an async predicate would be always truthy)
+    const visible = await Promise.all(pending.map(async r => scope === null || scheduleTenantMatches(scope, await getScheduleFromDb(r.task_name))))
+    const rows = pending
+      .filter((_, i) => visible[i])
       .map(r => toPendingRetryView(r, now))
     json(res, rows)
     return true
