@@ -1,7 +1,7 @@
 // Split from the former monolithic src/db.ts (see db/index.ts for the
 // re-export surface and boot orchestration).
 
-import { db, vecExtensionLoaded } from './connection.js'
+import { vecExtensionLoaded } from './connection.js'
 import { dbx } from './facade.js'
 import { Memory, MemoryVersion } from './memory.js'
 import { DashboardUser, DashboardUserPublic } from './sessions.js'
@@ -22,20 +22,18 @@ export async function recordMemoryRead(
 }
 
 // Record reads for a batch of memory ids in a single transaction.
-export function recordMemoryReadBatch(
+export async function recordMemoryReadBatch(
   agentId: string,
   memoryIds: number[],
   context: 'heartbeat' | 'search' | 'direct',
-): void {
+): Promise<void> {
   if (memoryIds.length === 0) return
   const now = Math.floor(Date.now() / 1000)
-  const stmt = db.prepare(
-    'INSERT INTO span_reads (agent_id, memory_id, read_at, context) VALUES (?, ?, ?, ?)'
-  )
-  const tx = db.transaction(() => {
-    for (const id of memoryIds) stmt.run(agentId, id, now, context)
+  await dbx.tx(async (tx) => {
+    for (const id of memoryIds) {
+      await tx.run('INSERT INTO span_reads (agent_id, memory_id, read_at, context) VALUES (?, ?, ?, ?)', agentId, id, now, context)
+    }
   })
-  tx()
 }
 
 // Returns memories that are stale for the given agent:
@@ -93,7 +91,7 @@ export async function runMemoryMaintenance(opts: {
     // Log warm->cold transitions before UPDATE so memory_versions has an audit trail.
     // SELECT candidates first (same WHERE as the UPDATE below), then bulk-insert versions.
     type CandRow = { id: number; content: string; keywords: string | null }
-    const warmToColdCandidates = db.prepare(`
+    const warmToColdCandidates = await tx.all<CandRow>(`
       SELECT id, content, keywords FROM memories
       WHERE category = 'warm'
         AND created_at < ? - ?
@@ -102,18 +100,18 @@ export async function runMemoryMaintenance(opts: {
           WHERE span_reads.memory_id = memories.id
             AND span_reads.read_at > ? - ?
         )
-    `).all(now, warmToColdSecs, now, warmToColdSecs) as CandRow[]
+    `, now, warmToColdSecs, now, warmToColdSecs)
 
     if (warmToColdCandidates.length > 0) {
-      const logV = db.prepare(
-        'INSERT INTO memory_versions(memory_id, content, category, keywords, changed_at, changed_by, change_type) VALUES (?,?,?,?,?,?,?)'
-      )
       for (const c of warmToColdCandidates) {
-        logV.run(c.id, c.content, 'cold', c.keywords, now, 'system:maintenance', 'category_change')
+        await tx.run(
+          'INSERT INTO memory_versions(memory_id, content, category, keywords, changed_at, changed_by, change_type) VALUES (?,?,?,?,?,?,?)',
+          c.id, c.content, 'cold', c.keywords, now, 'system:maintenance', 'category_change',
+        )
       }
     }
 
-    const warmToCold = db.prepare(`
+    const warmToCold = (await tx.run(`
       UPDATE memories
       SET category = 'cold', updated_at = ?
       WHERE category = 'warm'
@@ -123,10 +121,10 @@ export async function runMemoryMaintenance(opts: {
           WHERE span_reads.memory_id = memories.id
             AND span_reads.read_at > ? - ?
         )
-    `).run(now, now, warmToColdSecs, now, warmToColdSecs).changes
+    `, now, now, warmToColdSecs, now, warmToColdSecs)).changes
 
     // Log cold->warm transitions before UPDATE.
-    const coldToWarmCandidates = db.prepare(`
+    const coldToWarmCandidates = await tx.all<CandRow>(`
       SELECT id, content, keywords FROM memories
       WHERE category = 'cold'
         AND id IN (
@@ -135,18 +133,18 @@ export async function runMemoryMaintenance(opts: {
           GROUP BY memory_id
           HAVING COUNT(DISTINCT agent_id) >= ?
         )
-    `).all(now, coldToWarmSecs, minAgents) as CandRow[]
+    `, now, coldToWarmSecs, minAgents)
 
     if (coldToWarmCandidates.length > 0) {
-      const logV = db.prepare(
-        'INSERT INTO memory_versions(memory_id, content, category, keywords, changed_at, changed_by, change_type) VALUES (?,?,?,?,?,?,?)'
-      )
       for (const c of coldToWarmCandidates) {
-        logV.run(c.id, c.content, 'warm', c.keywords, now, 'system:maintenance', 'category_change')
+        await tx.run(
+          'INSERT INTO memory_versions(memory_id, content, category, keywords, changed_at, changed_by, change_type) VALUES (?,?,?,?,?,?,?)',
+          c.id, c.content, 'warm', c.keywords, now, 'system:maintenance', 'category_change',
+        )
       }
     }
 
-    const coldToWarm = db.prepare(`
+    const coldToWarm = (await tx.run(`
       UPDATE memories
       SET category = 'warm', updated_at = ?
       WHERE category = 'cold'
@@ -156,11 +154,9 @@ export async function runMemoryMaintenance(opts: {
           GROUP BY memory_id
           HAVING COUNT(DISTINCT agent_id) >= ?
         )
-    `).run(now, now, coldToWarmSecs, minAgents).changes
+    `, now, now, coldToWarmSecs, minAgents)).changes
 
-    const prunedVersions = db.prepare(
-      'DELETE FROM memory_versions WHERE changed_at < ?'
-    ).run(versionCutoff).changes
+    const prunedVersions = (await tx.run('DELETE FROM memory_versions WHERE changed_at < ?', versionCutoff)).changes
 
     return { warmToCold, coldToWarm, prunedVersions }
   })
@@ -303,13 +299,13 @@ export async function getUnexportedOtelSpans(limit = 500, nowMs = Date.now()): P
 
 // Marks a batch of spans as pushed. Runs as one transaction so a crash
 // mid-batch can't leave some spans marked and others not for the same POST.
-export function markOtelSpansExported(pairs: { trace_id: string; span_id: string }[], exportedAtMs: number): void {
+export async function markOtelSpansExported(pairs: { trace_id: string; span_id: string }[], exportedAtMs: number): Promise<void> {
   if (pairs.length === 0) return
-  const stmt = db.prepare('UPDATE otel_spans SET exported_at = ? WHERE trace_id = ? AND span_id = ?')
-  const tx = db.transaction((rows: typeof pairs) => {
-    for (const p of rows) stmt.run(exportedAtMs, p.trace_id, p.span_id)
+  await dbx.tx(async (tx) => {
+    for (const p of pairs) {
+      await tx.run('UPDATE otel_spans SET exported_at = ? WHERE trace_id = ? AND span_id = ?', exportedAtMs, p.trace_id, p.span_id)
+    }
   })
-  tx(pairs)
 }
 
 export interface OtelMetricsExportState {
@@ -854,14 +850,14 @@ export async function setTokenUsageCursor(filePath: string, lastLine: number, la
 }
 
 /** Upserts a file's parsed calls and advances its cursor in one transaction. */
-export function recordTokenUsageCalls(
+export async function recordTokenUsageCalls(
   calls: TokenUsageCall[],
   tenantId: string,
   filePath: string,
   linesRead: number,
   fileSize: number,
-): void {
-  const insertCall = db.prepare(`
+): Promise<void> {
+  const insertCallSql = `
     INSERT INTO token_usage (agent, session_id, timestamp, input_tokens, output_tokens,
       cache_read_tokens, cache_creation_tokens, thinking_tokens, model, content_preview, tool_name, tenant_id)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -871,10 +867,11 @@ export function recordTokenUsageCalls(
       cache_creation_tokens = CASE WHEN (token_usage.cache_creation_tokens IS NULL OR token_usage.cache_creation_tokens = 0) AND excluded.cache_creation_tokens > 0 THEN excluded.cache_creation_tokens ELSE token_usage.cache_creation_tokens END,
       cache_read_tokens = CASE WHEN (token_usage.cache_read_tokens IS NULL OR token_usage.cache_read_tokens = 0) AND excluded.cache_read_tokens > 0 THEN excluded.cache_read_tokens ELSE token_usage.cache_read_tokens END,
       tenant_id = excluded.tenant_id
-  `)
-  db.transaction(() => {
+  `
+  await dbx.tx(async (tx) => {
     for (const c of calls) {
-      insertCall.run(
+      await tx.run(
+        insertCallSql,
         c.agent, c.sessionId, c.timestamp,
         c.inputTokens, c.outputTokens,
         c.cacheReadTokens, c.cacheCreationTokens,
@@ -883,8 +880,10 @@ export function recordTokenUsageCalls(
         tenantId,
       )
     }
-    setTokenUsageCursor(filePath, linesRead, fileSize)
-  })()
+    // Same SQL as setTokenUsageCursor, on the tx handle so the cursor moves with the calls or not at all.
+    await tx.run(`INSERT INTO token_usage_cursors (file_path, last_line, last_size) VALUES (?, ?, ?)
+     ON CONFLICT(file_path) DO UPDATE SET last_line = excluded.last_line, last_size = excluded.last_size`, filePath, linesRead, fileSize)
+  })
 }
 
 export interface TokenSummaryModelRow {

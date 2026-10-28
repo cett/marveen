@@ -477,7 +477,7 @@ Respond ONLY with JSON, nothing else:
       }
       for (const [key, { ids, ctx }] of batchByAgent) {
         const agentId = key.split('::')[0]
-        recordMemoryReadBatch(agentId, ids, ctx)
+        await recordMemoryReadBatch(agentId, ids, ctx)
       }
       json(res, { ok: true, recorded: parsed.reads.length })
       return true

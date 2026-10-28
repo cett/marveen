@@ -232,13 +232,13 @@ async function exportTraces(cfg: ExportConfig): Promise<boolean> {
   const done = () => markOtelSpansExported(spans.map((s) => ({ trace_id: s.trace_id, span_id: s.span_id })), Date.now())
   if (result.kind === 'ok') {
     recordSuccess('traces', result.rejected, result.message, url)
-    done()
+    await done()
     recordDurations(spans) // the response durations ride out with the next metrics export
     return true
   }
   if (result.kind === 'permanent') {
     recordPermanent('traces', result.status, spans.length, url)
-    done()
+    await done()
     return true // the collector did answer: its verdict goes out with the self-metrics
   }
   recordFailure('traces', result, url)

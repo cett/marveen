@@ -228,7 +228,7 @@ export async function collectTokenUsage(): Promise<{ inserted: number; files: nu
         const { calls, linesRead } = await parseJsonlFile(file, source.agent, fromLine)
 
         if (calls.length > 0) {
-          recordTokenUsageCalls(calls, tenantId, file, linesRead, fileSize)
+          await recordTokenUsageCalls(calls, tenantId, file, linesRead, fileSize)
           totalInserted += calls.length
         } else {
           await setTokenUsageCursor(file, linesRead, fileSize)
