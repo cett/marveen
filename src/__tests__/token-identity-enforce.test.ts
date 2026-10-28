@@ -21,7 +21,7 @@ import * as wsDb from '../db/workspace.js'
 const tenantFault = vi.hoisted(() => ({ on: false }))
 vi.mock('../db/write-tenant.js', async (importOriginal) => {
   const orig = await importOriginal<typeof import('../db/write-tenant.js')>()
-  return { ...orig, resolveWriteTenant: (a: string | null | undefined) => { if (tenantFault.on) throw new Error('tenant lookup failed'); return orig.resolveWriteTenant(a) } }
+  return { ...orig, resolveWriteTenant: async (a: string | null | undefined) => { if (tenantFault.on) throw new Error('tenant lookup failed'); return orig.resolveWriteTenant(a) } }
 })
 
 vi.mock('../config.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../config.js')>()), MAIN_AGENT_ID: 'main-agent' }))

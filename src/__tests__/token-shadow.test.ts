@@ -26,7 +26,7 @@ import {
 // The shared agent is the one with no tenant to act in; every other agent has one.
 vi.mock('../db/write-tenant.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../db/write-tenant.js')>()),
-  resolveWriteTenant: (agentId: string | null | undefined) => (!agentId || agentId === 'agent-shared' ? null : 'default'),
+  resolveWriteTenant: async (agentId: string | null | undefined) => (!agentId || agentId === 'agent-shared' ? null : 'default'),
 }))
 vi.mock('../config.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../config.js')>()), MAIN_AGENT_ID: 'agent-main' }))
 
