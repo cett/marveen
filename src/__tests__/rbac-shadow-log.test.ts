@@ -67,8 +67,8 @@ describe('migration 0068', () => {
 })
 
 describe('recordRbacDecision', () => {
-  it('stores the caller, tenant, role, required permission and reason', () => {
-    expect(log.recordRbacDecision(session('viewer', 'tenant-a'), 'POST', '/api/kanban/cards', 'would-deny', 'role lacks permission', NOW)).toBe(true)
+  it('stores the caller, tenant, role, required permission and reason', async () => {
+    expect(await log.recordRbacDecision(session('viewer', 'tenant-a'), 'POST', '/api/kanban/cards', 'would-deny', 'role lacks permission', NOW)).toBe(true)
     expect(rows()).toEqual([
       expect.objectContaining({
         ts: NOW, tenant_id: 'tenant-a', principal_kind: 'session', principal: 'user-a', role: 'viewer',
@@ -82,23 +82,23 @@ describe('recordRbacDecision', () => {
     ['legacy file token (no name, defaults to the default tenant)', { kind: 'token' } as AuthResult, 'token', '', 'default'],
     ['device', { kind: 'device', device: 'device-a', deviceId: 1 } as AuthResult, 'device', 'device-a', 'default'],
     ['federation peer', { kind: 'federation', peer: 'peer-a' } as AuthResult, 'federation', 'peer-a', 'default'],
-  ])('principal label: %s', (_n, auth, kind, name, tenant) => {
-    log.recordRbacDecision(auth, 'GET', '/api/memories', 'permitted', '', NOW)
+  ])('principal label: %s', async (_n, auth, kind, name, tenant) => {
+    await log.recordRbacDecision(auth, 'GET', '/api/memories', 'permitted', '', NOW)
     expect(rows()[0]).toMatchObject({ principal_kind: kind, principal: name, tenant_id: tenant })
   })
 
-  it('a global-scope session (tenantId null) is stored as NULL, not as a tenant', () => {
-    log.recordRbacDecision(session('viewer', null), 'GET', '/api/memories', 'permitted', '', NOW)
+  it('a global-scope session (tenantId null) is stored as NULL, not as a tenant', async () => {
+    await log.recordRbacDecision(session('viewer', null), 'GET', '/api/memories', 'permitted', '', NOW)
     expect(rows()[0]!['tenant_id']).toBeNull()
   })
 
-  it('an unmapped route is recorded with the strictest permission, admin:all', () => {
-    log.recordRbacDecision(session('viewer'), 'GET', '/api/no-such-route-anywhere', 'would-deny', 'x', NOW)
+  it('an unmapped route is recorded with the strictest permission, admin:all', async () => {
+    await log.recordRbacDecision(session('viewer'), 'GET', '/api/no-such-route-anywhere', 'would-deny', 'x', NOW)
     expect(rows()[0]!['permission']).toBe('admin:all')
   })
 
-  it('unauthenticated principals are never recorded', () => {
-    expect(log.recordRbacDecision({ kind: 'none' }, 'GET', '/api/memories', 'permitted', '', NOW)).toBe(false)
+  it('unauthenticated principals are never recorded', async () => {
+    expect(await log.recordRbacDecision({ kind: 'none' }, 'GET', '/api/memories', 'permitted', '', NOW)).toBe(false)
     expect(rows()).toHaveLength(0)
   })
 
@@ -114,12 +114,12 @@ describe('recordRbacDecision', () => {
 })
 
 describe('retention', () => {
-  it('prunes strictly older than 30 days: the boundary second survives, one second older goes', () => {
+  it('prunes strictly older than 30 days: the boundary second survives, one second older goes', async () => {
     const cutoff = NOW - log.RETENTION_DAYS * DAY
     seed({ ts: cutoff - 1, route: '/old' })
     seed({ ts: cutoff, route: '/boundary' })
     seed({ ts: NOW, route: '/new' })
-    expect(log.pruneShadowLog(NOW)).toBe(1)
+    expect(await log.pruneShadowLog(NOW)).toBe(1)
     expect((rows().map(r => r['route']))).toEqual(['/boundary', '/new'])
   })
 
@@ -127,62 +127,62 @@ describe('retention', () => {
     expect(log.RETENTION_DAYS).toBe(30)
   })
 
-  it('a record opportunistically prunes old rows', () => {
+  it('a record opportunistically prunes old rows', async () => {
     seed({ ts: NOW - 31 * DAY, route: '/old' })
-    log.recordRbacDecision(session('viewer'), 'GET', '/api/memories', 'permitted', '', NOW)
+    await log.recordRbacDecision(session('viewer'), 'GET', '/api/memories', 'permitted', '', NOW)
     expect(rows().map(r => r['route'])).toEqual(['/api/memories'])
   })
 
-  it('the opportunistic prune is throttled to once per interval', () => {
-    log.recordRbacDecision(session('viewer'), 'GET', '/api/memories', 'permitted', '', NOW) // prunes, arms the throttle
+  it('the opportunistic prune is throttled to once per interval', async () => {
+    await log.recordRbacDecision(session('viewer'), 'GET', '/api/memories', 'permitted', '', NOW) // prunes, arms the throttle
     seed({ ts: NOW - 31 * DAY, route: '/old' })
-    log.recordRbacDecision(session('viewer'), 'GET', '/api/memories', 'permitted', '', NOW + log.PRUNE_INTERVAL_SEC - 1)
+    await log.recordRbacDecision(session('viewer'), 'GET', '/api/memories', 'permitted', '', NOW + log.PRUNE_INTERVAL_SEC - 1)
     expect(rows().some(r => r['route'] === '/old')).toBe(true) // still inside the interval: not pruned
-    log.recordRbacDecision(session('viewer'), 'GET', '/api/memories', 'permitted', '', NOW + log.PRUNE_INTERVAL_SEC)
+    await log.recordRbacDecision(session('viewer'), 'GET', '/api/memories', 'permitted', '', NOW + log.PRUNE_INTERVAL_SEC)
     expect(rows().some(r => r['route'] === '/old')).toBe(false)
   })
 })
 
 describe('runRbacGate (the web.ts wiring)', () => {
-  it('shadow: a viewer write is let through and recorded as would-deny', () => {
+  it('shadow: a viewer write is let through and recorded as would-deny', async () => {
     const { r } = res()
-    expect(log.runRbacGate(session('viewer', 'tenant-a'), 'POST', '/api/kanban/cards', r, 'shadow')).toBe(true)
+    expect(await log.runRbacGate(session('viewer', 'tenant-a'), 'POST', '/api/kanban/cards', r, 'shadow')).toBe(true)
     expect(rows()).toEqual([expect.objectContaining({ decision: 'would-deny', permission: 'kanban:write', role: 'viewer' })])
     expect(r.writeHead).not.toHaveBeenCalled()
   })
 
-  it('enforce: the same request is refused with 403 and recorded as denied (the refusal is persisted)', () => {
+  it('enforce: the same request is refused with 403 and recorded as denied (the refusal is persisted)', async () => {
     const { r, out } = res()
-    expect(log.runRbacGate(session('viewer', 'tenant-a'), 'POST', '/api/kanban/cards', r, 'enforce')).toBe(false)
+    expect(await log.runRbacGate(session('viewer', 'tenant-a'), 'POST', '/api/kanban/cards', r, 'enforce')).toBe(false)
     expect(out.status).toBe(403)
     expect(rows()).toEqual([expect.objectContaining({ decision: 'denied', permission: 'kanban:write' })])
   })
 
-  it.each(['shadow', 'enforce'] as const)('%s: a permitted non-admin request is recorded as permitted', (mode) => {
+  it.each(['shadow', 'enforce'] as const)('%s: a permitted non-admin request is recorded as permitted', async (mode) => {
     const { r } = res()
-    expect(log.runRbacGate(session('viewer', 'tenant-a'), 'GET', '/api/memories', r, mode)).toBe(true)
+    expect(await log.runRbacGate(session('viewer', 'tenant-a'), 'GET', '/api/memories', r, mode)).toBe(true)
     expect(rows()).toEqual([expect.objectContaining({ decision: 'permitted', role: 'viewer', reason: '' })])
   })
 
-  it.each(['shadow', 'enforce'] as const)('%s: admin traffic (bearer token and admin session) writes nothing', (mode) => {
+  it.each(['shadow', 'enforce'] as const)('%s: admin traffic (bearer token and admin session) writes nothing', async (mode) => {
     for (const auth of [{ kind: 'token' } as AuthResult, session('admin', null)]) {
-      expect(log.runRbacGate(auth, 'POST', '/api/kanban/cards', res().r, mode)).toBe(true)
+      expect(await log.runRbacGate(auth, 'POST', '/api/kanban/cards', res().r, mode)).toBe(true)
     }
     expect(rows()).toHaveLength(0)
   })
 
-  it('would-deny and permitted are mutually exclusive: one row per request', () => {
-    log.runRbacGate(session('viewer'), 'POST', '/api/kanban/cards', res().r, 'shadow')
-    log.runRbacGate(session('viewer'), 'GET', '/api/memories', res().r, 'shadow')
+  it('would-deny and permitted are mutually exclusive: one row per request', async () => {
+    await log.runRbacGate(session('viewer'), 'POST', '/api/kanban/cards', res().r, 'shadow')
+    await log.runRbacGate(session('viewer'), 'GET', '/api/memories', res().r, 'shadow')
     expect(rows().map(r => r['decision'])).toEqual(['would-deny', 'permitted'])
   })
 
-  it('a logging fault does not change the gate decision (enforce still refuses, shadow still passes)', () => {
+  it('a logging fault does not change the gate decision (enforce still refuses, shadow still passes)', async () => {
     db.exec('DROP TABLE rbac_shadow_log')
     const { r, out } = res()
-    expect(log.runRbacGate(session('viewer'), 'POST', '/api/kanban/cards', r, 'enforce')).toBe(false)
+    expect(await log.runRbacGate(session('viewer'), 'POST', '/api/kanban/cards', r, 'enforce')).toBe(false)
     expect(out.status).toBe(403)
-    expect(log.runRbacGate(session('viewer'), 'POST', '/api/kanban/cards', res().r, 'shadow')).toBe(true)
+    expect(await log.runRbacGate(session('viewer'), 'POST', '/api/kanban/cards', res().r, 'shadow')).toBe(true)
   })
 })
 
@@ -193,16 +193,16 @@ describe('queryShadowLog', () => {
     seed({ ts: NOW - 10, tenant_id: 'tenant-a', principal: 'user-a', role: 'viewer', route: '/api/schedules/x', permission: 'schedules:write', decision: 'denied' })
   })
 
-  it('returns newest first with the total', () => {
-    const r = log.queryShadowLog({})
+  it('returns newest first with the total', async () => {
+    const r = await log.queryShadowLog({})
     expect(r.total).toBe(3)
     expect(r.entries.map(e => e.route)).toEqual(['/api/schedules/x', '/api/memories', '/api/kanban/cards'])
   })
 
-  it('same-second rows are ordered newest id first', () => {
+  it('same-second rows are ordered newest id first', async () => {
     seed({ ts: NOW, route: '/first' })
     seed({ ts: NOW, route: '/second' })
-    expect(log.queryShadowLog({}).entries.slice(0, 2).map(e => e.route)).toEqual(['/second', '/first'])
+    expect((await log.queryShadowLog({})).entries.slice(0, 2).map(e => e.route)).toEqual(['/second', '/first'])
   })
 
   it.each([
@@ -216,44 +216,44 @@ describe('queryShadowLog', () => {
     [{ from: NOW - 20 }, ['/api/schedules/x', '/api/memories']],
     [{ to: NOW - 20 }, ['/api/kanban/cards']], // `to` is exclusive
     [{ from: NOW - 25, to: NOW - 5, decision: 'permitted' as const }, ['/api/memories']],
-  ])('filter %j', (filter, expected) => {
-    const r = log.queryShadowLog(filter)
+  ])('filter %j', async (filter, expected) => {
+    const r = await log.queryShadowLog(filter)
     expect(r.entries.map(e => e.route)).toEqual(expected)
     expect(r.total).toBe(expected.length)
   })
 
-  it('the route filter is a literal substring: LIKE wildcards in the input match nothing special', () => {
-    expect(log.queryShadowLog({ route: '%' }).total).toBe(0)
-    expect(log.queryShadowLog({ route: '_pi' }).total).toBe(0)
+  it('the route filter is a literal substring: LIKE wildcards in the input match nothing special', async () => {
+    expect((await log.queryShadowLog({ route: '%' })).total).toBe(0)
+    expect((await log.queryShadowLog({ route: '_pi' })).total).toBe(0)
   })
 
-  it('a filter that matches nothing returns an empty page, not an error', () => {
-    expect(log.queryShadowLog({ principal: 'nobody' })).toMatchObject({ entries: [], total: 0 })
+  it('a filter that matches nothing returns an empty page, not an error', async () => {
+    expect(await log.queryShadowLog({ principal: 'nobody' })).toMatchObject({ entries: [], total: 0 })
   })
 
-  it('paginates and clamps the limit to [1, MAX_LIMIT] and the offset to >= 0', () => {
-    expect(log.queryShadowLog({ limit: 1, offset: 1 }).entries.map(e => e.route)).toEqual(['/api/memories'])
-    expect(log.queryShadowLog({ limit: 0 }).limit).toBe(1)
-    expect(log.queryShadowLog({ limit: 100_000 }).limit).toBe(log.MAX_LIMIT)
-    expect(log.queryShadowLog({ offset: -5 }).offset).toBe(0)
-    expect(log.queryShadowLog({}).limit).toBe(log.DEFAULT_LIMIT)
+  it('paginates and clamps the limit to [1, MAX_LIMIT] and the offset to >= 0', async () => {
+    expect((await log.queryShadowLog({ limit: 1, offset: 1 })).entries.map(e => e.route)).toEqual(['/api/memories'])
+    expect((await log.queryShadowLog({ limit: 0 })).limit).toBe(1)
+    expect((await log.queryShadowLog({ limit: 100_000 })).limit).toBe(log.MAX_LIMIT)
+    expect((await log.queryShadowLog({ offset: -5 })).offset).toBe(0)
+    expect((await log.queryShadowLog({})).limit).toBe(log.DEFAULT_LIMIT)
   })
 })
 
 describe('summarizeShadowLog', () => {
-  it('an empty table yields zeros, not nulls', () => {
-    expect(log.summarizeShadowLog()).toEqual({
+  it('an empty table yields zeros, not nulls', async () => {
+    expect(await log.summarizeShadowLog()).toEqual({
       from: null, to: null, total: 0,
       by_decision: { 'would-deny': 0, denied: 0, permitted: 0 },
       top_denials: [], denied_principals: [],
     })
   })
 
-  it('counts by decision and ranks denial shapes; permitted rows are not a denial signal', () => {
+  it('counts by decision and ranks denial shapes; permitted rows are not a denial signal', async () => {
     for (let i = 0; i < 3; i++) seed({ route: '/api/kanban/cards', decision: 'would-deny', principal: 'user-a' })
     seed({ route: '/api/schedules/x', permission: 'schedules:write', decision: 'denied', principal: 'user-b', role: 'agent' })
     for (let i = 0; i < 5; i++) seed({ route: '/api/memories', permission: 'memories:read', decision: 'permitted', principal: 'user-c' })
-    const s = log.summarizeShadowLog()
+    const s = await log.summarizeShadowLog()
     expect(s.by_decision).toEqual({ 'would-deny': 3, denied: 1, permitted: 5 })
     expect(s.total).toBe(9)
     expect(s.top_denials).toEqual([
@@ -264,22 +264,22 @@ describe('summarizeShadowLog', () => {
     expect(s.top_denials.some(d => d.route === '/api/memories')).toBe(false)
   })
 
-  it('respects the time window and the tenant filter in every aggregate', () => {
+  it('respects the time window and the tenant filter in every aggregate', async () => {
     seed({ ts: NOW - 100, decision: 'would-deny', tenant_id: 'tenant-a', principal: 'user-old' })
     seed({ ts: NOW - 5, decision: 'would-deny', tenant_id: 'tenant-a', principal: 'user-a' })
     seed({ ts: NOW - 5, decision: 'would-deny', tenant_id: 'tenant-b', principal: 'user-b' })
-    const windowed = log.summarizeShadowLog({ from: NOW - 10 })
+    const windowed = await log.summarizeShadowLog({ from: NOW - 10 })
     expect(windowed.by_decision['would-deny']).toBe(2)
     expect(windowed.denied_principals.map(p => p.principal).sort()).toEqual(['user-a', 'user-b'])
-    const scoped = log.summarizeShadowLog({ from: NOW - 10, tenantId: 'tenant-b' })
+    const scoped = await log.summarizeShadowLog({ from: NOW - 10, tenantId: 'tenant-b' })
     expect(scoped.by_decision['would-deny']).toBe(1)
     expect(scoped.denied_principals.map(p => p.principal)).toEqual(['user-b'])
     expect(windowed.from).toBe(NOW - 10)
   })
 
-  it('caps the ranked lists at 20 entries', () => {
+  it('caps the ranked lists at 20 entries', async () => {
     for (let i = 0; i < 25; i++) seed({ route: `/api/r${i}`, principal: `user-${i}` })
-    const s = log.summarizeShadowLog()
+    const s = await log.summarizeShadowLog()
     expect(s.top_denials).toHaveLength(20)
     expect(s.denied_principals).toHaveLength(20)
     expect(s.by_decision['would-deny']).toBe(25)

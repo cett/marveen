@@ -71,7 +71,7 @@ export async function tryHandleRbacShadowLog(ctx: RouteContext): Promise<boolean
 
   const summary = p.get('summary')
   if (summary === '1' || summary === 'true') {
-    json(res, summarizeShadowLog({ from: filter.from, to: filter.to, tenantId: filter.tenantId }))
+    json(res, await summarizeShadowLog({ from: filter.from, to: filter.to, tenantId: filter.tenantId }))
     return true
   }
 
@@ -82,6 +82,6 @@ export async function tryHandleRbacShadowLog(ctx: RouteContext): Promise<boolean
   filter.limit = limit
   filter.offset = offset
 
-  json(res, queryShadowLog(filter))
+  json(res, await queryShadowLog(filter))
   return true
 }

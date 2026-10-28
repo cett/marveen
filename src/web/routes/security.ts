@@ -79,7 +79,7 @@ export async function tryHandleSecurity(ctx: RouteContext): Promise<boolean> {
     // where pairing "succeeded but does not work" is explainable from the
     // audit row alone.
     const overrideNote = sshDirOverride() ? ' sshdir_override=1' : ''
-    logConfigChange('security.bridge_enroll', null, `${name} (${outcome.installId}) ${outcome.action}${overrideNote}`, auth.kind)
+    await logConfigChange('security.bridge_enroll', null, `${name} (${outcome.installId}) ${outcome.action}${overrideNote}`, auth.kind)
     logger.info({ name, installId: outcome.installId, action: outcome.action, deviceKeyId: outcome.deviceKeyId }, 'bridge device enrolled')
     void notifySecurityEvent(
       `🔗 Bridge-párosítás a dashboardról: "${name}" (${outcome.action === 'replaced' ? 'újrapárosítás' : 'új eszköz'}). ` +

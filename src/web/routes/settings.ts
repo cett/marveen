@@ -107,7 +107,7 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
       // step that introduced the exposure.
       const loggedOldValue = def.secret ? SECRET_MASK : oldValue
       const loggedNewValue = def.secret ? SECRET_MASK : validation.value!
-      logConfigChange(key, loggedOldValue, loggedNewValue, resolvedActor)
+      await logConfigChange(key, loggedOldValue, loggedNewValue, resolvedActor)
       logger.info({ key, oldValue: loggedOldValue, newValue: loggedNewValue }, 'Setting updated')
       json(res, { ok: true, key, value: validation.value, requiresRestart: def.requiresRestart })
     } catch (err) {

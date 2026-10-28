@@ -257,7 +257,7 @@ describe('token rollups keep the tenants of a shared agent apart', () => {
     raw('acme', old, 10)
     raw('acme', old + 60, 5)
     raw('beta', old + 120, 7)
-    pruneTokenUsage()
+    await pruneTokenUsage()
     const daily = db.prepare('SELECT tenant_id, input_tokens, row_count FROM token_usage_daily ORDER BY tenant_id').all()
     expect(daily).toEqual([
       { tenant_id: 'acme', input_tokens: 15, row_count: 2 },

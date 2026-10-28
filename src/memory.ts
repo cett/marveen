@@ -164,8 +164,8 @@ export async function saveConversationTurn(
 
 export async function runDecaySweep(): Promise<void> {
   await dbDecay()
-  pruneAuditLogs()
-  const tokenPruneResult = pruneTokenUsage()
+  await pruneAuditLogs()
+  const tokenPruneResult = await pruneTokenUsage()
   const blackboardHistoryPruned = pruneBlackboardHistory()
   const conversationLogPruned = pruneConversationLog()
   const agentMessagesPruned = pruneAgentMessages()

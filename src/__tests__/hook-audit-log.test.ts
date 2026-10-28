@@ -26,7 +26,7 @@ describe('insertHookAuditLog / listHookAuditLog', () => {
       session_id: 'sess-1',
     })
 
-    const rows = listHookAuditLog()
+    const rows = await listHookAuditLog()
     expect(rows).toHaveLength(1)
     expect(rows[0]).toMatchObject({
       agent_id: 'agent-a',
@@ -43,7 +43,7 @@ describe('insertHookAuditLog / listHookAuditLog', () => {
 
   it('accepts null/omitted optional fields', async () => {
     await insertHookAuditLog({ hook_type: 'PreToolUse', verdict: 'deny' })
-    const rows = listHookAuditLog()
+    const rows = await listHookAuditLog()
     expect(rows).toHaveLength(1)
     expect(rows[0].agent_id).toBeNull()
     expect(rows[0].tool_name).toBeNull()
@@ -56,7 +56,7 @@ describe('insertHookAuditLog / listHookAuditLog', () => {
     await insertHookAuditLog({ hook_type: 'PostToolUse', verdict: 'deny', reason: 'r1' })
     await insertHookAuditLog({ hook_type: 'PostToolUse', verdict: 'allow', reason: 'r2' })
 
-    const denies = listHookAuditLog({ verdict: 'deny' })
+    const denies = await listHookAuditLog({ verdict: 'deny' })
     expect(denies).toHaveLength(1)
     expect(denies[0].reason).toBe('r1')
   })
@@ -65,7 +65,7 @@ describe('insertHookAuditLog / listHookAuditLog', () => {
     await insertHookAuditLog({ hook_type: 'PostToolUse', verdict: 'deny', agent_id: 'agent-a' })
     await insertHookAuditLog({ hook_type: 'PostToolUse', verdict: 'deny', agent_id: 'agent-b' })
 
-    const rows = listHookAuditLog({ agent_id: 'agent-a' })
+    const rows = await listHookAuditLog({ agent_id: 'agent-a' })
     expect(rows).toHaveLength(1)
     expect(rows[0].agent_id).toBe('agent-a')
   })
@@ -80,7 +80,7 @@ describe('insertHookAuditLog / listHookAuditLog', () => {
     // Query while still under the same fake "now" -- sinceSecs is relative to
     // Date.now(), so switching back to real time here would compare the
     // fake-timestamped rows against today's real clock instead.
-    const rows = listHookAuditLog({ sinceSecs: 86400 })
+    const rows = await listHookAuditLog({ sinceSecs: 86400 })
     vi.useRealTimers()
     expect(rows.map(r => r.reason)).toEqual(['second', 'first'])
   })
@@ -92,14 +92,14 @@ describe('insertHookAuditLog / listHookAuditLog', () => {
     vi.setSystemTime(new Date('2026-01-01T02:00:00Z'))
     await insertHookAuditLog({ hook_type: 'PostToolUse', verdict: 'deny', reason: 'recent' })
 
-    const rows = listHookAuditLog({ sinceSecs: 3600 })
+    const rows = await listHookAuditLog({ sinceSecs: 3600 })
     vi.useRealTimers()
     expect(rows.map(r => r.reason)).toEqual(['recent'])
   })
 
   it('caps limit at 1000', async () => {
     for (let i = 0; i < 5; i++) await insertHookAuditLog({ hook_type: 'PostToolUse', verdict: 'deny', reason: `r${i}` })
-    const rows = listHookAuditLog({ limit: 5000 })
+    const rows = await listHookAuditLog({ limit: 5000 })
     expect(rows).toHaveLength(5) // fewer rows than the cap; cap just doesn't truncate below actual count
   })
 })
@@ -112,8 +112,8 @@ describe('pruneHookAuditLog', () => {
     vi.setSystemTime(new Date('2026-01-31T00:00:00Z'))
     await insertHookAuditLog({ hook_type: 'PostToolUse', verdict: 'deny', reason: 'recent' })
 
-    pruneHookAuditLog(30 * 86400)
-    const rows = listHookAuditLog({ sinceSecs: 365 * 86400 })
+    await pruneHookAuditLog(30 * 86400)
+    const rows = await listHookAuditLog({ sinceSecs: 365 * 86400 })
     vi.useRealTimers()
     expect(rows.map(r => r.reason)).toEqual(['recent'])
   })

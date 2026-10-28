@@ -284,8 +284,8 @@ describe('reparentKanbanCard branches', () => {
 // ---------------------------------------------------------------------------
 
 describe('analyzeWorkflowCandidates', () => {
-  it('returns empty array when no recent tool calls', () => {
-    const result = analyzeWorkflowCandidates(0, 5, 300)
+  it('returns empty array when no recent tool calls', async () => {
+    const result = await analyzeWorkflowCandidates(0, 5, 300)
     expect(result).toEqual([])
   })
 
@@ -297,16 +297,16 @@ describe('analyzeWorkflowCandidates', () => {
       // session_id here, so span_id (traceId arg) must be unique per call.
       await logToolCall(sessionId, 'Bash', null, true, 'agent-a', `toolu_wf_${i}`, 100)
     }
-    const result = analyzeWorkflowCandidates(3600, 5, 300)
+    const result = await analyzeWorkflowCandidates(3600, 5, 300)
     expect(Array.isArray(result)).toBe(true)
     const found = result.find(c => c.session_id === sessionId)
     expect(found).toBeDefined()
     expect(found!.tool_calls.length).toBeGreaterThanOrEqual(6)
   })
 
-  it('splits chunks by time gaps', () => {
+  it('splits chunks by time gaps', async () => {
     // Already tested indirectly; just verify structure
-    const result = analyzeWorkflowCandidates(3600, 1, 0)
+    const result = await analyzeWorkflowCandidates(3600, 1, 0)
     expect(Array.isArray(result)).toBe(true)
   })
 })
@@ -322,19 +322,19 @@ describe('queryAuditLog with idea source', () => {
     await logIdeaStatusChange(ideaId, null, 'new', 'test-actor', 'test note')
   })
 
-  it('returns idea audit entries', () => {
-    const { entries: results } = queryAuditLog({ sources: ['idea'], limit: 50 })
+  it('returns idea audit entries', async () => {
+    const { entries: results } = await queryAuditLog({ sources: ['idea'], limit: 50 })
     expect(results.some(r => r.source === 'idea')).toBe(true)
   })
 
-  it('filters idea entries by from/to', () => {
+  it('filters idea entries by from/to', async () => {
     const now = Math.floor(Date.now() / 1000)
-    const { entries: results } = queryAuditLog({ sources: ['idea'], from: now - 5, to: now + 5, limit: 50 })
+    const { entries: results } = await queryAuditLog({ sources: ['idea'], from: now - 5, to: now + 5, limit: 50 })
     expect(Array.isArray(results)).toBe(true)
   })
 
-  it('filters idea entries by query string', () => {
-    const { entries: results } = queryAuditLog({ sources: ['idea'], q: 'test note', limit: 50 })
+  it('filters idea entries by query string', async () => {
+    const { entries: results } = await queryAuditLog({ sources: ['idea'], q: 'test note', limit: 50 })
     expect(Array.isArray(results)).toBe(true)
   })
 })
@@ -344,43 +344,43 @@ describe('queryAuditLog with store source', () => {
     await logStoreFileEvent('config/test.json', 'write', 0, 1024, 'agent-a')
   })
 
-  it('returns store audit entries', () => {
-    const { entries: results } = queryAuditLog({ sources: ['store'], limit: 50 })
+  it('returns store audit entries', async () => {
+    const { entries: results } = await queryAuditLog({ sources: ['store'], limit: 50 })
     expect(results.some(r => r.source === 'store')).toBe(true)
   })
 
-  it('filters store entries by agent', () => {
-    const { entries: results } = queryAuditLog({ sources: ['store'], agent: 'agent-a', limit: 50 })
+  it('filters store entries by agent', async () => {
+    const { entries: results } = await queryAuditLog({ sources: ['store'], agent: 'agent-a', limit: 50 })
     expect(Array.isArray(results)).toBe(true)
   })
 
-  it('filters store entries by from/to and query', () => {
+  it('filters store entries by from/to and query', async () => {
     const now = Math.floor(Date.now() / 1000)
-    const { entries: results } = queryAuditLog({ sources: ['store'], from: now - 5, to: now + 5, q: 'test.json', limit: 50 })
+    const { entries: results } = await queryAuditLog({ sources: ['store'], from: now - 5, to: now + 5, q: 'test.json', limit: 50 })
     expect(Array.isArray(results)).toBe(true)
   })
 })
 
 describe('queryAuditLog with diary source', () => {
-  it('returns diary entries (logs + memories)', () => {
-    const { entries: results } = queryAuditLog({ sources: ['diary'], limit: 50 })
+  it('returns diary entries (logs + memories)', async () => {
+    const { entries: results } = await queryAuditLog({ sources: ['diary'], limit: 50 })
     const hasDiary = results.some(r => r.source === 'diary')
     expect(hasDiary).toBe(true)
   })
 
-  it('filters diary by agent', () => {
-    const { entries: results } = queryAuditLog({ sources: ['diary'], agent: 'agent-a', limit: 50 })
+  it('filters diary by agent', async () => {
+    const { entries: results } = await queryAuditLog({ sources: ['diary'], agent: 'agent-a', limit: 50 })
     expect(Array.isArray(results)).toBe(true)
   })
 
-  it('filters diary by from/to', () => {
+  it('filters diary by from/to', async () => {
     const now = Math.floor(Date.now() / 1000)
-    const { entries: results } = queryAuditLog({ sources: ['diary'], from: now - 60, to: now + 60, limit: 50 })
+    const { entries: results } = await queryAuditLog({ sources: ['diary'], from: now - 60, to: now + 60, limit: 50 })
     expect(Array.isArray(results)).toBe(true)
   })
 
-  it('filters diary by query string', () => {
-    const { entries: results } = queryAuditLog({ sources: ['diary'], q: 'coverage', limit: 50 })
+  it('filters diary by query string', async () => {
+    const { entries: results } = await queryAuditLog({ sources: ['diary'], q: 'coverage', limit: 50 })
     expect(Array.isArray(results)).toBe(true)
   })
 })
@@ -390,8 +390,8 @@ describe('queryAuditLog with hook source', () => {
     await insertHookAuditLog({ agent_id: 'agent-a', hook_type: 'PreToolUse', verdict: 'deny', tool_name: 'Bash', reason: 'audit_test_reason' })
   })
 
-  it('returns hook audit entries with the shared AuditLogEntry shape (ts aliased to created_at)', () => {
-    const { entries: results } = queryAuditLog({ sources: ['hook'], limit: 50 })
+  it('returns hook audit entries with the shared AuditLogEntry shape (ts aliased to created_at)', async () => {
+    const { entries: results } = await queryAuditLog({ sources: ['hook'], limit: 50 })
     const hookEntry = results.find(r => r.source === 'hook' && r.reason === 'audit_test_reason')
     expect(hookEntry).toBeDefined()
     expect(hookEntry?.agent_id).toBe('agent-a')
@@ -401,13 +401,13 @@ describe('queryAuditLog with hook source', () => {
     expect(typeof hookEntry?.created_at).toBe('number')
   })
 
-  it('filters hook entries by agent', () => {
-    const { entries: results } = queryAuditLog({ sources: ['hook'], agent: 'agent-a', limit: 50 })
+  it('filters hook entries by agent', async () => {
+    const { entries: results } = await queryAuditLog({ sources: ['hook'], agent: 'agent-a', limit: 50 })
     expect(results.every(r => r.source !== 'hook' || r.agent_id === 'agent-a')).toBe(true)
   })
 
-  it('filters hook entries by query string', () => {
-    const { entries: results } = queryAuditLog({ sources: ['hook'], q: 'audit_test_reason', limit: 50 })
+  it('filters hook entries by query string', async () => {
+    const { entries: results } = await queryAuditLog({ sources: ['hook'], q: 'audit_test_reason', limit: 50 })
     expect(results.some(r => r.source === 'hook' && r.reason === 'audit_test_reason')).toBe(true)
   })
 })
@@ -418,16 +418,16 @@ describe('queryAuditLog with agent source: blackboard/approval entities', () => 
     await writeAgentAuditLog({ agent_id: 'agent-a', entity: 'approval', action: 'create', entity_id: 'appr-audit-test', detail: { category: 'file_write' } })
   })
 
-  it('merges blackboard and approval agent-audit entries', () => {
-    const { entries: results } = queryAuditLog({ sources: ['agent'], agent: 'agent-a', limit: 100 })
+  it('merges blackboard and approval agent-audit entries', async () => {
+    const { entries: results } = await queryAuditLog({ sources: ['agent'], agent: 'agent-a', limit: 100 })
     expect(results.some(r => r.entity === 'blackboard' && r.entity_id === 'bb-audit-test')).toBe(true)
     expect(results.some(r => r.entity === 'approval' && r.entity_id === 'appr-audit-test')).toBe(true)
   })
 })
 
 describe('queryAuditLog with multiple sources', () => {
-  it('merges all sources when sources is empty (default all)', () => {
-    const { entries: results } = queryAuditLog({ sources: [], limit: 100 })
+  it('merges all sources when sources is empty (default all)', async () => {
+    const { entries: results } = await queryAuditLog({ sources: [], limit: 100 })
     expect(Array.isArray(results)).toBe(true)
   })
 })
@@ -465,13 +465,13 @@ describe('updateIdea patch branches', () => {
 describe('logStoreFileEvent and getRecentStoreFileEvents', () => {
   it('logs and retrieves store file events', async () => {
     await logStoreFileEvent('store/test.db', 'read', 1, 512, 'agent-h')
-    const events = getRecentStoreFileEvents(10)
+    const events = await getRecentStoreFileEvents(10)
     expect(events.some(e => e.rel_path === 'store/test.db')).toBe(true)
   })
 
   it('logs event without agent', async () => {
     await logStoreFileEvent('store/anon.db', 'create', 0, null, null)
-    const events = getRecentStoreFileEvents(10)
+    const events = await getRecentStoreFileEvents(10)
     expect(events.some(e => e.rel_path === 'store/anon.db')).toBe(true)
   })
 })
@@ -507,11 +507,11 @@ describe('setMessageResult', () => {
 // ---------------------------------------------------------------------------
 
 describe('logConfigChange', () => {
-  it('logs a config change entry', () => {
-    logConfigChange('test.key', 'old-value', 'new-value', 'agent-a')
+  it('logs a config change entry', async () => {
+    await logConfigChange('test.key', 'old-value', 'new-value', 'agent-a')
   })
 
-  it('logs with null old value', () => {
-    logConfigChange('test.key2', null, 'new', 'system')
+  it('logs with null old value', async () => {
+    await logConfigChange('test.key2', null, 'new', 'system')
   })
 })

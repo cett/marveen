@@ -39,34 +39,34 @@ describe('logSkillUsage / getSkillUsageRows / getSkillUsageStats', () => {
     await logSkillUsage('test-agent-d', 'fleet-dashboard-api', 'tool_call', 'sess-abc')
     await logSkillUsage('test-agent-d', 'fleet-dashboard-api', 'skill_read', null)
     await logSkillUsage('test-agent-d', 'skill-factory', 'tool_call')
-    const rows = getSkillUsageRows({ agentId: 'test-agent-d' })
+    const rows = await getSkillUsageRows({ agentId: 'test-agent-d' })
     expect(rows.length).toBeGreaterThanOrEqual(3)
     expect(rows[0].skill_name).toBeDefined()
   })
 
-  it('getSkillUsageRows filters by skillName', () => {
-    const rows = getSkillUsageRows({ agentId: 'test-agent-d', skillName: 'fleet-dashboard-api' })
+  it('getSkillUsageRows filters by skillName', async () => {
+    const rows = await getSkillUsageRows({ agentId: 'test-agent-d', skillName: 'fleet-dashboard-api' })
     expect(rows.every(r => r.skill_name === 'fleet-dashboard-api')).toBe(true)
     expect(rows.length).toBeGreaterThanOrEqual(2)
   })
 
-  it('getSkillUsageRows respects limit', () => {
-    const rows = getSkillUsageRows({ agentId: 'test-agent-d', limit: 1 })
+  it('getSkillUsageRows respects limit', async () => {
+    const rows = await getSkillUsageRows({ agentId: 'test-agent-d', limit: 1 })
     expect(rows.length).toBe(1)
   })
 
-  it('getSkillUsageStats returns aggregated stats', () => {
-    const stats = getSkillUsageStats()
+  it('getSkillUsageStats returns aggregated stats', async () => {
+    const stats = await getSkillUsageStats()
     const fa = stats.find(s => s.skill_name === 'fleet-dashboard-api')
     expect(fa).toBeDefined()
     expect(fa!.call_count).toBeGreaterThanOrEqual(1)
     expect(fa!.read_count).toBeGreaterThanOrEqual(1)
   })
 
-  it('getSkillUsageStats with sinceSecs filters old rows', () => {
+  it('getSkillUsageStats with sinceSecs filters old rows', async () => {
     // With sinceSecs=86400 (1 day from now) => cutoff = now - 86400 = yesterday
     // Our just-inserted rows should still be included since they're recent
-    const stats = getSkillUsageStats(86400)
+    const stats = await getSkillUsageStats(86400)
     expect(Array.isArray(stats)).toBe(true)
   })
 })
@@ -74,18 +74,18 @@ describe('logSkillUsage / getSkillUsageRows / getSkillUsageStats', () => {
 // --- Config Change Log ---
 
 describe('logConfigChange / getRecentConfigChanges', () => {
-  it('inserts a config change and reads it back', () => {
-    logConfigChange('CHANNEL_TOKEN', 'old-token', 'new-token', 'test-admin')
-    logConfigChange('MAIN_AGENT_ID', null, 'marveen', 'test-admin')
-    const changes = getRecentConfigChanges(100)
+  it('inserts a config change and reads it back', async () => {
+    await logConfigChange('CHANNEL_TOKEN', 'old-token', 'new-token', 'test-admin')
+    await logConfigChange('MAIN_AGENT_ID', null, 'marveen', 'test-admin')
+    const changes = await getRecentConfigChanges(100)
     const tok = changes.find(c => c.key === 'CHANNEL_TOKEN' && c.actor === 'test-admin')
     expect(tok).toBeDefined()
     expect(tok!.old_value).toBe('old-token')
     expect(tok!.new_value).toBe('new-token')
   })
 
-  it('getRecentConfigChanges respects limit', () => {
-    const changes = getRecentConfigChanges(1)
+  it('getRecentConfigChanges respects limit', async () => {
+    const changes = await getRecentConfigChanges(1)
     expect(changes.length).toBe(1)
   })
 })
@@ -96,7 +96,7 @@ describe('logStoreFileEvent / getRecentStoreFileEvents', () => {
   it('inserts and retrieves store file events', async () => {
     await logStoreFileEvent('test/myfile.json', 'create', 0, 1024, 'test-agent-d')
     await logStoreFileEvent('test/secret.key', 'create', 1, 256, null)
-    const events = getRecentStoreFileEvents(100)
+    const events = await getRecentStoreFileEvents(100)
     const mine = events.find(e => e.rel_path === 'test/myfile.json')
     expect(mine).toBeDefined()
     expect(mine!.agent).toBe('test-agent-d')
@@ -107,39 +107,39 @@ describe('logStoreFileEvent / getRecentStoreFileEvents', () => {
 // --- Unified Audit Log Query ---
 
 describe('queryAuditLog', () => {
-  it('queries config source', () => {
-    const { entries } = queryAuditLog({ sources: ['config'], limit: 50 })
+  it('queries config source', async () => {
+    const { entries } = await queryAuditLog({ sources: ['config'], limit: 50 })
     expect(entries.some(e => e.source === 'config')).toBe(true)
   })
 
-  it('queries store source', () => {
-    const { entries } = queryAuditLog({ sources: ['store'], limit: 50 })
+  it('queries store source', async () => {
+    const { entries } = await queryAuditLog({ sources: ['store'], limit: 50 })
     expect(entries.some(e => e.source === 'store')).toBe(true)
   })
 
-  it('queries all sources when empty array', () => {
-    const { entries } = queryAuditLog({ sources: [], limit: 50 })
+  it('queries all sources when empty array', async () => {
+    const { entries } = await queryAuditLog({ sources: [], limit: 50 })
     expect(entries.length).toBeGreaterThan(0)
   })
 
-  it('filters by q (full-text search)', () => {
-    const { entries } = queryAuditLog({ sources: ['config'], q: 'CHANNEL_TOKEN', limit: 10 })
+  it('filters by q (full-text search)', async () => {
+    const { entries } = await queryAuditLog({ sources: ['config'], q: 'CHANNEL_TOKEN', limit: 10 })
     expect(entries.every(e => JSON.stringify(e).includes('CHANNEL_TOKEN'))).toBe(true)
   })
 
-  it('queries idea source without crashing', () => {
-    const { entries } = queryAuditLog({ sources: ['idea'], limit: 10 })
+  it('queries idea source without crashing', async () => {
+    const { entries } = await queryAuditLog({ sources: ['idea'], limit: 10 })
     expect(Array.isArray(entries)).toBe(true)
   })
 
-  it('queries diary source (daily_logs + memories)', () => {
-    const { entries } = queryAuditLog({ sources: ['diary'], limit: 10 })
+  it('queries diary source (daily_logs + memories)', async () => {
+    const { entries } = await queryAuditLog({ sources: ['diary'], limit: 10 })
     expect(Array.isArray(entries)).toBe(true)
   })
 
-  it('filters by from/to timestamps', () => {
+  it('filters by from/to timestamps', async () => {
     const now = Math.floor(Date.now() / 1000)
-    const { entries } = queryAuditLog({ sources: ['config'], from: now - 60, to: now + 60, limit: 50 })
+    const { entries } = await queryAuditLog({ sources: ['config'], from: now - 60, to: now + 60, limit: 50 })
     expect(Array.isArray(entries)).toBe(true)
   })
 })
@@ -147,22 +147,22 @@ describe('queryAuditLog', () => {
 describe('queryAuditLog pagination (offset + total)', () => {
   const ACTOR = 'test-page-actor'
 
-  beforeAll(() => {
+  beforeAll(async () => {
     for (let i = 0; i < 25; i++) {
-      logConfigChange(`test-page-key-${i}`, null, String(i), ACTOR)
+      await logConfigChange(`test-page-key-${i}`, null, String(i), ACTOR)
     }
   })
 
-  it('reports a total independent of limit, not just the returned page length', () => {
-    const { entries, total } = queryAuditLog({ sources: ['config'], q: ACTOR, limit: 10 })
+  it('reports a total independent of limit, not just the returned page length', async () => {
+    const { entries, total } = await queryAuditLog({ sources: ['config'], q: ACTOR, limit: 10 })
     expect(entries.length).toBe(10)
     expect(total).toBeGreaterThanOrEqual(25)
   })
 
-  it('offset pages are contiguous and non-overlapping', () => {
-    const page1 = queryAuditLog({ sources: ['config'], q: ACTOR, limit: 10, offset: 0 })
-    const page2 = queryAuditLog({ sources: ['config'], q: ACTOR, limit: 10, offset: 10 })
-    const page3 = queryAuditLog({ sources: ['config'], q: ACTOR, limit: 10, offset: 20 })
+  it('offset pages are contiguous and non-overlapping', async () => {
+    const page1 = await queryAuditLog({ sources: ['config'], q: ACTOR, limit: 10, offset: 0 })
+    const page2 = await queryAuditLog({ sources: ['config'], q: ACTOR, limit: 10, offset: 10 })
+    const page3 = await queryAuditLog({ sources: ['config'], q: ACTOR, limit: 10, offset: 20 })
 
     expect(page1.entries.length).toBe(10)
     expect(page2.entries.length).toBe(10)
@@ -176,19 +176,19 @@ describe('queryAuditLog pagination (offset + total)', () => {
 
     // Same DESC ordering as an unpaged, larger fetch: the concatenation of
     // the three pages must equal the first 25+ rows of a single big fetch.
-    const unpaged = queryAuditLog({ sources: ['config'], q: ACTOR, limit: 30 })
+    const unpaged = await queryAuditLog({ sources: ['config'], q: ACTOR, limit: 30 })
     expect([...ids1, ...ids2, ...ids3]).toEqual(unpaged.entries.map(e => e.id))
   })
 
-  it('an out-of-range offset returns an empty page but keeps the real total', () => {
-    const { entries, total } = queryAuditLog({ sources: ['config'], q: ACTOR, limit: 10, offset: 10_000 })
+  it('an out-of-range offset returns an empty page but keeps the real total', async () => {
+    const { entries, total } = await queryAuditLog({ sources: ['config'], q: ACTOR, limit: 10, offset: 10_000 })
     expect(entries).toEqual([])
     expect(total).toBeGreaterThanOrEqual(25)
   })
 
-  it('defaults offset to 0 when omitted', () => {
-    const withDefault = queryAuditLog({ sources: ['config'], q: ACTOR, limit: 5 })
-    const explicitZero = queryAuditLog({ sources: ['config'], q: ACTOR, limit: 5, offset: 0 })
+  it('defaults offset to 0 when omitted', async () => {
+    const withDefault = await queryAuditLog({ sources: ['config'], q: ACTOR, limit: 5 })
+    const explicitZero = await queryAuditLog({ sources: ['config'], q: ACTOR, limit: 5, offset: 0 })
     expect(withDefault.entries.map(e => e.id)).toEqual(explicitZero.entries.map(e => e.id))
   })
 })
@@ -204,7 +204,7 @@ describe('pruneAuditLogs', () => {
   // only ever ran via a manual POST /api/hook-audit/prune call. This pins the
   // fix -- pruneAuditLogs() must now also sweep it, using its own `ts` column
   // (not created_at, which hook_audit_log doesn't have).
-  it('also prunes hook_audit_log rows older than AUDIT_LOG_RETENTION_DAYS', () => {
+  it('also prunes hook_audit_log rows older than AUDIT_LOG_RETENTION_DAYS', async () => {
     const db = getDb()
     const now = Math.floor(Date.now() / 1000)
     const oldTs = now - 200 * 86400 // well past the 90-day default retention
@@ -215,7 +215,7 @@ describe('pruneAuditLogs', () => {
       "INSERT INTO hook_audit_log (ts, agent_id, hook_type, verdict) VALUES (?, ?, ?, ?)",
     ).run(now, 'test-hook-agent-fresh', 'PreToolUse', 'allow')
 
-    pruneAuditLogs()
+    await pruneAuditLogs()
 
     const remaining = db.prepare(
       "SELECT agent_id FROM hook_audit_log WHERE agent_id IN ('test-hook-agent-old', 'test-hook-agent-fresh')",
@@ -229,7 +229,7 @@ describe('pruneAuditLogs', () => {
   // second-resolution timestamp column -- this pins that pruneOtelSpans()
   // computes its cutoff in ms (a Math.floor(Date.now()/1000) regression here
   // would prune everything, since a second-based cutoff is ~1000x too old).
-  it('also prunes otel_spans rows older than OTEL_SPAN_RETENTION_DAYS', () => {
+  it('also prunes otel_spans rows older than OTEL_SPAN_RETENTION_DAYS', async () => {
     const db = getDb()
     const now = Date.now()
     const oldStartMs = now - 60 * 86400000 // well past the 30-day default retention
@@ -240,7 +240,7 @@ describe('pruneAuditLogs', () => {
       "INSERT INTO otel_spans (trace_id, span_id, agent_id, operation, start_ms) VALUES (?, ?, ?, ?, ?)",
     ).run('trace-test-otel-fresh', 'span-test-otel-fresh', 'test-otel-agent', 'test.op', now)
 
-    pruneAuditLogs()
+    await pruneAuditLogs()
 
     const remaining = db.prepare(
       "SELECT trace_id FROM otel_spans WHERE trace_id IN ('trace-test-otel-old', 'trace-test-otel-fresh')",
