@@ -509,8 +509,11 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     // The db is async, so the read, the decision and the write run under the schedule lock:
     // the row read here is the row that gets overwritten, and a concurrent activation or edit
     // of this schedule waits for the write instead of interleaving with it.
-    const { before, beforeTask, changed, demote } = await withScheduleLock(name, async () => {
+    const locked = await withScheduleLock(name, async () => {
       const before = useDb ? await getScheduleFromDb(name) : undefined
+      // A delete or a tenant move that ran since the checks above must not be written over: an edit never creates
+      // the row (writeScheduledTask would upsert one from defaults) and is judged against the tenant as it is now.
+      if (useDb && (!before || crossTenantBlocked(ctx, before.tenant_id ?? null))) return null
       const beforeTask: Record<string, unknown> = before ? { ...rowToTask(before) } : {}
       const changed = before ? reviewTriggerFields(beforeTask, update) : []
       const demote = !!before && newTenant === undefined && !isHumanAdmin(ctx)
@@ -520,6 +523,8 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
       await writeScheduledTask(name, update)
       return { before, beforeTask, changed, demote }
     })
+    if (!locked) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
+    const { before, beforeTask, changed, demote } = locked
 
     const tenantOfTask = newTenant ?? before?.tenant_id ?? DEFAULT_SCHEDULE_TENANT
     // Per changed field: a fingerprint before and after plus a short preview of the new
@@ -582,13 +587,18 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     let newEnabled: boolean
     if (useDb && dbRow) {
       // The toggle flips the stored value, so it is read under the schedule lock: two quick clicks flip it twice.
-      newEnabled = await withScheduleLock(name, async () => {
-        const next = ((await getScheduleFromDb(name)) ?? dbRow).enabled === 0
+      const flipped = await withScheduleLock(name, async () => {
+        const fresh = await getScheduleFromDb(name)
+        // Gone (deleted) or moved to another tenant since the checks above: nothing is written.
+        if (!fresh || crossTenantBlocked(ctx, fresh.tenant_id ?? null)) return null
+        const next = fresh.enabled === 0
         await setScheduleEnabled(name, next)
         // Mirror to file
         await writeScheduledTask(name, { enabled: next })
         return next
       })
+      if (flipped === null) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
+      newEnabled = flipped
     } else {
       const configPath = join(dir, 'task-config.json')
       let config: Record<string, unknown> = {}

@@ -34,6 +34,18 @@ import { PROJECT_ROOT, MAIN_AGENT_ID, SKILL_SQL_REGEN, TENANT_SKILL_FILES } from
 import { listAllSkills, getSkill, listSkillAccess, getEnabledAgentsForTenant, getTenantsForAgent, listSkillFiles, seedSkillFileIfAbsent, type SkillRow, type SkillFileRow } from '../db.js'
 import { MAX_SKILL_FILE_BYTES, MAX_SKILL_FILES_PER_SKILL, normalizeSkillRelPath, sanitizeSkillFileMode } from '../skill-files.js'
 import { addGeneratedHeader, stripGeneratedHeader, readGeneratedHeader } from '../skill-header.js'
+import { createKeyedSerializer } from './keyed-serializer.js'
+
+// Every function that writes or removes skill files runs one at a time. Each of them reads the skill rows (and the
+// companion files) first and writes files from what it read, across awaits: with an async db a bulk regen that read
+// its rows before a dashboard edit could write the older content after the single-skill regen of that edit, and the
+// file would stay stale. In the queue the later call always reads after the earlier one finished, so the last writer
+// holds the newest rows. In-process only; none of these calls another one of them (the agent-change entry point
+// below calls regenTenantSkillFiles one tenant after the other, outside the queue).
+const skillFileWrites = createKeyedSerializer()
+function serialized<A extends unknown[], R>(fn: (...args: A) => Promise<R>): (...args: A) => Promise<R> {
+  return (...args) => skillFileWrites.run('skill-files', () => fn(...args))
+}
 
 export interface RegenResult {
   enabled: boolean
@@ -96,7 +108,7 @@ export function resolveSkillPath(id: string): string | null {
  * @param dryRun       If true, log what would be written but don't touch disk.
  * @param forceEnabled Bypass the SKILL_SQL_REGEN kill-switch (CLI use only).
  */
-export async function regenSkillFilesFromSQL(dryRun = false, forceEnabled = false): Promise<RegenResult> {
+async function regenSkillFilesFromSQLLocked(dryRun = false, forceEnabled = false): Promise<RegenResult> {
   // Kill-switch: must be explicitly enabled for live writes. Dry-run bypasses
   // the check (read-only; safe to run for inspection regardless of the flag).
   if (!dryRun && !SKILL_SQL_REGEN && !forceEnabled) {
@@ -215,7 +227,7 @@ export interface SingleRegenResult {
  *
  * @param forceEnabled Bypass the SKILL_SQL_REGEN kill-switch (CLI/test use only).
  */
-export async function regenSingleSkillFile(id: string, forceEnabled = false): Promise<SingleRegenResult> {
+async function regenSingleSkillFileLocked(id: string, forceEnabled = false): Promise<SingleRegenResult> {
   if (!SKILL_SQL_REGEN && !forceEnabled) {
     return { written: false, skipped: true, reason: 'disabled' }
   }
@@ -684,7 +696,7 @@ function removeTenantSkillFiles(id: string, content: string, files: SkillFileRow
  * (before its session launches, so the loader sees them). Same rules as the bulk regen; the
  * agent does not have to be running yet.
  */
-export async function generateTenantSkillFilesForAgent(agentId: string, forceEnabled = false): Promise<{ written: number; skipped: number; errors: number }> {
+async function generateTenantSkillFilesForAgentLocked(agentId: string, forceEnabled = false): Promise<{ written: number; skipped: number; errors: number }> {
   const total = { written: 0, skipped: 0, errors: 0 }
   if (!SKILL_SQL_REGEN && !forceEnabled) return total
   for (const row of await listAllSkills()) {
@@ -701,7 +713,7 @@ export async function generateTenantSkillFilesForAgent(agentId: string, forceEna
  * (SKILL.md and companion files). A hand-edited SKILL.md or companion file is kept (it holds
  * work the DB does not have); a generated copy whose skill row is gone is removed.
  */
-export async function removeGeneratedTenantSkillFilesForAgent(agentId: string, forceEnabled = false): Promise<{ removed: number; kept: number; errors: number }> {
+async function removeGeneratedTenantSkillFilesForAgentLocked(agentId: string, forceEnabled = false): Promise<{ removed: number; kept: number; errors: number }> {
   const total = { removed: 0, kept: 0, errors: 0 }
   if (!SKILL_SQL_REGEN && !forceEnabled) return total
   if (!SAFE_SEGMENT.test(agentId)) return total
@@ -732,7 +744,7 @@ export async function removeGeneratedTenantSkillFilesForAgent(agentId: string, f
  * can affect (skills owned by, or granted to, the tenant). Called when an agent
  * is enabled/disabled for a tenant.
  */
-export async function regenTenantSkillFiles(tenantId: string, forceEnabled = false): Promise<{ written: number; removed: number; errors: number }> {
+async function regenTenantSkillFilesLocked(tenantId: string, forceEnabled = false): Promise<{ written: number; removed: number; errors: number }> {
   const total = { written: 0, removed: 0, errors: 0 }
   if (!SKILL_SQL_REGEN && !forceEnabled) return total
   for (const row of await listAllSkills()) {
@@ -833,3 +845,10 @@ export async function findSkillFileGaps(): Promise<SkillFileGaps> {
 export function listKnownSkillAgents(): string[] {
   return [MAIN_AGENT_ID, ...listAgentNames()]
 }
+
+// The exported entry points: the Locked functions above, one at a time.
+export const regenSkillFilesFromSQL = serialized(regenSkillFilesFromSQLLocked)
+export const regenSingleSkillFile = serialized(regenSingleSkillFileLocked)
+export const generateTenantSkillFilesForAgent = serialized(generateTenantSkillFilesForAgentLocked)
+export const removeGeneratedTenantSkillFilesForAgent = serialized(removeGeneratedTenantSkillFilesForAgentLocked)
+export const regenTenantSkillFiles = serialized(regenTenantSkillFilesLocked)
