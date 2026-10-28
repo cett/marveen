@@ -325,7 +325,7 @@ export async function searchAgentMemories(agentId: string, query: string, limit:
     return withoutRank(reRankByRecency(candidates, limit)) as Memory[]
   } catch {
     const tcFallback = tenantId ? ' AND tenant_id = ?' : ''
-    return await dbx.all<Memory>(`SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND (content LIKE ? OR keywords LIKE ?)${tcFallback} ORDER BY accessed_at DESC LIMIT ?`, agentId, `%${query}%`, `%${query}%`, ...tp, limit)
+    return await dbx.all<Memory>(`SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\')${tcFallback} ORDER BY accessed_at DESC LIMIT ?`, agentId, likeContains(query), likeContains(query), ...tp, limit)
   }
 }
 
@@ -422,6 +422,12 @@ export async function updateMemory(
 // graph, detail). tenantId undefined = unscoped (admin default).
 // ---------------------------------------------------------------------------
 
+// A "contains" pattern for LIKE ... ESCAPE '\': the wildcards of the user's text (% and _) and the escape
+// character itself match literally, so a query of "%" or "_" is not a match-everything search.
+export function likeContains(text: string): string {
+  return `%${text.replace(/[\\%_]/g, (c) => `\\${c}`)}%`
+}
+
 function memoryTenantFilter(tenantId: string | undefined): { clause: string; params: string[] } {
   return tenantId ? { clause: ' AND tenant_id = ?', params: [tenantId] } : { clause: '', params: [] }
 }
@@ -429,13 +435,13 @@ function memoryTenantFilter(tenantId: string | undefined): { clause: string; par
 // LIKE fallback used when FTS finds nothing for an agent-scoped query.
 export async function searchMemoriesLikeForAgent(agentId: string, query: string, limit: number, tenantId?: string): Promise<Memory[]> {
   const { clause, params } = memoryTenantFilter(tenantId)
-  return dbx.all<Memory>(`SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND (content LIKE ? OR keywords LIKE ?)${clause} ORDER BY accessed_at DESC LIMIT ?`, agentId, `%${query}%`, `%${query}%`, ...params, limit)
+  return dbx.all<Memory>(`SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\')${clause} ORDER BY accessed_at DESC LIMIT ?`, agentId, likeContains(query), likeContains(query), ...params, limit)
 }
 
 // LIKE fallback used when FTS finds nothing for an unscoped-agent query.
 export async function searchMemoriesLike(query: string, limit: number, tenantId?: string): Promise<Memory[]> {
   const { clause, params } = memoryTenantFilter(tenantId)
-  return dbx.all<Memory>(`SELECT * FROM memories WHERE content LIKE ?${clause} ORDER BY accessed_at DESC LIMIT ?`, `%${query}%`, ...params, limit)
+  return dbx.all<Memory>(`SELECT * FROM memories WHERE content LIKE ? ESCAPE '\\'${clause} ORDER BY accessed_at DESC LIMIT ?`, likeContains(query), ...params, limit)
 }
 
 // Of `ids`, the memories updated after this agent last read them.

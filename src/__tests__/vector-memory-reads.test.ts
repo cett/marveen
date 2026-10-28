@@ -6,6 +6,7 @@ import { useTestDb } from './helpers/with-test-db.js'
 import {
   db, searchMemories, getAgentMemories, countAgentMemories, searchAgentMemories, getMemoryStats, updateMemory,
   hybridSearch, runLinkMaintenance, searchArtifactsByVector, clearMemoryCache, insertImportSource, touchMemory,
+  searchMemoriesLike, searchMemoriesLikeForAgent, likeContains, dbx,
   touchMemoriesAccessed, decayMemories,
 } from '../db.js'
 import { syncVecMemoryEmbeddingUpdate } from '../db/vector.js'
@@ -182,5 +183,36 @@ describe('the vector paths', () => {
     const id = addMemory('walrus colony')
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve({}) })))
     expect((await hybridSearch('agent-r', 'walrus', 5)).map((m) => m.id)).toEqual([id])
+  })
+})
+
+describe('the LIKE fallbacks take the user\'s text literally', () => {
+  const ids = (rows: { id: number }[]): number[] => rows.map((r) => r.id).sort()
+
+  it('likeContains escapes the wildcards and the escape character', () => {
+    expect(likeContains('50%_off\\')).toBe('%50\\%\\_off\\\\%')
+    expect(likeContains('plain')).toBe('%plain%')
+  })
+
+  it.each([
+    ['100%', '100% sure', '100X sure'],
+    ['snake_case', 'snake_case name', 'snakeXcase name'],
+    ['a\\b', 'path a\\b here', 'path aXb here'],
+  ])('a query of %s matches only the memory that contains it, in all three fallbacks', async (query, hit, miss) => {
+    const h = addMemory(hit)
+    addMemory(miss)
+    expect(ids(await searchMemoriesLikeForAgent('agent-r', query, 10))).toEqual([h])
+    expect(ids(await searchMemoriesLike(query, 10))).toEqual([h])
+    // searchAgentMemories falls back to LIKE when the full-text query fails
+    const realAll = dbx.all.bind(dbx)
+    vi.spyOn(dbx, 'all').mockImplementationOnce(() => Promise.reject(new Error('fts failed')))
+    expect(ids(await searchAgentMemories('agent-r', query, 10))).toEqual([h])
+    vi.mocked(dbx.all).mockImplementation(realAll)
+  })
+
+  it('the keywords column is matched literally too', async () => {
+    const h = addMemory('x', { keywords: 'tier_1 100%' })
+    addMemory('y', { keywords: 'tierX1 100' })
+    expect(ids(await searchMemoriesLikeForAgent('agent-r', 'tier_1', 10))).toEqual([h])
   })
 })
