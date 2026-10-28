@@ -291,6 +291,20 @@ function refuseIfConfigUnhealthy(res: RouteContext['res']): boolean {
   return false
 }
 
+// Closes the master switch for a disable path (flag-only flip of the raw document) and says whether the
+// caller must stop. The flip answers false for two different reasons: the stored document is unreadable
+// garbage (the validator already fail-closes it to disabled, nothing is left open, a remove has to be able
+// to clear it) or the write threw and the cache still says enabled (the gate is open, so reporting a
+// disable would be a lie, and the poller, the queue and the stored peers must not be touched). Only the
+// second one answers here. Returns true when it wrote a 500 (caller stops).
+function refuseIfDisableFailed(res: RouteContext['res']): boolean {
+  if (setFederationEnabledPreservingFile(false)) return false
+  if (!getFederationConfig().enabled) return false
+  logger.error({ fed: true }, 'federation: disable failed, the master switch is still on')
+  json(res, { error: 'internal_error', hint: 'federation disable failed, federation stays enabled' }, 500)
+  return true
+}
+
 // ---- route handler ------------------------------------------------------------
 
 export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
@@ -491,7 +505,7 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
       // loss).
       const wantsDisable = payload !== null && typeof payload === 'object' && (payload as Record<string, unknown>).enabled !== true
       if (wantsDisable) {
-        setFederationEnabledPreservingFile(false)
+        if (refuseIfDisableFailed(res)) return true
         resetPeerBackoff()
         resetFederationPollerCache()
         const failed = failPendingFederatedMessages(undefined, 'Federation disabled while pending')
@@ -733,7 +747,7 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
   // the config module (cache cleared without trusting fs.watch), (4) memory
   // purges. Later commits extend this with poller-cache + CLAUDE.md steps.
   if (path === '/api/federation/remove' && method === 'POST') {
-    setFederationEnabledPreservingFile(false)
+    if (refuseIfDisableFailed(res)) return true
     const failed = failPendingFederatedMessages(undefined, 'Federation removed while pending')
     removeFederationStore()
     purgeInboxDedup()
