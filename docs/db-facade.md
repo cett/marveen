@@ -279,6 +279,20 @@ These are behaviours of the code today, listed so that nobody mistakes them for 
   unhandled rejection, as a synchronous throw in the (already asynchronous) tick did before. The skip ledger row
   (`appendTaskRun(...).catch(log)`) and every statement whose result is not used are held by `no-floating-promises`,
   not by a test.
+- **The skill-usage dedup is one `INSERT ... WHERE NOT EXISTS`, which holds on SQLite only.** `logSkillUsage`
+  (`src/db/audit.ts`) skips a repeat of the same (agent, skill, session, source) inside 60 s. As a SELECT followed by
+  an INSERT two concurrent calls both wrote a row; as one statement the SQLite connection runs it as a unit, so
+  exactly one wins (`audit-async-writers.test.ts`, five concurrent calls). The dedup is a time window, not a unique
+  key: on PostgreSQL under READ COMMITTED two such statements can still both insert, so phase 2 needs an advisory lock
+  keyed by (agent, skill, session) or a bucketed unique key.
+- **The RBAC decision row is written before a refusal goes out, and the write is best effort.** `runRbacGate`
+  (`src/web/rbac-shadow-log.ts`) takes the decision (`checkPermission`), awaits the `rbac_shadow_log` row and only
+  then lets `applyRbacGate` write the 401/403, so a refusal is recorded before the client sees it (the old hook order;
+  `applyRbacGate`'s hooks are synchronous and cannot await a write). A failed insert or prune is logged and never
+  changes the decision. The cost is that every refused or observed request waits for one insert.
+- **`logToolCall` is held by the types and the lint only.** It writes through `upsertOtelSpan`
+  (`src/db/observability.ts`), which still uses the raw connection inside an `async` function, so a driver-level test
+  (slow or failing `dbx.run`) cannot reach it until that module moves onto `dbx`.
 
 ## Tests
 
