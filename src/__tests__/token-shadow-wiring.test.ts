@@ -128,8 +128,8 @@ describe('the counter sees what the routes decide', () => {
   describe('a shared agent (two tenants) with no fresh tenant context', () => {
     beforeEach(async () => {
       createTenant('tenant-a', 'Tenant A')
-      setTenantAgentAvailability('default', 'shared', true)
-      setTenantAgentAvailability('tenant-a', 'shared', true)
+      await setTenantAgentAvailability('default', 'shared', true)
+      await setTenantAgentAvailability('tenant-a', 'shared', true)
       await mint('tok-shared', 'shared')
     })
 

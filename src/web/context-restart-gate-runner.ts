@@ -571,13 +571,13 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
   const { tokens: contextTokens, unmeasurableReason } =
     readContextTokensDetailed(workingDir, configDirFor(name), { sessionStartMs })
 
-  const dispatchedStats = (() => {
-    try { return getDispatchedPendingStats(name, nowMs, cfg.staleCutoffMs, { coordinatorAgentId: MAIN_AGENT_ID }) }
+  const dispatchedStats = (async () => {
+    try { return await getDispatchedPendingStats(name, nowMs, cfg.staleCutoffMs, { coordinatorAgentId: MAIN_AGENT_ID }) }
     catch { return null }
   })()
 
-  const openQuestion = (() => {
-    try { return hasOpenInboundQuestion(agentIdForLedger(name), { nowMs, staleCutoffMs: cfg.staleCutoffMs }) }
+  const openQuestion = (async () => {
+    try { return await hasOpenInboundQuestion(agentIdForLedger(name), { nowMs, staleCutoffMs: cfg.staleCutoffMs }) }
     catch { return false }
   })()
 

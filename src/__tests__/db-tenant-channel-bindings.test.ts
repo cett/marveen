@@ -172,13 +172,13 @@ describe('tenant channel bindings', () => {
     const ctx = () => dbMod.getDb().prepare('INSERT OR REPLACE INTO agent_tenant_context (agent_id, tenant_id, status) VALUES (?, ?, \'bound\')')
     const agents = () => (dbMod.getDb().prepare('SELECT agent_id FROM agent_tenant_context ORDER BY agent_id').all() as { agent_id: string }[]).map(r => r.agent_id)
 
-    it('disabling the agent for a tenant drops that agent\'s context for that tenant only', () => {
+    it('disabling the agent for a tenant drops that agent\'s context for that tenant only', async () => {
       ctx().run('agent-a', 'acme'); ctx().run('agent-b', 'acme'); ctx().run('agent-c', 'beta')
-      dbMod.setTenantAgentAvailability('acme', 'agent-a', true)
+      await dbMod.setTenantAgentAvailability('acme', 'agent-a', true)
       expect(agents()).toEqual(['agent-a', 'agent-b', 'agent-c'])       // enabling changes nothing
-      dbMod.setTenantAgentAvailability('acme', 'agent-a', false)
+      await dbMod.setTenantAgentAvailability('acme', 'agent-a', false)
       expect(agents()).toEqual(['agent-b', 'agent-c'])
-      dbMod.setTenantAgentAvailability('beta', 'agent-b', false)         // agent-b's context is acme's: untouched
+      await dbMod.setTenantAgentAvailability('beta', 'agent-b', false)         // agent-b's context is acme's: untouched
       expect(agents()).toEqual(['agent-b', 'agent-c'])
     })
 

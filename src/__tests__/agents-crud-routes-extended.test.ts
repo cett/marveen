@@ -825,7 +825,7 @@ describe('agent readers are tenant-scoped like GET /api/agents', async () => {
     vi.mocked(isTenantAgentEnabled).mockImplementation((t: string, a: string) => (ENABLED[t] ?? []).includes(a))
   }
   // The file-level mock's default, captured before any test overrides it.
-  const FILE_TENANT_FIELDS = helpers.tenantSummaryFields('any')
+  const FILE_TENANT_FIELDS = await helpers.tenantSummaryFields('any')
   function reset(): void {
     vi.mocked(helpers.tenantSummaryFields).mockReturnValue(FILE_TENANT_FIELDS)
     vi.mocked(agentConfig.listAgentNames).mockReturnValue([])

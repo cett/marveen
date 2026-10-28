@@ -124,13 +124,13 @@ describe('migration 0077 backfill (Q3b)', () => {
 })
 
 describe('resolveWriteTenant', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     initDatabase(':memory:')
     createTenant('acme', 'Acme')
     createTenant('beta', 'Beta')
-    setTenantAgentAvailability('acme', 'solo', true)
-    setTenantAgentAvailability('acme', 'shared', true)
-    setTenantAgentAvailability('beta', 'shared', true)
+    await setTenantAgentAvailability('acme', 'solo', true)
+    await setTenantAgentAvailability('acme', 'shared', true)
+    await setTenantAgentAvailability('beta', 'shared', true)
   })
 
   const setContext = (agent: string, tenant: string, status = 'bound', ageSeconds = 0) =>
@@ -150,7 +150,7 @@ describe('resolveWriteTenant', () => {
   it('counts the tenant an agent coordinates', async () => {
     updateTenant('beta', { main_agent_id: 'boss' })
     expect(await resolveWriteTenant('boss')).toBe('beta')
-    setTenantAgentAvailability('acme', 'boss', true)
+    await setTenantAgentAvailability('acme', 'boss', true)
     expect(await resolveWriteTenant('boss')).toBeNull()
   })
 
@@ -176,13 +176,13 @@ describe('resolveWriteTenant', () => {
 })
 
 describe('the writers stamp the tenant', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     initDatabase(':memory:')
     createTenant('acme', 'Acme')
     createTenant('beta', 'Beta')
-    setTenantAgentAvailability('acme', 'solo', true)
-    setTenantAgentAvailability('acme', 'shared', true)
-    setTenantAgentAvailability('beta', 'shared', true)
+    await setTenantAgentAvailability('acme', 'solo', true)
+    await setTenantAgentAvailability('acme', 'shared', true)
+    await setTenantAgentAvailability('beta', 'shared', true)
     db.prepare("INSERT INTO agent_tenant_context (agent_id, tenant_id, status, updated_at) VALUES ('shared', 'beta', 'bound', ?)")
       .run(Math.floor(Date.now() / 1000))
   })

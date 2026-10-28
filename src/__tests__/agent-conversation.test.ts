@@ -21,7 +21,7 @@ describe('getAgentConversation', () => {
     await createAgentMessage(a, 'marveen', 'a1')
     await createAgentMessage('marveen', a, 'a2')
     await createAgentMessage('someone-else', 'third', 'noise') // must not leak in
-    const conv = getAgentConversation(a, 50)
+    const conv = await getAgentConversation(a, 50)
     expect(conv.length).toBe(2)
     expect(conv.every(m => m.from_agent === a || m.to_agent === a)).toBe(true)
     // newest-first: a2 (later id) before a1
@@ -32,14 +32,14 @@ describe('getAgentConversation', () => {
   it('respects the limit', async () => {
     const a = 'tconv-limit'
     for (let i = 0; i < 5; i++) await createAgentMessage(a, 'marveen', `m${i}`)
-    expect(getAgentConversation(a, 3).length).toBe(3)
+    expect((await getAgentConversation(a, 3)).length).toBe(3)
   })
 
   it('caps the limit at 200 and floors it at 1', async () => {
     const a = 'tconv-cap'
     await createAgentMessage(a, 'marveen', 'x')
-    expect(getAgentConversation(a, 99999).length).toBeLessThanOrEqual(200)
-    expect(getAgentConversation(a, 0).length).toBe(1) // floored to >=1, one row exists
+    expect((await getAgentConversation(a, 99999)).length).toBeLessThanOrEqual(200)
+    expect((await getAgentConversation(a, 0)).length).toBe(1) // floored to >=1, one row exists
   })
 
   it('paginates older with beforeId (scroll-up)', async () => {
@@ -47,10 +47,10 @@ describe('getAgentConversation', () => {
     const ids: number[] = []
     for (let i = 0; i < 6; i++) ids.push((await createAgentMessage(a, 'marveen', `p${i}`)).id)
     // newest-first page of 3 -> the 3 highest ids
-    const page1 = getAgentConversation(a, 3)
+    const page1 = await getAgentConversation(a, 3)
     expect(page1.map(m => m.id)).toEqual([ids[5], ids[4], ids[3]])
     // next older page: before the oldest id we have (ids[3])
-    const page2 = getAgentConversation(a, 3, ids[3])
+    const page2 = await getAgentConversation(a, 3, ids[3])
     expect(page2.map(m => m.id)).toEqual([ids[2], ids[1], ids[0]])
     // no overlap between pages
     expect(page2.every(m => m.id < ids[3])).toBe(true)

@@ -60,7 +60,7 @@ export function computeBlackboardSignal(
 // tenantId: null means unfiltered (admin, sees every tenant including shared
 // '_multi_' agents); a string narrows to that tenant's own rows only.
 async function listBlackboardWithSignals(limit = 10, tenantId: string | null = null): Promise<BlackboardRowWithSignal[]> {
-  const rows = listBlackboardRows(limit, tenantId)
+  const rows = await listBlackboardRows(limit, tenantId)
 
   if (!rows.length) return []
 
@@ -73,14 +73,14 @@ async function listBlackboardWithSignals(limit = 10, tenantId: string | null = n
   // agent_messages.from_agent may contain a slash-prefixed sub-path; we match on
   // the exact agent_id as stored in fleet_blackboard (lower-cased base name).
   const agentIds = rows.map((r) => r.agent_id)
-  const msgRows = getLastOutboundMessageTimes(agentIds, Math.floor(Date.now() / 1000) - msgHours * 3600)
+  const msgRows = await getLastOutboundMessageTimes(agentIds, Math.floor(Date.now() / 1000) - msgHours * 3600)
 
   const lastMsgMap = new Map(msgRows.map((r) => [r.agent_id, r.last_msg_at]))
 
   // For Signal B: use the last actual state change from history, not updated_at.
   // updated_at is refreshed by every write (including no-op rewrites from schedule-runner),
   // so it cannot distinguish "never changed" from "written repeatedly with the same state".
-  const histRows = getLastBlackboardChangeTimes(agentIds)
+  const histRows = await getLastBlackboardChangeTimes(agentIds)
   const lastChangedMap = new Map(histRows.map((r) => [r.agent_id, r.last_changed_at]))
 
   const nowSec = Math.floor(Date.now() / 1000)
@@ -99,7 +99,7 @@ async function listBlackboardWithSignals(limit = 10, tenantId: string | null = n
   }))
 }
 
-function listBlackboard(limit = 10): BlackboardRow[] {
+async function listBlackboard(limit = 10): Promise<BlackboardRow[]> {
   return listBlackboardRows(limit)
 }
 
@@ -111,7 +111,7 @@ async function patchBlackboard(id: string, data: {
   blocked_reason?: string | null
   resolved_by?: string | null
 }): Promise<BlackboardRow | undefined> {
-  const row = getBlackboardRowById(id)
+  const row = await getBlackboardRowById(id)
   if (!row) return undefined
   const status = data.status ?? row.status
   const summary = data.summary ?? row.summary
@@ -121,8 +121,8 @@ async function patchBlackboard(id: string, data: {
   // the moment it moves away from 'blocked'.
   const blocked_by = status === 'blocked' ? (data.blocked_by ?? row.blocked_by ?? null) : null
   const blocked_reason = status === 'blocked' ? (data.blocked_reason ?? row.blocked_reason ?? null) : null
-  updateBlackboardRowById(id, { status, summary, task_ref, blocked_by, blocked_reason })
-  const updated = getBlackboardRowById(id) as BlackboardRow
+  await updateBlackboardRowById(id, { status, summary, task_ref, blocked_by, blocked_reason })
+  const updated = await getBlackboardRowById(id) as BlackboardRow
   // Only record history when the patch actually changed something.
   const changed =
     updated.status !== row.status ||
@@ -132,7 +132,7 @@ async function patchBlackboard(id: string, data: {
     (updated.blocked_reason ?? null) !== (row.blocked_reason ?? null)
   if (changed) {
     const resolving = row.status === 'blocked' && updated.status !== 'blocked'
-    insertBlackboardHistory({
+    await insertBlackboardHistory({
       agent_id: updated.agent_id, task_ref: updated.task_ref, status: updated.status, summary: updated.summary,
       blocked_by: updated.blocked_by, blocked_reason: updated.blocked_reason,
       resolved_by: resolving ? (data.resolved_by ?? null) : null,
@@ -169,7 +169,7 @@ export async function tryHandleBlackboard(ctx: RouteContext): Promise<boolean> {
     }
     const limitRaw = url.searchParams.get('limit')
     const limit = limitRaw !== null ? Math.min(Math.max(1, parseInt(limitRaw, 10) || 50), 200) : undefined
-    json(res, listBlackboardHistory({ agent_id, since, limit, tenantId: readTenantId }))
+    json(res, await listBlackboardHistory({ agent_id, since, limit, tenantId: readTenantId }))
     return true
   }
 
@@ -205,7 +205,7 @@ export async function tryHandleBlackboard(ctx: RouteContext): Promise<boolean> {
     // tenant context for a shared one, so a shared agent can post its own state.
     const ownRowOfFleetAgent = ctx.role === 'fleet_agent' && callerMayActAs(ctx, agent_id)
     if (ctx.role !== 'admin' && !ownRowOfFleetAgent) {
-      const expectedTenant = resolveAgentTenant(agent_id)
+      const expectedTenant = await resolveAgentTenant(agent_id)
       const callerTenant = ctx.tenantId ?? 'default'
       if (expectedTenant !== callerTenant) {
         json(res, { error: 'forbidden', hint: 'agent not in your tenant' }, 403)
@@ -213,7 +213,7 @@ export async function tryHandleBlackboard(ctx: RouteContext): Promise<boolean> {
       }
     }
     try {
-      const hadExisting = blackboardRowExistsForAgent(agent_id)
+      const hadExisting = await blackboardRowExistsForAgent(agent_id)
       const row = await upsertBlackboard(agent_id, { task_ref, status, summary, blocked_by, blocked_reason, resolved_by })
       try {
         await writeAgentAuditLog({ agent_id, entity: 'blackboard', action: hadExisting ? 'update' : 'create', entity_id: row.id, detail: { status, task_ref } })

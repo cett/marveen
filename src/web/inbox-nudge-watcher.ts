@@ -198,7 +198,7 @@ export async function tick(): Promise<void> {
   // and take the dashboard down.
   try {
     const now = Date.now()
-    const pending = getPendingMessages(MAIN_AGENT_ID)
+    const pending = await getPendingMessages(MAIN_AGENT_ID)
     const oldest = pending[0]
     const pre = decideNudgePreflight(
       { now, oldestId: oldest ? oldest.id : null, oldestAgeMs: oldest ? now - oldest.created_at * 1000 : 0 },

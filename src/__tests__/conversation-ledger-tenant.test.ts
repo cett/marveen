@@ -23,13 +23,13 @@ vi.mock('../web/agent-config.js', async (importOriginal) => ({
 const tenantOf = (messageId: string) =>
   (db.prepare('SELECT tenant_id FROM conversation_log WHERE message_id = ?').get(messageId) as { tenant_id: string | null }).tenant_id
 
-beforeEach(() => {
+beforeEach(async () => {
   initDatabase(':memory:')
   createTenant('acme', 'Acme')
   createTenant('beta', 'Beta')
-  setTenantAgentAvailability('acme', 'shared', true)
-  setTenantAgentAvailability('beta', 'shared', true)
-  setTenantAgentAvailability('acme', 'solo', true)
+  await setTenantAgentAvailability('acme', 'shared', true)
+  await setTenantAgentAvailability('beta', 'shared', true)
+  await setTenantAgentAvailability('acme', 'solo', true)
 })
 
 function turn(over: Record<string, unknown>) {
@@ -111,7 +111,7 @@ describe('server-side tenant stamp from the chat binding', () => {
 describe('a coordinator enabled for a second tenant is shared (main agent + availability)', () => {
   beforeEach(async () => {
     updateTenant('acme', { main_agent_id: 'coord' })      // coord coordinates acme ...
-    setTenantAgentAvailability('beta', 'coord', true)       // ... and is enabled for beta: ONE availability row
+    await setTenantAgentAvailability('beta', 'coord', true)       // ... and is enabled for beta: ONE availability row
     await setChannelBinding('coord', 'telegram', 'A', 'acme', 'test')
     await setChannelBinding('coord', 'telegram', 'B', 'beta', 'test')
     await logLedgerTurn(turn({ agent_id: 'coord', chat_id: 'A', message_id: 'a1', text: 'acme question', created_at: 1000 }))
@@ -120,9 +120,9 @@ describe('a coordinator enabled for a second tenant is shared (main agent + avai
   const ctxFor = (tenant: string) =>
     db.prepare("INSERT OR REPLACE INTO agent_tenant_context (agent_id, tenant_id, status, updated_at) VALUES ('coord', ?, 'bound', unixepoch())").run(tenant)
 
-  it('is shared although it has a single availability row', () => {
-    expect(isSharedLedgerAgent('coord')).toBe(true)
-    expect(isSharedLedgerAgent('solo')).toBe(false)
+  it('is shared although it has a single availability row', async () => {
+    expect(await isSharedLedgerAgent('coord')).toBe(true)
+    expect(await isSharedLedgerAgent('solo')).toBe(false)
   })
 
   it('replay is empty: the acme coordinator never replays beta turns (and vice versa)', async () => {
@@ -137,9 +137,9 @@ describe('a coordinator enabled for a second tenant is shared (main agent + avai
     expect((await openLedgerQuestion('coord'))?.text).toBe('beta question')
   })
 
-  it('a coordinator of one tenant with no other tenant is not shared', () => {
+  it('a coordinator of one tenant with no other tenant is not shared', async () => {
     updateTenant('acme', { main_agent_id: 'lonely' })
-    expect(isSharedLedgerAgent('lonely')).toBe(false)
+    expect(await isSharedLedgerAgent('lonely')).toBe(false)
   })
 })
 
@@ -192,8 +192,8 @@ describe('read rules', () => {
     setContext('acme', 'conflict')
     expect(await openLedgerQuestion('shared')).toBeNull()
     createTenant('gamma', 'Gamma')
-    setTenantAgentAvailability('gamma', 'shared', true)
-    setTenantAgentAvailability('acme', 'shared', false)             // still shared (beta + gamma), acme dropped
+    await setTenantAgentAvailability('gamma', 'shared', true)
+    await setTenantAgentAvailability('acme', 'shared', false)             // still shared (beta + gamma), acme dropped
     setContext('acme')
     expect(await openLedgerQuestion('shared')).toBeNull()                 // a context for a tenant it no longer serves
   })

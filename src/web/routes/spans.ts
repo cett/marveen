@@ -10,12 +10,12 @@ import type { RouteContext } from './types.js'
 // the same way (resolveAgentTenant against the tenant_agent_availability
 // opt-in matrix). Admin (including every fleet agent on the shared
 // dashboard-token bearer) is unrestricted.
-function tenantBlocked(ctx: RouteContext, agentId: string): boolean {
+async function tenantBlocked(ctx: RouteContext, agentId: string): Promise<boolean> {
   // A fleet_agent token writes the spans of its own agent only (see fleet-agent-identity.ts).
   if (ctx.role === 'fleet_agent') return !callerMayActAs(ctx, agentId)
   if (ctx.role === 'admin') return false
   const callerTenant = ctx.tenantId ?? 'default'
-  return resolveAgentTenant(agentId) !== callerTenant
+  return await resolveAgentTenant(agentId) !== callerTenant
 }
 
 export async function tryHandleSpans(ctx: RouteContext): Promise<boolean> {
@@ -54,7 +54,7 @@ export async function tryHandleSpans(ctx: RouteContext): Promise<boolean> {
     // the create-on-close upsert path both require it) -- a bare close of an
     // already-existing span carries no agent_id and was already tenant-checked
     // when it was opened.
-    if (data.agent_id && tenantBlocked(ctx, data.agent_id)) {
+    if (data.agent_id && await tenantBlocked(ctx, data.agent_id)) {
       json(res, { error: 'forbidden', hint: 'agent not in your tenant' }, 403)
       return true
     }
@@ -121,7 +121,7 @@ export async function tryHandleSpans(ctx: RouteContext): Promise<boolean> {
     if (!spans.length) { json(res, { error: 'not_found', hint: 'trace not found' }, 404); return true }
     // Tenant check against the root span's agent (spans are ordered by
     // start_ms ASC, so spans[0] is the trace's origin).
-    if (!isAdmin && resolveAgentTenant(spans[0].agent_id) !== callerTenant) {
+    if (!isAdmin && await resolveAgentTenant(spans[0].agent_id) !== callerTenant) {
       json(res, { error: 'not_found', hint: 'trace not found' }, 404)
       return true
     }
@@ -143,7 +143,7 @@ export async function tryHandleSpans(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'invalid_value', hint: 'from and to must be unix timestamps in milliseconds' }, 400)
       return true
     }
-    if (agentParam && tenantBlocked(ctx, agentParam)) {
+    if (agentParam && await tenantBlocked(ctx, agentParam)) {
       json(res, { error: 'forbidden', hint: 'agent not in your tenant' }, 403)
       return true
     }

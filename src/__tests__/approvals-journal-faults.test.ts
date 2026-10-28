@@ -52,7 +52,7 @@ async function call(method: string, path: string, caller: Caller, body?: object)
 
 const ask = (agent: string, category: string, action = 'Send the weekly digest') =>
   call('POST', '/api/approvals', OPENER, { agent_id: agent, category, action_description: action })
-const inbox = (agent: string) => getPendingMessages(agent).map(m => m.content)
+const inbox = async (agent: string) => (await getPendingMessages(agent)).map(m => m.content)
 const tick = () => new Promise<void>(r => setImmediate(r))
 
 let seq = 0
@@ -210,12 +210,12 @@ describe('the owner_unreached journal write after a failed owner message', () =>
     const escaped = await watchRejections(async () => {
       answer = await ask('agent-b', 'email_standing_recipient')
       // The journal write and the main-agent notice run after the answer, in the delivery callback.
-      await vi.waitFor(() => expect(inbox('main-agent').some(c => c.startsWith('[OWNER_UNREACHED]'))).toBe(true))
+      await vi.waitFor(async () => expect((await inbox('main-agent')).some(c => c.startsWith('[OWNER_UNREACHED]'))).toBe(true))
     })
 
     expect(answer.status).toBe(201)
     expect((await getApproval(answer.body.id))?.status).toBe('pending')
-    expect(inbox('main-agent').find(c => c.startsWith('[OWNER_UNREACHED]'))).toContain(`id=${answer.body.id}`)
+    expect((await inbox('main-agent')).find(c => c.startsWith('[OWNER_UNREACHED]'))).toContain(`id=${answer.body.id}`)
     expect(escaped).toEqual([])
     expect(fault.attempts.map(a => a.event)).toEqual(['owner_unreached'])
     expect(await listApprovalEvents(answer.body.id)).toEqual([])

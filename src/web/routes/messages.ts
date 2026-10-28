@@ -379,7 +379,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // notifications are sent without assign:true and produce no row.
     // Federated recipients are skipped (no local row).
     if (assign === true && !storedTo.includes('/')) {
-      const existing = findBlackboardRowByAgent(storedTo)
+      const existing = await findBlackboardRowByAgent(storedTo)
       if (!existing || (existing.status !== 'active' && existing.status !== 'blocked')) {
         await upsertBlackboard(storedTo, {
           status: 'assigned',
@@ -395,7 +395,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // reclaimed it or it was never opened, and the TTL sweep stays as the
     // safety net either way.
     if (complete === true) {
-      const senderRow = findBlackboardRowByAgent(from.trim())
+      const senderRow = await findBlackboardRowByAgent(from.trim())
       if (senderRow && (senderRow.status === 'assigned' || senderRow.status === 'active' || senderRow.status === 'blocked')) {
         await upsertBlackboard(senderRow.agent_id, {
           status: 'done',
@@ -433,7 +433,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
   // enough to curl on a schedule; the point is that a growing queue behind a
   // busy agent becomes visible BEFORE someone mistakes it for lost messages.
   if (path === '/api/messages/backlog' && method === 'GET') {
-    json(res, getPendingBacklogByAgent())
+    json(res, await getPendingBacklogByAgent())
     return true
   }
 
@@ -468,15 +468,15 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
 
     let messages: AgentMessage[]
     if (status === 'pending' && agent) {
-      messages = getPendingMessages(agent, msgTenantId)
+      messages = await getPendingMessages(agent, msgTenantId)
     } else if (status === 'pending') {
-      messages = getPendingMessages(undefined, msgTenantId)
+      messages = await getPendingMessages(undefined, msgTenantId)
     } else if (agent) {
       // SQL-filtered to THIS agent's last N (+ before-cursor pagination), not
       // global-last-N-then-JS-filter which starved rarely-active threads.
-      messages = getAgentConversation(agent, limit, Number.isFinite(before as number) ? before : undefined, msgTenantId)
+      messages = await getAgentConversation(agent, limit, Number.isFinite(before as number) ? before : undefined, msgTenantId)
     } else {
-      messages = listAgentMessages(limit, msgTenantId)
+      messages = await listAgentMessages(limit, msgTenantId)
     }
 
     jsonMaybeGzip(req, res, messages)
@@ -539,7 +539,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // overwrite the first result and send the sender a second [Eredmény] under the executor's name.
     let ok = false
     if (newStatus === 'done' || newStatus === 'failed' || newStatus === 'refused') {
-      ok = closeOpenMessage(id, newStatus, result)
+      ok = await closeOpenMessage(id, newStatus, result)
       if (!ok) {
         const current = await getAgentMessage(id)
         if (current && (current.status === 'done' || current.status === 'failed')) {

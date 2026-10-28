@@ -467,7 +467,7 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
     if (!tenant || tenant.disabled_at !== null) {
       json(res, { error: 'not_found', field: 'tenant_id', hint: 'Tenant not found or disabled' }, 404); return true
     }
-    if (tenantId !== 'default' && !agentBelongsToTenant(agentId, tenantId)) {
+    if (tenantId !== 'default' && !await agentBelongsToTenant(agentId, tenantId)) {
       json(res, { error: 'conflict', field: 'tenant_id', hint: 'Agent is not enabled for this tenant' }, 409); return true
     }
     const record = await setChannelBinding(agentId, channel, externalId, tenantId, ctx.auth?.user ?? 'system')
@@ -510,7 +510,7 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
     const tenant = getTenant(tenantId)
     if (!tenant) { json(res, { error: 'not_found', field: 'tenant_id', hint: 'Tenant not found' }, 404); return true }
 
-    const rows = listTenantAgentAvailability(tenantId)
+    const rows = await listTenantAgentAvailability(tenantId)
     const rowMap = new Map(rows.map(r => [r.agent_id, r]))
     const allAgents = listAgentNames()
     const items = allAgents.map(agentId => {
@@ -571,7 +571,7 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
       }
     }
 
-    const row = setTenantAgentAvailability(tenantId, sanitizedAgentId, enabled)
+    const row = await setTenantAgentAvailability(tenantId, sanitizedAgentId, enabled)
     await auditAdmin(ctx, 'admin.agent_availability.set', `${tenantId}/${agentId}`, { enabled })
     // Tenant skills are generated under the single-tenant agents only: follow the matrix, for every tenant the agent serves.
     try { await regenTenantSkillFilesForAgentChange(sanitizedAgentId, tenantId) } catch (err) { logger.warn({ err, tenantId }, 'tenant skill files could not be reconciled after an availability change') }

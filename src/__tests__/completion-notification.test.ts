@@ -19,7 +19,7 @@ beforeAll(() => { initDatabase(':memory:') })
 describe('completion-notification contract', () => {
   it('getAgentMessage returns the saved message after markMessageDone', async () => {
     const msg = await createAgentMessage('orin', 'dex', 'Research something')
-    expect(markMessageDone(msg.id, 'Done: result')).toBe(true)
+    expect(await markMessageDone(msg.id, 'Done: result')).toBe(true)
     const fetched = await getAgentMessage(msg.id)
     expect(fetched).toBeDefined()
     expect(fetched!.from_agent).toBe('orin')
@@ -36,7 +36,7 @@ describe('completion-notification contract', () => {
 
   it('notification message has correct from/to/content and is pending', async () => {
     const msg = await createAgentMessage('orin', 'rex', 'Do something')
-    markMessageDone(msg.id, 'PR opened')
+    await markMessageDone(msg.id, 'PR opened')
     const done = (await getAgentMessage(msg.id))!
 
     // Simulate what routes/messages.ts does after marking done
@@ -56,7 +56,7 @@ describe('completion-notification contract', () => {
 
   it('failed message also triggers notification with status:failed', async () => {
     const msg = await createAgentMessage('orin', 'lex', 'Some task')
-    markMessageFailed(msg.id, 'Network error')
+    await markMessageFailed(msg.id, 'Network error')
     const failed = (await getAgentMessage(msg.id))!
     expect(failed.status).toBe('failed')
 
@@ -72,11 +72,11 @@ describe('completion-notification contract', () => {
 
   it('self-message (from === to) does not create a notification', async () => {
     // The route handler skips notification when from_agent === to_agent
-    const before = listAgentMessages(200).length
+    const before = (await listAgentMessages(200)).length
     const msg = await createAgentMessage('orin', 'orin', 'Send to self')
-    markMessageDone(msg.id, 'ok')
+    await markMessageDone(msg.id, 'ok')
     // Only the original message was created; route handler would NOT add a notification
-    const after = listAgentMessages(200).length
+    const after = (await listAgentMessages(200)).length
     expect(after - before).toBe(1)
   })
 })

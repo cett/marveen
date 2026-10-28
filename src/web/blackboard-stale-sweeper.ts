@@ -13,8 +13,8 @@ export const TIER_CONFIG_KEY: Record<string, string> = {
   default:         'BB_STALE_DEFAULT_MIN',
 }
 
-function resolveThresholdSec(agentId: string): number {
-  const tier = getAgentTier(agentId)
+async function resolveThresholdSec(agentId: string): Promise<number> {
+  const tier = await getAgentTier(agentId)
   const key = TIER_CONFIG_KEY[tier] ?? 'BB_STALE_DEFAULT_MIN'
   return (getEffectiveSettingValue(key) as number) * 60
 }
@@ -28,12 +28,12 @@ export function startBlackboardStaleSweeper(
 ): NodeJS.Timeout {
   const sweep = async () => {
     try {
-      const activeIds = getActiveBlackboardAgentIds()
+      const activeIds = await getActiveBlackboardAgentIds()
       const thresholdsByAgent: Record<string, number> = {}
       for (const id of activeIds) {
-        thresholdsByAgent[id] = resolveThresholdSec(id)
+        thresholdsByAgent[id] = await resolveThresholdSec(id)
       }
-      const defaultSec = resolveThresholdSec('__nonexistent__')
+      const defaultSec = await resolveThresholdSec('__nonexistent__')
       const assignedSec = (getEffectiveSettingValue('BB_STALE_ASSIGNED_MIN') as number) * 60
       let inFlight: ReadonlySet<string> = new Set()
       try {

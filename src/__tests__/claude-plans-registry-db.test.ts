@@ -154,7 +154,7 @@ describe('blackboard integration (design section 3A)', () => {
     await upsertBlackboard('agent-a', { status: 'active', summary: 'working' })
     const nowSec = Math.floor(Date.now() / 1000)
     await markBlackboardStale({}, 60, 120, nowSec + 4000)
-    expect(findBlackboardRowByAgent('agent-a')?.status).toBe('stale')
+    expect((await findBlackboardRowByAgent('agent-a'))?.status).toBe('stale')
     expect(await getActivePlanForAgent('agent-a')).toBeNull()
   })
 })

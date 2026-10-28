@@ -34,25 +34,25 @@ beforeAll(() => {
 // ---------------------------------------------------------------------------
 
 describe('getAgentTier', () => {
-  it('returns "default" for an agent not in the tier table', () => {
-    expect(getAgentTier('agent-unknown')).toBe('default')
+  it('returns "default" for an agent not in the tier table', async () => {
+    expect(await getAgentTier('agent-unknown')).toBe('default')
   })
 
-  it('returns the stored tier when the agent is in the table', () => {
+  it('returns the stored tier when the agent is in the table', async () => {
     getDb().prepare(
       "INSERT OR REPLACE INTO agent_blackboard_tier (agent_id, tier) VALUES (?, ?)",
     ).run('agent-orch', 'orchestrator')
 
-    expect(getAgentTier('agent-orch')).toBe('orchestrator')
+    expect(await getAgentTier('agent-orch')).toBe('orchestrator')
   })
 
-  it('supports all four valid tiers', () => {
+  it('supports all four valid tiers', async () => {
     const tiers = ['orchestrator', 'interactive', 'short-running', 'default'] as const
     for (const tier of tiers) {
       getDb().prepare(
         "INSERT OR REPLACE INTO agent_blackboard_tier (agent_id, tier) VALUES (?, ?)",
       ).run(`agent-${tier}`, tier)
-      expect(getAgentTier(`agent-${tier}`)).toBe(tier)
+      expect(await getAgentTier(`agent-${tier}`)).toBe(tier)
     }
   })
 
@@ -70,7 +70,7 @@ describe('getAgentTier', () => {
 // ---------------------------------------------------------------------------
 
 describe('getActiveBlackboardAgentIds', () => {
-  it('returns only active rows, deduplicated', () => {
+  it('returns only active rows, deduplicated', async () => {
     const db = getDb()
     const now = Math.floor(Date.now() / 1000)
     db.prepare(
@@ -80,19 +80,19 @@ describe('getActiveBlackboardAgentIds', () => {
       "INSERT OR IGNORE INTO fleet_blackboard (id, agent_id, status, summary, updated_at) VALUES (?,?,?,?,?)",
     ).run('bb-done-1', 'agent-y', 'done', 'task y', now)
 
-    const ids = getActiveBlackboardAgentIds()
+    const ids = await getActiveBlackboardAgentIds()
     expect(ids).toContain('agent-x')
     expect(ids).not.toContain('agent-y')
   })
 
-  it('also includes assigned rows, not just active', () => {
+  it('also includes assigned rows, not just active', async () => {
     const db = getDb()
     const now = Math.floor(Date.now() / 1000)
     db.prepare(
       "INSERT OR IGNORE INTO fleet_blackboard (id, agent_id, status, summary, updated_at) VALUES (?,?,?,?,?)",
     ).run('bb-assigned-1', 'agent-z', 'assigned', 'delegated task', now)
 
-    const ids = getActiveBlackboardAgentIds()
+    const ids = await getActiveBlackboardAgentIds()
     expect(ids).toContain('agent-z')
   })
 })

@@ -46,8 +46,8 @@ beforeEach(async () => {
 
   dbMod.createTenant('acme', 'Acme')
   dbMod.updateTenant('acme', { main_agent_id: 'acme-lead' })
-  dbMod.setTenantAgentAvailability('acme', 'acme-lead', true)
-  dbMod.setTenantAgentAvailability('acme', 'acme-aux', true)
+  await dbMod.setTenantAgentAvailability('acme', 'acme-lead', true)
+  await dbMod.setTenantAgentAvailability('acme', 'acme-aux', true)
 })
 
 afterEach(() => {

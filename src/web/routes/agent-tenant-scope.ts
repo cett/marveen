@@ -19,12 +19,12 @@ export function isAdminCaller(ctx: Caller): boolean {
 }
 
 /** Names the caller may see; null means "no filter" (admin). */
-export function visibleAgentSet(ctx: Caller): Set<string> | null {
+export async function visibleAgentSet(ctx: Caller): Promise<Set<string> | null> {
   if (isAdminCaller(ctx)) return null
-  return new Set(getEnabledAgentsForTenant(ctx.tenantId ?? 'default'))
+  return new Set(await getEnabledAgentsForTenant(ctx.tenantId ?? 'default'))
 }
 
-export function callerCanSeeAgent(ctx: Caller, name: string): boolean {
+export async function callerCanSeeAgent(ctx: Caller, name: string): Promise<boolean> {
   if (isAdminCaller(ctx)) return true
   return isTenantAgentEnabled(ctx.tenantId ?? 'default', name)
 }

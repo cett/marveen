@@ -524,7 +524,7 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
         await setFederationEnabledPreservingFile(false)
         resetPeerBackoff()
         resetFederationPollerCache()
-        const failed = failPendingFederatedMessages(undefined, 'Federation disabled while pending')
+        const failed = await failPendingFederatedMessages(undefined, 'Federation disabled while pending')
         ensureFederationClaudeMdSection()
         logger.warn({ fed: true, failedPending: failed.length }, 'federation: disabled via PUT (invalid body, flag-only flip)')
         json(res, peersView(getFederationConfig()))
@@ -546,7 +546,7 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
     // per-peer purges so a re-added peer's fresh low message ids are not
     // replay-acked by stale dedup entries (and backoff/poller state is clean).
     for (const id of removedByPut) {
-      failPendingFederatedMessages(id, `Federation peer '${id}' removed via PUT`)
+      await failPendingFederatedMessages(id, `Federation peer '${id}' removed via PUT`)
       purgeInboxDedup(id)
       resetPeerBackoff(id)
       resetFederationPollerCache(id)
@@ -554,7 +554,7 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
     if (!validated.enabled) {
       resetPeerBackoff()
       resetFederationPollerCache()
-      const failed = failPendingFederatedMessages(undefined, 'Federation disabled while pending')
+      const failed = await failPendingFederatedMessages(undefined, 'Federation disabled while pending')
       if (failed.length) logger.warn({ fed: true, failedPending: failed.length }, 'federation: pending outbound messages failed on disable')
     }
     ensureFederationClaudeMdSection()
@@ -577,7 +577,7 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
     if (!enabled) {
       resetPeerBackoff()
       resetFederationPollerCache()
-      const failed = failPendingFederatedMessages(undefined, 'Federation disabled while pending')
+      const failed = await failPendingFederatedMessages(undefined, 'Federation disabled while pending')
       if (failed.length) logger.warn({ fed: true, failedPending: failed.length }, 'federation: pending outbound messages failed on disable')
     }
     ensureFederationClaudeMdSection()
@@ -726,7 +726,7 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
       return { next: validated, result: { done: null } }
     })
     if (settleMutation(res, outcome) === undefined) return true
-    const failed = failPendingFederatedMessages(id, `Federation peer '${id}' removed while pending`)
+    const failed = await failPendingFederatedMessages(id, `Federation peer '${id}' removed while pending`)
     purgeInboxDedup(id)
     resetPeerBackoff(id)
     resetFederationPollerCache(id)
@@ -780,7 +780,7 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
   // purges. Later commits extend this with poller-cache + CLAUDE.md steps.
   if (path === '/api/federation/remove' && method === 'POST') {
     await setFederationEnabledPreservingFile(false)
-    const failed = failPendingFederatedMessages(undefined, 'Federation removed while pending')
+    const failed = await failPendingFederatedMessages(undefined, 'Federation removed while pending')
     await removeFederationStore()
     purgeInboxDedup()
     resetPeerBackoff()

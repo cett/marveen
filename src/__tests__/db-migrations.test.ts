@@ -520,7 +520,7 @@ describe('Migration 0032 -- re-resolves stale rows against current availability'
     await upsertBlackboard('agent-a', { status: 'active', summary: 'fleet work' })
     // Now granted to tenant-a WITHOUT an explicit "default" row yet (the bug's
     // starting state) -- the row is still stale at this point.
-    setTenantAgentAvailability('tenant-a', 'agent-a', true)
+    await setTenantAgentAvailability('tenant-a', 'agent-a', true)
 
     const db = getDb()
     const before = db.prepare('SELECT tenant_id FROM fleet_blackboard WHERE agent_id = ?').get('agent-a') as { tenant_id: string }
@@ -528,7 +528,7 @@ describe('Migration 0032 -- re-resolves stale rows against current availability'
 
     // The gap is closed by also granting the agent's original "default"
     // membership explicitly (the immediate operational fix)...
-    setTenantAgentAvailability('default', 'agent-a', true)
+    await setTenantAgentAvailability('default', 'agent-a', true)
     // ...but the existing row STILL hasn't been re-written, so it is still stale.
     const stillStale = db.prepare('SELECT tenant_id FROM fleet_blackboard WHERE agent_id = ?').get('agent-a') as { tenant_id: string }
     expect(stillStale.tenant_id).toBe('default')
@@ -540,7 +540,7 @@ describe('Migration 0032 -- re-resolves stale rows against current availability'
   })
 
   it('a single-tenant agent stays correctly single-tenant after re-resolve (no false positive)', async () => {
-    setTenantAgentAvailability('tenant-a', 'agent-b', true)
+    await setTenantAgentAvailability('tenant-a', 'agent-b', true)
     await upsertBlackboard('agent-b', { status: 'active', summary: 'tenant work' })
 
     const db = getDb()
@@ -551,9 +551,9 @@ describe('Migration 0032 -- re-resolves stale rows against current availability'
   })
 
   it('a revoked (fully disabled) agent reverts to "default" on re-resolve', async () => {
-    setTenantAgentAvailability('tenant-a', 'agent-c', true)
+    await setTenantAgentAvailability('tenant-a', 'agent-c', true)
     await upsertBlackboard('agent-c', { status: 'active', summary: 'tenant work' })
-    setTenantAgentAvailability('tenant-a', 'agent-c', false) // revoked
+    await setTenantAgentAvailability('tenant-a', 'agent-c', false) // revoked
 
     const db = getDb()
     const stale = db.prepare('SELECT tenant_id FROM fleet_blackboard WHERE agent_id = ?').get('agent-c') as { tenant_id: string }
@@ -567,8 +567,8 @@ describe('Migration 0032 -- re-resolves stale rows against current availability'
 
   it('re-resolves fleet_blackboard_history rows the same way', async () => {
     await upsertBlackboard('agent-a', { status: 'active', summary: 'v1' })
-    setTenantAgentAvailability('tenant-a', 'agent-a', true)
-    setTenantAgentAvailability('default', 'agent-a', true)
+    await setTenantAgentAvailability('tenant-a', 'agent-a', true)
+    await setTenantAgentAvailability('default', 'agent-a', true)
 
     const db = getDb()
     reapplyMigration0032(db)
@@ -580,8 +580,8 @@ describe('Migration 0032 -- re-resolves stale rows against current availability'
 
   it('is idempotent -- running it twice in a row does not change the result', async () => {
     await upsertBlackboard('agent-a', { status: 'active', summary: 'v1' })
-    setTenantAgentAvailability('tenant-a', 'agent-a', true)
-    setTenantAgentAvailability('default', 'agent-a', true)
+    await setTenantAgentAvailability('tenant-a', 'agent-a', true)
+    await setTenantAgentAvailability('default', 'agent-a', true)
 
     const db = getDb()
     reapplyMigration0032(db)
@@ -636,9 +636,9 @@ describe('Migration 0033 -- backfills token_usage.tenant_id from tenant_agent_av
     expect(row.tenant_id).toBe('default')
   })
 
-  it('a single-tenant agent backfills to that tenant', () => {
+  it('a single-tenant agent backfills to that tenant', async () => {
     const db = getDb()
-    setTenantAgentAvailability('tenant-a', 'agent-b', true)
+    await setTenantAgentAvailability('tenant-a', 'agent-b', true)
     insertTokenUsageRow(db, 'agent-b', 'sess-1', 1000)
     // Row was inserted with the column DEFAULT ('default') -- simulate a
     // pre-existing row from before the agent was granted, needing backfill.
@@ -648,10 +648,10 @@ describe('Migration 0033 -- backfills token_usage.tenant_id from tenant_agent_av
     expect(row.tenant_id).toBe('tenant-a')
   })
 
-  it('a multi-tenant agent (2+ enabled rows) backfills to "_multi_"', () => {
+  it('a multi-tenant agent (2+ enabled rows) backfills to "_multi_"', async () => {
     const db = getDb()
-    setTenantAgentAvailability('tenant-a', 'agent-c', true)
-    setTenantAgentAvailability('tenant-b', 'agent-c', true)
+    await setTenantAgentAvailability('tenant-a', 'agent-c', true)
+    await setTenantAgentAvailability('tenant-b', 'agent-c', true)
     insertTokenUsageRow(db, 'agent-c', 'sess-1', 1000)
     reapplyMigration0033(db)
 
@@ -659,25 +659,25 @@ describe('Migration 0033 -- backfills token_usage.tenant_id from tenant_agent_av
     expect(row.tenant_id).toBe('_multi_')
   })
 
-  it('a revoked (fully disabled) agent reverts to "default" on re-resolve', () => {
+  it('a revoked (fully disabled) agent reverts to "default" on re-resolve', async () => {
     const db = getDb()
-    setTenantAgentAvailability('tenant-a', 'agent-d', true)
+    await setTenantAgentAvailability('tenant-a', 'agent-d', true)
     insertTokenUsageRow(db, 'agent-d', 'sess-1', 1000)
     reapplyMigration0033(db)
     const midway = db.prepare('SELECT tenant_id FROM token_usage WHERE agent = ?').get('agent-d') as { tenant_id: string }
     expect(midway.tenant_id).toBe('tenant-a')
 
-    setTenantAgentAvailability('tenant-a', 'agent-d', false)
+    await setTenantAgentAvailability('tenant-a', 'agent-d', false)
     reapplyMigration0033(db)
 
     const after = db.prepare('SELECT tenant_id FROM token_usage WHERE agent = ?').get('agent-d') as { tenant_id: string }
     expect(after.tenant_id).toBe('default')
   })
 
-  it('is idempotent -- running the backfill twice in a row does not change the result', () => {
+  it('is idempotent -- running the backfill twice in a row does not change the result', async () => {
     const db = getDb()
-    setTenantAgentAvailability('tenant-a', 'agent-e', true)
-    setTenantAgentAvailability('tenant-b', 'agent-e', true)
+    await setTenantAgentAvailability('tenant-a', 'agent-e', true)
+    await setTenantAgentAvailability('tenant-b', 'agent-e', true)
     insertTokenUsageRow(db, 'agent-e', 'sess-1', 1000)
 
     reapplyMigration0033(db)

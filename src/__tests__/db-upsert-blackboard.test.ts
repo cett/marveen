@@ -15,7 +15,7 @@ describe('upsertBlackboard: no-op guard', () => {
     await upsertBlackboard('agent-a', { status: 'active', summary: 'task-x', task_ref: null })
     await upsertBlackboard('agent-a', { status: 'active', summary: 'task-x', task_ref: null })
 
-    const history = listBlackboardHistory({ agent_id: 'agent-a' })
+    const history = await listBlackboardHistory({ agent_id: 'agent-a' })
     // Only the first insert should create a history entry; the second is a no-op.
     expect(history).toHaveLength(1)
     expect((history[0] as { status: string }).status).toBe('active')
@@ -25,7 +25,7 @@ describe('upsertBlackboard: no-op guard', () => {
     await upsertBlackboard('agent-a', { status: 'active', summary: 'task-x', task_ref: null })
     await upsertBlackboard('agent-a', { status: 'done',   summary: 'task-x', task_ref: null })
 
-    const history = listBlackboardHistory({ agent_id: 'agent-a' })
+    const history = await listBlackboardHistory({ agent_id: 'agent-a' })
     expect(history).toHaveLength(2)
     const statuses = (history as { status: string }[]).map(r => r.status).sort()
     expect(statuses).toEqual(['active', 'done'])
@@ -35,7 +35,7 @@ describe('upsertBlackboard: no-op guard', () => {
     await upsertBlackboard('agent-a', { status: 'active', summary: 'old summary', task_ref: null })
     await upsertBlackboard('agent-a', { status: 'active', summary: 'new summary', task_ref: null })
 
-    const history = listBlackboardHistory({ agent_id: 'agent-a' })
+    const history = await listBlackboardHistory({ agent_id: 'agent-a' })
     expect(history).toHaveLength(2)
     const summaries = (history as { summary: string }[]).map(r => r.summary).sort()
     expect(summaries).toEqual(['new summary', 'old summary'])
@@ -45,7 +45,7 @@ describe('upsertBlackboard: no-op guard', () => {
     await upsertBlackboard('agent-a', { status: 'active', summary: 'task-x', task_ref: null })
     await upsertBlackboard('agent-a', { status: 'active', summary: 'task-x', task_ref: 'card-001' })
 
-    const history = listBlackboardHistory({ agent_id: 'agent-a' })
+    const history = await listBlackboardHistory({ agent_id: 'agent-a' })
     expect(history).toHaveLength(2)
   })
 
@@ -53,7 +53,7 @@ describe('upsertBlackboard: no-op guard', () => {
     await upsertBlackboard('agent-a', { status: 'blocked', summary: 'stuck on X', task_ref: null })
     await upsertBlackboard('agent-a', { status: 'blocked', summary: 'stuck on X', task_ref: null })
 
-    const row = findBlackboardRowByAgent('agent-a')
+    const row = await findBlackboardRowByAgent('agent-a')
     expect(row?.status).toBe('blocked')
     expect(row?.summary).toBe('stuck on X')
   })
@@ -64,7 +64,7 @@ describe('upsertBlackboard: snapshot guard (schedule-runner done-write protectio
     const row = await upsertBlackboard('agent-b', { status: 'active', summary: 'heartbeat-daily', task_ref: null })
     const snapshot = { status: row.status, summary: row.summary, task_ref: row.task_ref ?? null }
 
-    const cur = findBlackboardRowByAgent('agent-b')!
+    const cur = (await findBlackboardRowByAgent('agent-b'))!
     const unchanged =
       cur.status === snapshot.status &&
       cur.summary === snapshot.summary &&
@@ -74,7 +74,7 @@ describe('upsertBlackboard: snapshot guard (schedule-runner done-write protectio
 
     // Runner would write done here -- verify it lands and creates a history entry.
     await upsertBlackboard('agent-b', { status: 'done', summary: 'heartbeat-daily', task_ref: null })
-    const history = listBlackboardHistory({ agent_id: 'agent-b' }) as { status: string }[]
+    const history = await listBlackboardHistory({ agent_id: 'agent-b' }) as { status: string }[]
     expect(history).toHaveLength(2)
     expect(history.map(r => r.status).sort()).toEqual(['active', 'done'])
   })
@@ -91,7 +91,7 @@ describe('upsertBlackboard: snapshot guard (schedule-runner done-write protectio
     expect(doneRow.task_ref).toBe('card-abc')
 
     // Verify the live row also carries the value (not just the return value).
-    const cur = findBlackboardRowByAgent('agent-b')!
+    const cur = (await findBlackboardRowByAgent('agent-b'))!
     expect(cur.task_ref).toBe('card-abc')
     expect(cur.status).toBe('done')
   })
@@ -103,7 +103,7 @@ describe('upsertBlackboard: snapshot guard (schedule-runner done-write protectio
     // Agent switches to blocked while task is running.
     await upsertBlackboard('agent-b', { status: 'blocked', summary: 'waiting for external API', task_ref: null })
 
-    const cur = findBlackboardRowByAgent('agent-b')!
+    const cur = (await findBlackboardRowByAgent('agent-b'))!
     const unchanged =
       cur.status === snapshot.status &&
       cur.summary === snapshot.summary &&
@@ -114,7 +114,7 @@ describe('upsertBlackboard: snapshot guard (schedule-runner done-write protectio
     expect(cur.status).toBe('blocked')
 
     // The history should have active and blocked entries; done must NOT appear.
-    const history = listBlackboardHistory({ agent_id: 'agent-b' }) as { status: string }[]
+    const history = await listBlackboardHistory({ agent_id: 'agent-b' }) as { status: string }[]
     expect(history.map(r => r.status).sort()).toEqual(['active', 'blocked'])
   })
 })
@@ -126,7 +126,7 @@ describe('upsertBlackboard blocked_by/blocked_reason/resolved_by', () => {
     })
     expect(row.blocked_by).toBe('agent-d')
     expect(row.blocked_reason).toBe('waiting on PR review')
-    const cur = findBlackboardRowByAgent('agent-c')!
+    const cur = (await findBlackboardRowByAgent('agent-c'))!
     expect(cur.blocked_by).toBe('agent-d')
     expect(cur.blocked_reason).toBe('waiting on PR review')
   })
@@ -146,7 +146,7 @@ describe('upsertBlackboard blocked_by/blocked_reason/resolved_by', () => {
     expect(resolved.blocked_by).toBeNull()
     expect(resolved.blocked_reason).toBeNull()
 
-    const history = listBlackboardHistory({ agent_id: 'agent-c' }) as { status: string; blocked_by: string | null; resolved_by: string | null }[]
+    const history = await listBlackboardHistory({ agent_id: 'agent-c' }) as { status: string; blocked_by: string | null; resolved_by: string | null }[]
     const blockedEntry = history.find(h => h.status === 'blocked')!
     const activeEntry = history.find(h => h.status === 'active')!
     expect(blockedEntry.blocked_by).toBe('agent-d')
@@ -158,7 +158,7 @@ describe('upsertBlackboard blocked_by/blocked_reason/resolved_by', () => {
     await upsertBlackboard('agent-c', { status: 'active', summary: 'task-x', task_ref: null })
     await upsertBlackboard('agent-c', { status: 'done', summary: 'task-x', task_ref: null, resolved_by: 'agent-e' })
 
-    const history = listBlackboardHistory({ agent_id: 'agent-c' }) as { status: string; resolved_by: string | null }[]
+    const history = await listBlackboardHistory({ agent_id: 'agent-c' }) as { status: string; resolved_by: string | null }[]
     expect(history.every(h => h.resolved_by === null)).toBe(true)
   })
 })

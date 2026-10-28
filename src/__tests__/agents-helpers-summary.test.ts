@@ -84,8 +84,8 @@ vi.mock('../web/agent-config.js', async (importOriginal) => {
 import { getAgentSummary, getAgentDetail, listAgentSummaries } from '../web/routes/agents-helpers.js'
 
 describe('getAgentSummary', () => {
-  it('returns a valid AgentSummary with expected structure', () => {
-    const summary = getAgentSummary('agent-d')
+  it('returns a valid AgentSummary with expected structure', async () => {
+    const summary = await getAgentSummary('agent-d')
     expect(summary).toBeDefined()
     expect(summary.name).toBe('agent-d')
     expect(typeof summary.running).toBe('boolean')
@@ -97,41 +97,41 @@ describe('getAgentSummary', () => {
     expect(summary.needsReauth).toBe(false)
   })
 
-  it('returns displayName from readAgentDisplayName', () => {
-    const summary = getAgentSummary('agent-d')
+  it('returns displayName from readAgentDisplayName', async () => {
+    const summary = await getAgentSummary('agent-d')
     expect(summary.displayName).toBe('Test Agent')
   })
 
-  it('returns model from readAgentModel', () => {
-    const summary = getAgentSummary('agent-d')
+  it('returns model from readAgentModel', async () => {
+    const summary = await getAgentSummary('agent-d')
     expect(summary.model).toBe('claude-sonnet-4-6')
   })
 
-  it('returns status=draft when claudeMd and soulMd are empty', () => {
-    const summary = getAgentSummary('agent-d')
+  it('returns status=draft when claudeMd and soulMd are empty', async () => {
+    const summary = await getAgentSummary('agent-d')
     expect(summary.status).toBe('draft')
   })
 
-  it('returns hasAvatar:false when findAvatarForAgent returns null', () => {
-    const summary = getAgentSummary('agent-d')
+  it('returns hasAvatar:false when findAvatarForAgent returns null', async () => {
+    const summary = await getAgentSummary('agent-d')
     expect(summary.hasAvatar).toBe(false)
   })
 
-  it('returns remoteHost:null for local agent', () => {
-    const summary = getAgentSummary('agent-d')
+  it('returns remoteHost:null for local agent', async () => {
+    const summary = await getAgentSummary('agent-d')
     expect(summary.remoteHost).toBeNull()
     expect(summary.remoteWorkdir).toBeNull()
   })
 
-  it('returns claudePlan:null when not set', () => {
-    const summary = getAgentSummary('agent-d')
+  it('returns claudePlan:null when not set', async () => {
+    const summary = await getAgentSummary('agent-d')
     expect(summary.claudePlan).toBeNull()
   })
 })
 
 describe('getAgentDetail', () => {
-  it('returns AgentDetail extending AgentSummary', () => {
-    const detail = getAgentDetail('agent-d')
+  it('returns AgentDetail extending AgentSummary', async () => {
+    const detail = await getAgentDetail('agent-d')
     expect(detail).toBeDefined()
     expect(detail.name).toBe('agent-d')
     // AgentDetail-specific fields
@@ -143,18 +143,18 @@ describe('getAgentDetail', () => {
     expect(typeof detail.hasApiKey).toBe('boolean')
   })
 
-  it('returns empty skills array when skills dir does not exist', () => {
-    const detail = getAgentDetail('agent-d')
+  it('returns empty skills array when skills dir does not exist', async () => {
+    const detail = await getAgentDetail('agent-d')
     expect(detail.skills).toEqual([])
   })
 
-  it('returns hasApiKey:false when no secret set', () => {
-    const detail = getAgentDetail('agent-d')
+  it('returns hasApiKey:false when no secret set', async () => {
+    const detail = await getAgentDetail('agent-d')
     expect(detail.hasApiKey).toBe(false)
   })
 
-  it('includes all AgentSummary fields', () => {
-    const detail = getAgentDetail('agent-f')
+  it('includes all AgentSummary fields', async () => {
+    const detail = await getAgentDetail('agent-f')
     expect(typeof detail.running).toBe('boolean')
     expect(['stopped', 'running', 'unreachable']).toContain(detail.runState)
     expect(detail.autoRestart).toBeDefined()

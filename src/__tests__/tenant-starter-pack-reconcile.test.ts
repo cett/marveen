@@ -45,13 +45,13 @@ beforeEach(async () => {
 
   dbMod.createTenant('acme', 'Acme')
   dbMod.updateTenant('acme', { main_agent_id: 'acme-lead' })
-  dbMod.setTenantAgentAvailability('acme', 'acme-lead', true)
-  dbMod.setTenantAgentAvailability('acme', 'acme-aux', true)
+  await dbMod.setTenantAgentAvailability('acme', 'acme-lead', true)
+  await dbMod.setTenantAgentAvailability('acme', 'acme-aux', true)
   dbMod.createTenant('gamma', 'Gamma')
-  dbMod.setTenantAgentAvailability('gamma', 'g-one', true)
-  dbMod.setTenantAgentAvailability('gamma', 'g-two', true)
-  dbMod.setTenantAgentAvailability('acme', 'shared-agent', true)
-  dbMod.setTenantAgentAvailability('default', 'shared-agent', true)
+  await dbMod.setTenantAgentAvailability('gamma', 'g-one', true)
+  await dbMod.setTenantAgentAvailability('gamma', 'g-two', true)
+  await dbMod.setTenantAgentAvailability('acme', 'shared-agent', true)
+  await dbMod.setTenantAgentAvailability('default', 'shared-agent', true)
 })
 
 afterEach(() => {
@@ -138,8 +138,8 @@ describe('no definite agent', () => {
 
   it('the current agent no longer serves and none can be chosen: parked as draft + disabled, agent unchanged, needs_agent', async () => {
     await gammaApproved()
-    dbMod.setTenantAgentAvailability('gamma', 'g-one', false)
-    dbMod.setTenantAgentAvailability('gamma', 'g-two', false)
+    await dbMod.setTenantAgentAvailability('gamma', 'g-one', false)
+    await dbMod.setTenantAgentAvailability('gamma', 'g-two', false)
     const r = await pack.reconcileStarterPack(human(), 'gamma')
     expect(r.state).toBe('needs_agent')
     expect(r.reason).toBe('ambiguous')
@@ -233,7 +233,7 @@ describe('hook on PUT /api/admin/agent-availability', () => {
 
   it('switching the only usable agent off parks the starter task', async () => {
     dbMod.createTenant('solo', 'Solo')
-    dbMod.setTenantAgentAvailability('solo', 'beta-one', true)
+    await dbMod.setTenantAgentAvailability('solo', 'beta-one', true)
     await pack.createStarterPack(human(), 'solo')
     await io.writeScheduledTask('solo-starter-daily-summary', { status: 'live', enabled: true })
     const r = await putAvailability('solo', 'beta-one', false)

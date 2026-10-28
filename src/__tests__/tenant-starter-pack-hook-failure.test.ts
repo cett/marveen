@@ -56,6 +56,6 @@ describe('availability PUT with a failing reconcile', () => {
 
     expect(reconcile).toHaveBeenCalled()
     expect(status).toBe(200)
-    expect(dbMod.isTenantAgentEnabled('solo', 'beta-one')).toBe(true)
+    expect(await dbMod.isTenantAgentEnabled('solo', 'beta-one')).toBe(true)
   })
 })

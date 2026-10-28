@@ -43,9 +43,9 @@ beforeEach(async () => {
   lockMod = await import('../web/schedule-lock.js')
   dbMod.createTenant('tenant-b', 'Tenant B')
   dbMod.updateTenant('tenant-b', { main_agent_id: 'tenant-agent' })
-  dbMod.setTenantAgentAvailability('tenant-b', 'tenant-agent', true)
-  dbMod.setTenantAgentAvailability('tenant-b', 'shared-agent', true)
-  dbMod.setTenantAgentAvailability('default', 'shared-agent', true)
+  await dbMod.setTenantAgentAvailability('tenant-b', 'tenant-agent', true)
+  await dbMod.setTenantAgentAvailability('tenant-b', 'shared-agent', true)
+  await dbMod.setTenantAgentAvailability('default', 'shared-agent', true)
   const base = { description: 'd', prompt: 'p', schedule: '0 9 * * *', enabled: true, skip_if_busy: false, force_send: false }
   await dbMod.upsertSchedule('t-tenant-b', { ...base, agent: 'shared-agent', type: 'task', tenant_id: 'tenant-b', status: 'live' })
 })

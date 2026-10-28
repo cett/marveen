@@ -213,7 +213,7 @@ export async function collectTokenUsage(): Promise<{ inserted: number; files: nu
     // Resolved once per source (constant for every call parsed from this
     // agent's transcripts) so a later tenant_agent_availability change is
     // picked up on the agent's next collection run, not just at first insert.
-    const tenantId = resolveAgentTenant(source.agent)
+    const tenantId = await resolveAgentTenant(source.agent)
     const files = findJsonlFiles(source.projectDir)
     for (const file of files) {
       let fileSize: number

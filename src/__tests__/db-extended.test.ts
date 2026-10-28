@@ -254,7 +254,7 @@ describe('pruneAuditLogs', () => {
 // --- Message log pruning (conversation_log + agent_messages) ---
 
 describe('pruneConversationLog / pruneAgentMessages', () => {
-  it('pruneConversationLog deletes rows older than MESSAGE_LOG_RETENTION_DAYS', () => {
+  it('pruneConversationLog deletes rows older than MESSAGE_LOG_RETENTION_DAYS', async () => {
     const db = getDb()
     const now = Math.floor(Date.now() / 1000)
     const oldTs = now - 200 * 86400 // well past the 90-day default retention
@@ -265,7 +265,7 @@ describe('pruneConversationLog / pruneAgentMessages', () => {
       "INSERT INTO conversation_log (agent_id, chat_id, direction, message_id, text, created_at) VALUES (?, ?, ?, ?, ?, ?)",
     ).run('test-convlog-agent', 'chat-1', 'in', 'msg-fresh', 'fresh message', now)
 
-    pruneConversationLog()
+    await pruneConversationLog()
 
     const remaining = db.prepare(
       "SELECT message_id FROM conversation_log WHERE agent_id = 'test-convlog-agent'",
@@ -278,7 +278,7 @@ describe('pruneConversationLog / pruneAgentMessages', () => {
   // Deliberately no status carve-out: a message still 'pending' 200 days
   // later is pruned the same as a 'done' one, matching every other age-only
   // prune function in this file.
-  it('pruneAgentMessages deletes rows older than MESSAGE_LOG_RETENTION_DAYS regardless of status', () => {
+  it('pruneAgentMessages deletes rows older than MESSAGE_LOG_RETENTION_DAYS regardless of status', async () => {
     const db = getDb()
     const now = Math.floor(Date.now() / 1000)
     const oldTs = now - 200 * 86400
@@ -289,7 +289,7 @@ describe('pruneConversationLog / pruneAgentMessages', () => {
       "INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at) VALUES (?, ?, ?, ?, ?)",
     ).run('test-msg-agent', 'test-to', 'fresh done message', 'done', now)
 
-    pruneAgentMessages()
+    await pruneAgentMessages()
 
     const remaining = db.prepare(
       "SELECT content FROM agent_messages WHERE from_agent = 'test-msg-agent'",

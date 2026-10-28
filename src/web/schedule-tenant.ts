@@ -26,7 +26,7 @@ export async function scheduleAgentServesTenant(agent: string, tenantId: string 
     if (agent === ALL_AGENTS) return true
     if (!knownScheduleAgents().includes(agent)) return false
     if (agent === MAIN_AGENT_ID) return true
-    const enabledFor = getTenantsForAgent(agent)
+    const enabledFor = await getTenantsForAgent(agent)
     return enabledFor.length === 0 || enabledFor.includes(DEFAULT_SCHEDULE_TENANT)
   }
   if (agent === ALL_AGENTS || agent === MAIN_AGENT_ID) return false
@@ -53,7 +53,7 @@ export async function scheduleAgentNamesForTenant(tenantId: string | null): Prom
 export async function creatorTenant(agentId: string): Promise<string | null> {
   const serving = await getServingTenant(agentId)
   if (serving) return serving
-  const own = resolveAgentTenant(agentId)
+  const own = await resolveAgentTenant(agentId)
   return own === '_multi_' ? null : own
 }
 

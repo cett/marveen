@@ -223,7 +223,7 @@ export interface AgentDetail extends AgentSummary {
   hasApiKey: boolean
 }
 
-export function getAgentSummary(name: string): AgentSummary {
+export async function getAgentSummary(name: string): Promise<AgentSummary> {
   const dir = agentDir(name)
   const configRoot = agentConfigRoot(name)
   const claudeMd = readFileOr(join(configRoot, 'CLAUDE.md'), '')
@@ -289,7 +289,7 @@ export function getAgentSummary(name: string): AgentSummary {
     contextTokens: running ? readContextTokensFromProjectDir(dir, resolveAgentConfigDir(name).configDir ?? undefined) : null,
     needsReauth: reauth.needsReauth,
     reauthReason: reauth.reason,
-    ...tenantSummaryFields(name),
+    ...await tenantSummaryFields(name),
   }
 }
 
@@ -298,9 +298,9 @@ export function getAgentSummary(name: string): AgentSummary {
  *  Exported so GET /api/team/graph (agents-crud.ts) can surface the same
  *  fields on org-chart nodes without recomputing the primary-tenant lookup
  *  or duplicating the tenantNames-merge logic. */
-export function tenantSummaryFields(name: string): Pick<AgentSummary, 'primaryTenantId' | 'tenantIds' | 'tenantNames'> {
+export async function tenantSummaryFields(name: string): Promise<Pick<AgentSummary, 'primaryTenantId' | 'tenantIds' | 'tenantNames'>> {
   const primaryTenant = getTenantForMainAgent(name)
-  const tenantIds = getTenantsForAgent(name)
+  const tenantIds = await getTenantsForAgent(name)
   const tenantNames: Record<string, string> = {}
   if (primaryTenant) tenantNames[primaryTenant.id] = primaryTenant.display_name
   for (const id of tenantIds) {
@@ -314,10 +314,10 @@ export function tenantSummaryFields(name: string): Pick<AgentSummary, 'primaryTe
 // redactMcp: true replaces mcpJson with an empty object -- used for non-admin
 // tenant callers, who must not see another agent's MCP server config (can
 // carry credentials/endpoints), only that the agent exists.
-export function getAgentDetail(name: string, redactMcp = false): AgentDetail {
+export async function getAgentDetail(name: string, redactMcp = false): Promise<AgentDetail> {
   const dir = agentDir(name)
   const configRoot = agentConfigRoot(name)
-  const summary = getAgentSummary(name)
+  const summary = await getAgentSummary(name)
   const claudeMd = readFileOr(join(configRoot, 'CLAUDE.md'), '')
   const soulMd = readFileOr(join(dir, 'SOUL.md'), '')
   const mcpJson = redactMcp ? '{}' : readFileOr(join(dir, '.mcp.json'), '{}')

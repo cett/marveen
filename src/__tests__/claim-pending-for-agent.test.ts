@@ -16,21 +16,21 @@ describe('claimPendingForAgent', () => {
     await createAgentMessage('subC', to, 'third')
 
     // cap=2 -> the two OLDEST, in FIFO order
-    const batch1 = claimPendingForAgent(to, 2)
+    const batch1 = await claimPendingForAgent(to, 2)
     expect(batch1.map(m => m.content)).toEqual(['first', 'second'])
     expect(batch1.every(m => m.status === 'delivered')).toBe(true)
 
     // next drain -> only the remaining one, with NO overlap (no double-claim)
     const ids1 = new Set([m1.id, m2.id])
-    const batch2 = claimPendingForAgent(to, 10)
+    const batch2 = await claimPendingForAgent(to, 10)
     expect(batch2.map(m => m.content)).toEqual(['third'])
     expect(batch2.some(m => ids1.has(m.id))).toBe(false)
 
     // inbox drained empty
-    expect(claimPendingForAgent(to, 10)).toEqual([])
+    expect(await claimPendingForAgent(to, 10)).toEqual([])
   })
 
-  it('returns [] for an agent with no pending messages', () => {
-    expect(claimPendingForAgent('claimtest-empty-' + Date.now(), 10)).toEqual([])
+  it('returns [] for an agent with no pending messages', async () => {
+    expect(await claimPendingForAgent('claimtest-empty-' + Date.now(), 10)).toEqual([])
   })
 })

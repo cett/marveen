@@ -70,47 +70,47 @@ beforeEach(() => {
 describe('closeOpenMessage (db level)', () => {
   it('closes an open row once; the second call changes nothing and returns false', async () => {
     const id = await task()
-    expect(closeOpenMessage(id, 'done', 'first')).toBe(true)
+    expect(await closeOpenMessage(id, 'done', 'first')).toBe(true)
     const after = row(id)
-    expect(closeOpenMessage(id, 'done', 'second')).toBe(false)
-    expect(closeOpenMessage(id, 'failed', 'third')).toBe(false)
-    expect(closeOpenMessage(id, 'refused', 'fourth')).toBe(false)
+    expect(await closeOpenMessage(id, 'done', 'second')).toBe(false)
+    expect(await closeOpenMessage(id, 'failed', 'third')).toBe(false)
+    expect(await closeOpenMessage(id, 'refused', 'fourth')).toBe(false)
     expect(row(id)).toEqual(after)
     expect(after.result).toBe('first')
   })
 
-  it('returns false for a row that does not exist', () => {
-    expect(closeOpenMessage(987654, 'done', 'x')).toBe(false)
+  it('returns false for a row that does not exist', async () => {
+    expect(await closeOpenMessage(987654, 'done', 'x')).toBe(false)
   })
 
   it('stores refused as status=failed with refused_reason and result', async () => {
     const id = await task()
-    expect(closeOpenMessage(id, 'refused', 'not my job')).toBe(true)
+    expect(await closeOpenMessage(id, 'refused', 'not my job')).toBe(true)
     expect(row(id)).toMatchObject({ status: 'failed', refused_reason: 'not my job', result: 'not my job' })
   })
 
   it('closes a delivered row too (delivered is not terminal)', async () => {
     const id = await task()
-    expect(markMessageDelivered(id)).toBe(true)
-    expect(closeOpenMessage(id, 'failed', 'boom')).toBe(true)
+    expect(await markMessageDelivered(id)).toBe(true)
+    expect(await closeOpenMessage(id, 'failed', 'boom')).toBe(true)
     expect(row(id)).toMatchObject({ status: 'failed', result: 'boom' })
   })
 
   it('done on a still-pending row backfills delivered_at; a real delivery time is kept', async () => {
     const pending = await task()
     expect(row(pending).delivered_at).toBeNull()
-    expect(closeOpenMessage(pending, 'done', 'ok')).toBe(true)
+    expect(await closeOpenMessage(pending, 'done', 'ok')).toBe(true)
     expect(row(pending).delivered_at).not.toBeNull()
 
     const delivered = await task()
     db.prepare('UPDATE agent_messages SET status = ?, delivered_at = ? WHERE id = ?').run('delivered', 1000, delivered)
-    expect(closeOpenMessage(delivered, 'done', 'ok')).toBe(true)
+    expect(await closeOpenMessage(delivered, 'done', 'ok')).toBe(true)
     expect(row(delivered).delivered_at).toBe(1000)
   })
 
   it('done without a result stores NULL, like the route always did', async () => {
     const id = await task()
-    expect(closeOpenMessage(id, 'done')).toBe(true)
+    expect(await closeOpenMessage(id, 'done')).toBe(true)
     expect(row(id).result).toBeNull()
   })
 })

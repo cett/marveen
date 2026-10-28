@@ -222,8 +222,8 @@ describe('GET /api/overview — tasksToday tenant scoping', () => {
   it('a shared agent\'s runs count for the tenant of each schedule (the old agent-based scoping lost them in every tenant)', async () => {
     createTenant('tenant-a', 'Tenant A')
     createTenant('tenant-b', 'Tenant B')
-    setTenantAgentAvailability('tenant-a', 'shared-agent', true)
-    setTenantAgentAvailability('tenant-b', 'shared-agent', true) // 2 enabled rows -> '_multi_'
+    await setTenantAgentAvailability('tenant-a', 'shared-agent', true)
+    await setTenantAgentAvailability('tenant-b', 'shared-agent', true) // 2 enabled rows -> '_multi_'
     seedSchedule('ta', 'tenant-a', 'shared-agent')
     seedSchedule('tb', 'tenant-b', 'shared-agent')
     seedRun('ta', 'shared-agent')

@@ -260,7 +260,7 @@ export function agentsWithRunnerRow(entries: Iterable<TaskInflightEntry>): Set<s
 // in isolation against a mocked db layer.
 export async function applyBlackboardDone(entry: TaskInflightEntry): Promise<void> {
   if (!entry.sawTurn || !entry.blackboardSnapshot) return
-  const cur = findBlackboardRowByAgent(entry.agentName)
+  const cur = await findBlackboardRowByAgent(entry.agentName)
   const snap = entry.blackboardSnapshot
   const unchanged = cur !== undefined &&
     (cur.status === snap.status || (snap.status === 'active' && cur.status === 'stale')) &&

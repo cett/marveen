@@ -63,14 +63,14 @@ describe('approvals notification target', () => {
     expect(out.status).toBe(201)
 
     // The notification must go to the mocked MAIN_AGENT_ID value.
-    const pending = getPendingMessages('agent-a')
+    const pending = await getPendingMessages('agent-a')
     expect(pending.length).toBe(1)
     expect(pending[0].to_agent).toBe('agent-a')
     expect(pending[0].from_agent).toBe('system')
     expect(pending[0].content).toContain('[APPROVAL_REQUEST]')
 
     // Regression guard: no message may land on a different target.
-    const wrongTarget = getPendingMessages('agent-b')
+    const wrongTarget = await getPendingMessages('agent-b')
     expect(wrongTarget.length).toBe(0)
   })
 })

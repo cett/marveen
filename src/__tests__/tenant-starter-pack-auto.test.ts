@@ -44,7 +44,7 @@ beforeEach(async () => {
   pack = await import('../web/tenant-starter-pack.js')
   // A tenant that existed before this feature: it has an agent and no marker.
   dbMod.createTenant('old', 'Old')
-  dbMod.setTenantAgentAvailability('old', 'old-one', true)
+  await dbMod.setTenantAgentAvailability('old', 'old-one', true)
 })
 
 afterEach(() => {
@@ -97,8 +97,8 @@ describe('starter task for a new tenant', () => {
 
   it('does not decide between two agents enabled before any task existed: it waits', async () => {
     await createTenant('duo')
-    dbMod.setTenantAgentAvailability('duo', 'solo-one', true)
-    dbMod.setTenantAgentAvailability('duo', 'solo-two', true)
+    await dbMod.setTenantAgentAvailability('duo', 'solo-one', true)
+    await dbMod.setTenantAgentAvailability('duo', 'solo-two', true)
     await setAvailability('duo', 'solo-one', true)
     expect(await starter('duo')).toBeUndefined()
     expect(marker('duo')).toBe(true)

@@ -265,8 +265,8 @@ describe('what a fleet_agent token cannot reach at all', () => {
 describe('a shared agent has no tenant on the token: the serving context decides, and none means no', () => {
   beforeEach(async () => {
     createTenant('acme', 'Acme')
-    setTenantAgentAvailability('default', 'shared', true)
-    setTenantAgentAvailability('acme', 'shared', true)
+    await setTenantAgentAvailability('default', 'shared', true)
+    await setTenantAgentAvailability('acme', 'shared', true)
     await mint('tok-shared', 'shared')
     await logLedgerTurn(turn('shared', 's1'))
   })
@@ -295,7 +295,7 @@ describe('a shared agent has no tenant on the token: the serving context decides
   })
 
   it('an agent that serves one tenant needs no context', async () => {
-    setTenantAgentAvailability('acme', 'solo', true)
+    await setTenantAgentAvailability('acme', 'solo', true)
     await mint('tok-solo', 'solo')
     const req = { headers: { authorization: 'Bearer tok-solo' } } as unknown as http.IncomingMessage
     expect(await resolveAuth(req, new URL('http://x/api/me'), '/api/me', 'GET', 'file', true)).toMatchObject({ tenantId: 'acme' })

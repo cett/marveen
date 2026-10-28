@@ -65,16 +65,16 @@ describe('updateTenant main_agent_id patch', () => {
 })
 
 describe('getTenantsForAgent', () => {
-  it('returns an empty list for an agent with no availability rows', () => {
-    expect(getTenantsForAgent('agent-a')).toEqual([])
+  it('returns an empty list for an agent with no availability rows', async () => {
+    expect(await getTenantsForAgent('agent-a')).toEqual([])
   })
 
-  it('returns only the tenant ids this agent is enabled=1 for', () => {
-    setTenantAgentAvailability('acme', 'agent-a', true)
-    setTenantAgentAvailability('other-co', 'agent-a', true)
-    setTenantAgentAvailability('acme', 'agent-b', false)
+  it('returns only the tenant ids this agent is enabled=1 for', async () => {
+    await setTenantAgentAvailability('acme', 'agent-a', true)
+    await setTenantAgentAvailability('other-co', 'agent-a', true)
+    await setTenantAgentAvailability('acme', 'agent-b', false)
 
-    expect(getTenantsForAgent('agent-a').sort()).toEqual(['acme', 'other-co'])
-    expect(getTenantsForAgent('agent-b')).toEqual([])
+    expect((await getTenantsForAgent('agent-a')).sort()).toEqual(['acme', 'other-co'])
+    expect(await getTenantsForAgent('agent-b')).toEqual([])
   })
 })
