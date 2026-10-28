@@ -35,7 +35,7 @@ vi.mock('../web/agent-config.js', () => ({
 vi.mock('../web/scheduled-tasks-io.js', () => ({
   SCHEDULED_TASKS_DIR: '/tmp/mock-tasks',
   MAX_SCHEDULED_TASK_PROMPT_LEN: 10_000,
-  listScheduledTasks: vi.fn().mockReturnValue([]),
+  listScheduledTasks: vi.fn().mockResolvedValue([]),
   listScheduledTasksFromFiles: vi.fn().mockReturnValue([]),
   writeScheduledTask: vi.fn(),
   rowToTask: (row: { id: string }) => ({ name: row.id, ...row }),
@@ -63,12 +63,12 @@ const mockGetScheduleFromDb = vi.fn()
 const mockActivateSchedule = vi.fn()
 
 vi.mock('../db.js', () => ({
-  listPendingTaskRetries: vi.fn().mockReturnValue([]),
-  deletePendingTaskRetryById: vi.fn().mockReturnValue(true),
+  listPendingTaskRetries: vi.fn().mockResolvedValue([]),
+  deletePendingTaskRetryById: vi.fn().mockResolvedValue(true),
   listTaskRunHistory: vi.fn().mockReturnValue([]),
   countSchedules: (...a: unknown[]) => mockCountSchedules(...a),
   getScheduleFromDb: (...a: unknown[]) => mockGetScheduleFromDb(...a),
-  listSchedulesFromDb: vi.fn().mockReturnValue([]),
+  listSchedulesFromDb: vi.fn().mockResolvedValue([]),
   deleteSchedule: vi.fn(),
   setScheduleEnabled: vi.fn(),
   patchSchedule: vi.fn(),
@@ -136,8 +136,8 @@ const mockRunScheduledTaskNow = vi.mocked(runScheduledTaskNow)
 
 beforeEach(() => {
   vi.clearAllMocks()
-  mockCountSchedules.mockReturnValue(3)
-  mockGetScheduleFromDb.mockReturnValue(undefined)
+  mockCountSchedules.mockResolvedValue(3)
+  mockGetScheduleFromDb.mockResolvedValue(undefined)
   mockRunScheduledTaskNow.mockResolvedValue({ ok: true, result: 'ran' })
 })
 
@@ -200,8 +200,8 @@ describe('POST /api/schedules/:name/activate', () => {
   })
 
   it('404s an unknown schedule name for a human admin', async () => {
-    mockGetScheduleFromDb.mockReturnValue(undefined)
-    mockActivateSchedule.mockReturnValue(null)
+    mockGetScheduleFromDb.mockResolvedValue(undefined)
+    mockActivateSchedule.mockResolvedValue(null)
     const { ctx, out } = makeCtx('POST', '/api/schedules/does-not-exist/activate', undefined, { role: 'admin', auth: { kind: 'session' } })
     await tryHandleSchedules(ctx)
     expect(out.status).toBe(404)
@@ -209,8 +209,8 @@ describe('POST /api/schedules/:name/activate', () => {
   })
 
   it('200s and flips status to live for a human admin on an existing draft', async () => {
-    mockGetScheduleFromDb.mockReturnValue({ id: 'my-task', tenant_id: null, status: 'draft', prompt: 'p' })
-    mockActivateSchedule.mockReturnValue({ id: 'my-task', status: 'live' })
+    mockGetScheduleFromDb.mockResolvedValue({ id: 'my-task', tenant_id: null, status: 'draft', prompt: 'p' })
+    mockActivateSchedule.mockResolvedValue({ id: 'my-task', status: 'live' })
     const { ctx, out } = makeCtx('POST', '/api/schedules/my-task/activate', undefined, { role: 'admin', auth: { kind: 'session' } })
     await tryHandleSchedules(ctx)
     expect(out.status).toBe(200)
@@ -224,7 +224,7 @@ describe('POST /api/schedules/:name/activate', () => {
 
 describe('POST /api/schedules/:name/run -- review-gate', () => {
   beforeEach(() => {
-    mockGetScheduleFromDb.mockReturnValue({ id: 'draft-task', tenant_id: null, enabled: 1 })
+    mockGetScheduleFromDb.mockResolvedValue({ id: 'draft-task', tenant_id: null, enabled: 1 })
   })
 
   it('409s not_live for a non-human-admin caller on a non-live task, without allowNotLive', async () => {

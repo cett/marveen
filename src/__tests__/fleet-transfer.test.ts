@@ -50,8 +50,8 @@ describe('encrypt/decrypt round-trip', () => {
 vi.mock('../db.js', () => ({
   backfillEmbeddings: () => Promise.resolve(),
   initDatabase: () => {},
-  listAllSkills: vi.fn().mockReturnValue([]),
-  seedSkillIfAbsent: vi.fn().mockReturnValue(true),
+  listAllSkills: vi.fn().mockResolvedValue([]),
+  seedSkillIfAbsent: vi.fn().mockResolvedValue(true),
   listAutonomyCategories: vi.fn().mockResolvedValue([]),
   upsertAutonomyCategory: vi.fn(),
   listModelProfileMap: vi.fn().mockReturnValue([]),

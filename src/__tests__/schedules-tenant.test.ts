@@ -16,7 +16,7 @@ const mockDeleteSchedule    = vi.fn()
 const mockSetScheduleEnabled = vi.fn()
 
 vi.mock('../db.js', () => ({
-  listPendingTaskRetries:    vi.fn().mockReturnValue([]),
+  listPendingTaskRetries:    vi.fn().mockResolvedValue([]),
   deletePendingTaskRetryById: vi.fn(),
   listTaskRunHistory:        vi.fn().mockReturnValue([]),
   countSchedules:            (...a: unknown[]) => mockCountSchedules(...a),
@@ -37,7 +37,7 @@ vi.mock('../db.js', () => ({
 vi.mock('../web/scheduled-tasks-io.js', () => ({
   SCHEDULED_TASKS_DIR:         '/fake/tasks',
   MAX_SCHEDULED_TASK_PROMPT_LEN: 50_000,
-  listScheduledTasks:          vi.fn().mockReturnValue([]),
+  listScheduledTasks:          vi.fn().mockResolvedValue([]),
   listScheduledTasksFromFiles: vi.fn().mockReturnValue([]),
   writeScheduledTask:          vi.fn(),
   // Minimal id -> name mapping mirroring the real rowToTask, just enough
@@ -127,7 +127,7 @@ describe('GET /api/schedules', () => {
   beforeEach(() => vi.clearAllMocks())
 
   it('admin with no filter gets all rows', async () => {
-    mockListSchedulesDb.mockReturnValue([fleetRow, tenantRow])
+    mockListSchedulesDb.mockResolvedValue([fleetRow, tenantRow])
     const { ctx, out } = makeCtx('GET', '/api/schedules', undefined, 'admin', null)
     await tryHandleSchedules(ctx)
     expect(out.status).toBe(200)
@@ -136,7 +136,7 @@ describe('GET /api/schedules', () => {
 
 
   it('non-admin gets only their tenant rows', async () => {
-    mockListSchedulesDb.mockReturnValue([tenantRow])
+    mockListSchedulesDb.mockResolvedValue([tenantRow])
     const { ctx, out } = makeCtx('GET', '/api/schedules', undefined, 'viewer', 'tenant-a')
     await tryHandleSchedules(ctx)
     expect(out.status).toBe(200)
@@ -148,7 +148,7 @@ describe('GET /api/schedules', () => {
   // every row in the response is missing `name`, which breaks delete/
   // toggle/run/edit (they build the URL from task.name -> "/undefined").
   it('DB-mode rows are mapped to include `name` (= id), not just `id`', async () => {
-    mockListSchedulesDb.mockReturnValue([tenantRow])
+    mockListSchedulesDb.mockResolvedValue([tenantRow])
     const { ctx, out } = makeCtx('GET', '/api/schedules', undefined, 'viewer', 'tenant-a')
     await tryHandleSchedules(ctx)
     expect(out.status).toBe(200)
@@ -208,7 +208,7 @@ describe('POST /api/schedules', () => {
   beforeEach(() => vi.clearAllMocks())
 
   it('non-admin: creates with their tenant_id auto-stamped', async () => {
-    mockGetScheduleDb.mockReturnValue(undefined)
+    mockGetScheduleDb.mockResolvedValue(undefined)
     const { writeScheduledTask } = await import('../web/scheduled-tasks-io.js')
     const { ctx } = makeCtx('POST', '/api/schedules', {
       name: 'my-report', prompt: 'Do the thing', schedule: '0 9 * * 1', agent: 'sub-a',
@@ -218,7 +218,7 @@ describe('POST /api/schedules', () => {
   })
 
   it('admin: can pass explicit tenant_id', async () => {
-    mockGetScheduleDb.mockReturnValue(undefined)
+    mockGetScheduleDb.mockResolvedValue(undefined)
     const { writeScheduledTask } = await import('../web/scheduled-tasks-io.js')
     const { ctx } = makeCtx('POST', '/api/schedules', {
       name: 'admin-task', prompt: 'Do admin stuff', schedule: '0 9 * * 1', tenant_id: 'tenant-b', agent: 'sub-a',
@@ -235,7 +235,7 @@ describe('DELETE /api/schedules/:name', () => {
   beforeEach(() => vi.clearAllMocks())
 
   it('non-admin can delete their own tenant schedule', async () => {
-    mockGetScheduleDb.mockReturnValue(tenantRow)
+    mockGetScheduleDb.mockResolvedValue(tenantRow)
     const { ctx, out } = makeCtx('DELETE', '/api/schedules/my-report', undefined, 'viewer', 'tenant-a')
     await tryHandleSchedules(ctx)
     expect(out.status).toBe(200)
@@ -243,7 +243,7 @@ describe('DELETE /api/schedules/:name', () => {
   })
 
   it('non-admin cannot delete another tenants schedule (404)', async () => {
-    mockGetScheduleDb.mockReturnValue(otherRow)
+    mockGetScheduleDb.mockResolvedValue(otherRow)
     const { ctx, out } = makeCtx('DELETE', '/api/schedules/other-report', undefined, 'viewer', 'tenant-a')
     await tryHandleSchedules(ctx)
     expect(out.status).toBe(404)
@@ -251,7 +251,7 @@ describe('DELETE /api/schedules/:name', () => {
   })
 
   it('non-admin cannot delete fleet schedule (404)', async () => {
-    mockGetScheduleDb.mockReturnValue(fleetRow)
+    mockGetScheduleDb.mockResolvedValue(fleetRow)
     const { ctx, out } = makeCtx('DELETE', '/api/schedules/morning-chain', undefined, 'viewer', 'tenant-a')
     await tryHandleSchedules(ctx)
     expect(out.status).toBe(404)
@@ -259,7 +259,7 @@ describe('DELETE /api/schedules/:name', () => {
   })
 
   it('admin can delete fleet schedule', async () => {
-    mockGetScheduleDb.mockReturnValue(fleetRow)
+    mockGetScheduleDb.mockResolvedValue(fleetRow)
     const { ctx, out } = makeCtx('DELETE', '/api/schedules/morning-chain', undefined, 'admin', null)
     await tryHandleSchedules(ctx)
     expect(out.status).toBe(200)
@@ -273,7 +273,7 @@ describe('POST /api/schedules/:name/toggle', () => {
   beforeEach(() => vi.clearAllMocks())
 
   it('non-admin cannot toggle fleet task (404)', async () => {
-    mockGetScheduleDb.mockReturnValue(fleetRow)
+    mockGetScheduleDb.mockResolvedValue(fleetRow)
     const { ctx, out } = makeCtx('POST', '/api/schedules/morning-chain/toggle', undefined, 'viewer', 'tenant-a')
     await tryHandleSchedules(ctx)
     expect(out.status).toBe(404)
@@ -281,7 +281,7 @@ describe('POST /api/schedules/:name/toggle', () => {
   })
 
   it('non-admin can toggle their own tenant task', async () => {
-    mockGetScheduleDb.mockReturnValue(tenantRow)
+    mockGetScheduleDb.mockResolvedValue(tenantRow)
     const { ctx, out } = makeCtx('POST', '/api/schedules/my-report/toggle', undefined, 'viewer', 'tenant-a')
     await tryHandleSchedules(ctx)
     expect(out.status).toBe(200)

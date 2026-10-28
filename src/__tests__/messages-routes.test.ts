@@ -10,7 +10,7 @@ vi.mock('../db.js', () => ({
   getAgentConversationThreads: vi.fn().mockReturnValue([]),
   getKanbanSeqByIdPrefix: vi.fn().mockReturnValue(null),
   closeOpenMessage: vi.fn().mockReturnValue(true),
-  getAgentMessage: vi.fn().mockReturnValue(null),
+  getAgentMessage: vi.fn().mockResolvedValue(null),
   closeOtelSpan: vi.fn(),
   findBlackboardRowByAgent: vi.fn().mockReturnValue(undefined),
   upsertBlackboard: vi.fn(),
@@ -845,7 +845,7 @@ describe('POST /api/messages: #924 audit principal resolves from the auth gate, 
       for (const f of [db.closeOpenMessage, db.createAgentMessage, db.writeAgentAuditLog]) {
         vi.mocked(f as any).mockClear()
       }
-      vi.mocked(db.getAgentMessage).mockReturnValue(row)
+      vi.mocked(db.getAgentMessage).mockResolvedValue(row)
       const { ctx, out } = makeCtx('PUT', '/api/messages/77', { status, result: 'r' }, opts)
       await tryHandleMessages(ctx)
       return { db, out }
@@ -853,7 +853,7 @@ describe('POST /api/messages: #924 audit principal resolves from the auth gate, 
 
     afterEach(async () => {
       const db = await import('../db.js')
-      vi.mocked(db.getAgentMessage).mockReturnValue(null as any)
+      vi.mocked(db.getAgentMessage).mockResolvedValue(null as any)
     })
 
     for (const status of STATUSES) {

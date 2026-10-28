@@ -37,10 +37,10 @@ vi.mock('../web/atomic-write.js', () => ({
 }))
 // DB layer mock: countSchedules=0 forces file-based path (tests test the file IO)
 vi.mock('../db.js', () => ({
-  countSchedules:    vi.fn().mockReturnValue(0),
-  getScheduleFromDb: vi.fn().mockReturnValue(undefined),
+  countSchedules:    vi.fn().mockResolvedValue(0),
+  getScheduleFromDb: vi.fn().mockResolvedValue(undefined),
   upsertSchedule:    vi.fn(),
-  listSchedulesFromDb: vi.fn().mockReturnValue([]),
+  listSchedulesFromDb: vi.fn().mockResolvedValue([]),
   deleteSchedule:    vi.fn(),
   setScheduleEnabled: vi.fn(),
   patchSchedule:     vi.fn(),
@@ -153,8 +153,8 @@ describe('scheduled-tasks-io', () => {
   describe('writeScheduledTask -- DB-mode tenant_id preservation', () => {
     it('preserves the existing DB row tenant_id when the caller omits tenantId', async () => {
       const db = await import('../db.js')
-      vi.mocked(db.countSchedules).mockReturnValue(1)
-      vi.mocked(db.getScheduleFromDb).mockReturnValue({
+      vi.mocked(db.countSchedules).mockResolvedValue(1)
+      vi.mocked(db.getScheduleFromDb).mockResolvedValue({
         id: 'tenant-task', prompt: 'p', description: 'd', schedule: '0 9 * * *',
         agent: 'marveen', type: 'task', enabled: 1, tenant_id: 'tenant-a',
         skip_if_busy: 0, force_send: 0, target_session: null, command: null,
@@ -170,14 +170,14 @@ describe('scheduled-tasks-io', () => {
         expect.objectContaining({ tenant_id: 'tenant-a' }),
       )
 
-      vi.mocked(db.countSchedules).mockReturnValue(0)
-      vi.mocked(db.getScheduleFromDb).mockReturnValue(undefined)
+      vi.mocked(db.countSchedules).mockResolvedValue(0)
+      vi.mocked(db.getScheduleFromDb).mockResolvedValue(undefined)
     })
 
     it('honors an explicit tenantId, and an explicit null never un-tenants a task', async () => {
       const db = await import('../db.js')
-      vi.mocked(db.countSchedules).mockReturnValue(1)
-      vi.mocked(db.getScheduleFromDb).mockReturnValue({
+      vi.mocked(db.countSchedules).mockResolvedValue(1)
+      vi.mocked(db.getScheduleFromDb).mockResolvedValue({
         id: 'tenant-task-2', prompt: 'p', description: 'd', schedule: '0 9 * * *',
         agent: 'marveen', type: 'task', enabled: 1, tenant_id: 'tenant-a',
         skip_if_busy: 0, force_send: 0, target_session: null, command: null,
@@ -197,8 +197,8 @@ describe('scheduled-tasks-io', () => {
           'tenant-task-2', expect.objectContaining({ tenant_id: 'tenant-a' }),
         )
       } finally {
-        vi.mocked(db.countSchedules).mockReturnValue(0)
-        vi.mocked(db.getScheduleFromDb).mockReturnValue(undefined)
+        vi.mocked(db.countSchedules).mockResolvedValue(0)
+        vi.mocked(db.getScheduleFromDb).mockResolvedValue(undefined)
       }
     })
   })

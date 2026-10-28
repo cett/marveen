@@ -37,8 +37,8 @@ const { getSkillMock, listAllSkillsMock } = vi.hoisted(() => ({
 vi.mock('../db.js', () => ({
   getSkill: getSkillMock,
   listAllSkills: listAllSkillsMock,
-  listSkillAccess: vi.fn().mockReturnValue([]),
-  listSkillFiles: vi.fn().mockReturnValue([]),
+  listSkillAccess: vi.fn().mockResolvedValue([]),
+  listSkillFiles: vi.fn().mockResolvedValue([]),
   getEnabledAgentsForTenant: vi.fn().mockReturnValue([]),
 }))
 
@@ -75,14 +75,14 @@ describe('regenSingleSkillFile', () => {
   beforeEach(() => { getSkillMock.mockReset() })
 
   it('is a no-op when the kill-switch is off and not forced', async () => {
-    getSkillMock.mockReturnValue(fleetSkillRow('global/never-called', 'content'))
+    getSkillMock.mockResolvedValue(fleetSkillRow('global/never-called', 'content'))
     const result = await regenSingleSkillFile('global/never-called', false)
     expect(result).toEqual({ written: false, skipped: true, reason: 'disabled' })
     expect(getSkillMock).not.toHaveBeenCalled()
   })
 
   it('writes the file for a fleet (global) skill when forced', async () => {
-    getSkillMock.mockReturnValue(fleetSkillRow('global/my-skill', '# Content v1'))
+    getSkillMock.mockResolvedValue(fleetSkillRow('global/my-skill', '# Content v1'))
     const result = await regenSingleSkillFile('global/my-skill', true)
     expect(result).toEqual({ written: true, skipped: false, reason: null })
     const path = join(FAKE_HOME, '.claude', 'skills', 'my-skill', 'SKILL.md')
@@ -91,13 +91,13 @@ describe('regenSingleSkillFile', () => {
   })
 
   it('is idempotent: a second call with unchanged content skips the write', async () => {
-    getSkillMock.mockReturnValue(fleetSkillRow('global/my-skill', '# Content v1'))
+    getSkillMock.mockResolvedValue(fleetSkillRow('global/my-skill', '# Content v1'))
     const result = await regenSingleSkillFile('global/my-skill', true)
     expect(result).toEqual({ written: false, skipped: true, reason: 'content_equal' })
   })
 
   it('writes to the agent-local path for a non-main agent id', async () => {
-    getSkillMock.mockReturnValue(fleetSkillRow('agent/agent-b/local-skill', 'local content'))
+    getSkillMock.mockResolvedValue(fleetSkillRow('agent/agent-b/local-skill', 'local content'))
     const result = await regenSingleSkillFile('agent/agent-b/local-skill', true)
     expect(result.written).toBe(true)
     const path = join(FAKE_PROJECT, 'agents', 'agent-b', '.claude', 'skills', 'local-skill', 'SKILL.md')
@@ -105,19 +105,19 @@ describe('regenSingleSkillFile', () => {
   })
 
   it('returns not_found for a missing skill id', async () => {
-    getSkillMock.mockReturnValue(undefined)
+    getSkillMock.mockResolvedValue(undefined)
     const result = await regenSingleSkillFile('global/missing', true)
     expect(result).toEqual({ written: false, skipped: false, reason: 'not_found' })
   })
 
   it('is a no-op (not_file_backed) for a tenant-scoped B2B skill whose tenant has no agent, without touching disk', async () => {
-    getSkillMock.mockReturnValue({ id: 'acme-corp-my-skill', name: 'my-skill', description: '', content: 'x', tenant_id: 'acme-corp', is_global: 0, created_by: null, created_at: 0, updated_at: 0 })
+    getSkillMock.mockResolvedValue({ id: 'acme-corp-my-skill', name: 'my-skill', description: '', content: 'x', tenant_id: 'acme-corp', is_global: 0, created_by: null, created_at: 0, updated_at: 0 })
     const result = await regenSingleSkillFile('acme-corp-my-skill', true)
     expect(result).toEqual({ written: false, skipped: true, reason: 'not_file_backed' })
   })
 
   it('returns unrecognized_id for a fleet skill whose id matches no known path pattern', async () => {
-    getSkillMock.mockReturnValue(fleetSkillRow('not-a-known-pattern', 'x'))
+    getSkillMock.mockResolvedValue(fleetSkillRow('not-a-known-pattern', 'x'))
     const result = await regenSingleSkillFile('not-a-known-pattern', true)
     expect(result).toEqual({ written: false, skipped: false, reason: 'unrecognized_id' })
   })
@@ -127,25 +127,25 @@ describe('regenSingleSkillFile', () => {
     // check for the 'global' pattern), so this only fails if the top-level
     // '..' substring guard actually runs -- unlike a longer traversal id,
     // which would already be rejected by the parts.length check alone.
-    getSkillMock.mockReturnValue(fleetSkillRow('global/..', 'x'))
+    getSkillMock.mockResolvedValue(fleetSkillRow('global/..', 'x'))
     const result = await regenSingleSkillFile('global/..', true)
     expect(result).toEqual({ written: false, skipped: false, reason: 'unrecognized_id' })
   })
 
   it('rejects an absolute-path id as unrecognized', async () => {
-    getSkillMock.mockReturnValue(fleetSkillRow('/etc/passwd', 'x'))
+    getSkillMock.mockResolvedValue(fleetSkillRow('/etc/passwd', 'x'))
     const result = await regenSingleSkillFile('/etc/passwd', true)
     expect(result).toEqual({ written: false, skipped: false, reason: 'unrecognized_id' })
   })
 
   it('rejects an id with an empty path segment as unrecognized', async () => {
-    getSkillMock.mockReturnValue(fleetSkillRow('global/', 'x'))
+    getSkillMock.mockResolvedValue(fleetSkillRow('global/', 'x'))
     const result = await regenSingleSkillFile('global/', true)
     expect(result).toEqual({ written: false, skipped: false, reason: 'unrecognized_id' })
   })
 
   it('writes to the project-root path (not the per-agent dir) for the main agent id', async () => {
-    getSkillMock.mockReturnValue(fleetSkillRow('agent/marveen/main-skill', 'main content'))
+    getSkillMock.mockResolvedValue(fleetSkillRow('agent/marveen/main-skill', 'main content'))
     const result = await regenSingleSkillFile('agent/marveen/main-skill', true)
     expect(result.written).toBe(true)
     const path = join(FAKE_PROJECT, '.claude', 'skills', 'main-skill', 'SKILL.md')
@@ -154,8 +154,8 @@ describe('regenSingleSkillFile', () => {
   })
 
   it('reports a write_error when the underlying write throws', async () => {
-    getSkillMock.mockReturnValue(fleetSkillRow('global/fails-to-write', 'x'))
-    atomicWriteMock.mockImplementationOnce(() => { throw new Error('disk full') })
+    getSkillMock.mockResolvedValue(fleetSkillRow('global/fails-to-write', 'x'))
+    atomicWriteMock.mockRejectedValueOnce(new Error('disk full'))
     const result = await regenSingleSkillFile('global/fails-to-write', true)
     expect(result).toEqual({ written: false, skipped: false, reason: 'write_error' })
     expect(loggerErrorMock).toHaveBeenCalled()
@@ -167,7 +167,7 @@ describe('generated header and drift handling', () => {
 
   it('rewrites a header-less (legacy) cache file quietly: same content, only the marker line is new', async () => {
     const path = join(FAKE_HOME, '.claude', 'skills', 'legacy-skill', 'SKILL.md')
-    getSkillMock.mockReturnValue(fleetSkillRow('global/legacy-skill', '---\nname: l\n---\nbody'))
+    getSkillMock.mockResolvedValue(fleetSkillRow('global/legacy-skill', '---\nname: l\n---\nbody'))
     mkdirSync(join(FAKE_HOME, '.claude', 'skills', 'legacy-skill'), { recursive: true })
     writeFileSync(path, '---\nname: l\n---\nbody')
     expect((await regenSingleSkillFile('global/legacy-skill', true)).written).toBe(true)
@@ -177,7 +177,7 @@ describe('generated header and drift handling', () => {
 
   it('warns and restores from the DB when the cache file drifted from the row', async () => {
     const path = join(FAKE_HOME, '.claude', 'skills', 'drifted', 'SKILL.md')
-    getSkillMock.mockReturnValue(fleetSkillRow('global/drifted', 'db truth'))
+    getSkillMock.mockResolvedValue(fleetSkillRow('global/drifted', 'db truth'))
     mkdirSync(join(FAKE_HOME, '.claude', 'skills', 'drifted'), { recursive: true })
     writeFileSync(path, addGeneratedHeader('someone edited this behind the DB', 'global/drifted'))
     expect((await regenSingleSkillFile('global/drifted', true)).written).toBe(true)
@@ -186,7 +186,7 @@ describe('generated header and drift handling', () => {
   })
 
   it('skips an up-to-date generated file without a warning', async () => {
-    getSkillMock.mockReturnValue(fleetSkillRow('global/uptodate', 'same'))
+    getSkillMock.mockResolvedValue(fleetSkillRow('global/uptodate', 'same'))
     expect((await regenSingleSkillFile('global/uptodate', true)).written).toBe(true)
     loggerWarnMock.mockClear()
     expect(await regenSingleSkillFile('global/uptodate', true)).toEqual({ written: false, skipped: true, reason: 'content_equal' })
@@ -201,14 +201,14 @@ describe('regenSkillFilesFromSQL', () => {
   })
 
   it('is a no-op when the kill-switch is off, not forced, and not a dry run', async () => {
-    listAllSkillsMock.mockReturnValue([fleetSkillRow('global/never-queried', 'x')])
+    listAllSkillsMock.mockResolvedValue([fleetSkillRow('global/never-queried', 'x')])
     const result = await regenSkillFilesFromSQL(false, false)
     expect(result).toEqual({ enabled: false, written: 0, skipped: 0, errors: 0 })
     expect(listAllSkillsMock).not.toHaveBeenCalled()
   })
 
   it('runs a dry run even with the kill-switch off, without touching disk', async () => {
-    listAllSkillsMock.mockReturnValue([fleetSkillRow('global/dry-run-skill', '# dry')])
+    listAllSkillsMock.mockResolvedValue([fleetSkillRow('global/dry-run-skill', '# dry')])
     const result = await regenSkillFilesFromSQL(true, false)
     expect(result).toEqual({ enabled: true, written: 1, skipped: 0, errors: 0 })
     const path = join(FAKE_HOME, '.claude', 'skills', 'dry-run-skill', 'SKILL.md')
@@ -216,7 +216,7 @@ describe('regenSkillFilesFromSQL', () => {
   })
 
   it('bypasses the kill-switch when forceEnabled is set', async () => {
-    listAllSkillsMock.mockReturnValue([fleetSkillRow('global/forced-bulk', '# forced')])
+    listAllSkillsMock.mockResolvedValue([fleetSkillRow('global/forced-bulk', '# forced')])
     const result = await regenSkillFilesFromSQL(false, true)
     expect(result).toEqual({ enabled: true, written: 1, skipped: 0, errors: 0 })
     const path = join(FAKE_HOME, '.claude', 'skills', 'forced-bulk', 'SKILL.md')
@@ -224,14 +224,14 @@ describe('regenSkillFilesFromSQL', () => {
   })
 
   it('returns errors:1 and does not throw when the skills query itself fails', async () => {
-    listAllSkillsMock.mockImplementation(() => { throw new Error('db locked') })
+    listAllSkillsMock.mockRejectedValue(new Error('db locked'))
     const result = await regenSkillFilesFromSQL(false, true)
     expect(result).toEqual({ enabled: true, written: 0, skipped: 0, errors: 1 })
     expect(loggerErrorMock).toHaveBeenCalled()
   })
 
   it('writes fleet rows to their canonical paths and creates no file for a tenant row whose tenant has no agent', async () => {
-    listAllSkillsMock.mockReturnValue([
+    listAllSkillsMock.mockResolvedValue([
       fleetSkillRow('global/fleet-only', '# fleet'),
       { id: 'acme-corp-skill', name: 'skill', description: '', content: 'x', tenant_id: 'acme-corp', is_global: 0, created_by: null, created_at: 0, updated_at: 0 },
     ])
@@ -240,7 +240,7 @@ describe('regenSkillFilesFromSQL', () => {
   })
 
   it('counts an unrecognized row id as an error and logs a warning, without aborting the batch', async () => {
-    listAllSkillsMock.mockReturnValue([
+    listAllSkillsMock.mockResolvedValue([
       fleetSkillRow('not-a-known-pattern', 'x'),
       fleetSkillRow('global/still-written', '# ok'),
     ])
@@ -250,18 +250,18 @@ describe('regenSkillFilesFromSQL', () => {
   })
 
   it('skips content-equal rows on a repeat run (idempotent bulk regen)', async () => {
-    listAllSkillsMock.mockReturnValue([fleetSkillRow('global/repeat-me', '# same content')])
+    listAllSkillsMock.mockResolvedValue([fleetSkillRow('global/repeat-me', '# same content')])
     await regenSkillFilesFromSQL(false, true)
     const result = await regenSkillFilesFromSQL(false, true)
     expect(result).toEqual({ enabled: true, written: 0, skipped: 1, errors: 0 })
   })
 
   it('counts a per-row write failure as an error without aborting the rest of the batch', async () => {
-    listAllSkillsMock.mockReturnValue([
+    listAllSkillsMock.mockResolvedValue([
       fleetSkillRow('global/write-fails-in-bulk', '# will fail'),
       fleetSkillRow('global/written-after-failure', '# ok'),
     ])
-    atomicWriteMock.mockImplementationOnce(() => { throw new Error('disk full') })
+    atomicWriteMock.mockRejectedValueOnce(new Error('disk full'))
     const result = await regenSkillFilesFromSQL(false, true)
     expect(result).toEqual({ enabled: true, written: 1, skipped: 0, errors: 1 })
   })
@@ -271,12 +271,12 @@ describe('findMissingSkillFiles', () => {
   beforeEach(() => { listAllSkillsMock.mockReset() })
 
   it('returns an empty array when the skills query fails, rather than throwing', async () => {
-    listAllSkillsMock.mockImplementation(() => { throw new Error('db locked') })
+    listAllSkillsMock.mockRejectedValue(new Error('db locked'))
     expect(await findMissingSkillFiles()).toEqual([])
   })
 
   it('lists fleet skill ids that have no file on disk yet', async () => {
-    listAllSkillsMock.mockReturnValue([
+    listAllSkillsMock.mockResolvedValue([
       fleetSkillRow('global/not-yet-written', '# missing'),
       { id: 'acme-corp-skill', name: 'skill', description: '', content: 'x', tenant_id: 'acme-corp', is_global: 0, created_by: null, created_at: 0, updated_at: 0 },
     ])
@@ -284,7 +284,7 @@ describe('findMissingSkillFiles', () => {
   })
 
   it('omits a skill once its file has been written to disk', async () => {
-    listAllSkillsMock.mockReturnValue([fleetSkillRow('global/now-present', '# present')])
+    listAllSkillsMock.mockResolvedValue([fleetSkillRow('global/now-present', '# present')])
     await regenSkillFilesFromSQL(false, true)
     expect(await findMissingSkillFiles()).toEqual([])
   })

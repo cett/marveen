@@ -83,7 +83,7 @@ describe('tryHandleMessages - GET extended paths', () => {
 describe('tryHandleMessages - PUT /api/messages/:id', () => {
   it('PUT returns 200 when closeOpenMessage succeeds and no message found (no OTel/notification)', async () => {
     mockCloseOpenMessage.mockReturnValueOnce(true)
-    mockGetAgentMessage.mockReturnValueOnce(null)
+    mockGetAgentMessage.mockResolvedValueOnce(null)
     const { ctx, out } = makeCtx('PUT', '/api/messages/42', { status: 'done', result: 'completed ok' })
     const handled = await tryHandleMessages(ctx)
     expect(handled).toBe(true)
@@ -101,7 +101,7 @@ describe('tryHandleMessages - PUT /api/messages/:id', () => {
 
   it('PUT with done status closes OTel span when trace_id and span_id present', async () => {
     mockCloseOpenMessage.mockReturnValueOnce(true)
-    mockGetAgentMessage.mockReturnValueOnce({
+    mockGetAgentMessage.mockResolvedValueOnce({
       id: 42,
       from_agent: 'agent-d',
       to_agent: 'agent-a',
@@ -117,7 +117,7 @@ describe('tryHandleMessages - PUT /api/messages/:id', () => {
 
   it('PUT with done status sends reverse notification when from != to and no Eredmeny prefix', async () => {
     mockCloseOpenMessage.mockReturnValueOnce(true)
-    mockGetAgentMessage.mockReturnValueOnce({
+    mockGetAgentMessage.mockResolvedValueOnce({
       id: 77,
       from_agent: 'agent-d',
       to_agent: 'agent-b',
@@ -137,7 +137,7 @@ describe('tryHandleMessages - PUT /api/messages/:id', () => {
 
   it('PUT skips reverse notification when content starts with [Eredmeny]', async () => {
     mockCloseOpenMessage.mockReturnValueOnce(true)
-    mockGetAgentMessage.mockReturnValueOnce({
+    mockGetAgentMessage.mockResolvedValueOnce({
       id: 88,
       from_agent: 'agent-d',
       to_agent: 'agent-b',

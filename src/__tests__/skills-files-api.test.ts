@@ -45,7 +45,7 @@ vi.mock('../db.js', () => ({
   getSkill: vi.fn((id: string) => store.get(id)),
   deleteSkill: vi.fn((id: string) => { for (const k of [...files.keys()]) if (k.startsWith(`${id}\u0000`)) files.delete(k); return store.delete(id) }),
   listAllSkills: vi.fn(() => [...store.values()]),
-  listSkillAccess: vi.fn().mockReturnValue([]),
+  listSkillAccess: vi.fn().mockResolvedValue([]),
   getEnabledAgentsForTenant: vi.fn((t: string) => avail.get(t) ?? []),
   getTenantsForAgent: vi.fn((a: string) => [...avail.entries()].filter(([, agents]) => agents.includes(a)).map(([t]) => t)),
   listSkillFiles: vi.fn((id: string) => [...files.values()].filter(f => f.skill_id === id).sort((a, b) => a.rel_path.localeCompare(b.rel_path))),
@@ -90,7 +90,7 @@ const b64 = (s: string) => Buffer.from(s).toString('base64')
 beforeEach(() => {
   rmSync(FAKE_HOME, { recursive: true, force: true })
   store.clear(); files.clear(); avail.clear()
-  vi.mocked(listSkillAccess).mockReturnValue([])
+  vi.mocked(listSkillAccess).mockResolvedValue([])
   mkdirSync(join(FAKE_PROJECT, 'agents', 'ann'), { recursive: true })
   store.set(SID, row(SID))
   mkdirSync(gdir(), { recursive: true })
@@ -197,7 +197,7 @@ describe('companion file access for a tenant the skill is GRANTED to', () => {
 
   beforeEach(async () => {
     store.set(FID, row(FID, 'acme', '---\nname: demo\n---\nbody'))
-    vi.mocked(listSkillAccess).mockImplementation(((id: string) => (id === FID ? [{ skill_id: id, tenant_id: 'beta' }] : [])) as any)
+    vi.mocked(listSkillAccess).mockImplementation(((id: string) => Promise.resolve(id === FID ? [{ skill_id: id, tenant_id: 'beta' }] : [])) as any)
     expect((await call('PUT', frel, { content: '#!/bin/sh\necho hi\n', mode: 0o755 }, owner)).status).toBe(201)
   })
 

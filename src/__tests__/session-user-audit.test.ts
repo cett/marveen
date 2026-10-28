@@ -87,7 +87,7 @@ vi.mock('../db.js', () => ({
   getAgentConversation: vi.fn().mockReturnValue([]),
   getAgentConversationThreads: vi.fn().mockReturnValue([]),
   closeOpenMessage: vi.fn().mockReturnValue(true),
-  getAgentMessage: vi.fn().mockReturnValue(null),
+  getAgentMessage: vi.fn().mockResolvedValue(null),
   closeOtelSpan: vi.fn(),
   getPendingBacklogByAgent: vi.fn().mockReturnValue([]),
   isAuthorizedPartnerSender: vi.fn().mockReturnValue(true),

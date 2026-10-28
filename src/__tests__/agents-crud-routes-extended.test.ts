@@ -85,7 +85,7 @@ vi.mock('../web/token-usage.js', () => ({
   getTokenSummary: vi.fn().mockReturnValue([]),
 }))
 vi.mock('../web/scheduled-tasks-io.js', () => ({
-  listScheduledTasks: vi.fn().mockReturnValue([]),
+  listScheduledTasks: vi.fn().mockResolvedValue([]),
 }))
 vi.mock('../web/federation/onboarding.js', () => ({
   ensureFederationClaudeMdSection: vi.fn(),
@@ -652,7 +652,7 @@ describe('agents-crud routes (extended)', () => {
       { assignee: 'test-agent', priority: 'urgent', cnt: 2 },
       { assignee: 'test-agent', priority: 'low', cnt: 1 },
     ])
-    vi.mocked(schedIO.listScheduledTasks).mockReturnValueOnce([
+    vi.mocked(schedIO.listScheduledTasks).mockResolvedValueOnce([
       { name: 'task-a', schedule: '*/30 * * * *', agent: 'test-agent', enabled: true, description: '', prompt: '', createdAt: 0, type: 'task', skipIfBusy: false, forceSend: false },
       { name: 'task-b', schedule: '0 * * * *', agent: 'test-agent', enabled: true, description: '', prompt: '', createdAt: 0, type: 'heartbeat', skipIfBusy: false, forceSend: false },
       { name: 'task-c', schedule: '0 */6 * * *', agent: 'test-agent', enabled: true, description: '', prompt: '', createdAt: 0, type: 'task', skipIfBusy: false, forceSend: false },

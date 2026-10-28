@@ -77,7 +77,7 @@ describe('schedule runner: awaited tick liveness stamp', () => {
     vi.useFakeTimers()
     vi.setSystemTime(START)
     mockSetSystemConfig.mockResolvedValue(undefined)
-    mockListScheduledTasks.mockReturnValue([])
+    mockListScheduledTasks.mockResolvedValue([])
   })
 
   afterEach(() => {

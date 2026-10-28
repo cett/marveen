@@ -75,7 +75,7 @@ describe('agent lifecycle and tenant skill files', () => {
   })
 
   it('a failing generation does not block the start', async () => {
-    vi.mocked(regen.generateTenantSkillFilesForAgent).mockImplementationOnce(() => { throw new Error('disk full') })
+    vi.mocked(regen.generateTenantSkillFilesForAgent).mockRejectedValueOnce(new Error('disk full'))
     await expect(startAgentProcess('agent-a')).rejects.toThrow('stop here')   // got past the generation
   })
 
@@ -98,7 +98,7 @@ describe('agent lifecycle and tenant skill files', () => {
 
   it('a failing removal does not fail the stop, and a stop that did nothing removes nothing', async () => {
     running.value = true
-    vi.mocked(regen.removeGeneratedTenantSkillFilesForAgent).mockImplementationOnce(() => { throw new Error('busy') })
+    vi.mocked(regen.removeGeneratedTenantSkillFilesForAgent).mockRejectedValueOnce(new Error('busy'))
     expect((await stopAgentProcess('agent-a')).ok).toBe(true)
     running.value = false
     vi.mocked(regen.removeGeneratedTenantSkillFilesForAgent).mockClear()

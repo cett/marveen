@@ -92,7 +92,7 @@ vi.mock('../web/token-usage.js', () => ({
   getTokenSummary: vi.fn().mockReturnValue([]),
 }))
 vi.mock('../web/scheduled-tasks-io.js', () => ({
-  listScheduledTasks: vi.fn().mockReturnValue([]),
+  listScheduledTasks: vi.fn().mockResolvedValue([]),
 }))
 vi.mock('../web/federation/onboarding.js', () => ({
   ensureFederationClaudeMdSection: vi.fn(),

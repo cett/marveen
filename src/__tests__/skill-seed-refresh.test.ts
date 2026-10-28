@@ -40,10 +40,10 @@ vi.mock('../db.js', () => ({
   getSkill: (id: string) => rows.get(id),
   updateSkill: (id: string, patch: { content?: string; description?: string }) => updateSkill(id, patch),
   seedSkillIfAbsent: (o: { id: string; content: string; description: string }) => seedSkillIfAbsent(o),
-  listAllSkills: vi.fn().mockReturnValue([]),
-  listSkillAccess: vi.fn().mockReturnValue([]),
+  listAllSkills: vi.fn().mockResolvedValue([]),
+  listSkillAccess: vi.fn().mockResolvedValue([]),
   getEnabledAgentsForTenant: vi.fn().mockReturnValue([]),
-  listSkillFiles: vi.fn().mockReturnValue([]),
+  listSkillFiles: vi.fn().mockResolvedValue([]),
   seedSkillFileIfAbsent: vi.fn(),
 }))
 

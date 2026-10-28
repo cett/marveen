@@ -24,14 +24,14 @@ vi.mock('../db.js', () => ({
   getSkill: vi.fn(),
   createSkill: vi.fn(),
   updateSkill: vi.fn(),
-  deleteSkill: vi.fn().mockReturnValue(true),
+  deleteSkill: vi.fn().mockResolvedValue(true),
   seedSkillIfAbsent: vi.fn(),
-  listSkillsForTenant: vi.fn().mockReturnValue([]),
-  listAllSkills: vi.fn().mockReturnValue([]),
+  listSkillsForTenant: vi.fn().mockResolvedValue([]),
+  listAllSkills: vi.fn().mockResolvedValue([]),
   grantSkillAccess: vi.fn(),
-  revokeSkillAccess: vi.fn().mockReturnValue(true),
-  listSkillAccess: vi.fn().mockReturnValue([]),
-  listSkillFiles: vi.fn().mockReturnValue([]),
+  revokeSkillAccess: vi.fn().mockResolvedValue(true),
+  listSkillAccess: vi.fn().mockResolvedValue([]),
+  listSkillFiles: vi.fn().mockResolvedValue([]),
 }))
 
 import { tryHandleSkills } from '../web/routes/skills.js'
@@ -67,8 +67,8 @@ const enc = (id: string) => encodeURIComponent(id)
 describe('PUT /api/skills/sql/:id creates a missing file-backed skill', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mockGetSkill.mockReturnValue(undefined)
-    mockCreateSkill.mockImplementation(((o: any) => ({ ...o, is_global: o.is_global ? 1 : 0 })) as any)
+    mockGetSkill.mockResolvedValue(undefined)
+    mockCreateSkill.mockImplementation(((o: any) => Promise.resolve({ ...o, is_global: o.is_global ? 1 : 0 })) as any)
   })
 
   it('global/<dir>: creates a fleet global row, description from the frontmatter, then generates the file', async () => {
@@ -124,8 +124,8 @@ describe('PUT /api/skills/sql/:id creates a missing file-backed skill', () => {
 
   describe('the description of an existing skill follows the frontmatter', () => {
     beforeEach(() => {
-      mockGetSkill.mockReturnValue({ id: 'global/new-skill', tenant_id: 'fleet' } as any)
-      mockUpdateSkill.mockReturnValue({ id: 'global/new-skill' } as any)
+      mockGetSkill.mockResolvedValue({ id: 'global/new-skill', tenant_id: 'fleet' } as any)
+      mockUpdateSkill.mockResolvedValue({ id: 'global/new-skill' } as any)
     })
     const put = async (body: object) => {
       const { ctx, out } = makeCtx('PUT', `/api/skills/sql/${enc('global/new-skill')}`, body)
@@ -154,8 +154,8 @@ describe('PUT /api/skills/sql/:id creates a missing file-backed skill', () => {
   })
 
   it('an existing row is still updated, not re-created', async () => {
-    mockGetSkill.mockReturnValue({ id: 'global/new-skill', tenant_id: 'fleet' } as any)
-    mockUpdateSkill.mockReturnValue({ id: 'global/new-skill' } as any)
+    mockGetSkill.mockResolvedValue({ id: 'global/new-skill', tenant_id: 'fleet' } as any)
+    mockUpdateSkill.mockResolvedValue({ id: 'global/new-skill' } as any)
     const { ctx, out } = makeCtx('PUT', `/api/skills/sql/${enc('global/new-skill')}`, BODY)
     await tryHandleSkills(ctx)
     expect(out.status).toBe(200)

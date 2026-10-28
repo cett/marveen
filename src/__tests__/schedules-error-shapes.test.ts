@@ -32,7 +32,7 @@ vi.mock('../web/agent-config.js', () => ({
 vi.mock('../web/scheduled-tasks-io.js', () => ({
   SCHEDULED_TASKS_DIR: '/tmp/mock-tasks',
   MAX_SCHEDULED_TASK_PROMPT_LEN: 10_000,
-  listScheduledTasks: vi.fn().mockReturnValue([]),
+  listScheduledTasks: vi.fn().mockResolvedValue([]),
   writeScheduledTask: vi.fn(),
 }))
 
@@ -54,13 +54,13 @@ vi.mock('../web/atomic-write.js', () => ({
 }))
 
 vi.mock('../db.js', () => ({
-  listPendingTaskRetries: vi.fn().mockReturnValue([]),
-  deletePendingTaskRetryById: vi.fn().mockReturnValue(false),
+  listPendingTaskRetries: vi.fn().mockResolvedValue([]),
+  deletePendingTaskRetryById: vi.fn().mockResolvedValue(false),
   listTaskRunHistory: vi.fn().mockReturnValue([]),
   // Schedules DB layer (SQL-backed): default to 0 so tests use the file-based path
-  countSchedules:    vi.fn().mockReturnValue(0),
-  getScheduleFromDb: vi.fn().mockReturnValue(undefined),
-  listSchedulesFromDb: vi.fn().mockReturnValue([]),
+  countSchedules:    vi.fn().mockResolvedValue(0),
+  getScheduleFromDb: vi.fn().mockResolvedValue(undefined),
+  listSchedulesFromDb: vi.fn().mockResolvedValue([]),
   deleteSchedule:    vi.fn(),
   setScheduleEnabled: vi.fn(),
   patchSchedule:     vi.fn(),
@@ -263,7 +263,7 @@ describe('DELETE /api/schedules/pending/:id -- error shapes', () => {
   })
 
   it('returns not_found when pending retry does not exist', async () => {
-    mockDeletePending.mockReturnValue(false)
+    mockDeletePending.mockResolvedValue(false)
     const { ctx, out } = makeCtx('DELETE', '/api/schedules/pending/999')
     await tryHandleSchedules(ctx)
     expect(out.status).toBe(404)

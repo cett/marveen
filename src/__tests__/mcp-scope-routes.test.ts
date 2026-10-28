@@ -109,7 +109,7 @@ vi.mock('../web/model-suggest.js', () => ({
   suggestForAgent: vi.fn().mockReturnValue({ model: 'claude-haiku-4-5', reason: 'low-traffic' }),
 }))
 vi.mock('../web/token-usage.js', () => ({ getTokenSummary: vi.fn().mockReturnValue([]) }))
-vi.mock('../web/scheduled-tasks-io.js', () => ({ listScheduledTasks: vi.fn().mockReturnValue([]) }))
+vi.mock('../web/scheduled-tasks-io.js', () => ({ listScheduledTasks: vi.fn().mockResolvedValue([]) }))
 vi.mock('../web/federation/onboarding.js', () => ({ ensureFederationClaudeMdSection: vi.fn() }))
 vi.mock('../web/claude-plans.js', () => ({
   readClaudePlans: vi.fn().mockReturnValue([]),

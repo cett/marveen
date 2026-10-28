@@ -541,7 +541,7 @@ describe('PUT /api/v1/admin/agent-availability', () => {
     expect(a.out.status).toBe(200)
     expect(skillRegen.regenTenantSkillFilesForAgentChange).toHaveBeenCalledWith('demo-agent', 'acme-corp')
 
-    vi.mocked(skillRegen.regenTenantSkillFilesForAgentChange).mockImplementationOnce(() => { throw new Error('disk full') })
+    vi.mocked(skillRegen.regenTenantSkillFilesForAgentChange).mockRejectedValueOnce(new Error('disk full'))
     const b = makeCtx('PUT', '/api/v1/admin/agent-availability', { tenant_id: 'acme-corp', agent_id: 'demo-agent', enabled: false })
     await tryHandleAdminB2b(b.ctx)
     expect(b.out.status).toBe(200)   // the matrix change itself stands

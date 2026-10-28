@@ -30,7 +30,7 @@ const fk = (id: string, rel: string) => `${id}\u0000${rel}`
 vi.mock('../db.js', () => ({
   getSkill: vi.fn((id: string) => store.get(id)),
   listAllSkills: vi.fn(() => [...store.values()]),
-  listSkillAccess: vi.fn().mockReturnValue([]),
+  listSkillAccess: vi.fn().mockResolvedValue([]),
   getEnabledAgentsForTenant: vi.fn().mockReturnValue([]),
   listSkillFiles: vi.fn((id: string) => [...files.values()].filter(f => f.skill_id === id)),
   seedSkillFileIfAbsent: vi.fn((id: string, rel: string, content: Buffer, mode?: number) => {

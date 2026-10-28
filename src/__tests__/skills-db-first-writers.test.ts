@@ -45,12 +45,12 @@ vi.mock('../db.js', () => ({
   updateSkill: vi.fn((id: string, p: any) => { const r = { ...store.get(id), ...p }; store.set(id, r); return r }),
   deleteSkill: vi.fn((id: string) => store.delete(id)),
   seedSkillIfAbsent: vi.fn(),
-  listSkillsForTenant: vi.fn().mockReturnValue([]),
+  listSkillsForTenant: vi.fn().mockResolvedValue([]),
   listAllSkills: vi.fn(() => [...store.values()]),
   grantSkillAccess: vi.fn(),
   revokeSkillAccess: vi.fn(),
-  listSkillAccess: vi.fn().mockReturnValue([]),
-  listSkillFiles: vi.fn().mockReturnValue([]),
+  listSkillAccess: vi.fn().mockResolvedValue([]),
+  listSkillFiles: vi.fn().mockResolvedValue([]),
 }))
 
 import { tryHandleSkills } from '../web/routes/skills.js'
