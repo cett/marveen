@@ -310,7 +310,7 @@ const NONE: ReadonlySet<string> = new Set()
  * row by id is exempt only when it carries no parameter that changes what comes back (`include=versions`
  * adds the row's history, `agent` / `agent_id` records a read for the named agent).
  */
-function sharedMemoryRead(r: { method: string; path: string; param: string | undefined; query: URLSearchParams }): boolean {
+async function sharedMemoryRead(r: { method: string; path: string; param: string | undefined; query: URLSearchParams }): Promise<boolean> {
   if (r.method !== 'GET') return false
   if (r.path === '/api/memories') {
     const asked = [...r.query.getAll('tier'), ...r.query.getAll('category')].filter((v) => v !== '')
@@ -318,7 +318,7 @@ function sharedMemoryRead(r: { method: string; path: string; param: string | und
   }
   if (r.param !== undefined && /^\d+$/.test(r.param) && r.path === `/api/memories/${r.param}`) {
     if (['include', 'agent', 'agent_id'].some((k) => r.query.has(k))) return false
-    return getMemoryOwnerRow(Number(r.param))?.category === 'shared'
+    return (await getMemoryOwnerRow(Number(r.param)))?.category === 'shared'
   }
   return false
 }
@@ -350,7 +350,7 @@ const WATCHED: readonly WatchSpec[] = [
     prefix: '/api/memories', kind: 'unscoped', paramSeg: 0, paramName: ':id',
     // The sub-routes that are not a row id (graph, stats, ...), so they are not read as one.
     paramLiterals: new Set(['import', 'backfill', 'stats', 'resort', 'links', 'read-event', 'graph', 'stale']),
-    owner: (p) => (/^\d+$/.test(p) ? getMemoryOwnerRow(Number(p))?.agent_id : undefined),
+    owner: async (p) => (/^\d+$/.test(p) ? (await getMemoryOwnerRow(Number(p)))?.agent_id : undefined),
     queryKeys: AGENT_QUERY, bodyKeys: AGENT_BODY, listsAcrossAgents: true, enforce: 'any', readExempt: sharedMemoryRead,
     omittedMain: { who: 'always', on: 'write', bodyKey: 'agent_id' },
   },

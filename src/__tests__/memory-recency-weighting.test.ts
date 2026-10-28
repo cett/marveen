@@ -80,7 +80,7 @@ describe('searchAgentMemories recency tie-break (integration, in-memory FTS5)', 
     // Backdate the first memory by 30 days directly in the DB.
     getDb().prepare('UPDATE memories SET created_at = ? WHERE id = ?').run(now - 30 * DAY, oldId)
 
-    const results = searchAgentMemories('tester', 'generátor állapota', 5)
+    const results = await searchAgentMemories('tester', 'generátor állapota', 5)
     const ids = results.map((m) => m.id)
     expect(ids).toContain(oldId)
     expect(ids).toContain(newId)

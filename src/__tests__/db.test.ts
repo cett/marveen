@@ -60,17 +60,17 @@ describe('sessions', () => {
 })
 
 describe('memories', () => {
-  it('emlek mentest es lekerdezest vegez', () => {
-    saveMemory('mem-chat-1', 'Szeretem a kavét', 'semantic')
-    const mems = recentMemories('mem-chat-1', 5)
+  it('emlek mentest es lekerdezest vegez', async () => {
+    await saveMemory('mem-chat-1', 'Szeretem a kavét', 'semantic')
+    const mems = await recentMemories('mem-chat-1', 5)
     expect(mems.length).toBeGreaterThan(0)
     expect(mems[0].content).toBe('Szeretem a kavét')
     expect(mems[0].sector).toBe('semantic')
   })
 
-  it('epizodikus emleket ment', () => {
-    saveMemory('mem-chat-2', 'Mai megbeszeles eredmenye', 'episodic')
-    const mems = getMemoriesForChat('mem-chat-2')
+  it('epizodikus emleket ment', async () => {
+    await saveMemory('mem-chat-2', 'Mai megbeszeles eredmenye', 'episodic')
+    const mems = await getMemoriesForChat('mem-chat-2')
     expect(mems.length).toBeGreaterThan(0)
     expect(mems[0].sector).toBe('episodic')
   })
@@ -79,7 +79,7 @@ describe('memories', () => {
     expect(() => decayMemories()).not.toThrow()
   })
 
-  it('recentMemories tenant filter is SQL-level (not post-LIMIT application filter)', () => {
+  it('recentMemories tenant filter is SQL-level (not post-LIMIT application filter)', async () => {
     // Mutation guard: if tenant_id = ? were applied after LIMIT instead of inside the
     // WHERE clause, a query for 4 tenant-a rows from a pool of 8 mixed rows (4+4)
     // would return only ~2 results. The SQL-level filter must come before LIMIT.
@@ -94,7 +94,7 @@ describe('memories', () => {
         'INSERT INTO memories (chat_id, content, sector, salience, created_at, accessed_at, tenant_id) VALUES (?, ?, ?, 1.0, ?, ?, ?)'
       ).run(chatId, `tenant-b memory ${i}`, 'semantic', now + i, now + i, 'tenant-b')
     }
-    const results = recentMemories(chatId, 4, 'tenant-a')
+    const results = await recentMemories(chatId, 4, 'tenant-a')
     expect(results).toHaveLength(4)
     expect(results.every((m) => m.tenant_id === 'tenant-a')).toBe(true)
   })

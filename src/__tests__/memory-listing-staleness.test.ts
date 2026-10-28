@@ -29,13 +29,13 @@ describe('updateMemory cache invalidation', () => {
     const AGENT = 'stale-put-agent'
     const { id } = await saveAgentMemory(AGENT, 'Original content', 'hot', 'orig')
     // Warm the cache the way a recall does.
-    expect(getAgentMemories(AGENT, 50).some(m => m.content === 'Original content')).toBe(true)
+    expect((await getAgentMemories(AGENT, 50)).some(m => m.content === 'Original content')).toBe(true)
 
     // The normal PUT: content and category change, ownership does not, so the
     // caller passes no agentId at all.
     await updateMemory(id, 'Rewritten content', 'cold')
 
-    const after = getAgentMemories(AGENT, 50)
+    const after = await getAgentMemories(AGENT, 50)
     const row = after.find(m => m.id === id)
     expect(row?.content).toBe('Rewritten content')
     expect(row?.category).toBe('cold')
@@ -46,14 +46,14 @@ describe('updateMemory cache invalidation', () => {
     const NEW = 'reassign-new-agent'
     const { id } = await saveAgentMemory(OLD, 'Handover note', 'hot', 'ho')
     // Warm both agents' caches.
-    expect(getAgentMemories(OLD, 50).some(m => m.id === id)).toBe(true)
-    expect(getAgentMemories(NEW, 50).some(m => m.id === id)).toBe(false)
+    expect((await getAgentMemories(OLD, 50)).some(m => m.id === id)).toBe(true)
+    expect((await getAgentMemories(NEW, 50)).some(m => m.id === id)).toBe(false)
 
     await updateMemory(id, 'Handover note', 'hot', NEW)
 
     // The memory must leave the old owner's list and appear in the new one.
-    expect(getAgentMemories(OLD, 50).some(m => m.id === id)).toBe(false)
-    expect(getAgentMemories(NEW, 50).some(m => m.id === id)).toBe(true)
+    expect((await getAgentMemories(OLD, 50)).some(m => m.id === id)).toBe(false)
+    expect((await getAgentMemories(NEW, 50)).some(m => m.id === id)).toBe(true)
   })
 
   it('invalidates every agent when a shared memory changes', async () => {
@@ -61,11 +61,11 @@ describe('updateMemory cache invalidation', () => {
     const READER = 'shared-reader-agent'
     const { id } = await saveAgentMemory(OWNER, 'Fleet rule v1', 'shared', 'rule')
     // A shared memory shows up in every agent's list, so the reader caches it too.
-    expect(getAgentMemories(READER, 50).some(m => m.content === 'Fleet rule v1')).toBe(true)
+    expect((await getAgentMemories(READER, 50)).some(m => m.content === 'Fleet rule v1')).toBe(true)
 
     await updateMemory(id, 'Fleet rule v2', 'shared')
 
-    expect(getAgentMemories(READER, 50).find(m => m.id === id)?.content).toBe('Fleet rule v2')
+    expect((await getAgentMemories(READER, 50)).find(m => m.id === id)?.content).toBe('Fleet rule v2')
   })
 })
 
@@ -77,7 +77,7 @@ describe('saveAgentMemory cache invalidation', () => {
     const OWNER = 'shared-create-owner'
     const READER = 'shared-create-reader'
     // The reader warms its list before the shared memory exists.
-    const before = getAgentMemories(READER, 50)
+    const before = await getAgentMemories(READER, 50)
     expect(before.some(m => m.content === 'Fleet-wide announcement')).toBe(false)
 
     await saveAgentMemory(OWNER, 'Fleet-wide announcement', 'shared', 'ann')
@@ -85,7 +85,7 @@ describe('saveAgentMemory cache invalidation', () => {
     // A shared row is listed for every agent, so evicting only the author
     // leaves every other agent serving a list that is missing it -- with
     // nothing in the response to signal the omission.
-    expect(getAgentMemories(READER, 50).some(m => m.content === 'Fleet-wide announcement')).toBe(true)
+    expect((await getAgentMemories(READER, 50)).some(m => m.content === 'Fleet-wide announcement')).toBe(true)
   })
 })
 
@@ -110,7 +110,7 @@ describe('getAgentMemories category filtering', () => {
     // With a limit of 5 the hot memory is not among the 5 most recent rows.
     // Asking for hot must still find it -- otherwise a priority silently
     // disappears from a fresh session's view with no truncation signal.
-    const hot = getAgentMemories(AGENT, 5, 'hot')
+    const hot = await getAgentMemories(AGENT, 5, 'hot')
     expect(hot.map(m => m.id)).toContain(hotId)
     expect(hot.every(m => m.category === 'hot')).toBe(true)
   })
@@ -120,9 +120,9 @@ describe('getAgentMemories category filtering', () => {
     await saveAgentMemory(A, 'Hot one', 'hot', 'h')
     await saveAgentMemory(A, 'Warm one', 'warm', 'w')
 
-    const hot = getAgentMemories(A, 50, 'hot')
-    const warm = getAgentMemories(A, 50, 'warm')
-    const all = getAgentMemories(A, 50)
+    const hot = await getAgentMemories(A, 50, 'hot')
+    const warm = await getAgentMemories(A, 50, 'warm')
+    const all = await getAgentMemories(A, 50)
 
     // A shared cache key would make these three the same list.
     expect(hot.every(m => m.category === 'hot')).toBe(true)

@@ -95,7 +95,7 @@ export async function updateTenantMemory(tenantId: string, id: number, patch: { 
 
 export async function deleteTenantMemory(tenantId: string, id: number): Promise<boolean> {
   const result = await dbx.run('DELETE FROM memories WHERE tenant_id = ? AND id = ?', tenantId, id)
-  if (result.changes > 0) syncVecMemoryDelete(id)
+  if (result.changes > 0) await syncVecMemoryDelete(id)
   return result.changes > 0
 }
 

@@ -107,24 +107,24 @@ describe('buildKanbanContext', () => {
 })
 
 describe('saveConversationTurn', () => {
-  it('skips a short message (<=20 chars)', () => {
-    saveConversationTurn('chat-1', 'remember this', 'ok')
+  it('skips a short message (<=20 chars)', async () => {
+    await saveConversationTurn('chat-1', 'remember this', 'ok')
     expect(mockSaveMemory).not.toHaveBeenCalled()
   })
 
-  it('skips a slash-command message regardless of length', () => {
-    saveConversationTurn('chat-1', '/status a very long slash command message', 'ok')
+  it('skips a slash-command message regardless of length', async () => {
+    await saveConversationTurn('chat-1', '/status a very long slash command message', 'ok')
     expect(mockSaveMemory).not.toHaveBeenCalled()
   })
 
-  it('skips a trivial acknowledgement even when padded past 20 chars by whitespace', () => {
-    saveConversationTurn('chat-1', '   koszi                ', 'ok')
+  it('skips a trivial acknowledgement even when padded past 20 chars by whitespace', async () => {
+    await saveConversationTurn('chat-1', '   koszi                ', 'ok')
     expect(mockSaveMemory).not.toHaveBeenCalled()
   })
 
-  it('saves a semantic memory for a long message matching the preference/fact pattern', () => {
+  it('saves a semantic memory for a long message matching the preference/fact pattern', async () => {
     const userMsg = 'Fontos, hogy mindig magyarul valaszolj nekem mostantol kezdve'
-    saveConversationTurn('chat-1', userMsg, 'Rendben, magyarul valaszolok.')
+    await saveConversationTurn('chat-1', userMsg, 'Rendben, magyarul valaszolok.')
 
     expect(mockSaveMemory).toHaveBeenCalledTimes(1)
     const [chatId, content, sector] = mockSaveMemory.mock.calls[0]
@@ -134,21 +134,21 @@ describe('saveConversationTurn', () => {
     expect(content).toContain('Rendben, magyarul valaszolok.')
   })
 
-  it('does not save a long message that matches neither the semantic nor the skip pattern', () => {
+  it('does not save a long message that matches neither the semantic nor the skip pattern', async () => {
     const userMsg = 'Milyen idő lesz holnap Budapesten, kell-e esernyő?'
-    saveConversationTurn('chat-1', userMsg, 'Napos lesz.')
+    await saveConversationTurn('chat-1', userMsg, 'Napos lesz.')
     expect(mockSaveMemory).not.toHaveBeenCalled()
   })
 })
 
 describe('runDecaySweep', () => {
-  it('runs every prune/decay step and logs a combined summary', () => {
+  it('runs every prune/decay step and logs a combined summary', async () => {
     vi.mocked(db.pruneTokenUsage).mockReturnValue({ pruned: 3 } as unknown as ReturnType<typeof db.pruneTokenUsage>)
     vi.mocked(db.pruneBlackboardHistory).mockReturnValue(2 as unknown as ReturnType<typeof db.pruneBlackboardHistory>)
     vi.mocked(db.pruneConversationLog).mockReturnValue(1 as unknown as ReturnType<typeof db.pruneConversationLog>)
     vi.mocked(db.pruneAgentMessages).mockReturnValue(4 as unknown as ReturnType<typeof db.pruneAgentMessages>)
 
-    runDecaySweep()
+    await runDecaySweep()
 
     expect(db.decayMemories).toHaveBeenCalledTimes(1)
     expect(db.pruneAuditLogs).toHaveBeenCalledTimes(1)

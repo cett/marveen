@@ -102,14 +102,14 @@ describe('memory functions', () => {
     await saveAgentMemory('db2-test-memo', 'Old decision log', 'cold', 'history')
   })
 
-  it('searchMemories returns results for matching query', () => {
-    const results = searchMemories('integration', 'chat-x', 3)
+  it('searchMemories returns results for matching query', async () => {
+    const results = await searchMemories('integration', 'chat-x', 3)
     // FTS search on agent memories - may return empty if no chat-specific memories
     expect(Array.isArray(results)).toBe(true)
   })
 
   it('touchMemory updates accessed_at', async () => {
-    const mems = getMemoriesForChat('chat-x', 10)
+    const mems = await getMemoriesForChat('chat-x', 10)
     await saveAgentMemory('db2-test-touch', 'Touchable memory', 'hot', '')
     const all = getDb().prepare("SELECT id FROM memories WHERE agent_id = 'db2-test-touch'").all() as { id: number }[]
     if (all.length > 0) {
@@ -132,13 +132,13 @@ describe('memory functions', () => {
     expect(() => decayMemories()).not.toThrow()
   })
 
-  it('getMemoriesForChat returns memories', () => {
-    const mems = getMemoriesForChat('chat-x', 5)
+  it('getMemoriesForChat returns memories', async () => {
+    const mems = await getMemoriesForChat('chat-x', 5)
     expect(Array.isArray(mems)).toBe(true)
   })
 
-  it('getMemoryStats returns totals', () => {
-    const stats = getMemoryStats()
+  it('getMemoryStats returns totals', async () => {
+    const stats = await getMemoryStats()
     expect(typeof stats.total).toBe('number')
     expect(typeof stats.withEmbedding).toBe('number')
     expect(typeof stats.byAgent).toBe('object')
@@ -147,35 +147,35 @@ describe('memory functions', () => {
   })
 
   it('getMemoryStats(tenantId) scopes total/byTier/importCount to that tenant only', async () => {
-    const globalBefore = getMemoryStats()
+    const globalBefore = await getMemoryStats()
     await saveAgentMemory('stat-tenant-a', 'tenant A memory', 'hot', undefined, false, 'stat-tenant-a-id')
     await saveAgentMemory('stat-tenant-b', 'tenant B memory', 'hot', undefined, false, 'stat-tenant-b-id')
 
-    const statsA = getMemoryStats('stat-tenant-a-id')
+    const statsA = await getMemoryStats('stat-tenant-a-id')
     expect(statsA.total).toBe(1)
     expect(statsA.byAgent['stat-tenant-a']).toBe(1)
     expect(statsA.byAgent['stat-tenant-b']).toBeUndefined()
 
-    const statsB = getMemoryStats('stat-tenant-b-id')
+    const statsB = await getMemoryStats('stat-tenant-b-id')
     expect(statsB.total).toBe(1)
     expect(statsB.byAgent['stat-tenant-b']).toBe(1)
 
     // No tenantId still returns the unfiltered fleet-wide total (backward compat).
-    const globalAfter = getMemoryStats()
+    const globalAfter = await getMemoryStats()
     expect(globalAfter.total).toBe(globalBefore.total + 2)
   })
 
-  it('getMemoryStats.withEmbedding counts embedding_blob, not just the legacy JSON column', () => {
+  it('getMemoryStats.withEmbedding counts embedding_blob, not just the legacy JSON column', async () => {
     const db = getDb()
     // Simulate the post-0005-migration state: a memory whose vector lives in the
     // binary embedding_blob column, with the legacy `embedding` JSON column NULL.
-    const before = getMemoryStats().withEmbedding
+    const before = (await getMemoryStats()).withEmbedding
     // 768-dim to satisfy the vec_memories(embedding FLOAT[768]) insert trigger.
     const buf = Buffer.from(new Float32Array(768).fill(0.1).buffer)
     db.prepare(
       "INSERT INTO memories (chat_id, content, sector, salience, created_at, accessed_at, agent_id, category, embedding, embedding_blob) VALUES ('c', 'blob-only vector', 'semantic', 1.0, unixepoch(), unixepoch(), 'stat-blob-test', 'warm', NULL, ?)"
     ).run(buf)
-    expect(getMemoryStats().withEmbedding).toBe(before + 1)
+    expect((await getMemoryStats()).withEmbedding).toBe(before + 1)
   })
 
   it('updateMemory updates content and returns true', async () => {
@@ -207,16 +207,16 @@ describe('getAgentMemories / getMemoriesForChat pagination', () => {
     getDb().exec(`DELETE FROM memories WHERE agent_id = '${AGENT}'`)
   })
 
-  it('countAgentMemories reports a total independent of limit, not just the page length', () => {
-    const page = getAgentMemories(AGENT, 10)
+  it('countAgentMemories reports a total independent of limit, not just the page length', async () => {
+    const page = await getAgentMemories(AGENT, 10)
     expect(page.length).toBe(10)
-    expect(countAgentMemories(AGENT)).toBe(25)
+    expect(await countAgentMemories(AGENT)).toBe(25)
   })
 
-  it('getAgentMemories offset pages are contiguous, non-overlapping, and match an unpaged fetch', () => {
-    const page1 = getAgentMemories(AGENT, 10, undefined, undefined, 0)
-    const page2 = getAgentMemories(AGENT, 10, undefined, undefined, 10)
-    const page3 = getAgentMemories(AGENT, 10, undefined, undefined, 20)
+  it('getAgentMemories offset pages are contiguous, non-overlapping, and match an unpaged fetch', async () => {
+    const page1 = await getAgentMemories(AGENT, 10, undefined, undefined, 0)
+    const page2 = await getAgentMemories(AGENT, 10, undefined, undefined, 10)
+    const page3 = await getAgentMemories(AGENT, 10, undefined, undefined, 20)
     expect(page1.length).toBe(10)
     expect(page2.length).toBe(10)
     expect(page3.length).toBe(5)
@@ -226,33 +226,33 @@ describe('getAgentMemories / getMemoriesForChat pagination', () => {
     const ids3 = page3.map(m => m.id)
     expect(new Set([...ids1, ...ids2, ...ids3]).size).toBe(25)
 
-    const unpaged = getAgentMemories(AGENT, 30)
+    const unpaged = await getAgentMemories(AGENT, 30)
     expect([...ids1, ...ids2, ...ids3]).toEqual(unpaged.map(m => m.id))
   })
 
-  it('an out-of-range offset returns an empty page but keeps the real total', () => {
-    const page = getAgentMemories(AGENT, 10, undefined, undefined, 10_000)
+  it('an out-of-range offset returns an empty page but keeps the real total', async () => {
+    const page = await getAgentMemories(AGENT, 10, undefined, undefined, 10_000)
     expect(page).toEqual([])
-    expect(countAgentMemories(AGENT)).toBe(25)
+    expect(await countAgentMemories(AGENT)).toBe(25)
   })
 
-  it('the cache key includes offset, so page 2 is not served page 1\'s cached rows', () => {
-    const page1 = getAgentMemories(AGENT, 10, undefined, undefined, 0)
-    const page2 = getAgentMemories(AGENT, 10, undefined, undefined, 10)
+  it('the cache key includes offset, so page 2 is not served page 1\'s cached rows', async () => {
+    const page1 = await getAgentMemories(AGENT, 10, undefined, undefined, 0)
+    const page2 = await getAgentMemories(AGENT, 10, undefined, undefined, 10)
     expect(page1.map(m => m.id)).not.toEqual(page2.map(m => m.id))
   })
 
-  it('getMemoriesForChat/countMemoriesForChat offset pages match an unpaged fetch of the same window', () => {
+  it('getMemoriesForChat/countMemoriesForChat offset pages match an unpaged fetch of the same window', async () => {
     // Scoped to this agent's own category via the SQL-level category filter,
     // not chat_id (every saveAgentMemory row shares the same ALLOWED_CHAT_ID),
     // so the count here is exact regardless of what other tests in this file
     // have already inserted.
-    const totalWarm = countMemoriesForChat(ALLOWED_CHAT_ID, undefined, 'warm')
+    const totalWarm = await countMemoriesForChat(ALLOWED_CHAT_ID, undefined, 'warm')
     expect(totalWarm).toBeGreaterThanOrEqual(25)
 
-    const page1 = getMemoriesForChat(ALLOWED_CHAT_ID, 10, undefined, 'warm', 0)
-    const page2 = getMemoriesForChat(ALLOWED_CHAT_ID, 10, undefined, 'warm', 10)
-    const unpaged = getMemoriesForChat(ALLOWED_CHAT_ID, 20, undefined, 'warm', 0)
+    const page1 = await getMemoriesForChat(ALLOWED_CHAT_ID, 10, undefined, 'warm', 0)
+    const page2 = await getMemoriesForChat(ALLOWED_CHAT_ID, 10, undefined, 'warm', 10)
+    const unpaged = await getMemoriesForChat(ALLOWED_CHAT_ID, 20, undefined, 'warm', 0)
     expect([...page1, ...page2].map(m => m.id)).toEqual(unpaged.map(m => m.id))
   })
 })

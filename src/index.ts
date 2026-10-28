@@ -583,7 +583,7 @@ async function main(): Promise<void> {
   }).catch(err => logger.warn({ err }, 'Workspace doc embedding backfill hiba (Ollama nem elerheto)'))
 
   // Memory decay (24h cycle)
-  runDecaySweep()
+  await runDecaySweep()
   decayInterval = setInterval(runDecaySweep, 24 * 60 * 60 * 1000)
 
   // Scheduled-task run snapshot retention: hourly cadence, 7-day age

@@ -71,14 +71,14 @@ describe('tenant memory search pagination (q-only branch)', () => {
     }
   })
 
-  it('searchMemories with tenantId=tenant-a returns only tenant-a rows', () => {
-    const rows = searchMemories('uniquetoken', 'test-chat', 10, 'tenant-a')
+  it('searchMemories with tenantId=tenant-a returns only tenant-a rows', async () => {
+    const rows = await searchMemories('uniquetoken', 'test-chat', 10, 'tenant-a')
     expect(rows.length).toBeGreaterThan(0)
     expect(rows.every(m => (m as Memory & { tenant_id?: string }).tenant_id === 'tenant-a')).toBe(true)
   })
 
-  it('searchMemories with tenantId=tenant-b returns only tenant-b rows', () => {
-    const rows = searchMemories('uniquetoken', 'test-chat', 10, 'tenant-b')
+  it('searchMemories with tenantId=tenant-b returns only tenant-b rows', async () => {
+    const rows = await searchMemories('uniquetoken', 'test-chat', 10, 'tenant-b')
     expect(rows.length).toBeGreaterThan(0)
     expect(rows.every(m => (m as Memory & { tenant_id?: string }).tenant_id === 'tenant-b')).toBe(true)
   })

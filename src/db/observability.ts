@@ -550,7 +550,7 @@ export interface TenantDeleteResult {
 export function deleteTenant(tenantId: string): TenantDeleteResult {
   if (tenantId === 'default') throw new Error('Cannot delete the default tenant')
 
-  const result = db.transaction((): TenantDeleteResult => {
+  const result = db.transaction(async (): Promise<TenantDeleteResult> => {
     // 0. Agents exclusive to this tenant: exactly one enabled availability row, and it is this tenant's
     //    (the same reading as resolveAgentTenant). Must run before step 13 deletes the availability rows.
     const exclusiveAgents = (
@@ -601,7 +601,7 @@ export function deleteTenant(tenantId: string): TenantDeleteResult {
       db.prepare('SELECT id FROM memories WHERE tenant_id = ?').all(tenantId) as { id: number }[]
     ).map((r) => r.id)
     for (const id of memIds) {
-      syncVecMemoryDelete(id)
+      await syncVecMemoryDelete(id)
       db.prepare('DELETE FROM memories WHERE id = ?').run(id)
     }
 
