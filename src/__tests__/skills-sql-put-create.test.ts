@@ -75,6 +75,8 @@ describe('PUT /api/skills/sql/:id creates a missing file-backed skill', () => {
     const { ctx, out } = makeCtx('PUT', `/api/skills/sql/${enc('global/new-skill')}`, BODY)
     await tryHandleSkills(ctx)
     expect(out.status).toBe(201)
+    // The body carries the created row (a Promise left in it would serialize as `{}`).
+    expect(out.body.skill).toMatchObject({ id: 'global/new-skill', name: 'new-skill', tenant_id: 'fleet' })
     expect(mockCreateSkill).toHaveBeenCalledWith(expect.objectContaining({
       id: 'global/new-skill', name: 'new-skill', description: 'does x', content: BODY.content, tenant_id: 'fleet', is_global: true,
     }))
