@@ -355,7 +355,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   }
   if (labelMatch && method === 'DELETE') {
     const id = decodeURIComponent(labelMatch[1])
-    if (await ownLabel(id) && deleteLabel(id)) { json(res, { ok: true }); return true }
+    if (await ownLabel(id) && await deleteLabel(id)) { json(res, { ok: true }); return true }
     json(res, { error: 'not_found', hint: 'Címke nem található' }, 404)
     return true
   }

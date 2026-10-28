@@ -5,7 +5,6 @@ import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { getEffectiveSettingValue } from '../settings-store.js'
 import { writeAgentAuditLog } from './audit.js'
-import { db } from './connection.js'
 import { logger } from '../logger.js'
 import { dbx } from './facade.js'
 
@@ -457,17 +456,17 @@ export async function moveKanbanCard(
     await dbx.tx(async (tx) => {
       const params: unknown[] = [status, orderedIds.indexOf(id), now, id]
       if (expected !== undefined) params.push(expected)
-      changed = db.prepare(sql).run(...params).changes > 0
+      changed = (await tx.run(sql, ...params)).changes > 0
       // A refused move (no such card, or not in the expected status) must not renumber the column: the
       // other cards' sort_order would change for a move that never happened.
       if (!changed) return
       if (from !== undefined && from !== status) {
-        db.prepare(
-          'INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at) VALUES (?, ?, ?, ?, ?)'
-        ).run(id, from, status, actor ?? null, now)
+        await tx.run(
+          'INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at) VALUES (?, ?, ?, ?, ?)',
+          id, from, status, actor ?? null, now,
+        )
       }
-      const updateOrder = db.prepare('UPDATE kanban_cards SET sort_order=? WHERE id=?')
-      orderedIds.forEach((cardId, i) => updateOrder.run(i, cardId))
+      for (const [i, cardId] of orderedIds.entries()) await tx.run('UPDATE kanban_cards SET sort_order=? WHERE id=?', i, cardId)
     })
     return changed
   }
@@ -730,16 +729,16 @@ export async function updateLabel(id: string, fields: Partial<Pick<Label, 'name'
   return (await dbx.run('UPDATE labels SET name=?, color=? WHERE id=?', f.name, f.color, id)).changes > 0
 }
 
-export function deleteLabel(id: string): boolean {
+export async function deleteLabel(id: string): Promise<boolean> {
   // Transaction: drop every card<->label link before the label row itself,
   // otherwise the join table keeps dangling references to a label that no
   // longer exists (foreign_keys is on by default, but the explicit delete keeps
   // this independent of the FK's ON DELETE action; orphan rows would silently
   // resurrect a "deleted" label in card detail views).
-  return db.transaction((labelId: string) => {
-    db.prepare('DELETE FROM kanban_card_labels WHERE label_id = ?').run(labelId)
-    return db.prepare('DELETE FROM labels WHERE id = ?').run(labelId).changes > 0
-  })(id) as boolean
+  return dbx.tx(async (tx) => {
+    await tx.run('DELETE FROM kanban_card_labels WHERE label_id = ?', id)
+    return (await tx.run('DELETE FROM labels WHERE id = ?', id)).changes > 0
+  })
 }
 
 export async function addLabelToCard(cardId: string, labelId: string): Promise<void> {
