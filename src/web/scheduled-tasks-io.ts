@@ -4,6 +4,7 @@ import { homedir } from 'node:os'
 import { MAIN_AGENT_ID } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { sanitizeScheduleName, safeJoin } from './sanitize.js'
+import { withScheduleLock } from './schedule-lock.js'
 import {
   countSchedules, listSchedulesFromDb, getScheduleFromDb, upsertSchedule, deleteSchedule,
   setScheduleEnabled, patchSchedule, seedScheduleIfAbsent,
@@ -355,17 +356,20 @@ export async function syncTaskConfigEnabledFromDb(
   return fixed
 }
 
-export async function writeScheduledTask(
-  taskName: string,
-  data: {
-    description?: string; prompt?: string; schedule?: string; agent?: string;
-    enabled?: boolean; type?: string; skipIfBusy?: boolean; forceSend?: boolean;
-    targetSession?: string; command?: string; timeoutMs?: number; failThreshold?: number;
-    preCheck?: string; catchUpMaxAgeMinutes?: number; stuckAfterMinutes?: number;
-    tenantId?: string | null; requires?: { mcp_servers?: string[] };
-    status?: 'draft' | 'pending_review' | 'live';
-  },
-): Promise<void> {
+export interface ScheduledTaskWrite {
+  description?: string; prompt?: string; schedule?: string; agent?: string;
+  enabled?: boolean; type?: string; skipIfBusy?: boolean; forceSend?: boolean;
+  targetSession?: string; command?: string; timeoutMs?: number; failThreshold?: number;
+  preCheck?: string; catchUpMaxAgeMinutes?: number; stuckAfterMinutes?: number;
+  tenantId?: string | null; requires?: { mcp_servers?: string[] };
+  status?: 'draft' | 'pending_review' | 'live';
+}
+
+export function writeScheduledTask(taskName: string, data: ScheduledTaskWrite): Promise<void> {
+  return withScheduleLock(taskName, () => writeScheduledTaskLocked(taskName, data))
+}
+
+async function writeScheduledTaskLocked(taskName: string, data: ScheduledTaskWrite): Promise<void> {
   const dbRow = await countSchedules() > 0 ? await getScheduleFromDb(taskName) : null
   const existing = dbRow ? rowToTask(dbRow) : (await countSchedules() > 0 ? null : readScheduledTask(taskName))
 

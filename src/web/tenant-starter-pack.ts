@@ -11,6 +11,7 @@ import {
 import { logger } from '../logger.js'
 import { sanitizeScheduleName } from './sanitize.js'
 import { writeScheduledTask } from './scheduled-tasks-io.js'
+import { withScheduleLock } from './schedule-lock.js'
 import { knownScheduleAgents, scheduleAgentServesTenant } from './schedule-tenant.js'
 import { auditScheduleWrite, isHumanAdmin, notifyScheduleReview, scheduleActor } from './schedule-review-effects.js'
 import type { RouteContext } from './routes/types.js'
@@ -147,7 +148,18 @@ export async function createStarterPack(
   ctx: RouteContext,
   tenantId: string,
   opts: { agentId?: string } = {},
-): Promise<{ ok: true; result: StarterResult } | { ok: false; error: 'tenant_unavailable' | 'ambiguous' | 'not_serving' | 'shared' | 'name_conflict'; name: string }> {
+): Promise<StarterCreateOutcome> {
+  // The check for an existing row and the create are one step: a second click waits and then reconciles.
+  return withScheduleLock(starterTaskName(tenantId), () => createStarterPackLocked(ctx, tenantId, opts))
+}
+
+type StarterCreateOutcome = { ok: true; result: StarterResult } | { ok: false; error: 'tenant_unavailable' | 'ambiguous' | 'not_serving' | 'shared' | 'name_conflict'; name: string }
+
+async function createStarterPackLocked(
+  ctx: RouteContext,
+  tenantId: string,
+  opts: { agentId?: string } = {},
+): Promise<StarterCreateOutcome> {
   const name = starterTaskName(tenantId)
   const { row, conflict } = await ownStarterRow(tenantId, name)
   if (conflict) return { ok: false, error: 'name_conflict', name }
@@ -265,6 +277,14 @@ export async function describeStarterPack(tenantId: string): Promise<StarterDesc
  * and reported as needs_agent. A second run changes nothing.
  */
 export async function reconcileStarterPack(
+  ctx: RouteContext,
+  tenantId: string,
+  opts: { explicitAgent?: string; existed?: boolean } = {},
+): Promise<StarterResult> {
+  return withScheduleLock(starterTaskName(tenantId), () => reconcileStarterPackLocked(ctx, tenantId, opts))
+}
+
+async function reconcileStarterPackLocked(
   ctx: RouteContext,
   tenantId: string,
   opts: { explicitAgent?: string; existed?: boolean } = {},

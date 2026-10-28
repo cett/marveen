@@ -155,7 +155,7 @@ describe('regenSingleSkillFile', () => {
 
   it('reports a write_error when the underlying write throws', async () => {
     getSkillMock.mockResolvedValue(fleetSkillRow('global/fails-to-write', 'x'))
-    atomicWriteMock.mockRejectedValueOnce(new Error('disk full'))
+    atomicWriteMock.mockImplementationOnce(() => { throw new Error('disk full') })
     const result = await regenSingleSkillFile('global/fails-to-write', true)
     expect(result).toEqual({ written: false, skipped: false, reason: 'write_error' })
     expect(loggerErrorMock).toHaveBeenCalled()
@@ -261,7 +261,7 @@ describe('regenSkillFilesFromSQL', () => {
       fleetSkillRow('global/write-fails-in-bulk', '# will fail'),
       fleetSkillRow('global/written-after-failure', '# ok'),
     ])
-    atomicWriteMock.mockRejectedValueOnce(new Error('disk full'))
+    atomicWriteMock.mockImplementationOnce(() => { throw new Error('disk full') })
     const result = await regenSkillFilesFromSQL(false, true)
     expect(result).toEqual({ enabled: true, written: 1, skipped: 0, errors: 1 })
   })

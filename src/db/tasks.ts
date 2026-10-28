@@ -349,16 +349,15 @@ const PATCH_SCHEDULE_ALLOWED_COLS = new Set([
 // separate from patchSchedule so the activation path can never accidentally
 // touch any other column.
 export async function activateSchedule(id: string): Promise<ScheduleRow | null> {
-  const existing = await getScheduleFromDb(id)
-  if (!existing) return null
   const now = Math.floor(Date.now() / 1000)
-  await dbx.run("UPDATE schedules SET status = 'live', updated_at = ? WHERE id = ?", now, id)
-  return (await dbx.get('SELECT * FROM schedules WHERE id = ?', id)) as ScheduleRow
+  // The statement's own match count says whether the row exists: a separate existence read could be overtaken by
+  // a delete, and the row read back afterwards would be undefined. A second activation of a live row only moves updated_at.
+  const result = await dbx.run("UPDATE schedules SET status = 'live', updated_at = ? WHERE id = ?", now, id)
+  if (result.changes === 0) return null
+  return (await dbx.get<ScheduleRow>('SELECT * FROM schedules WHERE id = ?', id)) ?? null
 }
 
 export async function patchSchedule(id: string, patch: Partial<Omit<UpsertScheduleOpts, 'created_at'>>): Promise<ScheduleRow | null> {
-  const existing = await getScheduleFromDb(id)
-  if (!existing) return null
   const now = Math.floor(Date.now() / 1000)
   const sets: string[] = ['updated_at = ?']
   const vals: unknown[] = [now]
@@ -370,8 +369,11 @@ export async function patchSchedule(id: string, patch: Partial<Omit<UpsertSchedu
     vals.push(boolCols.has(col) && typeof v === 'boolean' ? (v ? 1 : 0) : (v ?? null))
   }
   vals.push(id)
-  await dbx.run(`UPDATE schedules SET ${sets.join(', ')} WHERE id = ?`, ...vals)
-  return (await dbx.get('SELECT * FROM schedules WHERE id = ?', id)) as ScheduleRow
+  // Only the patched columns are written, so two patches of different columns both survive; the match count
+  // says whether the row exists (no separate read for a delete to slip behind).
+  const result = await dbx.run(`UPDATE schedules SET ${sets.join(', ')} WHERE id = ?`, ...vals)
+  if (result.changes === 0) return null
+  return (await dbx.get<ScheduleRow>('SELECT * FROM schedules WHERE id = ?', id)) ?? null
 }
 
 export async function deleteSchedule(id: string): Promise<boolean> {

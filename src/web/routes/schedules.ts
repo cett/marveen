@@ -18,6 +18,7 @@ import {
   SCHEDULED_TASKS_DIR, MAX_SCHEDULED_TASK_PROMPT_LEN,
   listScheduledTasks, listScheduledTasksFromFiles, writeScheduledTask, rowToTask, isTaskLive,
 } from '../scheduled-tasks-io.js'
+import { withScheduleLock } from '../schedule-lock.js'
 import { REVIEWED_FIELDS, reviewTriggerFields, reviewValueSha256, scheduleContentHash } from '../schedule-review.js'
 import { auditScheduleWrite, isHumanAdmin, notifyScheduleReview, scheduleActor } from '../schedule-review-effects.js'
 import { runScheduledTaskNow, loadLastTickMs, computeTickStatus } from '../schedule-runner.js'
@@ -377,31 +378,35 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     const resolved = resolveScheduleDir(scheduleActivateMatch[1])
     if (!resolved) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
     const { name } = resolved
-    const current = await getScheduleFromDb(name)
-    if (!current) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
-    // The admin's screen was rendered from a content hash (see the list above). If the task
-    // changed since -- the tenant edited the draft or the held task before the click --
-    // activating would approve content nobody looked at. Optional so a caller that has no
-    // screen (the CRUD recipe) keeps working; it is a human-only route either way.
-    const currentHash = scheduleContentHash({ ...rowToTask(current) }, REVIEWED_FIELDS)
-    const expectedHash = ctx.url.searchParams.get('expected_hash')
-    if (expectedHash !== null && expectedHash !== currentHash) {
-      json(res, {
-        error: 'stale_revision', content_hash: currentHash,
-        hint: 'The schedule changed since it was loaded; review the current content and activate again',
-      }, 409)
-      return true
-    }
-    const row = await activateSchedule(name)
-    if (!row) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
-    await auditScheduleWrite(ctx, 'activate', name, current.tenant_id ?? DEFAULT_SCHEDULE_TENANT, {
-      status_before: current.status, content_hash: currentHash, hash_checked: expectedHash !== null,
+    // Read, hash check, activation and mirror are one step: a save between the hash check and the
+    // activation would approve content nobody reviewed (the db is async, nothing else orders them).
+    await withScheduleLock(name, async () => {
+      const current = await getScheduleFromDb(name)
+      if (!current) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
+      // The admin's screen was rendered from a content hash (see the list above). If the task
+      // changed since -- the tenant edited the draft or the held task before the click --
+      // activating would approve content nobody looked at. Optional so a caller that has no
+      // screen (the CRUD recipe) keeps working; it is a human-only route either way.
+      const currentHash = scheduleContentHash({ ...rowToTask(current) }, REVIEWED_FIELDS)
+      const expectedHash = ctx.url.searchParams.get('expected_hash')
+      if (expectedHash !== null && expectedHash !== currentHash) {
+        json(res, {
+          error: 'stale_revision', content_hash: currentHash,
+          hint: 'The schedule changed since it was loaded; review the current content and activate again',
+        }, 409)
+        return true
+      }
+      const row = await activateSchedule(name)
+      if (!row) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
+      await auditScheduleWrite(ctx, 'activate', name, current.tenant_id ?? DEFAULT_SCHEDULE_TENANT, {
+        status_before: current.status, content_hash: currentHash, hash_checked: expectedHash !== null,
+      })
+      // Mirror to file (same pattern as toggle's file-mirror call) so a
+      // rollback to the file-based fallback keeps the activated state.
+      await writeScheduledTask(name, { status: 'live' })
+      logger.info({ name }, 'Scheduled task activated')
+      json(res, { ok: true, status: 'live' })
     })
-    // Mirror to file (same pattern as toggle's file-mirror call) so a
-    // rollback to the file-based fallback keeps the activated state.
-    await writeScheduledTask(name, { status: 'live' })
-    logger.info({ name }, 'Scheduled task activated')
-    json(res, { ok: true, status: 'live' })
     return true
   }
 
@@ -501,16 +506,20 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     // Re-review: a caller that is not a human admin cannot change what a live task executes
     // without a person approving it again. The comparison is against the row as it is NOW:
     // dbRow above was read before the body arrived, so a concurrent save may have moved it.
-    // Nothing below awaits until the write, and the DB driver is synchronous, so the row
-    // read here is the row that gets overwritten.
-    const before = useDb ? await getScheduleFromDb(name) : undefined
-    const beforeTask: Record<string, unknown> = before ? { ...rowToTask(before) } : {}
-    const changed = before ? reviewTriggerFields(beforeTask, update) : []
-    const demote = !!before && newTenant === undefined && !isHumanAdmin(ctx)
-      && isTaskLive(rowToTask(before)) && changed.length > 0
-    if (demote) update.status = 'pending_review'
+    // The db is async, so the read, the decision and the write run under the schedule lock:
+    // the row read here is the row that gets overwritten, and a concurrent activation or edit
+    // of this schedule waits for the write instead of interleaving with it.
+    const { before, beforeTask, changed, demote } = await withScheduleLock(name, async () => {
+      const before = useDb ? await getScheduleFromDb(name) : undefined
+      const beforeTask: Record<string, unknown> = before ? { ...rowToTask(before) } : {}
+      const changed = before ? reviewTriggerFields(beforeTask, update) : []
+      const demote = !!before && newTenant === undefined && !isHumanAdmin(ctx)
+        && isTaskLive(rowToTask(before)) && changed.length > 0
+      if (demote) update.status = 'pending_review'
 
-    await writeScheduledTask(name, update)
+      await writeScheduledTask(name, update)
+      return { before, beforeTask, changed, demote }
+    })
 
     const tenantOfTask = newTenant ?? before?.tenant_id ?? DEFAULT_SCHEDULE_TENANT
     // Per changed field: a fingerprint before and after plus a short preview of the new
@@ -546,9 +555,13 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     if (useDb ? !dbRow : !existsSync(dir)) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
     if (useDb && crossTenantBlocked(ctx, dbRow?.tenant_id ?? null)) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
 
-    if (useDb) await deleteSchedule(name)
-    // Always remove files too (keeps FS in sync with DB; noop if files missing)
-    if (existsSync(dir)) rmSync(dir, { recursive: true, force: true })
+    // Row and files go under the schedule lock: a write of this schedule that is still running would
+    // otherwise recreate the files (or the row) after the delete.
+    await withScheduleLock(name, async () => {
+      if (useDb) await deleteSchedule(name)
+      // Always remove files too (keeps FS in sync with DB; noop if files missing)
+      if (existsSync(dir)) rmSync(dir, { recursive: true, force: true })
+    })
     await auditScheduleWrite(ctx, 'delete', name, dbRow?.tenant_id ?? DEFAULT_SCHEDULE_TENANT, { status: dbRow?.status ?? null })
     logger.info({ name }, 'Scheduled task deleted')
     json(res, { ok: true })
@@ -568,10 +581,14 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
 
     let newEnabled: boolean
     if (useDb && dbRow) {
-      newEnabled = dbRow.enabled === 0
-      await setScheduleEnabled(name, newEnabled)
-      // Mirror to file
-      await writeScheduledTask(name, { enabled: newEnabled })
+      // The toggle flips the stored value, so it is read under the schedule lock: two quick clicks flip it twice.
+      newEnabled = await withScheduleLock(name, async () => {
+        const next = ((await getScheduleFromDb(name)) ?? dbRow).enabled === 0
+        await setScheduleEnabled(name, next)
+        // Mirror to file
+        await writeScheduledTask(name, { enabled: next })
+        return next
+      })
     } else {
       const configPath = join(dir, 'task-config.json')
       let config: Record<string, unknown> = {}
