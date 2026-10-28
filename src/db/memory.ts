@@ -605,7 +605,9 @@ export async function getMemoryOwnerRow(id: number): Promise<{ agent_id: string 
   return dbx.get<{ agent_id: string | null; tenant_id: string; category: string }>('SELECT agent_id, tenant_id, category FROM memories WHERE id = ?', id)
 }
 
-// Raw row delete; the route owns the vec/cache/audit side effects.
-export async function deleteMemoryRow(id: number): Promise<number> {
-  return (await dbx.run('DELETE FROM memories WHERE id = ?', id)).changes
+// Raw row delete; the route owns the vec/cache/audit side effects. With a tenant the statement itself is bound to
+// it, so a check made before the await cannot be outrun by the row changing hands in between.
+export async function deleteMemoryRow(id: number, tenantId?: string): Promise<number> {
+  if (tenantId === undefined) return (await dbx.run('DELETE FROM memories WHERE id = ?', id)).changes
+  return (await dbx.run('DELETE FROM memories WHERE id = ? AND tenant_id = ?', id, tenantId)).changes
 }

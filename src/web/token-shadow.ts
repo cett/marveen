@@ -282,7 +282,7 @@ interface WatchSpec {
    * A read the enforce mode lets through although `enforce` is 'any' (the shared memories: a tier meant
    * for the other agents). Such a request is counted as foreign_row_read, not foreign_row_access.
    */
-  readExempt?: (r: { method: string; path: string; param: string | undefined; query: URLSearchParams }) => boolean
+  readExempt?: (r: { method: string; path: string; param: string | undefined; query: URLSearchParams }) => boolean | Promise<boolean>
   /**
    * The route acts as the MAIN agent when the request names no agent (`agent_id || MAIN_AGENT_ID`).
    * For a caller that is not the main agent, enforce reads "names nobody" as "names the main agent":
@@ -819,7 +819,13 @@ async function observeIdentity(
   }
 
   const recorded = new Set<string>()
-  const exempt = !!spec.readExempt?.({ method, path, param, query: url.searchParams })
+  // A failed exemption lookup is no exemption: the request stays refusable (fail closed).
+  let exempt = false
+  try {
+    exempt = !!(await spec.readExempt?.({ method, path, param, query: url.searchParams }))
+  } catch (err) {
+    warnThrottled(err, 'token-shadow: read exemption lookup failed')
+  }
   const refusable = enforceApplies(spec, method) && !exempt
   // A write takes its agent from the body only (the route ignores the query), a read from the query key.
   const queryKeyNamed = !!spec.omittedMain?.queryKey && !!url.searchParams.get(spec.omittedMain.queryKey)?.trim()

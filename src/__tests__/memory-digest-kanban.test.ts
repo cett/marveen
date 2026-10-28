@@ -167,11 +167,11 @@ describe('runDailyDigest', () => {
   const now = Math.floor(Date.now() / 1000)
 
   function memory(id: number, content: string, ageSeconds: number) {
-    return { id, content, created_at: now - ageSeconds } as unknown as ReturnType<typeof db.getMemoriesForChat>[number]
+    return { id, content, created_at: now - ageSeconds } as unknown as Awaited<ReturnType<typeof db.getMemoriesForChat>>[number]
   }
 
   it('skips digest generation when fewer than 2 memories were recorded today', async () => {
-    mockGetMemoriesForChat.mockReturnValue([memory(1, 'only one thing happened', 3600)])
+    mockGetMemoriesForChat.mockResolvedValue([memory(1, 'only one thing happened', 3600)])
 
     const result = await runDailyDigest('chat-1')
 
@@ -181,7 +181,7 @@ describe('runDailyDigest', () => {
   })
 
   it('ignores memories older than 24h when counting today\'s activity', async () => {
-    mockGetMemoriesForChat.mockReturnValue([
+    mockGetMemoriesForChat.mockResolvedValue([
       memory(1, 'today A', 3600),
       memory(2, 'yesterday B', 2 * 86400),
       memory(3, 'yesterday C', 3 * 86400),
@@ -194,7 +194,7 @@ describe('runDailyDigest', () => {
   })
 
   it('generates and saves a digest as an episodic memory when there is enough activity', async () => {
-    mockGetMemoriesForChat.mockReturnValue([
+    mockGetMemoriesForChat.mockResolvedValue([
       memory(1, 'worked on the coverage series', 3600),
       memory(2, 'opened a pull request', 7200),
     ])
@@ -212,7 +212,7 @@ describe('runDailyDigest', () => {
   })
 
   it('returns null without saving when the sub-agent produces no text', async () => {
-    mockGetMemoriesForChat.mockReturnValue([
+    mockGetMemoriesForChat.mockResolvedValue([
       memory(1, 'worked on A', 3600),
       memory(2, 'worked on B', 7200),
     ])
@@ -225,7 +225,7 @@ describe('runDailyDigest', () => {
   })
 
   it('returns null and logs an error when the sub-agent invocation throws', async () => {
-    mockGetMemoriesForChat.mockReturnValue([
+    mockGetMemoriesForChat.mockResolvedValue([
       memory(1, 'worked on A', 3600),
       memory(2, 'worked on B', 7200),
     ])

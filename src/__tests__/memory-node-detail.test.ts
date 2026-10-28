@@ -104,9 +104,9 @@ function makeCtx(path: string, method = 'GET'): { ctx: RouteContext; out: { stat
 // Helper: stage what the five db helpers behind /detail return.
 function mockDetail(mem: any, readCount: number, neighbors: any[], versions: any[]) {
   vi.mocked(getMemoryDetailRow).mockReturnValue(mem)
-  vi.mocked(countMemoryReads).mockReturnValue(readCount)
-  vi.mocked(listMemoryNeighbors).mockReturnValue(neighbors)
-  vi.mocked(listMemoryCategoryHistory).mockReturnValue(versions)
+  vi.mocked(countMemoryReads).mockResolvedValue(readCount)
+  vi.mocked(listMemoryNeighbors).mockResolvedValue(neighbors)
+  vi.mocked(listMemoryCategoryHistory).mockResolvedValue(versions)
 }
 
 describe('GET /api/memories/:id/detail', () => {
@@ -134,7 +134,7 @@ describe('GET /api/memories/:id/detail', () => {
     const shadow = { ...MEM_A, id: 7, agent_id: 'import' }
     const meta = { file_name: 'a.html', file_path: '/docs/a.html', source_label: 'docs' }
     mockDetail(shadow, 0, [], [])
-    vi.mocked(getImportMetaForShadow).mockReturnValueOnce(meta)
+    vi.mocked(getImportMetaForShadow).mockResolvedValueOnce(meta)
     const { ctx, out } = makeCtx('/api/memories/7/detail')
     await tryHandleMemories(ctx)
     expect(getImportMetaForShadow).toHaveBeenCalledWith(7)
@@ -143,7 +143,7 @@ describe('GET /api/memories/:id/detail', () => {
   })
 
   it('returns 404 for non-existent memory', async () => {
-    vi.mocked(getMemoryDetailRow).mockReturnValue(undefined)
+    vi.mocked(getMemoryDetailRow).mockResolvedValue(undefined)
     const { ctx, out } = makeCtx('/api/memories/999/detail')
     const handled = await tryHandleMemories(ctx)
     expect(handled).toBe(true)

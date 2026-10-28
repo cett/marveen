@@ -55,17 +55,17 @@ describe('the fixture really is above 1', () => {
 })
 
 describe('upsertMemoryLink', () => {
-  it('stores a weight a rounding error above 1 as 1 instead of throwing', () => {
+  it('stores a weight a rounding error above 1 as 1 instead of throwing', async () => {
     const a = addMemory('a', OVER_ONE)
     const b = addMemory('b', OVER_ONE)
-    expect(() => upsertMemoryLink(a, b, 'semantic', 1.0000000000000002)).not.toThrow()
+    await expect(upsertMemoryLink(a, b, 'semantic', 1.0000000000000002)).resolves.toEqual(expect.any(Number))
     expect(links(a)[0].weight).toBe(1)
   })
 
-  it('leaves an ordinary weight alone', () => {
+  it('leaves an ordinary weight alone', async () => {
     const a = addMemory('a', OVER_ONE)
     const b = addMemory('b', OVER_ONE)
-    upsertMemoryLink(a, b, 'semantic', 0.8)
+    await upsertMemoryLink(a, b, 'semantic', 0.8)
     expect(links(a)[0].weight).toBeCloseTo(0.8)
   })
 })
@@ -122,18 +122,18 @@ describe('runLinkMaintenance', () => {
   })
 })
 
-describe('upsertMemoryLink: the rounding tolerance is narrow', () => {
-  it('stores a weight within the tolerance above 1 as 1', () => {
+describe('upsertMemoryLink: the rounding tolerance is narrow', async () => {
+  it('stores a weight within the tolerance above 1 as 1', async () => {
     const a = addMemory('a', OVER_ONE)
     const b = addMemory('b', OVER_ONE)
-    upsertMemoryLink(a, b, 'semantic', 1 + WEIGHT_ROUNDING_TOLERANCE / 2)
+    await upsertMemoryLink(a, b, 'semantic', 1 + WEIGHT_ROUNDING_TOLERANCE / 2)
     expect(links(a)[0].weight).toBe(1)
   })
 
-  it.each([1.5, 1 + 1e-8, Number.POSITIVE_INFINITY, Number.NaN, 0, -0.2])('does not store %s: it is a caller bug and fails loudly', (w) => {
+  it.each([1.5, 1 + 1e-8, Number.POSITIVE_INFINITY, Number.NaN, 0, -0.2])('does not store %s: it is a caller bug and fails loudly', async (w) => {
     const a = addMemory('a', OVER_ONE)
     const b = addMemory('b', OVER_ONE)
-    expect(() => upsertMemoryLink(a, b, 'semantic', w)).toThrow(/constraint failed/)
+    await expect(upsertMemoryLink(a, b, 'semantic', w)).rejects.toThrow(/constraint failed/)
     expect(links(a)).toEqual([])
   })
 })

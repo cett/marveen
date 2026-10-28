@@ -83,7 +83,11 @@ export function initDatabase(dbPathOverride?: string): void {
   // Create shadow rows in memories for any import_memories entries that lack
   // them. Must run after initVecSupport so that vec0 is loaded and the
   // vec_memories virtual table exists before the backfill inserts into it.
-  void backfillImportShadowRows().catch(err => logger.warn({ err }, 'Import shadow backfill failed'))
+  try {
+    backfillImportShadowRows()
+  } catch (err) {
+    logger.warn({ err }, 'Import shadow backfill failed')
+  }
 
   // One-time seed of the claude_plans_registry / agent_active_plans DB mirror
   // from the two JSON side-cars (#886). UNLIKE migrateTaskRunsFromJson in

@@ -4,7 +4,7 @@
 import { db, vecExtensionLoaded } from './connection.js'
 import { Memory, MemoryVersion } from './memory.js'
 import { DashboardUser, DashboardUserPublic } from './sessions.js'
-import { syncVecMemoryDelete } from './vector.js'
+import { deleteVecMemoryOnRawHandle } from './vector.js'
 import { resolveWriteTenant } from './write-tenant.js'
 import { reloadAgentSettingsCache } from './agent-settings-cache.js'
 import { purgeSecretsForTenant } from '../web/vault.js'
@@ -550,7 +550,7 @@ export interface TenantDeleteResult {
 export function deleteTenant(tenantId: string): TenantDeleteResult {
   if (tenantId === 'default') throw new Error('Cannot delete the default tenant')
 
-  const result = db.transaction(async (): Promise<TenantDeleteResult> => {
+  const result = db.transaction((): TenantDeleteResult => {
     // 0. Agents exclusive to this tenant: exactly one enabled availability row, and it is this tenant's
     //    (the same reading as resolveAgentTenant). Must run before step 13 deletes the availability rows.
     const exclusiveAgents = (
@@ -601,7 +601,7 @@ export function deleteTenant(tenantId: string): TenantDeleteResult {
       db.prepare('SELECT id FROM memories WHERE tenant_id = ?').all(tenantId) as { id: number }[]
     ).map((r) => r.id)
     for (const id of memIds) {
-      await syncVecMemoryDelete(id)
+      deleteVecMemoryOnRawHandle(id)
       db.prepare('DELETE FROM memories WHERE id = ?').run(id)
     }
 

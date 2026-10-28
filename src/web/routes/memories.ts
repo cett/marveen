@@ -739,7 +739,7 @@ Respond ONLY with JSON, nothing else:
       json(res, { error: 'not_found' }, 404)
       return true
     }
-    const changes = await deleteMemoryRow(id)
+    const changes = await deleteMemoryRow(id, isAdmin ? undefined : effectiveTenantId)
     // Invalidate the in-process TTL cache so a deleted memory does not
     // resurface in the agent-filtered list for the cache lifetime.
     if (changes > 0) {

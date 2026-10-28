@@ -29,6 +29,8 @@ const BOOT_SYNC_TWINS: Readonly<Record<string, readonly string[]>> = {
   enrollDashboardApiTokenSync: ['db/api-tokens.ts', 'web/token-bootstrap.ts'],
   replaceClaudePlanRowsSync: ['db/claude-plans.ts', 'db/index.ts'],
   activatePlanForAgentSync: ['db/claude-plans.ts', 'db/index.ts'],
+  // Boot-only, on the raw handle (no facade call before initDatabase returns); it has no asynchronous counterpart.
+  backfillImportShadowRows: ['db/vector.ts', 'db/index.ts'],
 }
 
 // Several files cross-reference a twin by name in a doc comment, which is not a call.

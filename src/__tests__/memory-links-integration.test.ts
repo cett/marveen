@@ -37,11 +37,11 @@ function insertMemoryWithEmbedding(content: string, floats?: number[]): number {
   return id
 }
 
-describe('upsertMemoryLink', () => {
-  it('creates a new link and returns a row id', () => {
+describe('upsertMemoryLink', async () => {
+  it('creates a new link and returns a row id', async () => {
     const src = insertMemoryWithEmbedding('src memory')
     const dst = insertMemoryWithEmbedding('dst memory')
-    const linkId = upsertMemoryLink(src, dst, 'explicit', 0.8)
+    const linkId = await upsertMemoryLink(src, dst, 'explicit', 0.8)
     expect(typeof linkId).toBe('number')
     const row = getDb().prepare('SELECT * FROM memory_links WHERE id = ?').get(linkId) as any
     expect(row).toBeDefined()
@@ -51,11 +51,11 @@ describe('upsertMemoryLink', () => {
     expect(row.weight).toBeCloseTo(0.8)
   })
 
-  it('updates weight on conflict (upsert semantics)', () => {
+  it('updates weight on conflict (upsert semantics)', async () => {
     const src = insertMemoryWithEmbedding('upsert src')
     const dst = insertMemoryWithEmbedding('upsert dst')
-    upsertMemoryLink(src, dst, 'semantic', 0.5)
-    upsertMemoryLink(src, dst, 'semantic', 0.95)
+    await upsertMemoryLink(src, dst, 'semantic', 0.5)
+    await upsertMemoryLink(src, dst, 'semantic', 0.95)
     const row = getDb()
       .prepare('SELECT weight FROM memory_links WHERE src_id = ? AND dst_id = ? AND link_type = ?')
       .get(src, dst, 'semantic') as any
@@ -68,8 +68,8 @@ describe('getMemoryNeighbors', () => {
     const src = insertMemoryWithEmbedding('neighbor src')
     const d1 = insertMemoryWithEmbedding('neighbor low')
     const d2 = insertMemoryWithEmbedding('neighbor high')
-    upsertMemoryLink(src, d1, 'semantic', 0.4)
-    upsertMemoryLink(src, d2, 'semantic', 0.9)
+    await upsertMemoryLink(src, d1, 'semantic', 0.4)
+    await upsertMemoryLink(src, d2, 'semantic', 0.9)
     const neighbors = await getMemoryNeighbors(src, 10)
     expect(neighbors.length).toBe(2)
     expect(neighbors[0].memory.id).toBe(d2)
@@ -85,7 +85,7 @@ describe('getMemoryNeighbors', () => {
   it('touches last_traversed_at on the edges', async () => {
     const src = insertMemoryWithEmbedding('traverse src')
     const dst = insertMemoryWithEmbedding('traverse dst')
-    upsertMemoryLink(src, dst, 'cooccurrence', 0.7)
+    await upsertMemoryLink(src, dst, 'cooccurrence', 0.7)
     const before = getDb().prepare('SELECT last_traversed_at FROM memory_links WHERE src_id = ?').get(src) as any
     expect(before.last_traversed_at).toBeNull()
     await getMemoryNeighbors(src, 5)
@@ -99,8 +99,8 @@ describe('pruneMemoryLinks', () => {
     const src = insertMemoryWithEmbedding('prune src')
     const d1 = insertMemoryWithEmbedding('prune keep')
     const d2 = insertMemoryWithEmbedding('prune remove')
-    upsertMemoryLink(src, d1, 'semantic', 0.8)
-    upsertMemoryLink(src, d2, 'entity', 0.05)
+    await upsertMemoryLink(src, d1, 'semantic', 0.8)
+    await upsertMemoryLink(src, d2, 'entity', 0.05)
     const removed = await pruneMemoryLinks(0.1)
     expect(removed).toBeGreaterThanOrEqual(1)
     const remaining = await getMemoryNeighbors(src, 10)

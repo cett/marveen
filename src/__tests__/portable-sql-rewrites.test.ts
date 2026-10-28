@@ -48,11 +48,11 @@ describe('RETURNING id replaces lastInsertRowid', () => {
   it('upsertMemoryLink returns the same id when the link is updated', async () => {
     const m1 = (await saveAgentMemory('agent-a', 'link source', 'hot')).id
     const m2 = (await saveAgentMemory('agent-a', 'link target', 'hot')).id
-    const first = upsertMemoryLink(m1, m2, 'semantic', 0.4)
+    const first = await upsertMemoryLink(m1, m2, 'semantic', 0.4)
     // An unrelated insert in between moves lastInsertRowid on; the upsert must
     // still report the link's own row.
     await saveAgentMemory('agent-a', 'unrelated insert', 'hot')
-    const again = upsertMemoryLink(m1, m2, 'semantic', 0.9)
+    const again = await upsertMemoryLink(m1, m2, 'semantic', 0.9)
     expect(again).toBe(first)
     const row = getDb().prepare('SELECT weight FROM memory_links WHERE id = ?').get(first) as { weight: number }
     expect(row.weight).toBe(0.9)

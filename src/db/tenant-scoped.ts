@@ -94,9 +94,12 @@ export async function updateTenantMemory(tenantId: string, id: number, patch: { 
 }
 
 export async function deleteTenantMemory(tenantId: string, id: number): Promise<boolean> {
-  const result = await dbx.run('DELETE FROM memories WHERE tenant_id = ? AND id = ?', tenantId, id)
-  if (result.changes > 0) await syncVecMemoryDelete(id)
-  return result.changes > 0
+  // One dbx.tx: the vec entry delete joins the transaction of the row delete, so a rollback leaves no vec orphan.
+  return dbx.tx(async (tx) => {
+    const result = await tx.run('DELETE FROM memories WHERE tenant_id = ? AND id = ?', tenantId, id)
+    if (result.changes > 0) await syncVecMemoryDelete(id)
+    return result.changes > 0
+  })
 }
 
 // ── kanban_cards ─────────────────────────────────────────────────────────────

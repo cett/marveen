@@ -584,7 +584,7 @@ async function main(): Promise<void> {
 
   // Memory decay (24h cycle)
   await runDecaySweep()
-  decayInterval = setInterval(runDecaySweep, 24 * 60 * 60 * 1000)
+  decayInterval = setInterval(() => { runDecaySweep().catch((err) => logger.warn({ err }, 'Memory decay sweep failed')) }, 24 * 60 * 60 * 1000)
 
   // Scheduled-task run snapshot retention: hourly cadence, 7-day age
   // cutoff with a per-task floor of the most recent 20 (see
