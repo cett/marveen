@@ -40,13 +40,13 @@ describe('label registry CRUD', () => {
     await addLabelToCard('card-a', 'lbl-a')
     expect(await getLabelsForCard('card-a')).toHaveLength(1)
 
-    expect(deleteLabel('lbl-a')).toBe(true)
+    expect(await deleteLabel('lbl-a')).toBe(true)
     expect(await getLabel('lbl-a')).toBeUndefined()
     expect(await getLabelsForCard('card-a')).toHaveLength(0)
   })
 
-  it('returns false deleting a non-existent label', () => {
-    expect(deleteLabel('nope')).toBe(false)
+  it('returns false deleting a non-existent label', async () => {
+    expect(await deleteLabel('nope')).toBe(false)
   })
 })
 
