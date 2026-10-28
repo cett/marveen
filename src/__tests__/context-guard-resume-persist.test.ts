@@ -58,7 +58,7 @@ const h = vi.hoisted(() => ({
   sendThrows: false,
   guardOff: false,
   notifyChannel: null as unknown as import('vitest').Mock<(...a: unknown[]) => Promise<void>>,
-  createAgentMessage: null as unknown as import('vitest').Mock<(...a: unknown[]) => { id: number }>,
+  createAgentMessage: null as unknown as import('vitest').Mock<(...a: unknown[]) => Promise<{ id: number }>>,
   sendPromptToSession: null as unknown as import('vitest').Mock<(...a: unknown[]) => Promise<string>>,
   restartAgentProcess: null as unknown as import('vitest').Mock<(...a: unknown[]) => void>,
 }))
@@ -126,7 +126,7 @@ vi.mock('../notify.js', async () => {
 vi.mock('../db/workspace.js', () => ({ getWorkspaceDocUpdatedAtMs: () => Promise.resolve(null) }))
 vi.mock('../db.js', async () => {
   const { vi } = await import('vitest')
-  h.createAgentMessage = vi.fn(() => ({ id: 1 }))
+  h.createAgentMessage = vi.fn(() => Promise.resolve({ id: 1 }))
   return { createAgentMessage: (...a: unknown[]) => h.createAgentMessage(...a) }
 })
 

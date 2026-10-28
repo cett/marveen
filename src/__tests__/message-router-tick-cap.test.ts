@@ -33,14 +33,14 @@ vi.mock('../config.js', async (importOriginal) => ({
 
 vi.mock('../db.js', () => ({
   getPendingMessages: (toAgent?: string) => {
-    if (toAgent) return [] // per-agent query for reconnect pre-pass
-    return mockGetPendingMessages()
+    if (toAgent) return Promise.resolve([]) // per-agent query for reconnect pre-pass
+    return Promise.resolve(mockGetPendingMessages())
   },
-  markMessageDelivered: (...a: unknown[]) => mockMarkDelivered(...a),
-  markMessageFailed: (...a: unknown[]) => mockMarkFailed(...a),
-  markMessageDone: (..._a: unknown[]) => true,
-  markMessageNoSession: (..._a: unknown[]) => true,
-  createAgentMessage: (..._a: unknown[]) => ({ id: 999 }),
+  markMessageDelivered: (...a: unknown[]) => Promise.resolve(mockMarkDelivered(...a)),
+  markMessageFailed: (...a: unknown[]) => Promise.resolve(mockMarkFailed(...a)),
+  markMessageDone: (..._a: unknown[]) => Promise.resolve(true),
+  markMessageNoSession: (..._a: unknown[]) => Promise.resolve(true),
+  createAgentMessage: (..._a: unknown[]) => Promise.resolve(({ id: 999 })),
   // card def5a189: OTel trace stubs -- no-ops in this test
   stampMessageTrace: (..._a: unknown[]) => Promise.resolve(false),
   upsertOtelSpan: (..._a: unknown[]) => undefined,

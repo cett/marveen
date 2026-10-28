@@ -3,16 +3,16 @@ import { EventEmitter } from 'node:events'
 import type { RouteContext } from '../web/routes/types.js'
 
 vi.mock('../db.js', () => ({
-  createAgentMessage: vi.fn().mockReturnValue({ id: 1 }),
-  getPendingMessages: vi.fn().mockReturnValue([]),
-  listAgentMessages: vi.fn().mockReturnValue([]),
-  getAgentConversation: vi.fn().mockReturnValue([]),
-  getAgentConversationThreads: vi.fn().mockReturnValue([]),
+  createAgentMessage: vi.fn().mockResolvedValue({ id: 1 }),
+  getPendingMessages: vi.fn().mockResolvedValue([]),
+  listAgentMessages: vi.fn().mockResolvedValue([]),
+  getAgentConversation: vi.fn().mockResolvedValue([]),
+  getAgentConversationThreads: vi.fn().mockResolvedValue([]),
   getKanbanSeqByIdPrefix: vi.fn().mockReturnValue(null),
-  closeOpenMessage: vi.fn().mockReturnValue(true),
+  closeOpenMessage: vi.fn().mockResolvedValue(true),
   getAgentMessage: vi.fn().mockResolvedValue(null),
   closeOtelSpan: vi.fn(),
-  findBlackboardRowByAgent: vi.fn().mockReturnValue(undefined),
+  findBlackboardRowByAgent: vi.fn().mockResolvedValue(undefined),
   upsertBlackboard: vi.fn(),
   writeAgentAuditLog: vi.fn(),
   isAuthorizedPartnerSender: vi.fn().mockReturnValue(false),
@@ -278,7 +278,7 @@ describe('POST /api/messages: assign:true delivery hook', () => {
 
   it('assign:true opens an assigned blackboard row for local recipient', async () => {
     const db = await import('../db.js')
-    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 42, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
+    vi.mocked(db.createAgentMessage).mockResolvedValueOnce({ id: 42, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
     const { ctx, out } = makeCtx('POST', '/api/messages', {
       from: 'agent-b',
       to: 'agent-c',
@@ -297,7 +297,7 @@ describe('POST /api/messages: assign:true delivery hook', () => {
 
   it('assign omitted: no blackboard row opened', async () => {
     const db = await import('../db.js')
-    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 43, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
+    vi.mocked(db.createAgentMessage).mockResolvedValueOnce({ id: 43, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
     const { ctx, out } = makeCtx('POST', '/api/messages', {
       from: 'agent-b',
       to: 'agent-c',
@@ -310,7 +310,7 @@ describe('POST /api/messages: assign:true delivery hook', () => {
 
   it('assign:false: no blackboard row opened', async () => {
     const db = await import('../db.js')
-    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 44, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
+    vi.mocked(db.createAgentMessage).mockResolvedValueOnce({ id: 44, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
     const { ctx, out } = makeCtx('POST', '/api/messages', {
       from: 'agent-b',
       to: 'agent-c',
@@ -327,7 +327,7 @@ describe('POST /api/messages: assign:true delivery hook', () => {
     vi.mocked(db.findBlackboardRowByAgent).mockResolvedValueOnce({
       id: 'abc', agent_id: 'agent-c', task_ref: null, status: 'active', summary: 'already working', updated_at: 0, tenant_id: 'default', blocked_by: null, blocked_reason: null,
     })
-    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 45, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
+    vi.mocked(db.createAgentMessage).mockResolvedValueOnce({ id: 45, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
     const { ctx, out } = makeCtx('POST', '/api/messages', {
       from: 'agent-b',
       to: 'agent-c',
@@ -346,7 +346,7 @@ describe('POST /api/messages: assign:true delivery hook', () => {
     vi.mocked(parseQualifiedId).mockReturnValueOnce({ system: 'remote', agent: 'agent-c' })
     vi.mocked(formatQualifiedId).mockReturnValueOnce('remote/agent-c')
     vi.mocked(getFederationConfig).mockReturnValueOnce({ enabled: true, systemId: 'local', peers: [{ id: 'remote' }] } as any)
-    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 46, from_agent: 'agent-b', to_agent: 'remote/agent-c', origin_note: null } as any)
+    vi.mocked(db.createAgentMessage).mockResolvedValueOnce({ id: 46, from_agent: 'agent-b', to_agent: 'remote/agent-c', origin_note: null } as any)
     const { ctx, out } = makeCtx('POST', '/api/messages', {
       from: 'agent-b',
       to: 'remote/agent-c',
@@ -372,7 +372,7 @@ describe('POST /api/messages: handoff envelope', () => {
 
   it('a string envelope is passed through to createAgentMessage verbatim', async () => {
     const db = await import('../db.js')
-    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 60, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
+    vi.mocked(db.createAgentMessage).mockResolvedValueOnce({ id: 60, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
     const { ctx, out } = makeCtx('POST', '/api/messages', {
       from: 'agent-b', to: 'agent-c', content: 'handoff', assign: true, envelope: '{"branch":"feat/x"}',
     })
@@ -385,7 +385,7 @@ describe('POST /api/messages: handoff envelope', () => {
 
   it('an object envelope is JSON.stringify-d before being passed through', async () => {
     const db = await import('../db.js')
-    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 61, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
+    vi.mocked(db.createAgentMessage).mockResolvedValueOnce({ id: 61, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
     const { ctx, out } = makeCtx('POST', '/api/messages', {
       from: 'agent-b', to: 'agent-c', content: 'handoff', assign: true, envelope: { branch: 'feat/x' },
     })
@@ -400,7 +400,7 @@ describe('POST /api/messages: handoff envelope', () => {
     const db = await import('../db.js')
     const { logger } = await import('../logger.js')
     const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as any)
-    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 62, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
+    vi.mocked(db.createAgentMessage).mockResolvedValueOnce({ id: 62, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
     const { ctx, out } = makeCtx('POST', '/api/messages', {
       from: 'agent-b', to: 'agent-c', content: 'handoff', assign: true,
     })
@@ -417,7 +417,7 @@ describe('POST /api/messages: handoff envelope', () => {
     const db = await import('../db.js')
     const { logger } = await import('../logger.js')
     const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as any)
-    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 63, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
+    vi.mocked(db.createAgentMessage).mockResolvedValueOnce({ id: 63, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
     const { ctx, out } = makeCtx('POST', '/api/messages', {
       from: 'agent-b', to: 'agent-c', content: 'handoff', assign: true, envelope: 'branch=feat/x',
     })
@@ -431,7 +431,7 @@ describe('POST /api/messages: handoff envelope', () => {
     const db = await import('../db.js')
     const { logger } = await import('../logger.js')
     const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as any)
-    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 64, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
+    vi.mocked(db.createAgentMessage).mockResolvedValueOnce({ id: 64, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
     const { ctx, out } = makeCtx('POST', '/api/messages', {
       from: 'agent-b', to: 'agent-c', content: 'just a note',
     })
@@ -457,7 +457,7 @@ describe('POST /api/messages: complete:true delivery hook', () => {
     vi.mocked(db.findBlackboardRowByAgent).mockResolvedValueOnce({
       id: 'abc', agent_id: 'agent-b', task_ref: '#867', status: 'assigned', summary: 'Working on it', updated_at: 0, tenant_id: 'default', blocked_by: null, blocked_reason: null,
     })
-    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 50, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
+    vi.mocked(db.createAgentMessage).mockResolvedValueOnce({ id: 50, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
     const { ctx, out } = makeCtx('POST', '/api/messages', {
       from: 'agent-b',
       to: 'agent-c',
@@ -480,7 +480,7 @@ describe('POST /api/messages: complete:true delivery hook', () => {
     vi.mocked(db.findBlackboardRowByAgent).mockResolvedValueOnce({
       id: 'abc', agent_id: 'agent-b', task_ref: null, status: 'active', summary: 'Working on it', updated_at: 0, tenant_id: 'default', blocked_by: null, blocked_reason: null,
     })
-    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 51, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
+    vi.mocked(db.createAgentMessage).mockResolvedValueOnce({ id: 51, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
     const { ctx, out } = makeCtx('POST', '/api/messages', {
       from: 'agent-b',
       to: 'agent-c',
@@ -502,7 +502,7 @@ describe('POST /api/messages: complete:true delivery hook', () => {
     vi.mocked(db.findBlackboardRowByAgent).mockResolvedValueOnce({
       id: 'abc', agent_id: 'agent-b', task_ref: null, status: 'blocked', summary: 'Waiting for auth', updated_at: 0, tenant_id: 'default', blocked_by: 'agent-c', blocked_reason: 'auth expired',
     })
-    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 56, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
+    vi.mocked(db.createAgentMessage).mockResolvedValueOnce({ id: 56, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
     const { ctx, out } = makeCtx('POST', '/api/messages', {
       from: 'agent-b',
       to: 'agent-c',
@@ -529,7 +529,7 @@ describe('POST /api/messages: complete:true delivery hook', () => {
     vi.mocked(db.findBlackboardRowByAgent).mockResolvedValue({
       id: 'abc', agent_id: 'agent-b', task_ref: null, status: 'blocked', summary: 'Waiting for auth', updated_at: 0, tenant_id: 'default', blocked_by: null, blocked_reason: null,
     })
-    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 57, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
+    vi.mocked(db.createAgentMessage).mockResolvedValueOnce({ id: 57, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
     const { ctx, out } = makeCtx('POST', '/api/messages', {
       from: 'agent-b',
       to: 'agent-c',
@@ -545,7 +545,7 @@ describe('POST /api/messages: complete:true delivery hook', () => {
     vi.mocked(db.findBlackboardRowByAgent).mockResolvedValueOnce({
       id: 'abc', agent_id: 'agent-b', task_ref: null, status: 'stale', summary: 'Old task', updated_at: 0, tenant_id: 'default', blocked_by: null, blocked_reason: null,
     })
-    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 52, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
+    vi.mocked(db.createAgentMessage).mockResolvedValueOnce({ id: 52, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
     const { ctx, out } = makeCtx('POST', '/api/messages', {
       from: 'agent-b',
       to: 'agent-c',
@@ -562,7 +562,7 @@ describe('POST /api/messages: complete:true delivery hook', () => {
     vi.mocked(db.findBlackboardRowByAgent).mockResolvedValueOnce({
       id: 'abc', agent_id: 'agent-b', task_ref: null, status: 'done', summary: 'Old task', updated_at: 0, tenant_id: 'default', blocked_by: null, blocked_reason: null,
     })
-    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 53, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
+    vi.mocked(db.createAgentMessage).mockResolvedValueOnce({ id: 53, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
     const { ctx, out } = makeCtx('POST', '/api/messages', {
       from: 'agent-b',
       to: 'agent-c',
@@ -577,7 +577,7 @@ describe('POST /api/messages: complete:true delivery hook', () => {
   it('complete:true does not error when the sender has no blackboard row', async () => {
     const db = await import('../db.js')
     vi.mocked(db.findBlackboardRowByAgent).mockResolvedValueOnce(undefined)
-    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 54, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
+    vi.mocked(db.createAgentMessage).mockResolvedValueOnce({ id: 54, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
     const { ctx, out } = makeCtx('POST', '/api/messages', {
       from: 'agent-b',
       to: 'agent-c',
@@ -594,7 +594,7 @@ describe('POST /api/messages: complete:true delivery hook', () => {
     vi.mocked(db.findBlackboardRowByAgent).mockResolvedValueOnce({
       id: 'abc', agent_id: 'agent-b', task_ref: null, status: 'assigned', summary: 'Working on it', updated_at: 0, tenant_id: 'default', blocked_by: null, blocked_reason: null,
     })
-    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 55, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
+    vi.mocked(db.createAgentMessage).mockResolvedValueOnce({ id: 55, from_agent: 'agent-b', to_agent: 'agent-c', origin_note: null } as any)
     const { ctx, out } = makeCtx('POST', '/api/messages', {
       from: 'agent-b',
       to: 'agent-c',
@@ -616,7 +616,7 @@ describe('POST /api/messages: no_pii_scrub review-gate', () => {
   it('bearer-token caller (no session auth): scrub still runs, warning logged, denied-attempt audit entry written (not the bypass action)', async () => {
     const { scrubPiiFromContent } = await import('../prompt-safety.js')
     const db = await import('../db.js')
-    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 101, from_agent: 'agent-a', to_agent: 'agent-b', origin_note: null } as any)
+    vi.mocked(db.createAgentMessage).mockResolvedValueOnce({ id: 101, from_agent: 'agent-a', to_agent: 'agent-b', origin_note: null } as any)
     const { ctx, out } = makeCtx('POST', '/api/messages', {
       from: 'agent-a', to: 'agent-b', content: 'health metrics here', no_pii_scrub: true,
     }, { role: 'admin' }) // role=admin from the shared bearer token, but no ctx.auth at all
@@ -634,7 +634,7 @@ describe('POST /api/messages: no_pii_scrub review-gate', () => {
   it('human admin session: scrub is bypassed and a pii_scrub_bypass audit entry is written', async () => {
     const { scrubPiiFromContent } = await import('../prompt-safety.js')
     const db = await import('../db.js')
-    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 102, from_agent: 'test-owner', to_agent: 'agent-b', origin_note: null } as any)
+    vi.mocked(db.createAgentMessage).mockResolvedValueOnce({ id: 102, from_agent: 'test-owner', to_agent: 'agent-b', origin_note: null } as any)
     const { ctx, out } = makeCtx('POST', '/api/messages', {
       from: 'test-owner', to: 'agent-b', content: 'health metrics here', no_pii_scrub: true,
     }, { role: 'admin', auth: { kind: 'session', user: 'jonas' } })
@@ -649,7 +649,7 @@ describe('POST /api/messages: no_pii_scrub review-gate', () => {
   it('session auth but non-admin role: scrub still runs, no bypass audit entry, denied-attempt audit entry written', async () => {
     const { scrubPiiFromContent } = await import('../prompt-safety.js')
     const db = await import('../db.js')
-    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 103, from_agent: 'agent-a', to_agent: 'agent-b', origin_note: null } as any)
+    vi.mocked(db.createAgentMessage).mockResolvedValueOnce({ id: 103, from_agent: 'agent-a', to_agent: 'agent-b', origin_note: null } as any)
     const { ctx, out } = makeCtx('POST', '/api/messages', {
       from: 'agent-a', to: 'agent-b', content: 'health metrics here', no_pii_scrub: true,
     }, { role: 'viewer', auth: { kind: 'session', user: 'someone' } })
@@ -670,7 +670,7 @@ describe('POST /api/messages: no_pii_scrub review-gate', () => {
   it('no_pii_scrub omitted: scrub runs regardless of auth, no bypass audit entry (baseline unchanged)', async () => {
     const { scrubPiiFromContent } = await import('../prompt-safety.js')
     const db = await import('../db.js')
-    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 104, from_agent: 'test-owner', to_agent: 'agent-b', origin_note: null } as any)
+    vi.mocked(db.createAgentMessage).mockResolvedValueOnce({ id: 104, from_agent: 'test-owner', to_agent: 'agent-b', origin_note: null } as any)
     const { ctx, out } = makeCtx('POST', '/api/messages', {
       from: 'test-owner', to: 'agent-b', content: 'ordinary message',
     }, { role: 'admin', auth: { kind: 'session', user: 'jonas' } })
@@ -694,7 +694,7 @@ describe('POST /api/messages: #924 audit principal resolves from the auth gate, 
 
   it('plain bearer-token caller (shared fleet token, no user/peer/device): principal is null', async () => {
     const db = await import('../db.js')
-    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 201, from_agent: 'agent-a', to_agent: 'agent-b', origin_note: null } as any)
+    vi.mocked(db.createAgentMessage).mockResolvedValueOnce({ id: 201, from_agent: 'agent-a', to_agent: 'agent-b', origin_note: null } as any)
     const { ctx, out } = makeCtx('POST', '/api/messages', {
       from: 'agent-a', to: 'agent-b', content: 'health metrics here', no_pii_scrub: true,
     }, { role: 'admin', auth: { kind: 'token' } })
@@ -710,7 +710,7 @@ describe('POST /api/messages: #924 audit principal resolves from the auth gate, 
 
   it('registered api-token caller (has a name in api_tokens): principal resolves to the token name', async () => {
     const db = await import('../db.js')
-    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 207, from_agent: 'agent-a', to_agent: 'agent-b', origin_note: null } as any)
+    vi.mocked(db.createAgentMessage).mockResolvedValueOnce({ id: 207, from_agent: 'agent-a', to_agent: 'agent-b', origin_note: null } as any)
     const { ctx, out } = makeCtx('POST', '/api/messages', {
       from: 'agent-a', to: 'agent-b', content: 'health metrics here', no_pii_scrub: true,
     }, { role: 'admin', auth: { kind: 'token', tokenName: 'example-service-token' } })
@@ -731,7 +731,7 @@ describe('POST /api/messages: #924 audit principal resolves from the auth gate, 
     // denied and the attempt is audited -- the row must show BOTH: what was
     // claimed (from) and who was actually authenticated (principal).
     const db = await import('../db.js')
-    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 202, from_agent: 'agent-x', to_agent: 'agent-b', origin_note: null } as any)
+    vi.mocked(db.createAgentMessage).mockResolvedValueOnce({ id: 202, from_agent: 'agent-x', to_agent: 'agent-b', origin_note: null } as any)
     const { ctx, out } = makeCtx('POST', '/api/messages', {
       from: 'agent-x', to: 'agent-b', content: 'health metrics here', no_pii_scrub: true,
     }, { role: 'viewer', auth: { kind: 'session', user: 'jonas' } })
@@ -747,7 +747,7 @@ describe('POST /api/messages: #924 audit principal resolves from the auth gate, 
 
   it('federation caller: principal resolves to the verified peer id', async () => {
     const db = await import('../db.js')
-    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 203, from_agent: 'agent-a', to_agent: 'agent-b', origin_note: null } as any)
+    vi.mocked(db.createAgentMessage).mockResolvedValueOnce({ id: 203, from_agent: 'agent-a', to_agent: 'agent-b', origin_note: null } as any)
     const { ctx, out } = makeCtx('POST', '/api/messages', {
       from: 'agent-a', to: 'agent-b', content: 'health metrics here', no_pii_scrub: true,
     }, { role: 'admin', auth: { kind: 'federation', peer: 'teodor' } })
@@ -763,7 +763,7 @@ describe('POST /api/messages: #924 audit principal resolves from the auth gate, 
 
   it('enrolled-device caller: principal resolves to the device key name', async () => {
     const db = await import('../db.js')
-    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 204, from_agent: 'agent-a', to_agent: 'agent-b', origin_note: null } as any)
+    vi.mocked(db.createAgentMessage).mockResolvedValueOnce({ id: 204, from_agent: 'agent-a', to_agent: 'agent-b', origin_note: null } as any)
     const { ctx, out } = makeCtx('POST', '/api/messages', {
       from: 'agent-a', to: 'agent-b', content: 'health metrics here', no_pii_scrub: true,
     }, { role: 'admin', auth: { kind: 'device', device: 'iphone-jonas' } })
@@ -779,7 +779,7 @@ describe('POST /api/messages: #924 audit principal resolves from the auth gate, 
 
   it('pii_scrub_bypass entry also carries the session principal in its detail', async () => {
     const db = await import('../db.js')
-    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 205, from_agent: 'test-owner', to_agent: 'agent-b', origin_note: null } as any)
+    vi.mocked(db.createAgentMessage).mockResolvedValueOnce({ id: 205, from_agent: 'test-owner', to_agent: 'agent-b', origin_note: null } as any)
     const { ctx, out } = makeCtx('POST', '/api/messages', {
       from: 'test-owner', to: 'agent-b', content: 'health metrics here', no_pii_scrub: true,
     }, { role: 'admin', auth: { kind: 'session', user: 'jonas' } })
@@ -812,7 +812,7 @@ describe('POST /api/messages: #924 audit principal resolves from the auth gate, 
   it('partner-tenant accepted create: audit entry carries the principal alongside the allowlist authorization', async () => {
     const db = await import('../db.js')
     vi.mocked(db.isAuthorizedPartnerSender).mockReturnValueOnce(true)
-    vi.mocked(db.createAgentMessage).mockReturnValueOnce({ id: 206, from_agent: 'partner-agent', to_agent: 'agent-b', origin_note: null } as any)
+    vi.mocked(db.createAgentMessage).mockResolvedValueOnce({ id: 206, from_agent: 'partner-agent', to_agent: 'agent-b', origin_note: null } as any)
     const { ctx, out } = makeCtx('POST', '/api/messages', {
       from: 'partner-agent', to: 'agent-b', content: 'hi',
     }, { role: 'viewer', tenantId: 'partner-1', auth: { kind: 'federation', peer: 'partner-system' } })

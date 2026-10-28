@@ -17,19 +17,19 @@ import type { RouteContext } from '../web/routes/types.js'
 vi.mock('../db.js', () => ({
   // used by messages.ts
   createAgentMessage: vi.fn(),
-  getPendingMessages: vi.fn().mockReturnValue([]),
-  listAgentMessages: vi.fn().mockReturnValue([]),
-  getAgentConversation: vi.fn().mockReturnValue([]),
-  getAgentConversationThreads: vi.fn().mockReturnValue([]),
+  getPendingMessages: vi.fn().mockResolvedValue([]),
+  listAgentMessages: vi.fn().mockResolvedValue([]),
+  getAgentConversation: vi.fn().mockResolvedValue([]),
+  getAgentConversationThreads: vi.fn().mockResolvedValue([]),
   getKanbanSeqByIdPrefix: vi.fn().mockReturnValue(null),
   closeOpenMessage: vi.fn(),
   getAgentMessage: vi.fn(),
   closeOtelSpan: vi.fn(),
-  getPendingBacklogByAgent: vi.fn().mockReturnValue([]),
+  getPendingBacklogByAgent: vi.fn().mockResolvedValue([]),
   COMPLETION_REPORT_PREFIX: '[Eredmény]',
   isAuthorizedPartnerSender: vi.fn(),
   writeAgentAuditLog: vi.fn(),
-  findBlackboardRowByAgent: vi.fn().mockReturnValue(undefined),
+  findBlackboardRowByAgent: vi.fn().mockResolvedValue(undefined),
   upsertBlackboard: vi.fn(),
   // used by admin-b2b.ts
   getDb: vi.fn().mockReturnValue({
@@ -148,7 +148,7 @@ describe('POST /api/messages -- partner tenant auth', () => {
     // the recipient is a registered agent (UNKNOWNTO924); the partner sender is not a fleet agent
     const { isKnownAgent } = await import('../web/agent-config.js')
     vi.mocked(isKnownAgent).mockImplementation((n: string) => n === 'agent-a')
-    vi.mocked(db.createAgentMessage).mockReturnValue({ id: 7, from_agent: 'partner-bot', to_agent: 'agent-a', origin_note: null } as any)
+    vi.mocked(db.createAgentMessage).mockResolvedValue({ id: 7, from_agent: 'partner-bot', to_agent: 'agent-a', origin_note: null } as any)
 
     const { ctx, out } = makeCtx('POST', '/api/messages',
       { from: 'partner-bot', to: 'agent-a', content: 'hello' },
@@ -192,7 +192,7 @@ describe('POST /api/messages -- partner tenant auth', () => {
     const { isKnownAgent } = await import('../web/agent-config.js')
     vi.mocked(isKnownAgent).mockImplementation((n: string) => n === 'agent-a' || n === 'agent-b')
 
-    vi.mocked(db.createAgentMessage).mockReturnValue({ id: 8, from_agent: 'agent-a', to_agent: 'agent-b', origin_note: null } as any)
+    vi.mocked(db.createAgentMessage).mockResolvedValue({ id: 8, from_agent: 'agent-a', to_agent: 'agent-b', origin_note: null } as any)
 
     const { ctx, out } = makeCtx('POST', '/api/messages',
       { from: 'agent-a', to: 'agent-b', content: 'fleet msg' },

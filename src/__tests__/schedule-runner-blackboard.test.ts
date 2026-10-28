@@ -155,7 +155,7 @@ describe('applyBlackboardDone: task_ref passthrough to upsertBlackboard', () => 
     // Without the fix (task_ref omitted from the call), upsertBlackboard receives
     // no task_ref and the column goes null -- this assertion would fail.
     const snapshot = { status: 'active', summary: 'kanban-task', task_ref: 'card-abc' }
-    vi.mocked(findBlackboardRowByAgent).mockReturnValue(
+    vi.mocked(findBlackboardRowByAgent).mockResolvedValue(
       { status: 'active', summary: 'kanban-task', task_ref: 'card-abc', updated_at: 0, agent_id: 'agent-a' } as any,
     )
 
@@ -181,7 +181,7 @@ describe('applyBlackboardDone: task_ref passthrough to upsertBlackboard', () => 
   it('skips upsertBlackboard when current row does not match snapshot', async () => {
     const snapshot = { status: 'active', summary: 'kanban-task', task_ref: 'card-abc' }
     // Agent changed the summary mid-run.
-    vi.mocked(findBlackboardRowByAgent).mockReturnValue(
+    vi.mocked(findBlackboardRowByAgent).mockResolvedValue(
       { status: 'active', summary: 'different-summary', task_ref: 'card-abc', updated_at: 0, agent_id: 'agent-a' } as any,
     )
 
@@ -196,7 +196,7 @@ describe('applyBlackboardDone: task_ref passthrough to upsertBlackboard', () => 
     const snapshot = { status: 'active', summary: 'kanban-task', task_ref: 'card-abc' }
 
     it('closes a stale row whose summary and task_ref are still the runner\'s own', async () => {
-      vi.mocked(findBlackboardRowByAgent).mockReturnValue(
+      vi.mocked(findBlackboardRowByAgent).mockResolvedValue(
         { status: 'stale', summary: 'kanban-task', task_ref: 'card-abc', updated_at: 0, agent_id: 'agent-a' } as any,
       )
       await applyBlackboardDone({ ...BASE_ENTRY, blackboardSnapshot: snapshot })
@@ -205,7 +205,7 @@ describe('applyBlackboardDone: task_ref passthrough to upsertBlackboard', () => 
     })
 
     it('closes a stale row with a null task_ref too', async () => {
-      vi.mocked(findBlackboardRowByAgent).mockReturnValue(
+      vi.mocked(findBlackboardRowByAgent).mockResolvedValue(
         { status: 'stale', summary: 'kanban-task', task_ref: null, updated_at: 0, agent_id: 'agent-a' } as any,
       )
       await applyBlackboardDone({ ...BASE_ENTRY, blackboardSnapshot: { ...snapshot, task_ref: null } })
@@ -213,7 +213,7 @@ describe('applyBlackboardDone: task_ref passthrough to upsertBlackboard', () => 
     })
 
     it('leaves a stale row alone when the agent changed the summary', async () => {
-      vi.mocked(findBlackboardRowByAgent).mockReturnValue(
+      vi.mocked(findBlackboardRowByAgent).mockResolvedValue(
         { status: 'stale', summary: 'agent wrote this', task_ref: 'card-abc', updated_at: 0, agent_id: 'agent-a' } as any,
       )
       await applyBlackboardDone({ ...BASE_ENTRY, blackboardSnapshot: snapshot })
@@ -221,7 +221,7 @@ describe('applyBlackboardDone: task_ref passthrough to upsertBlackboard', () => 
     })
 
     it('leaves a stale row alone when the task_ref differs', async () => {
-      vi.mocked(findBlackboardRowByAgent).mockReturnValue(
+      vi.mocked(findBlackboardRowByAgent).mockResolvedValue(
         { status: 'stale', summary: 'kanban-task', task_ref: 'card-other', updated_at: 0, agent_id: 'agent-a' } as any,
       )
       await applyBlackboardDone({ ...BASE_ENTRY, blackboardSnapshot: snapshot })
@@ -229,7 +229,7 @@ describe('applyBlackboardDone: task_ref passthrough to upsertBlackboard', () => 
     })
 
     it.each(['done', 'blocked', 'assigned'])('still leaves a %s row alone (only stale is forgiven)', async (status) => {
-      vi.mocked(findBlackboardRowByAgent).mockReturnValue(
+      vi.mocked(findBlackboardRowByAgent).mockResolvedValue(
         { status, summary: 'kanban-task', task_ref: 'card-abc', updated_at: 0, agent_id: 'agent-a' } as any,
       )
       await applyBlackboardDone({ ...BASE_ENTRY, blackboardSnapshot: snapshot })

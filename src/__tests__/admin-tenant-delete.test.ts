@@ -39,7 +39,7 @@ vi.mock('../db.js', () => ({
   listPartnerSenders: vi.fn(),
   createPartnerSender: vi.fn(),
   disablePartnerSender: vi.fn(),
-  listTenantAgentAvailability: vi.fn().mockReturnValue([]),
+  listTenantAgentAvailability: vi.fn().mockResolvedValue([]),
   setTenantAgentAvailability: vi.fn(),
   syncVecMemoryDelete: vi.fn(),
 }))

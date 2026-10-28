@@ -11,7 +11,7 @@ const mockEnabledFor = vi.fn<(agent: string) => string[]>()
 vi.mock('../config.js', async (orig) => ({ ...(await orig<typeof import('../config.js')>()), MAIN_AGENT_ID: 'main-agent' }))
 vi.mock('../db.js', async (orig) => ({
   ...(await orig<typeof import('../db.js')>()),
-  getTenantsForAgent: (a: string) => mockEnabledFor(a),
+  getTenantsForAgent: (a: string) => Promise.resolve(mockEnabledFor(a)),
   agentServesTenant: (a: string, t: string) => mockServes(a, t),
 }))
 vi.mock('../web/agent-config.js', async (orig) => ({

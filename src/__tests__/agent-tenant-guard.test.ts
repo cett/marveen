@@ -10,8 +10,8 @@ vi.mock('../web/agent-config.js', () => ({
   isKnownAgent: vi.fn().mockImplementation((n: string) => ['member-a', 'hidden-agent', 'main-agent'].includes(n)),
 }))
 vi.mock('../db.js', () => ({
-  getEnabledAgentsForTenant: vi.fn().mockReturnValue([]),
-  isTenantAgentEnabled: vi.fn().mockImplementation((t: string, a: string) => t === 'acme' && a === 'member-a'),
+  getEnabledAgentsForTenant: vi.fn().mockResolvedValue([]),
+  isTenantAgentEnabled: vi.fn().mockImplementation((t: string, a: string) => Promise.resolve(t === 'acme' && a === 'member-a')),
 }))
 
 import { tryGuardAgentTenantReads } from '../web/routes/agent-tenant-guard.js'

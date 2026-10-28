@@ -54,8 +54,8 @@ vi.mock('../db.js', () => ({
   getDb: vi.fn().mockReturnValue({
     prepare: vi.fn().mockReturnValue({ all: vi.fn().mockReturnValue([]) }),
   }),
-  getEnabledAgentsForTenant: vi.fn().mockReturnValue([]),
-  isTenantAgentEnabled: vi.fn().mockReturnValue(true),
+  getEnabledAgentsForTenant: vi.fn().mockResolvedValue([]),
+  isTenantAgentEnabled: vi.fn().mockResolvedValue(true),
 }))
 vi.mock('../web/telegram.js', () => ({
   sendAvatarChangeMessage: vi.fn().mockResolvedValue(undefined),

@@ -52,7 +52,7 @@ vi.mock('../db/observability.js', () => ({
   getTenant: vi.fn().mockReturnValue(undefined),
 }))
 vi.mock('../db/agents.js', () => ({
-  getTenantsForAgent: vi.fn().mockReturnValue([]),
+  getTenantsForAgent: vi.fn().mockResolvedValue([]),
 }))
 vi.mock('../web/remote-status-cache.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../web/remote-status-cache.js')>()

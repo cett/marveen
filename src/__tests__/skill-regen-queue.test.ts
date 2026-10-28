@@ -39,7 +39,7 @@ vi.mock('../db.js', () => ({
   listAllSkills: listAllSkillsMock,
   listSkillAccess: vi.fn().mockResolvedValue([]),
   listSkillFiles: listSkillFilesMock,
-  getEnabledAgentsForTenant: vi.fn().mockReturnValue([]),
+  getEnabledAgentsForTenant: vi.fn().mockResolvedValue([]),
 }))
 vi.mock('../logger.js', () => ({
   logger: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },

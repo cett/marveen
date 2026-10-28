@@ -28,14 +28,14 @@ vi.mock('../config.js', async (importOriginal) => ({
 }))
 
 vi.mock('../db.js', () => ({
-  getPendingMessages: (..._a: unknown[]) => [],
-  markMessageDelivered: (..._a: unknown[]) => true,
-  markMessageFailed: (..._a: unknown[]) => true,
-  markMessageDone: (..._a: unknown[]) => true,
-  markMessageNoSession: (..._a: unknown[]) => true,
-  markPendingFederatedFailed: (..._a: unknown[]) => true,
-  setMessageResult: (..._a: unknown[]) => true,
-  createAgentMessage: (...a: unknown[]) => mockCreateAgentMessage(...a),
+  getPendingMessages: (..._a: unknown[]) => Promise.resolve([]),
+  markMessageDelivered: (..._a: unknown[]) => Promise.resolve(true),
+  markMessageFailed: (..._a: unknown[]) => Promise.resolve(true),
+  markMessageDone: (..._a: unknown[]) => Promise.resolve(true),
+  markMessageNoSession: (..._a: unknown[]) => Promise.resolve(true),
+  markPendingFederatedFailed: (..._a: unknown[]) => Promise.resolve(true),
+  setMessageResult: (..._a: unknown[]) => Promise.resolve(true),
+  createAgentMessage: (...a: unknown[]) => Promise.resolve(mockCreateAgentMessage(...a)),
   stampMessageTrace: (..._a: unknown[]) => Promise.resolve(true),
   upsertOtelSpan: (..._a: unknown[]) => undefined,
   closeOtelSpan: (..._a: unknown[]) => false,

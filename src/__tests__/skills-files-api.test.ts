@@ -46,8 +46,8 @@ vi.mock('../db.js', () => ({
   deleteSkill: vi.fn((id: string) => { for (const k of [...files.keys()]) if (k.startsWith(`${id}\u0000`)) files.delete(k); return Promise.resolve(store.delete(id)) }),
   listAllSkills: vi.fn(() => Promise.resolve([...store.values()])),
   listSkillAccess: vi.fn().mockResolvedValue([]),
-  getEnabledAgentsForTenant: vi.fn((t: string) => avail.get(t) ?? []),
-  getTenantsForAgent: vi.fn((a: string) => [...avail.entries()].filter(([, agents]) => agents.includes(a)).map(([t]) => t)),
+  getEnabledAgentsForTenant: vi.fn((t: string) => Promise.resolve(avail.get(t) ?? [])),
+  getTenantsForAgent: vi.fn((a: string) => Promise.resolve([...avail.entries()].filter(([, agents]) => agents.includes(a)).map(([t]) => t))),
   listSkillFiles: vi.fn((id: string) => Promise.resolve([...files.values()].filter(f => f.skill_id === id).sort((a, b) => a.rel_path.localeCompare(b.rel_path)))),
   getSkillFile: vi.fn((id: string, rel: string) => Promise.resolve(files.get(fk(id, rel)))),
   putSkillFile: vi.fn((id: string, rel: string, content: Buffer, mode?: number) => {

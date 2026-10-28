@@ -10,7 +10,7 @@ const mocks = vi.hoisted(() => ({
   getRunningBackgroundTasks: vi.fn().mockResolvedValue([]),
   finishBackgroundTask: vi.fn(),
   markMessageFailed: vi.fn(),
-  claimPendingForAgent: vi.fn().mockReturnValue([]),
+  claimPendingForAgent: vi.fn().mockResolvedValue([]),
   getDb: vi.fn(),
   execFileSync: vi.fn(),
   resolveFromPath: vi.fn().mockReturnValue('/usr/bin/tmux'),

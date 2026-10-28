@@ -46,8 +46,8 @@ vi.mock('../db.js', () => ({
   createAgentMessage: vi.fn(),
   revokeApiTokensForAgent: vi.fn(),
   getOpenKanbanCountsByAssignee: vi.fn().mockReturnValue([]),
-  getEnabledAgentsForTenant: vi.fn().mockReturnValue([]),
-  isTenantAgentEnabled: vi.fn().mockReturnValue(true),
+  getEnabledAgentsForTenant: vi.fn().mockResolvedValue([]),
+  isTenantAgentEnabled: vi.fn().mockResolvedValue(true),
 }))
 vi.mock('../web/telegram.js', () => ({
   sendAvatarChangeMessage: vi.fn().mockResolvedValue(undefined),

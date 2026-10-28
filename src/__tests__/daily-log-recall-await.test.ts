@@ -21,7 +21,7 @@ vi.mock('../db.js', () => ({
   recallByDateRange: m.recallByDateRange,
   recallSearch: m.recallSearch,
   appLocalDate: () => '2026-10-26',
-  resolveAgentTenant: () => 'default',
+  resolveAgentTenant: () => Promise.resolve('default'),
 }))
 vi.mock('../config.js', () => ({ MAIN_AGENT_ID: 'main-agent', APP_TZ: 'Europe/Budapest' }))
 
