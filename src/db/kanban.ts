@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { getEffectiveSettingValue } from '../settings-store.js'
 import { writeAgentAuditLog } from './audit.js'
+import { resolveWriteTenant } from './write-tenant.js'
 import { updateIdeaWithStatusLog } from './misc.js'
 import { logger } from '../logger.js'
 import { dbx, type Dbx, type SqlOps, type Tx } from './facade.js'
@@ -165,9 +166,9 @@ export async function insertKanbanCardRows(card: NewKanbanCard, ops: Dbx | Tx = 
 }
 
 /** Best effort: an audit failure must not abort card creation. */
-export async function writeKanbanCreateAudit(entry: KanbanCreateAudit): Promise<void> {
+export async function writeKanbanCreateAudit(entry: KanbanCreateAudit, tenantId?: string | null): Promise<void> {
   try {
-    await writeAgentAuditLog({ agent_id: entry.agent_id, entity: 'kanban', action: 'create', entity_id: entry.entity_id, detail: entry.detail })
+    await writeAgentAuditLog({ agent_id: entry.agent_id, entity: 'kanban', action: 'create', entity_id: entry.entity_id, detail: entry.detail, tenant_id: tenantId })
   } catch { /* audit failure must not abort card creation */ }
 }
 
@@ -185,6 +186,7 @@ export async function createKanbanSubtasks(
   subtasks: Array<{ title: string; description?: string | null; assignee?: string | null; priority?: string | null }>,
   actor: string,
 ): Promise<string[]> {
+  const tenants = await resolveAuditTenants(subtasks.map((st) => st.assignee || 'system'))
   return dbx.tx(async (tx) => {
     const parent = await getKanbanCard(parentId, tx)
     if (!parent) throw new Error(`Parent card not found: ${parentId}`)
@@ -206,7 +208,7 @@ export async function createKanbanSubtasks(
       ids.push(id)
     }
     await addKanbanComment(parentId, actor, `Auto-breakdown: ${ids.length} subtask létrehozva (${ids.join(', ')})`, tx)
-    for (const entry of audits) await auditInSavepoint(tx, () => writeKanbanCreateAudit(entry), 'kanban create', entry.entity_id)
+    for (const entry of audits) await auditInSavepoint(tx, () => writeKanbanCreateAudit(entry, tenants.get(entry.agent_id)), 'kanban create', entry.entity_id)
     return ids
   })
 }
@@ -226,6 +228,7 @@ export async function promoteIdeaToKanban(
   idea: { from: string | null; actor: string; note: string },
 ): Promise<boolean> {
   if (cards.length === 0) throw new Error('promoteIdeaToKanban needs at least one card')
+  const tenants = await resolveAuditTenants(cards.map((c) => c.assignee || 'system'))
   try {
     await dbx.tx(async (tx) => {
       const audits: KanbanCreateAudit[] = []
@@ -233,13 +236,27 @@ export async function promoteIdeaToKanban(
       // TODO(phase2): the idea write joins this transaction through the ambient connection; pass the tx handle.
       const changed = await updateIdeaWithStatusLog(ideaId, { status: 'kanban', kanban_id: cards[0].id }, { from: idea.from, to: 'kanban', actor: idea.actor, note: idea.note })
       if (!changed) throw new IdeaGoneError()
-      for (const entry of audits) await auditInSavepoint(tx, () => writeKanbanCreateAudit(entry), 'kanban create', entry.entity_id)
+      for (const entry of audits) await auditInSavepoint(tx, () => writeKanbanCreateAudit(entry, tenants.get(entry.agent_id)), 'kanban create', entry.entity_id)
     })
     return true
   } catch (err) {
     if (err instanceof IdeaGoneError) return false
     throw err
   }
+}
+
+/**
+ * The tenants the audit rows of a transaction are stamped with, resolved BEFORE the transaction opens: the lookup
+ * reads through the facade, which inside the transaction body would run on another connection once the backend
+ * pools. An agent whose lookup fails is left out of the map; its audit then resolves the tenant itself, inside its
+ * savepoint, and a failure there stays best effort like every kanban audit.
+ */
+async function resolveAuditTenants(agentIds: string[]): Promise<Map<string, string | null>> {
+  const tenants = new Map<string, string | null>()
+  for (const id of new Set(agentIds)) {
+    try { tenants.set(id, await resolveWriteTenant(id)) } catch { /* resolved at write time instead */ }
+  }
+  return tenants
 }
 
 /** Runs one audit write in its own savepoint: a failure is logged, rolls back only itself and is never rethrown. */
@@ -646,6 +663,8 @@ export async function deleteKanbanCard(id: string): Promise<boolean> {
   const grandparentId = card.parent_id
   const grandparentDepth = grandparentId ? ((await getKanbanCard(grandparentId))?.depth ?? 0) : -1
   const now = Math.floor(Date.now() / 1000)
+  const auditAgent = card.assignee || 'system'
+  const auditTenant = (await resolveAuditTenants([auditAgent])).get(auditAgent)
 
   const deleted = await dbx.tx(async (tx) => {
     await tx.run('DELETE FROM kanban_comments WHERE card_id = ?', id)
@@ -663,7 +682,7 @@ export async function deleteKanbanCard(id: string): Promise<boolean> {
     if (removed) {
       await auditInSavepoint(
         tx,
-        () => writeAgentAuditLog({ agent_id: card.assignee || 'system', entity: 'kanban', action: 'delete', entity_id: id, detail: { title: card.title } }),
+        () => writeAgentAuditLog({ agent_id: auditAgent, entity: 'kanban', action: 'delete', entity_id: id, detail: { title: card.title }, tenant_id: auditTenant }),
         'kanban delete', id,
       )
     }

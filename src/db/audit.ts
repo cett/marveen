@@ -499,13 +499,16 @@ export async function writeAgentAuditLog(opts: {
   action: 'create' | 'update' | 'delete' | 'pii_scrub_bypass' | 'pii_scrub_attempt_denied' | 'reserved_marker_denied' | 'skip_not_live' | 'timeout_sweep' | 'mass_skip' | 'skip_tenant_mismatch' | 'review_requested' | 'activate' | 'toggle' | 'retarget' | 'envelope_hash_mismatch' | 'consume' | 'create_refused'
   entity_id?: string | number | null
   detail?: Record<string, unknown> | null
+  /** A tenant the caller already resolved (a writer inside a transaction cannot look it up on the facade there);
+   *  undefined resolves it from the agent, null is written as the unknown tenant. */
+  tenant_id?: string | null
 }): Promise<void> {
   await dbx.run('INSERT INTO agent_audit_log (agent_id, entity, action, entity_id, detail, tenant_id) VALUES (?, ?, ?, ?, ?, ?)', opts.agent_id,
     opts.entity,
     opts.action,
     opts.entity_id != null ? String(opts.entity_id) : null,
     opts.detail != null ? JSON.stringify(opts.detail) : null,
-    await resolveWriteTenant(opts.agent_id),
+    opts.tenant_id !== undefined ? opts.tenant_id : await resolveWriteTenant(opts.agent_id),
   )
 }
 
