@@ -52,7 +52,6 @@ type Outcome = { ok: true; scores: number[] } | { ok: false; reason: RerankFallb
 interface Job {
   query: string
   passages: string[]
-  settled: boolean
   timer: NodeJS.Timeout
   resolve: (outcome: Outcome) => void
 }
@@ -80,8 +79,7 @@ function getBackend(): RerankBackend {
 }
 
 function settle(job: Job, outcome: Outcome): void {
-  if (job.settled) return
-  job.settled = true
+  // Settled by whichever comes first (answer, timeout); the second call finds the promise already resolved.
   clearTimeout(job.timer)
   waiting = waiting.filter(j => j !== job)
   job.resolve(outcome)
@@ -119,7 +117,6 @@ function submit(query: string, passages: string[], budgetMs: number): Promise<Ou
     const job: Job = {
       query,
       passages,
-      settled: false,
       timer: setTimeout(() => settle(job, { ok: false, reason: 'timeout' }), budgetMs),
       resolve,
     }
