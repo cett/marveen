@@ -198,6 +198,25 @@ describe('the request context over a real HTTP request', () => {
   })
 })
 
+describe('the request path wiring in web.ts (source pin)', () => {
+  const web = code(files.find((f) => f.path === 'src/web.ts')!.text)
+
+  it('runs the whole request handler as http-gate and only the route dispatch as the caller', () => {
+    expect(web).toContain("runAs.system('http-gate', () => handleRequest(req, res))")
+    const dispatchAt = web.indexOf('dispatcher.dispatch(routeCtx)')
+    const wrapAt = web.indexOf('runAsRequest({')
+    expect(wrapAt).toBeGreaterThan(-1)
+    expect(wrapAt).toBeLessThan(dispatchAt)
+    expect(web.match(/dispatcher\.dispatch\(/g)?.length).toBe(1)
+  })
+
+  it('ends the boot phase after the dashboard listens, in both start branches of index.ts', () => {
+    const index = code(files.find((f) => f.path === 'src/index.ts')!.text)
+    expect(index.match(/endDbBootPhase\(\)/g)?.length).toBe(2)
+    expect(index).toContain('setAgentTenantResolver(')
+  })
+})
+
 describe('noteTenantResolved', () => {
   it('counts a route tenant that differs from the request context and returns its argument', () => {
     runAs.tenant('acme', () => {

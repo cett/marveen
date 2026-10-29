@@ -11,8 +11,8 @@ export const DB_CONTEXT_TOP_SITES = 20
 // of two answers), the calls by kind (expected = carried a context, unexpected = none after boot, anonymous = a route
 // served without a credential), the calls by role and by job, and the top call sites without a context.
 // Read-only. Admin-only: named in the RBAC table (src/web/rbac.ts), not left to the unlisted-route fallback.
-export async function tryHandleDbContext(ctx: RouteContext): Promise<boolean> {
-  if (ctx.path !== '/api/admin/db-context' || ctx.method !== 'GET') return false
+export function tryHandleDbContext(ctx: RouteContext): Promise<boolean> {
+  if (ctx.path !== '/api/admin/db-context' || ctx.method !== 'GET') return Promise.resolve(false)
   const stats = getDbContextStats()
   const withContext = stats.total - stats.withoutContext
   json(ctx.res, {
@@ -34,5 +34,5 @@ export async function tryHandleDbContext(ctx: RouteContext): Promise<boolean> {
     lastCallSite: stats.lastCallSite,
     registeredJobs: Object.keys(BACKGROUND_JOBS).length,
   })
-  return true
+  return Promise.resolve(true)
 }
