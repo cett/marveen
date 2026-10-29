@@ -76,7 +76,12 @@ function runTicks(
   return { alerts, lastTick: from }
 }
 
-describe('skip ledger: a 10 hour window of held-back tasks (24 tasks, restart after)', () => {
+// The two 10 hour windows below evaluate a real cron expression for 24 tasks at every tick: about 2 s of CPU on an
+// idle machine. The suite shares the machine with other runs, where a 7x slowdown is ordinary, so they carry their
+// own timeout instead of sitting a few seconds under the 15 s default.
+const HEAVY_WINDOW = { timeout: 90_000 }
+
+describe('skip ledger: a 10 hour window of held-back tasks (24 tasks, restart after)', HEAVY_WINDOW, () => {
   const held = (i: number): Partial<ScheduledTask> =>
     i < 4 ? { enabled: false } : { status: 'draft' } // 4 really disabled, 20 enabled but held by the gate
 
@@ -117,7 +122,7 @@ describe('skip ledger: a 10 hour window of held-back tasks (24 tasks, restart af
   })
 })
 
-describe('skip ledger: a mass disable (enabled flipped to 0 for most tasks at once)', () => {
+describe('skip ledger: a mass disable (enabled flipped to 0 for most tasks at once)', HEAVY_WINDOW, () => {
   it('records skipped_disabled rows for the flipped tasks only, alerts once, and stops when they recover', () => {
     const { runs, deps } = harness()
     const tracker = createSkipTracker()
