@@ -29,9 +29,39 @@ configuration caches, the `vec0` helpers, the OTel gauge reads). This page says 
 6. **Run inside a context.** `runAs.system('job-name', fn)`, `runAs.tenant(tenantId, fn)` or
    `runAs.agent(agentId, tenantId, fn)` around the work that touches the database. For now a call without one
    is counted and warned about (`getDbContextStats()`), not refused. A timer created before `runAs` does not
-   inherit it: a tick that touches the database opens its own `runAs`.
+   inherit it: a tick that touches the database opens its own `runAs` (see "Background jobs and the request context").
 7. **No database write per request for a counter.** The facade has no write buffer yet; a per-request counter
    waits for one (batched flushes) instead of adding a write to the request path.
+
+## Background jobs and the request context
+
+Every piece of code that touches the database runs in a context (`src/db/context.ts`). Nothing is refused yet:
+the context only records, and the counter shows what still runs without one.
+
+- **A job** (timer, file watcher, boot task) opens its own context, because a callback created outside a `runAs`
+  does not inherit one. `src/db/background-jobs.ts` is the classification: `BACKGROUND_JOBS` names each job, its file and its
+  role (`system`, `agent`, plus `hybrid` and `tenant-loop`, which are one system context until the PostgreSQL step splits
+  them per item). `NOT_DB_TIMER_FILES` lists the files that own an interval or a watcher and never reach a facade call.
+  `src/__tests__/db-background-jobs.test.ts` fails when a file with an interval or a watcher is in neither list, when a
+  job is not bound under its name in its file, or when a source uses a system job name the registry does not know.
+- **Helpers.** `systemJob(name, fn)` wraps a timer callback; `runAsAgentJob(job, agentId, fn)` runs one agent's turn of an
+  agent job as that agent in its tenant (the tenant comes from the resolver set at boot, kept five minutes; the default
+  tenant when the lookup fails); `runAsRequest(who, fn)` binds the route dispatch after the auth gate (an agent token as the
+  agent, a tenant caller as the tenant, a global admin as `http-admin`, a caller without a credential as `http-public`).
+  The gate itself (auth lookups, RBAC, shadow counters) runs as `http-gate`.
+- **Event callbacks do not carry the context.** A request `end` or a response `close` handler runs outside the context of
+  the code that registered it. `readBody` takes the context of its caller and hands it to the body observer
+  (`withDbContext`); a close handler that writes opens its own (`http-metrics`).
+- **The counter** (`getDbContextStats()`, `GET /api/admin/db-context`, hourly log line) splits the calls into expected (a
+  context), unexpected (none, after the boot phase ended), anonymous (`http-public`) and boot (none, before the dashboard
+  listened: module-load reads and the boot sequence). It also counts calls by role and job, tenant mismatches (a route
+  resolved another tenant than its request context carries, `noteTenantResolved`) and keeps the top call sites. The numbers
+  are monotonic since the process started; a measurement window is the difference of two answers. The Phase 1 condition is
+  `unexpected` at 0 over a clean window.
+- **Finding a missing place.** The registry test only knows files. To list the timer, watcher and event callbacks that reach
+  a facade call through the call graph, walk the program with the TypeScript compiler API (the root install is the native
+  TypeScript 7 without it; `tools/eslint/node_modules/typescript` is a 6.x), resolve each callee, mark every function in
+  `src/db/facade.ts` as a database call and print the callbacks that reach one. The pass behind this section found 40 sites; all are bound.
 
 ## Configuration reads stay synchronous
 

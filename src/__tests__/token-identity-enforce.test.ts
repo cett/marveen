@@ -341,7 +341,7 @@ describe('the switch and its wiring', () => {
     const observeAt = WEB_SRC.indexOf('await observeTokenUsage(req, auth, method, path, url)')
     const guardAt = WEB_SRC.indexOf("if (TOKEN_IDENTITY_MODE === 'enforce' && requiresAuth(path, method))")
     const refuseAt = WEB_SRC.indexOf('answerIdentityRefusal(req, res)')
-    const dispatchAt = WEB_SRC.indexOf('await dispatcher.dispatch(routeCtx)')
+    const dispatchAt = WEB_SRC.indexOf('dispatcher.dispatch(routeCtx)')
     expect(observeAt).toBeGreaterThan(-1)
     expect(guardAt).toBeGreaterThan(observeAt)
     expect(refuseAt).toBeGreaterThan(guardAt)

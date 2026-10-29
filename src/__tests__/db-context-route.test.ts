@@ -1,6 +1,6 @@
 // GET /api/admin/db-context: the measurement view of the db context counter, and its place in the RBAC table.
 
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect } from 'vitest'
 import { EventEmitter } from 'node:events'
 import { dbx, runAs } from '../db.js'
 import { tryHandleDbContext, DB_CONTEXT_TOP_SITES } from '../web/routes/db-context.js'
@@ -28,8 +28,6 @@ function call(method: string, path: string): Promise<{ handled: boolean; status:
   const ctx = { req, res, path: url.pathname, method, url, role: 'admin', tenantId: null } as unknown as RouteContext
   return tryHandleDbContext(ctx).then((handled) => ({ handled, status: out.status, body: out.body }))
 }
-
-beforeEach(() => undefined)
 
 describe('GET /api/admin/db-context', () => {
   it('splits the calls into expected, unexpected and anonymous and lists the sites without a context', async () => {

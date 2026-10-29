@@ -182,7 +182,7 @@ describe('shutdown wiring (source pin)', () => {
 
   it('web.ts registers the desired-state flush and keeps no SIGTERM listener of its own', () => {
     const src = stripComments(read('../web.ts'))
-    expect(src).toContain("registerSigtermFlush('desired-run-state', flushRunningStateToDesired)")
+    expect(src).toContain("registerSigtermFlush('desired-run-state', () => runAs.system('shutdown-flush', () => flushRunningStateToDesired()))")
     expect(src).not.toMatch(/process\.(once|on)\('SIGTERM'/)
   })
 })

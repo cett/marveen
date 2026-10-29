@@ -20,7 +20,7 @@ describe('useTestDb (the tests run in this order on purpose)', () => {
 
   it('second test: a fresh database, a free lock, zeroed counters, an empty cache', async () => {
     expect(lockFor(db).busy).toBe(false)
-    expect(getDbContextStats()).toEqual({ total: 0, withoutContext: 0, lastCallSite: null })
+    expect(getDbContextStats()).toMatchObject({ total: 0, withoutContext: 0, unexpected: 0, anonymous: 0, tenantMismatches: 0, lastCallSite: null, sites: [], booting: false })
     expect(getSystemConfig('leftover_key')).toBeUndefined()
     expect(await dbx.get("SELECT name FROM sqlite_master WHERE name = 'leftover'")).toBeUndefined()
     // and the facade works at once, no waiting behind the previous test's transaction
