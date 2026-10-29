@@ -12,11 +12,11 @@ const h = vi.hoisted(() => ({
 
 vi.mock('../db.js', () => ({
   getSystemConfigUncached: (...a: unknown[]) => h.uncached(...a),
-  insertSystemConfigIfAbsent: vi.fn(async () => false),
+  insertSystemConfigIfAbsent: vi.fn(() => Promise.resolve(false)),
   getLastConfigChangeValue: (...a: unknown[]) => h.last(...a),
-  logConfigChange: vi.fn(async () => undefined),
-  writeAdminAuditLog: vi.fn(async () => undefined),
-  createAgentMessage: vi.fn(async () => undefined),
+  logConfigChange: vi.fn(() => Promise.resolve()),
+  writeAdminAuditLog: vi.fn(() => Promise.resolve()),
+  createAgentMessage: vi.fn(() => Promise.resolve(undefined)),
 }))
 vi.mock('../logger.js', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() } }))
 
@@ -25,8 +25,8 @@ import { refreshRbacMode, getRbacMode } from '../web/rbac-mode.js'
 beforeEach(() => {
   h.row = { value: 'shadow' }
   h.journal = 'shadow'
-  h.uncached.mockImplementation(async () => h.row)
-  h.last.mockImplementation(async () => h.journal)
+  h.uncached.mockImplementation(() => Promise.resolve(h.row))
+  h.last.mockImplementation(() => Promise.resolve(h.journal))
 })
 
 describe('overlapping RBAC mode refreshes', () => {
