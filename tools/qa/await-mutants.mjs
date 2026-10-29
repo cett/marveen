@@ -59,14 +59,30 @@ function makeCopy(w) {
   return dir
 }
 
-/** Runs the tests related to the mutated file. Resolves to { status, firstFailingTest, exitCode }. */
-function runRelated(dir, m, runDir) {
+/**
+ * Runs the tests related to `m.file`. `baseline` is the set of tests that already fail in the copy WITHOUT a
+ * mutation (a test that depends on the checkout path or the host fails there whatever the mutant does): a
+ * mutant is killed only by a failure outside that set, and --bail leaves room for the known failures.
+ * Resolves to { status, firstFailingTest, exitCode, failing }.
+ */
+function runRelated(dir, m, runDir, baseline = null) {
   mkdirSync(path.join(runDir, 'store'), { recursive: true })
   mkdirSync(path.join(runDir, 'home'), { recursive: true })
   const outFile = path.join(runDir, 'vitest.json')
   const bin = args['vitest-bin'] ?? path.join(dir, 'node_modules/.bin/vitest')
+  const bail = baseline === null ? [] : ['--bail', String(baseline.size + 1)]
+  const failedIn = (rep) => {
+    const out = []
+    for (const f of rep.testResults ?? []) {
+      const rel = path.relative(dir, f.name)
+      const tests = (f.assertionResults ?? []).filter((a) => a.status === 'failed')
+      for (const t of tests) out.push(`${rel} > ${t.fullName}`)
+      if (f.status === 'failed' && tests.length === 0) out.push(`${rel} (suite failed)`)
+    }
+    return out
+  }
   return new Promise((resolve) => {
-    const child = spawn(bin, ['related', m.file, '--run', '--bail', '1', '--reporter=json', `--outputFile=${outFile}`], {
+    const child = spawn(bin, ['related', m.file, '--run', ...bail, '--reporter=json', `--outputFile=${outFile}`], {
       cwd: dir,
       env: { ...process.env, MARVEEN_STORE_DIR: path.join(runDir, 'store'), HOME: path.join(runDir, 'home'), CI: '1' },
       stdio: ['ignore', 'ignore', 'ignore'],
@@ -79,47 +95,66 @@ function runRelated(dir, m, runDir) {
       let rep = null
       try { rep = JSON.parse(readFileSync(outFile, 'utf8')) } catch { /* no report */ }
       if (!rep) return resolve({ status: 'error', firstFailingTest: null, exitCode: code })
-      if (rep.numFailedTests > 0 || rep.numFailedTestSuites > 0) {
-        let first = null
-        for (const f of rep.testResults ?? []) {
-          const t = (f.assertionResults ?? []).find((a) => a.status === 'failed')
-          if (t) { first = `${path.relative(dir, f.name)} > ${t.fullName}`; break }
-          if (f.status === 'failed' && !first) first = `${path.relative(dir, f.name)} (suite failed)`
-        }
-        return resolve({ status: 'killed', firstFailingTest: first, exitCode: code })
+      const failing = failedIn(rep)
+      if (baseline === null) {
+        // the unmutated run: it only records which tests fail on their own
+        return resolve({ status: rep.numTotalTests === 0 ? 'no-tests' : 'baseline', firstFailingTest: null, exitCode: code, failing })
       }
-      if (rep.numTotalTests === 0) return resolve({ status: 'no-tests', firstFailingTest: null, exitCode: code })
-      resolve({ status: code === 0 ? 'survived' : 'error', firstFailingTest: null, exitCode: code })
+      const fresh = failing.filter((t) => !baseline.has(t))
+      if (fresh.length > 0) return resolve({ status: 'killed', firstFailingTest: fresh[0], exitCode: code, failing })
+      if (rep.numTotalTests === 0) return resolve({ status: 'no-tests', firstFailingTest: null, exitCode: code, failing })
+      resolve({ status: code === 0 || failing.length > 0 ? 'survived' : 'error', firstFailingTest: null, exitCode: code, failing })
     })
   })
 }
 
-const results = new Array(mutants.length)
-let next = 0
 const t0 = Date.now()
 log(`await-mutants: ${mutants.length} mutant(s), ${workers} worker(s), HEAD ${head.slice(0, 8)}, copies in ${workDir}`)
+const dirs = Array.from({ length: workers }, (_, w) => makeCopy(w))
 
-async function worker(w) {
-  const dir = makeCopy(w)
-  for (;;) {
-    const i = next++
-    if (i >= mutants.length) return
-    const m = mutants[i]
+/** Runs fn(item, copyDir, index) over the items on the workers; every worker owns one copy. */
+async function pool(items, fn) {
+  let next = 0
+  await Promise.all(dirs.map(async (dir) => {
+    for (;;) {
+      const i = next++
+      if (i >= items.length) return
+      await fn(items[i], dir, i)
+    }
+  }))
+}
+
+// Phase 1: the unmutated related tests of every touched file, to learn which of them fail on their own.
+const files = [...new Set(mutants.map((m) => m.file))]
+const baselines = new Map()
+await pool(files, async (file, dir, i) => {
+  const res = await runRelated(dir, { file }, path.join(workDir, `base-${i}`))
+  baselines.set(file, { status: res.status, failing: res.failing ?? [] })
+  log(`baseline ${file}: ${res.status}, ${(res.failing ?? []).length} test(s) fail without a mutant`)
+})
+
+// Phase 2: one mutant at a time per worker.
+const results = new Array(mutants.length)
+await pool(mutants, async (m, dir, i) => {
+  const base = baselines.get(m.file)
+  const started = Date.now()
+  let res
+  if (base.status !== 'baseline') {
+    // no related tests, or the unmutated run itself crashed or timed out: the mutant cannot be judged
+    res = { status: base.status === 'no-tests' ? 'no-tests' : 'baseline-error', firstFailingTest: null, exitCode: null }
+  } else {
     const file = path.join(dir, m.file)
     const original = readFileSync(file, 'utf8')
-    const started = Date.now()
-    let res
     writeFileSync(file, applyMutant(original, m))
     try {
-      res = await runRelated(dir, m, path.join(workDir, `run-${m.id}`))
+      res = await runRelated(dir, m, path.join(workDir, `run-${m.id}`), new Set(base.failing))
     } finally {
       writeFileSync(file, original) // the copy is private to this worker; restore before the next mutant
     }
-    results[i] = { id: m.id, file: m.file, line: m.line, snippet: m.snippet, ...res, durationMs: Date.now() - started }
-    log(`${m.id} ${m.file}:${m.line} ${res.status}${res.firstFailingTest ? ' <- ' + res.firstFailingTest : ''} (${((Date.now() - started) / 1000).toFixed(0)}s)`)
   }
-}
-await Promise.all(Array.from({ length: workers }, (_, w) => worker(w)))
+  results[i] = { id: m.id, file: m.file, line: m.line, snippet: m.snippet, status: res.status, firstFailingTest: res.firstFailingTest, exitCode: res.exitCode, durationMs: Date.now() - started }
+  log(`${m.id} ${m.file}:${m.line} ${res.status}${res.firstFailingTest ? ' <- ' + res.firstFailingTest : ''} (${((Date.now() - started) / 1000).toFixed(0)}s)`)
+})
 
 const count = (s) => results.filter((r) => r.status === s).length
 const report = {
@@ -129,7 +164,8 @@ const report = {
   head,
   workers,
   wallSeconds: Math.round((Date.now() - t0) / 1000),
-  summary: { total: results.length, killed: count('killed'), survived: count('survived'), noTests: count('no-tests'), errors: count('error'), timeouts: count('timeout') },
+  summary: { total: results.length, killed: count('killed'), survived: count('survived'), noTests: count('no-tests'), baselineErrors: count('baseline-error'), errors: count('error'), timeouts: count('timeout') },
+  baselines: [...baselines].map(([file, b]) => ({ file, status: b.status, failingWithoutMutant: b.failing })),
   mutants: results,
 }
 process.stdout.write(JSON.stringify(report, null, 2) + '\n')
