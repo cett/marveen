@@ -99,13 +99,16 @@ export async function setSystemConfigMany(entries: ReadonlyArray<readonly [strin
 
 // Insert only when the key has no row yet; an existing row is never touched. Returns true when this
 // call created the row. For one-time backfills that must be safe to repeat on every boot.
-export function insertSystemConfigIfAbsent(key: string, value: string, source: string): boolean {
-  const info = db
-    .prepare(
-      `INSERT INTO system_config (key, value, updated_at, source) VALUES (?, ?, ?, ?)
-       ON CONFLICT DO NOTHING`
-    )
-    .run(key, value, Math.floor(Date.now() / 1000), source)
+export async function insertSystemConfigIfAbsent(key: string, value: string, source: string): Promise<boolean> {
+  const info = await dbx.run(
+    `INSERT INTO system_config (key, value, updated_at, source) VALUES (?, ?, ?, ?)
+       ON CONFLICT DO NOTHING`,
+    key,
+    value,
+    Math.floor(Date.now() / 1000),
+    source,
+  )
+  if (info.changes > 0) cacheAfterWrite(key) // database first, then the cache
   return info.changes > 0
 }
 

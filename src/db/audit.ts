@@ -393,10 +393,10 @@ export async function logConfigChange(
 
 // Newest journalled value for one key, or undefined when the key was never journalled. The same
 // created_at/id ordering as getRecentConfigChanges: two saves in one second still resolve to the later one.
-export function getLastConfigChangeValue(key: string): string | null | undefined {
-  const row = db
-    .prepare('SELECT new_value FROM config_change_log WHERE key = ? ORDER BY created_at DESC, id DESC LIMIT 1')
-    .get(key) as { new_value: string | null } | undefined
+export async function getLastConfigChangeValue(key: string): Promise<string | null | undefined> {
+  const row = (await dbx.get('SELECT new_value FROM config_change_log WHERE key = ? ORDER BY created_at DESC, id DESC LIMIT 1', key)) as
+    | { new_value: string | null }
+    | undefined
   return row === undefined ? undefined : row.new_value
 }
 

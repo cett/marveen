@@ -751,7 +751,7 @@ export async function observeTokenUsage(
       const rawCfg = req.headers['x-caller-config']
       const launchedAs = cleanAgentId(Array.isArray(rawCfg) ? rawCfg[0] : rawCfg)
       if (who.source === 'token' && who.caller === cleanAgentId(mainAgentId) && launchedAs && launchedAs !== INVALID && launchedAs !== who.caller) {
-        recordTokenShadow(base, { category: 'main_token_from_subagent', target: launchedAs })
+        await recordTokenShadow(base, { category: 'main_token_from_subagent', target: launchedAs })
       }
     } catch { /* a counting side effect only */ }
     const spec = watchSpecFor(path)

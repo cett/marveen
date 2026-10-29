@@ -147,7 +147,7 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
       logger.info({ key, oldValue: loggedOldValue, newValue: loggedNewValue }, 'Setting updated')
       if (isRbacMode) {
         // The write and its journal row are both in: the cache can now read a consistent pair.
-        refreshRbacMode()
+        await refreshRbacMode()
         // The notice to the main agent comes from refreshRbacMode (every switch to shadow); the actor is in the journal.
         if (looseningRbac) {
           logger.warn({ actor: resolvedActor, oldValue }, 'RBAC_MODE set to shadow: the RBAC gate no longer blocks')

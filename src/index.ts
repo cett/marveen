@@ -519,7 +519,7 @@ async function main(): Promise<void> {
 
   // RBAC_MODE: seed the system_config row from the env once (idempotent), read the live mode and keep
   // it fresh. Called here, not from initDatabase(): that also runs from every test against the shared store.
-  loadRbacMode()
+  await loadRbacMode()
   startRbacModeRefresh()
 
   // S8B: retire store/config-overrides.json (rename to .deprecated) now that
