@@ -13,6 +13,11 @@ export const DB_CONTEXT_TOP_SITES = 20
 // Read-only. Admin-only: named in the RBAC table (src/web/rbac.ts), not left to the unlisted-route fallback.
 export function tryHandleDbContext(ctx: RouteContext): Promise<boolean> {
   if (ctx.path !== '/api/admin/db-context' || ctx.method !== 'GET') return Promise.resolve(false)
+  // The RBAC gate already refuses a non-admin; this holds in shadow mode too, because the answer lists call sites (file and line).
+  if (ctx.role !== 'admin') {
+    json(ctx.res, { error: 'forbidden', hint: 'Admin only' }, 403)
+    return Promise.resolve(true)
+  }
   const stats = getDbContextStats()
   const withContext = stats.total - stats.withoutContext
   json(ctx.res, {

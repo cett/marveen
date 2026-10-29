@@ -156,10 +156,21 @@ describe('runAsAgentJob', () => {
 
 describe('runAsRequest', () => {
   it('maps the caller to a context', () => {
-    expect(runAsRequest({ authenticated: false, tenantId: 'default' }, () => currentDbContext())).toEqual({ role: 'system', name: 'http-public' })
-    expect(runAsRequest({ authenticated: true, tenantId: null }, () => currentDbContext())).toEqual({ role: 'system', name: 'http-admin' })
-    expect(runAsRequest({ authenticated: true, tenantId: 'acme' }, () => currentDbContext())).toEqual({ role: 'tenant', tenantId: 'acme' })
-    expect(runAsRequest({ authenticated: true, agentId: 'a1', tenantId: 'acme' }, () => currentDbContext())).toEqual({ role: 'agent', agentId: 'a1', tenantId: 'acme' })
+    expect(runAsRequest({ authenticated: false, role: undefined, tenantId: 'default' }, () => currentDbContext())).toEqual({ role: 'system', name: 'http-public' })
+    expect(runAsRequest({ authenticated: true, role: 'admin', tenantId: null }, () => currentDbContext())).toEqual({ role: 'system', name: 'http-admin' })
+    expect(runAsRequest({ authenticated: true, role: 'viewer', tenantId: 'acme' }, () => currentDbContext())).toEqual({ role: 'tenant', tenantId: 'acme' })
+    expect(runAsRequest({ authenticated: true, role: 'fleet_agent', agentId: 'a1', tenantId: 'acme' }, () => currentDbContext())).toEqual({ role: 'agent', agentId: 'a1', tenantId: 'acme' })
+  })
+
+  it('gives the unrestricted http-admin context to the admin role only, a global non-admin runs as the default tenant', () => {
+    for (const role of ['viewer', 'agent', 'operator', undefined]) {
+      expect(runAsRequest({ authenticated: true, role, tenantId: null }, () => currentDbContext()), String(role)).toEqual({ role: 'tenant', tenantId: 'default' })
+    }
+    expect(runAsRequest({ authenticated: true, role: 'admin', tenantId: 'acme' }, () => currentDbContext())).toEqual({ role: 'tenant', tenantId: 'acme' })
+  })
+
+  it('runs an agent token without a tenant as that agent in the default tenant, never as http-admin', () => {
+    expect(runAsRequest({ authenticated: true, role: 'fleet_agent', agentId: 'a1', tenantId: null }, () => currentDbContext())).toEqual({ role: 'agent', agentId: 'a1', tenantId: 'default' })
   })
 
   it('counts a route served without a credential as anonymous, not as unexpected', async () => {
@@ -167,7 +178,7 @@ describe('runAsRequest', () => {
     const { initDatabase } = await import('../db.js')
     initDatabase()
     resetDbContextForTest()
-    await runAsRequest({ authenticated: false, tenantId: 'default' }, async () => { await dbx.get('SELECT 1') })
+    await runAsRequest({ authenticated: false, role: undefined, tenantId: 'default' }, async () => { await dbx.get('SELECT 1') })
     expect(getDbContextStats()).toMatchObject({ total: 1, anonymous: 1, unexpected: 0 })
   })
 })
@@ -201,7 +212,7 @@ describe('the request context over a real HTTP request', () => {
       seen.observer = currentDbContext()?.tenantId
     })
     const port = await listen((req, res) => {
-      void runAsRequest({ authenticated: true, tenantId: 'acme' }, async () => {
+      void runAsRequest({ authenticated: true, role: 'viewer', tenantId: 'acme' }, async () => {
         seen.before = currentDbContext()?.tenantId
         const body = await readBody(req)
         seen.afterBody = currentDbContext()?.tenantId
@@ -221,10 +232,19 @@ describe('the request path wiring in web.ts (source pin)', () => {
   it('runs the whole request handler as http-gate and only the route dispatch as the caller', () => {
     expect(web).toContain("runAs.system('http-gate', () => handleRequest(req, res))")
     const dispatchAt = web.indexOf('dispatcher.dispatch(routeCtx)')
+    // the role goes in: http-admin is for the admin role only
+    expect(web).toMatch(/runAsRequest\(\{ authenticated: auth\.kind !== 'none', role, agentId:/)
     const wrapAt = web.indexOf('runAsRequest({')
     expect(wrapAt).toBeGreaterThan(-1)
     expect(wrapAt).toBeLessThan(dispatchAt)
     expect(web.match(/dispatcher\.dispatch\(/g)?.length).toBe(1)
+  })
+
+  it('binds the token collector and the auth sweep timers, the startup collection and the shutdown flush', () => {
+    expect(web).toContain("systemJob('token-usage-collector', () => {")
+    expect(web).toContain("runAs.system('token-usage-collector', () => collectTokenUsage())")
+    expect(web).toContain("systemJob('auth-state-sweep', () => { void sweepAuthState() })")
+    expect(web).toContain("runAs.system('shutdown-flush'")
   })
 
   it('ends the boot phase after the dashboard listens, in both start branches of index.ts', () => {

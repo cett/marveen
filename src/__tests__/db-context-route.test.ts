@@ -45,6 +45,23 @@ describe('GET /api/admin/db-context', () => {
     expect(r.body.registeredJobs).toBeGreaterThan(20)
   })
 
+  it('refuses a caller that is not an admin even when the gate let it through (shadow mode)', async () => {
+    const req = new EventEmitter() as unknown as NodeJS.EventEmitter & { method: string; headers: Record<string, string> }
+    req.method = 'GET'
+    req.headers = {}
+    const out = { status: 200, body: null as any }
+    const res = {
+      writeHead(s: number) { out.status = s },
+      setHeader(_k: string, _v: string) {},
+      end(b?: string | Buffer) { if (b) out.body = JSON.parse(Buffer.isBuffer(b) ? b.toString('utf-8') : b) },
+    }
+    const url = new URL('http://localhost:3420/api/admin/db-context')
+    const ctx = { req, res, path: url.pathname, method: 'GET', url, role: 'viewer', tenantId: null } as unknown as RouteContext
+    expect(await tryHandleDbContext(ctx)).toBe(true)
+    expect(out.status).toBe(403)
+    expect(out.body.sites).toBeUndefined()
+  })
+
   it('lists at most the top call sites', () => {
     expect(DB_CONTEXT_TOP_SITES).toBe(20)
   })

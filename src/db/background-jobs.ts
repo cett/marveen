@@ -60,7 +60,7 @@ export const BACKGROUND_JOBS = {
   'boot-sequence': { file: 'src/index.ts', role: 'system', note: 'the fire-and-forget backfills and passes started while the dashboard boots' },
   'http-gate': { file: 'src/web.ts', role: 'system', note: 'the request before a principal is known: the auth lookups, the RBAC gate and the shadow counters' },
   'http-public': { file: 'src/db/background-jobs.ts', role: 'system', note: 'a route served without a credential: login, auth status, avatars, the static files' },
-  'http-admin': { file: 'src/db/background-jobs.ts', role: 'system', note: 'a global admin session, which belongs to no tenant' },
+  'http-admin': { file: 'src/db/background-jobs.ts', role: 'system', note: 'a global admin session (role admin, no tenant); a global session of any other role runs as the default tenant' },
   'http-metrics': { file: 'src/otel-http.ts', role: 'system', note: 'the request counters written when a response is done (an event callback does not carry the request context)' },
   'shutdown-flush': { file: 'src/web.ts', role: 'system', note: 'flushes the running state on SIGTERM' },
 } as const satisfies Record<string, BackgroundJob>
@@ -89,13 +89,19 @@ export const NOT_DB_TIMER_FILES: Record<string, string> = {
 
 /**
  * The context of a request, from what the auth gate resolved: an agent token runs as that agent in its tenant, a
- * tenant caller as the tenant, a global admin (no tenant) and a caller without a credential as named system jobs.
+ * tenant caller as the tenant, and a caller without a credential as the named system job `http-public`.
+ *
+ * A caller without a tenant (a global session) gets the unrestricted `http-admin` context ONLY when its role is `admin`.
+ * Any other role, a viewer or an agent token without a tenant, runs under the `default` tenant: the same fallback
+ * `resolveTenantId` uses everywhere else, and a context that row-level security can restrict. What a non-admin global
+ * user may read across tenants is a PostgreSQL-step decision, not something this mapping grants.
  */
-export function runAsRequest<T>(who: { authenticated: boolean; agentId?: string; tenantId: string | null }, fn: () => T): T {
+export function runAsRequest<T>(who: { authenticated: boolean; role: string | undefined; agentId?: string; tenantId: string | null }, fn: () => T): T {
   if (!who.authenticated) return runAs.system('http-public', fn)
-  if (who.tenantId === null) return runAs.system('http-admin', fn)
-  if (who.agentId) return runAs.agent(who.agentId, who.tenantId, fn)
-  return runAs.tenant(who.tenantId, fn)
+  if (who.tenantId === null && who.role === 'admin') return runAs.system('http-admin', fn)
+  const tenantId = who.tenantId ?? 'default'
+  if (who.agentId) return runAs.agent(who.agentId, tenantId, fn)
+  return runAs.tenant(tenantId, fn)
 }
 
 /** The same function, every call running in `runAs.system(name)`. For a timer or an event callback created OUTSIDE a `runAs`. */
