@@ -94,9 +94,15 @@ use the synchronous twins of a migrated module, kept on the raw connection. The 
 | `resolveAgentOwningTenantIdSync` (the same two lookups as `resolveAgentOwningTenantId` on the raw handle, in the same order: keep the two in step) | `db/agents.ts`, called from `db/index.ts` |
 | `enrollDashboardApiTokenSync` (the file token is enrolled before `startWebServer` listens; it cannot await) | `db/api-tokens.ts`, called from `web/token-bootstrap.ts` |
 | `migrateScheduleLastRunFromFile` (the one-time import of the last-run file; it stays on the raw handle when the module goes async) | `db/tasks.ts` |
+| `migrateFederationConfigFromFile` (the one-time import of the federation file; it writes its row through `setSystemConfigSync`) | `db/federation.ts` |
+| `setSystemConfigSync` (the synchronous write of a `system_config` key for the boot importers) | `db/system-config.ts`, also used by `db/federation.ts` |
+| `replaceClaudePlanRowsSync`, `activatePlanForAgentSync` (the one-time import of the plan files) | `db/claude-plans.ts` |
+| `backfillImportShadowRows` (boot-only, on the raw handle; it has no asynchronous counterpart) | `db/vector.ts` |
 
-The table lists the twins only, not every boot-time migrator: `migrateFederationConfigFromFile` belongs to a module
-that is still entirely synchronous, so it is not a twin of anything yet.
+The table is the same list as `BOOT_SYNC_TWINS` in `src/__tests__/db-boot-sync-twins.test.ts` (14 names), which also
+requires every `// @boot-sync-twin` tag in `src/db/` to be in it. It lists the twins only, not every boot-time
+migrator. The federation module is not entirely synchronous: its other functions (`setFederationConfigRaw`,
+`deleteFederationConfigRaw`) are asynchronous; only the boot import is a twin.
 
 The rule: **a twin is called from the boot chain (`src/db/index.ts`, or the bootstrap helper that `startWebServer` calls) and from nowhere else.** A caller anywhere else would run on
 the raw connection beside the facade's transaction lock, which is what the facade exists to prevent, and which
@@ -128,9 +134,10 @@ transaction; the vault step and the `.env` mirror come last.**
    path changes (only directories that did not exist are created, and removed again on a failure).
 3. ONE `dbx.tx` holds all the database writes: the settings (autonomy, model profiles, auto-restart, desired agents,
    model fallback, terminal input, federation, cost budgets, egress allowlist), the skill rows (an error there fails
-   the import) and the per-table rows. The body holds no file I/O, network or timer. `seedSkillIfAbsent()` still
-   writes on the raw connection; on the one SQLite connection that statement runs inside the open transaction and
-   rolls back with it (see the raw-writer limit below), which `fleet-transfer-two-phase.test.ts` pins.
+   the import) and the per-table rows. The body holds no file I/O, network or timer. `seedSkillIfAbsent()` is on
+   the facade too (`db/tasks.ts`, a `dbx.run`), so it joins the open transaction and the skill rows roll back with
+   the rest; `fleet-transfer-two-phase.test.ts` pins both the rollback and that a skills SQL failure is not
+   swallowed.
 4. After the commit: the staged files are renamed into place, the model-profile, agent-settings and system-config
    caches are re-read (and the federation cache dropped), then the vault step (its two files and the bindings), then
    the `.env` mirror.
@@ -200,7 +207,8 @@ written with `dbx` calls only: a raw `db.prepare(...)` in it would sit beside th
 rules (see "What the facade does not cover").
 
 **The system-config document (read-modify-write).** A change to one stored document (the federation config is the
-example, `mutateFederationConfig`) reads the cached document, changes it and writes it back inside ONE `dbx.tx`:
+example, `mutateFederationConfig`) reads the stored document from the database inside ONE `dbx.tx` (never from the cache),
+changes it and writes it back in the same transaction:
 two overlapping requests that each read the old document and each wrote a changed copy would lose one change. The
 write goes to the database first and the cache is refreshed from the row afterwards (see "Configuration reads stay
 synchronous").
@@ -222,14 +230,17 @@ uninterruptible. With the async facade every `await` lets a second caller start,
 both read the old row (the later write drops the earlier change) and the mirror files could hold the older content.
 `src/web/keyed-serializer.ts` restores the guarantee inside the process: a per-key FIFO on the `AsyncLock` of the
 transaction layer, re-entrant through an `AsyncLocalStorage` (code that already holds a key takes it again without
-waiting for itself), and a failing caller rejects for itself only. It is used in four places:
+waiting for itself), and a failing caller rejects for itself only. It is used in five places:
 `writeScheduledTask` (key = schedule name, through `src/web/schedule-lock.ts`); the activate, edit (PUT), toggle and
 delete routes of `src/web/routes/schedules.ts`, which hold the same key for their whole decision (read, hash and
 review check, write, mirror), so an edit that arrives between the hash check of an activation and the activation
 itself waits; the create and reconcile of the tenant starter task (key = starter task name, so a double click ends in
 one create and one reconcile); and the five writers and the two removers of `src/web/skill-regen.ts`, which share one queue
 (`serialized`), so a bulk regen that read its rows before a dashboard edit cannot write them after the single regen of
-that edit, and a single regen that read a row cannot write the file back after the delete removed it. `activateSchedule` and `patchSchedule` write only the columns they own and take "the row exists" from the
+that edit, and a single regen that read a row cannot write the file back after the delete removed it; and the
+blackboard sequences (read the row, judge it, upsert) of `schedule-runner.ts`, `routes/messages.ts` and
+`routes/blackboard.ts` (key = agent id, through `src/web/blackboard-lock.ts`), so two callers of one agent cannot both
+judge the old row. `activateSchedule` and `patchSchedule` write only the columns they own and take "the row exists" from the
 match count of their own `UPDATE`: two overlapping patches of different columns both survive, a delete in between gives
 `null` (the routes answer 404) and nothing is re-created. The edit and toggle routes re-read the row under the lock and
 never create one: before, a schedule deleted between the check and the write came back as a fresh row.

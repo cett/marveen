@@ -123,9 +123,10 @@ export interface KanbanCreateAudit {
 }
 
 /**
- * The synchronous half of createKanbanCard: it writes the rows and returns the audit entry. It is the one to call
- * inside a synchronous (better-sqlite3) transaction, where an `await` would end the transaction early; the caller
- * writes the entry with writeKanbanCreateAudit after the commit.
+ * The row half of createKanbanCard: it writes the rows and returns the audit entry. It takes the facade or a
+ * transaction handle (`ops`), so a caller inside a `dbx.tx` body passes its handle and the rows are part of that
+ * transaction; the caller then writes the entry with writeKanbanCreateAudit (inside the body, in a savepoint, as
+ * the batch and idea paths do, or after the commit as createKanbanCard does).
  */
 export async function insertKanbanCardRows(card: NewKanbanCard, ops: Dbx | Tx = dbx): Promise<KanbanCreateAudit> {
   const now = Math.floor(Date.now() / 1000)
