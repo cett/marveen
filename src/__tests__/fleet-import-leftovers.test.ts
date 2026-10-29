@@ -45,7 +45,8 @@ beforeEach(() => {
 describe('scanImportLeftovers', () => {
   it('reports an orphan staged file with its kind and age, and leaves it byte for byte alone', async () => {
     const path = put('a/CLAUDE.md.import-new', 'partial')
-    const old = new Date(Date.now() - 3600_000)
+    // Whole seconds: a file system keeps a fractional mtime to its own precision (Linux rounds the milliseconds down).
+    const old = new Date(Math.floor((Date.now() - 3600_000) / 1000) * 1000)
     utimesSync(path, old, old)
     const mtimeBefore = statSync(path).mtimeMs
 
