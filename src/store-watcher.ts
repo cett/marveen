@@ -50,7 +50,7 @@ const SYSTEM_RE = /\.pid$|\.tmp$|\.tmp\.[a-f0-9]+$|\.migrated$|\.bak$|\.deprecat
 const SENSITIVE_NAMES = new Set(['.dashboard-token', '.agent-token', '.operator-token', 'vault.json', '.vault-key', '.claude-oauth-token', '.claim-signing-key', '.federation-token', 'federation.json'])
 
 // --- Attribution ---
-// A new store file is recorded without an actor (agent NULL, "ismeretlen" in the UI): fs.watch
+// A new store file is recorded without an actor (agent NULL; the dashboard audit table reads a missing actor as "ismeretlen"): fs.watch
 // calls back from the file system's own async origin, so nothing of the writing request (an
 // AsyncLocalStorage value, a process-wide slot) can be read there, and the OS offers no writer
 // identity. No code writes a store file on behalf of a request today; who changed a setting

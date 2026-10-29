@@ -360,8 +360,8 @@ These are behaviours of the code today, listed so that nobody mistakes them for 
   (`src/db/observability.ts`, on `dbx` since the observability steps of the third wave), so a slow or failing
   `dbx.run` reaches it: `observability-memory-otel-facade.test.ts` pins that the call resolves only after the span is
   written and that a failing driver is a rejection with nothing stored.
-- **The store file audit has no actor.** `store-watcher.ts` records a new file under `store/` with `agent` NULL (the UI
-  shows "ismeretlen"). `fs.watch` calls back from the file system's own async origin, so the writer's
+- **The store file audit has no actor.** `store-watcher.ts` records a new file under `store/` with `agent` NULL (the audit
+  table of the dashboard shows a missing actor as "ismeretlen"). `fs.watch` calls back from the file system's own async origin, so the writer's
   `AsyncLocalStorage` value is not on that path, and a process-wide slot ("the next event is mine") let any unrelated
   event take another request's actor, so the slot was removed. Nothing is lost today: the three routes that used it
   (`POST /api/settings`, and the auto-restart and context-guard config PUTs) write through the db facade and reach no
