@@ -275,16 +275,19 @@ These are behaviours of the code today, listed so that nobody mistakes them for 
   backup is restored onto its file or removed by hand. The one-apply-at-a-time flag lives in the process memory and
   assumes a single dashboard process: PostgreSQL phase 2 with several processes (or a background worker running an
   import) needs a database-level lock instead (an advisory lock or a lock row), because the flag does not see another
-  process.
+  process. What an interrupted import leaves behind (a `.import-new` staged copy, a
+  `.import-bak` backup) is reported by the boot log and by `GET /api/fleet/import-leftovers` (admin only, read-only).
 - **A failed fleet import can leave empty parent directories.** The staging step tracks only the deepest directory it
   created (`trackedMkdir`), so after a failed import the missing parent directories above it may remain, empty. In
   practice this is harmless: `~/.claude` always exists, and an empty directory changes no behaviour.
-- **The federation disable branches ignore the result of `setFederationEnabledPreservingFile`.** A `false` return
-  (the file could not be written) is not looked at, so the switch can read as off while the gate stays on.
-- **Creating a dashboard user twice in parallel** ends with a UNIQUE error answered as 500 for the second request
-  (it should be 409). Only the first user becomes the global admin (one statement), so this is a status code issue.
-- **The PUT import route** answers 500 when a concurrent request deletes a row between the import's read and its
-  write (an old window that was kept, not widened by the facade).
+- **The unique-violation helper knows only SQLite.** Creating a dashboard user twice in parallel answers 409 for the
+  second request (`isUniqueViolationOn(err, 'dashboard_users.username')` in `admin-b2b.ts` and `auth.ts`), and only
+  the first user becomes the global admin (one statement). The helper (`src/web/unique-violation.ts`) recognises
+  `SQLITE_CONSTRAINT_UNIQUE` only; on PostgreSQL the same error is SQLSTATE 23505, the check would not match and the
+  second request would answer 500 again. Phase 2 item B8.
+- **`PUT /api/import/sources/:id`** (`import-memories.ts`; not the fleet import) answers 500 when a concurrent request
+  deletes the row between the read after `denySourceAccess` (`(await getImportSource(id))!`) and the write (an old
+  window that was kept, not widened by the facade; on PostgreSQL it is wider).
 - **The audit entries of a single kanban card create and update are written after the commit.** `createKanbanCard`
   and `updateKanbanCard` commit the card rows first and write the `agent_audit_log` entry afterwards, delayed at most
   by the facade lock wait. The entry is best effort: a crash between the commit and the write, or a failing audit
@@ -322,7 +325,7 @@ These are behaviours of the code today, listed so that nobody mistakes them for 
   the mirror files, whose last writer wins. PostgreSQL phase 2 with several processes needs a database-level lock
   (an advisory lock keyed by the schedule name) in `withScheduleLock`.
 - **The tick timers of the schedule runner are callback boundaries, held by the lint alone.** The tick
-  (`setInterval(() => { void runCheck() })`), the retry timers (`void resubmit(...)`) and the command-task starts
+  (`const tick = systemJob('schedule-runner', () => { void runCheck() })`, run by a `setInterval`), the retry timers (`void resubmit(...)`) and the command-task starts
   (`void runCommandTask(...)`) are fire-and-forget by design: the lint allows `void`, and no test notices a different
   shape. `runCheck` resets its re-entrancy flag in a `finally`; an error that nothing inside a tick catches ends as an
   unhandled rejection, as a synchronous throw in the (already asynchronous) tick did before. The skip ledger row
@@ -349,10 +352,11 @@ These are behaviours of the code today, listed so that nobody mistakes them for 
   condition. PostgreSQL phase 2 with several processes needs the judgement inside the statement or a row lock: the
   lock does not see another process. `PATCH` of a row by id (`routes/blackboard.ts`, `updateBlackboardRowById`) is
   still read, merge, write without either guard (last write wins); it was not on the W3-6 list.
-- **`getAgentConversationThreads` reads its peers one query at a time.** The peer list, the counts and the last
-  message of each peer are separate reads, so a message created while it runs can show in the count of one peer and
-  not in the last-message field of that peer. The synchronous version could not be interleaved. It is a dashboard
-  sidebar; a snapshot read (one transaction, or one statement per peer with a window function) waits for phase 2.
+- **`getAgentConversationThreads` reads the last message of each peer separately.** The peer list and the counts
+  come from one statement (a CTE with a correlated COUNT in `db/agents.ts`); only the last message of each peer is a
+  read of its own, so a message created while it runs can show in the count of one peer and not in the last-message
+  field of that peer. The synchronous version could not be interleaved. It is a dashboard sidebar; a snapshot read
+  (one transaction, or a single statement with a window function) waits for phase 2 (item C12).
 - **`BEGIN IMMEDIATE` in `upsertBlackboard` is not observable on one connection.** The mode takes the write lock
   at the start so that a second connection (another process) cannot make the read stale; with the single dashboard
   connection the transaction lock already orders the callers, so no test can tell the modes apart.
@@ -360,8 +364,9 @@ These are behaviours of the code today, listed so that nobody mistakes them for 
   (`src/db/observability.ts`, on `dbx` since the observability steps of the third wave), so a slow or failing
   `dbx.run` reaches it: `observability-memory-otel-facade.test.ts` pins that the call resolves only after the span is
   written and that a failing driver is a rejection with nothing stored.
-- **The store file audit has no actor.** `store-watcher.ts` records a new file under `store/` with `agent` NULL (the audit
-  table of the dashboard shows a missing actor as "ismeretlen"). `fs.watch` calls back from the file system's own async origin, so the writer's
+- **The store file audit has no actor.** `store-watcher.ts` records a new file under `store/` with `agent` NULL (the dashboard audit
+  table reads a missing actor as "ismeretlen", but it requests only the `agent` and `hook` sources, so a store row
+  is visible only through `GET /api/audit-log?source=store`). `fs.watch` calls back from the file system's own async origin, so the writer's
   `AsyncLocalStorage` value is not on that path, and a process-wide slot ("the next event is mine") let any unrelated
   event take another request's actor, so the slot was removed. Nothing is lost today: the three routes that used it
   (`POST /api/settings`, and the auto-restart and context-guard config PUTs) write through the db facade and reach no
@@ -371,6 +376,20 @@ These are behaviours of the code today, listed so that nobody mistakes them for 
   path relative to `STORE_DIR` (about 5 s, a bounded map, consumed once by the watch callback that sees the same path)
   and writes the file in the same place, so the registration cannot drift from the path. Build it when such a writer
   exists, not before.
+- **Parallel writes (c=8) have 12-20% lower throughput on the facade than on the synchronous head.** Measured on
+  an isolated copy of the live database (2026-10-29, develop head against facade head, 2000 requests per route, 3
+  interleaved rounds): the single-statement writes (`POST /api/blackboard`, the kanban create/update/move/delete
+  cycle, the approvals create/resolve cycle) reach 12-20% fewer requests per second with 8 parallel callers, which is
+  +0.2 to +0.5 ms per operation. With one caller the latencies are within about 1 ms (p50 -0.05 to +0.3 ms; the
+  heavy write `POST /api/memories` +0.83 ms at p50 and +1.2% throughput); with 8 callers `POST /api/memories` is at
+  -2.7% throughput and +4.2% at p95. The list reads are 25-30% faster and the recall route is faster; the hybrid
+  memory search (`GET /api/memories?q=`) was +14.6% at p50 with one caller (p95 unchanged, a CPU-bound request of
+  about 3 s with a large spread, read as noise). Accepted for the deploy. The suspected cause (not profiled) is the
+  microtask cost of the async facade together with the `AsyncLocalStorage.run` wrapper and the call counter of the
+  request context; a profile with and without the wrapper belongs before Phase 2, to clean the baseline for the
+  PostgreSQL measurement.
+- **Phase 2 pointers.** The limits above are carried by the Phase 2 collection as items A13, A14, B8 (the unique
+  violation helper), C12 and section 1b.
 
 ## Tests
 
