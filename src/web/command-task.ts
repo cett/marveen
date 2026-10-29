@@ -21,6 +21,8 @@ export interface CommandHealth {
   alerted: boolean
   lastStatus: "ok" | "fail" | "findings" | "unknown"
   lastRun: number
+  /** Why the last run ended as it did (exit code and stderr head, or the timeout); absent in maps written before it existed. */
+  lastDetail?: string
 }
 type HealthMap = Record<string, CommandHealth>
 
@@ -57,6 +59,7 @@ export function evaluateCommandResult(
   outcome: CommandOutcome | boolean,
   failThreshold: number,
   now: number,
+  detail?: string,
 ): { next: CommandHealth; action: CommandAction } {
   const kind: CommandOutcome = typeof outcome === "boolean" ? (outcome ? "ok" : "fail") : outcome
   const wasAlerted = prev?.alerted ?? false
@@ -71,13 +74,36 @@ export function evaluateCommandResult(
     action = "alert"; alerted = true
   }
   return {
-    next: { fails, alerted, lastStatus: kind, lastRun: now },
+    next: { fails, alerted, lastStatus: kind, lastRun: now, ...(detail !== undefined && { lastDetail: detail.slice(0, MAX_DETAIL_CHARS) }) },
     action,
   }
 }
 
 const MAX_STDERR_BYTES = 4096
 const KILL_GRACE_MS = 2000
+const MAX_DETAIL_CHARS = 240
+// A command's time limit counts the time the host was awake. The monotonic clock of the process keeps
+// counting while the machine sleeps (and so do the timers), so a laptop that sleeps in the middle of a
+// backup would fire the limit on wake-up although the command ran for seconds. A watchdog that ticks
+// every tickMs sees the sleep as one tick that arrives far too late: a gap longer than a tick by more than
+// SLEEP_GAP_MS is time the process did not run, and it is not charged to the command. A real event-loop
+// stall of that length is counted the same way (the command got that much extra time), which errs on the
+// side of not killing.
+const SLEEP_GAP_MS = 5000
+
+export interface RunClock {
+  /** Monotonic milliseconds that keep counting while the machine sleeps. */
+  now(): number
+  /** Calls fn every ms until the returned function is called. */
+  every(ms: number, fn: () => void): () => void
+}
+const realClock: RunClock = {
+  now: () => performance.now(),
+  every: (ms, fn) => {
+    const handle = setInterval(fn, ms)
+    return () => clearInterval(handle)
+  },
+}
 
 // Runs `bash -lc <cmd>` WITHOUT blocking the event loop. This matters because
 // the scheduler lives inside the dashboard process: a synchronous spawn would
@@ -85,18 +111,39 @@ const KILL_GRACE_MS = 2000
 // dashboard's own API (curl http://localhost:<port>/api/...) could never be
 // answered and would simply time out. The child gets its own process group so a
 // timeout takes the whole tree down (bash, curl, tar, ...), not just the shell.
-function runCommand(cmd: string, timeoutMs: number): Promise<{ outcome: CommandOutcome; detail: string }> {
+export function runCommand(
+  cmd: string,
+  timeoutMs: number,
+  clock: RunClock = realClock,
+): Promise<{ outcome: CommandOutcome; detail: string; suspendedMs: number }> {
   return new Promise((resolve) => {
     let settled = false
     let timedOut = false
     let stderr = ""
     let timer: NodeJS.Timeout | undefined
+    let stopWatchdog: (() => void) | undefined
+    let suspendedMs = 0
+    const startedAt = clock.now()
+    let lastSeen = startedAt
+    const tickMs = Math.max(25, Math.min(1000, Math.floor(timeoutMs / 4)))
     const finish = (r: { outcome: CommandOutcome; detail: string }) => {
       if (settled) return
       settled = true
       if (timer) clearTimeout(timer)
-      resolve(r)
+      stopWatchdog?.()
+      resolve({ ...r, suspendedMs })
     }
+    // True when the process was not running for a while since it last looked (the machine slept).
+    const noteSuspension = (): boolean => {
+      const now = clock.now()
+      const gap = now - lastSeen
+      lastSeen = now
+      if (gap <= tickMs + SLEEP_GAP_MS) return false
+      // The process ran for at most one tick of the gap; charging none of it errs on the side of not killing.
+      suspendedMs += gap
+      return true
+    }
+    const awakeRemainingMs = () => timeoutMs - (clock.now() - startedAt - suspendedMs)
     let child: ReturnType<typeof spawn>
     try {
       child = spawn("bash", ["-lc", cmd], { stdio: ["ignore", "ignore", "pipe"], detached: true })
@@ -120,13 +167,30 @@ function runCommand(cmd: string, timeoutMs: number): Promise<{ outcome: CommandO
       const err = stderr.trim().slice(0, 200)
       finish({ outcome: code === COMMAND_EXIT_FINDINGS ? "findings" : "fail", detail: `exit ${code ?? signal}${err ? ": " + err : ""}` })
     })
-    timer = setTimeout(() => {
+    const onDeadline = () => {
+      if (settled) return
+      // The timer and the watchdog both wake up late after a sleep, in either order: look here too, so the
+      // limit is never judged before the sleep has been taken off the clock.
+      noteSuspension()
+      if (suspendedMs > 0) {
+        const remaining = awakeRemainingMs()
+        if (remaining > 1) {
+          timer = setTimeout(onDeadline, remaining)
+          return
+        }
+      }
       timedOut = true
       killTree("SIGTERM")
       setTimeout(() => killTree("SIGKILL"), KILL_GRACE_MS).unref()
       // do not wait for a stubborn tree to exit: the run is already a failure
       finish({ outcome: "fail", detail: `timeout ${timeoutMs}ms` })
-    }, timeoutMs)
+    }
+    timer = setTimeout(onDeadline, timeoutMs)
+    // The ticks keep lastSeen fresh and book a sleep as soon as the process wakes; the deadline above turns
+    // the booked sleep into the awake time the command still has left instead of a failure.
+    stopWatchdog = clock.every(tickMs, () => {
+      if (!settled) noteSuspension()
+    })
   })
 }
 
@@ -160,7 +224,7 @@ async function runCommandTaskInner(task: ScheduledTask, now: number): Promise<vo
   const failThreshold = task.failThreshold && task.failThreshold > 0 ? task.failThreshold : 2
   const map = load()
   const startedMs = Date.now()
-  const { outcome, detail } = await runCommand(task.command as string, timeoutMs)
+  const { outcome, detail, suspendedMs } = await runCommand(task.command as string, timeoutMs)
   // A finding is a run that did its job: only a real failure is an error span / error metric.
   const ok = outcome !== "fail"
   const endedMs = Date.now()
@@ -174,11 +238,12 @@ async function runCommandTaskInner(task: ScheduledTask, now: number): Promise<vo
       attributes: JSON.stringify({ schedule: task.name, schedule_type: 'command', ...(outcome === 'findings' && { outcome: 'findings' }) }),
     })
   } catch { /* telemetry is never fatal to the task */ }
-  const { next, action } = evaluateCommandResult(map[task.name], outcome, failThreshold, now)
+  const { next, action } = evaluateCommandResult(map[task.name], outcome, failThreshold, now, detail)
   map[task.name] = next
   persist()
   try { await appendTaskRun(task.name, task.agent || "system") } catch { /* non-fatal */ }
   logger.info({ task: task.name, ok, outcome, detail, fails: next.fails, action }, "command task ran")
+  if (suspendedMs > 0) logger.info({ task: task.name, suspendedMs, timeoutMs }, "command task ran across a host sleep: the sleep was not charged to its time limit")
 
   if (action === "none") return
   if (!TELEGRAM_BOT_TOKEN || !ALLOWED_CHAT_ID) {

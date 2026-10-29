@@ -1,7 +1,8 @@
 import { execSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { isAbsolute, join } from 'node:path'
 import { homedir } from 'node:os'
+import { readEnvFile } from './env.js'
 
 export type PlatformType = 'macos' | 'linux-server' | 'linux-gui'
 
@@ -66,10 +67,26 @@ export function resolveFromPath(name: string): string {
 // therefore succeeds; only the first actual use of the binary can throw, and
 // that call site can handle it. The resolved path is cached after the first
 // successful lookup.
-export function makeLazyBinResolver(name: string): () => string {
+//
+// `recorded` is the location the installer wrote down (a TMUX_BIN value in .env): it wins when it is an absolute
+// path that still exists. It is checked on every call, so a binary that moved falls back to the search below and
+// a recorded value that is gone never sticks. No recorded value, or a stale one: the search (`which`, then the
+// known install dirs); a binary that is nowhere throws the explicit error of resolveFromPath.
+export function makeLazyBinResolver(name: string, opts: { recorded?: () => string | undefined } = {}): () => string {
   let cached: string | null = null
   return () => {
+    const recorded = opts.recorded?.()
+    if (recorded && isAbsolute(recorded) && existsSync(recorded)) return recorded
     if (cached === null) cached = resolveFromPath(name)
     return cached
   }
 }
+
+/**
+ * The tmux binary: the location recorded at install time (TMUX_BIN), else the lazy search.
+ * The installer writes the value to .env, which readEnvFile reads but never copies into process.env (the dashboard
+ * process starts with a bare launchd environment), so the process environment is asked first and .env second.
+ */
+export const tmuxBin = makeLazyBinResolver('tmux', {
+  recorded: () => process.env['TMUX_BIN'] || readEnvFile(['TMUX_BIN'])['TMUX_BIN'] || undefined,
+})

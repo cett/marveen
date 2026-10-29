@@ -35,6 +35,13 @@ export function getSystemConfig(key: string): SystemConfigRow | undefined {
     | undefined
 }
 
+// The row as the database holds it NOW, past the write-through cache. For a key whose contract is that a
+// hand edit or a rollback done outside this process shows without a restart (RBAC_MODE): the cache assumes a
+// single writer and would keep serving the old value.
+export async function getSystemConfigUncached(key: string): Promise<SystemConfigRow | undefined> {
+  return dbx.get<SystemConfigRow>('SELECT key, value, updated_at, source FROM system_config WHERE key = ?', key)
+}
+
 export function listSystemConfig(): SystemConfigRow[] {
   const cached = cachedSystemConfigList()
   if (cached !== null) return cached
@@ -95,6 +102,21 @@ export async function setSystemConfigMany(entries: ReadonlyArray<readonly [strin
     for (const [key, value] of entries) await tx.run(UPSERT_SQL, key, value, source)
   }, { mode: 'immediate' })
   for (const [key] of entries) cacheAfterWrite(key) // database first, then the cache
+}
+
+// Insert only when the key has no row yet; an existing row is never touched. Returns true when this
+// call created the row. For one-time backfills that must be safe to repeat on every boot.
+export async function insertSystemConfigIfAbsent(key: string, value: string, source: string): Promise<boolean> {
+  const info = await dbx.run(
+    `INSERT INTO system_config (key, value, updated_at, source) VALUES (?, ?, ?, ?)
+       ON CONFLICT DO NOTHING`,
+    key,
+    value,
+    Math.floor(Date.now() / 1000),
+    source,
+  )
+  if (info.changes > 0) cacheAfterWrite(key) // database first, then the cache
+  return info.changes > 0
 }
 
 // Hard delete, not a value clear -- for keys that may hold secret material

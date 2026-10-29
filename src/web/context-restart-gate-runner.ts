@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { logger } from '../logger.js'
+import { tmuxBin } from '../platform.js'
 import { MAIN_AGENT_ID, PROJECT_ROOT, STORE_DIR } from '../config.js'
 import { listAgentNames, readAgentClaudeConfigDir } from './agent-config.js'
 import { agentSessionName, capturePane } from './agent-process.js'
@@ -43,8 +44,6 @@ import {
 
 const INITIAL_DELAY_MS = 3 * 60_000   // 3 min
 
-// tmux path (matches other runners).
-const TMUX = process.env.TMUX_BIN ?? '/usr/bin/tmux'
 
 // Child-process measurement constants.
 //
@@ -152,11 +151,15 @@ function capturePaneOrNull(session: string): string | null {
 
 function getPanePid(session: string): number | null {
   try {
-    const raw = execFileSync(TMUX, ['list-panes', '-t', session, '-F', '#{pane_pid}'],
+    const raw = execFileSync(tmuxBin(), ['list-panes', '-t', session, '-F', '#{pane_pid}'],
       { timeout: 3000, encoding: 'utf-8' })
     const pid = parseInt(raw.split('\n')[0]?.trim() ?? '', 10)
     return Number.isFinite(pid) && pid > 0 ? pid : null
-  } catch { return null }
+  } catch (err) {
+    // Fail-closed (null blocks the gate), but say why: a tmux that cannot be found is an explicit error from tmuxBin().
+    logger.warn({ err, session }, 'context-restart-gate: tmux pane pid lookup failed')
+    return null
+  }
 }
 
 /**
@@ -523,8 +526,8 @@ export function getLiveWorkChildArgs(session: string, mcpPatterns: string[]): st
  */
 async function sendClear(session: string): Promise<void> {
   await withSessionSendLock(session, null, 'deliver', () => {
-    execFileSync(TMUX, ['send-keys', '-t', session, '-l', '/clear'], { timeout: 5000 })
-    execFileSync(TMUX, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+    execFileSync(tmuxBin(), ['send-keys', '-t', session, '-l', '/clear'], { timeout: 5000 })
+    execFileSync(tmuxBin(), ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
   })
 }
 

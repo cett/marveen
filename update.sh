@@ -729,6 +729,10 @@ if [ -f "$INSTALL_DIR/.env" ]; then
   BOT_NAME=$(grep '^BOT_NAME=' "$INSTALL_DIR/.env" | cut -d= -f2-)
   OWNER_NAME=$(grep '^OWNER_NAME=' "$INSTALL_DIR/.env" | cut -d= -f2-)
   WEB_PORT="${WEB_PORT:-$(grep '^WEB_PORT=' "$INSTALL_DIR/.env" | cut -d= -f2- | tr -d '"')}"
+  # Record where tmux lives (TMUX_BIN), so the runtime resolver starts from the installed location.
+  if [ -f "$INSTALL_DIR/scripts/record-tmux-bin.sh" ]; then
+    bash "$INSTALL_DIR/scripts/record-tmux-bin.sh" "$INSTALL_DIR/.env" || true
+  fi
 fi
 SKILLS_DIR="$HOME/.claude/skills"
 SCHED_TARGET_DIR="$HOME/.claude/scheduled-tasks"
