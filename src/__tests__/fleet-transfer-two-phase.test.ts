@@ -20,6 +20,7 @@ import { cachedAgentSettingsByKey } from '../db/agent-settings-cache.js'
 import { listModelProfileMap } from '../db/model-profile-map.js'
 import { listAgentSettingsByKey } from '../db/agent-settings.js'
 import { updateEnvFile } from '../env.js'
+import { scanImportLeftovers } from '../web/fleet-import-leftovers.js'
 
 const { ROOT, PROJECT, STORE, HOME, AGENTS, TASKS, probe } = vi.hoisted(() => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -47,6 +48,8 @@ const { ROOT, PROJECT, STORE, HOME, AGENTS, TASKS, probe } = vi.hoisted(() => {
       failRenameTo: null as string | null,
       /** A copy onto exactly this path ends with other content than the source: a restore that "succeeds" wrongly. */
       corruptCopyTo: null as string | null,
+      /** Removing a `.import-new` / `.import-bak` file is a no-op: what a crash before the cleanup would leave behind. */
+      keepLeftovers: false,
     },
   }
 })
@@ -92,8 +95,14 @@ vi.mock('node:fs', async (importOriginal) => {
       real.copyFileSync(from, to)
       if (probe.corruptCopyTo !== null && String(to) === probe.corruptCopyTo) real.writeFileSync(to, 'not the previous content')
     },
-    unlinkSync: watch('unlinkSync', real.unlinkSync),
-    rmSync: watch('rmSync', real.rmSync),
+    unlinkSync: (path: string) => {
+      if (probe.keepLeftovers && /\.import-(new|bak)$/.test(String(path))) return
+      watch('unlinkSync', real.unlinkSync)(path)
+    },
+    rmSync: (...a: Parameters<typeof real.rmSync>) => {
+      if (probe.keepLeftovers) return // the directories the import created, with their staged files, stay too
+      watch('rmSync', real.rmSync)(...a)
+    },
     renameSync: (from: string, to: string) => {
       if (probe.inTx) probe.ioInTx.push(`renameSync ${from}`)
       if (probe.failRenameTo !== null && String(to) === probe.failRenameTo) throw new Error(`rename refused: ${to}`)
@@ -336,6 +345,7 @@ function expectCachesMatchTables(): void {
 
 beforeEach(async () => {
   initDatabase(':memory:')
+  probe.keepLeftovers = false // first: the cleanup below must really run
   rmSync(ROOT, { recursive: true, force: true })
   for (const d of [PROJECT, STORE, HOME, AGENTS, TASKS]) mkdirSync(d, { recursive: true })
   probe.inTx = false
@@ -728,5 +738,67 @@ describe('the same path staged twice', () => {
 
     expect(readFileSync(join(AGENTS, 'agent-b', '.claude', 'skills', 'skill-a', 'SKILL.md'), 'utf-8')).toBe(AGENT_SKILL_MD)
     expect(strays()).toEqual([])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The leftover scan walks importTargetRoots(). Here the leftovers come from the REAL import (the cleanup is made a
+// no-op, as a crash before it would), so a write location of the import that the roots do not reach shows up as a
+// stray the scan did not report.
+// ---------------------------------------------------------------------------
+
+describe('the leftover scan finds what an interrupted import really left', () => {
+  const found = async () => {
+    const scan = await scanImportLeftovers()
+    return { scan, rel: scan.items.map((i) => relative(ROOT, i.path)).sort() }
+  }
+
+  it('reports every backup of a completed import whose cleanup did not run, and deletes none of them', async () => {
+    probe.keepLeftovers = true
+    await apply(bundle())
+    const before = tree()
+
+    const { scan, rel } = await found()
+
+    expect(strays().filter((p) => p.endsWith('.import-bak')).length).toBeGreaterThan(3)
+    expect(rel).toEqual(strays().sort())
+    expect(scan.items.every((i) => i.kind === 'stale_bak')).toBe(true)
+    expect(scan.truncated).toBe(false)
+    expect(tree()).toEqual(before)
+  })
+
+  it('reports the staged files and backups of an import that failed before its commit', async () => {
+    getDb().exec("CREATE TRIGGER refuse_skill_rows BEFORE INSERT ON skills BEGIN SELECT RAISE(ABORT, 'skill row refused'); END")
+    probe.keepLeftovers = true
+    // channel pairing files stage two levels (main agent) and four levels (sub-agent) below their roots
+    const withChannels = bundle() as unknown as { mainAgent: { channelsAccess: object }; agents: { channelsAccess: object }[] }
+    withChannels.mainAgent.channelsAccess = { telegram: { allowFrom: [] } }
+    withChannels.agents[0].channelsAccess = { telegram: { allowFrom: [] } }
+    await expect(apply(withChannels as unknown as FleetJson)).rejects.toThrow(/skill row refused/)
+    const before = tree()
+
+    const { scan, rel } = await found()
+
+    expect(strays().filter((p) => p.endsWith('.import-new')).length).toBeGreaterThan(3)
+    expect(rel).toEqual(strays().sort())
+    // every root the import stages into is reached
+    for (const prefix of ['project/', 'home/.claude/channels/telegram/', 'agents/agent-b/.claude/channels/telegram/', 'home/.claude/skills/', 'tasks/', 'store/']) {
+      expect(rel.some((p) => p.startsWith(prefix)), prefix).toBe(true)
+    }
+    expect(new Set(scan.items.map((i) => i.kind))).toEqual(new Set(['orphan_new', 'stale_bak']))
+    expect(tree()).toEqual(before)
+  })
+
+  it('finds nothing after a clean import, and the next import is refused while a backup is left', async () => {
+    await apply(bundle())
+    expect((await found()).rel).toEqual([])
+
+    probe.keepLeftovers = true
+    await apply(bundle())
+    expect((await found()).rel.length).toBeGreaterThan(0)
+
+    const refusal = await apply(bundle()).then(() => undefined, (e: unknown) => e as Error)
+    expect(refusal).toBeInstanceOf(StaleBackupError)
+    expect(refusal!.message).toContain('/api/fleet/import-leftovers')
   })
 })

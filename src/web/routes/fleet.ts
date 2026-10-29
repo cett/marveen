@@ -1,10 +1,30 @@
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import { exportFleet, importFleet, ImportConflictError, MIN_VAULT_PASSWORD_LEN, UserFacingError, type ExportedFleet } from '../fleet-transfer.js'
+import { scanImportLeftovers } from '../fleet-import-leftovers.js'
 import type { RouteContext } from './types.js'
 
 export async function tryHandleFleet(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
+
+  // Read-only list of the staged files and backups an interrupted import left behind. Admin only (no RBAC entry:
+  // an unlisted route requires admin:all). It never deletes or writes anything.
+  if (path === '/api/fleet/import-leftovers' && method === 'GET') {
+    try {
+      const scan = await scanImportLeftovers()
+      json(res, {
+        items: scan.items.map((i) => ({ path: i.path, kind: i.kind, mtime: i.mtime, age_seconds: i.ageSeconds, action: i.action })),
+        truncated: scan.truncated,
+        truncated_reason: scan.truncatedReason,
+        import_in_progress: scan.importInProgress,
+        scanned_at: scan.scannedAt,
+      })
+    } catch (err: any) {
+      logger.error({ err }, 'Fleet import leftover scan failed')
+      json(res, { error: 'internal_error', hint: 'Leftover scan failed' }, 500)
+    }
+    return true
+  }
 
   if (path !== '/api/fleet/export' && path !== '/api/fleet/import') return false
 
