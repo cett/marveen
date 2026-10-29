@@ -86,6 +86,23 @@ describe('the registry against the source tree', () => {
   })
 })
 
+describe('every call of an agent job runs through runAsAgentJob', () => {
+  const sites: Array<[string, RegExp]> = [
+    ['src/web/context-guard-runner.ts', /\bcheckAgent\(/],
+    ['src/web/context-restart-gate-runner.ts', /\bcheckAgent\(/],
+    ['src/web/auto-restart-runner.ts', /\bcheckAgent\(/],
+    ['src/web/routes/background-tasks.ts', /\b(?:pollTick|checkAndFinalize)\(/],
+  ]
+  for (const [path, call] of sites) {
+    it(`${path}: no bare call`, () => {
+      const lines = code(files.find((f) => f.path === path)!.text).split('\n')
+      const calls = lines.filter((l) => call.test(l) && !/function /.test(l))
+      expect(calls.length).toBeGreaterThan(0)
+      expect(calls.filter((l) => !l.includes('runAsAgentJob('))).toEqual([])
+    })
+  }
+})
+
 describe('systemJob', () => {
   it('runs the function in runAs.system(name) on every call and passes arguments and result through', () => {
     const seen: Array<string | undefined> = []
