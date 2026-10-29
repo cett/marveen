@@ -47,7 +47,7 @@ the context only records, and the counter shows what still runs without one.
 - **Helpers.** `systemJob(name, fn)` wraps a timer callback; `runAsAgentJob(job, agentId, fn)` runs one agent's turn of an
   agent job as that agent in its tenant (the tenant comes from the resolver set at boot, kept five minutes; the default
   tenant when the lookup fails); `runAsRequest(who, fn)` binds the route dispatch after the auth gate (an agent token as the
-  agent, a tenant caller as the tenant, a global session as `http-admin` only when its role is admin, and any other global role or tenant-less agent token as the default tenant, a caller without a credential as `http-public`).
+  agent, a tenant caller as the tenant, a global session as `http-admin` only when its role is admin, any other authenticated caller without a tenant as `http-global-viewer`, a caller without a credential as `http-public`).
   The gate itself (auth lookups, RBAC, shadow counters) runs as `http-gate`.
 - **Event callbacks do not carry the context.** A request `end` or a response `close` handler runs outside the context of
   the code that registered it. `readBody` takes the context of its caller and hands it to the body observer

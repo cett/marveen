@@ -60,7 +60,8 @@ export const BACKGROUND_JOBS = {
   'boot-sequence': { file: 'src/index.ts', role: 'system', note: 'the fire-and-forget backfills and passes started while the dashboard boots' },
   'http-gate': { file: 'src/web.ts', role: 'system', note: 'the request before a principal is known: the auth lookups, the RBAC gate and the shadow counters' },
   'http-public': { file: 'src/db/background-jobs.ts', role: 'system', note: 'a route served without a credential: login, auth status, avatars, the static files' },
-  'http-admin': { file: 'src/db/background-jobs.ts', role: 'system', note: 'a global admin session (role admin, no tenant); a global session of any other role runs as the default tenant' },
+  'http-admin': { file: 'src/db/background-jobs.ts', role: 'system', note: 'a global admin session (role admin, no tenant)' },
+  'http-global-viewer': { file: 'src/db/background-jobs.ts', role: 'system', note: 'an authenticated caller of any other role without a tenant (a global viewer); what it may see under row-level security is a PostgreSQL-step decision' },
   'http-metrics': { file: 'src/otel-http.ts', role: 'system', note: 'the request counters written when a response is done (an event callback does not carry the request context)' },
   'shutdown-flush': { file: 'src/web.ts', role: 'system', note: 'flushes the running state on SIGTERM' },
 } as const satisfies Record<string, BackgroundJob>
@@ -92,16 +93,15 @@ export const NOT_DB_TIMER_FILES: Record<string, string> = {
  * tenant caller as the tenant, and a caller without a credential as the named system job `http-public`.
  *
  * A caller without a tenant (a global session) gets the unrestricted `http-admin` context ONLY when its role is `admin`.
- * Any other role, a viewer or an agent token without a tenant, runs under the `default` tenant: the same fallback
- * `resolveTenantId` uses everywhere else, and a context that row-level security can restrict. What a non-admin global
- * user may read across tenants is a PostgreSQL-step decision, not something this mapping grants.
+ * Any other authenticated role without a tenant is the separate, expected job `http-global-viewer`, so the unexpected count
+ * stays clean and the PostgreSQL step can give it its own, restricted role. What it may read across tenants is decided there.
  */
 export function runAsRequest<T>(who: { authenticated: boolean; role: string | undefined; agentId?: string; tenantId: string | null }, fn: () => T): T {
   if (!who.authenticated) return runAs.system('http-public', fn)
   if (who.tenantId === null && who.role === 'admin') return runAs.system('http-admin', fn)
-  const tenantId = who.tenantId ?? 'default'
-  if (who.agentId) return runAs.agent(who.agentId, tenantId, fn)
-  return runAs.tenant(tenantId, fn)
+  if (who.tenantId === null) return runAs.system('http-global-viewer', fn)
+  if (who.agentId) return runAs.agent(who.agentId, who.tenantId, fn)
+  return runAs.tenant(who.tenantId, fn)
 }
 
 /** The same function, every call running in `runAs.system(name)`. For a timer or an event callback created OUTSIDE a `runAs`. */

@@ -162,15 +162,23 @@ describe('runAsRequest', () => {
     expect(runAsRequest({ authenticated: true, role: 'fleet_agent', agentId: 'a1', tenantId: 'acme' }, () => currentDbContext())).toEqual({ role: 'agent', agentId: 'a1', tenantId: 'acme' })
   })
 
-  it('gives the unrestricted http-admin context to the admin role only, a global non-admin runs as the default tenant', () => {
+  it('gives the unrestricted http-admin context to the admin role only, a global non-admin is http-global-viewer', () => {
     for (const role of ['viewer', 'agent', 'operator', undefined]) {
-      expect(runAsRequest({ authenticated: true, role, tenantId: null }, () => currentDbContext()), String(role)).toEqual({ role: 'tenant', tenantId: 'default' })
+      expect(runAsRequest({ authenticated: true, role, tenantId: null }, () => currentDbContext()), String(role)).toEqual({ role: 'system', name: 'http-global-viewer' })
     }
     expect(runAsRequest({ authenticated: true, role: 'admin', tenantId: 'acme' }, () => currentDbContext())).toEqual({ role: 'tenant', tenantId: 'acme' })
   })
 
-  it('runs an agent token without a tenant as that agent in the default tenant, never as http-admin', () => {
-    expect(runAsRequest({ authenticated: true, role: 'fleet_agent', agentId: 'a1', tenantId: null }, () => currentDbContext())).toEqual({ role: 'agent', agentId: 'a1', tenantId: 'default' })
+  it('never gives http-admin to an agent token without a tenant', () => {
+    expect(runAsRequest({ authenticated: true, role: 'fleet_agent', agentId: 'a1', tenantId: null }, () => currentDbContext())).toEqual({ role: 'system', name: 'http-global-viewer' })
+  })
+
+  it('counts a global viewer as expected, not as unexpected or anonymous', async () => {
+    const { dbx, initDatabase } = await import('../db.js')
+    initDatabase()
+    resetDbContextForTest()
+    await runAsRequest({ authenticated: true, role: 'viewer', tenantId: null }, async () => { await dbx.get('SELECT 1') })
+    expect(getDbContextStats()).toMatchObject({ total: 1, unexpected: 0, anonymous: 0, byJob: { 'http-global-viewer': 1 } })
   })
 
   it('counts a route served without a credential as anonymous, not as unexpected', async () => {
