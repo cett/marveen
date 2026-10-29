@@ -65,7 +65,7 @@ describe('scanImportLeftovers', () => {
     const scan = await scanImportLeftovers({ roots: [{ dir: join(ROOT, 'b'), maxDepth: 1 }] })
 
     expect(scan.items.map((i) => i.kind)).toEqual(['stale_bak'])
-    expect(scan.items[0].action).toContain(`cp "${path}" "${join(ROOT, 'b', 'SOUL.md')}"`)
+    expect(scan.items[0].action).toContain(`cp '${path}' '${join(ROOT, 'b', 'SOUL.md')}'`)
     expect(scan.items[0].action).toContain('refused (409)')
     expect(readFileSync(path, 'utf-8')).toBe('original')
   })
@@ -161,7 +161,16 @@ describe('logging', () => {
   })
 
   it('the stale backup text names the file to restore', () => {
-    expect(leftoverAction('stale_bak', '/p/CLAUDE.md.import-bak')).toContain('cp "/p/CLAUDE.md.import-bak" "/p/CLAUDE.md"')
+    expect(leftoverAction('stale_bak', '/p/CLAUDE.md.import-bak')).toContain("cp '/p/CLAUDE.md.import-bak' '/p/CLAUDE.md'")
+  })
+
+  it('a path cannot break out of the quoted restore command', () => {
+    const hostile = "/p/a'; touch /tmp/x; '.import-bak"
+    // each quote is closed, escaped and reopened, so the whole path stays one literal word
+    expect(leftoverAction('stale_bak', hostile)).toContain("cp '/p/a'\\''; touch /tmp/x; '\\''.import-bak' '/p/a'\\''; touch /tmp/x; '\\'''")
+    const newline = leftoverAction('stale_bak', '/p/a\nrm -rf x.import-bak')
+    expect(newline).not.toContain('cp ')
+    expect(newline).toContain('control character')
   })
 })
 

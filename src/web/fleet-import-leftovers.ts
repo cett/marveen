@@ -55,12 +55,25 @@ export const DEFAULT_TIMEOUT_MS = 2000
 // Trees that can be big and never hold staged import files.
 const SKIPPED_DIRS = new Set(['node_modules', '.git'])
 
+// POSIX sh single quoting: the text inside '...' is literal; a quote inside is closed, escaped and reopened.
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`
+}
+
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHARS = /[\u0000-\u001f\u007f]/
+
 export function leftoverAction(kind: LeftoverKind, path: string): string {
   if (kind === 'stale_bak') {
+    const original = path.slice(0, -BACKUP_SUFFIX.length)
+    // The command is meant to be pasted into a shell, so it is offered only for a path that cannot break out of the
+    // quoting: a control character (a newline ends the command) means the paths are named, not scripted.
+    const restore = CONTROL_CHARS.test(path)
+      ? 'The path contains a control character, so no command is offered: restore it by hand.'
+      : `If the original should come back: cp ${shellQuote(path)} ${shellQuote(original)}, then remove the backup by hand.`
     return (
       'A previous import was interrupted after its commit; this file is a copy of the ORIGINAL content. ' +
-      `If the original should come back: cp "${path}" "${path.slice(0, -BACKUP_SUFFIX.length)}", then remove the backup by hand. ` +
-      'Otherwise remove it by hand. While a .import-bak exists the next import is refused (409).'
+      `${restore} Otherwise remove it by hand. While a .import-bak exists the next import is refused (409).`
     )
   }
   return (
