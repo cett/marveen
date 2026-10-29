@@ -170,6 +170,101 @@ check "DASHBOARD_BASE_URL honoured" grep -qx 'http://example.invalid:9/api/x' "$
 reset; echo own-a > "$INSTALL/agents/a/.agent-token"; WEB_PORT=4999 bash "$W" GET /api/x >/dev/null 2>&1
 check "WEB_PORT honoured" grep -qx 'http://localhost:4999/api/x' "$T/argv"
 
+# 13 X-Caller-Config: the agent the session was launched as, from CLAUDE_CONFIG_DIR, sent whatever the wrapper
+# resolves as the acting agent. A measurement signal only: the token, the exit code and the acting agent stay
+# exactly what the cwd / --token rules gave before. A stderr warning when the acting agent came from the install
+# root or from --token main and is not the launched agent.
+mkdir -p "$T/scratch" "$INSTALL/agents/a/.claude-config" "$INSTALL/.channels-config"
+matrix() { # matrix NAME CWD CONFIG KIND EXPECT_TOKEN EXPECT_HEADER(a|m|none) EXPECT_WARN(yes|no)
+  local name="$1" cwd="$2" cfg="$3" kind="$4" tok="$5" hdr="$6" warn="$7"
+  reset; echo own-a > "$INSTALL/agents/a/.agent-token"; echo own-m > "$INSTALL/.agent-token"
+  local err rc; unset MARVEEN_AGENT_ID MARVEEN_AGENT_TOKEN_FILE
+  if [ -n "$cfg" ]; then export CLAUDE_CONFIG_DIR="$cfg"; else unset CLAUDE_CONFIG_DIR; fi
+  err="$(cd "$cwd" && bash "$W" --token "$kind" GET /api/x 2>&1 >/dev/null)"; rc=$?
+  unset CLAUDE_CONFIG_DIR
+  check "$name: exit 0" test "$rc" -eq 0
+  check "$name: token $tok" grep -q "Bearer own-$tok" "$T/stdin"
+  if [ "$hdr" = none ]; then check "$name: no X-Caller-Config" bash -c "! grep -q 'X-Caller-Config' '$T/argv'"
+  else check "$name: X-Caller-Config: $hdr" grep -qx "X-Caller-Config: $hdr" "$T/argv"; fi
+  if [ "$warn" = yes ]; then check "$name: warns" bash -c "echo \"\$1\" | grep -q 'warning: acting as'" _ "$err"
+  else check "$name: no warning" bash -c "! echo \"\$1\" | grep -q 'warning'" _ "$err"; fi
+}
+CFG_A="$INSTALL/agents/a/.claude-config"; CFG_M="$INSTALL/.channels-config"
+#      name                               cwd                 config   kind   token header warn
+matrix "root cwd, sub-agent config"       "$INSTALL"          "$CFG_A" agent  m     a      yes
+matrix "root cwd, main config"            "$INSTALL"          "$CFG_M" agent  m     m      no
+matrix "root cwd, no config"              "$INSTALL"          ""       agent  m     none   no
+matrix "agent cwd, sub-agent config"      "$INSTALL/agents/a" "$CFG_A" agent  a     a      no
+matrix "agent cwd, main config"           "$INSTALL/agents/a" "$CFG_M" agent  a     m      no
+matrix "scratch cwd, sub-agent config"    "$T/scratch"        "$CFG_A" agent  a     a      no
+matrix "scratch cwd, main config"         "$T/scratch"        "$CFG_M" agent  m     m      no
+matrix "--token main, sub-agent config"   "$T/scratch"        "$CFG_A" main   m     a      yes
+matrix "--token main, main config"        "$T/scratch"        "$CFG_M" main   m     m      no
+matrix "--token main, no config"          "$T/scratch"        ""       main   m     none   no
+# negative control: a sub-agent config with the install root as cwd must never be given a token it did not have
+# before (it was the main agent's, and still is: this change only reports it).
+reset; echo own-a > "$INSTALL/agents/a/.agent-token"; echo own-m > "$INSTALL/.agent-token"
+OUT="$(cd "$INSTALL" && CLAUDE_CONFIG_DIR="$CFG_A" bash "$W" --agent a GET /api/x 2>&1 >/dev/null)"
+check "explicit --agent with a sub-agent config: own token, no warning" bash -c "grep -q 'Bearer own-a' '$T/stdin' && ! echo \"\$1\" | grep -q warning" _ "$OUT"
+
+# 14 a hostile config directory (the variable is the caller's own text): the agent segment is dropped whole, so no
+# extra header line, no raw control character on stderr, no header and no warning at all. The call itself goes out
+# as it would without a config directory (here: the main agent, from the install root).
+hostile() { # hostile NAME SEGMENT
+  local name="$1" seg="$2" err
+  reset; echo own-m > "$INSTALL/.agent-token"
+  err="$(cd "$INSTALL" && CLAUDE_CONFIG_DIR="$INSTALL/agents/$seg/.claude-config" bash "$W" GET /api/x 2>&1 >/dev/null)"
+  check "hostile config ($name): the call still goes out on the main agent's token" grep -q 'Bearer own-m' "$T/stdin"
+  check "hostile config ($name): no X-Caller-Config header" bash -c "! grep -q 'X-Caller-Config' '$T/argv'"
+  check "hostile config ($name): no injected header line" bash -c "! grep -qi 'X-Evil' '$T/argv'"
+  check "hostile config ($name): nothing raw on stderr" bash -c "[ -z \"\$1\" ]" _ "$err"
+}
+hostile "CRLF" "$(printf 'a\r\nX-Evil: 1')"
+hostile "LF" "$(printf 'a\nX-Evil: 1')"
+hostile "colon" "a: b"
+hostile "TAB and ESC" "$(printf 'a\t\033[31m')"
+hostile "3000 characters" "$(printf 'a%.0s' $(seq 1 3000))"
+hostile "65 characters" "$(printf 'a%.0s' $(seq 1 65))"
+# the acting agent printed in the warning is filtered too (here the main agent id itself carries an escape sequence)
+reset; echo own-m > "$INSTALL/.agent-token"
+err="$(cd "$INSTALL" && MAIN_AGENT_ID="$(printf 'm\033[31m')" CLAUDE_CONFIG_DIR="$CFG_A" bash "$W" GET /api/x 2>&1 >/dev/null)"; rc=$?
+check "a main agent id with an escape sequence: no request, no raw control character on stderr" bash -c "[ \"\$1\" -eq 3 ] && [ ! -e '$T/calls' ] && ! printf '%s' \"\$2\" | grep -q \$'\\033'" _ "$rc" "$err"
+
+# 15 the acting agent (the X-Agent-Id header and the token path) takes the same allowlist, whichever way it was named:
+# --agent, MARVEEN_AGENT_ID, the working directory, the config directory, --token main. A value that fails it ends
+# in the "no token for an unknown agent" exit (3), no request made, nothing raw on stderr.
+hostile_agent() { # hostile_agent NAME VALUE HOW(flag|env|cwd|main)
+  local name="$1" val="$2" how="$3" err rc
+  reset; echo own-a > "$INSTALL/agents/a/.agent-token"; echo own-m > "$INSTALL/.agent-token"
+  # the hostile id has a token of its own, so only the filter (not a missing token file) can end the call
+  mkdir -p "$INSTALL/agents/$val" && echo own-x > "$INSTALL/agents/$val/.agent-token"
+  case "$how" in
+    flag) err="$(cd "$T/scratch" && bash "$W" --agent "$val" GET /api/x 2>&1 >/dev/null)"; rc=$? ;;
+    env)  err="$(cd "$T/scratch" && MARVEEN_AGENT_ID="$val" bash "$W" GET /api/x 2>&1 >/dev/null)"; rc=$? ;;
+    cwd)  mkdir -p "$INSTALL/agents/$val"; err="$(cd "$INSTALL/agents/$val" && bash "$W" GET /api/x 2>&1 >/dev/null)"; rc=$? ;;
+    main) err="$(cd "$T/scratch" && MAIN_AGENT_ID="$val" bash "$W" --token main GET /api/x 2>&1 >/dev/null)"; rc=$? ;;
+  esac
+  check "hostile acting agent ($name, $how): exit 3 and no request" bash -c "[ \"\$1\" -eq 3 ] && [ ! -e '$T/calls' ]" _ "$rc"
+  check "hostile acting agent ($name, $how): no raw control character on stderr" bash -c "! printf '%s' \"\$1\" | grep -q \$'[\\001-\\037]'" _ "$err"
+}
+for how in flag env cwd main; do
+  hostile_agent "CRLF" "$(printf 'a\r\nX-Evil: 1')" "$how"
+  hostile_agent "colon" "a: b" "$how"
+  hostile_agent "ESC" "$(printf 'a\033[31m')" "$how"
+  hostile_agent "65 characters" "$(printf 'a%.0s' $(seq 1 65))" "$how"
+done
+# a plain id still works through every door (here: the flag and the working directory)
+reset; echo own-a > "$INSTALL/agents/a/.agent-token"
+(cd "$T/scratch" && bash "$W" --agent a GET /api/x >/dev/null 2>&1)
+check "a plain --agent id still sends X-Agent-Id" grep -qx "X-Agent-Id: a" "$T/argv"
+# the allowlist keeps a plain id of the longest allowed length, and the id the fleet really uses
+reset; echo own-m > "$INSTALL/.agent-token"; LONG="$(printf 'a%.0s' $(seq 1 64))"
+(cd "$INSTALL" && CLAUDE_CONFIG_DIR="$INSTALL/agents/$LONG/.claude-config" bash "$W" GET /api/x >/dev/null 2>&1)
+check "a 64 character id is still sent" grep -qx "X-Caller-Config: $LONG" "$T/argv"
+reset; echo own-m > "$INSTALL/.agent-token"
+(cd "$INSTALL" && CLAUDE_CONFIG_DIR="$INSTALL/agents/agent-b_2/.claude-config" bash "$W" GET /api/x >/dev/null 2>&1)
+check "an id with a hyphen, an underscore and a digit is still sent" grep -qx "X-Caller-Config: agent-b_2" "$T/argv"
+
 echo ""
 echo "passed: $PASS  failed: $FAIL"
 [ "$FAIL" -eq 0 ]

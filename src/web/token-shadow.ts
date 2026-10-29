@@ -88,6 +88,7 @@ export const TOKEN_SHADOW_CATEGORIES = [
   'fleet_skill_write_denied',
   'shared_token_refused',
   'channel_credential_drift',
+  'main_token_from_subagent',
 ] as const
 export type TokenShadowCategory = (typeof TOKEN_SHADOW_CATEGORIES)[number]
 
@@ -743,6 +744,16 @@ export async function observeTokenUsage(
       method, route: normalizeRoute(path), client: classifyClient(req.headers['user-agent']),
       caller: who.caller, callerSource: who.source,
     }
+    // The main agent's own token on a call whose wrapper says the session was launched as ANOTHER agent (a
+    // sub-agent that cd'd to the install root or asked for --token main). X-Caller-Config is a measurement
+    // signal from the client, never a credential: it changes nothing about the request, it only feeds this counter.
+    try {
+      const rawCfg = req.headers['x-caller-config']
+      const launchedAs = cleanAgentId(Array.isArray(rawCfg) ? rawCfg[0] : rawCfg)
+      if (who.source === 'token' && who.caller === cleanAgentId(mainAgentId) && launchedAs && launchedAs !== INVALID && launchedAs !== who.caller) {
+        recordTokenShadow(base, { category: 'main_token_from_subagent', target: launchedAs })
+      }
+    } catch { /* a counting side effect only */ }
     const spec = watchSpecFor(path)
     if (who.shared) {
       if (spec?.prefix === '/api/messages' && isWriteMethod(method) && typeof req.once === 'function') {

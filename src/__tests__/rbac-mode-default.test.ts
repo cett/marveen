@@ -1,5 +1,7 @@
-// RBAC_MODE parsing in config.ts. The gate must be on unless somebody asks, by name, for
-// shadow mode: an unset, empty or misspelled value is enforce, never a silently open gate.
+// RBAC_MODE_ENV parsing in config.ts: the mode the process environment or .env asks for. It is not the
+// live mode (that is the system_config row, see rbac-mode.test.ts); it seeds the row once and can only
+// tighten afterwards. Nothing set (or a blank value) asks for nothing; the exact word shadow loosens;
+// any other value, a misspelling included, is enforce, so a typo never asks for an open gate.
 //
 // config.ts reads process.env first and then the project .env through readEnvFile(), which
 // honours CLAUDECLAW_ENV_DIR. Every case points that at an empty temp dir, so a developer's
@@ -14,10 +16,10 @@ let envDir: string
 const saved: Record<string, string | undefined> = {}
 const KEYS = ['RBAC_MODE', 'CLAUDECLAW_ENV_DIR']
 
-async function loadMode(): Promise<string> {
+async function loadMode(): Promise<string | undefined> {
   vi.resetModules()
   const cfg = await import('../config.js')
-  return cfg.RBAC_MODE
+  return cfg.RBAC_MODE_ENV
 }
 
 beforeEach(() => {
@@ -35,9 +37,9 @@ afterEach(() => {
   rmSync(envDir, { recursive: true, force: true })
 })
 
-describe('RBAC_MODE from the process environment', () => {
-  it('is enforce when nothing is set', async () => {
-    expect(await loadMode()).toBe('enforce')
+describe('RBAC_MODE_ENV from the process environment', () => {
+  it('asks for nothing when nothing is set', async () => {
+    expect(await loadMode()).toBeUndefined()
   })
 
   it('is enforce when set to enforce', async () => {
@@ -50,16 +52,21 @@ describe('RBAC_MODE from the process environment', () => {
     expect(await loadMode()).toBe('shadow')
   })
 
-  it.each(['', '   ', 'shadw', 'off', 'false', '0', 'disabled'])('is enforce for %j (a typo never opens the gate)', async (v) => {
+  it.each(['', '   '])('asks for nothing for the blank value %j', async (v) => {
+    process.env['RBAC_MODE'] = v
+    expect(await loadMode()).toBeUndefined()
+  })
+
+  it.each(['shadw', 'off', 'false', '0', 'disabled'])('is enforce for %j (a typo never opens the gate)', async (v) => {
     process.env['RBAC_MODE'] = v
     expect(await loadMode()).toBe('enforce')
   })
 })
 
-describe('RBAC_MODE from the .env file', () => {
-  it('is enforce when the .env has no RBAC_MODE line', async () => {
+describe('RBAC_MODE_ENV from the .env file', () => {
+  it('asks for nothing when the .env has no RBAC_MODE line', async () => {
     writeFileSync(join(envDir, '.env'), 'WEB_PORT=3420\n')
-    expect(await loadMode()).toBe('enforce')
+    expect(await loadMode()).toBeUndefined()
   })
 
   it('is shadow when the .env says RBAC_MODE=shadow', async () => {
@@ -79,17 +86,17 @@ describe('RBAC_MODE from the .env file', () => {
   })
 })
 
-describe('RBAC_MODE source literals', () => {
+describe('RBAC_MODE_ENV source literals', () => {
   const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'config.ts'), 'utf-8')
-  const decl = src.slice(src.indexOf('export const RBAC_MODE'), src.indexOf('export const RBAC_MODE') + 400)
-
-  it("defaults to the literal 'enforce'", () => {
-    expect(decl).toContain("?? 'enforce')")
-    expect(decl).not.toContain("?? 'shadow')")
-  })
+  const decl = src.slice(src.indexOf('export const RBAC_MODE_ENV'), src.indexOf('export const RBAC_MODE_ENV') + 500)
 
   it("needs the literal 'shadow' to select shadow mode", () => {
     expect(decl).toContain("=== 'shadow'")
     expect(decl).not.toContain("=== 'enforce'")
+  })
+
+  it("falls back to the literal 'enforce' for any other non-blank value", () => {
+    expect(decl).toContain("? 'shadow' : 'enforce'")
+    expect(decl).not.toContain("? 'enforce' : 'shadow'")
   })
 })

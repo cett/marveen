@@ -97,6 +97,18 @@ export async function setSystemConfigMany(entries: ReadonlyArray<readonly [strin
   for (const [key] of entries) cacheAfterWrite(key) // database first, then the cache
 }
 
+// Insert only when the key has no row yet; an existing row is never touched. Returns true when this
+// call created the row. For one-time backfills that must be safe to repeat on every boot.
+export function insertSystemConfigIfAbsent(key: string, value: string, source: string): boolean {
+  const info = db
+    .prepare(
+      `INSERT INTO system_config (key, value, updated_at, source) VALUES (?, ?, ?, ?)
+       ON CONFLICT DO NOTHING`
+    )
+    .run(key, value, Math.floor(Date.now() / 1000), source)
+  return info.changes > 0
+}
+
 // Hard delete, not a value clear -- for keys that may hold secret material
 // (e.g. federation peer tokens), leaving a stale row with an empty value is
 // worse than removing it outright. Used by removeFederationStore().

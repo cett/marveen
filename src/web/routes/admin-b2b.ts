@@ -49,6 +49,7 @@ import { regenTenantSkillFilesForAgentChange } from '../skill-regen.js'
 import { autoCreateStarterPack, createStarterPack, describeStarterPack, markStarterPackPending, reconcileStarterPack } from '../tenant-starter-pack.js'
 import { logger } from '../../logger.js'
 import { denyUnlessHumanSession } from '../session-only-guard.js'
+import { isUniqueViolationOn } from '../unique-violation.js'
 import type { RouteContext } from './types.js'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -266,7 +267,16 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
     if (dup) { json(res, { error: 'conflict', field: 'username', hint: 'Username already exists' }, 409); return true }
 
     const hash = await hashPassword(password)
-    const user = await provisionDashboardUser(username, hash, role, finalTenantId, email, displayName)
+    let user: Awaited<ReturnType<typeof provisionDashboardUser>>
+    try {
+      user = await provisionDashboardUser(username, hash, role, finalTenantId, email, displayName)
+    } catch (err) {
+      // A second request with the same name passed the check above while this one hashed the password.
+      if (isUniqueViolationOn(err, 'dashboard_users.username')) {
+        json(res, { error: 'conflict', field: 'username', hint: 'Username already exists' }, 409); return true
+      }
+      throw err
+    }
     await auditAdmin(ctx, 'admin.user.create', user.id, { username, role, tenant_id: finalTenantId })
     json(res, userToPublic(user), 201)
     return true

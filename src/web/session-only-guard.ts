@@ -17,10 +17,10 @@ import { humanSessionOf } from './approval-human-only.js'
 import type { RouteContext } from './routes/types.js'
 
 /** Journal a refused attempt. Never throws: an audit fault must not change the answer. */
-async function auditRefusal(ctx: RouteContext, action: string): Promise<void> {
+async function auditRefusal(ctx: RouteContext, action: string, event: string): Promise<void> {
   try {
     const actor = ctx.auth?.tokenName ?? ctx.auth?.user ?? ctx.tokenAgentId ?? ctx.auth?.kind ?? 'unknown'
-    await writeAdminAuditLog(actor, 'security.human_session_required', action, {
+    await writeAdminAuditLog(actor, event, action, {
       path: ctx.path,
       method: ctx.method,
       kind: ctx.auth?.kind ?? null,
@@ -32,10 +32,27 @@ async function auditRefusal(ctx: RouteContext, action: string): Promise<void> {
   }
 }
 
-async function refuse(ctx: RouteContext, action: string, hint: string): Promise<true> {
-  await auditRefusal(ctx, action)
-  json(ctx.res, { error: 'forbidden', code: 'human_session_required', hint }, 403)
+async function refuse(ctx: RouteContext, action: string, hint: string, code = 'human_session_required'): Promise<true> {
+  await auditRefusal(ctx, action, `security.${code}`)
+  json(ctx.res, { error: 'forbidden', code, hint }, 403)
   return true
+}
+
+/**
+ * For a change that is only as strong as the human-session rule: refuse it while APPROVAL_HUMAN_ONLY_ENFORCE
+ * is off. With the switch off, a bearer token can still create a dashboard user (or reset a password) and
+ * log in as that person, so "a human session" proves nothing. Fail closed: a switch that cannot be read
+ * counts as off. Returns true when it refused.
+ */
+export function denyUnlessHumanOnlyEnforced(ctx: RouteContext, action: string, hint: string): boolean {
+  let on = false
+  try {
+    on = APPROVAL_HUMAN_ONLY_ENFORCE === true
+  } catch {
+    on = false
+  }
+  if (on) return false
+  return refuse(ctx, action, hint, 'human_only_enforce_required')
 }
 
 /**
@@ -49,6 +66,17 @@ export async function denyUnlessHumanSession(ctx: RouteContext, action: string):
   if (await countDashboardUsers(false) === 0) return false
   if (await humanSessionOf(ctx.req)) return false
   return refuse(ctx, action, 'Managing dashboard users needs a person logged in to the dashboard as a global admin')
+}
+
+/**
+ * Unconditional variant for a change that switches a protection off (RBAC_MODE -> shadow): only a person
+ * logged in to the dashboard as a global admin passes, whatever APPROVAL_HUMAN_ONLY_ENFORCE says and
+ * whether or not a dashboard user exists. Every token (the main agent's and the operator's included), a
+ * device key and a federation peer is refused, and the attempt is journalled. Returns true when it refused.
+ */
+export function denyUnlessHumanSessionAlways(ctx: RouteContext, action: string, hint: string): boolean {
+  if (humanSessionOf(ctx.req)) return false
+  return refuse(ctx, action, hint)
 }
 
 /**

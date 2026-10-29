@@ -1317,6 +1317,15 @@ function buildSettingRow(def, isAdmin) {
   desc.textContent = t('settings.desc.' + def.key) || def.description
   info.appendChild(desc)
 
+  // A stored RBAC_MODE shadow that is not what the gate runs (an unlogged row, the env brake, a read
+  // error): the row reports the live mode as its value and says why the stored one is not in force.
+  if (def.reason) {
+    const diverges = document.createElement('div')
+    diverges.className = 'settings-row-error'
+    diverges.textContent = t('settings.rbac_mode.diverges.' + def.reason, { stored: def.stored ?? '' })
+    info.appendChild(diverges)
+  }
+
   const meta = document.createElement('div')
   meta.className = 'settings-row-meta'
   const metaParts = []
@@ -1401,6 +1410,9 @@ function buildSettingRow(def, isAdmin) {
 
 async function saveAllSettings() {
   if (settingsDirty.size === 0) return
+  // Switching the RBAC gate to shadow turns a protection off: never without an explicit confirmation.
+  const rbacEntry = settingsDirty.get('RBAC_MODE')
+  if (rbacEntry && settingInputValue(rbacEntry.input, rbacEntry.type) === 'shadow' && !confirm(t('settings.rbac_mode.confirm_loosen'))) return
   const btn = document.getElementById('settingsSaveAllBtn')
   if (btn) { btn.disabled = true; btn.textContent = t('settings.save_btn.saving') }
 

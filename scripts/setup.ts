@@ -4,6 +4,7 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createInterface } from 'node:readline'
 import { homedir, platform } from 'node:os'
+import { tryResolveFromPath } from '../src/platform.js'
 import { SERVICE_ID, BRAND_NAME, appServiceLabel, LEGACY_SERVICE_ID, LEGACY_APP_SERVICE_LABEL } from '../src/config.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -97,6 +98,9 @@ async function main() {
   const providerChoice = await ask('Valassz (1/2, Enter = Telegram):')
   const provider = providerChoice === '2' ? 'slack' : 'telegram'
   config['CHANNEL_PROVIDER'] = provider
+  // Where tmux lives, recorded once: the runtime resolver (src/platform.ts, tmuxBin) starts from it.
+  const tmuxPath = tryResolveFromPath('tmux')
+  if (tmuxPath) config['TMUX_BIN'] = tmuxPath
   ok(`Csatorna: ${provider}`)
 
   if (provider === 'telegram') {

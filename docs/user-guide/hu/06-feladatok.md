@@ -80,7 +80,7 @@ A parancs típusú feladat egy nyers shell-parancsot (`bash -lc`) futtat a szerv
 | Beállítás | Jelentés |
 |-----------|----------|
 | `command` | A futtatandó shell-parancs |
-| `timeoutMs` | Időkorlát ezredmásodpercben (alapértelmezetten 10000) |
+| `timeoutMs` | Időkorlát ezredmásodpercben (alapértelmezetten 10000). Azt az időt számolja, amíg a gép ébren volt: a futás közbeni alvást nem terheli a parancsra |
 | `failThreshold` | Hány egymás utáni hiba után megy riasztás (alapértelmezetten 2) |
 
 Működése:
@@ -93,7 +93,7 @@ Működése:
 
 ### Állapotfájl és hiba-riasztások
 
-Minden futás frissíti a `store/command-task-health.json` fájlt, amely parancs típusú feladatonként egy bejegyzést tartalmaz: az egymás utáni hibák számát, hogy ment-e már riasztás, az utolsó állapotot (`ok`, `findings` vagy `fail`) és az utolsó futás idejét (ezredmásodperc az epoch óta).
+Minden futás frissíti a `store/command-task-health.json` fájlt, amely parancs típusú feladatonként egy bejegyzést tartalmaz: az egymás utáni hibák számát, hogy ment-e már riasztás, az utolsó állapotot (`ok`, `findings` vagy `fail`), az utolsó futás idejét (ezredmásodperc az epoch óta) és a `lastDetail` mezőt, azaz hogy az utolsó futás miért végződött úgy (a kilépési kód a hibakimenet elejével, vagy az időtúllépés).
 
 - Egy sikeres futás nullázza a hibaszámlálót.
 - Amikor a számláló eléri a `failThreshold` értékét, egyetlen Telegram-riasztás megy a tulajdonosnak a hiba részleteivel. A további hibák nem ismétlik a riasztást.
