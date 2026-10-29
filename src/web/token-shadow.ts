@@ -76,6 +76,7 @@ import { resolveWriteTenant } from '../db/write-tenant.js'
 import { resolveAgentIdHeader, type AuthResult } from './auth-gate.js'
 import { json, readBody, RequestBodyTooLargeError, SCHEDULE_BODY_MAX_BYTES, setRequestBodyObserver } from './http-helpers.js'
 
+import { runAs } from '../db/context.js'
 export const TOKEN_SHADOW_CATEGORIES = [
   'shared_token_use',
   'agent_id_mismatch',
@@ -758,7 +759,7 @@ export async function observeTokenUsage(
     if (who.shared) {
       if (spec?.prefix === '/api/messages' && isWriteMethod(method) && typeof req.once === 'function') {
         sharedUseDeferred.set(req, base)
-        req.once('close', () => { void flushSharedUse(req, '') })  // recordTokenShadow catches its own failures
+        req.once('close', () => { void runAs.system('http-metrics', () => flushSharedUse(req, '')) })  // recordTokenShadow catches its own failures; a close handler has no request db context
       } else {
         await recordTokenShadow(base, { category: 'shared_token_use', target: '' })
       }

@@ -26,6 +26,7 @@ import {
 import { logger } from '../logger.js'
 import type { RbacMode } from './authz.js'
 
+import { systemJob } from '../db/background-jobs.js'
 export const RBAC_MODE_KEY = 'RBAC_MODE'
 const REFRESH_INTERVAL_MS = 5000
 
@@ -182,7 +183,7 @@ export async function loadRbacMode(envMode: RbacMode | undefined = RBAC_MODE_ENV
 /** Start the periodic re-read. The timer is unref'd, so it never keeps the process alive. */
 export function startRbacModeRefresh(envMode: RbacMode | undefined = RBAC_MODE_ENV): void {
   stopRbacModeRefresh()
-  timer = setInterval(() => {
+  timer = setInterval(systemJob('rbac-mode-refresh', () => {
     // refreshRbacMode does not throw; the catch is the last line of defence: whatever goes wrong, the
     // gate falls back to enforce and the interval keeps running.
     void refreshRbacMode(envMode).catch(() => {
@@ -192,7 +193,7 @@ export function startRbacModeRefresh(envMode: RbacMode | undefined = RBAC_MODE_E
       cachedReason = 'read_error'
       cachedStored = null
     })
-  }, REFRESH_INTERVAL_MS)
+  }), REFRESH_INTERVAL_MS)
   timer.unref()
 }
 

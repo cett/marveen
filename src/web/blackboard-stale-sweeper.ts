@@ -2,6 +2,7 @@ import { getActiveBlackboardAgentIds, getAgentTier, markBlackboardStale, sweepSt
 import { getEffectiveSettingValue } from '../settings-store.js'
 import { logger } from '../logger.js'
 
+import { systemJob } from '../db/background-jobs.js'
 // Sweep runs every 5 minutes. Most thresholds are 60+ minutes so this gives
 // at least 12 checks before the first possible mark -- acceptable precision.
 const SWEEP_INTERVAL_MS = 5 * 60_000
@@ -59,5 +60,5 @@ export function startBlackboardStaleSweeper(
     }
   }
   // sweep wraps its whole body in try/catch, so the timer only starts it.
-  return setInterval(() => { void sweep() }, SWEEP_INTERVAL_MS)
+  return setInterval(systemJob('blackboard-stale-sweeper', () => { void sweep() }), SWEEP_INTERVAL_MS)
 }

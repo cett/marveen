@@ -2,6 +2,7 @@ import { sweepExpiredWorkspaceDocs } from '../db/workspace.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
 import { logger } from '../logger.js'
 
+import { systemJob } from '../db/background-jobs.js'
 // sweepExpiredWorkspaceDocs() (db/workspace.ts) existed with no caller --
 // the table only grew. Sweep on the same cadence as the blackboard-stale
 // sweeper; the TTL itself is minutes-to-days scale, so 5-minute granularity
@@ -20,5 +21,5 @@ export function startWorkspaceDocsTtlSweeper(): NodeJS.Timeout {
       logger.error({ err }, 'workspace-docs-ttl-sweeper: sweep failed')
     }
   }
-  return setInterval(() => { void sweep() }, SWEEP_INTERVAL_MS)
+  return setInterval(systemJob('workspace-docs-ttl-sweeper', () => { void sweep() }), SWEEP_INTERVAL_MS)
 }

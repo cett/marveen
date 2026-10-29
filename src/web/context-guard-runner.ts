@@ -45,6 +45,7 @@ import {
   type GuardInputs,
 } from '../context-guard.js'
 
+import { runAsAgentJob } from '../db/background-jobs.js'
 // Fleet context guard (kanban #81): acts BEFORE a session drowns in its own
 // context. Sweep every agent (main included) every five minutes; at actPct ask the
 // agent to write HANDOFF.md, then fresh-restart it and inject a resume prompt
@@ -758,9 +759,9 @@ export function startContextGuardRunner(): NodeJS.Timeout {
   async function sweep() {
     const now = Date.now()
     noteGuardSweep(now)
-    try { await checkAgent(MAIN_AGENT_ID, now) } catch (err) { logger.debug({ err }, 'context-guard: main check error') }
+    try { await runAsAgentJob('context-guard', MAIN_AGENT_ID, () => checkAgent(MAIN_AGENT_ID, now)) } catch (err) { logger.debug({ err }, 'context-guard: main check error') }
     for (const name of listAgentNames()) {
-      try { await checkAgent(name, now) } catch (err) { logger.debug({ err, agent: name }, 'context-guard: agent check error') }
+      try { await runAsAgentJob('context-guard', name, () => checkAgent(name, now)) } catch (err) { logger.debug({ err, agent: name }, 'context-guard: agent check error') }
     }
   }
   const tick = () => { void sweep().catch((err) => logger.error({ err }, 'context-guard: sweep tick failed')) }

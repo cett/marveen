@@ -11,6 +11,7 @@ import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import type { RouteContext } from './types.js'
 
+import { runAsAgentJob } from '../../db/background-jobs.js'
 const TMUX = resolveFromPath('tmux')
 const CLAUDE = resolveFromPath('claude')
 const MAX_CONCURRENT = 3
@@ -77,13 +78,13 @@ export async function spawnBackgroundTask(agentId: string, prompt: string): Prom
 
   logger.info({ id, agentId, session, prompt: prompt.slice(0, 100) }, 'Background task started')
 
-  scheduleFinalize(id)
-  pollUntilDone(id)
+  scheduleFinalize(id, agentId)
+  pollUntilDone(id, agentId)
 
   return task
 }
 
-function pollUntilDone(id: string): void {
+function pollUntilDone(id: string, agentId: string): void {
   // The tick is async (db facade): an interval callback cannot be awaited, so the body is its own function with its
   // own try/catch (a rejection would otherwise be an unhandled rejection), and `inFlight` keeps a slow tick from
   // overlapping the next one.
@@ -91,7 +92,7 @@ function pollUntilDone(id: string): void {
   const interval = setInterval(() => {
     if (inFlight) return
     inFlight = true
-    void pollTick().finally(() => { inFlight = false })
+    void runAsAgentJob('background-task', agentId, () => pollTick()).finally(() => { inFlight = false })
   }, 10_000)
 
   async function pollTick(): Promise<void> {
@@ -127,8 +128,8 @@ function pollUntilDone(id: string): void {
   }
 }
 
-function scheduleFinalize(id: string): void {
-  setTimeout(() => { void checkAndFinalize(id) }, TIMEOUT_MS)
+function scheduleFinalize(id: string, agentId: string): void {
+  setTimeout(() => { void runAsAgentJob('background-task', agentId, () => checkAndFinalize(id)) }, TIMEOUT_MS)
 }
 
 async function checkAndFinalize(id: string): Promise<void> {
@@ -156,8 +157,8 @@ export async function sweepOrphanedBackgroundTasks(): Promise<void> {
       const output = task.tmux_session ? captureSession(task.tmux_session) : null
       if (await finishBackgroundTask(task.id, 'failed', output?.trim() || '(orphaned on restart)')) orphaned++
     } else {
-      scheduleFinalize(task.id)
-      pollUntilDone(task.id)
+      scheduleFinalize(task.id, task.agent_id)
+      pollUntilDone(task.id, task.agent_id)
     }
   }
   if (orphaned) logger.info({ orphaned }, 'Swept orphaned background tasks on startup')

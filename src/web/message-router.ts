@@ -37,6 +37,7 @@ import { maybeWakeSubAgentsForTelegram } from './telegram-inbox-wake.js'
 import { recordDelivery } from './delivery-intent.js'
 import { oneLine } from './approval-owner-notice.js'
 
+import { systemJob } from '../db/background-jobs.js'
 // A message that cannot be delivered within this window (target session never
 // exists / stays busy) is marked failed so it stops clogging the pending
 // queue and we stop re-scanning it forever. Matches the scheduled-task retry
@@ -373,9 +374,9 @@ export async function deliverFederatedBatch(federated: AgentMessage[], now: numb
 }
 
 export function startMessageRouter(): NodeJS.Timeout {
-  return setInterval(() => {
+  return setInterval(systemJob('message-router', () => {
     void guardedMessageRouterTick().catch((err) => logger.error({ err }, 'message-router: tick failed'))
-  }, 5000)
+  }), 5000)
 }
 
 async function guardedMessageRouterTick(): Promise<void> {

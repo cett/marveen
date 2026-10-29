@@ -41,6 +41,7 @@ import {
 import { TOOL_TIMEOUTS } from '../tool-timeouts.js'
 import { logger } from '../logger.js'
 
+import { systemJob } from '../db/background-jobs.js'
 const PUSH_INTERVAL_MS = 30_000
 const SPAN_BATCH_LIMIT = 500
 const LOG_BATCH_LIMIT = 500 // per audit source
@@ -406,7 +407,7 @@ export async function tick(): Promise<void> {
 }
 
 export function startOtelPushExporter(): NodeJS.Timeout {
-  return setInterval(() => {
+  return setInterval(systemJob('otel-push-exporter', () => {
     tick().catch((err) => logger.warn({ err }, 'otel-push-exporter: tick failed'))
-  }, PUSH_INTERVAL_MS)
+  }), PUSH_INTERVAL_MS)
 }

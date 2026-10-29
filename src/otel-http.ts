@@ -13,6 +13,7 @@ import type http from 'node:http'
 import { upsertOtelSpan, closeOtelSpan } from './db.js'
 import { recordHttpServerRequest } from './otel-signals.js'
 
+import { runAs } from './db/context.js'
 // First path segment after /api: the resources of the dashboard.
 const RESOURCES: ReadonlySet<string> = new Set([
   'activity', 'admin', 'agent-availability', 'agents', 'agent-inflight-turn', 'agent-state', 'agent-taskstate', 'approvals', 'artifacts', 'audit',
@@ -149,10 +150,11 @@ export function instrumentHttpRequest(req: http.IncomingMessage, res: http.Serve
     if (!res.writableFinished) return
     if (isEventStream(req, res)) return
     // recordHttpRequest catches its own failures; a close handler cannot wait for it.
-    void recordHttpRequest({
+    // A close handler runs outside the request's db context, so the write opens its own.
+    void runAs.system('http-metrics', () => recordHttpRequest({
       method, path, status: res.statusCode, seconds: Number(process.hrtime.bigint() - t0) / 1e9,
       traceparent: req.headers['traceparent'],
       authenticated: trust.authenticated,
-    })
+    }))
   })
 }

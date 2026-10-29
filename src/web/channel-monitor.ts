@@ -55,6 +55,7 @@ import { decideDownAgentAction, AGENT_MAX_RESTART_ATTEMPTS, parseEtimeToSeconds 
 import { getClaudePidForSession, hasChannelPluginAlive, probeChannelPluginLiveness } from '../channel-coordinator/liveness.js'
 import { getDesiredAgents } from './agent-desired-state.js'
 
+import { systemJob } from '../db/background-jobs.js'
 const TMUX = resolveFromPath('tmux')
 const CLAUDE = resolveFromPath('claude')
 
@@ -2073,8 +2074,9 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
       checkRunning = false
     }
   }
-  setTimeout(() => { void check() }, 30000)
-  return setInterval(() => { void check() }, 60000)
+  const run = systemJob('channel-monitor', () => { void check() })
+  setTimeout(run, 30000)
+  return setInterval(run, 60000)
 }
 
 // Start desired-but-missing agents one at a time (~15s apart). The stagger is

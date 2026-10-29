@@ -30,6 +30,7 @@ import {
 import { HTML_LIKE_EXTS, stripMarkup } from './import-utils.js'
 import { getSecret } from './vault.js'
 
+import { systemJob } from '../db/background-jobs.js'
 // ── Secret-gate patterns ─────────────────────────────────────────────────────
 // Matches API tokens, private keys, passwords and similar credentials that must
 // not be stored in the memory database.
@@ -657,7 +658,7 @@ export function startImportCrawler(): void {
   // Check every 15 minutes; individual sources compare against their own interval
   // runDueImports is asynchronous now (the source list is read through the db facade): a rejection of the
   // timer callback must not escape as an unhandled rejection.
-  const runDue = (): void => { runDueImports().catch(err => logger.error({ err }, 'Import scheduling failed')) }
+  const runDue = systemJob('import-crawler', (): void => { runDueImports().catch(err => logger.error({ err }, 'Import scheduling failed')) })
   crawlerInterval = setInterval(runDue, 15 * 60_000)
   // Also run once shortly after startup to catch anything overdue
   setTimeout(runDue, 30_000)

@@ -35,6 +35,7 @@ import { agentDir, listAgentNames } from './agent-config.js'
 import { getSecret, setSecret, deleteSecret } from './vault.js'
 import { recordTokenShadow } from './token-shadow.js'
 
+import { systemJob } from '../db/background-jobs.js'
 /** The only provider the record covers today. */
 export const CHANNEL_PROVIDER = 'telegram'
 
@@ -377,7 +378,7 @@ export function startChannelCredentialDriftSweeper(): NodeJS.Timeout {
   const run = (): void => {
     checkAllChannelDrift().catch((err) => logger.warn({ err }, 'channel-credentials: drift sweep failed'))
   }
-  const first = setTimeout(() => {
+  const first = setTimeout(systemJob('channel-credential-drift', () => {
     run()
     listUnadoptedChannelAgents()
       .then((unadopted) => {
@@ -386,7 +387,7 @@ export function startChannelCredentialDriftSweeper(): NodeJS.Timeout {
         }
       })
       .catch((err) => logger.warn({ err }, 'channel-credentials: unadopted listing failed'))
-  }, DRIFT_FIRST_CHECK_DELAY_MS)
+  }), DRIFT_FIRST_CHECK_DELAY_MS)
   first.unref()
-  return setInterval(run, DRIFT_SWEEP_INTERVAL_MS)
+  return setInterval(systemJob('channel-credential-drift', run), DRIFT_SWEEP_INTERVAL_MS)
 }

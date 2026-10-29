@@ -21,6 +21,7 @@ import {
 import { isPublicFetchHost } from '../agent-scaffold-hooks.js'
 import type { RouteContext } from './types.js'
 
+import { noteTenantResolved } from '../../db/context.js'
 const VALID_TYPES = new Set<EgressAllowlistType>(['domain', 'prefix', 'quarantine_domain'])
 
 // Tenant scope helper for GET, mirroring schedules.ts / costops-budgets.ts:
@@ -29,7 +30,7 @@ const VALID_TYPES = new Set<EgressAllowlistType>(['domain', 'prefix', 'quarantin
 // - Non-admin is restricted to their own tenant.
 function effectiveTenant(ctx: RouteContext): string | null {
   if (ctx.role === 'admin') return ctx.url.searchParams.get('tenant')
-  return ctx.tenantId ?? 'default'
+  return noteTenantResolved(ctx.tenantId ?? 'default')
 }
 
 // SECURITY: writes (POST/DELETE) are admin-only, full stop -- unlike the

@@ -77,6 +77,7 @@ import { recordDelivery } from './delivery-intent.js'
 import { withSessionSendLock } from './session-send-lock.js'
 import { withBlackboardLock } from './blackboard-lock.js'
 
+import { systemJob } from '../db/background-jobs.js'
 // How many bare-Enter attempts the post-send resubmit tries before escalating
 // to a clear + re-inject, and the hard cap after which it gives up.
 const RESUBMIT_BARE_ENTER_ATTEMPTS = 2
@@ -1910,6 +1911,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
   }
 
   // Run immediately on start (catches missed tasks)
-  setTimeout(() => { void runCheck() }, 5000)
-  return setInterval(() => { void runCheck() }, SCHEDULE_TICK_MS)
+  const tick = systemJob('schedule-runner', () => { void runCheck() })
+  setTimeout(tick, 5000)
+  return setInterval(tick, SCHEDULE_TICK_MS)
 }

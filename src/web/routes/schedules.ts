@@ -25,6 +25,7 @@ import { runScheduledTaskNow, loadLastTickMs, computeTickStatus } from '../sched
 import { actingAgentId } from '../fleet-agent-identity.js'
 import type { RouteContext } from './types.js'
 
+import { noteTenantResolved } from '../../db/context.js'
 // Review-gate: every fleet agent authenticates with
 // the same shared dashboard-token bearer, which resolves to role='admin' for
 // backward-compat (src/web/authz.ts) -- so ctx.role==='admin' cannot tell
@@ -44,7 +45,7 @@ import type { RouteContext } from './types.js'
 // - Non-admin is restricted to their own tenant.
 function effectiveTenant(ctx: RouteContext): string | null {
   if (ctx.role === 'admin') return ctx.url.searchParams.get('tenant') ?? null  // null = all
-  return ctx.tenantId ?? 'default'
+  return noteTenantResolved(ctx.tenantId ?? 'default')
 }
 
 // Does a schedule row fall in the tenant scope effectiveTenant() computed? A missing

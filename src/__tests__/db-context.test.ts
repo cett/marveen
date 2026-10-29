@@ -2,7 +2,7 @@
 // The first group pins the AsyncLocalStorage traps the migration waves rely on.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { initDatabase, dbx, runAs, currentDbContext, getDbContextStats, resetDbContextStats } from '../db.js'
+import { initDatabase, dbx, runAs, currentDbContext, getDbContextStats, resetDbContextStats, endDbBootPhase } from '../db.js'
 import { logger } from '../logger.js'
 import { useTestDb } from './helpers/with-test-db.js'
 
@@ -175,5 +175,88 @@ describe('calls without a context', () => {
     await runAs.system('job', async () => { await dbx.get('SELECT 1') })
     expect(getDbContextStats()).toMatchObject({ total: 1, withoutContext: 0 })
     expect(warn.mock.calls.filter((c) => String(c[1] ?? '').includes('without a db context'))).toEqual([])
+  })
+})
+
+describe('the measurement view of the counter', () => {
+  it('counts calls with a context by role and, for the system role, by job name', async () => {
+    await runAs.system('sweeper', async () => { await dbx.get('SELECT 1'); await dbx.get('SELECT 2') })
+    await runAs.system('router', async () => { await dbx.get('SELECT 3') })
+    await runAs.tenant('acme', async () => { await dbx.get('SELECT 4') })
+    await runAs.agent('agent-a', 'acme', async () => { await dbx.get('SELECT 5') })
+    const stats = getDbContextStats()
+    expect(stats.byRole).toEqual({ system: 3, tenant: 1, agent: 1 })
+    expect(stats.byJob).toEqual({ sweeper: 2, router: 1 })
+    expect(stats.unexpected).toBe(0)
+  })
+
+  it('keeps the calls made before the boot phase ended apart from the unexpected ones', async () => {
+    vi.spyOn(logger, 'warn').mockImplementation(() => undefined)
+    // The reset hook leaves the boot phase; a real process starts in it. Re-enter it by resetting the module state.
+    vi.resetModules()
+    const fresh = await import('../db/context.js')
+    fresh.noteDbCall()
+    fresh.noteDbCall()
+    expect(fresh.getDbContextStats()).toMatchObject({ booting: true, withoutContext: 2, duringBoot: 2, unexpected: 0 })
+    fresh.endDbBootPhase()
+    fresh.noteDbCall()
+    expect(fresh.getDbContextStats()).toMatchObject({ booting: false, withoutContext: 3, duringBoot: 2, unexpected: 1 })
+  })
+
+  it('stays silent about a call without a context while booting and warns once the phase ended', async () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined)
+    vi.resetModules()
+    const fresh = await import('../db/context.js')
+    const { logger: freshLogger } = await import('../logger.js')
+    const freshWarn = vi.spyOn(freshLogger, 'warn').mockImplementation(() => undefined)
+    fresh.noteDbCall()
+    expect(freshWarn).not.toHaveBeenCalled()
+    fresh.endDbBootPhase()
+    fresh.noteDbCall()
+    expect(freshWarn).toHaveBeenCalledTimes(1)
+    expect(warn).not.toHaveBeenCalled()
+  })
+
+  it('reports where a call without a context came from: the caller outside src/db, most frequent first', async () => {
+    const hot = () => dbx.get('SELECT 1')
+    const cold = () => dbx.get('SELECT 2')
+    await hot(); await hot(); await hot()
+    await cold()
+    const { sites } = getDbContextStats()
+    expect(sites.length).toBeGreaterThanOrEqual(2)
+    expect(sites[0].site).toContain('db-context.test')
+    expect(sites[0].count).toBe(3)
+    expect(sites[1].count).toBe(1)
+    expect(sites.every((s) => s.boot === false)).toBe(true)
+  })
+
+  it('samples the call sites after the first 256 calls and keeps counting exactly', async () => {
+    vi.spyOn(logger, 'warn').mockImplementation(() => undefined)
+    for (let i = 0; i < 300; i++) await dbx.get('SELECT 1')
+    const stats = getDbContextStats()
+    expect(stats.withoutContext).toBe(300)
+    const sampled = stats.sites.reduce((n, s) => n + s.count, 0)
+    // 256 sampled in full, then every 16th of calls 257..300 (16, 32 -> calls 272 and 288)
+    expect(sampled).toBeLessThan(300)
+    expect(sampled).toBeGreaterThanOrEqual(256)
+  })
+
+  it('folds the sites beyond the cap into one (other) entry', async () => {
+    vi.spyOn(logger, 'warn').mockImplementation(() => undefined)
+    // 101 distinct call sites: a sourceURL gives every generated function its own stack frame text
+    const calls = Array.from({ length: 101 }, (_, i) => new Function('dbx', `return () => dbx.get('SELECT ${i}')\n//# sourceURL=generated-site-${i}.js`)(dbx) as () => Promise<unknown>)
+    for (const c of calls) await c()
+    const { sites } = getDbContextStats()
+    expect(sites.map((s) => s.site).filter((x) => x.includes('generated-site-')).length).toBe(100)
+    expect(sites.find((s) => s.site === '(other)')).toMatchObject({ count: 1 })
+    expect(sites.reduce((n, s) => n + s.count, 0)).toBe(101)
+  })
+
+  it('endDbBootPhase is idempotent and a reset leaves the boot phase', () => {
+    endDbBootPhase()
+    endDbBootPhase()
+    expect(getDbContextStats().booting).toBe(false)
+    resetDbContextStats()
+    expect(getDbContextStats().booting).toBe(false)
   })
 })
