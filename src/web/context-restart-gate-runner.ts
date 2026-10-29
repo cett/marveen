@@ -326,6 +326,32 @@ export function isMcpProcess(childArgs: string, mcpPatterns: string[]): boolean 
   return mcpPatterns.some(p => childArgs.includes(p))
 }
 
+// caffeinate flags that take a value (`-t <secs>`, `-w <pid>`); every other
+// flag (-d -i -m -s -u) stands alone.
+const CAFFEINATE_VALUE_FLAGS = new Set(['-t', '-w'])
+
+/**
+ * Pure: true if a child process (identified by its full args string) is a bare
+ * `caffeinate` sleep inhibitor. Claude Code respawns `caffeinate -i -t 300`
+ * every five minutes for as long as the session lives, so it is always there
+ * and is never in-flight work. `caffeinate [flags] <utility>` runs the utility
+ * as its own child and stays real work, so only an invocation without a
+ * utility counts.
+ *
+ * Exported for tests.
+ */
+export function isSleepInhibitorProcess(childArgs: string): boolean {
+  const tokens = childArgs.trim().split(/\s+/)
+  const exe = tokens[0]?.split('/').at(-1)
+  if (exe !== 'caffeinate') return false
+  for (let i = 1; i < tokens.length; i++) {
+    const t = tokens[i]!
+    if (!t.startsWith('-')) return false   // a utility to run: real work
+    if (CAFFEINATE_VALUE_FLAGS.has(t)) i++   // skip the flag's value
+  }
+  return true
+}
+
 /**
  * Wall-clock start time (ms) of the live claude process behind `session`, plus
  * the reason when it cannot be determined (no pane, claude not in the tree, ps
@@ -457,6 +483,7 @@ export function hasLiveChildProcesses(session: string, mcpPatterns: string[]): b
     // Check process args to identify MCP servers regardless of age.
     const args = getChildArgsStr(pid) ?? ''
     if (isMcpProcess(args, mcpPatterns)) continue   // pattern-based infra
+    if (isSleepInhibitorProcess(args)) continue   // Claude Code's own caffeinate
     return true   // live work child
   }
   return false
@@ -513,6 +540,7 @@ export function getLiveWorkChildArgs(session: string, mcpPatterns: string[]): st
       if (age === null || isInfrastructureChild(age, claudeAge)) continue
       const args = getChildArgsStr(pid) ?? ''
       if (isMcpProcess(args, mcpPatterns)) continue
+      if (isSleepInhibitorProcess(args)) continue
       result.push(args || `PID ${pid}`)
     }
     return result

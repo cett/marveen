@@ -157,6 +157,28 @@ describe('hasLiveChildProcesses', () => {
     expect(hasLiveChildProcesses(SESSION, ['some-mcp-pkg'])).toBe(true)
   })
 
+  it('a caffeinate sleep inhibitor child alone is not work -> false (the 243 min block)', async () => {
+    await mockProcessTree({
+      panePid: 100,
+      comm: { 100: 'claude' },
+      children: { 100: [200] },
+      age: { 100: 5000, 200: 120 },
+      args: { 200: 'caffeinate -i -t 300' },
+    })
+    expect(hasLiveChildProcesses(SESSION, [])).toBe(false)
+  })
+
+  it('a caffeinate does not hide a real work child next to it -> true', async () => {
+    await mockProcessTree({
+      panePid: 100,
+      comm: { 100: 'claude' },
+      children: { 100: [200, 201] },
+      age: { 100: 5000, 200: 120, 201: 300 },
+      args: { 200: 'caffeinate -i -t 300', 201: 'bash -c npm run build' },
+    })
+    expect(hasLiveChildProcesses(SESSION, [])).toBe(true)
+  })
+
   it('wrapper shape: pane is bash, claude is a child -> inspects claude own children', async () => {
     await mockProcessTree({
       panePid: 100,
@@ -212,6 +234,17 @@ describe('getLiveWorkChildArgs', () => {
       children: { 100: [200, 201, 202] },
       age: { 100: 500, 200: 2, 201: 300, 202: 310 },
       args: { 201: 'bash -c npm run build', 202: 'node /plugins/cache/telegram/index.js' },
+    })
+    expect(getLiveWorkChildArgs(SESSION, [])).toEqual(['bash -c npm run build'])
+  })
+
+  it('leaves a caffeinate sleep inhibitor out of the diagnostic list', async () => {
+    await mockProcessTree({
+      panePid: 100,
+      comm: { 100: 'claude' },
+      children: { 100: [200, 201] },
+      age: { 100: 5000, 200: 120, 201: 300 },
+      args: { 200: 'caffeinate -i -t 300', 201: 'bash -c npm run build' },
     })
     expect(getLiveWorkChildArgs(SESSION, [])).toEqual(['bash -c npm run build'])
   })

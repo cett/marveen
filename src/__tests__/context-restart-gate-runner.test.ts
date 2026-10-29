@@ -11,6 +11,7 @@ import {
   getCommForPid,
   extractMcpPackageNames,
   isMcpProcess,
+  isSleepInhibitorProcess,
   TASKSTATE_FRESH_WINDOW_MS,
 } from '../web/context-restart-gate-runner.js'
 
@@ -232,6 +233,27 @@ describe('extractMcpPackageNames', () => {
 // isMcpProcess: either a plugin-cache path OR a known .mcp.json package name
 // in argv marks a child as infrastructure regardless of its age (a
 // post-reconnect MCP server restarts fresh/young).
+describe('isSleepInhibitorProcess', () => {
+  it('the caffeinate Claude Code respawns every five minutes is an inhibitor', () => {
+    expect(isSleepInhibitorProcess('caffeinate -i -t 300')).toBe(true)
+    expect(isSleepInhibitorProcess('/usr/bin/caffeinate -i -t 300')).toBe(true)
+    expect(isSleepInhibitorProcess('caffeinate')).toBe(true)
+    expect(isSleepInhibitorProcess('caffeinate -dimsu -w 4242')).toBe(true)
+  })
+
+  it('caffeinate wrapping a utility is real work, the utility is its child', () => {
+    expect(isSleepInhibitorProcess('caffeinate -i npm run build')).toBe(false)
+    expect(isSleepInhibitorProcess('caffeinate -t 300 sleep 100')).toBe(false)
+  })
+
+  it('anything else, including a lookalike name, is not an inhibitor', () => {
+    expect(isSleepInhibitorProcess('bash -c npm run build')).toBe(false)
+    expect(isSleepInhibitorProcess('node caffeinate-helper.js')).toBe(false)
+    expect(isSleepInhibitorProcess('/opt/bin/caffeinated -i')).toBe(false)
+    expect(isSleepInhibitorProcess('')).toBe(false)
+  })
+})
+
 describe('isMcpProcess', () => {
   it('matches on the channel-plugin cache path', () => {
     expect(isMcpProcess('/opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/plugins/cache/telegram/index.js', [])).toBe(true)
