@@ -51,6 +51,10 @@ const CALLBACK_HOSTS = new Set([
 // `Promise.all(items.map(async ...))` is the intended use of a callback that returns a Promise.
 const PROMISE_API = /^Promise\.(all|allSettled|race|any|resolve)$/
 const isPromiseApiCall = (sf, p) => !!p && ts.isCallExpression(p) && PROMISE_API.test(p.expression.getText(sf))
+// Only these wait for the Promises they are handed. `Promise.resolve(arr.map(async ...))` does not: it wraps the
+// array, the elements stay un-awaited, so a map / flatMap callback inside it is still a finding.
+const PROMISE_WAITS = /^Promise\.(all|allSettled|race|any)$/
+const isPromiseWaitCall = (sf, p) => !!p && ts.isCallExpression(p) && PROMISE_WAITS.test(p.expression.getText(sf))
 
 const findings = []
 function report(sf, node, kind) {
@@ -87,7 +91,7 @@ function visit(sf, node) {
   if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && CALLBACK_HOSTS.has(node.expression.name.text)) {
     const hostName = node.expression.name.text
     // map / flatMap handed straight to a Promise API: the callbacks' Promises are awaited by it
-    if ((hostName === 'map' || hostName === 'flatMap') && isPromiseApiCall(sf, node.parent)) return ts.forEachChild(node, (c) => visit(sf, c))
+    if ((hostName === 'map' || hostName === 'flatMap') && isPromiseWaitCall(sf, node.parent)) return ts.forEachChild(node, (c) => visit(sf, c))
     for (const a of node.arguments) {
       if (!ts.isArrowFunction(a) && !ts.isFunctionExpression(a)) continue
       try {

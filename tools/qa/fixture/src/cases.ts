@@ -18,7 +18,9 @@ export async function misuse(): Promise<unknown[]> {
   const p = v.constructor // expect: prop-access
   const f = [1, 2].filter(async (e) => e > 1) // expect: callback-returns-promise
   const mp = [1, 2].map(async (e) => e) // expect: callback-returns-promise
+  const mr = Promise.resolve([1, 2].map(async (e) => e)) // expect: callback-returns-promise
   void sp
+  await mr
   return [t, o, s, b, n, x, arr, p, f, mp]
 }
 
