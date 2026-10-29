@@ -8,7 +8,6 @@ const mocks = vi.hoisted(() => ({
   getEffectiveSettingValue: vi.fn().mockReturnValue(false),
   setOverride: vi.fn(),
   logConfigChange: vi.fn(),
-  setStoreWriteActor: vi.fn(),
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }))
 
@@ -22,7 +21,6 @@ vi.mock('../settings-store.js', () => ({
   setOverride: mocks.setOverride,
 }))
 vi.mock('../db.js', () => ({ logConfigChange: mocks.logConfigChange }))
-vi.mock('../store-watcher.js', () => ({ setStoreWriteActor: mocks.setStoreWriteActor }))
 vi.mock('../logger.js', () => ({ logger: mocks.logger }))
 // The RBAC_MODE branch of the route is covered by rbac-mode-settings-route.test.ts; these files only
 // exercise the generic settings branches, so the RBAC helpers are inert here.

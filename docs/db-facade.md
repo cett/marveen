@@ -360,6 +360,17 @@ These are behaviours of the code today, listed so that nobody mistakes them for 
   (`src/db/observability.ts`, on `dbx` since the observability steps of the third wave), so a slow or failing
   `dbx.run` reaches it: `observability-memory-otel-facade.test.ts` pins that the call resolves only after the span is
   written and that a failing driver is a rejection with nothing stored.
+- **The store file audit has no actor.** `store-watcher.ts` records a new file under `store/` with `agent` NULL (the UI
+  shows "ismeretlen"). `fs.watch` calls back from the file system's own async origin, so the writer's
+  `AsyncLocalStorage` value is not on that path, and a process-wide slot ("the next event is mine") let any unrelated
+  event take another request's actor, so the slot was removed. Nothing is lost today: the three routes that used it
+  (`POST /api/settings`, and the auto-restart and context-guard config PUTs) write through the db facade and reach no
+  file-system writer, which `store-watcher.test.ts` pins. Who changed a setting stays in `config_change_log`. A future
+  code path that writes a store file for a request is attributed only through a path-keyed, TTL-bound helper, for
+  example `writeStoreFileAs(relPath, content, { actor, tenant })`: it registers `{ actor, tenant, expiresAt }` under the
+  path relative to `STORE_DIR` (about 5 s, a bounded map, consumed once by the watch callback that sees the same path)
+  and writes the file in the same place, so the registration cannot drift from the path. Build it when such a writer
+  exists, not before.
 
 ## Tests
 

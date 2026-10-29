@@ -28,8 +28,6 @@ vi.mock('../web/context-guard-runner.js', () => ({
   getContextGuardStatus: vi.fn().mockReturnValue([{ name: 'marveen', phase: 'idle', contextPct: 10 }]),
 }))
 vi.mock('../store-watcher.js', () => ({
-  setStoreWriteActor: vi.fn(),
-  clearStoreWriteActor: vi.fn(),
   startStoreWatcher: vi.fn(),
   stopStoreWatcher: vi.fn(),
 }))

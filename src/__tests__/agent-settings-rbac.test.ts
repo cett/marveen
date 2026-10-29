@@ -31,8 +31,6 @@ vi.mock('../web/agent-message-wrap.js', () => ({
   wrapAgentMessageForDelivery: vi.fn().mockReturnValue(''),
 }))
 vi.mock('../store-watcher.js', () => ({
-  setStoreWriteActor: vi.fn(),
-  clearStoreWriteActor: vi.fn(),
   startStoreWatcher: vi.fn(),
   stopStoreWatcher: vi.fn(),
 }))
@@ -48,7 +46,6 @@ vi.mock('../web/agent-config.js', async (importOriginal) => {
 
 import { initDatabase, getDb, createTenant, setTenantAgentAvailability, reloadAgentSettingsCache } from '../db.js'
 import { tryHandleAgentsProcess } from '../web/routes/agents-process.js'
-import { setStoreWriteActor } from '../store-watcher.js'
 
 beforeAll(async () => {
   initDatabase(':memory:')
@@ -134,9 +131,8 @@ describe('PUT /api/agents/:name/auto-restart -- tenant RBAC', () => {
   })
 })
 
-describe('the store write the config PUT causes is filed under the owning tenant', () => {
-  it.each(['auto-restart', 'context-guard'])('%s hands the agent\'s tenant to the store-watcher slot, not the caller\'s', async (route) => {
-    vi.mocked(setStoreWriteActor).mockClear()
+describe('the config a PUT stores is filed under the owning tenant', () => {
+  it.each(['auto-restart', 'context-guard'])('%s files the stored setting under the agent\'s tenant, not the caller\'s', async (route) => {
     const { ctx, statusCode } = makeCtx({
       method: 'PUT',
       path: `/api/agents/rbac-agent/${route}`,
@@ -146,7 +142,9 @@ describe('the store write the config PUT causes is filed under the owning tenant
     })
     expect(await tryHandleAgentsProcess(ctx)).toBe(true)
     expect(statusCode()).toBe(200)
-    expect(setStoreWriteActor).toHaveBeenCalledWith('dashboard', 'rbac-tenant-owner')
+    const rows = getDb().prepare("SELECT tenant_id FROM agent_settings WHERE agent_id = 'rbac-agent'").all() as Array<{ tenant_id: string }>
+    expect(rows.length).toBeGreaterThan(0)
+    expect(rows.every(r => r.tenant_id === 'rbac-tenant-owner')).toBe(true)
   })
 })
 
