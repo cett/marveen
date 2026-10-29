@@ -363,6 +363,11 @@ jobs:
         # marked "expect:" there, so a scanner that stops seeing a construct is caught here.
         run: node tools/qa/check-scanners.mjs
 
+      - name: Await-mutant list self-test (throwaway repository, FAILS the build)
+        # The mutant list of tools/qa/await-mutants.mjs must hold exactly the awaits a commit added to a
+        # source file, and applying a mutant must remove that one await. No test run, a second or two.
+        run: node tools/qa/check-mutants.mjs
+
       - name: Vacuous not.toThrow on the added lines (FAILS the build)
         # expect(() => <Promise>).not.toThrow() cannot fail: the check is deterministic and the
         # tree has none, so a new one is a finding that fails the pull request.

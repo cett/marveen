@@ -12,6 +12,7 @@
 //          --only <text> (files whose path contains it)   --timeout-sec <n> per mutant (default 900)
 //          --list (print the mutant list, run nothing)   --keep (keep the copies)
 //          --vitest-bin <path> (default node_modules/.bin/vitest in the copy)
+//          --ts-root <dir> (where tools/eslint/node_modules/typescript is; default --root)
 import { execFileSync, spawn } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
@@ -22,7 +23,7 @@ import { applyMutant, listAwaitMutants } from './lib/mutants.mjs'
 
 const args = parseArgs(process.argv.slice(2), {
   flags: ['list', 'keep'],
-  values: ['root', 'base', 'workers', 'work-dir', 'only', 'timeout-sec', 'vitest-bin'],
+  values: ['root', 'base', 'ts-root', 'workers', 'work-dir', 'only', 'timeout-sec', 'vitest-bin'],
   defaults: { workers: '4', 'timeout-sec': '900' },
 })
 if (!args.base) {
@@ -30,7 +31,7 @@ if (!args.base) {
   process.exit(2)
 }
 const root = resolveRoot(args.root)
-const ts = loadTypeScript(root)
+const ts = loadTypeScript(args['ts-root'] ? resolveRoot(args['ts-root']) : root)
 const log = (...a) => process.stderr.write(a.join(' ') + '\n')
 
 let mutants = listAwaitMutants(ts, root, args.base)

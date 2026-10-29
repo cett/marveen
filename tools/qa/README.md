@@ -20,7 +20,30 @@ node tools/qa/vacuous-notthrow-scan.mjs --base <sha>    # or --all
 
 Options: `--root <repo>`, `--tsconfig <rel>`, `--src <dir>` (promise scan), `--fail-on-findings`.
 
+## Per-await mutation sweep
+
+`await-mutants.mjs` removes, one at a time, every `await` the diff `base..HEAD` added to `src/` and runs the tests
+that import the file (`vitest related --bail`). A mutant that no test fails on SURVIVED: that await is not
+protected by a test.
+
+```
+node tools/qa/await-mutants.mjs --base <sha> --list                 # the mutant list, nothing runs
+node tools/qa/await-mutants.mjs --base <sha> --workers 4 > mutants.json
+node tools/qa/compare-mutants.mjs serial.json parallel.json         # validation: same status per mutant
+```
+
+- Runs from COPIES of the committed HEAD (`git archive`, one per worker, each with its own empty git repository
+  because `vitest.config.ts` asks git for the main checkout), so the working directory stays free and only the
+  commit is tested. Commit before you sweep.
+- Every mutant gets its own `MARVEEN_STORE_DIR` and `HOME`.
+- Phase 1 runs the unmutated related tests of each touched file. A test that fails there (it depends on the
+  checkout path or the host) cannot kill a mutant: a mutant is killed only by a failure outside that set.
+- Statuses: `killed` (with the first failing test), `survived`, `no-tests`, `baseline-error`, `timeout`, `error`.
+- `--workers` defaults to 4; `--only <text>` limits the files, `--work-dir`, `--keep`, `--timeout-sec` as in the header
+  of the script.
+
 ## Self-test
 
 `node tools/qa/check-scanners.mjs` runs both scanners over `tools/qa/fixture` and fails unless they report
 exactly the lines marked `// expect: <kind>` there. Add a marked line when a scanner learns a construct.
+`node tools/qa/check-mutants.mjs` checks the mutant list of the sweep against a throwaway git repository.
