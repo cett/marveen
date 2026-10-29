@@ -509,8 +509,8 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     // typically appears within 4-6s). Survey-rating modals from prior
     // sessions can also be present, so dismiss both. Errors are swallowed
     // -- the outbound pre-flight remains the safety net if this misses.
-    // Fire-and-forget: scheduleIdentitySetup only schedules delayed timers;
-    // startAgentProcess stays synchronous (out of scope, per the conversion rules).
+    // Fire-and-forget: scheduleIdentitySetup only schedules delayed timers and
+    // resolves immediately, so the call is not awaited (startAgentProcess itself is async).
     void scheduleIdentitySetup(session, readAgentDisplayName(name))
 
     // Colleague auto-unlock (2026-06-22): mirror the main session's

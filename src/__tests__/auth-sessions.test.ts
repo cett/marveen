@@ -1,16 +1,18 @@
-import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { initDatabase, getDb, createDashboardUser } from '../db.js'
+import { initDatabase, getDb, createDashboardUser, dbx } from '../db.js'
 import {
   createSession,
   resolveSession,
   revokeSession,
   revokeAllForUser,
+  revokeAllSessions,
   listUserSessions,
   sweepExpiredSessions,
   _clearSessionCacheForTest,
+  _cacheForTest,
 } from '../web/auth-sessions.js'
 
 // Real on-disk temp DB (dbPathOverride pattern) so restart-rehydration can be
@@ -125,6 +127,51 @@ describe('revocation', () => {
     await revokeAllForUser(u.id, keep)
     expect(await resolveSession(keep)).not.toBeNull()
     expect(await resolveSession(drop)).toBeNull()
+  })
+})
+
+// A table delete that rejects (SQLITE_BUSY) must not leave the revoked session resolving from the cache until its
+// TTL: the cache step of every revoke sits in a finally. The row stays (the delete failed), so the next request
+// re-reads the table instead of trusting the evicted entry.
+describe('revocation when the table delete rejects', () => {
+  afterEach(() => { vi.restoreAllMocks() })
+
+  const failDeletes = () => {
+    const real = dbx.run.bind(dbx)
+    vi.spyOn(dbx, 'run').mockImplementation(async (sql: string, ...p: unknown[]) => {
+      if (/^\s*DELETE FROM auth_sessions/i.test(sql)) throw new Error('database is locked')
+      return real(sql, ...p)
+    })
+  }
+
+  it('revokeSession evicts the cache entry and rethrows', async () => {
+    const u = await makeUser('busy1')
+    const token = await createSession({ userId: u.id, username: u.username })
+    expect(_cacheForTest.size).toBe(1)
+    failDeletes()
+    await expect(revokeSession(token)).rejects.toThrow('database is locked')
+    expect(_cacheForTest.size).toBe(0)
+    expect((getDb().prepare('SELECT COUNT(*) c FROM auth_sessions').get() as { c: number }).c).toBe(1)
+  })
+
+  it('revokeAllForUser evicts the user entries (sparing the exception) and rethrows', async () => {
+    const u = await makeUser('busy2')
+    const keep = await createSession({ userId: u.id, username: u.username })
+    await createSession({ userId: u.id, username: u.username })
+    expect(_cacheForTest.size).toBe(2)
+    failDeletes()
+    await expect(revokeAllForUser(u.id, keep)).rejects.toThrow('database is locked')
+    expect(_cacheForTest.size).toBe(1)
+  })
+
+  it('revokeAllSessions clears the cache and rethrows', async () => {
+    const u = await makeUser('busy3')
+    await createSession({ userId: u.id, username: u.username })
+    await createSession({ userId: u.id, username: u.username })
+    expect(_cacheForTest.size).toBe(2)
+    failDeletes()
+    await expect(revokeAllSessions()).rejects.toThrow('database is locked')
+    expect(_cacheForTest.size).toBe(0)
   })
 })
 

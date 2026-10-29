@@ -723,7 +723,7 @@ export async function answerIdentityRefusal(req: http.IncomingMessage, res: http
 }
 
 /**
- * Observe one authenticated request, after the auth and RBAC gates and before dispatch. Synchronous
+ * Observe one authenticated request, after the auth and RBAC gates and before dispatch. Asynchronous
  * and bounded: a few string operations, at most one row-owner lookup and one counter upsert per hit.
  * Never throws and never touches the request or the response (the body is not consumed here).
  */

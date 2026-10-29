@@ -87,11 +87,16 @@ function revoked(): void {
 }
 
 // The table first, the cache after it (a revoke that deleted the cache entry first could see it put back by a
-// resolveSession whose table read still found the row).
+// resolveSession whose table read still found the row). The cache step sits in a finally: a table delete that
+// rejects (SQLITE_BUSY) must not leave the entry resolving until its TTL while the caller gets the error. The
+// evicted session re-reads the table on its next request, so a row that is still there is checked, not trusted.
 async function removeByHash(idHash: string): Promise<void> {
-  await deleteAuthSessionByHash(idHash)
-  cache.delete(idHash)
-  revoked()
+  try {
+    await deleteAuthSessionByHash(idHash)
+  } finally {
+    cache.delete(idHash)
+    revoked()
+  }
 }
 
 function toCached(row: { user_id: number; username: string; created_at: number; last_seen_at: number }): CachedSession {
@@ -154,24 +159,29 @@ export async function revokeSession(cookieValue: string): Promise<void> {
 
 // Revoke every session of a user, optionally sparing the caller's own (used by
 // password-change and logout-all). exceptCookieValue is the RAW cookie value.
-// Table first, cache after it (see removeByHash).
+// Table first, cache after it, the cache step in a finally (see removeByHash).
 export async function revokeAllForUser(userId: number, exceptCookieValue?: string | null): Promise<void> {
   const exceptHash = exceptCookieValue ? sha256hex(exceptCookieValue) : null
-  await deleteAuthSessionsForUser(userId, exceptHash)
-  for (const [hash, entry] of cache) {
-    if (entry.userId === userId && hash !== exceptHash) cache.delete(hash)
+  try {
+    await deleteAuthSessionsForUser(userId, exceptHash)
+  } finally {
+    for (const [hash, entry] of cache) {
+      if (entry.userId === userId && hash !== exceptHash) cache.delete(hash)
+    }
+    revoked()
   }
-  revoked()
 }
 
 // Revoke EVERY browser session at once (break-glass security reset). Cache and
 // table go together -- a DB-only delete would leave cached sessions resolving
-// until the next restart. Table first, cache after it (see removeByHash).
+// until the next restart. Table first, cache after it, the cache step in a finally (see removeByHash).
 export async function revokeAllSessions(): Promise<number> {
-  const removed = await deleteAllAuthSessions()
-  cache.clear()
-  revoked()
-  return removed
+  try {
+    return await deleteAllAuthSessions()
+  } finally {
+    cache.clear()
+    revoked()
+  }
 }
 
 export async function listUserSessions(userId: number): Promise<UserSessionInfo[]> {
