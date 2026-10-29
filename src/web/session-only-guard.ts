@@ -44,7 +44,7 @@ async function refuse(ctx: RouteContext, action: string, hint: string, code = 'h
  * log in as that person, so "a human session" proves nothing. Fail closed: a switch that cannot be read
  * counts as off. Returns true when it refused.
  */
-export function denyUnlessHumanOnlyEnforced(ctx: RouteContext, action: string, hint: string): boolean {
+export async function denyUnlessHumanOnlyEnforced(ctx: RouteContext, action: string, hint: string): Promise<boolean> {
   let on = false
   try {
     on = APPROVAL_HUMAN_ONLY_ENFORCE === true
@@ -74,8 +74,8 @@ export async function denyUnlessHumanSession(ctx: RouteContext, action: string):
  * whether or not a dashboard user exists. Every token (the main agent's and the operator's included), a
  * device key and a federation peer is refused, and the attempt is journalled. Returns true when it refused.
  */
-export function denyUnlessHumanSessionAlways(ctx: RouteContext, action: string, hint: string): boolean {
-  if (humanSessionOf(ctx.req)) return false
+export async function denyUnlessHumanSessionAlways(ctx: RouteContext, action: string, hint: string): Promise<boolean> {
+  if (await humanSessionOf(ctx.req)) return false
   return refuse(ctx, action, hint)
 }
 

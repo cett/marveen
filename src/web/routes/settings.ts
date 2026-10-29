@@ -104,7 +104,7 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
       // off a token can create the dashboard admin that would loosen the gate, so loosening is refused then.
       if (
         looseningRbac &&
-        denyUnlessHumanOnlyEnforced(
+        await denyUnlessHumanOnlyEnforced(
           ctx,
           'settings.rbac_mode.loosen',
           'Switching the RBAC gate to shadow is only possible while APPROVAL_HUMAN_ONLY_ENFORCE is on; with it off a token can create the dashboard user that would do it',
@@ -114,7 +114,7 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
       }
       if (
         looseningRbac &&
-        denyUnlessHumanSessionAlways(
+        await denyUnlessHumanSessionAlways(
           ctx,
           'settings.rbac_mode.loosen',
           'Switching the RBAC gate to shadow needs a person logged in to the dashboard as a global admin',
