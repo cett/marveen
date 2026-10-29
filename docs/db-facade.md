@@ -275,7 +275,8 @@ These are behaviours of the code today, listed so that nobody mistakes them for 
   backup is restored onto its file or removed by hand. The one-apply-at-a-time flag lives in the process memory and
   assumes a single dashboard process: PostgreSQL phase 2 with several processes (or a background worker running an
   import) needs a database-level lock instead (an advisory lock or a lock row), because the flag does not see another
-  process.
+  process. What an interrupted import leaves behind (a `.import-new` staged copy, a
+  `.import-bak` backup) is reported by the boot log and by `GET /api/fleet/import-leftovers` (admin only, read-only).
 - **A failed fleet import can leave empty parent directories.** The staging step tracks only the deepest directory it
   created (`trackedMkdir`), so after a failed import the missing parent directories above it may remain, empty. In
   practice this is harmless: `~/.claude` always exists, and an empty directory changes no behaviour.
@@ -351,10 +352,11 @@ These are behaviours of the code today, listed so that nobody mistakes them for 
   condition. PostgreSQL phase 2 with several processes needs the judgement inside the statement or a row lock: the
   lock does not see another process. `PATCH` of a row by id (`routes/blackboard.ts`, `updateBlackboardRowById`) is
   still read, merge, write without either guard (last write wins); it was not on the W3-6 list.
-- **`getAgentConversationThreads` reads its peers one query at a time.** The peer list, the counts and the last
-  message of each peer are separate reads, so a message created while it runs can show in the count of one peer and
-  not in the last-message field of that peer. The synchronous version could not be interleaved. It is a dashboard
-  sidebar; a snapshot read (one transaction, or one statement per peer with a window function) waits for phase 2.
+- **`getAgentConversationThreads` reads the last message of each peer separately.** The peer list and the counts
+  come from one statement (a CTE with a correlated COUNT in `db/agents.ts`); only the last message of each peer is a
+  read of its own, so a message created while it runs can show in the count of one peer and not in the last-message
+  field of that peer. The synchronous version could not be interleaved. It is a dashboard sidebar; a snapshot read
+  (one transaction, or a single statement with a window function) waits for phase 2 (item C12).
 - **`BEGIN IMMEDIATE` in `upsertBlackboard` is not observable on one connection.** The mode takes the write lock
   at the start so that a second connection (another process) cannot make the read stale; with the single dashboard
   connection the transaction lock already orders the callers, so no test can tell the modes apart.
@@ -378,11 +380,14 @@ These are behaviours of the code today, listed so that nobody mistakes them for 
   an isolated copy of the live database (2026-10-29, develop head against facade head, 2000 requests per route, 3
   interleaved rounds): the single-statement writes (`POST /api/blackboard`, the kanban create/update/move/delete
   cycle, the approvals create/resolve cycle) reach 12-20% fewer requests per second with 8 parallel callers, which is
-  +0.2 to +0.5 ms per operation; with one caller the latencies are the same (`POST /api/memories`, the heavy write,
-  -2.7% throughput). The reads are not slower (the lists are 25-30% faster). Accepted for the deploy. The suspected
-  cause (not profiled) is the microtask cost of the async facade together with the `AsyncLocalStorage.run` wrapper and
-  the call counter of the request context; a profile with and without the wrapper belongs before Phase 2, to clean the
-  baseline for the PostgreSQL measurement.
+  +0.2 to +0.5 ms per operation. With one caller the latencies are within about 1 ms (p50 -0.05 to +0.3 ms; the
+  heavy write `POST /api/memories` +0.83 ms at p50 and +1.2% throughput); with 8 callers `POST /api/memories` is at
+  -2.7% throughput and +4.2% at p95. The list reads are 25-30% faster and the recall route is faster; the hybrid
+  memory search (`GET /api/memories?q=`) was +14.6% at p50 with one caller (p95 unchanged, a CPU-bound request of
+  about 3 s with a large spread, read as noise). Accepted for the deploy. The suspected cause (not profiled) is the
+  microtask cost of the async facade together with the `AsyncLocalStorage.run` wrapper and the call counter of the
+  request context; a profile with and without the wrapper belongs before Phase 2, to clean the baseline for the
+  PostgreSQL measurement.
 - **Phase 2 pointers.** The limits above are carried by the Phase 2 collection as items A13, A14, B8 (the unique
   violation helper), C12 and section 1b.
 
