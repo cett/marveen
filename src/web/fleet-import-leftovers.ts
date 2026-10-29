@@ -60,7 +60,6 @@ function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`
 }
 
-// eslint-disable-next-line no-control-regex
 const CONTROL_CHARS = /[\u0000-\u001f\u007f]/
 
 export function leftoverAction(kind: LeftoverKind, path: string): string {
@@ -171,9 +170,15 @@ export function logImportLeftovers(scan: LeftoverScan): void {
   for (const item of scan.items) {
     if (item.kind === 'orphan_new') orphans++
     else backups++
-    logger.warn({ path: item.path, kind: item.kind, mtime: item.mtime, ageSeconds: item.ageSeconds }, item.action)
+    logger.warn(
+      { path: item.path, kind: item.kind, mtime: item.mtime, ageSeconds: item.ageSeconds, action: item.action },
+      'Fleet import leftover: a staged file or backup of an interrupted import is still there',
+    )
   }
-  logger.warn({ orphans, staleBackups: backups }, `Fleet import leftovers: ${orphans} orphan, ${backups} stale backup (GET /api/fleet/import-leftovers lists them; nothing was deleted)`)
+  logger.warn(
+    { orphans, staleBackups: backups },
+    'Fleet import leftovers found; GET /api/fleet/import-leftovers lists them, nothing was deleted',
+  )
 }
 
 /** Boot hook: scan, log, never throw and never block the caller beyond the call itself (the scan is asynchronous). */

@@ -174,7 +174,8 @@ describe('logging', () => {
     expect(calls).toHaveLength(4)
     expect(calls.slice(0, 3).map(([o]) => (o as { kind: string }).kind).sort()).toEqual(['orphan_new', 'stale_bak', 'stale_bak'])
     expect(calls[0][0]).toHaveProperty('ageSeconds')
-    expect(calls[3][1]).toContain('1 orphan, 2 stale backup')
+    expect(calls[0][0]).toHaveProperty('action')
+    expect(calls[3][0]).toEqual({ orphans: 1, staleBackups: 2 })
     expect(calls[3][1]).toContain('nothing was deleted')
   })
 
