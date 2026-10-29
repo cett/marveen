@@ -451,8 +451,10 @@ export function linkMaintenanceFailedSystemically(r: Pick<LinkMaintenanceResult,
 
 /**
  * Periodic maintenance for the memory link graph:
- * 1. Re-embed memories whose updated_at > last link created_at (stale embeddings).
- * 2. Create/refresh neighbor links for recently updated memories.
+ * 1. Embed the memories that still have no embedding and were touched within maxAge (default 7 days).
+ * 2. Create/refresh neighbor links for the memories with an embedding that were touched within maxAge.
+ *    "Touched" is COALESCE(updated_at, created_at): saveMemory leaves updated_at NULL, so a memory nobody edited
+ *    counts from its creation time.
  * 3. Prune links below weightThreshold.
  * 4. Count orphan memories: have embedding but 0 outgoing links.
  *
