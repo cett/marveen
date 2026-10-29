@@ -337,6 +337,21 @@ for st in 0 ""; do
   strict "STRICT=${st:-unset}: own identity" "$st" "$INSTALL" "$CFG_A"; allowed "STRICT=${st:-unset}: own identity" a
   check "STRICT=${st:-unset}: own identity: no would-refuse line" bash -c "! echo \"\$1\" | grep -q 'AGENT_API_STRICT'" _ "$ERR"
 done
+# --token admin from a sub-agent session at the install root went out as the main agent before: STRICT=0 keeps that
+# (with the E1 notice), STRICT=1 refuses; from an agent directory or a scratch cwd the old admin refusal stays
+# (exit 3, no request) at both settings.
+for st in 0 ""; do
+  strict "STRICT=${st:-unset}: BASE, sub-agent a, --token admin" "$st" "$INSTALL" "$CFG_A" --token admin
+  allowed "STRICT=${st:-unset}: BASE, sub-agent a, --token admin: goes out as the main agent" m; would "STRICT=${st:-unset}: BASE, sub-agent a, --token admin" E1
+  check "STRICT=${st:-unset}: BASE, sub-agent a, --token admin: X-Agent-Id is the main agent" grep -qx 'X-Agent-Id: m' "$T/argv"
+  check "STRICT=${st:-unset}: BASE, sub-agent a, --token admin: X-Caller-Config names the sub-agent" grep -qx 'X-Caller-Config: a' "$T/argv"
+  strict "STRICT=${st:-unset}: agent cwd, sub-agent a, --token admin" "$st" "$INSTALL/agents/a" "$CFG_A" --token admin
+  check "STRICT=${st:-unset}: agent cwd, --token admin: the old refusal (exit 3, no request)" bash -c "test $RC -eq 3 && test ! -e '$T/calls'"
+  check "STRICT=${st:-unset}: agent cwd, --token admin: the old refusal text" bash -c "echo \"\$1\" | grep -q 'ask the main agent'" _ "$ERR"
+  strict "STRICT=${st:-unset}: scratch, sub-agent a, --token admin" "$st" "$T/scratch" "$CFG_A" --token admin
+  check "STRICT=${st:-unset}: scratch, --token admin: the old refusal (exit 3, no request)" bash -c "test $RC -eq 3 && test ! -e '$T/calls'"
+done
+strict "STRICT=1: BASE, sub-agent a, --token admin" 1 "$INSTALL" "$CFG_A" --token admin; refused "STRICT=1: BASE, sub-agent a, --token admin" E1
 # the --token main call still carries the launched agent in X-Caller-Config, whatever STRICT says
 strict "STRICT=0 --token main header" 0 "$INSTALL" "$CFG_A" --token main
 check "STRICT=0 --token main: X-Caller-Config names the launched sub-agent" grep -qx 'X-Caller-Config: a' "$T/argv"

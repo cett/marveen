@@ -34,8 +34,9 @@
 #   E1  ask for the main agent's identity (--token main, --token admin)
 #   E2  ask for the operator token (--token operator)
 #   E3  act as another agent (--agent / MARVEEN_AGENT_ID naming someone else)
-# With 1 such a call exits 3 and NO request is made. With 0 the call goes out as before and stderr says it
-# would be refused. A call with no sub-agent session (a system script, cron, the main agent) is never
+# With 1 such a call exits 3 and NO request is made. With 0 the call goes out as before (also --token admin
+# from a sub-agent session at the install root, which acted as the main agent) and stderr says it would be
+# refused. The long-standing admin refusal (exit 3 for an agent that is not the main one) stays either way. A call with no sub-agent session (a system script, cron, the main agent) is never
 # touched. This is hygiene against the common slip, not a security boundary: agents share one OS user.
 #
 # The token never appears on a command line: it is handed to curl as a config on STDIN
@@ -126,6 +127,10 @@ if [ -z "$AGENT" ] && [ -n "$CWD_AGENT" ]; then AGENT="$CWD_AGENT"; AGENT_BY="$C
 # dropped whole, which ends in the "no token for an unknown agent" exit below, with no request made.
 case "$AGENT" in *[!A-Za-z0-9_-]*) AGENT="" ;; esac
 [ "${#AGENT}" -le 64 ] || AGENT=""
+# Who the admin check below sees with AGENT_API_STRICT=0: the agent as it was named before the launch beat the cwd
+# (explicit, else the cwd, else the config directory). A call that went out as the main agent then still does.
+LEGACY_AGENT="$AGENT"
+[ "$AGENT_BY" != "explicit" ] && [ -n "$CWD_AGENT" ] && LEGACY_AGENT="$CWD_AGENT"
 
 # E1-E3: what a session launched as a sub-agent may not ask for. No sub-agent session (a system script, cron, the
 # main agent): nothing here applies.
@@ -151,6 +156,10 @@ if [ "$KIND" = "main" ]; then
 fi
 if [ "$KIND" = "admin" ]; then
   if [ -n "$AGENT" ] && [ "$AGENT" = "$MAIN" ]; then KIND="agent"
+  elif [ "$STRICT" = "0" ] && [ -n "$LEGACY_AGENT" ] && [ "$LEGACY_AGENT" = "$MAIN" ]; then
+    # STRICT=0 changes nothing for a refusal that is only E1: this call went out as the main agent before (a
+    # sub-agent session at the install root), and E1 has already said on stderr that it would be refused.
+    AGENT="$MAIN"; KIND="agent"; AGENT_BY="root"
   else
     echo "agent-api: this call needs admin rights and only the main agent holds them: ask the main agent to make it (an inter-agent message through /api/messages)" >&2
     exit 3
