@@ -130,6 +130,30 @@ describe('scanImportLeftovers', () => {
     expect(scan).toMatchObject({ items: [], importInProgress: true })
   })
 
+  it('does not even walk while an import is running', async () => {
+    mocks.inProgress = true
+    const untouched = new Proxy([], { get() { throw new Error('the roots were read') } }) as never
+
+    const scan = await scanImportLeftovers({ roots: untouched })
+
+    expect(scan.importInProgress).toBe(true)
+  })
+
+  it('an import that starts during the walk empties the result: its staged files are not leftovers', async () => {
+    put('h2/CLAUDE.md.import-new')
+    let calls = 0
+    const now = () => {
+      calls++
+      if (calls >= 3) mocks.inProgress = true // the apply begins after the scan started
+      return 1_000_000
+    }
+
+    const scan = await scanImportLeftovers({ roots: [{ dir: join(ROOT, 'h2'), maxDepth: 1 }], now })
+
+    expect(mocks.inProgress).toBe(true)
+    expect(scan).toMatchObject({ items: [], importInProgress: true })
+  })
+
   it('an unreadable root does not fail the scan', async () => {
     put('i/ok.import-bak')
     const scan = await scanImportLeftovers({ roots: [{ dir: join(ROOT, 'i', 'ok.import-bak'), maxDepth: 2 }, { dir: join(ROOT, 'i'), maxDepth: 1 }] })
