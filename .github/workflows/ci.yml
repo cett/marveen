@@ -329,3 +329,58 @@ jobs:
           name: coverage-report
           path: coverage/
           retention-days: 30
+
+  qa-scanners:
+    # The two QA scanners of tools/qa on the lines a pull request adds (tools/qa/README.md). Boo reads the
+    # findings that are left instead of grepping for them: the artifact holds the JSON reports.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    env:
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          # The scan diffs the pull request against its base.
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        # The project's types for the program the scanners build, and the classic TypeScript API
+        # (6.0) from the isolated tools/eslint toolchain, which TypeScript 7 does not ship.
+        run: |
+          npm ci
+          npm ci --prefix tools/eslint --ignore-scripts
+
+      - name: Scanner self-test (fixture, FAILS the build)
+        # Runs both scanners over tools/qa/fixture and fails unless they report exactly the lines
+        # marked "expect:" there, so a scanner that stops seeing a construct is caught here.
+        run: node tools/qa/check-scanners.mjs
+
+      - name: Vacuous not.toThrow on the added lines (FAILS the build)
+        # expect(() => <Promise>).not.toThrow() cannot fail: the check is deterministic and the
+        # tree has none, so a new one is a finding that fails the pull request.
+        run: node tools/qa/vacuous-notthrow-scan.mjs --base "$BASE_SHA" --fail-on-findings > qa-vacuous-notthrow.json
+
+      - name: Promise in a non-awaiting position on the added lines (report)
+        # REPORT MODE: the scan is a heuristic (a null check on an in-flight promise is legitimate),
+        # so the findings go to the job summary and the artifact and never fail the build.
+        continue-on-error: true
+        run: |
+          node tools/qa/promise-misuse-scan.mjs --base "$BASE_SHA" > qa-promise-misuse.json
+          node tools/qa/summarize.mjs qa-promise-misuse.json >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the scanner reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: qa-scanner-reports
+          path: qa-*.json
+          if-no-files-found: ignore
+          retention-days: 14
