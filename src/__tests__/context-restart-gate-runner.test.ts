@@ -241,6 +241,26 @@ describe('isSleepInhibitorProcess', () => {
     expect(isSleepInhibitorProcess('caffeinate -dimsu -w 4242')).toBe(true)
   })
 
+  it('clustered flags: the value of a trailing -t / -w is the next argument', () => {
+    expect(isSleepInhibitorProcess('caffeinate -it 300')).toBe(true)
+    expect(isSleepInhibitorProcess('caffeinate -dimsut 300')).toBe(true)
+    expect(isSleepInhibitorProcess('caffeinate -iw 4242')).toBe(true)
+    expect(isSleepInhibitorProcess('caffeinate -it300')).toBe(true)
+    expect(isSleepInhibitorProcess('caffeinate -t300 -i')).toBe(true)
+  })
+
+  it('clustered flags wrapping a utility stay real work', () => {
+    expect(isSleepInhibitorProcess('caffeinate -it 300 sleep 100')).toBe(false)
+    expect(isSleepInhibitorProcess('caffeinate -it300 npm run build')).toBe(false)
+    expect(isSleepInhibitorProcess('caffeinate -w 4242 npm run build')).toBe(false)
+    expect(isSleepInhibitorProcess('caffeinate -iw 4242 npm run build')).toBe(false)
+  })
+
+  it('-- ends the options: anything after it is the utility', () => {
+    expect(isSleepInhibitorProcess('caffeinate -i -- npm run build')).toBe(false)
+    expect(isSleepInhibitorProcess('caffeinate -i --')).toBe(true)
+  })
+
   it('caffeinate wrapping a utility is real work, the utility is its child', () => {
     expect(isSleepInhibitorProcess('caffeinate -i npm run build')).toBe(false)
     expect(isSleepInhibitorProcess('caffeinate -t 300 sleep 100')).toBe(false)

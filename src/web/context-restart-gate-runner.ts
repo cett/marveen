@@ -326,9 +326,11 @@ export function isMcpProcess(childArgs: string, mcpPatterns: string[]): boolean 
   return mcpPatterns.some(p => childArgs.includes(p))
 }
 
-// caffeinate flags that take a value (`-t <secs>`, `-w <pid>`); every other
-// flag (-d -i -m -s -u) stands alone.
-const CAFFEINATE_VALUE_FLAGS = new Set(['-t', '-w'])
+// caffeinate options that take a value (`-t <secs>`, `-w <pid>`); every other
+// option (-d -i -m -s -u) stands alone. getopt rules: options may be clustered
+// (`-it 300`), and the value is the rest of the cluster (`-t300`) or, when the
+// option ends the cluster, the next argument.
+const CAFFEINATE_VALUE_FLAGS = new Set(['t', 'w'])
 
 /**
  * Pure: true if a child process (identified by its full args string) is a bare
@@ -346,8 +348,13 @@ export function isSleepInhibitorProcess(childArgs: string): boolean {
   if (exe !== 'caffeinate') return false
   for (let i = 1; i < tokens.length; i++) {
     const t = tokens[i]!
+    if (t === '--') return i === tokens.length - 1   // anything after it is the utility
     if (!t.startsWith('-')) return false   // a utility to run: real work
-    if (CAFFEINATE_VALUE_FLAGS.has(t)) i++   // skip the flag's value
+    for (let c = 1; c < t.length; c++) {
+      if (!CAFFEINATE_VALUE_FLAGS.has(t[c]!)) continue
+      if (c === t.length - 1) i++   // the value is the next argument
+      break   // otherwise the rest of the cluster is the value
+    }
   }
   return true
 }

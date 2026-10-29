@@ -168,6 +168,28 @@ describe('hasLiveChildProcesses', () => {
     expect(hasLiveChildProcesses(SESSION, [])).toBe(false)
   })
 
+  it('the clustered caffeinate -it 300 is not work either -> false', async () => {
+    await mockProcessTree({
+      panePid: 100,
+      comm: { 100: 'claude' },
+      children: { 100: [200] },
+      age: { 100: 5000, 200: 120 },
+      args: { 200: 'caffeinate -it 300' },
+    })
+    expect(hasLiveChildProcesses(SESSION, [])).toBe(false)
+  })
+
+  it('caffeinate -w <pid> <utility> is real work -> true', async () => {
+    await mockProcessTree({
+      panePid: 100,
+      comm: { 100: 'claude' },
+      children: { 100: [200] },
+      age: { 100: 5000, 200: 120 },
+      args: { 200: 'caffeinate -w 4242 npm run build' },
+    })
+    expect(hasLiveChildProcesses(SESSION, [])).toBe(true)
+  })
+
   it('a caffeinate does not hide a real work child next to it -> true', async () => {
     await mockProcessTree({
       panePid: 100,
