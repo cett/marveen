@@ -133,6 +133,8 @@ import { registerSigtermFlush } from './web/sigterm-flush.js'
 import { startImportCrawler, stopImportCrawler } from './web/import-crawler.js'
 import { bootstrapDashboardToken } from './web/token-bootstrap.js'
 
+import { runAs } from './db/context.js'
+import { systemJob, runAsRequest } from './db/background-jobs.js'
 const WEB_DIR = join(PROJECT_ROOT, 'web')
 
 const dispatcher = new RouteDispatcher()
@@ -362,7 +364,9 @@ export async function startWebServer(port = 3420): Promise<http.Server> {
         if (await answerIdentityRefusal(req, res)) return
       }
 
-      if (await dispatcher.dispatch(routeCtx)) return
+      // From here the route works for the caller: its tenant, or its agent in that tenant.
+      const dispatched = await runAsRequest({ authenticated: auth.kind !== 'none', agentId: role === 'fleet_agent' ? tokenAgentId : undefined, tenantId: tenantId ?? null }, () => dispatcher.dispatch(routeCtx))
+      if (dispatched) return
 
       res.writeHead(404)
       res.end('Not found')
@@ -379,7 +383,7 @@ export async function startWebServer(port = 3420): Promise<http.Server> {
   // The listener is synchronous on purpose (no-misused-promises): a rejection from anything outside the
   // route try/catch above is logged and answered, never an unhandled rejection.
   const server = http.createServer((req, res) => {
-    void handleRequest(req, res).catch((err) => {
+    void runAs.system('http-gate', () => handleRequest(req, res)).catch((err) => {
       logger.error({ err }, 'Web szerver hiba (kezeletlen)')
       if (!res.headersSent) res.writeHead(500)
       res.end()
@@ -620,13 +624,13 @@ export async function startWebServer(port = 3420): Promise<http.Server> {
       logger.warn({ err }, 'Auth session sweep failed')
     }
   }
-  const authSessionSweepInterval = setInterval(() => { void sweepAuthState() }, 60 * 60 * 1000)
+  const authSessionSweepInterval = setInterval(systemJob('auth-state-sweep', () => { void sweepAuthState() }), 60 * 60 * 1000)
 
-  const tokenCollectInterval = webOnly ? undefined : setInterval(() => {
+  const tokenCollectInterval = webOnly ? undefined : setInterval(systemJob('token-usage-collector', () => {
     collectTokenUsage().catch(err => logger.warn({ err }, 'Periodic token usage collection failed'))
-  }, 5 * 60 * 1000)
+  }), 5 * 60 * 1000)
   if (!webOnly) {
-    collectTokenUsage().catch(err => logger.warn({ err }, 'Startup token usage collection failed'))
+    runAs.system('token-usage-collector', () => collectTokenUsage()).catch(err => logger.warn({ err }, 'Startup token usage collection failed'))
     logger.info('Token usage auto-collect started (5min poll + startup)')
   }
 
@@ -667,7 +671,7 @@ export async function startWebServer(port = 3420): Promise<http.Server> {
   // are gone (accepting lost context). Fire-and-forget: errors are logged
   // internally and never bubble to the caller.
   if (!webOnly) {
-    reconcileAgentsOnStartup().catch(err =>
+    runAs.system('boot-sequence', () => reconcileAgentsOnStartup()).catch(err =>
       logger.warn({ err }, 'startup-reconciliation: uncaught error (non-fatal)'),
     )
 
@@ -675,7 +679,7 @@ export async function startWebServer(port = 3420): Promise<http.Server> {
     // accurate desired-state data even after an unclean shutdown. One-time
     // registration inside server.listen so it only fires on the live instance,
     // not on WEB_ONLY staging. index.ts's shutdown() runs it before it closes the database.
-    registerSigtermFlush('desired-run-state', flushRunningStateToDesired)
+    registerSigtermFlush('desired-run-state', () => runAs.system('shutdown-flush', () => flushRunningStateToDesired()))
   }
 
   // Backfill the PreCompact hook into existing agents' settings.json so the
@@ -820,7 +824,7 @@ export async function startWebServer(port = 3420): Promise<http.Server> {
   }
 
   // Not awaited: the server is already up and the sweep only re-arms timers for tasks that survived the restart.
-  sweepOrphanedBackgroundTasks().catch((err) => logger.warn({ err }, 'Background task sweep skipped'))
+  runAs.system('boot-sequence', () => sweepOrphanedBackgroundTasks()).catch((err) => logger.warn({ err }, 'Background task sweep skipped'))
 
   try {
     const swept = sweepOrphanTaskStates(Date.now())

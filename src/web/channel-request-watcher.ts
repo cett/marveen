@@ -7,6 +7,7 @@ import { agentDir, listAgentNames, readAgentChannelProvider } from './agent-conf
 import { upsertChannelRequest, listPendingChannelRequests, updateChannelRequestName } from '../db.js'
 import { TOOL_TIMEOUTS } from '../tool-timeouts.js'
 
+import { runAs } from '../db/context.js'
 function resolveAgentProvider(name: string): ChannelProviderType {
   const perAgent = readAgentChannelProvider(name)
   if (perAgent === 'slack' || perAgent === 'telegram') return perAgent
@@ -120,7 +121,7 @@ async function guardedScanTick(): Promise<void> {
   if (tickRunning) return
   tickRunning = true
   try {
-    await runScanTick()
+    await runAs.system('channel-request-watcher', () => runScanTick())
   } catch (err) {
     logger.error({ err }, 'Channel request scan tick failed')
   } finally {

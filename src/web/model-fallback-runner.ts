@@ -33,6 +33,7 @@ import {
   type FallbackOverride,
 } from './model-fallback-state.js'
 
+import { systemJob } from '../db/background-jobs.js'
 // Drives the model-fallback-on-limit feature (see src/model-fallback.ts for the
 // why and the pure decision logic). Mirrors the auto-restart runner: a 60s
 // sweep, offset from the other watchers so tmux calls do not pile onto one tick.
@@ -228,7 +229,7 @@ export function startModelFallbackRunner(): NodeJS.Timeout {
       catch (err) { logger.debug({ err, agent: name }, 'model-fallback: agent check error') }
     }
   }
-  const run = () => { sweep().catch((err: unknown) => logger.warn({ err }, 'model-fallback: sweep failed')) }
+  const run = systemJob('model-fallback', () => { sweep().catch((err: unknown) => logger.warn({ err }, 'model-fallback: sweep failed')) })
   setTimeout(run, INITIAL_DELAY_MS)
   return setInterval(run, INTERVAL_MS)
 }

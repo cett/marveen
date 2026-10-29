@@ -12,6 +12,7 @@ import { detectReauthNeeded } from './reauth-detect.js'
 import { loginSequence, literalKeyArgs, specialKeyArgs } from './tmux-keys.js'
 import { withSessionSendLock } from './session-send-lock.js'
 
+import { systemJob } from '../db/background-jobs.js'
 // Autonomous re-auth healer (Adam stability-fix #1, scoped 2026-06-03).
 //
 // The watchdog only restarts MISSING sessions; the reauth badge only surfaces
@@ -409,6 +410,7 @@ export function startReauthHealer(): NodeJS.Timeout | null {
     )
   }
 
-  setTimeout(sweep, INITIAL_DELAY_MS)
-  return setInterval(sweep, PROBE_INTERVAL_MS)
+  const run = systemJob('reauth-healer', sweep)
+  setTimeout(run, INITIAL_DELAY_MS)
+  return setInterval(run, PROBE_INTERVAL_MS)
 }

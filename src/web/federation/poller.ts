@@ -22,6 +22,7 @@ import { isValidIdSegment } from './address.js'
 import { readBoundedBody, PeerResponseTooLargeError } from './http.js'
 import { FEDERATION_REQUEST_TIMEOUT_MS } from './bridge.js'
 
+import { systemJob } from '../../db/background-jobs.js'
 // 512KB: the structural worst case (100 agents with 600-char summaries --
 // which truncate() counts in UTF-16 units, so up to ~1.8KB of UTF-8 each --
 // plus 300 capped skills) must fit; an over-limit body is rejected WHOLE,
@@ -262,6 +263,7 @@ export function resetFederationPollerCache(peerId?: string): void {
 }
 
 export function startFederationPoller(): NodeJS.Timeout {
-  setTimeout(() => { refreshFederationStatus().catch(() => {}) }, FEDERATION_POLL_INITIAL_DELAY_MS).unref()
-  return setInterval(() => { refreshFederationStatus().catch(() => {}) }, FEDERATION_POLL_INTERVAL_MS)
+  const run = systemJob('federation-poller', () => { refreshFederationStatus().catch(() => {}) })
+  setTimeout(run, FEDERATION_POLL_INITIAL_DELAY_MS).unref()
+  return setInterval(run, FEDERATION_POLL_INTERVAL_MS)
 }

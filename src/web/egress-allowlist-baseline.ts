@@ -30,6 +30,7 @@ import { MAIN_AGENT_ID } from '../config.js'
 import { createAgentMessage } from '../db.js'
 import { logger } from '../logger.js'
 
+import { systemJob } from '../db/background-jobs.js'
 export const HISTORY_DIRNAME = 'egress-allowlist.history'
 export const VENDOR_HISTORY_DIRNAME = 'egress-vendor-hosts.history'
 const MISSING = 'missing'
@@ -172,9 +173,9 @@ export function watchEgressAllowlistBaseline(
   const stops: Array<() => void> = []
   for (const target of [ALLOWLIST_TARGET, VENDOR_HOSTS_TARGET]) {
     const file = join(storeDir, target.file)
-    const run = () => {
+    const run = systemJob('egress-baseline', () => {
       try { checkEgressAllowlistBaseline(storeDir, notify, new Date(), target) } catch { /* a failed check must not crash the server */ }
-    }
+    })
     run()
     watchFile(file, { interval: intervalMs }, run)
     stops.push(() => unwatchFile(file, run))

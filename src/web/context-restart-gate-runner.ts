@@ -28,6 +28,7 @@ import {
   type GateInputs,
 } from '../context-restart-gate.js'
 
+import { runAsAgentJob } from '../db/background-jobs.js'
 // Fleet context-restart gate: proactively send /clear to an agent session
 // before the context grows unwieldy, while holding the send lane and only
 // when ALL gate conditions confirm no work is in flight.
@@ -763,7 +764,7 @@ async function runSweep(name: string): Promise<void> {
     sweepTimers.delete(name)
     return
   }
-  try { await checkAgent(name, Date.now()) }
+  try { await runAsAgentJob('context-restart-gate', name, () => checkAgent(name, Date.now())) }
   catch (err) { logger.debug({ err, agent: name }, 'context-restart-gate: sweep error') }
   // Re-schedule using the agent's current retryIntervalMs (may have changed).
   scheduleSweep(name, readGateConfig(name).retryIntervalMs)

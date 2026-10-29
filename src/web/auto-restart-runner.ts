@@ -15,6 +15,7 @@ import { paneLooksIdle } from '../pane-state.js'
 import { readAutoRestartConfig } from './auto-restart-store.js'
 import { restartDue, dailyDueAtMs, parseHHMM, mainRestartMechanism, type AutoRestartConfig } from '../auto-restart.js'
 
+import { runAsAgentJob } from '../db/background-jobs.js'
 // Drives per-agent scheduled restarts (see src/auto-restart.ts for the why and
 // the pure due-logic). Mirrors the other watcher loops: a 60s sweep, started
 // after the others to avoid piling tmux calls onto one tick.
@@ -149,9 +150,9 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
 export function startAutoRestartRunner(): NodeJS.Timeout {
   async function sweep() {
     const now = Date.now()
-    try { await checkAgent(MAIN_AGENT_ID, now) } catch (err) { logger.debug({ err }, 'auto-restart: main check error') }
+    try { await runAsAgentJob('auto-restart', MAIN_AGENT_ID, () => checkAgent(MAIN_AGENT_ID, now)) } catch (err) { logger.debug({ err }, 'auto-restart: main check error') }
     for (const name of listAgentNames()) {
-      try { await checkAgent(name, now) } catch (err) { logger.debug({ err, agent: name }, 'auto-restart: agent check error') }
+      try { await runAsAgentJob('auto-restart', name, () => checkAgent(name, now)) } catch (err) { logger.debug({ err, agent: name }, 'auto-restart: agent check error') }
     }
   }
   // A timer callback cannot be awaited: start the sweep and log a rejection (listAgentNames is outside the per-agent try).

@@ -4,6 +4,7 @@ import { STORE_DIR } from './config.js'
 import { logStoreFileEvent } from './db.js'
 import { logger } from './logger.js'
 
+import { runAs } from './db/context.js'
 // --- System file denylist ---
 // Only files NOT on this list (and not matching SYSTEM_RE) are logged.
 // Everything else = Marveen-managed state that would produce noise.
@@ -165,7 +166,7 @@ export function startStoreWatcher(): void {
       const isSensitive = SENSITIVE_NAMES.has(basename(rel)) ? 1 : 0
 
       // A watch callback is synchronous: the write is left to run, and its failure is logged here.
-      logStoreFileEvent(rel, 'create', isSensitive, fileSize, agent, tenantId).catch((err: unknown) => {
+      runAs.system('store-watcher', () => logStoreFileEvent(rel, 'create', isSensitive, fileSize, agent, tenantId)).catch((err: unknown) => {
         logger.warn({ err, rel }, 'store-watcher: failed to log new file event')
       })
     })

@@ -20,6 +20,7 @@ import type { RouteContext } from './types.js'
 import { resolveApprovalTimeoutSeconds } from '../approval-timeout.js'
 import { tryHandleApprovalUse } from './approvals-consume.js'
 
+import { systemJob } from '../../db/background-jobs.js'
 // Every approval gets a deadline: the category's timeout_minutes, or the 24 h ceiling for an unknown
 // category / NULL value / unreadable DB. The caller's timeout_seconds can only shorten it.
 async function getTimeoutAt(category: string, requestedSeconds: unknown): Promise<number> {
@@ -154,7 +155,7 @@ export function startApprovalTimeoutSweeper(): NodeJS.Timeout {
       logger.warn({ err }, 'Approval timeout sweep failed')
     }
   }
-  return setInterval(() => { void sweep() }, 60_000)
+  return setInterval(systemJob('approval-timeout-sweeper', () => { void sweep() }), 60_000)
 }
 
 export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
