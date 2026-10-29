@@ -77,9 +77,10 @@ function runTicks(
 }
 
 // The two 10 hour windows below evaluate a real cron expression for 24 tasks at every tick: about 2 s of CPU on an
-// idle machine. The suite shares the machine with other runs, where a 7x slowdown is ordinary, so they carry their
-// own timeout instead of sitting a few seconds under the 15 s default.
-const HEAVY_WINDOW = { timeout: 90_000 }
+// idle machine (the whole file about 9 s). The suite shares the machine with other runs, where a 7x slowdown is
+// ordinary, so they carry their own timeout instead of sitting a few seconds under the 15 s default. It stays near
+// the real cost on purpose: a limit far above it would let a 40x slowdown of the tick loop pass green.
+const HEAVY_WINDOW = { timeout: 35_000 }
 
 describe('skip ledger: a 10 hour window of held-back tasks (24 tasks, restart after)', HEAVY_WINDOW, () => {
   const held = (i: number): Partial<ScheduledTask> =>

@@ -31,6 +31,18 @@ echo "$out" | grep -q "FAILED: $TMP/mixed/b-bad.test.py"; check "the failing fil
 echo "$out" | grep -q "boom"; check "the failing file's output is kept" "$?"
 echo "$out" | grep -q "slow-one"; check "the passing file still ran" "$?"
 
+# A job that dies before it records its exit code (here: the python kills the shell that wraps it, as an OOM kill
+# or a runner timeout would) leaves no .rc file. That is a failure, never a pass.
+mkdir "$TMP/died"
+cp "$TMP/pass/b-fast.test.py" "$TMP/died/a-fast.test.py"
+printf 'import os, signal\nprint("dying")\nos.kill(os.getppid(), signal.SIGKILL)\n' > "$TMP/died/b-died.test.py"
+out="$(bash "$RUNNER" -j 2 -d "$TMP/died" 2>&1)"; rc=$?
+[ "$rc" = 1 ]; check "a job that died without an exit code exits 1" "$?"
+echo "$out" | grep -q "FAILED: $TMP/died/b-died.test.py"; check "the dead job is named as failed" "$?"
+echo "$out" | grep -q "b-died.test.py exited 99"; check "the missing exit code reads as 99, not 0" "$?"
+echo "$out" | grep -q "all passed" && no_pass=1 || no_pass=0
+[ "$no_pass" = 0 ]; check "a dead job never prints 'all passed'" "$?"
+
 bash "$RUNNER" -j 0 -d "$TMP/pass" > /dev/null 2>&1; rc=$?
 [ "$rc" = 2 ]; check "-j 0 is refused" "$?"
 bash "$RUNNER" -d "$TMP/nothing" > /dev/null 2>&1; rc=$?
