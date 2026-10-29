@@ -38,7 +38,8 @@ node tools/qa/compare-mutants.mjs serial.json parallel.json         # validation
 - Every mutant gets its own `MARVEEN_STORE_DIR` and `HOME`.
 - Phase 1 runs the unmutated related tests of each touched file. A test that fails there (it depends on the
   checkout path or the host) cannot kill a mutant: a mutant is killed only by a failure outside that set.
-- Statuses: `killed` (with the first failing test), `survived`, `no-tests`, `baseline-error`, `timeout`, `error`.
+- Statuses: `killed` (with the first failing test), `survived`, `no-tests`, `baseline-error`, `timeout`, `error`,
+  and `flaky` with `--confirm-kills` (a killed mutant is run a second time; one that is not killed again is flaky).
 - `--workers` defaults to 4; `--only <text>` limits the files, `--work-dir`, `--keep`, `--timeout-sec` as in the header
   of the script.
 

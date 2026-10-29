@@ -48,6 +48,10 @@ const CALLBACK_HOSTS = new Set([
   'transaction', 'exec', 'immediate', 'run', 'forEach', 'map', 'setTimeout', 'setInterval', 'on', 'once',
 ])
 
+// `Promise.all(items.map(async ...))` is the intended use of a callback that returns a Promise.
+const PROMISE_API = /^Promise\.(all|allSettled|race|any|resolve)$/
+const isPromiseApiCall = (sf, p) => !!p && ts.isCallExpression(p) && PROMISE_API.test(p.expression.getText(sf))
+
 const findings = []
 function report(sf, node, kind) {
   const line = sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1
@@ -64,7 +68,7 @@ function visit(sf, node) {
   const P = node.parent
   const typeOf = (n) => { try { return checker.getTypeAtLocation(n) } catch { return null } }
   if (P && ts.isExpression(node) && !ts.isAwaitExpression(node) && isPromise(typeOf(node))) {
-    const inPromiseApi = (p) => ts.isCallExpression(p) && /^Promise\.(all|allSettled|race|any|resolve)$/.test(p.expression.getText(sf))
+    const inPromiseApi = (p) => isPromiseApiCall(sf, p)
     if (ts.isCallExpression(P) && P.arguments.includes(node) && !inPromiseApi(P)) report(sf, node, 'call-arg')
     else if (ts.isTemplateSpan(P)) report(sf, node, 'template')
     else if (ts.isPropertyAssignment(P) && P.initializer === node) report(sf, node, 'object-prop')
@@ -81,6 +85,9 @@ function visit(sf, node) {
     }
   }
   if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && CALLBACK_HOSTS.has(node.expression.name.text)) {
+    const hostName = node.expression.name.text
+    // map / flatMap handed straight to a Promise API: the callbacks' Promises are awaited by it
+    if ((hostName === 'map' || hostName === 'flatMap') && isPromiseApiCall(sf, node.parent)) return ts.forEachChild(node, (c) => visit(sf, c))
     for (const a of node.arguments) {
       if (!ts.isArrowFunction(a) && !ts.isFunctionExpression(a)) continue
       try {

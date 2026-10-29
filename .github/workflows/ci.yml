@@ -331,7 +331,7 @@ jobs:
           retention-days: 30
 
   qa-scanners:
-    # The two QA scanners of tools/qa on the lines a pull request adds (tools/qa/README.md). Boo reads the
+    # The two QA scanners of tools/qa on the lines a pull request adds (tools/qa/README.md). The QA review reads the
     # findings that are left instead of grepping for them: the artifact holds the JSON reports.
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest

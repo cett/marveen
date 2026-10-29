@@ -17,8 +17,9 @@ export async function misuse(): Promise<unknown[]> {
   const arr = [v] // expect: array-el
   const p = v.constructor // expect: prop-access
   const f = [1, 2].filter(async (e) => e > 1) // expect: callback-returns-promise
+  const mp = [1, 2].map(async (e) => e) // expect: callback-returns-promise
   void sp
-  return [t, o, s, b, n, x, arr, p, f]
+  return [t, o, s, b, n, x, arr, p, f, mp]
 }
 
 // None of these is a finding.
@@ -29,5 +30,6 @@ export function fine(): Promise<unknown[]> {
   const chained = v.then((e) => e + 1)
   const caught = v.catch(() => 0)
   const direct = fetchValue()
-  return Promise.all([awaited, all, chained, caught, direct, v])
+  const viaAll = Promise.all([1, 2].map(async (e) => e))
+  return Promise.all([awaited, all, chained, caught, direct, v, viaAll])
 }

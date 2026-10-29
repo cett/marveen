@@ -11,6 +11,8 @@
 // Options: --root <repo> (default cwd)   --workers <n> (default 4)   --work-dir <dir> (default a temp dir)
 //          --only <text> (files whose path contains it)   --timeout-sec <n> per mutant (default 900)
 //          --list (print the mutant list, run nothing)   --keep (keep the copies)
+//          --confirm-kills (run every killed mutant a second time; one that is not killed again is reported
+//            as `flaky`, a test that fails at random is no proof the await is protected)
 //          --vitest-bin <path> (default node_modules/.bin/vitest in the copy)
 //          --ts-root <dir> (where tools/eslint/node_modules/typescript is; default --root)
 import { execFileSync, spawn } from 'node:child_process'
@@ -22,7 +24,7 @@ import { loadTypeScript, parseArgs, resolveRoot } from './lib/common.mjs'
 import { applyMutant, listAwaitMutants } from './lib/mutants.mjs'
 
 const args = parseArgs(process.argv.slice(2), {
-  flags: ['list', 'keep'],
+  flags: ['list', 'keep', 'confirm-kills'],
   values: ['root', 'base', 'ts-root', 'workers', 'work-dir', 'only', 'timeout-sec', 'vitest-bin'],
   defaults: { workers: '4', 'timeout-sec': '900' },
 })
@@ -149,6 +151,10 @@ await pool(mutants, async (m, dir, i) => {
     writeFileSync(file, applyMutant(original, m))
     try {
       res = await runRelated(dir, m, path.join(workDir, `run-${m.id}`), new Set(base.failing))
+      if (res.status === 'killed' && args['confirm-kills']) {
+        const again = await runRelated(dir, m, path.join(workDir, `run-${m.id}-confirm`), new Set(base.failing))
+        if (again.status !== 'killed') res = { ...res, status: 'flaky' }
+      }
     } finally {
       writeFileSync(file, original) // the copy is private to this worker; restore before the next mutant
     }
@@ -165,7 +171,7 @@ const report = {
   head,
   workers,
   wallSeconds: Math.round((Date.now() - t0) / 1000),
-  summary: { total: results.length, killed: count('killed'), survived: count('survived'), noTests: count('no-tests'), baselineErrors: count('baseline-error'), errors: count('error'), timeouts: count('timeout') },
+  summary: { total: results.length, killed: count('killed'), survived: count('survived'), flaky: count('flaky'), noTests: count('no-tests'), baselineErrors: count('baseline-error'), errors: count('error'), timeouts: count('timeout') },
   baselines: [...baselines].map(([file, b]) => ({ file, status: b.status, failingWithoutMutant: b.failing })),
   mutants: results,
 }
