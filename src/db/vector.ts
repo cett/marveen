@@ -212,10 +212,20 @@ export async function hybridSearch(agentId: string, query: string, limit: number
   // the final order seen by callers reflects semantic relevance, not just
   // BM25+cosine rank fusion. Only when flag is ON (default OFF).
   if (getEffectiveSettingValue('MEMORY_RERANK_ENABLED') === '1') {
-    const fusedList = ranked.slice(0, limit * RERANK_FACTOR).map(([id]) => byId.get(id)!)
+    // The pool the cross-encoder sees is smaller than the list the retrieval over-fetched (RERANK_FACTOR): its cost
+    // grows with the pool, and it is never smaller than the number of results asked for.
+    const poolSize = Math.max(limit, Math.min(
+      limit * Number(getEffectiveSettingValue('MEMORY_RERANK_CANDIDATE_FACTOR')),
+      Number(getEffectiveSettingValue('MEMORY_RERANK_MAX_CANDIDATES')),
+    ))
+    const fusedList = ranked.slice(0, poolSize).map(([id]) => byId.get(id)!)
     if (fusedList.length > 0) {
       try {
-        return await rerank(query, fusedList, { topK: limit })
+        return await rerank(query, fusedList, {
+          topK: limit,
+          maxLength: Number(getEffectiveSettingValue('MEMORY_RERANK_MAX_LENGTH')),
+          budgetMs: Number(getEffectiveSettingValue('MEMORY_RERANK_BUDGET_MS')),
+        })
       } catch (err) {
         logger.debug({ err }, 'hybridSearch: reranker threw unexpectedly, returning RRF order')
         return fusedList.slice(0, limit)

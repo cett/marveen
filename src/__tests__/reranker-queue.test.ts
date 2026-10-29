@@ -22,13 +22,13 @@ function makeMemory(id: number, content = `m${id}`): Memory {
   }
 }
 
-interface Call { query: string; passages: string[]; resolve: (s: number[]) => void; reject: (e: Error) => void }
+interface Call { query: string; passages: string[]; maxLength?: number; resolve: (s: number[]) => void; reject: (e: Error) => void }
 
 class FakeBackend implements RerankBackend {
   readonly mode = 'worker' as const
   calls: Call[] = []
-  score(query: string, passages: string[]): Promise<number[]> {
-    return new Promise((resolve, reject) => { this.calls.push({ query, passages, resolve, reject }) })
+  score(query: string, passages: string[], maxLength?: number): Promise<number[]> {
+    return new Promise((resolve, reject) => { this.calls.push({ query, passages, maxLength, resolve, reject }) })
   }
   state() { return { workerState: 'ready' as const, loadMs: 1234 } }
   async dispose() {}
@@ -130,6 +130,19 @@ describe('rerank queue', () => {
     expect(await rerank('q', [])).toEqual([])
     expect(fake.calls).toHaveLength(0)
     expect(getRerankStats().calls).toBe(0)
+  })
+
+  it('hands the token limit to the backend, and nothing when none is set', async () => {
+    const limited = rerank('q1', pool, { maxLength: 256 })
+    await tick()
+    expect(fake.calls[0].maxLength).toBe(256)
+    fake.calls[0].resolve([0.1, 0.2, 0.3])
+    await limited
+    const unlimited = rerank('q2', pool)
+    await tick()
+    expect(fake.calls[1].maxLength).toBeUndefined()
+    fake.calls[1].resolve([0.1, 0.2, 0.3])
+    await unlimited
   })
 
   it('has a budget that fits one worker pass of ten candidates and a second behind it', () => {

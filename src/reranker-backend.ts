@@ -9,7 +9,7 @@ import type { RerankReply, RerankRequest } from './reranker-worker.js'
 /** Scores (query, passage) pairs, 0..1 in passage order. One call at a time: the queue in reranker.ts serializes. */
 export interface RerankBackend {
   readonly mode: 'worker' | 'in-process'
-  score(query: string, passages: string[]): Promise<number[]>
+  score(query: string, passages: string[], maxLength?: number): Promise<number[]>
   /** What the backend knows about itself, for the stats view. */
   state(): { workerState: 'not-started' | 'loading' | 'ready' | 'down'; loadMs: number | null }
   dispose(): Promise<void>
@@ -21,7 +21,7 @@ export class RerankUnavailableError extends Error {}
 /** The model on the main thread: the pre-worker behaviour, used where the compiled worker file does not exist. */
 export class InProcessRerankBackend implements RerankBackend {
   readonly mode = 'in-process' as const
-  score(query: string, passages: string[]): Promise<number[]> { return scorePairs(query, passages) }
+  score(query: string, passages: string[], maxLength?: number): Promise<number[]> { return scorePairs(query, passages, maxLength) }
   state() { return { workerState: 'not-started' as const, loadMs: null } }
   async dispose(): Promise<void> { _resetEngineForTests() }
 }
@@ -73,7 +73,7 @@ export class WorkerRerankBackend implements RerankBackend {
     return { workerState, loadMs: this.loadMs }
   }
 
-  score(query: string, passages: string[]): Promise<number[]> {
+  score(query: string, passages: string[], maxLength?: number): Promise<number[]> {
     let worker: WorkerLike
     try {
       worker = this.ensureWorker()
@@ -84,7 +84,7 @@ export class WorkerRerankBackend implements RerankBackend {
     return new Promise<number[]>((resolve, reject) => {
       this.pending.set(id, { resolve, reject })
       try {
-        worker.postMessage({ id, query, passages })
+        worker.postMessage({ id, query, passages, ...(maxLength !== undefined ? { maxLength } : {}) })
       } catch (err) {
         this.pending.delete(id)
         reject(err instanceof Error ? err : new Error(String(err)))

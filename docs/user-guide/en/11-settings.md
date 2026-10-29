@@ -125,6 +125,10 @@ Memory system and local Ollama vector generation settings.
 |-----|-------------|
 | `OLLAMA_URL` | Ollama API URL for local embedding generation |
 | `MEMORY_RERANK_ENABLED` | Enable reranking of search results |
+| `MEMORY_RERANK_MAX_LENGTH` | Token limit per scored (query, memory) pair |
+| `MEMORY_RERANK_CANDIDATE_FACTOR` | Candidates given to the reranker, as a multiple of the result count |
+| `MEMORY_RERANK_MAX_CANDIDATES` | Upper bound of candidates given to the reranker |
+| `MEMORY_RERANK_BUDGET_MS` | Longest a rerank may take before the search falls back to the order without it |
 | `WORKSPACE_DOCS_TTL_DAYS` | Days after which workspace documents are automatically deleted |
 | `WORKSPACE_DOC_RECALL_DEFAULT` | Whether workspace document recall is on by default |
 

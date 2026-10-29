@@ -125,6 +125,10 @@ A memória-rendszer és az Ollama vektorgenerátor beállításai.
 |-------|--------|
 | `OLLAMA_URL` | Az Ollama API URL-je a helyi vektorgeneráláshoz |
 | `MEMORY_RERANK_ENABLED` | Engedélyezi-e az újrarangsorolást a keresési eredményeknél |
+| `MEMORY_RERANK_MAX_LENGTH` | Pontozott (kérdés, memória) párok tokenhatára |
+| `MEMORY_RERANK_CANDIDATE_FACTOR` | A rerankernek átadott jelöltek száma a találatszám többszöröseként |
+| `MEMORY_RERANK_MAX_CANDIDATES` | A rerankernek átadott jelöltek felső határa |
+| `MEMORY_RERANK_BUDGET_MS` | Meddig tarthat egy rerank, mielőtt a keresés a rerank nélküli sorrendet adja |
 | `WORKSPACE_DOCS_TTL_DAYS` | Hány nap után törölje automatikusan a workspace-dokumentumokat |
 | `WORKSPACE_DOC_RECALL_DEFAULT` | Az alapértelmezett workspace-dokumentum visszahívás bekapcsolva-e |
 

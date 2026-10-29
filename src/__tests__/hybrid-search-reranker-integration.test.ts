@@ -287,3 +287,54 @@ describe('A/B: reranker applied after RRF fusion', () => {
     }
   })
 })
+
+describe('rerank pool and options come from the settings', () => {
+  function settings(over: Record<string, string>) {
+    mockGetEffectiveSettingValue.mockImplementation((key: string) => {
+      const all: Record<string, string> = {
+        MEMORY_RERANK_ENABLED: '1',
+        MEMORY_RERANK_CANDIDATE_FACTOR: '3',
+        MEMORY_RERANK_MAX_CANDIDATES: '20',
+        MEMORY_RERANK_MAX_LENGTH: '256',
+        MEMORY_RERANK_BUDGET_MS: '3000',
+        ...over,
+      }
+      return all[key] ?? '0'
+    })
+  }
+
+  async function seed(n: number) {
+    for (let i = 0; i < n; i++) await saveAgentMemory('agent-a', `widget note number ${i}`, 'warm', `widget${i}`)
+  }
+
+  it('hands the reranker limit x factor candidates, capped, with max length, budget and topK', async () => {
+    await seed(12)
+    settings({ MEMORY_RERANK_CANDIDATE_FACTOR: '1', MEMORY_RERANK_MAX_CANDIDATES: '50' })
+    await hybridSearch('agent-a', 'widget', 3)
+    const [, pool, opts] = mockRerank.mock.calls[0] as [string, Memory[], { topK: number; maxLength: number; budgetMs: number }]
+    expect(pool).toHaveLength(3)
+    expect(opts).toEqual({ topK: 3, maxLength: 256, budgetMs: 3000 })
+  })
+
+  it('caps the pool at MEMORY_RERANK_MAX_CANDIDATES', async () => {
+    await seed(12)
+    settings({ MEMORY_RERANK_CANDIDATE_FACTOR: '5', MEMORY_RERANK_MAX_CANDIDATES: '5' })
+    await hybridSearch('agent-a', 'widget', 3)
+    expect((mockRerank.mock.calls[0] as [string, Memory[]])[1]).toHaveLength(5)
+  })
+
+  it('never hands fewer candidates than the results asked for', async () => {
+    await seed(12)
+    settings({ MEMORY_RERANK_CANDIDATE_FACTOR: '1', MEMORY_RERANK_MAX_CANDIDATES: '5' })
+    await hybridSearch('agent-a', 'widget', 8)
+    expect((mockRerank.mock.calls[0] as [string, Memory[]])[1].length).toBeGreaterThanOrEqual(8)
+    expect(mockRerank.mock.calls[0][2]).toMatchObject({ topK: 8 })
+  })
+
+  it('passes a changed max length and budget through', async () => {
+    await seed(4)
+    settings({ MEMORY_RERANK_MAX_LENGTH: '512', MEMORY_RERANK_BUDGET_MS: '8000' })
+    await hybridSearch('agent-a', 'widget', 2)
+    expect(mockRerank.mock.calls[0][2]).toMatchObject({ maxLength: 512, budgetMs: 8000 })
+  })
+})

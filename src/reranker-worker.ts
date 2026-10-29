@@ -4,7 +4,7 @@
 // candidates, 4-5 s for fifty) stops only this thread.
 //
 // Protocol (all messages are plain structured-clone data):
-//   in:  { id: number, query: string, passages: string[] }
+//   in:  { id: number, query: string, passages: string[], maxLength?: number }
 //   out: { type: 'loaded', ms: number }          once, when the model is ready (before the first reply)
 //        { id, scores: number[] }                 the scores, in passage order
 //        { id, error: string }                    load or inference failed
@@ -12,7 +12,7 @@
 import { parentPort } from 'node:worker_threads'
 import { loadRanker, scorePairs } from './reranker-engine.js'
 
-export interface RerankRequest { id: number; query: string; passages: string[] }
+export interface RerankRequest { id: number; query: string; passages: string[]; maxLength?: number }
 export type RerankReply =
   | { type: 'loaded'; ms: number }
   | { id: number; scores: number[] }
@@ -29,7 +29,7 @@ export async function serveRerankRequest(req: RerankRequest, emit: (reply: Reran
       loadedReported = true
       emit({ type: 'loaded', ms: Date.now() - started })
     }
-    emit({ id: req.id, scores: await scorePairs(req.query, req.passages) })
+    emit({ id: req.id, scores: await scorePairs(req.query, req.passages, req.maxLength) })
   } catch (err) {
     emit({ id: req.id, error: err instanceof Error ? err.message : String(err) })
   }

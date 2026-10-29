@@ -74,6 +74,14 @@ describe('WorkerRerankBackend', () => {
     expect(await second).toEqual([0.5])
   })
 
+  it('puts the token limit in the request only when there is one', () => {
+    const { backend, workers } = setup()
+    void backend.score('q', ['a'], 256).catch(() => {})
+    void backend.score('q', ['b']).catch(() => {})
+    expect(workers[0].posted[0]).toEqual({ id: 1, query: 'q', passages: ['a'], maxLength: 256 })
+    expect(workers[0].posted[1]).toEqual({ id: 2, query: 'q', passages: ['b'] })
+  })
+
   it('rejects with the worker error text', async () => {
     const { backend, workers } = setup()
     const p = backend.score('q', ['a'])
@@ -132,6 +140,14 @@ describe('serveRerankRequest (the worker side)', () => {
     expect(scores[0]).toBeGreaterThan(0.9)
     expect(scores[1]).toBeLessThan(0.1)
     expect(mockTokenizerFn).toHaveBeenCalledWith(['q', 'q'], { text_pair: ['good', 'bad'], padding: true, truncation: true })
+  })
+
+  it('cuts the pairs at the requested token limit, and at the model limit when none is given', async () => {
+    mockModelFn.mockResolvedValue({ logits: { tolist: () => [[0]] } })
+    await serveRerankRequest({ id: 1, query: 'q', passages: ['a'], maxLength: 256 }, () => {})
+    await serveRerankRequest({ id: 2, query: 'q', passages: ['a'] }, () => {})
+    expect(mockTokenizerFn.mock.calls[0][1]).toMatchObject({ max_length: 256, truncation: true, padding: true })
+    expect(mockTokenizerFn.mock.calls[1][1]).not.toHaveProperty('max_length')
   })
 
   it('answers with an error instead of throwing when inference fails', async () => {

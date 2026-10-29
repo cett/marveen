@@ -45,6 +45,8 @@ export interface RerankOptions {
   maxCandidates?: number
   /** Overrides RERANK_BUDGET_MS for this call. */
   budgetMs?: number
+  /** Token cap of a (query, passage) pair; the model's own limit (512) when absent. */
+  maxLength?: number
 }
 
 type Outcome = { ok: true; scores: number[] } | { ok: false; reason: RerankFallbackReason }
@@ -52,6 +54,7 @@ type Outcome = { ok: true; scores: number[] } | { ok: false; reason: RerankFallb
 interface Job {
   query: string
   passages: string[]
+  maxLength?: number
   timer: NodeJS.Timeout
   resolve: (outcome: Outcome) => void
 }
@@ -91,7 +94,7 @@ function pump(): void {
   if (!next) return
   running = next
   const started = Date.now()
-  getBackend().score(next.query, next.passages).then(
+  getBackend().score(next.query, next.passages, next.maxLength).then(
     scores => {
       const ms = Date.now() - started
       stats.lastRerankMs = ms
@@ -110,13 +113,14 @@ function pump(): void {
   })
 }
 
-function submit(query: string, passages: string[], budgetMs: number): Promise<Outcome> {
+function submit(query: string, passages: string[], budgetMs: number, maxLength?: number): Promise<Outcome> {
   const outstanding = (running ? 1 : 0) + waiting.length
   if (outstanding >= RERANK_MAX_PENDING) return Promise.resolve({ ok: false, reason: 'queue_full' })
   return new Promise<Outcome>(resolve => {
     const job: Job = {
       query,
       passages,
+      maxLength,
       timer: setTimeout(() => settle(job, { ok: false, reason: 'timeout' }), budgetMs),
       resolve,
     }
@@ -147,12 +151,12 @@ export async function rerank(
   candidates: Memory[],
   opts: RerankOptions = {}
 ): Promise<Memory[]> {
-  const { topK = candidates.length, maxCandidates = candidates.length, budgetMs = RERANK_BUDGET_MS } = opts
+  const { topK = candidates.length, maxCandidates = candidates.length, budgetMs = RERANK_BUDGET_MS, maxLength } = opts
   const pool = candidates.slice(0, maxCandidates)
   if (pool.length === 0) return []
 
   stats.calls++
-  const outcome = await submit(query, pool.map(m => m.content), budgetMs)
+  const outcome = await submit(query, pool.map(m => m.content), budgetMs, maxLength)
   if (!outcome.ok) {
     noteFallback(outcome.reason)
     return pool.slice(0, topK)
