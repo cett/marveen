@@ -650,7 +650,7 @@ function exportMainAgent(
   }
 
   // Main agent channel access lives at ~/.claude/channels/<provider>/access.json
-  const channelsAccess = exportChannelsAccess(join(homedir(), '.claude', 'channels'))
+  const channelsAccess = exportChannelsAccess(mainChannelsRoot())
 
   return {
     agentId: MAIN_AGENT_ID,
@@ -1130,8 +1130,47 @@ async function buildDiffReport(fleet: FleetJson): Promise<DiffReport> {
 // its backup (the only copy of the previous content), and that backup makes the next import refuse to stage the
 // file. The backups of files that were never renamed are removed. A successful import removes every backup.
 
-const STAGE_SUFFIX = '.import-new'
-const BACKUP_SUFFIX = '.import-bak'
+export const STAGE_SUFFIX = '.import-new'
+export const BACKUP_SUFFIX = '.import-bak'
+
+/** `~/.claude/channels`: where the main agent's `<provider>/access.json` files live (exported, staged, and scanned for leftovers). */
+function mainChannelsRoot(): string {
+  return join(homedir(), '.claude', 'channels')
+}
+
+/** `~/.claude/skills`: where the global skills' `<name>/SKILL.md` files are staged. */
+function globalSkillsRoot(): string {
+  return join(homedir(), '.claude', 'skills')
+}
+
+export interface ImportTargetRoot {
+  dir: string
+  /** How many directory levels below `dir` hold files the import stages (1 = the entries of `dir` itself). */
+  maxDepth: number
+}
+
+/**
+ * Every directory tree the import stages files into, with the depth it reaches. The leftover scan walks exactly these
+ * (one list, built from the same constants and helpers the writers above use), so a new write location that is
+ * added to the import and to this list is covered at once, and a location that is in neither is visible in review.
+ *   PROJECT_ROOT (1) and its .claude (1)   main agent CLAUDE.md, SOUL.md, agent-config.json, .mcp.json, settings.json
+ *   ~/.claude/channels (2)                 <provider>/access.json
+ *   AGENTS_BASE_DIR (5)                    <agent>/files, <agent>/.claude/settings.json, <agent>/.claude/channels/<provider>/access.json
+ *   ~/.claude/skills (2)                   <skill>/SKILL.md
+ *   SCHEDULED_TASKS_DIR (2)                <task>/SKILL.md, <task>/task-config.json
+ *   STORE_DIR (1)                          vault.json, .vault-key, norbert-personal.json, costops-config.json
+ */
+export function importTargetRoots(): ImportTargetRoot[] {
+  return [
+    { dir: PROJECT_ROOT, maxDepth: 1 },
+    { dir: join(PROJECT_ROOT, '.claude'), maxDepth: 1 },
+    { dir: mainChannelsRoot(), maxDepth: 2 },
+    { dir: AGENTS_BASE_DIR, maxDepth: 5 },
+    { dir: globalSkillsRoot(), maxDepth: 2 },
+    { dir: SCHEDULED_TASKS_DIR, maxDepth: 2 },
+    { dir: STORE_DIR, maxDepth: 1 },
+  ]
+}
 
 interface WriteEntry {
   /** The final path. */
@@ -1165,7 +1204,8 @@ function stagedWrite(path: string, content: string | Buffer, tracker: WriteTrack
     if (existsSync(`${path}${BACKUP_SUFFIX}`)) {
       throw new StaleBackupError(
         `A backup left by an earlier import exists: ${path}${BACKUP_SUFFIX}. It may hold the only copy of the previous ` +
-        `content. Restore it onto ${path} or remove it, then import again. Nothing was imported.`,
+        `content. Restore it onto ${path} or remove it, then import again. Nothing was imported. ` +
+        `The startup log and GET /api/fleet/import-leftovers list every file an interrupted import left behind.`,
       )
     }
     // Tracked before the write, so a write that fails half way is still cleaned up.
@@ -1283,7 +1323,7 @@ function writeMainAgentFiles(ma: MainAgentExport, tracker: WriteTracker): void {
 
   // Main agent channel access: ~/.claude/channels/<provider>/access.json
   // B1: provider names validated by validateNames() before this is called
-  const channelsBase = join(homedir(), '.claude', 'channels')
+  const channelsBase = mainChannelsRoot()
   for (const [provider, access] of Object.entries(ma.channelsAccess ?? {})) {
     const provDir = safeJoin(channelsBase, provider)
     trackedMkdir(provDir, tracker)
@@ -1457,6 +1497,11 @@ const EMPTY_DIFF: DiffReport = {
 // mixed. A second apply is refused at once (409), it does not wait. A dry run writes nothing and is not limited.
 // The flag is per process: two dashboard processes on one store are not covered.
 let applyInProgress = false
+
+/** True while an apply runs: its own staged files and backups are not leftovers. */
+export function isImportApplyInProgress(): boolean {
+  return applyInProgress
+}
 
 export async function importFleet(
   rawBody: string,
@@ -1634,7 +1679,7 @@ async function runImportFleet(
   const skillSeeds = skillSqlSeeds(fleet)
 
   const tracker: WriteTracker = { files: [], dirs: [] }
-  const globalSkillsDir = join(homedir(), '.claude', 'skills')
+  const globalSkillsDir = globalSkillsRoot()
   let vaultFiles: WriteEntry[] = []
 
   try {

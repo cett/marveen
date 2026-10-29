@@ -24,6 +24,7 @@ import { startAgentProcess } from './web/agent-process.js'
 import { renameSharedCredentialsIfSafe, fleetTokenBootPass } from './web/claude-credentials-guard.js'
 import { startWebServer } from './web.js'
 import { loadRbacMode, startRbacModeRefresh } from './web/rbac-mode.js'
+import { runBootImportLeftoverScan } from './web/fleet-import-leftovers.js'
 import { logger } from './logger.js'
 import { startInviteMonitor, stopInviteMonitor } from './web/channel-invites.js'
 import { ensureDiscordChannelGroup } from './web/discord-group-bootstrap.js'
@@ -562,6 +563,10 @@ async function main(): Promise<void> {
   // 5/8's other three files (model-fallback.json, agents-desired.json,
   // terminal-input.json) -- previously migrated but never retired.
   retireGroup5StateFiles()
+
+  // An interrupted fleet import leaves staged files and backups behind. Report them (never delete): asynchronous and
+  // bounded in depth, count and time, so the boot does not wait for it, and a failure only logs.
+  runBootImportLeftoverScan().catch((err) => logger.warn({ err: err?.message }, 'Fleet import leftover scan failed'))
 
   // Turns the ledger hooks spooled while the dashboard was down.
   await flushLedgerSpool()
