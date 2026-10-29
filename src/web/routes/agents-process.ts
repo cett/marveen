@@ -5,7 +5,6 @@ import { agentDir, writeAgentRemoteConfig } from '../agent-config.js'
 import { readAutoRestartConfig, writeAutoRestartConfig } from '../auto-restart-store.js'
 import { readContextGuardConfig, writeContextGuardConfig } from '../context-guard-store.js'
 import { getContextGuardStatus } from '../context-guard-runner.js'
-import { setStoreWriteActor } from '../../store-watcher.js'
 import {
   startAgentProcess,
   stopAgentProcess,
@@ -72,7 +71,6 @@ export async function tryHandleAgentsProcess(ctx: RouteContext): Promise<boolean
       return true
     }
     const owningTenant = await resolveAgentOwningTenantId(name)
-    setStoreWriteActor('dashboard', owningTenant)
     const saved = await writeAutoRestartConfig(name, data, owningTenant)
     json(res, { ok: true, autoRestart: saved })
     return true
@@ -100,7 +98,6 @@ export async function tryHandleAgentsProcess(ctx: RouteContext): Promise<boolean
       return true
     }
     const owningTenant = await resolveAgentOwningTenantId(name)
-    setStoreWriteActor('dashboard', owningTenant)
     const saved = await writeContextGuardConfig(name, data, owningTenant)
     json(res, { ok: true, contextGuard: saved })
     return true

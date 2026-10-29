@@ -4,7 +4,6 @@ import { logger } from '../../logger.js'
 import { SETTINGS_REGISTRY, validateSettingValue } from '../../config-registry.js'
 import { getEffectiveSettingValue, setOverride } from '../../settings-store.js'
 import { logConfigChange } from '../../db.js'
-import { setStoreWriteActor } from '../../store-watcher.js'
 import { RBAC_MODE_KEY, parseRbacMode, refreshRbacMode, describeRbacMode } from '../rbac-mode.js'
 import { denyUnlessHumanSessionAlways, denyUnlessHumanOnlyEnforced } from '../session-only-guard.js'
 import type { RouteContext } from './types.js'
@@ -124,9 +123,6 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
       }
 
       const resolvedActor = typeof actor === 'string' && actor ? actor : 'dashboard'
-      // A setting is fleet-wide: no tenant. The actor string comes from the request body, so it is
-      // an audit label only and never decides a tenant.
-      setStoreWriteActor(resolvedActor, null)
       const oldValue = getEffectiveSettingValue(key)
       const result = await setOverride(key, value)
       if (!result.ok) {
