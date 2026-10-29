@@ -99,7 +99,10 @@ vi.mock('node:fs', async (importOriginal) => {
       if (probe.keepLeftovers && /\.import-(new|bak)$/.test(String(path))) return
       watch('unlinkSync', real.unlinkSync)(path)
     },
-    rmSync: watch('rmSync', real.rmSync),
+    rmSync: (...a: Parameters<typeof real.rmSync>) => {
+      if (probe.keepLeftovers) return // the directories the import created, with their staged files, stay too
+      watch('rmSync', real.rmSync)(...a)
+    },
     renameSync: (from: string, to: string) => {
       if (probe.inTx) probe.ioInTx.push(`renameSync ${from}`)
       if (probe.failRenameTo !== null && String(to) === probe.failRenameTo) throw new Error(`rename refused: ${to}`)
@@ -342,6 +345,7 @@ function expectCachesMatchTables(): void {
 
 beforeEach(async () => {
   initDatabase(':memory:')
+  probe.keepLeftovers = false // first: the cleanup below must really run
   rmSync(ROOT, { recursive: true, force: true })
   for (const d of [PROJECT, STORE, HOME, AGENTS, TASKS]) mkdirSync(d, { recursive: true })
   probe.inTx = false
@@ -349,7 +353,6 @@ beforeEach(async () => {
   probe.events = []
   probe.failRenameTo = null
   probe.corruptCopyTo = null
-  probe.keepLeftovers = false
   vi.mocked(updateEnvFile).mockClear()
   vi.mocked(updateEnvFile).mockImplementation(() => { probe.events.push('env') })
   await seedTarget()
@@ -767,13 +770,21 @@ describe('the leftover scan finds what an interrupted import really left', () =>
   it('reports the staged files and backups of an import that failed before its commit', async () => {
     getDb().exec("CREATE TRIGGER refuse_skill_rows BEFORE INSERT ON skills BEGIN SELECT RAISE(ABORT, 'skill row refused'); END")
     probe.keepLeftovers = true
-    await expect(apply(bundle())).rejects.toThrow(/skill row refused/)
+    // channel pairing files stage two levels (main agent) and four levels (sub-agent) below their roots
+    const withChannels = bundle() as unknown as { mainAgent: { channelsAccess: object }; agents: { channelsAccess: object }[] }
+    withChannels.mainAgent.channelsAccess = { telegram: { allowFrom: [] } }
+    withChannels.agents[0].channelsAccess = { telegram: { allowFrom: [] } }
+    await expect(apply(withChannels as unknown as FleetJson)).rejects.toThrow(/skill row refused/)
     const before = tree()
 
     const { scan, rel } = await found()
 
     expect(strays().filter((p) => p.endsWith('.import-new')).length).toBeGreaterThan(3)
     expect(rel).toEqual(strays().sort())
+    // every root the import stages into is reached
+    for (const prefix of ['project/', 'home/.claude/channels/telegram/', 'agents/agent-b/.claude/channels/telegram/', 'home/.claude/skills/', 'tasks/', 'store/']) {
+      expect(rel.some((p) => p.startsWith(prefix)), prefix).toBe(true)
+    }
     expect(new Set(scan.items.map((i) => i.kind))).toEqual(new Set(['orphan_new', 'stale_bak']))
     expect(tree()).toEqual(before)
   })
