@@ -213,12 +213,12 @@ describe('orphan sweep', () => {
 })
 
 describe('tenants', () => {
-  beforeEach(() => {
-    createTenant('tenant-x', 'Tenant X')
-    createTenant('tenant-y', 'Tenant Y')
-    setTenantAgentAvailability('tenant-x', 'agent-a', true)
-    setTenantAgentAvailability('tenant-x', 'agent-shared', true)
-    setTenantAgentAvailability('tenant-y', 'agent-shared', true)
+  beforeEach(async () => {
+    await createTenant('tenant-x', 'Tenant X')
+    await createTenant('tenant-y', 'Tenant Y')
+    await setTenantAgentAvailability('tenant-x', 'agent-a', true)
+    await setTenantAgentAvailability('tenant-x', 'agent-shared', true)
+    await setTenantAgentAvailability('tenant-y', 'agent-shared', true)
   })
 
   const tenantOf = (agent: string) =>
@@ -234,7 +234,7 @@ describe('tenants', () => {
   it('an agent that BECAME shared after the begin gets no stored preview either (decided at replay, not only at begin)', async () => {
     await begin('agent-a', 'tenant-x private request text')
     expect((await inflightReplay('agent-a', 'startup', T0 + 1)).additionalContext).toContain('private request text')
-    setTenantAgentAvailability('tenant-y', 'agent-a', true)
+    await setTenantAgentAvailability('tenant-y', 'agent-a', true)
     const text = (await inflightReplay('agent-a', 'startup', T0 + 2)).additionalContext!
     expect(text).toContain('MEGSZAKADT TURN')
     expect(text).not.toContain('private request text')

@@ -70,31 +70,31 @@ describe('kind: skill', () => {
 
 describe('kind: tenant', () => {
   beforeEach(async () => {
-    createTenant('co-x', 'Co X')
+    await createTenant('co-x', 'Co X')
     await createSkill({ id: 'co-x-helper', name: 'helper', content: 'old', tenant_id: 'co-x' })
   })
 
   it('updates the tenant row for an agent available to that tenant', async () => {
-    setTenantAgentAvailability('co-x', 'agent-a', true)
+    await setTenantAgentAvailability('co-x', 'agent-a', true)
     const res = await post({ kind: 'tenant', header_id: 'co-x-helper', agent_id: 'agent-a', dir_name: 'co-x-helper', content: 'edited' })
     expect(res.body).toEqual({ ok: true, message: 'updated tenant skill co-x-helper' })
     expect((await getSkill('co-x-helper'))!.content).toBe('edited')
   })
 
   it('also accepts an agent available only to a tenant the skill is granted to', async () => {
-    createTenant('co-y', 'Co Y')
+    await createTenant('co-y', 'Co Y')
     await grantSkillAccess('co-x-helper', 'co-y')
-    setTenantAgentAvailability('co-y', 'agent-b', true)
+    await setTenantAgentAvailability('co-y', 'agent-b', true)
     const res = await post({ kind: 'tenant', header_id: 'co-x-helper', agent_id: 'agent-b', dir_name: 'co-x-helper', content: 'edited by grantee' })
     expect(res.body.ignored).toBeUndefined()
     expect((await getSkill('co-x-helper'))!.content).toBe('edited by grantee')
   })
 
   it('ignores a forged header: unqualified agent, wrong directory, fleet or missing row', async () => {
-    setTenantAgentAvailability('co-x', 'agent-a', false)
+    await setTenantAgentAvailability('co-x', 'agent-a', false)
     const noAccess = await post({ kind: 'tenant', header_id: 'co-x-helper', agent_id: 'agent-a', dir_name: 'co-x-helper', content: 'evil' })
     expect(noAccess.body).toMatchObject({ ok: true, ignored: true })
-    setTenantAgentAvailability('co-x', 'agent-a', true)
+    await setTenantAgentAvailability('co-x', 'agent-a', true)
     const wrongDir = await post({ kind: 'tenant', header_id: 'co-x-helper', agent_id: 'agent-a', dir_name: 'something-else', content: 'evil' })
     expect(wrongDir.body.ignored).toBe(true)
     await createSkill({ id: 'global/f', name: 'f', content: 'old', tenant_id: 'fleet', is_global: true })
@@ -144,11 +144,11 @@ describe('kind: companion', () => {
   })
 
   it('applies the tenant qualification check to a generated tenant copy', async () => {
-    createTenant('co-x', 'Co X')
+    await createTenant('co-x', 'Co X')
     await createSkill({ id: 'co-x-helper', name: 'helper', content: 'c', tenant_id: 'co-x' })
     const denied = await post({ kind: 'companion', skill_id: 'co-x-helper', rel_path: 'a.txt', content_base64: b64('x'), tenant_agent: 'agent-a' })
     expect(denied.body.ignored).toBe(true)
-    setTenantAgentAvailability('co-x', 'agent-a', true)
+    await setTenantAgentAvailability('co-x', 'agent-a', true)
     const ok = await post({ kind: 'companion', skill_id: 'co-x-helper', rel_path: 'a.txt', content_base64: b64('x'), tenant_agent: 'agent-a' })
     expect(ok.body.ignored).toBeUndefined()
     expect(await getSkillFile('co-x-helper', 'a.txt')).toBeDefined()

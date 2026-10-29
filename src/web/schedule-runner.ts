@@ -75,6 +75,7 @@ import { readQuotaSnapshot } from '../quota-snapshot.js'
 import { paneShowsContextSaturation, detectsFirstRunGate, detectPaneState, type PaneState } from '../pane-state.js'
 import { recordDelivery } from './delivery-intent.js'
 import { withSessionSendLock } from './session-send-lock.js'
+import { withBlackboardLock } from './blackboard-lock.js'
 
 // How many bare-Enter attempts the post-send resubmit tries before escalating
 // to a clear + re-inject, and the hard cap after which it gives up.
@@ -260,15 +261,19 @@ export function agentsWithRunnerRow(entries: Iterable<TaskInflightEntry>): Set<s
 // in isolation against a mocked db layer.
 export async function applyBlackboardDone(entry: TaskInflightEntry): Promise<void> {
   if (!entry.sawTurn || !entry.blackboardSnapshot) return
-  const cur = findBlackboardRowByAgent(entry.agentName)
-  const snap = entry.blackboardSnapshot
-  const unchanged = cur !== undefined &&
-    (cur.status === snap.status || (snap.status === 'active' && cur.status === 'stale')) &&
-    cur.summary === snap.summary &&
-    (cur.task_ref ?? null) === snap.task_ref
-  if (unchanged) {
-    await upsertBlackboard(entry.agentName, { status: 'done', summary: entry.taskName, task_ref: entry.blackboardSnapshot.task_ref })
-  }
+  // Compare and write under the agent's blackboard lock: a post the agent makes between the read and the done
+  // write (through the route, which takes the same lock) is never overwritten.
+  await withBlackboardLock(entry.agentName, async () => {
+    const cur = await findBlackboardRowByAgent(entry.agentName)
+    const snap = entry.blackboardSnapshot!
+    const unchanged = cur !== undefined &&
+      (cur.status === snap.status || (snap.status === 'active' && cur.status === 'stale')) &&
+      cur.summary === snap.summary &&
+      (cur.task_ref ?? null) === snap.task_ref
+    if (unchanged) {
+      await upsertBlackboard(entry.agentName, { status: 'done', summary: entry.taskName, task_ref: snap.task_ref })
+    }
+  })
 }
 
 export type ResubmitAction = 'none' | 'enter' | 'reinject' | 'giveup'
@@ -1134,11 +1139,11 @@ async function attemptFireTask(
     // the prompt, so other agents can see the task is in flight. Snapshot the
     // written values so the done write later can verify nothing changed.
     const _bbTaskRef = (await findActiveKanbanCardByTitle(task.name))?.id ?? null
-    const _bbActiveRow = await upsertBlackboard(agentName, {
+    const _bbActiveRow = await withBlackboardLock(agentName, () => upsertBlackboard(agentName, {
       status: 'active',
       summary: task.name,
       task_ref: _bbTaskRef,
-    })
+    }))
     const _bbSnapshot = { status: _bbActiveRow.status, summary: _bbActiveRow.summary, task_ref: _bbActiveRow.task_ref ?? null }
     // forceSend skips the busy-state check above; it must also skip the
     // pre-flight wait-until-idle gate inside sendPromptToSession, otherwise a

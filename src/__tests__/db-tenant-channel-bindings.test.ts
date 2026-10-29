@@ -14,8 +14,8 @@ beforeEach(async () => {
   vi.resetModules()
   dbMod = await import('../db.js')
   dbMod.initDatabase(':memory:')
-  dbMod.createTenant('acme', 'Acme')
-  dbMod.createTenant('beta', 'Beta')
+  await dbMod.createTenant('acme', 'Acme')
+  await dbMod.createTenant('beta', 'Beta')
 })
 
 afterEach(() => {
@@ -74,7 +74,7 @@ describe('tenant channel bindings', () => {
     await dbMod.setChannelBinding('agent-a', 'telegram', '2', 'beta', 'admin')
     const ctx = dbMod.getDb().prepare("INSERT INTO agent_tenant_context (agent_id, tenant_id, status) VALUES (?, ?, 'bound')")
     ctx.run('agent-a', 'acme'); ctx.run('agent-b', 'beta')
-    dbMod.deleteTenant('acme')
+    await dbMod.deleteTenant('acme')
     expect(await dbMod.getChannelBindingTenant('agent-a', 'telegram', '1')).toBeNull()
     expect(await dbMod.getChannelBindingTenant('agent-a', 'telegram', '2')).toBe('beta')
     // an agent's recorded active context must not keep naming a deleted tenant
@@ -172,24 +172,24 @@ describe('tenant channel bindings', () => {
     const ctx = () => dbMod.getDb().prepare('INSERT OR REPLACE INTO agent_tenant_context (agent_id, tenant_id, status) VALUES (?, ?, \'bound\')')
     const agents = () => (dbMod.getDb().prepare('SELECT agent_id FROM agent_tenant_context ORDER BY agent_id').all() as { agent_id: string }[]).map(r => r.agent_id)
 
-    it('disabling the agent for a tenant drops that agent\'s context for that tenant only', () => {
+    it('disabling the agent for a tenant drops that agent\'s context for that tenant only', async () => {
       ctx().run('agent-a', 'acme'); ctx().run('agent-b', 'acme'); ctx().run('agent-c', 'beta')
-      dbMod.setTenantAgentAvailability('acme', 'agent-a', true)
+      await dbMod.setTenantAgentAvailability('acme', 'agent-a', true)
       expect(agents()).toEqual(['agent-a', 'agent-b', 'agent-c'])       // enabling changes nothing
-      dbMod.setTenantAgentAvailability('acme', 'agent-a', false)
+      await dbMod.setTenantAgentAvailability('acme', 'agent-a', false)
       expect(agents()).toEqual(['agent-b', 'agent-c'])
-      dbMod.setTenantAgentAvailability('beta', 'agent-b', false)         // agent-b's context is acme's: untouched
+      await dbMod.setTenantAgentAvailability('beta', 'agent-b', false)         // agent-b's context is acme's: untouched
       expect(agents()).toEqual(['agent-b', 'agent-c'])
     })
 
-    it('disabling a tenant or changing its main agent drops every context of that tenant', () => {
+    it('disabling a tenant or changing its main agent drops every context of that tenant', async () => {
       ctx().run('agent-a', 'acme'); ctx().run('agent-b', 'acme'); ctx().run('agent-c', 'beta')
-      dbMod.updateTenant('acme', { display_name: 'Acme 2' })
+      await dbMod.updateTenant('acme', { display_name: 'Acme 2' })
       expect(agents()).toEqual(['agent-a', 'agent-b', 'agent-c'])       // unrelated edit
-      dbMod.updateTenant('acme', { main_agent_id: 'agent-a' })
+      await dbMod.updateTenant('acme', { main_agent_id: 'agent-a' })
       expect(agents()).toEqual(['agent-c'])
       ctx().run('agent-b', 'beta')
-      dbMod.updateTenant('beta', { disabled: true })
+      await dbMod.updateTenant('beta', { disabled: true })
       expect(agents()).toEqual([])
     })
   })

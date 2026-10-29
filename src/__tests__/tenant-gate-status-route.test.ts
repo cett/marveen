@@ -10,9 +10,9 @@ import { useTestDb } from './helpers/with-test-db.js'
 
 useTestDb()
 
-beforeEach(() => {
-  createTenant('acme', 'Acme')
-  createTenant('beta', 'Beta')
+beforeEach(async () => {
+  await createTenant('acme', 'Acme')
+  await createTenant('beta', 'Beta')
 })
 
 function call(method: string, path: string): Promise<{ handled: boolean; status: number; body: any }> {
@@ -59,17 +59,17 @@ describe('GET /api/admin/tenant-gate-status', () => {
   })
 
   it('lists an agent enabled for 2+ live tenants, with and without a channel binding', async () => {
-    setTenantAgentAvailability('acme', 'm1', true)
-    setTenantAgentAvailability('beta', 'm1', true)
-    setTenantAgentAvailability('acme', 's1', true)
+    await setTenantAgentAvailability('acme', 'm1', true)
+    await setTenantAgentAvailability('beta', 'm1', true)
+    await setTenantAgentAvailability('acme', 's1', true)
     expect((await getTenantGateStatus()).multi_tenant_agents).toEqual([{ agent_id: 'm1', tenant_count: 2, has_binding: false }])
     await setChannelBinding('m1', 'telegram', '1', 'acme', 'admin')
     expect((await getTenantGateStatus()).multi_tenant_agents).toEqual([{ agent_id: 'm1', tenant_count: 2, has_binding: true }])
   })
 
   it('a disabled tenant does not count towards multi-tenancy', async () => {
-    setTenantAgentAvailability('acme', 'm1', true)
-    setTenantAgentAvailability('beta', 'm1', true)
+    await setTenantAgentAvailability('acme', 'm1', true)
+    await setTenantAgentAvailability('beta', 'm1', true)
     db.prepare("UPDATE tenants SET disabled_at = 5 WHERE id = 'beta'").run()
     expect((await getTenantGateStatus()).multi_tenant_agents).toEqual([])
   })

@@ -264,9 +264,9 @@ export function formatHeartbeatCardLabel(card: { id: string; title: string }): s
   return `[${card.id}] ${title}`
 }
 
-function collectKanban(): HeartbeatData['kanban'] {
+async function collectKanban(): Promise<HeartbeatData['kanban']> {
   try {
-    const summary = getHeartbeatKanbanSummary()
+    const summary = await getHeartbeatKanbanSummary()
     return {
       urgent: summary.urgent.length,
       in_progress: summary.in_progress.length,
@@ -293,7 +293,7 @@ function collectSystem(): SystemInfo {
 async function collectData(): Promise<HeartbeatData> {
   const [calendar, kanban, system] = await Promise.all([
     collectCalendar(),
-    Promise.resolve(collectKanban()),
+    Promise.resolve(await collectKanban()),
     Promise.resolve(collectSystem()),
   ])
   const tasks = await getActiveScheduledTaskCount()

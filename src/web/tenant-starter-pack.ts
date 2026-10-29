@@ -83,9 +83,9 @@ export interface StarterAgentResolution {
 }
 
 /** True when the agent is tied to a tenant other than `tenantId` (an enabled availability row, or being its main agent). */
-export function agentIsShared(agent: string, tenantId: string): boolean {
-  if (getTenantsForAgent(agent).some(t => t !== tenantId)) return true
-  const mainOf = getTenantForMainAgent(agent)
+export async function agentIsShared(agent: string, tenantId: string): Promise<boolean> {
+  if ((await getTenantsForAgent(agent)).some(t => t !== tenantId)) return true
+  const mainOf = await getTenantForMainAgent(agent)
   return mainOf !== undefined && mainOf.id !== tenantId
 }
 
@@ -94,13 +94,13 @@ export function agentIsShared(agent: string, tenantId: string): boolean {
  * else the only agent enabled for it. A null agent carries the reason it could not be chosen.
  */
 export async function resolveStarterAgent(tenantId: string, explicit?: string): Promise<StarterAgentResolution> {
-  const tenant = getTenant(tenantId)
+  const tenant = await getTenant(tenantId)
   if (!tenant || tenant.disabled_at !== null || tenantId === 'default') return { agent: null, reason: 'tenant_unavailable' }
   const known = new Set(knownScheduleAgents())
 
   const accept = async (agent: string, reason: StarterAgentReason): Promise<StarterAgentResolution> => {
     if (!await scheduleAgentServesTenant(agent, tenantId)) return { agent: null, reason: 'not_serving' }
-    if (agentIsShared(agent, tenantId)) return { agent: null, reason: 'shared' }
+    if (await agentIsShared(agent, tenantId)) return { agent: null, reason: 'shared' }
     return { agent, reason }
   }
 
@@ -108,7 +108,7 @@ export async function resolveStarterAgent(tenantId: string, explicit?: string): 
   if (tenant.main_agent_id && known.has(tenant.main_agent_id) && tenant.main_agent_id !== MAIN_AGENT_ID) {
     return accept(tenant.main_agent_id, 'main_agent')
   }
-  const enabled = getEnabledAgentsForTenant(tenantId).filter(a => known.has(a) && a !== MAIN_AGENT_ID)
+  const enabled = (await getEnabledAgentsForTenant(tenantId)).filter(a => known.has(a) && a !== MAIN_AGENT_ID)
   if (enabled.length === 1) return accept(enabled[0]!, 'single_enabled')
   return { agent: null, reason: 'ambiguous' }
 }
@@ -243,7 +243,7 @@ type StarterPlan =
 async function planStarter(tenantId: string, currentAgent: string, explicitAgent?: string): Promise<StarterPlan> {
   const target = await resolveStarterAgent(tenantId, explicitAgent)
   if (target.agent) return target.agent === currentAgent ? { kind: 'ok', agent: currentAgent } : { kind: 'retarget', agent: target.agent }
-  if (await scheduleAgentServesTenant(currentAgent, tenantId) && !agentIsShared(currentAgent, tenantId)) return { kind: 'ok', agent: currentAgent }
+  if (await scheduleAgentServesTenant(currentAgent, tenantId) && !await agentIsShared(currentAgent, tenantId)) return { kind: 'ok', agent: currentAgent }
   return { kind: 'needs_agent', reason: target.reason }
 }
 

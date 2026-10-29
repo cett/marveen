@@ -39,7 +39,7 @@ vi.mock('../db.js', () => ({
   listAllSkills: listAllSkillsMock,
   listSkillAccess: vi.fn().mockResolvedValue([]),
   listSkillFiles: vi.fn().mockResolvedValue([]),
-  getEnabledAgentsForTenant: vi.fn().mockReturnValue([]),
+  getEnabledAgentsForTenant: vi.fn().mockResolvedValue([]),
 }))
 
 const { atomicWriteMock } = vi.hoisted(() => ({ atomicWriteMock: vi.fn() }))

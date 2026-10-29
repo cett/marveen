@@ -124,13 +124,13 @@ describe('migration 0077 backfill (Q3b)', () => {
 })
 
 describe('resolveWriteTenant', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     initDatabase(':memory:')
-    createTenant('acme', 'Acme')
-    createTenant('beta', 'Beta')
-    setTenantAgentAvailability('acme', 'solo', true)
-    setTenantAgentAvailability('acme', 'shared', true)
-    setTenantAgentAvailability('beta', 'shared', true)
+    await createTenant('acme', 'Acme')
+    await createTenant('beta', 'Beta')
+    await setTenantAgentAvailability('acme', 'solo', true)
+    await setTenantAgentAvailability('acme', 'shared', true)
+    await setTenantAgentAvailability('beta', 'shared', true)
   })
 
   const setContext = (agent: string, tenant: string, status = 'bound', ageSeconds = 0) =>
@@ -148,9 +148,9 @@ describe('resolveWriteTenant', () => {
   })
 
   it('counts the tenant an agent coordinates', async () => {
-    updateTenant('beta', { main_agent_id: 'boss' })
+    await updateTenant('beta', { main_agent_id: 'boss' })
     expect(await resolveWriteTenant('boss')).toBe('beta')
-    setTenantAgentAvailability('acme', 'boss', true)
+    await setTenantAgentAvailability('acme', 'boss', true)
     expect(await resolveWriteTenant('boss')).toBeNull()
   })
 
@@ -176,13 +176,13 @@ describe('resolveWriteTenant', () => {
 })
 
 describe('the writers stamp the tenant', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     initDatabase(':memory:')
-    createTenant('acme', 'Acme')
-    createTenant('beta', 'Beta')
-    setTenantAgentAvailability('acme', 'solo', true)
-    setTenantAgentAvailability('acme', 'shared', true)
-    setTenantAgentAvailability('beta', 'shared', true)
+    await createTenant('acme', 'Acme')
+    await createTenant('beta', 'Beta')
+    await setTenantAgentAvailability('acme', 'solo', true)
+    await setTenantAgentAvailability('acme', 'shared', true)
+    await setTenantAgentAvailability('beta', 'shared', true)
     db.prepare("INSERT INTO agent_tenant_context (agent_id, tenant_id, status, updated_at) VALUES ('shared', 'beta', 'bound', ?)")
       .run(Math.floor(Date.now() / 1000))
   })
@@ -242,10 +242,10 @@ describe('the writers stamp the tenant', () => {
 })
 
 describe('token rollups keep the tenants of a shared agent apart', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     initDatabase(':memory:')
-    createTenant('acme', 'Acme')
-    createTenant('beta', 'Beta')
+    await createTenant('acme', 'Acme')
+    await createTenant('beta', 'Beta')
   })
 
   const raw = (tenant: string, ts: number, tokens: number) =>
@@ -275,9 +275,9 @@ describe('token rollups keep the tenants of a shared agent apart', () => {
 })
 
 describe('labels belong to a tenant', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     initDatabase(':memory:')
-    createTenant('acme', 'Acme')
+    await createTenant('acme', 'Acme')
   })
 
   it('a new label is default unless a tenant is named, and the list narrows to a tenant', async () => {

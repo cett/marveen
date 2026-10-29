@@ -8,11 +8,11 @@ const { mockGetAgentMessage, mockCloseOpenMessage } = vi.hoisted(() => ({
 }))
 
 vi.mock('../db.js', () => ({
-  createAgentMessage: vi.fn().mockReturnValue({ id: 99 }),
-  getPendingMessages: vi.fn().mockReturnValue([{ id: 1 }]),
-  listAgentMessages: vi.fn().mockReturnValue([{ id: 2 }]),
-  getAgentConversation: vi.fn().mockReturnValue([]),
-  getAgentConversationThreads: vi.fn().mockReturnValue([]),
+  createAgentMessage: vi.fn().mockResolvedValue({ id: 99 }),
+  getPendingMessages: vi.fn().mockResolvedValue([{ id: 1 }]),
+  listAgentMessages: vi.fn().mockResolvedValue([{ id: 2 }]),
+  getAgentConversation: vi.fn().mockResolvedValue([]),
+  getAgentConversationThreads: vi.fn().mockResolvedValue([]),
   getKanbanSeqByIdPrefix: vi.fn().mockReturnValue(null),
   closeOpenMessage: mockCloseOpenMessage,
   getAgentMessage: mockGetAgentMessage,

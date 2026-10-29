@@ -712,18 +712,18 @@ describe('/api/memories/stale isolation -- real getStaleMemories', () => {
     d.prepare('UPDATE memories SET updated_at = ? WHERE id = ?').run(now, r2.id)
   })
 
-  it('tenant-B stale does NOT return tenant-A shared memories', () => {
-    const rows = getStaleMemories('agent-a', 'tenant-b')
+  it('tenant-B stale does NOT return tenant-A shared memories', async () => {
+    const rows = await getStaleMemories('agent-a', 'tenant-b')
     expect(rows.filter(r => r.tenant_id === 'tenant-a')).toHaveLength(0)
   })
 
-  it('tenant-A stale does NOT return tenant-B memories', () => {
-    const rows = getStaleMemories('agent-a', 'tenant-a')
+  it('tenant-A stale does NOT return tenant-B memories', async () => {
+    const rows = await getStaleMemories('agent-a', 'tenant-a')
     expect(rows.filter(r => r.tenant_id === 'tenant-b')).toHaveLength(0)
   })
 
-  it('tenant-B stale returns its OWN memories', () => {
-    const rows = getStaleMemories('agent-a', 'tenant-b')
+  it('tenant-B stale returns its OWN memories', async () => {
+    const rows = await getStaleMemories('agent-a', 'tenant-b')
     expect(rows).toHaveLength(1)
     expect(rows[0]!.tenant_id).toBe('tenant-b')
   })

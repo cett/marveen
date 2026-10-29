@@ -194,8 +194,8 @@ describe('GET /api/overview — tasksToday tenant scoping', () => {
   }
 
   it('admin with ?tenant filter counts only the runs of that tenant\'s schedules', async () => {
-    createTenant('tenant-a', 'Tenant A')
-    createTenant('tenant-b', 'Tenant B')
+    await createTenant('tenant-a', 'Tenant A')
+    await createTenant('tenant-b', 'Tenant B')
     seedSchedule('t1', 'tenant-a', 'agent-a')
     seedSchedule('t2', 'tenant-b', 'agent-b')
     seedRun('t1', 'agent-a')
@@ -210,7 +210,7 @@ describe('GET /api/overview — tasksToday tenant scoping', () => {
   })
 
   it('a tenant with no schedules returns 0 tasksToday, not an error', async () => {
-    createTenant('tenant-empty', 'Empty Tenant')
+    await createTenant('tenant-empty', 'Empty Tenant')
     seedSchedule('t1', 'default', 'agent-a')
     seedRun('t1', 'agent-a')
 
@@ -220,10 +220,10 @@ describe('GET /api/overview — tasksToday tenant scoping', () => {
   })
 
   it('a shared agent\'s runs count for the tenant of each schedule (the old agent-based scoping lost them in every tenant)', async () => {
-    createTenant('tenant-a', 'Tenant A')
-    createTenant('tenant-b', 'Tenant B')
-    setTenantAgentAvailability('tenant-a', 'shared-agent', true)
-    setTenantAgentAvailability('tenant-b', 'shared-agent', true) // 2 enabled rows -> '_multi_'
+    await createTenant('tenant-a', 'Tenant A')
+    await createTenant('tenant-b', 'Tenant B')
+    await setTenantAgentAvailability('tenant-a', 'shared-agent', true)
+    await setTenantAgentAvailability('tenant-b', 'shared-agent', true) // 2 enabled rows -> '_multi_'
     seedSchedule('ta', 'tenant-a', 'shared-agent')
     seedSchedule('tb', 'tenant-b', 'shared-agent')
     seedRun('ta', 'shared-agent')
@@ -245,7 +245,7 @@ describe('GET /api/overview — tasksToday tenant scoping', () => {
 describe('GET /api/overview — tokensToday tenant scoping', () => {
   it('admin with ?tenant filter counts only that tenant\'s token_usage rows', async () => {
     const db = getDb()
-    createTenant('tenant-a', 'Tenant A')
+    await createTenant('tenant-a', 'Tenant A')
     const startOfDay = new Date()
     startOfDay.setHours(0, 0, 0, 0)
     const todaySec = Math.floor(startOfDay.getTime() / 1000) + 3600
@@ -265,7 +265,7 @@ describe('GET /api/overview — tokensToday tenant scoping', () => {
 
   it('"_multi_" (shared-agent) token_usage rows are excluded from a tenant\'s scoped view', async () => {
     const db = getDb()
-    createTenant('tenant-a', 'Tenant A')
+    await createTenant('tenant-a', 'Tenant A')
     const startOfDay = new Date()
     startOfDay.setHours(0, 0, 0, 0)
     const todaySec = Math.floor(startOfDay.getTime() / 1000) + 3600

@@ -34,7 +34,7 @@ export async function tryGuardAgentTenantReads(ctx: RouteContext): Promise<boole
   // Unknown names (including the static routes /activity, /export-all, ...)
   // fall through to their own handlers / 404.
   if (!isKnownAgent(name)) return false
-  if (callerCanSeeAgent(ctx, name)) return false
+  if (await callerCanSeeAgent(ctx, name)) return false
   json(ctx.res, { error: 'not_found', field: 'name' }, 404)
   return true
 }

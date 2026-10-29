@@ -43,15 +43,15 @@ beforeEach(async () => {
   pack = await import('../web/tenant-starter-pack.js')
   admin = await import('../web/routes/admin-b2b.js')
 
-  dbMod.createTenant('acme', 'Acme')
-  dbMod.updateTenant('acme', { main_agent_id: 'acme-lead' })
-  dbMod.setTenantAgentAvailability('acme', 'acme-lead', true)
-  dbMod.setTenantAgentAvailability('acme', 'acme-aux', true)
-  dbMod.createTenant('gamma', 'Gamma')
-  dbMod.setTenantAgentAvailability('gamma', 'g-one', true)
-  dbMod.setTenantAgentAvailability('gamma', 'g-two', true)
-  dbMod.setTenantAgentAvailability('acme', 'shared-agent', true)
-  dbMod.setTenantAgentAvailability('default', 'shared-agent', true)
+  await dbMod.createTenant('acme', 'Acme')
+  await dbMod.updateTenant('acme', { main_agent_id: 'acme-lead' })
+  await dbMod.setTenantAgentAvailability('acme', 'acme-lead', true)
+  await dbMod.setTenantAgentAvailability('acme', 'acme-aux', true)
+  await dbMod.createTenant('gamma', 'Gamma')
+  await dbMod.setTenantAgentAvailability('gamma', 'g-one', true)
+  await dbMod.setTenantAgentAvailability('gamma', 'g-two', true)
+  await dbMod.setTenantAgentAvailability('acme', 'shared-agent', true)
+  await dbMod.setTenantAgentAvailability('default', 'shared-agent', true)
 })
 
 afterEach(() => {
@@ -76,7 +76,7 @@ async function approvedStarter() {
 describe('main agent change', () => {
   it('re-aims to the new agent and returns the task to draft + disabled (each field on its own)', async () => {
     await approvedStarter()
-    dbMod.updateTenant('acme', { main_agent_id: 'acme-aux' })
+    await dbMod.updateTenant('acme', { main_agent_id: 'acme-aux' })
     const r = await pack.reconcileStarterPack(human(), 'acme')
     expect(r.state).toBe('retargeted')
     expect(r.retargeted).toEqual([{ name: NAME, from: 'acme-lead', to: 'acme-aux' }])
@@ -89,21 +89,21 @@ describe('main agent change', () => {
   it('keeps what a person edited: prompt and schedule', async () => {
     await approvedStarter()
     await io.writeScheduledTask(NAME, { prompt: 'my own prompt', schedule: '7 7 * * *' })
-    dbMod.updateTenant('acme', { main_agent_id: 'acme-aux' })
+    await dbMod.updateTenant('acme', { main_agent_id: 'acme-aux' })
     await pack.reconcileStarterPack(human(), 'acme')
     expect(await row()).toMatchObject({ prompt: 'my own prompt', schedule: '7 7 * * *' })
   })
 
   it('writes the file mirror with the new agent and draft', async () => {
     await approvedStarter()
-    dbMod.updateTenant('acme', { main_agent_id: 'acme-aux' })
+    await dbMod.updateTenant('acme', { main_agent_id: 'acme-aux' })
     await pack.reconcileStarterPack(human(), 'acme')
     expect(mirror()).toMatchObject({ agent: 'acme-aux', status: 'draft', enabled: false })
   })
 
   it('a second run writes, audits and notifies nothing', async () => {
     await approvedStarter()
-    dbMod.updateTenant('acme', { main_agent_id: 'acme-aux' })
+    await dbMod.updateTenant('acme', { main_agent_id: 'acme-aux' })
     await pack.reconcileStarterPack(agentToken(), 'acme')
     const stamp = (await row())!.updated_at
     const again = await pack.reconcileStarterPack(agentToken(), 'acme')
@@ -116,7 +116,7 @@ describe('main agent change', () => {
 
   it('never moves to an agent that is shared with another tenant', async () => {
     await approvedStarter()
-    dbMod.updateTenant('acme', { main_agent_id: 'shared-agent' })
+    await dbMod.updateTenant('acme', { main_agent_id: 'shared-agent' })
     const r = await pack.reconcileStarterPack(human(), 'acme')
     expect(r.state).toBe('ok')
     expect(await row()).toMatchObject({ agent: 'acme-lead', status: 'live', enabled: 1 })
@@ -138,8 +138,8 @@ describe('no definite agent', () => {
 
   it('the current agent no longer serves and none can be chosen: parked as draft + disabled, agent unchanged, needs_agent', async () => {
     await gammaApproved()
-    dbMod.setTenantAgentAvailability('gamma', 'g-one', false)
-    dbMod.setTenantAgentAvailability('gamma', 'g-two', false)
+    await dbMod.setTenantAgentAvailability('gamma', 'g-one', false)
+    await dbMod.setTenantAgentAvailability('gamma', 'g-two', false)
     const r = await pack.reconcileStarterPack(human(), 'gamma')
     expect(r.state).toBe('needs_agent')
     expect(r.reason).toBe('ambiguous')
@@ -156,7 +156,7 @@ describe('only the tenant\'s own starter task is touched', () => {
     await approvedStarter()
     await io.writeScheduledTask('acme-starter-extra', { prompt: 'p', agent: 'acme-lead', tenantId: 'acme', status: 'live', enabled: true })
     await pack.createStarterPack(human(), 'gamma', { agentId: 'g-one' })
-    dbMod.updateTenant('acme', { main_agent_id: 'acme-aux' })
+    await dbMod.updateTenant('acme', { main_agent_id: 'acme-aux' })
     await pack.reconcileStarterPack(human(), 'acme')
     expect(await row('acme-starter-extra')).toMatchObject({ agent: 'acme-lead', status: 'live', enabled: 1 })
     expect(await row('gamma-starter-daily-summary')).toMatchObject({ agent: 'g-one', status: 'draft', enabled: 0 })
@@ -179,12 +179,12 @@ describe('only the tenant\'s own starter task is touched', () => {
 describe('who is told', () => {
   it('a non-human actor sends exactly one retargeted review message; a human sends none', async () => {
     await approvedStarter()
-    dbMod.updateTenant('acme', { main_agent_id: 'acme-aux' })
+    await dbMod.updateTenant('acme', { main_agent_id: 'acme-aux' })
     await pack.reconcileStarterPack(human(), 'acme')
     expect(reviewMessages()).toEqual([])
 
     await io.writeScheduledTask(NAME, { status: 'live', enabled: true })
-    dbMod.updateTenant('acme', { main_agent_id: 'acme-lead' })
+    await dbMod.updateTenant('acme', { main_agent_id: 'acme-lead' })
     await pack.reconcileStarterPack(agentToken(), 'acme')
     const msgs = reviewMessages()
     expect(msgs).toHaveLength(1)
@@ -194,9 +194,9 @@ describe('who is told', () => {
 
   it('the one-hour throttle holds for a second retarget of the same task', async () => {
     await approvedStarter()
-    dbMod.updateTenant('acme', { main_agent_id: 'acme-aux' })
+    await dbMod.updateTenant('acme', { main_agent_id: 'acme-aux' })
     await pack.reconcileStarterPack(agentToken(), 'acme')
-    dbMod.updateTenant('acme', { main_agent_id: 'acme-lead' })
+    await dbMod.updateTenant('acme', { main_agent_id: 'acme-lead' })
     await pack.reconcileStarterPack(agentToken(), 'acme')
     expect(retargetAudits()).toBe(2)
     expect(reviewMessages()).toHaveLength(1)
@@ -206,7 +206,7 @@ describe('who is told', () => {
 describe('the create button repairs', () => {
   it('POSTing again after a main agent change re-aims the task and reports it', async () => {
     await approvedStarter()
-    dbMod.updateTenant('acme', { main_agent_id: 'acme-aux' })
+    await dbMod.updateTenant('acme', { main_agent_id: 'acme-aux' })
     const out = await pack.createStarterPack(human(), 'acme')
     expect(out.ok).toBe(true)
     if (out.ok) {
@@ -232,8 +232,8 @@ describe('hook on PUT /api/admin/agent-availability', () => {
   }
 
   it('switching the only usable agent off parks the starter task', async () => {
-    dbMod.createTenant('solo', 'Solo')
-    dbMod.setTenantAgentAvailability('solo', 'beta-one', true)
+    await dbMod.createTenant('solo', 'Solo')
+    await dbMod.setTenantAgentAvailability('solo', 'beta-one', true)
     await pack.createStarterPack(human(), 'solo')
     await io.writeScheduledTask('solo-starter-daily-summary', { status: 'live', enabled: true })
     const r = await putAvailability('solo', 'beta-one', false)

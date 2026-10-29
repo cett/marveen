@@ -74,7 +74,7 @@ let cardAcme = ''
 
 beforeEach(async () => {
   initDatabase(':memory:')
-  createTenant('acme', 'Acme')
+  await createTenant('acme', 'Acme')
   for (const [raw, agent] of [['tok-alpha', 'alpha'], ['tok-beta', 'beta']] as const) {
     await insertApiToken({ tokenHash: sha(raw), name: `fleet:${agent}`, role: 'fleet_agent', tenantId: 'default', createdAt: NOW() - 10, expiresAt: null, agentId: agent })
   }

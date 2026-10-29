@@ -166,11 +166,11 @@ describe('tryHandleDailyLog', () => {
 // had zero tenant checks, so any token-holder could read or write any
 // agent's journal.
 describe('tryHandleDailyLog: tenant-IDOR guard', () => {
-  beforeAll(() => {
-    createTenant('tenant-daily-a', 'Tenant Daily A')
-    createTenant('tenant-daily-b', 'Tenant Daily B')
-    setTenantAgentAvailability('tenant-daily-a', 'tenant-a-agent', true)
-    setTenantAgentAvailability('tenant-daily-b', 'tenant-b-agent', true)
+  beforeAll(async () => {
+    await createTenant('tenant-daily-a', 'Tenant Daily A')
+    await createTenant('tenant-daily-b', 'Tenant Daily B')
+    await setTenantAgentAvailability('tenant-daily-a', 'tenant-a-agent', true)
+    await setTenantAgentAvailability('tenant-daily-b', 'tenant-b-agent', true)
   })
 
   it('POST is blocked (403) when the target agent belongs to a different tenant', async () => {

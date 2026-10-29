@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto'
 import { writeAgentAuditLog } from './audit.js'
 import { deactivatePlanForAgent } from './claude-plans.js'
 import { db } from './connection.js'
+import { dbx, type SqlOps } from './facade.js'
 import { getDelegationTenant } from './tenant-channel-bindings.js'
 import { KanbanCard } from './kanban.js'
 import { Tenant, getTenantForMainAgent, COMPLETION_REPORT_PREFIX } from './observability.js'
@@ -54,21 +55,15 @@ export const HEARTBEAT_WAITING_SQL =
 export const HEARTBEAT_PLANNED_COUNT_SQL =
   "SELECT COUNT(*) AS n FROM kanban_cards WHERE archived_at IS NULL AND status = 'planned'"
 
-export function countPlannedKanbanCards(): number {
-  const row = db.prepare(HEARTBEAT_PLANNED_COUNT_SQL).get() as { n: number } | undefined
+export async function countPlannedKanbanCards(): Promise<number> {
+  const row = await dbx.get<{ n: number }>(HEARTBEAT_PLANNED_COUNT_SQL)
   return row?.n ?? 0
 }
 
-export function getHeartbeatKanbanSummary(): HeartbeatKanbanSummary {
-  const urgent = db
-    .prepare("SELECT * FROM kanban_cards WHERE archived_at IS NULL AND priority = 'urgent' AND status != 'done'")
-    .all() as KanbanCard[]
-  const in_progress = db
-    .prepare("SELECT * FROM kanban_cards WHERE archived_at IS NULL AND status = 'in_progress'")
-    .all() as KanbanCard[]
-  const waiting = db
-    .prepare("SELECT * FROM kanban_cards WHERE archived_at IS NULL AND status = 'waiting'")
-    .all() as KanbanCard[]
+export async function getHeartbeatKanbanSummary(): Promise<HeartbeatKanbanSummary> {
+  const urgent = await dbx.all<KanbanCard>("SELECT * FROM kanban_cards WHERE archived_at IS NULL AND priority = 'urgent' AND status != 'done'")
+  const in_progress = await dbx.all<KanbanCard>("SELECT * FROM kanban_cards WHERE archived_at IS NULL AND status = 'in_progress'")
+  const waiting = await dbx.all<KanbanCard>("SELECT * FROM kanban_cards WHERE archived_at IS NULL AND status = 'waiting'")
   return { urgent, in_progress, waiting }
 }
 
@@ -96,8 +91,8 @@ export function getHeartbeatKanbanSummary(): HeartbeatKanbanSummary {
 export const HEARTBEAT_NEW_HOT_MEMORIES_SQL =
   "SELECT COUNT(*) AS n FROM memories WHERE agent_id = ? AND category = 'hot' AND created_at > unixepoch() - 3600"
 
-export function countNewHotMemories(agentId: string): number {
-  const row = db.prepare(HEARTBEAT_NEW_HOT_MEMORIES_SQL).get(agentId) as { n: number } | undefined
+export async function countNewHotMemories(agentId: string): Promise<number> {
+  const row = await dbx.get<{ n: number }>(HEARTBEAT_NEW_HOT_MEMORIES_SQL, agentId)
   return row?.n ?? 0
 }
 
@@ -154,9 +149,7 @@ export async function createAgentMessage(
   // A delegation inherits the tenant of the request the sending agent is serving; an explicit non-default
   // tenant (partner sends) and messages for federated recipients are left as given.
   if (!pinTenant && tenantId === 'default' && !to.includes('/')) tenantId = await getDelegationTenant(from, now)
-  const { id } = db.prepare(
-    'INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at, origin_note, trace_id, span_id, parent_span_id, tenant_id, envelope) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id'
-  ).get(from, to, content, 'pending', now, originNote ?? null, traceCtx?.trace_id ?? null, traceCtx?.span_id ?? null, traceCtx?.parent_span_id ?? null, tenantId, envelope ?? null) as { id: number }
+  const { id } = (await dbx.get('INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at, origin_note, trace_id, span_id, parent_span_id, tenant_id, envelope) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id', from, to, content, 'pending', now, originNote ?? null, traceCtx?.trace_id ?? null, traceCtx?.span_id ?? null, traceCtx?.parent_span_id ?? null, tenantId, envelope ?? null)) as { id: number }
   try {
     await writeAgentAuditLog({ agent_id: from, entity: 'message', action: 'create', entity_id: id, detail: { to, preview: content.slice(0, 80) } })
   } catch { /* audit failure must not abort message creation */ }
@@ -175,15 +168,13 @@ export async function createAgentMessage(
   }
 }
 
-export function getPendingMessages(toAgent?: string, tenantId?: string): AgentMessage[] {
+export async function getPendingMessages(toAgent?: string, tenantId?: string): Promise<AgentMessage[]> {
   const tc = tenantId ? ' AND tenant_id = ?' : ''
   const tp = tenantId ? [tenantId] : []
   if (toAgent) {
-    return db.prepare(`SELECT * FROM agent_messages WHERE status = 'pending' AND to_agent = ?${tc} ORDER BY created_at ASC`)
-      .all(toAgent, ...tp) as AgentMessage[]
+    return dbx.all<AgentMessage>(`SELECT * FROM agent_messages WHERE status = 'pending' AND to_agent = ?${tc} ORDER BY created_at ASC`, toAgent, ...tp)
   }
-  return db.prepare(`SELECT * FROM agent_messages WHERE status = 'pending'${tc} ORDER BY created_at ASC`)
-    .all(...tp) as AgentMessage[]
+  return dbx.all<AgentMessage>(`SELECT * FROM agent_messages WHERE status = 'pending'${tc} ORDER BY created_at ASC`, ...tp)
 }
 
 // Status-guarded (pending only): the federation removal path bulk-fails
@@ -191,9 +182,9 @@ export function getPendingMessages(toAgent?: string, tenantId?: string): AgentMe
 // UPDATE would flip such a row failed->delivered after the fact. If the row
 // is no longer pending, this returns false and the caller must not record a
 // result either.
-export function markMessageDelivered(id: number): boolean {
+export async function markMessageDelivered(id: number): Promise<boolean> {
   const now = Math.floor(Date.now() / 1000)
-  return db.prepare("UPDATE agent_messages SET status = 'delivered', delivered_at = ? WHERE id = ? AND status = 'pending'").run(now, id).changes > 0
+  return (await dbx.run("UPDATE agent_messages SET status = 'delivered', delivered_at = ? WHERE id = ? AND status = 'pending'", now, id)).changes > 0
 }
 
 // Per-agent backlog: how many messages are waiting, and how old the oldest one
@@ -204,14 +195,12 @@ export function markMessageDelivered(id: number): boolean {
 // never going to pick it up.
 export type AgentBacklog = { agent: string; pending: number; oldestAgeSeconds: number }
 
-export function getPendingBacklogByAgent(): AgentBacklog[] {
+export async function getPendingBacklogByAgent(): Promise<AgentBacklog[]> {
   const now = Math.floor(Date.now() / 1000)
-  const rows = db.prepare(
-    `SELECT to_agent AS agent, COUNT(*) AS pending, MIN(created_at) AS oldest
+  const rows = (await dbx.all(`SELECT to_agent AS agent, COUNT(*) AS pending, MIN(created_at) AS oldest
        FROM agent_messages
       WHERE status = 'pending'
-      GROUP BY to_agent`,
-  ).all() as { agent: string; pending: number; oldest: number }[]
+      GROUP BY to_agent`)) as { agent: string; pending: number; oldest: number }[]
   return rows
     .map(r => ({ agent: r.agent, pending: r.pending, oldestAgeSeconds: Math.max(0, now - r.oldest) }))
     // oldest-first: whoever has been waiting longest is the one worth looking at
@@ -226,27 +215,28 @@ export function getPendingBacklogByAgent(): AgentBacklog[] {
 // leaves a reason, so the log can still answer "was this actually delivered?"
 // afterwards. Without it the only way to clear a backlog is raw SQL, which is
 // how the queue got 24 rows claiming delivery they never had.
-export function closeMessagesWithoutDelivery(ids: number[], reason: string): number {
+export async function closeMessagesWithoutDelivery(ids: number[], reason: string): Promise<number> {
   if (!ids.length) return 0
   const now = Math.floor(Date.now() / 1000)
   const note = `closed-without-delivery: ${reason}`
-  const stmt = db.prepare(
-    `UPDATE agent_messages SET status = 'delivered', delivered_at = ?, result = ?
-      WHERE id = ? AND status = 'pending'`,
-  )
-  const run = db.transaction((rows: number[]) => {
+  return dbx.tx(async (tx) => {
     let n = 0
-    for (const id of rows) n += stmt.run(now, note, id).changes
+    for (const id of ids) {
+      n += (await tx.run(
+        `UPDATE agent_messages SET status = 'delivered', delivered_at = ?, result = ?
+          WHERE id = ? AND status = 'pending'`,
+        now, note, id,
+      )).changes
+    }
     return n
   })
-  return run(ids)
 }
 
 // Supplementary result text WITHOUT a status change. The federation bridge
 // records the peer-assigned id on delivered rows ("fed:<peer>:<remote id>")
 // so a cross-system message can be traced without a schema migration.
-export function setMessageResult(id: number, result: string): boolean {
-  return db.prepare('UPDATE agent_messages SET result = ? WHERE id = ?').run(result, id).changes > 0
+export async function setMessageResult(id: number, result: string): Promise<boolean> {
+  return (await dbx.run('UPDATE agent_messages SET result = ? WHERE id = ?', result, id)).changes > 0
 }
 
 // Bulk-fail PENDING federated (slash-qualified to_agent) messages -- the
@@ -263,19 +253,15 @@ function escapeLike(value: string): string {
   return value.replace(/[\\%_]/g, (c) => '\\' + c)
 }
 
-export function failPendingFederatedMessages(peerId: string | undefined, reason: string): number[] {
+export async function failPendingFederatedMessages(peerId: string | undefined, reason: string): Promise<number[]> {
   const now = Math.floor(Date.now() / 1000)
   const rows = peerId === undefined
-    ? db.prepare(
-        `UPDATE agent_messages SET status = 'failed', result = ?, completed_at = ?
+    ? (await dbx.all(`UPDATE agent_messages SET status = 'failed', result = ?, completed_at = ?
            WHERE status = 'pending' AND to_agent LIKE '%/%'
-         RETURNING id`,
-      ).all(reason, now) as Array<{ id: number }>
-    : db.prepare(
-        `UPDATE agent_messages SET status = 'failed', result = ?, completed_at = ?
+         RETURNING id`, reason, now)) as Array<{ id: number }>
+    : (await dbx.all(`UPDATE agent_messages SET status = 'failed', result = ?, completed_at = ?
            WHERE status = 'pending' AND lower(to_agent) LIKE ? ESCAPE '\\'
-         RETURNING id`,
-      ).all(reason, now, escapeLike(peerId.toLowerCase()) + '/%') as Array<{ id: number }>
+         RETURNING id`, reason, now, escapeLike(peerId.toLowerCase()) + '/%')) as Array<{ id: number }>
   return rows.map((r) => r.id)
 }
 
@@ -286,34 +272,32 @@ export function failPendingFederatedMessages(peerId: string | undefined, reason:
 // Backs the main-agent inbox PULL model: the main agent drains its own inbox at
 // each turn (via the drain-inbox endpoint + UserPromptSubmit hook) instead of
 // the router tmux-injecting into its perpetually-busy channel session.
-export function claimPendingForAgent(toAgent: string, limit: number): AgentMessage[] {
+export async function claimPendingForAgent(toAgent: string, limit: number): Promise<AgentMessage[]> {
   const now = Math.floor(Date.now() / 1000)
-  const rows = db.prepare(
-    `UPDATE agent_messages SET status = 'delivered', delivered_at = ?
+  const rows = await dbx.all<AgentMessage>(`UPDATE agent_messages SET status = 'delivered', delivered_at = ?
        WHERE id IN (
          SELECT id FROM agent_messages
          WHERE to_agent = ? AND status = 'pending'
          ORDER BY created_at ASC, id ASC
          LIMIT ?
        )
-     RETURNING id, from_agent, to_agent, content, status, result, created_at, delivered_at, completed_at`,
-  ).all(now, toAgent, limit) as AgentMessage[]
+     RETURNING id, from_agent, to_agent, content, status, result, created_at, delivered_at, completed_at`, now, toAgent, limit)
   // RETURNING row order is unspecified; restore FIFO (created_at, then id as the
   // tiebreaker for same-second inserts) for delivery.
   return rows.sort((a, b) => (a.created_at - b.created_at) || (a.id - b.id))
 }
 
-export function markMessageDone(id: number, result?: string): boolean {
+export async function markMessageDone(id: number, result?: string): Promise<boolean> {
   const now = Math.floor(Date.now() / 1000)
   // COALESCE: some done-transitions skip the delivered step entirely (e.g. a
   // still-pending row marked done directly via PUT), so backfill delivered_at
   // only when it was never set -- don't clobber a real earlier delivery time.
-  return db.prepare("UPDATE agent_messages SET status = 'done', result = ?, completed_at = ?, delivered_at = COALESCE(delivered_at, ?) WHERE id = ?").run(result ?? null, now, now, id).changes > 0
+  return (await dbx.run("UPDATE agent_messages SET status = 'done', result = ?, completed_at = ?, delivered_at = COALESCE(delivered_at, ?) WHERE id = ?", result ?? null, now, now, id)).changes > 0
 }
 
-export function markMessageFailed(id: number, error?: string): boolean {
+export async function markMessageFailed(id: number, error?: string): Promise<boolean> {
   const now = Math.floor(Date.now() / 1000)
-  return db.prepare("UPDATE agent_messages SET status = 'failed', result = ?, completed_at = ? WHERE id = ?").run(error ?? null, now, id).changes > 0
+  return (await dbx.run("UPDATE agent_messages SET status = 'failed', result = ?, completed_at = ? WHERE id = ?", error ?? null, now, id)).changes > 0
 }
 
 // The executor's explicit "I won't do this" callback
@@ -322,11 +306,9 @@ export function markMessageFailed(id: number, error?: string): boolean {
 // distinct case from a delivery/execution error without a schema-breaking
 // status rename or a client-side migration for every existing status='failed'
 // consumer.
-export function markMessageRefused(id: number, reason?: string): boolean {
+export async function markMessageRefused(id: number, reason?: string): Promise<boolean> {
   const now = Math.floor(Date.now() / 1000)
-  return db.prepare(
-    "UPDATE agent_messages SET status = 'failed', refused_reason = ?, result = ?, completed_at = ? WHERE id = ?",
-  ).run(reason ?? null, reason ?? null, now, id).changes > 0
+  return (await dbx.run("UPDATE agent_messages SET status = 'failed', refused_reason = ?, result = ?, completed_at = ? WHERE id = ?", reason ?? null, reason ?? null, now, id)).changes > 0
 }
 
 // Close a message on behalf of its executor (PUT /api/messages/:id), compare-and-set: the single UPDATE only
@@ -335,22 +317,16 @@ export function markMessageRefused(id: number, reason?: string): boolean {
 // as status='failed' + refused_reason, like markMessageRefused. The done branch backfills delivered_at the
 // same way markMessageDone does (a still-pending row closed directly). The router's own transitions keep
 // using the unconditional markMessage* helpers above; they are not executor callbacks.
-export function closeOpenMessage(id: number, status: 'done' | 'failed' | 'refused', result?: string): boolean {
+export async function closeOpenMessage(id: number, status: 'done' | 'failed' | 'refused', result?: string): Promise<boolean> {
   const now = Math.floor(Date.now() / 1000)
   const text = result ?? null
   if (status === 'done') {
-    return db.prepare(
-      "UPDATE agent_messages SET status = 'done', result = ?, completed_at = ?, delivered_at = COALESCE(delivered_at, ?) WHERE id = ? AND status NOT IN ('done','failed')",
-    ).run(text, now, now, id).changes > 0
+    return (await dbx.run("UPDATE agent_messages SET status = 'done', result = ?, completed_at = ?, delivered_at = COALESCE(delivered_at, ?) WHERE id = ? AND status NOT IN ('done','failed')", text, now, now, id)).changes > 0
   }
   if (status === 'failed') {
-    return db.prepare(
-      "UPDATE agent_messages SET status = 'failed', result = ?, completed_at = ? WHERE id = ? AND status NOT IN ('done','failed')",
-    ).run(text, now, id).changes > 0
+    return (await dbx.run("UPDATE agent_messages SET status = 'failed', result = ?, completed_at = ? WHERE id = ? AND status NOT IN ('done','failed')", text, now, id)).changes > 0
   }
-  return db.prepare(
-    "UPDATE agent_messages SET status = 'failed', refused_reason = ?, result = ?, completed_at = ? WHERE id = ? AND status NOT IN ('done','failed')",
-  ).run(text, text, now, id).changes > 0
+  return (await dbx.run("UPDATE agent_messages SET status = 'failed', refused_reason = ?, result = ?, completed_at = ? WHERE id = ? AND status NOT IN ('done','failed')", text, text, now, id)).changes > 0
 }
 
 // Stamp the FIRST time the router finds the target
@@ -361,11 +337,9 @@ export function closeOpenMessage(id: number, status: 'done' | 'failed' | 'refuse
 // also avoids redundant calls while a single absence streak continues.
 // status='pending' guard mirrors markMessageDelivered: a row a concurrent
 // path already closed must not be touched.
-export function markMessageNoSession(id: number): boolean {
+export async function markMessageNoSession(id: number): Promise<boolean> {
   const now = Math.floor(Date.now() / 1000)
-  return db.prepare(
-    "UPDATE agent_messages SET no_session_at = COALESCE(no_session_at, ?) WHERE id = ? AND status = 'pending'",
-  ).run(now, id).changes > 0
+  return (await dbx.run("UPDATE agent_messages SET no_session_at = COALESCE(no_session_at, ?) WHERE id = ? AND status = 'pending'", now, id)).changes > 0
 }
 
 // Status-guarded fail for the federation bridge's terminal branches: it must
@@ -375,16 +349,16 @@ export function markMessageNoSession(id: number): boolean {
 // (result/completed_at change -> changes>0), producing a spurious second
 // notice. The drain-inbox path deliberately keeps the unguarded variant (it
 // fails an already-delivered row).
-export function markPendingFederatedFailed(id: number, error: string): boolean {
+export async function markPendingFederatedFailed(id: number, error: string): Promise<boolean> {
   const now = Math.floor(Date.now() / 1000)
-  return db.prepare("UPDATE agent_messages SET status = 'failed', result = ?, completed_at = ? WHERE id = ? AND status = 'pending'").run(error, now, id).changes > 0
+  return (await dbx.run("UPDATE agent_messages SET status = 'failed', result = ?, completed_at = ? WHERE id = ? AND status = 'pending'", error, now, id)).changes > 0
 }
 
-export function listAgentMessages(limit = 50, tenantId?: string): AgentMessage[] {
+export async function listAgentMessages(limit = 50, tenantId?: string): Promise<AgentMessage[]> {
   if (tenantId) {
-    return db.prepare('SELECT * FROM agent_messages WHERE tenant_id = ? ORDER BY created_at DESC LIMIT ?').all(tenantId, limit) as AgentMessage[]
+    return dbx.all<AgentMessage>('SELECT * FROM agent_messages WHERE tenant_id = ? ORDER BY created_at DESC LIMIT ?', tenantId, limit)
   }
-  return db.prepare('SELECT * FROM agent_messages ORDER BY created_at DESC LIMIT ?').all(limit) as AgentMessage[]
+  return dbx.all<AgentMessage>('SELECT * FROM agent_messages ORDER BY created_at DESC LIMIT ?', limit)
 }
 
 export interface DispatchedPendingStats {
@@ -410,12 +384,12 @@ export interface DispatchedPendingStats {
  *     coordinator, never to it). The coordinator's own outbound is real
  *     delegation and still counts.
  */
-export function getDispatchedPendingStats(
+export async function getDispatchedPendingStats(
   fromAgent: string,
   nowMs: number,
   staleCutoffMs: number,
   opts: { coordinatorAgentId?: string } = {},
-): DispatchedPendingStats {
+): Promise<DispatchedPendingStats> {
   const cutoffEpoch = Math.floor((nowMs - staleCutoffMs) / 1000)
   const excludeReports = opts.coordinatorAgentId && opts.coordinatorAgentId !== fromAgent
   const awaiting = `from_agent = ? AND status IN ('pending','delivered')
@@ -423,16 +397,12 @@ export function getDispatchedPendingStats(
   const args = excludeReports
     ? [fromAgent, COMPLETION_REPORT_PREFIX, opts.coordinatorAgentId]
     : [fromAgent, COMPLETION_REPORT_PREFIX]
-  const liveRow = db.prepare(
-    `SELECT COUNT(*) AS cnt FROM agent_messages
+  const liveRow = (await dbx.get(`SELECT COUNT(*) AS cnt FROM agent_messages
        WHERE ${awaiting}
-         AND CAST(created_at AS INTEGER) > ?`,
-  ).get(...args, cutoffEpoch) as { cnt: number }
-  const staleRow = db.prepare(
-    `SELECT COUNT(*) AS cnt FROM agent_messages
+         AND CAST(created_at AS INTEGER) > ?`, ...args, cutoffEpoch)) as { cnt: number }
+  const staleRow = (await dbx.get(`SELECT COUNT(*) AS cnt FROM agent_messages
        WHERE ${awaiting}
-         AND CAST(created_at AS INTEGER) <= ?`,
-  ).get(...args, cutoffEpoch) as { cnt: number }
+         AND CAST(created_at AS INTEGER) <= ?`, ...args, cutoffEpoch)) as { cnt: number }
   return {
     count:    liveRow?.cnt ?? 0,
     hasStale: (staleRow?.cnt ?? 0) > 0,
@@ -454,23 +424,19 @@ export function getDispatchedPendingStats(
  * agent whose channel logging stopped (last row months old) reads "open"
  * forever -- the gate then blocked for 160+ hours.
  */
-export function hasOpenInboundQuestion(
+export async function hasOpenInboundQuestion(
   agentId: string,
   opts?: { nowMs: number; staleCutoffMs: number },
-): boolean {
-  const row = db.prepare(
-    `SELECT id, created_at FROM conversation_log
+): Promise<boolean> {
+  const row = await dbx.get<{ id: number; created_at: number }>(`SELECT id, created_at FROM conversation_log
        WHERE agent_id = ? AND direction = 'in'
-       ORDER BY created_at DESC, id DESC LIMIT 1`,
-  ).get(agentId) as { id: number; created_at: number } | undefined
+       ORDER BY created_at DESC, id DESC LIMIT 1`, agentId)
   if (!row) return false
   if (opts && row.created_at <= Math.floor((opts.nowMs - opts.staleCutoffMs) / 1000)) return false
-  const laterOut = db.prepare(
-    `SELECT 1 FROM conversation_log
+  const laterOut = await dbx.get(`SELECT 1 FROM conversation_log
        WHERE agent_id = ? AND direction = 'out'
          AND (created_at > ? OR (created_at = ? AND id > ?))
-       LIMIT 1`,
-  ).get(agentId, row.created_at, row.created_at, row.id)
+       LIMIT 1`, agentId, row.created_at, row.created_at, row.id)
   return !laterOut
 }
 
@@ -487,18 +453,14 @@ const AGENT_MESSAGE_LIMIT_CAP = 200
 // then JS-filter -- that starved rarely-active agents' threads, dashboard bug
 // 2026-06-03). `beforeId` pages older: pass the oldest id you already have to
 // fetch the next-older batch (scroll-up pagination). Newest-first.
-export function getAgentConversation(agent: string, limit = 50, beforeId?: number, tenantId?: string): AgentMessage[] {
+export async function getAgentConversation(agent: string, limit = 50, beforeId?: number, tenantId?: string): Promise<AgentMessage[]> {
   const cap = Math.min(Math.max(1, Math.floor(limit) || 1), AGENT_MESSAGE_LIMIT_CAP)
   const tc = tenantId ? ' AND tenant_id = ?' : ''
   const tp = tenantId ? [tenantId] : []
   if (beforeId !== undefined && Number.isFinite(beforeId)) {
-    return db.prepare(
-      `SELECT * FROM agent_messages WHERE (from_agent = ? OR to_agent = ?) AND id < ?${tc} ORDER BY created_at DESC, id DESC LIMIT ?`
-    ).all(agent, agent, beforeId, ...tp, cap) as AgentMessage[]
+    return dbx.all<AgentMessage>(`SELECT * FROM agent_messages WHERE (from_agent = ? OR to_agent = ?) AND id < ?${tc} ORDER BY created_at DESC, id DESC LIMIT ?`, agent, agent, beforeId, ...tp, cap)
   }
-  return db.prepare(
-    `SELECT * FROM agent_messages WHERE (from_agent = ? OR to_agent = ?)${tc} ORDER BY created_at DESC, id DESC LIMIT ?`
-  ).all(agent, agent, ...tp, cap) as AgentMessage[]
+  return dbx.all<AgentMessage>(`SELECT * FROM agent_messages WHERE (from_agent = ? OR to_agent = ?)${tc} ORDER BY created_at DESC, id DESC LIMIT ?`, agent, agent, ...tp, cap)
 }
 
 export interface AgentThread {
@@ -512,11 +474,11 @@ export interface AgentThread {
 // message. Drives the dashboard sidebar. Recency is computed per-peer (max
 // created_at) so a rarely-active peer's last message is never hidden behind the
 // global recency window (the bug the JS-filter path had). Sorted newest-first.
-export function getAgentConversationThreads(tenantId?: string): AgentThread[] {
+export async function getAgentConversationThreads(tenantId?: string): Promise<AgentThread[]> {
   const tc = tenantId ? ' WHERE tenant_id = ?' : ''
   const tp = tenantId ? [tenantId] : []
   const countTc = tenantId ? ' AND m.tenant_id = ?' : ''
-  const parties = db.prepare(`
+  const parties = await dbx.all<{ agent: string; count: number }>(`
     WITH parties AS (
       SELECT from_agent AS agent FROM agent_messages${tc}
       UNION
@@ -525,19 +487,19 @@ export function getAgentConversationThreads(tenantId?: string): AgentThread[] {
     SELECT p.agent AS agent,
       (SELECT COUNT(*) FROM agent_messages m WHERE (m.from_agent = p.agent OR m.to_agent = p.agent)${countTc}) AS count
     FROM parties p
-  `).all(...tp, ...tp, ...tp) as { agent: string; count: number }[]
+  `, ...tp, ...tp, ...tp)
 
-  const lastStmt = tenantId
-    ? db.prepare('SELECT * FROM agent_messages WHERE (from_agent = ? OR to_agent = ?) AND tenant_id = ? ORDER BY created_at DESC, id DESC LIMIT 1')
-    : db.prepare('SELECT * FROM agent_messages WHERE from_agent = ? OR to_agent = ? ORDER BY created_at DESC, id DESC LIMIT 1')
+  const lastSql = tenantId
+    ? 'SELECT * FROM agent_messages WHERE (from_agent = ? OR to_agent = ?) AND tenant_id = ? ORDER BY created_at DESC, id DESC LIMIT 1'
+    : 'SELECT * FROM agent_messages WHERE from_agent = ? OR to_agent = ? ORDER BY created_at DESC, id DESC LIMIT 1'
 
   const system = new Set<string>(CHAT_SYSTEM_AGENTS)
   const threads: AgentThread[] = []
   for (const p of parties) {
     if (!p.agent || system.has(p.agent)) continue
     const lastMessage = (tenantId
-      ? lastStmt.get(p.agent, p.agent, tenantId)
-      : lastStmt.get(p.agent, p.agent)) as AgentMessage | undefined ?? null
+      ? await dbx.get<AgentMessage>(lastSql, p.agent, p.agent, tenantId)
+      : await dbx.get<AgentMessage>(lastSql, p.agent, p.agent)) ?? null
     threads.push({ agent: p.agent, count: p.count, lastMessage })
   }
   threads.sort((a, b) => {
@@ -562,7 +524,7 @@ export interface BlackboardHistoryRow {
   resolved_by: string | null
 }
 
-export function insertBlackboardHistory(entry: {
+export async function insertBlackboardHistory(entry: {
   agent_id: string
   task_ref: string | null
   status: string
@@ -570,21 +532,18 @@ export function insertBlackboardHistory(entry: {
   blocked_by?: string | null
   blocked_reason?: string | null
   resolved_by?: string | null
-}): void {
-  db.prepare(
-    'INSERT INTO fleet_blackboard_history (agent_id, task_ref, status, summary, tenant_id, blocked_by, blocked_reason, resolved_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-  ).run(
-    entry.agent_id, entry.task_ref, entry.status, entry.summary, resolveAgentTenant(entry.agent_id),
+}, ops: SqlOps = dbx): Promise<void> {
+  await ops.run('INSERT INTO fleet_blackboard_history (agent_id, task_ref, status, summary, tenant_id, blocked_by, blocked_reason, resolved_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', entry.agent_id, entry.task_ref, entry.status, entry.summary, await resolveAgentTenant(entry.agent_id, ops),
     entry.blocked_by ?? null, entry.blocked_reason ?? null, entry.resolved_by ?? null,
   )
 }
 
-export function listBlackboardHistory(opts: {
+export async function listBlackboardHistory(opts: {
   agent_id?: string
   since?: number
   limit?: number
   tenantId?: string | null
-} = {}): BlackboardHistoryRow[] {
+} = {}): Promise<BlackboardHistoryRow[]> {
   const limit = Math.min(opts.limit ?? 50, 200)
   const parts: string[] = []
   const params: (string | number)[] = []
@@ -593,16 +552,14 @@ export function listBlackboardHistory(opts: {
   if (opts.tenantId) { parts.push('tenant_id = ?'); params.push(opts.tenantId) }
   const where = parts.length ? 'WHERE ' + parts.join(' AND ') : ''
   params.push(limit)
-  return db.prepare(
-    `SELECT id, agent_id, task_ref, status, summary, created_at, tenant_id, blocked_by, blocked_reason, resolved_by
+  return dbx.all<BlackboardHistoryRow>(`SELECT id, agent_id, task_ref, status, summary, created_at, tenant_id, blocked_by, blocked_reason, resolved_by
      FROM fleet_blackboard_history ${where}
-     ORDER BY created_at DESC LIMIT ?`
-  ).all(...params) as BlackboardHistoryRow[]
+     ORDER BY created_at DESC LIMIT ?`, ...params)
 }
 
-export function pruneBlackboardHistory(ttlDays = 30): number {
+export async function pruneBlackboardHistory(ttlDays = 30): Promise<number> {
   const cutoff = Math.floor(Date.now() / 1000) - ttlDays * 86400
-  return db.prepare('DELETE FROM fleet_blackboard_history WHERE created_at < ?').run(cutoff).changes
+  return (await dbx.run('DELETE FROM fleet_blackboard_history WHERE created_at < ?', cutoff)).changes
 }
 
 // Both conversation_log (raw in/out Telegram/channel message log) and
@@ -613,16 +570,16 @@ export function pruneBlackboardHistory(ttlDays = 30): number {
 // "raw message history" concern; a message still 'pending' past the window
 // is treated the same as a delivered one, matching every other prune
 // function's age-only cutoff (no status carve-out).
-export function pruneConversationLog(): number {
+export async function pruneConversationLog(): Promise<number> {
   const retentionDays = Number(getEffectiveSettingValue('MESSAGE_LOG_RETENTION_DAYS'))
   const cutoff = Math.floor(Date.now() / 1000) - retentionDays * 86400
-  return db.prepare('DELETE FROM conversation_log WHERE created_at < ?').run(cutoff).changes
+  return (await dbx.run('DELETE FROM conversation_log WHERE created_at < ?', cutoff)).changes
 }
 
-export function pruneAgentMessages(): number {
+export async function pruneAgentMessages(): Promise<number> {
   const retentionDays = Number(getEffectiveSettingValue('MESSAGE_LOG_RETENTION_DAYS'))
   const cutoff = Math.floor(Date.now() / 1000) - retentionDays * 86400
-  return db.prepare('DELETE FROM agent_messages WHERE created_at < ?').run(cutoff).changes
+  return (await dbx.run('DELETE FROM agent_messages WHERE created_at < ?', cutoff)).changes
 }
 
 // Mark fleet_blackboard 'active'/'assigned' rows as 'stale' when they have
@@ -641,9 +598,7 @@ export async function markBlackboardStale(
   nowSec = Math.floor(Date.now() / 1000),
   skipActiveAgentIds: ReadonlySet<string> = new Set(),
 ): Promise<number> {
-  const rows = db.prepare(
-    `SELECT id, agent_id, task_ref, summary, updated_at, status FROM fleet_blackboard WHERE status IN ('active', 'assigned')`,
-  ).all() as { id: string; agent_id: string; task_ref: string | null; summary: string; updated_at: number; status: string }[]
+  const rows = (await dbx.all(`SELECT id, agent_id, task_ref, summary, updated_at, status FROM fleet_blackboard WHERE status IN ('active', 'assigned')`)) as { id: string; agent_id: string; task_ref: string | null; summary: string; updated_at: number; status: string }[]
   let marked = 0
   for (const row of rows) {
     // An agent whose scheduled run is still in flight owns its active row: the
@@ -651,10 +606,11 @@ export async function markBlackboardStale(
     if (row.status === 'active' && skipActiveAgentIds.has(row.agent_id)) continue
     const threshold = row.status === 'assigned' ? assignedThresholdSec : (thresholdsByAgent[row.agent_id] ?? defaultThresholdSec)
     if (nowSec - row.updated_at > threshold) {
-      db.prepare(
-        `UPDATE fleet_blackboard SET status = 'stale', updated_at = ? WHERE id = ?`,
-      ).run(nowSec, row.id)
-      insertBlackboardHistory({ agent_id: row.agent_id, task_ref: row.task_ref, status: 'stale', summary: row.summary })
+      // Compare-and-set on the row as it was read: an agent that posted (or closed its row) since the SELECT
+      // keeps its post, the sweep neither overwrites it nor records a stale entry or drops the plan binding.
+      const res = await dbx.run(`UPDATE fleet_blackboard SET status = 'stale', updated_at = ? WHERE id = ? AND status = ? AND updated_at = ?`, nowSec, row.id, row.status, row.updated_at)
+      if (res.changes === 0) continue
+      await insertBlackboardHistory({ agent_id: row.agent_id, task_ref: row.task_ref, status: 'stale', summary: row.summary })
       // #886: a blackboard row going stale means the agent behind it is
       // presumed dead -- drop any plan binding with it (design section 3A),
       // rather than let it look "active" forever.
@@ -665,13 +621,13 @@ export async function markBlackboardStale(
   return marked
 }
 
-export function getAgentTier(agentId: string): string {
-  const row = db.prepare('SELECT tier FROM agent_blackboard_tier WHERE agent_id = ?').get(agentId) as { tier: string } | undefined
+export async function getAgentTier(agentId: string): Promise<string> {
+  const row = await dbx.get<{ tier: string }>('SELECT tier FROM agent_blackboard_tier WHERE agent_id = ?', agentId)
   return row?.tier ?? 'default'
 }
 
-export function getActiveBlackboardAgentIds(): string[] {
-  const rows = db.prepare("SELECT DISTINCT agent_id FROM fleet_blackboard WHERE status IN ('active', 'assigned')").all() as { agent_id: string }[]
+export async function getActiveBlackboardAgentIds(): Promise<string[]> {
+  const rows = (await dbx.all("SELECT DISTINCT agent_id FROM fleet_blackboard WHERE status IN ('active', 'assigned')")) as { agent_id: string }[]
   return rows.map((r) => r.agent_id)
 }
 
@@ -691,8 +647,8 @@ export interface BlackboardRow {
   blocked_reason: string | null
 }
 
-export function findBlackboardRowByAgent(agent_id: string): BlackboardRow | undefined {
-  return db.prepare('SELECT * FROM fleet_blackboard WHERE agent_id = ?').get(agent_id) as BlackboardRow | undefined
+export async function findBlackboardRowByAgent(agent_id: string): Promise<BlackboardRow | undefined> {
+  return dbx.get<BlackboardRow>('SELECT * FROM fleet_blackboard WHERE agent_id = ?', agent_id)
 }
 
 // Resolve which tenant a blackboard row for agent_id belongs to, derived from
@@ -703,10 +659,8 @@ export function findBlackboardRowByAgent(agent_id: string): BlackboardRow | unde
 //   1 enabled row  -> that tenant
 //   2+ enabled rows -> '_multi_' sentinel: never matches a real ctx.tenantId,
 //     so the row is admin-only visible (see tryHandleBlackboard tenant filter).
-export function resolveAgentTenant(agent_id: string): string {
-  const rows = db
-    .prepare('SELECT tenant_id FROM tenant_agent_availability WHERE agent_id = ? AND enabled = 1')
-    .all(agent_id) as { tenant_id: string }[]
+export async function resolveAgentTenant(agent_id: string, ops: SqlOps = dbx): Promise<string> {
+  const rows = (await ops.all('SELECT tenant_id FROM tenant_agent_availability WHERE agent_id = ? AND enabled = 1', agent_id)) as { tenant_id: string }[]
   if (rows.length === 0) return 'default'
   if (rows.length === 1) return rows[0]!.tenant_id
   return '_multi_'
@@ -724,22 +678,43 @@ export function resolveAgentTenant(agent_id: string): string {
 // entry, and only on the actual blocked -> non-blocked transition.
 export async function upsertBlackboard(
   agent_id: string,
-  data: {
-    task_ref?: string | null
-    status?: string
-    summary: string
-    blocked_by?: string | null
-    blocked_reason?: string | null
-    resolved_by?: string | null
-  },
+  data: BlackboardUpsertData,
 ): Promise<BlackboardRow> {
-  const existing = db.prepare('SELECT * FROM fleet_blackboard WHERE agent_id = ?').get(agent_id) as BlackboardRow | undefined
+  const { row, changed } = await dbx.tx(async (tx) => writeBlackboardRow(tx, agent_id, data), { mode: 'immediate' })
+  // #886: an agent reporting itself 'done' no longer has a live claim on its
+  // plan binding either (design section 3A). Only on an actual transition,
+  // same as the history write -- a repeated no-op 'done' upsert must
+  // not matter here. After the commit: best-effort, never inside the lock.
+  if (changed && row.status === 'done') {
+    try { await deactivatePlanForAgent(row.agent_id) } catch { /* best-effort */ }
+  }
+  return row
+}
+
+interface BlackboardUpsertData {
+  task_ref?: string | null
+  status?: string
+  summary: string
+  blocked_by?: string | null
+  blocked_reason?: string | null
+  resolved_by?: string | null
+}
+
+// The read, the write and the history entry are ONE transaction: two overlapped first posts of the same agent
+// used to read "no row", pick two ids, and the loser's `SELECT ... WHERE id = ?` found nothing. The
+// transaction lock puts the second call behind the first, so it sees the first one's row and updates it.
+async function writeBlackboardRow(
+  tx: SqlOps,
+  agent_id: string,
+  data: BlackboardUpsertData,
+): Promise<{ row: BlackboardRow; changed: boolean }> {
+  const existing = await tx.get<BlackboardRow>('SELECT * FROM fleet_blackboard WHERE agent_id = ?', agent_id)
   const id = existing?.id ?? randomUUID().replace(/-/g, '').slice(0, 8)
-  const tenant_id = resolveAgentTenant(agent_id)
+  const tenant_id = await resolveAgentTenant(agent_id, tx)
   const status = data.status ?? 'active'
   const blockedBy = status === 'blocked' ? (data.blocked_by ?? existing?.blocked_by ?? null) : null
   const blockedReason = status === 'blocked' ? (data.blocked_reason ?? existing?.blocked_reason ?? null) : null
-  db.prepare(`
+  await tx.run(`
     INSERT INTO fleet_blackboard (id, agent_id, task_ref, status, summary, updated_at, tenant_id, blocked_by, blocked_reason)
     VALUES (?, ?, ?, ?, ?, unixepoch(), ?, ?, ?)
     ON CONFLICT(agent_id) DO UPDATE SET
@@ -750,8 +725,8 @@ export async function upsertBlackboard(
       tenant_id      = excluded.tenant_id,
       blocked_by     = excluded.blocked_by,
       blocked_reason = excluded.blocked_reason
-  `).run(id, agent_id, data.task_ref ?? null, status, data.summary, tenant_id, blockedBy, blockedReason)
-  const row = db.prepare('SELECT * FROM fleet_blackboard WHERE id = ?').get(id) as BlackboardRow
+  `, id, agent_id, data.task_ref ?? null, status, data.summary, tenant_id, blockedBy, blockedReason)
+  const row = (await tx.get('SELECT * FROM fleet_blackboard WHERE agent_id = ?', agent_id)) as BlackboardRow
   const changed = !existing ||
     existing.status !== row.status ||
     existing.summary !== row.summary ||
@@ -760,20 +735,13 @@ export async function upsertBlackboard(
     (existing.blocked_reason ?? null) !== (row.blocked_reason ?? null)
   if (changed) {
     const resolving = existing?.status === 'blocked' && row.status !== 'blocked'
-    insertBlackboardHistory({
+    await insertBlackboardHistory({
       agent_id: row.agent_id, task_ref: row.task_ref, status: row.status, summary: row.summary,
       blocked_by: row.blocked_by, blocked_reason: row.blocked_reason,
       resolved_by: resolving ? (data.resolved_by ?? null) : null,
-    })
+    }, tx)
   }
-  // #886: an agent reporting itself 'done' no longer has a live claim on its
-  // plan binding either (design section 3A). Only on an actual transition,
-  // same as the history write above -- a repeated no-op 'done' upsert must
-  // not matter here.
-  if (changed && row.status === 'done') {
-    try { await deactivatePlanForAgent(row.agent_id) } catch { /* best-effort */ }
-  }
-  return row
+  return { row, changed }
 }
 
 // ── Tenant-agent availability (deny-by-default opt-in matrix) ─────────────────
@@ -786,42 +754,39 @@ export interface TenantAgentAvailability {
 }
 
 /** List all availability rows for a tenant (enabled + disabled). */
-export function listTenantAgentAvailability(tenantId: string): TenantAgentAvailability[] {
-  return db
-    .prepare('SELECT tenant_id, agent_id, enabled, updated_at FROM tenant_agent_availability WHERE tenant_id = ? ORDER BY agent_id')
-    .all(tenantId) as TenantAgentAvailability[]
+export async function listTenantAgentAvailability(tenantId: string): Promise<TenantAgentAvailability[]> {
+  return dbx.all<TenantAgentAvailability>('SELECT tenant_id, agent_id, enabled, updated_at FROM tenant_agent_availability WHERE tenant_id = ? ORDER BY agent_id', tenantId)
 }
 
 /** Upsert a (tenant, agent) availability row. Returns the new row. */
-export function setTenantAgentAvailability(tenantId: string, agentId: string, enabled: boolean): TenantAgentAvailability {
+export async function setTenantAgentAvailability(tenantId: string, agentId: string, enabled: boolean): Promise<TenantAgentAvailability> {
   const now = Math.floor(Date.now() / 1000)
-  db.prepare(`
-    INSERT INTO tenant_agent_availability (tenant_id, agent_id, enabled, updated_at)
-    VALUES (?, ?, ?, ?)
-    ON CONFLICT(tenant_id, agent_id) DO UPDATE SET
-      enabled    = excluded.enabled,
-      updated_at = excluded.updated_at
-  `).run(tenantId, agentId, enabled ? 1 : 0, now)
-  // Disabling the agent for the tenant ends its use-time context for that tenant at once (the skill gate
-  // fails closed until the agent's next prompt re-resolves the source).
-  if (!enabled) db.prepare('DELETE FROM agent_tenant_context WHERE agent_id = ? AND tenant_id = ?').run(agentId, tenantId)
-  return db.prepare('SELECT tenant_id, agent_id, enabled, updated_at FROM tenant_agent_availability WHERE tenant_id = ? AND agent_id = ?').get(tenantId, agentId) as TenantAgentAvailability
+  // The availability row and the context delete are one step: a disabled agent never keeps its use-time context.
+  return dbx.tx(async (tx) => {
+    await tx.run(`
+      INSERT INTO tenant_agent_availability (tenant_id, agent_id, enabled, updated_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(tenant_id, agent_id) DO UPDATE SET
+        enabled    = excluded.enabled,
+        updated_at = excluded.updated_at
+    `, tenantId, agentId, enabled ? 1 : 0, now)
+    // Disabling the agent for the tenant ends its use-time context for that tenant at once (the skill gate
+    // fails closed until the agent's next prompt re-resolves the source).
+    if (!enabled) await tx.run('DELETE FROM agent_tenant_context WHERE agent_id = ? AND tenant_id = ?', agentId, tenantId)
+    return (await tx.get('SELECT tenant_id, agent_id, enabled, updated_at FROM tenant_agent_availability WHERE tenant_id = ? AND agent_id = ?', tenantId, agentId)) as TenantAgentAvailability
+  })
 }
 
 /** Check if an agent is explicitly enabled for a tenant. */
-export function isTenantAgentEnabled(tenantId: string, agentId: string): boolean {
-  const row = db
-    .prepare('SELECT enabled FROM tenant_agent_availability WHERE tenant_id = ? AND agent_id = ?')
-    .get(tenantId, agentId) as { enabled: number } | undefined
+export async function isTenantAgentEnabled(tenantId: string, agentId: string): Promise<boolean> {
+  const row = await dbx.get<{ enabled: number }>('SELECT enabled FROM tenant_agent_availability WHERE tenant_id = ? AND agent_id = ?', tenantId, agentId)
   return row?.enabled === 1
 }
 
 /** List agent_ids explicitly enabled=1 for a tenant (deny-by-default: agents
  *  with no row, or enabled=0, are not returned). */
-export function getEnabledAgentsForTenant(tenantId: string): string[] {
-  const rows = db
-    .prepare('SELECT agent_id FROM tenant_agent_availability WHERE tenant_id = ? AND enabled = 1')
-    .all(tenantId) as { agent_id: string }[]
+export async function getEnabledAgentsForTenant(tenantId: string): Promise<string[]> {
+  const rows = (await dbx.all('SELECT agent_id FROM tenant_agent_availability WHERE tenant_id = ? AND enabled = 1', tenantId)) as { agent_id: string }[]
   return rows.map(r => r.agent_id)
 }
 
@@ -829,10 +794,8 @@ export function getEnabledAgentsForTenant(tenantId: string): string[] {
  *  getEnabledAgentsForTenant, used for the Agents screen's per-tenant
  *  visibility chips. An agent with no rows at all (e.g. a fleet-internal
  *  agent never opted into any tenant) returns an empty array. */
-export function getTenantsForAgent(agentId: string): string[] {
-  const rows = db
-    .prepare('SELECT tenant_id FROM tenant_agent_availability WHERE agent_id = ? AND enabled = 1')
-    .all(agentId) as { tenant_id: string }[]
+export async function getTenantsForAgent(agentId: string): Promise<string[]> {
+  const rows = (await dbx.all('SELECT tenant_id FROM tenant_agent_availability WHERE agent_id = ? AND enabled = 1', agentId)) as { tenant_id: string }[]
   return rows.map(r => r.tenant_id)
 }
 
@@ -845,10 +808,21 @@ export function getTenantsForAgent(agentId: string): string[] {
  *  pre-tenant JSON side-cars -- same source of truth as agentBelongsToTenant
  *  below, so an imported row's tenant_id always matches what the write-check
  *  itself would compute for that agent. */
-export function resolveAgentOwningTenantId(agentId: string): string {
-  const primary = getTenantForMainAgent(agentId)
+export async function resolveAgentOwningTenantId(agentId: string): Promise<string> {
+  const primary = await getTenantForMainAgent(agentId)
   if (primary) return primary.id
-  return getTenantsForAgent(agentId)[0] ?? 'default'
+  return (await getTenantsForAgent(agentId))[0] ?? 'default'
+}
+
+/** Boot-only twin of resolveAgentOwningTenantId for the one-time agent_settings file import (db/index.ts), which
+ *  runs before initDatabase returns and cannot await. Same two lookups on the raw handle, in the same order, so an
+ *  imported row is stamped with the tenant the asynchronous resolver would pick -- keep the two in step. */
+// @boot-sync-twin
+export function resolveAgentOwningTenantIdSync(agentId: string): string {
+  const main = db.prepare('SELECT id FROM tenants WHERE main_agent_id = ? AND disabled_at IS NULL').get(agentId) as { id: string } | undefined
+  if (main) return main.id
+  const row = db.prepare('SELECT tenant_id FROM tenant_agent_availability WHERE agent_id = ? AND enabled = 1').get(agentId) as { tenant_id: string } | undefined
+  return row?.tenant_id ?? 'default'
 }
 
 /** Whether `tenantId` may manage (read/write) agentId's per-agent settings
@@ -857,8 +831,8 @@ export function resolveAgentOwningTenantId(agentId: string): string {
  *  resolveAgentOwningTenantId (single tenant, used to stamp a new row), an
  *  agent can be enabled for more than one tenant, and any of them may
  *  manage it -- admin bypasses this check entirely (see agents-process.ts). */
-export function agentBelongsToTenant(agentId: string, tenantId: string): boolean {
-  return getServedTenantIds(agentId).includes(tenantId)
+export async function agentBelongsToTenant(agentId: string, tenantId: string): Promise<boolean> {
+  return (await getServedTenantIds(agentId)).includes(tenantId)
 }
 
 /** Every tenant the agent serves: the tenant it coordinates as main agent (getTenantForMainAgent)
@@ -866,9 +840,9 @@ export function agentBelongsToTenant(agentId: string, tenantId: string): boolean
  *  agentBelongsToTenant and the "shared agent" rule of the conversation ledger (an agent serving
  *  two or more tenants), so a coordinator that is also enabled for a second tenant counts as
  *  shared everywhere. */
-export function getServedTenantIds(agentId: string): string[] {
-  const primary = getTenantForMainAgent(agentId)
-  const ids = getTenantsForAgent(agentId)
+export async function getServedTenantIds(agentId: string): Promise<string[]> {
+  const primary = await getTenantForMainAgent(agentId)
+  const ids = await getTenantsForAgent(agentId)
   return primary && !ids.includes(primary.id) ? [primary.id, ...ids] : ids
 }
 
@@ -877,52 +851,44 @@ export function getServedTenantIds(agentId: string): string[] {
 // ── Blackboard reads/updates used by routes/blackboard.ts ────────────
 
 /** Newest rows first; tenantId null = unfiltered (admin), a string narrows to that tenant. */
-export function listBlackboardRows(limit: number, tenantId: string | null = null): BlackboardRow[] {
+export async function listBlackboardRows(limit: number, tenantId: string | null = null): Promise<BlackboardRow[]> {
   return tenantId !== null
-    ? db.prepare('SELECT * FROM fleet_blackboard WHERE tenant_id = ? ORDER BY updated_at DESC LIMIT ?').all(tenantId, limit) as BlackboardRow[]
-    : db.prepare('SELECT * FROM fleet_blackboard ORDER BY updated_at DESC LIMIT ?').all(limit) as BlackboardRow[]
+    ? await dbx.all<BlackboardRow>('SELECT * FROM fleet_blackboard WHERE tenant_id = ? ORDER BY updated_at DESC LIMIT ?', tenantId, limit)
+    : await dbx.all<BlackboardRow>('SELECT * FROM fleet_blackboard ORDER BY updated_at DESC LIMIT ?', limit)
 }
 
-export function getBlackboardRowById(id: string): BlackboardRow | undefined {
-  return db.prepare('SELECT * FROM fleet_blackboard WHERE id = ?').get(id) as BlackboardRow | undefined
+export async function getBlackboardRowById(id: string): Promise<BlackboardRow | undefined> {
+  return dbx.get<BlackboardRow>('SELECT * FROM fleet_blackboard WHERE id = ?', id)
 }
 
-export function blackboardRowExistsForAgent(agentId: string): boolean {
-  return !!db.prepare('SELECT 1 FROM fleet_blackboard WHERE agent_id = ?').get(agentId)
+export async function blackboardRowExistsForAgent(agentId: string): Promise<boolean> {
+  return !!await dbx.get('SELECT 1 FROM fleet_blackboard WHERE agent_id = ?', agentId)
 }
 
 /** Latest outbound inter-agent message per sender, for the given agents, after `sinceSec`. */
-export function getLastOutboundMessageTimes(agentIds: string[], sinceSec: number): { agent_id: string; last_msg_at: number }[] {
+export async function getLastOutboundMessageTimes(agentIds: string[], sinceSec: number): Promise<{ agent_id: string; last_msg_at: number }[]> {
   const placeholders = agentIds.map(() => '?').join(',')
-  return db
-    .prepare(
-      `SELECT from_agent AS agent_id, MAX(created_at) AS last_msg_at
+  return (await dbx.all(`SELECT from_agent AS agent_id, MAX(created_at) AS last_msg_at
          FROM agent_messages
         WHERE from_agent IN (${placeholders})
           AND created_at > ?
-        GROUP BY from_agent`,
-    )
-    .all(...agentIds, sinceSec) as { agent_id: string; last_msg_at: number }[]
+        GROUP BY from_agent`, ...agentIds, sinceSec)) as { agent_id: string; last_msg_at: number }[]
 }
 
 /** Latest recorded state change per agent, from the history table. */
-export function getLastBlackboardChangeTimes(agentIds: string[]): { agent_id: string; last_changed_at: number }[] {
+export async function getLastBlackboardChangeTimes(agentIds: string[]): Promise<{ agent_id: string; last_changed_at: number }[]> {
   const placeholders = agentIds.map(() => '?').join(',')
-  return db
-    .prepare(
-      `SELECT agent_id, MAX(created_at) AS last_changed_at
+  return (await dbx.all(`SELECT agent_id, MAX(created_at) AS last_changed_at
          FROM fleet_blackboard_history
         WHERE agent_id IN (${placeholders})
-        GROUP BY agent_id`,
-    )
-    .all(...agentIds) as { agent_id: string; last_changed_at: number }[]
+        GROUP BY agent_id`, ...agentIds)) as { agent_id: string; last_changed_at: number }[]
 }
 
-export function updateBlackboardRowById(
+export async function updateBlackboardRowById(
   id: string,
   fields: { status: string; summary: string; task_ref: string | null | undefined; blocked_by: string | null; blocked_reason: string | null },
-): void {
-  db.prepare(`
+): Promise<void> {
+  await dbx.run(`
     UPDATE fleet_blackboard SET status = ?, summary = ?, task_ref = ?, blocked_by = ?, blocked_reason = ?, updated_at = unixepoch() WHERE id = ?
-  `).run(fields.status, fields.summary, fields.task_ref, fields.blocked_by, fields.blocked_reason, id)
+  `, fields.status, fields.summary, fields.task_ref, fields.blocked_by, fields.blocked_reason, id)
 }

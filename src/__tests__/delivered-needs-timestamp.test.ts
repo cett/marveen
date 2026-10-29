@@ -20,7 +20,7 @@ describe('delivered rows always carry a timestamp', () => {
 
   it('records a timestamp on a genuine delivery', async () => {
     const m = await createAgentMessage('a', to(), 'valódi kézbesítés')
-    expect(markMessageDelivered(m.id)).toBe(true)
+    expect(await markMessageDelivered(m.id)).toBe(true)
 
     const row = await getAgentMessage(m.id)
     expect(row?.status).toBe('delivered')
@@ -35,7 +35,7 @@ describe('delivered rows always carry a timestamp', () => {
     const m1 = await createAgentMessage('a', target, 'elavult')
     const m2 = await createAgentMessage('b', target, 'szintén elavult')
 
-    expect(closeMessagesWithoutDelivery([m1.id, m2.id], 'stale backlog after restart')).toBe(2)
+    expect(await closeMessagesWithoutDelivery([m1.id, m2.id], 'stale backlog after restart')).toBe(2)
 
     for (const id of [m1.id, m2.id]) {
       const row = await getAgentMessage(id)
@@ -49,10 +49,10 @@ describe('delivered rows always carry a timestamp', () => {
 
   it('does not reopen or re-close a row that is no longer pending', async () => {
     const m = await createAgentMessage('a', to(), 'már kézbesítve')
-    markMessageDelivered(m.id)
+    await markMessageDelivered(m.id)
     const before = await getAgentMessage(m.id)
 
-    expect(closeMessagesWithoutDelivery([m.id], 'késői takarítás')).toBe(0)
+    expect(await closeMessagesWithoutDelivery([m.id], 'késői takarítás')).toBe(0)
 
     const after = await getAgentMessage(m.id)
     expect(after?.delivered_at).toBe(before?.delivered_at)
@@ -79,7 +79,7 @@ describe('delivered rows always carry a timestamp', () => {
     // that really was delivered -- otherwise the repair destroys the very
     // distinction it exists to preserve.
     const real = await createAgentMessage('a', to(), 'valódi')
-    markMessageDelivered(real.id)
+    await markMessageDelivered(real.id)
     const stamp = (await getAgentMessage(real.id))?.delivered_at
 
     const flipped = await createAgentMessage('a', to(), 'nyersen lezárva')

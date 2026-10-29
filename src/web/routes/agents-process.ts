@@ -49,10 +49,10 @@ const INBOX_DRAIN_CAP = 10
 // back to admin-only for exactly those agents, matching today's real-world
 // operational shape (only the admin dashboard token manages them) without
 // a special case.
-function crossTenantAgentSettingsBlocked(ctx: RouteContext, name: string): boolean {
+async function crossTenantAgentSettingsBlocked(ctx: RouteContext, name: string): Promise<boolean> {
   if (ctx.role === 'admin') return false
   const callerTenant = ctx.tenantId ?? 'default'
-  return !agentBelongsToTenant(name, callerTenant)
+  return !await agentBelongsToTenant(name, callerTenant)
 }
 
 export async function tryHandleAgentsProcess(ctx: RouteContext): Promise<boolean> {
@@ -62,7 +62,7 @@ export async function tryHandleAgentsProcess(ctx: RouteContext): Promise<boolean
   if (autoRestartMatch && method === 'PUT') {
     const name = decodeURIComponent(autoRestartMatch[1])
     if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) { json(res, { error: 'not_found', hint: 'Agent not found' }, 404); return true }
-    if (crossTenantAgentSettingsBlocked(ctx, name)) { json(res, { error: 'forbidden', hint: 'Agent not in your tenant' }, 403); return true }
+    if (await crossTenantAgentSettingsBlocked(ctx, name)) { json(res, { error: 'forbidden', hint: 'Agent not in your tenant' }, 403); return true }
     const body = await readBody(req)
     let data: unknown
     try { data = JSON.parse(body.toString()) } catch { json(res, { error: 'parse_error', hint: 'Invalid JSON body' }, 400); return true }
@@ -71,7 +71,7 @@ export async function tryHandleAgentsProcess(ctx: RouteContext): Promise<boolean
       json(res, { error: arFields.code, field: arFields.rejected[0], hint: arFields.message }, 400)
       return true
     }
-    const owningTenant = resolveAgentOwningTenantId(name)
+    const owningTenant = await resolveAgentOwningTenantId(name)
     setStoreWriteActor('dashboard', owningTenant)
     const saved = await writeAutoRestartConfig(name, data, owningTenant)
     json(res, { ok: true, autoRestart: saved })
@@ -86,7 +86,7 @@ export async function tryHandleAgentsProcess(ctx: RouteContext): Promise<boolean
   if (contextGuardMatch && (method === 'GET' || method === 'PUT')) {
     const name = decodeURIComponent(contextGuardMatch[1])
     if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) { json(res, { error: 'not_found', hint: 'Agent not found' }, 404); return true }
-    if (crossTenantAgentSettingsBlocked(ctx, name)) { json(res, { error: 'forbidden', hint: 'Agent not in your tenant' }, 403); return true }
+    if (await crossTenantAgentSettingsBlocked(ctx, name)) { json(res, { error: 'forbidden', hint: 'Agent not in your tenant' }, 403); return true }
     if (method === 'GET') {
       json(res, { ok: true, contextGuard: readContextGuardConfig(name) })
       return true
@@ -99,7 +99,7 @@ export async function tryHandleAgentsProcess(ctx: RouteContext): Promise<boolean
       json(res, { error: cgFields.code, field: cgFields.rejected[0], hint: cgFields.message }, 400)
       return true
     }
-    const owningTenant = resolveAgentOwningTenantId(name)
+    const owningTenant = await resolveAgentOwningTenantId(name)
     setStoreWriteActor('dashboard', owningTenant)
     const saved = await writeContextGuardConfig(name, data, owningTenant)
     json(res, { ok: true, contextGuard: saved })
@@ -186,7 +186,7 @@ export async function tryHandleAgentsProcess(ctx: RouteContext): Promise<boolean
       json(res, { error: 'not_supported', hint: 'drain-inbox is main-agent only (sub-agents use the router push path)' }, 400)
       return true
     }
-    const claimed = claimPendingForAgent(name, INBOX_DRAIN_CAP)
+    const claimed = await claimPendingForAgent(name, INBOX_DRAIN_CAP)
     const blocks: string[] = []
     for (const msg of claimed) {
       const cls = classifyAgentMessage(msg.from_agent, msg.to_agent)
@@ -195,7 +195,7 @@ export async function tryHandleAgentsProcess(ctx: RouteContext): Promise<boolean
         // here is invisible message loss (delivered in the DB, never shown
         // to the agent, no log, no retry). Surface it like the router does.
         logger.warn({ id: msg.id, rawFrom: msg.from_agent }, 'drain-inbox: message rejected, from_agent cannot be framed safely')
-        if (!markMessageFailed(msg.id, 'Invalid or empty from_agent')) {
+        if (!await markMessageFailed(msg.id, 'Invalid or empty from_agent')) {
           logger.warn({ id: msg.id }, 'markMessageFailed affected 0 rows (deleted concurrently?)')
         }
         continue

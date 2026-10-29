@@ -74,7 +74,7 @@ const cardRow = (id: string) => getDb().prepare('SELECT parent_id, tenant_id, ti
 
 beforeEach(async () => {
   initDatabase(':memory:')
-  createTenant('acme', 'Acme')
+  await createTenant('acme', 'Acme')
   await insertApiToken({ tokenHash: sha('tok-alpha'), name: 'fleet:alpha', role: 'fleet_agent', tenantId: 'default', createdAt: NOW() - 10, expiresAt: null, agentId: 'alpha' })
   await createKanbanCard({ id: 'own-card', title: 'Own card', tenant_id: 'default' })
   await createKanbanCard({ id: 'own-parent', title: 'Own parent', tenant_id: 'default' })

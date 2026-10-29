@@ -68,7 +68,7 @@ const archivedIds = (body: unknown) => ((body as { cards: Array<{ id: string }> 
 
 beforeEach(async () => {
   initDatabase(':memory:')
-  createTenant('acme', 'Acme')
+  await createTenant('acme', 'Acme')
   await insertApiToken({ tokenHash: sha('tok-alpha'), name: 'fleet:alpha', role: 'fleet_agent', tenantId: 'default', createdAt: NOW() - 10, expiresAt: null, agentId: 'alpha' })
   await createKanbanCard({ id: 'def-arch', title: 'Default archived', project: 'proj-default', tenant_id: 'default' })
   await createKanbanCard({ id: 'acme-arch', title: 'Acme archived', project: 'proj-acme', tenant_id: 'acme' })

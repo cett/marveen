@@ -72,7 +72,7 @@ vi.mock('../db.js', () => ({
   // Tenant lookups behind the (tenant, agent) pair rule: every agent is a fleet
   // agent (enabled for no tenant), no non-default tenant serves anyone.
   getTenant: vi.fn(),
-  getTenantsForAgent: vi.fn().mockReturnValue([]),
+  getTenantsForAgent: vi.fn().mockResolvedValue([]),
   agentServesTenant: vi.fn().mockReturnValue(false),
 }))
 

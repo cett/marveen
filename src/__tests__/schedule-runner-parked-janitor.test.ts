@@ -53,9 +53,9 @@ vi.mock('../db.js', () => ({
   markPendingTaskRetryAlert: vi.fn(() => Promise.resolve(false)),
   clearPendingTaskRetryAlert: vi.fn(),
   markScheduledTaskKanbanWaiting: vi.fn(),
-  upsertBlackboard: vi.fn(() => ({ id: 'bb000001', agent_id: '', task_ref: null, status: 'active', summary: '', updated_at: 0 })),
+  upsertBlackboard: vi.fn(() => Promise.resolve(({ id: 'bb000001', agent_id: '', task_ref: null, status: 'active', summary: '', updated_at: 0 }))),
   findActiveKanbanCardByTitle: vi.fn(() => undefined),
-  findBlackboardRowByAgent: vi.fn(() => ({ id: 'bb000001', agent_id: '', task_ref: null, status: 'active', summary: '', updated_at: 0, tenant_id: 'default' })),
+  findBlackboardRowByAgent: vi.fn(() => Promise.resolve(({ id: 'bb000001', agent_id: '', task_ref: null, status: 'active', summary: '', updated_at: 0, tenant_id: 'default' }))),
   updateScheduleLastRun: vi.fn(),
   clearScheduleLastRunIfMatches: vi.fn(),
   // schedule_last_tick_ms (migration 0057, #985 group 2/8): undefined ->

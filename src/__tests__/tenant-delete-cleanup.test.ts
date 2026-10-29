@@ -70,18 +70,18 @@ function seedSimple(): void {
 }
 
 describe('deleteTenant: tenant-keyed leftovers', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     initDatabase(':memory:')
-    createTenant(TARGET, 'Gone')
-    createTenant(SIBLING, 'Sibling')
+    await createTenant(TARGET, 'Gone')
+    await createTenant(SIBLING, 'Sibling')
   })
 
-  it('removes the target tenant\'s rows in every simple table and import table, and only those', () => {
+  it('removes the target tenant\'s rows in every simple table and import table, and only those', async () => {
     seedSimple()
     const tables = [...TENANT_PURGE_SIMPLE_TABLES, 'import_sources', 'import_audit_log']
     // A fresh DB already carries seeded rows for `default` (egress allowlist), so compare before/after, not to 1.
     const before = Object.fromEntries(tables.map((t) => [t, OTHERS.map((o) => count(t, o))]))
-    const result = deleteTenant(TARGET)
+    const result = await deleteTenant(TARGET)
 
     for (const table of tables) {
       expect(count(table, TARGET), `${table}: target rows`).toBe(0)
@@ -90,8 +90,8 @@ describe('deleteTenant: tenant-keyed leftovers', () => {
     }
   })
 
-  it('reports zero counts for an empty tenant and no exclusive agents', () => {
-    const result = deleteTenant(TARGET)
+  it('reports zero counts for an empty tenant and no exclusive agents', async () => {
+    const result = await deleteTenant(TARGET)
     expect(result.memoriesDeleted).toBe(0)
     expect(result.exclusiveAgents).toEqual([])
     for (const n of Object.values(result.purged)) expect(n).toBe(0)
@@ -114,10 +114,10 @@ describe('deleteTenant: agent-keyed rows', () => {
   const tenantOf = (table: string, agent: string) =>
     (db().prepare(`SELECT tenant_id FROM ${table} WHERE agent_id = ?`).all(agent) as { tenant_id: string }[]).map((r) => r.tenant_id)
 
-  beforeEach(() => {
+  beforeEach(async () => {
     initDatabase(':memory:')
-    createTenant(TARGET, 'Gone')
-    createTenant(SIBLING, 'Sibling')
+    await createTenant(TARGET, 'Gone')
+    await createTenant(SIBLING, 'Sibling')
     // solo: only serves TARGET. shared: serves TARGET and default. other: only SIBLING. fleet: no availability row at all.
     avail(TARGET, 'solo'); avail(TARGET, 'shared'); avail('default', 'shared'); avail(SIBLING, 'other')
     for (const agent of ['solo', 'shared', 'other', 'fleet']) {
@@ -127,17 +127,17 @@ describe('deleteTenant: agent-keyed rows', () => {
     board('solo', TARGET); board('shared', TARGET); board('other', SIBLING); board('fleet', 'default')
   })
 
-  it('names the agents that serve only the deleted tenant, in the result', () => {
-    expect(deleteTenant(TARGET).exclusiveAgents).toEqual(['solo'])
+  it('names the agents that serve only the deleted tenant, in the result', async () => {
+    expect((await deleteTenant(TARGET)).exclusiveAgents).toEqual(['solo'])
   })
 
-  it('deletes the exclusive agent\'s settings, state and blackboard row', () => {
-    deleteTenant(TARGET)
+  it('deletes the exclusive agent\'s settings, state and blackboard row', async () => {
+    await deleteTenant(TARGET)
     for (const table of TENANT_PURGE_AGENT_KEYED_TABLES) expect(tenantOf(table, 'solo'), table).toEqual([])
   })
 
-  it('keeps a shared agent\'s configuration and re-tags it to default (not deleted, not left on the dead tenant)', () => {
-    const result = deleteTenant(TARGET)
+  it('keeps a shared agent\'s configuration and re-tags it to default (not deleted, not left on the dead tenant)', async () => {
+    const result = await deleteTenant(TARGET)
     for (const table of TENANT_PURGE_AGENT_KEYED_TABLES) expect(tenantOf(table, 'shared'), table).toEqual(['default'])
     expect(result.purged.agent_settings_retagged).toBe(1)
     expect(result.purged.agent_settings).toBe(1)
@@ -154,37 +154,37 @@ describe('deleteTenant: agent-keyed rows', () => {
     expect(getAgentSetting('solo', 'auto_restart')?.tenant_id).toBe(TARGET)
     expect(getAgentSetting('shared', 'auto_restart')?.tenant_id).toBe(TARGET)
 
-    deleteTenant(TARGET)
+    await deleteTenant(TARGET)
 
     expect(getAgentSetting('solo', 'auto_restart')).toBeUndefined()
     expect(getAgentSetting('shared', 'auto_restart')?.tenant_id).toBe('default')
   })
 
-  it('does not touch the rows of agents that never served the deleted tenant', () => {
-    deleteTenant(TARGET)
+  it('does not touch the rows of agents that never served the deleted tenant', async () => {
+    await deleteTenant(TARGET)
     for (const table of TENANT_PURGE_AGENT_KEYED_TABLES) {
       expect(tenantOf(table, 'other'), table).toEqual([SIBLING])
       expect(tenantOf(table, 'fleet'), table).toEqual(['default'])
     }
   })
 
-  it('does not count a disabled availability row as a second tenant: the agent is still exclusive', () => {
+  it('does not count a disabled availability row as a second tenant: the agent is still exclusive', async () => {
     avail(SIBLING, 'solo', 0)
-    expect(deleteTenant(TARGET).exclusiveAgents).toEqual(['solo'])
+    expect((await deleteTenant(TARGET)).exclusiveAgents).toEqual(['solo'])
     expect(tenantOf('agent_settings', 'solo')).toEqual([])
   })
 
-  it('an agent whose only availability row for the tenant is disabled is not exclusive: its row is re-tagged, not deleted', () => {
+  it('an agent whose only availability row for the tenant is disabled is not exclusive: its row is re-tagged, not deleted', async () => {
     avail(TARGET, 'ghost', 0)
     setting('ghost', 'auto_restart', TARGET)
-    const result = deleteTenant(TARGET)
+    const result = await deleteTenant(TARGET)
     expect(result.exclusiveAgents).toEqual(['solo'])
     expect(tenantOf('agent_settings', 'ghost')).toEqual(['default'])
   })
 
-  it('does not delete a row of an exclusive agent that is tagged with another tenant', () => {
+  it('does not delete a row of an exclusive agent that is tagged with another tenant', async () => {
     db().prepare("UPDATE agent_settings SET tenant_id = 'default' WHERE agent_id = 'solo'").run()
-    deleteTenant(TARGET)
+    await deleteTenant(TARGET)
     expect(tenantOf('agent_settings', 'solo')).toEqual(['default'])
   })
 })
@@ -194,13 +194,13 @@ describe('deleteTenant: the approval journal', () => {
     initDatabase(':memory:')
   })
 
-  it("removes the deleted tenant's approval events and leaves every other tenant's", () => {
-    createTenant(TARGET, 'Gone')
-    createTenant(SIBLING, 'Sibling')
+  it("removes the deleted tenant's approval events and leaves every other tenant's", async () => {
+    await createTenant(TARGET, 'Gone')
+    await createTenant(SIBLING, 'Sibling')
     for (const t of [TARGET, SIBLING, 'default']) {
       db().prepare("INSERT INTO approval_events (approval_id, tenant_id, event, created_at) VALUES (?, ?, 'consumed', 0)").run(`ap-${t}`, t)
     }
-    deleteTenant(TARGET)
+    await deleteTenant(TARGET)
     expect(count('approval_events', TARGET)).toBe(0)
     expect(count('approval_events', SIBLING)).toBe(1)
     expect(count('approval_events', 'default')).toBe(1)
@@ -235,32 +235,32 @@ describe('deleteTenant: drift guard', () => {
 })
 
 describe('deleteTenant: tombstones and untouched rollups', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     initDatabase(':memory:')
-    createTenant(TARGET, 'Gone')
+    await createTenant(TARGET, 'Gone')
   })
 
-  it('keeps the api_tokens row as a revoked tombstone', () => {
+  it('keeps the api_tokens row as a revoked tombstone', async () => {
     db().prepare("INSERT INTO api_tokens (name, token_hash, role, tenant_id, created_at) VALUES ('n', 'h', 'admin', ?, 0)").run(TARGET)
-    deleteTenant(TARGET)
+    await deleteTenant(TARGET)
     const row = db().prepare("SELECT revoked_at FROM api_tokens WHERE token_hash = 'h'").get() as { revoked_at: number | null } | undefined
     expect(row).toBeDefined()
     expect(row!.revoked_at).not.toBeNull()
   })
 
-  it('keeps the governance trail (agent and hook audit rows) of the deleted tenant', () => {
+  it('keeps the governance trail (agent and hook audit rows) of the deleted tenant', async () => {
     db().prepare("INSERT INTO agent_audit_log (agent_id, entity, action, tenant_id) VALUES ('a', 'agent', 'update', ?)").run(TARGET)
     db().prepare("INSERT INTO hook_audit_log (ts, agent_id, hook_type, verdict, tenant_id) VALUES (0, 'a', 'PreToolUse', 'allow', ?)").run(TARGET)
-    deleteTenant(TARGET)
+    await deleteTenant(TARGET)
     expect(count('agent_audit_log', TARGET)).toBe(1)
     expect(count('hook_audit_log', TARGET)).toBe(1)
   })
 
-  it('drops the card links of a purged label even when the card belongs to another tenant', () => {
+  it('drops the card links of a purged label even when the card belongs to another tenant', async () => {
     db().prepare("INSERT INTO labels (id, name, color, created_at, tenant_id) VALUES ('lb', 'l', '#fff', 0, ?)").run(TARGET)
     db().prepare("INSERT INTO kanban_cards (id, title, status, priority, created_at, updated_at, tenant_id) VALUES ('kc', 't', 'planned', 'normal', 0, 0, 'default')").run()
     db().prepare("INSERT INTO kanban_card_labels (card_id, label_id, created_at) VALUES ('kc', 'lb', 0)").run()
-    deleteTenant(TARGET)
+    await deleteTenant(TARGET)
     expect(db().prepare("SELECT COUNT(*) AS n FROM kanban_card_labels WHERE label_id = 'lb'").get()).toEqual({ n: 0 })
     expect(db().prepare("SELECT COUNT(*) AS n FROM kanban_cards WHERE id = 'kc'").get()).toEqual({ n: 1 })
   })

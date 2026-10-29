@@ -77,15 +77,15 @@ describe('failPendingFederatedMessages (db helper)', () => {
     const pUnderscore = await createAgentMessage('a', 'te_dor/x', 'p2') // '_' would be a LIKE wildcard
     const pLocal = await createAgentMessage('a', 'localagent', 'p3')
     const delivered = await createAgentMessage('a', 'teodor/y', 'p4')
-    markMessageDelivered(delivered.id)
+    await markMessageDelivered(delivered.id)
 
-    const failed = failPendingFederatedMessages('te_dor', 'peer removed')
+    const failed = await failPendingFederatedMessages('te_dor', 'peer removed')
     expect(failed).toEqual([pUnderscore.id]) // teodor/x must NOT be swept
     expect((await getAgentMessage(pTeodor.id))?.status).toBe('pending')
     expect((await getAgentMessage(pLocal.id))?.status).toBe('pending')
     expect((await getAgentMessage(delivered.id))?.status).toBe('delivered') // history untouched
 
-    const all = failPendingFederatedMessages(undefined, 'disabled')
+    const all = await failPendingFederatedMessages(undefined, 'disabled')
     expect(all).toEqual([pTeodor.id]) // only the remaining pending qualified row
     expect((await getAgentMessage(pTeodor.id))?.result).toBe('disabled')
   })
@@ -93,24 +93,24 @@ describe('failPendingFederatedMessages (db helper)', () => {
   it('per-peer scoping is case-insensitive (L1): pre-normalization uppercase rows are purged too', async () => {
     const upper = await createAgentMessage('a', 'Teodor/x', 'legacy row')
     const other = await createAgentMessage('a', 'cecil/x', 'other peer')
-    const failed = failPendingFederatedMessages('teodor', 'peer removed')
+    const failed = await failPendingFederatedMessages('teodor', 'peer removed')
     expect(failed).toEqual([upper.id])
     expect((await getAgentMessage(other.id))?.status).toBe('pending')
-    failPendingFederatedMessages(undefined, 'cleanup')
+    await failPendingFederatedMessages(undefined, 'cleanup')
   })
 })
 
 describe('markMessageDelivered status guard', () => {
   it('refuses to flip a non-pending row (concurrent bulk-fail vs in-flight send)', async () => {
     const msg = await createAgentMessage('a', 'teodor/x', 'race')
-    failPendingFederatedMessages('teodor', 'Federation removed while pending')
-    expect(markMessageDelivered(msg.id)).toBe(false)
+    await failPendingFederatedMessages('teodor', 'Federation removed while pending')
+    expect(await markMessageDelivered(msg.id)).toBe(false)
     expect((await getAgentMessage(msg.id))?.status).toBe('failed')
     expect((await getAgentMessage(msg.id))?.result).toBe('Federation removed while pending')
 
     const done = await createAgentMessage('a', 'b', 'done-first')
-    markMessageDone(done.id, 'ok')
-    expect(markMessageDelivered(done.id)).toBe(false)
+    await markMessageDone(done.id, 'ok')
+    expect(await markMessageDelivered(done.id)).toBe(false)
   })
 })
 

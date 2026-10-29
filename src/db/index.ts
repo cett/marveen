@@ -64,7 +64,7 @@ import { migrateFederationConfigFromFile } from './federation.js'
 import { loadSystemConfigCache } from './config-cache.js'
 import { loadModelProfileMapCache } from './model-profile-map-cache.js'
 import { loadAgentSettingsCache } from './agent-settings-cache.js'
-import { resolveAgentOwningTenantId } from './agents.js'
+import { resolveAgentOwningTenantIdSync } from './agents.js'
 import { logger } from '../logger.js'
 
 export function initDatabase(dbPathOverride?: string): void {
@@ -243,7 +243,7 @@ function migrateAgentSettingsFromFiles(): void {
     try {
       const raw = JSON.parse(readFileSync(p, 'utf-8'))
       if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
-        importAgentSettingsFromFile(key, raw as Record<string, unknown>, resolveAgentOwningTenantId)
+        importAgentSettingsFromFile(key, raw as Record<string, unknown>, resolveAgentOwningTenantIdSync)
       }
     } catch (err) {
       logger.warn({ err, file }, 'agent settings migration: failed to parse file, skipping')

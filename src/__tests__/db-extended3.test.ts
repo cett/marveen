@@ -192,8 +192,8 @@ describe('getKanbanSeqByIdPrefix', () => {
 // ---------------------------------------------------------------------------
 
 describe('getHeartbeatKanbanSummary', () => {
-  it('returns urgent, in_progress, waiting arrays', () => {
-    const result = getHeartbeatKanbanSummary()
+  it('returns urgent, in_progress, waiting arrays', async () => {
+    const result = await getHeartbeatKanbanSummary()
     expect(Array.isArray(result.urgent)).toBe(true)
     expect(Array.isArray(result.in_progress)).toBe(true)
     expect(Array.isArray(result.waiting)).toBe(true)
@@ -483,7 +483,7 @@ describe('logStoreFileEvent and getRecentStoreFileEvents', () => {
 describe('getPendingMessages without toAgent', () => {
   it('returns all pending messages', async () => {
     await createAgentMessage('test-sender', 'test-receiver', 'ping from test')
-    const msgs = getPendingMessages()
+    const msgs = await getPendingMessages()
     expect(Array.isArray(msgs)).toBe(true)
     expect(msgs.some(m => m.content === 'ping from test')).toBe(true)
   })
@@ -492,12 +492,12 @@ describe('getPendingMessages without toAgent', () => {
 describe('setMessageResult', () => {
   it('sets result on an existing message', async () => {
     const msg = await createAgentMessage('result-sender', 'result-recv', 'test msg for result')
-    const ok = setMessageResult(msg.id, 'result-text')
+    const ok = await setMessageResult(msg.id, 'result-text')
     expect(ok).toBe(true)
   })
 
-  it('returns false for nonexistent message id', () => {
-    const ok = setMessageResult(99999999, 'no such')
+  it('returns false for nonexistent message id', async () => {
+    const ok = await setMessageResult(99999999, 'no such')
     expect(ok).toBe(false)
   })
 })

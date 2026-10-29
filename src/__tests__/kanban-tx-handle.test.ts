@@ -12,17 +12,24 @@ import {
 beforeEach(() => { initDatabase(':memory:') })
 afterEach(() => { vi.restoreAllMocks() })
 
-// the audit write and the tenant lookup it makes (src/db/audit.ts, W3-5)
-const AUDIT_SINK = /^(INSERT INTO agent_audit_log|SELECT tenant_id, status, updated_at FROM agent_tenant_context)/
+// the audit write itself (src/db/audit.ts, W3-5): the one facade statement a transaction body may still run. The
+// tenant it is stamped with is resolved BEFORE the transaction, so its lookups are not part of the body.
+const AUDIT_SINK = /^INSERT INTO agent_audit_log/
 
-/** Records the SQL of every facade statement from now on; the audit sink is left out of the record. */
+/** Records the SQL of every facade statement that runs while a transaction is open; the audit insert is left out. */
 function spyFacade(): string[] {
   const seen: string[] = []
+  let open = 0
+  const realTx = dbx.tx.bind(dbx) as (fn: (tx: never) => Promise<unknown>) => Promise<unknown>
+  vi.spyOn(dbx, 'tx').mockImplementation((async (fn: (tx: never) => Promise<unknown>) => {
+    open++
+    try { return await realTx(fn) } finally { open-- }
+  }) as never)
   for (const m of ['get', 'run', 'all'] as const) {
     const real = dbx[m].bind(dbx) as (...a: unknown[]) => Promise<unknown>
     vi.spyOn(dbx, m).mockImplementation((async (sql: string, ...a: unknown[]) => {
       const s = sql.replace(/\s+/g, ' ').trim()
-      if (!AUDIT_SINK.test(s)) seen.push(s.slice(0, 70))
+      if (open > 0 && !AUDIT_SINK.test(s)) seen.push(s.slice(0, 70))
       return real(sql, ...a)
     }) as never)
   }
@@ -70,5 +77,44 @@ describe('the statements of a kanban transaction body go through the tx handle, 
     await promoteIdeaToKanban('i1', [{ id: 'p1', title: 'Parent' }, { id: 'k1', title: 'Kid', parent_id: 'p1' }], { from: 'new', actor: 'bot', note: 'n' })
     expect(seen).toEqual([])
     expect((db.prepare('SELECT COUNT(*) AS c FROM kanban_cards').get() as { c: number }).c).toBe(2)
+  })
+})
+
+describe('the tenant of the audit rows of a kanban transaction is resolved before it opens', () => {
+  const auditTenants = (action: string) => (db.prepare('SELECT tenant_id FROM agent_audit_log WHERE entity = ? AND action = ?').all('kanban', action) as { tenant_id: string | null }[]).map((r) => r.tenant_id)
+
+  it('the rows of the subtasks and of a delete carry the tenant of the card agent', async () => {
+    await createKanbanCard({ id: 'p1', title: 'Parent', assignee: 'agent-a' })
+    await createKanbanSubtasks('p1', [{ title: 'A', assignee: 'agent-a' }, { title: 'B' }], 'bot')
+    expect(auditTenants('create')).toEqual(['default', 'default', 'default'])
+    expect(await deleteKanbanCard('p1')).toBe(true)
+    expect(auditTenants('delete')).toEqual(['default'])
+  })
+
+  it('a failing tenant lookup stays best effort: the subtask is written with an unknown-tenant audit row, no lookup runs in the body', async () => {
+    await createKanbanCard({ id: 'p1', title: 'Parent' })
+    let open = 0
+    const realTx = dbx.tx.bind(dbx) as (fn: (tx: never) => Promise<unknown>) => Promise<unknown>
+    vi.spyOn(dbx, 'tx').mockImplementation((async (fn: (tx: never) => Promise<unknown>) => {
+      open++
+      try { return await realTx(fn) } finally { open-- }
+    }) as never)
+    let lookupsInBody = 0
+    for (const m of ['get', 'run', 'all'] as const) {
+      const real = dbx[m].bind(dbx) as (...a: unknown[]) => Promise<unknown>
+      vi.spyOn(dbx, m).mockImplementation((async (sql: string, ...a: unknown[]) => {
+        if (/FROM (tenants|tenant_agent_availability|agent_tenant_context)/.test(sql)) {
+          if (open > 0) lookupsInBody++
+          throw new Error('lookup down')
+        }
+        return real(sql, ...a)
+      }) as never)
+    }
+    const ids = await createKanbanSubtasks('p1', [{ title: 'A' }], 'bot')
+    expect(ids).toHaveLength(1)
+    expect(lookupsInBody).toBe(0)
+    expect((db.prepare('SELECT COUNT(*) AS c FROM kanban_cards WHERE parent_id = ?').get('p1') as { c: number }).c).toBe(1)
+    // the parent's own create row (written before the lookup broke) is 'default', the subtask's is unknown
+    expect(auditTenants('create')).toEqual(['default', null])
   })
 })

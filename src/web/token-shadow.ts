@@ -368,7 +368,7 @@ const WATCHED: readonly WatchSpec[] = [
   {
     prefix: '/api/blackboard', kind: 'unscoped', paramSeg: 0, paramName: ':id',
     paramLiterals: new Set(['history']),
-    owner: (p) => getBlackboardRowById(p)?.agent_id,
+    owner: async (p) => (await getBlackboardRowById(p))?.agent_id,
     queryKeys: ['agent_id'], bodyKeys: ['agent_id'], enforce: 'write',
   },
   {

@@ -5,38 +5,38 @@ import { initDatabase, createTenant, setTenantAgentAvailability, getEnabledAgent
 // in-memory SQLite database, so a broken query (wrong column, wrong enabled
 // filter) is caught even when route-level tests mock db.js entirely.
 
-beforeEach(() => {
+beforeEach(async () => {
   initDatabase(':memory:')
-  createTenant('acme', 'Acme')
-  createTenant('other-co', 'Other Co')
+  await createTenant('acme', 'Acme')
+  await createTenant('other-co', 'Other Co')
 })
 
 describe('getEnabledAgentsForTenant', () => {
-  it('returns an empty list for a tenant with no availability rows', () => {
-    expect(getEnabledAgentsForTenant('acme')).toEqual([])
+  it('returns an empty list for a tenant with no availability rows', async () => {
+    expect(await getEnabledAgentsForTenant('acme')).toEqual([])
   })
 
-  it('returns only the enabled=1 agents for the given tenant', () => {
-    setTenantAgentAvailability('acme', 'peter', true)
-    setTenantAgentAvailability('acme', 'zoe', true)
-    setTenantAgentAvailability('acme', 'carmen', false)
+  it('returns only the enabled=1 agents for the given tenant', async () => {
+    await setTenantAgentAvailability('acme', 'peter', true)
+    await setTenantAgentAvailability('acme', 'zoe', true)
+    await setTenantAgentAvailability('acme', 'carmen', false)
 
-    expect(getEnabledAgentsForTenant('acme').sort()).toEqual(['peter', 'zoe'])
+    expect((await getEnabledAgentsForTenant('acme')).sort()).toEqual(['peter', 'zoe'])
   })
 
-  it('does not leak another tenant\'s enabled agents', () => {
-    setTenantAgentAvailability('acme', 'peter', true)
-    setTenantAgentAvailability('other-co', 'vera', true)
+  it('does not leak another tenant\'s enabled agents', async () => {
+    await setTenantAgentAvailability('acme', 'peter', true)
+    await setTenantAgentAvailability('other-co', 'vera', true)
 
-    expect(getEnabledAgentsForTenant('acme')).toEqual(['peter'])
-    expect(getEnabledAgentsForTenant('other-co')).toEqual(['vera'])
+    expect(await getEnabledAgentsForTenant('acme')).toEqual(['peter'])
+    expect(await getEnabledAgentsForTenant('other-co')).toEqual(['vera'])
   })
 
-  it('reflects a later disable of a previously-enabled agent', () => {
-    setTenantAgentAvailability('acme', 'peter', true)
-    expect(getEnabledAgentsForTenant('acme')).toEqual(['peter'])
+  it('reflects a later disable of a previously-enabled agent', async () => {
+    await setTenantAgentAvailability('acme', 'peter', true)
+    expect(await getEnabledAgentsForTenant('acme')).toEqual(['peter'])
 
-    setTenantAgentAvailability('acme', 'peter', false)
-    expect(getEnabledAgentsForTenant('acme')).toEqual([])
+    await setTenantAgentAvailability('acme', 'peter', false)
+    expect(await getEnabledAgentsForTenant('acme')).toEqual([])
   })
 })

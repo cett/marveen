@@ -43,10 +43,10 @@ import { oneLine } from './approval-owner-notice.js'
 // window so a long turn that ate one also eats the other.
 
 // A message that ends as failed must not leave its inter-agent span open, and the failure is counted by reason.
-export function recordMessageFailure(msg: { trace_id?: string | null; span_id?: string | null }, reason: Parameters<typeof countMessageFailed>[0]): void {
+export async function recordMessageFailure(msg: { trace_id?: string | null; span_id?: string | null }, reason: Parameters<typeof countMessageFailed>[0]): Promise<void> {
   countMessageFailed(reason)
   try {
-    if (msg.trace_id && msg.span_id) closeOtelSpan(msg.trace_id, msg.span_id, Date.now(), 'error')
+    if (msg.trace_id && msg.span_id) await closeOtelSpan(msg.trace_id, msg.span_id, Date.now(), 'error')
   } catch { /* telemetry is never fatal to delivery */ }
 }
 
@@ -318,7 +318,7 @@ export async function deliverFederatedBatch(federated: AgentMessage[], now: numb
       logger.warn({ id: msg.id, from: msg.from_agent, to: msg.to_agent, ageMs }, 'Federated message abandoned: peer unreachable for full retry window')
       // Status-guarded: only bounce a notice when THIS call closed a still-
       // pending row (a concurrent disable/removal purge may have failed it).
-      if (markPendingFederatedFailed(msg.id, 'Abandoned: peer unreachable for full retry window')) {
+      if (await markPendingFederatedFailed(msg.id, 'Abandoned: peer unreachable for full retry window')) {
         await notifyDelegationFailed(msg, 'a társ a teljes türelmi ablakban elérhetetlen volt')
       } else {
         logger.warn({ id: msg.id }, 'markPendingFederatedFailed affected 0 rows (already closed concurrently)')
@@ -338,10 +338,10 @@ export async function deliverFederatedBatch(federated: AgentMessage[], now: numb
     if (result.kind === 'skipped') continue // peer in backoff: no network attempt made
     attempts++
     if (result.kind === 'delivered') {
-      const marked = markMessageDelivered(msg.id)
+      const marked = await markMessageDelivered(msg.id)
       if (marked) recordMessageDelivered(msg.created_at)
       if (marked && result.remoteId) {
-        setMessageResult(msg.id, `fed:${msg.to_agent.split('/')[0]}:${result.remoteId}`)
+        await setMessageResult(msg.id, `fed:${msg.to_agent.split('/')[0]}:${result.remoteId}`)
       }
       if (!marked) {
         // The row was concurrently closed (bulk-fail on disable/removal, or
@@ -356,7 +356,7 @@ export async function deliverFederatedBatch(federated: AgentMessage[], now: numb
       logger.warn({ fedOut: true, id: msg.id, to: msg.to_agent, error: result.error }, 'Federated message failed (terminal)')
       // Status-guarded: bounce the failure notice only if this call closed a
       // still-pending row (not a row a concurrent purge already failed).
-      if (markPendingFederatedFailed(msg.id, result.error)) {
+      if (await markPendingFederatedFailed(msg.id, result.error)) {
         await notifyDelegationFailed(msg, result.error)
       } else {
         logger.warn({ id: msg.id }, 'markPendingFederatedFailed affected 0 rows (already closed concurrently)')
@@ -444,7 +444,7 @@ export async function batchDeliverBacklog(agent: string, agentPending: AgentMess
   // Mark all batched messages as done. Use markMessageDone so they transition
   // cleanly (with COALESCE backfill for delivered_at if needed).
   for (const m of old) {
-    markMessageDone(m.id, `batched into backlog summary for ${agent}`)
+    await markMessageDone(m.id, `batched into backlog summary for ${agent}`)
     batchedMsgIdsThisTick.add(m.id)
   }
   // Create ONE new pending message with the summary. It will be picked up by
@@ -475,7 +475,7 @@ export async function runMessageRouterTick(): Promise<void> {
     // never reach the local path (agentSessionName / readAgentRemoteHost would
     // treat "sys/agent" as a nested filesystem path) and they have their own
     // budget so neither queue can starve the other.
-    const allPending = getPendingMessages()
+    const allPending = await getPendingMessages()
     const localPending: AgentMessage[] = []
     const federatedPending: AgentMessage[] = []
     for (const m of allPending) (isQualifiedId(m.to_agent) ? federatedPending : localPending).push(m)
@@ -509,7 +509,7 @@ export async function runMessageRouterTick(): Promise<void> {
     for (const agent of presentNow) {
       if (agentWasAbsent.has(agent) && !agentBatchedThisReconnect.has(agent)) {
         // Check if this agent qualifies for backlog batching.
-        const agentPending = getPendingMessages(agent)
+        const agentPending = await getPendingMessages(agent)
         if (agentPending.length > RECONNECT_BATCH_THRESHOLD) {
           const oldestAge = now - agentPending[0].created_at * 1000
           if (oldestAge > RECONNECT_BATCH_AGE_MS) {
@@ -586,10 +586,10 @@ export async function runMessageRouterTick(): Promise<void> {
 
       if (shouldAbandon(sessionExists, ageMs, MESSAGE_ABANDON_WINDOW_MS)) {
         logger.warn({ id: msg.id, from: msg.from_agent, to: msg.to_agent, ageMs }, 'Agent message abandoned: target session absent for full retry window')
-        if (!markMessageFailed(msg.id, 'Abandoned: target session absent for full retry window')) {
+        if (!await markMessageFailed(msg.id, 'Abandoned: target session absent for full retry window')) {
           logger.warn({ id: msg.id }, 'markMessageFailed affected 0 rows (deleted concurrently?)')
         }
-        recordMessageFailure(msg, 'abandoned')
+        await recordMessageFailure(msg, 'abandoned')
         await notifyOrchestratorOfFailedHandoff(msg, 'target session was absent for the entire retry window')
         routerInjectFailures.delete(msg.id)
         routerLoggedMisses.delete(msg.id)
@@ -603,7 +603,7 @@ export async function runMessageRouterTick(): Promise<void> {
           routerLoggedMisses.add(msg.id)
         }
         if (!routerNoSessionStamped.has(msg.id)) {
-          if (!markMessageNoSession(msg.id)) {
+          if (!await markMessageNoSession(msg.id)) {
             logger.warn({ id: msg.id }, 'markMessageNoSession affected 0 rows (status changed concurrently?)')
           }
           routerNoSessionStamped.add(msg.id)
@@ -687,10 +687,10 @@ export async function runMessageRouterTick(): Promise<void> {
       const cls = classifyAgentMessage(msg.from_agent, msg.to_agent)
       if (!cls) {
         logger.warn({ id: msg.id, rawFrom: msg.from_agent }, 'Agent message rejected: from_agent empty after sanitize')
-        if (!markMessageFailed(msg.id, 'Invalid or empty from_agent')) {
+        if (!await markMessageFailed(msg.id, 'Invalid or empty from_agent')) {
           logger.warn({ id: msg.id }, 'markMessageFailed affected 0 rows (deleted concurrently?)')
         }
-        recordMessageFailure(msg, 'invalid_sender')
+        await recordMessageFailure(msg, 'invalid_sender')
         routerLoggedMisses.delete(msg.id)
         continue
       }
@@ -749,7 +749,7 @@ export async function runMessageRouterTick(): Promise<void> {
         // the context that explains the tag semantics.
         await sendPromptToSession(session, prefix + wrapped, host)
         recordDelivery(session, prefix + wrapped)
-        if (!markMessageDelivered(msg.id)) {
+        if (!await markMessageDelivered(msg.id)) {
           logger.warn({ id: msg.id }, 'markMessageDelivered affected 0 rows (deleted concurrently?)')
         } else {
           recordMessageDelivered(msg.created_at)
@@ -774,20 +774,20 @@ export async function runMessageRouterTick(): Promise<void> {
           continue
         }
         logger.error({ err, id: msg.id, failCount }, 'Failed to inject agent message after retries, giving up')
-        if (!markMessageFailed(msg.id, `Failed to inject into tmux session after ${failCount} attempts`)) {
+        if (!await markMessageFailed(msg.id, `Failed to inject into tmux session after ${failCount} attempts`)) {
           logger.warn({ id: msg.id }, 'markMessageFailed affected 0 rows (deleted concurrently?)')
         }
-        recordMessageFailure(msg, 'inject_failed')
+        await recordMessageFailure(msg, 'inject_failed')
         await notifyOrchestratorOfFailedHandoff(msg, `tmux inject failed ${failCount}x`)
         routerInjectFailures.delete(msg.id)
         routerLoggedMisses.delete(msg.id)
       }
       } catch (err) {
         logger.warn({ err, id: msg.id, to: msg.to_agent }, 'Agent message processing threw; marking failed so the queue cannot wedge')
-        if (!markMessageFailed(msg.id, `Delivery error: ${String(err).slice(0, 200)}`)) {
+        if (!await markMessageFailed(msg.id, `Delivery error: ${String(err).slice(0, 200)}`)) {
           logger.warn({ id: msg.id }, 'markMessageFailed affected 0 rows (deleted concurrently?)')
         }
-        recordMessageFailure(msg, 'error')
+        await recordMessageFailure(msg, 'error')
         routerLoggedMisses.delete(msg.id)
       }
     }

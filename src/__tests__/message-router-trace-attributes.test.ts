@@ -26,14 +26,14 @@ vi.mock('../config.js', async (importOriginal) => ({
 
 vi.mock('../db.js', () => ({
   getPendingMessages: (toAgent?: string) => {
-    if (toAgent) return [] // per-agent query for reconnect pre-pass
-    return mockGetPendingMessages()
+    if (toAgent) return Promise.resolve([]) // per-agent query for reconnect pre-pass
+    return Promise.resolve(mockGetPendingMessages())
   },
-  markMessageDelivered: (..._a: unknown[]) => true,
-  markMessageFailed: (..._a: unknown[]) => true,
-  markMessageDone: (..._a: unknown[]) => true,
-  markMessageNoSession: (..._a: unknown[]) => true,
-  createAgentMessage: (..._a: unknown[]) => ({ id: 999 }),
+  markMessageDelivered: (..._a: unknown[]) => Promise.resolve(true),
+  markMessageFailed: (..._a: unknown[]) => Promise.resolve(true),
+  markMessageDone: (..._a: unknown[]) => Promise.resolve(true),
+  markMessageNoSession: (..._a: unknown[]) => Promise.resolve(true),
+  createAgentMessage: (..._a: unknown[]) => Promise.resolve(({ id: 999 })),
   stampMessageTrace: (...a: unknown[]) => mockStampMessageTrace(...a),
   upsertOtelSpan: (...a: unknown[]) => mockUpsertOtelSpan(...a),
   closeOtelSpan: (..._a: unknown[]) => false,

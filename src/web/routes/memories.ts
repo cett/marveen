@@ -392,7 +392,7 @@ Respond ONLY with JSON, nothing else:
     try {
       const body = await readBody(req)
       const opts = body.length ? JSON.parse(body.toString()) : {}
-      const result = runMemoryMaintenance({
+      const result = await runMemoryMaintenance({
         warmToColdDays: opts.warm_to_cold_days,
         coldToWarmDays: opts.cold_to_warm_days,
         minAgents: opts.min_agents,
@@ -477,7 +477,7 @@ Respond ONLY with JSON, nothing else:
       }
       for (const [key, { ids, ctx }] of batchByAgent) {
         const agentId = key.split('::')[0]
-        recordMemoryReadBatch(agentId, ids, ctx)
+        await recordMemoryReadBatch(agentId, ids, ctx)
       }
       json(res, { ok: true, recorded: parsed.reads.length })
       return true
@@ -485,7 +485,7 @@ Respond ONLY with JSON, nothing else:
 
     const { agent_id, memory_id, context } = parsed
     if (!agent_id || !memory_id) { json(res, { error: 'required', hint: 'agent_id and memory_id required' }, 400); return true }
-    recordMemoryRead(agent_id, memory_id, toCtx(context))
+    await recordMemoryRead(agent_id, memory_id, toCtx(context))
     json(res, { ok: true })
     return true
   }
@@ -630,7 +630,7 @@ Respond ONLY with JSON, nothing else:
   if (path === '/api/memories/stale' && method === 'GET') {
     const agentId = url.searchParams.get('agent_id') || url.searchParams.get('agent') || ''
     if (!agentId) { json(res, { error: 'required', field: 'agent_id', hint: 'agent_id required' }, 400); return true }
-    const stale = getStaleMemories(agentId, isAdmin ? undefined : effectiveTenantId)
+    const stale = await getStaleMemories(agentId, isAdmin ? undefined : effectiveTenantId)
     json(res, stale.map(m => ({ ...m, embedding: undefined, embedding_blob: undefined })))
     return true
   }
@@ -639,7 +639,7 @@ Respond ONLY with JSON, nothing else:
   const memVersionsMatch = path.match(/^\/api\/memories\/(\d+)\/versions$/)
   if (memVersionsMatch && method === 'GET') {
     const id = parseInt(memVersionsMatch[1], 10)
-    json(res, getMemoryVersions(id))
+    json(res, await getMemoryVersions(id))
     return true
   }
 
@@ -696,9 +696,9 @@ Respond ONLY with JSON, nothing else:
     if (!mem) { json(res, { error: 'not_found' }, 404); return true }
     const { embedding: _emb, embedding_blob: _blob, ...rest } = mem
     const agentId = url.searchParams.get('agent_id') || url.searchParams.get('agent') || ''
-    if (agentId) recordMemoryRead(agentId, id, 'direct')
+    if (agentId) await recordMemoryRead(agentId, id, 'direct')
     const payload: Record<string, unknown> = { ...rest }
-    if (includeVersions) payload.versions = getMemoryVersions(id)
+    if (includeVersions) payload.versions = await getMemoryVersions(id)
     json(res, payload)
     return true
   }

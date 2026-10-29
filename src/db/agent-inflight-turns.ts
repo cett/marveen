@@ -67,8 +67,8 @@ export function buildPreview(head: string): string {
 }
 
 /** A shared agent serves two or more tenants; its row never keeps prompt text (see inflightReplay). */
-function isSharedAgent(agentId: string): boolean {
-  return getServedTenantIds(agentId).length >= 2
+async function isSharedAgent(agentId: string): Promise<boolean> {
+  return (await getServedTenantIds(agentId)).length >= 2
 }
 
 export interface BeginInput {
@@ -92,7 +92,7 @@ export async function beginInflightTurn(agentId: string, input: BeginInput): Pro
     msg_id: extractMsgId(head),
     // No prompt text for a shared agent: its replay runs at SessionStart with no tenant context, and
     // the text of one tenant's prompt must not reach a session that may serve the other.
-    preview: isSharedAgent(agentId) ? null : buildPreview(head),
+    preview: await isSharedAgent(agentId) ? null : buildPreview(head),
     prompt_hash: input.prompt_hash,
     started_at: now,
     consumed_at: null,
@@ -168,7 +168,7 @@ export async function inflightReplay(
   if (!turn || !shouldReplayInflightTurn(turn, source, now)) return { additionalContext: null, turn_id: null }
   // Decided again NOW, not only at begin: the agent may have been enabled for a second tenant since the
   // row was written, and the preview it holds is then one tenant's text for a session that may serve both.
-  const visible = isSharedAgent(agentId) ? { ...turn, preview: null } : turn
+  const visible = await isSharedAgent(agentId) ? { ...turn, preview: null } : turn
   return { additionalContext: buildInflightInjection(visible), turn_id: turn.turn_id }
 }
 

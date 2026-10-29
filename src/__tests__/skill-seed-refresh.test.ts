@@ -42,7 +42,7 @@ vi.mock('../db.js', () => ({
   seedSkillIfAbsent: (o: { id: string; content: string; description: string }) => Promise.resolve(seedSkillIfAbsent(o)),
   listAllSkills: vi.fn().mockResolvedValue([]),
   listSkillAccess: vi.fn().mockResolvedValue([]),
-  getEnabledAgentsForTenant: vi.fn().mockReturnValue([]),
+  getEnabledAgentsForTenant: vi.fn().mockResolvedValue([]),
   listSkillFiles: vi.fn().mockResolvedValue([]),
   seedSkillFileIfAbsent: vi.fn(),
 }))

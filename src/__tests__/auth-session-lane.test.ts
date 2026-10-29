@@ -31,9 +31,9 @@ const FILE_TOKEN = 'f'.repeat(64)
 const HASH = '$scrypt$ln=16,r=8,p=1$c2FsdA==$a2V5'
 const SSE_PATH = '/api/agents/agent-a/pane/stream'
 
-beforeEach(() => {
+beforeEach(async () => {
   _clearSessionCacheForTest()
-  createTenant('tenant-b', 'Tenant B')
+  await createTenant('tenant-b', 'Tenant B')
 })
 afterEach(() => { vi.restoreAllMocks() })
 

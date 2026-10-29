@@ -223,7 +223,7 @@ function due(signal: Signal): boolean {
 
 async function exportTraces(cfg: ExportConfig): Promise<boolean> {
   if (!due('traces')) return false
-  const spans = getUnexportedOtelSpans(SPAN_BATCH_LIMIT)
+  const spans = await getUnexportedOtelSpans(SPAN_BATCH_LIMIT)
   if (spans.length === 0) return false
 
   const url = `${cfg.endpoint}/v1/traces`
@@ -232,13 +232,13 @@ async function exportTraces(cfg: ExportConfig): Promise<boolean> {
   const done = () => markOtelSpansExported(spans.map((s) => ({ trace_id: s.trace_id, span_id: s.span_id })), Date.now())
   if (result.kind === 'ok') {
     recordSuccess('traces', result.rejected, result.message, url)
-    done()
+    await done()
     recordDurations(spans) // the response durations ride out with the next metrics export
     return true
   }
   if (result.kind === 'permanent') {
     recordPermanent('traces', result.status, spans.length, url)
-    done()
+    await done()
     return true // the collector did answer: its verdict goes out with the self-metrics
   }
   recordFailure('traces', result, url)
@@ -247,29 +247,29 @@ async function exportTraces(cfg: ExportConfig): Promise<boolean> {
 
 async function exportMetrics(cfg: ExportConfig): Promise<boolean> {
   if (!due('metrics')) return false
-  const { last_export_ms } = getOtelMetricsExportState()
+  const { last_export_ms } = await getOtelMetricsExportState()
   const nowMs = Date.now()
   const sinceSec = Math.floor(last_export_ms / 1000)
   const untilSec = Math.floor(nowMs / 1000)
   if (untilSec <= sinceSec) return false
 
-  const histogramRows = tokenUsageHistogramWindow(sinceSec, untilSec)
-  const rows = sumTokenUsageWindow(sinceSec, untilSec)
+  const histogramRows = await tokenUsageHistogramWindow(sinceSec, untilSec)
+  const rows = await sumTokenUsageWindow(sinceSec, untilSec)
   // Advance the watermark even with zero rows -- an empty window is still a
   // fully-covered window, and not advancing would just re-scan it forever.
-  if (rows.length === 0 && histogramRows.length === 0) { setOtelMetricsExportWatermark(nowMs); return false }
+  if (rows.length === 0 && histogramRows.length === 0) { await setOtelMetricsExportWatermark(nowMs); return false }
 
   const url = `${cfg.endpoint}/v1/metrics`
   const payload = tokenUsageToOtelMetricsJson(histogramRows, rows, sinceSec, untilSec, cfg.serviceNamespace, readOtelExportOptions())
   const result = await postJson(url, cfg.headers, payload)
   if (result.kind === 'ok') {
     recordSuccess('metrics', result.rejected, result.message, url)
-    setOtelMetricsExportWatermark(nowMs)
+    await setOtelMetricsExportWatermark(nowMs)
     return true
   }
   if (result.kind === 'permanent') {
     recordPermanent('metrics', result.status, rows.length, url)
-    setOtelMetricsExportWatermark(nowMs)
+    await setOtelMetricsExportWatermark(nowMs)
     return true
   }
   recordFailure('metrics', result, url)

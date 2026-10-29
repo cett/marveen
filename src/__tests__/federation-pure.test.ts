@@ -7,7 +7,7 @@ vi.mock('../../config.js', () => ({
 }))
 
 vi.mock('../../db.js', () => ({
-  createAgentMessage: vi.fn().mockReturnValue({ id: 1 }),
+  createAgentMessage: vi.fn().mockResolvedValue({ id: 1 }),
   failPendingFederatedMessages: vi.fn(),
 }))
 

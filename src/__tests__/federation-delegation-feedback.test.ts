@@ -93,7 +93,7 @@ describe('delegation failure feedback (L5)', () => {
 
     expect((await getAgentMessage(old.id))?.status).toBe('failed')
     // A single local 'system' notice now waits for the sender.
-    const inbox = getPendingMessages('localboss')
+    const inbox = await getPendingMessages('localboss')
     expect(inbox).toHaveLength(1)
     expect(inbox[0].from_agent).toBe('system')
     expect(inbox[0].to_agent).toBe('localboss') // local -- never crosses the bridge
@@ -107,10 +107,10 @@ describe('delegation failure feedback (L5)', () => {
     const now = old.created_at * 1000 + 2 * 60 * 60 * 1000
     // First pass: abandons + one notice.
     await deliverFederatedBatch([(await getAgentMessage(old.id))!], now)
-    expect(getPendingMessages('boss2')).toHaveLength(1)
+    expect(await getPendingMessages('boss2')).toHaveLength(1)
     // Second pass over the SAME (now failed) row: markPendingFederatedFailed
     // must not re-fire, so no duplicate notice piles up.
     await deliverFederatedBatch([(await getAgentMessage(old.id))!], now + 1000)
-    expect(getPendingMessages('boss2')).toHaveLength(1) // still exactly one notice
+    expect(await getPendingMessages('boss2')).toHaveLength(1) // still exactly one notice
   })
 })

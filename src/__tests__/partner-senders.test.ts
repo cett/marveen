@@ -14,22 +14,23 @@ import type { RouteContext } from '../web/routes/types.js'
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
 
+vi.mock('../web/vault.js', () => ({ secretsExistForTenant: vi.fn().mockReturnValue(false) }))
 vi.mock('../db.js', () => ({
   // used by messages.ts
   createAgentMessage: vi.fn(),
-  getPendingMessages: vi.fn().mockReturnValue([]),
-  listAgentMessages: vi.fn().mockReturnValue([]),
-  getAgentConversation: vi.fn().mockReturnValue([]),
-  getAgentConversationThreads: vi.fn().mockReturnValue([]),
+  getPendingMessages: vi.fn().mockResolvedValue([]),
+  listAgentMessages: vi.fn().mockResolvedValue([]),
+  getAgentConversation: vi.fn().mockResolvedValue([]),
+  getAgentConversationThreads: vi.fn().mockResolvedValue([]),
   getKanbanSeqByIdPrefix: vi.fn().mockReturnValue(null),
   closeOpenMessage: vi.fn(),
   getAgentMessage: vi.fn(),
   closeOtelSpan: vi.fn(),
-  getPendingBacklogByAgent: vi.fn().mockReturnValue([]),
+  getPendingBacklogByAgent: vi.fn().mockResolvedValue([]),
   COMPLETION_REPORT_PREFIX: '[Eredmény]',
   isAuthorizedPartnerSender: vi.fn(),
   writeAgentAuditLog: vi.fn(),
-  findBlackboardRowByAgent: vi.fn().mockReturnValue(undefined),
+  findBlackboardRowByAgent: vi.fn().mockResolvedValue(undefined),
   upsertBlackboard: vi.fn(),
   // used by admin-b2b.ts
   getDb: vi.fn().mockReturnValue({
@@ -144,11 +145,11 @@ describe('POST /api/messages -- partner tenant auth', () => {
   beforeEach(() => { vi.clearAllMocks() })
 
   it('accepts a partner send when sender is in allowlist', async () => {
-    vi.mocked(db.isAuthorizedPartnerSender).mockReturnValue(true)
+    vi.mocked(db.isAuthorizedPartnerSender).mockResolvedValue(true)
     // the recipient is a registered agent (UNKNOWNTO924); the partner sender is not a fleet agent
     const { isKnownAgent } = await import('../web/agent-config.js')
     vi.mocked(isKnownAgent).mockImplementation((n: string) => n === 'agent-a')
-    vi.mocked(db.createAgentMessage).mockReturnValue({ id: 7, from_agent: 'partner-bot', to_agent: 'agent-a', origin_note: null } as any)
+    vi.mocked(db.createAgentMessage).mockResolvedValue({ id: 7, from_agent: 'partner-bot', to_agent: 'agent-a', origin_note: null } as any)
 
     const { ctx, out } = makeCtx('POST', '/api/messages',
       { from: 'partner-bot', to: 'agent-a', content: 'hello' },
@@ -168,7 +169,7 @@ describe('POST /api/messages -- partner tenant auth', () => {
   })
 
   it('rejects a partner send when sender is NOT in allowlist (403)', async () => {
-    vi.mocked(db.isAuthorizedPartnerSender).mockReturnValue(false)
+    vi.mocked(db.isAuthorizedPartnerSender).mockResolvedValue(false)
 
     const { ctx, out } = makeCtx('POST', '/api/messages',
       { from: 'unknown-bot', to: 'agent-a', content: 'hello' },
@@ -192,7 +193,7 @@ describe('POST /api/messages -- partner tenant auth', () => {
     const { isKnownAgent } = await import('../web/agent-config.js')
     vi.mocked(isKnownAgent).mockImplementation((n: string) => n === 'agent-a' || n === 'agent-b')
 
-    vi.mocked(db.createAgentMessage).mockReturnValue({ id: 8, from_agent: 'agent-a', to_agent: 'agent-b', origin_note: null } as any)
+    vi.mocked(db.createAgentMessage).mockResolvedValue({ id: 8, from_agent: 'agent-a', to_agent: 'agent-b', origin_note: null } as any)
 
     const { ctx, out } = makeCtx('POST', '/api/messages',
       { from: 'agent-a', to: 'agent-b', content: 'fleet msg' },
@@ -221,9 +222,9 @@ describe('POST /api/admin/partner-senders', () => {
   })
 
   it('creates a partner sender and returns 201', async () => {
-    vi.mocked(db.getTenant).mockReturnValue(SAMPLE_TENANT as any)
-    vi.mocked(db.listPartnerSenders).mockReturnValue([])
-    vi.mocked(db.createPartnerSender).mockReturnValue(SAMPLE_PS as any)
+    vi.mocked(db.getTenant).mockResolvedValue(SAMPLE_TENANT as any)
+    vi.mocked(db.listPartnerSenders).mockResolvedValue([])
+    vi.mocked(db.createPartnerSender).mockResolvedValue(SAMPLE_PS as any)
 
     const { ctx, out } = makeCtx('POST', '/api/v1/admin/partner-senders', {
       sender_id: 'partner-bot', tenant_id: 'tenant-x', display_name: 'Partner Bot',
@@ -236,8 +237,8 @@ describe('POST /api/admin/partner-senders', () => {
   })
 
   it('returns 409 if sender_id already exists for tenant', async () => {
-    vi.mocked(db.getTenant).mockReturnValue(SAMPLE_TENANT as any)
-    vi.mocked(db.listPartnerSenders).mockReturnValue([SAMPLE_PS] as any)
+    vi.mocked(db.getTenant).mockResolvedValue(SAMPLE_TENANT as any)
+    vi.mocked(db.listPartnerSenders).mockResolvedValue([SAMPLE_PS] as any)
 
     const { ctx, out } = makeCtx('POST', '/api/v1/admin/partner-senders', {
       sender_id: 'partner-bot', tenant_id: 'tenant-x', display_name: 'Partner Bot',
@@ -249,8 +250,8 @@ describe('POST /api/admin/partner-senders', () => {
   })
 
   it('returns 409 if sender_id collides with a fleet agent name', async () => {
-    vi.mocked(db.getTenant).mockReturnValue(SAMPLE_TENANT as any)
-    vi.mocked(db.listPartnerSenders).mockReturnValue([])
+    vi.mocked(db.getTenant).mockResolvedValue(SAMPLE_TENANT as any)
+    vi.mocked(db.listPartnerSenders).mockResolvedValue([])
     const { isKnownAgent } = await import('../web/agent-config.js')
     vi.mocked(isKnownAgent).mockReturnValueOnce(true)
 
@@ -275,7 +276,7 @@ describe('POST /api/admin/partner-senders', () => {
   })
 
   it('returns 404 if tenant does not exist', async () => {
-    vi.mocked(db.getTenant).mockReturnValue(undefined as any)
+    vi.mocked(db.getTenant).mockResolvedValue(undefined as any)
 
     const { ctx, out } = makeCtx('POST', '/api/v1/admin/partner-senders', {
       sender_id: 'partner-bot', tenant_id: 'no-such-tenant', display_name: 'X',
@@ -294,7 +295,7 @@ describe('GET /api/admin/partner-senders', () => {
   beforeEach(() => { vi.clearAllMocks() })
 
   it('returns all partner senders when no tenant_id filter', async () => {
-    vi.mocked(db.listPartnerSenders).mockReturnValue([SAMPLE_PS] as any)
+    vi.mocked(db.listPartnerSenders).mockResolvedValue([SAMPLE_PS] as any)
 
     const { ctx, out } = makeCtx('GET', '/api/v1/admin/partner-senders')
     await tryHandleAdminB2b(ctx)
@@ -306,7 +307,7 @@ describe('GET /api/admin/partner-senders', () => {
   })
 
   it('passes tenant_id filter to listPartnerSenders', async () => {
-    vi.mocked(db.listPartnerSenders).mockReturnValue([SAMPLE_PS] as any)
+    vi.mocked(db.listPartnerSenders).mockResolvedValue([SAMPLE_PS] as any)
 
     const { ctx, out } = makeCtx('GET', '/api/v1/admin/partner-senders?tenant_id=tenant-x')
     await tryHandleAdminB2b(ctx)
@@ -322,7 +323,7 @@ describe('DELETE /api/admin/partner-senders/:id', () => {
   beforeEach(() => { vi.clearAllMocks() })
 
   it('soft-disables an existing partner sender', async () => {
-    vi.mocked(db.disablePartnerSender).mockReturnValue(true)
+    vi.mocked(db.disablePartnerSender).mockResolvedValue(true)
 
     const { ctx, out } = makeCtx('DELETE', '/api/v1/admin/partner-senders/partner-bot?tenant_id=tenant-x')
     await tryHandleAdminB2b(ctx)
@@ -333,7 +334,7 @@ describe('DELETE /api/admin/partner-senders/:id', () => {
   })
 
   it('returns 404 when partner sender not found or already disabled', async () => {
-    vi.mocked(db.disablePartnerSender).mockReturnValue(false)
+    vi.mocked(db.disablePartnerSender).mockResolvedValue(false)
 
     const { ctx, out } = makeCtx('DELETE', '/api/v1/admin/partner-senders/no-such-bot?tenant_id=tenant-x')
     await tryHandleAdminB2b(ctx)

@@ -14,9 +14,9 @@ vi.mock('../db.js', () => ({
   decayMemories: vi.fn().mockReturnValue(undefined),
   pruneAuditLogs: vi.fn().mockResolvedValue(undefined),
   pruneTokenUsage: vi.fn().mockResolvedValue({ pruned: 0 }),
-  pruneBlackboardHistory: vi.fn().mockReturnValue(0),
-  pruneConversationLog: vi.fn().mockReturnValue(0),
-  pruneAgentMessages: vi.fn().mockReturnValue(0),
+  pruneBlackboardHistory: vi.fn().mockResolvedValue(0),
+  pruneConversationLog: vi.fn().mockResolvedValue(0),
+  pruneAgentMessages: vi.fn().mockResolvedValue(0),
   getMemoriesForChat: vi.fn().mockReturnValue([]),
   listKanbanCardsSummary: vi.fn().mockReturnValue([]),
 }))
@@ -144,9 +144,9 @@ describe('saveConversationTurn', () => {
 describe('runDecaySweep', () => {
   it('runs every prune/decay step and logs a combined summary', async () => {
     vi.mocked(db.pruneTokenUsage).mockResolvedValue({ pruned: 3 } as unknown as Awaited<ReturnType<typeof db.pruneTokenUsage>>)
-    vi.mocked(db.pruneBlackboardHistory).mockReturnValue(2 as unknown as ReturnType<typeof db.pruneBlackboardHistory>)
-    vi.mocked(db.pruneConversationLog).mockReturnValue(1 as unknown as ReturnType<typeof db.pruneConversationLog>)
-    vi.mocked(db.pruneAgentMessages).mockReturnValue(4 as unknown as ReturnType<typeof db.pruneAgentMessages>)
+    vi.mocked(db.pruneBlackboardHistory).mockResolvedValue(2 as unknown as Awaited<ReturnType<typeof db.pruneBlackboardHistory>>)
+    vi.mocked(db.pruneConversationLog).mockResolvedValue(1 as unknown as Awaited<ReturnType<typeof db.pruneConversationLog>>)
+    vi.mocked(db.pruneAgentMessages).mockResolvedValue(4 as unknown as Awaited<ReturnType<typeof db.pruneAgentMessages>>)
 
     await runDecaySweep()
 

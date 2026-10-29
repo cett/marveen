@@ -18,6 +18,8 @@ const BOOT_SYNC_TWINS: Readonly<Record<string, readonly string[]>> = {
   migrateCostBudgetsFromFile: ['db/cost-budgets.ts', 'db/index.ts'],
   migrateVaultBindingsFromFile: ['db/vault-bindings.ts', 'db/index.ts'],
   importAgentSettingsFromFile: ['db/agent-settings.ts', 'db/index.ts'],
+  // Boot-only, on the raw handle: the one-time agent_settings file import stamps each row with the owning tenant.
+  resolveAgentOwningTenantIdSync: ['db/agents.ts', 'db/index.ts'],
   importAgentStateFromFile: ['db/agent-state.ts', 'db/index.ts'],
   getAgentStateSync: ['db/agent-state.ts', 'db/index.ts'],
   setAgentStateSync: ['db/agent-state.ts', 'db/index.ts'],
@@ -52,6 +54,18 @@ function taggedTwins(sources: ReadonlyMap<string, string>): string[] {
     for (const m of src.matchAll(/\/\/ @boot-sync-twin\s*\n\s*export function (\w+)/g)) out.push(m[1]!)
   }
   return out.sort()
+}
+
+/** A statement on the raw synchronous connection (`db` is the live binding of db/connection.ts). */
+const RAW_STATEMENT = /\bdb\s*\.\s*(prepare|exec|transaction|pragma)\b/
+
+/** Cuts the top-level function `name` (from its `function` keyword to the closing brace at column 0) out of `src`. */
+function cutFunction(src: string, name: string): { body: string; rest: string } {
+  const start = src.search(new RegExp(`\\bfunction\\s+${name}\\b`))
+  if (start < 0) return { body: '', rest: src }
+  const close = src.indexOf('\n}', start)
+  const end = close < 0 ? src.length : close + 2
+  return { body: src.slice(start, end), rest: src.slice(0, start) + src.slice(end) }
 }
 
 function readSources(dir: string, out: Map<string, string> = new Map()): Map<string, string> {
@@ -102,13 +116,37 @@ describe('boot-synchronous twins stay inside the boot chain', () => {
     expect(declared.sort()).toEqual(declared.filter((n) => n in BOOT_SYNC_TWINS).sort())
   })
 
-  // The modules that have moved completely onto the facade keep no raw statement: the vault module (SSH keys,
-  // servers, the approvals and their journal) and the session module. A raw `db.prepare(...)` or a raw
-  // `db.transaction(...)` there would run beside the facade's transaction lock.
-  it.each(['db/vault.ts', 'db/sessions.ts'])('%s has no statement on the raw connection', (rel) => {
+  // The modules that have moved completely onto the facade keep no raw statement. A raw `db.prepare(...)` or a raw
+  // `db.transaction(...)` there would run beside the facade's transaction lock. The list is a literal on purpose:
+  // a module joins it in the commit that moves it, and the length check below keeps a renamed or emptied file
+  // from passing vacuously.
+  const RAW_FREE_MODULES = [
+    'db/agent-inflight-turns.ts', 'db/artifacts.ts', 'db/audit.ts', 'db/autonomy.ts', 'db/channel-credentials.ts',
+    'db/conversation-ledger.ts', 'db/device-keys.ts', 'db/egress-allowlist.ts', 'db/federation.ts',
+    'db/fleet-transfer.ts', 'db/import.ts', 'db/kanban.ts', 'db/memory.ts', 'db/misc.ts', 'db/observability.ts',
+    'db/otel-logs.ts', 'db/overview.ts', 'db/sessions.ts', 'db/tenant-channel-bindings.ts', 'db/tenant-scoped.ts',
+    'db/token-shadow.ts', 'db/vault.ts', 'db/workspace.ts',
+  ]
+  it.each(RAW_FREE_MODULES)('%s has no statement on the raw connection', (rel) => {
     const src = stripComments(SOURCES.get(rel) ?? '')
     expect(src.length).toBeGreaterThan(1000)
-    expect(src).not.toMatch(/\bdb\s*\.\s*(prepare|exec|transaction|pragma)\b/)
+    expect(src).not.toMatch(RAW_STATEMENT)
+  })
+
+  // A module on the facade whose only raw statements are its boot twin: with the twin's body cut out, nothing
+  // raw is left, and the twin itself does use the raw handle (a row whose twin moved away is stale).
+  const RAW_ONLY_IN_TWIN: Readonly<Record<string, string>> = {
+    'db/agents.ts': 'resolveAgentOwningTenantIdSync',
+    'db/tasks.ts': 'migrateScheduleLastRunFromFile',
+    'db/cost-budgets.ts': 'migrateCostBudgetsFromFile',
+    'db/vault-bindings.ts': 'migrateVaultBindingsFromFile',
+  }
+  it.each(Object.entries(RAW_ONLY_IN_TWIN))('%s keeps its raw statements inside %s only', (rel, twin) => {
+    expect(twin in BOOT_SYNC_TWINS).toBe(true)
+    const { body, rest } = cutFunction(stripComments(SOURCES.get(rel) ?? ''), twin)
+    expect(rest.length).toBeGreaterThan(1000)
+    expect(body).toMatch(RAW_STATEMENT)
+    expect(rest).not.toMatch(RAW_STATEMENT)
   })
 
   // Negative controls for the detector: without them a regex that matches nothing would pass every row above.
@@ -135,6 +173,16 @@ describe('boot-synchronous twins stay inside the boot chain', () => {
     it('the tag finder reads the declaration under the tag and ignores an untagged function', () => {
       const db = new Map([['db/x.ts', '// @boot-sync-twin\nexport function fooSync() {}\nexport function barSync() {}'], ['web/y.ts', '// @boot-sync-twin\nexport function ignored() {}']])
       expect(taggedTwins(db)).toEqual(['fooSync'])
+    })
+
+    it('cutFunction separates the twin body from the rest, so a raw statement outside it stays visible', () => {
+      const src = 'export function a() {\n  return db.prepare("x")\n}\nexport function b() {\n  return 1\n}\n'
+      const cut = cutFunction(src, 'a')
+      expect(cut.body).toMatch(RAW_STATEMENT)
+      expect(cut.rest).not.toMatch(RAW_STATEMENT)
+      const leaking = cutFunction(src + 'export function c() {\n  db.exec("y")\n}\n', 'a')
+      expect(leaking.rest).toMatch(RAW_STATEMENT)
+      expect(cutFunction(src, 'missing').body).toBe('')
     })
 
     it('the sync pair is matched by exact name, so the async getAgentState is not a twin hit', () => {

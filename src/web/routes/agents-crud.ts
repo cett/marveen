@@ -165,8 +165,8 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
     // rides along on a shared agent. Admin bypasses (role check, not
     // tenantId === null -- see RouteContext). Same rule as /api/team/graph via
     // agent-tenant-scope.ts.
-    const visible = visibleAgentSet(ctx)
-    const list = listAgentSummaries()
+    const visible = await visibleAgentSet(ctx)
+    const list = await listAgentSummaries()
     jsonMaybeGzip(req, res, visible === null
       ? list
       : list.filter(a => visible.has(a.name)).map(a => scopeTenantFieldsToCaller(a, ctx)))
@@ -208,7 +208,7 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
 
     // Non-admin: only the agents their tenant may see, and never the main
     // agent's channels session (the tail is live pane output).
-    const visible = visibleAgentSet(ctx)
+    const visible = await visibleAgentSet(ctx)
 
     // Main agent runs in the --channels session, not agent-<name>.
     if (visible === null) {
@@ -253,7 +253,7 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
 
     // Token usage: per-agent average input tokens/call over the last 30 days
     const thirtyDaysAgo = Math.floor(Date.now() / 1000) - 30 * 24 * 3600
-    const tokenSummaries = getTokenSummary(thirtyDaysAgo)
+    const tokenSummaries = await getTokenSummary(thirtyDaysAgo)
     const tokenMap = new Map(
       tokenSummaries.map(s => [s.agent, s.totalCalls > 0 ? s.totalInput / s.totalCalls : 0])
     )
@@ -559,7 +559,7 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
     // no tenant-membership fields (another tenant's name must not leak), and no
     // edge or delegatesTo entry pointing at an agent they cannot see. An agent
     // whose manager is hidden simply becomes a root of their chart.
-    const visible = visibleAgentSet(ctx)
+    const visible = await visibleAgentSet(ctx)
     if (visible === null) {
       nodes.push({
         id: MAIN_AGENT_ID,
@@ -583,7 +583,7 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
         securityProfile: readAgentSecurityProfile(agentName),
       }
       if (visible !== null) { nodes.push(base); continue }
-      const { primaryTenantId, tenantIds, tenantNames } = tenantSummaryFields(agentName)
+      const { primaryTenantId, tenantIds, tenantNames } = await tenantSummaryFields(agentName)
       const primaryTenantName = primaryTenantId ? tenantNames[primaryTenantId] : undefined
       nodes.push({
         ...base,
@@ -831,10 +831,10 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
     // (not 403) so the tenant can't distinguish "not mine" from "doesn't
     // exist". mcpJson is always redacted for non-admin, even when the agent
     // is enabled for their tenant (may hold credentials/endpoints).
-    if (!callerCanSeeAgent(ctx, name)) {
+    if (!await callerCanSeeAgent(ctx, name)) {
       json(res, { error: 'not_found', field: 'name' }, 404); return true
     }
-    json(res, scopeTenantFieldsToCaller(getAgentDetail(name, !isAdmin), ctx))
+    json(res, scopeTenantFieldsToCaller(await getAgentDetail(name, !isAdmin), ctx))
     return true
   }
 

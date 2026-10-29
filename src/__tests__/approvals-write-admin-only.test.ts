@@ -54,7 +54,7 @@ async function callAs(auth: AuthResult, method: string, path: string, body?: unk
 
 beforeEach(async () => {
   initDatabase(':memory:')
-  createTenant('acme', 'Acme')
+  await createTenant('acme', 'Acme')
   await createApproval({ id: 'appr-acme', agent_id: 'alpha', category: 'deploy', action_description: 'acme deploy', tenant_id: 'acme' })
   await createApproval({ id: 'appr-default', agent_id: 'alpha', category: 'deploy', action_description: 'default deploy', tenant_id: 'default' })
 })

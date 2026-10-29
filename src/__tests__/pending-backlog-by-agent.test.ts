@@ -24,7 +24,7 @@ describe('getPendingBacklogByAgent', () => {
     // backdate the first one so "oldest" is a real measurement, not a tie
     getDb().exec(`UPDATE agent_messages SET created_at = created_at - 3600 WHERE id = ${m1.id}`)
 
-    const row = getPendingBacklogByAgent().find(r => r.agent === busy)
+    const row = (await getPendingBacklogByAgent()).find(r => r.agent === busy)
     expect(row?.pending).toBe(2)
     expect(row?.oldestAgeSeconds).toBeGreaterThanOrEqual(3600)
   })
@@ -32,10 +32,10 @@ describe('getPendingBacklogByAgent', () => {
   it('drops an agent off the list once its queue is drained', async () => {
     const quiet = uniq()
     const m = await createAgentMessage('a', quiet, 'egyetlen')
-    expect(getPendingBacklogByAgent().some(r => r.agent === quiet)).toBe(true)
+    expect((await getPendingBacklogByAgent()).some(r => r.agent === quiet)).toBe(true)
 
-    markMessageDelivered(m.id)
-    expect(getPendingBacklogByAgent().some(r => r.agent === quiet)).toBe(false)
+    await markMessageDelivered(m.id)
+    expect((await getPendingBacklogByAgent()).some(r => r.agent === quiet)).toBe(false)
   })
 
   it('puts the longest-waiting agent first', async () => {
@@ -50,7 +50,7 @@ describe('getPendingBacklogByAgent', () => {
     await createAgentMessage('b', fresh, 'ez is most jött')
     await createAgentMessage('c', fresh, 'meg ez is')
 
-    const list = getPendingBacklogByAgent().filter(r => r.agent === stale || r.agent === fresh)
+    const list = (await getPendingBacklogByAgent()).filter(r => r.agent === stale || r.agent === fresh)
     expect(list[0].agent).toBe(stale)
     expect(list[0].pending).toBe(1)        // fewer messages, but waiting longer
     expect(list[1].pending).toBe(3)

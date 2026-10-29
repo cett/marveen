@@ -31,7 +31,7 @@ vi.mock('../db.js', () => ({
   getSkill: vi.fn((id: string) => Promise.resolve(store.get(id))),
   listAllSkills: vi.fn(() => Promise.resolve([...store.values()])),
   listSkillAccess: vi.fn().mockResolvedValue([]),
-  getEnabledAgentsForTenant: vi.fn().mockReturnValue([]),
+  getEnabledAgentsForTenant: vi.fn().mockResolvedValue([]),
   listSkillFiles: vi.fn((id: string) => Promise.resolve([...files.values()].filter(f => f.skill_id === id))),
   seedSkillFileIfAbsent: vi.fn((id: string, rel: string, content: Buffer, mode?: number) => {
     if (files.has(fk(id, rel))) return Promise.resolve(false)

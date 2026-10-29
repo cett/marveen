@@ -41,6 +41,7 @@ import {
 import { listDeviceKeys, assignDeviceKeyTenant } from '../auth-device-keys.js'
 import { readBody, json } from '../http-helpers.js'
 import { hashPassword } from '../password-hash.js'
+import { secretsExistForTenant } from '../vault.js'
 import { sanitizeAgentIdent } from '../../prompt-safety.js'
 import { isKnownAgent, listAgentNames } from '../agent-config.js'
 import { getHighRiskMcpServersForAgent } from '../mcp-risk-policy.js'
@@ -97,10 +98,13 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
     if (!displayName || displayName.length > 120) {
       json(res, { error: 'required', field: 'display_name', hint: 'Display name is required and must be ≤120 chars' }, 400); return true
     }
-    const existing = getTenant(id)
+    const existing = await getTenant(id)
     if (existing) { json(res, { error: 'conflict', hint: 'Tenant ID already exists' }, 409); return true }
+    // A delete whose vault write failed after its commit leaves the entries of that id in vault.json: a new tenant
+    // with the id would inherit them. The delete has to be repeated first (DELETE on the id purges them).
+    if (secretsExistForTenant(id)) { json(res, { error: 'conflict', field: 'id', hint: 'The vault still holds secrets of a deleted tenant with this ID: repeat the delete first' }, 409); return true }
 
-    const tenant = createTenant(id, displayName)
+    const tenant = await createTenant(id, displayName)
     await auditAdmin(ctx, 'admin.tenant.create', id, { display_name: displayName })
     // The new tenant is owed a starter task (a draft, disabled); it is made now if an agent can be chosen, else when one is enabled.
     try { markStarterPackPending(id); await autoCreateStarterPack(ctx, id) } catch (err) { logger.warn({ err, tenantId: id }, 'tenant starter task could not be created for the new tenant') }
@@ -110,7 +114,7 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/admin/tenants' && method === 'GET') {
     const includeDisabled = ctx.url.searchParams.get('include_disabled') === 'true'
-    const items = listTenants(includeDisabled)
+    const items = await listTenants(includeDisabled)
     json(res, { items, total: items.length })
     return true
   }
@@ -128,7 +132,7 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
     if (ctx.role !== 'admin') { json(res, { error: 'forbidden', hint: 'The starter pack is admin-only' }, 403); return true }
     const tenantId = starterMatch[1]
     if (tenantId === 'default') { json(res, { error: 'invalid_value', field: 'id', hint: 'The default tenant has no starter pack' }, 400); return true }
-    const tenant = getTenant(tenantId)
+    const tenant = await getTenant(tenantId)
     if (!tenant || tenant.disabled_at !== null) { json(res, { error: 'not_found', field: 'id', hint: 'Tenant not found or disabled' }, 404); return true }
 
     if (method === 'GET') { json(res, await describeStarterPack(tenantId)); return true }
@@ -157,9 +161,27 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'forbidden', hint: 'Default tenant cannot be deleted' }, 403)
       return true
     }
-    const existing = getTenant(tenantId)
-    if (!existing) { json(res, { error: 'not_found', field: 'id', hint: 'Tenant not found' }, 404); return true }
-    const result = deleteTenant(tenantId)
+    const existing = await getTenant(tenantId)
+    // No tenant row but vault entries of that id: the earlier delete committed and its vault write failed. The
+    // delete is idempotent, so repeating it purges the entries (deleteTenant matches no row and does the file step).
+    if (!existing && !secretsExistForTenant(tenantId)) { json(res, { error: 'not_found', field: 'id', hint: 'Tenant not found' }, 404); return true }
+    let result: Awaited<ReturnType<typeof deleteTenant>>
+    try {
+      result = await deleteTenant(tenantId)
+    } catch (err) {
+      // The vault write failed AFTER the commit: the rows are gone, so a repeated delete cannot find the schedule
+      // names again. The file mirror and the audit row do not depend on the vault outcome: do them here, then fail.
+      const committed = (err as { tenantDeleteSqlResult?: { memoriesDeleted: number; scheduleNames?: string[]; purged?: Record<string, number>; exclusiveAgents?: string[] } } | null)?.tenantDeleteSqlResult
+      if (committed) {
+        try {
+          const removed = removeScheduledTaskFiles(committed.scheduleNames ?? [])
+          await auditAdmin(ctx, 'admin.tenant.delete', tenantId, { memories_deleted: committed.memoriesDeleted, secrets_deleted: 0, vault_purge_failed: true, schedules_deleted: committed.scheduleNames?.length ?? 0, schedule_mirrors_removed: removed, purged: committed.purged, exclusive_agents: committed.exclusiveAgents })
+        } catch (followUp) {
+          logger.error({ err: followUp, tenantId }, 'tenant delete: file mirror cleanup or audit failed after a vault purge failure')
+        }
+      }
+      throw err
+    }
     // The tenant's schedules are gone from the table; their file mirror must go too, or an
     // empty-table re-seed would bring them back.
     const mirrorsRemoved = removeScheduledTaskFiles(result.scheduleNames ?? [])
@@ -170,7 +192,7 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
 
   if (tenantByIdMatch && method === 'PATCH') {
     const tenantId = tenantByIdMatch[1]
-    const existing = getTenant(tenantId)
+    const existing = await getTenant(tenantId)
     if (!existing) { json(res, { error: 'not_found', field: 'id', hint: 'Tenant not found' }, 404); return true }
 
     const body = JSON.parse((await readBody(req)).toString()) as Record<string, unknown>
@@ -192,7 +214,7 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
     }
     if (!hasField) { json(res, { error: 'required', hint: 'At least one field must be provided' }, 400); return true }
 
-    const updated = updateTenant(tenantId, patch)
+    const updated = await updateTenant(tenantId, patch)
     await auditAdmin(ctx, 'admin.tenant.update', tenantId, patch as Record<string, unknown>)
     json(res, updated)
     return true
@@ -229,7 +251,7 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'forbidden', field: 'tenant_id', hint: 'Action requires a global admin account' }, 403); return true
     }
     if (finalTenantId !== null) {
-      const tenant = getTenant(finalTenantId)
+      const tenant = await getTenant(finalTenantId)
       if (!tenant || tenant.disabled_at !== null) {
         json(res, { error: 'not_found', field: 'tenant_id', hint: 'Tenant not found or disabled' }, 404); return true
       }
@@ -244,7 +266,7 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
     if (dup) { json(res, { error: 'conflict', field: 'username', hint: 'Username already exists' }, 409); return true }
 
     const hash = await hashPassword(password)
-    const user = provisionDashboardUser(username, hash, role, finalTenantId, email, displayName)
+    const user = await provisionDashboardUser(username, hash, role, finalTenantId, email, displayName)
     await auditAdmin(ctx, 'admin.user.create', user.id, { username, role, tenant_id: finalTenantId })
     json(res, userToPublic(user), 201)
     return true
@@ -253,7 +275,7 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
   if (path === '/api/admin/users' && method === 'GET') {
     const tenantParam = ctx.url.searchParams.get('tenant_id') ?? undefined
     const includeDisabled = ctx.url.searchParams.get('include_disabled') === 'true'
-    const items = listDashboardUsersFiltered({ tenantId: tenantParam, includeDisabled })
+    const items = await listDashboardUsersFiltered({ tenantId: tenantParam, includeDisabled })
     json(res, { items: items.map(userToPublic), total: items.length })
     return true
   }
@@ -262,7 +284,7 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
   if (userPatchMatch && method === 'PATCH') {
     if (await denyUnlessHumanSession(ctx, 'admin.user.update')) return true
     const userId = parseInt(userPatchMatch[1], 10)
-    const existing = getDashboardUserById(userId)
+    const existing = await getDashboardUserById(userId)
     if (!existing) { json(res, { error: 'not_found', field: 'userId', hint: 'User not found' }, 404); return true }
 
     const body = JSON.parse((await readBody(req)).toString()) as Record<string, unknown>
@@ -315,7 +337,7 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'forbidden', field: 'tenant_id', hint: 'Action requires a global admin account' }, 403); return true
     }
     if (finalTenantId != null) {
-      const tenant = getTenant(finalTenantId)
+      const tenant = await getTenant(finalTenantId)
       if (!tenant || tenant.disabled_at !== null) {
         json(res, { error: 'not_found', field: 'tenant_id', hint: 'Tenant not found or disabled' }, 404); return true
       }
@@ -328,13 +350,17 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
         json(res, { error: 'forbidden', hint: 'Cannot disable your own account' }, 403); return true
       }
       // Last-admin protection: cannot disable the last active admin.
-      if (existing.role === 'admin' && countActiveAdmins() <= 1) {
+      if (existing.role === 'admin' && await countActiveAdmins() <= 1) {
         json(res, { error: 'forbidden', hint: 'Cannot remove the last administrator' }, 403); return true
       }
     }
 
-    const updated = adminPatchDashboardUser(userId, patch)
-    if (!updated) { json(res, { error: 'not_found', field: 'userId', hint: 'User not found' }, 404); return true }
+    // The checks above are fast paths; the UPDATE itself refuses to take the last active admin out of the admin set
+    // (compare-and-set), for the role change as well as the disabled flag.
+    const outcome = await adminPatchDashboardUser(userId, patch)
+    if (outcome.status === 'last_admin') { json(res, { error: 'forbidden', hint: 'Cannot remove the last administrator' }, 403); return true }
+    if (outcome.status === 'not_found') { json(res, { error: 'not_found', field: 'userId', hint: 'User not found' }, 404); return true }
+    const updated = outcome.user
     await auditAdmin(ctx, 'admin.user.update', userId, { username: existing.username, ...patch, password_hash: patch.password_hash ? '[redacted]' : undefined })
     json(res, userToPublic(updated))
     return true
@@ -343,14 +369,14 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
   if (userPatchMatch && method === 'DELETE') {
     if (await denyUnlessHumanSession(ctx, 'admin.user.delete')) return true
     const userId = parseInt(userPatchMatch[1], 10)
-    const existing = getDashboardUserById(userId)
+    const existing = await getDashboardUserById(userId)
     if (!existing) { json(res, { error: 'not_found', field: 'userId', hint: 'User not found' }, 404); return true }
 
     const actor = ctx.auth?.user
     if (actor && existing.username.toLowerCase() === actor.toLowerCase()) {
       json(res, { error: 'forbidden', hint: 'Cannot delete your own account' }, 403); return true
     }
-    if (existing.role === 'admin' && countActiveAdmins() <= 1) {
+    if (existing.role === 'admin' && await countActiveAdmins() <= 1) {
       json(res, { error: 'forbidden', hint: 'Cannot remove the last administrator' }, 403); return true
     }
 
@@ -379,7 +405,7 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
     if (!tenantId || RESERVED_TENANT_IDS.has(tenantId)) {
       json(res, { error: 'invalid_value', field: 'tenant_id', hint: 'Tenant ID is invalid or reserved' }, 400); return true
     }
-    const tenant = getTenant(tenantId)
+    const tenant = await getTenant(tenantId)
     if (!tenant || tenant.disabled_at !== null) {
       json(res, { error: 'not_found', field: 'tenant_id', hint: 'Tenant not found or disabled' }, 404); return true
     }
@@ -391,13 +417,13 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
       return true
     }
     // Check for existing (active or soft-disabled) entry
-    const existing = listPartnerSenders(tenantId).find((s) => s.sender_id === sanitizeAgentIdent(senderId))
+    const existing = (await listPartnerSenders(tenantId)).find((s) => s.sender_id === sanitizeAgentIdent(senderId))
     if (existing) {
       json(res, { error: 'conflict', hint: 'Sender already registered' }, 409); return true
     }
 
     const createdBy = ctx.auth?.user ?? 'system'
-    const record = createPartnerSender(sanitizeAgentIdent(senderId), tenantId, displayName, createdBy)
+    const record = await createPartnerSender(sanitizeAgentIdent(senderId), tenantId, displayName, createdBy)
     await auditAdmin(ctx, 'admin.partner_sender.create', `${tenantId}/${sanitizeAgentIdent(senderId)}`,
       { sender_id: record.sender_id, tenant_id: tenantId, display_name: displayName })
     json(res, record, 201)
@@ -406,7 +432,7 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/admin/partner-senders' && method === 'GET') {
     const tenantId = ctx.url.searchParams.get('tenant_id') ?? undefined
-    const items = listPartnerSenders(tenantId)
+    const items = await listPartnerSenders(tenantId)
     json(res, { items, total: items.length })
     return true
   }
@@ -419,7 +445,7 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
     if (!tenantId) {
       json(res, { error: 'required', field: 'tenantId', hint: 'pass ?tenant_id=<id>' }, 400); return true
     }
-    const disabled = disablePartnerSender(sanitizeAgentIdent(senderId), tenantId)
+    const disabled = await disablePartnerSender(sanitizeAgentIdent(senderId), tenantId)
     if (!disabled) {
       json(res, { error: 'not_found', field: 'senderId', hint: 'Partner sender not found or already disabled' }, 404); return true
     }
@@ -463,11 +489,11 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
     if (!EXTERNAL_ID_RE.test(externalId)) {
       json(res, { error: 'invalid_value', field: 'external_id', hint: 'external_id must be 1-128 printable characters without whitespace' }, 400); return true
     }
-    const tenant = tenantId ? getTenant(tenantId) : undefined
+    const tenant = tenantId ? await getTenant(tenantId) : undefined
     if (!tenant || tenant.disabled_at !== null) {
       json(res, { error: 'not_found', field: 'tenant_id', hint: 'Tenant not found or disabled' }, 404); return true
     }
-    if (tenantId !== 'default' && !agentBelongsToTenant(agentId, tenantId)) {
+    if (tenantId !== 'default' && !await agentBelongsToTenant(agentId, tenantId)) {
       json(res, { error: 'conflict', field: 'tenant_id', hint: 'Agent is not enabled for this tenant' }, 409); return true
     }
     const record = await setChannelBinding(agentId, channel, externalId, tenantId, ctx.auth?.user ?? 'system')
@@ -507,10 +533,10 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
     if (!tenantId) {
       json(res, { error: 'required', field: 'tenant_id', hint: 'pass ?tenant_id=<id>' }, 400); return true
     }
-    const tenant = getTenant(tenantId)
+    const tenant = await getTenant(tenantId)
     if (!tenant) { json(res, { error: 'not_found', field: 'tenant_id', hint: 'Tenant not found' }, 404); return true }
 
-    const rows = listTenantAgentAvailability(tenantId)
+    const rows = await listTenantAgentAvailability(tenantId)
     const rowMap = new Map(rows.map(r => [r.agent_id, r]))
     const allAgents = listAgentNames()
     const items = allAgents.map(agentId => {
@@ -530,7 +556,7 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
     if (!tenantId) { json(res, { error: 'required', field: 'tenant_id' }, 400); return true }
     if (!agentId) { json(res, { error: 'required', field: 'agent_id' }, 400); return true }
 
-    const tenant = getTenant(tenantId)
+    const tenant = await getTenant(tenantId)
     if (!tenant || tenant.disabled_at !== null) {
       json(res, { error: 'not_found', field: 'tenant_id', hint: 'Tenant not found or disabled' }, 404); return true
     }
@@ -571,7 +597,7 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
       }
     }
 
-    const row = setTenantAgentAvailability(tenantId, sanitizedAgentId, enabled)
+    const row = await setTenantAgentAvailability(tenantId, sanitizedAgentId, enabled)
     await auditAdmin(ctx, 'admin.agent_availability.set', `${tenantId}/${agentId}`, { enabled })
     // Tenant skills are generated under the single-tenant agents only: follow the matrix, for every tenant the agent serves.
     try { await regenTenantSkillFilesForAgentChange(sanitizedAgentId, tenantId) } catch (err) { logger.warn({ err, tenantId }, 'tenant skill files could not be reconciled after an availability change') }
@@ -604,7 +630,7 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
     const newTenantId = body.tenant_id === null ? null : typeof body.tenant_id === 'string' ? body.tenant_id.trim() || null : null
 
     if (newTenantId !== null) {
-      const tenant = getTenant(newTenantId)
+      const tenant = await getTenant(newTenantId)
       if (!tenant || tenant.disabled_at !== null) {
         json(res, { error: 'not_found', field: 'tenant_id', hint: 'Tenant not found or disabled' }, 404); return true
       }

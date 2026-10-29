@@ -82,7 +82,7 @@ const row = (id: string) => getDb().prepare('SELECT status, archived_at, dispatc
 beforeEach(async () => {
   generateBreakdown.mockClear()
   initDatabase(':memory:')
-  createTenant('acme', 'Acme')
+  await createTenant('acme', 'Acme')
   await insertApiToken({ tokenHash: sha('tok-alpha'), name: 'fleet:alpha', role: 'fleet_agent', tenantId: 'default', createdAt: NOW() - 10, expiresAt: null, agentId: 'alpha' })
   await createKanbanCard({ id: DEFAULT_CARD, title: 'Default card', assignee: 'beta', tenant_id: 'default' })
   await createKanbanCard({ id: ACME_CARD, title: 'Acme card', assignee: 'beta', tenant_id: 'acme' })

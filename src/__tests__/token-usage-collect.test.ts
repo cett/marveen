@@ -210,23 +210,23 @@ describe('collectTokenUsage', () => {
 })
 
 describe('getModelDistribution', () => {
-  it('returns aggregated model counts and token totals', () => {
-    const dist = getModelDistribution()
+  it('returns aggregated model counts and token totals', async () => {
+    const dist = await getModelDistribution()
     expect(Array.isArray(dist)).toBe(true)
     // We inserted rows with 'claude-opus-4-5', 'claude-sonnet-5', 'claude-haiku-4-5'
     const models = dist.map((d: any) => d.model)
     expect(models.some((m: string) => m.startsWith('claude-'))).toBe(true)
   })
 
-  it('filters by from/to range', () => {
+  it('filters by from/to range', async () => {
     const ts1 = 1716200000
-    const dist = getModelDistribution(ts1 - 1, ts1 + 3600)
+    const dist = await getModelDistribution(ts1 - 1, ts1 + 3600)
     // Only rows from the main agent's first file are in this range
     expect(Array.isArray(dist)).toBe(true)
   })
 
-  it('filters by agent', () => {
-    const dist = getModelDistribution(undefined, undefined, 'botx')
+  it('filters by agent', async () => {
+    const dist = await getModelDistribution(undefined, undefined, 'botx')
     expect(Array.isArray(dist)).toBe(true)
     // botx only has haiku rows
     const models = dist.map((d: any) => d.model)
@@ -235,50 +235,50 @@ describe('getModelDistribution', () => {
     }
   })
 
-  it('returns totalThinking per model', () => {
-    const dist = getModelDistribution()
+  it('returns totalThinking per model', async () => {
+    const dist = await getModelDistribution()
     const opus = dist.find((d: any) => d.model === 'claude-opus-4-5')
     expect(opus).toBeDefined()
     // msg-001 (collapsed) carries the ~100-token thinking block
     expect((opus as any).totalThinking).toBeGreaterThan(0)
   })
 
-  it('excludes rows with null or synthetic model', () => {
+  it('excludes rows with null or synthetic model', async () => {
     // Insert a row with null model to verify it's excluded
     getDb().prepare(
       `INSERT OR IGNORE INTO token_usage
        (agent, session_id, timestamp, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, model)
        VALUES ('fakemain', 'sess-nullmodel', 1716299999, 10, 5, 0, 0, NULL)`,
     ).run()
-    const dist = getModelDistribution()
+    const dist = await getModelDistribution()
     const hasNull = dist.some((d: any) => d.model === null || d.model === '')
     expect(hasNull).toBe(false)
   })
 })
 
 describe('getToolStats', () => {
-  it('returns tool usage aggregated by tool_name and model', () => {
-    const stats = getToolStats()
+  it('returns tool usage aggregated by tool_name and model', async () => {
+    const stats = await getToolStats()
     expect(Array.isArray(stats)).toBe(true)
     const toolNames = stats.map((s: any) => s.tool_name)
     expect(toolNames).toContain('Bash')
   })
 
-  it('filters by from/to range', () => {
+  it('filters by from/to range', async () => {
     const ts1 = 1716200000
-    const stats = getToolStats(ts1 - 1, ts1 + 3600)
+    const stats = await getToolStats(ts1 - 1, ts1 + 3600)
     expect(Array.isArray(stats)).toBe(true)
   })
 
-  it('filters by agent', () => {
-    const stats = getToolStats(undefined, undefined, 'fakemain')
+  it('filters by agent', async () => {
+    const stats = await getToolStats(undefined, undefined, 'fakemain')
     for (const s of stats) {
       expect((s as any).agents).toContain('fakemain')
     }
   })
 
-  it('returns totalThinking per tool', () => {
-    const stats = getToolStats()
+  it('returns totalThinking per tool', async () => {
+    const stats = await getToolStats()
     const bash = stats.find((s: any) => s.tool_name === 'Bash')
     expect(bash).toBeDefined()
     expect((bash as any).totalThinking).toBeGreaterThan(0)
@@ -286,8 +286,8 @@ describe('getToolStats', () => {
 })
 
 describe('getTokenSummary', () => {
-  it('returns totalThinking per agent and per model', () => {
-    const summaries = getTokenSummary()
+  it('returns totalThinking per agent and per model', async () => {
+    const summaries = await getTokenSummary()
     const fakemain = summaries.find(s => s.agent === 'fakemain')
     expect(fakemain).toBeDefined()
     expect(fakemain!.totalThinking).toBeGreaterThan(0)

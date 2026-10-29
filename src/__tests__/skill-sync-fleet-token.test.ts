@@ -147,9 +147,9 @@ describe('and nothing else: another agent\'s skill, a global one, a tenant one s
   })
 
   it('a generated tenant copy: the tenant row stays as it was, even for an agent that qualifies for the tenant', async () => {
-    createTenant('co-x', 'Co X')
+    await createTenant('co-x', 'Co X')
     await createSkill({ id: 'co-x-helper', name: 'helper', content: 'old', tenant_id: 'co-x' })
-    setTenantAgentAvailability('co-x', 'alpha', true)
+    await setTenantAgentAvailability('co-x', 'alpha', true)
     const r = await callAs(await tokenAuth('tok-alpha'), { kind: 'tenant', header_id: 'co-x-helper', agent_id: 'alpha', dir_name: 'co-x-helper', content: 'evil' })
     expect(r.status).toBe(403)
     expect((await getSkill('co-x-helper'))!.content).toBe('old')

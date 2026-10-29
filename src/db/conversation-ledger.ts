@@ -15,8 +15,8 @@ export const LEDGER_CHANNEL = 'telegram'
 /** A shared agent serves two or more tenants: the one it coordinates as main agent plus the ones
  *  it is enabled for (getServedTenantIds, the same set agentBelongsToTenant uses). Counting only
  *  the availability rows missed a coordinator enabled for one more tenant. */
-export function isSharedLedgerAgent(agentId: string): boolean {
-  return getServedTenantIds(agentId).length >= 2
+export async function isSharedLedgerAgent(agentId: string): Promise<boolean> {
+  return (await getServedTenantIds(agentId)).length >= 2
 }
 
 export interface LedgerTurnInput {
@@ -70,7 +70,7 @@ export async function logLedgerTurn(turn: LedgerTurnInput): Promise<boolean> {
 export async function recentLedgerTurns(agentId: string, limit = LEDGER_RECENT_DEFAULT): Promise<LedgerTurn[]> {
   // Replay runs at SessionStart, when no prompt has set a tenant context yet. A shared agent would
   // hand one tenant's turns to a session that may serve the other, so it gets nothing.
-  if (isSharedLedgerAgent(agentId)) return []
+  if (await isSharedLedgerAgent(agentId)) return []
   const rows = await dbx.all<LedgerTurn>(`SELECT direction, chat_id, text, ts FROM conversation_log
        WHERE agent_id = ? ORDER BY created_at DESC, id DESC LIMIT ?`, agentId, limit)
   return rows.reverse()
@@ -86,7 +86,7 @@ export async function recentLedgerTurns(agentId: string, limit = LEDGER_RECENT_D
 export async function openLedgerQuestion(agentId: string): Promise<LedgerOpenQuestion | null> {
   let tenantFilter = ''
   const params: (string | number)[] = [agentId]
-  if (isSharedLedgerAgent(agentId)) {
+  if (await isSharedLedgerAgent(agentId)) {
     const tenant = await getServingTenant(agentId)
     if (tenant === null) return null
     tenantFilter = ' AND tenant_id = ?'

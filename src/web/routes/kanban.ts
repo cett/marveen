@@ -313,7 +313,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   // few -- while counts.* always carries the FULL totals. The list is for
   // naming items; the numbers ONLY ever come from counts.
   if (path === '/api/kanban/heartbeat-summary' && method === 'GET') {
-    json(res, buildHeartbeatSummaryResponse(getHeartbeatKanbanSummary(), countNewHotMemories(MAIN_AGENT_ID), countPlannedKanbanCards()))
+    json(res, buildHeartbeatSummaryResponse(await getHeartbeatKanbanSummary(), await countNewHotMemories(MAIN_AGENT_ID), await countPlannedKanbanCards()))
     return true
   }
 

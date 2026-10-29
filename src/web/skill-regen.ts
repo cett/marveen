@@ -553,13 +553,16 @@ async function tenantSkillQualifiers(row: SkillRow): Promise<string[]> {
   const tenants = new Set<string>([row.tenant_id])
   for (const g of await listSkillAccess(row.id)) tenants.add(g.tenant_id)
   const agents = new Set<string>()
-  for (const t of tenants) for (const a of getEnabledAgentsForTenant(t)) agents.add(a)
+  for (const t of tenants) for (const a of await getEnabledAgentsForTenant(t)) agents.add(a)
   // The main agent's skills dir is the project-wide one, not a tenant's own.
-  return [...agents].filter(a =>
-    a !== MAIN_AGENT_ID && SAFE_SEGMENT.test(a) && isDir(join(AGENTS_BASE_DIR, a)) &&
+  const qualifiers: string[] = []
+  for (const a of agents) {
+    if (a === MAIN_AGENT_ID || !SAFE_SEGMENT.test(a) || !isDir(join(AGENTS_BASE_DIR, a))) continue
     // An agent shared by several tenants would expose this tenant's skill (and its companion
     // scripts) to requests of the other tenants: shared agents are DB-only, always.
-    getTenantsForAgent(a).length === 1)
+    if ((await getTenantsForAgent(a)).length === 1) qualifiers.push(a)
+  }
+  return qualifiers
 }
 
 /** Agents that hold a generated copy right now: the qualifiers that are running. */
@@ -767,7 +770,7 @@ async function regenTenantSkillFilesLocked(tenantId: string, forceEnabled = fals
  */
 export async function regenTenantSkillFilesForAgentChange(agentId: string, tenantId: string, forceEnabled = false): Promise<{ written: number; removed: number; errors: number }> {
   const total = { written: 0, removed: 0, errors: 0 }
-  const tenants = new Set<string>([tenantId, ...getTenantsForAgent(agentId)])
+  const tenants = new Set<string>([tenantId, ...await getTenantsForAgent(agentId)])
   for (const t of tenants) {
     const r = await regenTenantSkillFiles(t, forceEnabled)
     total.written += r.written; total.removed += r.removed; total.errors += r.errors

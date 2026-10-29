@@ -11,9 +11,9 @@ import {
 
 useTestDb()
 
-beforeEach(() => {
-  createTenant('acme', 'Acme')
-  createTenant('beta', 'Beta')
+beforeEach(async () => {
+  await createTenant('acme', 'Acme')
+  await createTenant('beta', 'Beta')
 })
 
 const seedContext = (agentId: string, tenantId: string) =>

@@ -166,9 +166,9 @@ export async function runDecaySweep(): Promise<void> {
   await dbDecay()
   await pruneAuditLogs()
   const tokenPruneResult = await pruneTokenUsage()
-  const blackboardHistoryPruned = pruneBlackboardHistory()
-  const conversationLogPruned = pruneConversationLog()
-  const agentMessagesPruned = pruneAgentMessages()
+  const blackboardHistoryPruned = await pruneBlackboardHistory()
+  const conversationLogPruned = await pruneConversationLog()
+  const agentMessagesPruned = await pruneAgentMessages()
   logger.info(
     { ...tokenPruneResult, blackboardHistoryPruned, conversationLogPruned, agentMessagesPruned },
     'Memoria leepulesi sopres vegrehajtva',

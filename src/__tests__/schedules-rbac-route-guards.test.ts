@@ -48,11 +48,11 @@ beforeEach(async () => {
   route = await import('../web/routes/schedules.js')
   io = await import('../web/scheduled-tasks-io.js')
 
-  dbMod.createTenant('tenant-b', 'Tenant B')
-  dbMod.updateTenant('tenant-b', { main_agent_id: 'tenant-agent' })
-  dbMod.setTenantAgentAvailability('tenant-b', 'tenant-agent', true)
-  dbMod.setTenantAgentAvailability('tenant-b', 'shared-agent', true)
-  dbMod.setTenantAgentAvailability('default', 'shared-agent', true)
+  await dbMod.createTenant('tenant-b', 'Tenant B')
+  await dbMod.updateTenant('tenant-b', { main_agent_id: 'tenant-agent' })
+  await dbMod.setTenantAgentAvailability('tenant-b', 'tenant-agent', true)
+  await dbMod.setTenantAgentAvailability('tenant-b', 'shared-agent', true)
+  await dbMod.setTenantAgentAvailability('default', 'shared-agent', true)
 
   const base = { description: 'Daily', prompt: 'Summarise the day', schedule: '0 9 * * *', enabled: true, skip_if_busy: false, force_send: false }
   await dbMod.upsertSchedule('t-live', { ...base, agent: 'tenant-agent', type: 'task', tenant_id: 'tenant-b', status: 'live' })
@@ -197,9 +197,9 @@ describe('cap on tasks waiting for review per tenant', () => {
   })
 
   it('it is per tenant: another tenant is not blocked by this one', async () => {
-    dbMod.createTenant('tenant-c', 'Tenant C')
-    dbMod.updateTenant('tenant-c', { main_agent_id: 'tenant-agent' })
-    dbMod.setTenantAgentAvailability('tenant-c', 'tenant-agent', true)
+    await dbMod.createTenant('tenant-c', 'Tenant C')
+    await dbMod.updateTenant('tenant-c', { main_agent_id: 'tenant-agent' })
+    await dbMod.setTenantAgentAvailability('tenant-c', 'tenant-agent', true)
     await seedDrafts(cap)
     expect((await call('POST', '/api/schedules', newTask('other-tenant'), session('agent', 'tenant-c'))).status).toBe(200)
   })

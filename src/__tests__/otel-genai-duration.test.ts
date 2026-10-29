@@ -180,7 +180,7 @@ describe('through tick', () => {
       trace_id: 'trace-dur-t', span_id: id, parent_span_id: null, agent_id: 'agent-dur-t', operation: 'model.call',
       start_ms: 100_000, attributes: JSON.stringify({ model: 'model-a', ...(measured ? { 'marveen.duration.source': 'transcript' } : {}) }),
     })
-    closeOtelSpan('trace-dur-t', id, measured ? 103_000 : 100_000, 'ok')
+    await closeOtelSpan('trace-dur-t', id, measured ? 103_000 : 100_000, 'ok')
   }
   const callsTo = (spy: ReturnType<typeof vi.spyOn>, suffix: string) =>
     spy.mock.calls.filter((c: unknown[]) => String(c[0]).endsWith(suffix))

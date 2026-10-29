@@ -121,7 +121,7 @@ describe('upsertMemoryLink', () => {
 
 describe('deleteMemoryRow', () => {
   it('with a tenant the statement itself is bound to it: another tenant\'s row is not deleted', async () => {
-    createTenant('acme', 'Acme')
+    await createTenant('acme', 'Acme')
     const mine = addMemory('mine', { tenant: 'acme' })
     const theirs = addMemory('theirs', { tenant: 'default' })
     expect(await deleteMemoryRow(theirs, 'acme')).toBe(0)
@@ -131,7 +131,7 @@ describe('deleteMemoryRow', () => {
   })
 
   it('without a tenant (the admin) it deletes by id', async () => {
-    createTenant('acme', 'Acme')
+    await createTenant('acme', 'Acme')
     const id = addMemory('x', { tenant: 'acme' })
     expect(await deleteMemoryRow(id)).toBe(1)
   })
@@ -139,7 +139,7 @@ describe('deleteMemoryRow', () => {
 
 describe('deleteTenantMemory', () => {
   it('deletes the tenant\'s own row only, and says whether it did', async () => {
-    createTenant('acme', 'Acme')
+    await createTenant('acme', 'Acme')
     const mine = addMemory('mine', { tenant: 'acme' })
     const theirs = addMemory('theirs', { tenant: 'default' })
     expect(await deleteTenantMemory('acme', theirs)).toBe(false)
@@ -150,7 +150,7 @@ describe('deleteTenantMemory', () => {
 
   it('a failing row delete leaves the row and its vec entry (one transaction)', async (ctx) => {
     if (!vecExtensionLoaded) ctx.skip()
-    createTenant('acme', 'Acme')
+    await createTenant('acme', 'Acme')
     const id = addMemory('mine', { tenant: 'acme', tilt: 0.2 })
     db.exec("CREATE TRIGGER memory_delete_blocked BEFORE DELETE ON memories BEGIN SELECT RAISE(ABORT, 'blocked'); END")
     await expect(deleteTenantMemory('acme', id)).rejects.toThrow(/blocked/)
@@ -160,7 +160,7 @@ describe('deleteTenantMemory', () => {
 
   it('the row delete and the vec delete run on the transaction (no dbx call while the body is open) and both are gone', async (ctx) => {
     if (!vecExtensionLoaded) ctx.skip()
-    createTenant('acme', 'Acme')
+    await createTenant('acme', 'Acme')
     const id = addMemory('mine', { tenant: 'acme', tilt: 0.2 })
     const spy = spyDbxCallsInsideTxBodies()
     expect(await deleteTenantMemory('acme', id)).toBe(true)
@@ -185,13 +185,12 @@ describe('syncVecMemoryDelete', () => {
 })
 
 describe('deleteTenant', () => {
-  it('stays a synchronous transaction (a promise body would commit at its first await) and drops rows and vec entries together', (ctx) => {
+  it('drops the memory rows and their vec entries together, in one transaction', async (ctx) => {
     if (!vecExtensionLoaded) ctx.skip()
-    createTenant('gone', 'Gone')
+    await createTenant('gone', 'Gone')
     const id = addMemory('m', { tenant: 'gone', tilt: 0.2 })
     const keep = addMemory('k', { tenant: 'default', tilt: 0.3 })
-    const result = deleteTenant('gone')
-    expect(result).not.toBeInstanceOf(Promise)
+    const result = await deleteTenant('gone')
     expect(result.memoriesDeleted).toBe(1)
     expect(memoryExists(id)).toBe(false)
     expect(vecExists(id)).toBe(false)
@@ -199,12 +198,12 @@ describe('deleteTenant', () => {
     expect(vecExists(keep)).toBe(true)
   })
 
-  it('a failure after the memories step rolls the memories and their vec entries back', (ctx) => {
+  it('a failure after the memories step rolls the memories and their vec entries back', async (ctx) => {
     if (!vecExtensionLoaded) ctx.skip()
-    createTenant('gone', 'Gone')
+    await createTenant('gone', 'Gone')
     const id = addMemory('m', { tenant: 'gone', tilt: 0.2 })
     db.exec("CREATE TRIGGER tenant_delete_blocked BEFORE DELETE ON tenants BEGIN SELECT RAISE(ABORT, 'blocked'); END")
-    expect(() => deleteTenant('gone')).toThrow(/blocked/)
+    await expect(deleteTenant('gone')).rejects.toThrow(/blocked/)
     expect(memoryExists(id)).toBe(true)
     expect(vecExists(id)).toBe(true)
   })

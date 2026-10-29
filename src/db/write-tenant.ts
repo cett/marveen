@@ -20,7 +20,7 @@ export async function resolveWriteTenant(agentId: string | null | undefined): Pr
   if (!agentId) return null
   const serving = await getServingTenant(agentId)
   if (serving) return serving
-  const served = getServedTenantIds(agentId)
+  const served = await getServedTenantIds(agentId)
   if (served.length === 0) return 'default'
   return served.length === 1 ? served[0]! : null
 }

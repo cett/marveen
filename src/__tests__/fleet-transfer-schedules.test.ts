@@ -148,7 +148,7 @@ describe('importFleet -- schedules', () => {
       const exported = await exportWithTenants()
       initDatabase(':memory:')
       const { createTenant } = await import('../db.js')
-      createTenant('tenant-known', 'Known')
+      await createTenant('tenant-known', 'Known')
 
       const applied = await importFleet(exported.data, { apply: true }) as any
       expect(applied.ok).toBe(true)
@@ -166,8 +166,8 @@ describe('importFleet -- schedules', () => {
       const exported = await exportWithTenants()
       initDatabase(':memory:')
       const { createTenant, updateTenant } = await import('../db.js')
-      createTenant('tenant-known', 'Known')
-      updateTenant('tenant-known', { disabled: true })
+      await createTenant('tenant-known', 'Known')
+      await updateTenant('tenant-known', { disabled: true })
 
       await importFleet(exported.data, { apply: true })
       expect(tenantOf('job-local')).toBe('default')
@@ -178,7 +178,7 @@ describe('importFleet -- schedules', () => {
       const exported = await exportWithTenants()
       initDatabase(':memory:')
       const { createTenant } = await import('../db.js')
-      createTenant('tenant-known', 'Known')
+      await createTenant('tenant-known', 'Known')
 
       const dry = await importFleet(exported.data, { apply: false }) as any
       expect(dry.warnings.filter((w: string) => w.includes('default tenantba kerül'))).toEqual([
@@ -186,7 +186,7 @@ describe('importFleet -- schedules', () => {
       ])
 
       initDatabase(':memory:')
-      createTenant('tenant-known', 'Known'); createTenant('tenant-elsewhere', 'Elsewhere')
+      await createTenant('tenant-known', 'Known'); await createTenant('tenant-elsewhere', 'Elsewhere')
       const clean = await importFleet(exported.data, { apply: false }) as any
       expect(clean.warnings.some((w: string) => w.includes('default tenantba kerül'))).toBe(false)
     })

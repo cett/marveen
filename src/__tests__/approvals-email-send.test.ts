@@ -279,7 +279,7 @@ describe('telling the owner', () => {
   it('without enforcement the same allowance keeps the main agent from being told of every request', async () => {
     flags.enforce = false
     for (let i = 0; i < 7; i++) await ask(MAIN_TOKEN)
-    expect(getPendingMessages('main-agent')).toHaveLength(5)
+    expect(await getPendingMessages('main-agent')).toHaveLength(5)
   })
 
   it('shows the owner the server description, not the requester text', async () => {

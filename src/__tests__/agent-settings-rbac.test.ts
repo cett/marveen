@@ -50,11 +50,11 @@ import { initDatabase, getDb, createTenant, setTenantAgentAvailability, reloadAg
 import { tryHandleAgentsProcess } from '../web/routes/agents-process.js'
 import { setStoreWriteActor } from '../store-watcher.js'
 
-beforeAll(() => {
+beforeAll(async () => {
   initDatabase(':memory:')
-  createTenant('rbac-tenant-owner', 'Owner Tenant')
-  createTenant('rbac-tenant-other', 'Other Tenant')
-  setTenantAgentAvailability('rbac-tenant-owner', 'rbac-agent', true)
+  await createTenant('rbac-tenant-owner', 'Owner Tenant')
+  await createTenant('rbac-tenant-other', 'Other Tenant')
+  await setTenantAgentAvailability('rbac-tenant-owner', 'rbac-agent', true)
 })
 
 afterEach(() => {

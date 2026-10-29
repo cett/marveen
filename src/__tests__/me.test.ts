@@ -65,7 +65,7 @@ beforeEach(() => { vi.clearAllMocks() })
 describe('GET /api/v1/me', () => {
   it('returns profile for session caller', async () => {
     vi.mocked(db.getDashboardUser).mockResolvedValue(SAMPLE_USER as any)
-    vi.mocked(db.getTenant).mockReturnValue(SAMPLE_TENANT as any)
+    vi.mocked(db.getTenant).mockResolvedValue(SAMPLE_TENANT as any)
     vi.mocked(sessions.listUserSessions).mockResolvedValue([{} as any, {} as any, {} as any])
 
     const { ctx, out } = makeCtx('GET', '/api/v1/me')
@@ -120,7 +120,7 @@ describe('GET /api/v1/me', () => {
 describe('PATCH /api/v1/me', () => {
   it('updates display_name', async () => {
     vi.mocked(db.getDashboardUser).mockResolvedValue(SAMPLE_USER as any)
-    vi.mocked(db.adminPatchDashboardUser).mockReturnValue({ ...SAMPLE_USER, display_name: 'Jane Updated' } as any)
+    vi.mocked(db.adminPatchDashboardUser).mockResolvedValue({ status: 'updated', user: { ...SAMPLE_USER, display_name: 'Jane Updated' } } as any)
 
     const { ctx, out } = makeCtx('PATCH', '/api/v1/me', { display_name: 'Jane Updated' })
     await tryHandleMe(ctx)
@@ -132,7 +132,7 @@ describe('PATCH /api/v1/me', () => {
 
   it('updates email', async () => {
     vi.mocked(db.getDashboardUser).mockResolvedValue(SAMPLE_USER as any)
-    vi.mocked(db.adminPatchDashboardUser).mockReturnValue({ ...SAMPLE_USER, email: 'new@acme.com' } as any)
+    vi.mocked(db.adminPatchDashboardUser).mockResolvedValue({ status: 'updated', user: { ...SAMPLE_USER, email: 'new@acme.com' } } as any)
 
     const { ctx, out } = makeCtx('PATCH', '/api/v1/me', { email: 'New@Acme.com' })
     await tryHandleMe(ctx)
@@ -144,7 +144,7 @@ describe('PATCH /api/v1/me', () => {
 
   it('clears display_name when null', async () => {
     vi.mocked(db.getDashboardUser).mockResolvedValue(SAMPLE_USER as any)
-    vi.mocked(db.adminPatchDashboardUser).mockReturnValue({ ...SAMPLE_USER, display_name: null } as any)
+    vi.mocked(db.adminPatchDashboardUser).mockResolvedValue({ status: 'updated', user: { ...SAMPLE_USER, display_name: null } } as any)
 
     const { ctx, out } = makeCtx('PATCH', '/api/v1/me', { display_name: null })
     await tryHandleMe(ctx)

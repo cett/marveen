@@ -123,7 +123,7 @@ export async function recordHttpRequest(f: HttpRequestFacts): Promise<void> {
         trace_id: traceId, span_id: spanId, parent_span_id: null, agent_id: f.agentId || 'dashboard',
         operation: 'http.server', start_ms: startMs, attributes: JSON.stringify({ http_method: method, http_route: route, http_status: status }),
       })
-      closeOtelSpan(traceId, spanId, endMs, status >= 500 ? 'error' : 'ok')
+      await closeOtelSpan(traceId, spanId, endMs, status >= 500 ? 'error' : 'ok')
     }
   } catch {
     /* instrumentation: never affects the request */
