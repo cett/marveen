@@ -93,14 +93,16 @@ export const NOT_DB_TIMER_FILES: Record<string, string> = {
  * tenant caller as the tenant, and a caller without a credential as the named system job `http-public`.
  *
  * A caller without a tenant (a global session) gets the unrestricted `http-admin` context ONLY when its role is `admin`.
- * Any other authenticated role without a tenant is the separate, expected job `http-global-viewer`, so the unexpected count
+ * Any other authenticated session role without a tenant is the separate, expected job `http-global-viewer`, so the unexpected count
  * stays clean and the PostgreSQL step can give it its own, restricted role. What it may read across tenants is decided there.
  */
 export function runAsRequest<T>(who: { authenticated: boolean; role: string | undefined; agentId?: string; tenantId: string | null }, fn: () => T): T {
   if (!who.authenticated) return runAs.system('http-public', fn)
+  // An agent token without a tenant runs as the agent in the `default` tenant, the fallback of `resolveTenantId`. That is
+  // today's rule, not the final one (Phase 2 decides it).
+  if (who.agentId) return runAs.agent(who.agentId, who.tenantId ?? 'default', fn)
   if (who.tenantId === null && who.role === 'admin') return runAs.system('http-admin', fn)
   if (who.tenantId === null) return runAs.system('http-global-viewer', fn)
-  if (who.agentId) return runAs.agent(who.agentId, who.tenantId, fn)
   return runAs.tenant(who.tenantId, fn)
 }
 

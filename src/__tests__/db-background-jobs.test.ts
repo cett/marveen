@@ -169,8 +169,8 @@ describe('runAsRequest', () => {
     expect(runAsRequest({ authenticated: true, role: 'admin', tenantId: 'acme' }, () => currentDbContext())).toEqual({ role: 'tenant', tenantId: 'acme' })
   })
 
-  it('never gives http-admin to an agent token without a tenant', () => {
-    expect(runAsRequest({ authenticated: true, role: 'fleet_agent', agentId: 'a1', tenantId: null }, () => currentDbContext())).toEqual({ role: 'system', name: 'http-global-viewer' })
+  it('runs an agent token without a tenant as that agent in the default tenant (today\'s fallback), never as http-admin', () => {
+    expect(runAsRequest({ authenticated: true, role: 'fleet_agent', agentId: 'a1', tenantId: null }, () => currentDbContext())).toEqual({ role: 'agent', agentId: 'a1', tenantId: 'default' })
   })
 
   it('counts a global viewer as expected, not as unexpected or anonymous', async () => {
