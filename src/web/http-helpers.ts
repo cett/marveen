@@ -5,6 +5,7 @@ import { gzipSync } from 'node:zlib'
 import { logger } from '../logger.js'
 import { checkErrorResponse } from '../api-error-catalog.js'
 
+import { currentDbContext, withDbContext } from '../db/context.js'
 export const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
@@ -65,6 +66,8 @@ export function readBody(
   opts: { maxBytes?: number } = {},
 ): Promise<Buffer> {
   const maxBytes = opts.maxBytes ?? DEFAULT_READ_BODY_MAX_BYTES
+  // The 'end' event below does not carry the db context of the caller: the observer runs in the one taken here.
+  const dbContext = currentDbContext()
   const done = readBodies.get(req)
   if (done) {
     return done.length > maxBytes ? Promise.reject(new RequestBodyTooLargeError(maxBytes)) : Promise.resolve(done)
@@ -108,7 +111,7 @@ export function readBody(
       // The observer (the identity counter) writes before the body is handed on, as it did when it was synchronous.
       // A fault, thrown or rejected, never fails the request.
       let observed: void | Promise<void>
-      try { observed = requestBodyObserver?.(req, body) } catch { observed = undefined }
+      try { observed = withDbContext(dbContext, () => requestBodyObserver?.(req, body)) } catch { observed = undefined }
       void Promise.resolve(observed).catch(() => { /* counter only */ }).then(() => resolve(body))
     })
     req.on('close', clearDrainTimer)

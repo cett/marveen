@@ -51,6 +51,14 @@ export const runAs = {
   },
 }
 
+/**
+ * Runs `fn` in a context taken earlier with `currentDbContext()`, or in none. For an event callback (a request 'end', a
+ * response 'close') that was registered inside a `runAs` and must act in it: the callback itself does not carry the context.
+ */
+export function withDbContext<T>(ctx: DbContext | undefined, fn: () => T): T {
+  return ctx === undefined ? fn() : store.run(ctx, fn)
+}
+
 /** The context of the running call, or undefined when none was set. */
 export function currentDbContext(): DbContext | undefined {
   return store.getStore()
@@ -66,11 +74,15 @@ const MAX_JOBS = 200
 const SAMPLE_ALL_UNTIL = 256
 const SAMPLE_EVERY = 16
 const OTHER = '(other)'
+/** The job name the request path uses for a caller without a credential (db/background-jobs.ts). */
+const ANONYMOUS_JOB = 'http-public'
 
 // The boot phase: module-load reads (config values, migrations) run before any `runAs` can exist. They are counted
 // apart (`duringBoot`) and are not "unexpected". The dashboard ends the phase once it listens; a test starts in the
 // running phase (the reset hooks below), so a test never inherits the boot allowance.
 let booting = true
+const startedAt = Date.now()
+let bootEndedAt: number | null = null
 
 let total = 0
 let withoutContext = 0
@@ -78,6 +90,8 @@ let duringBoot = 0
 let lastCallSite: string | null = null
 let lastWarnAt = 0
 let sampledSeen = 0
+let anonymousCalls = 0
+let tenantMismatches = 0
 const callSites = new Map<string, { count: number; boot: boolean }>()
 const jobCalls = new Map<string, number>()
 const roleCalls: Record<DbRole, number> = { system: 0, tenant: 0, agent: 0 }
@@ -100,6 +114,13 @@ export interface DbContextStats {
   duringBoot: number
   /** `withoutContext - duringBoot`: the number the Phase 1 measurement window must hold at 0. */
   unexpected: number
+  /** Calls of a route served without a credential (`http-public`): they carry a context but no principal, and are no measure of anything. */
+  anonymous: number
+  /** A route resolved a tenant other than the one its request context carries (see `noteTenantResolved`). */
+  tenantMismatches: number
+  /** When the process started and when the boot phase ended (ms since the epoch): a measurement window is the difference of two snapshots. */
+  startedAt: number
+  bootEndedAt: number | null
   /** Calls with a context, by role. */
   byRole: Record<DbRole, number>
   /** Calls of `runAs.system(name)`, by job name: shows which classified jobs actually touch the db. */
@@ -130,7 +151,10 @@ export function noteDbCall(): void {
   const ctx = store.getStore()
   if (ctx !== undefined) {
     roleCalls[ctx.role] += 1
-    if (ctx.role === 'system' && ctx.name) bump(jobCalls, ctx.name, MAX_JOBS)
+    if (ctx.role === 'system' && ctx.name) {
+      bump(jobCalls, ctx.name, MAX_JOBS)
+      if (ctx.name === ANONYMOUS_JOB) anonymousCalls += 1
+    }
     return
   }
   withoutContext += 1
@@ -158,7 +182,19 @@ export function noteDbCall(): void {
 
 /** The dashboard is up: from here a call without a context is unexpected. */
 export function endDbBootPhase(): void {
+  if (booting) bootEndedAt = Date.now()
   booting = false
+}
+
+/**
+ * A route says which tenant it is about to work in. When the request context carries another tenant, that is counted: the
+ * ambient tenant and the one the route resolves for itself must agree for a caller that belongs to a tenant. Returns its
+ * argument, so a resolver can `return noteTenantResolved(...)`. A global admin or a system job has no ambient tenant and is skipped.
+ */
+export function noteTenantResolved(tenantId: string | null): string | null {
+  const ambient = store.getStore()?.tenantId
+  if (ambient !== undefined && tenantId !== null && ambient !== tenantId) tenantMismatches += 1
+  return tenantId
 }
 
 export function getDbContextStats(): DbContextStats {
@@ -170,6 +206,10 @@ export function getDbContextStats(): DbContextStats {
     withoutContext,
     duringBoot,
     unexpected: withoutContext - duringBoot,
+    anonymous: anonymousCalls,
+    tenantMismatches,
+    startedAt,
+    bootEndedAt,
     byRole: { ...roleCalls },
     byJob: Object.fromEntries(jobCalls),
     sites,
@@ -186,6 +226,8 @@ export function resetDbContextStats(): void {
   lastCallSite = null
   lastWarnAt = 0
   sampledSeen = 0
+  anonymousCalls = 0
+  tenantMismatches = 0
   callSites.clear()
   jobCalls.clear()
   roleCalls.system = 0

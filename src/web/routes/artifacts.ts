@@ -10,6 +10,7 @@ import { logger } from '../../logger.js'
 import { parsePagination } from '../utils/pagination.js'
 import type { RouteContext } from './types.js'
 
+import { noteTenantResolved } from '../../db/context.js'
 // Tenant scope helpers (mirrors kanban/memories pattern):
 // - Admin with no ?tenant= filter sees all tenants (effectiveTenantId = null).
 // - Admin with ?tenant=<id> sees only that tenant.
@@ -20,7 +21,7 @@ function effectiveTenant(ctx: RouteContext): string | null {
     const param = ctx.url.searchParams.get('tenant')
     return param ?? null
   }
-  return ctx.tenantId ?? 'default'
+  return noteTenantResolved(ctx.tenantId ?? 'default')
 }
 
 // Cross-tenant guard for single-resource operations (peek-before-touch, anti-enum):

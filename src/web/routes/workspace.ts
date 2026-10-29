@@ -18,6 +18,7 @@ import {
 } from '../../db/workspace.js'
 import type { RouteContext } from './types.js'
 
+import { noteTenantResolved } from '../../db/context.js'
 const VALID_TYPES = new Set<WorkspaceDocType>(['plan', 'brief', 'report', 'notes'])
 const VALID_CONTENT_TYPES = new Set<WorkspaceContentType>(['text', 'code', 'binary'])
 
@@ -30,9 +31,9 @@ const MAX_SEARCH_QUERY_CHARS = 200
 
 function effectiveTenant(ctx: RouteContext): string | null {
   const isAdmin = ctx.role === 'admin'
-  return isAdmin
+  return noteTenantResolved(isAdmin
     ? (ctx.url.searchParams.get('tenant') ?? null)
-    : (ctx.tenantId ?? 'default')
+    : (ctx.tenantId ?? 'default'))
 }
 
 export async function tryHandleWorkspace(ctx: RouteContext): Promise<boolean> {

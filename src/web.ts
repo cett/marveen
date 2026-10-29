@@ -107,6 +107,8 @@ import { tryHandleIntel } from './web/routes/intel.js'
 import { tryHandleConversationLedger } from './web/routes/conversation-ledger.js'
 import { tryHandleSkillSync } from './web/routes/skill-sync.js'
 import { tryHandleTenantGateStatus } from './web/routes/tenant-gate-status.js'
+import { tryHandleDbContext } from './web/routes/db-context.js'
+import { startDbContextReport } from './web/db-context-report.js'
 import { tryHandleFleetQ } from './web/routes/fleet-q.js'
 import { tryHandleStatic } from './web/routes/static.js'
 import { tryHandleVoice } from './web/routes/voice.js'
@@ -202,6 +204,7 @@ const dispatcher = new RouteDispatcher()
   .add(tryHandleConversationLedger)
   .add(tryHandleSkillSync)
   .add(tryHandleTenantGateStatus)
+  .add(tryHandleDbContext)
   .add(tryHandleFleetQ)
   .add(tryHandleFleet)
   .add(ctx => tryHandleStatic(ctx, WEB_DIR))
@@ -625,6 +628,7 @@ export async function startWebServer(port = 3420): Promise<http.Server> {
     }
   }
   const authSessionSweepInterval = setInterval(systemJob('auth-state-sweep', () => { void sweepAuthState() }), 60 * 60 * 1000)
+  const dbContextReportInterval = startDbContextReport()
 
   const tokenCollectInterval = webOnly ? undefined : setInterval(systemJob('token-usage-collector', () => {
     collectTokenUsage().catch(err => logger.warn({ err }, 'Periodic token usage collection failed'))
@@ -851,6 +855,7 @@ export async function startWebServer(port = 3420): Promise<http.Server> {
     clearInterval(contextGuardInterval)
     clearInterval(approvalTimeoutInterval)
     clearInterval(authSessionSweepInterval)
+    clearInterval(dbContextReportInterval)
     stopImportCrawler()
     clearInterval(updateCheckerInterval)
     if (blackboardStaleInterval) clearInterval(blackboardStaleInterval)

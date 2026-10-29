@@ -59,10 +59,10 @@ export const BACKGROUND_JOBS = {
   'background-task': { file: 'src/web/routes/background-tasks.ts', role: 'agent', note: 'poll and timeout of one background task of an agent' },
   'boot-sequence': { file: 'src/index.ts', role: 'system', note: 'the fire-and-forget backfills and passes started while the dashboard boots' },
   'http-gate': { file: 'src/web.ts', role: 'system', note: 'the request before a principal is known: the auth lookups, the RBAC gate and the shadow counters' },
-  'http-public': { file: 'src/web.ts', role: 'system', note: 'a route served without a credential: login, auth status, avatars, the static files' },
-  'http-admin': { file: 'src/web.ts', role: 'system', note: 'a global admin session, which belongs to no tenant' },
+  'http-public': { file: 'src/db/background-jobs.ts', role: 'system', note: 'a route served without a credential: login, auth status, avatars, the static files' },
+  'http-admin': { file: 'src/db/background-jobs.ts', role: 'system', note: 'a global admin session, which belongs to no tenant' },
   'http-metrics': { file: 'src/otel-http.ts', role: 'system', note: 'the request counters written when a response is done (an event callback does not carry the request context)' },
-  'shutdown-flush': { file: 'src/web/sigterm-flush.ts', role: 'system', note: 'flushes the running state on SIGTERM' },
+  'shutdown-flush': { file: 'src/web.ts', role: 'system', note: 'flushes the running state on SIGTERM' },
 } as const satisfies Record<string, BackgroundJob>
 
 export type BackgroundJobName = keyof typeof BACKGROUND_JOBS
@@ -78,6 +78,8 @@ export const NOT_DB_TIMER_FILES: Record<string, string> = {
   'src/web/command-task.ts': 'child process timing',
   'src/web/mcp-list.ts': 'cached connector list',
   'src/web/routes/agent-terminal.ts': 'tmux stream',
+  'src/agent.ts': 'typing indicator while the model runs',
+  'src/web/db-context-report.ts': 'reads the counter, no db',
   'src/web/stuck-input-watcher.ts': 'tmux panes',
   'src/web/update-checker.ts': 'git fetch',
   'src/web/worker-liveness.ts': 'worker session liveness',
