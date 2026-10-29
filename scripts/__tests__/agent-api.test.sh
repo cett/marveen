@@ -337,6 +337,20 @@ for st in 0 ""; do
   strict "STRICT=${st:-unset}: own identity" "$st" "$INSTALL" "$CFG_A"; allowed "STRICT=${st:-unset}: own identity" a
   check "STRICT=${st:-unset}: own identity: no would-refuse line" bash -c "! echo \"\$1\" | grep -q 'AGENT_API_STRICT'" _ "$ERR"
 done
+# A sub-agent session with no token file of its own, run from the install root: exit 3 (no readable own token), no request,
+# whatever STRICT says. It used to go out on the main agent's token. And session alpha in another agent's directory acts
+# as alpha (it used to be the directory's agent), at STRICT 0 and unset as well.
+for st in 0 "" 1; do
+  reset; echo own-m > "$INSTALL/.agent-token"; echo own-b > "$INSTALL/agents/b/.agent-token"
+  unset MARVEEN_AGENT_ID MARVEEN_AGENT_TOKEN_FILE
+  if [ -n "$st" ]; then export AGENT_API_STRICT="$st"; else unset AGENT_API_STRICT; fi
+  ERR="$(cd "$INSTALL" && CLAUDE_CONFIG_DIR="$CFG_A" bash "$W" GET /api/x 2>&1 >/dev/null)"; RC=$?
+  unset AGENT_API_STRICT
+  check "STRICT=${st:-unset}: sub-agent without its own token file at the install root: exit 3, no request" bash -c "test $RC -eq 3 && test ! -e '$T/calls'"
+  check "STRICT=${st:-unset}: sub-agent without its own token file: says no readable own token" bash -c "echo \"\$1\" | grep -q 'no readable own token'" _ "$ERR"
+  strict "STRICT=${st:-unset}: session a in agent b's directory" "$st" "$INSTALL/agents/b" "$CFG_A"
+  allowed "STRICT=${st:-unset}: session a in agent b's directory" a
+done
 # --token admin from a sub-agent session is refused in BOTH modes, from the install root as well (exit 3, no request, the
 # old refusal text); the E1-E3 notices only warn under STRICT=0 for the other tokens.
 for st in 0 "" 1; do
