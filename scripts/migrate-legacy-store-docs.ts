@@ -134,10 +134,10 @@ function printPlan(docs: PreparedDoc[]): void {
   }
 }
 
-function runWrite(docs: PreparedDoc[]): void {
+async function runWrite(docs: PreparedDoc[]): Promise<void> {
   console.log(`Writing ${docs.length} docs into workspace_docs (upsert by agent_id+doc_key, safe to re-run)...\n`)
   for (const d of docs) {
-    saveWorkspaceDoc({
+    await saveWorkspaceDoc({
       agent_id: d.entry.agent_id,
       tenant_id: 'default',
       doc_key: d.docKey,
@@ -151,7 +151,7 @@ function runWrite(docs: PreparedDoc[]): void {
   }
 }
 
-function runVerify(docs: PreparedDoc[]): { allOk: boolean; verifiedFiles: string[] } {
+async function runVerify(docs: PreparedDoc[]): Promise<{ allOk: boolean; verifiedFiles: string[] }> {
   console.log(`\nVerifying ${docs.length} docs byte-for-byte against the DB...\n`)
   let allOk = true
   const verifiedFiles: string[] = []
@@ -165,7 +165,7 @@ function runVerify(docs: PreparedDoc[]): { allOk: boolean; verifiedFiles: string
       allOk = false
       continue
     }
-    const stored = getWorkspaceDoc(row.id)
+    const stored = await getWorkspaceDoc(row.id)
     if (!stored || stored.content === null) {
       console.log(`  FAIL ${d.entry.file}: row ${row.id} has no content`)
       allOk = false
@@ -185,7 +185,7 @@ function runVerify(docs: PreparedDoc[]): { allOk: boolean; verifiedFiles: string
   return { allOk, verifiedFiles }
 }
 
-function main(): void {
+async function main(): Promise<void> {
   const manifest = loadManifest()
   const docs = prepare(manifest)
 
@@ -202,14 +202,14 @@ function main(): void {
   initDatabase()
 
   if (verifyOnly) {
-    const { allOk, verifiedFiles } = runVerify(docs)
+    const { allOk, verifiedFiles } = await runVerify(docs)
     printDeleteInstructions(allOk, verifiedFiles)
     process.exit(allOk ? 0 : 1)
   }
 
   printPlan(docs)
-  runWrite(docs)
-  const { allOk, verifiedFiles } = runVerify(docs)
+  await runWrite(docs)
+  const { allOk, verifiedFiles } = await runVerify(docs)
   printDeleteInstructions(allOk, verifiedFiles)
   if (!allOk) process.exit(1)
 }
@@ -229,4 +229,9 @@ function printDeleteInstructions(allOk: boolean, verifiedFiles: string[]): void 
   console.log(`  rm ${verifiedFiles.map(f => `"${f}"`).join(' \\\n     ')}`)
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) main()
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main().catch((err) => {
+    console.error(err)
+    process.exit(1)
+  })
+}

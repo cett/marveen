@@ -15,7 +15,7 @@ import { fileURLToPath } from 'node:url'
 const ROOT = fileURLToPath(new URL('../..', import.meta.url))
 
 /** Scripts whose type-check fails today (a Promise used as a row after the facade went asynchronous). */
-const KNOWN_BROKEN: readonly string[] = ['scripts/migrate-legacy-store-docs.ts']
+const KNOWN_BROKEN: readonly string[] = []
 
 const DB_IMPORT = /from\s+['"]\.\.\/src\/db(?:\.js|\/[^'"]*)['"]/
 

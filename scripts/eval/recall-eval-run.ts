@@ -70,7 +70,7 @@ export async function runCases(
       stages.final = (await hybridSearch(c.agentId!, c.text, FINAL_LIMIT, c.tenantId)).map((m) => String(m.id))
     } else if (c.kind === 'doc') {
       const o = { agentId: c.agentId, tenantId: c.tenantId, limit: FINAL_LIMIT }
-      stages.fts = searchWorkspaceDocs(c.text, { ...o, limit: FINAL_LIMIT * 2 }).map((d) => d.id)
+      stages.fts = (await searchWorkspaceDocs(c.text, { ...o, limit: FINAL_LIMIT * 2 })).map((d) => d.id)
       stages.vec_prod = (await vectorSearchDocs(c.text, o)).map((d) => d.id)
       stages.final = (await hybridSearchDocs(c.text, o)).map((d) => d.id)
     } else {
