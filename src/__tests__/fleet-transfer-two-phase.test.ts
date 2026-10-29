@@ -20,6 +20,7 @@ import { cachedAgentSettingsByKey } from '../db/agent-settings-cache.js'
 import { listModelProfileMap } from '../db/model-profile-map.js'
 import { listAgentSettingsByKey } from '../db/agent-settings.js'
 import { updateEnvFile } from '../env.js'
+import { scanImportLeftovers } from '../web/fleet-import-leftovers.js'
 
 const { ROOT, PROJECT, STORE, HOME, AGENTS, TASKS, probe } = vi.hoisted(() => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -47,6 +48,8 @@ const { ROOT, PROJECT, STORE, HOME, AGENTS, TASKS, probe } = vi.hoisted(() => {
       failRenameTo: null as string | null,
       /** A copy onto exactly this path ends with other content than the source: a restore that "succeeds" wrongly. */
       corruptCopyTo: null as string | null,
+      /** Removing a `.import-new` / `.import-bak` file is a no-op: what a crash before the cleanup would leave behind. */
+      keepLeftovers: false,
     },
   }
 })
@@ -92,7 +95,10 @@ vi.mock('node:fs', async (importOriginal) => {
       real.copyFileSync(from, to)
       if (probe.corruptCopyTo !== null && String(to) === probe.corruptCopyTo) real.writeFileSync(to, 'not the previous content')
     },
-    unlinkSync: watch('unlinkSync', real.unlinkSync),
+    unlinkSync: (path: string) => {
+      if (probe.keepLeftovers && /\.import-(new|bak)$/.test(String(path))) return
+      watch('unlinkSync', real.unlinkSync)(path)
+    },
     rmSync: watch('rmSync', real.rmSync),
     renameSync: (from: string, to: string) => {
       if (probe.inTx) probe.ioInTx.push(`renameSync ${from}`)
@@ -343,6 +349,7 @@ beforeEach(async () => {
   probe.events = []
   probe.failRenameTo = null
   probe.corruptCopyTo = null
+  probe.keepLeftovers = false
   vi.mocked(updateEnvFile).mockClear()
   vi.mocked(updateEnvFile).mockImplementation(() => { probe.events.push('env') })
   await seedTarget()
@@ -728,5 +735,59 @@ describe('the same path staged twice', () => {
 
     expect(readFileSync(join(AGENTS, 'agent-b', '.claude', 'skills', 'skill-a', 'SKILL.md'), 'utf-8')).toBe(AGENT_SKILL_MD)
     expect(strays()).toEqual([])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The leftover scan walks importTargetRoots(). Here the leftovers come from the REAL import (the cleanup is made a
+// no-op, as a crash before it would), so a write location of the import that the roots do not reach shows up as a
+// stray the scan did not report.
+// ---------------------------------------------------------------------------
+
+describe('the leftover scan finds what an interrupted import really left', () => {
+  const found = async () => {
+    const scan = await scanImportLeftovers()
+    return { scan, rel: scan.items.map((i) => relative(ROOT, i.path)).sort() }
+  }
+
+  it('reports every backup of a completed import whose cleanup did not run, and deletes none of them', async () => {
+    probe.keepLeftovers = true
+    await apply(bundle())
+    const before = tree()
+
+    const { scan, rel } = await found()
+
+    expect(strays().filter((p) => p.endsWith('.import-bak')).length).toBeGreaterThan(3)
+    expect(rel).toEqual(strays().sort())
+    expect(scan.items.every((i) => i.kind === 'stale_bak')).toBe(true)
+    expect(scan.truncated).toBe(false)
+    expect(tree()).toEqual(before)
+  })
+
+  it('reports the staged files and backups of an import that failed before its commit', async () => {
+    getDb().exec("CREATE TRIGGER refuse_skill_rows BEFORE INSERT ON skills BEGIN SELECT RAISE(ABORT, 'skill row refused'); END")
+    probe.keepLeftovers = true
+    await expect(apply(bundle())).rejects.toThrow(/skill row refused/)
+    const before = tree()
+
+    const { scan, rel } = await found()
+
+    expect(strays().filter((p) => p.endsWith('.import-new')).length).toBeGreaterThan(3)
+    expect(rel).toEqual(strays().sort())
+    expect(new Set(scan.items.map((i) => i.kind))).toEqual(new Set(['orphan_new', 'stale_bak']))
+    expect(tree()).toEqual(before)
+  })
+
+  it('finds nothing after a clean import, and the next import is refused while a backup is left', async () => {
+    await apply(bundle())
+    expect((await found()).rel).toEqual([])
+
+    probe.keepLeftovers = true
+    await apply(bundle())
+    expect((await found()).rel.length).toBeGreaterThan(0)
+
+    const refusal = await apply(bundle()).then(() => undefined, (e: unknown) => e as Error)
+    expect(refusal).toBeInstanceOf(StaleBackupError)
+    expect(refusal!.message).toContain('/api/fleet/import-leftovers')
   })
 })
