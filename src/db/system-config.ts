@@ -35,6 +35,13 @@ export function getSystemConfig(key: string): SystemConfigRow | undefined {
     | undefined
 }
 
+// The row as the database holds it NOW, past the write-through cache. For a key whose contract is that a
+// hand edit or a rollback done outside this process shows without a restart (RBAC_MODE): the cache assumes a
+// single writer and would keep serving the old value.
+export async function getSystemConfigUncached(key: string): Promise<SystemConfigRow | undefined> {
+  return dbx.get<SystemConfigRow>('SELECT key, value, updated_at, source FROM system_config WHERE key = ?', key)
+}
+
 export function listSystemConfig(): SystemConfigRow[] {
   const cached = cachedSystemConfigList()
   if (cached !== null) return cached

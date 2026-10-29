@@ -33,14 +33,14 @@ import { isUniqueViolationOn } from '../web/unique-violation.js'
 const PASSWORD = 'another-long-password-2'
 let cookie: string
 
-beforeEach(() => {
+beforeEach(async () => {
   gate.expected = 1
   gate.entered = 0
   gate.waiters = []
   initDatabase(':memory:')
   _clearSessionCacheForTest()
-  const owner = createDashboardUser('owner', '$hash$') // the first user: global admin
-  cookie = createSession({ userId: owner.id, username: owner.username })
+  const owner = await createDashboardUser('owner', '$hash$') // the first user: global admin
+  cookie = await createSession({ userId: owner.id, username: owner.username })
 })
 
 async function call(method: string, path: string, body: object) {

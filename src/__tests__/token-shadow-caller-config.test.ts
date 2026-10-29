@@ -19,10 +19,10 @@ const fleetAuth = (agent: string): AuthResult => ({ kind: 'token', role: 'fleet_
 const operatorAuth: AuthResult = { kind: 'token', role: 'admin', tokenName: 'operator' }
 const sessionAuth: AuthResult = { kind: 'session', user: 'user-a', role: 'admin' }
 
-function observe(auth: AuthResult, headers: Record<string, string | string[]> = {}, path = '/api/kanban'): void {
+async function observe(auth: AuthResult, headers: Record<string, string | string[]> = {}, path = '/api/kanban'): Promise<void> {
   const req = new EventEmitter() as unknown as http.IncomingMessage
   req.headers = headers as http.IncomingHttpHeaders
-  observeTokenUsage(req, auth, 'GET', path, new URL(`http://localhost:3420${path}`))
+  await observeTokenUsage(req, auth, 'GET', path, new URL(`http://localhost:3420${path}`))
 }
 
 interface Row { category: string; caller: string; caller_source: string; target: string; count: number }
@@ -38,18 +38,18 @@ describe('main_token_from_subagent', () => {
     expect(TOKEN_SHADOW_CATEGORIES).toContain('main_token_from_subagent')
   })
 
-  it('counts the main agent token on a call launched as another agent, per launched agent', () => {
-    observe(mainAdminAuth, { 'x-caller-config': 'agent-a' })
-    observe(mainAdminAuth, { 'x-caller-config': 'agent-a' })
-    observe(mainAdminAuth, { 'x-caller-config': 'agent-b' })
+  it('counts the main agent token on a call launched as another agent, per launched agent', async () => {
+    await observe(mainAdminAuth, { 'x-caller-config': 'agent-a' })
+    await observe(mainAdminAuth, { 'x-caller-config': 'agent-a' })
+    await observe(mainAdminAuth, { 'x-caller-config': 'agent-b' })
     expect(rows().map((r) => [r.caller, r.caller_source, r.target, r.count])).toEqual([
       [MAIN, 'token', 'agent-a', 2],
       [MAIN, 'token', 'agent-b', 1],
     ])
   })
 
-  it('takes the first value of a repeated header and tolerates case and padding', () => {
-    observe(mainAdminAuth, { 'x-caller-config': [' Agent-A ', 'agent-b'] })
+  it('takes the first value of a repeated header and tolerates case and padding', async () => {
+    await observe(mainAdminAuth, { 'x-caller-config': [' Agent-A ', 'agent-b'] })
     expect(rows().map((r) => [r.target, r.count])).toEqual([['agent-a', 1]])
   })
 
@@ -62,15 +62,15 @@ describe('main_token_from_subagent', () => {
     ['a sub-agent token with a different launch agent (not the main token)', fleetAuth('agent-a'), { 'x-caller-config': 'agent-b' }],
     ['the operator token', operatorAuth, { 'x-caller-config': 'agent-a' }],
     ['a session', sessionAuth, { 'x-caller-config': 'agent-a' }],
-  ])('counts nothing for %s', (_label, auth, headers) => {
-    observe(auth, headers)
+  ])('counts nothing for %s', async (_label, auth, headers) => {
+    await observe(auth, headers)
     expect(rows()).toEqual([])
   })
 
-  it('changes nothing about the request: the headers and the auth result are untouched', () => {
+  it('changes nothing about the request: the headers and the auth result are untouched', async () => {
     const headers = { 'x-caller-config': 'agent-a', 'x-agent-id': MAIN }
     const auth = { ...mainAdminAuth }
-    observe(auth, headers)
+    await observe(auth, headers)
     expect(headers).toEqual({ 'x-caller-config': 'agent-a', 'x-agent-id': MAIN })
     expect(auth).toEqual(mainAdminAuth)
   })

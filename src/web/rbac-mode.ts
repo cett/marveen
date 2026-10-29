@@ -16,7 +16,7 @@
 
 import { RBAC_MODE_ENV, MAIN_AGENT_ID } from '../config.js'
 import {
-  getSystemConfig,
+  getSystemConfigUncached,
   insertSystemConfigIfAbsent,
   getLastConfigChangeValue,
   logConfigChange,
@@ -43,6 +43,8 @@ let refreshTicket = 0
 let appliedTicket = 0
 // Why the stored row and the live mode differ, when they do (see RbacModeReason).
 let cachedReason: RbacModeReason | null = null
+// The raw row value the last refresh saw (null: no row or unreadable), for the Settings screen.
+let cachedStored: string | null = null
 let unloggedShadowAlarmed = false
 let timer: NodeJS.Timeout | undefined
 
@@ -76,13 +78,7 @@ export function getRbacMode(): RbacMode {
  * when a stored shadow is NOT what is in force. Never throws.
  */
 export function describeRbacMode(): { effective: RbacMode; stored: string | null; reason: RbacModeReason | null } {
-  let stored: string | null = null
-  try {
-    stored = getSystemConfig(RBAC_MODE_KEY)?.value ?? null
-  } catch {
-    stored = null
-  }
-  return { effective: cached, stored, reason: cachedReason }
+  return { effective: cached, stored: cachedStored, reason: cachedReason }
 }
 
 /** Tell the main agent (and through it the owner). Never throws: a notice fault must not change the mode. */
@@ -110,18 +106,22 @@ async function alarmUnloggedShadow(): Promise<void> {
 
 // reason = why a stored shadow is not in force; unlogged_shadow is the alarm case (the row says shadow and
 // the journal does not).
-async function readStoredMode(envMode: RbacMode | undefined): Promise<{ mode: RbacMode; reason: RbacModeReason | null }> {
+async function readStoredMode(
+  envMode: RbacMode | undefined,
+): Promise<{ mode: RbacMode; reason: RbacModeReason | null; stored: string | null }> {
   try {
-    const row = getSystemConfig(RBAC_MODE_KEY)
-    if (!row || parseRbacMode(row.value) !== 'shadow') return { mode: 'enforce', reason: null }
+    // Straight from the table, not the config cache: the cache only knows this process's writes.
+    const row = await getSystemConfigUncached(RBAC_MODE_KEY)
+    const stored = row?.value ?? null
+    if (!row || parseRbacMode(row.value) !== 'shadow') return { mode: 'enforce', reason: null, stored }
     // The env file tightens only: an explicit enforce there is the emergency brake.
-    if (envMode === 'enforce') return { mode: 'enforce', reason: 'env_enforce' }
+    if (envMode === 'enforce') return { mode: 'enforce', reason: 'env_enforce', stored }
     const last = await getLastConfigChangeValue(RBAC_MODE_KEY)
-    if (typeof last !== 'string' || parseRbacMode(last) !== 'shadow') return { mode: 'enforce', reason: 'unlogged_shadow' }
-    return { mode: 'shadow', reason: null }
+    if (typeof last !== 'string' || parseRbacMode(last) !== 'shadow') return { mode: 'enforce', reason: 'unlogged_shadow', stored }
+    return { mode: 'shadow', reason: null, stored }
   } catch (err) {
     safely(() => logger.warn({ err }, 'Could not read RBAC_MODE from system_config, using enforce'))
-    return { mode: 'enforce', reason: 'read_error' }
+    return { mode: 'enforce', reason: 'read_error', stored: null }
   }
 }
 
@@ -132,7 +132,7 @@ async function readStoredMode(envMode: RbacMode | undefined): Promise<{ mode: Rb
  */
 export async function refreshRbacMode(envMode: RbacMode | undefined = RBAC_MODE_ENV): Promise<RbacMode> {
   const ticket = ++refreshTicket
-  const { mode, reason } = await readStoredMode(envMode)
+  const { mode, reason, stored } = await readStoredMode(envMode)
   // A refresh that started later has already written the cache: this read is older, drop it.
   if (ticket < appliedTicket) return cached
   appliedTicket = ticket
@@ -142,6 +142,7 @@ export async function refreshRbacMode(envMode: RbacMode | undefined = RBAC_MODE_
   const alarm = unlogged && !unloggedShadowAlarmed
   cached = mode
   cachedReason = reason
+  cachedStored = stored
   unloggedShadowAlarmed = unlogged
   if (alarm) await alarmUnloggedShadow()
   if (mode !== previous) {
@@ -189,6 +190,7 @@ export function startRbacModeRefresh(envMode: RbacMode | undefined = RBAC_MODE_E
       appliedTicket = ++refreshTicket
       cached = 'enforce'
       cachedReason = 'read_error'
+      cachedStored = null
     })
   }, REFRESH_INTERVAL_MS)
   timer.unref()
