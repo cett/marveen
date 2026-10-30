@@ -37,7 +37,8 @@ make_tree() {
 #!/bin/sh
 D="$(dirname "$0")/.."
 echo "$*" >> "$D/wrapper-args.log"
-echo "CFG=${CLAUDE_CONFIG_DIR-unset}" >> "$D/wrapper-env.log"
+echo "CFG=${CLAUDE_CONFIG_DIR-unset} AID=${MARVEEN_AGENT_ID-unset} TF=${MARVEEN_AGENT_TOKEN_FILE-unset} STRICT=${AGENT_API_STRICT-unset}" >> "$D/wrapper-env.log"
+echo "DBU=${DASHBOARD_BASE_URL-unset} SD=${MARVEEN_STORE_DIR-unset} MID=${MAIN_AGENT_ID-unset} WP=${WEB_PORT-unset}${MARVEEN_WEB_PORT-} PX=${http_proxy-unset}${HTTPS_PROXY-}${ALL_PROXY-} PATH=$PATH" >> "$D/wrapper-env2.log"
 for a in "$@"; do if [ "$a" = "-" ]; then cat > "$D/wrapper-body.log"; cat "$D/wrapper-body.log" >> "$D/wrapper-bodies.log"; echo >> "$D/wrapper-bodies.log"; fi; done
 # stub-mode: need-from = answer HTTP 400 (exit 22) to a body without "from" (what the server does for the main
 # agent's token); no-token = the wrapper's "no readable own token" (exit 3)
@@ -90,6 +91,31 @@ make_tree e2 "MAIN_AGENT_ID=mainbot" yes
 assert_eq "...filtered to a safe id like MAIN_AGENT_ID (it goes into hand-built JSON)" "someonex" "$(field "$ROOT" to)"
 if python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$ROOT/wrapper-body.log" 2>/dev/null; then pass "...and the body is valid JSON"; else fail "invalid JSON: $(cat "$ROOT/wrapper-body.log")"; fi
 
+echo "nothing the session sets may steer a call that can end on the main token (a session that dropped its identity)"
+# The wrapper is started in a CLEAN environment: only the variables that say WHO is calling are passed on.
+make_tree h2 "MAIN_AGENT_ID=mainbot" yes
+(cd "$ROOT" && DASHBOARD_BASE_URL=http://evil.invalid:9 MARVEEN_DASHBOARD_ORIGIN=http://evil.invalid:9 MARVEEN_STORE_DIR=/tmp/evil-store \
+  MAIN_AGENT_ID=evil WEB_PORT=9 MARVEEN_WEB_PORT=9 http_proxy=http://evil.invalid:8 HTTPS_PROXY=http://evil.invalid:8 ALL_PROXY=http://evil.invalid:8 \
+  PATH="/tmp/evil-bin:$PATH" git checkout -q -b feature 2>/dev/null)
+assert_eq "session URL, origin, store, main id, port, proxies and PATH do not reach the wrapper" \
+  "DBU=http://localhost:3420 SD=unset MID=unset WP=unset PX=unset PATH=/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin" "$(head -1 "$ROOT/wrapper-env2.log" 2>/dev/null)"
+make_tree h2b "MAIN_AGENT_ID=mainbot" yes
+(cd "$ROOT" && CLAUDE_CONFIG_DIR="$ROOT/agents/sub-a/.claude-config" MARVEEN_AGENT_ID=sub-a MARVEEN_AGENT_TOKEN_FILE="$ROOT/agents/sub-a/.agent-token" AGENT_API_STRICT=1 \
+  git checkout -q -b feature 2>/dev/null)
+assert_eq "...but the identity variables of the caller are passed on" "CFG=$ROOT/agents/sub-a/.claude-config AID=sub-a TF=$ROOT/agents/sub-a/.agent-token STRICT=1" "$(head -1 "$ROOT/wrapper-env.log" 2>/dev/null)"
+make_tree h3 "MAIN_AGENT_ID=mainbot
+MARVEEN_DASHBOARD_ORIGIN=http://127.0.0.1:3555" yes
+(cd "$ROOT" && MARVEEN_DASHBOARD_ORIGIN=http://evil.invalid:9 git checkout -q -b feature 2>/dev/null)
+case "$(head -1 "$ROOT/wrapper-env2.log" 2>/dev/null)" in "DBU=http://127.0.0.1:3555 "*) pass "a loopback origin in the .env of the tree is used (the session's is not)" ;; *) fail "loopback origin not used: $(head -1 "$ROOT/wrapper-env2.log" 2>/dev/null)" ;; esac
+n=0
+for bad in "http://evil.invalid" "http://localhost:80@evil.invalid" "http://localhost.evil.invalid" "https://localhost" "http://localhost:3420/x"; do
+  n=$((n + 1))
+  make_tree "h4-$n" "MAIN_AGENT_ID=mainbot
+MARVEEN_DASHBOARD_ORIGIN=$bad" yes
+  (cd "$ROOT" && git checkout -q -b feature 2>/dev/null)
+  case "$(head -1 "$ROOT/wrapper-env2.log" 2>/dev/null)" in "DBU=http://localhost:3420 "*) pass "origin '$bad' from the .env is ignored" ;; *) fail "origin '$bad' was used: $(head -1 "$ROOT/wrapper-env2.log" 2>/dev/null)" ;; esac
+done
+
 echo "the server insists on a sender (the main agent's token): one retry naming the main agent"
 make_tree r "MAIN_AGENT_ID=mainbot" yes
 echo need-from > "$ROOT/stub-mode"
@@ -111,15 +137,19 @@ echo "the REAL wrapper and a fake curl: a sub-agent session under AGENT_API_STRI
 # The fake curl plays the server: a request on the MAIN agent's token needs a sender in the body (HTTP 400 without,
 # as the real server answers), a request on a sub-agent's token is accepted without one. It records every call.
 FAKEBIN="$TMP/fakebin"; mkdir -p "$FAKEBIN"
-cat > "$FAKEBIN/curl" <<'FAKE'
+# The hook starts the wrapper in a clean environment with a fixed PATH, so the fake curl cannot be found through PATH or
+# told where to record through a variable: the fixture wrapper calls it by absolute path, and it reads its record
+# prefix from a file.
+sed "s#__RECFILE__#$TMP/current-rec#g" > "$FAKEBIN/curl" <<'FAKE'
 #!/bin/bash
+R="$(cat __RECFILE__)"
 cfg=""; body=""; prev=""
 for a in "$@"; do
   if [ "$a" = "-K" ]; then cfg="$(cat)"; fi
   case "$prev" in --data-binary) body="$(cat "${a#@}" 2>/dev/null)" ;; esac
   prev="$a"
 done
-echo "$cfg" >> "$FAKE_REC.cfg"; echo "$body" >> "$FAKE_REC.bodies"; printf '%s\n' "$@" >> "$FAKE_REC.argv"; echo x >> "$FAKE_REC.calls"
+echo "$cfg" >> "$R.cfg"; echo "$body" >> "$R.bodies"; printf '%s\n' "$@" >> "$R.argv"; echo x >> "$R.calls"
 case "$cfg" in
   *main-fixture-token*) case "$body" in *'"from"'*) printf '{}\n200' ;; *) printf '{"error":"required"}\n400' ;; esac ;;
   *) printf '{}\n200' ;;
@@ -129,14 +159,18 @@ chmod +x "$FAKEBIN/curl"
 # real_tree <name>: a tree with the real wrapper and a token file for the main agent and for sub-a
 real_tree() {
   make_tree "$1" "MAIN_AGENT_ID=mainbot" no
-  cp "$SRC_DIR/agent-api.sh" "$ROOT/scripts/agent-api.sh"
+  # the fixture wrapper is the real one with only its curl call pointed at the fake, by absolute path
+  sed "s#| curl -K - #| $FAKEBIN/curl -K - #" "$SRC_DIR/agent-api.sh" > "$ROOT/scripts/agent-api.sh"
+  grep -q "$FAKEBIN/curl -K -" "$ROOT/scripts/agent-api.sh" || fail "fixture: the curl call in agent-api.sh changed, the test cannot inject its fake"
   mkdir -p "$ROOT/agents/sub-a"
   echo main-fixture-token > "$ROOT/.agent-token"; echo sub-fixture-token > "$ROOT/agents/sub-a/.agent-token"
-  REC="$TMP/rec-$1"
+  REC="$TMP/rec-$1"; echo "$REC" > "$TMP/current-rec"
 }
 
 real_tree i
-(cd "$ROOT" && env CLAUDE_CONFIG_DIR="$ROOT/agents/sub-a/.claude-config" AGENT_API_STRICT=1 MAIN_AGENT_ID=mainbot PATH="$FAKEBIN:$PATH" FAKE_REC="$REC" git checkout -q -b feature 2>"$TMP/i.err")
+# the session also tries to steer the call: another URL, origin and proxy
+(cd "$ROOT" && env CLAUDE_CONFIG_DIR="$ROOT/agents/sub-a/.claude-config" AGENT_API_STRICT=1 DASHBOARD_BASE_URL=http://evil.invalid:9 MARVEEN_DASHBOARD_ORIGIN=http://evil.invalid:9 ALL_PROXY=http://evil.invalid:8 git checkout -q -b feature 2>"$TMP/i.err")
+if grep -q 'evil.invalid' "$REC.argv" 2>/dev/null; then fail "the request went to the session's URL: $(cat "$REC.argv")"; elif grep -q 'http://localhost:3420/api/messages' "$REC.argv" 2>/dev/null; then pass "the request went to the tree's own dashboard"; else fail "unexpected target: $(cat "$REC.argv" 2>/dev/null)"; fi
 assert_eq "STRICT=1, sub-agent session: exactly one request went out" "1" "$(wc -l < "$REC.calls" 2>/dev/null | tr -d ' ')"
 if grep -q 'sub-fixture-token' "$REC.cfg" 2>/dev/null; then pass "it carried the sub-agent's own token"; else fail "the sub-agent's token is missing from the request"; fi
 if grep -q 'main-fixture-token' "$REC.cfg" 2>/dev/null; then fail "the main agent's token was used by a sub-agent session"; else pass "the main agent's token was not used"; fi
@@ -144,21 +178,30 @@ if grep -q '"from"' "$REC.bodies" 2>/dev/null; then fail "the body names a sende
 if grep -q '"to":"mainbot"' "$REC.bodies" 2>/dev/null; then pass "it is addressed to the main agent"; else fail "wrong recipient: $(cat "$REC.bodies" 2>/dev/null)"; fi
 assert_eq "nothing was reported as failed" "" "$(cat "$TMP/i.err")"
 # control: the main agent's token from that session IS refused (E1), so reverting the hook to --token main would fail the checks above
-(cd "$ROOT" && env CLAUDE_CONFIG_DIR="$ROOT/agents/sub-a/.claude-config" AGENT_API_STRICT=1 MAIN_AGENT_ID=mainbot PATH="$FAKEBIN:$PATH" FAKE_REC="$TMP/rec-ctl" bash scripts/agent-api.sh --token main GET /api/x >/dev/null 2>"$TMP/ctl.err"); ctl_rc=$?
+(cd "$ROOT" && env CLAUDE_CONFIG_DIR="$ROOT/agents/sub-a/.claude-config" AGENT_API_STRICT=1 MAIN_AGENT_ID=mainbot bash scripts/agent-api.sh --token main GET /api/x >/dev/null 2>"$TMP/ctl.err"); ctl_rc=$?
 assert_eq "control: --token main from that session is refused (exit 3)" "3" "$ctl_rc"
 if grep -q 'refused (E1)' "$TMP/ctl.err"; then pass "control: the refusal is rule E1"; else fail "control: no E1 text ($(cat "$TMP/ctl.err"))"; fi
 
 # the main agent's own session (or a terminal in the prod tree): the cwd names the main agent, its token needs a sender
 real_tree k
-(cd "$ROOT" && env -u CLAUDE_CONFIG_DIR AGENT_API_STRICT=1 MAIN_AGENT_ID=mainbot PATH="$FAKEBIN:$PATH" FAKE_REC="$REC" git checkout -q -b feature 2>"$TMP/k.err")
+(cd "$ROOT" && env -u CLAUDE_CONFIG_DIR AGENT_API_STRICT=1 git checkout -q -b feature 2>"$TMP/k.err")
 assert_eq "main agent: two requests (without a sender, then with one)" "2" "$(wc -l < "$REC.calls" 2>/dev/null | tr -d ' ')"
 if grep -q '"from":"mainbot"' "$REC.bodies" 2>/dev/null; then pass "the retry names the main agent"; else fail "no sender in the retry: $(cat "$REC.bodies" 2>/dev/null)"; fi
 assert_eq "main agent: nothing was reported as failed" "" "$(cat "$TMP/k.err")"
 
+# A sub-agent that drops its launch identity is resolved from the cwd (the prod tree = the main agent), so its call
+# ends on the MAIN token. Whatever else the session sets must not steer where that goes.
+real_tree o
+(cd "$ROOT" && env -u CLAUDE_CONFIG_DIR DASHBOARD_BASE_URL=http://evil.invalid:9 MARVEEN_DASHBOARD_ORIGIN=http://evil.invalid:9 \
+  http_proxy=http://evil.invalid:8 ALL_PROXY=http://evil.invalid:8 git checkout -q -b feature 2>"$TMP/o.err")
+if grep -q 'main-fixture-token' "$REC.cfg" 2>/dev/null; then pass "dropped identity: the call is the main agent's (the premise of this case)"; else fail "premise: no main token call ($(cat "$REC.cfg" 2>/dev/null))"; fi
+if grep -q 'evil.invalid' "$REC.argv" "$REC.cfg" 2>/dev/null; then fail "the main token call went to / through the session's choice: $(cat "$REC.argv")"; else pass "the main token call did not go where the session pointed (URL, origin, proxy)"; fi
+if grep -q 'http://localhost:3420/api/messages' "$REC.argv" 2>/dev/null; then pass "it went to the dashboard of the tree"; else fail "unexpected target: $(cat "$REC.argv" 2>/dev/null)"; fi
+
 # a sub-agent without a token file: a local error line, the checkout goes on
 real_tree m
 rm -f "$ROOT/agents/sub-a/.agent-token"
-(cd "$ROOT" && env CLAUDE_CONFIG_DIR="$ROOT/agents/sub-a/.claude-config" AGENT_API_STRICT=1 MAIN_AGENT_ID=mainbot PATH="$FAKEBIN:$PATH" FAKE_REC="$REC" git checkout -q -b feature 2>"$TMP/m.err"); rc=$?
+(cd "$ROOT" && env CLAUDE_CONFIG_DIR="$ROOT/agents/sub-a/.claude-config" AGENT_API_STRICT=1 git checkout -q -b feature 2>"$TMP/m.err"); rc=$?
 assert_eq "no token file: the checkout still succeeds" "0" "$rc"
 assert_eq "no token file: no request was made" "" "$(cat "$REC.calls" 2>/dev/null)"
 case "$(cat "$TMP/m.err")" in *"alert was NOT sent (agent-api exit 3)"*"no readable own token"*) pass "no token file: a local error line says why" ;; *) fail "no token file: '$(cat "$TMP/m.err")'" ;; esac

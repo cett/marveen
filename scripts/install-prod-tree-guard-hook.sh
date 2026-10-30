@@ -158,10 +158,14 @@ fi
 # The alert goes out through the API wrapper as WHOEVER RAN THE CHECKOUT (the wrapper's own identity: the session's
 # launch identity, else the agent the cwd names, which in the prod tree is the main agent); no wrapper, no alert.
 # It is deliberately NOT sent with `--token main`: git runs this hook inside the session that ran the checkout, and a
-# sub-agent session asking for the main agent's token is refused with AGENT_API_STRICT=1 (rule E1). Working around that
-# by dropping the session's environment would hand the MAIN token to whatever the session can steer (URL, PATH, store),
-# so the alert instead carries the caller's own token and the caller's own name. A message from a sub-agent to the main
-# agent is exactly what the alert is anyway: it also says WHO switched the prod tree.
+# sub-agent session asking for the main agent's token is refused with AGENT_API_STRICT=1 (rule E1). So the alert carries
+# the caller's own token and the caller's own name. A message from a sub-agent to the main agent is exactly what the
+# alert is anyway: it also says WHO switched the prod tree.
+# One case still ends in the MAIN token: a session that drops its launch identity (unsets CLAUDE_CONFIG_DIR) is
+# resolved by the wrapper from the cwd, and in the prod tree the cwd names the main agent. So nothing else the session
+# can set may steer where that token goes: the wrapper runs in a CLEAN environment (`env -i`) with a fixed PATH (no
+# look-alike program on it), no proxy variables, and a URL computed below from the .env of this tree. Only the
+# variables that name WHO is calling are passed on.
 # The sender is not named in the body for a fleet-agent token: the server takes it from the token, and a different one
 # is refused (403). Only a token without that pinning (the main agent's) must name it, so a 400 is retried once
 # with the main agent as sender.
@@ -172,7 +176,10 @@ API_WRAPPER="$PROD_ROOT/scripts/agent-api.sh"
 # The alert MUST name the tree it fired in: without it a test alert raised
 # from a scratch root is word-for-word identical to a real one, and the
 # reader starts an investigation (cost one wasted round on 2026-08-22).
-ORIGIN="${MARVEEN_DASHBOARD_ORIGIN:-http://localhost:3420}"
+# The dashboard origin is read from the .env of the guarded tree, NEVER from the environment of the session (see
+# above); it must be http://localhost or http://127.0.0.1 with an optional port, anything else falls back to the default.
+ORIGIN="$(grep -E '^MARVEEN_DASHBOARD_ORIGIN=' "$PROD_ROOT/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
+[[ "$ORIGIN" =~ ^http://(localhost|127\.0\.0\.1)(:[0-9]{1,5})?$ ]] || ORIGIN="http://localhost:3420"
 # The default recipient (and the sender of the retry) is the install's own main agent (MAIN_AGENT_ID in the .env of the
 # guarded tree, read here at alert time, never baked in), not a fixed "marveen": on an install whose main agent has
 # another id the API rejects an unknown recipient. No .env or no id = the stock "marveen".
@@ -190,7 +197,11 @@ BRANCH="${BRANCH//[^A-Za-z0-9._\/-]/_}"
 TOPLEVEL="${TOPLEVEL//[^A-Za-z0-9._\/ -]/_}"
 TEXT="\"to\":\"$ALERT_TO\",\"content\":\"[PROD-FA ORSEG, post-checkout hook] Fa: $TOPLEVEL -- agat valtott a(z) $BRANCH agra. (Ha ez az utvonal nem a telepites fo faja, ez PROBA, nem eles riasztas.) AUTO-VISSZAALLITAS: $REVERTED. Commitot a pre-commit hook blokkol; szandekos valtashoz MARVEEN_PROD_CHECKOUT_OK=1.\"}"
 # send_alert <json-body>: the wrapper's stderr is kept (a failed send is reported below, never swallowed)
-send_alert() { printf '%s' "$1" | DASHBOARD_BASE_URL="$ORIGIN" bash "$API_WRAPPER" --max-time 5 POST /api/messages - 2>&1 >/dev/null; }
+CALL_ENV=(PATH=/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin DASHBOARD_BASE_URL="$ORIGIN")
+for v in CLAUDE_CONFIG_DIR MARVEEN_AGENT_ID MARVEEN_AGENT_TOKEN_FILE AGENT_API_STRICT; do
+  [ -n "${!v:-}" ] && CALL_ENV+=("$v=${!v}")
+done
+send_alert() { printf '%s' "$1" | env -i "${CALL_ENV[@]}" /bin/bash "$API_WRAPPER" --max-time 5 POST /api/messages - 2>&1 >/dev/null; }
 ALERT_ERR="$(send_alert "{$TEXT")"; ALERT_RC=$?
 if [ "$ALERT_RC" -eq 22 ]; then ALERT_ERR="$(send_alert "{\"from\":\"$MAIN_ID\",$TEXT")"; ALERT_RC=$?; fi
 if [ "$ALERT_RC" -ne 0 ]; then
