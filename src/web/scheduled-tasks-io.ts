@@ -4,6 +4,7 @@ import { homedir } from 'node:os'
 import { MAIN_AGENT_ID } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { sanitizeScheduleName, safeJoin } from './sanitize.js'
+import { withScheduleLock } from './schedule-lock.js'
 import {
   countSchedules, listSchedulesFromDb, getScheduleFromDb, upsertSchedule, deleteSchedule,
   setScheduleEnabled, patchSchedule, seedScheduleIfAbsent,
@@ -227,12 +228,12 @@ export function parseRequires(raw: { mcp_servers?: unknown } | undefined): Sched
 // Uses INSERT OR IGNORE so re-running at startup never overwrites a row that
 // was hand-edited in the DB since the last boot.
 // Returns the number of newly inserted rows (0 on a warm boot with seeded DB).
-export function seedSchedulesFromFilesIfEmpty(): number {
-  if (countSchedules() > 0) return 0
+export async function seedSchedulesFromFilesIfEmpty(): Promise<number> {
+  if (await countSchedules() > 0) return 0
   const fileTasks = listScheduledTasksFromFiles()
   let inserted = 0
   for (const task of fileTasks) {
-    const seeded = seedScheduleIfAbsent(task.name, {
+    const seeded = await seedScheduleIfAbsent(task.name, {
       prompt:                   task.prompt,
       description:              task.description,
       schedule:                 task.schedule,
@@ -262,9 +263,9 @@ export function seedSchedulesFromFilesIfEmpty(): number {
 // DB is the primary source once it has been seeded by the migration script;
 // falls back to the file system so the runner keeps firing during the
 // transition window and after a rollback (just clear the schedules table).
-export function listScheduledTasks(): ScheduledTask[] {
-  if (countSchedules() > 0) {
-    return listSchedulesFromDb().map(rowToTask)
+export async function listScheduledTasks(): Promise<ScheduledTask[]> {
+  if (await countSchedules() > 0) {
+    return (await listSchedulesFromDb()).map(rowToTask)
   }
   return listScheduledTasksFromFiles()
 }
@@ -272,8 +273,8 @@ export function listScheduledTasks(): ScheduledTask[] {
 /** Names of the DB schedules that are enabled AND live. Reads the DB row
  *  itself (never the task-config.json mirror), so it is the scheduler's baseline
  *  of what SHOULD be running no matter how the tick's own task list was read. */
-export function listDbRunnableTaskNames(): string[] {
-  return listSchedulesFromDb()
+export async function listDbRunnableTaskNames(): Promise<string[]> {
+  return (await listSchedulesFromDb())
     .map(rowToTask)
     .filter(t => t.enabled && isTaskLive(t))
     .map(t => t.name)
@@ -333,12 +334,12 @@ export function rowToTask(row: ScheduleRow): ScheduledTask {
  * missing or unparseable file is left alone (the mirror is never created here).
  * Returns the names of the tasks whose file was rewritten.
  */
-export function syncTaskConfigEnabledFromDb(
-  rows: ReadonlyArray<Pick<ScheduleRow, 'id' | 'enabled'>> = listSchedulesFromDb(),
+export async function syncTaskConfigEnabledFromDb(
+  rows?: ReadonlyArray<Pick<ScheduleRow, 'id' | 'enabled'>>,
   dir: string = SCHEDULED_TASKS_DIR,
-): string[] {
+): Promise<string[]> {
   const fixed: string[] = []
-  for (const row of rows) {
+  for (const row of rows ?? await listSchedulesFromDb()) {
     const configPath = join(dir, row.id, 'task-config.json')
     let config: Record<string, unknown>
     try {
@@ -355,19 +356,22 @@ export function syncTaskConfigEnabledFromDb(
   return fixed
 }
 
-export function writeScheduledTask(
-  taskName: string,
-  data: {
-    description?: string; prompt?: string; schedule?: string; agent?: string;
-    enabled?: boolean; type?: string; skipIfBusy?: boolean; forceSend?: boolean;
-    targetSession?: string; command?: string; timeoutMs?: number; failThreshold?: number;
-    preCheck?: string; catchUpMaxAgeMinutes?: number; stuckAfterMinutes?: number;
-    tenantId?: string | null; requires?: { mcp_servers?: string[] };
-    status?: 'draft' | 'pending_review' | 'live';
-  },
-): void {
-  const dbRow = countSchedules() > 0 ? getScheduleFromDb(taskName) : null
-  const existing = dbRow ? rowToTask(dbRow) : (countSchedules() > 0 ? null : readScheduledTask(taskName))
+export interface ScheduledTaskWrite {
+  description?: string; prompt?: string; schedule?: string; agent?: string;
+  enabled?: boolean; type?: string; skipIfBusy?: boolean; forceSend?: boolean;
+  targetSession?: string; command?: string; timeoutMs?: number; failThreshold?: number;
+  preCheck?: string; catchUpMaxAgeMinutes?: number; stuckAfterMinutes?: number;
+  tenantId?: string | null; requires?: { mcp_servers?: string[] };
+  status?: 'draft' | 'pending_review' | 'live';
+}
+
+export function writeScheduledTask(taskName: string, data: ScheduledTaskWrite): Promise<void> {
+  return withScheduleLock(taskName, () => writeScheduledTaskLocked(taskName, data))
+}
+
+async function writeScheduledTaskLocked(taskName: string, data: ScheduledTaskWrite): Promise<void> {
+  const dbRow = await countSchedules() > 0 ? await getScheduleFromDb(taskName) : null
+  const existing = dbRow ? rowToTask(dbRow) : (await countSchedules() > 0 ? null : readScheduledTask(taskName))
 
   const merged = {
     prompt:                   data.prompt                   ?? existing?.prompt                   ?? '',
@@ -395,7 +399,7 @@ export function writeScheduledTask(
     status:                   data.status ?? existing?.status ?? 'live',
   }
 
-  upsertSchedule(taskName, merged)
+  await upsertSchedule(taskName, merged)
 
   // Keep files in sync as safety-net (allows rollback: just clear the DB table).
   _writeScheduledTaskFiles(taskName, merged)

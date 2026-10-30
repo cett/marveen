@@ -66,46 +66,80 @@ function nowSec(): number {
 
 // Mint a fresh session (always at successful login only -- never from a
 // client-supplied value) and return the raw token for the Set-Cookie header.
-export function createSession(user: AuthSessionUser, opts: { userAgent?: string | null; remoteNote?: string | null } = {}): string {
+export async function createSession(user: AuthSessionUser, opts: { userAgent?: string | null; remoteNote?: string | null } = {}): Promise<string> {
   const token = randomBytes(32).toString('base64url')
   const idHash = sha256hex(token)
   const now = nowSec()
-  insertAuthSession(idHash, user.userId, user.username, now, opts.userAgent ?? null, opts.remoteNote ?? null)
+  // The row first, the cache after it: a failed insert leaves no cache entry, so no cookie outlives the process
+  // without a durable row behind it.
+  await insertAuthSession(idHash, user.userId, user.username, now, opts.userAgent ?? null, opts.remoteNote ?? null)
   cache.set(idHash, { userId: user.userId, username: user.username, createdAt: now, lastSeenAt: now })
   return token
 }
 
-function removeByHash(idHash: string): void {
-  cache.delete(idHash)
-  deleteAuthSessionByHash(idHash)
+// Counts the revocations that have finished. A rehydrating resolveSession reads it before its table read and
+// compares it afterwards: with the table read asynchronous, a revoke can finish between the read and the
+// cache.set, and without the comparison the revoked session would be put back in the cache.
+let revokeEpoch = 0
+
+function revoked(): void {
+  revokeEpoch++
+}
+
+// The table first, the cache after it (a revoke that deleted the cache entry first could see it put back by a
+// resolveSession whose table read still found the row). The cache step sits in a finally: a table delete that
+// rejects (SQLITE_BUSY) must not leave the entry resolving until its TTL while the caller gets the error. The
+// evicted session re-reads the table on its next request, so a row that is still there is checked, not trusted.
+async function removeByHash(idHash: string): Promise<void> {
+  try {
+    await deleteAuthSessionByHash(idHash)
+  } finally {
+    cache.delete(idHash)
+    revoked()
+  }
+}
+
+function toCached(row: { user_id: number; username: string; created_at: number; last_seen_at: number }): CachedSession {
+  return { userId: row.user_id, username: row.username, createdAt: row.created_at, lastSeenAt: row.last_seen_at }
+}
+
+// Cache miss (fresh process after a restart, or a session minted by another path): rehydrate from the durable
+// table. Null = no such session.
+async function rehydrate(idHash: string): Promise<CachedSession | null> {
+  const epoch = revokeEpoch
+  const row = await getAuthSessionByHash(idHash)
+  if (!row) return null
+  if (epoch === revokeEpoch) {
+    const entry = toCached(row)
+    cache.set(idHash, entry)
+    return entry
+  }
+  // A revoke finished while the row was being read: the row may be one it removed. Ask the table again and
+  // do not cache the answer (the next request rehydrates cleanly).
+  const again = await getAuthSessionByHash(idHash)
+  return again ? toCached(again) : null
 }
 
 // Validate a presented cookie value. Returns the session principal or null.
 // Enforces both TTLs and debounces the last_seen write to <= once per 60s.
-export function resolveSession(cookieValue: string): ResolvedSession | null {
+// A table error rejects: the caller refuses the request, it never falls through to another auth lane.
+export async function resolveSession(cookieValue: string): Promise<ResolvedSession | null> {
   if (!cookieValue) return null
   const idHash = sha256hex(cookieValue)
-  let entry = cache.get(idHash)
-  if (!entry) {
-    // Cache miss (fresh process after a restart, or a session minted by another
-    // path): rehydrate from the durable table.
-    const row = getAuthSessionByHash(idHash)
-    if (!row) return null
-    entry = { userId: row.user_id, username: row.username, createdAt: row.created_at, lastSeenAt: row.last_seen_at }
-    cache.set(idHash, entry)
-  }
+  const entry = cache.get(idHash) ?? await rehydrate(idHash)
+  if (!entry) return null
   const now = nowSec()
   if (now - entry.createdAt > ABSOLUTE_TTL_SEC) {
-    removeByHash(idHash)
+    await removeByHash(idHash)
     return null
   }
   if (now - entry.lastSeenAt > IDLE_TTL_SEC) {
-    removeByHash(idHash)
+    await removeByHash(idHash)
     return null
   }
   if (now - entry.lastSeenAt >= LAST_SEEN_DEBOUNCE_SEC) {
     entry.lastSeenAt = now
-    const changes = touchAuthSessionLastSeen(idHash, now)
+    const changes = await touchAuthSessionLastSeen(idHash, now)
     // Zero changed rows = the session row was deleted OUTSIDE this process
     // (dashboard-user sessions:clear / security:reset run in their own process
     // and cannot reach this cache). Honor the revocation within <=60s instead
@@ -118,40 +152,50 @@ export function resolveSession(cookieValue: string): ResolvedSession | null {
   return { userId: entry.userId, username: entry.username }
 }
 
-export function revokeSession(cookieValue: string): void {
+export async function revokeSession(cookieValue: string): Promise<void> {
   if (!cookieValue) return
-  removeByHash(sha256hex(cookieValue))
+  await removeByHash(sha256hex(cookieValue))
 }
 
 // Revoke every session of a user, optionally sparing the caller's own (used by
 // password-change and logout-all). exceptCookieValue is the RAW cookie value.
-export function revokeAllForUser(userId: number, exceptCookieValue?: string | null): void {
+// Table first, cache after it, the cache step in a finally (see removeByHash).
+export async function revokeAllForUser(userId: number, exceptCookieValue?: string | null): Promise<void> {
   const exceptHash = exceptCookieValue ? sha256hex(exceptCookieValue) : null
-  for (const [hash, entry] of cache) {
-    if (entry.userId === userId && hash !== exceptHash) cache.delete(hash)
+  try {
+    await deleteAuthSessionsForUser(userId, exceptHash)
+  } finally {
+    for (const [hash, entry] of cache) {
+      if (entry.userId === userId && hash !== exceptHash) cache.delete(hash)
+    }
+    revoked()
   }
-  deleteAuthSessionsForUser(userId, exceptHash)
 }
 
 // Revoke EVERY browser session at once (break-glass security reset). Cache and
 // table go together -- a DB-only delete would leave cached sessions resolving
-// until the next restart.
-export function revokeAllSessions(): number {
-  cache.clear()
-  return deleteAllAuthSessions()
+// until the next restart. Table first, cache after it, the cache step in a finally (see removeByHash).
+export async function revokeAllSessions(): Promise<number> {
+  try {
+    return await deleteAllAuthSessions()
+  } finally {
+    cache.clear()
+    revoked()
+  }
 }
 
-export function listUserSessions(userId: number): UserSessionInfo[] {
-  return listAuthSessionRowsForUser(userId).map((r) => ({ idHashPrefix: r.id_hash.slice(0, 12), createdAt: r.created_at, lastSeenAt: r.last_seen_at, userAgent: r.user_agent }))
+export async function listUserSessions(userId: number): Promise<UserSessionInfo[]> {
+  return (await listAuthSessionRowsForUser(userId)).map((r) => ({ idHashPrefix: r.id_hash.slice(0, 12), createdAt: r.created_at, lastSeenAt: r.last_seen_at, userAgent: r.user_agent }))
 }
 
 // Hourly sweep of rows past either TTL. Cheap: two indexed range deletes plus a
-// cache prune. Returns the number of DB rows removed.
-export function sweepExpiredSessions(): number {
+// cache prune. Returns the number of DB rows removed. The cutoffs are fixed before
+// the first await, so the table delete and the cache prune use the same instant.
+export async function sweepExpiredSessions(): Promise<number> {
   const now = nowSec()
   const idleCutoff = now - IDLE_TTL_SEC
   const absoluteCutoff = now - ABSOLUTE_TTL_SEC
-  const removed = deleteExpiredAuthSessions(idleCutoff, absoluteCutoff)
+  const removed = await deleteExpiredAuthSessions(idleCutoff, absoluteCutoff)
   for (const [hash, entry] of cache) {
     if (entry.lastSeenAt < idleCutoff || entry.createdAt < absoluteCutoff) cache.delete(hash)
   }

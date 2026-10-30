@@ -124,17 +124,17 @@ describe('seeding into the schedules DB', () => {
     rmSync(tmp, { recursive: true, force: true })
   })
 
-  it('a fresh install gets both as command rows with no prompt and the rendered command', () => {
-    expect(io.seedSchedulesFromFilesIfEmpty()).toBe(2)
+  it('a fresh install gets both as command rows with no prompt and the rendered command', async () => {
+    expect(await io.seedSchedulesFromFilesIfEmpty()).toBe(2)
 
-    const backup = dbMod.getScheduleFromDb('nightly-backup')
+    const backup = await dbMod.getScheduleFromDb('nightly-backup')
     expect(backup).toMatchObject({
       type: 'command', prompt: '', enabled: 1, agent: 'main-agent',
       schedule: '0 3 * * *', timeout_ms: 120000, fail_threshold: 1, status: 'live', tenant_id: 'default',
       command: "bash '/opt/marveen/scripts/backup.sh'",
     })
 
-    const maint = dbMod.getScheduleFromDb('memory-maintenance')
+    const maint = await dbMod.getScheduleFromDb('memory-maintenance')
     expect(maint).toMatchObject({
       type: 'command', prompt: '', enabled: 1, agent: 'main-agent',
       schedule: '15 3 * * *', timeout_ms: 480000, fail_threshold: 1, status: 'live',
@@ -147,42 +147,42 @@ describe('seeding into the schedules DB', () => {
     expect(backup?.command).not.toContain('{{')
   })
 
-  it('an existing install keeps its own rows untouched and gains nothing from the files', () => {
-    const custom = dbMod.upsertSchedule('nightly-backup', {
+  it('an existing install keeps its own rows untouched and gains nothing from the files', async () => {
+    const custom = await dbMod.upsertSchedule('nightly-backup', {
       prompt: 'operator prompt', description: 'my backup', schedule: '30 1 * * *', agent: 'someone',
       type: 'command', enabled: false, skip_if_busy: false, force_send: false,
       command: 'bash /srv/my-backup.sh', timeout_ms: 900000, fail_threshold: 3,
       status: 'live', tenant_id: null,
     })
-    const before = { ...dbMod.getScheduleFromDb('nightly-backup') }
+    const before = { ...await dbMod.getScheduleFromDb('nightly-backup') }
 
-    expect(io.seedSchedulesFromFilesIfEmpty()).toBe(0)
+    expect(await io.seedSchedulesFromFilesIfEmpty()).toBe(0)
 
-    expect(dbMod.getScheduleFromDb('nightly-backup')).toEqual(before)
-    expect(dbMod.getScheduleFromDb('nightly-backup')).toMatchObject({ command: 'bash /srv/my-backup.sh', schedule: '30 1 * * *', enabled: 0 })
+    expect(await dbMod.getScheduleFromDb('nightly-backup')).toEqual(before)
+    expect(await dbMod.getScheduleFromDb('nightly-backup')).toMatchObject({ command: 'bash /srv/my-backup.sh', schedule: '30 1 * * *', enabled: 0 })
     expect(custom.id).toBe('nightly-backup')
     // The table was not empty, so the memory-maintenance file is not imported either.
-    expect(dbMod.getScheduleFromDb('memory-maintenance')).toBeUndefined()
+    expect(await dbMod.getScheduleFromDb('memory-maintenance')).toBeUndefined()
   })
 
-  it('a row for one seeded task survives even when the other is absent (insert-or-ignore)', () => {
+  it('a row for one seeded task survives even when the other is absent (insert-or-ignore)', async () => {
     const seedIfAbsent = dbMod.seedScheduleIfAbsent
-    dbMod.upsertSchedule('memory-maintenance', {
+    await dbMod.upsertSchedule('memory-maintenance', {
       prompt: 'kept', description: 'mine', schedule: '45 4 * * *', agent: 'someone',
       type: 'task', enabled: true, skip_if_busy: true, force_send: false,
       status: 'live', tenant_id: null,
     })
-    const before = { ...dbMod.getScheduleFromDb('memory-maintenance') }
+    const before = { ...await dbMod.getScheduleFromDb('memory-maintenance') }
 
     const task = io.listScheduledTasksFromFiles().find(t => t.name === 'memory-maintenance')
     expect(task).toBeDefined()
-    expect(seedIfAbsent('memory-maintenance', {
+    expect(await seedIfAbsent('memory-maintenance', {
       prompt: task!.prompt, description: task!.description, schedule: task!.schedule, agent: task!.agent,
       type: task!.type ?? 'task', enabled: task!.enabled, tenant_id: null,
       skip_if_busy: false, force_send: false,
       command: task!.command ?? null, timeout_ms: task!.timeoutMs ?? null, fail_threshold: task!.failThreshold ?? null,
     })).toBe(false)
 
-    expect(dbMod.getScheduleFromDb('memory-maintenance')).toEqual(before)
+    expect(await dbMod.getScheduleFromDb('memory-maintenance')).toEqual(before)
   })
 })

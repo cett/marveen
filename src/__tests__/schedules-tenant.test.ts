@@ -16,9 +16,9 @@ const mockDeleteSchedule    = vi.fn()
 const mockSetScheduleEnabled = vi.fn()
 
 vi.mock('../db.js', () => ({
-  listPendingTaskRetries:    vi.fn().mockReturnValue([]),
+  listPendingTaskRetries:    vi.fn().mockResolvedValue([]),
   deletePendingTaskRetryById: vi.fn(),
-  listTaskRunHistory:        vi.fn().mockReturnValue([]),
+  listTaskRunHistory:        vi.fn().mockResolvedValue([]),
   countSchedules:            (...a: unknown[]) => mockCountSchedules(...a),
   listSchedulesFromDb:       (...a: unknown[]) => mockListSchedulesDb(...a),
   getScheduleFromDb:         (...a: unknown[]) => mockGetScheduleDb(...a),
@@ -27,23 +27,24 @@ vi.mock('../db.js', () => ({
   patchSchedule:             vi.fn(),
   upsertSchedule:            vi.fn(),
   // Tenant lookups behind the create/edit rules: every tenant exists, every agent is a fleet agent.
-  getTenant: vi.fn((id: string) => ({ id, disabled_at: null })),
-  getTenantsForAgent: vi.fn().mockReturnValue([]),
+  getTenant: vi.fn((id: string) => Promise.resolve({ id, disabled_at: null })),
+  getTenantsForAgent: vi.fn().mockResolvedValue([]),
   agentServesTenant: vi.fn().mockReturnValue(true),
   getServingTenant: vi.fn().mockReturnValue(null),
-  resolveAgentTenant: vi.fn().mockReturnValue('default'),
+  resolveAgentTenant: vi.fn().mockResolvedValue('default'),
 }))
 
 vi.mock('../web/scheduled-tasks-io.js', () => ({
   SCHEDULED_TASKS_DIR:         '/fake/tasks',
   MAX_SCHEDULED_TASK_PROMPT_LEN: 50_000,
-  listScheduledTasks:          vi.fn().mockReturnValue([]),
+  listScheduledTasks:          vi.fn().mockResolvedValue([]),
   listScheduledTasksFromFiles: vi.fn().mockReturnValue([]),
   writeScheduledTask:          vi.fn(),
   // Minimal id -> name mapping mirroring the real rowToTask, just enough
   // for the GET /api/schedules assertions below to see the shape the
   // frontend actually depends on.
   rowToTask:                   (row: { id: string }) => ({ name: row.id, ...row }),
+  isTaskLive:                  (task: { status?: string }) => task.status === undefined || task.status === 'live',
 }))
 
 const mockLoadLastTickMs = vi.fn<() => number | null>().mockReturnValue(null)
@@ -127,7 +128,7 @@ describe('GET /api/schedules', () => {
   beforeEach(() => vi.clearAllMocks())
 
   it('admin with no filter gets all rows', async () => {
-    mockListSchedulesDb.mockReturnValue([fleetRow, tenantRow])
+    mockListSchedulesDb.mockResolvedValue([fleetRow, tenantRow])
     const { ctx, out } = makeCtx('GET', '/api/schedules', undefined, 'admin', null)
     await tryHandleSchedules(ctx)
     expect(out.status).toBe(200)
@@ -136,7 +137,7 @@ describe('GET /api/schedules', () => {
 
 
   it('non-admin gets only their tenant rows', async () => {
-    mockListSchedulesDb.mockReturnValue([tenantRow])
+    mockListSchedulesDb.mockResolvedValue([tenantRow])
     const { ctx, out } = makeCtx('GET', '/api/schedules', undefined, 'viewer', 'tenant-a')
     await tryHandleSchedules(ctx)
     expect(out.status).toBe(200)
@@ -148,7 +149,7 @@ describe('GET /api/schedules', () => {
   // every row in the response is missing `name`, which breaks delete/
   // toggle/run/edit (they build the URL from task.name -> "/undefined").
   it('DB-mode rows are mapped to include `name` (= id), not just `id`', async () => {
-    mockListSchedulesDb.mockReturnValue([tenantRow])
+    mockListSchedulesDb.mockResolvedValue([tenantRow])
     const { ctx, out } = makeCtx('GET', '/api/schedules', undefined, 'viewer', 'tenant-a')
     await tryHandleSchedules(ctx)
     expect(out.status).toBe(200)
@@ -208,7 +209,7 @@ describe('POST /api/schedules', () => {
   beforeEach(() => vi.clearAllMocks())
 
   it('non-admin: creates with their tenant_id auto-stamped', async () => {
-    mockGetScheduleDb.mockReturnValue(undefined)
+    mockGetScheduleDb.mockResolvedValue(undefined)
     const { writeScheduledTask } = await import('../web/scheduled-tasks-io.js')
     const { ctx } = makeCtx('POST', '/api/schedules', {
       name: 'my-report', prompt: 'Do the thing', schedule: '0 9 * * 1', agent: 'sub-a',
@@ -218,7 +219,7 @@ describe('POST /api/schedules', () => {
   })
 
   it('admin: can pass explicit tenant_id', async () => {
-    mockGetScheduleDb.mockReturnValue(undefined)
+    mockGetScheduleDb.mockResolvedValue(undefined)
     const { writeScheduledTask } = await import('../web/scheduled-tasks-io.js')
     const { ctx } = makeCtx('POST', '/api/schedules', {
       name: 'admin-task', prompt: 'Do admin stuff', schedule: '0 9 * * 1', tenant_id: 'tenant-b', agent: 'sub-a',
@@ -235,7 +236,7 @@ describe('DELETE /api/schedules/:name', () => {
   beforeEach(() => vi.clearAllMocks())
 
   it('non-admin can delete their own tenant schedule', async () => {
-    mockGetScheduleDb.mockReturnValue(tenantRow)
+    mockGetScheduleDb.mockResolvedValue(tenantRow)
     const { ctx, out } = makeCtx('DELETE', '/api/schedules/my-report', undefined, 'viewer', 'tenant-a')
     await tryHandleSchedules(ctx)
     expect(out.status).toBe(200)
@@ -243,7 +244,7 @@ describe('DELETE /api/schedules/:name', () => {
   })
 
   it('non-admin cannot delete another tenants schedule (404)', async () => {
-    mockGetScheduleDb.mockReturnValue(otherRow)
+    mockGetScheduleDb.mockResolvedValue(otherRow)
     const { ctx, out } = makeCtx('DELETE', '/api/schedules/other-report', undefined, 'viewer', 'tenant-a')
     await tryHandleSchedules(ctx)
     expect(out.status).toBe(404)
@@ -251,7 +252,7 @@ describe('DELETE /api/schedules/:name', () => {
   })
 
   it('non-admin cannot delete fleet schedule (404)', async () => {
-    mockGetScheduleDb.mockReturnValue(fleetRow)
+    mockGetScheduleDb.mockResolvedValue(fleetRow)
     const { ctx, out } = makeCtx('DELETE', '/api/schedules/morning-chain', undefined, 'viewer', 'tenant-a')
     await tryHandleSchedules(ctx)
     expect(out.status).toBe(404)
@@ -259,7 +260,7 @@ describe('DELETE /api/schedules/:name', () => {
   })
 
   it('admin can delete fleet schedule', async () => {
-    mockGetScheduleDb.mockReturnValue(fleetRow)
+    mockGetScheduleDb.mockResolvedValue(fleetRow)
     const { ctx, out } = makeCtx('DELETE', '/api/schedules/morning-chain', undefined, 'admin', null)
     await tryHandleSchedules(ctx)
     expect(out.status).toBe(200)
@@ -273,7 +274,7 @@ describe('POST /api/schedules/:name/toggle', () => {
   beforeEach(() => vi.clearAllMocks())
 
   it('non-admin cannot toggle fleet task (404)', async () => {
-    mockGetScheduleDb.mockReturnValue(fleetRow)
+    mockGetScheduleDb.mockResolvedValue(fleetRow)
     const { ctx, out } = makeCtx('POST', '/api/schedules/morning-chain/toggle', undefined, 'viewer', 'tenant-a')
     await tryHandleSchedules(ctx)
     expect(out.status).toBe(404)
@@ -281,10 +282,81 @@ describe('POST /api/schedules/:name/toggle', () => {
   })
 
   it('non-admin can toggle their own tenant task', async () => {
-    mockGetScheduleDb.mockReturnValue(tenantRow)
+    mockGetScheduleDb.mockResolvedValue(tenantRow)
     const { ctx, out } = makeCtx('POST', '/api/schedules/my-report/toggle', undefined, 'viewer', 'tenant-a')
     await tryHandleSchedules(ctx)
     expect(out.status).toBe(200)
     expect(mockSetScheduleEnabled).toHaveBeenCalledWith('my-report', false) // enabled=1 -> toggles to false
+  })
+
+  // The flip is decided on the row read under the schedule lock, not on the one read before it (two quick clicks
+  // flip it twice), and a row that is gone or moved tenant in between is not written.
+  it('flips the value it re-reads under the lock, not the one read before', async () => {
+    mockGetScheduleDb
+      .mockResolvedValueOnce(tenantRow)                          // the checks before the lock: enabled
+      .mockResolvedValueOnce({ ...tenantRow, enabled: 0 })       // under the lock: a click in between disabled it
+    const { ctx, out } = makeCtx('POST', '/api/schedules/my-report/toggle', undefined, 'viewer', 'tenant-a')
+    await tryHandleSchedules(ctx)
+    expect(out.status).toBe(200)
+    expect(out.body).toEqual({ ok: true, enabled: true })
+    expect(mockSetScheduleEnabled).toHaveBeenCalledWith('my-report', true)
+  })
+
+  it('answers 404 and writes nothing when the row was deleted after the checks', async () => {
+    mockGetScheduleDb.mockResolvedValueOnce(tenantRow).mockResolvedValueOnce(undefined)
+    const { writeScheduledTask } = await import('../web/scheduled-tasks-io.js')
+    vi.mocked(writeScheduledTask).mockClear()
+    const { ctx, out } = makeCtx('POST', '/api/schedules/my-report/toggle', undefined, 'viewer', 'tenant-a')
+    await tryHandleSchedules(ctx)
+    expect(out.status).toBe(404)
+    expect(mockSetScheduleEnabled).not.toHaveBeenCalled()
+    expect(vi.mocked(writeScheduledTask)).not.toHaveBeenCalled()
+  })
+
+  it('answers 404 and writes nothing when the row moved to another tenant after the checks', async () => {
+    mockGetScheduleDb.mockResolvedValueOnce(tenantRow).mockResolvedValueOnce({ ...tenantRow, tenant_id: 'tenant-b' })
+    const { writeScheduledTask } = await import('../web/scheduled-tasks-io.js')
+    vi.mocked(writeScheduledTask).mockClear()
+    const { ctx, out } = makeCtx('POST', '/api/schedules/my-report/toggle', undefined, 'viewer', 'tenant-a')
+    await tryHandleSchedules(ctx)
+    expect(out.status).toBe(404)
+    expect(mockSetScheduleEnabled).not.toHaveBeenCalled()
+    expect(vi.mocked(writeScheduledTask)).not.toHaveBeenCalled()
+  })
+})
+
+// ── Edit (PUT) under the schedule lock ────────────────────────────────────────
+
+describe('PUT /api/schedules/:name', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  it('answers 404 and creates nothing when the row was deleted between the checks and the write', async () => {
+    mockGetScheduleDb.mockResolvedValueOnce(tenantRow).mockResolvedValueOnce(undefined)
+    const { writeScheduledTask } = await import('../web/scheduled-tasks-io.js')
+    vi.mocked(writeScheduledTask).mockClear()
+    const { ctx, out } = makeCtx('PUT', '/api/schedules/my-report', { description: 'new' }, 'viewer', 'tenant-a')
+    await tryHandleSchedules(ctx)
+    expect(out.status).toBe(404)
+    expect(vi.mocked(writeScheduledTask)).not.toHaveBeenCalled()
+  })
+
+  it('answers 404 and writes nothing when the row moved to another tenant between the checks and the write', async () => {
+    mockGetScheduleDb.mockResolvedValueOnce(tenantRow).mockResolvedValueOnce({ ...tenantRow, tenant_id: 'tenant-b' })
+    const { writeScheduledTask } = await import('../web/scheduled-tasks-io.js')
+    vi.mocked(writeScheduledTask).mockClear()
+    const { ctx, out } = makeCtx('PUT', '/api/schedules/my-report', { description: 'new' }, 'viewer', 'tenant-a')
+    await tryHandleSchedules(ctx)
+    expect(out.status).toBe(404)
+    expect(vi.mocked(writeScheduledTask)).not.toHaveBeenCalled()
+  })
+
+  it('writes the edit when the row is unchanged under the lock', async () => {
+    mockGetScheduleDb.mockResolvedValue(tenantRow)
+    const { writeScheduledTask } = await import('../web/scheduled-tasks-io.js')
+    vi.mocked(writeScheduledTask).mockClear()
+    const { ctx, out } = makeCtx('PUT', '/api/schedules/my-report', { description: 'new' }, 'viewer', 'tenant-a')
+    await tryHandleSchedules(ctx)
+    expect(out.status).toBe(200)
+    expect(vi.mocked(writeScheduledTask)).toHaveBeenCalledWith('my-report', expect.objectContaining({ description: 'new' }))
   })
 })

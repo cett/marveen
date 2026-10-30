@@ -31,7 +31,8 @@ vi.mock('../db.js', () => ({
     transaction: vi.fn().mockImplementation((fn: () => unknown) => fn),
   }),
   createAgentMessage: vi.fn(),
-  markKanbanCardDispatched: vi.fn(),
+  markKanbanCardDispatched: vi.fn().mockResolvedValue(true),
+  releaseKanbanCardDispatch: vi.fn().mockResolvedValue(undefined),
   getKanbanSeqByIdPrefix: vi.fn().mockReturnValue(null),
   listLabels: vi.fn().mockReturnValue([]),
   getLabel: vi.fn().mockReturnValue(null),
@@ -92,7 +93,7 @@ function makeCtx(
 
 describe('PATCH /api/kanban/:id/parent -- status code from code, not string', () => {
   it('returns 404 when code is not_found (card missing)', async () => {
-    vi.mocked(db.reparentKanbanCard).mockReturnValueOnce({
+    vi.mocked(db.reparentKanbanCard).mockResolvedValueOnce({
       ok: false, code: 'not_found', hint: 'Card not found',
     })
     const { ctx, out } = makeCtx('PATCH', '/api/kanban/missing/parent', { parent_id: null })
@@ -102,7 +103,7 @@ describe('PATCH /api/kanban/:id/parent -- status code from code, not string', ()
   })
 
   it('returns 404 when code is not_found (parent missing)', async () => {
-    vi.mocked(db.reparentKanbanCard).mockReturnValueOnce({
+    vi.mocked(db.reparentKanbanCard).mockResolvedValueOnce({
       ok: false, code: 'not_found', hint: 'Parent card not found',
     })
     const { ctx, out } = makeCtx('PATCH', '/api/kanban/card1/parent', { parent_id: 'ghost' })
@@ -114,7 +115,7 @@ describe('PATCH /api/kanban/:id/parent -- status code from code, not string', ()
   })
 
   it('returns 400 when code is invalid (self-parent)', async () => {
-    vi.mocked(db.reparentKanbanCard).mockReturnValueOnce({
+    vi.mocked(db.reparentKanbanCard).mockResolvedValueOnce({
       ok: false, code: 'invalid_value', hint: 'Card cannot be its own parent',
     })
     const { ctx, out } = makeCtx('PATCH', '/api/kanban/card1/parent', { parent_id: 'card1' })
@@ -124,7 +125,7 @@ describe('PATCH /api/kanban/:id/parent -- status code from code, not string', ()
   })
 
   it('returns 400 when code is limit_exceeded (depth)', async () => {
-    vi.mocked(db.reparentKanbanCard).mockReturnValueOnce({
+    vi.mocked(db.reparentKanbanCard).mockResolvedValueOnce({
       ok: false, code: 'limit_exceeded', hint: 'Reparenting would exceed max depth of 3 levels',
     })
     const { ctx, out } = makeCtx('PATCH', '/api/kanban/card1/parent', { parent_id: 'deep' })

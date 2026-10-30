@@ -42,11 +42,13 @@ export type CategoryCheck =
  * a stray space or zero-width character, a missing or doubled underscore): a name that looks like the
  * gated category and is not it would be an unguarded twin of it.
  */
-export function checkCategory(raw: string, humanOnlyKeys: readonly string[] = humanOnlyKeysNow()): CategoryCheck {
-  if (humanOnlyKeys.includes(raw)) return { ok: true, category: raw }
+export async function checkCategory(raw: string, humanOnlyKeys?: readonly string[]): Promise<CategoryCheck> {
+  // An await cannot sit in a parameter default, so the keys are read here when the caller passed none.
+  const keys = humanOnlyKeys ?? await humanOnlyKeysNow()
+  if (keys.includes(raw)) return { ok: true, category: raw }
   const canonical = normalize(raw)
   const skel = skeleton(canonical)
-  for (const key of humanOnlyKeys) {
+  for (const key of keys) {
     if (skel !== '' && skeleton(key) === skel) {
       return { ok: false, error: 'category_alias_of_human_only', hint: `category is a variant spelling of the human-only category "${key}"` }
     }
@@ -58,10 +60,10 @@ export function checkCategory(raw: string, humanOnlyKeys: readonly string[] = hu
 }
 
 /** The human-only keys now: the code's floor and the table's column. A table that cannot be read leaves the floor. */
-export function humanOnlyKeysNow(): string[] {
+export async function humanOnlyKeysNow(): Promise<string[]> {
   const keys = new Set(HUMAN_ONLY_FLOOR)
   try {
-    for (const k of listHumanOnlyCategoryKeys()) keys.add(k)
+    for (const k of await listHumanOnlyCategoryKeys()) keys.add(k)
   } catch (err) {
     logger.warn({ err }, 'Human-only category lookup failed, using the built-in floor')
   }
@@ -69,9 +71,9 @@ export function humanOnlyKeysNow(): string[] {
 }
 
 /** True when a request in this category is human-only. Compares the normalized name, so a twin spelling counts too. */
-export function isHumanOnly(category: string): boolean {
+export async function isHumanOnly(category: string): Promise<boolean> {
   const canonical = normalize(category)
-  return humanOnlyKeysNow().some((k) => k === canonical || skeleton(k) === skeleton(canonical))
+  return (await humanOnlyKeysNow()).some((k) => k === canonical || skeleton(k) === skeleton(canonical))
 }
 
 /** The category an outgoing email is approved under; its requests carry an envelope and a content hash. */
@@ -97,13 +99,13 @@ export function isHumanOnlyFloorKey(key: string): boolean {
  * Authorization header says: a browser that sends both is still the person, and a script with a token
  * and no cookie is not.
  */
-export function humanSessionOf(req: http.IncomingMessage): { user: string } | null {
+export async function humanSessionOf(req: http.IncomingMessage): Promise<{ user: string } | null> {
   try {
     const cookie = parseCookies(req.headers.cookie)[SESSION_COOKIE_NAME]
     if (!cookie) return null
-    const session = resolveSession(cookie)
+    const session = await resolveSession(cookie)
     if (!session) return null
-    const row = getDashboardUserAuthRow(session.username)
+    const row = await getDashboardUserAuthRow(session.username)
     if (!row || row.role !== 'admin' || row.tenant_id !== null) return null
     return { user: session.username }
   } catch (err) {

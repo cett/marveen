@@ -20,12 +20,13 @@ import type { RouteContext } from './types.js'
 import { resolveApprovalTimeoutSeconds } from '../approval-timeout.js'
 import { tryHandleApprovalUse } from './approvals-consume.js'
 
+import { systemJob } from '../../db/background-jobs.js'
 // Every approval gets a deadline: the category's timeout_minutes, or the 24 h ceiling for an unknown
 // category / NULL value / unreadable DB. The caller's timeout_seconds can only shorten it.
-function getTimeoutAt(category: string, requestedSeconds: unknown): number {
+async function getTimeoutAt(category: string, requestedSeconds: unknown): Promise<number> {
   let categoryMinutes: number | null = null
   try {
-    categoryMinutes = getAutonomyCategory(category)?.timeout_minutes ?? null
+    categoryMinutes = (await getAutonomyCategory(category))?.timeout_minutes ?? null
   } catch (err) {
     logger.warn({ err, category }, 'Autonomy category lookup failed, using the default approval timeout')
   }
@@ -40,9 +41,9 @@ const MAX_EMAIL_OWNER_NOTICES_PER_HOUR = 5
 const HOUR_S = 3600
 
 /** True when this new email request is within the agent's hourly allowance of owner notices. */
-function withinOwnerNoticeAllowance(approval: Approval): boolean {
+async function withinOwnerNoticeAllowance(approval: Approval): Promise<boolean> {
   try {
-    const earlier = countApprovalsRequestedSince({
+    const earlier = await countApprovalsRequestedSince({
       agent_id: approval.agent_id, category: approval.category, tenant_id: approval.tenant_id,
       since: Math.floor(Date.now() / 1000) - HOUR_S, exceptId: approval.id,
     })
@@ -55,8 +56,8 @@ function withinOwnerNoticeAllowance(approval: Approval): boolean {
 }
 
 /** A request is human-only when its row says so (a snapshot, so a later widening of the set also reaches it) or its category is. */
-function isHumanOnlyApproval(approval: Approval | undefined): boolean {
-  return approval !== undefined && (approval.human_only === 1 || isHumanOnly(approval.category))
+async function isHumanOnlyApproval(approval: Approval | undefined): Promise<boolean> {
+  return approval !== undefined && (approval.human_only === 1 || await isHumanOnly(approval.category))
 }
 
 /**
@@ -64,9 +65,9 @@ function isHumanOnlyApproval(approval: Approval | undefined): boolean {
  * refused; otherwise it went through and the row says it only would have been. Never throws: a journal
  * fault must not turn a refusal into a success.
  */
-function journalNonHumanDecision(approval: Approval, actor: string | undefined): void {
+async function journalNonHumanDecision(approval: Approval, actor: string | undefined): Promise<void> {
   try {
-    recordApprovalEvent({
+    await recordApprovalEvent({
       approval_id: approval.id,
       tenant_id: approval.tenant_id,
       event: 'bearer_denied',
@@ -90,52 +91,52 @@ const HUMAN_ONLY_REFUSAL = {
  * told not to relay or decide it, and a failed owner message is reported back as OWNER_UNREACHED. The
  * requester hears the outcome from notifyRequester. Never throws: the approval exists either way.
  */
-function notifyAboutNewRequest(approval: Approval): void {
-  if (approval.category === EMAIL_SEND_CATEGORY && !withinOwnerNoticeAllowance(approval)) {
+async function notifyAboutNewRequest(approval: Approval): Promise<void> {
+  if (approval.category === EMAIL_SEND_CATEGORY && !await withinOwnerNoticeAllowance(approval)) {
     logger.warn({ approvalId: approval.id, agent: approval.agent_id }, 'Email approval request not announced: the hourly notice allowance is used up')
     try {
-      recordApprovalEvent({ approval_id: approval.id, tenant_id: approval.tenant_id, event: 'notify_suppressed', reason: 'rate_limited', actor: 'system' })
+      await recordApprovalEvent({ approval_id: approval.id, tenant_id: approval.tenant_id, event: 'notify_suppressed', reason: 'rate_limited', actor: 'system' })
     } catch (err) {
       logger.warn({ err, approvalId: approval.id }, 'Could not journal a suppressed owner notice')
     }
     return
   }
-  if (!APPROVAL_HUMAN_ONLY_ENFORCE || !isHumanOnlyApproval(approval)) {
-    notifyMainAgent(approval)
+  if (!APPROVAL_HUMAN_ONLY_ENFORCE || !await isHumanOnlyApproval(approval)) {
+    await notifyMainAgent(approval)
     return
   }
   // The main agent asking for itself does not need to be told about its own request.
-  if (approval.agent_id !== MAIN_AGENT_ID) sendSystemMessage(MAIN_AGENT_ID, humanOnlyRequestLine(approval), approval)
-  void notifyOwnerOfHumanOnlyRequest(approval).then((delivered) => {
+  if (approval.agent_id !== MAIN_AGENT_ID) await sendSystemMessage(MAIN_AGENT_ID, humanOnlyRequestLine(approval), approval)
+  void notifyOwnerOfHumanOnlyRequest(approval).then(async (delivered) => {
     if (delivered) return
     logger.warn({ approvalId: approval.id }, 'The owner could not be told about a human-only approval request')
     try {
-      recordApprovalEvent({ approval_id: approval.id, tenant_id: approval.tenant_id, event: 'owner_unreached', actor: 'system' })
+      await recordApprovalEvent({ approval_id: approval.id, tenant_id: approval.tenant_id, event: 'owner_unreached', actor: 'system' })
     } catch (err) {
       logger.warn({ err, approvalId: approval.id }, 'Could not journal an unreached owner')
     }
-    sendSystemMessage(MAIN_AGENT_ID, ownerUnreachedLine(approval), approval)
+    await sendSystemMessage(MAIN_AGENT_ID, ownerUnreachedLine(approval), approval)
   })
 }
 
 /** Tell the requester how its human-only request was decided (enforcement on). Best effort. */
-function notifyRequester(approval: Approval | undefined): void {
-  if (!approval || !isHumanOnlyApproval(approval) || !APPROVAL_HUMAN_ONLY_ENFORCE) return
-  sendSystemMessage(approval.agent_id, approvalResolvedLine(approval), approval)
+async function notifyRequester(approval: Approval | undefined): Promise<void> {
+  if (!approval || !await isHumanOnlyApproval(approval) || !APPROVAL_HUMAN_ONLY_ENFORCE) return
+  await sendSystemMessage(approval.agent_id, approvalResolvedLine(approval), approval)
 }
 
-function sendSystemMessage(to: string, content: string, approval: Approval): void {
+async function sendSystemMessage(to: string, content: string, approval: Approval): Promise<void> {
   try {
-    createAgentMessage('system', to, content)
+    await createAgentMessage('system', to, content)
   } catch (err) {
     // Non-fatal: the approval stands regardless; these notices are best-effort
     logger.warn({ err, approvalId: approval.id, to }, 'Failed to send an approval notice')
   }
 }
 
-function notifyMainAgent(approval: Approval): void {
+async function notifyMainAgent(approval: Approval): Promise<void> {
   try {
-    createAgentMessage('system', MAIN_AGENT_ID, approvalRequestLine(approval))
+    await createAgentMessage('system', MAIN_AGENT_ID, approvalRequestLine(approval))
   } catch (err) {
     // Non-fatal: the approval is created regardless; main-agent notification is best-effort
     logger.warn({ err, approvalId: approval.id }, 'Failed to notify main agent of approval request')
@@ -143,17 +144,18 @@ function notifyMainAgent(approval: Approval): void {
 }
 
 export function startApprovalTimeoutSweeper(): NodeJS.Timeout {
-  return setInterval(() => {
+  const sweep = async (): Promise<void> => {
     try {
-      const expired = expireTimedOutApprovals()
+      const expired = await expireTimedOutApprovals()
       if (expired > 0) {
         logger.info({ expired }, 'Approval timeout sweep: expired pending approvals')
-        writeAgentAuditLog({ agent_id: 'system', entity: 'approval', action: 'timeout_sweep', detail: { expired } })
+        await writeAgentAuditLog({ agent_id: 'system', entity: 'approval', action: 'timeout_sweep', detail: { expired } })
       }
     } catch (err) {
       logger.warn({ err }, 'Approval timeout sweep failed')
     }
-  }, 60_000)
+  }
+  return setInterval(systemJob('approval-timeout-sweeper', () => { void sweep() }), 60_000)
 }
 
 export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
@@ -212,7 +214,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     // A fleet_agent asks for approval as itself, in the tenant it is serving (never one it names).
     if (denyForeignAgent(ctx, agent_id.trim())) return true
     // An agent-bound admin token (the main agent's) asks as the agent it names, never as another one.
-    if (denyAgentBoundAdminForeign(ctx, agent_id.trim())) return true
+    if (await denyAgentBoundAdminForeign(ctx, agent_id.trim())) return true
     const requestTenant: string | null =
       ctx.role === 'fleet_agent' ? (ctx.tenantId ?? null) : (typeof tenant_id === 'string' ? tenant_id.trim() || null : null)
 
@@ -223,7 +225,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     const requester = agentBoundAdminId(ctx) ?? agent_id.trim()
     let storedCategory = category.trim()
     if (APPROVAL_HUMAN_ONLY_ENFORCE) {
-      const checked = checkCategory(category)
+      const checked = await checkCategory(category)
       if (!checked.ok) {
         json(res, { error: 'invalid_value', field: 'category', code: checked.error, hint: checked.hint }, 400)
         return true
@@ -233,20 +235,20 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
 
     if (!emailSend) {
       const id = randomUUID()
-      const approval = createApproval({
+      const approval = await createApproval({
         id,
         agent_id: requester,
         category: storedCategory,
-        human_only: isHumanOnly(storedCategory),
+        human_only: await isHumanOnly(storedCategory),
         action_description: (action_description as string).trim(),
         action_payload: typeof action_payload === 'string' ? action_payload : null,
         content_hash: typeof content_hash === 'string' ? content_hash : null,
-        timeout_at: getTimeoutAt(storedCategory, timeout_seconds),
+        timeout_at: await getTimeoutAt(storedCategory, timeout_seconds),
         tenant_id: requestTenant,
       })
-      notifyAboutNewRequest(approval)
+      await notifyAboutNewRequest(approval)
       try {
-        writeAgentAuditLog({ agent_id: approval.agent_id, entity: 'approval', action: 'create', entity_id: approval.id, detail: { category: approval.category } })
+        await writeAgentAuditLog({ agent_id: approval.agent_id, entity: 'approval', action: 'create', entity_id: approval.id, detail: { category: approval.category } })
       } catch { /* audit failure must not abort the write */ }
       logger.info({ id, agent_id, category }, 'Approval request created')
       json(res, approval, 201)
@@ -293,13 +295,13 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     if (typeof content_hash === 'string' && content_hash !== parsed.hash) {
       // The payload is not the mail the requester thinks it hashed: a parity fault, or a tampered request.
       try {
-        writeAgentAuditLog({ agent_id: requester, entity: 'approval', action: 'envelope_hash_mismatch', detail: { client_hash_prefix: content_hash.slice(0, 12), server_hash_prefix: parsed.hash.slice(0, 12) } })
+        await writeAgentAuditLog({ agent_id: requester, entity: 'approval', action: 'envelope_hash_mismatch', detail: { client_hash_prefix: content_hash.slice(0, 12), server_hash_prefix: parsed.hash.slice(0, 12) } })
       } catch { /* audit failure must not change the refusal */ }
       json(res, { error: 'invalid_value', field: 'content_hash', code: 'hash_mismatch', hint: 'content_hash does not match the hash the server computes from action_payload' }, 400)
       return true
     }
 
-    const opened = createApprovalOnce({
+    const opened = await createApprovalOnce({
       id: randomUUID(),
       agent_id: requester,
       category: EMAIL_SEND_CATEGORY,
@@ -307,7 +309,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       action_description: describeEmail(parsed.envelope, parsed.hash),
       action_payload: parsed.canon,
       content_hash: parsed.hash,
-      timeout_at: getTimeoutAt(EMAIL_SEND_CATEGORY, timeout_seconds),
+      timeout_at: await getTimeoutAt(EMAIL_SEND_CATEGORY, timeout_seconds),
       tenant_id: requestTenant,
       max_pending: MAX_PENDING_EMAIL_REQUESTS,
     })
@@ -326,9 +328,9 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       return true
     }
     const approval = opened.approval
-    notifyAboutNewRequest(approval)
+    await notifyAboutNewRequest(approval)
     try {
-      writeAgentAuditLog({ agent_id: approval.agent_id, entity: 'approval', action: 'create', entity_id: approval.id, detail: { category: approval.category } })
+      await writeAgentAuditLog({ agent_id: approval.agent_id, entity: 'approval', action: 'create', entity_id: approval.id, detail: { category: approval.category } })
     } catch { /* audit failure must not abort the write */ }
     logger.info({ id: approval.id, agent_id: requester, category: approval.category }, 'Approval request created')
     json(res, approval, 201)
@@ -355,7 +357,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     if (ctx.role === 'fleet_agent') {
       if (agent_id !== undefined && denyForeignAgent(ctx, agent_id)) return true
       const own = { agent_id: ctx.tokenAgentId, category, status, content_hash }
-      json(res, { items: listApprovals({ ...own, limit, offset }), total: countApprovals(own), offset, limit, counts: {}, oldest_pending: null, window_s: APPROVAL_CONSUME_WINDOW_S })
+      json(res, { items: await listApprovals({ ...own, limit, offset }), total: await countApprovals(own), offset, limit, counts: {}, oldest_pending: null, window_s: APPROVAL_CONSUME_WINDOW_S })
       return true
     }
 
@@ -378,10 +380,10 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     }
 
     const filter = { agent_id, category, status, content_hash, tenantId }
-    const items = listApprovals({ ...filter, limit, offset })
-    const total = countApprovals(filter)
-    const counts = getApprovalStatusCounts(tenantId)
-    const oldestPending = getOldestPendingApproval(tenantId) ?? null
+    const items = await listApprovals({ ...filter, limit, offset })
+    const total = await countApprovals(filter)
+    const counts = await getApprovalStatusCounts(tenantId)
+    const oldestPending = await getOldestPendingApproval(tenantId) ?? null
     json(res, { items, total, offset, limit, counts, oldest_pending: oldestPending, window_s: APPROVAL_CONSUME_WINDOW_S })
     return true
   }
@@ -389,7 +391,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
   // GET /api/approvals/:id -- status poll
   const idMatch = path.match(/^\/api\/approvals\/([^/]+)$/)
   if (idMatch && method === 'GET') {
-    const approval = getApproval(idMatch[1])
+    const approval = await getApproval(idMatch[1])
     // A fleet_agent reads its own requests only; a tenant user, those of its own tenant. Both get the
     // same 404 as a missing id (no existence oracle).
     const hidden = approval !== undefined && (
@@ -410,8 +412,8 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     // (POST) and read it, never resolve it: approvals:write reaches this route only because the same
     // permission also covers the request.
     if (ctx.role === 'fleet_agent') {
-      const asked = getApproval(idMatch[1])
-      if (asked && isHumanOnlyApproval(asked)) journalNonHumanDecision(asked, ctx.tokenAgentId)
+      const asked = await getApproval(idMatch[1])
+      if (asked && await isHumanOnlyApproval(asked)) await journalNonHumanDecision(asked, ctx.tokenAgentId)
       json(res, { error: 'forbidden', hint: 'A fleet agent token cannot resolve approvals' }, 403)
       return true
     }
@@ -445,20 +447,20 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       return true
     }
     const msgId = typeof telegram_message_id === 'number' ? telegram_message_id : null
-    const target = getApproval(idMatch[1])
+    const target = await getApproval(idMatch[1])
 
     // Human-only approval: the one way to decide it is a person's dashboard session (a global admin),
     // whatever token the request also carries and whatever status it asks for (a rejection or a timeout
     // by a token is as much a decision as an approval). Without enforcement the request goes through as
     // before, and the journal records that it would have been refused.
     let resolvedVia: ApprovalResolvedVia | null = ctx.auth?.kind === 'session' ? 'dashboard_session' : ctx.auth ? 'bearer' : null
-    if (target && isHumanOnlyApproval(target)) {
-      const human = humanSessionOf(req)
+    if (target && await isHumanOnlyApproval(target)) {
+      const human = await humanSessionOf(req)
       if (human) {
         resolvedVia = 'dashboard_session'
         if (APPROVAL_HUMAN_ONLY_ENFORCE) effectiveResolvedBy = `human:session:${human.user}`
       } else {
-        journalNonHumanDecision(target, effectiveResolvedBy)
+        await journalNonHumanDecision(target, effectiveResolvedBy)
         if (APPROVAL_HUMAN_ONLY_ENFORCE) {
           json(res, HUMAN_ONLY_REFUSAL, 403)
           return true
@@ -490,10 +492,10 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       }
     }
 
-    const updated = resolveApproval(idMatch[1], status, effectiveResolvedBy, msgId, resolvedVia)
+    const updated = await resolveApproval(idMatch[1], status, effectiveResolvedBy, msgId, resolvedVia)
     if (!updated) {
       // Either not found or already resolved
-      const existing = getApproval(idMatch[1])
+      const existing = await getApproval(idMatch[1])
       if (!existing) {
         json(res, { error: 'not_found', hint: 'Not found' }, 404)
       } else if (existing.status === 'pending') {
@@ -505,10 +507,10 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       return true
     }
 
-    const approval = getApproval(idMatch[1])
-    notifyRequester(approval)
+    const approval = await getApproval(idMatch[1])
+    await notifyRequester(approval)
     try {
-      writeAgentAuditLog({ agent_id: effectiveResolvedBy, entity: 'approval', action: 'update', entity_id: idMatch[1], detail: { status, requested_by: approval?.agent_id ?? null, ...(declared && declared !== effectiveResolvedBy ? { declared_resolved_by: declared } : {}) } })
+      await writeAgentAuditLog({ agent_id: effectiveResolvedBy, entity: 'approval', action: 'update', entity_id: idMatch[1], detail: { status, requested_by: approval?.agent_id ?? null, ...(declared && declared !== effectiveResolvedBy ? { declared_resolved_by: declared } : {}) } })
     } catch { /* audit failure must not abort the write */ }
     logger.info({ id: idMatch[1], status, resolved_by: effectiveResolvedBy }, 'Approval resolved')
     json(res, approval)

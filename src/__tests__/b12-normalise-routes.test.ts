@@ -16,7 +16,7 @@ vi.mock('node:fs', async (importOriginal) => {
   return { ...orig, existsSync: mocks.existsSync }
 })
 vi.mock('../db.js', () => ({
-  queryAuditLog: vi.fn().mockReturnValue({ entries: [], total: 0 }),
+  queryAuditLog: vi.fn().mockResolvedValue({ entries: [], total: 0 }),
   saveAgentMemory: vi.fn(),
   appendDailyLog: vi.fn(),
   getDailyLog: vi.fn().mockReturnValue(null),
@@ -144,7 +144,7 @@ describe('B12 normalise -- audit-log', () => {
     const { tryHandleAuditLog } = await import('../web/routes/audit-log.js')
     const db = await import('../db.js')
     const settings = await import('../settings-store.js')
-    vi.mocked(db.queryAuditLog).mockReturnValueOnce({ entries: [{ id: 1 }] as any, total: 7000 })
+    vi.mocked(db.queryAuditLog).mockResolvedValueOnce({ entries: [{ id: 1 }] as any, total: 7000 })
     vi.mocked(settings.getEffectiveSettingValue).mockReturnValueOnce(200) // AUDIT_LOG_MAX_ENTRIES
     const { ctx, status, body } = makeCtx({ method: 'GET', path: '/api/audit-log?source=hook&offset=200&limit=200' })
     await tryHandleAuditLog(ctx)

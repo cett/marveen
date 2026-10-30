@@ -15,92 +15,92 @@ import {
 // db-upsert-blackboard.test.ts).
 // fixtures (privacy: no real agent names)
 
-beforeEach(() => {
+beforeEach(async () => {
   initDatabase(':memory:')
   // tenant_agent_availability.tenant_id references tenants(id) -- create the
   // fixtures used across this file up front.
-  createTenant('tenant-a', 'Tenant A')
-  createTenant('tenant-b', 'Tenant B')
-  createTenant('tenant-c', 'Tenant C')
+  await createTenant('tenant-a', 'Tenant A')
+  await createTenant('tenant-b', 'Tenant B')
+  await createTenant('tenant-c', 'Tenant C')
 })
 
 describe('resolveAgentTenant', () => {
-  it('returns "default" for an agent with no tenant_agent_availability rows (fleet agent)', () => {
-    expect(resolveAgentTenant('agent-x')).toBe('default')
+  it('returns "default" for an agent with no tenant_agent_availability rows (fleet agent)', async () => {
+    expect(await resolveAgentTenant('agent-x')).toBe('default')
   })
 
-  it('returns the single tenant for an agent assigned to exactly one tenant', () => {
-    setTenantAgentAvailability('tenant-a', 'agent-a', true)
-    expect(resolveAgentTenant('agent-a')).toBe('tenant-a')
+  it('returns the single tenant for an agent assigned to exactly one tenant', async () => {
+    await setTenantAgentAvailability('tenant-a', 'agent-a', true)
+    expect(await resolveAgentTenant('agent-a')).toBe('tenant-a')
   })
 
-  it('returns "_multi_" for an agent assigned to 2+ tenants', () => {
-    setTenantAgentAvailability('tenant-a', 'agent-b', true)
-    setTenantAgentAvailability('tenant-b', 'agent-b', true)
-    expect(resolveAgentTenant('agent-b')).toBe('_multi_')
+  it('returns "_multi_" for an agent assigned to 2+ tenants', async () => {
+    await setTenantAgentAvailability('tenant-a', 'agent-b', true)
+    await setTenantAgentAvailability('tenant-b', 'agent-b', true)
+    expect(await resolveAgentTenant('agent-b')).toBe('_multi_')
   })
 
-  it('ignores disabled (enabled=0) rows -- they are not a real assignment', () => {
-    setTenantAgentAvailability('tenant-a', 'agent-c', true)
-    setTenantAgentAvailability('tenant-b', 'agent-c', false) // explicitly revoked
-    expect(resolveAgentTenant('agent-c')).toBe('tenant-a')
+  it('ignores disabled (enabled=0) rows -- they are not a real assignment', async () => {
+    await setTenantAgentAvailability('tenant-a', 'agent-c', true)
+    await setTenantAgentAvailability('tenant-b', 'agent-c', false) // explicitly revoked
+    expect(await resolveAgentTenant('agent-c')).toBe('tenant-a')
   })
 
-  it('falls back to "default" when every row for the agent is disabled', () => {
-    setTenantAgentAvailability('tenant-a', 'agent-c', false)
-    expect(resolveAgentTenant('agent-c')).toBe('default')
+  it('falls back to "default" when every row for the agent is disabled', async () => {
+    await setTenantAgentAvailability('tenant-a', 'agent-c', false)
+    expect(await resolveAgentTenant('agent-c')).toBe('default')
   })
 })
 
 describe('upsertBlackboard: tenant_id assignment', () => {
-  it('stamps tenant_id from resolveAgentTenant on insert', () => {
-    setTenantAgentAvailability('tenant-a', 'agent-a', true)
-    const row = upsertBlackboard('agent-a', { status: 'active', summary: 'working' })
+  it('stamps tenant_id from resolveAgentTenant on insert', async () => {
+    await setTenantAgentAvailability('tenant-a', 'agent-a', true)
+    const row = await upsertBlackboard('agent-a', { status: 'active', summary: 'working' })
     expect(row.tenant_id).toBe('tenant-a')
   })
 
-  it('fleet agents (no availability row) get tenant_id "default"', () => {
-    const row = upsertBlackboard('agent-x', { status: 'active', summary: 'working' })
+  it('fleet agents (no availability row) get tenant_id "default"', async () => {
+    const row = await upsertBlackboard('agent-x', { status: 'active', summary: 'working' })
     expect(row.tenant_id).toBe('default')
   })
 
-  it('a shared (2+ tenant) agent gets the "_multi_" sentinel', () => {
-    setTenantAgentAvailability('tenant-a', 'agent-b', true)
-    setTenantAgentAvailability('tenant-b', 'agent-b', true)
-    const row = upsertBlackboard('agent-b', { status: 'active', summary: 'working' })
+  it('a shared (2+ tenant) agent gets the "_multi_" sentinel', async () => {
+    await setTenantAgentAvailability('tenant-a', 'agent-b', true)
+    await setTenantAgentAvailability('tenant-b', 'agent-b', true)
+    const row = await upsertBlackboard('agent-b', { status: 'active', summary: 'working' })
     expect(row.tenant_id).toBe('_multi_')
   })
 
-  it('re-resolves tenant_id on every write, tracking availability changes', () => {
-    const first = upsertBlackboard('agent-d', { status: 'active', summary: 'v1' })
+  it('re-resolves tenant_id on every write, tracking availability changes', async () => {
+    const first = await upsertBlackboard('agent-d', { status: 'active', summary: 'v1' })
     expect(first.tenant_id).toBe('default')
 
-    setTenantAgentAvailability('tenant-c', 'agent-d', true)
-    const second = upsertBlackboard('agent-d', { status: 'active', summary: 'v2' })
+    await setTenantAgentAvailability('tenant-c', 'agent-d', true)
+    const second = await upsertBlackboard('agent-d', { status: 'active', summary: 'v2' })
     expect(second.tenant_id).toBe('tenant-c')
-    expect(findBlackboardRowByAgent('agent-d')?.tenant_id).toBe('tenant-c')
+    expect((await findBlackboardRowByAgent('agent-d'))?.tenant_id).toBe('tenant-c')
   })
 })
 
 describe('listBlackboardHistory: tenant filter', () => {
-  it('filters history rows to the given tenantId', () => {
-    setTenantAgentAvailability('tenant-a', 'agent-a', true)
-    setTenantAgentAvailability('tenant-b', 'agent-e', true)
-    upsertBlackboard('agent-a', { status: 'active', summary: 'a' })
-    upsertBlackboard('agent-e', { status: 'active', summary: 'b' })
+  it('filters history rows to the given tenantId', async () => {
+    await setTenantAgentAvailability('tenant-a', 'agent-a', true)
+    await setTenantAgentAvailability('tenant-b', 'agent-e', true)
+    await upsertBlackboard('agent-a', { status: 'active', summary: 'a' })
+    await upsertBlackboard('agent-e', { status: 'active', summary: 'b' })
 
-    const tenantAHistory = listBlackboardHistory({ tenantId: 'tenant-a' })
+    const tenantAHistory = await listBlackboardHistory({ tenantId: 'tenant-a' })
     expect(tenantAHistory).toHaveLength(1)
     expect(tenantAHistory[0]!.agent_id).toBe('agent-a')
   })
 
-  it('tenantId=null (or omitted) returns rows across all tenants', () => {
-    setTenantAgentAvailability('tenant-a', 'agent-a', true)
-    setTenantAgentAvailability('tenant-b', 'agent-e', true)
-    upsertBlackboard('agent-a', { status: 'active', summary: 'a' })
-    upsertBlackboard('agent-e', { status: 'active', summary: 'b' })
+  it('tenantId=null (or omitted) returns rows across all tenants', async () => {
+    await setTenantAgentAvailability('tenant-a', 'agent-a', true)
+    await setTenantAgentAvailability('tenant-b', 'agent-e', true)
+    await upsertBlackboard('agent-a', { status: 'active', summary: 'a' })
+    await upsertBlackboard('agent-e', { status: 'active', summary: 'b' })
 
-    const all = listBlackboardHistory({})
+    const all = await listBlackboardHistory({})
     expect(all).toHaveLength(2)
   })
 })

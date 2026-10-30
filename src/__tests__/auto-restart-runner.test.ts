@@ -77,8 +77,8 @@ describe('auto-restart-runner', () => {
     mockLoggerDebug.mockClear()
   })
 
-  afterEach(() => {
-    vi.runOnlyPendingTimers()
+  afterEach(async () => {
+    await vi.runOnlyPendingTimersAsync()
     vi.useRealTimers()
   })
 
@@ -87,7 +87,7 @@ describe('auto-restart-runner', () => {
     const start = await loadRunner()
     start()
 
-    vi.advanceTimersByTime(40_000) // initial delay -> first sweep
+    await vi.advanceTimersByTimeAsync(40_000) // initial delay -> first sweep
 
     expect(mockRestartAgentProcess).not.toHaveBeenCalled()
     expect(mockRespawnMainSessionFresh).not.toHaveBeenCalled()
@@ -100,8 +100,8 @@ describe('auto-restart-runner', () => {
     const start = await loadRunner()
     start()
 
-    vi.advanceTimersByTime(40_000) // seed
-    vi.advanceTimersByTime(3_700_000) // past +1h due, aligned to a 60s tick
+    await vi.advanceTimersByTimeAsync(40_000) // seed
+    await vi.advanceTimersByTimeAsync(3_700_000) // past +1h due, aligned to a 60s tick
 
     expect(mockRestartAgentProcess).toHaveBeenCalledWith('zack', { fresh: true })
   })
@@ -112,8 +112,8 @@ describe('auto-restart-runner', () => {
     const start = await loadRunner()
     start()
 
-    vi.advanceTimersByTime(40_000)
-    vi.advanceTimersByTime(3_700_000)
+    await vi.advanceTimersByTimeAsync(40_000)
+    await vi.advanceTimersByTimeAsync(3_700_000)
 
     expect(mockRestartAgentProcess).not.toHaveBeenCalled()
     expect(mockLoggerInfo).toHaveBeenCalledWith(
@@ -128,8 +128,8 @@ describe('auto-restart-runner', () => {
     const start = await loadRunner()
     start()
 
-    vi.advanceTimersByTime(40_000)
-    vi.advanceTimersByTime(3_700_000)
+    await vi.advanceTimersByTimeAsync(40_000)
+    await vi.advanceTimersByTimeAsync(3_700_000)
 
     expect(mockRestartAgentProcess).not.toHaveBeenCalled()
     // The main agent (always eligible) still runs its own idle check each
@@ -143,8 +143,8 @@ describe('auto-restart-runner', () => {
     const start = await loadRunner()
     start()
 
-    vi.advanceTimersByTime(40_000)
-    vi.advanceTimersByTime(3_700_000)
+    await vi.advanceTimersByTimeAsync(40_000)
+    await vi.advanceTimersByTimeAsync(3_700_000)
 
     expect(mockRestartAgentProcess).not.toHaveBeenCalled()
   })
@@ -154,8 +154,8 @@ describe('auto-restart-runner', () => {
     const start = await loadRunner()
     start()
 
-    vi.advanceTimersByTime(40_000)
-    vi.advanceTimersByTime(3_700_000)
+    await vi.advanceTimersByTimeAsync(40_000)
+    await vi.advanceTimersByTimeAsync(3_700_000)
 
     expect(mockExecFileSync).toHaveBeenCalledWith(
       '/bin/launchctl',
@@ -172,8 +172,8 @@ describe('auto-restart-runner', () => {
     const start = await loadRunner()
     start()
 
-    vi.advanceTimersByTime(40_000)
-    vi.advanceTimersByTime(3_700_000)
+    await vi.advanceTimersByTimeAsync(40_000)
+    await vi.advanceTimersByTimeAsync(3_700_000)
 
     expect(mockRespawnMainSessionFresh).toHaveBeenCalledTimes(1)
     expect(mockExecFileSync).not.toHaveBeenCalled()
@@ -184,8 +184,8 @@ describe('auto-restart-runner', () => {
     const start = await loadRunner()
     start()
 
-    vi.advanceTimersByTime(40_000)
-    vi.advanceTimersByTime(3_700_000)
+    await vi.advanceTimersByTimeAsync(40_000)
+    await vi.advanceTimersByTimeAsync(3_700_000)
 
     expect(mockRespawnMainSessionFresh).toHaveBeenCalledTimes(1)
   })
@@ -198,8 +198,8 @@ describe('auto-restart-runner', () => {
     const start = await loadRunner()
     start()
 
-    vi.advanceTimersByTime(40_000)
-    vi.advanceTimersByTime(3_700_000)
+    await vi.advanceTimersByTimeAsync(40_000)
+    await vi.advanceTimersByTimeAsync(3_700_000)
 
     expect(mockLoggerWarn).toHaveBeenCalledWith(
       { err: expect.any(Error), name: 'zack' },
@@ -209,7 +209,7 @@ describe('auto-restart-runner', () => {
     // lastRestart was never updated on failure, so the next elapsed interval
     // is due again immediately (no need to wait another full hour).
     mockRestartAgentProcess.mockReset()
-    vi.advanceTimersByTime(60_000)
+    await vi.advanceTimersByTimeAsync(60_000)
     expect(mockRestartAgentProcess).toHaveBeenCalledWith('zack', { fresh: false })
   })
 
@@ -219,8 +219,8 @@ describe('auto-restart-runner', () => {
     const start = await loadRunner()
     start()
 
-    vi.advanceTimersByTime(40_000) // seed
-    vi.advanceTimersByTime(24 * 3_600_000 + 60_000) // cross into the next day
+    await vi.advanceTimersByTimeAsync(40_000) // seed
+    await vi.advanceTimersByTimeAsync(24 * 3_600_000 + 60_000) // cross into the next day
 
     expect(mockRestartAgentProcess).toHaveBeenCalledWith('zack', { fresh: false })
   })
@@ -231,8 +231,8 @@ describe('auto-restart-runner', () => {
     const start = await loadRunner()
     start()
 
-    vi.advanceTimersByTime(40_000)
-    vi.advanceTimersByTime(24 * 3_600_000 + 60_000)
+    await vi.advanceTimersByTimeAsync(40_000)
+    await vi.advanceTimersByTimeAsync(24 * 3_600_000 + 60_000)
 
     expect(mockRestartAgentProcess).not.toHaveBeenCalled()
   })
@@ -245,17 +245,16 @@ describe('auto-restart-runner', () => {
     })
     const start = await loadRunner()
 
-    expect(() => {
-      start()
-      vi.advanceTimersByTime(40_000)
-    }).not.toThrow()
+    // A rejected sweep would surface as an unhandled rejection and fail the run; the broken agent only logs.
+    start()
+    await vi.advanceTimersByTimeAsync(40_000)
 
     expect(mockLoggerDebug).toHaveBeenCalledWith(
       { err: expect.any(Error), agent: 'broken' },
       'auto-restart: agent check error',
     )
     // The main-agent check error path uses its own message shape.
-    vi.advanceTimersByTime(3_700_000)
+    await vi.advanceTimersByTimeAsync(3_700_000)
     expect(mockRestartAgentProcess).toHaveBeenCalledWith('zack', { fresh: false })
   })
 
@@ -265,7 +264,7 @@ describe('auto-restart-runner', () => {
     const start = await loadRunner()
     start()
 
-    vi.advanceTimersByTime(40_000)
+    await vi.advanceTimersByTimeAsync(40_000)
 
     expect(mockReadAutoRestartConfig).toHaveBeenCalledWith(MAIN_AGENT_ID)
     expect(mockReadAutoRestartConfig).toHaveBeenCalledWith('zack')
@@ -277,7 +276,7 @@ describe('auto-restart-runner', () => {
     const start = await loadRunner()
     start()
 
-    vi.advanceTimersByTime(39_999)
+    await vi.advanceTimersByTimeAsync(39_999)
 
     expect(mockReadAutoRestartConfig).not.toHaveBeenCalled()
   })

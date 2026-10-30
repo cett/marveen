@@ -100,9 +100,9 @@ async function readUseBody(ctx: RouteContext, needCategory: boolean): Promise<Us
 }
 
 /** Every use attempt leaves an audit row, refused or not; a failure to write it changes no answer. */
-function auditUse(principal: string, via: 'id' | 'claim', outcome: ConsumeOutcome | ClaimOutcome, id: string | undefined, hash: string): void {
+async function auditUse(principal: string, via: 'id' | 'claim', outcome: ConsumeOutcome | ClaimOutcome, id: string | undefined, hash: string): Promise<void> {
   try {
-    writeAgentAuditLog({
+    await writeAgentAuditLog({
       agent_id: principal, entity: 'approval', action: 'consume', entity_id: id ?? (outcome.approval ? outcome.approval.id : undefined),
       detail: {
         via, outcome: outcome.ok ? (outcome.replayed ? 'replayed' : 'adopted' in outcome && outcome.adopted ? 'adopted' : 'consumed') : outcome.reason,
@@ -143,9 +143,9 @@ async function handleUse(ctx: RouteContext, id: string | null): Promise<true> {
 
   const common = { content_hash: body.content_hash, principal, tenant_id: tenantOf(ctx), window_s: APPROVAL_CONSUME_WINDOW_S, ref: body.ref, consumer: body.consumer }
   const outcome = id !== null
-    ? consumeApproval({ ...common, id })
-    : claimApproval({ ...common, category: body.category as string, ...(body.mode === 'send' ? { mode: 'send' as const } : {}) })
-  auditUse(principal, id !== null ? 'id' : 'claim', outcome, id ?? undefined, body.content_hash)
+    ? await consumeApproval({ ...common, id })
+    : await claimApproval({ ...common, category: body.category as string, ...(body.mode === 'send' ? { mode: 'send' as const } : {}) })
+  await auditUse(principal, id !== null ? 'id' : 'claim', outcome, id ?? undefined, body.content_hash)
 
   if (outcome.ok) {
     logger.info({ id: outcome.approval.id, agent: principal, replayed: outcome.replayed }, 'Approval used up')
@@ -185,19 +185,19 @@ async function handleUse(ctx: RouteContext, id: string | null): Promise<true> {
 }
 
 /** GET /api/approvals/:id/events -- the journal of one approval, for diagnosis and the Approvals page. */
-function handleEvents(ctx: RouteContext, id: string): true {
+async function handleEvents(ctx: RouteContext, id: string): Promise<true> {
   // The journal names the principals that touched the row: a person's or the admin's view, not an agent's.
   if (ctx.role === 'fleet_agent') {
     json(ctx.res, { error: 'forbidden', hint: 'The approval journal is read by the owner, not by a fleet agent token' }, 403)
     return true
   }
-  const approval = getApproval(id)
+  const approval = await getApproval(id)
   const foreignTenant = approval !== undefined && ctx.auth?.kind === 'session' && ctx.role !== 'admin' && approval.tenant_id !== ctx.tenantId
   if (!approval || foreignTenant) {
     json(ctx.res, { error: 'not_found', hint: 'Not found' }, 404)
     return true
   }
-  json(ctx.res, { approval_id: approval.id, items: listApprovalEvents(approval.id) })
+  json(ctx.res, { approval_id: approval.id, items: await listApprovalEvents(approval.id) })
   return true
 }
 

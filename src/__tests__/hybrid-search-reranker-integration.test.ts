@@ -63,7 +63,7 @@ afterEach(() => {
 
 describe('MEMORY_RERANK_ENABLED flag -- OFF (default)', () => {
   it('does not call reranker when flag is OFF and vector candidates exist', async () => {
-    const m = saveAgentMemory('agent-a', 'machine learning concepts', 'warm', 'ml')
+    const m = await saveAgentMemory('agent-a', 'machine learning concepts', 'warm', 'ml')
     const { getDb } = await import('../db.js')
     getDb().prepare('UPDATE memories SET embedding_blob = ? WHERE id = ?').run(make768dBlobFixed(), m.id)
 
@@ -80,8 +80,8 @@ describe('MEMORY_RERANK_ENABLED flag -- OFF (default)', () => {
   })
 
   it('returns a valid array with recency-ordered results when flag is OFF', async () => {
-    saveAgentMemory('agent-a', 'recent topic', 'warm', 'recent')
-    saveAgentMemory('agent-a', 'older topic', 'warm', 'older')
+    await saveAgentMemory('agent-a', 'recent topic', 'warm', 'recent')
+    await saveAgentMemory('agent-a', 'older topic', 'warm', 'older')
 
     mockGetEffectiveSettingValue.mockImplementation((_key: string) => '0')
 
@@ -94,8 +94,8 @@ describe('MEMORY_RERANK_ENABLED flag -- OFF (default)', () => {
 
 describe('MEMORY_RERANK_ENABLED flag -- ON', () => {
   it('invokes reranker when flag is ON and vector candidates exist', async () => {
-    const m1 = saveAgentMemory('agent-a', 'machine learning concepts', 'warm', 'ml')
-    const m2 = saveAgentMemory('agent-a', 'deep learning neural networks', 'warm', 'dl')
+    const m1 = await saveAgentMemory('agent-a', 'machine learning concepts', 'warm', 'ml')
+    const m2 = await saveAgentMemory('agent-a', 'deep learning neural networks', 'warm', 'dl')
     const { getDb } = await import('../db.js')
     getDb().prepare('UPDATE memories SET embedding_blob = ? WHERE id = ?').run(make768dBlobFixed(), m1.id)
     getDb().prepare('UPDATE memories SET embedding_blob = ? WHERE id = ?').run(make768dBlobFixed(), m2.id)
@@ -131,7 +131,7 @@ describe('MEMORY_RERANK_ENABLED flag -- ON', () => {
   })
 
   it('returns valid array when flag is ON and reranker throws', async () => {
-    saveAgentMemory('agent-a', 'resilience check', 'warm', 'resilience')
+    await saveAgentMemory('agent-a', 'resilience check', 'warm', 'resilience')
     mockRerank.mockRejectedValueOnce(new Error('onnx runtime error'))
 
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
@@ -150,8 +150,8 @@ describe('MEMORY_RERANK_ENABLED flag -- ON', () => {
 
 describe('hybridSearch reranker integration', () => {
   it('returns FTS results even when flag is OFF', async () => {
-    saveAgentMemory('agent-a', 'apples are tasty red fruit', 'warm', 'apple fruit')
-    saveAgentMemory('agent-a', 'bananas are sweet yellow fruit', 'warm', 'banana fruit')
+    await saveAgentMemory('agent-a', 'apples are tasty red fruit', 'warm', 'apple fruit')
+    await saveAgentMemory('agent-a', 'bananas are sweet yellow fruit', 'warm', 'banana fruit')
 
     const results = await hybridSearch('agent-a', 'fruit', 5)
 
@@ -162,8 +162,8 @@ describe('hybridSearch reranker integration', () => {
   })
 
   it('calls rerank with correct query when flag is ON and vector candidates exist', async () => {
-    const m1 = saveAgentMemory('agent-a', 'machine learning concepts', 'warm', 'ml')
-    const m2 = saveAgentMemory('agent-a', 'deep learning neural networks', 'warm', 'dl')
+    const m1 = await saveAgentMemory('agent-a', 'machine learning concepts', 'warm', 'ml')
+    const m2 = await saveAgentMemory('agent-a', 'deep learning neural networks', 'warm', 'dl')
 
     const { getDb } = await import('../db.js')
     const db = getDb()
@@ -193,7 +193,7 @@ describe('hybridSearch reranker integration', () => {
   })
 
   it('hybridSearch handles reranker throwing gracefully when flag is ON', async () => {
-    saveAgentMemory('agent-a', 'content about widgets', 'warm', 'widget')
+    await saveAgentMemory('agent-a', 'content about widgets', 'warm', 'widget')
     mockRerank.mockRejectedValueOnce(new Error('reranker crashed'))
 
     mockGetEffectiveSettingValue.mockImplementation((key: string) =>
@@ -208,8 +208,8 @@ describe('hybridSearch reranker integration', () => {
 
 describe('A/B: reranker applied after RRF fusion', () => {
   it('flag OFF: reranker is never called, result comes from RRF order', async () => {
-    saveAgentMemory('agent-a', 'topic alpha', 'warm', 'alpha')
-    saveAgentMemory('agent-a', 'topic beta', 'warm', 'beta')
+    await saveAgentMemory('agent-a', 'topic alpha', 'warm', 'alpha')
+    await saveAgentMemory('agent-a', 'topic beta', 'warm', 'beta')
 
     mockGetEffectiveSettingValue.mockImplementation(() => '0')
 
@@ -221,8 +221,8 @@ describe('A/B: reranker applied after RRF fusion', () => {
   })
 
   it('flag ON: reranker is called on the fused list and its output is returned', async () => {
-    const m1 = saveAgentMemory('agent-a', 'topic alpha first', 'warm', 'alpha')
-    const m2 = saveAgentMemory('agent-a', 'topic beta second', 'warm', 'beta')
+    const m1 = await saveAgentMemory('agent-a', 'topic alpha first', 'warm', 'alpha')
+    const m2 = await saveAgentMemory('agent-a', 'topic beta second', 'warm', 'beta')
 
     // Reranker returns reversed order relative to what FTS/RRF would produce.
     const rerankerOrder: Memory[] = [
@@ -253,8 +253,8 @@ describe('A/B: reranker applied after RRF fusion', () => {
   })
 
   it('flag ON vs OFF yields different orderings when reranker reverses the list', async () => {
-    const m1 = saveAgentMemory('agent-a', 'memory one', 'warm', 'one')
-    const m2 = saveAgentMemory('agent-a', 'memory two', 'warm', 'two')
+    const m1 = await saveAgentMemory('agent-a', 'memory one', 'warm', 'one')
+    const m2 = await saveAgentMemory('agent-a', 'memory two', 'warm', 'two')
 
     // OFF: no reranker -- collect whatever order RRF gives.
     mockGetEffectiveSettingValue.mockImplementation(() => '0')

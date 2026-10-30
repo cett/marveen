@@ -243,6 +243,29 @@ describe('POST /api/ideas/:id/promote', () => {
   })
 })
 
+describe('promote leaves no orphan card when the idea write fails', () => {
+  const cards = () => (getDb().prepare('SELECT COUNT(*) AS c FROM kanban_cards').get() as { c: number }).c
+  const blockIdeaUpdates = () => getDb().exec(`CREATE TRIGGER block_idea BEFORE UPDATE ON idea_box BEGIN SELECT RAISE(ABORT, 'idea blocked'); END`)
+
+  it('promote: the card is rolled back with the idea write, nothing is answered ok', async () => {
+    const id = await createIdeaViaRoute({ title: 'Ship the widget' })
+    blockIdeaUpdates()
+    const { ctx, out } = makeCtx('POST', `/api/ideas/${id}/promote`, { phase: 'plan' })
+    await expect(tryHandleIdeas(ctx)).rejects.toThrow(/idea blocked/)
+    expect(JSON.stringify(out.body)).not.toContain('"ok":true')
+    expect(cards()).toBe(0)
+  })
+
+  it('promote-breakdown: the parent and the children are rolled back with the idea write', async () => {
+    const id = await createIdeaViaRoute({ title: 'Big feature' })
+    blockIdeaUpdates()
+    const { ctx, out } = makeCtx('POST', `/api/ideas/${id}/promote-breakdown`, { subtasks: [{ title: 'Sub A' }, { title: 'Sub B' }] })
+    await expect(tryHandleIdeas(ctx)).rejects.toThrow(/idea blocked/)
+    expect(JSON.stringify(out.body)).not.toContain('"ok":true')
+    expect(cards()).toBe(0)
+  })
+})
+
 describe('POST /api/ideas/:id/breakdown', () => {
   it('404s on an unknown id', async () => {
     const { ctx, out } = makeCtx('POST', '/api/ideas/missing/breakdown', {})

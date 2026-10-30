@@ -120,13 +120,13 @@ describe('pruneTokenUsage', () => {
     db.exec("DELETE FROM token_usage_monthly WHERE agent = 'test-prune'")
   })
 
-  it('deletes rows older than the retention window (default 30 days), keeps recent ones', () => {
+  it('deletes rows older than the retention window (default 30 days), keeps recent ones', async () => {
     insertRow('sess-old-1', 200)   // well past 30d
     insertRow('sess-old-2', 31)    // just past 30d
     insertRow('sess-recent-1', 29) // just inside 30d
     insertRow('sess-recent-2', 1)  // recent
 
-    const result = pruneTokenUsage()
+    const result = await pruneTokenUsage()
     expect(result.rawDeleted).toBe(2)
 
     const remaining = getDb()
@@ -135,15 +135,15 @@ describe('pruneTokenUsage', () => {
     expect(remaining.map((r) => r.session_id)).toEqual(['sess-recent-1', 'sess-recent-2'])
   })
 
-  it('is a no-op when nothing is older than the window', () => {
+  it('is a no-op when nothing is older than the window', async () => {
     insertRow('sess-fresh', 5)
-    const result = pruneTokenUsage()
+    const result = await pruneTokenUsage()
     expect(result.rawDeleted).toBe(0)
     const cnt = getDb().prepare("SELECT COUNT(*) c FROM token_usage WHERE agent = 'test-prune'").get() as { c: number }
     expect(cnt.c).toBe(1)
   })
 
-  it('aggregates old rows into token_usage_daily before deleting them', () => {
+  it('aggregates old rows into token_usage_daily before deleting them', async () => {
     // Snap to today's UTC noon, then subtract 60 days.
     // This makes the timestamp always land at 12:00 UTC, avoiding midnight boundary
     // issues when CI runs at 22-24 UTC (= 00-02 Budapest next day). 60 days keeps
@@ -160,7 +160,7 @@ describe('pruneTokenUsage', () => {
        VALUES ('test-prune', 'sess-agg-2', ?, 200, 75, 0, 0)`,
     ).run(oldTs + 3600) // same day, 1h later
 
-    const result = pruneTokenUsage()
+    const result = await pruneTokenUsage()
     expect(result.rawDeleted).toBe(2)
     expect(result.dailyUpserted).toBeGreaterThanOrEqual(1)
 
@@ -174,7 +174,7 @@ describe('pruneTokenUsage', () => {
     expect(daily[0].row_count).toBe(2)
   })
 
-  it('aggregates old rows into token_usage_monthly before deleting them', () => {
+  it('aggregates old rows into token_usage_monthly before deleting them', async () => {
     const todayNoonUTC = Math.floor(Date.now() / 86400000) * 86400 + 43200
     const oldTs = todayNoonUTC - 60 * DAY
     getDb().prepare(
@@ -182,7 +182,7 @@ describe('pruneTokenUsage', () => {
        VALUES ('test-prune', 'sess-month-1', ?, 500, 100, 0, 0)`,
     ).run(oldTs)
 
-    const result = pruneTokenUsage()
+    const result = await pruneTokenUsage()
     expect(result.rawDeleted).toBe(1)
     expect(result.monthlyUpserted).toBeGreaterThanOrEqual(1)
 
@@ -195,7 +195,7 @@ describe('pruneTokenUsage', () => {
     expect(monthly[0].row_count).toBe(1)
   })
 
-  it('is idempotent: running pruneTokenUsage twice does not duplicate aggregated rows', () => {
+  it('is idempotent: running pruneTokenUsage twice does not duplicate aggregated rows', async () => {
     const todayNoonUTC = Math.floor(Date.now() / 86400000) * 86400 + 43200
     const oldTs = todayNoonUTC - 60 * DAY
     getDb().prepare(
@@ -203,8 +203,8 @@ describe('pruneTokenUsage', () => {
        VALUES ('test-prune', 'sess-idem-1', ?, 100, 50, 0, 0)`,
     ).run(oldTs)
 
-    pruneTokenUsage()  // first run: aggregates + deletes
-    pruneTokenUsage()  // second run: nothing to delete, no phantom duplicates
+    await pruneTokenUsage()  // first run: aggregates + deletes
+    await pruneTokenUsage()  // second run: nothing to delete, no phantom duplicates
 
     const dailyCount = getDb()
       .prepare("SELECT COUNT(*) c FROM token_usage_daily WHERE agent = 'test-prune'")
@@ -218,7 +218,7 @@ describe('pruneTokenUsage', () => {
     expect(monthlyCount.c).toBe(1)
   })
 
-  it('preserves aggregated totals across repeated prune runs', () => {
+  it('preserves aggregated totals across repeated prune runs', async () => {
     const todayNoonUTC = Math.floor(Date.now() / 86400000) * 86400 + 43200
     const oldTs = todayNoonUTC - 60 * DAY
     getDb().prepare(
@@ -226,8 +226,8 @@ describe('pruneTokenUsage', () => {
        VALUES ('test-prune', 'sess-persist-1', ?, 400, 200, 0, 0)`,
     ).run(oldTs)
 
-    pruneTokenUsage()  // aggregates and deletes the row
-    pruneTokenUsage()  // second run: raw table empty for this agent; upsert re-applies same zero
+    await pruneTokenUsage()  // aggregates and deletes the row
+    await pruneTokenUsage()  // second run: raw table empty for this agent; upsert re-applies same zero
 
     const daily = getDb()
       .prepare("SELECT input_tokens, output_tokens FROM token_usage_daily WHERE agent = 'test-prune'")
@@ -277,7 +277,7 @@ describe('getTokenSummary', () => {
 
   it('returns per-agent summaries with correct aggregations', async () => {
     const { getTokenSummary } = await import('../web/token-usage.js')
-    const summaries = getTokenSummary(baseTs - 1, baseTs + 7200)
+    const summaries = await getTokenSummary(baseTs - 1, baseTs + 7200)
 
     const main = summaries.find(s => s.agent === 'test-main')
     const samu = summaries.find(s => s.agent === 'test-samu')
@@ -296,7 +296,7 @@ describe('getTokenSummary', () => {
   it('respects time range filters', async () => {
     const { getTokenSummary } = await import('../web/token-usage.js')
     // Only first two entries (baseTs and baseTs+60)
-    const summaries = getTokenSummary(baseTs, baseTs + 100)
+    const summaries = await getTokenSummary(baseTs, baseTs + 100)
     const main = summaries.find(s => s.agent === 'test-main')
     expect(main).toBeDefined()
     expect(main!.totalCalls).toBe(2)
@@ -304,7 +304,7 @@ describe('getTokenSummary', () => {
 
   it('returns empty array when no data in range', async () => {
     const { getTokenSummary } = await import('../web/token-usage.js')
-    const summaries = getTokenSummary(0, 1)
+    const summaries = await getTokenSummary(0, 1)
     expect(summaries).toEqual([])
   })
 })
@@ -314,7 +314,7 @@ describe('getTokenTimeline', () => {
 
   it('buckets data by specified interval', async () => {
     const { getTokenTimeline } = await import('../web/token-usage.js')
-    const timeline = getTokenTimeline(60, baseTs - 1, baseTs + 7200)
+    const timeline = await getTokenTimeline(60, baseTs - 1, baseTs + 7200)
 
     expect(timeline.length).toBeGreaterThan(0)
     for (const bucket of timeline) {
@@ -328,7 +328,7 @@ describe('getTokenTimeline', () => {
 
   it('filters by agent', async () => {
     const { getTokenTimeline } = await import('../web/token-usage.js')
-    const timeline = getTokenTimeline(60, baseTs - 1, baseTs + 7200, 'test-samu')
+    const timeline = await getTokenTimeline(60, baseTs - 1, baseTs + 7200, 'test-samu')
 
     for (const bucket of timeline) {
       expect(bucket.agent).toBe('test-samu')
@@ -337,7 +337,7 @@ describe('getTokenTimeline', () => {
 
   it('inputTokens includes cache tokens', async () => {
     const { getTokenTimeline } = await import('../web/token-usage.js')
-    const timeline = getTokenTimeline(60, baseTs - 1, baseTs + 7200, 'test-samu')
+    const timeline = await getTokenTimeline(60, baseTs - 1, baseTs + 7200, 'test-samu')
     const samBucket = timeline[0]
     // test-samu has input=3000+cache_read=1000+cache_creation=200 in first entry
     expect(samBucket.inputTokens).toBeGreaterThanOrEqual(4200)
@@ -349,7 +349,7 @@ describe('getTokenDetails', () => {
 
   it('returns details ordered by timestamp DESC', async () => {
     const { getTokenDetails } = await import('../web/token-usage.js')
-    const details = getTokenDetails({ from: baseTs - 1, to: baseTs + 7200 })
+    const details = await getTokenDetails({ from: baseTs - 1, to: baseTs + 7200 })
 
     expect(details.length).toBeGreaterThan(0)
     for (let i = 1; i < details.length; i++) {
@@ -359,7 +359,7 @@ describe('getTokenDetails', () => {
 
   it('filters by agent', async () => {
     const { getTokenDetails } = await import('../web/token-usage.js')
-    const details = getTokenDetails({ agent: 'test-samu', from: baseTs - 1, to: baseTs + 7200 })
+    const details = await getTokenDetails({ agent: 'test-samu', from: baseTs - 1, to: baseTs + 7200 })
 
     expect(details.length).toBe(2)
     for (const d of details) {
@@ -369,7 +369,7 @@ describe('getTokenDetails', () => {
 
   it('filters by minTokens', async () => {
     const { getTokenDetails } = await import('../web/token-usage.js')
-    const details = getTokenDetails({ minTokens: 2000, from: baseTs - 1, to: baseTs + 7200 })
+    const details = await getTokenDetails({ minTokens: 2000, from: baseTs - 1, to: baseTs + 7200 })
 
     for (const d of details) {
       // SELECT * returns snake_case DB column names
@@ -381,8 +381,8 @@ describe('getTokenDetails', () => {
 
   it('respects limit and offset', async () => {
     const { getTokenDetails } = await import('../web/token-usage.js')
-    const page1 = getTokenDetails({ limit: 2, offset: 0, from: baseTs - 1, to: baseTs + 7200 })
-    const page2 = getTokenDetails({ limit: 2, offset: 2, from: baseTs - 1, to: baseTs + 7200 })
+    const page1 = await getTokenDetails({ limit: 2, offset: 0, from: baseTs - 1, to: baseTs + 7200 })
+    const page2 = await getTokenDetails({ limit: 2, offset: 2, from: baseTs - 1, to: baseTs + 7200 })
 
     expect(page1.length).toBe(2)
     expect(page2.length).toBeGreaterThan(0)
@@ -391,7 +391,7 @@ describe('getTokenDetails', () => {
 
   it('full-text search via q parameter', async () => {
     const { getTokenDetails } = await import('../web/token-usage.js')
-    const details = getTokenDetails({ q: 'samu', from: baseTs - 1, to: baseTs + 7200 })
+    const details = await getTokenDetails({ q: 'samu', from: baseTs - 1, to: baseTs + 7200 })
 
     expect(details.length).toBeGreaterThan(0)
     for (const d of details) {
@@ -404,7 +404,7 @@ describe('getTokenDetails', () => {
     const { getTokenDetails } = await import('../web/token-usage.js')
     // The route caps at 500, but the function itself accepts what's passed.
     // We verify the route handler in a separate test, but ensure the function works.
-    const details = getTokenDetails({ limit: 1000, from: baseTs - 1, to: baseTs + 7200 })
+    const details = await getTokenDetails({ limit: 1000, from: baseTs - 1, to: baseTs + 7200 })
     expect(details.length).toBeLessThanOrEqual(1000)
   })
 })
@@ -446,7 +446,7 @@ describe('correlateWithKanban', () => {
     `).run('test-kanban-1', 'Test Task', 'in_progress', 'normal', 'test-main', 'test-project', baseTs, baseTs)
 
     const { correlateWithKanban } = await import('../web/token-usage.js')
-    correlateWithKanban()
+    await correlateWithKanban()
 
     const rows = db.prepare(
       "SELECT task_title, project FROM token_usage WHERE agent = 'test-main' AND task_title IS NOT NULL",

@@ -73,7 +73,7 @@ async function ask(env: Record<string, unknown> = envelope()) {
   expect(out.status).toBe(201)
   return { id: out.body.id as string, hash: out.body.content_hash as string, env }
 }
-const approveByPerson = (id: string) => expect(resolveApproval(id, 'approved', 'human:session:owner', null, 'dashboard_session')).toBe(true)
+const approveByPerson = async (id: string) => expect(await resolveApproval(id, 'approved', 'human:session:owner', null, 'dashboard_session')).toBe(true)
 const consume = (id: string, hash: string, caller: Caller = MAIN, extra: Record<string, unknown> = {}) =>
   call('POST', `/api/approvals/${id}/consume`, caller, { content_hash: hash, ...extra })
 const claim = (hash: string, caller: Caller = MAIN, extra: Record<string, unknown> = {}) =>
@@ -92,14 +92,14 @@ beforeEach(() => {
 describe('POST /api/approvals/:id/consume', () => {
   it('uses an approved request up once, journals it and audits it', async () => {
     const { id, hash } = await ask()
-    approveByPerson(id)
+    await approveByPerson(id)
     const out = await consume(id, hash, MAIN, { ref: 'gmail-send-1', consumer: 'email-approval-gate' })
     expect(out.status).toBe(200)
     expect(out.body).toMatchObject({ ok: true, replayed: false, window_s: APPROVAL_CONSUME_WINDOW_S })
     expect(out.body.approval).toMatchObject({ id, consumed_by: 'main-agent', consumed_ref: 'gmail-send-1' })
     expect(out.body.approval.consumed_at).toEqual(expect.any(Number))
-    expect(getApproval(id)).toMatchObject({ consumed_by: 'main-agent', consumed_ref: 'gmail-send-1' })
-    expect(listApprovalEvents(id).map((e) => e.event)).toEqual(['consumed'])
+    expect(await getApproval(id)).toMatchObject({ consumed_by: 'main-agent', consumed_ref: 'gmail-send-1' })
+    expect((await listApprovalEvents(id)).map((e) => e.event)).toEqual(['consumed'])
     expect(auditRows()).toEqual([{ agent_id: 'main-agent', entity_id: id, detail: expect.stringContaining('"outcome":"consumed"') }])
     expect(auditRows()[0].detail).toContain(hash.slice(0, 12))
     expect(auditRows()[0].detail).not.toContain(hash)
@@ -107,7 +107,7 @@ describe('POST /api/approvals/:id/consume', () => {
 
   it('answers a second use 409 already_consumed, and a retry with the same ref as a replay', async () => {
     const { id, hash } = await ask()
-    approveByPerson(id)
+    await approveByPerson(id)
     expect((await consume(id, hash, MAIN, { ref: 'r1' })).status).toBe(200)
     const again = await consume(id, hash, MAIN, { ref: 'r2' })
     expect(again.status).toBe(409)
@@ -116,12 +116,12 @@ describe('POST /api/approvals/:id/consume', () => {
     const retry = await consume(id, hash, MAIN, { ref: 'r1' })
     expect(retry.status).toBe(200)
     expect(retry.body).toMatchObject({ ok: true, replayed: true })
-    expect(listApprovalEvents(id).map((e) => e.event)).toEqual(['consumed', 'consume_refused'])
+    expect((await listApprovalEvents(id)).map((e) => e.event)).toEqual(['consumed', 'consume_refused'])
   })
 
   it('lets exactly one of several simultaneous uses through', async () => {
     const { id, hash } = await ask()
-    approveByPerson(id)
+    await approveByPerson(id)
     const results = await Promise.all([1, 2, 3, 4, 5, 6].map((n) => consume(id, hash, MAIN, { ref: `race-${n}` })))
     expect(results.filter((r) => r.status === 200)).toHaveLength(1)
     expect(results.filter((r) => r.status === 409).every((r) => r.body.reason === 'already_consumed')).toBe(true)
@@ -133,28 +133,28 @@ describe('POST /api/approvals/:id/consume', () => {
     expect(pending.status).toBe(409)
     expect(pending.body.reason).toBe('not_approved')
     expect(pending.body.approval).toMatchObject({ id: a.id, status: 'pending', consumed_at: null })
-    expect(resolveApproval(a.id, 'rejected', 'human:session:owner', null, 'dashboard_session')).toBe(true)
+    expect(await resolveApproval(a.id, 'rejected', 'human:session:owner', null, 'dashboard_session')).toBe(true)
     expect((await consume(a.id, a.hash)).body.reason).toBe('not_approved')
     const b = await ask()
-    approveByPerson(b.id)
+    await approveByPerson(b.id)
     const other = await consume(b.id, hashOf(envelope()))
     expect(other.status).toBe(409)
     expect(other.body.reason).toBe('hash_mismatch')
-    expect(getApproval(b.id)?.consumed_at).toBeNull()
+    expect((await getApproval(b.id))?.consumed_at).toBeNull()
   })
 
   it('refuses an approval a token decided, not a person (advisory-era leftovers)', async () => {
     const { id, hash } = await ask()
-    expect(resolveApproval(id, 'approved', 'some-token', null, 'bearer')).toBe(true)
+    expect(await resolveApproval(id, 'approved', 'some-token', null, 'bearer')).toBe(true)
     const out = await consume(id, hash)
     expect(out.status).toBe(409)
     expect(out.body.reason).toBe('not_human_decided')
-    expect(getApproval(id)?.consumed_at).toBeNull()
+    expect((await getApproval(id))?.consumed_at).toBeNull()
   })
 
   it('refuses an approval older than the window', async () => {
     const { id, hash } = await ask()
-    approveByPerson(id)
+    await approveByPerson(id)
     getDb().prepare('UPDATE approvals SET resolved_at = ? WHERE id = ?').run(Math.floor(Date.now() / 1000) - APPROVAL_CONSUME_WINDOW_S - 5, id)
     const out = await consume(id, hash)
     expect(out.status).toBe(409)
@@ -162,8 +162,8 @@ describe('POST /api/approvals/:id/consume', () => {
   })
 
   it('refuses a category that has no hash to bind', async () => {
-    createApproval({ id: 'plain-1', agent_id: 'main-agent', category: 'deploy', action_description: 'x', content_hash: 'a'.repeat(64) })
-    resolveApproval('plain-1', 'approved', 'human:session:owner', null, 'dashboard_session')
+    await createApproval({ id: 'plain-1', agent_id: 'main-agent', category: 'deploy', action_description: 'x', content_hash: 'a'.repeat(64) })
+    await resolveApproval('plain-1', 'approved', 'human:session:owner', null, 'dashboard_session')
     const out = await consume('plain-1', 'a'.repeat(64))
     expect(out.status).toBe(409)
     expect(out.body.reason).toBe('wrong_category')
@@ -173,42 +173,42 @@ describe('POST /api/approvals/:id/consume', () => {
 describe('who may use an approval up', () => {
   it('needs the token of an identified agent: a shared token, a session and a tenant user are 403', async () => {
     const { id, hash } = await ask()
-    approveByPerson(id)
+    await approveByPerson(id)
     for (const caller of [SHARED, OWNER_SESSION, TENANT_SESSION]) {
       const out = await consume(id, hash, caller)
       expect(out.status).toBe(403)
       expect(out.body).toMatchObject({ error: 'forbidden', reason: 'agent_identity_required' })
       expect((await claim(hash, caller)).status).toBe(403)
     }
-    expect(getApproval(id)?.consumed_at).toBeNull()
+    expect((await getApproval(id))?.consumed_at).toBeNull()
   })
 
   it('is the requesting agent only: another agent is 403 and the row is untouched', async () => {
     const { id, hash } = await ask()
-    approveByPerson(id)
+    await approveByPerson(id)
     const out = await consume(id, hash, WORKER)
     expect(out.status).toBe(403)
     expect(out.body).toMatchObject({ error: 'forbidden', reason: 'agent_mismatch' })
     expect(JSON.stringify(out.body)).not.toContain('owner@example.com')
-    expect(getApproval(id)?.consumed_at).toBeNull()
-    expect(listApprovalEvents(id).map((e) => [e.event, e.reason, e.actor])).toEqual([['consume_refused', 'agent_mismatch', 'worker']])
+    expect((await getApproval(id))?.consumed_at).toBeNull()
+    expect((await listApprovalEvents(id)).map((e) => [e.event, e.reason, e.actor])).toEqual([['consume_refused', 'agent_mismatch', 'worker']])
     expect((await claim(hash, WORKER)).body.reason).toBe('none')
   })
 
   it('treats another tenant\'s approval as missing', async () => {
     const { id, hash } = await ask()
-    approveByPerson(id)
+    await approveByPerson(id)
     const out = await consume(id, hash, MAIN_OTHER_TENANT)
     expect(out.status).toBe(404)
     expect(out.body.error).toBe('not_found')
     expect((await consume('no-such-id', hash)).status).toBe(404)
     expect((await claim(hash, MAIN_OTHER_TENANT)).body.reason).toBe('none')
-    expect(getApproval(id)?.consumed_at).toBeNull()
+    expect((await getApproval(id))?.consumed_at).toBeNull()
   })
 
   it('lets the main agent\'s admin-role token use its own approval', async () => {
     const { id, hash } = await ask()
-    approveByPerson(id)
+    await approveByPerson(id)
     expect((await consume(id, hash, MAIN_ADMIN)).status).toBe(200)
   })
 })
@@ -216,19 +216,19 @@ describe('who may use an approval up', () => {
 describe('what the body must hold', () => {
   it('refuses a body that is not JSON, not an object, or has no valid hash', async () => {
     const { id, hash } = await ask()
-    approveByPerson(id)
+    await approveByPerson(id)
     const path = `/api/approvals/${id}/consume`
     expect((await call('POST', path, MAIN, undefined, '{nope')).status).toBe(400)
     expect((await call('POST', path, MAIN, [hash])).status).toBe(400)
     expect((await call('POST', path, MAIN, {})).body).toMatchObject({ error: 'invalid_value', field: 'content_hash' })
     expect((await call('POST', path, MAIN, { content_hash: hash.toUpperCase() })).status).toBe(400)
     expect((await call('POST', path, MAIN, { content_hash: hash.slice(1) })).status).toBe(400)
-    expect(getApproval(id)?.consumed_at).toBeNull()
+    expect((await getApproval(id))?.consumed_at).toBeNull()
   })
 
   it('keeps ref and consumer short and printable', async () => {
     const { id, hash } = await ask()
-    approveByPerson(id)
+    await approveByPerson(id)
     for (const bad of [{ ref: 'x'.repeat(201) }, { ref: 'tab\there' }, { ref: 'café' }, { ref: 5 }, { consumer: 'y'.repeat(65) }, { consumer: {} }]) {
       const out = await consume(id, hash, MAIN, bad)
       expect(out.status, JSON.stringify(bad)).toBe(400)
@@ -241,7 +241,7 @@ describe('what the body must hold', () => {
 describe('POST /api/approvals/claim', () => {
   it('uses up the approval of the mail it is told the hash of', async () => {
     const { id, hash } = await ask()
-    approveByPerson(id)
+    await approveByPerson(id)
     const out = await claim(hash, MAIN, { ref: 'send-1' })
     expect(out.status).toBe(200)
     expect(out.body).toMatchObject({ ok: true, replayed: false, window_s: APPROVAL_CONSUME_WINDOW_S })
@@ -264,11 +264,11 @@ describe('POST /api/approvals/claim', () => {
     expect(pending.body).toMatchObject({ reason: 'pending', approval_id: open.id })
     expect(pending.body.approval).toMatchObject({ id: open.id, status: 'pending' })
 
-    expect(resolveApproval(open.id, 'rejected', 'human:session:owner', null, 'dashboard_session')).toBe(true)
+    expect(await resolveApproval(open.id, 'rejected', 'human:session:owner', null, 'dashboard_session')).toBe(true)
     expect((await claim(open.hash)).body.reason).toBe('rejected')
 
     const old = await ask()
-    approveByPerson(old.id)
+    await approveByPerson(old.id)
     getDb().prepare('UPDATE approvals SET resolved_at = ? WHERE id = ?').run(Math.floor(Date.now() / 1000) - APPROVAL_CONSUME_WINDOW_S - 5, old.id)
     expect((await claim(old.hash)).body.reason).toBe('expired')
   })
@@ -288,7 +288,7 @@ describe('GET /api/approvals/:id/events', () => {
   it('lists the journal of one approval, refusals included, oldest first', async () => {
     const { id, hash } = await ask()
     await consume(id, hash)
-    approveByPerson(id)
+    await approveByPerson(id)
     await consume(id, hash, MAIN, { ref: 'a' })
     await consume(id, hash, MAIN, { ref: 'b' })
     const out = await call('GET', `/api/approvals/${id}/events`, OWNER_SESSION)
@@ -306,7 +306,7 @@ describe('GET /api/approvals/:id/events', () => {
     expect(agent.status).toBe(403)
     expect((await call('GET', `/api/approvals/${id}/events`, TENANT_SESSION)).status).toBe(404)
     expect((await call('GET', '/api/approvals/nope/events', OWNER_SESSION)).status).toBe(404)
-    const own = createApproval({ id: 'b-1', agent_id: 'x', category: 'deploy', action_description: 'x', tenant_id: 'tenant-b' })
+    const own = await createApproval({ id: 'b-1', agent_id: 'x', category: 'deploy', action_description: 'x', tenant_id: 'tenant-b' })
     expect((await call('GET', `/api/approvals/${own.id}/events`, TENANT_SESSION)).status).toBe(200)
   })
 })
@@ -351,7 +351,7 @@ describe('the signature on a used-up answer', () => {
 
   async function approvedClaim(ref = 'gate-1') {
     const { id, hash } = await ask()
-    approveByPerson(id)
+    await approveByPerson(id)
     return { id, hash, out: await claim(hash, MAIN, { ref, consumer: 'email-approval-gate' }) }
   }
 
@@ -366,7 +366,7 @@ describe('the signature on a used-up answer', () => {
 
   it('is on the consume answer, and a replay of the same use carries the same signature', async () => {
     const { id, hash } = await ask()
-    approveByPerson(id)
+    await approveByPerson(id)
     const first = await consume(id, hash, MAIN, { ref: 'r1' })
     expect(first.status).toBe(200)
     expect(first.body.sig).toBe(hmac(signedText(first.body.approval)))
@@ -407,7 +407,7 @@ describe('the signature on a used-up answer', () => {
 
   it('answers 503 and uses nothing up when the key cannot be read, and works again once it can', async () => {
     const { id, hash } = await ask()
-    approveByPerson(id)
+    await approveByPerson(id)
     mkdirSync(keyPath())   // a directory where the key file should be: not readable as a key
     for (const out of [await claim(hash, MAIN, { ref: 'r1' }), await consume(id, hash, MAIN, { ref: 'r1' })]) {
       expect(out.status).toBe(503)
@@ -415,7 +415,7 @@ describe('the signature on a used-up answer', () => {
       expect(out.body.sig).toBeUndefined()
       expect(out.body.approval).toBeUndefined()
     }
-    expect(getApproval(id)).toMatchObject({ consumed_at: null, consumed_by: null })
+    expect(await getApproval(id)).toMatchObject({ consumed_at: null, consumed_by: null })
     rmSync(keyPath(), { recursive: true })
     const ok = await claim(hash, MAIN, { ref: 'r1' })
     expect(ok.status).toBe(200)
@@ -424,14 +424,14 @@ describe('the signature on a used-up answer', () => {
 
   it('answers 503 for a key file that is not a key (short, not hex), without replacing it', async () => {
     const { id, hash } = await ask()
-    approveByPerson(id)
+    await approveByPerson(id)
     for (const junk of ['', 'abc', 'zz'.repeat(32), 'ab'.repeat(16), 'AB'.repeat(32)]) {
       writeFileSync(keyPath(), junk)
       const out = await claim(hash, MAIN, { ref: 'r1' })
       expect(out.status, JSON.stringify(junk)).toBe(503)
       expect(readFileSync(keyPath(), 'utf-8')).toBe(junk)
     }
-    expect(getApproval(id)?.consumed_at).toBeNull()
+    expect((await getApproval(id))?.consumed_at).toBeNull()
   })
 
   it('does not hide the other refusals behind the key: a 409 or 403 has no signature and the usual status', async () => {
@@ -456,7 +456,7 @@ describe('POST /api/approvals/claim with mode send', () => {
 
   async function reserved() {
     const { id, hash } = await ask()
-    approveByPerson(id)
+    await approveByPerson(id)
     const gate = await gateClaim(hash)
     expect(gate.status).toBe(200)
     return { id, hash, gate }
@@ -476,7 +476,7 @@ describe('POST /api/approvals/claim with mode send', () => {
     expect(out.body.sig).not.toBe(gate.body.sig)
     expect(out.body.sig).not.toBe(hmac(v1(a)))
     expect(gate.body.sig).toBe(hmac(v1(gate.body.approval)))
-    expect(listApprovalEvents(id).map((e) => e.event)).toEqual(['consumed', 'used'])
+    expect((await listApprovalEvents(id)).map((e) => e.event)).toEqual(['consumed', 'used'])
     expect(auditRows().map((r) => JSON.parse(r.detail).outcome)).toEqual(['consumed', 'adopted'])
   })
 
@@ -504,7 +504,7 @@ describe('POST /api/approvals/claim with mode send', () => {
 
   it('with no gate in front the sender reserves and seals: adopted:false, still a v2 signature', async () => {
     const { id, hash } = await ask()
-    approveByPerson(id)
+    await approveByPerson(id)
     const out = await sendClaim(hash, 'send-1')
     expect(out.status).toBe(200)
     expect(out.body).toMatchObject({ ok: true, adopted: false })
@@ -525,16 +525,16 @@ describe('POST /api/approvals/claim with mode send', () => {
     const byId = await consume(id, hash, MAIN, { mode: 'send', ref: 'send-1' })
     expect(byId.status).toBe(400)
     expect(byId.body.field).toBe('mode')
-    expect(getApproval(id)?.used_at ?? null).toBeNull()
+    expect((await getApproval(id))?.used_at ?? null).toBeNull()
   })
 
   it('does not open a way around the human decision: a token-decided request, a missing grant, another agent, a shared token', async () => {
     const tokenDecided = await ask()
-    expect(resolveApproval(tokenDecided.id, 'approved', 'agent:main-agent', null, 'bearer')).toBe(true)
+    expect(await resolveApproval(tokenDecided.id, 'approved', 'agent:main-agent', null, 'bearer')).toBe(true)
     const refused = await sendClaim(tokenDecided.hash)
     expect(refused.status).toBe(409)
     expect(refused.body.reason).toBe('not_human_decided')
-    expect(getApproval(tokenDecided.id)).toMatchObject({ consumed_at: null, used_at: null })
+    expect(await getApproval(tokenDecided.id)).toMatchObject({ consumed_at: null, used_at: null })
 
     const { hash } = await reserved()
     const other = await sendClaim(hash, 'send-1', WORKER)

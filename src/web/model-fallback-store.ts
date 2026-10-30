@@ -1,5 +1,5 @@
 import { DEFAULT_AGENT_MODEL } from '../config.js'
-import { getSystemConfig, setSystemConfig } from '../db/system-config.js'
+import { getSystemConfig, setSystemConfigMany } from '../db/system-config.js'
 import {
   normalizeModelFallbackConfig,
   DEFAULT_MODEL_CHAIN,
@@ -55,7 +55,7 @@ export function readModelFallbackConfig(): ModelFallbackConfig {
   return explicitChain ? cfg : { ...cfg, chain: defaultChainForInstall() }
 }
 
-export function writeModelFallbackConfig(cfg: Partial<ModelFallbackConfig>): ModelFallbackConfig {
+export async function writeModelFallbackConfig(cfg: Partial<ModelFallbackConfig>): Promise<ModelFallbackConfig> {
   const current = readModelFallbackConfig()
   const merged = normalizeModelFallbackConfig({ ...current, ...cfg })
   // Only persist the fields the caller actually sent (same reasoning as
@@ -67,9 +67,11 @@ export function writeModelFallbackConfig(cfg: Partial<ModelFallbackConfig>): Mod
   // it: it would then stop tracking DEFAULT_AGENT_MODEL if that ever
   // changes, and readModelFallbackConfig()'s explicitChainFromRow() would
   // treat the now-stale baked value as an operator override forever after.
-  if (cfg.enabled !== undefined) setSystemConfig(KEY_ENABLED, merged.enabled ? '1' : '0')
-  if (cfg.chain !== undefined) setSystemConfig(KEY_CHAIN, JSON.stringify(merged.chain))
-  if (cfg.revertAfterMinutes !== undefined) setSystemConfig(KEY_REVERT_MINUTES, String(merged.revertAfterMinutes))
+  const entries: Array<[string, string]> = []
+  if (cfg.enabled !== undefined) entries.push([KEY_ENABLED, merged.enabled ? '1' : '0'])
+  if (cfg.chain !== undefined) entries.push([KEY_CHAIN, JSON.stringify(merged.chain)])
+  if (cfg.revertAfterMinutes !== undefined) entries.push([KEY_REVERT_MINUTES, String(merged.revertAfterMinutes)])
+  await setSystemConfigMany(entries) // the sent fields land together
   return merged
 }
 
@@ -99,8 +101,10 @@ export function readModelFallbackFieldsRaw(): Partial<ModelFallbackConfig> {
  *  A field left out of `fields` is left untouched -- see the reasoning above for
  *  why fleet-transfer must not blanket-overwrite an unconfigured chain/enabled/
  *  revertAfterMinutes with whatever the source fleet's code-level default was. */
-export function writeModelFallbackFieldsRaw(fields: Partial<ModelFallbackConfig>): void {
-  if (fields.enabled !== undefined) setSystemConfig(KEY_ENABLED, fields.enabled ? '1' : '0')
-  if (fields.chain !== undefined) setSystemConfig(KEY_CHAIN, JSON.stringify(fields.chain))
-  if (fields.revertAfterMinutes !== undefined) setSystemConfig(KEY_REVERT_MINUTES, String(fields.revertAfterMinutes))
+export async function writeModelFallbackFieldsRaw(fields: Partial<ModelFallbackConfig>): Promise<void> {
+  const entries: Array<[string, string]> = []
+  if (fields.enabled !== undefined) entries.push([KEY_ENABLED, fields.enabled ? '1' : '0'])
+  if (fields.chain !== undefined) entries.push([KEY_CHAIN, JSON.stringify(fields.chain)])
+  if (fields.revertAfterMinutes !== undefined) entries.push([KEY_REVERT_MINUTES, String(fields.revertAfterMinutes)])
+  await setSystemConfigMany(entries)
 }

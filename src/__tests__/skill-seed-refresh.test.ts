@@ -37,13 +37,13 @@ const seedSkillIfAbsent = vi.fn((o: { id: string; content: string; description: 
   return true
 })
 vi.mock('../db.js', () => ({
-  getSkill: (id: string) => rows.get(id),
-  updateSkill: (id: string, patch: { content?: string; description?: string }) => updateSkill(id, patch),
-  seedSkillIfAbsent: (o: { id: string; content: string; description: string }) => seedSkillIfAbsent(o),
-  listAllSkills: vi.fn().mockReturnValue([]),
-  listSkillAccess: vi.fn().mockReturnValue([]),
-  getEnabledAgentsForTenant: vi.fn().mockReturnValue([]),
-  listSkillFiles: vi.fn().mockReturnValue([]),
+  getSkill: (id: string) => Promise.resolve(rows.get(id)),
+  updateSkill: (id: string, patch: { content?: string; description?: string }) => Promise.resolve(updateSkill(id, patch)),
+  seedSkillIfAbsent: (o: { id: string; content: string; description: string }) => Promise.resolve(seedSkillIfAbsent(o)),
+  listAllSkills: vi.fn().mockResolvedValue([]),
+  listSkillAccess: vi.fn().mockResolvedValue([]),
+  getEnabledAgentsForTenant: vi.fn().mockResolvedValue([]),
+  listSkillFiles: vi.fn().mockResolvedValue([]),
   seedSkillFileIfAbsent: vi.fn(),
 }))
 
@@ -72,57 +72,57 @@ describe('applySeedSkillRefreshMarker', () => {
     rmSync(MARKER, { force: true })
   })
 
-  it('is a no-op without a marker', () => {
-    expect(applySeedSkillRefreshMarker()).toEqual({ applied: 0, unchanged: 0, errors: 0 })
+  it('is a no-op without a marker', async () => {
+    expect(await applySeedSkillRefreshMarker()).toEqual({ applied: 0, unchanged: 0, errors: 0 })
     expect(updateSkill).not.toHaveBeenCalled()
   })
 
-  it('updates the existing row from the refreshed file (content + description) and removes the marker', () => {
+  it('updates the existing row from the refreshed file (content + description) and removes the marker', async () => {
     rows.set('global/demo', { id: 'global/demo', content: 'OLD', description: 'old' })
     writeSkill('demo', NEW)
     writeMarker('demo')
-    expect(applySeedSkillRefreshMarker()).toEqual({ applied: 1, unchanged: 0, errors: 0 })
+    expect(await applySeedSkillRefreshMarker()).toEqual({ applied: 1, unchanged: 0, errors: 0 })
     expect(rows.get('global/demo')).toEqual({ id: 'global/demo', content: NEW, description: 'new text' })
     expect(existsSync(MARKER)).toBe(false)
   })
 
-  it('strips a generated header before storing, so the row never carries it', () => {
+  it('strips a generated header before storing, so the row never carries it', async () => {
     rows.set('global/demo', { id: 'global/demo', content: 'OLD', description: 'old' })
     writeSkill('demo', addGeneratedHeader(NEW, 'global/demo'))
     writeMarker('demo')
-    applySeedSkillRefreshMarker()
+    await applySeedSkillRefreshMarker()
     expect(rows.get('global/demo')?.content).toBe(NEW)
   })
 
-  it('counts a row that already matches as unchanged and does not write it', () => {
+  it('counts a row that already matches as unchanged and does not write it', async () => {
     rows.set('global/demo', { id: 'global/demo', content: NEW, description: 'new text' })
     writeSkill('demo', NEW)
     writeMarker('demo')
-    expect(applySeedSkillRefreshMarker()).toEqual({ applied: 0, unchanged: 1, errors: 0 })
+    expect(await applySeedSkillRefreshMarker()).toEqual({ applied: 0, unchanged: 1, errors: 0 })
     expect(updateSkill).not.toHaveBeenCalled()
   })
 
-  it('seeds a row for a skill that has none yet', () => {
+  it('seeds a row for a skill that has none yet', async () => {
     writeSkill('fresh', NEW)
     writeMarker('fresh')
-    expect(applySeedSkillRefreshMarker().applied).toBe(1)
+    expect((await applySeedSkillRefreshMarker()).applied).toBe(1)
     expect(rows.get('global/fresh')?.content).toBe(NEW)
   })
 
-  it('rejects path-unsafe names, counts them as errors and keeps the marker', () => {
+  it('rejects path-unsafe names, counts them as errors and keeps the marker', async () => {
     writeMarker('../escape', 'a/b', '..')
-    const r = applySeedSkillRefreshMarker()
+    const r = await applySeedSkillRefreshMarker()
     expect(r.errors).toBe(3)
     expect(updateSkill).not.toHaveBeenCalled()
     expect(seedSkillIfAbsent).not.toHaveBeenCalled()
     expect(existsSync(MARKER)).toBe(true)
   })
 
-  it('handles duplicate names once and keeps the marker when a listed file is missing', () => {
+  it('handles duplicate names once and keeps the marker when a listed file is missing', async () => {
     rows.set('global/demo', { id: 'global/demo', content: 'OLD', description: 'old' })
     writeSkill('demo', NEW)
     writeMarker('demo', 'demo', 'missing')
-    const r = applySeedSkillRefreshMarker()
+    const r = await applySeedSkillRefreshMarker()
     expect(r).toEqual({ applied: 1, unchanged: 0, errors: 1 })
     expect(updateSkill).toHaveBeenCalledTimes(1)
     expect(existsSync(MARKER)).toBe(true)

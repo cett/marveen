@@ -24,9 +24,9 @@ vi.mock('../web/channel-monitor.js', () => ({
   hardRestartMarveenChannels: vi.fn().mockReturnValue({ ok: true }),
 }))
 vi.mock('../web/agent-process.js', () => ({
-  startAgentProcess: vi.fn().mockReturnValue({ ok: true }),
-  stopAgentProcess: vi.fn().mockReturnValue({ ok: true }),
-  restartAgentProcess: vi.fn().mockReturnValue({ ok: true }),
+  startAgentProcess: vi.fn().mockResolvedValue({ ok: true }),
+  stopAgentProcess: vi.fn().mockResolvedValue({ ok: true }),
+  restartAgentProcess: vi.fn().mockResolvedValue({ ok: true }),
   getAgentProcessInfo: vi.fn().mockReturnValue(null),
 }))
 vi.mock('../web/manual-restart-gate.js', async (importOriginal) => ({
@@ -35,18 +35,16 @@ vi.mock('../web/manual-restart-gate.js', async (importOriginal) => ({
 }))
 vi.mock('../web/auto-restart-store.js', () => ({
   readAutoRestartConfig: vi.fn().mockReturnValue({ enabled: false }),
-  writeAutoRestartConfig: vi.fn().mockReturnValue({ enabled: false }),
+  writeAutoRestartConfig: vi.fn().mockResolvedValue({ enabled: false }),
 }))
 vi.mock('../web/context-guard-store.js', () => ({
   readContextGuardConfig: vi.fn().mockReturnValue({ enabled: false }),
-  writeContextGuardConfig: vi.fn().mockReturnValue({ enabled: false }),
+  writeContextGuardConfig: vi.fn().mockResolvedValue({ enabled: false }),
 }))
 vi.mock('../web/context-guard-runner.js', () => ({
   getContextGuardStatus: vi.fn().mockReturnValue({ phase: 'idle', contextPct: 0 }),
 }))
 vi.mock('../store-watcher.js', () => ({
-  setStoreWriteActor: vi.fn(),
-  clearStoreWriteActor: vi.fn(),
   startStoreWatcher: vi.fn(),
   stopStoreWatcher: vi.fn(),
 }))
@@ -56,14 +54,14 @@ vi.mock('../web/agent-desired-state.js', () => ({
   getDesiredAgents: vi.fn().mockReturnValue(new Set()),
 }))
 vi.mock('../db.js', () => ({
-  claimPendingForAgent: vi.fn().mockReturnValue([]),
+  claimPendingForAgent: vi.fn().mockResolvedValue([]),
   markMessageFailed: vi.fn(),
   getDb: vi.fn(),
   // agent_settings tenant check (#985 group 3) -- default to "caller belongs"
   // so the existing (pre-group-3) route tests keep exercising the routes
   // past the new cross-tenant gate unchanged.
-  agentBelongsToTenant: vi.fn().mockReturnValue(true),
-  resolveAgentOwningTenantId: vi.fn().mockReturnValue('default'),
+  agentBelongsToTenant: vi.fn().mockResolvedValue(true),
+  resolveAgentOwningTenantId: vi.fn().mockResolvedValue('default'),
 }))
 vi.mock('../web/routes/agents-helpers.js', () => ({
   remoteRunStateCache: { getOrRefresh: vi.fn().mockReturnValue('stopped') },

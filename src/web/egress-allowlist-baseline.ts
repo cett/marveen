@@ -30,6 +30,7 @@ import { MAIN_AGENT_ID } from '../config.js'
 import { createAgentMessage } from '../db.js'
 import { logger } from '../logger.js'
 
+import { systemJob } from '../db/background-jobs.js'
 export const HISTORY_DIRNAME = 'egress-allowlist.history'
 export const VENDOR_HISTORY_DIRNAME = 'egress-vendor-hosts.history'
 const MISSING = 'missing'
@@ -172,9 +173,9 @@ export function watchEgressAllowlistBaseline(
   const stops: Array<() => void> = []
   for (const target of [ALLOWLIST_TARGET, VENDOR_HOSTS_TARGET]) {
     const file = join(storeDir, target.file)
-    const run = () => {
+    const run = systemJob('egress-baseline', () => {
       try { checkEgressAllowlistBaseline(storeDir, notify, new Date(), target) } catch { /* a failed check must not crash the server */ }
-    }
+    })
     run()
     watchFile(file, { interval: intervalMs }, run)
     stops.push(() => unwatchFile(file, run))
@@ -187,7 +188,7 @@ export function watchEgressAllowlistBaseline(
  * change is seen. Its value is exactly that it is ALREADY QUEUED: a history directory rewritten
  * later (same OS user) does not take back a message that has been sent.
  */
-export function queueAllowlistReport(report: string): void {
+export async function queueAllowlistReport(report: string): Promise<void> {
   logger.warn({ report }, 'egress config changed (allowlist or vendor hosts)')
-  createAgentMessage('system', MAIN_AGENT_ID, report)
+  await createAgentMessage('system', MAIN_AGENT_ID, report)
 }

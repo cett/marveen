@@ -1,10 +1,30 @@
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
-import { exportFleet, importFleet, MIN_VAULT_PASSWORD_LEN, UserFacingError, type ExportedFleet } from '../fleet-transfer.js'
+import { exportFleet, importFleet, ImportConflictError, MIN_VAULT_PASSWORD_LEN, UserFacingError, type ExportedFleet } from '../fleet-transfer.js'
+import { scanImportLeftovers } from '../fleet-import-leftovers.js'
 import type { RouteContext } from './types.js'
 
 export async function tryHandleFleet(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
+
+  // Read-only list of the staged files and backups an interrupted import left behind. Admin only (no RBAC entry:
+  // an unlisted route requires admin:all). It never deletes or writes anything.
+  if (path === '/api/fleet/import-leftovers' && method === 'GET') {
+    try {
+      const scan = await scanImportLeftovers()
+      json(res, {
+        items: scan.items.map((i) => ({ path: i.path, kind: i.kind, mtime: i.mtime, age_seconds: i.ageSeconds, action: i.action })),
+        truncated: scan.truncated,
+        truncated_reason: scan.truncatedReason,
+        import_in_progress: scan.importInProgress,
+        scanned_at: scan.scannedAt,
+      })
+    } catch (err: any) {
+      logger.error({ err }, 'Fleet import leftover scan failed')
+      json(res, { error: 'internal_error', hint: 'Leftover scan failed' }, 500)
+    }
+    return true
+  }
 
   if (path !== '/api/fleet/export' && path !== '/api/fleet/import') return false
 
@@ -17,7 +37,7 @@ export async function tryHandleFleet(ctx: RouteContext): Promise<boolean> {
       return true
     }
     try {
-      const exported: ExportedFleet = exportFleet({ vaultPassword: vaultPassword || undefined })
+      const exported: ExportedFleet = await exportFleet({ vaultPassword: vaultPassword || undefined })
       const buf = Buffer.from(exported.data)
       res.writeHead(200, {
         'Content-Type': 'application/json',
@@ -56,15 +76,19 @@ export async function tryHandleFleet(ctx: RouteContext): Promise<boolean> {
 
     // importFleet handles JSON parse (and encrypted blob detection) internally
     try {
-      const result = importFleet(rawBody, { vaultPassword: vaultPassword || undefined, apply })
+      const result = await importFleet(rawBody, { vaultPassword: vaultPassword || undefined, apply })
       if ('dryRun' in result && result.errors.length > 0) {
         json(res, result, 400)
       } else {
         json(res, result, 200)
       }
     } catch (err: any) {
-      logger.error({ err }, 'Fleet import failed')
-      json(res, { error: 'internal_error', hint: 'Fleet import failed' }, 500)
+      if (err instanceof ImportConflictError) {
+        json(res, { error: 'conflict', hint: err.message }, 409)
+      } else {
+        logger.error({ err }, 'Fleet import failed')
+        json(res, { error: 'internal_error', hint: 'Fleet import failed' }, 500)
+      }
     }
     return true
   }

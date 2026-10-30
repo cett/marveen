@@ -74,13 +74,13 @@ export async function reconcileAgentsOnStartup(): Promise<void> {
       if (liveness === 'live') {
         // Part B (ADR-001): reconnect -- session survived, context is preserved.
         logger.info({ agent: name, session }, 'startup-reconciliation: reconnected to existing tmux session')
-        if (!desired.has(name)) addDesiredAgent(name)
+        if (!desired.has(name)) await addDesiredAgent(name)
       } else {
         // Stale: shell exists but Claude Code crashed inside the session.
         // Restart preserves the session name convention but starts a fresh CC process.
         logger.warn({ agent: name, session }, 'startup-reconciliation: session stale (CC not responsive) -- restarting')
         try {
-          const result = restartAgentProcess(name)
+          const result = await restartAgentProcess(name)
           if (!result.ok) {
             logger.warn({ agent: name, error: result.error }, 'startup-reconciliation: stale restart failed')
           } else {
@@ -100,7 +100,7 @@ export async function reconcileAgentsOnStartup(): Promise<void> {
 
       logger.info({ agent: name, session }, 'startup-reconciliation: session absent -- launching')
       try {
-        const result = startAgentProcess(name)
+        const result = await startAgentProcess(name)
         if (result.ok) {
           logger.info({ agent: name }, 'startup-reconciliation: launched successfully')
         } else if (result.error === 'conflict') {
@@ -121,12 +121,12 @@ export async function reconcileAgentsOnStartup(): Promise<void> {
 // SIGTERM flush: ensure agents that are actually running end up in the desired
 // set so the next startup has accurate data even after an unclean shutdown.
 // Only ever adds -- deliberate stops (removeDesiredAgent) are not undone here.
-export function flushRunningStateToDesired(): void {
+export async function flushRunningStateToDesired(): Promise<void> {
   const desired = getDesiredAgents()
   for (const name of listAgentNames()) {
     try {
       if (!desired.has(name) && tmuxSessionExists(agentSessionName(name))) {
-        addDesiredAgent(name)
+        await addDesiredAgent(name)
         logger.info({ agent: name }, 'startup-reconciliation: SIGTERM flush -- added running agent to desired set')
       }
     } catch (err) {

@@ -12,6 +12,8 @@
 import { existsSync, readFileSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
 import { db } from './connection.js'
+import { dbx } from './facade.js'
+import { cacheAfterWrite, cachedSystemConfig, cachedSystemConfigList, refreshSystemConfigCacheIfLive } from './config-cache.js'
 import { STORE_DIR } from '../config.js'
 import { logger } from '../logger.js'
 
@@ -22,42 +24,107 @@ export interface SystemConfigRow {
   source: string
 }
 
+// Reads are served from the synchronous write-through cache (config-cache.ts) once initDatabase() has loaded
+// it for the current connection; until then (and for a connection the cache was not loaded for) they read the
+// table, exactly as before. The reads stay synchronous when the db layer turns async.
 export function getSystemConfig(key: string): SystemConfigRow | undefined {
+  const cached = cachedSystemConfig(key)
+  if (cached !== null) return cached
   return db.prepare('SELECT key, value, updated_at, source FROM system_config WHERE key = ?').get(key) as
     | SystemConfigRow
     | undefined
 }
 
+// The row as the database holds it NOW, past the write-through cache. For a key whose contract is that a
+// hand edit or a rollback done outside this process shows without a restart (RBAC_MODE): the cache assumes a
+// single writer and would keep serving the old value.
+export async function getSystemConfigUncached(key: string): Promise<SystemConfigRow | undefined> {
+  return dbx.get<SystemConfigRow>('SELECT key, value, updated_at, source FROM system_config WHERE key = ?', key)
+}
+
 export function listSystemConfig(): SystemConfigRow[] {
+  const cached = cachedSystemConfigList()
+  if (cached !== null) return cached
   return db.prepare('SELECT key, value, updated_at, source FROM system_config ORDER BY key').all() as SystemConfigRow[]
 }
 
+const UPSERT_SQL = `INSERT INTO system_config (key, value, updated_at, source) VALUES (?, ?, unixepoch(), ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, source = excluded.source`
+
 // Upsert. source defaults to 'db' (an operator/admin set this directly,
 // as opposed to 'migrated_from_json' -- see migrateConfigOverridesToSystemConfig).
-export function setSystemConfig(key: string, value: string, source: string = 'db'): void {
-  db.prepare(
-    `INSERT INTO system_config (key, value, updated_at, source) VALUES (?, ?, unixepoch(), ?)
-     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, source = excluded.source`
-  ).run(key, value, source)
+export async function setSystemConfig(key: string, value: string, source: string = 'db'): Promise<void> {
+  await dbx.run(UPSERT_SQL, key, value, source)
+  cacheAfterWrite(key) // database first, then the cache
+}
+
+// The boot twin of setSystemConfig: initDatabase() runs before anything can await, and it restores the
+// schedule tick stamp with one write. Only db/index.ts calls it (db-boot-sync-twins.test.ts).
+// @boot-sync-twin
+export function setSystemConfigSync(key: string, value: string, source: string = 'db'): void {
+  db.prepare(UPSERT_SQL).run(key, value, source)
+  cacheAfterWrite(key) // database first, then the cache
+}
+
+/**
+ * Read-modify-write of one key that cannot lose an update. The current value is read FROM THE DATABASE inside an
+ * immediate transaction (never from the cache: the cache is the other writer's last word only after its commit),
+ * `mutate` turns it into the next value, and the write is part of the same transaction. Two overlapping calls
+ * therefore both land: the second sees what the first wrote. The cache follows the commit.
+ *
+ * `mutate` runs under the connection's transaction lock: pure code only, no I/O, no awaits. Returning `undefined`
+ * leaves the row alone (no write, no `updated_at` bump). Resolves to whether a write happened.
+ */
+export async function updateSystemConfig(
+  key: string,
+  mutate: (current: string | undefined) => string | undefined,
+  source: string = 'db',
+): Promise<boolean> {
+  const wrote = await dbx.tx(async (tx) => {
+    const row = await tx.get<{ value: string }>('SELECT value FROM system_config WHERE key = ?', key)
+    const next = mutate(row?.value)
+    if (next === undefined) return false
+    await tx.run(UPSERT_SQL, key, next, source)
+    return true
+  }, { mode: 'immediate' })
+  if (wrote) cacheAfterWrite(key) // database first, then the cache
+  return wrote
+}
+
+/**
+ * Write several keys as one unit: one transaction, and the cache follows the commit for all of them in one
+ * synchronous step, so a reader never sees half of the group (the writes were atomic against the event loop
+ * while they were synchronous; three awaited `setSystemConfig` calls would not be).
+ */
+export async function setSystemConfigMany(entries: ReadonlyArray<readonly [string, string]>, source: string = 'db'): Promise<void> {
+  if (entries.length === 0) return
+  await dbx.tx(async (tx) => {
+    for (const [key, value] of entries) await tx.run(UPSERT_SQL, key, value, source)
+  }, { mode: 'immediate' })
+  for (const [key] of entries) cacheAfterWrite(key) // database first, then the cache
 }
 
 // Insert only when the key has no row yet; an existing row is never touched. Returns true when this
 // call created the row. For one-time backfills that must be safe to repeat on every boot.
-export function insertSystemConfigIfAbsent(key: string, value: string, source: string): boolean {
-  const info = db
-    .prepare(
-      `INSERT INTO system_config (key, value, updated_at, source) VALUES (?, ?, ?, ?)
-       ON CONFLICT DO NOTHING`
-    )
-    .run(key, value, Math.floor(Date.now() / 1000), source)
+export async function insertSystemConfigIfAbsent(key: string, value: string, source: string): Promise<boolean> {
+  const info = await dbx.run(
+    `INSERT INTO system_config (key, value, updated_at, source) VALUES (?, ?, ?, ?)
+       ON CONFLICT DO NOTHING`,
+    key,
+    value,
+    Math.floor(Date.now() / 1000),
+    source,
+  )
+  if (info.changes > 0) cacheAfterWrite(key) // database first, then the cache
   return info.changes > 0
 }
 
 // Hard delete, not a value clear -- for keys that may hold secret material
 // (e.g. federation peer tokens), leaving a stale row with an empty value is
 // worse than removing it outright. Used by removeFederationStore().
-export function deleteSystemConfig(key: string): void {
-  db.prepare('DELETE FROM system_config WHERE key = ?').run(key)
+export async function deleteSystemConfig(key: string): Promise<void> {
+  await dbx.run('DELETE FROM system_config WHERE key = ?', key)
+  cacheAfterWrite(key) // database first, then the cache
 }
 
 // One-time migration of store/config-overrides.json into system_config.
@@ -94,6 +161,7 @@ export function migrateConfigOverridesToSystemConfig(): number {
     const result = stmt.run(key, String(value))
     if (result.changes > 0) migrated++
   }
+  if (migrated > 0) refreshSystemConfigCacheIfLive()
   return migrated
 }
 
@@ -153,6 +221,7 @@ function migrateOneGroup5File(filename: string, extract: (parsed: unknown) => Ar
     const result = stmt.run(key, value)
     if (result.changes > 0) migrated++
   }
+  if (migrated > 0) refreshSystemConfigCacheIfLive()
   return migrated
 }
 

@@ -336,11 +336,13 @@ describe('the runner wires the ledger into every tick', () => {
   })
 
   it('raises the mass-skip alert off the scan result', () => {
-    expect(SRC).toMatch(/if \(skipScan\.alert\) sendMassSkipAlert\(/)
+    expect(SRC).toMatch(/if \(skipScan\.alert\) await sendMassSkipAlert\(/)
   })
 
   it('seeds the skip tracker baseline from the DB rows, not from the tick task list', () => {
-    expect(SRC).toMatch(/dbRunnable: listDbRunnableTaskNames/)
+    // the read is async: the tick settles it before the first scan (behaviour: schedule-runner-skip-baseline.test.ts)
+    expect(SRC).toMatch(/dbRunnable = await listDbRunnableTaskNames\(\)/)
+    expect(SRC).toMatch(/dbRunnable: \(\) => dbRunnable/)
   })
 
   it('reconciles task-config.json enabled from the DB', () => {

@@ -13,13 +13,13 @@ import type { RouteContext } from './types.js'
 // Admin (including every fleet agent on the shared dashboard-token bearer,
 // which maps to role='admin' for backward-compat) is unrestricted, matching
 // every other tenant-scoped route in this codebase.
-function tenantBlocked(ctx: RouteContext, agentId: string): boolean {
+async function tenantBlocked(ctx: RouteContext, agentId: string): Promise<boolean> {
   // A fleet_agent token is held to its own agent instead: the log of its own agent is its own in
   // whichever tenant it is serving, and no other agent's log is reachable.
   if (ctx.role === 'fleet_agent') return !callerMayActAs(ctx, agentId)
   if (ctx.role === 'admin') return false
   const callerTenant = ctx.tenantId ?? 'default'
-  return resolveAgentTenant(agentId) !== callerTenant
+  return await resolveAgentTenant(agentId) !== callerTenant
 }
 
 export async function tryHandleDailyLog(ctx: RouteContext): Promise<boolean> {
@@ -30,8 +30,8 @@ export async function tryHandleDailyLog(ctx: RouteContext): Promise<boolean> {
     const data = JSON.parse(body.toString()) as { agent_id?: string; content: string }
     if (!data.content?.trim()) { json(res, { error: 'required', field: 'content', hint: 'Content required' }, 400); return true }
     const agentId = actingAgentId(ctx, data.agent_id, MAIN_AGENT_ID)
-    if (tenantBlocked(ctx, agentId)) { json(res, { error: 'forbidden', hint: 'agent not in your tenant' }, 403); return true }
-    appendDailyLog(agentId, data.content.trim())
+    if (await tenantBlocked(ctx, agentId)) { json(res, { error: 'forbidden', hint: 'agent not in your tenant' }, 403); return true }
+    await appendDailyLog(agentId, data.content.trim())
     // Warn-only homoglyph check (GATEHOMOGLIFSWEEP816) -- see memories.ts.
     const homoglyphs = detectHomoglyphs(data.content)
     if (homoglyphs.length > 0) {
@@ -46,18 +46,18 @@ export async function tryHandleDailyLog(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/daily-log' && method === 'GET') {
     const agent = actingAgentId(ctx, url.searchParams.get('agent'), MAIN_AGENT_ID)
-    if (tenantBlocked(ctx, agent)) { json(res, { error: 'forbidden', hint: 'agent not in your tenant' }, 403); return true }
+    if (await tenantBlocked(ctx, agent)) { json(res, { error: 'forbidden', hint: 'agent not in your tenant' }, 403); return true }
     // The default day is the one entries are filed under (the app time zone's), not the UTC day: between local
     // midnight and UTC midnight a bare GET would otherwise read yesterday's, empty, log.
     const date = url.searchParams.get('date') || appLocalDate()
-    json(res, getDailyLog(agent, date))
+    json(res, await getDailyLog(agent, date))
     return true
   }
 
   if (path === '/api/daily-log/dates' && method === 'GET') {
     const agent = actingAgentId(ctx, url.searchParams.get('agent'), MAIN_AGENT_ID)
-    if (tenantBlocked(ctx, agent)) { json(res, { error: 'forbidden', hint: 'agent not in your tenant' }, 403); return true }
-    json(res, getDailyLogDates(agent))
+    if (await tenantBlocked(ctx, agent)) { json(res, { error: 'forbidden', hint: 'agent not in your tenant' }, 403); return true }
+    json(res, await getDailyLogDates(agent))
     return true
   }
 

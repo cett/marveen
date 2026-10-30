@@ -15,14 +15,14 @@ export async function tryHandleHomoglyphs(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/homoglyphs' && method === 'GET') {
     const includeResolved = url.searchParams.get('all') === '1'
-    const rows = listHomoglyphFindings(includeResolved)
+    const rows = await listHomoglyphFindings(includeResolved)
     json(res, { findings: rows })
     return true
   }
 
   const resolveMatch = path.match(/^\/api\/homoglyphs\/(\d+)\/resolve$/)
   if (resolveMatch && method === 'POST') {
-    const changed = resolveHomoglyphFinding(Number(resolveMatch[1]))
+    const changed = await resolveHomoglyphFinding(Number(resolveMatch[1]))
     json(res, { ok: true, changed })
     return true
   }

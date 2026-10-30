@@ -1,7 +1,7 @@
 // Split from the former monolithic src/db.ts (see db/index.ts for the
 // re-export surface and boot orchestration).
 
-import { db } from './connection.js'
+import { dbx, type SqlOps } from './facade.js'
 
 export interface VaultSshKey {
   id: string
@@ -16,34 +16,30 @@ export interface VaultSshKey {
 }
 
 /** tenantId null -- admin global view (no filter, every tenant's keys). */
-export function listVaultSshKeys(tenantId: string | null = null): VaultSshKey[] {
-  if (tenantId === null) return db.prepare('SELECT * FROM vault_ssh_keys ORDER BY label ASC').all() as VaultSshKey[]
-  return db.prepare('SELECT * FROM vault_ssh_keys WHERE tenant_id = ? ORDER BY label ASC').all(tenantId) as VaultSshKey[]
+export async function listVaultSshKeys(tenantId: string | null = null): Promise<VaultSshKey[]> {
+  if (tenantId === null) return dbx.all<VaultSshKey>('SELECT * FROM vault_ssh_keys ORDER BY label ASC')
+  return dbx.all<VaultSshKey>('SELECT * FROM vault_ssh_keys WHERE tenant_id = ? ORDER BY label ASC', tenantId)
 }
 
-export function getVaultSshKey(id: string): VaultSshKey | undefined {
-  return db.prepare('SELECT * FROM vault_ssh_keys WHERE id = ?').get(id) as VaultSshKey | undefined
+export async function getVaultSshKey(id: string): Promise<VaultSshKey | undefined> {
+  return dbx.get<VaultSshKey>('SELECT * FROM vault_ssh_keys WHERE id = ?', id)
 }
 
-export function createVaultSshKey(key: Pick<VaultSshKey, 'id' | 'label' | 'username' | 'vault_key_id' | 'public_key' | 'fingerprint' | 'key_type' | 'tenant_id'>): VaultSshKey {
+export async function createVaultSshKey(key: Pick<VaultSshKey, 'id' | 'label' | 'username' | 'vault_key_id' | 'public_key' | 'fingerprint' | 'key_type' | 'tenant_id'>): Promise<VaultSshKey> {
   const now = Math.floor(Date.now() / 1000)
-  db.prepare(
-    `INSERT INTO vault_ssh_keys (id, label, username, vault_key_id, public_key, fingerprint, key_type, created_at, tenant_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(key.id, key.label, key.username, key.vault_key_id, key.public_key, key.fingerprint, key.key_type, now, key.tenant_id)
+  await dbx.run(`INSERT INTO vault_ssh_keys (id, label, username, vault_key_id, public_key, fingerprint, key_type, created_at, tenant_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, key.id, key.label, key.username, key.vault_key_id, key.public_key, key.fingerprint, key.key_type, now, key.tenant_id)
   return { ...key, created_at: now }
 }
 
 // Unassign the key from all servers, then delete it. Returns the count of
 // servers that were unassigned so callers can surface that in the response.
-export function deleteVaultSshKey(id: string): { deleted: boolean; unassigned: number } {
-  return db.transaction(() => {
-    const unassigned = db.prepare(
-      'UPDATE vault_ssh_servers SET ssh_key_id = NULL, updated_at = ? WHERE ssh_key_id = ?'
-    ).run(Math.floor(Date.now() / 1000), id).changes
-    const deleted = db.prepare('DELETE FROM vault_ssh_keys WHERE id = ?').run(id).changes > 0
+export async function deleteVaultSshKey(id: string): Promise<{ deleted: boolean; unassigned: number }> {
+  return dbx.tx(async (tx) => {
+    const unassigned = (await tx.run('UPDATE vault_ssh_servers SET ssh_key_id = NULL, updated_at = ? WHERE ssh_key_id = ?', Math.floor(Date.now() / 1000), id)).changes
+    const deleted = (await tx.run('DELETE FROM vault_ssh_keys WHERE id = ?', id)).changes > 0
     return { deleted, unassigned }
-  })()
+  })
 }
 
 // Stores server metadata. The ssh_key_id FK points to vault_ssh_keys (nullable;
@@ -70,26 +66,24 @@ export function computeSshKeyStatus(server: VaultSshServer): SshKeyStatus {
   return server.ssh_key_id ? 'ok' : 'missing'
 }
 
-export function listVaultSshServers(tenantId?: string | null): VaultSshServer[] {
+export async function listVaultSshServers(tenantId?: string | null): Promise<VaultSshServer[]> {
   const tc = tenantId ? ' WHERE tenant_id = ?' : ''
   const tp = tenantId ? [tenantId] : []
-  return db.prepare(`SELECT * FROM vault_ssh_servers${tc} ORDER BY name ASC`).all(...tp) as VaultSshServer[]
+  return dbx.all<VaultSshServer>(`SELECT * FROM vault_ssh_servers${tc} ORDER BY name ASC`, ...tp)
 }
 
-export function getVaultSshServer(id: string): VaultSshServer | undefined {
-  return db.prepare('SELECT * FROM vault_ssh_servers WHERE id = ?').get(id) as VaultSshServer | undefined
+export async function getVaultSshServer(id: string): Promise<VaultSshServer | undefined> {
+  return dbx.get<VaultSshServer>('SELECT * FROM vault_ssh_servers WHERE id = ?', id)
 }
 
-export function createVaultSshServer(server: Pick<VaultSshServer, 'id' | 'name' | 'host' | 'port' | 'username' | 'description' | 'tenant_id'>): VaultSshServer {
+export async function createVaultSshServer(server: Pick<VaultSshServer, 'id' | 'name' | 'host' | 'port' | 'username' | 'description' | 'tenant_id'>): Promise<VaultSshServer> {
   const now = Math.floor(Date.now() / 1000)
-  db.prepare(
-    `INSERT INTO vault_ssh_servers (id, name, host, port, username, description, tenant_id, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(server.id, server.name, server.host, server.port, server.username, server.description ?? null, server.tenant_id, now, now)
+  await dbx.run(`INSERT INTO vault_ssh_servers (id, name, host, port, username, description, tenant_id, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, server.id, server.name, server.host, server.port, server.username, server.description ?? null, server.tenant_id, now, now)
   return { ...server, ssh_key_id: null, created_at: now, updated_at: now }
 }
 
-export function updateVaultSshServer(id: string, patch: Partial<Pick<VaultSshServer, 'name' | 'host' | 'port' | 'username' | 'ssh_key_id' | 'description'>>): boolean {
+export async function updateVaultSshServer(id: string, patch: Partial<Pick<VaultSshServer, 'name' | 'host' | 'port' | 'username' | 'ssh_key_id' | 'description'>>): Promise<boolean> {
   const now = Math.floor(Date.now() / 1000)
   const sets: string[] = ['updated_at = ?']
   const params: unknown[] = [now]
@@ -100,11 +94,11 @@ export function updateVaultSshServer(id: string, patch: Partial<Pick<VaultSshSer
   if (patch.ssh_key_id !== undefined)  { sets.push('ssh_key_id = ?'); params.push(patch.ssh_key_id) }
   if (patch.description !== undefined) { sets.push('description = ?'); params.push(patch.description) }
   params.push(id)
-  return db.prepare(`UPDATE vault_ssh_servers SET ${sets.join(', ')} WHERE id = ?`).run(...params).changes > 0
+  return (await dbx.run(`UPDATE vault_ssh_servers SET ${sets.join(', ')} WHERE id = ?`, ...params)).changes > 0
 }
 
-export function deleteVaultSshServer(id: string): boolean {
-  return db.prepare('DELETE FROM vault_ssh_servers WHERE id = ?').run(id).changes > 0
+export async function deleteVaultSshServer(id: string): Promise<boolean> {
+  return (await dbx.run('DELETE FROM vault_ssh_servers WHERE id = ?', id)).changes > 0
 }
 
 export interface Approval {
@@ -136,7 +130,7 @@ export interface Approval {
   used_ref?: string | null
 }
 
-export function createApproval(params: {
+interface CreateApprovalParams {
   id: string
   agent_id: string
   category: string
@@ -146,24 +140,11 @@ export function createApproval(params: {
   tenant_id?: string | null
   human_only?: boolean
   content_hash?: string | null
-}): Approval {
-  const now = Math.floor(Date.now() / 1000)
+}
+
+// The request as it starts out; the INSERT writes exactly these values.
+function pendingApproval(params: CreateApprovalParams, now: number): Approval {
   const humanOnly = params.human_only ? 1 : 0
-  db.prepare(`
-    INSERT INTO approvals (id, agent_id, category, action_description, action_payload, timeout_at, requested_at, tenant_id, human_only, content_hash)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    params.id,
-    params.agent_id,
-    params.category,
-    params.action_description,
-    params.action_payload ?? null,
-    params.timeout_at ?? null,
-    now,
-    params.tenant_id ?? 'default',
-    humanOnly,
-    params.content_hash ?? null,
-  )
   return {
     id: params.id,
     agent_id: params.agent_id,
@@ -186,28 +167,43 @@ export function createApproval(params: {
   }
 }
 
-export function getApproval(id: string): Approval | undefined {
-  return db.prepare('SELECT * FROM approvals WHERE id = ?').get(id) as Approval | undefined
+const INSERT_APPROVAL_SQL = `
+  INSERT INTO approvals (id, agent_id, category, action_description, action_payload, timeout_at, requested_at, tenant_id, human_only, content_hash)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`
+
+const insertApprovalArgs = (a: Approval): unknown[] =>
+  [a.id, a.agent_id, a.category, a.action_description, a.action_payload, a.timeout_at, a.requested_at, a.tenant_id, a.human_only, a.content_hash]
+
+// `ops` is the handle the statement runs on: the facade by default, the `tx` handle inside a transaction body.
+export async function createApproval(params: CreateApprovalParams, ops: SqlOps = dbx): Promise<Approval> {
+  const approval = pendingApproval(params, Math.floor(Date.now() / 1000))
+  await ops.run(INSERT_APPROVAL_SQL, ...insertApprovalArgs(approval))
+  return approval
+}
+
+export async function getApproval(id: string, ops: SqlOps = dbx): Promise<Approval | undefined> {
+  return ops.get<Approval>('SELECT * FROM approvals WHERE id = ?', id)
 }
 
 // Approving or rejecting a request whose deadline has passed is refused even in the up-to-60 s window
 // before the sweeper marks it `timeout`; recording the `timeout` status itself stays allowed.
-export function resolveApproval(
+export async function resolveApproval(
   id: string,
   status: 'approved' | 'rejected' | 'timeout',
   resolvedBy: string,
   telegramMessageId?: number | null,
   resolvedVia?: ApprovalResolvedVia | null,
-): boolean {
+): Promise<boolean> {
   const now = Math.floor(Date.now() / 1000)
-  return db.prepare(`
+  return (await dbx.run(`
     UPDATE approvals
     SET status = ?, resolved_at = ?, resolved_by = ?,
         telegram_message_id = COALESCE(?, telegram_message_id),
         resolved_via = ?
     WHERE id = ? AND status = 'pending'
       AND (? = 'timeout' OR timeout_at IS NULL OR timeout_at > ?)
-  `).run(status, now, resolvedBy, telegramMessageId ?? null, resolvedVia ?? null, id, status, now).changes > 0
+  `, status, now, resolvedBy, telegramMessageId ?? null, resolvedVia ?? null, id, status, now)).changes > 0
 }
 
 /** How a decision reached the server: a logged-in dashboard session, or any bearer token. */
@@ -224,27 +220,33 @@ export type ApprovalEventKind = 'consumed' | 'used' | 'consume_refused' | 'beare
  * failure to write it must not turn a refusal into a success, so the caller decides what to do with a
  * throw (the callers on a refusal path catch it).
  */
-export function recordApprovalEvent(params: {
+export async function recordApprovalEvent(params: ApprovalEventParams, ops: SqlOps = dbx): Promise<void> {
+  await ops.run(INSERT_APPROVAL_EVENT_SQL, ...approvalEventArgs(params))
+}
+
+interface ApprovalEventParams {
   approval_id: string
   tenant_id?: string | null
   event: ApprovalEventKind
   reason?: string | null
   actor?: string | null
   ref?: string | null
-}): void {
-  db.prepare(`
-    INSERT INTO approval_events (approval_id, tenant_id, event, reason, actor, ref, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    params.approval_id,
-    params.tenant_id ?? 'default',
-    params.event,
-    params.reason ?? null,
-    params.actor ?? null,
-    params.ref ?? null,
-    Math.floor(Date.now() / 1000),
-  )
 }
+
+const INSERT_APPROVAL_EVENT_SQL = `
+  INSERT INTO approval_events (approval_id, tenant_id, event, reason, actor, ref, created_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?)
+`
+
+const approvalEventArgs = (params: ApprovalEventParams): unknown[] => [
+  params.approval_id,
+  params.tenant_id ?? 'default',
+  params.event,
+  params.reason ?? null,
+  params.actor ?? null,
+  params.ref ?? null,
+  Math.floor(Date.now() / 1000),
+]
 
 export interface ApprovalEvent {
   id: number
@@ -258,10 +260,8 @@ export interface ApprovalEvent {
 }
 
 /** The journal rows of one approval, oldest first. */
-export function listApprovalEvents(approvalId: string): ApprovalEvent[] {
-  return db
-    .prepare('SELECT * FROM approval_events WHERE approval_id = ? ORDER BY created_at ASC, id ASC')
-    .all(approvalId) as ApprovalEvent[]
+export async function listApprovalEvents(approvalId: string): Promise<ApprovalEvent[]> {
+  return dbx.all<ApprovalEvent>('SELECT * FROM approval_events WHERE approval_id = ? ORDER BY created_at ASC, id ASC', approvalId)
 }
 
 /**
@@ -327,10 +327,14 @@ function consumerLabel(consumer: string | null | undefined): string | null {
   return label || null
 }
 
-/** Journal a refused consume. Never throws: a journal fault must not turn a refusal into a success. */
-function journalConsumeRefusal(approval: Approval, reason: string, principal: string, ref: string | null): void {
+/**
+ * Journal a refused consume. Never rejects: a journal fault must not turn a refusal into a success. The write is
+ * awaited INSIDE the try: a call that is started and not awaited would reject outside the catch (an unhandled
+ * rejection, which ends the process by default).
+ */
+export async function journalConsumeRefusal(approval: Approval, reason: string, principal: string, ref: string | null): Promise<void> {
   try {
-    recordApprovalEvent({ approval_id: approval.id, tenant_id: approval.tenant_id, event: 'consume_refused', reason, actor: principal, ref })
+    await recordApprovalEvent({ approval_id: approval.id, tenant_id: approval.tenant_id, event: 'consume_refused', reason, actor: principal, ref })
   } catch { /* the refusal stands without its journal row */ }
 }
 
@@ -340,7 +344,7 @@ function journalConsumeRefusal(approval: Approval, reason: string, principal: st
 // session, whatever the human_only snapshot of the row says.
 // With `seal`, the same write also stamps the effect (used_at / used_ref): the official sender, when no gate
 // reserved the approval before it, reserves and seals in one step.
-function consumeStatement(seal = false): string {
+export function consumeStatement(seal = false): string {
   const marks = CONSUMABLE_APPROVAL_CATEGORIES.map(() => '?').join(', ')
   return `
     UPDATE approvals SET consumed_at = ?, consumed_by = ?, consumed_ref = ?${seal ? ', used_at = ?, used_ref = ?' : ''}
@@ -351,10 +355,11 @@ function consumeStatement(seal = false): string {
 }
 
 /** Run the guarded write for one row. True when this call is the one that used the approval up. */
-function useUpApproval(id: string, p: ConsumeParams, now: number, ref: string | null, seal = false): boolean {
-  return db.prepare(consumeStatement(seal)).run(
+export async function useUpApproval(id: string, p: ConsumeParams, now: number, ref: string | null, seal = false, ops: SqlOps = dbx): Promise<boolean> {
+  return (await ops.run(
+    consumeStatement(seal),
     now, p.principal, ref, ...(seal ? [now, ref] : []), id, ...CONSUMABLE_APPROVAL_CATEGORIES, p.content_hash, p.tenant_id, p.principal, now - p.window_s,
-  ).changes > 0
+  )).changes > 0
 }
 
 // The sender's write: it takes over the reservation the gate made for this very mail and seals it. Every
@@ -362,10 +367,11 @@ function useUpApproval(id: string, p: ConsumeParams, now: number, ref: string | 
 // changes the row. Nothing here creates, decides or re-opens an approval: it only stamps a row a person decided in
 // a dashboard session and the SAME agent's gate already reserved FOR THE OFFICIAL SENDER (a `gate-send-` ref: the
 // gate only writes that prefix when it read the call as gmail-send.py), a moment ago, and not sealed yet.
-// The SELECT that picks the candidate repeats these conditions, and inside one synchronous transaction on one
-// connection nothing can change between the two statements, so a test through claimApproval() cannot tell the
-// UPDATE's WHERE from the SELECT's. This WHERE is the second line (a second connection or process would make it the
-// only one), and adoptReservation() is exported so a test can run it alone against rows that break one condition.
+// The SELECT that picks the candidate repeats these conditions, and inside one transaction on one connection (the
+// facade's transaction lock keeps every other facade caller out of the body) nothing can change between the two
+// statements, so a test through claimApproval() cannot tell the UPDATE's WHERE from the SELECT's. This WHERE is the
+// second line (a second connection or process would make it the only one), and adoptReservation() is exported so a
+// test can run it alone against rows that break one condition.
 const ADOPT_STATEMENT = `
   UPDATE approvals SET used_at = ?, used_ref = ?
   WHERE id = ? AND category = ? AND status = 'approved' AND content_hash = ? AND tenant_id = ? AND agent_id = ?
@@ -375,12 +381,14 @@ const ADOPT_STATEMENT = `
 `
 
 /** Stamp the gate's reservation `id` as sealed by the sender's `ref`; false when any adoption condition does not hold. */
-export function adoptReservation(
+export async function adoptReservation(
   id: string, p: Pick<ConsumeParams, 'principal' | 'tenant_id' | 'content_hash'> & { category: string }, adoptSince: number, now: number, ref: string,
-): boolean {
-  return db.prepare(ADOPT_STATEMENT).run(
+  ops: SqlOps = dbx,
+): Promise<boolean> {
+  return (await ops.run(
+    ADOPT_STATEMENT,
     now, ref, id, p.category, p.content_hash, p.tenant_id, p.principal, adoptSince, p.principal,
-  ).changes > 0
+  )).changes > 0
 }
 
 /** The ref prefix by which the gate marks a reservation made for the official sender (the intent the sender may adopt). */
@@ -409,18 +417,20 @@ function isReplay(row: Approval, p: ConsumeParams, now: number): boolean {
  * the window. The success and its journal row are one transaction; a refusal is classified from the row
  * afterwards (the write itself never says why it matched nothing) and journalled best-effort.
  */
-export function consumeApproval(p: ConsumeParams & { id: string }): ConsumeOutcome {
+export async function consumeApproval(p: ConsumeParams & { id: string }): Promise<ConsumeOutcome> {
   const now = p.now ?? nowSeconds()
   const ref = p.ref ?? null
   const hashOk = isContentHash(p.content_hash)
-  const outcome = db.transaction((): ConsumeOutcome => {
+  // The default (deferred) transaction mode, as the synchronous transaction it replaces: the guarded write below
+  // is the line that decides, and the body holds database calls and pure policy only.
+  const outcome = await dbx.tx(async (tx): Promise<ConsumeOutcome> => {
     // A malformed hash skips the guarded write; it is then refused below as a mismatch.
-    if (hashOk && useUpApproval(p.id, p, now, ref)) {
-      const approval = getApproval(p.id) as Approval
-      recordApprovalEvent({ approval_id: p.id, tenant_id: approval.tenant_id, event: 'consumed', reason: consumerLabel(p.consumer), actor: p.principal, ref })
+    if (hashOk && await useUpApproval(p.id, p, now, ref, false, tx)) {
+      const approval = await getApproval(p.id, tx) as Approval
+      await recordApprovalEvent({ approval_id: p.id, tenant_id: approval.tenant_id, event: 'consumed', reason: consumerLabel(p.consumer), actor: p.principal, ref }, tx)
       return { ok: true, replayed: false, approval }
     }
-    const row = getApproval(p.id)
+    const row = await getApproval(p.id, tx)
     // Another tenant's row answers exactly like a missing one.
     if (!row || row.tenant_id !== p.tenant_id) return { ok: false, reason: 'not_found' }
     if (row.agent_id !== p.principal) return { ok: false, reason: 'agent_mismatch', approval: row }
@@ -434,8 +444,8 @@ export function consumeApproval(p: ConsumeParams & { id: string }): ConsumeOutco
     if (row.content_hash !== p.content_hash) return { ok: false, reason: 'hash_mismatch', approval: row }
     if (row.resolved_at == null || row.resolved_at < now - p.window_s) return { ok: false, reason: 'expired', approval: row }
     return { ok: false, reason: 'not_human_decided', approval: row }
-  })()
-  if (!outcome.ok && outcome.approval) journalConsumeRefusal(outcome.approval, outcome.reason, p.principal, ref)
+  })
+  if (!outcome.ok && outcome.approval) await journalConsumeRefusal(outcome.approval, outcome.reason, p.principal, ref)
   return outcome
 }
 
@@ -452,7 +462,7 @@ export function consumeApproval(p: ConsumeParams & { id: string }): ConsumeOutco
  * the latest-decision lookup only names the reason once nothing is usable), so the id only has to make
  * the pick deterministic; it does not need to be the insertion order.
  */
-export function claimApproval(p: ConsumeParams & { category: string; mode?: ClaimMode }): ClaimOutcome {
+export async function claimApproval(p: ConsumeParams & { category: string; mode?: ClaimMode }): Promise<ClaimOutcome> {
   const now = p.now ?? nowSeconds()
   const ref = p.ref ?? null
   const send = p.mode === 'send'
@@ -462,65 +472,65 @@ export function claimApproval(p: ConsumeParams & { category: string; mode?: Clai
   if (!isContentHash(p.content_hash)) return { ok: false, reason: 'hash_mismatch' }
   // The sender seals under its own reference: without one there would be nothing to retry or audit with.
   if (send && ref === null) throw new Error("claimApproval: mode 'send' needs a ref")
-  const outcome = db.transaction((): ClaimOutcome => {
+  const outcome = await dbx.tx(async (tx): Promise<ClaimOutcome> => {
     const scope = [p.principal, p.tenant_id, p.category, p.content_hash]
     if (send) {
       // A retry of the sender's own lost answer: the row it sealed under this ref a moment ago.
-      const sealed = db.prepare(`
+      const sealed = await tx.get<Approval>(`
         SELECT * FROM approvals
         WHERE agent_id = ? AND tenant_id = ? AND category = ? AND content_hash = ?
           AND used_ref = ? AND used_at >= ?
         ORDER BY used_at DESC, id DESC LIMIT 1
-      `).get(...scope, ref, now - CONSUME_REPLAY_WINDOW_S) as Approval | undefined
+      `, ...scope, ref, now - CONSUME_REPLAY_WINDOW_S)
       if (sealed) return { ok: true, replayed: true, adopted: sealed.consumed_ref !== sealed.used_ref, approval: sealed }
       // The gate reserved this very mail a moment ago: take that reservation over instead of asking for a second approval.
-      const reserved = db.prepare(`
+      const reserved = await tx.get<{ id: string }>(`
         SELECT id FROM approvals
         WHERE agent_id = ? AND tenant_id = ? AND category = ? AND content_hash = ?
           AND status = 'approved' AND resolved_via = 'dashboard_session'
           AND consumed_at IS NOT NULL AND consumed_at >= ? AND consumed_by = ? AND consumed_ref LIKE 'gate-send-%' AND used_at IS NULL
         ORDER BY consumed_at DESC, id DESC LIMIT 1
-      `).get(...scope, adoptSince, p.principal) as { id: string } | undefined
-      if (reserved && adoptReservation(reserved.id, p, adoptSince, now, ref as string)) {   // send implies a ref (checked above)
-        const approval = getApproval(reserved.id) as Approval
-        recordApprovalEvent({ approval_id: reserved.id, tenant_id: approval.tenant_id, event: 'used', reason: 'adopted_gate_reservation', actor: p.principal, ref })
+      `, ...scope, adoptSince, p.principal)
+      if (reserved && await adoptReservation(reserved.id, p, adoptSince, now, ref as string, tx)) {   // send implies a ref (checked above)
+        const approval = await getApproval(reserved.id, tx) as Approval
+        await recordApprovalEvent({ approval_id: reserved.id, tenant_id: approval.tenant_id, event: 'used', reason: 'adopted_gate_reservation', actor: p.principal, ref }, tx)
         return { ok: true, replayed: false, adopted: true, approval }
       }
     } else if (typeof p.ref === 'string' && p.ref !== '') {
-      const again = db.prepare(`
+      const again = await tx.get<Approval>(`
         SELECT * FROM approvals
         WHERE agent_id = ? AND tenant_id = ? AND category = ? AND content_hash = ?
           AND consumed_by = ? AND consumed_ref = ? AND consumed_at >= ?
         ORDER BY consumed_at DESC, id DESC LIMIT 1
-      `).get(...scope, p.principal, p.ref, now - CONSUME_REPLAY_WINDOW_S) as Approval | undefined
+      `, ...scope, p.principal, p.ref, now - CONSUME_REPLAY_WINDOW_S)
       if (again) return { ok: true, replayed: true, approval: again }
     }
-    const usable = db.prepare(`
+    const usable = await tx.get<{ id: string }>(`
       SELECT id FROM approvals
       WHERE agent_id = ? AND tenant_id = ? AND category = ? AND content_hash = ?
         AND status = 'approved' AND consumed_at IS NULL AND resolved_at >= ? AND resolved_via = 'dashboard_session'
       ORDER BY resolved_at DESC, id DESC LIMIT 1
-    `).get(...scope, now - p.window_s) as { id: string } | undefined
-    if (usable && useUpApproval(usable.id, p, now, ref, send)) {
-      const approval = getApproval(usable.id) as Approval
-      recordApprovalEvent({ approval_id: usable.id, tenant_id: approval.tenant_id, event: 'consumed', reason: consumerLabel(p.consumer), actor: p.principal, ref })
-      if (send) recordApprovalEvent({ approval_id: usable.id, tenant_id: approval.tenant_id, event: 'used', reason: 'reserved_and_sealed', actor: p.principal, ref })
+    `, ...scope, now - p.window_s)
+    if (usable && await useUpApproval(usable.id, p, now, ref, send, tx)) {
+      const approval = await getApproval(usable.id, tx) as Approval
+      await recordApprovalEvent({ approval_id: usable.id, tenant_id: approval.tenant_id, event: 'consumed', reason: consumerLabel(p.consumer), actor: p.principal, ref }, tx)
+      if (send) await recordApprovalEvent({ approval_id: usable.id, tenant_id: approval.tenant_id, event: 'used', reason: 'reserved_and_sealed', actor: p.principal, ref }, tx)
       return send ? { ok: true, replayed: false, adopted: false, approval } : { ok: true, replayed: false, approval }
     }
     // A request still open (its deadline not passed, even if the sweeper has not marked it yet) beats any old decision.
-    const open = db.prepare(`
+    const open = await tx.get<Approval>(`
       SELECT * FROM approvals
       WHERE agent_id = ? AND tenant_id = ? AND category = ? AND content_hash = ?
         AND status = 'pending' AND (timeout_at IS NULL OR timeout_at > ?)
       ORDER BY requested_at DESC, id DESC LIMIT 1
-    `).get(...scope, now) as Approval | undefined
+    `, ...scope, now)
     if (open) return { ok: false, reason: 'pending', approval: open }
-    const last = db.prepare(`
+    const last = await tx.get<Approval>(`
       SELECT * FROM approvals
       WHERE agent_id = ? AND tenant_id = ? AND category = ? AND content_hash = ?
         AND status != 'pending' AND resolved_at IS NOT NULL
       ORDER BY resolved_at DESC, id DESC LIMIT 1
-    `).get(...scope) as Approval | undefined
+    `, ...scope)
     if (!last) return { ok: false, reason: 'none' }
     if (last.status === 'rejected') return { ok: false, reason: 'rejected', approval: last }
     // A request that timed out unanswered leaves nothing to use: the caller starts over.
@@ -529,9 +539,9 @@ export function claimApproval(p: ConsumeParams & { category: string; mode?: Clai
     if (last.consumed_at != null) return { ok: false, reason: send && last.used_at != null ? 'already_used' : 'already_consumed', approval: last }
     if (last.resolved_at != null && last.resolved_at < now - p.window_s) return { ok: false, reason: 'expired', approval: last }
     return { ok: false, reason: 'not_human_decided', approval: last }
-  })()
+  })
   if (!outcome.ok && outcome.approval && outcome.reason !== 'pending' && outcome.reason !== 'none') {
-    journalConsumeRefusal(outcome.approval, outcome.reason, p.principal, ref)
+    await journalConsumeRefusal(outcome.approval, outcome.reason, p.principal, ref)
   }
   return outcome
 }
@@ -540,11 +550,11 @@ export function claimApproval(p: ConsumeParams & { category: string; mode?: Clai
  * How many requests of one agent and category (in one tenant) were made since `since`, the one named by
  * `exceptId` left out. Read from the rows, not from memory, so a restart does not reset a rate limit.
  */
-export function countApprovalsRequestedSince(params: { agent_id: string; category: string; tenant_id: string; since: number; exceptId?: string }): number {
-  const row = db.prepare(`
+export async function countApprovalsRequestedSince(params: { agent_id: string; category: string; tenant_id: string; since: number; exceptId?: string }): Promise<number> {
+  const row = (await dbx.get(`
     SELECT COUNT(*) AS n FROM approvals
     WHERE agent_id = ? AND category = ? AND tenant_id = ? AND requested_at >= ? AND id != ?
-  `).get(params.agent_id, params.category, params.tenant_id, params.since, params.exceptId ?? '') as { n: number }
+  `, params.agent_id, params.category, params.tenant_id, params.since, params.exceptId ?? '')) as { n: number }
   return row.n
 }
 
@@ -560,28 +570,28 @@ export type OpenOnceOutcome =
  * means pending with its deadline not passed: an expired row the sweeper has not marked yet neither
  * answers a new request nor counts against the cap.
  */
-export function createApprovalOnce(params: Parameters<typeof createApproval>[0] & { content_hash: string; max_pending: number }): OpenOnceOutcome {
+export async function createApprovalOnce(params: Parameters<typeof createApproval>[0] & { content_hash: string; max_pending: number }): Promise<OpenOnceOutcome> {
   const tenant = params.tenant_id ?? 'default'
   if (!isContentHash(params.content_hash)) return { ok: false, reason: 'hash_mismatch' }
-  const outcome = db.transaction((): OpenOnceOutcome => {
+  const outcome = await dbx.tx(async (tx): Promise<OpenOnceOutcome> => {
     const now = nowSeconds()
-    const same = db.prepare(`
+    const same = await tx.get<Approval>(`
       SELECT * FROM approvals
       WHERE agent_id = ? AND tenant_id = ? AND category = ? AND content_hash = ?
         AND status = 'pending' AND (timeout_at IS NULL OR timeout_at > ?)
       ORDER BY requested_at DESC, id DESC LIMIT 1
-    `).get(params.agent_id, tenant, params.category, params.content_hash, now) as Approval | undefined
+    `, params.agent_id, tenant, params.category, params.content_hash, now)
     if (same) return { ok: true, approval: same, deduplicated: true }
-    const open = db.prepare(`
+    const open = await tx.get<{ n: number }>(`
       SELECT COUNT(*) AS n FROM approvals
       WHERE agent_id = ? AND tenant_id = ? AND category = ? AND status = 'pending' AND (timeout_at IS NULL OR timeout_at > ?)
-    `).get(params.agent_id, tenant, params.category, now) as { n: number }
+    `, params.agent_id, tenant, params.category, now) as { n: number }
     if (open.n >= params.max_pending) return { ok: false, reason: 'too_many_pending' }
-    return { ok: true, approval: createApproval(params), deduplicated: false }
-  }).immediate()
+    return { ok: true, approval: await createApproval(params, tx), deduplicated: false }
+  }, { mode: 'immediate' })
   if (outcome.ok && outcome.deduplicated) {
     try {
-      recordApprovalEvent({ approval_id: outcome.approval.id, tenant_id: tenant, event: 'created_deduplicated', actor: params.agent_id })
+      await recordApprovalEvent({ approval_id: outcome.approval.id, tenant_id: tenant, event: 'created_deduplicated', actor: params.agent_id })
     } catch { /* the request stands without its journal row */ }
   }
   return outcome
@@ -614,7 +624,7 @@ function approvalsWhere(opts: {
   return { where, params }
 }
 
-export function listApprovals(opts: {
+export async function listApprovals(opts: {
   agent_id?: string
   category?: string
   status?: string
@@ -622,33 +632,33 @@ export function listApprovals(opts: {
   limit?: number
   offset?: number
   tenantId?: string
-}): Approval[] {
+}): Promise<Approval[]> {
   const { where, params } = approvalsWhere(opts)
   const limit = Math.min(opts.limit ?? 100, 500)
   const offset = Math.max(opts.offset ?? 0, 0)
-  return db.prepare(`SELECT * FROM approvals ${where} ORDER BY requested_at DESC LIMIT ? OFFSET ?`).all(...params, limit, offset) as Approval[]
+  return dbx.all<Approval>(`SELECT * FROM approvals ${where} ORDER BY requested_at DESC LIMIT ? OFFSET ?`, ...params, limit, offset)
 }
 
-export function countApprovals(opts: {
+export async function countApprovals(opts: {
   agent_id?: string
   category?: string
   status?: string
   content_hash?: string
   tenantId?: string
-}): number {
+}): Promise<number> {
   const { where, params } = approvalsWhere(opts)
-  const row = db.prepare(`SELECT COUNT(*) AS n FROM approvals ${where}`).get(...params) as { n: number }
+  const row = (await dbx.get(`SELECT COUNT(*) AS n FROM approvals ${where}`, ...params)) as { n: number }
   return row.n
 }
 
 // Tenant-scoped only (no status/category/agent filter) so the stat cards
 // stay accurate regardless of which filtered/paginated page is showing --
 // same reasoning as getIdeaStatusCounts (Ideas P1b).
-export function getApprovalStatusCounts(tenantId?: string): Record<'pending' | 'approved' | 'rejected' | 'timeout', number> {
+export async function getApprovalStatusCounts(tenantId?: string): Promise<Record<'pending' | 'approved' | 'rejected' | 'timeout', number>> {
   const params: unknown[] = []
   let where = ''
   if (tenantId !== undefined) { where = 'WHERE tenant_id = ?'; params.push(tenantId) }
-  const rows = db.prepare(`SELECT status, COUNT(*) AS n FROM approvals ${where} GROUP BY status`).all(...params) as { status: string; n: number }[]
+  const rows = (await dbx.all(`SELECT status, COUNT(*) AS n FROM approvals ${where} GROUP BY status`, ...params)) as { status: string; n: number }[]
   const counts = { pending: 0, approved: 0, rejected: 0, timeout: 0 }
   for (const r of rows) {
     if (r.status in counts) counts[r.status as keyof typeof counts] = r.n
@@ -659,36 +669,36 @@ export function getApprovalStatusCounts(tenantId?: string): Record<'pending' | '
 // Oldest still-pending approval, tenant-scoped only -- drives the "N pending,
 // oldest waiting Xm" banner without the frontend having to fetch (and
 // re-filter) the whole pending set itself.
-export function getOldestPendingApproval(tenantId?: string): { agent_id: string; category: string; requested_at: number; timeout_at: number | null } | undefined {
+export async function getOldestPendingApproval(tenantId?: string): Promise<{ agent_id: string; category: string; requested_at: number; timeout_at: number | null } | undefined> {
   const params: unknown[] = []
   let where = `status = 'pending'`
   if (tenantId !== undefined) { where += ' AND tenant_id = ?'; params.push(tenantId) }
-  return db.prepare(`
+  return dbx.get<{ agent_id: string; category: string; requested_at: number; timeout_at: number | null }>(`
     SELECT agent_id, category, requested_at, timeout_at FROM approvals
     WHERE ${where} ORDER BY requested_at ASC LIMIT 1
-  `).get(...params) as { agent_id: string; category: string; requested_at: number; timeout_at: number | null } | undefined
+  `, ...params)
 }
 
 // Stamp trace context onto an agent_messages row that was created without one.
 // Called by the message-router tick BEFORE delivery so the span is stamped
 // exactly once (pending rows only -- delivered/done rows are already closed).
-export function stampMessageTrace(
+export async function stampMessageTrace(
   id: number,
   traceId: string,
   spanId: string,
   parentSpanId: string | null,
-): boolean {
-  return db.prepare(`
+): Promise<boolean> {
+  return (await dbx.run(`
     UPDATE agent_messages
        SET trace_id = ?, span_id = ?, parent_span_id = ?
      WHERE id = ? AND status = 'pending' AND trace_id IS NULL
-  `).run(traceId, spanId, parentSpanId, id).changes > 0
+  `, traceId, spanId, parentSpanId, id)).changes > 0
 }
 
-export function expireTimedOutApprovals(): number {
+export async function expireTimedOutApprovals(): Promise<number> {
   const now = Math.floor(Date.now() / 1000)
-  return db.prepare(`
+  return (await dbx.run(`
     UPDATE approvals SET status = 'timeout', resolved_at = ?, resolved_by = 'system:timeout'
     WHERE status = 'pending' AND timeout_at IS NOT NULL AND timeout_at <= ?
-  `).run(now, now).changes
+  `, now, now)).changes
 }

@@ -1,48 +1,47 @@
 // Split from the former monolithic src/db.ts (see db/index.ts for the
 // re-export surface and boot orchestration).
 
-import { db, vecExtensionLoaded } from './connection.js'
+import { vecExtensionLoaded } from './connection.js'
+import { dbx } from './facade.js'
 import { Memory, MemoryVersion } from './memory.js'
 import { DashboardUser, DashboardUserPublic } from './sessions.js'
 import { syncVecMemoryDelete } from './vector.js'
 import { resolveWriteTenant } from './write-tenant.js'
+import { reloadAgentSettingsCache } from './agent-settings-cache.js'
+import { logger } from '../logger.js'
 import { purgeSecretsForTenant } from '../web/vault.js'
 import { GENAI_TOKEN_BUCKET_BOUNDS } from '../otel-genai.js'
 
-export function recordMemoryRead(
+export async function recordMemoryRead(
   agentId: string,
   memoryId: number,
   context: 'heartbeat' | 'search' | 'direct',
-): void {
+): Promise<void> {
   const now = Math.floor(Date.now() / 1000)
-  db.prepare(
-    'INSERT INTO span_reads (agent_id, memory_id, read_at, context) VALUES (?, ?, ?, ?)'
-  ).run(agentId, memoryId, now, context)
+  await dbx.run('INSERT INTO span_reads (agent_id, memory_id, read_at, context) VALUES (?, ?, ?, ?)', agentId, memoryId, now, context)
 }
 
 // Record reads for a batch of memory ids in a single transaction.
-export function recordMemoryReadBatch(
+export async function recordMemoryReadBatch(
   agentId: string,
   memoryIds: number[],
   context: 'heartbeat' | 'search' | 'direct',
-): void {
+): Promise<void> {
   if (memoryIds.length === 0) return
   const now = Math.floor(Date.now() / 1000)
-  const stmt = db.prepare(
-    'INSERT INTO span_reads (agent_id, memory_id, read_at, context) VALUES (?, ?, ?, ?)'
-  )
-  const tx = db.transaction(() => {
-    for (const id of memoryIds) stmt.run(agentId, id, now, context)
+  await dbx.tx(async (tx) => {
+    for (const id of memoryIds) {
+      await tx.run('INSERT INTO span_reads (agent_id, memory_id, read_at, context) VALUES (?, ?, ?, ?)', agentId, id, now, context)
+    }
   })
-  tx()
 }
 
 // Returns memories that are stale for the given agent:
 // updated_at > agent's last span_read.read_at (or never read at all).
-export function getStaleMemories(agentId: string, tenantId?: string): Memory[] {
+export async function getStaleMemories(agentId: string, tenantId?: string): Promise<Memory[]> {
   const tc = tenantId ? '\n      AND m.tenant_id = ?' : ''
   const tp = tenantId ? [tenantId] : []
-  return db.prepare(`
+  return dbx.all<Memory>(`
     SELECT m.* FROM memories m
     LEFT JOIN (
       SELECT memory_id, MAX(read_at) AS last_read
@@ -53,13 +52,11 @@ export function getStaleMemories(agentId: string, tenantId?: string): Memory[] {
     WHERE (m.agent_id = ? OR m.category = 'shared')
       AND m.updated_at > COALESCE(sr.last_read, 0)${tc}
     ORDER BY m.updated_at DESC
-  `).all(agentId, agentId, ...tp) as Memory[]
+  `, agentId, agentId, ...tp)
 }
 
-export function getMemoryVersions(memoryId: number): MemoryVersion[] {
-  return db.prepare(
-    'SELECT * FROM memory_versions WHERE memory_id = ? ORDER BY changed_at DESC, id DESC'
-  ).all(memoryId) as MemoryVersion[]
+export async function getMemoryVersions(memoryId: number): Promise<MemoryVersion[]> {
+  return dbx.all<MemoryVersion>('SELECT * FROM memory_versions WHERE memory_id = ? ORDER BY changed_at DESC, id DESC', memoryId)
 }
 
 // Auto tier-resorting based on span_reads activity. All three steps run in
@@ -74,19 +71,19 @@ export function getMemoryVersions(memoryId: number): MemoryVersion[] {
 // version prune: delete memory_versions older than 180 days.
 //
 // Returns affected row counts for observability.
-export function runMemoryMaintenance(opts: {
+export async function runMemoryMaintenance(opts: {
   warmToColdDays?: number
   coldToWarmDays?: number
   minAgents?: number
   versionTtlDays?: number
-} = {}): { warmToCold: number; coldToWarm: number; prunedVersions: number } {
+} = {}): Promise<{ warmToCold: number; coldToWarm: number; prunedVersions: number }> {
   const warmToColdSecs = (opts.warmToColdDays ?? 30) * 86400
   const coldToWarmSecs = (opts.coldToWarmDays ?? 30) * 86400
   const minAgents = opts.minAgents ?? 2
   const versionCutoff = Math.floor(Date.now() / 1000) - (opts.versionTtlDays ?? 180) * 86400
   const now = Math.floor(Date.now() / 1000)
 
-  return db.transaction(() => {
+  return dbx.tx(async (tx) => {
     // Only warm -> cold: hot is manually managed; shared belongs to all agents.
     // created_at check: memory must be at least warmToColdSecs old before it
     // can be auto-archived (a brand-new unread memory is not the same as a stale one).
@@ -94,7 +91,7 @@ export function runMemoryMaintenance(opts: {
     // Log warm->cold transitions before UPDATE so memory_versions has an audit trail.
     // SELECT candidates first (same WHERE as the UPDATE below), then bulk-insert versions.
     type CandRow = { id: number; content: string; keywords: string | null }
-    const warmToColdCandidates = db.prepare(`
+    const warmToColdCandidates = await tx.all<CandRow>(`
       SELECT id, content, keywords FROM memories
       WHERE category = 'warm'
         AND created_at < ? - ?
@@ -103,18 +100,18 @@ export function runMemoryMaintenance(opts: {
           WHERE span_reads.memory_id = memories.id
             AND span_reads.read_at > ? - ?
         )
-    `).all(now, warmToColdSecs, now, warmToColdSecs) as CandRow[]
+    `, now, warmToColdSecs, now, warmToColdSecs)
 
     if (warmToColdCandidates.length > 0) {
-      const logV = db.prepare(
-        'INSERT INTO memory_versions(memory_id, content, category, keywords, changed_at, changed_by, change_type) VALUES (?,?,?,?,?,?,?)'
-      )
       for (const c of warmToColdCandidates) {
-        logV.run(c.id, c.content, 'cold', c.keywords, now, 'system:maintenance', 'category_change')
+        await tx.run(
+          'INSERT INTO memory_versions(memory_id, content, category, keywords, changed_at, changed_by, change_type) VALUES (?,?,?,?,?,?,?)',
+          c.id, c.content, 'cold', c.keywords, now, 'system:maintenance', 'category_change',
+        )
       }
     }
 
-    const warmToCold = db.prepare(`
+    const warmToCold = (await tx.run(`
       UPDATE memories
       SET category = 'cold', updated_at = ?
       WHERE category = 'warm'
@@ -124,10 +121,10 @@ export function runMemoryMaintenance(opts: {
           WHERE span_reads.memory_id = memories.id
             AND span_reads.read_at > ? - ?
         )
-    `).run(now, now, warmToColdSecs, now, warmToColdSecs).changes
+    `, now, now, warmToColdSecs, now, warmToColdSecs)).changes
 
     // Log cold->warm transitions before UPDATE.
-    const coldToWarmCandidates = db.prepare(`
+    const coldToWarmCandidates = await tx.all<CandRow>(`
       SELECT id, content, keywords FROM memories
       WHERE category = 'cold'
         AND id IN (
@@ -136,18 +133,18 @@ export function runMemoryMaintenance(opts: {
           GROUP BY memory_id
           HAVING COUNT(DISTINCT agent_id) >= ?
         )
-    `).all(now, coldToWarmSecs, minAgents) as CandRow[]
+    `, now, coldToWarmSecs, minAgents)
 
     if (coldToWarmCandidates.length > 0) {
-      const logV = db.prepare(
-        'INSERT INTO memory_versions(memory_id, content, category, keywords, changed_at, changed_by, change_type) VALUES (?,?,?,?,?,?,?)'
-      )
       for (const c of coldToWarmCandidates) {
-        logV.run(c.id, c.content, 'warm', c.keywords, now, 'system:maintenance', 'category_change')
+        await tx.run(
+          'INSERT INTO memory_versions(memory_id, content, category, keywords, changed_at, changed_by, change_type) VALUES (?,?,?,?,?,?,?)',
+          c.id, c.content, 'warm', c.keywords, now, 'system:maintenance', 'category_change',
+        )
       }
     }
 
-    const coldToWarm = db.prepare(`
+    const coldToWarm = (await tx.run(`
       UPDATE memories
       SET category = 'warm', updated_at = ?
       WHERE category = 'cold'
@@ -157,22 +154,18 @@ export function runMemoryMaintenance(opts: {
           GROUP BY memory_id
           HAVING COUNT(DISTINCT agent_id) >= ?
         )
-    `).run(now, now, coldToWarmSecs, minAgents).changes
+    `, now, now, coldToWarmSecs, minAgents)).changes
 
-    const prunedVersions = db.prepare(
-      'DELETE FROM memory_versions WHERE changed_at < ?'
-    ).run(versionCutoff).changes
+    const prunedVersions = (await tx.run('DELETE FROM memory_versions WHERE changed_at < ?', versionCutoff)).changes
 
     return { warmToCold, coldToWarm, prunedVersions }
-  })()
+  })
 }
 
 // Delete memory_versions entries older than ttlDays (default 180).
-export function pruneMemoryVersions(ttlDays = 180): number {
+export async function pruneMemoryVersions(ttlDays = 180): Promise<number> {
   const cutoff = Math.floor(Date.now() / 1000) - ttlDays * 86400
-  return db.prepare(
-    'DELETE FROM memory_versions WHERE changed_at < ?'
-  ).run(cutoff).changes
+  return (await dbx.run('DELETE FROM memory_versions WHERE changed_at < ?', cutoff)).changes
 }
 
 export interface OtelSpan {
@@ -201,8 +194,8 @@ export interface InterAgentSpanAttributes {
   to: string
 }
 
-export function upsertOtelSpan(span: Omit<OtelSpan, 'end_ms' | 'status'> & { end_ms?: number | null; status?: OtelSpan['status'] }): void {
-  db.prepare(`
+export async function upsertOtelSpan(span: Omit<OtelSpan, 'end_ms' | 'status'> & { end_ms?: number | null; status?: OtelSpan['status'] }): Promise<void> {
+  await dbx.run(`
     INSERT INTO otel_spans (trace_id, span_id, parent_span_id, agent_id, operation, start_ms, end_ms, status, attributes, tenant_id)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT (trace_id, span_id) DO UPDATE SET
@@ -213,26 +206,24 @@ export function upsertOtelSpan(span: Omit<OtelSpan, 'end_ms' | 'status'> & { end
       end_ms = excluded.end_ms,
       status = excluded.status,
       attributes = COALESCE(excluded.attributes, otel_spans.attributes)
-  `).run(
-    span.trace_id, span.span_id, span.parent_span_id ?? null,
+  `, span.trace_id, span.span_id, span.parent_span_id ?? null,
     span.agent_id, span.operation, span.start_ms,
     span.end_ms ?? null, span.status ?? 'running', span.attributes ?? null,
-    resolveWriteTenant(span.agent_id),
+    await resolveWriteTenant(span.agent_id),
   )
 }
 
-export function closeOtelSpan(traceId: string, spanId: string, endMs: number, status: OtelSpan['status']): boolean {
-  return db.prepare(`
+export async function closeOtelSpan(traceId: string, spanId: string, endMs: number, status: OtelSpan['status']): Promise<boolean> {
+  return (await dbx.run(`
     UPDATE otel_spans SET
       exported_at = CASE WHEN exported_at IS NOT NULL AND (end_ms IS NOT ? OR status IS NOT ?) THEN NULL ELSE exported_at END,
       end_ms = ?, status = ?
     WHERE trace_id = ? AND span_id = ?
-  `).run(endMs, status, endMs, status, traceId, spanId).changes > 0
+  `, endMs, status, endMs, status, traceId, spanId)).changes > 0
 }
 
-export function getOtelTrace(traceId: string): OtelSpan[] {
-  return db.prepare('SELECT * FROM otel_spans WHERE trace_id = ? ORDER BY start_ms ASC')
-    .all(traceId) as OtelSpan[]
+export async function getOtelTrace(traceId: string): Promise<OtelSpan[]> {
+  return dbx.all<OtelSpan>('SELECT * FROM otel_spans WHERE trace_id = ? ORDER BY start_ms ASC', traceId)
 }
 
 export interface OtelTraceSummary {
@@ -246,12 +237,12 @@ export interface OtelTraceSummary {
 }
 
 // Query spans for OTEL JSON export. All params are optional.
-export function queryOtelSpans(opts: {
+export async function queryOtelSpans(opts: {
   agent?: string
   fromMs?: number
   toMs?: number
   limit?: number
-}): OtelSpan[] {
+}): Promise<OtelSpan[]> {
   const { agent, fromMs, toMs, limit = 1000 } = opts
   const clauses: string[] = []
   const params: (string | number)[] = []
@@ -260,13 +251,11 @@ export function queryOtelSpans(opts: {
   if (toMs !== undefined) { clauses.push('start_ms <= ?'); params.push(toMs) }
   const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''
   params.push(Math.min(limit, 5000))
-  return db.prepare(
-    `SELECT * FROM otel_spans ${where} ORDER BY start_ms ASC LIMIT ?`,
-  ).all(...params) as OtelSpan[]
+  return dbx.all<OtelSpan>(`SELECT * FROM otel_spans ${where} ORDER BY start_ms ASC LIMIT ?`, ...params)
 }
 
-export function listOtelTraces(limit = 50): OtelTraceSummary[] {
-  return db.prepare(`
+export async function listOtelTraces(limit = 50): Promise<OtelTraceSummary[]> {
+  return dbx.all<OtelTraceSummary>(`
     SELECT
       s.trace_id,
       s.operation  AS root_operation,
@@ -284,7 +273,7 @@ export function listOtelTraces(limit = 50): OtelTraceSummary[] {
     WHERE s.parent_span_id IS NULL
     ORDER BY s.start_ms DESC
     LIMIT ?
-  `).all(limit) as OtelTraceSummary[]
+  `, limit)
 }
 
 // ── OTLP push exporter (#800/#802) ────────────────────────────────────────────
@@ -298,39 +287,38 @@ export function listOtelTraces(limit = 50): OtelTraceSummary[] {
 // the hook's own writes, so its final state goes out once more under the same span id.
 export const OTEL_RUNNING_SPAN_IDLE_MS = 15 * 60 * 1000
 
-export function getUnexportedOtelSpans(limit = 500, nowMs = Date.now()): OtelSpan[] {
-  return db.prepare(`
+export async function getUnexportedOtelSpans(limit = 500, nowMs = Date.now()): Promise<OtelSpan[]> {
+  return dbx.all<OtelSpan>(`
     SELECT * FROM otel_spans
     WHERE end_ms IS NOT NULL AND exported_at IS NULL
       AND (status != 'running' OR end_ms <= ?)
     ORDER BY end_ms ASC
     LIMIT ?
-  `).all(nowMs - OTEL_RUNNING_SPAN_IDLE_MS, limit) as OtelSpan[]
+  `, nowMs - OTEL_RUNNING_SPAN_IDLE_MS, limit)
 }
 
 // Marks a batch of spans as pushed. Runs as one transaction so a crash
 // mid-batch can't leave some spans marked and others not for the same POST.
-export function markOtelSpansExported(pairs: { trace_id: string; span_id: string }[], exportedAtMs: number): void {
+export async function markOtelSpansExported(pairs: { trace_id: string; span_id: string }[], exportedAtMs: number): Promise<void> {
   if (pairs.length === 0) return
-  const stmt = db.prepare('UPDATE otel_spans SET exported_at = ? WHERE trace_id = ? AND span_id = ?')
-  const tx = db.transaction((rows: typeof pairs) => {
-    for (const p of rows) stmt.run(exportedAtMs, p.trace_id, p.span_id)
+  await dbx.tx(async (tx) => {
+    for (const p of pairs) {
+      await tx.run('UPDATE otel_spans SET exported_at = ? WHERE trace_id = ? AND span_id = ?', exportedAtMs, p.trace_id, p.span_id)
+    }
   })
-  tx(pairs)
 }
 
 export interface OtelMetricsExportState {
   last_export_ms: number
 }
 
-export function getOtelMetricsExportState(): OtelMetricsExportState {
-  const row = db.prepare('SELECT last_export_ms FROM otel_metrics_export_state WHERE id = 1')
-    .get() as OtelMetricsExportState | undefined
+export async function getOtelMetricsExportState(): Promise<OtelMetricsExportState> {
+  const row = await dbx.get<OtelMetricsExportState>('SELECT last_export_ms FROM otel_metrics_export_state WHERE id = 1')
   return row ?? { last_export_ms: 0 }
 }
 
-export function setOtelMetricsExportWatermark(lastExportMs: number): void {
-  db.prepare('UPDATE otel_metrics_export_state SET last_export_ms = ? WHERE id = 1').run(lastExportMs)
+export async function setOtelMetricsExportWatermark(lastExportMs: number): Promise<void> {
+  await dbx.run('UPDATE otel_metrics_export_state SET last_export_ms = ? WHERE id = 1', lastExportMs)
 }
 
 export interface TokenUsageMetricRow {
@@ -349,8 +337,8 @@ export interface TokenUsageMetricRow {
 // gen_ai.client.token.usage delta metric export. Bounded window (not just
 // ">= sinceMs") so a slow tick can't double-count rows a later tick would
 // also pick up.
-export function sumTokenUsageWindow(sinceSec: number, untilSec: number): TokenUsageMetricRow[] {
-  return db.prepare(`
+export async function sumTokenUsageWindow(sinceSec: number, untilSec: number): Promise<TokenUsageMetricRow[]> {
+  return dbx.all<TokenUsageMetricRow>(`
     SELECT
       agent,
       model,
@@ -363,7 +351,7 @@ export function sumTokenUsageWindow(sinceSec: number, untilSec: number): TokenUs
     FROM token_usage
     WHERE timestamp > ? AND timestamp <= ?
     GROUP BY agent, model, tenant_id
-  `).all(sinceSec, untilSec) as TokenUsageMetricRow[]
+  `, sinceSec, untilSec)
 }
 
 // One token_usage row is one model response, so the per-response token count of the input and output
@@ -387,15 +375,14 @@ function bucketCaseSql(column: string): string {
   return `CASE ${whens} ELSE ${GENAI_TOKEN_BUCKET_BOUNDS.length} END`
 }
 
-export function tokenUsageHistogramWindow(sinceSec: number, untilSec: number): TokenHistogramRow[] {
+export async function tokenUsageHistogramWindow(sinceSec: number, untilSec: number): Promise<TokenHistogramRow[]> {
   const side = (column: 'input_tokens' | 'output_tokens', type: 'input' | 'output') => `
     SELECT agent, model, tenant_id, '${type}' AS token_type, ${bucketCaseSql(column)} AS bucket,
            COUNT(*) AS n, SUM(${column}) AS total, MIN(${column}) AS min_value, MAX(${column}) AS max_value
     FROM token_usage
     WHERE timestamp > @since AND timestamp <= @until AND ${column} > 0
     GROUP BY agent, model, tenant_id, bucket`
-  return db.prepare(`${side('input_tokens', 'input')} UNION ALL ${side('output_tokens', 'output')}`)
-    .all({ since: sinceSec, until: untilSec }) as TokenHistogramRow[]
+  return dbx.all<TokenHistogramRow>(`${side('input_tokens', 'input')} UNION ALL ${side('output_tokens', 'output')}`, { since: sinceSec, until: untilSec })
 }
 
 // ── B2B Tenant registry ───────────────────────────────────────────────────────
@@ -408,33 +395,30 @@ export interface Tenant {
   main_agent_id: string | null
 }
 
-export function createTenant(id: string, displayName: string): Tenant {
+export async function createTenant(id: string, displayName: string): Promise<Tenant> {
   const now = Math.floor(Date.now() / 1000)
-  db.prepare('INSERT INTO tenants (id, display_name, created_at) VALUES (?, ?, ?)')
-    .run(id, displayName, now)
+  await dbx.run('INSERT INTO tenants (id, display_name, created_at) VALUES (?, ?, ?)', id, displayName, now)
   return { id, display_name: displayName, created_at: now, disabled_at: null, main_agent_id: null }
 }
 
-export function getTenant(id: string): Tenant | undefined {
-  return db.prepare('SELECT * FROM tenants WHERE id = ?').get(id) as Tenant | undefined
+export async function getTenant(id: string): Promise<Tenant | undefined> {
+  return dbx.get<Tenant>('SELECT * FROM tenants WHERE id = ?', id)
 }
 
-export function listTenants(includeDisabled = false): Tenant[] {
+export async function listTenants(includeDisabled = false): Promise<Tenant[]> {
   if (includeDisabled) {
-    return db.prepare('SELECT * FROM tenants ORDER BY created_at ASC').all() as Tenant[]
+    return dbx.all<Tenant>('SELECT * FROM tenants ORDER BY created_at ASC')
   }
-  return db.prepare('SELECT * FROM tenants WHERE disabled_at IS NULL ORDER BY created_at ASC').all() as Tenant[]
+  return dbx.all<Tenant>('SELECT * FROM tenants WHERE disabled_at IS NULL ORDER BY created_at ASC')
 }
 
 /** The tenant, if any, whose main_agent_id is this agent -- drives the
  *  Agents screen's tenant-main-agent badge. */
-export function getTenantForMainAgent(agentId: string): Tenant | undefined {
-  return db.prepare('SELECT * FROM tenants WHERE main_agent_id = ? AND disabled_at IS NULL').get(agentId) as Tenant | undefined
+export async function getTenantForMainAgent(agentId: string): Promise<Tenant | undefined> {
+  return dbx.get<Tenant>('SELECT * FROM tenants WHERE main_agent_id = ? AND disabled_at IS NULL', agentId)
 }
 
-export function updateTenant(id: string, patch: { display_name?: string; disabled?: boolean; main_agent_id?: string }): Tenant | null {
-  const existing = getTenant(id)
-  if (!existing) return null
+export async function updateTenant(id: string, patch: { display_name?: string; disabled?: boolean; main_agent_id?: string }): Promise<Tenant | null> {
   const now = Math.floor(Date.now() / 1000)
   const fields: string[] = []
   const params: unknown[] = []
@@ -452,15 +436,22 @@ export function updateTenant(id: string, patch: { display_name?: string; disable
   } else if (patch.disabled === false) {
     fields.push('disabled_at = NULL')
   }
-  if (fields.length === 0) return existing
   params.push(id)
-  db.prepare(`UPDATE tenants SET ${fields.join(', ')} WHERE id = ?`).run(...params)
-  // Disabling the tenant or changing its main agent ends the use-time tenant context of every agent that was
-  // serving it (the skill gate fails closed until each agent's next prompt re-resolves the source).
-  if (patch.disabled === true || (patch.main_agent_id !== undefined && patch.main_agent_id !== existing.main_agent_id)) {
-    db.prepare('DELETE FROM agent_tenant_context WHERE tenant_id = ?').run(id)
-  }
-  return db.prepare('SELECT * FROM tenants WHERE id = ?').get(id) as Tenant
+  // The read of the old row, the update and the context drop are ONE transaction: a crash or a failure between the
+  // last two would leave a disabled tenant (or one with a new main agent) with the use-time context of its old
+  // state, which the skill gate trusts, and the "main agent changed" decision must see the row it overwrites.
+  return dbx.tx(async (tx): Promise<Tenant | null> => {
+    const existing = await tx.get<Tenant>('SELECT * FROM tenants WHERE id = ?', id)
+    if (!existing) return null
+    if (fields.length === 0) return existing
+    await tx.run(`UPDATE tenants SET ${fields.join(', ')} WHERE id = ?`, ...params)
+    // Disabling the tenant or changing its main agent ends the use-time tenant context of every agent that was
+    // serving it (the skill gate fails closed until each agent's next prompt re-resolves the source).
+    if (patch.disabled === true || (patch.main_agent_id !== undefined && patch.main_agent_id !== existing.main_agent_id)) {
+      await tx.run('DELETE FROM agent_tenant_context WHERE tenant_id = ?', id)
+    }
+    return (await tx.get('SELECT * FROM tenants WHERE id = ?', id)) as Tenant
+  })
 }
 
 // Tables whose rows belong to a tenant by a plain `tenant_id` column and are purged with one
@@ -535,166 +526,188 @@ export interface TenantDeleteResult {
 //      (the agents exclusive to the tenant are read BEFORE this step, the step erases the evidence).
 //  14. Drop vault_ssh_servers (child of vault_ssh_keys by FK direction).
 //  15. Drop vault_ssh_keys.
-//  16. Purge vault.json secrets -- the one non-transactional step (file I/O,
-//      not part of the SQLite transaction), placed right before the final
-//      tenant-row delete so if it throws, that last SQL statement never
-//      runs and the whole SQL transaction rolls back consistently.
-//  17. Drop the tenant row itself.
+//  16. Drop the tenant row itself.
 // The tenant-keyed leftovers (TENANT_PURGE_SIMPLE_TABLES, import_audit_log before import_sources)
 // and the agent-keyed rows (agent_settings, agent_state, fleet_blackboard) are cleaned right before
 // step 16. An agent-keyed row tagged with this tenant is deleted when its agent is exclusive to the
 // tenant, and re-tagged to `default` when the agent also serves another tenant (its configuration
 // outlives the tenant). The rollup tables token_usage_daily / _monthly carry tenant_id and are purged with the rest.
+//
+// Steps 0-16 are ONE dbx.tx and every statement in it runs on the tx handle (the approvals included: they are
+// on the facade like every other table), so a failure anywhere rolls the whole SQL part back. The transaction
+// body holds the facade lock: it has no file I/O. The one file step, the vault.json purge, runs AFTER the
+// commit. Consequence: if the vault write fails (disk full, permission), the SQL part is already committed,
+// the tenant row is gone and the promise rejects with the file error; its secrets stay in vault.json until a
+// second call of this function (idempotent: every delete matches nothing, the purge runs again) removes them.
+// The reverse order would delete the secrets of a tenant that a failed transaction then keeps.
 // The 'default' tenant is permanently guarded and throws if passed.
-export function deleteTenant(tenantId: string): TenantDeleteResult {
+export async function deleteTenant(tenantId: string): Promise<TenantDeleteResult> {
   if (tenantId === 'default') throw new Error('Cannot delete the default tenant')
 
-  return db.transaction((): TenantDeleteResult => {
+  const sqlResult = await dbx.tx(async (tx): Promise<Omit<TenantDeleteResult, 'secretsDeleted'>> => {
     // 0. Agents exclusive to this tenant: exactly one enabled availability row, and it is this tenant's
     //    (the same reading as resolveAgentTenant). Must run before step 13 deletes the availability rows.
     const exclusiveAgents = (
-      db.prepare(
+      await tx.all<{ agent_id: string }>(
         `SELECT agent_id FROM tenant_agent_availability
           WHERE tenant_id = ? AND enabled = 1
             AND (SELECT COUNT(*) FROM tenant_agent_availability o WHERE o.agent_id = tenant_agent_availability.agent_id AND o.enabled = 1) = 1
           ORDER BY agent_id`,
-      ).all(tenantId) as { agent_id: string }[]
+        tenantId,
+      )
     ).map((r) => r.agent_id)
     const purged: Record<string, number> = {}
 
     // 1. Reject pending approvals
-    db.prepare(
+    await tx.run(
       "UPDATE approvals SET status = 'rejected', resolved_at = unixepoch() WHERE tenant_id = ? AND status = 'pending'",
-    ).run(tenantId)
+      tenantId,
+    )
 
     // 2. Revoke api_tokens (tombstone -- keep row for audit, mark revoked)
-    db.prepare('UPDATE api_tokens SET revoked_at = unixepoch() WHERE tenant_id = ? AND revoked_at IS NULL').run(tenantId)
+    await tx.run('UPDATE api_tokens SET revoked_at = unixepoch() WHERE tenant_id = ? AND revoked_at IS NULL', tenantId)
 
     // 3. Drop identity/access rows
-    db.prepare('DELETE FROM dashboard_users WHERE tenant_id = ?').run(tenantId)
-    db.prepare('DELETE FROM partner_senders WHERE tenant_id = ?').run(tenantId)
-    db.prepare('DELETE FROM device_keys WHERE tenant_id = ?').run(tenantId)
+    await tx.run('DELETE FROM dashboard_users WHERE tenant_id = ?', tenantId)
+    await tx.run('DELETE FROM partner_senders WHERE tenant_id = ?', tenantId)
+    await tx.run('DELETE FROM device_keys WHERE tenant_id = ?', tenantId)
 
     // 4. Drop all approvals, and their journal
-    db.prepare('DELETE FROM approval_events WHERE tenant_id = ?').run(tenantId)
-    db.prepare('DELETE FROM approvals WHERE tenant_id = ?').run(tenantId)
+    await tx.run('DELETE FROM approval_events WHERE tenant_id = ?', tenantId)
+    await tx.run('DELETE FROM approvals WHERE tenant_id = ?', tenantId)
 
     // 5. Drop messages and import memories
-    db.prepare('DELETE FROM agent_messages WHERE tenant_id = ?').run(tenantId)
-    db.prepare('DELETE FROM import_memories WHERE tenant_id = ?').run(tenantId)
+    await tx.run('DELETE FROM agent_messages WHERE tenant_id = ?', tenantId)
+    await tx.run('DELETE FROM import_memories WHERE tenant_id = ?', tenantId)
 
     // 6. Drop kanban (child tables before parent)
     const cardIds = (
-      db.prepare('SELECT id FROM kanban_cards WHERE tenant_id = ?').all(tenantId) as { id: string }[]
+      await tx.all<{ id: string }>('SELECT id FROM kanban_cards WHERE tenant_id = ?', tenantId)
     ).map((r) => r.id)
     if (cardIds.length > 0) {
       const ph = cardIds.map(() => '?').join(', ')
-      db.prepare(`DELETE FROM kanban_card_labels WHERE card_id IN (${ph})`).run(...cardIds)
-      db.prepare(`DELETE FROM kanban_card_events  WHERE card_id IN (${ph})`).run(...cardIds)
-      db.prepare(`DELETE FROM kanban_comments     WHERE card_id IN (${ph})`).run(...cardIds)
+      await tx.run(`DELETE FROM kanban_card_labels WHERE card_id IN (${ph})`, ...cardIds)
+      await tx.run(`DELETE FROM kanban_card_events  WHERE card_id IN (${ph})`, ...cardIds)
+      await tx.run(`DELETE FROM kanban_comments     WHERE card_id IN (${ph})`, ...cardIds)
     }
-    db.prepare('DELETE FROM kanban_cards WHERE tenant_id = ?').run(tenantId)
+    await tx.run('DELETE FROM kanban_cards WHERE tenant_id = ?', tenantId)
 
-    // 7. Drop memories -- row-by-row to keep vec0 index in sync (same connection, safe inside tx)
+    // 7. Drop memories -- row-by-row to keep vec0 index in sync. syncVecMemoryDelete is awaited INSIDE the
+    //    body: it joins this transaction (same connection), so a rollback takes the vec entry delete with it.
     const memIds = (
-      db.prepare('SELECT id FROM memories WHERE tenant_id = ?').all(tenantId) as { id: number }[]
+      await tx.all<{ id: number }>('SELECT id FROM memories WHERE tenant_id = ?', tenantId)
     ).map((r) => r.id)
     for (const id of memIds) {
-      syncVecMemoryDelete(id)
-      db.prepare('DELETE FROM memories WHERE id = ?').run(id)
+      await syncVecMemoryDelete(id)
+      await tx.run('DELETE FROM memories WHERE id = ?', id)
     }
 
     // 8. Drop artifacts (vec_artifacts kept in sync by the vec_artifacts_ad DELETE trigger)
-    db.prepare('DELETE FROM artifacts WHERE tenant_id = ?').run(tenantId)
+    await tx.run('DELETE FROM artifacts WHERE tenant_id = ?', tenantId)
 
     // 9. Drop schedules, with the retries still pending for them (a retry of a task that no
     //    longer exists would be re-injected into its agent). The names go back to the caller:
     //    the file mirror under ~/.claude/scheduled-tasks is outside this transaction.
     const scheduleNames = (
-      db.prepare('SELECT id FROM schedules WHERE tenant_id = ?').all(tenantId) as { id: string }[]
+      await tx.all<{ id: string }>('SELECT id FROM schedules WHERE tenant_id = ?', tenantId)
     ).map((r) => r.id)
-    db.prepare('DELETE FROM pending_task_retries WHERE task_name IN (SELECT id FROM schedules WHERE tenant_id = ?)').run(tenantId)
-    db.prepare('DELETE FROM schedules WHERE tenant_id = ?').run(tenantId)
+    await tx.run('DELETE FROM pending_task_retries WHERE task_name IN (SELECT id FROM schedules WHERE tenant_id = ?)', tenantId)
+    await tx.run('DELETE FROM schedules WHERE tenant_id = ?', tenantId)
 
     // 10 & 11. Drop skill_tenant_access before skills (foreign_keys is on by default, so the order matters;
     //          explicit two-pass: access grants TO this tenant, then grants FROM its skills).
-    db.prepare('DELETE FROM skill_tenant_access WHERE tenant_id = ?').run(tenantId)
+    await tx.run('DELETE FROM skill_tenant_access WHERE tenant_id = ?', tenantId)
     const skillIds = (
-      db.prepare('SELECT id FROM skills WHERE tenant_id = ?').all(tenantId) as { id: string }[]
+      await tx.all<{ id: string }>('SELECT id FROM skills WHERE tenant_id = ?', tenantId)
     ).map((r) => r.id)
     if (skillIds.length > 0) {
       const ph = skillIds.map(() => '?').join(', ')
-      db.prepare(`DELETE FROM skill_tenant_access WHERE skill_id IN (${ph})`).run(...skillIds)
-      db.prepare(`DELETE FROM skill_files WHERE skill_id IN (${ph})`).run(...skillIds)
+      await tx.run(`DELETE FROM skill_tenant_access WHERE skill_id IN (${ph})`, ...skillIds)
+      await tx.run(`DELETE FROM skill_files WHERE skill_id IN (${ph})`, ...skillIds)
     }
-    db.prepare('DELETE FROM skills WHERE tenant_id = ?').run(tenantId)
+    await tx.run('DELETE FROM skills WHERE tenant_id = ?', tenantId)
 
     // 12. Drop workspace_docs -- vec_workspace_docs has no trigger, sync manually before main delete.
+    // @sqlite-only: the sqlite-vec `vec0` table (the PostgreSQL phase moves it to pgvector).
     if (vecExtensionLoaded) {
-      try { db.prepare('DELETE FROM vec_workspace_docs WHERE tenant_id = ?').run(tenantId) } catch { /* vec0 unavailable */ }
+      try { await tx.run('DELETE FROM vec_workspace_docs WHERE tenant_id = ?', tenantId) } catch { /* vec0 unavailable */ }
     }
-    db.prepare('DELETE FROM workspace_docs WHERE tenant_id = ?').run(tenantId)
+    await tx.run('DELETE FROM workspace_docs WHERE tenant_id = ?', tenantId)
 
     // 13. Drop tenant_agent_availability (foreign_keys is on by default; the explicit delete is redundant with the cascade but harmless)
-    db.prepare('DELETE FROM tenant_agent_availability WHERE tenant_id = ?').run(tenantId)
-    db.prepare('DELETE FROM tenant_channel_bindings WHERE tenant_id = ?').run(tenantId)
-    db.prepare('DELETE FROM agent_tenant_context WHERE tenant_id = ?').run(tenantId)
+    await tx.run('DELETE FROM tenant_agent_availability WHERE tenant_id = ?', tenantId)
+    await tx.run('DELETE FROM tenant_channel_bindings WHERE tenant_id = ?', tenantId)
+    await tx.run('DELETE FROM agent_tenant_context WHERE tenant_id = ?', tenantId)
 
     // 14 & 15. Drop the vault SSH pool (child before parent by FK direction;
     //          foreign_keys is on by default, same as steps 10/13).
-    db.prepare('DELETE FROM vault_ssh_servers WHERE tenant_id = ?').run(tenantId)
-    db.prepare('DELETE FROM vault_ssh_keys WHERE tenant_id = ?').run(tenantId)
+    await tx.run('DELETE FROM vault_ssh_servers WHERE tenant_id = ?', tenantId)
+    await tx.run('DELETE FROM vault_ssh_keys WHERE tenant_id = ?', tenantId)
 
     // 15b. Tenant-keyed leftovers. import_audit_log goes before import_sources on purpose: the FK would
     //      cascade it, but a silent cascade is how 0041 once lost audit rows, so it is explicit and counted.
-    purged.import_audit_log = db.prepare('DELETE FROM import_audit_log WHERE tenant_id = ?').run(tenantId).changes
-    purged.import_sources = db.prepare('DELETE FROM import_sources WHERE tenant_id = ?').run(tenantId).changes
+    purged.import_audit_log = (await tx.run('DELETE FROM import_audit_log WHERE tenant_id = ?', tenantId)).changes
+    purged.import_sources = (await tx.run('DELETE FROM import_sources WHERE tenant_id = ?', tenantId)).changes
     // A label of this tenant can still be linked from a card of another tenant (links made before
     // labels carried a tenant): drop those links before the label rows go.
-    db.prepare('DELETE FROM kanban_card_labels WHERE label_id IN (SELECT id FROM labels WHERE tenant_id = ?)').run(tenantId)
+    await tx.run('DELETE FROM kanban_card_labels WHERE label_id IN (SELECT id FROM labels WHERE tenant_id = ?)', tenantId)
     for (const table of TENANT_PURGE_SIMPLE_TABLES) {
-      purged[table] = db.prepare(`DELETE FROM ${table} WHERE tenant_id = ?`).run(tenantId).changes
+      purged[table] = (await tx.run(`DELETE FROM ${table} WHERE tenant_id = ?`, tenantId)).changes
     }
 
     // 15c. Agent-keyed rows tagged with this tenant: exclusive agent -> delete, anyone else -> re-tag.
     const exclusivePh = exclusiveAgents.map(() => '?').join(', ')
     for (const table of TENANT_PURGE_AGENT_KEYED_TABLES) {
       purged[table] = exclusiveAgents.length > 0
-        ? db.prepare(`DELETE FROM ${table} WHERE tenant_id = ? AND agent_id IN (${exclusivePh})`).run(tenantId, ...exclusiveAgents).changes
+        ? (await tx.run(`DELETE FROM ${table} WHERE tenant_id = ? AND agent_id IN (${exclusivePh})`, tenantId, ...exclusiveAgents)).changes
         : 0
-      purged[`${table}_retagged`] = db.prepare(`UPDATE ${table} SET tenant_id = 'default' WHERE tenant_id = ?`).run(tenantId).changes
+      purged[`${table}_retagged`] = (await tx.run(`UPDATE ${table} SET tenant_id = 'default' WHERE tenant_id = ?`, tenantId)).changes
     }
 
-    // 16. Purge vault.json secrets (non-transactional file I/O -- see comment above)
-    const secretsDeleted = purgeSecretsForTenant(tenantId)
+    // 16. Drop the tenant row
+    await tx.run('DELETE FROM tenants WHERE id = ?', tenantId)
 
-    // 17. Drop the tenant row
-    db.prepare('DELETE FROM tenants WHERE id = ?').run(tenantId)
+    return { memoriesDeleted: memIds.length, scheduleNames, purged, exclusiveAgents }
+  })
 
-    return { memoriesDeleted: memIds.length, secretsDeleted, scheduleNames, purged, exclusiveAgents }
-  })()
+  // agent_settings is one of TENANT_PURGE_AGENT_KEYED_TABLES above, written in the transaction,
+  // bypassing the synchronous write-through cache (agent-settings-cache.ts). Reload it now the
+  // transaction has committed -- database first, then the cache, same rule as every other writer of
+  // that table. No await between the commit and the reload except the promise hop of dbx.tx itself.
+  reloadAgentSettingsCache()
+
+  // The one non-SQL step, after the commit (see the header): the vault.json entries of the tenant.
+  let secretsDeleted: number
+  try {
+    secretsDeleted = purgeSecretsForTenant(tenantId)
+  } catch (err) {
+    logger.error({ err, tenantId }, 'tenant deleted but its vault.json entries could not be purged: repeat the delete to remove them')
+    // The committed part travels with the error: the schedule names exist only in this result (a repeated delete
+    // finds no rows), and the caller still has to remove their file mirror and write the audit row.
+    throw Object.assign(err instanceof Error ? err : new Error(String(err)), { tenantDeleteSqlResult: sqlResult })
+  }
+
+  return { ...sqlResult, secretsDeleted }
 }
 
 // ── B2B Dashboard user provisioning ──────────────────────────────────────────
 
 /** Admin-controlled user provisioning: explicit role + tenant_id, no first-user-wins. */
-export function provisionDashboardUser(
+export async function provisionDashboardUser(
   username: string,
   passwordHash: string,
   role: string,
   tenantId: string | null,
   email?: string | null,
   displayName?: string | null,
-): DashboardUser {
+): Promise<DashboardUser> {
   const now = Math.floor(Date.now() / 1000)
-  const { id } = db
-    .prepare('INSERT INTO dashboard_users (username, password_hash, role, tenant_id, email, display_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id')
-    .get(username, passwordHash, role, tenantId, email ?? null, displayName ?? null, now, now) as { id: number }
+  const { id } = (await dbx.get('INSERT INTO dashboard_users (username, password_hash, role, tenant_id, email, display_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id', username, passwordHash, role, tenantId, email ?? null, displayName ?? null, now, now)) as { id: number }
   return { id, username, password_hash: passwordHash, role, tenant_id: tenantId, email: email ?? null, display_name: displayName ?? null, created_at: now, updated_at: now, disabled: 0 }
 }
 
-export function getDashboardUserById(id: number): DashboardUser | undefined {
-  return db.prepare('SELECT * FROM dashboard_users WHERE id = ?').get(id) as DashboardUser | undefined
+export async function getDashboardUserById(id: number): Promise<DashboardUser | undefined> {
+  return dbx.get<DashboardUser>('SELECT * FROM dashboard_users WHERE id = ?', id)
 }
 
 export interface ListUsersOpts {
@@ -702,7 +715,7 @@ export interface ListUsersOpts {
   includeDisabled?: boolean
 }
 
-export function listDashboardUsersFiltered(opts: ListUsersOpts = {}): DashboardUserPublic[] {
+export async function listDashboardUsersFiltered(opts: ListUsersOpts = {}): Promise<DashboardUserPublic[]> {
   const conditions: string[] = []
   const params: unknown[] = []
   if (!opts.includeDisabled) {
@@ -715,9 +728,7 @@ export function listDashboardUsersFiltered(opts: ListUsersOpts = {}): DashboardU
     params.push(opts.tenantId)
   }
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
-  return db
-    .prepare(`SELECT id, username, role, tenant_id, email, display_name, created_at, updated_at, disabled FROM dashboard_users ${where} ORDER BY username COLLATE NOCASE`)
-    .all(...params) as DashboardUserPublic[]
+  return dbx.all<DashboardUserPublic>(`SELECT id, username, role, tenant_id, email, display_name, created_at, updated_at, disabled FROM dashboard_users ${where} ORDER BY username COLLATE NOCASE`, ...params)
 }
 
 export interface AdminUserPatch {
@@ -729,9 +740,27 @@ export interface AdminUserPatch {
   display_name?: string | null
 }
 
-export function adminPatchDashboardUser(id: number, patch: AdminUserPatch): DashboardUser | null {
-  const existing = getDashboardUserById(id)
-  if (!existing) return null
+export type AdminPatchOutcome =
+  | { status: 'updated'; user: DashboardUser }
+  | { status: 'last_admin' }
+  | { status: 'not_found' }
+
+/**
+ * The patch that takes an active admin out of the active-admin count: a role other than admin, or disabled.
+ * Only such a patch carries the last-admin condition.
+ */
+function patchLeavesAdmin(patch: AdminUserPatch): boolean {
+  return (patch.role !== undefined && patch.role !== 'admin') || patch.disabled === true
+}
+
+/**
+ * One conditional UPDATE ... RETURNING decides and writes: a patch that makes the last active admin a non-admin or
+ * disabled matches no row (the count condition is evaluated by the same statement that writes, so two concurrent
+ * demotions of the two remaining admins cannot both pass: exactly one changes a row). The same compare-and-set as
+ * deleteDashboardUserKeepingLastAdmin (sessions.ts), for the role change and the disabled flag together.
+ * 'last_admin' and 'not_found' are told apart by a read AFTER the refused write; only the answer depends on it.
+ */
+export async function adminPatchDashboardUser(id: number, patch: AdminUserPatch): Promise<AdminPatchOutcome> {
   const now = Math.floor(Date.now() / 1000)
   const fields: string[] = ['updated_at = ?']
   const params: unknown[] = [now]
@@ -742,12 +771,16 @@ export function adminPatchDashboardUser(id: number, patch: AdminUserPatch): Dash
   if ('email' in patch) { fields.push('email = ?'); params.push(patch.email ?? null) }
   if ('display_name' in patch) { fields.push('display_name = ?'); params.push(patch.display_name ?? null) }
   params.push(id)
-  db.prepare(`UPDATE dashboard_users SET ${fields.join(', ')} WHERE id = ?`).run(...params)
-  return getDashboardUserById(id) ?? null
+  const guard = patchLeavesAdmin(patch)
+    ? " AND NOT (role = 'admin' AND disabled = 0 AND (SELECT COUNT(*) FROM dashboard_users WHERE role = 'admin' AND disabled = 0) <= 1)"
+    : ''
+  const user = await dbx.get<DashboardUser>(`UPDATE dashboard_users SET ${fields.join(', ')} WHERE id = ?${guard} RETURNING *`, ...params)
+  if (user) return { status: 'updated', user }
+  return (await dbx.get('SELECT 1 AS present FROM dashboard_users WHERE id = ?', id)) ? { status: 'last_admin' } : { status: 'not_found' }
 }
 
-export function countActiveAdmins(): number {
-  return (db.prepare("SELECT COUNT(*) AS c FROM dashboard_users WHERE role = 'admin' AND disabled = 0").get() as { c: number }).c
+export async function countActiveAdmins(): Promise<number> {
+  return ((await dbx.get("SELECT COUNT(*) AS c FROM dashboard_users WHERE role = 'admin' AND disabled = 0")) as { c: number }).c
 }
 
 // Prefix that marks a message as a completion report / acknowledgement.
@@ -765,37 +798,29 @@ export interface PartnerSender {
   disabled_at: number | null
 }
 
-export function isAuthorizedPartnerSender(senderId: string, tenantId: string): boolean {
-  const row = db.prepare(
-    'SELECT 1 FROM partner_senders WHERE sender_id = ? AND tenant_id = ? AND disabled_at IS NULL'
-  ).get(senderId, tenantId)
+export async function isAuthorizedPartnerSender(senderId: string, tenantId: string): Promise<boolean> {
+  const row = await dbx.get('SELECT 1 FROM partner_senders WHERE sender_id = ? AND tenant_id = ? AND disabled_at IS NULL', senderId, tenantId)
   return row != null
 }
 
-export function listPartnerSenders(tenantId?: string): PartnerSender[] {
+export async function listPartnerSenders(tenantId?: string): Promise<PartnerSender[]> {
   if (tenantId != null) {
-    return db.prepare(
-      'SELECT sender_id, tenant_id, display_name, created_by, created_at, disabled_at FROM partner_senders WHERE tenant_id = ? ORDER BY created_at ASC'
-    ).all(tenantId) as PartnerSender[]
+    return dbx.all<PartnerSender>('SELECT sender_id, tenant_id, display_name, created_by, created_at, disabled_at FROM partner_senders WHERE tenant_id = ? ORDER BY created_at ASC', tenantId)
   }
-  return db.prepare(
-    'SELECT sender_id, tenant_id, display_name, created_by, created_at, disabled_at FROM partner_senders ORDER BY tenant_id, created_at ASC'
-  ).all() as PartnerSender[]
+  return dbx.all<PartnerSender>('SELECT sender_id, tenant_id, display_name, created_by, created_at, disabled_at FROM partner_senders ORDER BY tenant_id, created_at ASC')
 }
 
-export function createPartnerSender(senderId: string, tenantId: string, displayName: string, createdBy: string): PartnerSender {
-  db.prepare(
-    'INSERT INTO partner_senders (sender_id, tenant_id, display_name, created_by) VALUES (?, ?, ?, ?)'
-  ).run(senderId, tenantId, displayName, createdBy)
-  return db.prepare(
-    'SELECT sender_id, tenant_id, display_name, created_by, created_at, disabled_at FROM partner_senders WHERE sender_id = ? AND tenant_id = ?'
-  ).get(senderId, tenantId) as PartnerSender
+export async function createPartnerSender(senderId: string, tenantId: string, displayName: string, createdBy: string): Promise<PartnerSender> {
+  // One statement: the row the caller gets back is the row this INSERT wrote (a separate read-back could meet a
+  // concurrent disable or tenant delete and return nothing). A duplicate key rejects with the driver's constraint error.
+  return (await dbx.get(
+    'INSERT INTO partner_senders (sender_id, tenant_id, display_name, created_by) VALUES (?, ?, ?, ?) RETURNING sender_id, tenant_id, display_name, created_by, created_at, disabled_at',
+    senderId, tenantId, displayName, createdBy,
+  )) as PartnerSender
 }
 
-export function disablePartnerSender(senderId: string, tenantId: string): boolean {
-  const result = db.prepare(
-    'UPDATE partner_senders SET disabled_at = unixepoch() WHERE sender_id = ? AND tenant_id = ? AND disabled_at IS NULL'
-  ).run(senderId, tenantId)
+export async function disablePartnerSender(senderId: string, tenantId: string): Promise<boolean> {
+  const result = await dbx.run('UPDATE partner_senders SET disabled_at = unixepoch() WHERE sender_id = ? AND tenant_id = ? AND disabled_at IS NULL', senderId, tenantId)
   return result.changes > 0
 }
 
@@ -817,28 +842,24 @@ export interface TokenUsageCall {
   toolName: string | null
 }
 
-export function getTokenUsageCursor(filePath: string): { last_line: number; last_size: number } | undefined {
-  return db
-    .prepare('SELECT last_line, last_size FROM token_usage_cursors WHERE file_path = ?')
-    .get(filePath) as { last_line: number; last_size: number } | undefined
+export async function getTokenUsageCursor(filePath: string): Promise<{ last_line: number; last_size: number } | undefined> {
+  return dbx.get<{ last_line: number; last_size: number }>('SELECT last_line, last_size FROM token_usage_cursors WHERE file_path = ?', filePath)
 }
 
-export function setTokenUsageCursor(filePath: string, lastLine: number, lastSize: number): void {
-  db.prepare(
-    `INSERT INTO token_usage_cursors (file_path, last_line, last_size) VALUES (?, ?, ?)
-     ON CONFLICT(file_path) DO UPDATE SET last_line = excluded.last_line, last_size = excluded.last_size`,
-  ).run(filePath, lastLine, lastSize)
+export async function setTokenUsageCursor(filePath: string, lastLine: number, lastSize: number): Promise<void> {
+  await dbx.run(`INSERT INTO token_usage_cursors (file_path, last_line, last_size) VALUES (?, ?, ?)
+     ON CONFLICT(file_path) DO UPDATE SET last_line = excluded.last_line, last_size = excluded.last_size`, filePath, lastLine, lastSize)
 }
 
 /** Upserts a file's parsed calls and advances its cursor in one transaction. */
-export function recordTokenUsageCalls(
+export async function recordTokenUsageCalls(
   calls: TokenUsageCall[],
   tenantId: string,
   filePath: string,
   linesRead: number,
   fileSize: number,
-): void {
-  const insertCall = db.prepare(`
+): Promise<void> {
+  const insertCallSql = `
     INSERT INTO token_usage (agent, session_id, timestamp, input_tokens, output_tokens,
       cache_read_tokens, cache_creation_tokens, thinking_tokens, model, content_preview, tool_name, tenant_id)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -848,10 +869,11 @@ export function recordTokenUsageCalls(
       cache_creation_tokens = CASE WHEN (token_usage.cache_creation_tokens IS NULL OR token_usage.cache_creation_tokens = 0) AND excluded.cache_creation_tokens > 0 THEN excluded.cache_creation_tokens ELSE token_usage.cache_creation_tokens END,
       cache_read_tokens = CASE WHEN (token_usage.cache_read_tokens IS NULL OR token_usage.cache_read_tokens = 0) AND excluded.cache_read_tokens > 0 THEN excluded.cache_read_tokens ELSE token_usage.cache_read_tokens END,
       tenant_id = excluded.tenant_id
-  `)
-  db.transaction(() => {
+  `
+  await dbx.tx(async (tx) => {
     for (const c of calls) {
-      insertCall.run(
+      await tx.run(
+        insertCallSql,
         c.agent, c.sessionId, c.timestamp,
         c.inputTokens, c.outputTokens,
         c.cacheReadTokens, c.cacheCreationTokens,
@@ -860,8 +882,10 @@ export function recordTokenUsageCalls(
         tenantId,
       )
     }
-    setTokenUsageCursor(filePath, linesRead, fileSize)
-  })()
+    // Same SQL as setTokenUsageCursor, on the tx handle so the cursor moves with the calls or not at all.
+    await tx.run(`INSERT INTO token_usage_cursors (file_path, last_line, last_size) VALUES (?, ?, ?)
+     ON CONFLICT(file_path) DO UPDATE SET last_line = excluded.last_line, last_size = excluded.last_size`, filePath, linesRead, fileSize)
+  })
 }
 
 export interface TokenSummaryModelRow {
@@ -887,14 +911,14 @@ export interface TokenSummary {
   perModel: TokenSummaryModelRow[]
 }
 
-export function getTokenSummary(from?: number, to?: number): TokenSummary[] {
+export async function getTokenSummary(from?: number, to?: number): Promise<TokenSummary[]> {
   const conditions: string[] = []
   const params: any[] = []
   if (from) { conditions.push('timestamp >= ?'); params.push(from) }
   if (to) { conditions.push('timestamp <= ?'); params.push(to) }
   const where = conditions.length ? ' WHERE ' + conditions.join(' AND ') : ''
 
-  const rows = db.prepare(`
+  const rows = (await dbx.all(`
     SELECT agent,
       COUNT(*) as totalCalls,
       SUM(input_tokens) as totalInput,
@@ -908,9 +932,9 @@ export function getTokenSummary(from?: number, to?: number): TokenSummary[] {
     FROM token_usage
     ${where}
     GROUP BY agent ORDER BY totalInput DESC
-  `).all(...params) as Omit<TokenSummary, 'perModel'>[]
+  `, ...params)) as Omit<TokenSummary, 'perModel'>[]
 
-  const modelRows = db.prepare(`
+  const modelRows = (await dbx.all(`
     SELECT agent, model,
       SUM(input_tokens) as totalInput,
       SUM(output_tokens) as totalOutput,
@@ -920,7 +944,7 @@ export function getTokenSummary(from?: number, to?: number): TokenSummary[] {
     FROM token_usage
     ${where}
     GROUP BY agent, model
-  `).all(...params) as (TokenSummaryModelRow & { agent: string })[]
+  `, ...params)) as (TokenSummaryModelRow & { agent: string })[]
 
   const byAgent = new Map<string, TokenSummaryModelRow[]>()
   for (const mr of modelRows) {
@@ -942,8 +966,8 @@ export interface TokenUsageWindowModelRow {
 }
 
 /** One agent's token rows with `from <= timestamp < to`, summed per model. */
-export function sumTokenUsageByModel(agent: string, from: number, to: number): TokenUsageWindowModelRow[] {
-  return db.prepare(`
+export async function sumTokenUsageByModel(agent: string, from: number, to: number): Promise<TokenUsageWindowModelRow[]> {
+  return dbx.all<TokenUsageWindowModelRow>(`
     SELECT model, COUNT(*) AS calls,
       COALESCE(SUM(input_tokens), 0) AS inputTokens,
       COALESCE(SUM(output_tokens), 0) AS outputTokens,
@@ -952,12 +976,12 @@ export function sumTokenUsageByModel(agent: string, from: number, to: number): T
     FROM token_usage
     WHERE agent = ? AND timestamp >= ? AND timestamp < ?
     GROUP BY model
-  `).all(agent, from, to) as TokenUsageWindowModelRow[]
+  `, agent, from, to)
 }
 
 /** Timestamp of the newest token row of one agent, or null when it has none. */
-export function getLastTokenUsageTimestamp(agent: string): number | null {
-  const row = db.prepare('SELECT MAX(timestamp) AS ts FROM token_usage WHERE agent = ?').get(agent) as { ts: number | null }
+export async function getLastTokenUsageTimestamp(agent: string): Promise<number | null> {
+  const row = (await dbx.get('SELECT MAX(timestamp) AS ts FROM token_usage WHERE agent = ?', agent)) as { ts: number | null }
   return row.ts ?? null
 }
 
@@ -971,8 +995,8 @@ export interface ModelDistEntry {
   totalThinking: number
 }
 
-export function getModelDistribution(from?: number, to?: number, agent?: string): ModelDistEntry[] {
-  const hasModelCol = db.prepare("SELECT COUNT(*) as n FROM pragma_table_info('token_usage') WHERE name='model'").get() as { n: number }
+export async function getModelDistribution(from?: number, to?: number, agent?: string): Promise<ModelDistEntry[]> {
+  const hasModelCol = (await dbx.get("SELECT COUNT(*) as n FROM pragma_table_info('token_usage') WHERE name='model'")) as { n: number }
   if (!hasModelCol.n) return []
 
   let sql = `
@@ -997,7 +1021,7 @@ export function getModelDistribution(from?: number, to?: number, agent?: string)
   sql += ' WHERE ' + conditions.join(' AND ')
   sql += ' GROUP BY model ORDER BY count DESC'
 
-  return db.prepare(sql).all(...params) as ModelDistEntry[]
+  return dbx.all<ModelDistEntry>(sql, ...params)
 }
 
 export interface ToolStatEntry {
@@ -1012,7 +1036,7 @@ export interface ToolStatEntry {
   totalThinking: number
 }
 
-export function getToolStats(from?: number, to?: number, agent?: string): ToolStatEntry[] {
+export async function getToolStats(from?: number, to?: number, agent?: string): Promise<ToolStatEntry[]> {
   let sql = `
     SELECT tool_name,
       model,
@@ -1034,7 +1058,7 @@ export function getToolStats(from?: number, to?: number, agent?: string): ToolSt
   if (conditions.length) sql += ' AND ' + conditions.join(' AND ')
   sql += ' GROUP BY tool_name, model ORDER BY count DESC'
 
-  return db.prepare(sql).all(...params) as ToolStatEntry[]
+  return dbx.all<ToolStatEntry>(sql, ...params)
 }
 
 export interface TimelineBucket {
@@ -1045,12 +1069,12 @@ export interface TimelineBucket {
   outputTokens: number
 }
 
-export function getTokenTimeline(
+export async function getTokenTimeline(
   bucketMinutes: number = 60,
   from?: number,
   to?: number,
   agent?: string,
-): TimelineBucket[] {
+): Promise<TimelineBucket[]> {
   const bucketSeconds = bucketMinutes * 60
   let sql = `
     SELECT
@@ -1069,7 +1093,7 @@ export function getTokenTimeline(
   if (conditions.length) sql += ' WHERE ' + conditions.join(' AND ')
   sql += ' GROUP BY bucket, agent ORDER BY bucket ASC'
 
-  return db.prepare(sql).all(...params) as TimelineBucket[]
+  return dbx.all<TimelineBucket>(sql, ...params)
 }
 
 export interface TokenDetail {
@@ -1089,9 +1113,9 @@ export interface TokenDetail {
   project: string | null
 }
 
-export function getTokenDetails(
+export async function getTokenDetails(
   opts: { agent?: string; from?: number; to?: number; limit?: number; offset?: number; minTokens?: number; q?: string },
-): TokenDetail[] {
+): Promise<TokenDetail[]> {
   let sql = `SELECT * FROM token_usage`
   const conditions: string[] = []
   const params: any[] = []
@@ -1112,35 +1136,35 @@ export function getTokenDetails(
   sql += ' LIMIT ? OFFSET ?'
   params.push(opts.limit || 100, opts.offset || 0)
 
-  return db.prepare(sql).all(...params) as TokenDetail[]
+  return dbx.all<TokenDetail>(sql, ...params)
 }
 
-export function correlateWithKanban(): void {
-  const uncorrelated = db.prepare(`
+export async function correlateWithKanban(): Promise<void> {
+  const uncorrelated = (await dbx.all(`
     SELECT DISTINCT agent, MIN(timestamp) as minTs, MAX(timestamp) as maxTs
     FROM token_usage
     WHERE task_title IS NULL
     GROUP BY agent
-  `).all() as { agent: string; minTs: number; maxTs: number }[]
+  `)) as { agent: string; minTs: number; maxTs: number }[]
 
   for (const row of uncorrelated) {
-    const cards = db.prepare(`
+    const cards = await dbx.all<any>(`
       SELECT id, title, project, assignee, updated_at
       FROM kanban_cards
       WHERE (assignee = ? OR assignee LIKE '%' || ? || '%')
         AND updated_at BETWEEN ? AND ?
       ORDER BY updated_at ASC
-    `).all(row.agent, row.agent, row.minTs, row.maxTs) as any[]
+    `, row.agent, row.agent, row.minTs, row.maxTs)
 
     for (const card of cards) {
       const nextCard = cards.find((c: any) => c.updated_at > card.updated_at)
       const endTs = nextCard ? nextCard.updated_at : row.maxTs
 
-      db.prepare(`
+      await dbx.run(`
         UPDATE token_usage
         SET task_title = ?, project = ?
         WHERE agent = ? AND timestamp BETWEEN ? AND ? AND task_title IS NULL
-      `).run(card.title, card.project || null, row.agent, card.updated_at, endTs)
+      `, card.title, card.project || null, row.agent, card.updated_at, endTs)
     }
   }
 }

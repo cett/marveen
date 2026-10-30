@@ -120,8 +120,8 @@ afterEach(() => {
 })
 
 // First sweep fires at 50s, then every 60s.
-const firstSweep = () => vi.advanceTimersByTime(50_000 + 1)
-const minutes = (n: number) => vi.advanceTimersByTime(n * MIN)
+const firstSweep = () => vi.advanceTimersByTimeAsync(50_000 + 1)
+const minutes = (n: number) => vi.advanceTimersByTimeAsync(n * MIN)
 
 
 const writeState = (entries: Record<string, { primary: string; current: string; downgradedAt: number }>) =>
@@ -147,7 +147,7 @@ describe('flag OFF: an existing overlay is still reverted', () => {
     expect(mainLaunchModel()).toBe(SONNET) // sanity: the overlay really pins it
 
     await boot()
-    firstSweep()
+    await firstSweep()
 
     expect(stateFile()['main']).toBeUndefined()
     expect(m.hardRestart).toHaveBeenCalledTimes(1)
@@ -159,7 +159,7 @@ describe('flag OFF: an existing overlay is still reverted', () => {
   it('an expired sub-agent overlay is cleared and the agent respawned on its own primary', async () => {
     writeState({ sub: { primary: SONNET, current: HAIKU, downgradedAt: Date.now() - 90 * MIN } })
     await boot()
-    firstSweep()
+    await firstSweep()
 
     expect(stateFile()['sub']).toBeUndefined()
     expect(m.restartAgentProcess).toHaveBeenCalledWith('sub', { fresh: false })
@@ -169,7 +169,7 @@ describe('flag OFF: an existing overlay is still reverted', () => {
   it('an overlay that is not yet due stays, and nothing is restarted', async () => {
     writeState({ main: { primary: OPUS55, current: SONNET, downgradedAt: Date.now() - 10 * MIN } })
     await boot()
-    firstSweep()
+    await firstSweep()
 
     expect(stateFile()['main']).toMatchObject({ current: SONNET })
     expect(m.hardRestart).not.toHaveBeenCalled()
@@ -179,12 +179,12 @@ describe('flag OFF: an existing overlay is still reverted', () => {
     writeState({ main: { primary: OPUS55, current: SONNET, downgradedAt: Date.now() - 90 * MIN } })
     ctx.idle = false
     await boot()
-    firstSweep()
+    await firstSweep()
     expect(stateFile()['main']).toMatchObject({ current: SONNET })
     expect(m.hardRestart).not.toHaveBeenCalled()
 
     ctx.idle = true
-    vi.advanceTimersByTime(MIN)
+    await vi.advanceTimersByTimeAsync(MIN)
     expect(stateFile()['main']).toBeUndefined()
     expect(m.hardRestart).toHaveBeenCalledTimes(1)
   })
@@ -193,7 +193,7 @@ describe('flag OFF: an existing overlay is still reverted', () => {
     ctx.subRunning = false
     writeState({ sub: { primary: SONNET, current: HAIKU, downgradedAt: Date.now() - 90 * MIN } })
     await boot()
-    firstSweep()
+    await firstSweep()
 
     expect(stateFile()['sub']).toBeUndefined()
     expect(m.restartAgentProcess).not.toHaveBeenCalled()
@@ -204,7 +204,7 @@ describe('flag OFF: an existing overlay is still reverted', () => {
     const entry = { primary: OPUS55, current: SONNET, downgradedAt: Date.now() - 90 * MIN }
     writeState({ main: entry })
     await boot()
-    firstSweep()
+    await firstSweep()
 
     expect(m.hardRestart).toHaveBeenCalledTimes(1)
     expect(stateFile()['main']).toEqual(entry)
@@ -216,8 +216,8 @@ describe('flag OFF: no new downgrade, fleet otherwise untouched', () => {
     ctx.panes['main-channels'] = LIMIT_PANE
     ctx.panes['sub-session'] = LIMIT_PANE
     await boot()
-    firstSweep()
-    minutes(15)
+    await firstSweep()
+    await minutes(15)
 
     expect(stateFile()).toEqual({})
     expect(m.hardRestart).not.toHaveBeenCalled()
@@ -229,8 +229,8 @@ describe('flag OFF: no new downgrade, fleet otherwise untouched', () => {
     writeState({ main: entry })
     ctx.panes['main-channels'] = LIMIT_PANE
     await boot()
-    firstSweep()
-    minutes(15)
+    await firstSweep()
+    await minutes(15)
 
     expect(stateFile()['main']).toEqual(entry)
     expect(m.hardRestart).not.toHaveBeenCalled()
@@ -238,8 +238,8 @@ describe('flag OFF: no new downgrade, fleet otherwise untouched', () => {
 
   it('agents without an overlay are not even inspected', async () => {
     await boot()
-    firstSweep()
-    minutes(3)
+    await firstSweep()
+    await minutes(3)
 
     expect(m.capturePane).not.toHaveBeenCalled()
   })
@@ -250,7 +250,7 @@ describe('flag ON: unchanged', () => {
     ctx.enabled = true
     ctx.panes['main-channels'] = LIMIT_PANE
     await boot()
-    firstSweep()
+    await firstSweep()
 
     expect(stateFile()['main']).toMatchObject({ primary: OPUS55, current: SONNET })
     expect(m.hardRestart).toHaveBeenCalledTimes(1)
@@ -260,7 +260,7 @@ describe('flag ON: unchanged', () => {
     ctx.enabled = true
     writeState({ main: { primary: OPUS55, current: SONNET, downgradedAt: Date.now() - 90 * MIN } })
     await boot()
-    firstSweep()
+    await firstSweep()
 
     expect(stateFile()['main']).toBeUndefined()
     expect(m.hardRestart).toHaveBeenCalledTimes(1)

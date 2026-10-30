@@ -24,7 +24,7 @@ const DAY = 86400
 const OLD = Math.floor(Date.now() / 1000) - 40 * DAY // older than the 30-day default cutoff
 
 describe('kanban_cards_status_bumps_updated_at trigger', () => {
-  it('bumps updated_at when a raw SQL UPDATE changes status without touching updated_at', () => {
+  it('bumps updated_at when a raw SQL UPDATE changes status without touching updated_at', async () => {
     const db = getDb()
     db.prepare(
       `INSERT INTO kanban_cards (id, title, status, priority, created_at, updated_at)
@@ -33,13 +33,13 @@ describe('kanban_cards_status_bumps_updated_at trigger', () => {
 
     db.prepare("UPDATE kanban_cards SET status = 'done' WHERE id = ?").run('raw-1')
 
-    const card = getKanbanCard('raw-1')!
+    const card = (await getKanbanCard('raw-1'))!
     expect(card.status).toBe('done')
     expect(card.updated_at).toBeGreaterThan(OLD)
     expect(card.updated_at).toBeGreaterThanOrEqual(Math.floor(Date.now() / 1000) - 5)
   })
 
-  it('does not touch updated_at when a raw SQL UPDATE sets status to its current value (no-op)', () => {
+  it('does not touch updated_at when a raw SQL UPDATE sets status to its current value (no-op)', async () => {
     const db = getDb()
     db.prepare(
       `INSERT INTO kanban_cards (id, title, status, priority, created_at, updated_at)
@@ -48,10 +48,10 @@ describe('kanban_cards_status_bumps_updated_at trigger', () => {
 
     db.prepare("UPDATE kanban_cards SET status = 'planned' WHERE id = ?").run('raw-2')
 
-    expect(getKanbanCard('raw-2')!.updated_at).toBe(OLD)
+    expect((await getKanbanCard('raw-2'))!.updated_at).toBe(OLD)
   })
 
-  it('does not touch updated_at when the same statement already sets it (normal write path)', () => {
+  it('does not touch updated_at when the same statement already sets it (normal write path)', async () => {
     const db = getDb()
     const now = Math.floor(Date.now() / 1000)
     db.prepare(
@@ -64,12 +64,12 @@ describe('kanban_cards_status_bumps_updated_at trigger', () => {
     // not fire here, or it would just be racing production's own timestamp.
     db.prepare("UPDATE kanban_cards SET status = 'done', updated_at = ? WHERE id = ?").run(now, 'raw-3')
 
-    expect(getKanbanCard('raw-3')!.updated_at).toBe(now)
+    expect((await getKanbanCard('raw-3'))!.updated_at).toBe(now)
   })
 })
 
 describe('listKanbanCards auto-archive vs. raw SQL status writes', () => {
-  it('does NOT archive a card moved to done via raw SQL this run, even though its old updated_at predates the cutoff', () => {
+  it('does NOT archive a card moved to done via raw SQL this run, even though its old updated_at predates the cutoff', async () => {
     const db = getDb()
     db.prepare(
       `INSERT INTO kanban_cards (id, title, status, priority, created_at, updated_at)
@@ -79,12 +79,12 @@ describe('listKanbanCards auto-archive vs. raw SQL status writes', () => {
     // The exact shape of the bug: status-only raw SQL write, no updated_at.
     db.prepare("UPDATE kanban_cards SET status = 'done' WHERE id = ?").run('freshly-done')
 
-    listKanbanCards()
+    await listKanbanCards()
 
-    expect(getKanbanCard('freshly-done')!.archived_at).toBeNull()
+    expect((await getKanbanCard('freshly-done'))!.archived_at).toBeNull()
   })
 
-  it('POZ. KONTROLL: still archives a genuinely old done card that never had a status UPDATE', () => {
+  it('POZ. KONTROLL: still archives a genuinely old done card that never had a status UPDATE', async () => {
     const db = getDb()
     // Written 'done' directly at INSERT time (e.g. a seed/import), so the
     // trigger (which only fires on UPDATE OF status) never touched it --
@@ -94,16 +94,16 @@ describe('listKanbanCards auto-archive vs. raw SQL status writes', () => {
        VALUES ('genuinely-old', 'old and done', 'done', 'normal', ?, ?)`
     ).run(OLD, OLD)
 
-    listKanbanCards()
+    await listKanbanCards()
 
-    expect(getKanbanCard('genuinely-old')!.archived_at).not.toBeNull()
+    expect((await getKanbanCard('genuinely-old'))!.archived_at).not.toBeNull()
   })
 
-  it('does not archive a done card moved via the production entry point (createKanbanCard + status: done)', () => {
-    createKanbanCard({ id: 'prod-done', title: 'created done today', status: 'done' })
+  it('does not archive a done card moved via the production entry point (createKanbanCard + status: done)', async () => {
+    await createKanbanCard({ id: 'prod-done', title: 'created done today', status: 'done' })
 
-    listKanbanCards()
+    await listKanbanCards()
 
-    expect(getKanbanCard('prod-done')!.archived_at).toBeNull()
+    expect((await getKanbanCard('prod-done'))!.archived_at).toBeNull()
   })
 })

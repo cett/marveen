@@ -13,6 +13,7 @@ import type http from 'node:http'
 import { upsertOtelSpan, closeOtelSpan } from './db.js'
 import { recordHttpServerRequest } from './otel-signals.js'
 
+import { runAs } from './db/context.js'
 // First path segment after /api: the resources of the dashboard.
 const RESOURCES: ReadonlySet<string> = new Set([
   'activity', 'admin', 'agent-availability', 'agents', 'agent-inflight-turn', 'agent-state', 'agent-taskstate', 'approvals', 'artifacts', 'audit',
@@ -107,7 +108,7 @@ export interface HttpRequestFacts {
   nowMs?: number
 }
 
-export function recordHttpRequest(f: HttpRequestFacts): void {
+export async function recordHttpRequest(f: HttpRequestFacts): Promise<void> {
   try {
     const refused = f.status >= 400 && f.status < 500
     const route = httpRouteTemplate(f.path, refused)
@@ -119,11 +120,11 @@ export function recordHttpRequest(f: HttpRequestFacts): void {
       const startMs = Math.max(0, endMs - Math.round(f.seconds * 1000))
       const traceId = (f.authenticated ? traceIdFromTraceparent(f.traceparent) : null) ?? randomBytes(16).toString('hex')
       const spanId = randomBytes(8).toString('hex')
-      upsertOtelSpan({
+      await upsertOtelSpan({
         trace_id: traceId, span_id: spanId, parent_span_id: null, agent_id: f.agentId || 'dashboard',
         operation: 'http.server', start_ms: startMs, attributes: JSON.stringify({ http_method: method, http_route: route, http_status: status }),
       })
-      closeOtelSpan(traceId, spanId, endMs, status >= 500 ? 'error' : 'ok')
+      await closeOtelSpan(traceId, spanId, endMs, status >= 500 ? 'error' : 'ok')
     }
   } catch {
     /* instrumentation: never affects the request */
@@ -148,10 +149,12 @@ export function instrumentHttpRequest(req: http.IncomingMessage, res: http.Serve
   res.once('close', () => {
     if (!res.writableFinished) return
     if (isEventStream(req, res)) return
-    recordHttpRequest({
+    // recordHttpRequest catches its own failures; a close handler cannot wait for it.
+    // A close handler runs outside the request's db context, so the write opens its own.
+    void runAs.system('http-metrics', () => recordHttpRequest({
       method, path, status: res.statusCode, seconds: Number(process.hrtime.bigint() - t0) / 1e9,
       traceparent: req.headers['traceparent'],
       authenticated: trust.authenticated,
-    })
+    }))
   })
 }

@@ -76,6 +76,7 @@ import { resolveWriteTenant } from '../db/write-tenant.js'
 import { resolveAgentIdHeader, type AuthResult } from './auth-gate.js'
 import { json, readBody, RequestBodyTooLargeError, SCHEDULE_BODY_MAX_BYTES, setRequestBodyObserver } from './http-helpers.js'
 
+import { runAs } from '../db/context.js'
 export const TOKEN_SHADOW_CATEGORIES = [
   'shared_token_use',
   'agent_id_mismatch',
@@ -265,8 +266,8 @@ interface WatchSpec {
   paramLiterals?: ReadonlySet<string>
   /** The path parameter IS an agent id (otherwise it addresses a row, see `owner`). */
   paramIsAgent?: boolean
-  /** Owner agent of the row the path parameter addresses. */
-  owner?: (param: string) => string | null | undefined
+  /** Owner agent of the row the path parameter addresses. May be asynchronous: the reader awaits it. */
+  owner?: (param: string) => string | null | undefined | Promise<string | null | undefined>
   queryKeys: readonly string[]
   bodyKeys: readonly string[]
   /** The size cap of the route's own body read, when it is tighter than the default; the gate reads with the same cap. */
@@ -283,7 +284,7 @@ interface WatchSpec {
    * A read the enforce mode lets through although `enforce` is 'any' (the shared memories: a tier meant
    * for the other agents). Such a request is counted as foreign_row_read, not foreign_row_access.
    */
-  readExempt?: (r: { method: string; path: string; param: string | undefined; query: URLSearchParams }) => boolean
+  readExempt?: (r: { method: string; path: string; param: string | undefined; query: URLSearchParams }) => boolean | Promise<boolean>
   /**
    * The route acts as the MAIN agent when the request names no agent (`agent_id || MAIN_AGENT_ID`).
    * For a caller that is not the main agent, enforce reads "names nobody" as "names the main agent":
@@ -311,7 +312,7 @@ const NONE: ReadonlySet<string> = new Set()
  * row by id is exempt only when it carries no parameter that changes what comes back (`include=versions`
  * adds the row's history, `agent` / `agent_id` records a read for the named agent).
  */
-function sharedMemoryRead(r: { method: string; path: string; param: string | undefined; query: URLSearchParams }): boolean {
+async function sharedMemoryRead(r: { method: string; path: string; param: string | undefined; query: URLSearchParams }): Promise<boolean> {
   if (r.method !== 'GET') return false
   if (r.path === '/api/memories') {
     const asked = [...r.query.getAll('tier'), ...r.query.getAll('category')].filter((v) => v !== '')
@@ -319,7 +320,7 @@ function sharedMemoryRead(r: { method: string; path: string; param: string | und
   }
   if (r.param !== undefined && /^\d+$/.test(r.param) && r.path === `/api/memories/${r.param}`) {
     if (['include', 'agent', 'agent_id'].some((k) => r.query.has(k))) return false
-    return getMemoryOwnerRow(Number(r.param))?.category === 'shared'
+    return (await getMemoryOwnerRow(Number(r.param)))?.category === 'shared'
   }
   return false
 }
@@ -351,31 +352,31 @@ const WATCHED: readonly WatchSpec[] = [
     prefix: '/api/memories', kind: 'unscoped', paramSeg: 0, paramName: ':id',
     // The sub-routes that are not a row id (graph, stats, ...), so they are not read as one.
     paramLiterals: new Set(['import', 'backfill', 'stats', 'resort', 'links', 'read-event', 'graph', 'stale']),
-    owner: (p) => (/^\d+$/.test(p) ? getMemoryOwnerRow(Number(p))?.agent_id : undefined),
+    owner: async (p) => (/^\d+$/.test(p) ? (await getMemoryOwnerRow(Number(p)))?.agent_id : undefined),
     queryKeys: AGENT_QUERY, bodyKeys: AGENT_BODY, listsAcrossAgents: true, enforce: 'any', readExempt: sharedMemoryRead,
     omittedMain: { who: 'always', on: 'write', bodyKey: 'agent_id' },
   },
   {
     prefix: '/api/workspace', kind: 'unscoped', paramSeg: 0, paramName: ':id',
-    owner: (p) => peekWorkspaceDoc(p)?.agent_id,
+    owner: async (p) => (await peekWorkspaceDoc(p))?.agent_id,
     queryKeys: AGENT_QUERY, bodyKeys: AGENT_BODY, listsAcrossAgents: true, enforce: 'write',
   },
   {
     prefix: '/api/kanban', kind: 'unscoped', paramSeg: 0, paramName: ':id',
     paramLiterals: new Set(['labels', 'heartbeat-summary', 'assignees', 'archived', 'search']),
-    owner: (p) => getKanbanCard(p)?.assignee,
+    owner: async (p) => (await getKanbanCard(p))?.assignee,
     queryKeys: ['assignee'], bodyKeys: ['assignee'], enforce: 'none',
   },
   {
     prefix: '/api/blackboard', kind: 'unscoped', paramSeg: 0, paramName: ':id',
     paramLiterals: new Set(['history']),
-    owner: (p) => getBlackboardRowById(p)?.agent_id,
+    owner: async (p) => (await getBlackboardRowById(p))?.agent_id,
     queryKeys: ['agent_id'], bodyKeys: ['agent_id'], enforce: 'write',
   },
   {
     prefix: '/api/schedules', kind: 'unscoped', paramSeg: 0, paramName: ':name',
     paramLiterals: new Set(['tick-status', 'agents', 'expand-questions', 'expand-prompt', 'pending']),
-    owner: (p) => getScheduleFromDb(p)?.agent,
+    owner: async (p) => (await getScheduleFromDb(p))?.agent,
     queryKeys: AGENT_QUERY, bodyKeys: ['agent'], bodyMaxBytes: SCHEDULE_BODY_MAX_BYTES, enforce: 'any', omittedMain: { who: 'always', on: 'write', bodyKey: 'agent' },
   },
 ]
@@ -464,33 +465,41 @@ function warnThrottled(err: unknown, msg: string): void {
 interface Base { method: string; route: string; client: string; caller: string; callerSource: TokenShadowCallerSource }
 
 /** Adds one to the counter of this shape. Never throws. `nowSec` is injectable for tests. */
-export function recordTokenShadow(base: Base, hit: ShadowHit, nowSec: number = Math.floor(Date.now() / 1000)): boolean {
+export async function recordTokenShadow(base: Base, hit: ShadowHit, nowSec: number = Math.floor(Date.now() / 1000)): Promise<boolean> {
   try {
     const day = utcDay(nowSec)
-    if (dayState.day !== day) dayState = { day, known: new Set(), rows: countTokenShadowRowsForDay(day) }
+    if (dayState.day !== day) dayState = { day, known: new Set(), rows: await countTokenShadowRowsForDay(day) }
     let key: TokenShadowKey = {
       day, category: hit.category, method: base.method, route: base.route,
       caller: base.caller, callerSource: base.callerSource, client: base.client, target: hit.target,
     }
     let ks = keyString(key)
     if (!dayState.known.has(ks)) {
-      if (tokenShadowKeyExists(key)) {
+      const exists = await tokenShadowKeyExists(key)
+      // The lookup is awaited: overlapping first records of the same new shape all got here with `known` empty.
+      // Deciding on a fresh read of `known` (no await between it and the add) lets exactly one of them count the row.
+      if (dayState.known.has(ks)) {
+        // another record of this shape counted it meanwhile
+      } else if (exists) {
         dayState.known.add(ks)
       } else if (dayState.rows >= MAX_ROWS_PER_DAY) {
         // Over the cap: fold into one overflow row per (day, category, method) instead of growing.
         key = { day, category: hit.category, method: base.method, route: OVERFLOW, caller: OVERFLOW, callerSource: 'none', client: 'other', target: '' }
         ks = keyString(key)
         if (!dayState.known.has(ks)) {
-          if (!tokenShadowKeyExists(key)) dayState.rows += 1
-          dayState.known.add(ks)
+          const overflowExists = await tokenShadowKeyExists(key)
+          if (!dayState.known.has(ks)) {
+            if (!overflowExists) dayState.rows += 1
+            dayState.known.add(ks)
+          }
         }
       } else {
         dayState.rows += 1
         dayState.known.add(ks)
       }
     }
-    bumpTokenShadow(key, nowSec)
-    pruneThrottled(nowSec)
+    await bumpTokenShadow(key, nowSec)
+    await pruneThrottled(nowSec)
     return true
   } catch (err) {
     warnThrottled(err, 'token-shadow: counter write failed')
@@ -498,11 +507,11 @@ export function recordTokenShadow(base: Base, hit: ShadowHit, nowSec: number = M
   }
 }
 
-function pruneThrottled(nowSec: number): void {
+async function pruneThrottled(nowSec: number): Promise<void> {
   if (nowSec - lastPruneAt < PRUNE_INTERVAL_SEC) return
   lastPruneAt = nowSec
   try {
-    deleteTokenShadowRowsBefore(utcDay(nowSec - RETENTION_DAYS * SECONDS_PER_DAY))
+    await deleteTokenShadowRowsBefore(utcDay(nowSec - RETENTION_DAYS * SECONDS_PER_DAY))
   } catch (err) {
     warnThrottled(err, 'token-shadow: prune failed')
   }
@@ -513,11 +522,11 @@ function pruneThrottled(nowSec: number): void {
 const tenantless = new Map<string, { v: boolean; at: number }>()
 
 /** True when `agentId` has no tenant to act in right now (a shared agent with no fresh context). Cached 5 s. */
-function agentHasNoTenant(agentId: string): boolean {
+async function agentHasNoTenant(agentId: string): Promise<boolean> {
   const now = Date.now()
   const hit = tenantless.get(agentId)
   if (hit && now - hit.at < TENANTLESS_TTL_MS) return hit.v
-  const v = resolveWriteTenant(agentId) === null
+  const v = await resolveWriteTenant(agentId) === null
   if (tenantless.size > 200) tenantless.clear()
   tenantless.set(agentId, { v, at: now })
   return v
@@ -531,17 +540,17 @@ function agentHasNoTenant(agentId: string): boolean {
  * straggler that still holds the old token is visible. Never changes the 401, never throws. A bearer
  * that is unknown, expired or any other revoked token is not the shared token and is not counted.
  */
-export function observeRefusedSharedToken(req: http.IncomingMessage, method: string, rawPath: string): void {
+export async function observeRefusedSharedToken(req: http.IncomingMessage, method: string, rawPath: string): Promise<void> {
   try {
     const m = /^Bearer\s+(.+)$/.exec(req.headers.authorization ?? '')
     const bearer = m?.[1]?.trim()
     if (!bearer) return
     const path = stripApiVersion(rawPath)
     if (path === TOKEN_SHADOW_ROUTE) return
-    const row = getApiTokenRowByHash(createHash('sha256').update(bearer).digest('hex'))
+    const row = await getApiTokenRowByHash(createHash('sha256').update(bearer).digest('hex'))
     if (!row || row.name !== DASHBOARD_TOKEN_NAME || row.revoked_at === null) return
     const declared = cleanAgentId(resolveAgentIdHeader(req))
-    recordTokenShadow(
+    await recordTokenShadow(
       {
         method, route: normalizeRoute(path), client: classifyClient(req.headers['user-agent']),
         caller: declared, callerSource: declared ? 'self_declared' : 'none',
@@ -569,11 +578,11 @@ function messageSenderTarget(body: Buffer): string {
   }
 }
 
-function flushSharedUse(req: http.IncomingMessage, target: string): void {
+async function flushSharedUse(req: http.IncomingMessage, target: string): Promise<void> {
   const base = sharedUseDeferred.get(req)
   if (!base) return
   sharedUseDeferred.delete(req)
-  recordTokenShadow(base, { category: 'shared_token_use', target })
+  await recordTokenShadow(base, { category: 'shared_token_use', target })
 }
 
 interface Pending { base: Base; spec: WatchSpec; recorded: Set<string>; caller: string; refusable: boolean; omittedMain: boolean }
@@ -691,7 +700,7 @@ export async function answerIdentityRefusal(req: http.IncomingMessage, res: http
   try {
     const refusal = await identityRefusal(req)
     if (!refusal) return false
-    if (base) recordTokenShadow(base, { category: 'identity_refused', target: refusal.target })
+    if (base) await recordTokenShadow(base, { category: 'identity_refused', target: refusal.target })
     if (refusal.undecided) {
       logger.error(
         { path: req.url?.split('?')[0], method: req.method, caller: refusal.caller },
@@ -714,18 +723,18 @@ export async function answerIdentityRefusal(req: http.IncomingMessage, res: http
 }
 
 /**
- * Observe one authenticated request, after the auth and RBAC gates and before dispatch. Synchronous
+ * Observe one authenticated request, after the auth and RBAC gates and before dispatch. Asynchronous
  * and bounded: a few string operations, at most one row-owner lookup and one counter upsert per hit.
  * Never throws and never touches the request or the response (the body is not consumed here).
  */
-export function observeTokenUsage(
+export async function observeTokenUsage(
   req: http.IncomingMessage,
   auth: AuthResult,
   method: string,
   rawPath: string,
   url: URL,
   mainAgentId: string = MAIN_AGENT_ID,
-): void {
+): Promise<void> {
   try {
     const path = stripApiVersion(rawPath)
     if (path === TOKEN_SHADOW_ROUTE) return
@@ -743,16 +752,16 @@ export function observeTokenUsage(
       const rawCfg = req.headers['x-caller-config']
       const launchedAs = cleanAgentId(Array.isArray(rawCfg) ? rawCfg[0] : rawCfg)
       if (who.source === 'token' && who.caller === cleanAgentId(mainAgentId) && launchedAs && launchedAs !== INVALID && launchedAs !== who.caller) {
-        recordTokenShadow(base, { category: 'main_token_from_subagent', target: launchedAs })
+        await recordTokenShadow(base, { category: 'main_token_from_subagent', target: launchedAs })
       }
     } catch { /* a counting side effect only */ }
     const spec = watchSpecFor(path)
     if (who.shared) {
       if (spec?.prefix === '/api/messages' && isWriteMethod(method) && typeof req.once === 'function') {
         sharedUseDeferred.set(req, base)
-        req.once('close', () => flushSharedUse(req, ''))
+        req.once('close', () => { void runAs.system('http-metrics', () => flushSharedUse(req, '')) })  // recordTokenShadow catches its own failures; a close handler has no request db context
       } else {
-        recordTokenShadow(base, { category: 'shared_token_use', target: '' })
+        await recordTokenShadow(base, { category: 'shared_token_use', target: '' })
       }
     }
     const hasTenantParam = !!url.searchParams.get('tenant')
@@ -760,14 +769,14 @@ export function observeTokenUsage(
     // (4) tenant context. A counting side effect only: a fault in it must not skip the identity check below.
     try {
       // A shared-token request that declares a shared agent and names no tenant.
-      if (who.shared && who.source === 'self_declared' && !hasTenantParam && agentHasNoTenant(who.caller)) {
-        recordTokenShadow(base, { category: 'missing_tenant_context', target: explainServingTenantMiss(who.caller) })
+      if (who.shared && who.source === 'self_declared' && !hasTenantParam && await agentHasNoTenant(who.caller)) {
+        await recordTokenShadow(base, { category: 'missing_tenant_context', target: await explainServingTenantMiss(who.caller) })
       }
       // The memory read of a shared agent from a caller that has no tenant of its own to scope it by.
       if (spec?.prefix === '/api/memories' && method === 'GET' && !hasTenantParam && (who.shared || who.fleetAgent)) {
         const named = cleanAgentId(url.searchParams.get('agent') ?? url.searchParams.get('agent_id'))
-        if (named && named !== INVALID && agentHasNoTenant(named)) {
-          recordTokenShadow(base, { category: 'shared_agent_memories_no_tenant', target: named })
+        if (named && named !== INVALID && await agentHasNoTenant(named)) {
+          await recordTokenShadow(base, { category: 'shared_agent_memories_no_tenant', target: named })
         }
       }
     } catch (err) {
@@ -778,7 +787,7 @@ export function observeTokenUsage(
     if (!spec || !who.caller || who.caller === mainAgentId.trim().toLowerCase()) return
 
     try {
-      observeIdentity(req, spec, who, base, method, path, url, mainAgentId)
+      await observeIdentity(req, spec, who, base, method, path, url, mainAgentId)
     } catch (err) {
       // The decision could not be made. Where enforce would have had to decide, it refuses (see identityRefusal);
       // the exemption is not known any more, so a read enforce would have let through is refused too.
@@ -796,7 +805,7 @@ export function observeTokenUsage(
  * The identity half of observeTokenUsage: classify what the request names, count it, and remember the verdict enforce
  * will give. May throw: the caller turns a fault into an `undecided` verdict where enforce applies.
  */
-function observeIdentity(
+async function observeIdentity(
   req: http.IncomingMessage,
   spec: WatchSpec,
   who: ShadowCaller,
@@ -805,7 +814,7 @@ function observeIdentity(
   path: string,
   url: URL,
   mainAgentId: string,
-): void {
+): Promise<void> {
   const targets = new Set<string>()
   let ownerLookupFailed = false
   const param = paramOf(spec, path)
@@ -813,7 +822,7 @@ function observeIdentity(
     if (spec.paramIsAgent) targets.add(param)
     else if (spec.owner) {
       try {
-        const owner = spec.owner(param)
+        const owner = await spec.owner(param)
         if (owner) targets.add(owner)
       } catch (err) {
         // Not knowing whose row it is does not mean it is the caller's: remembered, and decided below.
@@ -830,7 +839,13 @@ function observeIdentity(
   }
 
   const recorded = new Set<string>()
-  const exempt = !!spec.readExempt?.({ method, path, param, query: url.searchParams })
+  // A failed exemption lookup is no exemption: the request stays refusable (fail closed).
+  let exempt = false
+  try {
+    exempt = !!(await spec.readExempt?.({ method, path, param, query: url.searchParams }))
+  } catch (err) {
+    warnThrottled(err, 'token-shadow: read exemption lookup failed')
+  }
   const refusable = enforceApplies(spec, method) && !exempt
   // A write takes its agent from the body only (the route ignores the query), a read from the query key.
   const queryKeyNamed = !!spec.omittedMain?.queryKey && !!url.searchParams.get(spec.omittedMain.queryKey)?.trim()
@@ -841,7 +856,7 @@ function observeIdentity(
     pathVerdicts.set(req, { caller: who.caller, hit: { category: 'agent_id_mismatch', target: mainAgentId.trim().toLowerCase() }, base })
   }
   for (const hit of identityHits({ kind: spec.kind, caller: who.caller, mainAgentId, targets, refusable })) {
-    recordTokenShadow(base, hit)
+    await recordTokenShadow(base, hit)
     recorded.add(hit.target)
     if (refusable && !pathVerdicts.has(req)) pathVerdicts.set(req, { caller: who.caller, hit, base })
   }
@@ -850,7 +865,7 @@ function observeIdentity(
     pathVerdicts.set(req, { caller: who.caller, hit: { category: 'agent_id_mismatch', target: UNDECIDED }, base, undecided: true })
   }
   if (spec.listsAcrossAgents && method === 'GET' && param === undefined && !queryNamed) {
-    recordTokenShadow(base, { category: 'unscoped_read', target: '*' })
+    await recordTokenShadow(base, { category: 'unscoped_read', target: '*' })
   }
 
   if (spec.bodyKeys.length > 0 && isWriteMethod(method)) {
@@ -859,9 +874,9 @@ function observeIdentity(
 }
 
 /** Called by readBody once the body is complete; counts the agent ids a body names. Never throws. */
-export function observeRequestBody(req: http.IncomingMessage, body: Buffer, mainAgentId: string = MAIN_AGENT_ID): void {
+export async function observeRequestBody(req: http.IncomingMessage, body: Buffer, mainAgentId: string = MAIN_AGENT_ID): Promise<void> {
   try {
-    if (sharedUseDeferred.has(req)) flushSharedUse(req, messageSenderTarget(body))
+    if (sharedUseDeferred.has(req)) await flushSharedUse(req, messageSenderTarget(body))
   } catch (err) {
     warnThrottled(err, 'token-shadow: shared-use record failed')
   }
@@ -875,7 +890,7 @@ export function observeRequestBody(req: http.IncomingMessage, body: Buffer, main
     for (const hit of identityHits({ kind: pending.spec.kind, caller: pending.base.caller, mainAgentId, targets: named, refusable: pending.refusable })) {
       if (pending.recorded.has(hit.target)) continue
       pending.recorded.add(hit.target)
-      recordTokenShadow(pending.base, hit)
+      await recordTokenShadow(pending.base, hit)
     }
   } catch {
     // A body that is not JSON is the handler's 400 to give; the counter has nothing to count.
@@ -885,15 +900,15 @@ export function observeRequestBody(req: http.IncomingMessage, body: Buffer, main
 setRequestBodyObserver((req, body) => observeRequestBody(req, body))
 
 /** A fleet-agent token of a shared agent was refused 403 for lack of tenant context (web.ts). */
-export function recordTenantContextRefusal(req: http.IncomingMessage, auth: AuthResult, method: string, rawPath: string): void {
+export async function recordTenantContextRefusal(req: http.IncomingMessage, auth: AuthResult, method: string, rawPath: string): Promise<void> {
   try {
     const who = resolveShadowCaller(auth, undefined)
     if (!who || who.source !== 'token') return
-    recordTokenShadow(
+    await recordTokenShadow(
       { method, route: normalizeRoute(rawPath), client: classifyClient(req.headers['user-agent']), caller: who.caller, callerSource: 'token' },
       // target = why there was no tenant (no_row | unknown | conflict | stale | not_serving | error):
       // the counter says what to fix, not only that something failed.
-      { category: 'missing_tenant_context', target: explainServingTenantMiss(who.caller) },
+      { category: 'missing_tenant_context', target: await explainServingTenantMiss(who.caller) },
     )
   } catch (err) {
     warnThrottled(err, 'token-shadow: refusal record failed')
@@ -908,18 +923,18 @@ export function skillOwnerTarget(skillId: string): string {
 }
 
 /** A fleet_agent token tried a skill write T1 refuses (skills.ts, at the 403). */
-export function recordFleetSkillWriteDenied(
+export async function recordFleetSkillWriteDenied(
   req: http.IncomingMessage,
   tokenAgentId: string | undefined,
   method: string,
   rawPath: string,
   skillId: string,
-): void {
+): Promise<void> {
   try {
     const caller = cleanAgentId(tokenAgentId)
     if (!caller) return
     const owner = skillOwnerTarget(skillId)
-    recordTokenShadow(
+    await recordTokenShadow(
       { method, route: normalizeRoute(rawPath), client: classifyClient(req.headers['user-agent']), caller, callerSource: 'token' },
       { category: 'fleet_skill_write_denied', target: owner === caller ? '' : owner },
     )

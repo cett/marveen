@@ -18,14 +18,14 @@ beforeEach(() => {
   getDb().exec("DELETE FROM otel_spans WHERE operation = 'http.server'")
 })
 
-const metric = () => collectRegistryMetrics().find((m) => m.name === 'http.server.request.duration')
+const metric = async () => (await collectRegistryMetrics()).find((m) => m.name === 'http.server.request.duration')
 const attrMap = (p: any) => Object.fromEntries(p.attributes.map((a: any) => [a.key, a.value.stringValue ?? a.value.intValue]))
 const httpSpans = () => getDb().prepare("SELECT * FROM otel_spans WHERE operation = 'http.server'").all() as any[]
 
-function upsertSessionSpan() {
+async function upsertSessionSpan() {
   getDb().exec("DELETE FROM otel_spans WHERE trace_id = 'session-a'")
-  upsertOtelSpan({ trace_id: 'session-a', span_id: 'span-1', parent_span_id: null, agent_id: 'agent-a', operation: 'tool.Bash', start_ms: 1, attributes: null })
-  closeOtelSpan('session-a', 'span-1', 2, 'ok')
+  await upsertOtelSpan({ trace_id: 'session-a', span_id: 'span-1', parent_span_id: null, agent_id: 'agent-a', operation: 'tool.Bash', start_ms: 1, attributes: null })
+  await closeOtelSpan('session-a', 'span-1', 2, 'ok')
 }
 
 describe('httpRouteTemplate', () => {
@@ -116,33 +116,33 @@ describe('traceIdFromTraceparent', () => {
 })
 
 describe('recordHttpRequest', () => {
-  it('records every request in the histogram with the method, the TEMPLATE and the status, and no span for a fast success', () => {
-    recordHttpRequest({ method: 'get', path: '/api/kanban/card-123', status: 200, seconds: 0.03 })
-    const p = (metric()!.histogram!.dataPoints as any[])[0]
+  it('records every request in the histogram with the method, the TEMPLATE and the status, and no span for a fast success', async () => {
+    await recordHttpRequest({ method: 'get', path: '/api/kanban/card-123', status: 200, seconds: 0.03 })
+    const p = ((await metric())!.histogram!.dataPoints as any[])[0]
     expect(attrMap(p)).toEqual({ 'http.request.method': 'GET', 'http.route': '/api/kanban/{id}', 'http.response.status_code': '200' })
     expect(p.count).toBe('1')
     expect(httpSpans()).toHaveLength(0)
   })
 
-  it('uses the conventional bounds in seconds', () => {
-    recordHttpRequest({ method: 'GET', path: '/api/overview', status: 200, seconds: 0.2 })
-    const p = (metric()!.histogram!.dataPoints as any[])[0]
+  it('uses the conventional bounds in seconds', async () => {
+    await recordHttpRequest({ method: 'GET', path: '/api/overview', status: 200, seconds: 0.2 })
+    const p = ((await metric())!.histogram!.dataPoints as any[])[0]
     expect(p.explicitBounds).toEqual([0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10])
     expect(p.bucketCounts[6]).toBe('1') // 0.2 s: the <= 0.25 bucket
   })
 
-  it('writes a span for a server error and for a slow request, none for a client error', () => {
-    recordHttpRequest({ method: 'POST', path: '/api/messages', status: 500, seconds: 0.01 })
-    recordHttpRequest({ method: 'GET', path: '/api/overview', status: 200, seconds: SLOW_REQUEST_SECONDS })
-    recordHttpRequest({ method: 'GET', path: '/api/overview', status: 404, seconds: 0.01 })
-    recordHttpRequest({ method: 'GET', path: '/api/overview', status: 200, seconds: SLOW_REQUEST_SECONDS - 0.01 })
+  it('writes a span for a server error and for a slow request, none for a client error', async () => {
+    await recordHttpRequest({ method: 'POST', path: '/api/messages', status: 500, seconds: 0.01 })
+    await recordHttpRequest({ method: 'GET', path: '/api/overview', status: 200, seconds: SLOW_REQUEST_SECONDS })
+    await recordHttpRequest({ method: 'GET', path: '/api/overview', status: 404, seconds: 0.01 })
+    await recordHttpRequest({ method: 'GET', path: '/api/overview', status: 200, seconds: SLOW_REQUEST_SECONDS - 0.01 })
     const spans = httpSpans()
     expect(spans.map((s) => s.status).sort()).toEqual(['error', 'ok'])
     expect(spans.every((s) => s.end_ms >= s.start_ms)).toBe(true)
   })
 
-  it('exports the span as a SERVER span named by the template, never by the raw path', () => {
-    recordHttpRequest({ method: 'GET', path: '/api/skills/secret-skill-name/run', status: 503, seconds: 0.5 })
+  it('exports the span as a SERVER span named by the template, never by the raw path', async () => {
+    await recordHttpRequest({ method: 'GET', path: '/api/skills/secret-skill-name/run', status: 503, seconds: 0.5 })
     const [row] = httpSpans()
     const json = JSON.stringify(spansToOtelJson([row], 'ns-a', { serviceInstanceId: 'inst-a' }))
     const span = (JSON.parse(json).resourceSpans[0].scopeSpans[0].spans as any[])[0]
@@ -154,10 +154,10 @@ describe('recordHttpRequest', () => {
     expect(span.status.code).toBe(2)
   })
 
-  it('joins the trace of a valid traceparent and starts its own for a missing or bad one', () => {
+  it('joins the trace of a valid traceparent and starts its own for a missing or bad one', async () => {
     const tid = '4bf92f3577b34da6a3ce929d0e0e4736'
-    recordHttpRequest({ method: 'GET', path: '/api/overview', status: 500, seconds: 0.1, traceparent: `00-${tid}-00f067aa0ba902b7-01`, authenticated: true })
-    recordHttpRequest({ method: 'GET', path: '/api/overview', status: 500, seconds: 0.1, traceparent: 'nonsense', authenticated: true })
+    await recordHttpRequest({ method: 'GET', path: '/api/overview', status: 500, seconds: 0.1, traceparent: `00-${tid}-00f067aa0ba902b7-01`, authenticated: true })
+    await recordHttpRequest({ method: 'GET', path: '/api/overview', status: 500, seconds: 0.1, traceparent: 'nonsense', authenticated: true })
     const rows = httpSpans()
     expect(rows).toHaveLength(2)
     const exported = JSON.parse(JSON.stringify(spansToOtelJson(rows, 'ns-a', { serviceInstanceId: 'i' }))).resourceSpans
@@ -166,39 +166,39 @@ describe('recordHttpRequest', () => {
     expect(ids).toContain(tid)
     const other = ids.find((i: string) => i !== tid)!
     expect(other).toMatch(/^[0-9a-f]{32}$/)
-    expect(getOtelTrace(`w3c-${tid}`).length).toBe(1)
+    expect((await getOtelTrace(`w3c-${tid}`)).length).toBe(1)
   })
 
-  it('contract with the hooks: the trace id of a session is sha256(session id)[:32], which is what they send as traceparent', () => {
+  it('contract with the hooks: the trace id of a session is sha256(session id)[:32], which is what they send as traceparent', async () => {
     // pinned in scripts/__tests__/dashboard-api-traceparent.test.py as FIXED_TRACE
-    upsertSessionSpan()
+    await upsertSessionSpan()
     const [row] = getDb().prepare("SELECT * FROM otel_spans WHERE trace_id = 'session-a'").all() as any[]
     const exported = JSON.parse(JSON.stringify(spansToOtelJson([row], 'ns-a', { serviceInstanceId: 'i' })))
     expect(exported.resourceSpans[0].scopeSpans[0].spans[0].traceId).toBe('fa57a52dbf08190218529730a3e99db6')
   })
 
-  it('ignores the traceparent of a caller without credentials: the span gets a trace of its own', () => {
+  it('ignores the traceparent of a caller without credentials: the span gets a trace of its own', async () => {
     const tid = '4bf92f3577b34da6a3ce929d0e0e4736'
-    recordHttpRequest({ method: 'GET', path: '/api/overview', status: 500, seconds: 0.1, traceparent: `00-${tid}-00f067aa0ba902b7-01` })
-    recordHttpRequest({ method: 'GET', path: '/api/overview', status: 500, seconds: 0.1, traceparent: `00-${tid}-00f067aa0ba902b7-01`, authenticated: false })
+    await recordHttpRequest({ method: 'GET', path: '/api/overview', status: 500, seconds: 0.1, traceparent: `00-${tid}-00f067aa0ba902b7-01` })
+    await recordHttpRequest({ method: 'GET', path: '/api/overview', status: 500, seconds: 0.1, traceparent: `00-${tid}-00f067aa0ba902b7-01`, authenticated: false })
     const ids = httpSpans().map((s) => s.trace_id)
     expect(ids).toHaveLength(2)
     expect(ids.some((i: string) => i.includes(tid))).toBe(false)
   })
 
-  it('names only the resource for an answer that says no, and such answers never grow the set of known templates', () => {
+  it('names only the resource for an answer that says no, and such answers never grow the set of known templates', async () => {
     for (let i = 0; i < MAX_DISTINCT_ROUTES + 100; i++) {
-      recordHttpRequest({ method: 'GET', path: `/api/kanban/${'status/'.repeat(i % 3)}x${i}/${i}`, status: i % 2 ? 401 : 404, seconds: 0.001 })
+      await recordHttpRequest({ method: 'GET', path: `/api/kanban/${'status/'.repeat(i % 3)}x${i}/${i}`, status: i % 2 ? 401 : 404, seconds: 0.001 })
     }
-    const routes = new Set(((metric()!.histogram!.dataPoints as any[]).map(attrMap)).map((a) => a['http.route']))
+    const routes = new Set((((await metric())!.histogram!.dataPoints as any[]).map(attrMap)).map((a) => a['http.route']))
     expect([...routes]).toEqual(['/api/kanban'])
     // the cap is untouched: a real route still gets its full template
     expect(httpRouteTemplate('/api/kanban/card-1/comments')).toBe('/api/kanban/{id}/comments')
   })
 
-  it('leaves the whole cap for real routes however many refused requests came first', () => {
+  it('leaves the whole cap for real routes however many refused requests came first', async () => {
     const resources = ['activity', 'admin', 'agents', 'approvals', 'artifacts', 'audit', 'auth', 'autonomy', 'backups', 'blackboard', 'kanban', 'memories', 'messages', 'skills', 'tokens', 'users']
-    for (const r of resources) recordHttpRequest({ method: 'GET', path: `/api/${r}/x/y`, status: 401, seconds: 0.001 })
+    for (const r of resources) await recordHttpRequest({ method: 'GET', path: `/api/${r}/x/y`, status: 401, seconds: 0.001 })
     const sub = ['status', 'search', 'stats', 'run', 'export', 'import', 'history', 'versions', 'comments', 'sync', 'log', 'login', 'me', 'set']
     const distinct = new Set<string>()
     outer: for (const a of resources) for (const b of sub) for (const c of sub) {
@@ -209,19 +209,19 @@ describe('recordHttpRequest', () => {
     expect(distinct.size).toBe(MAX_DISTINCT_ROUTES)
   })
 
-  it('does not report which paths exist: a 404 under a known resource looks like a 401', () => {
-    recordHttpRequest({ method: 'GET', path: '/api/kanban/nonexistent/deep/path', status: 404, seconds: 0.001 })
-    recordHttpRequest({ method: 'GET', path: '/api/kanban/some-card', status: 401, seconds: 0.001 })
-    const routes = (metric()!.histogram!.dataPoints as any[]).map(attrMap).map((a) => a['http.route'])
+  it('does not report which paths exist: a 404 under a known resource looks like a 401', async () => {
+    await recordHttpRequest({ method: 'GET', path: '/api/kanban/nonexistent/deep/path', status: 404, seconds: 0.001 })
+    await recordHttpRequest({ method: 'GET', path: '/api/kanban/some-card', status: 401, seconds: 0.001 })
+    const routes = ((await metric())!.histogram!.dataPoints as any[]).map(attrMap).map((a) => a['http.route'])
     expect(new Set(routes)).toEqual(new Set(['/api/kanban']))
   })
 
-  it('counts a status outside 100-599 as 0 and a hostile method as _OTHER, and never throws', () => {
-    expect(() => recordHttpRequest({ method: 'PROPFIND', path: '/api/x', status: 9999, seconds: 0.1 })).not.toThrow()
-    const p = (metric()!.histogram!.dataPoints as any[])[0]
+  it('counts a status outside 100-599 as 0 and a hostile method as _OTHER, and never throws', async () => {
+    await expect(recordHttpRequest({ method: 'PROPFIND', path: '/api/x', status: 9999, seconds: 0.1 })).resolves.toBeUndefined()
+    const p = ((await metric())!.histogram!.dataPoints as any[])[0]
     expect(attrMap(p)['http.request.method']).toBe('_OTHER')
     expect(attrMap(p)['http.response.status_code']).toBe('0')
-    expect(() => recordHttpRequest({ method: 'GET', path: undefined as unknown as string, status: 200, seconds: NaN })).not.toThrow()
+    await expect(recordHttpRequest({ method: 'GET', path: undefined as unknown as string, status: 200, seconds: NaN })).resolves.toBeUndefined()
   })
 })
 
@@ -234,16 +234,16 @@ describe('instrumentHttpRequest on a real HTTP server', () => {
     await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
     return { server, port: (server.address() as net.AddressInfo).port }
   }
-  const points = () => ((metric()?.histogram?.dataPoints ?? []) as any[]).map((p) => ({ a: attrMap(p), count: p.count }))
+  const points = async () => (((await metric())?.histogram?.dataPoints ?? []) as any[]).map((p) => ({ a: attrMap(p), count: p.count }))
 
   it('measures an answered request with the template of the route and the status, never the path or the query', async () => {
     const { server, port } = await serve((_req, res) => { res.writeHead(401); res.end('no') })
     try {
       await (await fetch(`http://127.0.0.1:${port}/api/kanban/some-card-name?q=secret-search-term`)).text()
       await new Promise((r) => setTimeout(r, 30))
-      const hit = points().find((p) => p.a['http.route'] === '/api/kanban')
+      const hit = (await points()).find((p) => p.a['http.route'] === '/api/kanban')
       expect(hit?.a).toEqual({ 'http.request.method': 'GET', 'http.route': '/api/kanban', 'http.response.status_code': '401' })
-      expect(JSON.stringify(collectRegistryMetrics())).not.toMatch(/some-card-name|secret-search-term/)
+      expect(JSON.stringify(await collectRegistryMetrics())).not.toMatch(/some-card-name|secret-search-term/)
     } finally {
       await new Promise((r) => server.close(r))
     }
@@ -280,7 +280,7 @@ describe('instrumentHttpRequest on a real HTTP server', () => {
       ctl.abort()
       await pending
       await new Promise((r) => setTimeout(r, 50))
-      expect(points()).toEqual([])
+      expect((await points())).toEqual([])
     } finally {
       server.closeAllConnections()
       await new Promise((r) => server.close(r))
@@ -290,7 +290,7 @@ describe('instrumentHttpRequest on a real HTTP server', () => {
   it('is what the dashboard server calls first in its handler', async () => {
     const { readFileSync } = await import('node:fs')
     const src = readFileSync(new URL('../web.ts', import.meta.url), 'utf8')
-    const handler = src.slice(src.indexOf('http.createServer(async (req, res) => {'))
+    const handler = src.slice(src.indexOf('const handleRequest = async (req: http.IncomingMessage, res: http.ServerResponse) => {'))
     expect(handler.slice(0, 900)).toContain('instrumentHttpRequest(req, res, method, path, httpTrust)')
     // the caller counts as authenticated once resolveAuth found a principal, not before
     expect(src).toMatch(/resolveAuth\(req, url, path, method, DASHBOARD_TOKEN, true\)\n\s+httpTrust\.authenticated = auth\.kind !== 'none'/)

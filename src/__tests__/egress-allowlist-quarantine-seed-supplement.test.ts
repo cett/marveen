@@ -3,8 +3,9 @@
 // (#985 group 1 follow-up -- 0056's baked seed does not retroactively pick
 // up file edits made after authoring time). Asserts they land in the
 // DB-backed table, not just the JSON side-car.
-import { describe, it, expect, beforeAll } from 'vitest'
-import { initDatabase, listEgressAllowlistRows } from '../db.js'
+import { describe, it, expect } from 'vitest'
+import { listEgressAllowlistRows } from '../db.js'
+import { useTestDb } from './helpers/with-test-db.js'
 
 const SUPPLEMENT_HOSTS = [
   'www.hwsw.hu',
@@ -16,13 +17,11 @@ const SUPPLEMENT_HOSTS = [
   'hzoltan.com',
 ]
 
-beforeAll(() => {
-  initDatabase(':memory:')
-})
+useTestDb()
 
 describe('migration 0059 seed supplement', () => {
-  it('seeds all 7 hosts as domain-type rows in the default tenant', () => {
-    const rows = listEgressAllowlistRows(null)
+  it('seeds all 7 hosts as domain-type rows in the default tenant', async () => {
+    const rows = await listEgressAllowlistRows(null)
     for (const host of SUPPLEMENT_HOSTS) {
       const row = rows.find((r) => r.value === host)
       expect(row, `expected a seeded row for ${host}`).toBeDefined()

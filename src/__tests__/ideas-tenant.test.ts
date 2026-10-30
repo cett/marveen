@@ -2,11 +2,14 @@
 // idea_box.tenant_id). Separate from
 // ideas-routes.test.ts, whose makeCtx defaults to role: 'admin' throughout
 // and predates tenant scoping -- this file exercises the non-admin path.
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { EventEmitter } from 'node:events'
 import type { RouteContext } from '../web/routes/types.js'
+import * as dbMod from '../db.js'
 import { initDatabase } from '../db.js'
 import { tryHandleIdeas } from '../web/routes/ideas.js'
+
+vi.mock('../web/llm-breakdown.js', () => ({ generateBreakdown: vi.fn(() => Promise.resolve({ subtasks: [] })) }))
 
 beforeEach(() => {
   initDatabase(':memory:')
@@ -104,4 +107,119 @@ describe('tryHandleIdeas: tenant-IDOR guard', () => {
     await tryHandleIdeas(ctx)
     expect(out.status).toBe(200)
   })
+})
+
+// The ownership check of each route reads the idea first (`await getIdeaById`). A check that lost its `await` reads a
+// Promise: it is never "missing", and its tenant_id is undefined. These tests pin both directions: the owner is let in
+// (the broken check would 404 its own tenant) and a missing idea is a 404 for the admin as well (the broken check
+// lets the admin through to a 200 with an empty list).
+describe('tryHandleIdeas: ownership check reads the idea (await-dependent guard)', () => {
+  const ownRoutes: Array<[string, string, (id: string) => string, object | undefined]> = [
+    ['DELETE', 'DELETE idea', (id) => `/api/ideas/${id}`, undefined],
+    ['GET', 'GET comments', (id) => `/api/ideas/${id}/comments`, undefined],
+    ['POST', 'POST comment', (id) => `/api/ideas/${id}/comments`, { content: 'a comment' }],
+    ['GET', 'GET status-log', (id) => `/api/ideas/${id}/status-log`, undefined],
+  ]
+
+  for (const [method, label, pathOf, body] of ownRoutes) {
+    it(`${label}: the owning tenant is let in`, async () => {
+      const id = await createIdea('tenant-a', 'own idea')
+      const { ctx, out } = makeCtx(method, pathOf(id), body, { role: 'agent', tenantId: 'tenant-a' })
+      await tryHandleIdeas(ctx)
+      expect(out.status).toBe(200)
+    })
+
+    it(`${label}: another tenant gets 404`, async () => {
+      const id = await createIdea('tenant-b', 'foreign idea')
+      const { ctx, out } = makeCtx(method, pathOf(id), body, { role: 'agent', tenantId: 'tenant-a' })
+      await tryHandleIdeas(ctx)
+      expect(out.status).toBe(404)
+    })
+
+    it(`${label}: an unknown id is 404 for the admin too`, async () => {
+      const { ctx, out } = makeCtx(method, pathOf('does-not-exist'), body, { role: 'admin' })
+      await tryHandleIdeas(ctx)
+      expect(out.status).toBe(404)
+    })
+  }
+})
+
+// The other five idea routes read the idea the same way (PUT, promote, breakdown, promote-breakdown, revert); the same
+// three cases per route, so the CHANGELOG claim "on every route" holds.
+describe('tryHandleIdeas: ownership check of PUT, promote, breakdown, promote-breakdown and revert', () => {
+  const routes: Array<[string, string, (id: string) => string, object | undefined]> = [
+    ['PUT', 'PUT idea', (id) => `/api/ideas/${id}`, { title: 'renamed' }],
+    ['POST', 'POST promote', (id) => `/api/ideas/${id}/promote`, { phase: 'detail' }],
+    ['POST', 'POST breakdown', (id) => `/api/ideas/${id}/breakdown`, {}],
+    ['POST', 'POST promote-breakdown', (id) => `/api/ideas/${id}/promote-breakdown`, { subtasks: [{ title: 's' }] }],
+    ['POST', 'POST revert', (id) => `/api/ideas/${id}/revert`, {}],
+  ]
+  for (const [method, label, pathOf, body] of routes) {
+    it(`${label}: the owning tenant is not turned away with a 404`, async () => {
+      const id = await createIdea('tenant-a', 'own idea')
+      const { ctx, out } = makeCtx(method, pathOf(id), body, { role: 'agent', tenantId: 'tenant-a' })
+      await tryHandleIdeas(ctx)
+      expect(out.status).not.toBe(404)
+    })
+    it(`${label}: another tenant gets 404`, async () => {
+      const id = await createIdea('tenant-b', 'foreign idea')
+      const { ctx, out } = makeCtx(method, pathOf(id), body, { role: 'agent', tenantId: 'tenant-a' })
+      await tryHandleIdeas(ctx)
+      expect(out.status).toBe(404)
+    })
+    it(`${label}: an unknown id is 404 for the admin too`, async () => {
+      const { ctx, out } = makeCtx(method, pathOf('does-not-exist'), body, { role: 'admin' })
+      await tryHandleIdeas(ctx)
+      expect(out.status).toBe(404)
+    })
+  }
+})
+
+// Every caller of updateIdeaWithStatusLog awaits it. A call that lost its `await` answers `ok: true` while the write is
+// still running (or has failed), so a rejected write must reach the handler's caller, and when the handler resolves
+// the idea row and exactly one status-log row are already written. The PUT case also fails if the PUT stops logging.
+describe('updateIdeaWithStatusLog is awaited by every caller', () => {
+  type Route = [string, string, (id: string) => string, object | undefined, string]
+  const routes: Route[] = [
+    ['PUT', 'PUT status change', (id) => `/api/ideas/${id}`, { status: 'reviewed' }, 'new'],
+    ['POST', 'promote', (id) => `/api/ideas/${id}/promote`, { phase: 'detail' }, 'new'],
+    ['POST', 'promote-breakdown', (id) => `/api/ideas/${id}/promote-breakdown`, { subtasks: [{ title: 's' }] }, 'new'],
+    ['POST', 'revert', (id) => `/api/ideas/${id}/revert`, {}, 'kanban'],
+  ]
+  for (const [method, label, pathOf, body, startStatus] of routes) {
+    it(`${label}: a rejected idea+log write is not answered ok`, async () => {
+      const id = await createIdea('tenant-a', 'idea')
+      if (startStatus !== 'new') await dbMod.updateIdea(id, { status: startStatus as 'kanban' })
+      // promote and promote-breakdown reach the idea write through promoteIdeaToKanban (one transaction with the cards)
+      const target = label.startsWith('promote') ? 'promoteIdeaToKanban' : 'updateIdeaWithStatusLog'
+      vi.mocked(dbMod[target]).mockRejectedValueOnce(new Error('db down'))
+      const { ctx, out } = makeCtx(method, pathOf(id), body, { role: 'agent', tenantId: 'tenant-a' })
+
+      await expect(tryHandleIdeas(ctx)).rejects.toThrow('db down')
+
+      expect(JSON.stringify(out)).not.toContain('"ok":true')
+    })
+
+    it(`${label}: the idea row and exactly one status-log row are written when the handler resolves`, async () => {
+      const id = await createIdea('tenant-a', 'idea')
+      if (startStatus !== 'new') await dbMod.updateIdea(id, { status: startStatus as 'kanban' })
+      const before = (await dbMod.getIdeaStatusLog(id)).length
+      const { ctx, out } = makeCtx(method, pathOf(id), body, { role: 'agent', tenantId: 'tenant-a' })
+
+      await tryHandleIdeas(ctx)
+
+      expect(out.status).toBe(200)
+      expect((await dbMod.getIdeaStatusLog(id)).length).toBe(before + 1)
+      expect((await dbMod.getIdeaById(id))?.status).toBe(label === 'revert' ? 'reviewed' : label === 'PUT status change' ? 'reviewed' : 'kanban')
+    })
+  }
+})
+
+vi.mock('../db.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../db.js')>()
+  return {
+    ...actual,
+    updateIdeaWithStatusLog: vi.fn(actual.updateIdeaWithStatusLog),
+    promoteIdeaToKanban: vi.fn(actual.promoteIdeaToKanban),
+  }
 })

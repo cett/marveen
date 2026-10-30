@@ -55,6 +55,7 @@ import { decideDownAgentAction, AGENT_MAX_RESTART_ATTEMPTS, parseEtimeToSeconds 
 import { getClaudePidForSession, hasChannelPluginAlive, probeChannelPluginLiveness } from '../channel-coordinator/liveness.js'
 import { getDesiredAgents } from './agent-desired-state.js'
 
+import { systemJob } from '../db/background-jobs.js'
 const TMUX = resolveFromPath('tmux')
 const CLAUDE = resolveFromPath('claude')
 
@@ -2015,7 +2016,7 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
         }
         logger.warn({ agent: t.agentName, provider: t.provider, failures }, 'Agent channel plugin down -- auto-restarting')
         try {
-          stopAgentProcess(t.agentName!)
+          await stopAgentProcess(t.agentName!)
           // Settle before the fresh start. stopAgentProcess already reaps this
           // agent's channel orphans + waits 2s; add more so the shared plugin
           // cache (bun run --cwd <plugin>, .in_use markers) fully releases from
@@ -2032,7 +2033,7 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
           // the --channels plugin MCP server, so the agent comes up with no plugin
           // and no poller (verified: continue -> "Plugin not found" in /mcp; fresh
           // -> plugin loads + poller attaches). Context is dropped, memory persists.
-          startAgentProcess(t.agentName!, { fresh: true })
+          await startAgentProcess(t.agentName!, { fresh: true })
           agentLastRestart.set(t.agentName!, Date.now())
           agentDownSince.delete(t.session)
           agentBusyDeferAlerted.delete(t.session)
@@ -2073,8 +2074,9 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
       checkRunning = false
     }
   }
-  setTimeout(() => { void check() }, 30000)
-  return setInterval(() => { void check() }, 60000)
+  const run = systemJob('channel-monitor', () => { void check() })
+  setTimeout(run, 30000)
+  return setInterval(run, 60000)
 }
 
 // Start desired-but-missing agents one at a time (~15s apart). The stagger is
@@ -2125,7 +2127,7 @@ async function reconcileDesiredAgents(): Promise<void> {
       if (!memGateAllowsStart(name)) continue   // Commit 3 v1: safe-mode / memory gate
       logger.warn({ agent: name }, 'Desired agent not running -- auto-starting (reconcile)')
       try {
-        const r = startAgentProcess(name)
+        const r = await startAgentProcess(name)
         agentLastRestart.set(name, Date.now())
         if (!r.ok && r.error !== 'conflict') {
           logger.error({ agent: name, error: r.error }, 'Reconcile start failed')

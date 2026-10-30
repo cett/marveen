@@ -64,13 +64,13 @@ async function callAs(auth: AuthResult, method: string, path: string, body?: unk
   return out
 }
 
-function tokenAuth(raw: string): AuthResult {
+async function tokenAuth(raw: string): Promise<AuthResult> {
   const req = { headers: { authorization: `Bearer ${raw}` } } as unknown as http.IncomingMessage
   return resolveAuth(req, new URL('http://x/api/me'), '/api/me', 'GET', 'the-file-token', true)
 }
 
-const agentA = () => tokenAuth('tok-agent-a') // fleet_agent, tenant default
-const admin = () => tokenAuth('the-file-token')
+const agentA = async () => tokenAuth('tok-agent-a') // fleet_agent, tenant default
+const admin = async () => tokenAuth('the-file-token')
 const tenantUser: AuthResult = { kind: 'session', user: 'u-agent', role: 'agent', tenantId: 'tenant-x' }
 
 const CARD = 'card-1'
@@ -78,21 +78,21 @@ const OTHER = 'card-2'
 const THIRD = 'card-3'
 const FOREIGN = 'card-foreign'
 
-const move = (id: string, body: unknown, auth: AuthResult = admin()) => callAs(auth, 'POST', `/api/kanban/${id}/move`, body)
+const move = async (id: string, body: unknown, auth?: AuthResult) => callAs(auth ?? await admin(), 'POST', `/api/kanban/${id}/move`, body)
 const card = (id: string) => getDb().prepare('SELECT status, sort_order, updated_at, dispatched_at FROM kanban_cards WHERE id = ?').get(id) as
   { status: string; sort_order: number; updated_at: number; dispatched_at: number | null }
 const events = (id: string) => getDb().prepare('SELECT from_status, to_status, actor FROM kanban_card_events WHERE card_id = ? ORDER BY id').all(id) as
   { from_status: string; to_status: string; actor: string | null }[]
 const sentMessages = () => (getDb().prepare('SELECT COUNT(*) AS n FROM agent_messages').get() as { n: number }).n
 
-beforeEach(() => {
+beforeEach(async () => {
   initDatabase(':memory:')
-  createTenant('tenant-x', 'Tenant X')
-  insertApiToken({ tokenHash: sha('tok-agent-a'), name: 'fleet:agent-a', role: 'fleet_agent', tenantId: 'default', createdAt: NOW() - 10, expiresAt: null, agentId: 'agent-a' })
-  createKanbanCard({ id: CARD, title: 'Card one', assignee: 'agent-b', tenant_id: 'default' })
-  createKanbanCard({ id: OTHER, title: 'Card two', assignee: 'agent-b', tenant_id: 'default' })
-  createKanbanCard({ id: THIRD, title: 'Card three', assignee: 'agent-b', tenant_id: 'default' })
-  createKanbanCard({ id: FOREIGN, title: 'Foreign card', assignee: 'agent-b', tenant_id: 'tenant-x' })
+  await createTenant('tenant-x', 'Tenant X')
+  await insertApiToken({ tokenHash: sha('tok-agent-a'), name: 'fleet:agent-a', role: 'fleet_agent', tenantId: 'default', createdAt: NOW() - 10, expiresAt: null, agentId: 'agent-a' })
+  await createKanbanCard({ id: CARD, title: 'Card one', assignee: 'agent-b', tenant_id: 'default' })
+  await createKanbanCard({ id: OTHER, title: 'Card two', assignee: 'agent-b', tenant_id: 'default' })
+  await createKanbanCard({ id: THIRD, title: 'Card three', assignee: 'agent-b', tenant_id: 'default' })
+  await createKanbanCard({ id: FOREIGN, title: 'Foreign card', assignee: 'agent-b', tenant_id: 'tenant-x' })
 })
 
 afterEach(() => {
@@ -157,8 +157,8 @@ describe('expected_status does not match -> 409 status_conflict, nothing written
   })
 
   it('does not update the parent card', async () => {
-    createKanbanCard({ id: 'parent-1', title: 'Parent', tenant_id: 'default' })
-    createKanbanCard({ id: 'child-1', title: 'Child', parent_id: 'parent-1', tenant_id: 'default' })
+    await createKanbanCard({ id: 'parent-1', title: 'Parent', tenant_id: 'default' })
+    await createKanbanCard({ id: 'child-1', title: 'Child', parent_id: 'parent-1', tenant_id: 'default' })
     // Positive control: an unconditional move of the only child to done pulls the parent along.
     const parentBefore = card('parent-1').status
     expect((await move('child-1', { status: 'done', actor: 'agent-b' })).status).toBe(200)
@@ -194,7 +194,7 @@ describe('expected_status does not match -> 409 status_conflict, nothing written
 })
 
 describe('the audit event names the status the compare-and-set proved', () => {
-  it('a status that changes between the previous-status read and the write does not leak into from_status', () => {
+  it('a status that changes between the previous-status read and the write does not leak into from_status', async () => {
     // The card is 'planned' when moveKanbanCard reads its status, and another writer parks it in
     // 'waiting' right after; the guard (expected 'waiting') then matches. The event must say
     // waiting -> done, not planned -> done.
@@ -217,7 +217,7 @@ describe('the audit event names the status the compare-and-set proved', () => {
       })
     }) as any)
 
-    expect(moveKanbanCard(CARD, 'done', 0, 'agent-b', undefined, { expectedStatus: 'waiting' })).toBe(true)
+    expect(await moveKanbanCard(CARD, 'done', 0, 'agent-b', undefined, { expectedStatus: 'waiting' })).toBe(true)
     vi.restoreAllMocks()
     expect(events(CARD)).toEqual([{ from_status: 'waiting', to_status: 'done', actor: 'agent-b' }])
   })
@@ -284,7 +284,7 @@ describe('validation and the unchanged cases', () => {
 
   it('a body that is not a JSON object is 400', async () => {
     for (const raw of ['null', '[]', '"done"', '7']) {
-      const res = await callAs(admin(), 'POST', `/api/kanban/${CARD}/move`, undefined, raw)
+      const res = await callAs(await admin(), 'POST', `/api/kanban/${CARD}/move`, undefined, raw)
       expect(res.status, raw).toBe(400)
     }
     expect(card(CARD).status).toBe('planned')
@@ -293,7 +293,7 @@ describe('validation and the unchanged cases', () => {
 
 describe('tenant line', () => {
   it("a foreign tenant's card is 404 even when expected_status would mismatch (no status leak)", async () => {
-    const res = await move(FOREIGN, { status: 'done', expected_status: 'waiting' }, agentA())
+    const res = await move(FOREIGN, { status: 'done', expected_status: 'waiting' }, await agentA())
     expect(res.status).toBe(404)
     expect(res.body.error).toBe('not_found')
     expect(res.body.current_status).toBeUndefined()
@@ -307,8 +307,8 @@ describe('tenant line', () => {
   })
 
   it('the 404 for a foreign card is the same body with and without expected_status', async () => {
-    const guarded = await move(FOREIGN, { status: 'done', expected_status: 'planned' }, agentA())
-    const plain = await move(FOREIGN, { status: 'done' }, agentA())
+    const guarded = await move(FOREIGN, { status: 'done', expected_status: 'planned' }, await agentA())
+    const plain = await move(FOREIGN, { status: 'done' }, await agentA())
     expect(guarded).toEqual(plain)
   })
 })

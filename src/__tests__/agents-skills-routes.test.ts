@@ -113,7 +113,7 @@ describe('GET /api/agents/:name/skills', () => {
 
   it('lists the main agent\'s skills from SQL as source=global, deletable=true', async () => {
     const { createSkill } = await import('../db.js')
-    createSkill({ id: 'global/skill-a', name: 'skill-a', description: 'does A', content: '---\nname: skill-a\ndescription: "does A"\n---\nbody', tenant_id: 'fleet', is_global: true })
+    await createSkill({ id: 'global/skill-a', name: 'skill-a', description: 'does A', content: '---\nname: skill-a\ndescription: "does A"\n---\nbody', tenant_id: 'fleet', is_global: true })
     const { ctx, body } = makeCtx({ method: 'GET', path: '/api/agents/marveen/skills' })
     await tryHandleAgentsSkills(ctx)
     const skills = body() as any[]
@@ -131,10 +131,10 @@ describe('GET /api/agents/:name/skills', () => {
 
   it('lists a sub-agent\'s local skills plus non-shadowed inherited global skills', async () => {
     const { createSkill } = await import('../db.js')
-    createSkill({ id: 'agent/agent-b/local-only', name: 'local-only', description: 'local', content: 'x', tenant_id: 'fleet', is_global: false })
-    createSkill({ id: 'agent/agent-b/shared-name', name: 'shared-name', description: 'local version', content: 'x', tenant_id: 'fleet', is_global: false })
-    createSkill({ id: 'global/shared-name', name: 'shared-name', description: 'global version', content: 'x', tenant_id: 'fleet', is_global: true })
-    createSkill({ id: 'global/inherited-only', name: 'inherited-only', description: 'from global', content: 'x', tenant_id: 'fleet', is_global: true })
+    await createSkill({ id: 'agent/agent-b/local-only', name: 'local-only', description: 'local', content: 'x', tenant_id: 'fleet', is_global: false })
+    await createSkill({ id: 'agent/agent-b/shared-name', name: 'shared-name', description: 'local version', content: 'x', tenant_id: 'fleet', is_global: false })
+    await createSkill({ id: 'global/shared-name', name: 'shared-name', description: 'global version', content: 'x', tenant_id: 'fleet', is_global: true })
+    await createSkill({ id: 'global/inherited-only', name: 'inherited-only', description: 'from global', content: 'x', tenant_id: 'fleet', is_global: true })
     const { ctx, body } = makeCtx({ method: 'GET', path: '/api/agents/agent-b/skills' })
     await tryHandleAgentsSkills(ctx)
     const skills = body() as any[]
@@ -164,23 +164,23 @@ describe('DELETE /api/agents/:name/skills/:skillName', () => {
   it('deletes a global (main agent) skill dir and its DB row', async () => {
     writeSkillDir(GLOBAL_SKILLS_DIR, 'doomed', { skillMd: '---\ndescription: x\n---\n' })
     const { createSkill } = await import('../db.js')
-    createSkill({ id: 'global/doomed', name: 'doomed', content: 'x', tenant_id: 'fleet', is_global: true })
+    await createSkill({ id: 'global/doomed', name: 'doomed', content: 'x', tenant_id: 'fleet', is_global: true })
     const { ctx, status } = makeCtx({ method: 'DELETE', path: '/api/agents/marveen/skills/doomed' })
     await tryHandleAgentsSkills(ctx)
     expect(status()).toBe(200)
     expect(existsSync(join(GLOBAL_SKILLS_DIR, 'doomed'))).toBe(false)
-    expect(getSkill('global/doomed')).toBeUndefined()
+    expect(await getSkill('global/doomed')).toBeUndefined()
   })
 
   it('deletes a sub-agent skill dir using the agent/<name>/<skill> DB id', async () => {
     writeSkillDir(agentSkillsDir('agent-b'), 'doomed', { skillMd: '---\ndescription: x\n---\n' })
     const { createSkill } = await import('../db.js')
-    createSkill({ id: 'agent/agent-b/doomed', name: 'doomed', content: 'x', tenant_id: 'fleet', is_global: false })
+    await createSkill({ id: 'agent/agent-b/doomed', name: 'doomed', content: 'x', tenant_id: 'fleet', is_global: false })
     const { ctx, status } = makeCtx({ method: 'DELETE', path: '/api/agents/agent-b/skills/doomed' })
     await tryHandleAgentsSkills(ctx)
     expect(status()).toBe(200)
     expect(existsSync(join(agentSkillsDir('agent-b'), 'doomed'))).toBe(false)
-    expect(getSkill('agent/agent-b/doomed')).toBeUndefined()
+    expect(await getSkill('agent/agent-b/doomed')).toBeUndefined()
   })
 })
 
@@ -220,7 +220,7 @@ describe('POST /api/agents/:name/skills (create)', () => {
 
   it('returns 409 when the DB already has a row for this id (dir absent, id pre-seeded)', async () => {
     const { createSkill } = await import('../db.js')
-    createSkill({ id: 'global/dup', name: 'dup', content: 'x', tenant_id: 'fleet', is_global: true })
+    await createSkill({ id: 'global/dup', name: 'dup', content: 'x', tenant_id: 'fleet', is_global: true })
     vi.mocked(generateSkillMd).mockResolvedValueOnce('# generated')
     const { ctx, status } = makeCtx({ method: 'POST', path: '/api/agents/marveen/skills', body: jsonBody({ name: 'dup', description: 'y' }) })
     await tryHandleAgentsSkills(ctx)
@@ -235,7 +235,7 @@ describe('POST /api/agents/:name/skills (create)', () => {
     expect(status()).toBe(200)
     expect(body()).toEqual({ ok: true, name: 'new-skill' })
     expect(readFileSync(join(GLOBAL_SKILLS_DIR, 'new-skill', 'SKILL.md'), 'utf-8')).toBe(addGeneratedHeader('# generated content', 'global/new-skill'))
-    expect(getSkill('global/new-skill')).toMatchObject({ name: 'new-skill', is_global: 1 })
+    expect(await getSkill('global/new-skill')).toMatchObject({ name: 'new-skill', is_global: 1 })
   })
 
   it('creates an agent-local skill for a sub-agent', async () => {
@@ -244,7 +244,7 @@ describe('POST /api/agents/:name/skills (create)', () => {
     await tryHandleAgentsSkills(ctx)
     expect(status()).toBe(200)
     expect(readFileSync(join(agentSkillsDir('agent-b'), 'sub-skill', 'SKILL.md'), 'utf-8')).toBe(addGeneratedHeader('# sub-agent skill', 'agent/agent-b/sub-skill'))
-    expect(getSkill('agent/agent-b/sub-skill')).toMatchObject({ is_global: 0 })
+    expect(await getSkill('agent/agent-b/sub-skill')).toMatchObject({ is_global: 0 })
   })
 
   it('does not roll back the DB row when the post-create file regen fails (Phase 4 of the file->SQL-only migration: SQL is the source of truth, file regen is best-effort)', async () => {
@@ -254,7 +254,7 @@ describe('POST /api/agents/:name/skills (create)', () => {
     await tryHandleAgentsSkills(ctx)
     expect(status()).toBe(200)
     expect(body()).toEqual({ ok: true, name: 'regen-fail' })
-    expect(getSkill('global/regen-fail')).toMatchObject({ name: 'regen-fail' })
+    expect(await getSkill('global/regen-fail')).toMatchObject({ name: 'regen-fail' })
     // writeSkillFileToDisk mkdir's the dir before the write attempt, so the
     // dir can exist even though the write itself failed -- assert on the file.
     expect(existsSync(join(GLOBAL_SKILLS_DIR, 'regen-fail', 'SKILL.md'))).toBe(false)
@@ -365,7 +365,7 @@ describe('POST /api/agents/:name/skills/import', () => {
     await tryHandleAgentsSkills(ctx)
     expect(status()).toBe(200)
     expect(body()).toEqual({ ok: true, imported: ['good-skill'] })
-    expect(getSkill('global/good-skill')).toMatchObject({ name: 'good-skill', description: 'imported', is_global: 1 })
+    expect(await getSkill('global/good-skill')).toMatchObject({ name: 'good-skill', description: 'imported', is_global: 1 })
   })
 
   it('imports into the sub-agent-scoped DB id for a non-main agent', async () => {
@@ -384,7 +384,7 @@ describe('POST /api/agents/:name/skills/import', () => {
     const { ctx, status } = multipartCtx('agent-b')
     await tryHandleAgentsSkills(ctx)
     expect(status()).toBe(200)
-    expect(getSkill('agent/agent-b/sub-good')).toMatchObject({ is_global: 0 })
+    expect(await getSkill('agent/agent-b/sub-good')).toMatchObject({ is_global: 0 })
   })
 
   it('returns 500 and cleans up the tmp zip when extraction itself throws', async () => {

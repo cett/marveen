@@ -79,7 +79,7 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       return true
     }
     const claimedAgentId = actingAgentId(ctx, data.agent_id, MAIN_AGENT_ID)
-    const result = saveAgentMemory(
+    const result = await saveAgentMemory(
       claimedAgentId,
       data.content.trim(),
       category,
@@ -89,7 +89,7 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     )
     try {
       if (ctx.auth?.kind === 'session' && ctx.auth.user) {
-        writeAgentAuditLog({ agent_id: ctx.auth.user, entity: 'memory', action: 'create', entity_id: result.id })
+        await writeAgentAuditLog({ agent_id: ctx.auth.user, entity: 'memory', action: 'create', entity_id: result.id })
       }
     } catch { /* audit failure must not abort the save */ }
     const mismatch = ownerMismatch(ctx, claimedAgentId)
@@ -162,19 +162,19 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     if (q && mode === 'hybrid') {
       results = await hybridSearch(queryAgentId || MAIN_AGENT_ID, q, limit, recallTenantId)
     } else if (q && queryAgentId) {
-      results = searchAgentMemories(queryAgentId, q, limit, recallTenantId)
-      if (results.length === 0) results = searchMemoriesLikeForAgent(queryAgentId, q, limit, recallTenantId)
+      results = await searchAgentMemories(queryAgentId, q, limit, recallTenantId)
+      if (results.length === 0) results = await searchMemoriesLikeForAgent(queryAgentId, q, limit, recallTenantId)
     } else if (q) {
-      results = searchMemories(q, ALLOWED_CHAT_ID, limit, recallTenantId)
-      if (results.length === 0) results = searchMemoriesLike(q, limit, recallTenantId)
+      results = await searchMemories(q, ALLOWED_CHAT_ID, limit, recallTenantId)
+      if (results.length === 0) results = await searchMemoriesLike(q, limit, recallTenantId)
     } else if (queryAgentId) {
       // Tenant filtering pushed into SQL (before LIMIT) to avoid the post-filter
       // accuracy bug: getAgentMemories enforces tenantId in the WHERE clause.
-      results = getAgentMemories(queryAgentId, limit, sqlCategory, recallTenantId, offset)
-      if (tier !== 'import') total = countAgentMemories(queryAgentId, sqlCategory, recallTenantId)
+      results = await getAgentMemories(queryAgentId, limit, sqlCategory, recallTenantId, offset)
+      if (tier !== 'import') total = await countAgentMemories(queryAgentId, sqlCategory, recallTenantId)
     } else {
-      results = getMemoriesForChat(ALLOWED_CHAT_ID, limit, recallTenantId, sqlCategory, offset)
-      if (tier !== 'import') total = countMemoriesForChat(ALLOWED_CHAT_ID, recallTenantId, sqlCategory)
+      results = await getMemoriesForChat(ALLOWED_CHAT_ID, limit, recallTenantId, sqlCategory, offset)
+      if (tier !== 'import') total = await countMemoriesForChat(ALLOWED_CHAT_ID, recallTenantId, sqlCategory)
     }
 
     // Tenant isolation: defence-in-depth guard. All branches above now filter
@@ -202,14 +202,14 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     // (many matches, not all actually consumed). Callers that genuinely process
     // a memory -- heartbeats, direct fetches -- call POST /api/memories/read-event
     // explicitly with the ids they actually used.
-    if (q && results.length && !readOnly) touchMemoriesAccessed(results.map(m => m.id))
+    if (q && results.length && !readOnly) await touchMemoriesAccessed(results.map(m => m.id))
 
     // Smart context injection (F2): when searching with a known agent, annotate
     // results with is_stale and surface updated-but-unread memories first.
     let staleIdSet = new Set<number>()
     if (q && agentId && results.length) {
       const ids = results.map(m => m.id)
-      staleIdSet = new Set(listUpdatedSinceLastReadIds(agentId, ids))
+      staleIdSet = new Set(await listUpdatedSinceLastReadIds(agentId, ids))
       // Stale memories float to the top of context -- the agent needs fresh info first.
       results.sort((a, b) => (staleIdSet.has(b.id) ? 1 : 0) - (staleIdSet.has(a.id) ? 1 : 0))
     }
@@ -301,7 +301,7 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       const chunk = chunks[i]
 
       if (!categorizeModel) {
-        saveAgentMemory(agentId, chunk, 'warm', '', true)
+        await saveAgentMemory(agentId, chunk, 'warm', '', true)
         stats.warm++
         imported++
         continue
@@ -349,7 +349,7 @@ Respond ONLY with JSON, nothing else:
           // Default to warm if parsing fails
         }
 
-        saveAgentMemory(agentId, chunk, tier, keywords, true)
+        await saveAgentMemory(agentId, chunk, tier, keywords, true)
         stats[tier as keyof typeof stats]++
         imported++
 
@@ -357,7 +357,7 @@ Respond ONLY with JSON, nothing else:
           await new Promise(r => setTimeout(r, 200))
         }
       } catch {
-        saveAgentMemory(agentId, chunk, 'warm', '', true)
+        await saveAgentMemory(agentId, chunk, 'warm', '', true)
         stats.warm++
         imported++
       }
@@ -381,7 +381,7 @@ Respond ONLY with JSON, nothing else:
 
   if (path === '/api/memories/stats' && method === 'GET') {
     const statsTenantId = isAdmin ? (tenantParam ?? undefined) : effectiveTenantId
-    json(res, getMemoryStats(statsTenantId))
+    json(res, await getMemoryStats(statsTenantId))
     return true
   }
 
@@ -392,7 +392,7 @@ Respond ONLY with JSON, nothing else:
     try {
       const body = await readBody(req)
       const opts = body.length ? JSON.parse(body.toString()) : {}
-      const result = runMemoryMaintenance({
+      const result = await runMemoryMaintenance({
         warmToColdDays: opts.warm_to_cold_days,
         coldToWarmDays: opts.cold_to_warm_days,
         minAgents: opts.min_agents,
@@ -417,9 +417,9 @@ Respond ONLY with JSON, nothing else:
     if (idsParam) {
       memoryIds = idsParam.split(',').map(s => parseInt(s, 10)).filter(n => !isNaN(n))
     } else if (agentParam) {
-      memoryIds = listRecentMemoryIdsForAgent(agentParam, 500)
+      memoryIds = await listRecentMemoryIdsForAgent(agentParam, 500)
     }
-    json(res, getLinksForMemories(memoryIds))
+    json(res, await getLinksForMemories(memoryIds))
     return true
   }
 
@@ -477,7 +477,7 @@ Respond ONLY with JSON, nothing else:
       }
       for (const [key, { ids, ctx }] of batchByAgent) {
         const agentId = key.split('::')[0]
-        recordMemoryReadBatch(agentId, ids, ctx)
+        await recordMemoryReadBatch(agentId, ids, ctx)
       }
       json(res, { ok: true, recorded: parsed.reads.length })
       return true
@@ -485,7 +485,7 @@ Respond ONLY with JSON, nothing else:
 
     const { agent_id, memory_id, context } = parsed
     if (!agent_id || !memory_id) { json(res, { error: 'required', hint: 'agent_id and memory_id required' }, 400); return true }
-    recordMemoryRead(agent_id, memory_id, toCtx(context))
+    await recordMemoryRead(agent_id, memory_id, toCtx(context))
     json(res, { ok: true })
     return true
   }
@@ -513,7 +513,7 @@ Respond ONLY with JSON, nothing else:
     const timelineTenantId = isAdmin ? (tenantParam ?? undefined) : effectiveTenantId
 
     // Nodes created within the requested window (agent-filtered if provided)
-    const nodeRows = listMemoryGraphNodesInWindow(fromTs, toTs, agentParam || enforcedSelfScope(ctx) || undefined, timelineTenantId)
+    const nodeRows = await listMemoryGraphNodesInWindow(fromTs, toTs, agentParam || enforcedSelfScope(ctx) || undefined, timelineTenantId)
 
     const nodeIdSet    = new Set(nodeRows.map(r => r.id))
     const nodeIds      = nodeRows.map(r => r.id)
@@ -521,12 +521,12 @@ Respond ONLY with JSON, nothing else:
     // Edges where both endpoints are in the node set AND weight >= weight_min.
     // created_at filter not applied on edges: an edge may be created outside the
     // window if both nodes happen to fall inside it.
-    const edgeRows = listMemoryLinksAmong(nodeIds, weightMin)
+    const edgeRows = (await listMemoryLinksAmong(nodeIds, weightMin))
       .filter(e => nodeIdSet.has(e.src_id) && nodeIdSet.has(e.dst_id))
 
     // Degree map (same weight threshold)
     const degreeMap = new Map<number, number>()
-    for (const d of listMemoryLinkDegrees(nodeIds, weightMin)) degreeMap.set(d.src_id, d.degree)
+    for (const d of await listMemoryLinkDegrees(nodeIds, weightMin)) degreeMap.set(d.src_id, d.degree)
 
     const nodes = nodeRows.map(r => ({
       id:          r.id,
@@ -541,7 +541,7 @@ Respond ONLY with JSON, nothing else:
     // Tier-change events: memory_versions entries with change_type='category_change'
     // whose changed_at falls in the window and whose memory_id is in the node set.
     // from_tier is derived by inverting to_tier (maintenance only does warm<->cold).
-    const tierChangedRows = listCategoryChangesInWindow(nodeIds, fromTs, toTs)
+    const tierChangedRows = await listCategoryChangesInWindow(nodeIds, fromTs, toTs)
 
     // Event list: 'created' per node + 'linked' per edge + 'tier_changed' per version entry.
     // Sorted by ts ascending for the frontend scrubber.
@@ -591,16 +591,16 @@ Respond ONLY with JSON, nothing else:
     // the whole graph payload.
     const graphTenantId = isAdmin ? (tenantParam ?? undefined) : effectiveTenantId
 
-    const nodeRows = listMemoryGraphNodes(limit, agentParam || enforcedSelfScope(ctx) || undefined, graphTenantId)
+    const nodeRows = await listMemoryGraphNodes(limit, agentParam || enforcedSelfScope(ctx) || undefined, graphTenantId)
 
     const nodeIdSet = new Set(nodeRows.map(r => r.id))
     const nodeIds = nodeRows.map(r => r.id)
 
-    const edgeRows = listMemoryLinksAmong(nodeIds, weightMin)
+    const edgeRows = (await listMemoryLinksAmong(nodeIds, weightMin))
       .filter(e => nodeIdSet.has(e.src_id) && nodeIdSet.has(e.dst_id))
 
     const degreeMap = new Map<number, number>()
-    for (const d of listMemoryLinkDegrees(nodeIds, weightMin)) degreeMap.set(d.src_id, d.degree)
+    for (const d of await listMemoryLinkDegrees(nodeIds, weightMin)) degreeMap.set(d.src_id, d.degree)
 
     const orphanCount = nodeRows.filter(r => !edgeRows.some(e => e.src_id === r.id || e.dst_id === r.id)).length
 
@@ -630,7 +630,7 @@ Respond ONLY with JSON, nothing else:
   if (path === '/api/memories/stale' && method === 'GET') {
     const agentId = url.searchParams.get('agent_id') || url.searchParams.get('agent') || ''
     if (!agentId) { json(res, { error: 'required', field: 'agent_id', hint: 'agent_id required' }, 400); return true }
-    const stale = getStaleMemories(agentId, isAdmin ? undefined : effectiveTenantId)
+    const stale = await getStaleMemories(agentId, isAdmin ? undefined : effectiveTenantId)
     json(res, stale.map(m => ({ ...m, embedding: undefined, embedding_blob: undefined })))
     return true
   }
@@ -639,7 +639,7 @@ Respond ONLY with JSON, nothing else:
   const memVersionsMatch = path.match(/^\/api\/memories\/(\d+)\/versions$/)
   if (memVersionsMatch && method === 'GET') {
     const id = parseInt(memVersionsMatch[1], 10)
-    json(res, getMemoryVersions(id))
+    json(res, await getMemoryVersions(id))
     return true
   }
 
@@ -648,12 +648,12 @@ Respond ONLY with JSON, nothing else:
   if (memDetailMatch && method === 'GET') {
     const id = parseInt(memDetailMatch[1], 10)
 
-    const mem = getMemoryDetailRow(id)
+    const mem = await getMemoryDetailRow(id)
     if (!mem) { json(res, { error: 'not_found' }, 404); return true }
 
-    const read_count = countMemoryReads(id)
-    const neighbors = listMemoryNeighbors(id)
-    const versionRows = listMemoryCategoryHistory(id)
+    const read_count = await countMemoryReads(id)
+    const neighbors = await listMemoryNeighbors(id)
+    const versionRows = await listMemoryCategoryHistory(id)
 
     const tier_history = versionRows.map((row, i) => {
       const to_tier = row.category
@@ -662,7 +662,7 @@ Respond ONLY with JSON, nothing else:
     })
 
     // For shadow rows (agent_id='import'), look up the originating file and source.
-    const import_meta = mem.agent_id === 'import' ? getImportMetaForShadow(id) : null
+    const import_meta = mem.agent_id === 'import' ? await getImportMetaForShadow(id) : null
 
     json(res, {
       id: mem.id,
@@ -692,13 +692,13 @@ Respond ONLY with JSON, nothing else:
   if (memIdMatch && method === 'GET') {
     const id = parseInt(memIdMatch[1], 10)
     const includeVersions = url.searchParams.get('include') === 'versions'
-    const mem = getMemoryById(id)
+    const mem = await getMemoryById(id)
     if (!mem) { json(res, { error: 'not_found' }, 404); return true }
     const { embedding: _emb, embedding_blob: _blob, ...rest } = mem
     const agentId = url.searchParams.get('agent_id') || url.searchParams.get('agent') || ''
-    if (agentId) recordMemoryRead(agentId, id, 'direct')
+    if (agentId) await recordMemoryRead(agentId, id, 'direct')
     const payload: Record<string, unknown> = { ...rest }
-    if (includeVersions) payload.versions = getMemoryVersions(id)
+    if (includeVersions) payload.versions = await getMemoryVersions(id)
     json(res, payload)
     return true
   }
@@ -707,7 +707,7 @@ Respond ONLY with JSON, nothing else:
     const id = parseInt(memIdMatch[1], 10)
     // Non-admin callers may only update memories belonging to their own tenant.
     if (!isAdmin) {
-      const tenantRow = getMemoryOwnerRow(id)
+      const tenantRow = await getMemoryOwnerRow(id)
       if (!tenantRow || tenantRow.tenant_id !== effectiveTenantId) {
         json(res, { error: 'not_found' }, 404)
         return true
@@ -726,27 +726,27 @@ Respond ONLY with JSON, nothing else:
       json(res, { error: 'required', field: 'content', hint: 'content is required and must be a non-empty string' }, 400)
       return true
     }
-    if (updateMemory(id, content, tier || category, agent_id, keywords)) { json(res, { ok: true }); return true }
+    if (await updateMemory(id, content, tier || category, agent_id, keywords)) { json(res, { ok: true }); return true }
     json(res, { error: 'not_found' }, 404)
     return true
   }
 
   if (memIdMatch && method === 'DELETE') {
     const id = parseInt(memIdMatch[1], 10)
-    const row = getMemoryOwnerRow(id)
+    const row = await getMemoryOwnerRow(id)
     // Non-admin callers may only delete memories belonging to their own tenant.
     if (!isAdmin && row && row.tenant_id !== effectiveTenantId) {
       json(res, { error: 'not_found' }, 404)
       return true
     }
-    const changes = deleteMemoryRow(id)
+    const changes = await deleteMemoryRow(id, isAdmin ? undefined : effectiveTenantId)
     // Invalidate the in-process TTL cache so a deleted memory does not
     // resurface in the agent-filtered list for the cache lifetime.
     if (changes > 0) {
-      syncVecMemoryDelete(id)
+      await syncVecMemoryDelete(id)
       clearMemoryCache()
       try {
-        writeAgentAuditLog({ agent_id: row?.agent_id || 'unknown', entity: 'memory', action: 'delete', entity_id: id })
+        await writeAgentAuditLog({ agent_id: row?.agent_id || 'unknown', entity: 'memory', action: 'delete', entity_id: id })
       } catch { /* audit failure must not abort the delete */ }
       json(res, { ok: true })
       return true

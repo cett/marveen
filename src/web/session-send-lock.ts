@@ -105,7 +105,7 @@ export async function withSessionSendLock<T>(
   session: string,
   host: string | null,
   mode: SendLockMode,
-  fn: () => Promise<T>,
+  fn: () => T | Promise<T>,
   opts: WithSessionSendLockOpts = {},
 ): Promise<SendLockResult<T>> {
   const lane = laneFor(keyFor(session, host))

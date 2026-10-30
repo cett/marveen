@@ -3,14 +3,16 @@
 
 import { describe, it, expect, beforeEach } from 'vitest'
 import { EventEmitter } from 'node:events'
-import { initDatabase, createTenant, setTenantAgentAvailability, setChannelBinding, db, getTenantGateStatus } from '../db.js'
+import { createTenant, setTenantAgentAvailability, setChannelBinding, db, getTenantGateStatus } from '../db.js'
 import { tryHandleTenantGateStatus } from '../web/routes/tenant-gate-status.js'
 import type { RouteContext } from '../web/routes/types.js'
+import { useTestDb } from './helpers/with-test-db.js'
 
-beforeEach(() => {
-  initDatabase(':memory:')
-  createTenant('acme', 'Acme')
-  createTenant('beta', 'Beta')
+useTestDb()
+
+beforeEach(async () => {
+  await createTenant('acme', 'Acme')
+  await createTenant('beta', 'Beta')
 })
 
 function call(method: string, path: string): Promise<{ handled: boolean; status: number; body: any }> {
@@ -57,27 +59,27 @@ describe('GET /api/admin/tenant-gate-status', () => {
   })
 
   it('lists an agent enabled for 2+ live tenants, with and without a channel binding', async () => {
-    setTenantAgentAvailability('acme', 'm1', true)
-    setTenantAgentAvailability('beta', 'm1', true)
-    setTenantAgentAvailability('acme', 's1', true)
-    expect(getTenantGateStatus().multi_tenant_agents).toEqual([{ agent_id: 'm1', tenant_count: 2, has_binding: false }])
-    setChannelBinding('m1', 'telegram', '1', 'acme', 'admin')
-    expect(getTenantGateStatus().multi_tenant_agents).toEqual([{ agent_id: 'm1', tenant_count: 2, has_binding: true }])
+    await setTenantAgentAvailability('acme', 'm1', true)
+    await setTenantAgentAvailability('beta', 'm1', true)
+    await setTenantAgentAvailability('acme', 's1', true)
+    expect((await getTenantGateStatus()).multi_tenant_agents).toEqual([{ agent_id: 'm1', tenant_count: 2, has_binding: false }])
+    await setChannelBinding('m1', 'telegram', '1', 'acme', 'admin')
+    expect((await getTenantGateStatus()).multi_tenant_agents).toEqual([{ agent_id: 'm1', tenant_count: 2, has_binding: true }])
   })
 
   it('a disabled tenant does not count towards multi-tenancy', async () => {
-    setTenantAgentAvailability('acme', 'm1', true)
-    setTenantAgentAvailability('beta', 'm1', true)
+    await setTenantAgentAvailability('acme', 'm1', true)
+    await setTenantAgentAvailability('beta', 'm1', true)
     db.prepare("UPDATE tenants SET disabled_at = 5 WHERE id = 'beta'").run()
-    expect(getTenantGateStatus().multi_tenant_agents).toEqual([])
+    expect((await getTenantGateStatus()).multi_tenant_agents).toEqual([])
   })
 
   it('reports a missing gate table rather than failing', async () => {
     db.exec('DROP TABLE agent_tenant_context')
     db.prepare('DELETE FROM schema_version WHERE version = 65').run()
-    const m = getTenantGateStatus().migrations
+    const m = (await getTenantGateStatus()).migrations
     expect(m[1]).toEqual({ version: 65, table: 'agent_tenant_context', applied: false, table_exists: false })
     expect(m[0]!.applied).toBe(true)
-    expect(getTenantGateStatus().contexts).toEqual([])
+    expect((await getTenantGateStatus()).contexts).toEqual([])
   })
 })

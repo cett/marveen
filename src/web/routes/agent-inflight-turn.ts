@@ -47,12 +47,12 @@ export async function tryHandleAgentInflightTurn(ctx: RouteContext): Promise<boo
   if (!isRegisteredLedgerAgent(agentId)) return bad(ctx, 'agent', 'agent is not a registered agent')
 
   if (action === 'replay') {
-    json(res, inflightReplay(agentId, url.searchParams.get('source') ?? ''))
+    json(res, await inflightReplay(agentId, url.searchParams.get('source') ?? ''))
     return true
   }
 
   if (action === 'end') {
-    json(res, { ok: true, removed: endInflightTurn(agentId) })
+    json(res, { ok: true, removed: await endInflightTurn(agentId) })
     return true
   }
 
@@ -69,7 +69,7 @@ export async function tryHandleAgentInflightTurn(ctx: RouteContext): Promise<boo
   if (action === 'consume') {
     const turnId = data['turn_id']
     if (typeof turnId !== 'string' || !TURN_ID_RE.test(turnId)) return bad(ctx, 'turn_id', 'turn_id must be the 16 hex characters replay returned')
-    json(res, { ok: true, consumed: consumeInflightTurn(agentId, turnId) })
+    json(res, { ok: true, consumed: await consumeInflightTurn(agentId, turnId) })
     return true
   }
 
@@ -79,7 +79,7 @@ export async function tryHandleAgentInflightTurn(ctx: RouteContext): Promise<boo
   if (typeof head !== 'string') return bad(ctx, 'prompt_head', 'prompt_head must be a string')
   if (head.length > INFLIGHT_HEAD_MAX) return bad(ctx, 'prompt_head', `prompt_head must be at most ${INFLIGHT_HEAD_MAX} characters`)
   if (typeof hash !== 'string' || !HASH_RE.test(hash)) return bad(ctx, 'prompt_hash', 'prompt_hash must be 8-64 lowercase hex characters')
-  const turn = beginInflightTurn(agentId, { head, prompt_hash: hash })
+  const turn = await beginInflightTurn(agentId, { head, prompt_hash: hash })
   json(res, { ok: true, turn_id: turn.turn_id, source: turn.source, msg_id: turn.msg_id })
   return true
 }

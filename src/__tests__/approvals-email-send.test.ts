@@ -83,7 +83,7 @@ describe('the request of the main agent', () => {
     expect(out.body.action_payload).toBe(parsed.ok && parsed.canon)
     expect(JSON.parse(out.body.action_payload).to).toEqual(['B@example.com', 'a@example.com'])
     expect(parseEmailEnvelope(JSON.parse(out.body.action_payload), 'main-agent')).toMatchObject({ ok: true, hash })
-    expect(getApproval(out.body.id)).toMatchObject({ content_hash: hash, action_payload: out.body.action_payload })
+    expect(await getApproval(out.body.id)).toMatchObject({ content_hash: hash, action_payload: out.body.action_payload })
   })
 
   it('needs no description from the requester', async () => {
@@ -213,7 +213,7 @@ describe('the same mail twice, and too many mails', () => {
     expect(again.body).toMatchObject({ id: first.body.id, deduplicated: true })
     expect(rows()).toHaveLength(1)
     expect(deliverToChannel).toHaveBeenCalledTimes(1)
-    expect(listApprovalEvents(first.body.id).map((e) => e.event)).toEqual(['created_deduplicated'])
+    expect((await listApprovalEvents(first.body.id)).map((e) => e.event)).toEqual(['created_deduplicated'])
   })
 
   it('ten simultaneous identical requests leave one row and one owner message', async () => {
@@ -261,9 +261,9 @@ describe('telling the owner', () => {
       await flush()
     }
     expect(deliverToChannel).toHaveBeenCalledTimes(5)
-    expect(listApprovalEvents(made[5]).map((e) => [e.event, e.reason])).toEqual([['notify_suppressed', 'rate_limited']])
-    expect(listApprovalEvents(made[6]).map((e) => e.event)).toEqual(['notify_suppressed'])
-    expect(listApprovalEvents(made[4])).toEqual([])
+    expect((await listApprovalEvents(made[5])).map((e) => [e.event, e.reason])).toEqual([['notify_suppressed', 'rate_limited']])
+    expect((await listApprovalEvents(made[6])).map((e) => e.event)).toEqual(['notify_suppressed'])
+    expect(await listApprovalEvents(made[4])).toEqual([])
   })
 
   it('counts requests older than an hour as spent allowance no longer', async () => {
@@ -279,7 +279,7 @@ describe('telling the owner', () => {
   it('without enforcement the same allowance keeps the main agent from being told of every request', async () => {
     flags.enforce = false
     for (let i = 0; i < 7; i++) await ask(MAIN_TOKEN)
-    expect(getPendingMessages('main-agent')).toHaveLength(5)
+    expect(await getPendingMessages('main-agent')).toHaveLength(5)
   })
 
   it('shows the owner the server description, not the requester text', async () => {

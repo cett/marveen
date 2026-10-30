@@ -36,8 +36,8 @@ export function readAutoRestartConfig(name: string): AutoRestartConfig {
  *  `tenantId` stamps ownership for the RBAC own-tenant-vs-cross-tenant check
  *  (agents-process.ts) -- defaults to 'default' for callers with no tenant
  *  context (tests, scripts). */
-export function writeAutoRestartConfig(name: string, cfg: unknown, tenantId = 'default'): AutoRestartConfig {
+export async function writeAutoRestartConfig(name: string, cfg: unknown, tenantId = 'default'): Promise<AutoRestartConfig> {
   const normalized = normalizeAutoRestartConfig(cfg)
-  setAgentSetting(name, 'auto_restart', normalized, tenantId)
+  await setAgentSetting(name, 'auto_restart', normalized, tenantId)
   return normalized
 }

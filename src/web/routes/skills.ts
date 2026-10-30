@@ -63,9 +63,9 @@ function parseSkillKeywords(content: string): string[] {
 // Skills are stored in SQL and mirrored to disk for the Claude Code loader --
 // derive per-agent coverage for a skill name from the `agent/<agentId>/<name>`
 // id scheme instead of statting each agent's on-disk skills directory.
-function getSkillAgents(skillDirName: string): string[] {
+async function getSkillAgents(skillDirName: string): Promise<string[]> {
   const agents: string[] = []
-  for (const row of listAllSkills()) {
+  for (const row of await listAllSkills()) {
     const parts = row.id.split('/')
     if (parts.length === 3 && parts[0] === 'agent' && parts[2] === skillDirName) {
       agents.push(parts[1])
@@ -370,7 +370,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
       description,
       keywords,
       content,
-      agents: getSkillAgents(skillName),
+      agents: await getSkillAgents(skillName),
       path: skillDir,
       mtime: userDetailMtime,
       files,
@@ -404,7 +404,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
 
     const sqlId = `global/${skillName}`
     try {
-      createSkill({ id: sqlId, name: skillName, description, content: skillMd, tenant_id: 'fleet', is_global: true })
+      await createSkill({ id: sqlId, name: skillName, description, content: skillMd, tenant_id: 'fleet', is_global: true })
     } catch {
       json(res, { error: 'conflict', hint: 'Skill already exists' }, 409)
       return true
@@ -412,7 +412,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
 
     // SQL is the source of truth (Phase 4 of the file->SQL-only migration);
     // no direct file write here, matches the /api/skills/sql POST precedent above.
-    regenSingleSkillFile(sqlId)
+    await regenSingleSkillFile(sqlId)
 
     json(res, { ok: true, name: skillName })
     return true
@@ -502,9 +502,9 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
         const content = readFileOr(skillMdPath, '')
         const desc = parseFrontmatterField(content, 'description')
         try {
-          seedSkillIfAbsent({ id: `global/${dirName}`, name: dirName, description: desc, content, tenant_id: 'fleet', is_global: true })
+          await seedSkillIfAbsent({ id: `global/${dirName}`, name: dirName, description: desc, content, tenant_id: 'fleet', is_global: true })
           // scripts/, references/ ... of the archive belong in the DB too (skill_files).
-          importCompanionFilesOfDir(`global/${dirName}`, join(skillsDir, dirName))
+          await importCompanionFilesOfDir(`global/${dirName}`, join(skillsDir, dirName))
         } catch (sqlErr) {
           logger.warn({ dirName, err: sqlErr }, 'Failed to upsert imported skill into SQL')
         }
@@ -555,12 +555,12 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
       // Companion files (scripts/, references/) still travel via the copy above
       // until they live in the DB; SKILL.md is registered as the agent-local row
       // so the DB, not the copy, is what the agent's skill is generated from.
-      const globalRow = getSkill(`global/${skillName}`)
+      const globalRow = await getSkill(`global/${skillName}`)
       if (globalRow) {
         const localId = `agent/${agentName}/${skillName}`
-        if (getSkill(localId)) updateSkill(localId, { content: globalRow.content, description: globalRow.description })
-        else createSkill({ id: localId, name: skillName, description: globalRow.description, content: globalRow.content, tenant_id: 'fleet', is_global: false })
-        regenSingleSkillFile(localId, true)
+        if (await getSkill(localId)) await updateSkill(localId, { content: globalRow.content, description: globalRow.description })
+        else await createSkill({ id: localId, name: skillName, description: globalRow.description, content: globalRow.content, tenant_id: 'fleet', is_global: false })
+        await regenSingleSkillFile(localId, true)
       }
     }
 
@@ -569,7 +569,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
       const agentSkillDir = join(AGENTS_BASE_DIR, agentName, '.claude', 'skills', skillName)
       if (existsSync(agentSkillDir)) {
         rmSync(agentSkillDir, { recursive: true, force: true })
-        deleteSkill(`agent/${agentName}/${skillName}`)
+        await deleteSkill(`agent/${agentName}/${skillName}`)
       }
     }
 
@@ -607,16 +607,16 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
       if (typeof content !== 'string') { json(res, { error: 'required', field: 'content', hint: 'content is required' }, 400); return true }
       const agentSqlId = `agent/${agentPutParam}/${skillName}`
       const agentDesc = parseFrontmatterField(content, 'description')
-      if (getSkill(agentSqlId)) {
-        updateSkill(agentSqlId, { content, description: agentDesc })
+      if (await getSkill(agentSqlId)) {
+        await updateSkill(agentSqlId, { content, description: agentDesc })
       } else {
-        createSkill({ id: agentSqlId, name: skillName, description: agentDesc, content, tenant_id: 'fleet', is_global: false })
+        await createSkill({ id: agentSqlId, name: skillName, description: agentDesc, content, tenant_id: 'fleet', is_global: false })
       }
       // DB-first: the row above is the source of truth, the file is generated
       // from it. forceEnabled: this is an explicit user edit of an existing
       // file-backed skill, which always reached disk; the SKILL_SQL_REGEN
       // switch only governs the automatic write-back, not this.
-      const agentRegen = regenSingleSkillFile(agentSqlId, true)
+      const agentRegen = await regenSingleSkillFile(agentSqlId, true)
       if (agentRegen.reason === 'write_error' || agentRegen.reason === 'unrecognized_id') {
         logger.error({ skillName, agentId: agentPutParam, reason: agentRegen.reason }, 'Agent-local skill saved to SQL but file generation failed')
         json(res, { error: 'internal_error', hint: 'Saved, but generating the skill file failed' }, 500)
@@ -639,13 +639,13 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     if (typeof content !== 'string') { json(res, { error: 'required', field: 'content', hint: 'content is required' }, 400); return true }
     const globalSqlId = `global/${skillName}`
     const globalDesc = parseFrontmatterField(content, 'description')
-    if (getSkill(globalSqlId)) {
-      updateSkill(globalSqlId, { content, description: globalDesc })
+    if (await getSkill(globalSqlId)) {
+      await updateSkill(globalSqlId, { content, description: globalDesc })
     } else {
-      createSkill({ id: globalSqlId, name: skillName, description: globalDesc, content, tenant_id: 'fleet', is_global: true })
+      await createSkill({ id: globalSqlId, name: skillName, description: globalDesc, content, tenant_id: 'fleet', is_global: true })
     }
     // DB-first (see the agent-local branch above): generate the file from the row.
-    const globalRegen = regenSingleSkillFile(globalSqlId, true)
+    const globalRegen = await regenSingleSkillFile(globalSqlId, true)
     if (globalRegen.reason === 'write_error' || globalRegen.reason === 'unrecognized_id') {
       logger.error({ skillName, reason: globalRegen.reason }, 'Skill saved to SQL but file generation failed')
       json(res, { error: 'internal_error', hint: 'Saved, but generating the skill file failed' }, 500)
@@ -673,7 +673,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
   const fleetReadable = (skillId: string, skillTenant: string): boolean =>
     fleetAgent && skillTenant === 'fleet' && (skillId.startsWith('global/') || isOwnAgentSkill(skillId))
   // Phase T2 shadow counter: a skill write this narrowing refuses is counted (never changes the answer).
-  const countFleetSkillDenial = (skillId: string): void => recordFleetSkillWriteDenied(req, ctx.tokenAgentId, method, path, skillId)
+  const countFleetSkillDenial = async (skillId: string): Promise<void> => recordFleetSkillWriteDenied(req, ctx.tokenAgentId, method, path, skillId)
 
   // Skill ids contain '/' ("global/<dir>", "agent/<id>/<dir>"), so clients send
   // them percent-encoded (encodeURIComponent) as ONE path segment; the raw
@@ -693,17 +693,17 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
   const sqlAccessItem = path.match(/^\/api(?:\/v1)?\/skills\/sql\/([^/]+)\/access\/([^/]+)$/)
 
   if (sqlSkillsBase && method === 'GET') {
-    let rows = isAdmin ? listAllSkills() : (callerTenantId ? listSkillsForTenant(callerTenantId) : [])
+    let rows = isAdmin ? await listAllSkills() : (callerTenantId ? await listSkillsForTenant(callerTenantId) : [])
     if (fleetAgent) {
       const have = new Set(rows.map(r => r.id))
-      rows = [...rows, ...listAllSkills().filter(r => fleetReadable(r.id, r.tenant_id) && !have.has(r.id))]
+      rows = [...rows, ...(await listAllSkills()).filter(r => fleetReadable(r.id, r.tenant_id) && !have.has(r.id))]
     }
     json(res, { skills: rows })
     return true
   }
 
   if (sqlSkillsBase && method === 'POST') {
-    if (fleetAgent) { countFleetSkillDenial(''); json(res, { error: 'forbidden', hint: 'A fleet agent token changes its own agent skills only (PUT agent/<name>/<skill>)' }, 403); return true }
+    if (fleetAgent) { await countFleetSkillDenial(''); json(res, { error: 'forbidden', hint: 'A fleet agent token changes its own agent skills only (PUT agent/<name>/<skill>)' }, 403); return true }
     if (!isAdmin && !callerTenantId) { json(res, { error: 'forbidden', hint: 'No tenant scope' }, 403); return true }
     const body = await readBody(req)
     let parsed: { name?: string; description?: string; content?: string; is_global?: boolean } = {}
@@ -715,13 +715,13 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     const tenantId = callerTenantId ?? 'fleet'
     const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 64)
     const id = `${tenantId}-${slug}`
-    if (getSkill(id)) { json(res, { error: 'conflict', hint: 'A skill with this name already exists for this tenant' }, 409); return true }
-    const row = createSkill({ id, name: name.trim(), description: description ?? '', content, tenant_id: tenantId, is_global: is_global ?? false, created_by: ctx.auth?.kind === 'session' ? (ctx.auth.user ?? null) : null })
+    if (await getSkill(id)) { json(res, { error: 'conflict', hint: 'A skill with this name already exists for this tenant' }, 409); return true }
+    const row = await createSkill({ id, name: name.trim(), description: description ?? '', content, tenant_id: tenantId, is_global: is_global ?? false, created_by: ctx.auth?.kind === 'session' ? (ctx.auth.user ?? null) : null })
     // Phase 1 of the file->SQL-only migration: push this
     // write to disk immediately rather than waiting for the next startup
     // regen. No-op (skipped) for non-fleet skills and while SKILL_SQL_REGEN
     // is off.
-    regenSingleSkillFile(id)
+    await regenSingleSkillFile(id)
     json(res, { ok: true, skill: row }, 201)
     return true
   }
@@ -729,12 +729,12 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
   if (sqlSkillIdMatch && method === 'GET') {
     const id = decodeSegment(sqlSkillIdMatch[1])
     if (id === null) return badSegment()
-    const row = getSkill(id)
+    const row = await getSkill(id)
     if (!row) { json(res, { error: 'not_found' }, 404); return true }
     if (!isAdmin && !fleetReadable(id, row.tenant_id)) {
       if (!callerTenantId) { json(res, { error: 'not_found' }, 404); return true }
       if (row.tenant_id !== callerTenantId) {
-        const grants = listSkillAccess(id)
+        const grants = await listSkillAccess(id)
         if (!grants.some(g => g.tenant_id === callerTenantId)) { json(res, { error: 'not_found' }, 404); return true }
       }
     }
@@ -745,12 +745,12 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
   if (sqlSkillIdMatch && method === 'PUT') {
     const id = decodeSegment(sqlSkillIdMatch[1])
     if (id === null) return badSegment()
-    const existing = getSkill(id)
+    const existing = await getSkill(id)
     // A file-backed id (global/<dir>, agent/<agent>/<dir>) that has no row yet is CREATED by
     // the PUT (admin only, fleet tenant): the skill writers are DB-first, so an agent that
     // has the content must be able to create the row, not just patch an existing one.
     const createSpec = existing ? null : fileBackedSkillSpec(id)
-    if (fleetAgent && !isOwnAgentSkill(id)) { countFleetSkillDenial(id); json(res, { error: 'forbidden', hint: 'A fleet agent token changes its own agent skills only' }, 403); return true }
+    if (fleetAgent && !isOwnAgentSkill(id)) { await countFleetSkillDenial(id); json(res, { error: 'forbidden', hint: 'A fleet agent token changes its own agent skills only' }, 403); return true }
     if (!existing && !(createSpec && (isAdmin || isOwnAgentSkill(id)))) { json(res, { error: 'not_found' }, 404); return true }
     if (existing && !isAdmin && !fleetAgent && callerTenantId !== existing.tenant_id) { json(res, { error: 'not_found' }, 404); return true }
     const body = await readBody(req)
@@ -759,12 +759,12 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     if (parsed.is_global !== undefined && !isAdmin) { json(res, { error: 'forbidden', hint: 'Only admin can set is_global' }, 403); return true }
     if (createSpec) {
       if (typeof parsed.content !== 'string' || !parsed.content.trim()) { json(res, { error: 'required', field: 'content', hint: 'content is required to create a skill' }, 400); return true }
-      const row = createSkill({
+      const row = await createSkill({
         id, name: createSpec.name, description: parsed.description ?? parseSkillDescription(parsed.content),
         content: parsed.content, tenant_id: 'fleet', is_global: createSpec.isGlobal,
         created_by: ctx.auth?.kind === 'session' ? (ctx.auth.user ?? null) : null,
       })
-      regenSingleSkillFile(id)
+      await regenSingleSkillFile(id)
       json(res, { ok: true, skill: row }, 201)
       return true
     }
@@ -774,8 +774,8 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
       const fmDescription = parseSkillDescription(parsed.content)
       if (fmDescription) parsed = { ...parsed, description: fmDescription }
     }
-    const updated = updateSkill(id, parsed)
-    regenSingleSkillFile(id)
+    const updated = await updateSkill(id, parsed)
+    await regenSingleSkillFile(id)
     json(res, { ok: true, skill: updated })
     return true
   }
@@ -783,15 +783,15 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
   if (sqlSkillIdMatch && method === 'DELETE') {
     const id = decodeSegment(sqlSkillIdMatch[1])
     if (id === null) return badSegment()
-    if (fleetAgent && !isOwnAgentSkill(id)) { countFleetSkillDenial(id); json(res, { error: 'forbidden', hint: 'A fleet agent token changes its own agent skills only' }, 403); return true }
-    const existing = getSkill(id)
+    if (fleetAgent && !isOwnAgentSkill(id)) { await countFleetSkillDenial(id); json(res, { error: 'forbidden', hint: 'A fleet agent token changes its own agent skills only' }, 403); return true }
+    const existing = await getSkill(id)
     if (!existing) { json(res, { error: 'not_found' }, 404); return true }
     if (!isAdmin && !fleetAgent && callerTenantId !== existing.tenant_id) { json(res, { error: 'not_found' }, 404); return true }
-    const companionFiles = listSkillFiles(id)   // read before the delete removes them
-    deleteSkill(id)
+    const companionFiles = await listSkillFiles(id)   // read before the delete removes them
+    await deleteSkill(id)
     // The file is only a generated cache of the row: drop it too, or the loader
     // keeps serving a skill the DB no longer has (a hand-edited file is kept).
-    removeGeneratedSkillFile(id, existing.content, existing.tenant_id, companionFiles)
+    await removeGeneratedSkillFile(id, existing.content, existing.tenant_id, companionFiles)
     json(res, { ok: true })
     return true
   }
@@ -805,16 +805,16 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
   if (filesId) {
     const id = decodeSegment(filesId[1])
     if (id === null) return badSegment()
-    const skill = getSkill(id)
+    const skill = await getSkill(id)
     if (!skill) { json(res, { error: 'not_found' }, 404); return true }
     const canWrite = isAdmin || (fleetAgent ? isOwnAgentSkill(id) : callerTenantId === skill.tenant_id)
-    const canRead = canWrite || fleetReadable(id, skill.tenant_id) || (!!callerTenantId && listSkillAccess(id).some(g => g.tenant_id === callerTenantId))
+    const canRead = canWrite || fleetReadable(id, skill.tenant_id) || (!!callerTenantId && (await listSkillAccess(id)).some(g => g.tenant_id === callerTenantId))
     if (!canRead) { json(res, { error: 'not_found' }, 404); return true }
     const fileView = (f: { rel_path: string; content: Buffer; mode: number; updated_at: number }) =>
       ({ rel_path: f.rel_path, size: f.content.length, mode: f.mode, updated_at: f.updated_at })
 
     if (sqlFilesBase && method === 'GET') {
-      json(res, { files: listSkillFiles(id).map(fileView) })
+      json(res, { files: (await listSkillFiles(id)).map(fileView) })
       return true
     }
 
@@ -825,20 +825,20 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
       if (!rel) { json(res, { error: 'invalid_value', field: 'rel_path', hint: 'Relative posix path without .., empty segments or backslashes; SKILL.md itself is the skill content' }, 400); return true }
 
       if (method === 'GET') {
-        const f = getSkillFile(id, rel)
+        const f = await getSkillFile(id, rel)
         if (!f) { json(res, { error: 'not_found' }, 404); return true }
         json(res, { ...fileView(f), content_base64: f.content.toString('base64') })
         return true
       }
 
-      if (!canWrite) { if (fleetAgent) countFleetSkillDenial(id); json(res, { error: 'not_found' }, 404); return true }
+      if (!canWrite) { if (fleetAgent) await countFleetSkillDenial(id); json(res, { error: 'not_found' }, 404); return true }
 
       if (method === 'DELETE') {
-        const f = getSkillFile(id, rel)
+        const f = await getSkillFile(id, rel)
         if (!f) { json(res, { error: 'not_found' }, 404); return true }
-        deleteSkillFile(id, rel)
+        await deleteSkillFile(id, rel)
         // Drop the generated copy too (only while it still equals the deleted row).
-        removeGeneratedCompanionFile(id, rel, f.content, skill.tenant_id)
+        await removeGeneratedCompanionFile(id, rel, f.content, skill.tenant_id)
         json(res, { ok: true })
         return true
       }
@@ -857,10 +857,10 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
       const bytes = hasText ? Buffer.from(parsed.content as string, 'utf-8') : Buffer.from(parsed.content_base64 as string, 'base64')
       if (bytes.length > MAX_SKILL_FILE_BYTES) { json(res, { error: 'limit_exceeded', hint: `File too large (max ${MAX_SKILL_FILE_BYTES} bytes)` }, 413); return true }
       if (parsed.mode !== undefined && (typeof parsed.mode !== 'number' || !Number.isInteger(parsed.mode))) { json(res, { error: 'invalid_value', field: 'mode', hint: 'mode must be an integer (permission bits)' }, 400); return true }
-      const isNew = !getSkillFile(id, rel)
-      if (isNew && countSkillFiles(id) >= MAX_SKILL_FILES_PER_SKILL) { json(res, { error: 'limit_exceeded', hint: `At most ${MAX_SKILL_FILES_PER_SKILL} companion files per skill` }, 400); return true }
-      const saved = putSkillFile(id, rel, bytes, parsed.mode as number | undefined)
-      const regen = regenSingleSkillFile(id, true)   // an explicit write always reaches disk, like PUT /api/skills/:name
+      const isNew = !await getSkillFile(id, rel)
+      if (isNew && await countSkillFiles(id) >= MAX_SKILL_FILES_PER_SKILL) { json(res, { error: 'limit_exceeded', hint: `At most ${MAX_SKILL_FILES_PER_SKILL} companion files per skill` }, 400); return true }
+      const saved = await putSkillFile(id, rel, bytes, parsed.mode as number | undefined)
+      const regen = await regenSingleSkillFile(id, true)   // an explicit write always reaches disk, like PUT /api/skills/:name
       if (regen.reason === 'write_error') { json(res, { error: 'internal_error', hint: 'Saved to the DB, but the on-disk copy could not be written' }, 500); return true }
       json(res, { ok: true, file: fileView(saved) }, isNew ? 201 : 200)
       return true
@@ -871,9 +871,9 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     const id = decodeSegment(sqlAccessBase[1])
     if (id === null) return badSegment()
     if (!isAdmin) { json(res, { error: 'forbidden', hint: 'Admin only' }, 403); return true }
-    const existing = getSkill(id)
+    const existing = await getSkill(id)
     if (!existing) { json(res, { error: 'not_found' }, 404); return true }
-    json(res, { access: listSkillAccess(id) })
+    json(res, { access: await listSkillAccess(id) })
     return true
   }
 
@@ -881,15 +881,15 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     const id = decodeSegment(sqlAccessBase[1])
     if (id === null) return badSegment()
     if (!isAdmin) { json(res, { error: 'forbidden', hint: 'Admin only' }, 403); return true }
-    const existing = getSkill(id)
+    const existing = await getSkill(id)
     if (!existing) { json(res, { error: 'not_found' }, 404); return true }
     const body = await readBody(req)
     let parsed: { tenant_id?: string } = {}
     try { parsed = JSON.parse(body.toString()) } catch { json(res, { error: 'parse_error', hint: 'Invalid JSON' }, 400); return true }
     if (typeof parsed.tenant_id !== 'string' || !parsed.tenant_id) { json(res, { error: 'required', field: 'tenant_id', hint: 'tenant_id is required' }, 400); return true }
-    grantSkillAccess(id, parsed.tenant_id, ctx.auth?.kind === 'session' ? ctx.auth.user : undefined)
+    await grantSkillAccess(id, parsed.tenant_id, ctx.auth?.kind === 'session' ? ctx.auth.user : undefined)
     // A granted tenant skill also lands under the grantee tenant's agents.
-    regenSingleSkillFile(id)
+    await regenSingleSkillFile(id)
     json(res, { ok: true })
     return true
   }
@@ -900,10 +900,10 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     const tenantId = decodeSegment(rawTenantId)
     if (id === null || tenantId === null) return badSegment()
     if (!isAdmin) { json(res, { error: 'forbidden', hint: 'Admin only' }, 403); return true }
-    const ok = revokeSkillAccess(id, tenantId)
+    const ok = await revokeSkillAccess(id, tenantId)
     if (!ok) { json(res, { error: 'not_found' }, 404); return true }
     // Drop the generated copy from the agents that only qualified through this grant.
-    regenSingleSkillFile(id)
+    await regenSingleSkillFile(id)
     json(res, { ok: true })
     return true
   }

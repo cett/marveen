@@ -28,7 +28,7 @@ vi.mock('../web/agent-config.js', async (importOriginal) => ({
 // The skill routes mirror every write to <project>/agents/<name>/.claude/skills on disk: keep the test off the real tree.
 vi.mock('../web/skill-regen.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../web/skill-regen.js')>()),
-  regenSingleSkillFile: () => ({ written: false, reason: 'test' }),
+  regenSingleSkillFile: () => Promise.resolve({ written: false, reason: 'test' }),
   removeGeneratedSkillFile: () => {},
   removeGeneratedCompanionFile: () => {},
 }))
@@ -36,7 +36,7 @@ vi.mock('../config.js', async (importOriginal) => ({ ...(await importOriginal<ty
 
 const sha = (s: string) => createHash('sha256').update(s).digest('hex')
 const NOW = () => Math.floor(Date.now() / 1000)
-const mint = (raw: string, agentId: string | null, role: 'fleet_agent' | 'admin' = 'fleet_agent') =>
+const mint = async (raw: string, agentId: string | null, role: 'fleet_agent' | 'admin' = 'fleet_agent') =>
   insertApiToken({ tokenHash: sha(raw), name: `${role}:${agentId ?? 'none'}`, role, tenantId: 'default', createdAt: NOW() - 10, expiresAt: null, agentId })
 
 const HANDLERS: RouteHandler[] = [tryHandleConversationLedger, tryHandleDailyLog, tryHandleSkills, tryHandleTokenShadow]
@@ -58,10 +58,10 @@ async function request(rawToken: string | null, method: string, path: string, bo
     },
   } as unknown as http.ServerResponse
   const url = new URL(`http://localhost:3420${path}`)
-  const auth = resolveAuth(req, url, url.pathname, method, 'the-file-token', true)
+  const auth = await resolveAuth(req, url, url.pathname, method, 'the-file-token', true)
   if (auth.kind === 'none') { out.status = 401; return out }
   if (auth.kind === 'token' && auth.tenantContextMissing) {
-    recordTenantContextRefusal(req, auth, method, url.pathname)
+    await recordTenantContextRefusal(req, auth, method, url.pathname)
     out.status = 403; out.body = { error: 'forbidden', hint: 'no fresh tenant context' }; return out
   }
   const decision = checkPermission(auth, method, url.pathname)
@@ -73,7 +73,7 @@ async function request(rawToken: string | null, method: string, path: string, bo
     agentId: role === 'fleet_agent' && tokenAgentId ? tokenAgentId : resolveAgentIdHeader(req),
     auth: auth.kind === 'token' ? { kind: 'token', tokenName: auth.tokenName } : undefined,
   } as unknown as RouteContext
-  observeTokenUsage(req, auth, method, url.pathname, url) // where web.ts calls it: after the gates, before dispatch
+  await observeTokenUsage(req, auth, method, url.pathname, url) // where web.ts calls it: after the gates, before dispatch
   for (const h of HANDLERS) if (await h(ctx)) return out
   out.status = 404
   return out
@@ -87,14 +87,14 @@ const total = (category: string): number => rows(category).reduce((n, r) => n + 
 const setContext = (agent: string, tenant: string, status: string) =>
   getDb().prepare('INSERT OR REPLACE INTO agent_tenant_context (agent_id, tenant_id, status, updated_at) VALUES (?, ?, ?, ?)').run(agent, tenant, status, NOW())
 
-beforeEach(() => {
+beforeEach(async () => {
   initDatabase(':memory:')
   resetTokenShadowForTests()
-  mint('tok-alpha', 'alpha')
-  mint('tok-beta', 'beta')
-  mint('tok-main-agent', 'main-agent', 'admin')
+  await mint('tok-alpha', 'alpha')
+  await mint('tok-beta', 'beta')
+  await mint('tok-main-agent', 'main-agent', 'admin')
   // The shared dashboard token as production has it: enrolled in api_tokens as 'dashboard', admin, no agent.
-  insertApiToken({ tokenHash: sha('the-enrolled-token'), name: 'dashboard', role: 'admin', tenantId: 'default', createdAt: NOW() - 10, expiresAt: null, agentId: null })
+  await insertApiToken({ tokenHash: sha('the-enrolled-token'), name: 'dashboard', role: 'admin', tenantId: 'default', createdAt: NOW() - 10, expiresAt: null, agentId: null })
 })
 
 describe('the counter sees what the routes decide', () => {
@@ -126,11 +126,11 @@ describe('the counter sees what the routes decide', () => {
   })
 
   describe('a shared agent (two tenants) with no fresh tenant context', () => {
-    beforeEach(() => {
-      createTenant('tenant-a', 'Tenant A')
-      setTenantAgentAvailability('default', 'shared', true)
-      setTenantAgentAvailability('tenant-a', 'shared', true)
-      mint('tok-shared', 'shared')
+    beforeEach(async () => {
+      await createTenant('tenant-a', 'Tenant A')
+      await setTenantAgentAvailability('default', 'shared', true)
+      await setTenantAgentAvailability('tenant-a', 'shared', true)
+      await mint('tok-shared', 'shared')
     })
 
     it('its fleet token is refused 403 and the refusal is counted', async () => {
@@ -226,7 +226,8 @@ describe('wiring in the production request pipeline (source level; booting the s
     expect(ctxAt).toBeGreaterThan(0)
     expect(observeAt).toBeGreaterThan(ctxAt)
     expect(dispatchAt).toBeGreaterThan(observeAt)
-    expect(WEB).toMatch(/if \(requiresAuth\(path, method\)\) observeTokenUsage\(/)
+    // awaited: the owner lookup of a watched route is asynchronous and the enforce gate reads what it records
+    expect(WEB).toMatch(/if \(requiresAuth\(path, method\)\) await observeTokenUsage\(/)
   })
 
   it('web.ts counts the tenant-context refusal before it answers 403, and registers the admin route', () => {
@@ -242,7 +243,7 @@ describe('wiring in the production request pipeline (source level; booting the s
   })
 
   it('readBody reports the finished body to the observer and survives a throwing one', () => {
-    expect(HELPERS).toMatch(/requestBodyObserver\(req, body\)/)
-    expect(HELPERS).toMatch(/try \{ requestBodyObserver\(req, body\) \} catch/)
+    expect(HELPERS).toMatch(/requestBodyObserver\?\.\(req, body\)/)
+    expect(HELPERS).toMatch(/try \{ observed = withDbContext\(dbContext, \(\) => requestBodyObserver\?\.\(req, body\)\) \} catch/)
   })
 })

@@ -236,6 +236,9 @@ export const ENDPOINT_PERMISSION_TABLE: readonly EndpointPermissionEntry[] = [
   // prefix, which would otherwise cover it. Create, toggle, run, expand-* are POSTs, a delete of a
   // task or of a pending retry is a DELETE: all schedules:write.
   { method: 'GET', pathPattern: '/api/schedules/tick-status', prefix: false, permission: 'admin:all' },
+  // The db context counter (src/web/routes/db-context.ts): named here although the /api/admin/ prefix already covers it.
+  { method: 'GET', pathPattern: '/api/admin/db-context', prefix: false, permission: 'admin:all' },
+  { method: 'GET', pathPattern: '/api/v1/admin/db-context', prefix: false, permission: 'admin:all' },
   { method: 'GET', pathPattern: '/api/schedules', prefix: true, permission: 'schedules:read' },
   { method: 'POST', pathPattern: '/api/schedules', prefix: true, permission: 'schedules:write' },
   { method: 'PUT', pathPattern: '/api/schedules', prefix: true, permission: 'schedules:write' },

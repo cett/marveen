@@ -90,7 +90,7 @@ export async function buildMemoryContext(
   // FTS-only when Ollama is not running. Keep recentMemories for recency signal.
   const [hybridResults, recent] = await Promise.all([
     hybridSearch(MAIN_AGENT_ID, userMessage, 5, tenantId),
-    Promise.resolve(recentMemories(chatId, 5, tenantId)),
+    Promise.resolve(await recentMemories(chatId, 5, tenantId)),
   ])
 
   const seen = new Set<number>()
@@ -106,7 +106,7 @@ export async function buildMemoryContext(
   if (combined.length === 0) return ''
 
   for (const m of combined) {
-    touchMemory(m.id)
+    await touchMemory(m.id)
   }
 
   const lines = combined.map((m) => `- ${m.content} (${m.sector})`)
@@ -127,8 +127,8 @@ const PRIORITY_HU: Record<string, string> = {
   low: '🔵',
 }
 
-export function buildKanbanContext(): string {
-  const cards = listKanbanCardsSummary()
+export async function buildKanbanContext(): Promise<string> {
+  const cards = await listKanbanCardsSummary()
   if (cards.length === 0) return ''
 
   const grouped: Record<string, string[]> = {}
@@ -156,19 +156,19 @@ export async function saveConversationTurn(
   // Episodic memories come from daily digest and session checkpoints
   if (SEMANTIC_PATTERN.test(userMsg)) {
     const content = `Felhasznalo: ${userMsg.slice(0, 500)}\nAsszisztens: ${assistantMsg.slice(0, 500)}`
-    saveMemory(chatId, content, 'semantic')
+    await saveMemory(chatId, content, 'semantic')
     logger.debug({ chatId }, 'Szemantikus emlek mentve')
   }
   // Non-semantic turns are NOT saved individually -- they go into daily digest
 }
 
-export function runDecaySweep(): void {
-  dbDecay()
-  pruneAuditLogs()
-  const tokenPruneResult = pruneTokenUsage()
-  const blackboardHistoryPruned = pruneBlackboardHistory()
-  const conversationLogPruned = pruneConversationLog()
-  const agentMessagesPruned = pruneAgentMessages()
+export async function runDecaySweep(): Promise<void> {
+  await dbDecay()
+  await pruneAuditLogs()
+  const tokenPruneResult = await pruneTokenUsage()
+  const blackboardHistoryPruned = await pruneBlackboardHistory()
+  const conversationLogPruned = await pruneConversationLog()
+  const agentMessagesPruned = await pruneAgentMessages()
   logger.info(
     { ...tokenPruneResult, blackboardHistoryPruned, conversationLogPruned, agentMessagesPruned },
     'Memoria leepulesi sopres vegrehajtva',
@@ -180,7 +180,7 @@ export function runDecaySweep(): void {
 export async function runDailyDigest(chatId: string): Promise<string | null> {
   // Collect today's episodic memories (last 24h)
   const oneDayAgo = Math.floor(Date.now() / 1000) - 86400
-  const allRecent = getMemoriesForChat(chatId, 50)
+  const allRecent = await getMemoriesForChat(chatId, 50)
   const todayMemories = allRecent.filter((m) => m.created_at >= oneDayAgo)
 
   if (todayMemories.length < 2) {
@@ -217,7 +217,7 @@ ${memoryLines}`
 
     const digest = text.trim()
     const today = new Date().toLocaleDateString('hu-HU')
-    saveMemory(chatId, `[Napi naplo ${today}] ${digest}`, 'episodic')
+    await saveMemory(chatId, `[Napi naplo ${today}] ${digest}`, 'episodic')
     logger.info({ chatId, digestCwd, digestConfigDir }, `Napi naplo mentve: ${today}`)
     return digest
   } catch (err) {

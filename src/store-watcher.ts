@@ -4,6 +4,7 @@ import { STORE_DIR } from './config.js'
 import { logStoreFileEvent } from './db.js'
 import { logger } from './logger.js'
 
+import { runAs } from './db/context.js'
 // --- System file denylist ---
 // Only files NOT on this list (and not matching SYSTEM_RE) are logged.
 // Everything else = Marveen-managed state that would produce noise.
@@ -48,28 +49,12 @@ const SYSTEM_RE = /\.pid$|\.tmp$|\.tmp\.[a-f0-9]+$|\.migrated$|\.bak$|\.deprecat
 // can show a sanitised label instead of hinting at secret values.
 const SENSITIVE_NAMES = new Set(['.dashboard-token', '.agent-token', '.operator-token', 'vault.json', '.vault-key', '.claude-oauth-token', '.claim-signing-key', '.federation-token', 'federation.json'])
 
-// --- Agent attribution slot ---
-// Node.js is single-threaded; a route handler sets this before writing,
-// the watch callback reads and clears it in the next event-loop tick.
-// For direct writes (Bash/Write tool from outside the process), this stays
-// null -- stored as null, shown as "ismeretlen" in the UI. There is no
-// OS-level mechanism to identify the writer without a process audit daemon,
-// so null is the honest and correct value.
-let currentWriteActor: string | null = null
-// The tenant the file belongs to, set by the route that knows it (server-resolved, never taken from
-// the actor string: a request body can claim any actor name). null = fleet scope (a global file);
-// undefined = the route said nothing, the writer falls back to the actor as an agent id.
-let currentWriteTenant: string | null | undefined = undefined
-
-export function setStoreWriteActor(actor: string, tenantId?: string | null): void {
-  currentWriteActor = actor
-  currentWriteTenant = tenantId
-}
-
-export function clearStoreWriteActor(): void {
-  currentWriteActor = null
-  currentWriteTenant = undefined
-}
+// --- Attribution ---
+// A new store file is recorded without an actor (agent NULL; the dashboard audit table reads a missing actor as "ismeretlen"): fs.watch
+// calls back from the file system's own async origin, so nothing of the writing request (an
+// AsyncLocalStorage value, a process-wide slot) can be read there, and the OS offers no writer
+// identity. No code writes a store file on behalf of a request today; who changed a setting
+// stays in config_change_log. See docs/db-facade.md, Known limits.
 
 // --- Known-files tracking for creation detection ---
 // Populated at watcher startup by scanning store/. A rename event for a path
@@ -121,14 +106,6 @@ export function startStoreWatcher(): void {
       if (!filename) return
       const rel = filename.replace(/\\/g, '/')
 
-      // Consume (clear) the actor slot for ALL events, including system-file
-      // events, so a slot set before a denylist-ed write cannot leak to the
-      // next unrelated event.
-      const agent = currentWriteActor
-      const tenantId = currentWriteTenant
-      currentWriteActor = null
-      currentWriteTenant = undefined
-
       // Only rename events can indicate a new file. change = modification.
       if (eventType !== 'rename') return
 
@@ -164,11 +141,10 @@ export function startStoreWatcher(): void {
       knownFiles.add(rel)
       const isSensitive = SENSITIVE_NAMES.has(basename(rel)) ? 1 : 0
 
-      try {
-        logStoreFileEvent(rel, 'create', isSensitive, fileSize, agent, tenantId)
-      } catch (err) {
+      // A watch callback is synchronous: the write is left to run, and its failure is logged here.
+      runAs.system('store-watcher', () => logStoreFileEvent(rel, 'create', isSensitive, fileSize)).catch((err: unknown) => {
         logger.warn({ err, rel }, 'store-watcher: failed to log new file event')
-      }
+      })
     })
     logger.info({ dir: STORE_DIR, knownCount: knownFiles.size }, 'Store file watcher started')
   } catch (err) {

@@ -32,7 +32,7 @@ export async function tryHandleAutonomy(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/autonomy' && method === 'GET') {
     try {
-      const rows = listAutonomyCategories()
+      const rows = await listAutonomyCategories()
       const updated_at = rows.reduce((max, r) => Math.max(max, r.updated_at), 0)
       // approvalHumanOnlyEnforce: whether a human-only approval is decided only by a person's dashboard
       // session on this server. A caller that relies on such an approval (the email send gate) reads it
@@ -75,7 +75,7 @@ export async function tryHandleAutonomy(ctx: RouteContext): Promise<boolean> {
           json(res, { error: 'forbidden', code: 'human_only_floor', hint: `Category "${key}" is human-only by design and cannot be lowered` }, 403)
           return true
         }
-        if (!human_only && !humanSessionOf(req)) {
+        if (!human_only && !await humanSessionOf(req)) {
           json(res, { error: 'forbidden', code: 'human_session_required', hint: 'Taking a category out of the human-only set needs a person logged in to the dashboard' }, 403)
           return true
         }
@@ -94,7 +94,7 @@ export async function tryHandleAutonomy(ctx: RouteContext): Promise<boolean> {
         }
       }
 
-      const cat = getAutonomyCategory(key)
+      const cat = await getAutonomyCategory(key)
       if (!cat) {
         json(res, { error: 'not_found', hint: `Category "${key}" not found` }, 404)
         return true
@@ -112,11 +112,11 @@ export async function tryHandleAutonomy(ctx: RouteContext): Promise<boolean> {
         }
       }
 
-      if (hasLevel) setAutonomyCategoryLevel(key, level as number, 'dashboard')
+      if (hasLevel) await setAutonomyCategoryLevel(key, level as number, 'dashboard')
       if (hasHumanOnly) {
-        setAutonomyCategoryHumanOnly(key, human_only as boolean, 'dashboard')
+        await setAutonomyCategoryHumanOnly(key, human_only as boolean, 'dashboard')
         try {
-          writeAgentAuditLog({
+          await writeAgentAuditLog({
             agent_id: ctx.auth?.user ?? ctx.auth?.tokenName ?? 'system',
             entity: 'approval',
             action: 'update',
@@ -126,9 +126,9 @@ export async function tryHandleAutonomy(ctx: RouteContext): Promise<boolean> {
         } catch { /* audit failure must not abort the write */ }
       }
       if (hasTimeout) {
-        setAutonomyCategoryTimeout(key, timeout_minutes as number | null, 'dashboard')
+        await setAutonomyCategoryTimeout(key, timeout_minutes as number | null, 'dashboard')
         try {
-          writeAgentAuditLog({
+          await writeAgentAuditLog({
             agent_id: ctx.auth?.user ?? ctx.auth?.tokenName ?? 'system',
             entity: 'approval',
             action: 'update',
@@ -137,7 +137,7 @@ export async function tryHandleAutonomy(ctx: RouteContext): Promise<boolean> {
           })
         } catch { /* audit failure must not abort the write */ }
       }
-      const updated = getAutonomyCategory(key)
+      const updated = await getAutonomyCategory(key)
       logger.info({ key, level: updated?.level, timeout_minutes: updated?.timeout_minutes }, 'Autonomy category updated')
       json(res, { ok: true, key, level: updated?.level ?? level, timeoutMinutes: updated?.timeout_minutes ?? null, updated_at: updated?.updated_at })
     } catch (err) {

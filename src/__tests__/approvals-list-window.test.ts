@@ -35,10 +35,10 @@ async function list(caller: Caller, query = '') {
   return out
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   initDatabase(':memory:')
-  createApproval({ id: 'a-1', agent_id: 'main-agent', category: 'deploy', action_description: 'x' })
-  createApproval({ id: 'b-1', agent_id: 'worker', category: 'deploy', action_description: 'y', tenant_id: 'tenant-b' })
+  await createApproval({ id: 'a-1', agent_id: 'main-agent', category: 'deploy', action_description: 'x' })
+  await createApproval({ id: 'b-1', agent_id: 'worker', category: 'deploy', action_description: 'y', tenant_id: 'tenant-b' })
 })
 
 describe('GET /api/approvals window_s', () => {
@@ -72,6 +72,19 @@ describe('GET /api/approvals window_s', () => {
     expect(out.body.items).toEqual([])
     expect(Number.isInteger(out.body.window_s)).toBe(true)
     expect(out.body.window_s).toBe(777)
+  })
+
+  it('a fleet agent token gets the true total of its own requests', async () => {
+    const out = await list(MAIN)
+    expect(out.body.total).toBe(1)
+    expect(out.body.items).toHaveLength(1)
+  })
+
+  it('an admin gets oldest_pending as the oldest pending row, not an empty object', async () => {
+    const out = await list(ADMIN)
+    expect(out.body.oldest_pending).toMatchObject({ category: 'deploy' })
+    expect(typeof out.body.oldest_pending.requested_at).toBe('number')
+    expect(['main-agent', 'worker']).toContain(out.body.oldest_pending.agent_id)
   })
 
   it('is not added to a refused request', async () => {

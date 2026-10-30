@@ -175,12 +175,12 @@ describe('the span export', () => {
 })
 
 describe('through tick', () => {
-  function seedModelCallSpan(id: string, measured = true) {
-    upsertOtelSpan({
+  async function seedModelCallSpan(id: string, measured = true) {
+    await upsertOtelSpan({
       trace_id: 'trace-dur-t', span_id: id, parent_span_id: null, agent_id: 'agent-dur-t', operation: 'model.call',
       start_ms: 100_000, attributes: JSON.stringify({ model: 'model-a', ...(measured ? { 'marveen.duration.source': 'transcript' } : {}) }),
     })
-    closeOtelSpan('trace-dur-t', id, measured ? 103_000 : 100_000, 'ok')
+    await closeOtelSpan('trace-dur-t', id, measured ? 103_000 : 100_000, 'ok')
   }
   const callsTo = (spy: ReturnType<typeof vi.spyOn>, suffix: string) =>
     spy.mock.calls.filter((c: unknown[]) => String(c[0]).endsWith(suffix))
@@ -188,7 +188,7 @@ describe('through tick', () => {
     callsTo(spy, '/v1/metrics').filter((c: unknown[]) => String((c[1] as { body: string }).body).includes('gen_ai.client.operation.duration'))
 
   it('sends the durations of the spans it just exported to /v1/metrics, once', async () => {
-    seedModelCallSpan('msg_t1')
+    await seedModelCallSpan('msg_t1')
     const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }))
     await tick()
     expect(durationCalls(fetchSpy)).toHaveLength(1)
@@ -197,14 +197,14 @@ describe('through tick', () => {
   })
 
   it('sends nothing for a span without a measured duration', async () => {
-    seedModelCallSpan('msg_t2', false)
+    await seedModelCallSpan('msg_t2', false)
     const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }))
     await tick()
     expect(durationCalls(fetchSpy)).toHaveLength(0)
   })
 
   it('does not count the durations of spans whose trace export failed, and counts them once they went out', async () => {
-    seedModelCallSpan('msg_t3')
+    await seedModelCallSpan('msg_t3')
     const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue(new Response('no', { status: 503 }))
     await tick()
     expect(dur.takePendingDurations()).toBeNull()
@@ -215,7 +215,7 @@ describe('through tick', () => {
   })
 
   it('keeps the observations when the metrics send fails and sends them on the next try', async () => {
-    seedModelCallSpan('msg_t4')
+    await seedModelCallSpan('msg_t4')
     const fetchSpy = vi.spyOn(global, 'fetch').mockImplementation(async (url) =>
       String(url).endsWith('/v1/traces') ? new Response('{}', { status: 200 }) : new Response('no', { status: 503 }))
     await tick()
@@ -229,7 +229,7 @@ describe('through tick', () => {
   })
 
   it('drops a batch the collector refuses for good instead of retrying it for ever', async () => {
-    seedModelCallSpan('msg_t5')
+    await seedModelCallSpan('msg_t5')
     const fetchSpy = vi.spyOn(global, 'fetch').mockImplementation(async (url) =>
       String(url).endsWith('/v1/traces') ? new Response('{}', { status: 200 }) : new Response('bad', { status: 400 }))
     await tick()

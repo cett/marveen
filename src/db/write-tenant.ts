@@ -3,7 +3,7 @@
 // row of a shared agent never lands in the wrong tenant and an unresolved one is visibly NULL.
 
 import { getServedTenantIds } from './agents.js'
-import { db } from './connection.js'
+import { dbx } from './facade.js'
 import { getServingTenant } from './tenant-channel-bindings.js'
 
 /**
@@ -16,20 +16,18 @@ import { getServingTenant } from './tenant-channel-bindings.js'
  *      filed under 'default'.
  * No agent id (a system writer) is NULL as well.
  */
-export function resolveWriteTenant(agentId: string | null | undefined): string | null {
+export async function resolveWriteTenant(agentId: string | null | undefined): Promise<string | null> {
   if (!agentId) return null
-  const serving = getServingTenant(agentId)
+  const serving = await getServingTenant(agentId)
   if (serving) return serving
-  const served = getServedTenantIds(agentId)
+  const served = await getServedTenantIds(agentId)
   if (served.length === 0) return 'default'
   return served.length === 1 ? served[0]! : null
 }
 
 /** Tenant of a dashboard user, for the rows an admin action writes (agent_audit_log keeps the user
  *  name in agent_id). The global admin has no tenant: NULL. */
-export function dashboardUserTenant(username: string): string | null {
-  const row = db
-    .prepare('SELECT tenant_id FROM dashboard_users WHERE lower(username) = lower(?)')
-    .get(username) as { tenant_id: string | null } | undefined
+export async function dashboardUserTenant(username: string): Promise<string | null> {
+  const row = await dbx.get<{ tenant_id: string | null }>('SELECT tenant_id FROM dashboard_users WHERE lower(username) = lower(?)', username)
   return row?.tenant_id ?? null
 }

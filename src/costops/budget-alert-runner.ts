@@ -66,10 +66,10 @@ function formatMessage(status: BudgetStatus): string {
  * warning/hard level whose cooldown has elapsed, persist updated cooldowns.
  */
 export async function runBudgetAlertCheck(nowMs: number = Date.now()): Promise<void> {
-  const { config } = loadCostopsConfig()
+  const { config } = await loadCostopsConfig()
   if (config.budgets.length === 0) return
 
-  const statuses = evaluateBudgets(config, nowMs)
+  const statuses = await evaluateBudgets(config, nowMs)
   const state = loadState()
   let stateChanged = false
 

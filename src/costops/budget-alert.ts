@@ -33,28 +33,28 @@ const UNSUPPORTED_SCOPES = new Set(['source', 'provider', 'product'])
  * scope, empty tables, zero amount) reads as 'ok' rather than raising or
  * fabricating a false alarm.
  */
-export function evaluateBudgets(
+export async function evaluateBudgets(
   config: CostOpsConfig,
   nowMs: number,
-): BudgetStatus[] {
+): Promise<BudgetStatus[]> {
   const nowSec = Math.floor(nowMs / 1000)
-  return config.budgets.map((budget) => {
+  return Promise.all(config.budgets.map(async (budget) => {
     const scope = budget.scope ?? 'global'
     if (UNSUPPORTED_SCOPES.has(scope) || budget.amount <= 0) {
-      return { budget, spent: 0, ratio: 0, level: 'ok', blocked: false }
+      return { budget, spent: 0, ratio: 0, level: 'ok' as const, blocked: false }
     }
     if ((scope === 'agent' || scope === 'tenant') && !budget.scope_ref) {
-      return { budget, spent: 0, ratio: 0, level: 'ok', blocked: false }
+      return { budget, spent: 0, ratio: 0, level: 'ok' as const, blocked: false }
     }
     const filter: TokenSpendFilter =
       scope === 'agent' ? { agent: budget.scope_ref } :
       scope === 'tenant' ? { tenant: budget.scope_ref } :
       {}
-    const spent = getMonthlyTokenSpend(filter, nowSec)
+    const spent = await getMonthlyTokenSpend(filter, nowSec)
     const ratio = spent / budget.amount
     const warn = budget.warning_threshold ?? 0.8
     const hard = budget.hard_threshold ?? 1.0
     const level: BudgetStatus['level'] = ratio >= hard ? 'hard' : ratio >= warn ? 'warning' : 'ok'
     return { budget, spent, ratio, level, blocked: level === 'hard' && budget.block_on_hard === true }
-  })
+  }))
 }

@@ -388,6 +388,7 @@ Az `agent-tokens check` csak olvas és tokent soha nem ír ki. Fájlonként egy 
 | `unknown_hash` | az adatbázis ezt a tokent soha nem látta (régebbi adatbázis újabb fájlok alatt, vagy fordítva) | az `issue` lecseréli |
 | `revoked` | a tokent visszavonták vagy lejárt | az `issue` lecseréli |
 | `wrong_role` | a fájlban más alany vagy más szerep érvényes tokenje van | az `issue` lecseréli |
+| `multiple_active` | a fájl tokenje érvényes, de a névhez egynél több aktív sor tartozik (az ötödik oszlop a token nevét és a darabszámot adja); a többi sort senki nem birtokolja | `issue --rotate` (`issue-operator --rotate`): a sima `issue` meghagyja az érvényes fájlt és az extra sorokat |
 | `shared_mismatch` | a `store/.dashboard-token` nem az aktív `dashboard` sor hash-ét adja | `rotate-shared` (3. lépés) |
 | `shared_in_env` | `DASHBOARD_TOKEN` van az `.env`-ben vagy a környezetben; az archívum viszi az `.env`-et, a változó pedig felülírja a token-fájlt | töröld az `.env`-ből, majd `rotate-shared` |
 

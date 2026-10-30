@@ -26,9 +26,9 @@ export function readGateConfig(name: string): GateConfig {
   }
 }
 
-export function writeGateConfig(name: string, cfg: unknown, tenantId = 'default'): GateConfig {
+export async function writeGateConfig(name: string, cfg: unknown, tenantId = 'default'): Promise<GateConfig> {
   const normalized = normalizeGateConfig(cfg)
-  setAgentSetting(name, 'context_restart_gate', normalized, tenantId)
+  await setAgentSetting(name, 'context_restart_gate', normalized, tenantId)
   return normalized
 }
 
@@ -66,8 +66,8 @@ function normalizeState(raw: unknown): GateRunState {
   }
 }
 
-export function readGateRunState(name: string): GateRunState {
-  const row = getAgentState(name, 'gate_run_state')
+export async function readGateRunState(name: string): Promise<GateRunState> {
+  const row = await getAgentState(name, 'gate_run_state')
   if (!row) return { ...EMPTY_STATE }
   try {
     return normalizeState(JSON.parse(row.state_value))
@@ -76,6 +76,6 @@ export function readGateRunState(name: string): GateRunState {
   }
 }
 
-export function writeGateRunState(name: string, state: GateRunState): void {
-  setAgentState(name, 'gate_run_state', state)
+export function writeGateRunState(name: string, state: GateRunState): Promise<void> {
+  return setAgentState(name, 'gate_run_state', state)
 }

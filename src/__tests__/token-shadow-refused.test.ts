@@ -37,61 +37,61 @@ describe('shared_token_refused', () => {
     expect(TOKEN_SHADOW_CATEGORIES).toContain('shared_token_refused')
   })
 
-  it('counts the shared token once it is rotated away, with the declared caller', () => {
-    enrollDashboardApiToken(sha('old-shared'), NOW - 100)
-    enrollDashboardApiToken(sha('new-shared'), NOW) // the rotation: the old row is revoked
-    expect(getApiTokenRowByHash(sha('old-shared'))?.revoked_at).not.toBeNull()
+  it('counts the shared token once it is rotated away, with the declared caller', async () => {
+    await enrollDashboardApiToken(sha('old-shared'), NOW - 100)
+    await enrollDashboardApiToken(sha('new-shared'), NOW) // the rotation: the old row is revoked
+    expect((await getApiTokenRowByHash(sha('old-shared')))?.revoked_at).not.toBeNull()
 
-    observeRefusedSharedToken(reqWith({ authorization: 'Bearer old-shared', 'x-agent-id': 'agent-a', 'user-agent': 'curl/8' }), 'POST', '/api/v1/memories')
+    await observeRefusedSharedToken(reqWith({ authorization: 'Bearer old-shared', 'x-agent-id': 'agent-a', 'user-agent': 'curl/8' }), 'POST', '/api/v1/memories')
     expect(refusedRows()).toEqual([
       { day: expect.any(String), category: 'shared_token_refused', method: 'POST', route: '/api/memories', caller: 'agent-a', caller_source: 'self_declared', client: 'curl', target: '', count: 1, last_ts: expect.any(Number) },
     ])
   })
 
-  it('counts a straggler with no X-Agent-Id as nobody', () => {
-    enrollDashboardApiToken(sha('old-shared'), NOW - 100)
-    enrollDashboardApiToken(sha('new-shared'), NOW)
-    observeRefusedSharedToken(reqWith({ authorization: 'Bearer old-shared' }), 'GET', '/api/agents')
-    observeRefusedSharedToken(reqWith({ authorization: 'Bearer old-shared' }), 'GET', '/api/agents')
+  it('counts a straggler with no X-Agent-Id as nobody', async () => {
+    await enrollDashboardApiToken(sha('old-shared'), NOW - 100)
+    await enrollDashboardApiToken(sha('new-shared'), NOW)
+    await observeRefusedSharedToken(reqWith({ authorization: 'Bearer old-shared' }), 'GET', '/api/agents')
+    await observeRefusedSharedToken(reqWith({ authorization: 'Bearer old-shared' }), 'GET', '/api/agents')
     const rows = refusedRows()
     expect(rows).toHaveLength(1)
     expect(rows[0]).toMatchObject({ caller: '', caller_source: 'none', count: 2 })
   })
 
-  it('does not count the CURRENT shared token (it is not refused)', () => {
-    enrollDashboardApiToken(sha('current'), NOW)
-    observeRefusedSharedToken(reqWith({ authorization: 'Bearer current' }), 'GET', '/api/agents')
+  it('does not count the CURRENT shared token (it is not refused)', async () => {
+    await enrollDashboardApiToken(sha('current'), NOW)
+    await observeRefusedSharedToken(reqWith({ authorization: 'Bearer current' }), 'GET', '/api/agents')
     expect(refusedTotal()).toBe(0)
   })
 
-  it('does not count an unknown bearer, a missing bearer or a malformed header', () => {
-    enrollDashboardApiToken(sha('current'), NOW)
-    observeRefusedSharedToken(reqWith({ authorization: 'Bearer never-seen' }), 'GET', '/api/agents')
-    observeRefusedSharedToken(reqWith({}), 'GET', '/api/agents')
-    observeRefusedSharedToken(reqWith({ authorization: 'Basic abc' }), 'GET', '/api/agents')
-    observeRefusedSharedToken(reqWith({ authorization: 'Bearer ' }), 'GET', '/api/agents')
+  it('does not count an unknown bearer, a missing bearer or a malformed header', async () => {
+    await enrollDashboardApiToken(sha('current'), NOW)
+    await observeRefusedSharedToken(reqWith({ authorization: 'Bearer never-seen' }), 'GET', '/api/agents')
+    await observeRefusedSharedToken(reqWith({}), 'GET', '/api/agents')
+    await observeRefusedSharedToken(reqWith({ authorization: 'Basic abc' }), 'GET', '/api/agents')
+    await observeRefusedSharedToken(reqWith({ authorization: 'Bearer ' }), 'GET', '/api/agents')
     expect(refusedTotal()).toBe(0)
   })
 
-  it('does not count another revoked token (only the shared one is the straggler we look for)', () => {
-    insertApiToken({ tokenHash: sha('agent-token'), name: 'fleet_agent:agent-a', role: 'fleet_agent', tenantId: 'default', createdAt: NOW - 50, expiresAt: null, agentId: 'agent-a' })
-    const row = getApiTokenRowByHash(sha('agent-token'))!
-    revokeApiToken(row.id, NOW)
-    observeRefusedSharedToken(reqWith({ authorization: 'Bearer agent-token', 'x-agent-id': 'agent-a' }), 'GET', '/api/agents')
+  it('does not count another revoked token (only the shared one is the straggler we look for)', async () => {
+    await insertApiToken({ tokenHash: sha('agent-token'), name: 'fleet_agent:agent-a', role: 'fleet_agent', tenantId: 'default', createdAt: NOW - 50, expiresAt: null, agentId: 'agent-a' })
+    const row = (await getApiTokenRowByHash(sha('agent-token')))!
+    await revokeApiToken(row.id, NOW)
+    await observeRefusedSharedToken(reqWith({ authorization: 'Bearer agent-token', 'x-agent-id': 'agent-a' }), 'GET', '/api/agents')
     expect(refusedTotal()).toBe(0)
   })
 
-  it('never counts its own reading route', () => {
-    enrollDashboardApiToken(sha('old-shared'), NOW - 100)
-    enrollDashboardApiToken(sha('new-shared'), NOW)
-    observeRefusedSharedToken(reqWith({ authorization: 'Bearer old-shared' }), 'GET', '/api/v1/token-shadow')
+  it('never counts its own reading route', async () => {
+    await enrollDashboardApiToken(sha('old-shared'), NOW - 100)
+    await enrollDashboardApiToken(sha('new-shared'), NOW)
+    await observeRefusedSharedToken(reqWith({ authorization: 'Bearer old-shared' }), 'GET', '/api/v1/token-shadow')
     expect(refusedTotal()).toBe(0)
   })
 
-  it('never throws: a counter fault must not become a different answer than the 401', () => {
-    enrollDashboardApiToken(sha('old-shared'), NOW - 100)
-    enrollDashboardApiToken(sha('new-shared'), NOW)
+  it('never throws: a counter fault must not become a different answer than the 401', async () => {
+    await enrollDashboardApiToken(sha('old-shared'), NOW - 100)
+    await enrollDashboardApiToken(sha('new-shared'), NOW)
     getDb().exec('DROP TABLE token_usage_shadow')
-    expect(() => observeRefusedSharedToken(reqWith({ authorization: 'Bearer old-shared' }), 'GET', '/api/agents')).not.toThrow()
+    await expect(observeRefusedSharedToken(reqWith({ authorization: 'Bearer old-shared' }), 'GET', '/api/agents')).resolves.toBeUndefined()
   })
 })

@@ -167,7 +167,7 @@ export interface RolloutDeps {
   sessionCreatedSec(t: RolloutTarget): number | null
   isIdle(t: RolloutTarget): boolean
   /** Restart one session; throws when it cannot. */
-  restart(t: RolloutTarget): void
+  restart(t: RolloutTarget): void | Promise<void>
 }
 
 export type RolloutResult =
@@ -182,7 +182,7 @@ export type RolloutResult =
  * One rollout tick: restart at most ONE stale, idle session. Called every minute
  * by the runner; does nothing unless a version change is waiting to be rolled out.
  */
-export function rolloutStep(deps: RolloutDeps, p: ClaudeUpdatePaths = defaultPaths()): RolloutResult {
+export async function rolloutStep(deps: RolloutDeps, p: ClaudeUpdatePaths = defaultPaths()): Promise<RolloutResult> {
   const st = readClaudeUpdateState(p)
   const updatedAt = typeof st.updatedAt === 'number' ? st.updatedAt : null
   if (updatedAt == null) return { action: 'none' }
@@ -224,7 +224,7 @@ export function rolloutStep(deps: RolloutDeps, p: ClaudeUpdatePaths = defaultPat
 
   attempts[candidate.name] = (attempts[candidate.name] ?? 0) + 1
   try {
-    deps.restart(candidate)
+    await deps.restart(candidate)
   } catch (err) {
     logger.warn({ err, agent: candidate.name }, 'claude-update: restart failed')
     writeRolloutState(p, { ...ro, attempts, restarted, lastRestartAt: now })
@@ -245,10 +245,10 @@ export function rolloutStep(deps: RolloutDeps, p: ClaudeUpdatePaths = defaultPat
  * who deleted the row on purpose does not get it back at the next boot. Returns
  * true when a row was inserted.
  */
-export function ensureClaudeUpdateTask(storeDir: string = STORE_DIR, projectRoot: string = PROJECT_ROOT, agent: string = MAIN_AGENT_ID): boolean {
+export async function ensureClaudeUpdateTask(storeDir: string = STORE_DIR, projectRoot: string = PROJECT_ROOT, agent: string = MAIN_AGENT_ID): Promise<boolean> {
   const marker = join(storeDir, SEEDED_MARKER)
   if (existsSync(marker)) return false
-  const inserted = seedScheduleIfAbsent(CLAUDE_UPDATE_TASK, {
+  const inserted = await seedScheduleIfAbsent(CLAUDE_UPDATE_TASK, {
     prompt: '',
     description: 'Claude Code frissítés hetente egyszer (LLM nélkül): a scripts/claude-update.sh egyetlen, zárolt futással frissít, ellenőrzi a binárist és rögzíti az eredményt. A futó sessionök idle-only, lépcsőzve, a fő-agens utoljára újraindulnak. Hiba esetén (nem 0 exit kód) Telegram-riasztás, újraindítás nem történik.',
     schedule: CLAUDE_UPDATE_CRON,

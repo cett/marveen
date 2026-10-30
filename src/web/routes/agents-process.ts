@@ -5,7 +5,6 @@ import { agentDir, writeAgentRemoteConfig } from '../agent-config.js'
 import { readAutoRestartConfig, writeAutoRestartConfig } from '../auto-restart-store.js'
 import { readContextGuardConfig, writeContextGuardConfig } from '../context-guard-store.js'
 import { getContextGuardStatus } from '../context-guard-runner.js'
-import { setStoreWriteActor } from '../../store-watcher.js'
 import {
   startAgentProcess,
   stopAgentProcess,
@@ -49,10 +48,10 @@ const INBOX_DRAIN_CAP = 10
 // back to admin-only for exactly those agents, matching today's real-world
 // operational shape (only the admin dashboard token manages them) without
 // a special case.
-function crossTenantAgentSettingsBlocked(ctx: RouteContext, name: string): boolean {
+async function crossTenantAgentSettingsBlocked(ctx: RouteContext, name: string): Promise<boolean> {
   if (ctx.role === 'admin') return false
   const callerTenant = ctx.tenantId ?? 'default'
-  return !agentBelongsToTenant(name, callerTenant)
+  return !await agentBelongsToTenant(name, callerTenant)
 }
 
 export async function tryHandleAgentsProcess(ctx: RouteContext): Promise<boolean> {
@@ -62,7 +61,7 @@ export async function tryHandleAgentsProcess(ctx: RouteContext): Promise<boolean
   if (autoRestartMatch && method === 'PUT') {
     const name = decodeURIComponent(autoRestartMatch[1])
     if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) { json(res, { error: 'not_found', hint: 'Agent not found' }, 404); return true }
-    if (crossTenantAgentSettingsBlocked(ctx, name)) { json(res, { error: 'forbidden', hint: 'Agent not in your tenant' }, 403); return true }
+    if (await crossTenantAgentSettingsBlocked(ctx, name)) { json(res, { error: 'forbidden', hint: 'Agent not in your tenant' }, 403); return true }
     const body = await readBody(req)
     let data: unknown
     try { data = JSON.parse(body.toString()) } catch { json(res, { error: 'parse_error', hint: 'Invalid JSON body' }, 400); return true }
@@ -71,9 +70,8 @@ export async function tryHandleAgentsProcess(ctx: RouteContext): Promise<boolean
       json(res, { error: arFields.code, field: arFields.rejected[0], hint: arFields.message }, 400)
       return true
     }
-    const owningTenant = resolveAgentOwningTenantId(name)
-    setStoreWriteActor('dashboard', owningTenant)
-    const saved = writeAutoRestartConfig(name, data, owningTenant)
+    const owningTenant = await resolveAgentOwningTenantId(name)
+    const saved = await writeAutoRestartConfig(name, data, owningTenant)
     json(res, { ok: true, autoRestart: saved })
     return true
   }
@@ -86,7 +84,7 @@ export async function tryHandleAgentsProcess(ctx: RouteContext): Promise<boolean
   if (contextGuardMatch && (method === 'GET' || method === 'PUT')) {
     const name = decodeURIComponent(contextGuardMatch[1])
     if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) { json(res, { error: 'not_found', hint: 'Agent not found' }, 404); return true }
-    if (crossTenantAgentSettingsBlocked(ctx, name)) { json(res, { error: 'forbidden', hint: 'Agent not in your tenant' }, 403); return true }
+    if (await crossTenantAgentSettingsBlocked(ctx, name)) { json(res, { error: 'forbidden', hint: 'Agent not in your tenant' }, 403); return true }
     if (method === 'GET') {
       json(res, { ok: true, contextGuard: readContextGuardConfig(name) })
       return true
@@ -99,9 +97,8 @@ export async function tryHandleAgentsProcess(ctx: RouteContext): Promise<boolean
       json(res, { error: cgFields.code, field: cgFields.rejected[0], hint: cgFields.message }, 400)
       return true
     }
-    const owningTenant = resolveAgentOwningTenantId(name)
-    setStoreWriteActor('dashboard', owningTenant)
-    const saved = writeContextGuardConfig(name, data, owningTenant)
+    const owningTenant = await resolveAgentOwningTenantId(name)
+    const saved = await writeContextGuardConfig(name, data, owningTenant)
     json(res, { ok: true, contextGuard: saved })
     return true
   }
@@ -146,10 +143,10 @@ export async function tryHandleAgentsProcess(ctx: RouteContext): Promise<boolean
     // the --channels plugin MCP server (agent comes up deaf).
     let startFresh = false
     try { startFresh = JSON.parse((await readBody(req)).toString() || '{}').fresh === true } catch {}
-    const result = startAgentProcess(name, { fresh: startFresh })
+    const result = await startAgentProcess(name, { fresh: startFresh })
     // Record operator intent so the monitor keeps this agent up across shared
     // tmux-server restarts / reboots (see agent-desired-state.ts).
-    if (result.ok || result.error === 'conflict') addDesiredAgent(name)
+    if (result.ok || result.error === 'conflict') await addDesiredAgent(name)
     if (result.ok) { json(res, { ok: true }); return true }
     json(res, { error: result.error, ...(result.hint ? { hint: result.hint } : {}) }, result.error === 'not_found' ? 404 : result.error === 'conflict' ? 409 : result.error === 'internal_error' ? 500 : 400)
     return true
@@ -162,9 +159,9 @@ export async function tryHandleAgentsProcess(ctx: RouteContext): Promise<boolean
       json(res, { error: 'not_supported', hint: 'Main agent lifecycle is service-managed; use /api/marveen/restart for recovery' }, 400)
       return true
     }
-    const result = stopAgentProcess(name)
+    const result = await stopAgentProcess(name)
     // Explicit stop clears intent so the monitor will not resurrect it.
-    removeDesiredAgent(name)
+    await removeDesiredAgent(name)
     if (result.ok) { json(res, { ok: true }); return true }
     json(res, { error: result.error, ...(result.hint ? { hint: result.hint } : {}) }, result.error === 'conflict' ? 409 : result.error === 'internal_error' ? 500 : 400)
     return true
@@ -186,7 +183,7 @@ export async function tryHandleAgentsProcess(ctx: RouteContext): Promise<boolean
       json(res, { error: 'not_supported', hint: 'drain-inbox is main-agent only (sub-agents use the router push path)' }, 400)
       return true
     }
-    const claimed = claimPendingForAgent(name, INBOX_DRAIN_CAP)
+    const claimed = await claimPendingForAgent(name, INBOX_DRAIN_CAP)
     const blocks: string[] = []
     for (const msg of claimed) {
       const cls = classifyAgentMessage(msg.from_agent, msg.to_agent)
@@ -195,7 +192,7 @@ export async function tryHandleAgentsProcess(ctx: RouteContext): Promise<boolean
         // here is invisible message loss (delivered in the DB, never shown
         // to the agent, no log, no retry). Surface it like the router does.
         logger.warn({ id: msg.id, rawFrom: msg.from_agent }, 'drain-inbox: message rejected, from_agent cannot be framed safely')
-        if (!markMessageFailed(msg.id, 'Invalid or empty from_agent')) {
+        if (!await markMessageFailed(msg.id, 'Invalid or empty from_agent')) {
           logger.warn({ id: msg.id }, 'markMessageFailed affected 0 rows (deleted concurrently?)')
         }
         continue
@@ -242,7 +239,7 @@ export async function tryHandleAgentsProcess(ctx: RouteContext): Promise<boolean
     // Optional { "fresh": true } body -> no `--continue` (see /start note).
     let restartFresh = false
     try { restartFresh = JSON.parse(body.toString() || '{}').fresh === true } catch {}
-    const result = restartAgentProcess(name, { fresh: restartFresh })
+    const result = await restartAgentProcess(name, { fresh: restartFresh })
     if (result.ok) { json(res, { ok: true }); return true }
     json(res, { error: result.error, ...(result.hint ? { hint: result.hint } : {}) }, result.error === 'not_found' ? 404 : result.error === 'conflict' ? 409 : result.error === 'internal_error' ? 500 : 400)
     return true

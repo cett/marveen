@@ -22,8 +22,8 @@ const TMP = mkdtempSync(join(tmpdir(), 'fed-err-shapes-test-'))
 const IN_TOKEN = generatePeerInboundToken()
 const OUT_TOKEN = 'e'.repeat(64)
 
-function writeCfg(obj: unknown): void {
-  _seedFederationConfigForTest(obj as Record<string, unknown>)
+async function writeCfg(obj: unknown): Promise<void> {
+  await _seedFederationConfigForTest(obj as Record<string, unknown>)
 }
 
 function ctx(method: string, path: string, body?: unknown): {
@@ -60,9 +60,9 @@ beforeAll(() => {
   initDatabase(':memory:')
 })
 
-beforeEach(() => {
+beforeEach(async () => {
   _setFederationStoreDirForTest(TMP)
-  writeCfg({
+  await writeCfg({
     enabled: true,
     systemId: 'test-system',
     peers: [{ id: 'arthur', baseUrl: 'https://macbook.example.ts.net', inboundToken: IN_TOKEN, outboundToken: OUT_TOKEN }],

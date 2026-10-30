@@ -280,10 +280,10 @@ export async function tryHandleAgentsChannels(ctx: RouteContext): Promise<boolea
         setAgentEnabledPlugins(name, provider)
         gcWasRunning = isAgentRunning(name)
         if (gcWasRunning) {
-          const stopRes = stopAgentProcess(name)
+          const stopRes = await stopAgentProcess(name)
           if (stopRes.ok) {
             try { execSync('sleep 2', { timeout: 4000 }) } catch {}
-            gcRestarted = startAgentProcess(name).ok
+            gcRestarted = (await startAgentProcess(name)).ok
           }
         }
       }
@@ -368,7 +368,7 @@ export async function tryHandleAgentsChannels(ctx: RouteContext): Promise<boolea
     // The server-side record follows the channel: the new token goes into the vault, and the adopted
     // chat list and baseline of the previous setup are dropped (access.json was just reset). The owner
     // adopts the pairing again once it exists (POST /api/channel-credentials/adopt).
-    if (provider === CHANNEL_PROVIDER) resetChannelAfterSetup(name, botToken.trim())
+    if (provider === CHANNEL_PROVIDER) await resetChannelAfterSetup(name, botToken.trim())
 
     // Main agent doesn't have an agent-config.json or enabled-plugins entry
     // (the channels session reuses the system claude install), so skip the
@@ -386,10 +386,10 @@ export async function tryHandleAgentsChannels(ctx: RouteContext): Promise<boolea
       if (provider === 'telegram') sendWelcomeMessage(name, botToken.trim()).catch(() => {})
       wasRunning = isAgentRunning(name)
       if (wasRunning) {
-        const stopRes = stopAgentProcess(name)
+        const stopRes = await stopAgentProcess(name)
         if (stopRes.ok) {
           try { execSync('sleep 2', { timeout: 4000 }) } catch {}
-          const startRes = startAgentProcess(name)
+          const startRes = await startAgentProcess(name)
           restarted = startRes.ok
         }
       }
@@ -408,7 +408,7 @@ export async function tryHandleAgentsChannels(ctx: RouteContext): Promise<boolea
     const accessFile = join(stateDir, 'access.json')
     if (existsSync(envFile)) unlinkSync(envFile)
     if (existsSync(accessFile)) unlinkSync(accessFile)
-    if (provider === CHANNEL_PROVIDER) forgetChannel(name)
+    if (provider === CHANNEL_PROVIDER) await forgetChannel(name)
     writeAgentChannelProvider(name, '')
     resetAgentEnabledPlugins(name)
     json(res, { ok: true })
@@ -636,7 +636,7 @@ export async function tryHandleAgentsChannels(ctx: RouteContext): Promise<boolea
   if (chReqListMatch && method === 'GET') {
     const name = decodeURIComponent(chReqListMatch[1])
     if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) { json(res, { error: 'not_found', hint: 'Agent not found' }, 404); return true }
-    json(res, listPendingChannelRequests(name))
+    json(res, await listPendingChannelRequests(name))
     return true
   }
 
@@ -650,7 +650,7 @@ export async function tryHandleAgentsChannels(ctx: RouteContext): Promise<boolea
     let opts: { requireMention?: boolean; allowFromAll?: boolean } = {}
     try { opts = JSON.parse(body.toString() || '{}') } catch { json(res, { error: 'parse_error', hint: 'Invalid JSON body' }, 400); return true }
 
-    const pending = listPendingChannelRequests(name)
+    const pending = await listPendingChannelRequests(name)
     const request = pending.find(r => r.id === reqId)
     if (!request) { json(res, { error: 'not_found', hint: 'Request not found' }, 404); return true }
 
@@ -679,7 +679,7 @@ export async function tryHandleAgentsChannels(ctx: RouteContext): Promise<boolea
       access.channels[request.channel_id] = channelConfig
 
       atomicWriteFileSync(accessPath, JSON.stringify(access, null, 2))
-      updateChannelRequestStatus(reqId, 'approved')
+      await updateChannelRequestStatus(reqId, 'approved')
       logger.info({ name, channelId: request.channel_id, channelName: request.channel_name }, 'Channel request approved')
       json(res, { ok: true })
     } catch (err) {
@@ -694,7 +694,7 @@ export async function tryHandleAgentsChannels(ctx: RouteContext): Promise<boolea
     const name = decodeURIComponent(chReqDenyMatch[1])
     const reqId = Number(chReqDenyMatch[2])
     if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) { json(res, { error: 'not_found', hint: 'Agent not found' }, 404); return true }
-    if (updateChannelRequestStatus(reqId, 'denied')) {
+    if (await updateChannelRequestStatus(reqId, 'denied')) {
       json(res, { ok: true })
     } else {
       json(res, { error: 'not_found', hint: 'Request not found or already resolved' }, 404)

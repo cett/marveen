@@ -67,7 +67,7 @@ vi.mock('../db/observability.js', () => ({
   getTenant: vi.fn().mockReturnValue(undefined),
 }))
 vi.mock('../db/agents.js', () => ({
-  getTenantsForAgent: vi.fn().mockReturnValue([]),
+  getTenantsForAgent: vi.fn().mockResolvedValue([]),
 }))
 vi.mock('../web/remote-status-cache.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../web/remote-status-cache.js')>()
@@ -106,24 +106,24 @@ beforeEach(() => clearFallbackOverride('agent-d'))
 afterAll(() => rmSync(store.dir, { recursive: true, force: true }))
 
 describe('getAgentSummary with a model-fallback overlay', () => {
-  it('reports the configured X as model AND the downgraded Y as fallback / effectiveModel', () => {
+  it('reports the configured X as model AND the downgraded Y as fallback / effectiveModel', async () => {
     setFallbackOverride('agent-d', { primary: X, current: Y, downgradedAt: 5_000 })
-    const summary = getAgentSummary('agent-d')
+    const summary = await getAgentSummary('agent-d')
     expect(summary.model).toBe(X)
     expect(summary.fallback).toEqual({ primary: X, current: Y, downgradedAt: 5_000 })
     expect(summary.effectiveModel).toBe(Y)
   })
 
-  it('without an overlay: no fallback, effectiveModel equals model', () => {
-    const summary = getAgentSummary('agent-d')
+  it('without an overlay: no fallback, effectiveModel equals model', async () => {
+    const summary = await getAgentSummary('agent-d')
     expect(summary.fallback).toBeNull()
     expect(summary.effectiveModel).toBe(X)
     expect(summary.model).toBe(X)
   })
 
-  it('a cleared overlay stops being reported', () => {
+  it('a cleared overlay stops being reported', async () => {
     setFallbackOverride('agent-d', { primary: X, current: Y, downgradedAt: 5_000 })
     clearFallbackOverride('agent-d')
-    expect(getAgentSummary('agent-d').fallback).toBeNull()
+    expect((await getAgentSummary('agent-d')).fallback).toBeNull()
   })
 })

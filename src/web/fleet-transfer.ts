@@ -8,7 +8,7 @@
 // NOT included -- those come from a normal `npm ci && npm run build` install.
 
 import {
-  existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, unlinkSync,
+  copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync,
 } from 'node:fs'
 import { join, extname } from 'node:path'
 import { homedir, hostname } from 'node:os'
@@ -18,7 +18,7 @@ import {
 import { PROJECT_ROOT, STORE_DIR, MAIN_AGENT_ID, BOT_NAME, BRAND_NAME, OWNER_NAME, CHANNEL_PROVIDER } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { updateEnvFile } from '../env.js'
-import { AGENTS_BASE_DIR, listAgentNames, invalidateModelProfileMapCache } from './agent-config.js'
+import { AGENTS_BASE_DIR, listAgentNames } from './agent-config.js'
 import { safeJoin } from './sanitize.js'
 import { SCHEDULED_TASKS_DIR } from './scheduled-tasks-io.js'
 import { getBindings } from './vault-bindings.js'
@@ -34,6 +34,9 @@ import {
 } from '../db/fleet-transfer.js'
 import { validateConfig, type BudgetEntry } from '../costops/config.js'
 import { listVaultBindings, replaceVaultBindings, type VaultBinding } from '../db/vault-bindings.js'
+import { reloadSystemConfigCache } from '../db/config-cache.js'
+import { reloadModelProfileMapCache } from '../db/model-profile-map-cache.js'
+import { reloadAgentSettingsCache } from '../db/agent-settings-cache.js'
 import { getFederationConfigRaw, setFederationConfigRaw } from '../db/federation.js'
 import { invalidateFederationConfigCache, validateFederationConfig } from './federation/config.js'
 import { logger } from '../logger.js'
@@ -50,6 +53,32 @@ export class UserFacingError extends Error {
   constructor(message: string) {
     super(message)
     this.name = 'UserFacingError'
+  }
+}
+
+// ---------------------------------------------------------------------------
+// ImportConflictError -- the import cannot run now, and nothing was applied; route maps to 409 (not 500).
+//   StaleBackupError    an earlier import left a `.import-bak` that this one would overwrite
+//   ImportInProgressError  another apply is running in this process
+// ---------------------------------------------------------------------------
+export class ImportConflictError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'ImportConflictError'
+  }
+}
+
+export class StaleBackupError extends ImportConflictError {
+  constructor(message: string) {
+    super(message)
+    this.name = 'StaleBackupError'
+  }
+}
+
+export class ImportInProgressError extends ImportConflictError {
+  constructor(message: string) {
+    super(message)
+    this.name = 'ImportInProgressError'
   }
 }
 
@@ -424,9 +453,9 @@ function looksLikeHeaderSecret(key: string, value: string): boolean {
 }
 
 // Build lookup: mcpFilePath -> serverName -> envVar -> vaultSecretId
-function buildBindingLookup(): Map<string, Map<string, Map<string, string>>> {
+async function buildBindingLookup(): Promise<Map<string, Map<string, Map<string, string>>>> {
   const lookup = new Map<string, Map<string, Map<string, string>>>()
-  for (const binding of getBindings()) {
+  for (const binding of await getBindings()) {
     for (const target of binding.targets) {
       if (!lookup.has(target.mcpFilePath)) lookup.set(target.mcpFilePath, new Map())
       const byServer = lookup.get(target.mcpFilePath)!
@@ -561,16 +590,16 @@ function extractSkillDescription(content: string): string {
 // Skills are stored in SQL and mirrored to disk as the generated cache the
 // Claude Code loader reads. Export from SQL so a snapshot reflects the latest
 // content even if the on-disk mirror hasn't been regenerated yet.
-function listGlobalSkillsFromSQL(): SkillExport[] {
+async function listGlobalSkillsFromSQL(): Promise<SkillExport[]> {
   const prefix = 'global/'
-  return listAllSkills()
+  return (await listAllSkills())
     .filter(r => r.tenant_id === 'fleet' && r.id.startsWith(prefix))
     .map(r => ({ name: r.id.slice(prefix.length), skillMd: r.content }))
 }
 
-function listAgentSkillsFromSQL(agentId: string): SkillExport[] {
+async function listAgentSkillsFromSQL(agentId: string): Promise<SkillExport[]> {
   const prefix = `agent/${agentId}/`
-  return listAllSkills()
+  return (await listAllSkills())
     .filter(r => r.tenant_id === 'fleet' && r.id.startsWith(prefix))
     .map(r => ({ name: r.id.slice(prefix.length), skillMd: r.content }))
 }
@@ -621,7 +650,7 @@ function exportMainAgent(
   }
 
   // Main agent channel access lives at ~/.claude/channels/<provider>/access.json
-  const channelsAccess = exportChannelsAccess(join(homedir(), '.claude', 'channels'))
+  const channelsAccess = exportChannelsAccess(mainChannelsRoot())
 
   return {
     agentId: MAIN_AGENT_ID,
@@ -641,11 +670,11 @@ function exportMainAgent(
   }
 }
 
-function exportAgent(
+async function exportAgent(
   name: string,
   bindingLookup: Map<string, Map<string, Map<string, string>>>,
   withSecrets: boolean,
-): AgentExport {
+): Promise<AgentExport> {
   const dir = join(AGENTS_BASE_DIR, name)
   const claudeDir = join(dir, '.claude')
   const mcpPath = join(dir, '.mcp.json')
@@ -696,7 +725,7 @@ function exportAgent(
     channelsAccess,
     avatar,
     avatarExt,
-    agentSkills: listAgentSkillsFromSQL(name),
+    agentSkills: await listAgentSkillsFromSQL(name),
   }
 }
 
@@ -713,10 +742,10 @@ function exportScheduledTasks(): ScheduledTaskExport[] {
   return result
 }
 
-function exportDashboardSettings(): DashboardSettingsExport {
+async function exportDashboardSettings(): Promise<DashboardSettingsExport> {
   const read = (name: string) => safeReadJson(join(STORE_DIR, name))
   return {
-    autonomy: listAutonomyCategories(),
+    autonomy: await listAutonomyCategories(),
     modelProfileMap: listModelProfileMap(),
     autoRestart: listAgentSettingsByKey('auto_restart'),
     agentsDesired: [...getDesiredAgents()].sort(),
@@ -724,13 +753,13 @@ function exportDashboardSettings(): DashboardSettingsExport {
     modelFallback: readModelFallbackFieldsRaw(),
     federation: readFederationConfigObjectRaw(),
     costopsConfig: read('costops-config.json'),
-    costBudgets: listCostBudgets('default'),
-    egressAllowlist: listEgressAllowlistRows(null),
+    costBudgets: await listCostBudgets('default'),
+    egressAllowlist: await listEgressAllowlistRows(null),
     terminalInputEnabled: readTerminalInputEnabledRaw(),
   }
 }
 
-function exportVault(): VaultExport | null {
+async function exportVault(): Promise<VaultExport | null> {
   const vaultKeyPath = join(STORE_DIR, '.vault-key')
   const vaultKeyMigratedPath = join(STORE_DIR, '.vault-key.migrated')
   const vaultPath = join(STORE_DIR, 'vault.json')
@@ -752,7 +781,7 @@ function exportVault(): VaultExport | null {
   const entries = (vaultStore.entries as Record<string, unknown>[]) ?? []
   // DB-backed (vault_bindings, migration 0062, #985 group 7/8), not the
   // retired store/vault-bindings.json.
-  const bindings = listVaultBindings('default') as unknown as Record<string, unknown>[]
+  const bindings = (await listVaultBindings('default')) as unknown as Record<string, unknown>[]
 
   // Channel .env (bot tokens) are intentionally NOT exported -- see re-pair model comment in VaultExport.
   return { vaultKey, entries, bindings }
@@ -764,42 +793,42 @@ export const ENCRYPTED_FLEET_VERSION = 1
 
 export type ExportedFleet = { data: string; exportedAt: string }
 
-export function exportFleet(options: { vaultPassword?: string } = {}): ExportedFleet {
+export async function exportFleet(options: { vaultPassword?: string } = {}): Promise<ExportedFleet> {
   if (options.vaultPassword !== undefined && options.vaultPassword.length < MIN_VAULT_PASSWORD_LEN) {
     throw new Error(`A vault jelszó legalább ${MIN_VAULT_PASSWORD_LEN} karakter kell legyen.`)
   }
 
   const withSecrets = !!options.vaultPassword
-  const bindingLookup = withSecrets ? new Map() : buildBindingLookup()
+  const bindingLookup = withSecrets ? new Map() : await buildBindingLookup()
 
   const mainAgent = exportMainAgent(bindingLookup, withSecrets)
-  const agents = listAgentNames().map(name => exportAgent(name, bindingLookup, withSecrets))
-  const skills = listGlobalSkillsFromSQL()
+  const agents = await Promise.all(listAgentNames().map(name => exportAgent(name, bindingLookup, withSecrets)))
+  const skills = await listGlobalSkillsFromSQL()
   const scheduledTasks = exportScheduledTasks()
 
   // Export ALL memories and daily_logs across every agent_id
-  const memories = exportMemoryRows<MemoryRow>()
+  const memories = await exportMemoryRows<MemoryRow>()
 
-  const dailyLogs = exportDailyLogRows<DailyLogRow>()
+  const dailyLogs = await exportDailyLogRows<DailyLogRow>()
 
   const kanban: KanbanExport = {
-    cards: exportTableRows('kanban_cards'),
-    comments: exportTableRows('kanban_comments'),
-    cardEvents: exportTableRows('kanban_card_events'),
-    labels: exportTableRows('labels'),
-    cardLabels: exportTableRows('kanban_card_labels'),
+    cards: await exportTableRows('kanban_cards'),
+    comments: await exportTableRows('kanban_comments'),
+    cardEvents: await exportTableRows('kanban_card_events'),
+    labels: await exportTableRows('labels'),
+    cardLabels: await exportTableRows('kanban_card_labels'),
   }
 
   const ideaBox: IdeaBoxExport = {
-    ideas: exportTableRows('idea_box'),
-    comments: exportTableRows('idea_comments'),
-    statusLog: exportTableRows('idea_status_log'),
+    ideas: await exportTableRows('idea_box'),
+    comments: await exportTableRows('idea_comments'),
+    statusLog: await exportTableRows('idea_status_log'),
   }
 
   // DB-based schedules (dashboard-schedule-crud API), distinct from the file-based
   // scheduledTasks[] above. Force-disabled at export time, same as scheduledTasks,
   // so an imported fleet never starts firing a source fleet's cron jobs unreviewed.
-  const schedules = exportTableRows('schedules')
+  const schedules = (await exportTableRows('schedules'))
     .map(row => ({ ...row, enabled: 0 }))
 
   // Import-pipeline source configs (local/gdrive/sharepoint/confluence). Only the
@@ -811,7 +840,7 @@ export function exportFleet(options: { vaultPassword?: string } = {}): ExportedF
   // leaving last_run_at set would make the next crawl treat itself as incremental
   // and silently skip everything older than that cutoff -- content the target
   // never actually has, since import_memories didn't come along for the ride.
-  const importSources = exportTableRows('import_sources')
+  const importSources = (await exportTableRows('import_sources'))
     .map(row => ({ ...row, enabled: 0, last_run_at: null }))
 
   // SSH key-pool metadata (P4). Neither table has a private-key column -- the
@@ -819,11 +848,11 @@ export function exportFleet(options: { vaultPassword?: string } = {}): ExportedF
   // vault_key_id, and is included ONLY when the vault section below is (i.e.
   // only in an encrypted, password-protected export). This metadata alone is
   // safe in plaintext: public key, fingerprint, host/port/username, no secret.
-  const vaultSshKeys = exportTableRows('vault_ssh_keys')
-  const vaultSshServers = exportTableRows('vault_ssh_servers')
+  const vaultSshKeys = await exportTableRows('vault_ssh_keys')
+  const vaultSshServers = await exportTableRows('vault_ssh_servers')
 
   // Vault section is only included in encrypted exports (whole-JSON encryption makes it safe)
-  const vault = withSecrets ? exportVault() : undefined
+  const vault = withSecrets ? await exportVault() : undefined
 
   const fleet: FleetJson = {
     schemaVersion: 1,
@@ -841,7 +870,7 @@ export function exportFleet(options: { vaultPassword?: string } = {}): ExportedF
     importSources,
     vaultSshKeys,
     vaultSshServers,
-    dashboardSettings: exportDashboardSettings(),
+    dashboardSettings: await exportDashboardSettings(),
     ...(vault ? { vault } : {}),
   }
 
@@ -950,11 +979,11 @@ function importedScheduleTenant(localTenants: ReadonlySet<string>, raw: unknown)
   return typeof raw === 'string' && localTenants.has(raw) ? raw : 'default'
 }
 
-function enabledLocalTenantIds(): Set<string> {
-  return new Set<string>(['default', ...listEnabledTenantIds()])
+async function enabledLocalTenantIds(): Promise<Set<string>> {
+  return new Set<string>(['default', ...await listEnabledTenantIds()])
 }
 
-function buildDiffReport(fleet: FleetJson): DiffReport {
+async function buildDiffReport(fleet: FleetJson): Promise<DiffReport> {
   const warnings: string[] = []
 
   const existingAgents = new Set(listAgentNames())
@@ -962,38 +991,38 @@ function buildDiffReport(fleet: FleetJson): DiffReport {
 
   let newMemories = 0
   for (const mem of fleet.memories ?? []) {
-    if (!fleetRowExists('memories', mem)) {
+    if (!await fleetRowExists('memories', mem)) {
       newMemories++
     }
   }
 
   let newCards = 0
   for (const card of fleet.kanban?.cards ?? []) {
-    if (!fleetRowIdExists('kanban_cards', (card as any).id)) newCards++
+    if (!await fleetRowIdExists('kanban_cards', (card as any).id)) newCards++
   }
 
   let newLabels = 0
   for (const label of fleet.kanban?.labels ?? []) {
-    if (!fleetRowIdExists('labels', (label as any).id)) newLabels++
+    if (!await fleetRowIdExists('labels', (label as any).id)) newLabels++
   }
 
   let newDailyLogs = 0
   for (const log of fleet.dailyLogs ?? []) {
-    if (!fleetRowExists('daily_logs', log)) {
+    if (!await fleetRowExists('daily_logs', log)) {
       newDailyLogs++
     }
   }
 
   let newComments = 0
   for (const c of fleet.kanban?.comments ?? []) {
-    if (!fleetRowExists('kanban_comments', c as any)) newComments++
+    if (!await fleetRowExists('kanban_comments', c as any)) newComments++
   }
 
   let newSchedules = 0
   let rehomedSchedules = 0
-  const localTenants = enabledLocalTenantIds()
+  const localTenants = await enabledLocalTenantIds()
   for (const sch of fleet.schedules ?? []) {
-    if (fleetRowIdExists('schedules', (sch as any).id)) continue
+    if (await fleetRowIdExists('schedules', (sch as any).id)) continue
     newSchedules++
     const exported = (sch as any).tenant_id
     if (exported != null && importedScheduleTenant(localTenants, exported) !== exported) rehomedSchedules++
@@ -1007,7 +1036,7 @@ function buildDiffReport(fleet: FleetJson): DiffReport {
 
   let newImportSources = 0
   for (const src of fleet.importSources ?? []) {
-    if (!fleetRowIdExists('import_sources', (src as any).id)) newImportSources++
+    if (!await fleetRowIdExists('import_sources', (src as any).id)) newImportSources++
   }
   if (newImportSources > 0) {
     warnings.push(
@@ -1018,11 +1047,11 @@ function buildDiffReport(fleet: FleetJson): DiffReport {
 
   let newVaultSshKeys = 0
   for (const key of fleet.vaultSshKeys ?? []) {
-    if (!fleetRowIdExists('vault_ssh_keys', (key as any).id)) newVaultSshKeys++
+    if (!await fleetRowIdExists('vault_ssh_keys', (key as any).id)) newVaultSshKeys++
   }
   let newVaultSshServers = 0
   for (const srv of fleet.vaultSshServers ?? []) {
-    if (!fleetRowIdExists('vault_ssh_servers', (srv as any).id)) newVaultSshServers++
+    if (!await fleetRowIdExists('vault_ssh_servers', (srv as any).id)) newVaultSshServers++
   }
 
   if (!fleet.vault) {
@@ -1083,12 +1112,75 @@ function buildDiffReport(fleet: FleetJson): DiffReport {
 }
 
 // ---------------------------------------------------------------------------
-// Apply helpers -- tracked writes for partial cleanup (H3)
+// Apply helpers -- staged writes, so a failing import leaves nothing half applied
 // ---------------------------------------------------------------------------
+//
+// The import is applied in phases:
+//   0. decode and validate everything that is pure (nothing is written),
+//   1. STAGE the files: each one is written as `<path>.import-new`; a file that would be overwritten is first copied
+//      to `<path>.import-bak`. No final path changes in this phase (only the directories that did not exist are
+//      created, and tracked so a failure removes them again),
+//   2. ONE database transaction holds every database write of the import (the settings, the skills and the rows),
+//   3. only after the commit: rename the staged files into place, reload the process-local caches, then the vault
+//      step and the `.env` mirror (the vault stays last, as before).
+//
+// Backup rule. A failure before the commit never touched a final path, so the staged files AND the backups (a
+// redundant copy of files that are still in place) are removed. A failure after the commit restores each renamed
+// file from its backup and removes that backup once the restored file is verified; a file whose restore fails keeps
+// its backup (the only copy of the previous content), and that backup makes the next import refuse to stage the
+// file. The backups of files that were never renamed are removed. A successful import removes every backup.
+
+export const STAGE_SUFFIX = '.import-new'
+export const BACKUP_SUFFIX = '.import-bak'
+
+/** `~/.claude/channels`: where the main agent's `<provider>/access.json` files live (exported, staged, and scanned for leftovers). */
+function mainChannelsRoot(): string {
+  return join(homedir(), '.claude', 'channels')
+}
+
+/** `~/.claude/skills`: where the global skills' `<name>/SKILL.md` files are staged. */
+function globalSkillsRoot(): string {
+  return join(homedir(), '.claude', 'skills')
+}
+
+export interface ImportTargetRoot {
+  dir: string
+  /** How many directory levels below `dir` hold files the import stages (1 = the entries of `dir` itself). */
+  maxDepth: number
+}
+
+/**
+ * Every directory tree the import stages files into, with the depth it reaches. The leftover scan walks exactly these
+ * (one list, built from the same constants and helpers the writers above use), so a new write location that is
+ * added to the import and to this list is covered at once, and a location that is in neither is visible in review.
+ *   PROJECT_ROOT (1) and its .claude (1)   main agent CLAUDE.md, SOUL.md, agent-config.json, .mcp.json, settings.json
+ *   ~/.claude/channels (2)                 <provider>/access.json
+ *   AGENTS_BASE_DIR (5)                    <agent>/files, <agent>/.claude/settings.json, <agent>/.claude/channels/<provider>/access.json
+ *   ~/.claude/skills (2)                   <skill>/SKILL.md
+ *   SCHEDULED_TASKS_DIR (2)                <task>/SKILL.md, <task>/task-config.json
+ *   STORE_DIR (1)                          vault.json, .vault-key, norbert-personal.json, costops-config.json
+ */
+export function importTargetRoots(): ImportTargetRoot[] {
+  return [
+    { dir: PROJECT_ROOT, maxDepth: 1 },
+    { dir: join(PROJECT_ROOT, '.claude'), maxDepth: 1 },
+    { dir: mainChannelsRoot(), maxDepth: 2 },
+    { dir: AGENTS_BASE_DIR, maxDepth: 5 },
+    { dir: globalSkillsRoot(), maxDepth: 2 },
+    { dir: SCHEDULED_TASKS_DIR, maxDepth: 2 },
+    { dir: STORE_DIR, maxDepth: 1 },
+  ]
+}
 
 interface WriteEntry {
+  /** The final path. */
   path: string
-  preexisted: boolean
+  /** `<path>.import-new`: where the new content waits for the commit. */
+  staged: string
+  /** `<path>.import-bak`: the previous content, set only when the final path existed at staging time. */
+  backup: string | null
+  /** True once the staged file was renamed onto the final path. */
+  renamed: boolean
 }
 
 interface WriteTracker {
@@ -1103,23 +1195,118 @@ function trackedMkdir(path: string, tracker: WriteTracker): void {
   }
 }
 
-function trackedWrite(path: string, content: string | Buffer, tracker: WriteTracker, opts?: { mode?: number }): void {
-  const preexisted = existsSync(path)
-  atomicWriteFileSync(path, content as string, opts)
-  tracker.files.push({ path, preexisted })
+/** Phase 1: write the new content next to `path` and back up the file it will replace. Touches no final path. */
+function stagedWrite(path: string, content: string | Buffer, tracker: WriteTracker, opts?: { mode?: number }): WriteEntry {
+  let entry = tracker.files.find((e) => e.path === path)
+  if (!entry) {
+    // A backup that is already there was left by an earlier import that could not restore this file: it may be the
+    // only copy of the previous content, and the backup of this import would overwrite it. Refuse, touch nothing.
+    if (existsSync(`${path}${BACKUP_SUFFIX}`)) {
+      throw new StaleBackupError(
+        `A backup left by an earlier import exists: ${path}${BACKUP_SUFFIX}. It may hold the only copy of the previous ` +
+        `content. Restore it onto ${path} or remove it, then import again. Nothing was imported. ` +
+        `The startup log and GET /api/fleet/import-leftovers list every file an interrupted import left behind.`,
+      )
+    }
+    // Tracked before the write, so a write that fails half way is still cleaned up.
+    entry = { path, staged: `${path}${STAGE_SUFFIX}`, backup: null, renamed: false }
+    tracker.files.push(entry)
+  }
+  atomicWriteFileSync(entry.staged, content as string, opts)
+  if (entry.backup === null && existsSync(path)) {
+    const backup = `${path}${BACKUP_SUFFIX}`
+    copyFileSync(path, backup)
+    entry.backup = backup
+  }
+  return entry
 }
 
-function cleanupTracked(tracker: WriteTracker): void {
-  // Only delete files that did not exist before the import started; pre-existing overwritten files
-  // cannot be restored (no backup), so we leave them rather than delete them (H3).
-  for (const { path, preexisted } of tracker.files) {
-    if (!preexisted) {
-      try { unlinkSync(path) } catch { /* best effort */ }
-    }
-  }
-  // Remove dirs in reverse order (deepest first), only if empty
+function removeQuietly(path: string): void {
+  try { unlinkSync(path) } catch { /* best effort */ }
+}
+
+function removeCreatedDirs(tracker: WriteTracker): void {
+  // Deepest first. Only directories this import created are listed, so nothing of the target's goes with them.
   for (const d of [...tracker.dirs].reverse()) {
     try { rmSync(d, { recursive: true, force: true }) } catch { /* best effort */ }
+  }
+}
+
+/** Failure before the commit: no final path was touched, so drop the staged files, the backups and the new dirs. */
+function discardStaged(tracker: WriteTracker): void {
+  for (const e of tracker.files) {
+    removeQuietly(e.staged)
+    if (e.backup) removeQuietly(e.backup)
+  }
+  removeCreatedDirs(tracker)
+}
+
+/** Phase 3: rename the staged files onto their final paths (same directory, so each rename is atomic). */
+function finalizeStaged(entries: readonly WriteEntry[]): void {
+  for (const e of entries) {
+    renameSync(e.staged, e.path)
+    e.renamed = true
+  }
+}
+
+/**
+ * Failure after the commit: put the final paths back as they were. A renamed file that replaced an existing one is
+ * copied back from its backup, and once the copy is verified its backup is removed (a backup that stays is the sign
+ * of a file that is NOT back, see the rule above); a renamed file that is new is removed; a file that was never
+ * renamed loses its staged copy and its backup. Best effort and logged: returns the paths that could not be
+ * restored, and their backups remain.
+ */
+function restoreFinalized(tracker: WriteTracker): string[] {
+  const failed: string[] = []
+  for (const e of tracker.files) {
+    if (!e.renamed) {
+      removeQuietly(e.staged)
+      if (e.backup) removeQuietly(e.backup)
+      continue
+    }
+    try {
+      if (e.backup) {
+        copyFileSync(e.backup, e.path)
+        // The backup is the only copy of the previous content until the file is back, so it goes only after the
+        // restored file was read again and equals it. A restore that fails or differs keeps THIS backup (and only
+        // this one), which also makes the next import refuse to stage this file (StaleBackupError).
+        if (!readFileSync(e.path).equals(readFileSync(e.backup))) throw new Error('the restored file differs from its backup')
+        unlinkSync(e.backup)
+      } else {
+        unlinkSync(e.path)
+      }
+    } catch (err: any) {
+      failed.push(e.path)
+      logger.error({ path: e.path, err: err?.message }, 'Fleet import: could not restore a file after a failed finish')
+    }
+  }
+  removeCreatedDirs(tracker)
+  return failed
+}
+
+/** Success: the previous content is no longer needed. */
+function dropBackups(tracker: WriteTracker): void {
+  for (const e of tracker.files) {
+    if (e.backup) removeQuietly(e.backup)
+  }
+}
+
+/**
+ * Re-read the process-local caches that mirror the tables the import writes (a write-through cache shows the new
+ * value as soon as the statement ran, inside the transaction, and keeps it after a rollback), and drop the federation
+ * config cache for the same reason.
+ */
+function reloadImportCaches(): void {
+  reloadModelProfileMapCache()
+  reloadAgentSettingsCache()
+  reloadSystemConfigCache()
+  invalidateFederationConfigCache()
+}
+
+/** The failure-branch variant: the original error is the one to report, so a reload that fails is only logged. */
+function reloadImportCachesQuietly(): void {
+  try { reloadImportCaches() } catch (err: any) {
+    logger.error({ err: err?.message }, 'Fleet import: could not reload the caches after a failed import')
   }
 }
 
@@ -1127,20 +1314,20 @@ function writeMainAgentFiles(ma: MainAgentExport, tracker: WriteTracker): void {
   const claudeDir = join(PROJECT_ROOT, '.claude')
   trackedMkdir(claudeDir, tracker)
 
-  if (ma.claudeMd) trackedWrite(join(PROJECT_ROOT, 'CLAUDE.md'), ma.claudeMd, tracker)
-  if (ma.soulMd) trackedWrite(join(PROJECT_ROOT, 'SOUL.md'), ma.soulMd, tracker)
+  if (ma.claudeMd) stagedWrite(join(PROJECT_ROOT, 'CLAUDE.md'), ma.claudeMd, tracker)
+  if (ma.soulMd) stagedWrite(join(PROJECT_ROOT, 'SOUL.md'), ma.soulMd, tracker)
   if (ma.config && Object.keys(ma.config).length)
-    trackedWrite(join(PROJECT_ROOT, 'agent-config.json'), JSON.stringify(ma.config, null, 2), tracker)
-  trackedWrite(join(PROJECT_ROOT, '.mcp.json'), JSON.stringify(deplaceholderMcp(ma.mcp), null, 2), tracker)
-  trackedWrite(join(claudeDir, 'settings.json'), JSON.stringify(ma.settings, null, 2), tracker)
+    stagedWrite(join(PROJECT_ROOT, 'agent-config.json'), JSON.stringify(ma.config, null, 2), tracker)
+  stagedWrite(join(PROJECT_ROOT, '.mcp.json'), JSON.stringify(deplaceholderMcp(ma.mcp), null, 2), tracker)
+  stagedWrite(join(claudeDir, 'settings.json'), JSON.stringify(ma.settings, null, 2), tracker)
 
   // Main agent channel access: ~/.claude/channels/<provider>/access.json
   // B1: provider names validated by validateNames() before this is called
-  const channelsBase = join(homedir(), '.claude', 'channels')
+  const channelsBase = mainChannelsRoot()
   for (const [provider, access] of Object.entries(ma.channelsAccess ?? {})) {
     const provDir = safeJoin(channelsBase, provider)
     trackedMkdir(provDir, tracker)
-    trackedWrite(join(provDir, 'access.json'), JSON.stringify(access, null, 2), tracker)
+    stagedWrite(join(provDir, 'access.json'), JSON.stringify(access, null, 2), tracker)
   }
 }
 
@@ -1150,38 +1337,49 @@ function writeAgentFiles(agent: AgentExport, tracker: WriteTracker): void {
   const claudeDir = safeJoin(dir, '.claude')
   trackedMkdir(claudeDir, tracker)
 
-  trackedWrite(join(dir, 'agent-config.json'), JSON.stringify(agent.config, null, 2), tracker)
-  if (agent.claudeMd) trackedWrite(join(dir, 'CLAUDE.md'), agent.claudeMd, tracker)
-  if (agent.soulMd) trackedWrite(join(dir, 'SOUL.md'), agent.soulMd, tracker)
+  stagedWrite(join(dir, 'agent-config.json'), JSON.stringify(agent.config, null, 2), tracker)
+  if (agent.claudeMd) stagedWrite(join(dir, 'CLAUDE.md'), agent.claudeMd, tracker)
+  if (agent.soulMd) stagedWrite(join(dir, 'SOUL.md'), agent.soulMd, tracker)
 
   // .mcp.json: de-placeholder vault refs (path denormalization happens at fleet level)
-  trackedWrite(join(dir, '.mcp.json'), JSON.stringify(deplaceholderMcp(agent.mcp), null, 2), tracker)
+  stagedWrite(join(dir, '.mcp.json'), JSON.stringify(deplaceholderMcp(agent.mcp), null, 2), tracker)
 
-  trackedWrite(join(claudeDir, 'settings.json'), JSON.stringify(agent.settings, null, 2), tracker)
+  stagedWrite(join(claudeDir, 'settings.json'), JSON.stringify(agent.settings, null, 2), tracker)
 
   for (const [provider, access] of Object.entries(agent.channelsAccess ?? {})) {
     const provDir = safeJoin(claudeDir, 'channels', provider)
     trackedMkdir(provDir, tracker)
-    trackedWrite(join(provDir, 'access.json'), JSON.stringify(access, null, 2), tracker)
+    stagedWrite(join(provDir, 'access.json'), JSON.stringify(access, null, 2), tracker)
   }
 
   if (agent.avatar) {
     // B1: whitelist extension to prevent path traversal via malicious avatarExt
     const ext = /^(png|jpe?g|webp)$/i.test(String(agent.avatarExt || '')) ? String(agent.avatarExt) : 'png'
-    trackedWrite(safeJoin(dir, `avatar.${ext}`), Buffer.from(agent.avatar, 'base64'), tracker)
+    stagedWrite(safeJoin(dir, `avatar.${ext}`), Buffer.from(agent.avatar, 'base64'), tracker)
   }
 
   for (const skill of agent.agentSkills ?? []) {
     const skillDir = safeJoin(claudeDir, 'skills', skill.name)
     trackedMkdir(skillDir, tracker)
-    trackedWrite(join(skillDir, 'SKILL.md'), skill.skillMd, tracker)
-    // Dual-write into SQL (the source of truth) alongside the file the Claude
-    // Code loader needs -- mirrors the existing zip-import precedent
-    // (routes/skills.ts). Unconditional, not gated by SKILL_SQL_REGEN: a fresh
-    // install may still have the kill-switch off, and the loader needs the
-    // file regardless, so this can't rely on regen to materialize it.
-    try {
-      seedSkillIfAbsent({
+    stagedWrite(join(skillDir, 'SKILL.md'), skill.skillMd, tracker)
+    // The matching SQL row is part of the import transaction (skillSqlSeeds()).
+  }
+}
+
+type SkillSeed = Parameters<typeof seedSkillIfAbsent>[0]
+
+/**
+ * Dual-write into SQL (the source of truth) alongside the file the Claude Code loader needs -- mirrors the
+ * existing zip-import precedent (routes/skills.ts). Unconditional, not gated by SKILL_SQL_REGEN: a fresh install
+ * may still have the kill-switch off, and the loader needs the file regardless, so this can't rely on regen to
+ * materialize it. Pure: the rows are decided here and written inside the import transaction, where a failure
+ * fails the import instead of leaving a file without its row.
+ */
+function skillSqlSeeds(fleet: FleetJson): SkillSeed[] {
+  const seeds: SkillSeed[] = []
+  for (const agent of fleet.agents ?? []) {
+    for (const skill of agent.agentSkills ?? []) {
+      seeds.push({
         id: `agent/${agent.name}/${skill.name}`,
         name: skill.name,
         description: extractSkillDescription(skill.skillMd),
@@ -1189,10 +1387,29 @@ function writeAgentFiles(agent: AgentExport, tracker: WriteTracker): void {
         tenant_id: 'fleet',
         is_global: false,
       })
-    } catch (sqlErr) {
-      logger.warn({ agent: agent.name, skill: skill.name, err: sqlErr }, 'Fleet import: failed to upsert agent skill into SQL')
     }
   }
+  for (const skill of fleet.skills ?? []) {
+    seeds.push({
+      id: `global/${skill.name}`,
+      name: skill.name,
+      description: extractSkillDescription(skill.skillMd),
+      content: skill.skillMd,
+      tenant_id: 'fleet',
+      is_global: true,
+    })
+  }
+  return seeds
+}
+
+// Phase 1 of the vault: stage the two files (mode 0600 from the first byte). The caller renames them in the vault step.
+function stageVaultFiles(vault: VaultExport, tracker: WriteTracker): WriteEntry[] {
+  // vault.vaultKey is plaintext -- the caller already decrypted the whole JSON with the user password
+  return [
+    stagedWrite(join(STORE_DIR, '.vault-key'), vault.vaultKey, tracker, { mode: 0o600 }),
+    stagedWrite(join(STORE_DIR, 'vault.json'), JSON.stringify({ entries: vault.entries }, null, 2), tracker, { mode: 0o600 }),
+  ]
+  // Channel .env (bot tokens) are intentionally NOT imported -- target must re-pair channels manually.
 }
 
 // vault.bindings -> vault_bindings (DB-backed, migration 0062, #985 group
@@ -1205,11 +1422,12 @@ function writeAgentFiles(agent: AgentExport, tracker: WriteTracker): void {
 // vault_bindings' PRIMARY KEY mid-write and throwing. Pushes onto the
 // caller's `warnings` array (the same applyWarnings list importFleet's other
 // DB-backed fields report through) rather than returning its own.
-function importVaultSection(vault: VaultExport, tracker: WriteTracker, warnings: string[]): void {
-  // vault.vaultKey is plaintext -- the caller already decrypted the whole JSON with the user password
-  trackedWrite(join(STORE_DIR, '.vault-key'), vault.vaultKey, tracker, { mode: 0o600 })
-  trackedWrite(join(STORE_DIR, 'vault.json'), JSON.stringify({ entries: vault.entries }, null, 2), tracker, { mode: 0o600 })
-  // Channel .env (bot tokens) are intentionally NOT imported -- target must re-pair channels manually.
+//
+// The two vault files were STAGED with everything else (stageVaultFiles, phase 1) and are renamed here, in the
+// vault step after the commit; the bindings are written here too, so nothing of the vault changes if the
+// transaction fails.
+async function importVaultSection(vault: VaultExport, stagedFiles: readonly WriteEntry[], warnings: string[]): Promise<void> {
+  finalizeStaged(stagedFiles)
 
   const rawBindings = Array.isArray(vault.bindings) ? vault.bindings : []
   if (rawBindings.length === 0) {
@@ -1252,7 +1470,7 @@ function importVaultSection(vault: VaultExport, tracker: WriteTracker, warnings:
   // length would let replaceVaultBindings('default', []) through in exactly
   // that case, still wiping the target for reasons the source never asked for.
   if (deduped.length > 0) {
-    replaceVaultBindings('default', deduped)
+    await replaceVaultBindings('default', deduped)
   }
   if (invalidCount > 0) {
     warnings.push(`vault bindings: ${invalidCount} érvénytelen bejegyzés kimaradt az importból.`)
@@ -1273,10 +1491,38 @@ const EMPTY_DIFF: DiffReport = {
   errors: [],
 }
 
-export function importFleet(
+// One apply at a time. The staged files carry fixed names (`<path>.import-new`, `<path>.import-bak`), so two applies
+// that overlap (a double click on the import button) would stage onto the same files, one of them would fail its
+// rename after its transaction had committed, and the database and the files of two different bundles could end up
+// mixed. A second apply is refused at once (409), it does not wait. A dry run writes nothing and is not limited.
+// The flag is per process: two dashboard processes on one store are not covered.
+let applyInProgress = false
+
+/** True while an apply runs: its own staged files and backups are not leftovers. */
+export function isImportApplyInProgress(): boolean {
+  return applyInProgress
+}
+
+export async function importFleet(
   rawBody: string,
   options: { vaultPassword?: string; apply: boolean },
-): DiffReport | ImportResult {
+): Promise<DiffReport | ImportResult> {
+  if (!options.apply) return runImportFleet(rawBody, options)
+  if (applyInProgress) {
+    throw new ImportInProgressError('A fleet import is already in progress. Wait for it to finish, then import again.')
+  }
+  applyInProgress = true
+  try {
+    return await runImportFleet(rawBody, options)
+  } finally {
+    applyInProgress = false
+  }
+}
+
+async function runImportFleet(
+  rawBody: string,
+  options: { vaultPassword?: string; apply: boolean },
+): Promise<DiffReport | ImportResult> {
   // Auto-detect encrypted export: {"enc":1,"blob":"..."}
   // H2/M2: decrypt FIRST, before any file writes or DB commits (fail-fast on wrong password)
   let jsonBody: string
@@ -1318,7 +1564,7 @@ export function importFleet(
   }
 
   if (!options.apply) {
-    const report = buildDiffReport(fleet)
+    const report = await buildDiffReport(fleet)
     // M1: vault present in export but no password at import -> warning (apply would skip vault)
     if (fleet.vault && !options.vaultPassword) {
       report.warnings.push('vault szekció jelen van, de nem adtál meg jelszót -- a vault-titkok kihagyásra kerülnek.')
@@ -1327,12 +1573,117 @@ export function importFleet(
   }
 
   // -------------------------------------------------------------------------
-  // Apply phase -- H3: track ALL writes, cleanup on any failure
+  // Apply phase -- two phases, so a failing import leaves nothing half applied
+  // (the phases are described above stagedWrite())
   // -------------------------------------------------------------------------
+
+  // Phase 0: decode and validate everything that is pure, before anything is written.
+  const s = fleet.dashboardSettings ?? {}
+  // One warnings list for the whole apply (the vault step and the identity takeover push onto it too).
+  const applyWarnings: string[] = []
+
+  // federation (system_config 'federation_config_json') -- whole-value replace via the raw setter, not a file write,
+  // then an explicit cache invalidation (see invalidateFederationConfigCache()'s doc comment for why this bypass
+  // needs one -- there is no cross-module file watch anymore to pick the change up on its own). Validated BEFORE
+  // the write (same precedent as costBudgets/vault bindings below): an invalid source document must not silently
+  // overwrite the target's own working federation config with something the fail-closed reader would then disable
+  // on its very next read -- a booby-trapped import that "succeeds" but quietly kills the target's federation.
+  // Skip the write, report a warning, leave the target's existing config untouched.
+  let federationJson: string | null = null
+  if (s.federation && Object.keys(s.federation).length) {
+    const result = validateFederationConfig(s.federation)
+    if (typeof result === 'string') {
+      applyWarnings.push(`federáció: a forrás konfig érvénytelen (${result}) -- kihagyva, a célgép saját federációs beállításai megmaradtak.`)
+    } else {
+      federationJson = JSON.stringify(s.federation, null, 2)
+    }
+  }
+
+  // costBudgets (cost_budgets) -- whole-value replace, not a file write. A possible `budgets` key inside
+  // s.costopsConfig (an export taken before the budgets moved to the database, i.e. the old file-based format) is not read here --
+  // that data is not lost, though: migrateCostBudgetsFromFile() (src/db/cost-budgets.ts, wired into
+  // initDatabase()) picks it up ADDITIVELY (INSERT OR IGNORE) from costopsConfig's own file on the target's *next*
+  // boot, same as any other install from before that move.
+  //
+  // An EMPTY array is deliberately NOT the same as "replace with nothing": it means either an old-format export
+  // (this field genuinely absent) or a source fleet with zero configured budgets -- neither justifies wiping a
+  // target's own already-configured budgets. Same Object.keys(...).length guard idiom as costopsConfig, just
+  // array-shaped. A non-empty array IS still a full replace (P3 semantics, matching the old whole-file overwrite
+  // this field replaced) -- but only after validateConfig() drops any malformed entry (missing id, non-number
+  // amount), so one bad row in the source snapshot can't crash the write against cost_budgets' NOT NULL columns.
+  let budgetsToReplace: BudgetEntry[] | null = null
+  if (Array.isArray(s.costBudgets) && s.costBudgets.length > 0) {
+    const { config: validatedConfig, errors: budgetErrors } = validateConfig({ budgets: s.costBudgets })
+    // De-dup by id, first occurrence wins -- same "first wins" semantics as migrateCostBudgetsFromFile()'s
+    // INSERT OR IGNORE. Without this, a duplicated id in the source snapshot hits cost_budgets'
+    // PRIMARY KEY(id, tenant_id) and throws mid-write instead of the later duplicate being silently skipped.
+    const seenIds = new Set<string>()
+    const deduped: BudgetEntry[] = []
+    let duplicateCount = 0
+    for (const b of validatedConfig.budgets) {
+      if (seenIds.has(b.id)) { duplicateCount++; continue }
+      seenIds.add(b.id)
+      deduped.push(b)
+    }
+    // The `s.costBudgets.length > 0` guard above only proves the SOURCE array was non-empty -- if every entry was
+    // invalid (or every valid entry was a duplicate id), `deduped` can still be empty here. Applying the "don't
+    // wipe on empty" guard to the raw source length would let a replaceCostBudgets('default', []) call through
+    // in exactly that case, still wiping the target for reasons the source never actually asked for (nothing it
+    // sent survived validation).
+    if (deduped.length > 0) budgetsToReplace = deduped
+    if (budgetErrors.length > 0) {
+      applyWarnings.push(
+        `costBudgets: ${budgetErrors.length} érvénytelen bejegyzés kimaradt az importból (${budgetErrors.join('; ')}).`
+      )
+    }
+    if (duplicateCount > 0) {
+      applyWarnings.push(
+        `costBudgets: ${duplicateCount} duplikált id kimaradt (az első előfordulás nyert).`
+      )
+    }
+    if (deduped.length === 0) {
+      applyWarnings.push('costBudgets: egyetlen érvényes bejegyzés sem maradt validálás után -- a célgép saját budgetjei megmaradtak (nem törlődtek).')
+    }
+  } else if (Array.isArray(s.costBudgets)) {
+    applyWarnings.push('costBudgets üres volt a forrás fájlban -- a célgép saját budgetjei megmaradtak (nem törlődtek).')
+  }
+
+  // Identity takeover: mirror the source identity set (name, brand, owner) into .env so the target install adopts
+  // the source persona on next restart. Preference: use identity object (full set) if present; fall back to
+  // agentId-only for exports produced before the identity field was added. Decided here, written in the last step.
+  //
+  // .env (via updateEnvFile below) is the ONLY identity-persistence path here since it was retired
+  // config-overrides.json -- this used to also write a config-overrides.json, but cfg()'s boot-time identity
+  // consumers (OWNER_NAME, BOT_NAME, BRAND_NAME, MAIN_AGENT_ID) read env['KEY'] directly, never cfg(), so that
+  // write was already redundant with this .env mirror for every field that matters at boot. Shell-side launchers
+  // -- above all scripts/channels.sh -- also read MAIN_AGENT_ID / CHANNEL_PROVIDER DIRECTLY from .env. Without
+  // this mirror the main agent would launch under the pre-import identity (`${old-id}-channels`) while the
+  // dashboard looks for `${new-id}-channels` and reports the main agent as down.
+  const sourceIdentity = fleet.mainAgent?.identity
+  const sourceAgentId = sourceIdentity?.MAIN_AGENT_ID ?? fleet.mainAgent?.agentId
+  let envIdentity: Record<string, string> | null = null
+  if (sourceAgentId && typeof sourceAgentId === 'string') {
+    envIdentity = {}
+    if (sourceIdentity && typeof sourceIdentity === 'object') {
+      // Only the identity keys an export writes (FleetIdentity). The bundle is untrusted input and .env holds
+      // credentials and endpoints (tokens, OTEL_* ...): any other key in `identity` is not copied.
+      for (const key of FLEET_IDENTITY_ENV_KEYS) {
+        const val = (sourceIdentity as unknown as Record<string, unknown>)[key]
+        if (typeof val === 'string' && val.length > 0 && !/[\x00-\x1f\x7f\x85\u2028\u2029]/.test(val)) envIdentity[key] = val
+      }
+    } else {
+      envIdentity['MAIN_AGENT_ID'] = sourceAgentId
+    }
+  }
+
+  const skillSeeds = skillSqlSeeds(fleet)
+
   const tracker: WriteTracker = { files: [], dirs: [] }
-  const globalSkillsDir = join(homedir(), '.claude', 'skills')
+  const globalSkillsDir = globalSkillsRoot()
+  let vaultFiles: WriteEntry[] = []
 
   try {
+    // Phase 1: stage the files. No final path changes here.
     // 0. Main agent files (PROJECT_ROOT level -- main agent persona, settings, channel pairing)
     if (fleet.mainAgent) {
       writeMainAgentFiles(fleet.mainAgent, tracker)
@@ -1343,25 +1694,12 @@ export function importFleet(
       writeAgentFiles(agent, tracker)
     }
 
-    // 2. Global skills
+    // 2. Global skills (their SQL rows are in the transaction below)
     trackedMkdir(globalSkillsDir, tracker)
     for (const skill of fleet.skills ?? []) {
       const skillDir = safeJoin(globalSkillsDir, skill.name)
       trackedMkdir(skillDir, tracker)
-      trackedWrite(join(skillDir, 'SKILL.md'), skill.skillMd, tracker)
-      // Dual-write into SQL -- see the matching comment in writeAgentFiles().
-      try {
-        seedSkillIfAbsent({
-          id: `global/${skill.name}`,
-          name: skill.name,
-          description: extractSkillDescription(skill.skillMd),
-          content: skill.skillMd,
-          tenant_id: 'fleet',
-          is_global: true,
-        })
-      } catch (sqlErr) {
-        logger.warn({ skill: skill.name, err: sqlErr }, 'Fleet import: failed to upsert global skill into SQL')
-      }
+      stagedWrite(join(skillDir, 'SKILL.md'), skill.skillMd, tracker)
     }
 
     // 3. Scheduled tasks (all paused: enabled=false already set at export time)
@@ -1371,155 +1709,83 @@ export function importFleet(
     for (const task of fleet.scheduledTasks ?? []) {
       const dir = safeJoin(SCHEDULED_TASKS_DIR, task.dirName)
       trackedMkdir(dir, tracker)
-      if (task.skillMd) trackedWrite(join(dir, 'SKILL.md'), task.skillMd, tracker)
-      trackedWrite(
+      if (task.skillMd) stagedWrite(join(dir, 'SKILL.md'), task.skillMd, tracker)
+      stagedWrite(
         join(dir, 'task-config.json'),
         JSON.stringify({ ...task.config, enabled: false }, null, 2),
         tracker,
       )
     }
 
-    // 4. Dashboard settings
-    const s = fleet.dashboardSettings ?? {}
-    // Declared here (not down by the main-agent-identity block below) so the
-    // costBudgets validation warning further down can also push onto it --
-    // same array, one warnings list for the whole apply.
-    const applyWarnings: string[] = []
-    // DB-backed -- upsert each imported row into autonomy_categories
-    // (not a file write). Upsert rather than replace-all: a category that
-    // only exists on the target fleet (not in the imported snapshot) is left
-    // untouched, consistent with the identity-takeover model not being
-    // destructive beyond what the source snapshot actually describes.
-    if (Array.isArray(s.autonomy)) {
-      for (const row of s.autonomy) upsertAutonomyCategory(row)
-    }
-    // Same upsert-not-replace rationale as autonomy above.
-    if (Array.isArray(s.modelProfileMap)) {
-      for (const row of s.modelProfileMap) upsertModelProfileMapEntry(row)
-      invalidateModelProfileMapCache()
-    }
-    // DB-backed (agent_settings) -- upsert per agent, same
-    // rationale as autonomy/modelProfileMap above, not a file write.
-    if (s.autoRestart) {
-      for (const [agentId, cfg] of Object.entries(s.autoRestart)) setAgentSetting(agentId, 'auto_restart', cfg)
-    }
-    // DB-backed (system_config 'agents_desired') -- whole-value replace, not a
-    // file write. Array.isArray guards a pre-migration snapshot that still has
-    // the old `{}` empty-object shape (nothing to import from that).
-    if (Array.isArray(s.agentsDesired)) setDesiredAgents(s.agentsDesired as string[])
+    // 4. Dashboard settings that are still files
     if (s.norbertPersonal && Object.keys(s.norbertPersonal).length)
-      trackedWrite(join(STORE_DIR, 'norbert-personal.json'), JSON.stringify(s.norbertPersonal, null, 2), tracker)
-    // DB-backed (system_config 'model_fallback_*') -- see the field-level doc
-    // comment on writeModelFallbackFieldsRaw() for why this only sets the
-    // fields the source snapshot actually carries, not a file write.
-    if (s.modelFallback && Object.keys(s.modelFallback).length)
-      writeModelFallbackFieldsRaw(s.modelFallback as Partial<ModelFallbackConfig>)
-    // DB-backed (system_config 'terminal_input_enabled') -- see
-    // readTerminalInputEnabledRaw()'s doc comment for why an absent field must
-    // leave the target's current value untouched rather than defaulting it.
-    if (typeof s.terminalInputEnabled === 'boolean') writeTerminalInputEnabled(s.terminalInputEnabled)
-    // DB-backed (system_config 'federation_config_json') -- whole-value
-    // replace via the raw setter, not a file write, then an explicit cache
-    // invalidation (see invalidateFederationConfigCache()'s doc comment for
-    // why this bypass needs one -- there is no cross-module file watch
-    // anymore to pick the change up on its own). Validated BEFORE the write
-    // (same #524/#526 precedent as costBudgets/vault bindings below): an
-    // invalid source document must not silently overwrite the target's own
-    // working federation config with something the fail-closed reader would
-    // then disable on its very next read -- a booby-trapped import that
-    // "succeeds" but quietly kills the target's federation. Skip the write,
-    // report a warning, leave the target's existing config untouched.
-    if (s.federation && Object.keys(s.federation).length) {
-      const result = validateFederationConfig(s.federation)
-      if (typeof result === 'string') {
-        applyWarnings.push(`federáció: a forrás konfig érvénytelen (${result}) -- kihagyva, a célgép saját federációs beállításai megmaradtak.`)
-      } else {
-        setFederationConfigRaw(JSON.stringify(s.federation, null, 2))
-        invalidateFederationConfigCache()
-      }
-    }
+      stagedWrite(join(STORE_DIR, 'norbert-personal.json'), JSON.stringify(s.norbertPersonal, null, 2), tracker)
     if (s.costopsConfig && Object.keys(s.costopsConfig).length)
-      trackedWrite(join(STORE_DIR, 'costops-config.json'), JSON.stringify(s.costopsConfig, null, 2), tracker)
-    // DB-backed (cost_budgets) -- whole-value replace, not a file write. A
-    // possible `budgets` key inside s.costopsConfig (an export taken before
-    // #985 group 6/8, i.e. the old file-based format) is not read here --
-    // that data is not lost, though: migrateCostBudgetsFromFile()
-    // (src/db/cost-budgets.ts, wired into initDatabase()) picks it up
-    // ADDITIVELY (INSERT OR IGNORE) from costopsConfig's own file write just
-    // above on the target's *next* boot, same as any other pre-#985 install.
-    //
-    // An EMPTY array is deliberately NOT the same as "replace with nothing":
-    // it means either an old-format export (this field genuinely absent) or
-    // a source fleet with zero configured budgets -- neither justifies
-    // wiping a target's own already-configured budgets. Same
-    // Object.keys(...).length guard idiom as costopsConfig above, just
-    // array-shaped. A non-empty array IS still a full replace (P3 semantics,
-    // matching the old whole-file overwrite this field replaced) -- but only
-    // after validateConfig() drops any malformed entry (missing id,
-    // non-number amount), so one bad row in the source snapshot can't crash
-    // the write against cost_budgets' NOT NULL columns.
-    if (Array.isArray(s.costBudgets) && s.costBudgets.length > 0) {
-      const { config: validatedConfig, errors: budgetErrors } = validateConfig({ budgets: s.costBudgets })
-      // De-dup by id, first occurrence wins -- same "first wins" semantics
-      // as migrateCostBudgetsFromFile()'s INSERT OR IGNORE. Without this, a
-      // duplicated id in the source snapshot hits cost_budgets'
-      // PRIMARY KEY(id, tenant_id) and throws mid-write instead of the later
-      // duplicate being silently skipped.
-      const seenIds = new Set<string>()
-      const deduped: BudgetEntry[] = []
-      let duplicateCount = 0
-      for (const b of validatedConfig.budgets) {
-        if (seenIds.has(b.id)) { duplicateCount++; continue }
-        seenIds.add(b.id)
-        deduped.push(b)
-      }
-      // The `s.costBudgets.length > 0` guard above only proves the SOURCE
-      // array was non-empty -- if every entry was invalid (or every valid
-      // entry was a duplicate id), `deduped` can still be empty here.
-      // Applying the "don't wipe on empty" guard to the raw source length
-      // would let a replaceCostBudgets('default', []) call through in
-      // exactly that case, still wiping the target for reasons the source
-      // never actually asked for (nothing it sent survived validation).
-      if (deduped.length > 0) {
-        replaceCostBudgets('default', deduped)
-      }
-      if (budgetErrors.length > 0) {
-        applyWarnings.push(
-          `costBudgets: ${budgetErrors.length} érvénytelen bejegyzés kimaradt az importból (${budgetErrors.join('; ')}).`
-        )
-      }
-      if (duplicateCount > 0) {
-        applyWarnings.push(
-          `costBudgets: ${duplicateCount} duplikált id kimaradt (az első előfordulás nyert).`
-        )
-      }
-      if (deduped.length === 0) {
-        applyWarnings.push('costBudgets: egyetlen érvényes bejegyzés sem maradt validálás után -- a célgép saját budgetjei megmaradtak (nem törlődtek).')
-      }
-    } else if (Array.isArray(s.costBudgets)) {
-      applyWarnings.push('costBudgets üres volt a forrás fájlban -- a célgép saját budgetjei megmaradtak (nem törlődtek).')
-    }
-    // egress_allowlist -- DB-backed (migration 0056), MERGE not overwrite (see
-    // DashboardSettingsExport doc): INSERT OR IGNORE per row is the union
-    // semantics, same upsert-not-replace rationale as autonomy above.
-    if (Array.isArray(s.egressAllowlist)) {
-      mergeEgressAllowlistEntries(s.egressAllowlist as EgressAllowlistRow[])
+      stagedWrite(join(STORE_DIR, 'costops-config.json'), JSON.stringify(s.costopsConfig, null, 2), tracker)
+
+    // 5. Vault files (staged like the rest; renamed in the vault step after the commit)
+    if (fleet.vault) {
+      vaultFiles = stageVaultFiles(fleet.vault, tracker)
     }
 
-    // 5. DB -- single transaction (H3: before vault so vault is last and cleanup is cleaner)
-    // 5. DB -- single transaction (H3: before vault so vault is last and cleanup is cleaner)
-    // The row-level policy (required fields, enums, forced values) lives here;
-    // the SQL itself is in db/fleet-transfer.ts.
-    const importTx = () => inFleetImportTransaction(() => {
+    // Phase 2: ONE transaction holds every database write of the import -- the settings, the skill rows and the
+    // per-row imports -- so a failure anywhere rolls all of it back. The body holds only `dbx` calls (the modules
+    // below are on the facade, so each joins the ambient transaction and a nested one becomes a savepoint) and pure
+    // row policy: no file I/O, no network, no timer, no LLM, no vault. seedSkillIfAbsent() is on the facade too
+    // (db/tasks.ts), so the skill rows roll back with the rest. Rows are written in the same order the
+    // pre-transaction block used.
+    const importTx = () => inFleetImportTransaction(async () => {
+      // DB-backed -- upsert each imported row into autonomy_categories (not a file write). Upsert rather than
+      // replace-all: a category that only exists on the target fleet (not in the imported snapshot) is left
+      // untouched, consistent with the identity-takeover model not being destructive beyond what the source
+      // snapshot actually describes.
+      if (Array.isArray(s.autonomy)) {
+        for (const row of s.autonomy) await upsertAutonomyCategory(row)
+      }
+      // Same upsert-not-replace rationale as autonomy above. upsertModelProfileMapEntry is write-through
+      // (db/model-profile-map-cache.ts), so the cache is re-read after a rollback (reloadImportCaches()).
+      if (Array.isArray(s.modelProfileMap)) {
+        for (const row of s.modelProfileMap) await upsertModelProfileMapEntry(row)
+      }
+      // DB-backed (agent_settings) -- upsert per agent, same rationale as autonomy/modelProfileMap above.
+      if (s.autoRestart) {
+        for (const [agentId, cfg] of Object.entries(s.autoRestart)) await setAgentSetting(agentId, 'auto_restart', cfg)
+      }
+      // DB-backed (system_config 'agents_desired') -- whole-value replace. Array.isArray guards a pre-migration
+      // snapshot that still has the old `{}` empty-object shape (nothing to import from that).
+      if (Array.isArray(s.agentsDesired)) await setDesiredAgents(s.agentsDesired as string[])
+      // DB-backed (system_config 'model_fallback_*') -- see the field-level doc comment on
+      // writeModelFallbackFieldsRaw() for why this only sets the fields the source snapshot actually carries.
+      if (s.modelFallback && Object.keys(s.modelFallback).length)
+        await writeModelFallbackFieldsRaw(s.modelFallback as Partial<ModelFallbackConfig>)
+      // DB-backed (system_config 'terminal_input_enabled') -- see readTerminalInputEnabledRaw()'s doc comment for
+      // why an absent field must leave the target's current value untouched rather than defaulting it.
+      if (typeof s.terminalInputEnabled === 'boolean') await writeTerminalInputEnabled(s.terminalInputEnabled)
+      // federation: validated in phase 0; the cache is dropped after the commit (reloadImportCaches()).
+      if (federationJson !== null) await setFederationConfigRaw(federationJson)
+      // cost_budgets: validated and de-duplicated in phase 0.
+      if (budgetsToReplace !== null) await replaceCostBudgets('default', budgetsToReplace)
+      // egress_allowlist -- DB-backed (migration 0056), MERGE not overwrite (see DashboardSettingsExport doc):
+      // INSERT OR IGNORE per row is the union semantics, same upsert-not-replace rationale as autonomy above.
+      if (Array.isArray(s.egressAllowlist)) {
+        await mergeEgressAllowlistEntries(s.egressAllowlist as EgressAllowlistRow[])
+      }
+
+      // The SQL side of the skill files staged above. A failure is the import's failure (it used to be logged and
+      // swallowed, which let a file and its row drift apart).
+      for (const seed of skillSeeds) await seedSkillIfAbsent(seed)
+
+      // The row-level policy (required fields, enums, forced values) lives here; the SQL itself is in
+      // db/fleet-transfer.ts.
       // labels first (FK dep for kanban_card_labels)
       // M3: skip rows with missing required fields to avoid SQLite constraint errors -> 500
-      importFleetRows('labels', (fleet.kanban?.labels ?? []).filter((label) => {
+      await importFleetRows('labels', (fleet.kanban?.labels ?? []).filter((label) => {
         const l = label as any
         if (!l.id || !l.name || breaksTableRules(l, ['color', 'created_at'])) { logger.warn({ id: l.id }, 'Fleet import: skipping label with missing required fields'); return false }
         return true
       }))
 
-      importFleetRows('kanban_cards', (fleet.kanban?.cards ?? []).filter((card) => {
+      await importFleetRows('kanban_cards', (fleet.kanban?.cards ?? []).filter((card) => {
         const c = card as any
         if (!c.id || !c.title || !c.status || !c.priority || c.sort_order == null
           || breaksTableRules(c, ['created_at', 'updated_at'], {
@@ -1532,18 +1798,18 @@ export function importFleet(
       }))
 
       // kanban comments (idempotent: card_id + content)
-      importFleetRows('kanban_comments', (fleet.kanban?.comments ?? []).filter((comment) => {
+      await importFleetRows('kanban_comments', (fleet.kanban?.comments ?? []).filter((comment) => {
         const c = comment as any
         return !!c.card_id && !!c.content
       }))
 
       // kanban card events -- idempotent on (card_id, created_at, to_status)
-      importFleetRows('kanban_card_events', (fleet.kanban?.cardEvents ?? []).filter((ev) => {
+      await importFleetRows('kanban_card_events', (fleet.kanban?.cardEvents ?? []).filter((ev) => {
         const e = ev as any
         return !!e.card_id && !!e.to_status
       }))
 
-      importFleetRows('kanban_card_labels', (fleet.kanban?.cardLabels ?? []).filter((cl) => {
+      await importFleetRows('kanban_card_labels', (fleet.kanban?.cardLabels ?? []).filter((cl) => {
         const c = cl as any
         return !!c.card_id && !!c.label_id && c.created_at != null
       }))
@@ -1552,7 +1818,7 @@ export function importFleet(
       // exported value (defense in depth -- mirrors the file-based scheduledTasks
       // pause-on-import above): a migrated fleet must never start firing a source
       // fleet's cron jobs unreviewed, e.g. under a different/missing agent name.
-      const scheduleTenants = enabledLocalTenantIds()
+      const scheduleTenants = await enabledLocalTenantIds()
       const scheduleRows: Record<string, unknown>[] = []
       for (const sch of fleet.schedules ?? []) {
         const s = sch as any
@@ -1567,7 +1833,7 @@ export function importFleet(
           skip_if_busy: s.skip_if_busy ?? 0, force_send: s.force_send ?? 0,
         })
       }
-      importFleetRows('schedules', scheduleRows)
+      await importFleetRows('schedules', scheduleRows)
 
       // import_sources -- idempotent on id. Always imported disabled with
       // last_run_at cleared, regardless of the exported values (defense in
@@ -1590,13 +1856,13 @@ export function importFleet(
           tenant_id: s.tenant_id ?? 'default',
         })
       }
-      importFleetRows('import_sources', importSourceRows)
+      await importFleetRows('import_sources', importSourceRows)
 
       // vault_ssh_keys -- idempotent on id. Metadata only (no private key column);
       // inserted before vault_ssh_servers below since a server's ssh_key_id refers
       // to it (foreign_keys is on for this connection, so the insert order matters:
       // keys before servers).
-      importFleetRows('vault_ssh_keys', (fleet.vaultSshKeys ?? []).filter((key) => {
+      await importFleetRows('vault_ssh_keys', (fleet.vaultSshKeys ?? []).filter((key) => {
         const k = key as any
         if (!k.id || !k.label || !k.username || !k.vault_key_id || !k.public_key || !k.fingerprint || !k.key_type
           || breaksTableRules(k, ['created_at'])) {
@@ -1606,7 +1872,7 @@ export function importFleet(
       }).map((key) => ({ ...(key as any), tenant_id: (key as any).tenant_id ?? 'default' })))
 
       // vault_ssh_servers -- idempotent on id.
-      importFleetRows('vault_ssh_servers', (fleet.vaultSshServers ?? []).filter((srv) => {
+      await importFleetRows('vault_ssh_servers', (fleet.vaultSshServers ?? []).filter((srv) => {
         const s2 = srv as any
         if (!s2.id || !s2.name || !s2.host || !s2.username || breaksTableRules(s2, ['created_at', 'updated_at'])) {
           logger.warn({ id: s2.id }, 'Fleet import: skipping SSH server with missing required fields'); return false
@@ -1617,15 +1883,15 @@ export function importFleet(
       // memories -- idempotent on (agent_id, content); covers ALL agent_ids
       // agent_id-k pontosan a forrásból kerülnek át (a cél átveszi a forrás főagent identitását)
       const now = Math.floor(Date.now() / 1000)
-      importFleetRows('memories', (fleet.memories ?? []).map((mem) => ({
+      await importFleetRows('memories', (fleet.memories ?? []).map((mem) => ({
         ...mem, chat_id: '', accessed_at: mem.accessed_at ?? now, auto_generated: mem.auto_generated ?? 0,
       })))
 
       // daily logs -- idempotent on (agent_id, date, content); multiple rows per date are preserved
-      importFleetRows('daily_logs', fleet.dailyLogs ?? [])
+      await importFleetRows('daily_logs', fleet.dailyLogs ?? [])
 
       // idea_box -- idempotent on id
-      importFleetRows('idea_box', (fleet.ideaBox?.ideas ?? []).filter((idea) => {
+      await importFleetRows('idea_box', (fleet.ideaBox?.ideas ?? []).filter((idea) => {
         const i = idea as any
         if (!i.id || breaksTableRules(i, ['title', 'category', 'created_at', 'updated_at'], { status: ['new', 'reviewed', 'kanban', 'rejected'] })) {
           logger.warn({ id: i.id }, 'Fleet import: skipping idea with missing required fields'); return false
@@ -1634,87 +1900,82 @@ export function importFleet(
       }).map((idea) => ({ ...(idea as any), source: (idea as any).source ?? '' })))
 
       // idea_comments -- M5: idempotent on (idea_id, created_at, content)
-      importFleetRows('idea_comments', fleet.ideaBox?.comments ?? [])
+      await importFleetRows('idea_comments', fleet.ideaBox?.comments ?? [])
 
       // idea_status_log -- M5: idempotent on (idea_id, created_at, to_status)
-      importFleetRows('idea_status_log', fleet.ideaBox?.statusLog ?? [])
+      await importFleetRows('idea_status_log', fleet.ideaBox?.statusLog ?? [])
 
       // FTS rebuild after all memory inserts
-      rebuildMemoriesFts()
+      await rebuildMemoriesFts()
     })
 
-    importTx()
+    await importTx()
+  } catch (err: any) {
+    // Failure in phase 1 or 2: no final path was touched and the transaction (if it ran) rolled back, so the staged
+    // files go and the caches are re-read. The write-through caches may have shown the new values inside the
+    // transaction and keep them after the rollback.
+    discardStaged(tracker)
+    reloadImportCachesQuietly()
+    logger.error({ err: err.message }, 'Fleet import failed, nothing applied, staged files removed')
+    throw err
+  }
+
+  // Phase 3: the database is committed. Put the files in place, then the caches, then the vault, then .env (the
+  // vault and .env stay last, as before). A failure here cannot roll the database back: the files are restored
+  // from their backups instead, and the error says that the database changes remain.
+  try {
+    finalizeStaged(tracker.files.filter((e) => !vaultFiles.includes(e)))
+    reloadImportCaches()
 
     // 6. Vault -- LAST: vault data is plaintext (decrypted at the top of importFleet)
     if (fleet.vault) {
-      importVaultSection(fleet.vault, tracker, applyWarnings)
+      await importVaultSection(fleet.vault, vaultFiles, applyWarnings)
     }
 
-    // M3: fire-and-forget re-embed imported memories (embedding was stripped at export)
-    backfillEmbeddings().catch(err => logger.warn({ err: err?.message }, 'Fleet import: embedding backfill failed'))
-
-    // Identity takeover: mirror the source identity set (name, brand, owner)
-    // into .env so the target install adopts the source persona on next
-    // restart. Preference: use identity object (full set) if present; fall
-    // back to agentId-only for exports produced before the identity field
-    // was added.
-    //
-    // .env (via updateEnvFile below) is the ONLY identity-persistence path
-    // here since S8B retired config-overrides.json -- this used to also
-    // write a config-overrides.json, but cfg()'s boot-time identity consumers
-    // (OWNER_NAME, BOT_NAME, BRAND_NAME, MAIN_AGENT_ID) read env['KEY']
-    // directly, never cfg(), so that write was already redundant with this
-    // .env mirror for every field that matters at boot. Shell-side launchers
-    // -- above all scripts/channels.sh -- also read MAIN_AGENT_ID /
-    // CHANNEL_PROVIDER DIRECTLY from .env. Without this mirror the main
-    // agent would launch under the pre-import identity (`${old-id}-channels`)
-    // while the dashboard looks for `${new-id}-channels` and reports the
-    // main agent as down.
-    const sourceIdentity = fleet.mainAgent?.identity
-    const sourceAgentId = sourceIdentity?.MAIN_AGENT_ID ?? fleet.mainAgent?.agentId
-    if (sourceAgentId && typeof sourceAgentId === 'string') {
-      const envIdentity: Record<string, string> = {}
-      if (sourceIdentity && typeof sourceIdentity === 'object') {
-        // Only the identity keys an export writes (FleetIdentity). The bundle is untrusted input and .env holds
-        // credentials and endpoints (tokens, OTEL_* ...): any other key in `identity` is not copied.
-        for (const key of FLEET_IDENTITY_ENV_KEYS) {
-          const val = (sourceIdentity as unknown as Record<string, unknown>)[key]
-          if (typeof val === 'string' && val.length > 0 && !/[\x00-\x1f\x7f\x85\u2028\u2029]/.test(val)) envIdentity[key] = val
-        }
-      } else {
-        envIdentity['MAIN_AGENT_ID'] = sourceAgentId
-      }
+    // Identity takeover (decided in phase 0): the .env mirror is the very last step.
+    if (envIdentity !== null) {
       updateEnvFile(envIdentity)
 
       applyWarnings.push(
         `Fő-agent identitás átvéve: ${sourceAgentId}. Újraindítás kell hogy a dashboard ${sourceAgentId}-ként induljon.`
       )
     }
-
-    logger.info({ agents: (fleet.agents ?? []).map(a => a.name) }, 'Fleet import completed')
-
-    return {
-      ok: true,
-      imported: {
-        mainAgent: !!fleet.mainAgent,
-        agents: (fleet.agents ?? []).map(a => a.name),
-        globalSkills: (fleet.skills ?? []).length,
-        scheduledTasks: (fleet.scheduledTasks ?? []).length,
-        memories: (fleet.memories ?? []).length,
-        kanbanCards: (fleet.kanban?.cards ?? []).length,
-        labels: (fleet.kanban?.labels ?? []).length,
-        dailyLogs: (fleet.dailyLogs ?? []).length,
-        ideaBox: (fleet.ideaBox?.ideas ?? []).length,
-        schedules: (fleet.schedules ?? []).length,
-        importSources: (fleet.importSources ?? []).length,
-        vaultSshKeys: (fleet.vaultSshKeys ?? []).length,
-        vaultSshServers: (fleet.vaultSshServers ?? []).length,
-      },
-      ...(applyWarnings.length > 0 ? { warnings: applyWarnings } : {}),
-    }
   } catch (err: any) {
-    cleanupTracked(tracker)
-    logger.error({ err: err.message }, 'Fleet import failed, tracked writes cleaned up')
-    throw err
+    const notRestored = restoreFinalized(tracker)
+    logger.error({ err: err.message, notRestored }, 'Fleet import: the database was committed but finishing the files failed')
+    throw new Error(
+      `Fleet import: the database changes were committed and stay in place, but applying the files failed (${err.message}). ` +
+      (notRestored.length === 0
+        ? 'The files were restored to their previous content (their .import-bak backups are removed).'
+        : `These files could not be restored, take them from their .import-bak backups: ${notRestored.join(', ')}.`),
+      { cause: err },
+    )
+  }
+
+  dropBackups(tracker)
+
+  // M3: fire-and-forget re-embed imported memories (embedding was stripped at export)
+  backfillEmbeddings().catch(err => logger.warn({ err: err?.message }, 'Fleet import: embedding backfill failed'))
+
+  logger.info({ agents: (fleet.agents ?? []).map(a => a.name) }, 'Fleet import completed')
+
+  return {
+    ok: true,
+    imported: {
+      mainAgent: !!fleet.mainAgent,
+      agents: (fleet.agents ?? []).map(a => a.name),
+      globalSkills: (fleet.skills ?? []).length,
+      scheduledTasks: (fleet.scheduledTasks ?? []).length,
+      memories: (fleet.memories ?? []).length,
+      kanbanCards: (fleet.kanban?.cards ?? []).length,
+      labels: (fleet.kanban?.labels ?? []).length,
+      dailyLogs: (fleet.dailyLogs ?? []).length,
+      ideaBox: (fleet.ideaBox?.ideas ?? []).length,
+      schedules: (fleet.schedules ?? []).length,
+      importSources: (fleet.importSources ?? []).length,
+      vaultSshKeys: (fleet.vaultSshKeys ?? []).length,
+      vaultSshServers: (fleet.vaultSshServers ?? []).length,
+    },
+    ...(applyWarnings.length > 0 ? { warnings: applyWarnings } : {}),
   }
 }

@@ -21,12 +21,12 @@ const TOKEN = 'a'.repeat(64)
 const IN_TOKEN = 'b'.repeat(64)
 const NOW = 1_750_000_000_000
 
-function writeConfigFile(obj: unknown): void {
-  _seedFederationConfigForTest(obj as Record<string, unknown>)
+async function writeConfigFile(obj: unknown): Promise<void> {
+  await _seedFederationConfigForTest(obj as Record<string, unknown>)
 }
 
-function enabledConfig(peerOverrides: Record<string, unknown> = {}): void {
-  writeConfigFile({
+async function enabledConfig(peerOverrides: Record<string, unknown> = {}): Promise<void> {
+  await writeConfigFile({
     enabled: true,
     systemId: 'teodor',
     peers: [{ id: 'arthur', baseUrl: 'https://macbook.example', outboundToken: TOKEN, inboundToken: IN_TOKEN, ...peerOverrides }],
@@ -43,10 +43,10 @@ beforeAll(() => {
   initDatabase(':memory:')
 })
 
-beforeEach(() => {
+beforeEach(async () => {
   _setFederationStoreDirForTest(TMP)
   _resetBackoffForTest()
-  _clearFederationConfigForTest()
+  await _clearFederationConfigForTest()
 })
 
 afterAll(() => {
@@ -60,20 +60,20 @@ describe('sendFederatedMessage -- terminal failures (no network)', () => {
   })
 
   it('fails on an invalid address and on an unknown peer', async () => {
-    enabledConfig()
+    await enabledConfig()
     expect(await sendFederatedMessage({ ...MSG, to_agent: 'a/b/c' }, NOW)).toMatchObject({ kind: 'failed' })
     expect(await sendFederatedMessage({ ...MSG, to_agent: 'nobody/x' }, NOW)).toMatchObject({ kind: 'failed' })
   })
 
   it('fails when the target system is the own system', async () => {
-    enabledConfig()
+    await enabledConfig()
     const r = await sendFederatedMessage({ ...MSG, to_agent: 'teodor/dev' }, NOW)
     expect(r).toMatchObject({ kind: 'failed' })
     if (r.kind === 'failed') expect(r.error).toContain('this system')
   })
 
   it('matches the target system case-insensitively (L1): uppercase prefix finds the peer / own system', async () => {
-    enabledConfig()
+    await enabledConfig()
     // Own-system guard folds case too.
     expect(await sendFederatedMessage({ ...MSG, to_agent: 'Teodor/dev' }, NOW)).toMatchObject({ kind: 'failed' })
     // Uppercase peer prefix (pre-normalization row) still finds 'arthur'.
@@ -82,13 +82,13 @@ describe('sendFederatedMessage -- terminal failures (no network)', () => {
   })
 
   it('refuses to forward an already-qualified sender', async () => {
-    enabledConfig()
+    await enabledConfig()
     const r = await sendFederatedMessage({ ...MSG, from_agent: 'x/y' }, NOW, fetchReturning(202, {}))
     expect(r).toMatchObject({ kind: 'failed' })
   })
 
   it('fails terminally (no network attempt) while pairing is incomplete (empty outboundToken)', async () => {
-    enabledConfig({ outboundToken: '' })
+    await enabledConfig({ outboundToken: '' })
     let calls = 0
     const counting = (async () => { calls++; return new Response('{}', { status: 202 }) }) as typeof fetch
     const r = await sendFederatedMessage(MSG, NOW, counting)
@@ -98,7 +98,7 @@ describe('sendFederatedMessage -- terminal failures (no network)', () => {
   })
 
   it('fails oversized content terminally without a network attempt', async () => {
-    enabledConfig()
+    await enabledConfig()
     let calls = 0
     const counting = (async () => { calls++; return new Response('{}', { status: 202 }) }) as typeof fetch
     const r = await sendFederatedMessage({ ...MSG, content: 'x'.repeat(FEDERATION_MAX_CONTENT_BYTES + 1) }, NOW, counting)
@@ -109,7 +109,7 @@ describe('sendFederatedMessage -- terminal failures (no network)', () => {
 
 describe('sendFederatedMessage -- wire behaviour', () => {
   it('delivers on 202 and returns the remote id', async () => {
-    enabledConfig()
+    await enabledConfig()
     let seenUrl = ''
     let seenInit: RequestInit | undefined
     const f = (async (url: string | URL | Request, init?: RequestInit) => {
@@ -126,14 +126,14 @@ describe('sendFederatedMessage -- wire behaviour', () => {
   })
 
   it('treats 4xx as terminal and does NOT back the peer off (a rejection is an answer)', async () => {
-    enabledConfig()
+    await enabledConfig()
     const r = await sendFederatedMessage(MSG, NOW, fetchReturning(404, { error: 'Unknown recipient' }))
     expect(r).toMatchObject({ kind: 'failed' })
     expect(isPeerInBackoff('arthur', NOW + 1)).toBe(false)
   })
 
   it('treats 401 as RETRYABLE with backoff (token rotation must not burn the queue)', async () => {
-    enabledConfig()
+    await enabledConfig()
     const r = await sendFederatedMessage(MSG, NOW, fetchReturning(401, { error: 'Unauthorized' }))
     expect(r).toMatchObject({ kind: 'retry' })
     if (r.kind === 'retry') expect(r.error).toContain('401')
@@ -141,14 +141,14 @@ describe('sendFederatedMessage -- wire behaviour', () => {
   })
 
   it('treats 5xx as retryable and backs the peer off', async () => {
-    enabledConfig()
+    await enabledConfig()
     const r = await sendFederatedMessage(MSG, NOW, fetchReturning(503, {}))
     expect(r).toMatchObject({ kind: 'retry' })
     expect(isPeerInBackoff('arthur', NOW + 1)).toBe(true)
   })
 
   it('treats network errors as retryable with backoff', async () => {
-    enabledConfig()
+    await enabledConfig()
     const f = (async () => { throw new Error('ECONNREFUSED') }) as unknown as typeof fetch
     const r = await sendFederatedMessage(MSG, NOW, f)
     expect(r).toMatchObject({ kind: 'retry' })
@@ -158,7 +158,7 @@ describe('sendFederatedMessage -- wire behaviour', () => {
 
 describe('per-peer backoff (circuit breaker)', () => {
   it('skips without a network attempt while backing off, then retries after the window', async () => {
-    enabledConfig()
+    await enabledConfig()
     let calls = 0
     const failing = (async () => { calls++; return new Response('', { status: 500 }) }) as typeof fetch
 
@@ -175,7 +175,7 @@ describe('per-peer backoff (circuit breaker)', () => {
   })
 
   it('backoff grows exponentially and clears on success', async () => {
-    enabledConfig()
+    await enabledConfig()
     const failing = fetchReturning(500, {})
     await sendFederatedMessage(MSG, NOW, failing)             // failures=1 -> +10s
     await sendFederatedMessage(MSG, NOW + 11_000, failing)    // failures=2 -> +20s

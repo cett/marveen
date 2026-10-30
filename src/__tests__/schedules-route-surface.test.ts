@@ -32,7 +32,7 @@ vi.mock('../web/agent-config.js', () => ({
 vi.mock('../web/scheduled-tasks-io.js', () => ({
   SCHEDULED_TASKS_DIR: '/tmp/mock-tasks',
   MAX_SCHEDULED_TASK_PROMPT_LEN: 10_000,
-  listScheduledTasks: vi.fn().mockReturnValue([]),
+  listScheduledTasks: vi.fn().mockResolvedValue([]),
   listScheduledTasksFromFiles: vi.fn().mockReturnValue([]),
   writeScheduledTask: vi.fn(),
   rowToTask: (row: { id: string }) => ({ name: row.id, ...row }),
@@ -59,12 +59,12 @@ const mockCountSchedules = vi.fn().mockReturnValue(0)
 const mockGetScheduleFromDb = vi.fn()
 
 vi.mock('../db.js', () => ({
-  listPendingTaskRetries: vi.fn().mockReturnValue([]),
-  deletePendingTaskRetryById: vi.fn().mockReturnValue(true),
-  listTaskRunHistory: vi.fn().mockReturnValue([]),
+  listPendingTaskRetries: vi.fn().mockResolvedValue([]),
+  deletePendingTaskRetryById: vi.fn().mockResolvedValue(true),
+  listTaskRunHistory: vi.fn().mockResolvedValue([]),
   countSchedules: (...a: unknown[]) => mockCountSchedules(...a),
   getScheduleFromDb: (...a: unknown[]) => mockGetScheduleFromDb(...a),
-  listSchedulesFromDb: vi.fn().mockReturnValue([]),
+  listSchedulesFromDb: vi.fn().mockResolvedValue([]),
   deleteSchedule: vi.fn(),
   setScheduleEnabled: vi.fn(),
   patchSchedule: vi.fn(),
@@ -72,7 +72,7 @@ vi.mock('../db.js', () => ({
   // Tenant lookups behind the (tenant, agent) pair rule: every agent is a fleet
   // agent (enabled for no tenant), no non-default tenant serves anyone.
   getTenant: vi.fn(),
-  getTenantsForAgent: vi.fn().mockReturnValue([]),
+  getTenantsForAgent: vi.fn().mockResolvedValue([]),
   agentServesTenant: vi.fn().mockReturnValue(false),
 }))
 
@@ -134,7 +134,7 @@ const mockIsValidCron = vi.mocked(isValidCronShape)
 
 beforeEach(() => {
   vi.clearAllMocks()
-  mockCountSchedules.mockReturnValue(0)
+  mockCountSchedules.mockResolvedValue(0)
   mockIsValidCron.mockReturnValue(true)
   mockExistsSync.mockReturnValue(true)
 })
@@ -268,8 +268,8 @@ describe('PUT /api/schedules/:name -- file-mode', () => {
 
 describe('PUT /api/schedules/:name -- DB-mode cross-tenant guard', () => {
   it('returns not_found (not a leaked 403) when the schedule belongs to another tenant', async () => {
-    mockCountSchedules.mockReturnValue(3)
-    mockGetScheduleFromDb.mockReturnValue({ id: 'other-report', tenant_id: 'tenant-b' })
+    mockCountSchedules.mockResolvedValue(3)
+    mockGetScheduleFromDb.mockResolvedValue({ id: 'other-report', tenant_id: 'tenant-b' })
     const { ctx, out } = makeCtx('PUT', '/api/schedules/other-report', { description: 'x' }, 'viewer', 'tenant-a')
     await tryHandleSchedules(ctx)
     expect(out.status).toBe(404)
@@ -306,13 +306,13 @@ describe('POST /api/schedules/:name/run -- success', () => {
 
 describe('GET /api/schedules/pending', () => {
   it('maps DB rows through toPendingRetryView', async () => {
-    mockListPendingTaskRetries.mockReturnValue([{
+    mockListPendingTaskRetries.mockResolvedValue([{
       id: 1, task_name: 'my-task', agent_name: 'jarvis',
       first_attempt: 1000, last_attempt: 1000, attempt_count: 1,
       last_reason: 'busy', alert_sent_at: null,
     } as never])
     // The default-tenant caller makeCtx() builds only sees retries of its own tenant's tasks.
-    mockGetScheduleFromDb.mockReturnValue({ id: 'my-task', tenant_id: 'default' })
+    mockGetScheduleFromDb.mockResolvedValue({ id: 'my-task', tenant_id: 'default' })
     const { ctx, out } = makeCtx('GET', '/api/schedules/pending')
     await tryHandleSchedules(ctx)
     expect(out.status).toBe(200)
@@ -328,7 +328,7 @@ describe('GET /api/schedules/pending', () => {
 
 describe('GET /api/schedules/:name/runs -- success', () => {
   it('returns the run history verbatim', async () => {
-    mockListTaskRunHistory.mockReturnValue([{ id: 1, status: 'success' } as never])
+    mockListTaskRunHistory.mockResolvedValue([{ id: 1, status: 'success' } as never])
     const { ctx, out } = makeCtx('GET', '/api/schedules/my-task/runs')
     await tryHandleSchedules(ctx)
     expect(out.status).toBe(200)

@@ -36,7 +36,7 @@ describe('hybridSearch graph traversal (F3)', () => {
     // "alpha" appears in FTS; "omega unique xyz" does NOT
     const alpha = insertMemory('alpha unique keyword fts hit here')
     const omega = insertMemory('omega unique xyz not matching the fts query')
-    upsertMemoryLink(alpha, omega, 'semantic', 0.95)
+    await upsertMemoryLink(alpha, omega, 'semantic', 0.95)
 
     const results = await hybridSearch(AGENT, 'alpha unique keyword', 10)
     const ids = results.map(r => r.id)
@@ -47,7 +47,7 @@ describe('hybridSearch graph traversal (F3)', () => {
   it('direct hit ranks before its linked neighbor', async () => {
     const direct = insertMemory('directhit xq9z7 special term fts ranking')
     const neighbor = insertMemory('neighbor xq9z7 does not match the fts query directly here')
-    upsertMemoryLink(direct, neighbor, 'semantic', 0.9)
+    await upsertMemoryLink(direct, neighbor, 'semantic', 0.9)
 
     const results = await hybridSearch(AGENT, 'directhit xq9z7 special term', 10)
     const directIdx = results.findIndex(r => r.id === direct)
@@ -63,7 +63,7 @@ describe('hybridSearch graph traversal (F3)', () => {
     const m1 = insertMemory('dupltest zyxw7 first memory with shared terms')
     const m2 = insertMemory('dupltest zyxw7 second memory also matches fts')
     // m2 is a FTS hit AND a link-neighbor of m1
-    upsertMemoryLink(m1, m2, 'semantic', 0.85)
+    await upsertMemoryLink(m1, m2, 'semantic', 0.85)
 
     const results = await hybridSearch(AGENT, 'dupltest zyxw7', 10)
     const m2Count = results.filter(r => r.id === m2).length
@@ -75,7 +75,7 @@ describe('hybridSearch graph traversal (F3)', () => {
     const hub = insertMemory('hubnode kq8v3 central memory term')
     for (let i = 0; i < 8; i++) {
       const spoke = insertMemory(`spoke ${i} kq8v3 connected memory node`)
-      upsertMemoryLink(hub, spoke, 'semantic', 0.8)
+      await upsertMemoryLink(hub, spoke, 'semantic', 0.8)
     }
     const results = await hybridSearch(AGENT, 'hubnode kq8v3', 3)
     expect(results.length).toBeLessThanOrEqual(3)

@@ -213,13 +213,13 @@ export async function collectTokenUsage(): Promise<{ inserted: number; files: nu
     // Resolved once per source (constant for every call parsed from this
     // agent's transcripts) so a later tenant_agent_availability change is
     // picked up on the agent's next collection run, not just at first insert.
-    const tenantId = resolveAgentTenant(source.agent)
+    const tenantId = await resolveAgentTenant(source.agent)
     const files = findJsonlFiles(source.projectDir)
     for (const file of files) {
       let fileSize: number
       try { fileSize = statSync(file).size } catch { continue }
 
-      const cursor = getTokenUsageCursor(file)
+      const cursor = await getTokenUsageCursor(file)
       if (cursor && cursor.last_size === fileSize) continue
 
       const fromLine = (cursor && cursor.last_size <= fileSize) ? cursor.last_line : 0
@@ -228,10 +228,10 @@ export async function collectTokenUsage(): Promise<{ inserted: number; files: nu
         const { calls, linesRead } = await parseJsonlFile(file, source.agent, fromLine)
 
         if (calls.length > 0) {
-          recordTokenUsageCalls(calls, tenantId, file, linesRead, fileSize)
+          await recordTokenUsageCalls(calls, tenantId, file, linesRead, fileSize)
           totalInserted += calls.length
         } else {
-          setTokenUsageCursor(file, linesRead, fileSize)
+          await setTokenUsageCursor(file, linesRead, fileSize)
         }
         totalFiles++
       } catch (err) {

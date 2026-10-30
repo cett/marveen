@@ -285,7 +285,10 @@ describe('baseline: the dashboard actually runs it (binding lock)', () => {
     // the watcher runs only on the instance that owns the hooks: a worktree / WEB_ONLY instance never reaches it
     expect(call).toBeGreaterThan(branch)
     expect(call).toBeLessThan(end)
-    expect(src.slice(call, call + 80)).toContain('watchEgressAllowlistBaseline(STORE_DIR, queueAllowlistReport)')
+    // queueAllowlistReport is async: the watcher callback is synchronous, so the report is queued from a
+    // wrapper that hands every report to it and logs a failure instead of leaving a rejection unhandled
+    const startCall = src.slice(call, src.indexOf('\n      })', call) + '\n      })'.length)
+    expect(startCall).toMatch(/^watchEgressAllowlistBaseline\(STORE_DIR, \(report\) => \{\s*queueAllowlistReport\(report\)\.catch\(/)
   })
 })
 
@@ -311,30 +314,39 @@ describe('gate wiring: MultiEdit reaches the hook (fork addition)', () => {
 
 describe('baseline: the report is a QUEUED message, not only a callback', () => {
   beforeEach(() => { initDatabase(':memory:') })
-  const queued = () => getPendingMessages(MAIN_AGENT_ID).filter((m) => m.from_agent === 'system')
+  const queued = async () => (await getPendingMessages(MAIN_AGENT_ID)).filter((m) => m.from_agent === 'system')
+  // The notify callback is synchronous and queueAllowlistReport is async, as in production: keep every
+  // queueing promise and settle them before looking at the queue.
+  let pending: Array<Promise<void>> = []
+  const notify = (report: string): void => { pending.push(queueAllowlistReport(report)) }
+  const settled = async () => { await Promise.all(pending); pending = [] }
+  beforeEach(() => { pending = [] })
 
   it('a plain fs write (no hook involved) puts ONE system message in the main agent queue, with the hash and the diff', async () => {
     const { createHash } = await import('node:crypto')
-    checkEgressAllowlistBaseline(store, queueAllowlistReport)
-    expect(queued()).toHaveLength(0)
+    checkEgressAllowlistBaseline(store, notify)
+    await settled()
+    expect(await queued()).toHaveLength(0)
     const bytes = JSON.stringify({ domains: ['a.example', 'b.example', 'evil.example'] })
     writeFileSync(join(store, ['egress', 'allowlist'].join('-') + '.json'), bytes)
-    checkEgressAllowlistBaseline(store, queueAllowlistReport)
-    const msgs = queued()
+    checkEgressAllowlistBaseline(store, notify)
+    await settled()
+    const msgs = await queued()
     expect(msgs).toHaveLength(1)
     expect(msgs[0].content).toContain('domains +evil.example')
     expect(msgs[0].content).toContain(createHash('sha256').update(bytes).digest('hex').slice(0, 12))
     // rewriting the history afterwards does not take the sent report back
     rmSync(join(store, HISTORY_DIRNAME), { recursive: true, force: true })
-    expect(queued()).toHaveLength(1)
+    expect(await queued()).toHaveLength(1)
   })
 
-  it('a write made while the dashboard was down is queued by the boot check', () => {
-    checkEgressAllowlistBaseline(store, queueAllowlistReport)
+  it('a write made while the dashboard was down is queued by the boot check', async () => {
+    checkEgressAllowlistBaseline(store, notify)
     writeFileSync(allowlist, JSON.stringify({ domains: ['offline.example'] }))
-    const stop = watchEgressAllowlistBaseline(store, queueAllowlistReport, 60_000)
+    const stop = watchEgressAllowlistBaseline(store, notify, 60_000)
     stop()
-    expect(queued()).toHaveLength(1)
-    expect(queued()[0].content).toContain('+offline.example')
+    await settled()
+    expect(await queued()).toHaveLength(1)
+    expect((await queued())[0].content).toContain('+offline.example')
   })
 })

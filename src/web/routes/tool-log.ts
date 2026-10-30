@@ -23,7 +23,7 @@ export async function tryHandleToolLog(ctx: RouteContext): Promise<boolean> {
     if (!data.session_id || !data.tool_name) { json(res, { error: 'required', hint: 'session_id and tool_name required' }, 400); return true }
     const success = data.success !== false
     if (data.agent_id && denyForeignAgent(ctx, data.agent_id)) return true
-    logToolCall(data.session_id, data.tool_name, data.input_summary ?? null, success, actingAgentId(ctx, data.agent_id, '') || null, data.trace_id ?? null, data.duration_ms ?? null)
+    await logToolCall(data.session_id, data.tool_name, data.input_summary ?? null, success, actingAgentId(ctx, data.agent_id, '') || null, data.trace_id ?? null, data.duration_ms ?? null)
     json(res, { ok: true })
     return true
   }
@@ -31,7 +31,7 @@ export async function tryHandleToolLog(ctx: RouteContext): Promise<boolean> {
   // GET /api/tool-log -- recent tool calls
   if (path === '/api/tool-log' && method === 'GET') {
     const since = parseInt(url.searchParams.get('since') || '3600')
-    json(res, getRecentToolCalls(since))
+    json(res, await getRecentToolCalls(since))
     return true
   }
 
@@ -40,7 +40,7 @@ export async function tryHandleToolLog(ctx: RouteContext): Promise<boolean> {
     const since = parseInt(url.searchParams.get('since') || '3600')
     const minCalls = parseInt(url.searchParams.get('min_calls') || '5')
     const gapSecs = parseInt(url.searchParams.get('gap') || '300')
-    const candidates = analyzeWorkflowCandidates(since, minCalls, gapSecs)
+    const candidates = await analyzeWorkflowCandidates(since, minCalls, gapSecs)
     // Return summarized form (without full tool_calls array to keep response small)
     const summary = candidates.map(c => ({
       session_id: c.session_id,

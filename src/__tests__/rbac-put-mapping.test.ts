@@ -64,7 +64,7 @@ async function callAs(auth: AuthResult, method: string, path: string, body?: unk
   return out
 }
 
-function tokenAuth(raw: string): AuthResult {
+async function tokenAuth(raw: string): Promise<AuthResult> {
   const req = { headers: { authorization: `Bearer ${raw}` } } as unknown as http.IncomingMessage
   return resolveAuth(req, new URL('http://x/api/me'), '/api/me', 'GET', 'the-file-token', true)
 }
@@ -73,16 +73,16 @@ const session = (role: 'admin' | 'agent' | 'read_only' | 'viewer', tenantId: str
 let cardDefault = ''
 let cardAcme = ''
 
-beforeEach(() => {
+beforeEach(async () => {
   initDatabase(':memory:')
-  createTenant('acme', 'Acme')
+  await createTenant('acme', 'Acme')
   for (const [raw, agent] of [['tok-alpha', 'alpha'], ['tok-beta', 'beta']] as const) {
-    insertApiToken({ tokenHash: sha(raw), name: `fleet:${agent}`, role: 'fleet_agent', tenantId: 'default', createdAt: NOW() - 10, expiresAt: null, agentId: agent })
+    await insertApiToken({ tokenHash: sha(raw), name: `fleet:${agent}`, role: 'fleet_agent', tenantId: 'default', createdAt: NOW() - 10, expiresAt: null, agentId: agent })
   }
   cardDefault = 'card-default'
   cardAcme = 'card-acme'
-  createKanbanCard({ id: cardDefault, title: 'Default card', assignee: 'beta', tenant_id: 'default' })
-  createKanbanCard({ id: cardAcme, title: 'Acme card', tenant_id: 'acme' })
+  await createKanbanCard({ id: cardDefault, title: 'Default card', assignee: 'beta', tenant_id: 'default' })
+  await createKanbanCard({ id: cardAcme, title: 'Acme card', tenant_id: 'acme' })
 })
 
 describe('the endpoint table maps every PUT it should', () => {
@@ -108,18 +108,18 @@ describe('the endpoint table maps every PUT it should', () => {
 
 describe('PUT /api/kanban/:id by role', () => {
   it('a fleet_agent token edits a card of its tenant (200) and the card changes', async () => {
-    const r = await callAs(tokenAuth('tok-alpha'), 'PUT', `/api/kanban/${cardDefault}`, { description: 'edited' })
+    const r = await callAs(await tokenAuth('tok-alpha'), 'PUT', `/api/kanban/${cardDefault}`, { description: 'edited' })
     expect(r.status).toBe(200)
-    expect(getKanbanCard(cardDefault)?.description).toBe('edited')
+    expect((await getKanbanCard(cardDefault))?.description).toBe('edited')
   })
 
   it('a tenant user (role agent) edits a card of its own tenant (200)', async () => {
     expect((await callAs(session('agent', 'acme'), 'PUT', `/api/kanban/${cardAcme}`, { title: 'renamed' })).status).toBe(200)
-    expect(getKanbanCard(cardAcme)?.title).toBe('renamed')
+    expect((await getKanbanCard(cardAcme))?.title).toBe('renamed')
   })
 
   it('the shared admin token and an admin session still edit any card', async () => {
-    expect((await callAs(tokenAuth('the-file-token'), 'PUT', `/api/kanban/${cardAcme}`, { title: 'by admin' })).status).toBe(200)
+    expect((await callAs(await tokenAuth('the-file-token'), 'PUT', `/api/kanban/${cardAcme}`, { title: 'by admin' })).status).toBe(200)
     expect((await callAs(session('admin', null), 'PUT', `/api/kanban/${cardDefault}`, { title: 'by admin session' })).status).toBe(200)
   })
 
@@ -128,35 +128,35 @@ describe('PUT /api/kanban/:id by role', () => {
       const r = await callAs(session(role, 'acme'), 'PUT', `/api/kanban/${cardAcme}`, { title: 'nope' })
       expect(r.status).toBe(403)
     }
-    expect(getKanbanCard(cardAcme)?.title).toBe('Acme card')
+    expect((await getKanbanCard(cardAcme))?.title).toBe('Acme card')
   })
 
   it("another tenant's card is a 404 for a fleet token and a tenant user, and stays untouched", async () => {
-    expect((await callAs(tokenAuth('tok-alpha'), 'PUT', `/api/kanban/${cardAcme}`, { title: 'cross' })).status).toBe(404)
+    expect((await callAs(await tokenAuth('tok-alpha'), 'PUT', `/api/kanban/${cardAcme}`, { title: 'cross' })).status).toBe(404)
     expect((await callAs(session('agent', 'acme'), 'PUT', `/api/kanban/${cardDefault}`, { title: 'cross' })).status).toBe(404)
-    expect(getKanbanCard(cardAcme)?.title).toBe('Acme card')
-    expect(getKanbanCard(cardDefault)?.title).toBe('Default card')
+    expect((await getKanbanCard(cardAcme))?.title).toBe('Acme card')
+    expect((await getKanbanCard(cardDefault))?.title).toBe('Default card')
   })
 
   it("a non-admin cannot move a card under ANOTHER tenant's parent (404), but can under its own tenant's", async () => {
-    createKanbanCard({ id: 'parent-default', title: 'Parent', tenant_id: 'default' })
-    expect((await callAs(tokenAuth('tok-alpha'), 'PUT', `/api/kanban/${cardDefault}`, { parent_id: cardAcme })).status).toBe(404)
-    expect(getKanbanCard(cardDefault)?.parent_id ?? null).toBeNull()
+    await createKanbanCard({ id: 'parent-default', title: 'Parent', tenant_id: 'default' })
+    expect((await callAs(await tokenAuth('tok-alpha'), 'PUT', `/api/kanban/${cardDefault}`, { parent_id: cardAcme })).status).toBe(404)
+    expect((await getKanbanCard(cardDefault))?.parent_id ?? null).toBeNull()
     expect((await callAs(session('agent', 'acme'), 'PUT', `/api/kanban/${cardAcme}`, { parent_id: 'parent-default' })).status).toBe(404)
-    expect(getKanbanCard(cardAcme)?.parent_id ?? null).toBeNull()
+    expect((await getKanbanCard(cardAcme))?.parent_id ?? null).toBeNull()
 
-    expect((await callAs(tokenAuth('tok-alpha'), 'PUT', `/api/kanban/${cardDefault}`, { parent_id: 'parent-default' })).status).toBe(200)
-    expect(getKanbanCard(cardDefault)?.parent_id).toBe('parent-default')
+    expect((await callAs(await tokenAuth('tok-alpha'), 'PUT', `/api/kanban/${cardDefault}`, { parent_id: 'parent-default' })).status).toBe(200)
+    expect((await getKanbanCard(cardDefault))?.parent_id).toBe('parent-default')
     // admin keeps the cross-tenant reach, and null (detach) is not a reference
-    expect((await callAs(tokenAuth('the-file-token'), 'PUT', `/api/kanban/${cardDefault}`, { parent_id: cardAcme })).status).toBe(200)
-    expect((await callAs(tokenAuth('tok-alpha'), 'PUT', `/api/kanban/${cardDefault}`, { parent_id: null })).status).toBe(200)
+    expect((await callAs(await tokenAuth('the-file-token'), 'PUT', `/api/kanban/${cardDefault}`, { parent_id: cardAcme })).status).toBe(200)
+    expect((await callAs(await tokenAuth('tok-alpha'), 'PUT', `/api/kanban/${cardDefault}`, { parent_id: null })).status).toBe(200)
   })
 
   it('a label edit is reachable the same way', async () => {
-    const made = await callAs(tokenAuth('tok-alpha'), 'POST', '/api/kanban/labels', { name: 'bug' })
+    const made = await callAs(await tokenAuth('tok-alpha'), 'POST', '/api/kanban/labels', { name: 'bug' })
     expect(made.status).toBe(200)
     const id = made.body['id'] as string
-    expect((await callAs(tokenAuth('tok-alpha'), 'PUT', `/api/kanban/labels/${id}`, { name: 'defect' })).status).toBe(200)
+    expect((await callAs(await tokenAuth('tok-alpha'), 'PUT', `/api/kanban/labels/${id}`, { name: 'defect' })).status).toBe(200)
     expect((await callAs(session('viewer', 'default'), 'PUT', `/api/kanban/labels/${id}`, { name: 'x' })).status).toBe(403)
   })
 })
@@ -166,7 +166,7 @@ describe('the audit row of a card edit names the caller', () => {
     getDb().prepare("SELECT agent_id, detail FROM agent_audit_log WHERE entity = 'kanban' AND action = 'update' AND entity_id = ? ORDER BY id").all(cardDefault) as Array<{ agent_id: string; detail: string }>
 
   it('a fleet token: the agent of the token, not the assignee of the card (beta)', async () => {
-    await callAs(tokenAuth('tok-alpha'), 'PUT', `/api/kanban/${cardDefault}`, { description: 'x' })
+    await callAs(await tokenAuth('tok-alpha'), 'PUT', `/api/kanban/${cardDefault}`, { description: 'x' })
     const r = rows()
     expect(r).toHaveLength(1)
     expect(r[0].agent_id).toBe('alpha')
@@ -182,7 +182,7 @@ describe('the audit row of a card edit names the caller', () => {
   })
 
   it('the shared token with no identity: falls back to the assignee, as before', async () => {
-    await callAs(tokenAuth('the-file-token'), 'PUT', `/api/kanban/${cardDefault}`, { description: 'x' })
+    await callAs(await tokenAuth('the-file-token'), 'PUT', `/api/kanban/${cardDefault}`, { description: 'x' })
     const r = rows()
     expect(r).toHaveLength(1)
     expect(r[0].agent_id).toBe('beta')
@@ -193,13 +193,13 @@ describe('the audit row of a card edit names the caller', () => {
 describe('PUT /api/memories/:id by role', () => {
   let memDefault = 0
   let memAcme = 0
-  beforeEach(() => {
-    memDefault = saveAgentMemory('alpha', 'default memory', 'warm', undefined, false, 'default').id
-    memAcme = saveAgentMemory('x', 'acme memory', 'warm', undefined, false, 'acme').id
+  beforeEach(async () => {
+    memDefault = (await saveAgentMemory('alpha', 'default memory', 'warm', undefined, false, 'default')).id
+    memAcme = (await saveAgentMemory('x', 'acme memory', 'warm', undefined, false, 'acme')).id
   })
 
   it('a fleet token and a tenant user edit a memory of their tenant (200)', async () => {
-    expect((await callAs(tokenAuth('tok-alpha'), 'PUT', `/api/memories/${memDefault}`, { content: 'edited by alpha' })).status).toBe(200)
+    expect((await callAs(await tokenAuth('tok-alpha'), 'PUT', `/api/memories/${memDefault}`, { content: 'edited by alpha' })).status).toBe(200)
     expect((await callAs(session('agent', 'acme'), 'PUT', `/api/memories/${memAcme}`, { content: 'edited by user' })).status).toBe(200)
     const row = getDb().prepare('SELECT content FROM memories WHERE id = ?').get(memAcme) as { content: string }
     expect(row.content).toBe('edited by user')
@@ -212,7 +212,7 @@ describe('PUT /api/memories/:id by role', () => {
   })
 
   it("another tenant's memory is a 404 and stays untouched", async () => {
-    expect((await callAs(tokenAuth('tok-alpha'), 'PUT', `/api/memories/${memAcme}`, { content: 'cross' })).status).toBe(404)
+    expect((await callAs(await tokenAuth('tok-alpha'), 'PUT', `/api/memories/${memAcme}`, { content: 'cross' })).status).toBe(404)
     expect((await callAs(session('agent', 'acme'), 'PUT', `/api/memories/${memDefault}`, { content: 'cross' })).status).toBe(404)
     const row = getDb().prepare('SELECT content FROM memories WHERE id = ?').get(memAcme) as { content: string }
     expect(row.content).toBe('acme memory')
@@ -223,41 +223,41 @@ describe('PUT /api/messages/:id by role', () => {
   let toAlpha = 0
   let toBeta = 0
   let inAcme = 0
-  beforeEach(() => {
-    toAlpha = createAgentMessage('main-agent', 'alpha', 'task for alpha').id
-    toBeta = createAgentMessage('main-agent', 'beta', 'task for beta').id
-    inAcme = createAgentMessage('main-agent', 'alpha', 'acme task', null, null, 'acme', null, true).id
+  beforeEach(async () => {
+    toAlpha = (await createAgentMessage('main-agent', 'alpha', 'task for alpha')).id
+    toBeta = (await createAgentMessage('main-agent', 'beta', 'task for beta')).id
+    inAcme = (await createAgentMessage('main-agent', 'alpha', 'acme task', null, null, 'acme', null, true)).id
   })
 
   it('a fleet token closes a message addressed to its own agent (200)', async () => {
-    const r = await callAs(tokenAuth('tok-alpha'), 'PUT', `/api/messages/${toAlpha}`, { status: 'done', result: 'ok' })
+    const r = await callAs(await tokenAuth('tok-alpha'), 'PUT', `/api/messages/${toAlpha}`, { status: 'done', result: 'ok' })
     expect(r.status).toBe(200)
-    expect(getAgentMessage(toAlpha)?.status).toBe('done')
+    expect((await getAgentMessage(toAlpha))?.status).toBe('done')
   })
 
   it("a fleet token cannot close, fail or refuse a colleague's message (403) and the message stays open", async () => {
     for (const status of ['done', 'failed', 'refused']) {
-      const r = await callAs(tokenAuth('tok-alpha'), 'PUT', `/api/messages/${toBeta}`, { status, result: 'not mine' })
+      const r = await callAs(await tokenAuth('tok-alpha'), 'PUT', `/api/messages/${toBeta}`, { status, result: 'not mine' })
       expect(r.status, status).toBe(403)
     }
-    expect(getAgentMessage(toBeta)?.status).not.toBe('done')
-    expect(getAgentMessage(toBeta)?.status).not.toBe('failed')
+    expect((await getAgentMessage(toBeta))?.status).not.toBe('done')
+    expect((await getAgentMessage(toBeta))?.status).not.toBe('failed')
   })
 
   it('the refusal is audited with the reason', async () => {
-    await callAs(tokenAuth('tok-alpha'), 'PUT', `/api/messages/${toBeta}`, { status: 'done' })
+    await callAs(await tokenAuth('tok-alpha'), 'PUT', `/api/messages/${toBeta}`, { status: 'done' })
     const row = getDb().prepare("SELECT agent_id, detail FROM agent_audit_log WHERE entity = 'message' ORDER BY id DESC LIMIT 1").get() as { agent_id: string; detail: string }
     expect(row.agent_id).toBe('alpha')
     expect(JSON.parse(row.detail)).toMatchObject({ reason: 'not_recipient_denied', message_to: 'beta' })
   })
 
   it("another tenant's message is a 404 even for its recipient's name, and stays open", async () => {
-    expect((await callAs(tokenAuth('tok-alpha'), 'PUT', `/api/messages/${inAcme}`, { status: 'done' })).status).toBe(404)
-    expect(getAgentMessage(inAcme)?.status).not.toBe('done')
+    expect((await callAs(await tokenAuth('tok-alpha'), 'PUT', `/api/messages/${inAcme}`, { status: 'done' })).status).toBe(404)
+    expect((await getAgentMessage(inAcme))?.status).not.toBe('done')
   })
 
   it('the shared admin token and an admin session still close any message', async () => {
-    expect((await callAs(tokenAuth('the-file-token'), 'PUT', `/api/messages/${toBeta}`, { status: 'done' })).status).toBe(200)
+    expect((await callAs(await tokenAuth('the-file-token'), 'PUT', `/api/messages/${toBeta}`, { status: 'done' })).status).toBe(200)
     expect((await callAs(session('admin', null), 'PUT', `/api/messages/${toAlpha}`, { status: 'failed' })).status).toBe(200)
   })
 

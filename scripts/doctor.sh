@@ -292,14 +292,17 @@ TOKEN_CHECK_RC=$?
 if [ "$TOKEN_CHECK_RC" -eq 0 ]; then
   ok "Agent tokens: every token file matches an active token (main agent, agents, operator)"
 elif [ "$TOKEN_CHECK_RC" -eq 1 ] && [ -n "$TOKEN_CHECK_OUT" ]; then
-  while IFS="$(printf '\t')" read -r t_subject t_status t_role t_path; do
+  while IFS="$(printf '\t')" read -r t_subject t_status t_role t_path t_detail; do
     [ -n "$t_subject" ] && [ "$t_status" != "ok" ] || continue
+    # A stray extra active row is only cleared by a rotation; a plain issue would keep the valid file.
+    t_rotate=""
+    [ "$t_status" = "multiple_active" ] && t_rotate=" --rotate"
     case "$t_subject" in
-      operator) t_fix="npm run agent-tokens -- issue-operator" ;;
+      operator) t_fix="npm run agent-tokens -- issue-operator${t_rotate}" ;;
       shared)   t_fix="npm run agent-tokens -- rotate-shared" ;;
-      *)        t_fix="npm run agent-tokens -- issue ${t_subject}" ;;
+      *)        t_fix="npm run agent-tokens -- issue ${t_subject}${t_rotate}" ;;
     esac
-    fail "token ${t_subject}: ${t_status} -- run: ${t_fix}"
+    fail "token ${t_subject}: ${t_status}${t_detail:+ (${t_detail})} -- run: ${t_fix}"
   done <<EOF
 $TOKEN_CHECK_OUT
 EOF

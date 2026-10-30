@@ -63,7 +63,7 @@ async function callAs(auth: AuthResult, method: string, path: string, body?: unk
   return out
 }
 
-function tokenAuth(raw: string): AuthResult {
+async function tokenAuth(raw: string): Promise<AuthResult> {
   const req = { headers: { authorization: `Bearer ${raw}` } } as unknown as http.IncomingMessage
   return resolveAuth(req, new URL('http://x/api/me'), '/api/me', 'GET', 'the-file-token', true)
 }
@@ -72,16 +72,16 @@ const session = (role: 'admin' | 'agent' | 'read_only' | 'viewer', tenantId: str
 let cardDefault = ''
 let cardAcme = ''
 
-beforeEach(() => {
+beforeEach(async () => {
   initDatabase(':memory:')
-  createTenant('acme', 'Acme')
+  await createTenant('acme', 'Acme')
   for (const [raw, agent] of [['tok-alpha', 'alpha'], ['tok-beta', 'beta']] as const) {
-    insertApiToken({ tokenHash: sha(raw), name: `fleet:${agent}`, role: 'fleet_agent', tenantId: 'default', createdAt: NOW() - 10, expiresAt: null, agentId: agent })
+    await insertApiToken({ tokenHash: sha(raw), name: `fleet:${agent}`, role: 'fleet_agent', tenantId: 'default', createdAt: NOW() - 10, expiresAt: null, agentId: agent })
   }
   cardDefault = 'card-default'
   cardAcme = 'card-acme'
-  createKanbanCard({ id: cardDefault, title: 'Default card', assignee: 'beta', tenant_id: 'default' })
-  createKanbanCard({ id: cardAcme, title: 'Acme card', tenant_id: 'acme' })
+  await createKanbanCard({ id: cardDefault, title: 'Default card', assignee: 'beta', tenant_id: 'default' })
+  await createKanbanCard({ id: cardAcme, title: 'Acme card', tenant_id: 'acme' })
 })
 
 
@@ -90,37 +90,37 @@ const childrenOf = (id: string) => getDb().prepare('SELECT id, tenant_id FROM ka
 const SUBTASKS = { subtasks: [{ title: 'sub 1', description: 'd', assignee: null, priority: 'normal' }] }
 
 describe('PATCH /api/kanban/:id/parent holds the tenant line', () => {
-  beforeEach(() => {
-    createKanbanCard({ id: 'parent-default', title: 'Parent', tenant_id: 'default' })
-    createKanbanCard({ id: 'parent-acme', title: 'Parent', tenant_id: 'acme' })
+  beforeEach(async () => {
+    await createKanbanCard({ id: 'parent-default', title: 'Parent', tenant_id: 'default' })
+    await createKanbanCard({ id: 'parent-acme', title: 'Parent', tenant_id: 'acme' })
   })
 
   it('a fleet token and a tenant user move their own tenant\'s card under their own tenant\'s parent (200)', async () => {
-    expect((await callAs(tokenAuth('tok-alpha'), 'PATCH', `/api/kanban/${cardDefault}/parent`, { parent_id: 'parent-default' })).status).toBe(200)
+    expect((await callAs(await tokenAuth('tok-alpha'), 'PATCH', `/api/kanban/${cardDefault}/parent`, { parent_id: 'parent-default' })).status).toBe(200)
     expect(tree(cardDefault)?.parent_id).toBe('parent-default')
     expect((await callAs(session('agent', 'acme'), 'PATCH', `/api/kanban/${cardAcme}/parent`, { parent_id: 'parent-acme' })).status).toBe(200)
     expect(tree(cardAcme)?.parent_id).toBe('parent-acme')
   })
 
   it("another tenant's card is a 404 and stays where it was", async () => {
-    expect((await callAs(tokenAuth('tok-alpha'), 'PATCH', `/api/kanban/${cardAcme}/parent`, { parent_id: 'parent-default' })).status).toBe(404)
+    expect((await callAs(await tokenAuth('tok-alpha'), 'PATCH', `/api/kanban/${cardAcme}/parent`, { parent_id: 'parent-default' })).status).toBe(404)
     expect((await callAs(session('agent', 'acme'), 'PATCH', `/api/kanban/${cardDefault}/parent`, { parent_id: 'parent-acme' })).status).toBe(404)
     expect(tree(cardAcme)?.parent_id ?? null).toBeNull()
     expect(tree(cardDefault)?.parent_id ?? null).toBeNull()
   })
 
   it("an own card cannot be moved under ANOTHER tenant's parent (404)", async () => {
-    expect((await callAs(tokenAuth('tok-alpha'), 'PATCH', `/api/kanban/${cardDefault}/parent`, { parent_id: 'parent-acme' })).status).toBe(404)
+    expect((await callAs(await tokenAuth('tok-alpha'), 'PATCH', `/api/kanban/${cardDefault}/parent`, { parent_id: 'parent-acme' })).status).toBe(404)
     expect((await callAs(session('agent', 'acme'), 'PATCH', `/api/kanban/${cardAcme}/parent`, { parent_id: 'parent-default' })).status).toBe(404)
     expect(tree(cardDefault)?.parent_id ?? null).toBeNull()
     expect(tree(cardAcme)?.parent_id ?? null).toBeNull()
   })
 
   it('detaching (parent_id null) is not a reference, and an admin keeps the cross-tenant reach', async () => {
-    await callAs(tokenAuth('tok-alpha'), 'PATCH', `/api/kanban/${cardDefault}/parent`, { parent_id: 'parent-default' })
-    expect((await callAs(tokenAuth('tok-alpha'), 'PATCH', `/api/kanban/${cardDefault}/parent`, { parent_id: null })).status).toBe(200)
+    await callAs(await tokenAuth('tok-alpha'), 'PATCH', `/api/kanban/${cardDefault}/parent`, { parent_id: 'parent-default' })
+    expect((await callAs(await tokenAuth('tok-alpha'), 'PATCH', `/api/kanban/${cardDefault}/parent`, { parent_id: null })).status).toBe(200)
     expect(tree(cardDefault)?.parent_id ?? null).toBeNull()
-    expect((await callAs(tokenAuth('the-file-token'), 'PATCH', `/api/kanban/${cardAcme}/parent`, { parent_id: 'parent-default' })).status).toBe(200)
+    expect((await callAs(await tokenAuth('the-file-token'), 'PATCH', `/api/kanban/${cardAcme}/parent`, { parent_id: 'parent-default' })).status).toBe(200)
     expect(tree(cardAcme)?.parent_id).toBe('parent-default')
   })
 
@@ -133,16 +133,19 @@ describe('PATCH /api/kanban/:id/parent holds the tenant line', () => {
 
 describe('POST /api/kanban/:id/breakdown/accept holds the tenant line', () => {
   it('creates the subtasks under an own card, in that card\'s tenant (200)', async () => {
-    expect((await callAs(session('agent', 'acme'), 'POST', `/api/kanban/${cardAcme}/breakdown/accept`, SUBTASKS)).status).toBe(200)
+    const accepted = await callAs(session('agent', 'acme'), 'POST', `/api/kanban/${cardAcme}/breakdown/accept`, SUBTASKS)
+    expect(accepted.status).toBe(200)
     const kids = childrenOf(cardAcme)
     expect(kids).toHaveLength(1)
+    // the body carries the created ids themselves (a createKanbanSubtasks that lost its await would serialize `{}`)
+    expect(accepted.body).toEqual({ ok: true, created: kids.map((k) => k.id) })
     expect(kids[0].tenant_id).toBe('acme')
-    expect((await callAs(tokenAuth('tok-alpha'), 'POST', `/api/kanban/${cardDefault}/breakdown/accept`, SUBTASKS)).status).toBe(200)
+    expect((await callAs(await tokenAuth('tok-alpha'), 'POST', `/api/kanban/${cardDefault}/breakdown/accept`, SUBTASKS)).status).toBe(200)
     expect(childrenOf(cardDefault)[0].tenant_id).toBe('default')
   })
 
   it("another tenant's card is a 404 and no subtask or comment is created", async () => {
-    expect((await callAs(tokenAuth('tok-alpha'), 'POST', `/api/kanban/${cardAcme}/breakdown/accept`, SUBTASKS)).status).toBe(404)
+    expect((await callAs(await tokenAuth('tok-alpha'), 'POST', `/api/kanban/${cardAcme}/breakdown/accept`, SUBTASKS)).status).toBe(404)
     expect((await callAs(session('agent', 'acme'), 'POST', `/api/kanban/${cardDefault}/breakdown/accept`, SUBTASKS)).status).toBe(404)
     expect(childrenOf(cardAcme)).toHaveLength(0)
     expect(childrenOf(cardDefault)).toHaveLength(0)
@@ -151,7 +154,7 @@ describe('POST /api/kanban/:id/breakdown/accept holds the tenant line', () => {
   })
 
   it('an admin keeps the cross-tenant reach', async () => {
-    expect((await callAs(tokenAuth('the-file-token'), 'POST', `/api/kanban/${cardAcme}/breakdown/accept`, SUBTASKS)).status).toBe(200)
+    expect((await callAs(await tokenAuth('the-file-token'), 'POST', `/api/kanban/${cardAcme}/breakdown/accept`, SUBTASKS)).status).toBe(200)
     expect(childrenOf(cardAcme)[0].tenant_id).toBe('acme')
   })
 })

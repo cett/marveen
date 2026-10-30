@@ -56,7 +56,7 @@ export async function tryHandleModelFallback(ctx: RouteContext): Promise<boolean
       }
     }
 
-    const saved = writeModelFallbackConfig(body as Partial<ModelFallbackConfig>)
+    const saved = await writeModelFallbackConfig(body as Partial<ModelFallbackConfig>)
     logger.info({ enabled: saved.enabled, chainLength: saved.chain.length, revertAfterMinutes: saved.revertAfterMinutes }, 'Model-fallback config updated')
     json(res, saved)
     return true

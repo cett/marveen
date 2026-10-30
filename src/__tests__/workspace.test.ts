@@ -67,8 +67,8 @@ beforeEach(() => { vi.clearAllMocks() })
 
 describe('GET /api/workspace', () => {
   it('returns list of docs', async () => {
-    vi.mocked(store.listWorkspaceDocs).mockReturnValue([SAMPLE_DOC as any])
-    vi.mocked(store.countWorkspaceDocs).mockReturnValue(1)
+    vi.mocked(store.listWorkspaceDocs).mockResolvedValue([SAMPLE_DOC as any])
+    vi.mocked(store.countWorkspaceDocs).mockResolvedValue(1)
     const { ctx, out } = makeCtx('GET', '/api/v1/workspace')
     await tryHandleWorkspace(ctx)
     expect(out.status).toBe(200)
@@ -77,8 +77,8 @@ describe('GET /api/workspace', () => {
   })
 
   it('accepts limit/offset and passes them through, with a real COUNT(*) as total', async () => {
-    vi.mocked(store.listWorkspaceDocs).mockReturnValue([SAMPLE_DOC as any])
-    vi.mocked(store.countWorkspaceDocs).mockReturnValue(47)
+    vi.mocked(store.listWorkspaceDocs).mockResolvedValue([SAMPLE_DOC as any])
+    vi.mocked(store.countWorkspaceDocs).mockResolvedValue(47)
     const { ctx, out } = makeCtx('GET', '/api/v1/workspace?limit=20&offset=20')
     await tryHandleWorkspace(ctx)
     expect(out.status).toBe(200)
@@ -91,8 +91,8 @@ describe('GET /api/workspace', () => {
   })
 
   it('omitted limit stays unbounded (agent-to-agent handoff contract)', async () => {
-    vi.mocked(store.listWorkspaceDocs).mockReturnValue([SAMPLE_DOC as any])
-    vi.mocked(store.countWorkspaceDocs).mockReturnValue(1)
+    vi.mocked(store.listWorkspaceDocs).mockResolvedValue([SAMPLE_DOC as any])
+    vi.mocked(store.countWorkspaceDocs).mockResolvedValue(1)
     const { ctx, out } = makeCtx('GET', '/api/v1/workspace?doc_key_prefix=design')
     await tryHandleWorkspace(ctx)
     expect(out.status).toBe(200)
@@ -117,8 +117,8 @@ describe('GET /api/workspace', () => {
   })
 
   it('passes tenant filter to listWorkspaceDocs for non-admin', async () => {
-    vi.mocked(store.listWorkspaceDocs).mockReturnValue([])
-    vi.mocked(store.countWorkspaceDocs).mockReturnValue(0)
+    vi.mocked(store.listWorkspaceDocs).mockResolvedValue([])
+    vi.mocked(store.countWorkspaceDocs).mockResolvedValue(0)
     const { ctx, out } = makeCtx('GET', '/api/v1/workspace', undefined, { role: 'agent', tenantId: 'acme-corp' })
     await tryHandleWorkspace(ctx)
     expect(vi.mocked(store.listWorkspaceDocs)).toHaveBeenCalledWith(
@@ -128,8 +128,8 @@ describe('GET /api/workspace', () => {
   })
 
   it('passes agent filter', async () => {
-    vi.mocked(store.listWorkspaceDocs).mockReturnValue([])
-    vi.mocked(store.countWorkspaceDocs).mockReturnValue(0)
+    vi.mocked(store.listWorkspaceDocs).mockResolvedValue([])
+    vi.mocked(store.countWorkspaceDocs).mockResolvedValue(0)
     const { ctx, out } = makeCtx('GET', '/api/v1/workspace?agent=rick')
     await tryHandleWorkspace(ctx)
     expect(vi.mocked(store.listWorkspaceDocs)).toHaveBeenCalledWith(
@@ -148,7 +148,7 @@ describe('GET /api/workspace', () => {
 
 describe('POST /api/workspace', () => {
   it('creates a text doc and returns 201', async () => {
-    vi.mocked(store.saveWorkspaceDoc).mockReturnValue(SAMPLE_DOC as any)
+    vi.mocked(store.saveWorkspaceDoc).mockResolvedValue(SAMPLE_DOC as any)
     const { ctx, out } = makeCtx('POST', '/api/v1/workspace', {
       agent_id: 'rick', title: 'RBAC plan', content_type: 'text', type: 'plan',
       content: 'content here', doc_key: '668-plan',
@@ -227,8 +227,8 @@ describe('POST /api/workspace', () => {
 
   it('creates a binary doc with base64 blob', async () => {
     const binaryDoc = { ...SAMPLE_DOC, content_type: 'binary', content_blob_b64: null }
-    vi.mocked(store.saveWorkspaceDoc).mockReturnValue(binaryDoc as any)
-    vi.mocked(store.getWorkspaceDocBlob).mockReturnValue(Buffer.from('PNG'))
+    vi.mocked(store.saveWorkspaceDoc).mockResolvedValue(binaryDoc as any)
+    vi.mocked(store.getWorkspaceDocBlob).mockResolvedValue(Buffer.from('PNG'))
     const { ctx, out } = makeCtx('POST', '/api/v1/workspace', {
       agent_id: 'rick', title: 'diagram.png', content_type: 'binary', type: 'notes',
       content_blob_b64: Buffer.from('PNG').toString('base64'),
@@ -241,7 +241,7 @@ describe('POST /api/workspace', () => {
   })
 
   it('accepts code content_type', async () => {
-    vi.mocked(store.saveWorkspaceDoc).mockReturnValue({ ...SAMPLE_DOC, content_type: 'code' } as any)
+    vi.mocked(store.saveWorkspaceDoc).mockResolvedValue({ ...SAMPLE_DOC, content_type: 'code' } as any)
     const { ctx, out } = makeCtx('POST', '/api/v1/workspace', {
       agent_id: 'rick', title: 'migration', content_type: 'code', type: 'notes',
       content: 'CREATE TABLE foo (id INTEGER PRIMARY KEY); -- rm -rf is fine in code',
@@ -255,8 +255,8 @@ describe('POST /api/workspace', () => {
 
 describe('GET /api/workspace/:id', () => {
   it('returns doc by id', async () => {
-    vi.mocked(store.peekWorkspaceDoc).mockReturnValue(SAMPLE_META as any)
-    vi.mocked(store.getWorkspaceDoc).mockReturnValue(SAMPLE_DOC as any)
+    vi.mocked(store.peekWorkspaceDoc).mockResolvedValue(SAMPLE_META as any)
+    vi.mocked(store.getWorkspaceDoc).mockResolvedValue(SAMPLE_DOC as any)
     const { ctx, out } = makeCtx('GET', '/api/v1/workspace/abc123')
     await tryHandleWorkspace(ctx)
     expect(out.status).toBe(200)
@@ -264,14 +264,14 @@ describe('GET /api/workspace/:id', () => {
   })
 
   it('returns 404 for unknown id', async () => {
-    vi.mocked(store.peekWorkspaceDoc).mockReturnValue(null)
+    vi.mocked(store.peekWorkspaceDoc).mockResolvedValue(null)
     const { ctx, out } = makeCtx('GET', '/api/v1/workspace/ghost')
     await tryHandleWorkspace(ctx)
     expect(out.status).toBe(404)
   })
 
   it('returns 404 when non-admin accesses a different tenant doc (ID enumeration protection)', async () => {
-    vi.mocked(store.peekWorkspaceDoc).mockReturnValue({ ...SAMPLE_META, tenant_id: 'other-tenant' } as any)
+    vi.mocked(store.peekWorkspaceDoc).mockResolvedValue({ ...SAMPLE_META, tenant_id: 'other-tenant' } as any)
     const { ctx, out } = makeCtx('GET', '/api/v1/workspace/abc123', undefined, { role: 'agent', tenantId: 'acme-corp' })
     await tryHandleWorkspace(ctx)
     expect(out.status).toBe(404)
@@ -279,9 +279,9 @@ describe('GET /api/workspace/:id', () => {
   })
 
   it('includes content_blob_b64 for binary docs', async () => {
-    vi.mocked(store.peekWorkspaceDoc).mockReturnValue({ ...SAMPLE_META, content_type: 'binary' } as any)
-    vi.mocked(store.getWorkspaceDoc).mockReturnValue({ ...SAMPLE_DOC, content_type: 'binary' } as any)
-    vi.mocked(store.getWorkspaceDocBlob).mockReturnValue(Buffer.from('PNG'))
+    vi.mocked(store.peekWorkspaceDoc).mockResolvedValue({ ...SAMPLE_META, content_type: 'binary' } as any)
+    vi.mocked(store.getWorkspaceDoc).mockResolvedValue({ ...SAMPLE_DOC, content_type: 'binary' } as any)
+    vi.mocked(store.getWorkspaceDocBlob).mockResolvedValue(Buffer.from('PNG'))
     const { ctx, out } = makeCtx('GET', '/api/v1/workspace/abc123')
     await tryHandleWorkspace(ctx)
     expect(out.status).toBe(200)
@@ -293,8 +293,8 @@ describe('GET /api/workspace/:id', () => {
 
 describe('PATCH /api/workspace/:id', () => {
   it('patches title and returns updated doc', async () => {
-    vi.mocked(store.peekWorkspaceDoc).mockReturnValue(SAMPLE_META as any)
-    vi.mocked(store.patchWorkspaceDoc).mockReturnValue({ ...SAMPLE_DOC, title: 'New title' } as any)
+    vi.mocked(store.peekWorkspaceDoc).mockResolvedValue(SAMPLE_META as any)
+    vi.mocked(store.patchWorkspaceDoc).mockResolvedValue({ ...SAMPLE_DOC, title: 'New title' } as any)
     const { ctx, out } = makeCtx('PATCH', '/api/v1/workspace/abc123', { title: 'New title' })
     await tryHandleWorkspace(ctx)
     expect(out.status).toBe(200)
@@ -308,14 +308,14 @@ describe('PATCH /api/workspace/:id', () => {
   })
 
   it('returns 404 for unknown doc', async () => {
-    vi.mocked(store.peekWorkspaceDoc).mockReturnValue(null)
+    vi.mocked(store.peekWorkspaceDoc).mockResolvedValue(null)
     const { ctx, out } = makeCtx('PATCH', '/api/v1/workspace/ghost', { title: 'x' })
     await tryHandleWorkspace(ctx)
     expect(out.status).toBe(404)
   })
 
   it('returns 404 when non-admin patches a different tenant doc', async () => {
-    vi.mocked(store.peekWorkspaceDoc).mockReturnValue({ ...SAMPLE_META, tenant_id: 'other-tenant' } as any)
+    vi.mocked(store.peekWorkspaceDoc).mockResolvedValue({ ...SAMPLE_META, tenant_id: 'other-tenant' } as any)
     const { ctx, out } = makeCtx('PATCH', '/api/v1/workspace/abc123', { title: 'x' }, { role: 'agent', tenantId: 'acme-corp' })
     await tryHandleWorkspace(ctx)
     expect(out.status).toBe(404)
@@ -323,14 +323,14 @@ describe('PATCH /api/workspace/:id', () => {
   })
 
   it('returns 400 for empty body', async () => {
-    vi.mocked(store.peekWorkspaceDoc).mockReturnValue(SAMPLE_META as any)
+    vi.mocked(store.peekWorkspaceDoc).mockResolvedValue(SAMPLE_META as any)
     const { ctx, out } = makeCtx('PATCH', '/api/v1/workspace/abc123', {})
     await tryHandleWorkspace(ctx)
     expect(out.status).toBe(400)
   })
 
   it('returns 413 when patched content exceeds limit', async () => {
-    vi.mocked(store.peekWorkspaceDoc).mockReturnValue(SAMPLE_META as any)
+    vi.mocked(store.peekWorkspaceDoc).mockResolvedValue(SAMPLE_META as any)
     const { ctx, out } = makeCtx('PATCH', '/api/v1/workspace/abc123', {
       content: 'x'.repeat(3 * 1024 * 1024),
     })
@@ -343,8 +343,8 @@ describe('PATCH /api/workspace/:id', () => {
 
 describe('DELETE /api/workspace/:id', () => {
   it('deletes doc and returns ok', async () => {
-    vi.mocked(store.peekWorkspaceDoc).mockReturnValue(SAMPLE_META as any)
-    vi.mocked(store.deleteWorkspaceDoc).mockReturnValue(true)
+    vi.mocked(store.peekWorkspaceDoc).mockResolvedValue(SAMPLE_META as any)
+    vi.mocked(store.deleteWorkspaceDoc).mockResolvedValue(true)
     const { ctx, out } = makeCtx('DELETE', '/api/v1/workspace/abc123')
     await tryHandleWorkspace(ctx)
     expect(out.status).toBe(200)
@@ -358,8 +358,8 @@ describe('DELETE /api/workspace/:id', () => {
   })
 
   it('allows admin session-auth to delete', async () => {
-    vi.mocked(store.peekWorkspaceDoc).mockReturnValue(SAMPLE_META as any)
-    vi.mocked(store.deleteWorkspaceDoc).mockReturnValue(true)
+    vi.mocked(store.peekWorkspaceDoc).mockResolvedValue(SAMPLE_META as any)
+    vi.mocked(store.deleteWorkspaceDoc).mockResolvedValue(true)
     const { ctx, out } = makeCtx('DELETE', '/api/v1/workspace/abc123', undefined, { authKind: 'session', role: 'admin' })
     await tryHandleWorkspace(ctx)
     expect(out.status).toBe(200)
@@ -367,17 +367,39 @@ describe('DELETE /api/workspace/:id', () => {
   })
 
   it('returns 404 for unknown doc', async () => {
-    vi.mocked(store.peekWorkspaceDoc).mockReturnValue(null)
+    vi.mocked(store.peekWorkspaceDoc).mockResolvedValue(null)
     const { ctx, out } = makeCtx('DELETE', '/api/v1/workspace/ghost')
     await tryHandleWorkspace(ctx)
     expect(out.status).toBe(404)
   })
 
   it('returns 404 when non-admin deletes a different tenant doc', async () => {
-    vi.mocked(store.peekWorkspaceDoc).mockReturnValue({ ...SAMPLE_META, tenant_id: 'other-tenant' } as any)
+    vi.mocked(store.peekWorkspaceDoc).mockResolvedValue({ ...SAMPLE_META, tenant_id: 'other-tenant' } as any)
     const { ctx, out } = makeCtx('DELETE', '/api/v1/workspace/abc123', undefined, { role: 'agent', tenantId: 'acme-corp' })
     await tryHandleWorkspace(ctx)
     expect(out.status).toBe(404)
     expect(vi.mocked(store.deleteWorkspaceDoc)).not.toHaveBeenCalled()
+  })
+})
+
+describe('DELETE /api/workspace/:id answers only after the delete finished', () => {
+  it('a rejected delete is not reported as ok', async () => {
+    vi.mocked(store.peekWorkspaceDoc).mockResolvedValue(SAMPLE_META as any)
+    vi.mocked(store.deleteWorkspaceDoc).mockRejectedValue(new Error('disk full'))
+    const { ctx, out } = makeCtx('DELETE', '/api/v1/workspace/abc123')
+    await expect(tryHandleWorkspace(ctx)).rejects.toThrow('disk full')
+    expect(out.body?.ok).not.toBe(true)
+  })
+  it('the response waits for a pending delete', async () => {
+    vi.mocked(store.peekWorkspaceDoc).mockResolvedValue(SAMPLE_META as any)
+    let finish!: (v: boolean) => void
+    vi.mocked(store.deleteWorkspaceDoc).mockReturnValue(new Promise<boolean>((r) => { finish = r }))
+    const { ctx, out } = makeCtx('DELETE', '/api/v1/workspace/abc123')
+    const done = tryHandleWorkspace(ctx)
+    await new Promise((r) => setTimeout(r, 20))
+    expect(out.body?.ok).not.toBe(true)
+    finish(true)
+    await done
+    expect(out.body.ok).toBe(true)
   })
 })

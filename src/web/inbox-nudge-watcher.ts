@@ -52,6 +52,7 @@ import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { isSessionReadyForPrompt, sendPromptToSession, sessionExistsOnHost } from './agent-process.js'
 import { sendAlert } from './channel-monitor.js'
 
+import { systemJob } from '../db/background-jobs.js'
 export const INBOX_NUDGE_INITIAL_DELAY_MS = 55_000 // free slot (taken: 5/10/20/25/30/35/40/45/50/90s)
 export const INBOX_NUDGE_INTERVAL_MS = 20_000
 // A message younger than this is left alone: a concurrently-starting turn (or
@@ -198,7 +199,7 @@ export async function tick(): Promise<void> {
   // and take the dashboard down.
   try {
     const now = Date.now()
-    const pending = getPendingMessages(MAIN_AGENT_ID)
+    const pending = await getPendingMessages(MAIN_AGENT_ID)
     const oldest = pending[0]
     const pre = decideNudgePreflight(
       { now, oldestId: oldest ? oldest.id : null, oldestAgeMs: oldest ? now - oldest.created_at * 1000 : 0 },
@@ -277,6 +278,7 @@ export async function tick(): Promise<void> {
 }
 
 export function startInboxNudgeWatcher(): NodeJS.Timeout {
-  setTimeout(() => { void tick() }, INBOX_NUDGE_INITIAL_DELAY_MS).unref()
-  return setInterval(() => { void tick() }, INBOX_NUDGE_INTERVAL_MS)
+  const run = systemJob('inbox-nudge-watcher', () => { void tick() })
+  setTimeout(run, INBOX_NUDGE_INITIAL_DELAY_MS).unref()
+  return setInterval(run, INBOX_NUDGE_INTERVAL_MS)
 }

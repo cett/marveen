@@ -9,7 +9,7 @@
 // quarantine-reader template render, fleet-transfer.ts export/import) calls
 // straight into these functions.
 
-import { db } from './connection.js'
+import { dbx } from './facade.js'
 
 export type EgressAllowlistType = 'domain' | 'prefix' | 'quarantine_domain'
 
@@ -31,19 +31,15 @@ const SELECT_COLUMNS = 'id, value, type, added_by, added_at, tenant_id'
  * must be (the hook enforces one fleet-wide policy, not a per-tenant one --
  * see the route module for why).
  */
-export function listEgressAllowlistRows(tenantId: string | null = null): EgressAllowlistRow[] {
+export async function listEgressAllowlistRows(tenantId: string | null = null): Promise<EgressAllowlistRow[]> {
   if (tenantId === null) {
-    return db.prepare(`SELECT ${SELECT_COLUMNS} FROM egress_allowlist ORDER BY type, value`).all() as EgressAllowlistRow[]
+    return dbx.all<EgressAllowlistRow>(`SELECT ${SELECT_COLUMNS} FROM egress_allowlist ORDER BY type, value`)
   }
-  return db
-    .prepare(`SELECT ${SELECT_COLUMNS} FROM egress_allowlist WHERE tenant_id = ? ORDER BY type, value`)
-    .all(tenantId) as EgressAllowlistRow[]
+  return dbx.all<EgressAllowlistRow>(`SELECT ${SELECT_COLUMNS} FROM egress_allowlist WHERE tenant_id = ? ORDER BY type, value`, tenantId)
 }
 
-export function getEgressAllowlistRow(id: number): EgressAllowlistRow | undefined {
-  return db.prepare(`SELECT ${SELECT_COLUMNS} FROM egress_allowlist WHERE id = ?`).get(id) as
-    | EgressAllowlistRow
-    | undefined
+export async function getEgressAllowlistRow(id: number): Promise<EgressAllowlistRow | undefined> {
+  return dbx.get<| EgressAllowlistRow>(`SELECT ${SELECT_COLUMNS} FROM egress_allowlist WHERE id = ?`, id)
 }
 
 /**
@@ -52,21 +48,19 @@ export function getEgressAllowlistRow(id: number): EgressAllowlistRow | undefine
  * route treats that as success, matching the old file's "domain already in
  * the list" behavior).
  */
-export function insertEgressAllowlistEntry(entry: {
+export async function insertEgressAllowlistEntry(entry: {
   value: string
   type: EgressAllowlistType
   tenant_id?: string
   added_by?: string
-}): void {
-  db.prepare(
-    `INSERT INTO egress_allowlist (value, type, added_by, added_at, tenant_id)
+}): Promise<void> {
+  await dbx.run(`INSERT INTO egress_allowlist (value, type, added_by, added_at, tenant_id)
      VALUES (?, ?, ?, unixepoch(), ?)
-     ON CONFLICT DO NOTHING`
-  ).run(entry.value, entry.type, entry.added_by ?? 'dashboard', entry.tenant_id ?? 'default')
+     ON CONFLICT DO NOTHING`, entry.value, entry.type, entry.added_by ?? 'dashboard', entry.tenant_id ?? 'default')
 }
 
-export function deleteEgressAllowlistEntry(id: number): boolean {
-  const result = db.prepare('DELETE FROM egress_allowlist WHERE id = ?').run(id)
+export async function deleteEgressAllowlistEntry(id: number): Promise<boolean> {
+  const result = await dbx.run('DELETE FROM egress_allowlist WHERE id = ?', id)
   return result.changes > 0
 }
 
@@ -78,25 +72,24 @@ export function deleteEgressAllowlistEntry(id: number): boolean {
  * added. `added_by`/`added_at` on an already-existing row are therefore
  * never touched by an import, by construction (IGNORE never fires UPDATE).
  */
-export function mergeEgressAllowlistEntries(
+export async function mergeEgressAllowlistEntries(
   entries: Array<{ value: string; type: EgressAllowlistType; tenant_id?: string; added_by?: string }>
-): void {
-  const insert = db.prepare(
-    `INSERT INTO egress_allowlist (value, type, added_by, added_at, tenant_id)
-     VALUES (?, ?, ?, unixepoch(), ?)
-     ON CONFLICT DO NOTHING`
-  )
-  const tx = db.transaction((rows: typeof entries) => {
-    for (const row of rows) {
-      insert.run(row.value, row.type, row.added_by ?? 'seed_migration', row.tenant_id ?? 'default')
+): Promise<void> {
+  await dbx.tx(async (tx) => {
+    for (const row of entries) {
+      await tx.run(
+        `INSERT INTO egress_allowlist (value, type, added_by, added_at, tenant_id)
+         VALUES (?, ?, ?, unixepoch(), ?)
+         ON CONFLICT DO NOTHING`,
+        row.value, row.type, row.added_by ?? 'seed_migration', row.tenant_id ?? 'default'
+      )
     }
   })
-  tx(entries)
 }
 
 /** Just the values of one type, across all tenants -- what a fleet-wide consumer (quarantine-reader template render) wants. */
-export function listEgressAllowlistValues(type: EgressAllowlistType): string[] {
+export async function listEgressAllowlistValues(type: EgressAllowlistType): Promise<string[]> {
   return (
-    db.prepare('SELECT value FROM egress_allowlist WHERE type = ? ORDER BY value').all(type) as { value: string }[]
+    (await dbx.all('SELECT value FROM egress_allowlist WHERE type = ? ORDER BY value', type)) as { value: string }[]
   ).map((r) => r.value)
 }

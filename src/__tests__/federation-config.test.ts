@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vites
 import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { initDatabase, db } from '../db.js'
+import { initDatabase, db, clearSystemConfigCache, reloadSystemConfigCache } from '../db.js'
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID } from '../config.js'
 import { checkBearerToken } from '../web/dashboard-auth.js'
@@ -35,16 +35,16 @@ const TMP = mkdtempSync(join(tmpdir(), 'fed-config-test-'))
 const IN_TOKEN = 'f'.repeat(64)
 const OUT_TOKEN = 'e'.repeat(64)
 
-function writeConfigFile(obj: unknown): void {
-  _seedFederationConfigForTest(obj as string | Record<string, unknown>)
+async function writeConfigFile(obj: unknown): Promise<void> {
+  await _seedFederationConfigForTest(obj as string | Record<string, unknown>)
 }
 
 beforeAll(() => {
   initDatabase(':memory:')
 })
 
-beforeEach(() => {
-  _clearFederationConfigForTest()
+beforeEach(async () => {
+  await _clearFederationConfigForTest()
   rmSync(join(TMP, '.federation-token'), { force: true })
   _setFederationStoreDirForTest(TMP)
 })
@@ -207,18 +207,18 @@ describe('isAcceptablePeerBaseUrl / abandonWindowMsForPeer / token mint', () => 
 })
 
 describe('fail-closed store reads', () => {
-  it('missing row / garbage JSON / one invalid peer -> disabled with no peers', () => {
+  it('missing row / garbage JSON / one invalid peer -> disabled with no peers', async () => {
     expect(getFederationConfig().enabled).toBe(false)
-    _seedFederationConfigForTest('{not json')
+    await _seedFederationConfigForTest('{not json')
     expect(getFederationConfig().enabled).toBe(false)
-    writeConfigFile({ enabled: true, peers: [validPeers[0], { id: 'bad peer!', baseUrl: 'https://x.example', inboundToken: 'g'.repeat(64) }] })
+    await writeConfigFile({ enabled: true, peers: [validPeers[0], { id: 'bad peer!', baseUrl: 'https://x.example', inboundToken: 'g'.repeat(64) }] })
     const cfg = getFederationConfig()
     expect(cfg.enabled).toBe(false)
     expect(cfg.peers).toHaveLength(0)
   })
 
-  it('valid enabled document -> enabled with parsed peers', () => {
-    writeConfigFile({ enabled: true, peers: validPeers })
+  it('valid enabled document -> enabled with parsed peers', async () => {
+    await writeConfigFile({ enabled: true, peers: validPeers })
     const cfg = getFederationConfig()
     expect(cfg.enabled).toBe(true)
     expect(cfg.peers.map((p) => p.id)).toEqual(['arthur'])
@@ -230,13 +230,14 @@ describe('fail-closed store reads', () => {
   // level, not warn. A mutation flipping loadConfigFromDb()'s try/catch to
   // fail OPEN (or dropping it entirely) survived the suite before this test
   // existed -- nothing exercised a genuine throw from getFederationConfigRaw().
-  it('a genuine DB read failure (not just a missing/invalid row) fail-closes and logs at error level', () => {
-    writeConfigFile({ enabled: true, peers: validPeers })
+  it('a genuine DB read failure (not just a missing/invalid row) fail-closes and logs at error level', async () => {
+    await writeConfigFile({ enabled: true, peers: validPeers })
     expect(getFederationConfig().enabled).toBe(true) // sanity: would be true if the read worked
 
     const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => logger)
     db.exec('ALTER TABLE system_config RENAME TO system_config_test_down')
     try {
+      clearSystemConfigCache() // the system_config read cache would answer without touching the table
       reloadFederationForTest() // clear the cache so the next read actually hits the DB
       const cfg = getFederationConfig()
       expect(cfg.enabled).toBe(false)
@@ -247,6 +248,7 @@ describe('fail-closed store reads', () => {
       expect(logArg).toHaveProperty('err')
     } finally {
       db.exec('ALTER TABLE system_config_test_down RENAME TO system_config')
+      reloadSystemConfigCache()
       errorSpy.mockRestore()
       reloadFederationForTest()
     }
@@ -254,86 +256,172 @@ describe('fail-closed store reads', () => {
 })
 
 describe('identifyFederationCaller', () => {
-  it('identifies the matching peer and only while enabled', () => {
-    writeConfigFile({ enabled: true, peers: validPeers })
+  it('identifies the matching peer and only while enabled', async () => {
+    await writeConfigFile({ enabled: true, peers: validPeers })
     expect(identifyFederationCaller(`Bearer ${IN_TOKEN}`, checkBearerToken)).toBe('arthur')
     expect(identifyFederationCaller(`Bearer ${'0'.repeat(64)}`, checkBearerToken)).toBeNull()
     expect(identifyFederationCaller(undefined, checkBearerToken)).toBeNull()
-    writeConfigFile({ enabled: false, peers: validPeers })
+    await writeConfigFile({ enabled: false, peers: validPeers })
     // Disabled: no auth work at all -- a disabled peer presents as plain 401.
     expect(identifyFederationCaller(`Bearer ${IN_TOKEN}`, checkBearerToken)).toBeNull()
   })
 
-  it('never authenticates against an empty/short stored token', () => {
+  it('never authenticates against an empty/short stored token', async () => {
     // Hand-seeded doc with a short inbound token fail-closes the WHOLE
     // config, so the caller loop never even sees it.
-    writeConfigFile({ enabled: true, peers: [{ ...validPeers[0], inboundToken: '' }] })
+    await writeConfigFile({ enabled: true, peers: [{ ...validPeers[0], inboundToken: '' }] })
     expect(identifyFederationCaller('Bearer  ', checkBearerToken)).toBeNull()
   })
 })
 
 describe('lossless enable/disable + removal', () => {
-  it('setFederationEnabledPreservingFile flips the flag and keeps peers -- even INVALID ones stay in the store', () => {
-    writeConfigFile({ enabled: true, peers: validPeers })
-    expect(setFederationEnabledPreservingFile(false)).toBe(true)
+  it('setFederationEnabledPreservingFile flips the flag and keeps peers -- even INVALID ones stay in the store', async () => {
+    await writeConfigFile({ enabled: true, peers: validPeers })
+    expect(await setFederationEnabledPreservingFile(false)).toBe(true)
     const cfg = getFederationConfig()
     expect(cfg.enabled).toBe(false)
     expect(cfg.peers).toHaveLength(1) // lossless: peers survive the flip
-    expect(setFederationEnabledPreservingFile(true)).toBe(true)
+    expect(await setFederationEnabledPreservingFile(true)).toBe(true)
     expect(getFederationConfig().enabled).toBe(true)
 
     // The critical data-loss edge: an INVALID stored peer fail-closes the
     // VIEW (peers: []), but the flag flip must not write that emptiness back.
-    writeConfigFile({ enabled: true, peers: [{ ...validPeers[0], inboundToken: 'short' }] })
+    await writeConfigFile({ enabled: true, peers: [{ ...validPeers[0], inboundToken: 'short' }] })
     expect(getFederationConfig().peers).toHaveLength(0) // view is fail-closed
-    expect(setFederationEnabledPreservingFile(false)).toBe(true)
+    expect(await setFederationEnabledPreservingFile(false)).toBe(true)
     const raw = JSON.parse(getFederationConfigRaw()!)
     expect(raw.peers).toHaveLength(1) // the store still has the peer
     expect(raw.enabled).toBe(false)
   })
 
-  it('returns false on unreadable garbage (nothing to flip; validator already fail-closes)', () => {
-    _seedFederationConfigForTest('{oops')
-    expect(setFederationEnabledPreservingFile(false)).toBe(false)
+  it('returns false on unreadable garbage (nothing to flip; validator already fail-closes)', async () => {
+    await _seedFederationConfigForTest('{oops')
+    expect(await setFederationEnabledPreservingFile(false)).toBe(false)
   })
 
-  it('setFederationRoutingModePreservingFile sets the mode, keeps peers + enabled, survives an invalid stored peer', () => {
-    writeConfigFile({ enabled: true, routingMode: 'catalog-first', peers: validPeers })
-    expect(setFederationRoutingModePreservingFile('strong')).toBe(true)
+  it('setFederationRoutingModePreservingFile sets the mode, keeps peers + enabled, survives an invalid stored peer', async () => {
+    await writeConfigFile({ enabled: true, routingMode: 'catalog-first', peers: validPeers })
+    expect(await setFederationRoutingModePreservingFile('strong')).toBe(true)
     const cfg = getFederationConfig()
     expect(cfg.routingMode).toBe('strong')
     expect(cfg.enabled).toBe(true) // untouched
     expect(cfg.peers).toHaveLength(1) // lossless
     // Invalid stored peer -> the VIEW fail-closes, but the store (incl. the peer) is kept.
-    writeConfigFile({ enabled: true, peers: [{ ...validPeers[0], inboundToken: 'short' }] })
-    expect(setFederationRoutingModePreservingFile('advisory')).toBe(true)
+    await writeConfigFile({ enabled: true, peers: [{ ...validPeers[0], inboundToken: 'short' }] })
+    expect(await setFederationRoutingModePreservingFile('advisory')).toBe(true)
     const raw = JSON.parse(getFederationConfigRaw()!)
     expect(raw.routingMode).toBe('advisory')
     expect(raw.peers).toHaveLength(1)
   })
 
-  it('removeFederationStore deletes the config row + legacy token file and is idempotent', () => {
-    writeConfigFile({ enabled: true, peers: validPeers })
+  it('removeFederationStore deletes the config row + legacy token file and is idempotent', async () => {
+    await writeConfigFile({ enabled: true, peers: validPeers })
     writeFileSync(join(TMP, '.federation-token'), 'legacy'.repeat(11))
-    removeFederationStore()
+    await removeFederationStore()
     expect(getFederationConfigRaw()).toBeUndefined()
     expect(existsSync(join(TMP, '.federation-token'))).toBe(false)
     expect(getFederationConfig().enabled).toBe(false)
-    removeFederationStore() // idempotent
+    await removeFederationStore() // idempotent
   })
 
-  it('writeFederationConfig refreshes the cache synchronously', () => {
-    writeFederationConfig({ enabled: true, systemId: 'teodor', peers: [{ id: 'arthur', baseUrl: 'https://x.example', outboundToken: OUT_TOKEN, inboundToken: IN_TOKEN, trust: 'untrusted' }] })
+  it('writeFederationConfig refreshes the cache synchronously', async () => {
+    await writeFederationConfig({ enabled: true, systemId: 'teodor', peers: [{ id: 'arthur', baseUrl: 'https://x.example', outboundToken: OUT_TOKEN, inboundToken: IN_TOKEN, trust: 'untrusted' }] })
     expect(getFederationConfig().enabled).toBe(true)
     expect(getFederationConfig().peers[0].id).toBe('arthur')
   })
 })
 
 describe('reloadFederationForTest', () => {
-  it('is still exported and clears the cache (legacy-named seam, kept for other federation test files)', () => {
-    writeConfigFile({ enabled: true, peers: validPeers })
+  it('is still exported and clears the cache (legacy-named seam, kept for other federation test files)', async () => {
+    await writeConfigFile({ enabled: true, peers: validPeers })
     expect(getFederationConfig().enabled).toBe(true)
     reloadFederationForTest()
     expect(getFederationConfig().enabled).toBe(true) // same stored doc, just re-read
+  })
+})
+
+describe('overlapping writes and the auth gate (writers are awaited read-modify-writes)', () => {
+  const bearer = `Bearer ${IN_TOKEN}`
+  const gate = (): string | null => identifyFederationCaller(bearer, checkBearerToken)
+
+  it('an enabled flip and a routing-mode change started together both land, in either order', async () => {
+    for (const order of ['flip-first', 'mode-first'] as const) {
+      await writeConfigFile({ enabled: true, routingMode: 'catalog-first', peers: validPeers })
+      const flip = (): Promise<boolean> => setFederationEnabledPreservingFile(false)
+      const mode = (): Promise<boolean> => setFederationRoutingModePreservingFile('strong')
+      const results = order === 'flip-first' ? await Promise.all([flip(), mode()]) : (await Promise.all([mode(), flip()])).reverse()
+      expect(results).toEqual([true, true])
+      const raw = JSON.parse(getFederationConfigRaw()!)
+      expect(raw.enabled, order).toBe(false)
+      expect(raw.routingMode, order).toBe('strong')
+      expect(raw.peers, order).toHaveLength(1)
+      const cfg = getFederationConfig()
+      expect(cfg.enabled, order).toBe(false)
+      expect(cfg.routingMode, order).toBe('strong')
+    }
+  })
+
+  it('many overlapping routing-mode and enabled writes: the last one of each kind wins and nothing else changes', async () => {
+    await writeConfigFile({ enabled: true, routingMode: 'catalog-first', peers: validPeers })
+    await Promise.all([
+      setFederationRoutingModePreservingFile('advisory'),
+      setFederationEnabledPreservingFile(false),
+      setFederationRoutingModePreservingFile('strong'),
+      setFederationEnabledPreservingFile(true),
+      setFederationRoutingModePreservingFile('advisory'),
+    ])
+    const raw = JSON.parse(getFederationConfigRaw()!)
+    expect(raw.routingMode).toBe('advisory')
+    expect(raw.enabled).toBe(true)
+    expect(raw.peers).toHaveLength(1)
+    expect(getFederationConfig()).toMatchObject({ enabled: true, routingMode: 'advisory' })
+  })
+
+  it('the gate refuses the moment a disable resolves (a switched-off federation accepts no peer)', async () => {
+    await writeConfigFile({ enabled: true, peers: validPeers })
+    expect(gate()).toBe('arthur') // primes the cache with the enabled document
+    expect(await setFederationEnabledPreservingFile(false)).toBe(true)
+    expect(gate()).toBeNull() // the very next synchronous check, not "eventually"
+    expect(await setFederationEnabledPreservingFile(true)).toBe(true)
+    expect(gate()).toBe('arthur')
+  })
+
+  it('writeFederationConfig: the gate sees the new document as soon as the write resolves', async () => {
+    await writeConfigFile({ enabled: true, peers: validPeers })
+    expect(gate()).toBe('arthur') // cache primed
+    const disabled = validateFederationConfig({ enabled: false, peers: validPeers })
+    if (typeof disabled === 'string') throw new Error(disabled)
+    await writeFederationConfig(disabled)
+    expect(gate()).toBeNull()
+    expect(getFederationConfig().enabled).toBe(false)
+  })
+
+  it('removeFederationStore: the gate refuses as soon as the removal resolves', async () => {
+    await writeConfigFile({ enabled: true, peers: validPeers })
+    expect(gate()).toBe('arthur') // cache primed
+    await removeFederationStore()
+    expect(gate()).toBeNull()
+    expect(getFederationConfigRaw()).toBeUndefined()
+  })
+
+  it.each([
+    ['unparseable text', '{oops'],
+    ['a JSON array', '[1,2]'],
+    ['a JSON scalar', '42'],
+  ])('garbage in the store (%s): both setters answer false and write nothing', async (_label, garbage) => {
+    await _seedFederationConfigForTest(garbage)
+    const before = getFederationConfigRaw()
+    expect(await setFederationEnabledPreservingFile(true)).toBe(false)
+    expect(await setFederationRoutingModePreservingFile('strong')).toBe(false)
+    expect(getFederationConfigRaw()).toBe(before)
+    expect(gate()).toBeNull() // and the view stays fail-closed
+  })
+
+  it('an enable of a stored document with an invalid peer reports false (the view stays disabled) but keeps the data', async () => {
+    await writeConfigFile({ enabled: false, peers: [{ ...validPeers[0], inboundToken: 'short' }] })
+    expect(await setFederationEnabledPreservingFile(true)).toBe(false)
+    expect(JSON.parse(getFederationConfigRaw()!)).toMatchObject({ enabled: true })
+    expect(JSON.parse(getFederationConfigRaw()!).peers).toHaveLength(1)
+    expect(gate()).toBeNull()
   })
 })

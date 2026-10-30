@@ -39,7 +39,7 @@ export async function tryHandleSecurity(ctx: RouteContext): Promise<boolean> {
   // Enrollment mints a device key and an SSH access line: an agent's credential must not be able to
   // hand itself (or anyone) a way in, so with enforcement on it needs a person's session like the
   // other credential issuers.
-  if (denyAgentCredentialIssue(ctx, 'security.bridge_enroll')) return true
+  if (await denyAgentCredentialIssue(ctx, 'security.bridge_enroll')) return true
 
   let body: Record<string, unknown>
   try {
@@ -79,7 +79,7 @@ export async function tryHandleSecurity(ctx: RouteContext): Promise<boolean> {
     // where pairing "succeeded but does not work" is explainable from the
     // audit row alone.
     const overrideNote = sshDirOverride() ? ' sshdir_override=1' : ''
-    logConfigChange('security.bridge_enroll', null, `${name} (${outcome.installId}) ${outcome.action}${overrideNote}`, auth.kind)
+    await logConfigChange('security.bridge_enroll', null, `${name} (${outcome.installId}) ${outcome.action}${overrideNote}`, auth.kind)
     logger.info({ name, installId: outcome.installId, action: outcome.action, deviceKeyId: outcome.deviceKeyId }, 'bridge device enrolled')
     void notifySecurityEvent(
       `🔗 Bridge-párosítás a dashboardról: "${name}" (${outcome.action === 'replaced' ? 'újrapárosítás' : 'új eszköz'}). ` +

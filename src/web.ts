@@ -20,6 +20,7 @@ import { normalizePath, applyDeprecationHeaders } from './web/routes/versioning.
 import { instrumentHttpRequest } from './otel-http.js'
 import { AGENTS_BASE_DIR, listAgentNames } from './web/agent-config.js'
 import { ensureAgentHooks, ensureAgentStalenessHook, ensureEgressGate, ensureBashEgressParser, ensureDestructiveGate, ensureAuthAdminGate, ensureTenantHooks, ensureGovernanceGateCommands, ensureSkillUsageMatcher, ensureQuarantineReader, ensureContextWatchdogHook, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection, ensureWorkDocSection } from './web/agent-scaffold.js'
+import { backfillQuarantineReaders } from './web/quarantine-backfill.js'
 import { watchEgressAllowlistBaseline, queueAllowlistReport } from './web/egress-allowlist-baseline.js'
 import { shouldRegisterHooks, pruneStaleHooksFromSettingsFile } from './web/hook-registration-guard.js'
 import { refreshMarveenBotUsername } from './web/telegram.js'
@@ -106,6 +107,8 @@ import { tryHandleIntel } from './web/routes/intel.js'
 import { tryHandleConversationLedger } from './web/routes/conversation-ledger.js'
 import { tryHandleSkillSync } from './web/routes/skill-sync.js'
 import { tryHandleTenantGateStatus } from './web/routes/tenant-gate-status.js'
+import { tryHandleDbContext } from './web/routes/db-context.js'
+import { startDbContextReport } from './web/db-context-report.js'
 import { tryHandleFleetQ } from './web/routes/fleet-q.js'
 import { tryHandleStatic } from './web/routes/static.js'
 import { tryHandleVoice } from './web/routes/voice.js'
@@ -128,9 +131,12 @@ import { getDb } from './db.js'
 import type { RouteContext } from './web/routes/types.js'
 import { RouteDispatcher } from './web/routes/dispatcher.js'
 import { reconcileAgentsOnStartup, flushRunningStateToDesired } from './web/startup-reconciliation.js'
+import { registerSigtermFlush } from './web/sigterm-flush.js'
 import { startImportCrawler, stopImportCrawler } from './web/import-crawler.js'
 import { bootstrapDashboardToken } from './web/token-bootstrap.js'
 
+import { runAs } from './db/context.js'
+import { systemJob, runAsRequest } from './db/background-jobs.js'
 const WEB_DIR = join(PROJECT_ROOT, 'web')
 
 const dispatcher = new RouteDispatcher()
@@ -198,6 +204,7 @@ const dispatcher = new RouteDispatcher()
   .add(tryHandleConversationLedger)
   .add(tryHandleSkillSync)
   .add(tryHandleTenantGateStatus)
+  .add(tryHandleDbContext)
   .add(tryHandleFleetQ)
   .add(tryHandleFleet)
   .add(ctx => tryHandleStatic(ctx, WEB_DIR))
@@ -206,7 +213,7 @@ function ensureDirs() {
   mkdirSync(AGENTS_BASE_DIR, { recursive: true })
 }
 
-export function startWebServer(port = 3420): http.Server {
+export async function startWebServer(port = 3420): Promise<http.Server> {
   // SECURITY: Server binds to 127.0.0.1 (see server.listen below). The allowed
   // browser origins mirror that -- anything else is rejected to prevent CSRF
   // from malicious websites the user may visit while the dashboard is running.
@@ -228,7 +235,7 @@ export function startWebServer(port = 3420): http.Server {
   // stay in sync without an extra env var.
   const allowedHosts = buildAllowedHosts(allowedOrigins)
 
-  const server = http.createServer(async (req, res) => {
+  const handleRequest = async (req: http.IncomingMessage, res: http.ServerResponse) => {
     const url = new URL(req.url || '/', `http://localhost:${port}`)
     const { path, deprecated, apiVersion } = normalizePath(url.pathname)
     const method = req.method || 'GET'
@@ -290,7 +297,7 @@ export function startWebServer(port = 3420): http.Server {
     // fleet curl call keeps working with users present or absent. requiresAuth()
     // decides whether a missing principal is a 401 (gated /api/* + fleet
     // manifest) or a public probe (auth status/login, avatars).
-    const auth: AuthResult = resolveAuth(req, url, path, method, DASHBOARD_TOKEN, true)
+    const auth: AuthResult = await resolveAuth(req, url, path, method, DASHBOARD_TOKEN, true)
     httpTrust.authenticated = auth.kind !== 'none' // a traceparent is believed only from a caller with credentials
     if (requiresAuth(path, method) && auth.kind === 'none') {
       if (isFederationWireEndpoint(path, method)) {
@@ -298,7 +305,7 @@ export function startWebServer(port = 3420): http.Server {
         // brute-force surface -- make them visible (round-2 scoped-token gate).
         logger.warn({ path, method }, 'federation: rejected wire-endpoint auth')
       }
-      observeRefusedSharedToken(req, method, path) // shadow counter: a rotated-away shared token knocking; never throws
+      await observeRefusedSharedToken(req, method, path) // shadow counter: a rotated-away shared token knocking; never throws
       res.writeHead(401, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: 'unauthorized', hint: 'Bearer token required' }))
       return
@@ -307,7 +314,7 @@ export function startWebServer(port = 3420): http.Server {
     // no tenant to act in. Refused here, before the RBAC gate, so it holds in shadow mode too.
     if (requiresAuth(path, method) && auth.kind === 'token' && auth.tenantContextMissing) {
       logger.warn({ path, method, agent: auth.agentId }, 'fleet agent token refused: no fresh tenant context for a shared agent')
-      recordTenantContextRefusal(req, auth, method, path) // shadow counter: measures only, never throws
+      await recordTenantContextRefusal(req, auth, method, path) // shadow counter: measures only, never throws
       res.writeHead(403, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: 'forbidden', hint: 'No fresh tenant context for this shared agent' }))
       return
@@ -319,7 +326,7 @@ export function startWebServer(port = 3420): http.Server {
     // (in BOTH modes), so the observation window is measurable from the database.
     // Runs only for gated, authenticated requests (kind !== 'none').
     if (requiresAuth(path, method) && auth.kind !== 'none') {
-      if (!runRbacGate(auth, method, path, res, getRbacMode())) return
+      if (!await runRbacGate(auth, method, path, res, getRbacMode())) return
     }
 
     const role = auth.kind !== 'none' ? resolveRole(auth) : undefined
@@ -352,7 +359,7 @@ export function startWebServer(port = 3420): http.Server {
 
       // Phase T2 shadow counter: measures the shared token and per-agent token use. Counts only; it
       // never throws, never reads the body here and never changes the outcome of the request.
-      if (requiresAuth(path, method)) observeTokenUsage(req, auth, method, path, url)
+      if (requiresAuth(path, method)) await observeTokenUsage(req, auth, method, path, url)
 
       // Phase T4-7: with TOKEN_IDENTITY_MODE=enforce a non-main agent caller that names another agent
       // is refused with the same classification the counter just recorded. Shadow (the default): no-op.
@@ -360,7 +367,9 @@ export function startWebServer(port = 3420): http.Server {
         if (await answerIdentityRefusal(req, res)) return
       }
 
-      if (await dispatcher.dispatch(routeCtx)) return
+      // From here the route works for the caller: its tenant, or its agent in that tenant.
+      const dispatched = await runAsRequest({ authenticated: auth.kind !== 'none', role, agentId: role === 'fleet_agent' ? tokenAgentId : undefined, tenantId: tenantId ?? null }, () => dispatcher.dispatch(routeCtx))
+      if (dispatched) return
 
       res.writeHead(404)
       res.end('Not found')
@@ -372,6 +381,16 @@ export function startWebServer(port = 3420): http.Server {
       logger.error({ err }, 'Web szerver hiba')
       json(res, { error: 'internal_error', hint: 'Szerver hiba' }, 500)
     }
+  }
+
+  // The listener is synchronous on purpose (no-misused-promises): a rejection from anything outside the
+  // route try/catch above is logged and answered, never an unhandled rejection.
+  const server = http.createServer((req, res) => {
+    void runAs.system('http-gate', () => handleRequest(req, res)).catch((err) => {
+      logger.error({ err }, 'Web szerver hiba (kezeletlen)')
+      if (!res.headersSent) res.writeHead(500)
+      res.end()
+    })
   })
 
   server.on('error', (err: NodeJS.ErrnoException) => {
@@ -596,22 +615,26 @@ export function startWebServer(port = 3420): http.Server {
   // Hourly sweep of expired browser-login sessions (7d idle / 30d absolute).
   // Runs regardless of WEB_ONLY -- it is a cheap indexed delete on the shared DB
   // and keeps auth_sessions from growing unboundedly on any instance.
-  const authSessionSweepInterval = setInterval(() => {
+  // The device-key sweep is asynchronous now, so the body is its own async function with its own try/catch:
+  // the timer callback stays synchronous (no floating Promise) and a failed sweep is still only a warning.
+  const sweepAuthState = async (): Promise<void> => {
     try {
-      const swept = sweepExpiredSessions()
+      const swept = await sweepExpiredSessions()
       if (swept > 0) logger.info({ swept }, 'Expired auth sessions swept')
-      const sweptKeys = sweepExpiredDeviceKeys()
+      const sweptKeys = await sweepExpiredDeviceKeys()
       if (sweptKeys > 0) logger.info({ swept: sweptKeys }, 'Expired device keys swept')
     } catch (err) {
       logger.warn({ err }, 'Auth session sweep failed')
     }
-  }, 60 * 60 * 1000)
+  }
+  const authSessionSweepInterval = setInterval(systemJob('auth-state-sweep', () => { void sweepAuthState() }), 60 * 60 * 1000)
+  const dbContextReportInterval = startDbContextReport()
 
-  const tokenCollectInterval = webOnly ? undefined : setInterval(() => {
+  const tokenCollectInterval = webOnly ? undefined : setInterval(systemJob('token-usage-collector', () => {
     collectTokenUsage().catch(err => logger.warn({ err }, 'Periodic token usage collection failed'))
-  }, 5 * 60 * 1000)
+  }), 5 * 60 * 1000)
   if (!webOnly) {
-    collectTokenUsage().catch(err => logger.warn({ err }, 'Startup token usage collection failed'))
+    runAs.system('token-usage-collector', () => collectTokenUsage()).catch(err => logger.warn({ err }, 'Startup token usage collection failed'))
     logger.info('Token usage auto-collect started (5min poll + startup)')
   }
 
@@ -652,17 +675,15 @@ export function startWebServer(port = 3420): http.Server {
   // are gone (accepting lost context). Fire-and-forget: errors are logged
   // internally and never bubble to the caller.
   if (!webOnly) {
-    reconcileAgentsOnStartup().catch(err =>
+    runAs.system('boot-sequence', () => reconcileAgentsOnStartup()).catch(err =>
       logger.warn({ err }, 'startup-reconciliation: uncaught error (non-fatal)'),
     )
 
     // On SIGTERM: flush which agents are running so the next startup has
     // accurate desired-state data even after an unclean shutdown. One-time
     // registration inside server.listen so it only fires on the live instance,
-    // not on WEB_ONLY staging.
-    process.once('SIGTERM', () => {
-      try { flushRunningStateToDesired() } catch { /* best effort */ }
-    })
+    // not on WEB_ONLY staging. index.ts's shutdown() runs it before it closes the database.
+    registerSigtermFlush('desired-run-state', () => runAs.system('shutdown-flush', () => flushRunningStateToDesired()))
   }
 
   // Backfill the PreCompact hook into existing agents' settings.json so the
@@ -689,6 +710,7 @@ export function startWebServer(port = 3420): http.Server {
       const govPatched: string[] = []
       const skillUsagePatched: string[] = []
       const watchdogPatched: string[] = []
+      const quarantineAgents: string[] = []
       const pruned: string[] = []
       // Include the main agent (MAIN_AGENT_ID) so the voice hook is also seeded
       // into ~/.claude/settings.json alongside existing hooks (e.g. telegram_progress.py).
@@ -709,12 +731,17 @@ export function startWebServer(port = 3420): http.Server {
         // No-op for MAIN_AGENT_ID (already covered via the project-tracked
         // .claude/settings.json) -- see ensureContextWatchdogHook's own comment.
         if (ensureContextWatchdogHook(agentName)) watchdogPatched.push(agentName)
-        ensureQuarantineReader(agentName)
+        quarantineAgents.push(agentName)
       }
+      // ensureQuarantineReader is asynchronous (egress allowlist from the db facade) and this function stays
+      // synchronous, so the step runs behind the loop; it logs its own failures (see quarantine-backfill.ts).
+      void backfillQuarantineReaders(quarantineAgents, ensureQuarantineReader)
       // EGRESSSELFEDIT824: hash baseline + a report of every change to the allowlist, by any
       // route. Inside the hook-registration branch on purpose: only the instance that owns the
       // hooks watches the shared store, a worktree / WEB_ONLY instance does not.
-      watchEgressAllowlistBaseline(STORE_DIR, queueAllowlistReport)
+      watchEgressAllowlistBaseline(STORE_DIR, (report) => {
+        queueAllowlistReport(report).catch((err: unknown) => logger.warn({ err }, 'egress allowlist baseline: could not queue the change report'))
+      })
       if (pruned.length) logger.info({ pruned }, 'Stale hook entries pruned from agent settings.json')
       if (patched.length) logger.info({ patched }, 'PreCompact hook backfilled into agent settings.json')
       if (stalePatched.length) logger.info({ patched: stalePatched }, 'staleness-guard UserPromptSubmit hook backfilled into agent settings.json')
@@ -739,38 +766,38 @@ export function startWebServer(port = 3420): http.Server {
       logger.warn({ err }, 'Scheduled tasks seed skipped')
     }
     try {
-      const seeded = seedSchedulesFromFilesIfEmpty()
+      const seeded = await seedSchedulesFromFilesIfEmpty()
       if (seeded > 0) logger.info({ seeded }, 'Schedules table seeded from files')
     } catch (err) {
       logger.warn({ err }, 'Schedule DB seed skipped')
     }
     try {
       // The nightly memory maintenance moved from an inline curl chain to a script; an install that still has the stock chain follows.
-      if (ensureMemoryMaintenanceCommand()) logger.info('memory-maintenance task moved to scripts/memory-maintenance.sh')
+      if (await ensureMemoryMaintenanceCommand()) logger.info('memory-maintenance task moved to scripts/memory-maintenance.sh')
     } catch (err) {
       logger.warn({ err }, 'memory-maintenance command migration skipped')
     }
     try {
       // After the file seed above: an empty table must still get the shipped file seeds first.
-      if (ensureClaudeUpdateTask()) logger.info('Weekly claude-update task seeded')
+      if (await ensureClaudeUpdateTask()) logger.info('Weekly claude-update task seeded')
     } catch (err) {
       logger.warn({ err }, 'claude-update task seed skipped')
     }
     try {
-      if (ensureDailyLogSummaryTask()) logger.info('Evening daily-log-summary task seeded')
+      if (await ensureDailyLogSummaryTask()) logger.info('Evening daily-log-summary task seeded')
     } catch (err) {
       logger.warn({ err }, 'daily-log-summary task seed skipped')
     }
     try {
       // update.sh refreshed shipped skill files: bring their DB rows along before the regen writes rows back over files.
-      const refreshed = applySeedSkillRefreshMarker()
+      const refreshed = await applySeedSkillRefreshMarker()
       if (refreshed.applied > 0 || refreshed.errors > 0) logger.info(refreshed, 'Refreshed seed skills applied to the DB')
     } catch (err) {
       logger.warn({ err }, 'Seed skill refresh apply skipped')
     }
     try {
       // Companion files (scripts/, references/) that only exist on disk go into the DB first.
-      const companions = importSkillCompanionFilesFromDisk()
+      const companions = await importSkillCompanionFilesFromDisk()
       if (companions.seeded > 0) logger.info({ seeded: companions.seeded }, 'Skill companion files imported into the DB')
     } catch (err) {
       logger.warn({ err }, 'Skill companion file import skipped')
@@ -778,7 +805,7 @@ export function startWebServer(port = 3420): http.Server {
     // Tenant skill files belong to running agents only: the startup regen writes them for those and prunes the rest.
     setTenantSkillAgentProbe(isAgentSessionRunning)
     try {
-      const regen = regenSkillFilesFromSQL()
+      const regen = await regenSkillFilesFromSQL()
       if (regen.enabled) {
         logger.info({ written: regen.written, skipped: regen.skipped, errors: regen.errors }, 'Skill files regenerated from SQL')
       }
@@ -787,7 +814,7 @@ export function startWebServer(port = 3420): http.Server {
     }
     try {
       // Skills that are in the DB but not on disk (fresh restore, regen switched off, a failed write): say so once.
-      const gaps = findSkillFileGaps()
+      const gaps = await findSkillFileGaps()
       const missing = gaps.skillFiles.length + gaps.companionFiles.length + gaps.tenantCopies.length
       if (missing > 0) {
         logger.warn(
@@ -800,11 +827,8 @@ export function startWebServer(port = 3420): http.Server {
     }
   }
 
-  try {
-    sweepOrphanedBackgroundTasks()
-  } catch (err) {
-    logger.warn({ err }, 'Background task sweep skipped')
-  }
+  // Not awaited: the server is already up and the sweep only re-arms timers for tasks that survived the restart.
+  runAs.system('boot-sequence', () => sweepOrphanedBackgroundTasks()).catch((err) => logger.warn({ err }, 'Background task sweep skipped'))
 
   try {
     const swept = sweepOrphanTaskStates(Date.now())
@@ -831,6 +855,7 @@ export function startWebServer(port = 3420): http.Server {
     clearInterval(contextGuardInterval)
     clearInterval(approvalTimeoutInterval)
     clearInterval(authSessionSweepInterval)
+    clearInterval(dbContextReportInterval)
     stopImportCrawler()
     clearInterval(updateCheckerInterval)
     if (blackboardStaleInterval) clearInterval(blackboardStaleInterval)

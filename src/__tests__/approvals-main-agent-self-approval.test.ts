@@ -40,18 +40,18 @@ beforeEach(() => {
 
 describe('PATCH /api/approvals/:id by the main agent token', () => {
   it('refuses to resolve the main agent\'s own request, even when the body names someone else', async () => {
-    createApproval({ id: 'own-1', agent_id: 'main-x', category: 'file_write', action_description: 'x' })
+    await createApproval({ id: 'own-1', agent_id: 'main-x', category: 'file_write', action_description: 'x' })
     for (const body of [{ status: 'approved' }, { status: 'approved', resolved_by: 'someone-else' }, { status: 'rejected', resolved_by: 'dashboard' }]) {
       const r = await patch(MAIN_TOKEN, 'own-1', body)
       expect(r.status, JSON.stringify(body)).toBe(403)
     }
-    expect(getApproval('own-1')?.status).toBe('pending')
+    expect((await getApproval('own-1'))?.status).toBe('pending')
   })
 
   it('still resolves another agent\'s request, recorded under the agent the token names', async () => {
-    createApproval({ id: 'other-1', agent_id: 'agent-d', category: 'file_write', action_description: 'x' })
+    await createApproval({ id: 'other-1', agent_id: 'agent-d', category: 'file_write', action_description: 'x' })
     const r = await patch(MAIN_TOKEN, 'other-1', { status: 'approved' })
     expect(r.status).toBe(200)
-    expect(getApproval('other-1')).toMatchObject({ status: 'approved', resolved_by: 'main-x' })
+    expect(await getApproval('other-1')).toMatchObject({ status: 'approved', resolved_by: 'main-x' })
   })
 })

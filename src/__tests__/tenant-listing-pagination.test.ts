@@ -17,40 +17,40 @@ describe('tenant listing pagination', () => {
     }
   })
 
-  it('listAgentMessages(5) returns 5 rows for admin (no tenant filter)', () => {
-    const rows = listAgentMessages(5)
+  it('listAgentMessages(5) returns 5 rows for admin (no tenant filter)', async () => {
+    const rows = await listAgentMessages(5)
     expect(rows).toHaveLength(5)
   })
 
-  it('listAgentMessages(5, tenant-a) returns 5 rows all from tenant-a (SQL filters before LIMIT)', () => {
+  it('listAgentMessages(5, tenant-a) returns 5 rows all from tenant-a (SQL filters before LIMIT)', async () => {
     // Critical: with SQL push-down, LIMIT applies AFTER the WHERE tenant_id=? clause.
     // Without push-down, LIMIT=5 from 12 total would include tenant-b rows, then the
     // JS filter would return fewer than 5 -- starving the tenant-scoped caller.
-    const rows = listAgentMessages(5, 'tenant-a')
+    const rows = await listAgentMessages(5, 'tenant-a')
     expect(rows).toHaveLength(5)
     expect(rows.every(m => m.tenant_id === 'tenant-a')).toBe(true)
   })
 
-  it('listAgentMessages(10, tenant-a) returns exactly 6 rows (all of tenant-a)', () => {
-    const rows = listAgentMessages(10, 'tenant-a')
+  it('listAgentMessages(10, tenant-a) returns exactly 6 rows (all of tenant-a)', async () => {
+    const rows = await listAgentMessages(10, 'tenant-a')
     expect(rows).toHaveLength(6)
     expect(rows.every(m => m.tenant_id === 'tenant-a')).toBe(true)
   })
 
-  it('listAgentMessages(10, tenant-b) returns exactly 6 rows (all of tenant-b)', () => {
-    const rows = listAgentMessages(10, 'tenant-b')
+  it('listAgentMessages(10, tenant-b) returns exactly 6 rows (all of tenant-b)', async () => {
+    const rows = await listAgentMessages(10, 'tenant-b')
     expect(rows).toHaveLength(6)
     expect(rows.every(m => m.tenant_id === 'tenant-b')).toBe(true)
   })
 
-  it('getAgentConversation(alpha, 10, undefined, tenant-a) returns only tenant-a rows', () => {
-    const rows = getAgentConversation('alpha', 10, undefined, 'tenant-a')
+  it('getAgentConversation(alpha, 10, undefined, tenant-a) returns only tenant-a rows', async () => {
+    const rows = await getAgentConversation('alpha', 10, undefined, 'tenant-a')
     expect(rows.length).toBeGreaterThan(0)
     expect(rows.every(m => m.tenant_id === 'tenant-a')).toBe(true)
   })
 
-  it('getPendingMessages(undefined, tenant-a) returns only tenant-a pending rows', () => {
-    const rows = getPendingMessages(undefined, 'tenant-a')
+  it('getPendingMessages(undefined, tenant-a) returns only tenant-a pending rows', async () => {
+    const rows = await getPendingMessages(undefined, 'tenant-a')
     expect(rows.length).toBeGreaterThan(0)
     expect(rows.every(m => m.tenant_id === 'tenant-a')).toBe(true)
   })
@@ -71,14 +71,14 @@ describe('tenant memory search pagination (q-only branch)', () => {
     }
   })
 
-  it('searchMemories with tenantId=tenant-a returns only tenant-a rows', () => {
-    const rows = searchMemories('uniquetoken', 'test-chat', 10, 'tenant-a')
+  it('searchMemories with tenantId=tenant-a returns only tenant-a rows', async () => {
+    const rows = await searchMemories('uniquetoken', 'test-chat', 10, 'tenant-a')
     expect(rows.length).toBeGreaterThan(0)
     expect(rows.every(m => (m as Memory & { tenant_id?: string }).tenant_id === 'tenant-a')).toBe(true)
   })
 
-  it('searchMemories with tenantId=tenant-b returns only tenant-b rows', () => {
-    const rows = searchMemories('uniquetoken', 'test-chat', 10, 'tenant-b')
+  it('searchMemories with tenantId=tenant-b returns only tenant-b rows', async () => {
+    const rows = await searchMemories('uniquetoken', 'test-chat', 10, 'tenant-b')
     expect(rows.length).toBeGreaterThan(0)
     expect(rows.every(m => (m as Memory & { tenant_id?: string }).tenant_id === 'tenant-b')).toBe(true)
   })

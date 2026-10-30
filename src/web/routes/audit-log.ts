@@ -60,7 +60,7 @@ export async function tryHandleAuditLog(ctx: RouteContext): Promise<boolean> {
     return true
   }
 
-  const { entries, total } = queryAuditLog({ sources, from, to, q, agent, limit, offset })
+  const { entries, total } = await queryAuditLog({ sources, from, to, q, agent, limit, offset })
   json(res, { entries, total, offset, limit })
   return true
 }

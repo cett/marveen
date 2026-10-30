@@ -191,9 +191,9 @@ export async function bridgeEnroll(
 
   // Replace-by-id on the device-key side too: a re-paired device must not
   // keep its previous (possibly lost) key alive.
-  const prior = findDeviceKeyByInstallId(parsed.installId)
-  if (prior) revokeDeviceKey(prior.id)
-  const minted = createDeviceKey(input.name, { installId: parsed.installId })
+  const prior = await findDeviceKeyByInstallId(parsed.installId)
+  if (prior) await revokeDeviceKey(prior.id)
+  const minted = await createDeviceKey(input.name, { installId: parsed.installId })
 
   const host = input.host ?? primaryIPv4() ?? hostname()
   const bundle = encodeBundle(

@@ -62,7 +62,7 @@ async function callAs(auth: AuthResult, method: string, path: string, body?: unk
   return out
 }
 
-function tokenAuth(raw: string): AuthResult {
+async function tokenAuth(raw: string): Promise<AuthResult> {
   const req = { headers: { authorization: `Bearer ${raw}` } } as unknown as http.IncomingMessage
   return resolveAuth(req, new URL('http://x/api/me'), '/api/me', 'GET', 'the-file-token', true)
 }
@@ -72,28 +72,28 @@ const DEFAULT_CARD = 'card-default'
 const ACME_CARD = 'card-acme'
 const ACME_ARCHIVED = 'card-acme-archived'
 
-const alpha = () => tokenAuth('tok-alpha') // fleet_agent, tenant default
+const alpha = async () => tokenAuth('tok-alpha') // fleet_agent, tenant default
 const acmeUser = () => session('agent', 'acme') // tenant user of acme
-const admin = () => tokenAuth('the-file-token')
+const admin = async () => tokenAuth('the-file-token')
 
 const row = (id: string) => getDb().prepare('SELECT status, archived_at, dispatched_at FROM kanban_cards WHERE id = ?').get(id) as
   { status: string; archived_at: number | null; dispatched_at: number | null }
 
-beforeEach(() => {
+beforeEach(async () => {
   generateBreakdown.mockClear()
   initDatabase(':memory:')
-  createTenant('acme', 'Acme')
-  insertApiToken({ tokenHash: sha('tok-alpha'), name: 'fleet:alpha', role: 'fleet_agent', tenantId: 'default', createdAt: NOW() - 10, expiresAt: null, agentId: 'alpha' })
-  createKanbanCard({ id: DEFAULT_CARD, title: 'Default card', assignee: 'beta', tenant_id: 'default' })
-  createKanbanCard({ id: ACME_CARD, title: 'Acme card', assignee: 'beta', tenant_id: 'acme' })
-  createKanbanCard({ id: ACME_ARCHIVED, title: 'Acme archived', tenant_id: 'acme' })
-  archiveKanbanCard(ACME_ARCHIVED)
-  createKanbanCard({ id: 'acme-child', title: 'Acme child', parent_id: ACME_CARD, tenant_id: 'acme' })
-  createKanbanCard({ id: 'default-child', title: 'Default child', parent_id: DEFAULT_CARD, tenant_id: 'default' })
-  createLabel({ id: 'lbl-acme', name: 'acme-label', color: '#3b82f6', tenant_id: 'acme' })
-  createLabel({ id: 'lbl-default', name: 'default-label', color: '#10b981', tenant_id: 'default' })
-  addLabelToCard(ACME_CARD, 'lbl-acme')
-  addKanbanComment(ACME_CARD, 'someone', 'secret acme comment')
+  await createTenant('acme', 'Acme')
+  await insertApiToken({ tokenHash: sha('tok-alpha'), name: 'fleet:alpha', role: 'fleet_agent', tenantId: 'default', createdAt: NOW() - 10, expiresAt: null, agentId: 'alpha' })
+  await createKanbanCard({ id: DEFAULT_CARD, title: 'Default card', assignee: 'beta', tenant_id: 'default' })
+  await createKanbanCard({ id: ACME_CARD, title: 'Acme card', assignee: 'beta', tenant_id: 'acme' })
+  await createKanbanCard({ id: ACME_ARCHIVED, title: 'Acme archived', tenant_id: 'acme' })
+  await archiveKanbanCard(ACME_ARCHIVED)
+  await createKanbanCard({ id: 'acme-child', title: 'Acme child', parent_id: ACME_CARD, tenant_id: 'acme' })
+  await createKanbanCard({ id: 'default-child', title: 'Default child', parent_id: DEFAULT_CARD, tenant_id: 'default' })
+  await createLabel({ id: 'lbl-acme', name: 'acme-label', color: '#3b82f6', tenant_id: 'acme' })
+  await createLabel({ id: 'lbl-default', name: 'default-label', color: '#10b981', tenant_id: 'default' })
+  await addLabelToCard(ACME_CARD, 'lbl-acme')
+  await addKanbanComment(ACME_CARD, 'someone', 'secret acme comment')
 })
 
 type Case = { name: string; method: string; path: (id: string) => string; body?: unknown }
@@ -120,70 +120,79 @@ const CASES: Case[] = [
 describe("a foreign card id on a /api/kanban/:id/* route is a 404 for a non-admin caller", () => {
   for (const c of CASES) {
     it(`${c.name}: fleet token and tenant user get 404 on the other tenant's card`, async () => {
-      expect((await callAs(alpha(), c.method, c.path(ACME_CARD), c.body)).status).toBe(404)
+      expect((await callAs(await alpha(), c.method, c.path(ACME_CARD), c.body)).status).toBe(404)
       expect((await callAs(acmeUser(), c.method, c.path(DEFAULT_CARD), c.body)).status).toBe(404)
     })
   }
 
+  it('GET /api/kanban/:id: a foreign card is a 404, an own card is read, an admin reads any', async () => {
+    expect((await callAs(await alpha(), 'GET', `/api/kanban/${ACME_CARD}`)).status).toBe(404)
+    expect((await callAs(acmeUser(), 'GET', `/api/kanban/${DEFAULT_CARD}`)).status).toBe(404)
+    const own = await callAs(await alpha(), 'GET', `/api/kanban/${DEFAULT_CARD}`)
+    expect(own.status).toBe(200)
+    expect((own.body as { id: string }).id).toBe(DEFAULT_CARD)
+    expect((await callAs(await admin(), 'GET', `/api/kanban/${ACME_CARD}`)).status).toBe(200)
+  })
+
   it('the 404 body is the same as for a card that does not exist (no id probing)', async () => {
-    const foreign = await callAs(alpha(), 'GET', `/api/kanban/${ACME_CARD}/comments`)
-    const missing = await callAs(alpha(), 'GET', '/api/kanban/no-such-card/comments')
+    const foreign = await callAs(await alpha(), 'GET', `/api/kanban/${ACME_CARD}/comments`)
+    const missing = await callAs(await alpha(), 'GET', '/api/kanban/no-such-card/comments')
     expect(foreign).toEqual(missing)
     expect(foreign.status).toBe(404)
   })
 
   it('an archived foreign card is covered too', async () => {
-    expect((await callAs(alpha(), 'POST', `/api/kanban/${ACME_ARCHIVED}/unarchive`)).status).toBe(404)
-    expect((await callAs(alpha(), 'GET', `/api/kanban/${ACME_ARCHIVED}/comments`)).status).toBe(404)
+    expect((await callAs(await alpha(), 'POST', `/api/kanban/${ACME_ARCHIVED}/unarchive`)).status).toBe(404)
+    expect((await callAs(await alpha(), 'GET', `/api/kanban/${ACME_ARCHIVED}/comments`)).status).toBe(404)
     expect(row(ACME_ARCHIVED).archived_at).not.toBeNull()
   })
 })
 
 describe('a foreign card is left exactly as it was', () => {
   it('move does not change the status and does not dispatch', async () => {
-    await callAs(alpha(), 'POST', `/api/kanban/${ACME_CARD}/move`, { status: 'in_progress', sort_order: 1 })
+    await callAs(await alpha(), 'POST', `/api/kanban/${ACME_CARD}/move`, { status: 'in_progress', sort_order: 1 })
     expect(row(ACME_CARD)).toMatchObject({ status: 'planned', dispatched_at: null })
     const msgs = getDb().prepare('SELECT COUNT(*) AS n FROM agent_messages').get() as { n: number }
     expect(msgs.n).toBe(0)
   })
 
   it('archive and unarchive change nothing', async () => {
-    await callAs(alpha(), 'POST', `/api/kanban/${ACME_CARD}/archive`)
+    await callAs(await alpha(), 'POST', `/api/kanban/${ACME_CARD}/archive`)
     expect(row(ACME_CARD).archived_at).toBeNull()
-    await callAs(alpha(), 'POST', `/api/kanban/${ACME_ARCHIVED}/unarchive`)
+    await callAs(await alpha(), 'POST', `/api/kanban/${ACME_ARCHIVED}/unarchive`)
     expect(row(ACME_ARCHIVED).archived_at).not.toBeNull()
   })
 
   it('a comment is not written, the existing one is not readable', async () => {
-    await callAs(alpha(), 'POST', `/api/kanban/${ACME_CARD}/comments`, { author: 'x', content: 'intruder' })
-    expect(getKanbanComments(ACME_CARD).map((c) => c.content)).toEqual(['secret acme comment'])
-    const read = await callAs(alpha(), 'GET', `/api/kanban/${ACME_CARD}/comments`)
+    await callAs(await alpha(), 'POST', `/api/kanban/${ACME_CARD}/comments`, { author: 'x', content: 'intruder' })
+    expect((await getKanbanComments(ACME_CARD)).map((c) => c.content)).toEqual(['secret acme comment'])
+    const read = await callAs(await alpha(), 'GET', `/api/kanban/${ACME_CARD}/comments`)
     expect(JSON.stringify(read.body)).not.toContain('secret acme comment')
   })
 
   it('labels are not attached to or detached from it', async () => {
-    await callAs(alpha(), 'POST', `/api/kanban/${ACME_CARD}/labels`, { labelId: 'lbl-default' })
-    await callAs(alpha(), 'DELETE', `/api/kanban/${ACME_CARD}/labels/lbl-acme`)
-    expect(getLabelsForCard(ACME_CARD).map((l) => l.id)).toEqual(['lbl-acme'])
+    await callAs(await alpha(), 'POST', `/api/kanban/${ACME_CARD}/labels`, { labelId: 'lbl-default' })
+    await callAs(await alpha(), 'DELETE', `/api/kanban/${ACME_CARD}/labels/lbl-acme`)
+    expect((await getLabelsForCard(ACME_CARD)).map((l) => l.id)).toEqual(['lbl-acme'])
   })
 
   it('breakdown never reaches the LLM with the foreign card\'s title', async () => {
-    await callAs(alpha(), 'POST', `/api/kanban/${ACME_CARD}/breakdown`)
+    await callAs(await alpha(), 'POST', `/api/kanban/${ACME_CARD}/breakdown`)
     expect(generateBreakdown).not.toHaveBeenCalled()
   })
 
   it('a foreign card is not detached from its parent and gets no accepted subtasks', async () => {
-    await callAs(alpha(), 'PATCH', '/api/kanban/acme-child/parent', { parent_id: null })
-    expect((getKanbanCard('acme-child') as { parent_id: string | null }).parent_id).toBe(ACME_CARD)
-    await callAs(alpha(), 'POST', `/api/kanban/${ACME_CARD}/breakdown/accept`, { subtasks: [{ title: 'intruder', description: '', assignee: null, priority: 'normal' }] })
+    await callAs(await alpha(), 'PATCH', '/api/kanban/acme-child/parent', { parent_id: null })
+    expect((await getKanbanCard('acme-child') as { parent_id: string | null }).parent_id).toBe(ACME_CARD)
+    await callAs(await alpha(), 'POST', `/api/kanban/${ACME_CARD}/breakdown/accept`, { subtasks: [{ title: 'intruder', description: '', assignee: null, priority: 'normal' }] })
     const kids = getDb().prepare('SELECT COUNT(*) AS n FROM kanban_cards WHERE parent_id = ?').get(ACME_CARD) as { n: number }
     expect(kids.n).toBe(1)
-    expect(getKanbanComments(ACME_CARD).map((c) => c.content)).toEqual(['secret acme comment'])
+    expect((await getKanbanComments(ACME_CARD)).map((c) => c.content)).toEqual(['secret acme comment'])
   })
 
   it('children and subtree do not list the foreign tree', async () => {
     for (const p of ['children', 'subtree']) {
-      const r = await callAs(alpha(), 'GET', `/api/kanban/${ACME_CARD}/${p}`)
+      const r = await callAs(await alpha(), 'GET', `/api/kanban/${ACME_CARD}/${p}`)
       expect(JSON.stringify(r.body)).not.toContain('Acme child')
     }
   })
@@ -193,9 +202,9 @@ describe('move: the orderedIds column list is cut down to the caller\'s own tena
   const sortOrder = (id: string) => (getDb().prepare('SELECT sort_order FROM kanban_cards WHERE id = ?').get(id) as { sort_order: number }).sort_order
 
   it("a foreign card id in orderedIds keeps its sort_order, the own cards are renumbered", async () => {
-    createKanbanCard({ id: 'default-b', title: 'Default b', tenant_id: 'default' })
+    await createKanbanCard({ id: 'default-b', title: 'Default b', tenant_id: 'default' })
     getDb().prepare('UPDATE kanban_cards SET sort_order = 777 WHERE id = ?').run(ACME_CARD)
-    const res = await callAs(alpha(), 'POST', `/api/kanban/${DEFAULT_CARD}/move`, {
+    const res = await callAs(await alpha(), 'POST', `/api/kanban/${DEFAULT_CARD}/move`, {
       status: 'waiting', sort_order: 0, orderedIds: ['default-b', ACME_CARD, DEFAULT_CARD],
     })
     expect(res.status).toBe(200)
@@ -206,7 +215,7 @@ describe('move: the orderedIds column list is cut down to the caller\'s own tena
 
   it('an admin renumbers a list that crosses tenants, as before', async () => {
     getDb().prepare('UPDATE kanban_cards SET sort_order = 777 WHERE id = ?').run(ACME_CARD)
-    await callAs(admin(), 'POST', `/api/kanban/${DEFAULT_CARD}/move`, { status: 'waiting', sort_order: 0, orderedIds: [DEFAULT_CARD, ACME_CARD] })
+    await callAs(await admin(), 'POST', `/api/kanban/${DEFAULT_CARD}/move`, { status: 'waiting', sort_order: 0, orderedIds: [DEFAULT_CARD, ACME_CARD] })
     expect(sortOrder(ACME_CARD)).toBe(1)
   })
 })
@@ -215,18 +224,18 @@ describe('PATCH /parent and breakdown/accept: the references and the tenant of w
   const tree = (id: string) => getDb().prepare('SELECT parent_id, tenant_id FROM kanban_cards WHERE id = ?').get(id) as { parent_id: string | null; tenant_id: string }
 
   it("an own card cannot be moved under another tenant's card (404, unchanged)", async () => {
-    expect((await callAs(alpha(), 'PATCH', `/api/kanban/${DEFAULT_CARD}/parent`, { parent_id: ACME_CARD })).status).toBe(404)
+    expect((await callAs(await alpha(), 'PATCH', `/api/kanban/${DEFAULT_CARD}/parent`, { parent_id: ACME_CARD })).status).toBe(404)
     expect((await callAs(acmeUser(), 'PATCH', `/api/kanban/${ACME_CARD}/parent`, { parent_id: DEFAULT_CARD })).status).toBe(404)
     expect(tree(DEFAULT_CARD).parent_id).toBeNull()
     expect(tree(ACME_CARD).parent_id).toBeNull()
   })
 
   it('an own card moves under an own parent and detaches again (200); an admin may cross', async () => {
-    createKanbanCard({ id: 'parent-default', title: 'P', tenant_id: 'default' })
-    expect((await callAs(alpha(), 'PATCH', `/api/kanban/${DEFAULT_CARD}/parent`, { parent_id: 'parent-default' })).status).toBe(200)
+    await createKanbanCard({ id: 'parent-default', title: 'P', tenant_id: 'default' })
+    expect((await callAs(await alpha(), 'PATCH', `/api/kanban/${DEFAULT_CARD}/parent`, { parent_id: 'parent-default' })).status).toBe(200)
     expect(tree(DEFAULT_CARD).parent_id).toBe('parent-default')
-    expect((await callAs(alpha(), 'PATCH', `/api/kanban/${DEFAULT_CARD}/parent`, { parent_id: null })).status).toBe(200)
-    expect((await callAs(admin(), 'PATCH', `/api/kanban/${ACME_CARD}/parent`, { parent_id: 'parent-default' })).status).toBe(200)
+    expect((await callAs(await alpha(), 'PATCH', `/api/kanban/${DEFAULT_CARD}/parent`, { parent_id: null })).status).toBe(200)
+    expect((await callAs(await admin(), 'PATCH', `/api/kanban/${ACME_CARD}/parent`, { parent_id: 'parent-default' })).status).toBe(200)
   })
 
   it('the subtasks of an accepted breakdown carry the tenant of the card they hang under', async () => {
@@ -242,21 +251,21 @@ describe('POST /api/kanban: a parent_id in the body is held to the caller\'s ten
 
   it("a card cannot be created under another tenant's card (404, nothing created)", async () => {
     const before = count()
-    expect((await callAs(alpha(), 'POST', '/api/kanban', { title: 'sneaky', parent_id: ACME_CARD })).status).toBe(404)
+    expect((await callAs(await alpha(), 'POST', '/api/kanban', { title: 'sneaky', parent_id: ACME_CARD })).status).toBe(404)
     expect((await callAs(acmeUser(), 'POST', '/api/kanban', { title: 'sneaky', parent_id: DEFAULT_CARD })).status).toBe(404)
     expect(count()).toBe(before)
   })
 
   it('under an own card it is created in the caller\'s tenant (200)', async () => {
-    const res = await callAs(alpha(), 'POST', '/api/kanban', { title: 'child', parent_id: DEFAULT_CARD })
+    const res = await callAs(await alpha(), 'POST', '/api/kanban', { title: 'child', parent_id: DEFAULT_CARD })
     expect(res.status).toBe(200)
     const created = getDb().prepare('SELECT tenant_id, parent_id FROM kanban_cards WHERE id = ?').get((res.body as { id: string }).id)
     expect(created).toEqual({ tenant_id: 'default', parent_id: DEFAULT_CARD })
   })
 
   it('without a parent_id nothing changes, and an admin keeps the cross-tenant reach', async () => {
-    expect((await callAs(alpha(), 'POST', '/api/kanban', { title: 'plain' })).status).toBe(200)
-    expect((await callAs(admin(), 'POST', '/api/kanban', { title: 'admin child', parent_id: ACME_CARD })).status).toBe(200)
+    expect((await callAs(await alpha(), 'POST', '/api/kanban', { title: 'plain' })).status).toBe(200)
+    expect((await callAs(await admin(), 'POST', '/api/kanban', { title: 'admin child', parent_id: ACME_CARD })).status).toBe(200)
   })
 })
 
@@ -264,39 +273,39 @@ describe('POST /api/kanban: a parent_id in the body is held to the caller\'s ten
 // can carry one). The label registry lives under the same prefix, so the path-id gate must not wave `labels`
 // through for the card routes.
 describe('a card with the id "labels" is held to its tenant like any other card', () => {
-  beforeEach(() => {
-    createKanbanCard({ id: 'labels', title: 'Acme labels card', tenant_id: 'acme' })
-    addKanbanComment('labels', 'someone', 'secret labels comment')
+  beforeEach(async () => {
+    await createKanbanCard({ id: 'labels', title: 'Acme labels card', tenant_id: 'acme' })
+    await addKanbanComment('labels', 'someone', 'secret labels comment')
     // A label on the card, so that a detach through the loose registry shape (DELETE
     // /api/kanban/labels/labels/<labelId>, which is a card route) would have something to remove.
-    addLabelToCard('labels', 'lbl-acme')
+    await addLabelToCard('labels', 'lbl-acme')
   })
 
   for (const c of CASES) {
     it(`${c.name}: a default-tenant token gets 404 for the acme card "labels"`, async () => {
-      expect((await callAs(alpha(), c.method, c.path('labels'), c.body)).status).toBe(404)
+      expect((await callAs(await alpha(), c.method, c.path('labels'), c.body)).status).toBe(404)
     })
   }
 
   it('the foreign card is left as it was', async () => {
-    const read = await callAs(alpha(), 'GET', '/api/kanban/labels/comments')
+    const read = await callAs(await alpha(), 'GET', '/api/kanban/labels/comments')
     expect(JSON.stringify(read.body)).not.toContain('secret labels comment')
-    await callAs(alpha(), 'POST', '/api/kanban/labels/archive')
-    await callAs(alpha(), 'POST', '/api/kanban/labels/comments', { author: 'x', content: 'intruder' })
-    expect(getKanbanCard('labels')?.archived_at ?? null).toBeNull()
-    expect(getKanbanComments('labels').map((x) => x.content)).toEqual(['secret labels comment'])
+    await callAs(await alpha(), 'POST', '/api/kanban/labels/archive')
+    await callAs(await alpha(), 'POST', '/api/kanban/labels/comments', { author: 'x', content: 'intruder' })
+    expect((await getKanbanCard('labels'))?.archived_at ?? null).toBeNull()
+    expect((await getKanbanComments('labels')).map((x) => x.content)).toEqual(['secret labels comment'])
   })
 
   it('a label is neither detached from nor attached to the foreign card', async () => {
-    const detach = await callAs(alpha(), 'DELETE', '/api/kanban/labels/labels/lbl-acme')
+    const detach = await callAs(await alpha(), 'DELETE', '/api/kanban/labels/labels/lbl-acme')
     expect(detach.status).toBe(404)
-    const attach = await callAs(alpha(), 'POST', '/api/kanban/labels/labels', { labelId: 'lbl-default' })
+    const attach = await callAs(await alpha(), 'POST', '/api/kanban/labels/labels', { labelId: 'lbl-default' })
     expect(attach.status).toBe(404)
-    expect(getLabelsForCard('labels').map((l) => l.id)).toEqual(['lbl-acme'])
+    expect((await getLabelsForCard('labels')).map((l) => l.id)).toEqual(['lbl-acme'])
   })
 
   it('GET /api/kanban/labels is the label registry list, tenant-filtered, never the card', async () => {
-    const res = await callAs(alpha(), 'GET', '/api/kanban/labels')
+    const res = await callAs(await alpha(), 'GET', '/api/kanban/labels')
     expect(res.status).toBe(200)
     expect(JSON.stringify(res.body)).not.toContain('Acme labels card')
     expect(JSON.stringify(res.body)).not.toContain('acme-label')
@@ -304,15 +313,15 @@ describe('a card with the id "labels" is held to its tenant like any other card'
 
   it('the owning tenant and an admin reach it', async () => {
     expect((await callAs(acmeUser(), 'GET', '/api/kanban/labels/comments')).status).toBe(200)
-    expect((await callAs(admin(), 'GET', '/api/kanban/labels/comments')).status).toBe(200)
+    expect((await callAs(await admin(), 'GET', '/api/kanban/labels/comments')).status).toBe(200)
   })
 
   it('the label registry still answers PUT/DELETE /api/kanban/labels/:labelId, also for a label id that is a card-route word', async () => {
     // The caller's tenant (default) has no card "labels": without the registry exemption the gate would read
     // these as card routes of a card "labels" and answer 404.
     const defaultUser = session('agent', 'default')
-    createLabel({ id: 'comments', name: 'comments-label', color: '#3b82f6', tenant_id: 'default' })
-    createLabel({ id: 'archive', name: 'archive-label', color: '#3b82f6', tenant_id: 'default' })
+    await createLabel({ id: 'comments', name: 'comments-label', color: '#3b82f6', tenant_id: 'default' })
+    await createLabel({ id: 'archive', name: 'archive-label', color: '#3b82f6', tenant_id: 'default' })
     expect((await callAs(defaultUser, 'PUT', '/api/kanban/labels/comments', { name: 'renamed' })).status).toBe(200)
     expect((await callAs(defaultUser, 'DELETE', '/api/kanban/labels/archive')).status).toBe(200)
     expect((await callAs(defaultUser, 'DELETE', '/api/kanban/labels/comments')).status).toBe(200)
@@ -321,44 +330,44 @@ describe('a card with the id "labels" is held to its tenant like any other card'
 
 describe('POST /api/kanban never takes the card id from the body', () => {
   it('an id in the body is ignored: the card gets a generated id, which is the one returned', async () => {
-    const res = await callAs(alpha(), 'POST', '/api/kanban', { id: 'labels', title: 'picked id' })
+    const res = await callAs(await alpha(), 'POST', '/api/kanban', { id: 'labels', title: 'picked id' })
     expect(res.status).toBe(200)
     const id = (res.body as { id: string }).id
     expect(id).not.toBe('labels')
     expect(id).toMatch(/^[0-9a-f]{8}$/)
-    expect(getKanbanCard('labels')).toBeUndefined()
+    expect(await getKanbanCard('labels')).toBeUndefined()
     // the id the response names is the stored one: the card is there under it, and readable
-    expect(getKanbanCard(id)?.title).toBe('picked id')
-    const read = await callAs(alpha(), 'GET', `/api/kanban/${id}`)
+    expect((await getKanbanCard(id))?.title).toBe('picked id')
+    const read = await callAs(await alpha(), 'GET', `/api/kanban/${id}`)
     expect(read.status).toBe(200)
     expect((read.body as { id: string; title: string })).toMatchObject({ id, title: 'picked id' })
   })
 
   it('an id that exists in another tenant answers like any other create (no probing, nothing overwritten)', async () => {
-    const res = await callAs(alpha(), 'POST', '/api/kanban', { id: ACME_CARD, title: 'probe' })
+    const res = await callAs(await alpha(), 'POST', '/api/kanban', { id: ACME_CARD, title: 'probe' })
     expect(res.status).toBe(200)
     expect((res.body as { id: string }).id).not.toBe(ACME_CARD)
-    expect(getKanbanCard(ACME_CARD)?.title).toBe('Acme card')
+    expect((await getKanbanCard(ACME_CARD))?.title).toBe('Acme card')
   })
 })
 
 describe('an own card keeps working', () => {
   it('move, comments, labels, events, children and subtree answer 200 for the owning tenant', async () => {
-    expect((await callAs(alpha(), 'POST', `/api/kanban/${DEFAULT_CARD}/move`, { status: 'waiting', sort_order: 1 })).status).toBe(200)
+    expect((await callAs(await alpha(), 'POST', `/api/kanban/${DEFAULT_CARD}/move`, { status: 'waiting', sort_order: 1 })).status).toBe(200)
     expect(row(DEFAULT_CARD).status).toBe('waiting')
-    expect((await callAs(alpha(), 'POST', `/api/kanban/${DEFAULT_CARD}/comments`, { author: 'a', content: 'mine' })).status).toBe(200)
-    expect((await callAs(alpha(), 'GET', `/api/kanban/${DEFAULT_CARD}/comments`)).status).toBe(200)
-    expect((await callAs(alpha(), 'POST', `/api/kanban/${DEFAULT_CARD}/labels`, { labelId: 'lbl-default' })).status).toBe(200)
-    expect((await callAs(alpha(), 'GET', `/api/kanban/${DEFAULT_CARD}/labels`)).status).toBe(200)
-    expect((await callAs(alpha(), 'DELETE', `/api/kanban/${DEFAULT_CARD}/labels/lbl-default`)).status).toBe(200)
-    expect((await callAs(alpha(), 'GET', `/api/kanban/${DEFAULT_CARD}/events`)).status).toBe(200)
+    expect((await callAs(await alpha(), 'POST', `/api/kanban/${DEFAULT_CARD}/comments`, { author: 'a', content: 'mine' })).status).toBe(200)
+    expect((await callAs(await alpha(), 'GET', `/api/kanban/${DEFAULT_CARD}/comments`)).status).toBe(200)
+    expect((await callAs(await alpha(), 'POST', `/api/kanban/${DEFAULT_CARD}/labels`, { labelId: 'lbl-default' })).status).toBe(200)
+    expect((await callAs(await alpha(), 'GET', `/api/kanban/${DEFAULT_CARD}/labels`)).status).toBe(200)
+    expect((await callAs(await alpha(), 'DELETE', `/api/kanban/${DEFAULT_CARD}/labels/lbl-default`)).status).toBe(200)
+    expect((await callAs(await alpha(), 'GET', `/api/kanban/${DEFAULT_CARD}/events`)).status).toBe(200)
     // Tokens per card is admin only (the rows are keyed by agent, not tenant): an own card is 403 for a fleet
     // token, 200 for an admin.
-    expect((await callAs(alpha(), 'GET', `/api/kanban/${DEFAULT_CARD}/tokens`)).status).toBe(403)
-    expect((await callAs(admin(), 'GET', `/api/kanban/${DEFAULT_CARD}/tokens`)).status).toBe(200)
-    expect((await callAs(admin(), 'GET', `/api/kanban/${ACME_CARD}/tokens`)).status).toBe(200)
-    expect((await callAs(alpha(), 'GET', `/api/kanban/${DEFAULT_CARD}/children`)).status).toBe(200)
-    expect((await callAs(alpha(), 'GET', `/api/kanban/${DEFAULT_CARD}/subtree`)).status).toBe(200)
+    expect((await callAs(await alpha(), 'GET', `/api/kanban/${DEFAULT_CARD}/tokens`)).status).toBe(403)
+    expect((await callAs(await admin(), 'GET', `/api/kanban/${DEFAULT_CARD}/tokens`)).status).toBe(200)
+    expect((await callAs(await admin(), 'GET', `/api/kanban/${ACME_CARD}/tokens`)).status).toBe(200)
+    expect((await callAs(await alpha(), 'GET', `/api/kanban/${DEFAULT_CARD}/children`)).status).toBe(200)
+    expect((await callAs(await alpha(), 'GET', `/api/kanban/${DEFAULT_CARD}/subtree`)).status).toBe(200)
   })
 
   it('a tenant user reaches the archived card of its own tenant (unarchive 200)', async () => {
@@ -373,7 +382,7 @@ describe('an own card keeps working', () => {
 
   it('breakdown of an own card reaches the generator', async () => {
     expect((await callAs(acmeUser(), 'POST', `/api/kanban/${ACME_CARD}/breakdown`)).status).toBe(409) // it already has a child
-    createKanbanCard({ id: 'lonely', title: 'Lonely', tenant_id: 'acme' })
+    await createKanbanCard({ id: 'lonely', title: 'Lonely', tenant_id: 'acme' })
     expect((await callAs(acmeUser(), 'POST', '/api/kanban/lonely/breakdown')).status).toBe(200)
     expect(generateBreakdown).toHaveBeenCalledTimes(1)
   })
@@ -381,13 +390,13 @@ describe('an own card keeps working', () => {
 
 describe('an admin keeps the cross-tenant reach', () => {
   it('reads and writes a card of any tenant', async () => {
-    expect((await callAs(admin(), 'GET', `/api/kanban/${ACME_CARD}/comments`)).status).toBe(200)
-    expect((await callAs(admin(), 'POST', `/api/kanban/${ACME_CARD}/comments`, { author: 'root', content: 'from admin' })).status).toBe(200)
-    expect((await callAs(admin(), 'POST', `/api/kanban/${ACME_CARD}/move`, { status: 'waiting', sort_order: 1 })).status).toBe(200)
-    expect(getKanbanCard(ACME_CARD)?.status).toBe('waiting')
-    expect((await callAs(admin(), 'POST', `/api/kanban/${ACME_CARD}/archive`)).status).toBe(200)
-    expect((await callAs(admin(), 'POST', `/api/kanban/${ACME_CARD}/unarchive`)).status).toBe(200)
-    expect((await callAs(admin(), 'GET', `/api/kanban/${ACME_CARD}/subtree`)).status).toBe(200)
+    expect((await callAs(await admin(), 'GET', `/api/kanban/${ACME_CARD}/comments`)).status).toBe(200)
+    expect((await callAs(await admin(), 'POST', `/api/kanban/${ACME_CARD}/comments`, { author: 'root', content: 'from admin' })).status).toBe(200)
+    expect((await callAs(await admin(), 'POST', `/api/kanban/${ACME_CARD}/move`, { status: 'waiting', sort_order: 1 })).status).toBe(200)
+    expect((await getKanbanCard(ACME_CARD))?.status).toBe('waiting')
+    expect((await callAs(await admin(), 'POST', `/api/kanban/${ACME_CARD}/archive`)).status).toBe(200)
+    expect((await callAs(await admin(), 'POST', `/api/kanban/${ACME_CARD}/unarchive`)).status).toBe(200)
+    expect((await callAs(await admin(), 'GET', `/api/kanban/${ACME_CARD}/subtree`)).status).toBe(200)
   })
 })
 

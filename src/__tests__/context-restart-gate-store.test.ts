@@ -18,7 +18,7 @@ const { TMP_ROOT, STORE_DIR } = vi.hoisted(() => {
 
 vi.mock('../config.js', () => ({ PROJECT_ROOT: TMP_ROOT, STORE_DIR }))
 
-import { initDatabase, getDb } from '../db.js'
+import { initDatabase, getDb, reloadAgentSettingsCache } from '../db.js'
 import {
   readGateConfig,
   writeGateConfig,
@@ -40,6 +40,7 @@ beforeAll(() => {
 afterEach(() => {
   getDb().exec("DELETE FROM agent_settings WHERE setting_key = 'context_restart_gate'")
   getDb().exec("DELETE FROM agent_state WHERE state_key = 'gate_run_state'")
+  reloadAgentSettingsCache() // the raw DELETE above bypasses the write-through cache (agent-settings-cache.ts)
 })
 
 describe('readGateConfig / writeGateConfig', () => {
@@ -47,22 +48,22 @@ describe('readGateConfig / writeGateConfig', () => {
     expect(readGateConfig('agent-a')).toEqual(DEFAULT_GATE_CONFIG)
   })
 
-  it('returns defaults for an agent with no entry', () => {
-    writeGateConfig('other', { enabled: true })
+  it('returns defaults for an agent with no entry', async () => {
+    await writeGateConfig('other', { enabled: true })
     expect(readGateConfig('agent-a')).toEqual(DEFAULT_GATE_CONFIG)
   })
 
-  it('normalizes and persists a written config', () => {
-    const saved = writeGateConfig('agent-a', { enabled: true, thresholdTokens: 123456 })
+  it('normalizes and persists a written config', async () => {
+    const saved = await writeGateConfig('agent-a', { enabled: true, thresholdTokens: 123456 })
     expect(saved.enabled).toBe(true)
     expect(saved.thresholdTokens).toBe(123456)
     expect(readGateConfig('agent-a')).toEqual(saved)
   })
 
-  it('overwrites an existing entry without affecting others', () => {
-    writeGateConfig('agent-a', { enabled: true })
-    writeGateConfig('agent-d', { enabled: false })
-    writeGateConfig('agent-a', { enabled: false })
+  it('overwrites an existing entry without affecting others', async () => {
+    await writeGateConfig('agent-a', { enabled: true })
+    await writeGateConfig('agent-d', { enabled: false })
+    await writeGateConfig('agent-a', { enabled: false })
     expect(readGateConfig('agent-a').enabled).toBe(false)
     expect(readGateConfig('agent-d').enabled).toBe(false)
   })
@@ -71,6 +72,7 @@ describe('readGateConfig / writeGateConfig', () => {
     getDb().prepare(
       `INSERT INTO agent_settings (agent_id, setting_key, setting_value, tenant_id) VALUES (?, 'context_restart_gate', '{not json', 'default')`,
     ).run('agent-a')
+    reloadAgentSettingsCache() // the raw INSERT above bypasses the write-through cache
     expect(readGateConfig('agent-a')).toEqual(DEFAULT_GATE_CONFIG)
   })
 })
@@ -78,47 +80,47 @@ describe('readGateConfig / writeGateConfig', () => {
 describe('readGateRunState / writeGateRunState', () => {
   const EMPTY_STATE: GateRunState = { firstBlockedAt: null, lastAlertAt: null, lastClearAt: null }
 
-  it('returns empty state when no row exists', () => {
-    expect(readGateRunState('agent-a')).toEqual(EMPTY_STATE)
+  it('returns empty state when no row exists', async () => {
+    expect(await readGateRunState('agent-a')).toEqual(EMPTY_STATE)
   })
 
-  it('returns empty state for an agent with no entry', () => {
-    writeGateRunState('other', { firstBlockedAt: 1000, lastAlertAt: null, lastClearAt: null })
-    expect(readGateRunState('agent-a')).toEqual(EMPTY_STATE)
+  it('returns empty state for an agent with no entry', async () => {
+    await writeGateRunState('other', { firstBlockedAt: 1000, lastAlertAt: null, lastClearAt: null })
+    expect(await readGateRunState('agent-a')).toEqual(EMPTY_STATE)
   })
 
-  it('persists and reads back a written state', () => {
+  it('persists and reads back a written state', async () => {
     const state: GateRunState = { firstBlockedAt: 1000, lastAlertAt: 2000, lastClearAt: 3000 }
-    writeGateRunState('agent-a', state)
-    expect(readGateRunState('agent-a')).toEqual(state)
+    await writeGateRunState('agent-a', state)
+    expect(await readGateRunState('agent-a')).toEqual(state)
   })
 
-  it('normalizes non-positive / non-finite fields to null on read', () => {
+  it('normalizes non-positive / non-finite fields to null on read', async () => {
     getDb().prepare(
       `INSERT INTO agent_state (agent_id, state_key, state_value, tenant_id) VALUES (?, 'gate_run_state', ?, 'default')`,
     ).run('agent-a', JSON.stringify({ firstBlockedAt: -5, lastAlertAt: Infinity, lastClearAt: 'nope' }))
-    expect(readGateRunState('agent-a')).toEqual(EMPTY_STATE)
+    expect(await readGateRunState('agent-a')).toEqual(EMPTY_STATE)
   })
 
-  it('floors fractional timestamps on read', () => {
+  it('floors fractional timestamps on read', async () => {
     getDb().prepare(
       `INSERT INTO agent_state (agent_id, state_key, state_value, tenant_id) VALUES (?, 'gate_run_state', ?, 'default')`,
     ).run('agent-a', JSON.stringify({ firstBlockedAt: 1000.7, lastAlertAt: null, lastClearAt: null }))
-    expect(readGateRunState('agent-a').firstBlockedAt).toBe(1000)
+    expect((await readGateRunState('agent-a')).firstBlockedAt).toBe(1000)
   })
 
-  it('survives a row whose state_value is not valid JSON', () => {
+  it('survives a row whose state_value is not valid JSON', async () => {
     getDb().prepare(
       `INSERT INTO agent_state (agent_id, state_key, state_value, tenant_id) VALUES (?, 'gate_run_state', 'INVALID', 'default')`,
     ).run('agent-a')
-    expect(readGateRunState('agent-a')).toEqual(EMPTY_STATE)
+    expect(await readGateRunState('agent-a')).toEqual(EMPTY_STATE)
   })
 
-  it('overwrites an existing entry without affecting others', () => {
-    writeGateRunState('agent-a', { firstBlockedAt: 1, lastAlertAt: null, lastClearAt: null })
-    writeGateRunState('agent-d', { firstBlockedAt: 2, lastAlertAt: null, lastClearAt: null })
-    writeGateRunState('agent-a', EMPTY_STATE)
-    expect(readGateRunState('agent-a')).toEqual(EMPTY_STATE)
-    expect(readGateRunState('agent-d').firstBlockedAt).toBe(2)
+  it('overwrites an existing entry without affecting others', async () => {
+    await writeGateRunState('agent-a', { firstBlockedAt: 1, lastAlertAt: null, lastClearAt: null })
+    await writeGateRunState('agent-d', { firstBlockedAt: 2, lastAlertAt: null, lastClearAt: null })
+    await writeGateRunState('agent-a', EMPTY_STATE)
+    expect(await readGateRunState('agent-a')).toEqual(EMPTY_STATE)
+    expect((await readGateRunState('agent-d')).firstBlockedAt).toBe(2)
   })
 })

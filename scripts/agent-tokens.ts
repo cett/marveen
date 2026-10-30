@@ -47,7 +47,7 @@ if (cmd === 'issue') {
       continue
     }
     try {
-      const r = issueAgentToken(agent, { rotate })
+      const r = await issueAgentToken(agent, { rotate })
       process.stdout.write(`${r.subject}\t${r.status}\t${r.role}\t${r.path}\n`)
     } catch (err) {
       failed++
@@ -56,13 +56,13 @@ if (cmd === 'issue') {
   }
   process.exit(failed > 0 ? 1 : 0)
 } else if (cmd === 'issue-operator') {
-  const r = issueOperatorToken({ rotate: flags.has('--rotate') })
+  const r = await issueOperatorToken({ rotate: flags.has('--rotate') })
   process.stdout.write(`${r.subject}\t${r.status}\t${r.role}\t${r.path}\n`)
 } else if (cmd === 'rotate-shared') {
   // Always mints a new shared token (no `kept`), writes store/.dashboard-token and revokes the old row
   // with its hash. Refuses, changing nothing, when DASHBOARD_TOKEN is set (it would override the file).
   try {
-    const r = rotateSharedToken()
+    const r = await rotateSharedToken()
     process.stdout.write(`shared\t${r.status}\tadmin\t${r.path}\n`)
     process.stderr.write(
       'The old shared token is revoked. Restart the dashboard so the in-memory copy is replaced, ' +
@@ -76,18 +76,18 @@ if (cmd === 'issue') {
 } else if (cmd === 'check') {
   // Read-only: one line per expected token file, exit 1 when any is not `ok`.
   const targets = names.length > 0 ? names : [MAIN_AGENT_ID, ...listAgentNames().filter(n => n !== MAIN_AGENT_ID)]
-  const { rows, ok } = checkAgentTokens(targets)
-  for (const r of rows) process.stdout.write(`${r.subject}\t${r.status}\t${r.role}\t${r.path}\n`)
+  const { rows, ok } = await checkAgentTokens(targets)
+  for (const r of rows) process.stdout.write(`${r.subject}\t${r.status}\t${r.role}\t${r.path}${r.detail ? `\t${r.detail}` : ''}\n`)
   process.exit(ok ? 0 : 1)
 } else if (cmd === 'archive-shared-age' && names.length === 1) {
   // Used by verify-restore.sh on its extracted copy of an archive's database: predates | current | unknown.
-  process.stdout.write(`${archiveSharedTokenAge(names[0]!)}\n`)
+  process.stdout.write(`${await archiveSharedTokenAge(names[0]!)}\n`)
 } else if (cmd === 'list') {
-  for (const t of listApiTokenRows().filter(r => r.revoked_at === null)) {
+  for (const t of (await listApiTokenRows()).filter(r => r.revoked_at === null)) {
     process.stdout.write(`${t.id}\t${t.name}\t${t.role}\t${t.agent_id ?? '-'}\t${t.tenant_id}\t${new Date(t.created_at * 1000).toISOString()}\n`)
   }
 } else if (cmd === 'revoke' && names.length === 1) {
-  process.stdout.write(`revoked ${revokeApiTokensForAgent(names[0]!, Math.floor(Date.now() / 1000))} token(s) of ${names[0]}\n`)
+  process.stdout.write(`revoked ${await revokeApiTokensForAgent(names[0]!, Math.floor(Date.now() / 1000))} token(s) of ${names[0]}\n`)
 } else {
   usage()
 }

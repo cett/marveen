@@ -34,6 +34,18 @@ import { PROJECT_ROOT, MAIN_AGENT_ID, SKILL_SQL_REGEN, TENANT_SKILL_FILES } from
 import { listAllSkills, getSkill, listSkillAccess, getEnabledAgentsForTenant, getTenantsForAgent, listSkillFiles, seedSkillFileIfAbsent, type SkillRow, type SkillFileRow } from '../db.js'
 import { MAX_SKILL_FILE_BYTES, MAX_SKILL_FILES_PER_SKILL, normalizeSkillRelPath, sanitizeSkillFileMode } from '../skill-files.js'
 import { addGeneratedHeader, stripGeneratedHeader, readGeneratedHeader } from '../skill-header.js'
+import { createKeyedSerializer } from './keyed-serializer.js'
+
+// Every function that writes or removes skill files runs one at a time. Each of them reads the skill rows (and the
+// companion files) first and writes files from what it read, across awaits: with an async db a bulk regen that read
+// its rows before a dashboard edit could write the older content after the single-skill regen of that edit, and the
+// file would stay stale. In the queue the later call always reads after the earlier one finished, so the last writer
+// holds the newest rows. In-process only; none of these calls another one of them (the agent-change entry point
+// below calls regenTenantSkillFiles one tenant after the other, outside the queue).
+const skillFileWrites = createKeyedSerializer()
+function serialized<A extends unknown[], R>(fn: (...args: A) => Promise<R>): (...args: A) => Promise<R> {
+  return (...args) => skillFileWrites.run('skill-files', () => fn(...args))
+}
 
 export interface RegenResult {
   enabled: boolean
@@ -96,7 +108,7 @@ export function resolveSkillPath(id: string): string | null {
  * @param dryRun       If true, log what would be written but don't touch disk.
  * @param forceEnabled Bypass the SKILL_SQL_REGEN kill-switch (CLI use only).
  */
-export function regenSkillFilesFromSQL(dryRun = false, forceEnabled = false): RegenResult {
+async function regenSkillFilesFromSQLLocked(dryRun = false, forceEnabled = false): Promise<RegenResult> {
   // Kill-switch: must be explicitly enabled for live writes. Dry-run bypasses
   // the check (read-only; safe to run for inspection regardless of the flag).
   if (!dryRun && !SKILL_SQL_REGEN && !forceEnabled) {
@@ -109,7 +121,7 @@ export function regenSkillFilesFromSQL(dryRun = false, forceEnabled = false): Re
 
   let allRows: SkillRow[]
   try {
-    allRows = listAllSkills()
+    allRows = await listAllSkills()
   } catch (err) {
     logger.error({ err }, 'skill-regen: failed to query skills table')
     return { enabled: true, written: 0, skipped: 0, errors: 1 }
@@ -130,7 +142,7 @@ export function regenSkillFilesFromSQL(dryRun = false, forceEnabled = false): Re
     else if (outcome === 'skipped') skipped++
     else errors++
     if (outcome !== 'error') {
-      const c = writeCompanionFiles(dirOfSkillMd(targetPath), safeListSkillFiles(row.id), dryRun)
+      const c = writeCompanionFiles(dirOfSkillMd(targetPath), await safeListSkillFiles(row.id), dryRun)
       written += c.written
       skipped += c.skipped
       errors += c.errors
@@ -139,7 +151,7 @@ export function regenSkillFilesFromSQL(dryRun = false, forceEnabled = false): Re
 
   for (const row of tenantRows) {
     try {
-      const t = reconcileTenantSkill(row, dryRun)
+      const t = await reconcileTenantSkill(row, dryRun)
       written += t.written
       skipped += t.skipped
       errors += t.errors
@@ -215,15 +227,15 @@ export interface SingleRegenResult {
  *
  * @param forceEnabled Bypass the SKILL_SQL_REGEN kill-switch (CLI/test use only).
  */
-export function regenSingleSkillFile(id: string, forceEnabled = false): SingleRegenResult {
+async function regenSingleSkillFileLocked(id: string, forceEnabled = false): Promise<SingleRegenResult> {
   if (!SKILL_SQL_REGEN && !forceEnabled) {
     return { written: false, skipped: true, reason: 'disabled' }
   }
 
-  const row = getSkill(id)
+  const row = await getSkill(id)
   if (!row) return { written: false, skipped: false, reason: 'not_found' }
   if (row.tenant_id !== 'fleet') {
-    const t = reconcileTenantSkill(row, false)
+    const t = await reconcileTenantSkill(row, false)
     if (t.errors > 0) return { written: false, skipped: false, reason: 'write_error' }
     if (t.written > 0) return { written: true, skipped: false, reason: null }
     if (t.removed > 0) return { written: false, skipped: false, reason: null }
@@ -237,7 +249,7 @@ export function regenSingleSkillFile(id: string, forceEnabled = false): SingleRe
 
   const outcome = writeSkillFileToDisk(id, targetPath, row.content, false)
   if (outcome === 'error') return { written: false, skipped: false, reason: 'write_error' }
-  const c = writeCompanionFiles(dirOfSkillMd(targetPath), safeListSkillFiles(id), false)
+  const c = writeCompanionFiles(dirOfSkillMd(targetPath), await safeListSkillFiles(id), false)
   if (c.errors > 0) return { written: false, skipped: false, reason: 'write_error' }
   if (outcome === 'written' || c.written > 0) return { written: true, skipped: false, reason: null }
   return { written: false, skipped: true, reason: 'content_equal' }
@@ -263,7 +275,7 @@ export interface RemoveGeneratedResult {
  * @param tenantId The deleted row's tenant_id; non-fleet skills are removed from every agent that holds a generated copy.
  * @param files    The deleted skill's companion file rows (read BEFORE the DB delete); the ones still byte-equal on disk are removed too.
  */
-export function removeGeneratedSkillFile(id: string, content: string, tenantId: string, files: SkillFileRow[] = []): RemoveGeneratedResult {
+function removeGeneratedSkillFileLocked(id: string, content: string, tenantId: string, files: SkillFileRow[] = []): RemoveGeneratedResult {
   if (!SKILL_SQL_REGEN) return { removed: false, reason: 'disabled' }
   if (tenantId !== 'fleet') return removeTenantSkillFiles(id, content, files)
   const targetPath = resolveSkillPath(id)
@@ -294,8 +306,8 @@ function dirOfSkillMd(skillMdPath: string): string {
   return skillMdPath.replace(/\/SKILL\.md$/, '')
 }
 
-function safeListSkillFiles(id: string): SkillFileRow[] {
-  try { return listSkillFiles(id) } catch (err) {
+async function safeListSkillFiles(id: string): Promise<SkillFileRow[]> {
+  try { return await listSkillFiles(id) } catch (err) {
     logger.error({ err, id }, 'skill-regen: failed to read skill companion files')
     return []
   }
@@ -383,7 +395,7 @@ function removeCompanionFiles(skillDir: string, files: SkillFileRow[]): void {
  * on-disk locations (the fleet dir, or every tenant copy). Only byte-equal
  * files go; returns how many were removed.
  */
-export function removeGeneratedCompanionFile(id: string, relPath: string, content: Buffer, tenantId: string): number {
+function removeGeneratedCompanionFileLocked(id: string, relPath: string, content: Buffer, tenantId: string): number {
   if (!SKILL_SQL_REGEN) return 0
   let removed = 0
   if (tenantId === 'fleet') {
@@ -432,7 +444,7 @@ export interface CompanionImportResult { seeded: number; skipped: number; errors
  * in `skillDir`. Insert-if-absent: a file the DB already has is never
  * overwritten. Symlinks, tool caches and over-limit files are not imported.
  */
-export function importCompanionFilesOfDir(skillId: string, skillDir: string, dryRun = false): CompanionImportResult {
+export async function importCompanionFilesOfDir(skillId: string, skillDir: string, dryRun = false): Promise<CompanionImportResult> {
   const out: CompanionImportResult = { seeded: 0, skipped: 0, errors: 0 }
   const found = walkCompanionFiles(skillDir)
   if (found.length > MAX_SKILL_FILES_PER_SKILL) {
@@ -451,7 +463,7 @@ export function importCompanionFilesOfDir(skillId: string, skillDir: string, dry
         continue
       }
       if (dryRun) { out.seeded++; continue }
-      if (seedSkillFileIfAbsent(skillId, rel, readFileSync(f.abs), st.mode)) out.seeded++
+      if (await seedSkillFileIfAbsent(skillId, rel, readFileSync(f.abs), st.mode)) out.seeded++
       else out.skipped++
     } catch (err) {
       logger.error({ err, id: skillId, rel }, 'skill-regen: companion file import failed')
@@ -467,17 +479,17 @@ export function importCompanionFilesOfDir(skillId: string, skillDir: string, dry
  * importCompanionFilesOfDir) and only matters until the DB holds them all. Runs
  * BEFORE the regen, which would otherwise never know about these files.
  */
-export function importSkillCompanionFilesFromDisk(dryRun = false): CompanionImportResult {
+export async function importSkillCompanionFilesFromDisk(dryRun = false): Promise<CompanionImportResult> {
   const total: CompanionImportResult = { seeded: 0, skipped: 0, errors: 0 }
   let rows: SkillRow[]
-  try { rows = listAllSkills().filter(r => r.tenant_id === 'fleet') } catch (err) {
+  try { rows = (await listAllSkills()).filter(r => r.tenant_id === 'fleet') } catch (err) {
     logger.error({ err }, 'skill-regen: failed to query skills table for companion import')
     return { ...total, errors: 1 }
   }
   for (const row of rows) {
     const skillMd = resolveSkillPath(row.id)
     if (!skillMd || !existsSync(skillMd)) continue
-    const r = importCompanionFilesOfDir(row.id, dirOfSkillMd(skillMd), dryRun)
+    const r = await importCompanionFilesOfDir(row.id, dirOfSkillMd(skillMd), dryRun)
     total.seeded += r.seeded
     total.skipped += r.skipped
     total.errors += r.errors
@@ -535,24 +547,27 @@ function agentIsRunning(agentId: string): boolean {
 }
 
 /** Agents that MAY hold a generated copy of a tenant skill (mode, tenant availability, directory on disk), running or not. */
-function tenantSkillQualifiers(row: SkillRow): string[] {
+async function tenantSkillQualifiers(row: SkillRow): Promise<string[]> {
   const mode = TENANT_SKILL_FILES   // read once: a getter in tests, a constant in production
   if (mode === 'off') return []
   const tenants = new Set<string>([row.tenant_id])
-  for (const g of listSkillAccess(row.id)) tenants.add(g.tenant_id)
+  for (const g of await listSkillAccess(row.id)) tenants.add(g.tenant_id)
   const agents = new Set<string>()
-  for (const t of tenants) for (const a of getEnabledAgentsForTenant(t)) agents.add(a)
+  for (const t of tenants) for (const a of await getEnabledAgentsForTenant(t)) agents.add(a)
   // The main agent's skills dir is the project-wide one, not a tenant's own.
-  return [...agents].filter(a =>
-    a !== MAIN_AGENT_ID && SAFE_SEGMENT.test(a) && isDir(join(AGENTS_BASE_DIR, a)) &&
+  const qualifiers: string[] = []
+  for (const a of agents) {
+    if (a === MAIN_AGENT_ID || !SAFE_SEGMENT.test(a) || !isDir(join(AGENTS_BASE_DIR, a))) continue
     // An agent shared by several tenants would expose this tenant's skill (and its companion
     // scripts) to requests of the other tenants: shared agents are DB-only, always.
-    getTenantsForAgent(a).length === 1)
+    if ((await getTenantsForAgent(a)).length === 1) qualifiers.push(a)
+  }
+  return qualifiers
 }
 
 /** Agents that hold a generated copy right now: the qualifiers that are running. */
-function tenantSkillRecipients(row: SkillRow): string[] {
-  return tenantSkillQualifiers(row).filter(agentIsRunning)
+async function tenantSkillRecipients(row: SkillRow): Promise<string[]> {
+  return (await tenantSkillQualifiers(row)).filter(agentIsRunning)
 }
 
 function readTextOrNull(p: string): string | null {
@@ -596,11 +611,11 @@ function writeTenantCopy(row: SkillRow, agentId: string, files: SkillFileRow[], 
   }
 }
 
-function reconcileTenantSkill(row: SkillRow, dryRun: boolean): TenantReconcile {
+async function reconcileTenantSkill(row: SkillRow, dryRun: boolean): Promise<TenantReconcile> {
   const out: TenantReconcile = { written: 0, skipped: 0, errors: 0, removed: 0, recipients: 0 }
-  const expected = new Set(tenantSkillRecipients(row))
+  const expected = new Set(await tenantSkillRecipients(row))
   out.recipients = expected.size
-  const files = safeListSkillFiles(row.id)
+  const files = await safeListSkillFiles(row.id)
 
   for (const agentId of expected) writeTenantCopy(row, agentId, files, dryRun, out)
 
@@ -684,13 +699,13 @@ function removeTenantSkillFiles(id: string, content: string, files: SkillFileRow
  * (before its session launches, so the loader sees them). Same rules as the bulk regen; the
  * agent does not have to be running yet.
  */
-export function generateTenantSkillFilesForAgent(agentId: string, forceEnabled = false): { written: number; skipped: number; errors: number } {
+async function generateTenantSkillFilesForAgentLocked(agentId: string, forceEnabled = false): Promise<{ written: number; skipped: number; errors: number }> {
   const total = { written: 0, skipped: 0, errors: 0 }
   if (!SKILL_SQL_REGEN && !forceEnabled) return total
-  for (const row of listAllSkills()) {
-    if (row.tenant_id === 'fleet' || !tenantSkillQualifiers(row).includes(agentId)) continue
+  for (const row of await listAllSkills()) {
+    if (row.tenant_id === 'fleet' || !(await tenantSkillQualifiers(row)).includes(agentId)) continue
     const out: TenantReconcile = { written: 0, skipped: 0, errors: 0, removed: 0, recipients: 0 }
-    writeTenantCopy(row, agentId, safeListSkillFiles(row.id), false, out)
+    writeTenantCopy(row, agentId, await safeListSkillFiles(row.id), false, out)
     total.written += out.written; total.skipped += out.skipped; total.errors += out.errors
   }
   return total
@@ -701,21 +716,21 @@ export function generateTenantSkillFilesForAgent(agentId: string, forceEnabled =
  * (SKILL.md and companion files). A hand-edited SKILL.md or companion file is kept (it holds
  * work the DB does not have); a generated copy whose skill row is gone is removed.
  */
-export function removeGeneratedTenantSkillFilesForAgent(agentId: string, forceEnabled = false): { removed: number; kept: number; errors: number } {
+async function removeGeneratedTenantSkillFilesForAgentLocked(agentId: string, forceEnabled = false): Promise<{ removed: number; kept: number; errors: number }> {
   const total = { removed: 0, kept: 0, errors: 0 }
   if (!SKILL_SQL_REGEN && !forceEnabled) return total
   if (!SAFE_SEGMENT.test(agentId)) return total
   const skillsDir = join(AGENTS_BASE_DIR, agentId, '.claude', 'skills')
   let entries: string[] = []
   try { entries = readdirSync(skillsDir) } catch { return total }
-  const rows = new Map(listAllSkills().map(r => [r.id, r]))
+  const rows = new Map((await listAllSkills()).map(r => [r.id, r]))
   for (const entry of entries) {
     const path = join(skillsDir, entry, 'SKILL.md')
     const text = readTextOrNull(path)
     const hdr = text === null ? null : readGeneratedHeader(text)
     if (text === null || !hdr || !hdr.tenant || !hdr.id) continue   // not a generated tenant copy
     const row = rows.get(hdr.id)
-    if (row) removeCompanionFiles(dirOfSkillMd(path), safeListSkillFiles(row.id))
+    if (row) removeCompanionFiles(dirOfSkillMd(path), await safeListSkillFiles(row.id))
     if (row && stripGeneratedHeader(text) !== row.content) {
       logger.warn({ id: hdr.id, agentId, path }, 'skill-regen: tenant skill copy was edited by hand, keeping it at agent stop')
       total.kept++
@@ -732,13 +747,13 @@ export function removeGeneratedTenantSkillFilesForAgent(agentId: string, forceEn
  * can affect (skills owned by, or granted to, the tenant). Called when an agent
  * is enabled/disabled for a tenant.
  */
-export function regenTenantSkillFiles(tenantId: string, forceEnabled = false): { written: number; removed: number; errors: number } {
+async function regenTenantSkillFilesLocked(tenantId: string, forceEnabled = false): Promise<{ written: number; removed: number; errors: number }> {
   const total = { written: 0, removed: 0, errors: 0 }
   if (!SKILL_SQL_REGEN && !forceEnabled) return total
-  for (const row of listAllSkills()) {
+  for (const row of await listAllSkills()) {
     if (row.tenant_id === 'fleet') continue
-    if (row.tenant_id !== tenantId && !listSkillAccess(row.id).some(g => g.tenant_id === tenantId)) continue
-    const t = reconcileTenantSkill(row, false)
+    if (row.tenant_id !== tenantId && !(await listSkillAccess(row.id)).some(g => g.tenant_id === tenantId)) continue
+    const t = await reconcileTenantSkill(row, false)
     total.written += t.written
     total.removed += t.removed
     total.errors += t.errors
@@ -753,11 +768,11 @@ export function regenTenantSkillFiles(tenantId: string, forceEnabled = false): {
  * remaining tenant's copies are due). So reconcile the changed tenant AND every tenant the agent
  * serves now, not just the changed one.
  */
-export function regenTenantSkillFilesForAgentChange(agentId: string, tenantId: string, forceEnabled = false): { written: number; removed: number; errors: number } {
+export async function regenTenantSkillFilesForAgentChange(agentId: string, tenantId: string, forceEnabled = false): Promise<{ written: number; removed: number; errors: number }> {
   const total = { written: 0, removed: 0, errors: 0 }
-  const tenants = new Set<string>([tenantId, ...getTenantsForAgent(agentId)])
+  const tenants = new Set<string>([tenantId, ...await getTenantsForAgent(agentId)])
   for (const t of tenants) {
-    const r = regenTenantSkillFiles(t, forceEnabled)
+    const r = await regenTenantSkillFiles(t, forceEnabled)
     total.written += r.written; total.removed += r.removed; total.errors += r.errors
   }
   return total
@@ -768,11 +783,11 @@ export function regenTenantSkillFilesForAgentChange(agentId: string, tenantId: s
  * Used for the proof step (guardrail 5) before enabling the kill-switch.
  * Returns a list of IDs that are missing from disk.
  */
-export function findMissingSkillFiles(): string[] {
+export async function findMissingSkillFiles(): Promise<string[]> {
   const missing: string[] = []
   let rows
   try {
-    rows = listAllSkills().filter(r => r.tenant_id === 'fleet')
+    rows = (await listAllSkills()).filter(r => r.tenant_id === 'fleet')
   } catch {
     return []
   }
@@ -798,12 +813,12 @@ export interface SkillFileGaps {
  * state right after a restore, or with SKILL_SQL_REGEN off). Content drift is
  * not reported here; the regen restores it with a warning.
  */
-export function findSkillFileGaps(): SkillFileGaps {
+export async function findSkillFileGaps(): Promise<SkillFileGaps> {
   const gaps: SkillFileGaps = { skillFiles: [], companionFiles: [], tenantCopies: [] }
   let rows: SkillRow[]
-  try { rows = listAllSkills() } catch { return gaps }
-  const missingCompanions = (id: string, skillDir: string) => {
-    for (const f of safeListSkillFiles(id)) {
+  try { rows = await listAllSkills() } catch { return gaps }
+  const missingCompanions = async (id: string, skillDir: string) => {
+    for (const f of await safeListSkillFiles(id)) {
       const t = companionTarget(skillDir, f.rel_path)
       if (!t || !existsSync(t)) gaps.companionFiles.push(`${id}:${f.rel_path}`)
     }
@@ -813,14 +828,14 @@ export function findSkillFileGaps(): SkillFileGaps {
       const p = resolveSkillPath(row.id)
       if (!p) continue
       if (!existsSync(p)) gaps.skillFiles.push(row.id)
-      missingCompanions(row.id, dirOfSkillMd(p))
+      await missingCompanions(row.id, dirOfSkillMd(p))
       continue
     }
-    for (const agentId of tenantSkillRecipients(row)) {
+    for (const agentId of await tenantSkillRecipients(row)) {
       const p = tenantSkillPath(agentId, row.id)
       if (!p) continue
       if (!existsSync(p)) gaps.tenantCopies.push(`${row.id}@${agentId}`)
-      missingCompanions(row.id, dirOfSkillMd(p))
+      await missingCompanions(row.id, dirOfSkillMd(p))
     }
   }
   return gaps
@@ -833,3 +848,14 @@ export function findSkillFileGaps(): SkillFileGaps {
 export function listKnownSkillAgents(): string[] {
   return [MAIN_AGENT_ID, ...listAgentNames()]
 }
+
+// The exported entry points: the Locked functions above, one at a time.
+export const regenSkillFilesFromSQL = serialized(regenSkillFilesFromSQLLocked)
+export const regenSingleSkillFile = serialized(regenSingleSkillFileLocked)
+export const generateTenantSkillFilesForAgent = serialized(generateTenantSkillFilesForAgentLocked)
+export const removeGeneratedTenantSkillFilesForAgent = serialized(removeGeneratedTenantSkillFilesForAgentLocked)
+export const regenTenantSkillFiles = serialized(regenTenantSkillFilesLocked)
+// The two removers are in the queue as well: a single regen that already read the row would otherwise write the
+// file back after the delete route removed it, and the file of a deleted skill would stay on disk.
+export const removeGeneratedSkillFile = serialized((id: string, content: string, tenantId: string, files: SkillFileRow[] = []) => Promise.resolve().then(() => removeGeneratedSkillFileLocked(id, content, tenantId, files)))
+export const removeGeneratedCompanionFile = serialized((id: string, relPath: string, content: Buffer, tenantId: string) => Promise.resolve().then(() => removeGeneratedCompanionFileLocked(id, relPath, content, tenantId)))

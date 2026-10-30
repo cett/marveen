@@ -15,7 +15,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { initDatabase, getDb } from '../db.js'
+import { getDb } from '../db.js'
+import { useTestDb } from './helpers/with-test-db.js'
 
 vi.mock('../logger.js', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() } }))
 
@@ -53,8 +54,8 @@ async function waitForCrawl(db: ReturnType<typeof getDb>, id: string, seeded: nu
 describe('runDueImports', () => {
   let emptyDir: string
 
+  useTestDb()
   beforeEach(() => {
-    initDatabase(':memory:')
     emptyDir = mkdtempSync(join(tmpdir(), 'import-run-due-'))
   })
 
@@ -107,7 +108,7 @@ describe('runDueImports', () => {
     expect(lastRunAt(db, 'disabled-src')).toBe(seeded)
   })
 
-  it('no enabled sources: resolves without throwing', async () => {
-    await expect(runDueImports()).resolves.toBeUndefined()
+  it('no enabled sources: returns without throwing', async () => {
+    expect(await runDueImports()).toBeUndefined()
   })
 })

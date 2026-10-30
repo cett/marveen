@@ -85,7 +85,7 @@ function startRemoteAgentProcess(
   }
 }
 
-export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}): { ok: boolean; pid?: number; error?: string; hint?: string } {
+export async function startAgentProcess(name: string, opts: { fresh?: boolean } = {}): Promise<{ ok: boolean; pid?: number; error?: string; hint?: string }> {
   const dir = agentDir(name)
   if (!existsSync(dir)) return { ok: false, error: 'not_found', hint: 'Agent not found' }
 
@@ -118,13 +118,13 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
 
   // Tenant skill files exist only while the agent runs: generate them before the session launches so
   // its loader sees them. Best effort: without them the agent merely lacks the tenant's skills.
-  try { generateTenantSkillFilesForAgent(name) } catch (err) { logger.warn({ err, name }, 'tenant skill files could not be generated at agent start (non-fatal)') }
+  try { await generateTenantSkillFilesForAgent(name) } catch (err) { logger.warn({ err, name }, 'tenant skill files could not be generated at agent start (non-fatal)') }
 
   // #886: restore the agent_active_plans binding a preceding stop dropped, if
   // the just-restarted agent's HANDOFF.md carries a plan marker (context-guard
   // restarts write one, see claude-plan-handoff-marker.ts). Best-effort,
   // never blocks launch; a manual/first start with no marker is a no-op.
-  recoverActivePlanFromHandoff(name)
+  await recoverActivePlanFromHandoff(name)
 
   const agentProvider = resolveAgentProvider(name)
   const provider = getProvider(agentProvider)
@@ -509,8 +509,8 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
     // typically appears within 4-6s). Survey-rating modals from prior
     // sessions can also be present, so dismiss both. Errors are swallowed
     // -- the outbound pre-flight remains the safety net if this misses.
-    // Fire-and-forget: scheduleIdentitySetup only schedules delayed timers;
-    // startAgentProcess stays synchronous (out of scope, per the conversion rules).
+    // Fire-and-forget: scheduleIdentitySetup only schedules delayed timers and
+    // resolves immediately, so the call is not awaited (startAgentProcess itself is async).
     void scheduleIdentitySetup(session, readAgentDisplayName(name))
 
     // Colleague auto-unlock (2026-06-22): mirror the main session's
@@ -535,7 +535,7 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
   }
 }
 
-export function stopAgentProcess(name: string): { ok: boolean; error?: string; hint?: string } {
+export async function stopAgentProcess(name: string): Promise<{ ok: boolean; error?: string; hint?: string }> {
   const session = agentSessionName(name)
   if (!isAgentRunning(name)) return { ok: false, error: 'conflict', hint: 'agent is not running, nothing to stop' }
 
@@ -562,11 +562,11 @@ export function stopAgentProcess(name: string): { ok: boolean; error?: string; h
     // (recoverActivePlanFromHandoff, a context-guard restart) or the agent
     // starts unbound until explicitly reassigned (a manual stop). Best-effort:
     // must never fail the stop itself.
-    try { deactivatePlanForAgent(name) } catch (err) { logger.warn({ err, name }, 'deactivatePlanForAgent failed (non-fatal)') }
+    try { await deactivatePlanForAgent(name) } catch (err) { logger.warn({ err, name }, 'deactivatePlanForAgent failed (non-fatal)') }
     // The generated tenant skill copies leave with the session (the DB stays the source; the next
     // start regenerates them). A local cleanup: a remote agent's files live on the laptop.
     if (!host) {
-      try { removeGeneratedTenantSkillFilesForAgent(name) } catch (err) { logger.warn({ err, name }, 'tenant skill files could not be removed at agent stop (non-fatal)') }
+      try { await removeGeneratedTenantSkillFilesForAgent(name) } catch (err) { logger.warn({ err, name }, 'tenant skill files could not be removed at agent stop (non-fatal)') }
     }
     logger.info({ name, session, host }, 'Agent tmux session stopped')
     return { ok: true }
@@ -585,9 +585,9 @@ export function getAgentProcessInfo(name: string): { running: boolean; session?:
   }
 }
 
-export function restartAgentProcess(name: string, opts: { fresh?: boolean } = {}): { ok: boolean; pid?: number; error?: string; hint?: string } {
+export async function restartAgentProcess(name: string, opts: { fresh?: boolean } = {}): Promise<{ ok: boolean; pid?: number; error?: string; hint?: string }> {
   if (isAgentRunning(name)) {
-    const stopResult = stopAgentProcess(name)
+    const stopResult = await stopAgentProcess(name)
     if (!stopResult.ok) return { ok: false, error: stopResult.error ?? 'internal_error', hint: stopResult.hint || 'Failed to stop running agent before restart' }
   }
   return startAgentProcess(name, opts)

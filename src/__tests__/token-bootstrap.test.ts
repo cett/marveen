@@ -118,23 +118,23 @@ describe('bootstrapDashboardToken', () => {
       expect(states().map((r) => r.revoked_at !== null)).toEqual([true, true, false])
     })
 
-    it('cleans up two active rows left by an install from before rotation revoked the old one', () => {
+    it('cleans up two active rows left by an install from before rotation revoked the old one', async () => {
       const now = Math.floor(Date.now() / 1000)
       for (const t of ['legacy-a', 'legacy-b']) {
         db.prepare("INSERT INTO api_tokens (token_hash, name, role, created_at) VALUES (?, 'dashboard', 'admin', ?)").run(sha256(t), now)
       }
-      expect(enrollDashboardApiToken(sha256('legacy-b'), now)).toBe(0) // the row exists, nothing inserted
-      expect(resolveApiToken('legacy-a')).toEqual({ found: false, registeredButInvalid: true })
-      expect(resolveApiToken('legacy-b')).toMatchObject({ found: true })
+      expect(await enrollDashboardApiToken(sha256('legacy-b'), now)).toBe(0) // the row exists, nothing inserted
+      expect(await resolveApiToken('legacy-a')).toEqual({ found: false, registeredButInvalid: true })
+      expect(await resolveApiToken('legacy-b')).toMatchObject({ found: true })
     })
 
-    it('restoring an old token file (A -> B -> A) revokes B and does not resurrect A', () => {
+    it('restoring an old token file (A -> B -> A) revokes B and does not resurrect A', async () => {
       bootstrapDashboardToken('token-a')
       bootstrapDashboardToken('token-b')
       bootstrapDashboardToken('token-a')
-      expect(resolveApiToken('token-b')).toEqual({ found: false, registeredButInvalid: true })
+      expect(await resolveApiToken('token-b')).toEqual({ found: false, registeredButInvalid: true })
       // A was revoked by the first rotation and is not un-revoked; the rollback in the module header is the way back
-      expect(resolveApiToken('token-a')).toEqual({ found: false, registeredButInvalid: true })
+      expect(await resolveApiToken('token-a')).toEqual({ found: false, registeredButInvalid: true })
     })
 
     it('a restart with the same token revokes nothing', () => {
@@ -157,11 +157,11 @@ describe('bootstrapDashboardToken', () => {
       expect(others.every((r) => r.revoked_at === null)).toBe(true)
     })
 
-    it('a rotated-away token no longer authenticates; it does not fall through to an admin grant', () => {
+    it('a rotated-away token no longer authenticates; it does not fall through to an admin grant', async () => {
       bootstrapDashboardToken('token-old')
       bootstrapDashboardToken('token-new')
-      expect(resolveApiToken('token-old')).toEqual({ found: false, registeredButInvalid: true })
-      expect(resolveApiToken('token-new')).toMatchObject({ found: true, role: 'admin' })
+      expect(await resolveApiToken('token-old')).toEqual({ found: false, registeredButInvalid: true })
+      expect(await resolveApiToken('token-new')).toMatchObject({ found: true, role: 'admin' })
     })
 
     it('does not resurrect a row that was revoked on purpose when the same token boots again', () => {

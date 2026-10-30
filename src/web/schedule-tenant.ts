@@ -20,13 +20,13 @@ export function knownScheduleAgents(): string[] {
   return [MAIN_AGENT_ID, ...listAgentNames().filter(n => n !== MAIN_AGENT_ID)]
 }
 
-export function scheduleAgentServesTenant(agent: string, tenantId: string | null): boolean {
+export async function scheduleAgentServesTenant(agent: string, tenantId: string | null): Promise<boolean> {
   const tenant = tenantId ?? DEFAULT_SCHEDULE_TENANT
   if (tenant === DEFAULT_SCHEDULE_TENANT) {
     if (agent === ALL_AGENTS) return true
     if (!knownScheduleAgents().includes(agent)) return false
     if (agent === MAIN_AGENT_ID) return true
-    const enabledFor = getTenantsForAgent(agent)
+    const enabledFor = await getTenantsForAgent(agent)
     return enabledFor.length === 0 || enabledFor.includes(DEFAULT_SCHEDULE_TENANT)
   }
   if (agent === ALL_AGENTS || agent === MAIN_AGENT_ID) return false
@@ -35,9 +35,12 @@ export function scheduleAgentServesTenant(agent: string, tenantId: string | null
 }
 
 /** Agent names offered for a tenant (all of them when no tenant is given). */
-export function scheduleAgentNamesForTenant(tenantId: string | null): string[] {
+export async function scheduleAgentNamesForTenant(tenantId: string | null): Promise<string[]> {
   const names = knownScheduleAgents()
-  return tenantId === null ? names : names.filter(n => scheduleAgentServesTenant(n, tenantId))
+  if (tenantId === null) return names
+  // A filter callback cannot be async (a Promise is truthy and would keep every name): decide one by one, then filter.
+  const serves = await Promise.all(names.map(n => scheduleAgentServesTenant(n, tenantId)))
+  return names.filter((_, i) => serves[i])
 }
 
 /**
@@ -47,10 +50,10 @@ export function scheduleAgentNamesForTenant(tenantId: string | null): string[] {
  * several tenants) with no context is ambiguous, so the answer is null and the caller must
  * refuse rather than file the task under a guess.
  */
-export function creatorTenant(agentId: string): string | null {
-  const serving = getServingTenant(agentId)
+export async function creatorTenant(agentId: string): Promise<string | null> {
+  const serving = await getServingTenant(agentId)
   if (serving) return serving
-  const own = resolveAgentTenant(agentId)
+  const own = await resolveAgentTenant(agentId)
   return own === '_multi_' ? null : own
 }
 
@@ -60,15 +63,15 @@ export function creatorTenant(agentId: string): string | null {
  * because the tenant-context hook would bind nothing for it. Answers are memoised for the
  * life of the checker (one scheduler tick), so a fleet of tasks costs a lookup per distinct pair.
  */
-export function createPairOrphanChecker(): (tenantId: string | null | undefined, agent: string | undefined) => boolean {
+export function createPairOrphanChecker(): (tenantId: string | null | undefined, agent: string | undefined) => Promise<boolean> {
   const memo = new Map<string, boolean>()
-  return (tenantId, agent) => {
+  return async (tenantId, agent) => {
     const tenant = tenantId ?? DEFAULT_SCHEDULE_TENANT
     const name = agent || MAIN_AGENT_ID
     const key = `${tenant}\u0000${name}`
     let orphan = memo.get(key)
     if (orphan === undefined) {
-      try { orphan = !scheduleAgentServesTenant(name, tenant) } catch { orphan = false }  // a failed lookup must not stop tasks from firing
+      try { orphan = !await scheduleAgentServesTenant(name, tenant) } catch { orphan = false }  // a failed lookup must not stop tasks from firing
       memo.set(key, orphan)
     }
     return orphan

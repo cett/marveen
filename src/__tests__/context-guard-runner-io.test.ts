@@ -113,7 +113,7 @@ const {
     mockReadTranscriptMtimeFromProjectDir: vi.fn((dir: string) => transcriptMtimeByDir.get(dir) ?? null),
     mockReadContextGuardConfig: vi.fn((name: string) => cfgByAgent.get(name) ?? DEFAULT_CFG),
     mockCreateAgentMessage: vi.fn(),
-    mockGetWorkspaceDocUpdatedAtMs: vi.fn((name: string) => handoffMtimeByAgent.get(name) ?? null),
+    mockGetWorkspaceDocUpdatedAtMs: vi.fn((name: string) => Promise.resolve(handoffMtimeByAgent.get(name) ?? null)),
     mockAppendActivePlanMarkerToHandoff: vi.fn(),
     mockHardRestartMarveenChannels: vi.fn(() => ({ ok: true }) as { ok: boolean; error?: string }),
     mockLastMainRespawnAt: vi.fn(() => null as number | null),
@@ -308,7 +308,7 @@ beforeEach(async () => {
   mockReadTranscriptMtimeFromProjectDir.mockImplementation((dir: string) => transcriptMtimeByDir.get(dir) ?? null)
   mockReadContextGuardConfig.mockImplementation((name: string) => cfgByAgent.get(name) ?? DEFAULT_CFG)
   mockCreateAgentMessage.mockReset()
-  mockGetWorkspaceDocUpdatedAtMs.mockImplementation((name: string) => handoffMtimeByAgent.get(name) ?? null)
+  mockGetWorkspaceDocUpdatedAtMs.mockImplementation((name: string) => Promise.resolve(handoffMtimeByAgent.get(name) ?? null))
   mockAppendActivePlanMarkerToHandoff.mockReset()
   mockHardRestartMarveenChannels.mockReset().mockReturnValue({ ok: true })
   mockLastMainRespawnAt.mockReset().mockReturnValue(null)
@@ -719,5 +719,47 @@ describe('checkAgent: inject-resume after restart', () => {
     expect(prompt).toContain('FOLYTASD')
     expect(prompt).toContain('assignee=agent-resume')
     expect(getHardGuardPhase('agent-resume')).toBe('cooldown')
+  })
+})
+
+// Which branch of resumePrompt the injected prompt takes: the handoff freshness probe is asynchronous, and a
+// missing await on it would read a Promise (never null) and always claim a handoff existed.
+describe('inject-resume says whether a handoff existed', () => {
+  async function resumeWith(handoffSql: number | null, fileMtime: number | null): Promise<string> {
+    const name = 'agent-handoff-resume'
+    mockListAgentNames.mockReturnValue([name])
+    setCfg(name, { saturationRestart: true })
+    armSession(subSession(name), { saturated: true })
+    const { startContextGuardRunner } = await loadRunner()
+    handle = startContextGuardRunner()
+    await runNextSweep()
+    await runNextSweep() // confirms + restarts -> await-ready
+    mockSendPromptToSession.mockClear()
+    // From here on the handoff state is what the test names (the pre-restart sweeps ran with the default: none).
+    if (handoffSql !== null) handoffMtimeByAgent.set(name, handoffSql); else handoffMtimeByAgent.delete(name)
+    const fs = await import('node:fs')
+    vi.mocked(fs.statSync).mockImplementation((() => {
+      if (fileMtime === null) throw new Error('ENOENT')
+      return { mtimeMs: fileMtime }
+    }) as never)
+    sessionReadyBySession.set(subSession(name), true)
+    await runNextSweep()
+    expect(mockSendPromptToSession).toHaveBeenCalledTimes(1)
+    return String(mockSendPromptToSession.mock.calls[0][1])
+  }
+
+  it('no handoff anywhere: the prompt routes to live sources', async () => {
+    const prompt = await resumeWith(null, null)
+    expect(prompt).toContain('nem készült el időben')
+  })
+  it('a handoff in workspace_docs: the prompt names the handoff file', async () => {
+    const prompt = await resumeWith(Date.now(), null)
+    expect(prompt).not.toContain('nem készült el időben')
+    expect(prompt).toContain('olvasd be')
+  })
+  it('only the HANDOFF.md file exists (fallback): the prompt names the handoff file', async () => {
+    const prompt = await resumeWith(null, Date.now())
+    expect(prompt).not.toContain('nem készült el időben')
+    expect(prompt).toContain('olvasd be')
   })
 })

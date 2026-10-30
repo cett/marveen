@@ -10,6 +10,7 @@ import { logger } from '../../logger.js'
 import { parsePagination } from '../utils/pagination.js'
 import type { RouteContext } from './types.js'
 
+import { noteTenantResolved } from '../../db/context.js'
 // Tenant scope helpers (mirrors kanban/memories pattern):
 // - Admin with no ?tenant= filter sees all tenants (effectiveTenantId = null).
 // - Admin with ?tenant=<id> sees only that tenant.
@@ -20,7 +21,7 @@ function effectiveTenant(ctx: RouteContext): string | null {
     const param = ctx.url.searchParams.get('tenant')
     return param ?? null
   }
-  return ctx.tenantId ?? 'default'
+  return noteTenantResolved(ctx.tenantId ?? 'default')
 }
 
 // Cross-tenant guard for single-resource operations (peek-before-touch, anti-enum):
@@ -39,8 +40,8 @@ function crossTenantBlocked(ctx: RouteContext, artifactTenantId: string): boolea
 // GET /api/artifacts/stats  — aggregate counts for monitoring
 // Returns artifact_count, vec_count (ANN index rows, -1 if unavailable),
 // and vec_rebuild_suggested (true when vec_count >= 10 000).
-function handleStats(ctx: RouteContext): boolean {
-  json(ctx.res, getArtifactStats())
+async function handleStats(ctx: RouteContext): Promise<boolean> {
+  json(ctx.res, await getArtifactStats())
   return true
 }
 
@@ -78,7 +79,7 @@ async function handleCreate(ctx: RouteContext): Promise<boolean> {
   // cloud URL) an artifact another agent stored.
   if (denyForeignAgent(ctx, body.agent_id.trim())) return true
   if (ctx.role === 'fleet_agent' && body.cloud_url?.trim()) {
-    const owner = getArtifactAgentByCloudUrl(body.cloud_url.trim())
+    const owner = await getArtifactAgentByCloudUrl(body.cloud_url.trim())
     if (owner !== undefined && owner !== ctx.tokenAgentId) {
       json(ctx.res, { error: 'forbidden', hint: 'That cloud artifact belongs to another agent' }, 403)
       return true
@@ -101,7 +102,7 @@ async function handleCreate(ctx: RouteContext): Promise<boolean> {
   }
 
   try {
-    const result = createArtifact({
+    const result = await createArtifact({
       agent_id:  body.agent_id.trim(),
       tenant_id: tenantId,
       title:     body.title.trim(),
@@ -123,7 +124,7 @@ async function handleCreate(ctx: RouteContext): Promise<boolean> {
 
 // GET /api/artifacts  — list without content
 // ?agent=&kind=&q=&limit=&offset=&tenant= (tenant param for admins only)
-function handleList(ctx: RouteContext): boolean {
+async function handleList(ctx: RouteContext): Promise<boolean> {
   const { res, url } = ctx
   const agent = url.searchParams.get('agent') ?? undefined
   const kind  = url.searchParams.get('kind')  ?? undefined
@@ -137,16 +138,16 @@ function handleList(ctx: RouteContext): boolean {
   const tenant_id   = tenantScope !== null ? tenantScope : undefined
 
   const filter = { agent, tenant_id, kind, q }
-  const items = listArtifacts({ ...filter, limit, offset })
-  const total = countArtifacts(filter)
+  const items = await listArtifacts({ ...filter, limit, offset })
+  const total = await countArtifacts(filter)
   json(res, { items, total, offset, limit })
   return true
 }
 
 // GET /api/artifacts/:id  — full content + mime
-function handleGet(ctx: RouteContext, id: string): boolean {
+async function handleGet(ctx: RouteContext, id: string): Promise<boolean> {
   const { res } = ctx
-  const row = getArtifact(id)
+  const row = await getArtifact(id)
   if (!row) { json(res, { error: 'not_found', hint: 'Not found' }, 404); return true }
   if (crossTenantBlocked(ctx, row.tenant_id)) return true
 
@@ -173,9 +174,9 @@ function handleGet(ctx: RouteContext, id: string): boolean {
 // POST /api/artifacts/:id/view-token  (Bearer required)
 // Returns a short-lived HMAC token that lets a browser open the artifact
 // content via GET /api/artifacts/:id/view without a Bearer header.
-function handleViewToken(ctx: RouteContext, id: string): boolean {
+async function handleViewToken(ctx: RouteContext, id: string): Promise<boolean> {
   const { res } = ctx
-  const row = getArtifact(id)
+  const row = await getArtifact(id)
   if (!row) { json(res, { error: 'not_found', hint: 'Not found' }, 404); return true }
   if (crossTenantBlocked(ctx, row.tenant_id)) return true
 
@@ -191,7 +192,7 @@ function handleViewToken(ctx: RouteContext, id: string): boolean {
 // Strict CSP prevents any cross-context reads; nosniff closes MIME confusion.
 // No tenant check: the signed token was issued by handleViewToken which
 // already enforced the tenant gate.
-function handleView(ctx: RouteContext, id: string): boolean {
+async function handleView(ctx: RouteContext, id: string): Promise<boolean> {
   const { res, url } = ctx
   const token = url.searchParams.get('token') ?? ''
   const expStr = url.searchParams.get('exp') ?? ''
@@ -208,7 +209,7 @@ function handleView(ctx: RouteContext, id: string): boolean {
     return true
   }
 
-  const row = getArtifact(id)
+  const row = await getArtifact(id)
   if (!row) {
     json(res, { error: 'not_found', hint: 'Not found' }, 404)
     return true
@@ -229,7 +230,7 @@ function handleView(ctx: RouteContext, id: string): boolean {
 async function handleRename(ctx: RouteContext, id: string): Promise<boolean> {
   const { res } = ctx
 
-  const existing = getArtifact(id)
+  const existing = await getArtifact(id)
   if (!existing) { json(res, { error: 'not_found', hint: 'Not found' }, 404); return true }
   if (crossTenantBlocked(ctx, existing.tenant_id)) return true
 
@@ -243,19 +244,19 @@ async function handleRename(ctx: RouteContext, id: string): Promise<boolean> {
     json(res, { error: 'limit_exceeded', field: 'title', hint: `title must not exceed ${ARTIFACT_TITLE_MAX_LENGTH} characters` }, 400); return true
   }
 
-  renameArtifact(id, title)
+  await renameArtifact(id, title)
   json(res, { ok: true })
   return true
 }
 
 // DELETE /api/artifacts/:id
-function handleDelete(ctx: RouteContext, id: string): boolean {
+async function handleDelete(ctx: RouteContext, id: string): Promise<boolean> {
   const { res } = ctx
-  const existing = getArtifact(id)
+  const existing = await getArtifact(id)
   if (!existing) { json(res, { error: 'not_found', hint: 'Not found' }, 404); return true }
   if (crossTenantBlocked(ctx, existing.tenant_id)) return true
 
-  deleteArtifact(id)
+  await deleteArtifact(id)
   json(res, { ok: true })
   return true
 }

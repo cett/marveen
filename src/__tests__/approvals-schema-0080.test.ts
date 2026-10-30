@@ -68,46 +68,46 @@ describe('createApproval / getApproval / resolveApproval with the new columns', 
   const base = { id: 'ap-1', agent_id: 'worker', category: 'email_send', action_description: 'send a mail' }
   const HASH = 'a'.repeat(64)
 
-  it('an approval made without the new fields has them off / empty', () => {
-    const made = createApproval(base)
+  it('an approval made without the new fields has them off / empty', async () => {
+    const made = await createApproval(base)
     expect(made).toMatchObject({ human_only: 0, resolved_via: null, content_hash: null, consumed_at: null, consumed_by: null, consumed_ref: null })
-    expect(getApproval('ap-1')).toMatchObject({ human_only: 0, content_hash: null, consumed_at: null })
+    expect(await getApproval('ap-1')).toMatchObject({ human_only: 0, content_hash: null, consumed_at: null })
   })
 
-  it('stores the human-only snapshot and the content hash, and returns them from both calls', () => {
-    const made = createApproval({ ...base, human_only: true, content_hash: HASH })
+  it('stores the human-only snapshot and the content hash, and returns them from both calls', async () => {
+    const made = await createApproval({ ...base, human_only: true, content_hash: HASH })
     expect(made).toMatchObject({ human_only: 1, content_hash: HASH })
-    expect(getApproval('ap-1')).toMatchObject({ human_only: 1, content_hash: HASH, consumed_at: null })
+    expect(await getApproval('ap-1')).toMatchObject({ human_only: 1, content_hash: HASH, consumed_at: null })
   })
 
-  it('resolveApproval records how the decision arrived, and keeps it NULL when the caller says nothing', () => {
-    createApproval(base)
-    createApproval({ ...base, id: 'ap-2' })
-    expect(resolveApproval('ap-1', 'approved', 'human:session:owner', null, 'dashboard_session')).toBe(true)
-    expect(resolveApproval('ap-2', 'rejected', 'someone')).toBe(true)
-    expect(getApproval('ap-1')).toMatchObject({ status: 'approved', resolved_by: 'human:session:owner', resolved_via: 'dashboard_session' })
-    expect(getApproval('ap-2')).toMatchObject({ status: 'rejected', resolved_via: null })
+  it('resolveApproval records how the decision arrived, and keeps it NULL when the caller says nothing', async () => {
+    await createApproval(base)
+    await createApproval({ ...base, id: 'ap-2' })
+    expect(await resolveApproval('ap-1', 'approved', 'human:session:owner', null, 'dashboard_session')).toBe(true)
+    expect(await resolveApproval('ap-2', 'rejected', 'someone')).toBe(true)
+    expect(await getApproval('ap-1')).toMatchObject({ status: 'approved', resolved_by: 'human:session:owner', resolved_via: 'dashboard_session' })
+    expect(await getApproval('ap-2')).toMatchObject({ status: 'rejected', resolved_via: null })
   })
 
-  it('a decided approval is not decided twice (the existing guard still holds)', () => {
-    createApproval(base)
-    expect(resolveApproval('ap-1', 'approved', 'a', null, 'bearer')).toBe(true)
-    expect(resolveApproval('ap-1', 'rejected', 'b', null, 'dashboard_session')).toBe(false)
-    expect(getApproval('ap-1')).toMatchObject({ status: 'approved', resolved_via: 'bearer' })
+  it('a decided approval is not decided twice (the existing guard still holds)', async () => {
+    await createApproval(base)
+    expect(await resolveApproval('ap-1', 'approved', 'a', null, 'bearer')).toBe(true)
+    expect(await resolveApproval('ap-1', 'rejected', 'b', null, 'dashboard_session')).toBe(false)
+    expect(await getApproval('ap-1')).toMatchObject({ status: 'approved', resolved_via: 'bearer' })
   })
 })
 
 describe('the approval journal', () => {
-  it('records events with their tenant and returns them oldest first', () => {
-    recordApprovalEvent({ approval_id: 'ap-1', event: 'consume_refused', reason: 'hash_mismatch', actor: 'worker', ref: 'req-1', tenant_id: 't-a' })
-    recordApprovalEvent({ approval_id: 'ap-1', event: 'consumed', actor: 'worker' })
-    recordApprovalEvent({ approval_id: 'ap-2', event: 'bearer_denied', reason: 'human_only_category' })
-    const events = listApprovalEvents('ap-1')
+  it('records events with their tenant and returns them oldest first', async () => {
+    await recordApprovalEvent({ approval_id: 'ap-1', event: 'consume_refused', reason: 'hash_mismatch', actor: 'worker', ref: 'req-1', tenant_id: 't-a' })
+    await recordApprovalEvent({ approval_id: 'ap-1', event: 'consumed', actor: 'worker' })
+    await recordApprovalEvent({ approval_id: 'ap-2', event: 'bearer_denied', reason: 'human_only_category' })
+    const events = await listApprovalEvents('ap-1')
     expect(events.map((e) => e.event)).toEqual(['consume_refused', 'consumed'])
     expect(events[0]).toMatchObject({ approval_id: 'ap-1', tenant_id: 't-a', reason: 'hash_mismatch', actor: 'worker', ref: 'req-1' })
     expect(events[1]).toMatchObject({ tenant_id: 'default', reason: null, ref: null })
     expect(typeof events[0].created_at).toBe('number')
-    expect(listApprovalEvents('ap-2')).toHaveLength(1)
-    expect(listApprovalEvents('nope')).toEqual([])
+    expect(await listApprovalEvents('ap-2')).toHaveLength(1)
+    expect(await listApprovalEvents('nope')).toEqual([])
   })
 })

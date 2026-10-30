@@ -13,7 +13,8 @@ import { execFileSync } from 'node:child_process'
 import { runLsof } from './lsof.js'
 import type { Server as HttpServer } from 'node:http'
 import { PROJECT_ROOT, STORE_DIR, IS_ISOLATED_MODE, PID_FILENAME, WEB_PORT, ALLOWED_CHAT_ID, MAIN_AGENT_ID, RESPAWN_ENABLED, HEARTBEAT_AGENT_ENABLED } from './config.js'
-import { initDatabase, backfillEmbeddings, closeDatabase, retireConfigOverridesFile, retireScheduleStateFiles, retireAgentSettingsFiles, retireAgentStateFiles, retireKanbanAuditStateFile, retireVaultBindingsFile, retireFederationConfigFile, retireGroup5StateFiles } from './db.js'
+import { runSigtermFlushes } from './web/sigterm-flush.js'
+import { initDatabase, resolveAgentTenant, backfillEmbeddings, closeDatabase, retireConfigOverridesFile, retireScheduleStateFiles, retireAgentSettingsFiles, retireAgentStateFiles, retireKanbanAuditStateFile, retireVaultBindingsFile, retireFederationConfigFile, retireGroup5StateFiles } from './db.js'
 import { flushLedgerSpool } from './conversation-ledger-spool.js'
 import { backfillWorkspaceDocs } from './db/workspace.js'
 import { runDecaySweep, runDailyDigest } from './memory.js'
@@ -23,6 +24,7 @@ import { startAgentProcess } from './web/agent-process.js'
 import { renameSharedCredentialsIfSafe, fleetTokenBootPass } from './web/claude-credentials-guard.js'
 import { startWebServer } from './web.js'
 import { loadRbacMode, startRbacModeRefresh } from './web/rbac-mode.js'
+import { runBootImportLeftoverScan } from './web/fleet-import-leftovers.js'
 import { logger } from './logger.js'
 import { startInviteMonitor, stopInviteMonitor } from './web/channel-invites.js'
 import { ensureDiscordChannelGroup } from './web/discord-group-bootstrap.js'
@@ -39,6 +41,8 @@ import {
   type PidfileLockContext,
 } from './process-lock.js'
 
+import { runAs, endDbBootPhase } from './db/context.js'
+import { systemJob, setAgentTenantResolver } from './db/background-jobs.js'
 const BANNER = `
  ██████╗██╗      █████╗ ██╗   ██╗██████╗ ███████╗
 ██╔════╝██║     ██╔══██╗██║   ██║██╔══██╗██╔════╝
@@ -419,7 +423,13 @@ let webServer: HttpServer | null = null
 let shuttingDown = false
 let exitCode = 0
 
-const shutdown = (): void => {
+// SIGTERM flushes (src/web/sigterm-flush.ts) may take this long in total before the database is closed. Kept
+// under the process-lock takeover grace (DEFAULT_GRACE_MS in process-lock.ts): a replacing start SIGKILLs this
+// process once that grace has passed, so a longer flush would be cut off with the database still open.
+const SIGTERM_FLUSH_BUDGET_MS = 1000
+
+// `signal` is the name Node passes to a signal listener; the uncaughtException path calls it without one.
+const shutdown = (signal?: string): void => {
   if (shuttingDown) return
   try {
     shuttingDown = true
@@ -434,27 +444,43 @@ const shutdown = (): void => {
     if (digestTimer) clearTimeout(digestTimer)
     if (digestInterval) clearInterval(digestInterval)
     if (scheduledRunSnapshotSweepInterval) clearInterval(scheduledRunSnapshotSweepInterval)
-    try { closeDatabase() } catch (err) { logger.warn({ err }, 'closeDatabase threw during shutdown') }
-
+    // Armed before anything awaits: a flush that hangs must not keep the process from exiting.
     const hardKill = setTimeout(() => {
       logger.warn({ timeoutMs: SHUTDOWN_HARD_KILL_MS }, 'Graceful shutdown timeout, hard exit')
       releaseLock()
       process.exit(exitCode || 1)
     }, SHUTDOWN_HARD_KILL_MS)
 
-    if (webServer) {
-      try { webServer.closeIdleConnections?.() } catch { /* older node */ }
-      try { webServer.closeAllConnections?.() } catch { /* older node */ }
-      webServer.close(() => {
-        clearTimeout(hardKill)
+    const finish = (): void => {
+      try {
+        try { closeDatabase() } catch (err) { logger.warn({ err }, 'closeDatabase threw during shutdown') }
+
+        if (webServer) {
+          try { webServer.closeIdleConnections?.() } catch { /* older node */ }
+          try { webServer.closeAllConnections?.() } catch { /* older node */ }
+          webServer.close(() => {
+            clearTimeout(hardKill)
+            releaseLock()
+            process.exit(exitCode)
+          })
+        } else {
+          // Early shutdown, before startWebServer ran. Nothing to drain.
+          clearTimeout(hardKill)
+          releaseLock()
+          process.exit(exitCode)
+        }
+      } catch (err) {
+        logger.error({ err }, 'Shutdown threw, exiting anyway')
         releaseLock()
-        process.exit(exitCode)
-      })
+        process.exit(1)
+      }
+    }
+
+    if (signal === 'SIGTERM') {
+      // The desired run-state flush writes to the database: it runs (awaited) BEFORE the database closes.
+      void runSigtermFlushes(SIGTERM_FLUSH_BUDGET_MS).then(finish, finish)
     } else {
-      // Early shutdown, before startWebServer ran. Nothing to drain.
-      clearTimeout(hardKill)
-      releaseLock()
-      process.exit(exitCode)
+      finish()
     }
   } catch (err) {
     logger.error({ err }, 'Shutdown threw, exiting anyway')
@@ -493,10 +519,12 @@ async function main(): Promise<void> {
   // Database
   initDatabase()
   logger.info('Adatbazis inicializalva')
+  // The agent jobs (auto-restart, context guard, restart gate, background tasks) run as the agent in its tenant.
+  setAgentTenantResolver((agentId) => resolveAgentTenant(agentId))
 
   // RBAC_MODE: seed the system_config row from the env once (idempotent), read the live mode and keep
   // it fresh. Called here, not from initDatabase(): that also runs from every test against the shared store.
-  loadRbacMode()
+  await loadRbacMode()
   startRbacModeRefresh()
 
   // S8B: retire store/config-overrides.json (rename to .deprecated) now that
@@ -540,8 +568,12 @@ async function main(): Promise<void> {
   // terminal-input.json) -- previously migrated but never retired.
   retireGroup5StateFiles()
 
+  // An interrupted fleet import leaves staged files and backups behind. Report them (never delete): asynchronous and
+  // bounded in depth, count and time, so the boot does not wait for it, and a failure only logs.
+  runAs.system('boot-sequence', () => runBootImportLeftoverScan()).catch((err) => logger.warn({ err: err?.message }, 'Fleet import leftover scan failed'))
+
   // Turns the ledger hooks spooled while the dashboard was down.
-  flushLedgerSpool()
+  await runAs.system('boot-sequence', () => flushLedgerSpool())
 
   if (IS_ISOLATED_MODE) {
     // Isolated mode: serve the web dashboard only, no background tasks or agent management.
@@ -549,25 +581,26 @@ async function main(): Promise<void> {
     // (ensureAutonomySection, ensureFederationClaudeMdSection, reconcileAgentsOnStartup,
     // hook registration) -- isolated instances must never modify shared project files.
     process.env['WEB_ONLY'] = 'true'
-    webServer = startWebServer(WEB_PORT)
+    webServer = await startWebServer(WEB_PORT)
+    endDbBootPhase()
     logger.info(`Marveen fut izolalt modban! Dashboard: http://localhost:${WEB_PORT}`)
     return
   }
 
   // Backfill embeddings for memories saved before Ollama was available.
   // Fire-and-forget: a missing or slow Ollama instance must not block startup.
-  backfillEmbeddings().then(count => {
+  runAs.system('boot-sequence', () => backfillEmbeddings()).then(count => {
     if (count > 0) logger.info({ count }, 'Embedding backfill befejezve')
   }).catch(err => logger.warn({ err }, 'Embedding backfill hiba (Ollama nem elerheto)'))
 
   // Same fire-and-forget backfill, for workspace_docs saved before this feature existed.
-  backfillWorkspaceDocs().then(count => {
+  runAs.system('boot-sequence', () => backfillWorkspaceDocs()).then(count => {
     if (count > 0) logger.info({ count }, 'Workspace doc embedding backfill befejezve')
   }).catch(err => logger.warn({ err }, 'Workspace doc embedding backfill hiba (Ollama nem elerheto)'))
 
   // Memory decay (24h cycle)
-  runDecaySweep()
-  decayInterval = setInterval(runDecaySweep, 24 * 60 * 60 * 1000)
+  await runAs.system('memory-decay', () => runDecaySweep())
+  decayInterval = setInterval(systemJob('memory-decay', () => { runDecaySweep().catch((err) => logger.warn({ err }, 'Memory decay sweep failed')) }), 24 * 60 * 60 * 1000)
 
   // Scheduled-task run snapshot retention: hourly cadence, 7-day age
   // cutoff with a per-task floor of the most recent 20 (see
@@ -583,15 +616,14 @@ async function main(): Promise<void> {
     target.setHours(23, 0, 0, 0)
     if (target <= now) target.setDate(target.getDate() + 1)
     const msUntil = target.getTime() - now.getTime()
-    digestTimer = setTimeout(() => {
+    const digest = systemJob('daily-digest', () => {
       runDailyDigest(ALLOWED_CHAT_ID).catch((err) =>
         logger.error({ err }, 'Napi naplo hiba')
       )
-      digestInterval = setInterval(() => {
-        runDailyDigest(ALLOWED_CHAT_ID).catch((err) =>
-          logger.error({ err }, 'Napi naplo hiba')
-        )
-      }, 24 * 60 * 60 * 1000)
+    })
+    digestTimer = setTimeout(() => {
+      digest()
+      digestInterval = setInterval(digest, 24 * 60 * 60 * 1000)
     }, msUntil)
     logger.info({ nextRun: target.toLocaleString('hu-HU') }, 'Napi naplo utemezve')
   }
@@ -629,7 +661,7 @@ async function main(): Promise<void> {
   // bootcamp root gap), validates a never-verified existing fleet token, and
   // quarantines one the probe proves dead.
   setTimeout(() => {
-    fleetTokenBootPass()
+    runAs.system('boot-sequence', () => fleetTokenBootPass())
       .then((result) => logger.info({ result }, 'credentials-guard: fleet-token boot pass'))
       .catch((err) => logger.warn({ err }, 'credentials-guard: fleet-token boot pass failed'))
   }, 15_000)
@@ -637,7 +669,7 @@ async function main(): Promise<void> {
   if (shouldBootHeartbeatAgent({ respawnEnabled: RESPAWN_ENABLED, agentEnabled: HEARTBEAT_AGENT_ENABLED })) {
     ensureHeartbeatAgent()
     logger.info({ agent: HEARTBEAT_AGENT_NAME }, 'Heartbeat agent scaffold ensured (channel-less, dashboard-hidden)')
-    const heartbeatStart = startAgentProcess(HEARTBEAT_AGENT_NAME)
+    const heartbeatStart = await startAgentProcess(HEARTBEAT_AGENT_NAME)
     if (heartbeatStart.ok) {
       logger.info({ agent: HEARTBEAT_AGENT_NAME }, 'Heartbeat agent started')
     } else if (heartbeatStart.error === 'conflict') {
@@ -659,13 +691,15 @@ async function main(): Promise<void> {
   startInviteMonitor(MAIN_AGENT_ID, AGENTS_BASE_DIR)
 
   // Slack channel request watcher (audit.jsonl -> pending_channel_requests).
-  startChannelRequestWatcher()
+  startChannelRequestWatcher().catch((err) => logger.warn({ err }, 'Channel request watcher failed to start'))
 
   // Store file audit watcher
   startStoreWatcher()
 
   // Web dashboard
-  webServer = startWebServer(WEB_PORT)
+  webServer = await startWebServer(WEB_PORT)
+  // The boot sequence is over: from here a db call without a context is unexpected (db/context.ts).
+  endDbBootPhase()
 
   logger.info(`Marveen fut! Dashboard: http://localhost:${WEB_PORT}`)
   logger.info('Telegram kommunikacio: Claude Code Channels kezeli')
