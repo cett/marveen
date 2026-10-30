@@ -5,7 +5,8 @@
 # where each file belongs (see docs/fork-guide/en/F03-operations.md, "Backup and restore"):
 #
 #   repo/   -> extract under the project root (this repo)
-#     store/claudeclaw.db (+ -shm/-wal; WAL-checkpointed before copy)
+#     store/claudeclaw.db (ONE consistent snapshot taken with `sqlite3 .backup`, WAL folded in, no -shm/-wal;
+#       integrity-checked and counted per table into MANIFEST.txt, which scripts/verify-restore.sh compares)
 #       (memories, kanban, artifacts, artifacts_fts*, vec_artifacts* tables)
 #     NOT in the archive, on purpose: the per-agent tokens (agents/*/.agent-token, the main agent's
 #     .agent-token in the project root), store/.operator-token and the shared dashboard token
@@ -101,6 +102,53 @@ MANIFEST="$(mktemp -t claudeclaw-manifest.XXXXXX)"
 STAGE="$(mktemp -d -t claudeclaw-stage.XXXXXX)"
 trap 'rm -f "${REPOLIST}" "${HOMELIST}" "${MANIFEST}"; rm -rf "${STAGE}"' EXIT
 
+# --- Consistent DB snapshot + per-table row counts. ------------------------
+# The live database is read through SQLite's own online backup (.backup), not copied file by file: a plain
+# cp of db + -wal + -shm from a running dashboard can catch them at different moments. The snapshot is one
+# self-contained file (the WAL is folded in), written straight into the staging tree, so the -shm/-wal files
+# are not archived at all. Its integrity is checked HERE, on the copy that goes into the archive, and its row
+# counts go into MANIFEST.txt for verify-restore.sh to compare against. Without the sqlite3 CLI none of this
+# can be done, and a backup that silently skips it is the failure this guards against: it stops instead.
+# db_rowcounts <db>: "table<TAB>rows" per ordinary table. Virtual tables are skipped (vec0 needs its extension to
+# be read), but their shadow tables are ordinary tables and counted. Keep in sync with verify-restore.sh.
+db_rowcounts() {
+  local db="$1" sql
+  sql="$(sqlite3 "${db}" "SELECT 'SELECT ''' || name || ''' || char(9) || count(*) FROM \"' || name || '\";' FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT GLOB '*[^A-Za-z0-9_]*' AND sql NOT LIKE 'CREATE VIRTUAL TABLE%' ORDER BY name;")"
+  [[ -n "${sql}" ]] || return 0
+  sqlite3 "${db}" "${sql}"
+}
+SNAPSHOT_COUNTS=""
+if [[ -f store/claudeclaw.db ]]; then
+  if ! command -v sqlite3 >/dev/null 2>&1; then
+    echo "backup: ABORT -- the sqlite3 CLI is missing, so no consistent database snapshot and no row counts can be taken" >&2
+    exit 2
+  fi
+  LIVE_DB=store/claudeclaw.db
+  SNAPSHOT="${STAGE}/repo/${LIVE_DB}"
+  mkdir -p "$(dirname "${SNAPSHOT}")"
+  if ! sqlite3 "${LIVE_DB}" ".backup '${SNAPSHOT}'"; then
+    echo "backup: ABORT -- sqlite3 .backup of ${LIVE_DB} failed" >&2
+    exit 2
+  fi
+  SNAP_IC="$(sqlite3 "${SNAPSHOT}" 'PRAGMA integrity_check(1);' 2>/dev/null || echo 'error')"
+  if [[ "${SNAP_IC}" != "ok" ]]; then
+    echo "backup: ABORT -- PRAGMA integrity_check of the snapshot failed: ${SNAP_IC}" >&2
+    exit 2
+  fi
+  SNAPSHOT_COUNTS="$(db_rowcounts "${SNAPSHOT}")"
+  # The snapshot inherits WAL mode, and opening it above left -wal/-shm files beside it in the staging tree:
+  # switch it to the rollback journal so it really is one file, and make sure no sidecar is archived.
+  sqlite3 "${SNAPSHOT}" 'PRAGMA journal_mode=DELETE;' >/dev/null 2>&1 || true
+  rm -f "${SNAPSHOT}-wal" "${SNAPSHOT}-shm"
+  # sqlite3 creates the snapshot with the default umask; the live file's mode is what the archive must carry
+  # (the old cp -pR preserved it), because the archive holds the whole database.
+  chmod "$(stat -c '%a' "${LIVE_DB}" 2>/dev/null || stat -f '%Lp' "${LIVE_DB}")" "${SNAPSHOT}" 2>/dev/null || chmod 600 "${SNAPSHOT}"
+  if [[ -z "${SNAPSHOT_COUNTS}" ]]; then
+    echo "backup: ABORT -- the database snapshot has no tables" >&2
+    exit 2
+  fi
+fi
+
 # add_if <listfile> <base> <relpath>  -- append relpath when <base>/<relpath> exists.
 add_if() {
   local list="$1" base="$2" rel="$3"
@@ -109,8 +157,11 @@ add_if() {
 
 # repo/ group (relative to REPO_ROOT)
 add_if "${REPOLIST}" "${REPO_ROOT}" store/claudeclaw.db
-add_if "${REPOLIST}" "${REPO_ROOT}" store/claudeclaw.db-shm
-add_if "${REPOLIST}" "${REPO_ROOT}" store/claudeclaw.db-wal
+# The snapshot above is already one self-contained file: the live -shm/-wal are not archived next to it.
+if [[ -z "${SNAPSHOT_COUNTS}" ]]; then
+  add_if "${REPOLIST}" "${REPO_ROOT}" store/claudeclaw.db-shm
+  add_if "${REPOLIST}" "${REPO_ROOT}" store/claudeclaw.db-wal
+fi
 add_if "${REPOLIST}" "${REPO_ROOT}" store/vault.json
 add_if "${REPOLIST}" "${REPO_ROOT}" .env
 add_if "${REPOLIST}" "${REPO_ROOT}" scheduled-tasks.json
@@ -239,6 +290,11 @@ fi
   fi
   echo "--- repo/ ---"; sed 's,^,repo/,' "${REPOLIST}" 2>/dev/null || true
   echo "--- home/ ---"; sed 's,^,home/,' "${HOMELIST}" 2>/dev/null || true
+  if [[ -n "${SNAPSHOT_COUNTS}" ]]; then
+    # Read by scripts/verify-restore.sh: the restore check compares these against the archived database.
+    echo "--- db-rowcounts (table<TAB>rows, counted on the archived snapshot) ---"
+    printf '%s\n' "${SNAPSHOT_COUNTS}"
+  fi
 } > "${MANIFEST}"
 
 # --- Assemble the archive via a staging dir, then one plain tar. -----------
@@ -256,6 +312,8 @@ stage_group() {  # stage_group <listfile> <base> <group>
   [[ -s "${list}" ]] || return 0
   while IFS= read -r rel; do
     [[ -z "${rel}" ]] && continue
+    # Already staged (the database snapshot): do not copy the live file over it.
+    [[ -f "${STAGE}/${group}/${rel}" ]] && continue
     parent="$(dirname "${rel}")"
     mkdir -p "${STAGE}/${group}/${parent}"
     cp -pR "${base}/${rel}" "${STAGE}/${group}/${parent}/"

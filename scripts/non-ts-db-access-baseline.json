@@ -26,11 +26,12 @@
     },
     "scripts/backup.sh": {
       "dialect": {
-        "PRAGMA": 3
+        "GLOB": 1,
+        "PRAGMA": 6
       },
       "direct": {
-        "claudeclaw.db": 7,
-        "sqlite3 CLI": 3
+        "claudeclaw.db": 9,
+        "sqlite3 CLI": 9
       }
     },
     "scripts/ensure-native-modules.sh": {
@@ -117,11 +118,12 @@
     },
     "scripts/verify-restore.sh": {
       "dialect": {
+        "GLOB": 1,
         "PRAGMA": 3
       },
       "direct": {
-        "claudeclaw.db": 4,
-        "sqlite3 CLI": 2
+        "claudeclaw.db": 6,
+        "sqlite3 CLI": 4
       }
     },
     "seed-skills/fleet-helper/scripts/mail_triage.py": {

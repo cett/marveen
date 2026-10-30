@@ -6,8 +6,10 @@
 #   PATH     /api/..., query string included, e.g. "/api/memories?agent=alpha&q=term"
 #   BODY     a JSON string, "-" to read it from STDIN, or "@file" to send that file as is
 # Options (before METHOD):
-#   --agent ID          act as this agent (default: MARVEEN_AGENT_ID, else derived from the cwd, else
-#                       from CLAUDE_CONFIG_DIR: a worktree or scratch cwd names nobody, the launch does)
+#   --agent ID          act as this agent. Without it the agent is, in this order: MARVEEN_AGENT_ID, the
+#                       agent the session was launched as (CLAUDE_CONFIG_DIR), the agent the cwd names
+#                       (agents/<id>, the install root = the main agent). The launch beats the cwd: a
+#                       sub-agent that cd'd to the install root is still itself.
 #   --max-time SECS     give up on the request after SECS seconds (default: no limit)
 #   --with-status       print the HTTP status as a last extra line after the body (what
 #                       `curl -w '\n%{http_code}'` gave), for scripts that branch on 201 vs 200
@@ -27,14 +29,34 @@
 # answer; 2 on a usage error; 3 when there is no token to send (no own token file, or an admin
 # call by an agent that is not the main one): NO request is made then.
 #
+# AGENT_API_STRICT (env, read on every call; 0 = default, 1): a session launched as a SUB-agent (its
+# CLAUDE_CONFIG_DIR is agents/<id>/.claude-config) may not
+#   E1  ask for the main agent's identity (--token main, --token admin)
+#   E2  ask for the operator token (--token operator)
+#   E3  act as another agent (--agent / MARVEEN_AGENT_ID naming someone else)
+# With 1 such a call exits 3 and NO request is made. With 0 the call goes out as before and stderr says it
+# would be refused, except --token admin: --token admin from a sub-agent session is refused in both modes (as
+# before for its own directory); E1-E3 for the other tokens only warn under STRICT=0. A call with no sub-agent session (a system script, cron, the main agent) is never
+# touched. This is hygiene against the common slip, not a security boundary: agents share one OS user.
+#
+# Origin of a privileged token: --token main, operator and admin go only to a LOOPBACK dashboard (http or https on
+# localhost, 127.0.0.1 or [::1], an optional port). Any other DASHBOARD_BASE_URL (a remote host, a look-alike such as
+# localhost.example or localhost:80@host) exits 3 and NO request is made, in both AGENT_API_STRICT modes: these tokens
+# must not be sent to a place the environment of the caller picked. The main agent's token counts too, however the call
+# got there (a session that dropped its launch identity is resolved to the main agent from the cwd). Such a call also
+# ignores proxy variables (--noproxy '*'), which would route even a loopback URL elsewhere. A sub-agent's own token is
+# not limited.
+#
 # The token never appears on a command line: it is handed to curl as a config on STDIN
 # (`curl -K -`), the body goes through a 0600 temp file. A token that is present but REFUSED
 # (401, a revoked or stale file) is NOT retried on another token: that would hide the fault.
 #
-# Env: MARVEEN_AGENT_ID, MARVEEN_AGENT_TOKEN_FILE (explicit own-token file), MAIN_AGENT_ID,
+# Env: MARVEEN_AGENT_ID, MARVEEN_AGENT_TOKEN_FILE (explicit own-token file), MAIN_AGENT_ID, AGENT_API_STRICT,
 #      DASHBOARD_BASE_URL (default http://localhost:<MARVEEN_WEB_PORT|WEB_PORT|.env|3420>).
 # Portable to macOS /bin/bash 3.2.
 set -uo pipefail
+# The id allowlists below are `case` ranges: in a UTF-8 locale [A-Za-z] can match accented letters. Not exported.
+LC_ALL=C
 
 BASE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STORE="${MARVEEN_STORE_DIR:-$BASE/store}"
@@ -56,7 +78,12 @@ while [ $# -gt 0 ]; do
 done
 [ "$KIND" = "shared" ] && { echo "agent-api: --token shared no longer exists: the shared dashboard token is not used by agents any more (use agent, or admin for the main agent)" >&2; exit 2; }
 case "$KIND" in agent|operator|admin|main) : ;; *) echo "agent-api: --token must be agent, operator, admin or main" >&2; exit 2 ;; esac
+# main, operator and admin are privileged: they are sent only to a loopback origin (checked where the URL is built).
+# KIND is rewritten below (main and admin turn into the agent kind), so the asked-for kind is kept.
+ASKED_KIND="$KIND"
 [ $# -ge 2 ] || usage
+STRICT="${AGENT_API_STRICT:-0}"
+case "$STRICT" in 0|1) : ;; *) echo "agent-api: AGENT_API_STRICT must be 0 or 1" >&2; exit 2 ;; esac
 METHOD="$1"; APIPATH="$2"; BODY="${3-}"
 case "$METHOD" in GET|POST|PUT|PATCH|DELETE) : ;; *) echo "agent-api: bad METHOD '$METHOD'" >&2; exit 2 ;; esac
 case "$APIPATH" in /api/*) : ;; *) echo "agent-api: PATH must start with /api/" >&2; exit 2 ;; esac
@@ -88,25 +115,46 @@ esac
 case "$CFG_AGENT" in *[!A-Za-z0-9_-]*|"") CFG_AGENT="" ;; esac
 [ "${#CFG_AGENT}" -le 64 ] || CFG_AGENT=""
 
-# How the acting agent was named: explicit (--agent or MARVEEN_AGENT_ID: the caller said so), root (the install
-# root as cwd), cwd (an agent directory), config (the config directory), token-main (--token main).
+# How the acting agent was named: explicit (--agent or MARVEEN_AGENT_ID: the caller said so), config (the config
+# directory the session was launched with), root (the install root as cwd), cwd (an agent directory),
+# token-main (--token main). Order: explicit > config > cwd. The launch beats the cwd, so a sub-agent that
+# cd'd to the install root still acts as itself (and the main agent does not turn into a sub-agent by cd'ing).
 AGENT_BY="explicit"
-if [ -z "$AGENT" ]; then
-  case "$PWD" in
-    "$BASE"/agents/*) AGENT="${PWD#"$BASE"/agents/}"; AGENT="${AGENT%%/*}"; AGENT_BY="cwd" ;;
-    "$BASE") AGENT="$MAIN"; AGENT_BY="root" ;;
-  esac
-fi
+CWD_AGENT=""; CWD_BY=""
+case "$PWD" in
+  "$BASE"/agents/*) CWD_AGENT="${PWD#"$BASE"/agents/}"; CWD_AGENT="${CWD_AGENT%%/*}"; CWD_BY="cwd" ;;
+  "$BASE") CWD_AGENT="$MAIN"; CWD_BY="root" ;;
+esac
+case "$CWD_AGENT" in *[!A-Za-z0-9_-]*) CWD_AGENT="" ;; esac
+[ "${#CWD_AGENT}" -le 64 ] || CWD_AGENT=""
 if [ -z "$AGENT" ] && [ -n "$CFG_AGENT" ]; then
-  # A working directory that names nobody (a worktree, a scratch directory): the config directory
-  # the session was launched with does.
   AGENT="$CFG_AGENT"; AGENT_BY="config"
+  [ -n "$CWD_AGENT" ] && [ "$CWD_AGENT" != "$CFG_AGENT" ] && \
+    echo "agent-api: warning: the cwd names $CWD_AGENT, the session config directory names $CFG_AGENT: using $CFG_AGENT" >&2
 fi
+if [ -z "$AGENT" ] && [ -n "$CWD_AGENT" ]; then AGENT="$CWD_AGENT"; AGENT_BY="$CWD_BY"; fi
 # The acting agent goes into a header line (X-Agent-Id) and a token path: the same allowlist as the launched agent
 # above (letters, digits, '-' and '_', at most 64 characters), whichever way it was named. Anything else is
 # dropped whole, which ends in the "no token for an unknown agent" exit below, with no request made.
 case "$AGENT" in *[!A-Za-z0-9_-]*) AGENT="" ;; esac
 [ "${#AGENT}" -le 64 ] || AGENT=""
+
+# E1-E3: what a session launched as a sub-agent may not ask for. No sub-agent session (a system script, cron, the
+# main agent): nothing here applies.
+if [ -n "$CFG_AGENT" ] && [ "$CFG_AGENT" != "$MAIN" ]; then
+  RULE=""; WHY=""
+  if [ "$KIND" = "main" ] || [ "$KIND" = "admin" ]; then
+    RULE="E1"; WHY="a sub-agent session ($CFG_AGENT) asked for the main agent's identity (--token $KIND): ask the main agent through /api/messages, or drop the flag to act as yourself"
+  elif [ "$KIND" = "operator" ]; then
+    RULE="E2"; WHY="a sub-agent session ($CFG_AGENT) asked for the operator token: ask the main agent through /api/messages"
+  elif [ "$AGENT_BY" = "explicit" ] && [ "$AGENT" != "$CFG_AGENT" ]; then
+    RULE="E3"; WHY="a sub-agent session ($CFG_AGENT) may not act as another agent (--agent / MARVEEN_AGENT_ID): drop the flag or pass --agent $CFG_AGENT"
+  fi
+  if [ -n "$RULE" ]; then
+    if [ "$STRICT" = "1" ]; then echo "agent-api: refused ($RULE): $WHY" >&2; exit 3; fi
+    echo "agent-api: warning: would be refused with AGENT_API_STRICT=1 ($RULE): $WHY" >&2
+  fi
+fi
 
 if [ "$KIND" = "main" ]; then
   AGENT="$MAIN"; KIND="agent"; AGENT_BY="token-main"
@@ -143,21 +191,34 @@ else
   exit 3
 fi
 [ "${AGENT_API_VERBOSE:-}" = "1" ] && echo "agent-api: token source=$SOURCE agent=${AGENT:-?}" >&2
-# The acting agent came from the install-root working directory or from --token main, and it is not the agent
-# this session was launched as (a sub-agent that cd'd to the install root, or asked for the main agent's token):
-# the call goes out on that token as before. A notice only, nothing about the request changes.
-if [ -n "$CFG_AGENT" ] && [ -n "$AGENT" ] && [ "$AGENT" != "$CFG_AGENT" ] && { [ "$AGENT_BY" = "root" ] || [ "$AGENT_BY" = "token-main" ]; }; then
-  echo "agent-api: warning: acting as $AGENT (resolved from $AGENT_BY) but this session was launched as $CFG_AGENT; pass --agent $CFG_AGENT to act as yourself" >&2
-fi
-
 PORT="${MARVEEN_WEB_PORT:-${WEB_PORT:-$(env_file_value WEB_PORT)}}"
-URL="${DASHBOARD_BASE_URL:-http://localhost:${PORT:-3420}}${APIPATH}"
+ORIGIN_URL="${DASHBOARD_BASE_URL:-http://localhost:${PORT:-3420}}"
+URL="${ORIGIN_URL}${APIPATH}"
+PRIVILEGED=0
+WHAT="--token $ASKED_KIND"
+case "$ASKED_KIND" in main|operator|admin) PRIVILEGED=1 ;; esac
+# The main agent's token is privileged however it was asked for: a call that merely resolved to the main agent (the
+# launch identity dropped, so the cwd names it; --agent / MARVEEN_AGENT_ID naming it; its token file given as
+# MARVEEN_AGENT_TOKEN_FILE) sends the same admin token.
+if [ "$PRIVILEGED" -eq 0 ] && { { [ -n "$AGENT" ] && [ "$AGENT" = "$MAIN" ]; } || [ "$TOKEN_PATH" = "$BASE/.agent-token" ]; }; then
+  PRIVILEGED=1; WHAT="the main agent's token (as '${AGENT:-?}')"
+fi
+if [ "$PRIVILEGED" -eq 1 ]; then
+  LOOPBACK_RE='^https?://(localhost|127\.0\.0\.1|\[::1\])(:[0-9]{1,5})?/?$'
+  if ! [[ "$ORIGIN_URL" =~ $LOOPBACK_RE ]]; then
+    # Show host and port only: the value may carry credentials (user:pass@) or control characters.
+    SHOWN="${ORIGIN_URL#*://}"; SHOWN="${SHOWN##*@}"; SHOWN="${SHOWN%%/*}"; SHOWN="${SHOWN//[^[:print:]]/?}"
+    echo "agent-api: refused: a call with $WHAT goes only to a loopback dashboard (http or https on localhost, 127.0.0.1 or [::1], optional port), not to '${SHOWN:0:80}': fix DASHBOARD_BASE_URL, or make the call with a sub-agent's own token" >&2
+    exit 3
+  fi
+fi
 
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/agent-api.XXXXXX")" || exit 1
 trap 'rm -rf "$TMP"' EXIT
 chmod 700 "$TMP"
 
 ARGS=(-sS -X "$METHOD" -w $'\n%{http_code}' -H "Content-Type: application/json")
+[ "$PRIVILEGED" -eq 1 ] && ARGS+=(--noproxy '*')
 [ -n "$AGENT" ] && ARGS+=(-H "X-Agent-Id: $AGENT")
 [ -n "$CFG_AGENT" ] && ARGS+=(-H "X-Caller-Config: $CFG_AGENT")
 case "$MAXTIME" in ""|*[!0-9]*) [ -z "$MAXTIME" ] || { echo "agent-api: --max-time takes whole seconds" >&2; exit 2; } ;; *) ARGS+=(--max-time "$MAXTIME") ;; esac

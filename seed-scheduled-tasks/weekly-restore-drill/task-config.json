@@ -1,0 +1,11 @@
+{
+  "schedule": "30 3 * * 0",
+  "agent": "{{MAIN_AGENT_ID}}",
+  "enabled": true,
+  "type": "command",
+  "description": "Heti visszaállítási próba vasárnap 03:30-kor (LLM nélkül): a legfrissebb mentés kicsomagolása egy eldobható könyvtárba és a scripts/verify-restore.sh --drill (checksum, integrity_check, táblák és sorok összevetése a MANIFEST.txt-vel). Hibánál (nem 0 exit kód, vagy 36 óránál régebbi legfrissebb mentés) a command-task health Telegram-riasztást küld.",
+  "command": "bash '{{INSTALL_DIR}}/scripts/restore-drill.sh'",
+  "timeoutMs": 300000,
+  "failThreshold": 1,
+  "createdAt": 0
+}
