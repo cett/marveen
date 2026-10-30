@@ -145,7 +145,7 @@ Marveen supports multi-user operation: each tenant's data (memories, kanban, age
 | `agent` | Full read/write access to one tenant's data, no admin |
 | `read_only` | One tenant's data, read-only |
 | `viewer` | List memories, kanban, agents (without blackboard) |
-| `fleet_agent` | The role of a fleet agent's own API token (one per agent, `agent_id` names it; issued with `npm run agent-tokens`, see above). Memories, kanban, messages, blackboard, schedules and approvals (it can file a request, never decide one), scoped to the agent itself; no admin endpoint (agent lifecycle, vault, tokens, RBAC). It is not a tenant-user role: the token carries no tenant of its own. |
+| `fleet_agent` | The role of a fleet agent's own API token (one per agent, `agent_id` names it; issued with `npm run agent-tokens`, see above). Memories, kanban, blackboard and schedules (read and write), agents (read only), approvals (it can file a request, never decide one), the machine endpoints an agent needs to run itself (ledger, agent state, daily log, artifacts, skills, voice replies in its own channel), scoped to the agent itself. Messages are send-only (`POST` and `PUT /api/messages`; `GET /api/messages` is a `403`). It reads the non-admin view of `GET /api/settings` and `/api/marveen` (`200`). No admin endpoint (agent lifecycle, vault, tokens, RBAC). It is not a tenant-user role: the token carries no tenant of its own. |
 
 ### Token management
 
@@ -153,7 +153,7 @@ API tokens are managed at `/api/v1/admin/tokens` (the legacy `/api/admin/tokens`
 
 | Route | What it does |
 |-------|--------------|
-| `GET /api/v1/admin/tokens` | List the tokens (`id`, `name`, `role`, `tenant_id`, `agent_id`, `expires_at`, `revoked_at`, `last_used_at`, `rotated_from`; no hash, no token) |
+| `GET /api/v1/admin/tokens` | List the tokens (`id`, `name`, `role`, `tenant_id`, `agent_id`, `created_at`, `expires_at`, `revoked_at`, `last_used_at`, `rotated_from`; no hash, no token) |
 | `POST /api/v1/admin/tokens` | Create a token. Body: `name` (required), `role` (required: `admin`, `agent`, `read_only`, `viewer` or `fleet_agent`), `tenant_id` (default `default`), `expires_in_days` (a number of days from now; left out, the token does not expire), `agent_id` (required for `fleet_agent`, an optional label on an `admin` token, refused for the other roles; must name a known agent). A `fleet_agent` token is always stored in the `default` tenant, whatever `tenant_id` says. Answers 201 with `token` and the row |
 | `POST /api/v1/admin/tokens/<id>/rotate` | New token value, the old one is revoked in the same step. Body (optional): `expires_in_days`; left out, the new token keeps the old expiry. `409 conflict` when the token is already revoked |
 | `DELETE /api/v1/admin/tokens/<id>/revoke` | Revoke without a replacement. `409 conflict` when it is already revoked. There is no `PATCH` on a token |
@@ -180,7 +180,7 @@ bash scripts/agent-api.sh --token operator POST /api/v1/admin/tokens/<id>/rotate
 bash scripts/agent-api.sh --token operator DELETE /api/v1/admin/tokens/<id>/revoke
 ```
 
-A fleet agent's own token is normally issued with `npm run agent-tokens -- issue` (above), not by hand. While `APPROVAL_HUMAN_ONLY_ENFORCE` is on, create and rotate refuse a caller that is an agent (a `fleet_agent` token, any token that carries an `agent_id`, a device key or a federation peer) with `403 human_session_required`, unless a person is signed in to the dashboard; revoke is not limited that way. The operator token (role `admin`, no agent) is not an agent.
+A fleet agent's own token is normally issued with `npm run agent-tokens -- issue` (above), not by hand. While `APPROVAL_HUMAN_ONLY_ENFORCE` is on, create and rotate refuse a caller that is an agent (a `fleet_agent` token, any token that carries an `agent_id`, a device key or a federation peer) with `403 human_session_required`, unless a person is signed in to the dashboard; revoke is not limited that way. The same guard sits on the other credential-issuing routes: `POST /api/admin/browser-enroll-codes`, `POST /api/auth/device-keys` and the Bridge pairing. The operator token (role `admin`, no agent) is not an agent.
 
 ### Onboarding a B2B partner
 

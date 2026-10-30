@@ -145,7 +145,7 @@ A Marveen többfelhasználós működésre is alkalmas: az egyes tenantok adatai
 | `agent` | Egy tenant összes adata (olvasás + írás), nincs admin |
 | `read_only` | Egy tenant adatai csak olvasásra |
 | `viewer` | Memóriák, kanban, ágensek listázása (blackboard nélkül) |
-| `fleet_agent` | Egy flotta-ágens saját API tokenjének szerepköre (ágensenként egy, az `agent_id` nevezi meg; az `npm run agent-tokens` állítja ki, lásd fent). Memóriák, kanban, üzenetek, blackboard, ütemezések és jóváhagyások (kérést adhat be, döntést sosem hoz), az ágens saját adataira szűkítve; admin végpontot nem ér el (ágens-életciklus, vault, tokenek, RBAC). Nem tenant-felhasználói szerepkör: a token nem hordoz saját tenantot. |
+| `fleet_agent` | Egy flotta-ágens saját API tokenjének szerepköre (ágensenként egy, az `agent_id` nevezi meg; az `npm run agent-tokens` állítja ki, lásd fent). Memóriák, kanban, blackboard és ütemezések (olvasás és írás), ágensek (csak olvasás), jóváhagyások (kérést adhat be, döntést sosem hoz), az ágensnek a saját működéséhez kellő gépi végpontok (főkönyv, ágens-állapot, napi napló, artifactok, skillek, hangválasz a saját csatornán), az ágens saját adataira szűkítve. Az üzenetek csak küldésre szólnak (`POST` és `PUT /api/messages`; a `GET /api/messages` `403`). A `GET /api/settings` és a `/api/marveen` nem-admin nézetét olvashatja (`200`). Admin végpontot nem ér el (ágens-életciklus, vault, tokenek, RBAC). Nem tenant-felhasználói szerepkör: a token nem hordoz saját tenantot. |
 
 ### Token kezelés
 
@@ -153,7 +153,7 @@ Az API tokenek a `/api/v1/admin/tokens` végponton kezelhetők (a régi `/api/ad
 
 | Útvonal | Mit csinál |
 |---------|-----------|
-| `GET /api/v1/admin/tokens` | A tokenek listája (`id`, `name`, `role`, `tenant_id`, `agent_id`, `expires_at`, `revoked_at`, `last_used_at`, `rotated_from`; hash és token nélkül) |
+| `GET /api/v1/admin/tokens` | A tokenek listája (`id`, `name`, `role`, `tenant_id`, `agent_id`, `created_at`, `expires_at`, `revoked_at`, `last_used_at`, `rotated_from`; hash és token nélkül) |
 | `POST /api/v1/admin/tokens` | Új token. Törzs: `name` (kötelező), `role` (kötelező: `admin`, `agent`, `read_only`, `viewer` vagy `fleet_agent`), `tenant_id` (alapértelmezett `default`), `expires_in_days` (mostantól számított napok száma; elhagyva a token nem jár le), `agent_id` (`fleet_agent`-nél kötelező, `admin` tokenen elhagyható címke, a többi szerepkörnél elutasított; ismert ágenst kell megneveznie). A `fleet_agent` token a `tenant_id` értékétől függetlenül mindig a `default` tenantba kerül. 201-et ad a `token` mezővel és a sorral |
 | `POST /api/v1/admin/tokens/<id>/rotate` | Új tokenérték, a régit ugyanabban a lépésben visszavonja. Törzs (elhagyható): `expires_in_days`; elhagyva az új token megtartja a régi lejáratát. `409 conflict`, ha a token már vissza van vonva |
 | `DELETE /api/v1/admin/tokens/<id>/revoke` | Visszavonás csere nélkül. `409 conflict`, ha már vissza van vonva. Tokenre `PATCH` nincs |
@@ -180,7 +180,7 @@ bash scripts/agent-api.sh --token operator POST /api/v1/admin/tokens/<id>/rotate
 bash scripts/agent-api.sh --token operator DELETE /api/v1/admin/tokens/<id>/revoke
 ```
 
-Egy flotta-ágens saját tokenjét általában az `npm run agent-tokens -- issue` állítja ki (fent), nem kézzel. Amíg az `APPROVAL_HUMAN_ONLY_ENFORCE` be van kapcsolva, a létrehozás és a rotálás `403 human_session_required`-et ad az ágens hívónak (`fleet_agent` token, bármely `agent_id`-t hordozó token, eszközkulcs vagy föderációs társ), hacsak nincs személy bejelentkezve a dashboardra; a visszavonást ez nem korlátozza. Az operátor token (`admin` szerepkör, ágens nélkül) nem ágens.
+Egy flotta-ágens saját tokenjét általában az `npm run agent-tokens -- issue` állítja ki (fent), nem kézzel. Amíg az `APPROVAL_HUMAN_ONLY_ENFORCE` be van kapcsolva, a létrehozás és a rotálás `403 human_session_required`-et ad az ágens hívónak (`fleet_agent` token, bármely `agent_id`-t hordozó token, eszközkulcs vagy föderációs társ), hacsak nincs személy bejelentkezve a dashboardra; a visszavonást ez nem korlátozza. Ugyanez az őr áll a többi hitelesítő-kiadó útvonalon is: `POST /api/admin/browser-enroll-codes`, `POST /api/auth/device-keys` és a Bridge-párosítás. Az operátor token (`admin` szerepkör, ágens nélkül) nem ágens.
 
 ### B2B partner beléptetése
 
