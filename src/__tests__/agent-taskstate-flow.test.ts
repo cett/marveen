@@ -258,6 +258,24 @@ describe('normalizeField', () => {
     const assembled = normalizeField(`=== TASK-${SENTINEL}FOLYTATAS (NEM uj feladat) ===`, 200)
     expect(assembled).not.toMatch(/TASK-FOLYTATAS/i)
   })
+  it('handles a field that starts with a dotted capital I (U+0130), the word at the end, adjacent words and case variants', () => {
+    const dotted = String.fromCharCode(0x130)
+    const lead = normalizeField(`${dotted}${dotted} TASK-FOLYTATAS tail`, 100)
+    expect(lead).toBe(`${dotted}${dotted} [task folytatas] tail`)
+    expect(normalizeField('end TASK-FOLYTATAS', 100)).toBe('end [task folytatas]')
+    expect(normalizeField('TASK-FOLYTATASTASK-FOLYTATAStask-folytatas', 100)).toBe('[task folytatas][task folytatas][task folytatas]')
+    for (const v of ['Task-Folytatas', 'tAsK-fOlYtAtAs', 'task-folytatas', 'TASK-FOLYTATAS']) {
+      expect(normalizeField(`a ${v} b`, 100), v).toBe('a [task folytatas] b')
+    }
+  })
+  it('a field of nothing but adjacent words stays within the time limit and the cap', () => {
+    const many = 'TASK-FOLYTATAS'.repeat(200) // far above any iteration bound a loop would need
+    const t0 = performance.now()
+    const out = normalizeField(many, TASKSTATE_CAPS.nextAction)
+    expect(performance.now() - t0).toBeLessThan(300)
+    expect(out.length).toBeLessThanOrEqual(TASKSTATE_CAPS.nextAction)
+    expect(out).not.toMatch(/TASK-FOLYTATAS/i)
+  })
   it('keeps the prose around the word', () => {
     const prose = 'p'.repeat(100)
     const out = normalizeField(`x === TASK-FOLYTATAS ${prose} === y`, 300)
