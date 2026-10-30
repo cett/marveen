@@ -3,7 +3,7 @@
  * (src/reranker-worker.ts) against a mocked model. The real thread is not started here: a Worker cannot load a .ts
  * file, so the thread itself is checked by the measurement on the compiled build.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { EventEmitter } from 'node:events'
 
 const { mockTokenizerFn, mockModelFn, registerSigtermFlush } = vi.hoisted(() => ({
@@ -35,12 +35,13 @@ class FakeWorker extends EventEmitter {
   reply(msg: RerankReply) { this.emit('message', msg) }
 }
 
-function setup(cooldownMs = 1000) {
+function setup(cooldownMs = 1000, watchdogMs?: number) {
   const workers: FakeWorker[] = []
   let now = 10_000
   const backend = new WorkerRerankBackend({
     spawn: () => { const w = new FakeWorker(); workers.push(w); return w as unknown as WorkerLike },
     cooldownMs,
+    ...(watchdogMs !== undefined ? { watchdogMs } : {}),
     now: () => now,
   })
   return { backend, workers, advance: (ms: number) => { now += ms } }
@@ -126,6 +127,85 @@ describe('WorkerRerankBackend', () => {
     expect(registerSigtermFlush.mock.calls[0][0]).toBe('reranker-worker')
     await (registerSigtermFlush.mock.calls[0][1] as () => Promise<void>)()
     expect(workers[0].terminated).toBe(true)
+  })
+})
+
+describe('WorkerRerankBackend, a hung worker', () => {
+  beforeEach(() => { vi.useFakeTimers() })
+  afterEach(() => { vi.useRealTimers() })
+
+  it('stops a worker whose request outlasts the watchdog, fails the call and cools down', async () => {
+    const { backend, workers, advance } = setup(1000)
+    const p = backend.score('q', ['a'], undefined, 100)
+    const failed = expect(p).rejects.toThrow('did not answer in time')
+    vi.advanceTimersByTime(101)
+    await failed
+    expect(workers[0].terminated).toBe(true)
+    expect(backend.state().workerState).toBe('down')
+    await expect(backend.score('q', ['a'], undefined, 100)).rejects.toBeInstanceOf(RerankUnavailableError)
+    expect(workers).toHaveLength(1)
+    // What the stopped thread still emits is not the live worker's business.
+    workers[0].emit('exit', 1)
+    workers[0].reply({ id: 1, scores: [0.4] })
+    advance(1001)
+    const again = backend.score('q', ['a'], undefined, 100)
+    expect(workers).toHaveLength(2)
+    workers[1].reply({ id: 2, scores: [0.7] })
+    expect(await again).toEqual([0.7])
+  })
+
+  it('leaves a worker alone that answers inside the watchdog time', async () => {
+    const { backend, workers } = setup()
+    const p = backend.score('q', ['a'], undefined, 100)
+    vi.advanceTimersByTime(60)
+    workers[0].reply({ id: 1, scores: [0.4] })
+    expect(await p).toEqual([0.4])
+    vi.advanceTimersByTime(1000)
+    expect(workers[0].terminated).toBe(false)
+    expect(backend.state().workerState).toBe('loading')
+  })
+
+  it('uses its own default when the call brings no watchdog time', async () => {
+    const { backend, workers } = setup(1000, 50)
+    const failed = expect(backend.score('q', ['a'])).rejects.toThrow('did not answer in time')
+    vi.advanceTimersByTime(51)
+    await failed
+    expect(workers[0].terminated).toBe(true)
+  })
+
+  it('fails every call that waits on the hung worker, not only the oldest', async () => {
+    const { backend } = setup()
+    const a = expect(backend.score('q', ['a'], undefined, 100)).rejects.toThrow('did not answer in time')
+    const b = expect(backend.score('q', ['b'], undefined, 5000)).rejects.toThrow('did not answer in time')
+    vi.advanceTimersByTime(101)
+    await Promise.all([a, b])
+  })
+})
+
+describe('WorkerRerankBackend, after dispose()', () => {
+  it('fails the call that is pending', async () => {
+    const { backend, workers } = setup()
+    const p = backend.score('q', ['a'])
+    const stopped = backend.dispose()
+    await expect(p).rejects.toThrow('reranker worker stopped')
+    await stopped
+    expect(workers[0].terminated).toBe(true)
+  })
+
+  it('starts no new worker for a rerank that arrives late', async () => {
+    const { backend, workers } = setup()
+    void backend.score('q', ['a']).catch(() => {})
+    await backend.dispose()
+    await expect(backend.score('q2', ['b'])).rejects.toBeInstanceOf(RerankUnavailableError)
+    expect(workers).toHaveLength(1)
+    expect(workers[0].posted).toHaveLength(1)
+  })
+
+  it('does not start a worker either when none was ever started', async () => {
+    const { backend, workers } = setup()
+    await backend.dispose()
+    await expect(backend.score('q', ['a'])).rejects.toBeInstanceOf(RerankUnavailableError)
+    expect(workers).toHaveLength(0)
   })
 })
 

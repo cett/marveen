@@ -22,13 +22,13 @@ function makeMemory(id: number, content = `m${id}`): Memory {
   }
 }
 
-interface Call { query: string; passages: string[]; maxLength?: number; resolve: (s: number[]) => void; reject: (e: Error) => void }
+interface Call { query: string; passages: string[]; maxLength?: number; watchdogMs?: number; resolve: (s: number[]) => void; reject: (e: Error) => void }
 
 class FakeBackend implements RerankBackend {
   readonly mode = 'worker' as const
   calls: Call[] = []
-  score(query: string, passages: string[], maxLength?: number): Promise<number[]> {
-    return new Promise((resolve, reject) => { this.calls.push({ query, passages, maxLength, resolve, reject }) })
+  score(query: string, passages: string[], maxLength?: number, watchdogMs?: number): Promise<number[]> {
+    return new Promise((resolve, reject) => { this.calls.push({ query, passages, maxLength, watchdogMs, resolve, reject }) })
   }
   state() { return { workerState: 'ready' as const, loadMs: 1234 } }
   async dispose() {}
@@ -124,6 +124,20 @@ describe('rerank queue', () => {
   it('applies topK and maxCandidates on the fallback path too', async () => {
     const out = await rerank('q', [makeMemory(1), makeMemory(2), makeMemory(3), makeMemory(4)], { topK: 2, maxCandidates: 3, budgetMs: 10 })
     expect(ids(out)).toEqual([1, 2])
+  })
+
+  it('falls back to the first maxCandidates when topK asks for more than that', async () => {
+    // topK 4 > maxCandidates 3: the fallback is the pool, not the first four of the input.
+    const out = await rerank('q', [makeMemory(1), makeMemory(2), makeMemory(3), makeMemory(4), makeMemory(5)], { topK: 4, maxCandidates: 3, budgetMs: 10 })
+    expect(ids(out)).toEqual([1, 2, 3])
+  })
+
+  it('gives the backend three times the budget of the call before the worker counts as hung', async () => {
+    const p = rerank('q', pool, { budgetMs: 700 })
+    await tick()
+    expect(fake.calls[0].watchdogMs).toBe(2100)
+    fake.calls[0].resolve([0.1, 0.2, 0.3])
+    await p
   })
 
   it('does not count or queue an empty candidate list', async () => {

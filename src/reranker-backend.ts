@@ -9,7 +9,11 @@ import type { RerankReply, RerankRequest } from './reranker-worker.js'
 /** Scores (query, passage) pairs, 0..1 in passage order. One call at a time: the queue in reranker.ts serializes. */
 export interface RerankBackend {
   readonly mode: 'worker' | 'in-process'
-  score(query: string, passages: string[], maxLength?: number): Promise<number[]>
+  /**
+   * `watchdogMs`: a worker whose request has been running this long is considered hung and is replaced (worker
+   * backend only; the in-process backend cannot be stopped from outside).
+   */
+  score(query: string, passages: string[], maxLength?: number, watchdogMs?: number): Promise<number[]>
   /** What the backend knows about itself, for the stats view. */
   state(): { workerState: 'not-started' | 'loading' | 'ready' | 'down'; loadMs: number | null }
   dispose(): Promise<void>
@@ -40,14 +44,22 @@ export interface WorkerBackendOptions {
   spawn: () => WorkerLike
   /** After an unexpected worker exit no new worker is started for this long; callers fall back meanwhile. */
   cooldownMs?: number
+  /** Default for a request that brings no watchdog time of its own. */
+  watchdogMs?: number
   now?: () => number
 }
 
 const DEFAULT_COOLDOWN_MS = 30_000
+/** A running request is given this many times the budget its caller waits for before the worker is declared hung. */
+export const RERANK_WATCHDOG_FACTOR = 3
+const DEFAULT_WATCHDOG_MS = 9_000
 
-interface Pending { resolve: (scores: number[]) => void; reject: (err: Error) => void }
+interface Pending { resolve: (scores: number[]) => void; reject: (err: Error) => void; watchdog: NodeJS.Timeout }
 
-/** The model in a worker thread: spawned on first use, replaced after a crash (with a cooldown), stopped on SIGTERM. */
+/**
+ * The model in a worker thread: spawned on first use, replaced after a crash or when it hangs (with a cooldown),
+ * stopped on SIGTERM and not started again after that.
+ */
 export class WorkerRerankBackend implements RerankBackend {
   readonly mode = 'worker' as const
   private worker: WorkerLike | null = null
@@ -58,11 +70,14 @@ export class WorkerRerankBackend implements RerankBackend {
   private nextId = 1
   private readonly pending = new Map<number, Pending>()
   private flushRegistered = false
+  private disposed = false
   private readonly cooldownMs: number
+  private readonly watchdogMs: number
   private readonly now: () => number
 
   constructor(private readonly opts: WorkerBackendOptions) {
     this.cooldownMs = opts.cooldownMs ?? DEFAULT_COOLDOWN_MS
+    this.watchdogMs = opts.watchdogMs ?? DEFAULT_WATCHDOG_MS
     this.now = opts.now ?? Date.now
   }
 
@@ -73,7 +88,7 @@ export class WorkerRerankBackend implements RerankBackend {
     return { workerState, loadMs: this.loadMs }
   }
 
-  score(query: string, passages: string[], maxLength?: number): Promise<number[]> {
+  score(query: string, passages: string[], maxLength?: number, watchdogMs?: number): Promise<number[]> {
     let worker: WorkerLike
     try {
       worker = this.ensureWorker()
@@ -82,10 +97,18 @@ export class WorkerRerankBackend implements RerankBackend {
     }
     const id = this.nextId++
     return new Promise<number[]>((resolve, reject) => {
-      this.pending.set(id, { resolve, reject })
+      // A native forward pass cannot be interrupted from inside the thread, and a worker that never answers would
+      // otherwise make every later call wait out its whole budget until the process restarts: past the watchdog
+      // time the thread is stopped and replaced after the cooldown.
+      const watchdog = setTimeout(() => {
+        if (this.pending.has(id)) this.retire(worker, new Error('reranker worker did not answer in time'), true)
+      }, watchdogMs ?? this.watchdogMs)
+      watchdog.unref()
+      this.pending.set(id, { resolve, reject, watchdog })
       try {
         worker.postMessage({ id, query, passages, ...(maxLength !== undefined ? { maxLength } : {}) })
       } catch (err) {
+        clearTimeout(watchdog)
         this.pending.delete(id)
         reject(err instanceof Error ? err : new Error(String(err)))
       }
@@ -93,6 +116,9 @@ export class WorkerRerankBackend implements RerankBackend {
   }
 
   async dispose(): Promise<void> {
+    // Final: a rerank that arrives after this (the flush runs for up to a second while the server still answers)
+    // must not start a new worker that the exit then kills halfway.
+    this.disposed = true
     const worker = this.worker
     this.worker = null
     this.failPending(new Error('reranker worker stopped'))
@@ -100,6 +126,7 @@ export class WorkerRerankBackend implements RerankBackend {
   }
 
   private ensureWorker(): WorkerLike {
+    if (this.disposed) throw new RerankUnavailableError('reranker worker is stopped')
     if (this.worker) return this.worker
     if (this.now() < this.downUntil) throw new RerankUnavailableError('reranker worker is cooling down after a crash')
     const worker = this.opts.spawn()
@@ -130,25 +157,36 @@ export class WorkerRerankBackend implements RerankBackend {
     const entry = this.pending.get(msg.id)
     if (!entry) return
     this.pending.delete(msg.id)
+    clearTimeout(entry.watchdog)
     if ('error' in msg) entry.reject(new Error(msg.error))
     else entry.resolve(msg.scores)
   }
 
   private onGone(which: WorkerLike, err: Error): void {
-    // 'error' is followed by 'exit' for the same worker, and dispose() clears this.worker first: act once, and
-    // never on a worker that was already replaced.
+    this.retire(which, err, false)
+  }
+
+  /**
+   * The worker is gone (crashed, or hung and stopped here): fail what waits on it and start the cooldown.
+   * 'error' is followed by 'exit' for the same worker, and dispose() clears this.worker first: act once, and
+   * never on a worker that was already replaced.
+   */
+  private retire(which: WorkerLike, err: Error, terminate: boolean): void {
     if (which !== this.worker) return
     this.worker = null
     this.loaded = false
     this.downUntil = this.now() + this.cooldownMs
     logger.warn({ err: err.message, cooldownMs: this.cooldownMs }, 'reranker worker is gone, falling back to the RRF order')
     this.failPending(err)
+    // Not awaited: stopping a thread that sits in native code may take long, and the callers are waiting on a
+    // fallback, not on this. Its late events are ignored, it is no longer this.worker.
+    if (terminate) which.terminate().catch((e: unknown) => logger.warn({ err: e }, 'reranker worker: terminate failed'))
   }
 
   private failPending(err: Error): void {
     const entries = [...this.pending.values()]
     this.pending.clear()
-    for (const entry of entries) entry.reject(err)
+    for (const entry of entries) { clearTimeout(entry.watchdog); entry.reject(err) }
   }
 }
 

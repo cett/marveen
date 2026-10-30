@@ -1,7 +1,7 @@
 import { logger } from './logger.js'
 import type { Memory } from './db.js'
 import { RERANKER_MODEL, _resetEngineForTests } from './reranker-engine.js'
-import { RerankUnavailableError, createDefaultRerankBackend, type RerankBackend } from './reranker-backend.js'
+import { RERANK_WATCHDOG_FACTOR, RerankUnavailableError, createDefaultRerankBackend, type RerankBackend } from './reranker-backend.js'
 
 // Cross-encoder rerank of the fused hybrid-search list.
 //
@@ -55,6 +55,7 @@ interface Job {
   query: string
   passages: string[]
   maxLength?: number
+  budgetMs: number
   timer: NodeJS.Timeout
   resolve: (outcome: Outcome) => void
 }
@@ -94,7 +95,7 @@ function pump(): void {
   if (!next) return
   running = next
   const started = Date.now()
-  getBackend().score(next.query, next.passages, next.maxLength).then(
+  getBackend().score(next.query, next.passages, next.maxLength, next.budgetMs * RERANK_WATCHDOG_FACTOR).then(
     scores => {
       const ms = Date.now() - started
       stats.lastRerankMs = ms
@@ -121,6 +122,7 @@ function submit(query: string, passages: string[], budgetMs: number, maxLength?:
       query,
       passages,
       maxLength,
+      budgetMs,
       timer: setTimeout(() => settle(job, { ok: false, reason: 'timeout' }), budgetMs),
       resolve,
     }
