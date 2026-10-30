@@ -18,6 +18,9 @@
 // Pair each with its preamble so the model knows what the tags mean.
 // Both wrappers scrub ALL our security tags from the payload (not just their
 // own) so a nested injection inside an outer wrap can't open a fake inner tag.
+// The untrusted / trusted-peer / web-fetch wrappers also neutralize the
+// '<channel' opener (see PAYLOAD_CHANNEL_RX); only the channel-inbound envelope
+// and scheduled-task bodies keep it.
 //
 // Source attributes are routed through two sanitizers:
 //   sanitizeAgentIdent:  raw agent id, no ':' (router builds "agent:NAME")
@@ -48,12 +51,33 @@ const SECURITY_TAG_RX = new RegExp(
 // still finds every occurrence in audit logs.
 const STRIPPED_SENTINEL = `[[SECURITY_TAG_REMOVED_${randomBytes(4).toString('hex')}]]`
 
+// '<channel' is NOT in SECURITY_TAG_NAMES: wrapChannelInbound must keep the
+// coordinator-built <channel ...> envelope, and scheduled-task bodies are
+// operator-authored (two of them quote the tag in prose). It IS neutralized in
+// every other payload wrapper (wrapUntrusted, wrapUntrustedFetch,
+// wrapTrustedPeer) via PAYLOAD_CHANNEL_RX, so text that reaches an agent inside
+// one of those frames cannot carry a live-looking channel delivery. Only the
+// OPENER is replaced (not the whole tag): a `[^>]*>` span could swallow prose
+// up to a far '>', and an opener-only rule also covers over-long and
+// unterminated tags. The lookahead leaves words like <channelization> alone.
+const PAYLOAD_CHANNEL_RX = /<\s*\/?\s*channel(?=[\s>/]|$)/gi
+
 /** Neutralize security-framing tags in free text that reaches an agent's
  *  context OUTSIDE a wrap (e.g. peer-supplied catalog text rendered into the
  *  routing directory). Same regex + sentinel as the wrappers -- never
- *  duplicated at call sites. */
+ *  duplicated at call sites. Does not touch '<channel' (see PAYLOAD_CHANNEL_RX);
+ *  callers that need it use scrubFramingTags. */
 export function scrubSecurityTags(raw: string): string {
   return raw.replace(SECURITY_TAG_RX, STRIPPED_SENTINEL)
+}
+
+/** Payload-level scrub: our security tags AND the '<channel' opener. Used by
+ *  the untrusted / trusted-peer / web-fetch wrappers, and by callers that
+ *  sanitize free text for an agent's context. Idempotent. */
+export function scrubFramingTags(raw: string): string {
+  return raw
+    .replace(SECURITY_TAG_RX, STRIPPED_SENTINEL)
+    .replace(PAYLOAD_CHANNEL_RX, STRIPPED_SENTINEL)
 }
 
 // ── PII scrub-before-persist ────────────────────────────────────────────────
@@ -151,7 +175,7 @@ export function wrapUntrusted(source: string, content: string | null | undefined
   if (content == null) return ''
   const text = String(content)
   if (text.length === 0) return ''
-  const scrubbed = text.replace(SECURITY_TAG_RX, STRIPPED_SENTINEL)
+  const scrubbed = scrubFramingTags(text)
   const safeSource = sanitizeAgentSource(source)
   return `<untrusted source="${safeSource}">\n${scrubbed}\n</untrusted>`
 }
@@ -178,7 +202,7 @@ export function wrapUntrustedFetch(
   if (content == null) return ''
   const text = String(content)
   if (text.length === 0) return ''
-  const scrubbed = text.replace(SECURITY_TAG_RX, STRIPPED_SENTINEL)
+  const scrubbed = scrubFramingTags(text)
   // Strip chars that could break out of an XML attribute; nonce is already hex.
   const safeUrl = url.replace(/[^a-zA-Z0-9.:/_?&=%-]/g, '').slice(0, 256)
   return `<untrusted source="web-fetch:${safeUrl}" fetch-nonce="${nonce}">\n${scrubbed}\n</untrusted>`
@@ -188,7 +212,7 @@ export function wrapTrustedPeer(source: string, content: string | null | undefin
   if (content == null) return ''
   const text = String(content)
   if (text.length === 0) return ''
-  const scrubbed = text.replace(SECURITY_TAG_RX, STRIPPED_SENTINEL)
+  const scrubbed = scrubFramingTags(text)
   const safeSource = sanitizeAgentSource(source)
   return `<trusted-peer source="${safeSource}">\n${scrubbed}\n</trusted-peer>`
 }
