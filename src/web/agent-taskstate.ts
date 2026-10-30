@@ -86,7 +86,9 @@ const SENTINEL_IN_VALUE_RX = /=+\s*TASK-FOLYTATAS[^=\n]*=+/gi
 
 // C0/C1 controls (newline and tab are folded into spaces afterwards), plus the
 // invisible and bidirectional-override characters that hide or reorder text.
-const CONTROL_RX = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f​-‏‪-‮⁠-⁩﻿]/g
+const RAW_CUT_FACTOR = 4
+
+const CONTROL_RX =/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f​-‏‪-‮⁠-⁩﻿]/g
 
 /**
  * One value of the record, made safe to replay: no control characters, every run of
@@ -97,7 +99,12 @@ const CONTROL_RX = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f​-‏�
  * is applied on write and again on read.
  */
 export function normalizeField(s: unknown, max: number): string {
+  // Cut the raw input FIRST, to a generous multiple of the cap (control characters
+  // and runs of whitespace shrink a value, so the kept text can still fill the cap):
+  // every pass below, the tag patterns included, then runs on a bounded string, not
+  // on whatever size the request body allowed.
   let folded = String(s ?? '')
+    .slice(0, max * RAW_CUT_FACTOR)
     .replace(CONTROL_RX, '')
     .replace(/\s+/g, ' ')
   // Repeat until stable: cutting an inner sentinel can join the pieces around it
@@ -111,7 +118,10 @@ export function normalizeField(s: unknown, max: number): string {
 
 function asStringArray(v: unknown): string[] {
   if (!Array.isArray(v)) return []
+  // Only the first items are looked at at all: a body with a million entries must
+  // not cost a million normalizations to keep twenty.
   return v
+    .slice(0, TASKSTATE_CAPS.maxItems * 5)
     .map((x) => normalizeField(x, TASKSTATE_CAPS.item))
     .filter(Boolean)
     .slice(0, TASKSTATE_CAPS.maxItems)

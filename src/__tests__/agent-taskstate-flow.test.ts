@@ -12,6 +12,7 @@ import type { RouteContext } from '../web/routes/types.js'
 import { tryHandleAgentTaskState } from '../web/routes/agent-taskstate.js'
 import {
   readTaskState,
+  writeTaskState,
   clearTaskState,
   sweepOrphanTaskStates,
   normalizeField,
@@ -255,6 +256,68 @@ describe('normalizeField', () => {
   it('turns null and undefined into an empty string', () => {
     expect(normalizeField(undefined, 10)).toBe('')
     expect(normalizeField(null, 10)).toBe('')
+  })
+})
+
+// A big value must not be fed whole to the tag patterns (an opener with no closing '>' makes
+// the security-tag pattern quadratic: ~550 kB took ~85 s). The raw input is cut first.
+describe('large input stays cheap', () => {
+  const LIMIT_MS = 300
+  const bigs = {
+    'openers without a closing bracket': '<untrusted '.repeat(50_000), // ~550 kB
+    'channel openers': '<channel '.repeat(60_000),
+    'angle bracket and spaces': `<${' '.repeat(550_000)}x`,
+    'sentinel pieces': '=== TASK-'.repeat(60_000),
+  }
+
+  it('normalizeField', () => {
+    for (const [name, big] of Object.entries(bigs)) {
+      const t0 = performance.now()
+      const out = normalizeField(big, TASKSTATE_CAPS.nextAction)
+      expect(performance.now() - t0, name).toBeLessThan(LIMIT_MS)
+      expect(out.length, name).toBeLessThanOrEqual(TASKSTATE_CAPS.nextAction)
+    }
+  })
+
+  it('the write route with every field and list item oversized', async () => {
+    for (const [name, big] of Object.entries(bigs)) {
+      const body = { summary: big, nextAction: big, pendingDecision: big, doneSteps: [big, big], alreadyDelegated: [big] }
+      const t0 = performance.now()
+      await write(A, body, fleetTokenOf(A))
+      expect(performance.now() - t0, name).toBeLessThan(LIMIT_MS)
+      expect((rawRecord(A).nextAction as string).length, name).toBeLessThanOrEqual(TASKSTATE_CAPS.nextAction)
+    }
+  })
+
+  it('the read path on a record planted with oversized fields', () => {
+    for (const [name, big] of Object.entries(bigs)) {
+      plant(A, { agent: A, summary: big, nextAction: big, pendingDecision: big, doneSteps: [big], alreadyDelegated: [big], ts: Date.now(), consumed: false, writer: A })
+      const t0 = performance.now()
+      const r = readTaskState(A)!
+      expect(performance.now() - t0, name).toBeLessThan(LIMIT_MS)
+      expect(r.nextAction.length, name).toBeLessThanOrEqual(TASKSTATE_CAPS.nextAction)
+    }
+  })
+
+  it('a list with a million entries is read from the front only', async () => {
+    const t0 = performance.now()
+    await write(A, { nextAction: 'n', doneSteps: Array.from({ length: 1_000_000 }, () => ' ') }, fleetTokenOf(A))
+    expect(performance.now() - t0).toBeLessThan(2_000)
+    expect(rawRecord(A).doneSteps).toEqual([])
+  })
+
+  it('and only a bounded number of its entries are ever converted', () => {
+    let converted = 0
+    const entry = { toString: () => { converted++; return 'x' } }
+    writeTaskState(A, { doneSteps: Array.from({ length: 5_000 }, () => entry as unknown as string) }, Date.now(), A)
+    expect(converted).toBeGreaterThan(0)
+    expect(converted).toBeLessThanOrEqual(TASKSTATE_CAPS.maxItems * 5)
+    expect(readTaskState(A)!.doneSteps.length).toBe(TASKSTATE_CAPS.maxItems)
+  })
+
+  it('the cut still keeps text that sits within the cap after whitespace and control characters are dropped', () => {
+    const padded = ('a \n\t\u0000'.repeat(40)).trim() // 5 raw chars per kept 'a '
+    expect(normalizeField(padded, 50).length).toBeGreaterThan(40)
   })
 })
 
