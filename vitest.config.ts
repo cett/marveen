@@ -31,7 +31,10 @@ export default defineConfig({
     // tree (multiple fleet agents checking out worktrees/config under this repo
     // root) otherwise gets picked up by vitest's default glob, causing spurious
     // failures from other agents' Playwright/config files (#807).
-    exclude: [...configDefaults.exclude, 'tests/smoke/**', 'dist/**', 'agents/**', '.channels-config/**'],
+    // 'tools/qa/fixture/**' holds the scanner fixture (tools/qa/check-scanners.mjs reads it as source text, on
+    // purpose with a test file whose `expect` is not imported): it is data for the scanners, not a suite, and a
+    // full run would pick it up and fail with "expect is not defined".
+    exclude: [...configDefaults.exclude, 'tests/smoke/**', 'dist/**', 'agents/**', '.channels-config/**', 'tools/qa/fixture/**'],
     // Default 5 s is too tight for DB-heavy tests in a fully-parallel suite run.
     // Affected tests pass in isolation; the timeout is a concurrency artefact.
     testTimeout: 15000,
