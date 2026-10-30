@@ -17,7 +17,7 @@ import {
 import { MAIN_AGENT_ID, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ } from '../../config.js'
 import { logger } from '../../logger.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
-import { isBlankContent } from '../../blank-content.js'
+import { BlankContentError, isBlankContent } from '../../blank-content.js'
 import { detectHomoglyphs, formatHomoglyphWarning } from '../../homoglyph.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
 import { actingAgentId, enforcedSelfScope } from '../fleet-agent-identity.js'
@@ -734,7 +734,14 @@ Respond ONLY with JSON, nothing else:
       json(res, { error: 'required', field: 'content', hint: 'content is required and must be a non-empty string' }, 400)
       return true
     }
-    if (await updateMemory(id, content, tier || category, agent_id, keywords)) { json(res, { ok: true }); return true }
+    try {
+      if (await updateMemory(id, content, tier || category, agent_id, keywords)) { json(res, { ok: true }); return true }
+    } catch (err) {
+      // The check above and the DB layer share isBlankContent; this keeps a future divergence a 400, not a 500.
+      if (!(err instanceof BlankContentError)) throw err
+      json(res, { error: 'required', field: 'content', hint: 'content is required and must be a non-empty string' }, 400)
+      return true
+    }
     json(res, { error: 'not_found' }, 404)
     return true
   }
