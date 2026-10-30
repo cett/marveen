@@ -287,6 +287,29 @@ export function getSchemaReport(): SchemaReport | null {
   return lastSchemaReport
 }
 
+const SCHEMA_STRICT_ON = new Set(['1', 'true', 'yes', 'on'])
+const SCHEMA_STRICT_OFF = new Set(['', '0', 'false', 'no', 'off'])
+
+/**
+ * Reads SCHEMA_STRICT from the environment at call time. On: 1, true, yes, on. Off: unset, empty, 0,
+ * false, no, off (case and surrounding spaces ignored). Any other value is treated as OFF, because the
+ * default must never refuse to start, but it is not silent: it is logged as a WARN, so an operator who
+ * meant "on" (a typo, "01", "enabled") sees that the strict check is not active.
+ */
+function schemaStrictRequested(): boolean {
+  const raw = process.env.SCHEMA_STRICT
+  if (raw === undefined) return false
+  const value = raw.trim().toLowerCase()
+  if (SCHEMA_STRICT_ON.has(value)) return true
+  if (!SCHEMA_STRICT_OFF.has(value)) {
+    logger.warn(
+      { value: raw },
+      'SCHEMA_STRICT has an unrecognised value and is treated as off. Use 1 (or true, yes, on) to refuse a database that is newer than the code, 0 (or false, no, off) to allow it.',
+    )
+  }
+  return false
+}
+
 function loadRecorded(db: Database.Database): Map<number, string | null> {
   const rows = db.prepare('SELECT version, checksum FROM schema_version').all() as { version: number; checksum: string | null }[]
   return new Map(rows.map((r) => [r.version, r.checksum]))
@@ -335,10 +358,10 @@ export function applyMigrations(db: Database.Database, migrationsDir?: string): 
   const currentVersion = applied.size === 0 ? 0 : Math.max(...applied.keys())
 
   // A database newer than this code is accepted by default (a code-only rollback must still boot).
-  // SCHEMA_STRICT=1 (read here, at call time) refuses it before any pending migration is applied;
+  // SCHEMA_STRICT=1 (or true, yes, on; read here, at call time) refuses it before any pending migration is applied;
   // verify instances and CI set it so a database taken from another branch is not touched silently.
   const before = describeSchema(applied, files)
-  if (process.env.SCHEMA_STRICT === '1' && before.dbAhead.length > 0) {
+  if (schemaStrictRequested() && before.dbAhead.length > 0) {
     throw new Error(`Database schema is newer than the code: versions ${before.dbAhead.join(', ')}`)
   }
 

@@ -133,6 +133,52 @@ describe('applyMigrations: SCHEMA_STRICT=1', () => {
   })
 })
 
+describe('applyMigrations: SCHEMA_STRICT values', () => {
+  function startWithValue(value: string): () => void {
+    applyMigrations(db, dir)
+    recordFutureVersion()
+    process.env.SCHEMA_STRICT = value
+    return () => applyMigrations(db, dir)
+  }
+
+  it.each(['1', 'true', 'TRUE', 'True', 'yes', 'on', ' 1 ', ' On '])('%j turns the strict check on', (value) => {
+    const run = startWithValue(value)
+    expect(run).toThrow(new RegExp(`newer than the code.*${FUTURE_VERSION}`))
+    expect(logged(warnSpy, 'unrecognised value')).toBe(false)
+  })
+
+  it.each(['0', 'false', 'FALSE', 'no', 'off', '', '  '])('%j is an explicit off: boots, no warning about the value', (value) => {
+    const run = startWithValue(value)
+    expect(run).not.toThrow()
+    expect(logged(warnSpy, 'unrecognised value')).toBe(false)
+  })
+
+  it('unset is off and silent', () => {
+    applyMigrations(db, dir)
+    recordFutureVersion()
+    expect(() => applyMigrations(db, dir)).not.toThrow()
+    expect(logged(warnSpy, 'unrecognised value')).toBe(false)
+  })
+
+  it.each(['01', '2', 'enable', 'enabled', 'strict', 'truee', 'y'])('%j is not understood: still boots (never refuse by default) but WARNs with the value', (value) => {
+    const run = startWithValue(value)
+    expect(run).not.toThrow()
+    const warns = callsWithValue(value)
+    expect(warns, 'a warn naming the unrecognised value').toHaveLength(1)
+  })
+
+  it('an unknown value warns even on a clean database (the typo is visible at every start)', () => {
+    process.env.SCHEMA_STRICT = '01'
+    expect(() => applyMigrations(db, dir)).not.toThrow()
+    expect(callsWithValue('01')).toHaveLength(1)
+  })
+
+  /** WARN calls that carry the unrecognised-value message and the raw value in the structured fields. */
+  function callsWithValue(value: string): unknown[][] {
+    return callsWith(warnSpy, 'unrecognised value').filter((c) => (c[0] as { value?: string }).value === value)
+  }
+})
+
 describe('applyMigrations: checksum mismatch stays a per-version warning', () => {
   it('T5: an edited-in-DB checksum lists the version in mismatched and keeps the existing WARN', () => {
     applyMigrations(db, dir)
