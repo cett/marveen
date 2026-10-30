@@ -40,6 +40,7 @@ import { reloadAgentSettingsCache } from '../db/agent-settings-cache.js'
 import { getFederationConfigRaw, setFederationConfigRaw } from '../db/federation.js'
 import { invalidateFederationConfigCache, validateFederationConfig } from './federation/config.js'
 import { logger } from '../logger.js'
+import { isBlankContent } from '../blank-content.js'
 
 // ---------------------------------------------------------------------------
 // Schema version -- bump when the JSON shape changes incompatibly.
@@ -983,6 +984,17 @@ async function enabledLocalTenantIds(): Promise<Set<string>> {
   return new Set<string>(['default', ...await listEnabledTenantIds()])
 }
 
+/**
+ * The memory rows of a bundle that can be written. A row with no visible text (an old export from a fleet that still
+ * had one) is left out: the memories trigger refuses it, and the whole import is one transaction, so one such row
+ * would roll back every table of the import. The other rows go in.
+ */
+function importableMemories(fleet: FleetJson): { rows: MemoryRow[]; skippedBlank: number } {
+  const all = fleet.memories ?? []
+  const rows = all.filter((mem) => typeof mem.content === 'string' && !isBlankContent(mem.content))
+  return { rows, skippedBlank: all.length - rows.length }
+}
+
 async function buildDiffReport(fleet: FleetJson): Promise<DiffReport> {
   const warnings: string[] = []
 
@@ -990,10 +1002,14 @@ async function buildDiffReport(fleet: FleetJson): Promise<DiffReport> {
   const newAgents = (fleet.agents ?? []).map(a => a.name).filter(n => !existingAgents.has(n))
 
   let newMemories = 0
-  for (const mem of fleet.memories ?? []) {
+  const memoryRows = importableMemories(fleet)
+  for (const mem of memoryRows.rows) {
     if (!await fleetRowExists('memories', mem)) {
       newMemories++
     }
+  }
+  if (memoryRows.skippedBlank > 0) {
+    warnings.push(`${memoryRows.skippedBlank} memória-sor látható szöveg nélkül van -- az import kihagyja.`)
   }
 
   let newCards = 0
@@ -1581,6 +1597,11 @@ async function runImportFleet(
   const s = fleet.dashboardSettings ?? {}
   // One warnings list for the whole apply (the vault step and the identity takeover push onto it too).
   const applyWarnings: string[] = []
+  const memoryRows = importableMemories(fleet)
+  if (memoryRows.skippedBlank > 0) {
+    logger.warn({ skipped: memoryRows.skippedBlank }, 'Fleet import: skipping memory rows with no visible text')
+    applyWarnings.push(`memóriák: ${memoryRows.skippedBlank} sor látható szöveg nélkül kimaradt az importból.`)
+  }
 
   // federation (system_config 'federation_config_json') -- whole-value replace via the raw setter, not a file write,
   // then an explicit cache invalidation (see invalidateFederationConfigCache()'s doc comment for why this bypass
@@ -1883,7 +1904,7 @@ async function runImportFleet(
       // memories -- idempotent on (agent_id, content); covers ALL agent_ids
       // agent_id-k pontosan a forrásból kerülnek át (a cél átveszi a forrás főagent identitását)
       const now = Math.floor(Date.now() / 1000)
-      await importFleetRows('memories', (fleet.memories ?? []).map((mem) => ({
+      await importFleetRows('memories', memoryRows.rows.map((mem) => ({
         ...mem, chat_id: '', accessed_at: mem.accessed_at ?? now, auto_generated: mem.auto_generated ?? 0,
       })))
 
@@ -1966,7 +1987,7 @@ async function runImportFleet(
       agents: (fleet.agents ?? []).map(a => a.name),
       globalSkills: (fleet.skills ?? []).length,
       scheduledTasks: (fleet.scheduledTasks ?? []).length,
-      memories: (fleet.memories ?? []).length,
+      memories: memoryRows.rows.length,
       kanbanCards: (fleet.kanban?.cards ?? []).length,
       labels: (fleet.kanban?.labels ?? []).length,
       dailyLogs: (fleet.dailyLogs ?? []).length,

@@ -1459,6 +1459,9 @@ paths:
                     type: boolean
                   imported:
                     type: integer
+                  skipped_blank:
+                    type: integer
+                    description: Chunks dropped because they have no visible text (empty, whitespace or invisible characters only)
                   stats:
                     type: object
                     properties:
@@ -1471,7 +1474,7 @@ paths:
                       shared:
                         type: integer
         "400":
-          description: No chunks provided
+          description: No chunks provided, or every chunk is blank
           content:
             application/json:
               schema:

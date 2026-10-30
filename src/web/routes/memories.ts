@@ -372,7 +372,7 @@ Respond ONLY with JSON, nothing else:
     }
 
     logger.info({ agentId, imported, stats, skippedBlank }, 'Migráció befejezve')
-    json(res, { ok: true, imported, stats })
+    json(res, { ok: true, imported, stats, skipped_blank: skippedBlank })
     return true
   }
 

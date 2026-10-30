@@ -7,6 +7,7 @@ import { logger } from '../logger.js'
 import { TOOL_TIMEOUTS } from '../tool-timeouts.js'
 import { rerank } from '../reranker.js'
 import { stripMarkup } from '../web/import-utils.js'
+import { isBlankContent } from '../blank-content.js'
 import { db, tryLoadVecExtension, vecExtensionLoaded } from './connection.js'
 import { dbx, type SqlOps } from './facade.js'
 import { Memory, reRankByRecency, searchAgentMemories } from './memory.js'
@@ -269,6 +270,11 @@ export function backfillImportShadowRows(): number {
   if (pending.length === 0) return 0
 
   for (const row of pending) {
+    if (isBlankContent(row.content)) {
+      // The memories trigger would abort the insert and the loop with it, leaving the rows after this one without a shadow.
+      logger.warn({ importId: row.id }, 'Import row has no visible text, no shadow row created')
+      continue
+    }
     const result = db
       .prepare(
         `INSERT INTO memories (agent_id, content, category, keywords, chat_id, sector, created_at, accessed_at, updated_at)
@@ -300,6 +306,11 @@ export function backfillImportShadowRows(): number {
   if (htmlRows.length > 0) {
     for (const row of htmlRows) {
       const stripped = stripMarkup(row.content)
+      if (isBlankContent(stripped)) {
+        // The memories trigger would refuse the text, and the import row would be left changed on its own.
+        logger.warn({ importId: row.import_id }, 'HTML import row has no visible text after stripping, left as it is')
+        continue
+      }
       db.prepare('UPDATE import_memories SET content = ? WHERE id = ?').run(stripped, row.import_id)
       db.prepare('UPDATE memories SET content = ?, embedding_blob = NULL WHERE id = ?').run(stripped, row.shadow_id)
     }

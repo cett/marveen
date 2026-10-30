@@ -155,7 +155,7 @@ const OLD = {
 const SKILL_MD = '---\nname: skill-g\ndescription: A global skill\n---\nbody\n'
 const AGENT_SKILL_MD = '---\nname: skill-a\ndescription: An agent skill\n---\nbody\n'
 
-function bundle(extra: { comments?: Record<string, unknown>[] } = {}): FleetJson {
+function bundle(extra: { comments?: Record<string, unknown>[]; memories?: FleetJson['memories'] } = {}): FleetJson {
   return {
     schemaVersion: 1,
     exportedAt: '2026-01-01T00:00:00.000Z',
@@ -184,7 +184,7 @@ function bundle(extra: { comments?: Record<string, unknown>[] } = {}): FleetJson
     }],
     skills: [{ name: 'skill-g', skillMd: SKILL_MD }],
     scheduledTasks: [{ dirName: 'task-a', skillMd: 'task body\n', config: { schedule: '0 7 * * *' } }],
-    memories: [],
+    memories: extra.memories ?? [],
     dailyLogs: [],
     kanban: {
       labels: [],
@@ -421,6 +421,37 @@ describe('a skills SQL failure is not swallowed', () => {
     expect(after).toEqual(before)
     expect(tree()).toEqual(filesBefore)
     expectCachesMatchTables()
+  })
+})
+
+describe('a memory row with no visible text in the bundle', () => {
+  const memory = (content: string) => ({
+    agent_id: 'agent-a', content, sector: 'semantic', salience: 1, created_at: 1, accessed_at: 1,
+    category: 'warm', auto_generated: 0, keywords: '',
+  })
+  const ZWSP = String.fromCodePoint(0x200b)
+
+  it('is left out with a warning, and the other rows and every other table are imported', async () => {
+    const result = await apply(bundle({ memories: [memory('first memory'), memory(ZWSP), memory('   '), memory('second memory')] })) as {
+      ok: boolean; imported: { memories: number }; warnings?: string[]
+    }
+
+    expect(result.ok).toBe(true)
+    expect(rows("SELECT content FROM memories ORDER BY content")).toEqual([{ content: 'first memory' }, { content: 'second memory' }])
+    expect(result.imported.memories).toBe(2)
+    expect(result.warnings?.some((w) => w.includes('2 sor'))).toBe(true)
+    // the import was not rolled back: another table of the same bundle is in place
+    expect(rows("SELECT id FROM kanban_cards WHERE id = 'card-a'")).toEqual([{ id: 'card-a' }])
+    expect(probe.events).not.toContain('rollback')
+  })
+
+  it('does not count in the dry run either', async () => {
+    const report = await importFleet(JSON.stringify(bundle({ memories: [memory('first memory'), memory(ZWSP)] })), { apply: false }) as {
+      wouldCreate: { memories: number }; warnings: string[]
+    }
+
+    expect(report.wouldCreate.memories).toBe(1)
+    expect(report.warnings.some((w) => w.includes('1 memória-sor'))).toBe(true)
   })
 })
 
