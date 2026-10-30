@@ -237,6 +237,36 @@ describe('migrate-legacy-store-docs.ts: --verify-only', () => {
     expect(r.stdout).toMatch(new RegExp(`FAIL ${ENTRIES[1].file.replace(/\./g, '\\.')}: length \\d+ vs \\d+ \\(MISMATCH\\)`))
   }, 60000)
 
+  it('fails (exit 1) when the same doc_key exists under ANOTHER agent and the right agent has no row', async () => {
+    expect((await run(['--write'])).status).toBe(0)
+    const key = `legacy/${stem(ENTRIES[0].file)}`
+    // The row now belongs to someone else: same doc_key and byte-identical content, but not the manifest agent's.
+    rewriteDb('UPDATE workspace_docs SET agent_id = ? WHERE doc_key = ? AND agent_id = ?', 'agent-other', key, ENTRIES[0].agent_id)
+    expect(docs().map((d) => [d.doc_key, d.agent_id])).toContainEqual([key, 'agent-other'])
+    expect(docs().some((d) => d.doc_key === key && d.agent_id === ENTRIES[0].agent_id)).toBe(false)
+
+    const r = await run(['--verify-only'])
+    expect(r.status).toBe(1)
+    expect(r.stdout).toContain(`FAIL ${ENTRIES[0].file}: no row found for agent_id=${ENTRIES[0].agent_id} doc_key=${key}`)
+    expect(r.stdout).not.toContain(`PASS ${ENTRIES[0].file}`) // another agent's copy is no proof for this one
+    expect(r.stdout).toContain(`PASS ${ENTRIES[1].file}`) // the other files are still checked
+    expect(r.stdout).not.toMatch(/\n\s+rm "/)
+  }, 60000)
+
+  it('a --write run writes the right agent its own row and leaves the other agent\'s row with that doc_key alone', async () => {
+    expect((await run(['--write'])).status).toBe(0)
+    const key = `legacy/${stem(ENTRIES[0].file)}`
+    rewriteDb('UPDATE workspace_docs SET agent_id = ? WHERE doc_key = ? AND agent_id = ?', 'agent-other', key, ENTRIES[0].agent_id)
+    const foreignId = docs().find((d) => d.doc_key === key && d.agent_id === 'agent-other')!.id
+
+    const r = await run(['--write'])
+    expect(r.status).toBe(0)
+    const rows = docs().filter((d) => d.doc_key === key)
+    expect(rows.map((d) => d.agent_id).sort()).toEqual([ENTRIES[0].agent_id, 'agent-other'].sort())
+    expect(rows.find((d) => d.agent_id === 'agent-other')!.id).toBe(foreignId)
+    expect(rows.find((d) => d.agent_id === ENTRIES[0].agent_id)!.content).toBe(CONTENT[0])
+  }, 60000)
+
   it('a --write run exits 1 and prints no rm command when a written row cannot be read back', async () => {
     // Make the verify step fail inside the same run: after a first --write, a trigger rewrites the content of one
     // legacy doc whenever the re-run updates it, so what is read back differs from what was written.
