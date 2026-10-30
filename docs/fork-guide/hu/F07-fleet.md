@@ -145,35 +145,52 @@ A Marveen többfelhasználós működésre is alkalmas: az egyes tenantok adatai
 | `agent` | Egy tenant összes adata (olvasás + írás), nincs admin |
 | `read_only` | Egy tenant adatai csak olvasásra |
 | `viewer` | Memóriák, kanban, ágensek listázása (blackboard nélkül) |
+| `fleet_agent` | Egy flotta-ágens saját API tokenjének szerepköre (ágensenként egy, az `agent_id` nevezi meg; az `npm run agent-tokens` állítja ki, lásd fent). Memóriák, kanban és blackboard (olvasás és írás), ütemezések (csak olvasás: a `default` tenanton, ahol a tokenje mindig van, az írás `403`, ezért az ütemezés-módosítás a főágensen át megy), ágensek (csak olvasás), jóváhagyások (kérést adhat be, döntést sosem hoz), az ágensnek a saját működéséhez kellő gépi végpontok (főkönyv, ágens-állapot, napi napló, artifactok, skillek, hangválasz a saját csatornán), az ágens saját adataira szűkítve. Az üzenetek csak küldésre szólnak (`POST` és `PUT /api/messages`; a `GET /api/messages` `403`). A `GET /api/settings` és a `/api/marveen` nem-admin nézetét olvashatja (`200`). Admin végpontot nem ér el (ágens-életciklus, vault, tokenek, RBAC). Nem tenant-felhasználói szerepkör: a token nem hordoz saját tenantot. |
 
 ### Token kezelés
 
-Az API tokenek a `/api/v1/admin/tokens` végponton kezelhetők:
+Az API tokenek a `/api/v1/admin/tokens` végponton kezelhetők (a régi `/api/admin/tokens` ugyanaz az útvonal). Mind a négy útvonalhoz `admin:all` kell. A nyers tokenértéket a létrehozás és a rotálás hívása adja vissza egyszer; a lista sosem tartalmazza.
+
+| Útvonal | Mit csinál |
+|---------|-----------|
+| `GET /api/v1/admin/tokens` | A tokenek listája (`id`, `name`, `role`, `tenant_id`, `agent_id`, `created_at`, `expires_at`, `revoked_at`, `last_used_at`, `rotated_from`; hash és token nélkül) |
+| `POST /api/v1/admin/tokens` | Új token. Törzs: `name` (kötelező), `role` (kötelező: `admin`, `agent`, `read_only`, `viewer` vagy `fleet_agent`), `tenant_id` (alapértelmezett `default`), `expires_in_days` (mostantól számított napok száma; elhagyva a token nem jár le), `agent_id` (`fleet_agent`-nél kötelező, `admin` tokenen elhagyható címke, a többi szerepkörnél elutasított; ismert ágenst kell megneveznie). A `fleet_agent` token a `tenant_id` értékétől függetlenül mindig a `default` tenantba kerül. 201-et ad a `token` mezővel és a sorral |
+| `POST /api/v1/admin/tokens/<id>/rotate` | Új tokenérték, a régit ugyanabban a lépésben visszavonja. Törzs (elhagyható): `expires_in_days`; elhagyva az új token megtartja a régi lejáratát. `409 conflict`, ha a token már vissza van vonva |
+| `DELETE /api/v1/admin/tokens/<id>/revoke` | Visszavonás csere nélkül. `409 conflict`, ha már vissza van vonva. Tokenre `PATCH` nincs |
+
+Az `<id>` a listából vett numerikus `id`. Példák:
 
 ```bash
-# Új token létrehozása
+# Tenant-felhasználói token 90 napos lejárattal
 bash scripts/agent-api.sh --token operator POST /api/v1/admin/tokens '{
     "name": "partner-token",
     "role": "agent",
     "tenant_id": "acme-corp",
-    "expires_at": "2027-01-01T00:00:00Z"
+    "expires_in_days": 90
   }'
 ```
 
 ```bash
-# Token visszavonása
-bash scripts/agent-api.sh --token operator PATCH /api/v1/admin/tokens/<id> '{"revoked": true}'
+# Rotálás (a régi érték azonnal megszűnik), a 90 napos élettartam mostantól számítva
+bash scripts/agent-api.sh --token operator POST /api/v1/admin/tokens/<id>/rotate '{"expires_in_days": 90}'
 ```
+
+```bash
+# Token visszavonása
+bash scripts/agent-api.sh --token operator DELETE /api/v1/admin/tokens/<id>/revoke
+```
+
+Egy flotta-ágens saját tokenjét általában az `npm run agent-tokens -- issue` állítja ki (fent), nem kézzel. Amíg az `APPROVAL_HUMAN_ONLY_ENFORCE` be van kapcsolva, a létrehozás és a rotálás `403 human_session_required`-et ad az ágens hívónak (`fleet_agent` token, bármely `agent_id`-t hordozó token, eszközkulcs vagy föderációs társ), hacsak nincs személy bejelentkezve a dashboardra; a visszavonást ez nem korlátozza. Ugyanez az őr áll a többi hitelesítő-kiadó útvonalon is: `POST /api/admin/browser-enroll-codes`, `POST /api/auth/device-keys` és a Bridge-párosítás. Az operátor token (`admin` szerepkör, ágens nélkül) nem ágens.
 
 ### B2B partner beléptetése
 
 Egy külső partner (B2B tenant) alapvetően az `agent` szerepkörrel kap tokent, és a saját `tenant_id`-jére szűrt adatokat lát. A beléptetési folyamat:
 
 1. Tenant felvétele az admin felületen (Beállítások > Tenantok)
-2. `agent` token generálása a partner számára (lejárattal, `expires_at`)
+2. `agent` token generálása a partner számára (lejárattal, `expires_in_days`, pl. 90)
 3. A tokent biztonságos csatornán kell átadni (nem emailben nyílt szövegként)
 4. Izolációs teszt: az új tokennel egy `default` tenant memória lekérdezésének üres listát kell adnia
-5. Rotációs folyamat egyeztetése: új token igénylése lejárat előtt legalább 2 héttel
+5. Rotációs folyamat egyeztetése: új token igénylése lejárat előtt legalább 2 héttel. A rotálás (`POST .../rotate`) a régi értéket azonnal visszavonja, ezért az újat a hívás után rögtön át kell adni
 
 ### RBAC-mód, shadow-napló és visszaállítás
 
