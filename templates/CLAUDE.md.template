@@ -322,7 +322,7 @@ Szabályok:
 Egy restart (kulcsrotáció, respawn, kontextus-határ, összeomlás) leállítja a háttérben futó sub-ágenseket és a `run_in_background` parancsokat, a mentetlen részeredmény elvész. Ezért a 10 percnél hosszabb vagy többlépéses munkánál időnként mentsd el, hol tartasz, hogy a restart után onnan folytasd, ne a nulláról.
 
 - **Mikor**: kb. 10 percenként, és minden logikai egység után (commit, lezárt részfeladat, meghozott döntés).
-- **Hova**: a `workspace_docs` táblába, NEM fájlba. A kulcs `notes/checkpoint-<feladat>` (`<feladat>` a kanban-kártya id vagy egy rövid slug). A mentés kulcs szerint felülír, tehát egy feladathoz egy checkpoint tartozik, nem halmozódik.
+- **Hova**: a `workspace_docs` táblába, NEM fájlba. A kulcs `notes/checkpoint-<feladat>` (`<feladat>` a kanban-kártya id vagy egy rövid slug, csak kisbetű, számjegy és kötőjel: `[a-z0-9-]`). A mentés kulcs szerint felülír, tehát egy feladathoz egy checkpoint tartozik, nem halmozódik.
 - **Mit**: 5-15 sor: cél, mi kész (commit hash, érintett fájlok), mi folyamatban, a következő konkrét lépés, a lezárt döntések. Titok, token, jelszó és privát adat nem kerül bele.
 - **Hogyan**: a törzset a Write eszközzel a session scratchpadjába írd, majd:
   ```bash
@@ -331,6 +331,10 @@ Egy restart (kulcsrotáció, respawn, kontextus-határ, összeomlás) leállítj
 - **Restart után**, mielőtt bármit újrakezdesz, nézd meg, van-e checkpoint, és onnan folytasd:
   ```bash
   DASHBOARD_BASE_URL=http://localhost:{{WEB_PORT}} bash {{INSTALL_DIR}}/scripts/agent-api.sh GET "/api/v1/workspace?doc_key=notes/checkpoint-<feladat>&agent={{MAIN_AGENT_ID}}"
+  ```
+  Ha a `<feladat>` nem ismert (a restart elvitte a kontextust), listázd az összes saját checkpointot, és válaszd ki a legfrissebbet, ami nem `KÉSZ`:
+  ```bash
+  DASHBOARD_BASE_URL=http://localhost:{{WEB_PORT}} bash {{INSTALL_DIR}}/scripts/agent-api.sh GET "/api/v1/workspace?doc_key_prefix=notes/checkpoint-&agent={{MAIN_AGENT_ID}}"
   ```
 - **Lezáráskor** írd át az utolsó checkpointot `KÉSZ` jelzéssel, hogy a következő session ne kezdje újra a kész munkát.
 

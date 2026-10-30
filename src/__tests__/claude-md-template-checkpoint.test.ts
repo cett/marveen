@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -55,6 +55,20 @@ describe('CLAUDE.md.template: long background work checkpoint section', () => {
     expect(s).toContain('/api/v1/workspace?doc_key=notes/checkpoint-<feladat>&agent=agent-a')
   })
 
+  it('tells the agent how to find its checkpoints when the task name is unknown after a restart', () => {
+    const s = section()
+    expect(s).toContain('/api/v1/workspace?doc_key_prefix=notes/checkpoint-&agent=agent-a')
+    expect(s).toMatch(/nem ismert/)
+  })
+
+  it('closes a finished task with a KÉSZ marker on the last checkpoint', () => {
+    expect(section()).toMatch(/\*\*Lezáráskor\*\* írd át az utolsó checkpointot `KÉSZ` jelzéssel/)
+  })
+
+  it('limits the task slug to the character set workspace-put.py accepts', () => {
+    expect(section()).toContain('`[a-z0-9-]`')
+  })
+
   it('forbids secrets and private data in the checkpoint body', () => {
     expect(section()).toMatch(/Titok, token, jelszó és privát adat nem kerül bele/)
   })
@@ -79,37 +93,67 @@ describe('CLAUDE.md.template: long background work checkpoint section', () => {
   })
 })
 
-describe('CLAUDE.md.template: the checkpoint doc_key is one workspace-put.py accepts', () => {
+describe('CLAUDE.md.template: the save recipe is one workspace-put.py accepts', () => {
   let tmp: string
   let body: string
+  let scratch: string
   beforeAll(() => {
     tmp = mkdtempSync(join(tmpdir(), 'ckpt-tpl-'))
-    body = join(tmp, 'body.md')
+    scratch = join(tmp, 'scratchpad')
+    mkdirSync(scratch)
+    body = join(scratch, 'body.md')
     writeFileSync(body, '# checkpoint\n\ngoal / done / next\n')
   })
   afterAll(() => { rmSync(tmp, { recursive: true, force: true }) })
 
-  // The API wrapper is pointed at a path that does not exist. Validation of the doc_key runs BEFORE any
-  // API call (exit 2 = usage/validation error); a key that passes validation then fails at the missing
-  // wrapper (exit 1 = runtime failure). So "exit !== 2" means "the script accepted this doc_key", and
-  // the dashboard is never contacted.
-  function put(docKey: string) {
-    return spawnSync('python3', [WORKSPACE_PUT, '--file', body, '--doc-key', docKey, '--type', 'notes', '--agent', 'agent-a'], {
+  // The recipe command exactly as the template shows it, placeholders filled with fixtures.
+  function recipeArgs(): string[] {
+    const line = section().split('\n').find(l => l.includes('workspace-put.py'))
+    expect(line, 'the template must show the workspace-put.py call').toBeDefined()
+    return line!.trim()
+      .replace(/^python3 \S+workspace-put\.py /, '')
+      .replace('<scratchpad-út>', body)
+      .replace('<feladat>', 'task-1')
+      .split(/\s+/)
+  }
+
+  // The API wrapper is pointed at a path that does not exist. Every argument check (doc_key prefix,
+  // --type against the prefix, the --delete-source eligibility) runs BEFORE any API call and fails with
+  // exit 2 (usage/validation); a recipe that passes them then fails at the missing wrapper with exit 1
+  // (runtime). So "exit !== 2" means "the script accepted the whole recipe" and the dashboard is never
+  // contacted. --scratchpad-root is the only flag added: it lets the fixture body count as a scratchpad file.
+  function run(args: string[]) {
+    return spawnSync('python3', [WORKSPACE_PUT, ...args, '--scratchpad-root', scratch], {
       encoding: 'utf-8',
       env: { ...process.env, WORKSPACE_PUT_API_CMD: join(tmp, 'no-such-wrapper') },
     })
   }
 
-  it('the key the template teaches (with the placeholder filled in) passes the script validation', () => {
-    const m = section().match(/--doc-key (\S*<feladat>\S*)/)
-    expect(m, 'the template must show the workspace-put.py call with its doc_key').not.toBeNull()
-    const key = m![1].replace('<feladat>', 'c607faf3')
-    const r = put(key)
-    expect(r.status, `workspace-put.py rejected the template doc_key ${key}: ${r.stderr}`).not.toBe(2)
+  it('the full recipe (doc_key, --type, --agent, --delete-source) passes the script validation', () => {
+    const args = recipeArgs()
+    const r = run(args)
+    expect(r.status, `workspace-put.py rejected the template recipe ${args.join(' ')}: ${r.stderr}`).not.toBe(2)
   })
 
-  it('control: a key outside the allowed prefixes IS rejected with exit 2 (so the check above can fail)', () => {
-    const r = put('checkpoint/c607faf3')
+  it('the recipe names type notes and the main agent id', () => {
+    const args = recipeArgs()
+    expect(args[args.indexOf('--type') + 1]).toBe('notes')
+    expect(args[args.indexOf('--agent') + 1]).toBe('agent-a')
+    expect(args).toContain('--delete-source')
+  })
+
+  it('control: a wrong type for the notes prefix IS rejected with exit 2 (so the checks above can fail)', () => {
+    const args = recipeArgs()
+    args[args.indexOf('--type') + 1] = 'plan'
+    const r = run(args)
+    expect(r.status).toBe(2)
+    expect(r.stderr).toMatch(/--type/)
+  })
+
+  it('control: a key outside the allowed prefixes IS rejected with exit 2', () => {
+    const args = recipeArgs()
+    args[args.indexOf('--doc-key') + 1] = 'checkpoint/task-1'
+    const r = run(args)
     expect(r.status).toBe(2)
     expect(r.stderr).toMatch(/doc_key/)
   })
