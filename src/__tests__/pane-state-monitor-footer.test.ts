@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { detectPaneState } from '../pane-state.js'
 
-// A session that runs a background monitor or shell shows a footer with a count. Measured in a live
+// A session that runs a background monitor shows a footer with a count. Measured in a live
 // session: `⏵⏵ bypass permissions on · 1 monitor`, with NOTHING after the count (no shift+tab hint, no
 // ctrl+t / ↓ to manage / ← for agents tail). The idle-footer rule required one of those tails, so such a
 // session read 'unknown' and the router would not deliver to it. These tests pin both directions: the
@@ -14,7 +14,7 @@ function frame(...below: string[]): string {
   return ['', '⏺ ok', '', RULE, '❯ ', RULE, ...below].join('\n')
 }
 
-describe('idle footer with a background monitor or shell and no action hint', () => {
+describe('idle footer with a background monitor and no action hint', () => {
   it.each([
     '  ⏵⏵ bypass permissions on · 1 monitor',
     '  ⏵⏵ bypass permissions on · 2 monitors',
@@ -70,6 +70,10 @@ describe('prose that quotes the footer is NOT an idle footer', () => {
     ['a bare shell count is a truncated frame (existing contract, pane-state.test.ts)', '  ⏵⏵ bypass permissions on · 1 shell'],
     ['a bare shell count, plural', '  ⏵⏵ bypass permissions on · 3 shells'],
     ['a monitor count followed by a bare shell count (not measured, not accepted)', '  ⏵⏵ bypass permissions on · 1 monitor · 1 shell'],
+    ['the glyph in the MIDDLE of a line and the monitor count at its end (the line-start anchor)', '  the status says ⏵⏵ bypass permissions on · 1 monitor'],
+    ['a prose prefix directly before the glyph', 'note: ⏵⏵ bypass permissions on · 2 monitors'],
+    ['a mode line with no count at all', '  ⏵⏵ bypass permissions on'],
+    ['a mode line that ends in the separator and no count', '  ⏵⏵ bypass permissions on ·'],
     ['count with no unit', '  ⏵⏵ bypass permissions on · 1'],
     ['unit with no count', '  ⏵⏵ bypass permissions on · monitor'],
   ])('%s', (_label, prose) => {
