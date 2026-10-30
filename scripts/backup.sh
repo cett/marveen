@@ -139,6 +139,9 @@ if [[ -f store/claudeclaw.db ]]; then
   # switch it to the rollback journal so it really is one file, and make sure no sidecar is archived.
   sqlite3 "${SNAPSHOT}" 'PRAGMA journal_mode=DELETE;' >/dev/null 2>&1 || true
   rm -f "${SNAPSHOT}-wal" "${SNAPSHOT}-shm"
+  # sqlite3 creates the snapshot with the default umask; the live file's mode is what the archive must carry
+  # (the old cp -pR preserved it), because the archive holds the whole database.
+  chmod "$(stat -c '%a' store/claudeclaw.db 2>/dev/null || stat -f '%Lp' store/claudeclaw.db)" "${SNAPSHOT}" 2>/dev/null || chmod 600 "${SNAPSHOT}"
   if [[ -z "${SNAPSHOT_COUNTS}" ]]; then
     echo "backup: ABORT -- the database snapshot has no tables" >&2
     exit 2

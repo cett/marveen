@@ -25,6 +25,7 @@ mkrepo() {
   mkdir -p "$r/scripts" "$r/store" "$r/home"
   cp "$INSTALL_DIR/scripts/backup.sh" "$INSTALL_DIR/scripts/verify-restore.sh" "$INSTALL_DIR/scripts/restore-drill.sh" "$r/scripts/"
   sqlite3 "$r/store/claudeclaw.db" 'PRAGMA journal_mode=WAL; CREATE TABLE a(x); CREATE TABLE b(x); CREATE TABLE c(x); INSERT INTO a VALUES (1),(2),(3);' >/dev/null
+  chmod 600 "$r/store/claudeclaw.db"
   echo "$r"
 }
 backup_in() { ( cd "$1" && HOME="$1/home" bash scripts/backup.sh ) ; }
@@ -58,6 +59,8 @@ X="$TMPDIR_BASE/a-x"; mkdir -p "$X"; tar -xzf "$ARC" -C "$X" repo/store/claudecl
 [ "$(sqlite3 "$X/repo/store/claudeclaw.db" 'SELECT count(*) FROM a')" = "3" ] && pass "the archived database holds the rows" || fail "archived database lost its rows"
 # The live file is in WAL mode; only the snapshot (rewritten as one self-contained file) is in the rollback journal mode.
 [ "$(sqlite3 "$X/repo/store/claudeclaw.db" 'PRAGMA journal_mode;')" = "delete" ] && pass "the archived file is the snapshot, not a copy of the live file" || fail "the archived database is not the snapshot (journal_mode: $(sqlite3 "$X/repo/store/claudeclaw.db" 'PRAGMA journal_mode;'))"
+
+[ "$(tar -tvzf "$ARC" repo/store/claudeclaw.db | cut -c1-10)" = "-rw-------" ] && pass "the archived database keeps the live file's 0600 mode" || fail "archived database mode: $(tar -tvzf "$ARC" repo/store/claudeclaw.db | cut -c1-10)"
 
 echo "(b) a row that is only in the -wal file is in the snapshot"
 R="$(mkrepo b)"
