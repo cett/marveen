@@ -304,7 +304,7 @@ function schemaStrictRequested(): boolean {
   if (!SCHEMA_STRICT_OFF.has(value)) {
     logger.warn(
       { value: raw },
-      'SCHEMA_STRICT has an unrecognised value and is treated as off. Use 1 (or true, yes, on) to refuse a database that is newer than the code, 0 (or false, no, off) to allow it.',
+      'SCHEMA_STRICT value is not understood, so the strict check is NOT active (the start is not refused). Use 1 to refuse a database that is newer than the code.',
     )
   }
   return false

@@ -144,27 +144,30 @@ describe('applyMigrations: SCHEMA_STRICT values', () => {
   it.each(['1', 'true', 'TRUE', 'True', 'yes', 'on', ' 1 ', ' On '])('%j turns the strict check on', (value) => {
     const run = startWithValue(value)
     expect(run).toThrow(new RegExp(`newer than the code.*${FUTURE_VERSION}`))
-    expect(logged(warnSpy, 'unrecognised value')).toBe(false)
+    expect(logged(warnSpy, 'value is not understood')).toBe(false)
   })
 
   it.each(['0', 'false', 'FALSE', 'no', 'off', '', '  '])('%j is an explicit off: boots, no warning about the value', (value) => {
     const run = startWithValue(value)
     expect(run).not.toThrow()
-    expect(logged(warnSpy, 'unrecognised value')).toBe(false)
+    expect(logged(warnSpy, 'value is not understood')).toBe(false)
   })
 
   it('unset is off and silent', () => {
     applyMigrations(db, dir)
     recordFutureVersion()
     expect(() => applyMigrations(db, dir)).not.toThrow()
-    expect(logged(warnSpy, 'unrecognised value')).toBe(false)
+    expect(logged(warnSpy, 'value is not understood')).toBe(false)
   })
 
   it.each(['01', '2', 'enable', 'enabled', 'strict', 'truee', 'y'])('%j is not understood: still boots (never refuse by default) but WARNs with the value', (value) => {
     const run = startWithValue(value)
     expect(run).not.toThrow()
     const warns = callsWithValue(value)
-    expect(warns, 'a warn naming the unrecognised value').toHaveLength(1)
+    expect(warns, 'a warn naming the value is not understood').toHaveLength(1)
+    const message = warns[0].find((a) => typeof a === 'string') as string
+    expect(message).toContain('strict check is NOT active')
+    expect(message).toContain('Use 1')
   })
 
   it('an unknown value warns even on a clean database (the typo is visible at every start)', () => {
@@ -173,9 +176,9 @@ describe('applyMigrations: SCHEMA_STRICT values', () => {
     expect(callsWithValue('01')).toHaveLength(1)
   })
 
-  /** WARN calls that carry the unrecognised-value message and the raw value in the structured fields. */
+  /** WARN calls that carry the value-is-not-understood message and the raw value in the structured fields. */
   function callsWithValue(value: string): unknown[][] {
-    return callsWith(warnSpy, 'unrecognised value').filter((c) => (c[0] as { value?: string }).value === value)
+    return callsWith(warnSpy, 'value is not understood').filter((c) => (c[0] as { value?: string }).value === value)
   }
 })
 
