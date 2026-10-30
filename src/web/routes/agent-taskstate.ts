@@ -6,9 +6,21 @@ import {
   markConsumed,
   clearTaskState,
   shouldReplayTaskState,
+  isTrustedTaskStateWriter,
   buildTaskStateInjection,
+  buildNoTaskStateNote,
 } from '../agent-taskstate.js'
+import { logger } from '../../logger.js'
 import type { RouteContext } from './types.js'
+
+// Who is writing, from the authenticated context only: the agent the token belongs to (the
+// main agent's own token names the main agent), else the dashboard session user, else the
+// shared token. Never the body, never X-Agent-Id (the caller's own claim).
+function taskStateWriter(ctx: RouteContext): string {
+  if (ctx.tokenAgentId) return ctx.tokenAgentId
+  if (ctx.auth?.kind === 'session' && ctx.auth.user) return `session:${ctx.auth.user}`
+  return 'shared'
+}
 
 // Endpoints for the compact task-state re-injection feature (#4).
 //  POST   /api/agent-taskstate/:agent          <- PreCompact agent-hook writes the record
@@ -36,9 +48,17 @@ export async function tryHandleAgentTaskState(ctx: RouteContext): Promise<boolea
     const agent = decodeURIComponent(replayMatch[1])
     const source = url.searchParams.get('source') || ''
     const record = readTaskState(agent)
-    const inject = shouldReplayTaskState(record, source, Date.now())
-      ? buildTaskStateInjection(record!)
-      : null
+    const now = Date.now()
+    // A live record from a writer we do not trust is refused AND marked used: left
+    // unconsumed, a forged fresh record would keep the context-restart gate blocked
+    // for its whole freshness window. The log line carries no record content.
+    if (record && !record.consumed && !isTrustedTaskStateWriter(record)) {
+      logger.warn({ agent: record.agent, writer: record.writer }, 'agent-taskstate: record from an untrusted writer refused')
+      markConsumed(agent)
+    }
+    const inject = shouldReplayTaskState(record, source, now)
+      ? buildTaskStateInjection(record!, now)
+      : buildNoTaskStateNote(source)
     json(res, { additionalContext: inject })
     return true
   }
@@ -62,7 +82,7 @@ export async function tryHandleAgentTaskState(ctx: RouteContext): Promise<boolea
       nextAction: fields.nextAction as string | undefined,
       pendingDecision: fields.pendingDecision as string | undefined,
       summary: fields.summary as string | undefined,
-    }, Date.now())
+    }, Date.now(), taskStateWriter(ctx))
     json(res, { ok: true, record })
     return true
   }
