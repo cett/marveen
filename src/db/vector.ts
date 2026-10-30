@@ -451,8 +451,10 @@ export function linkMaintenanceFailedSystemically(r: Pick<LinkMaintenanceResult,
 
 /**
  * Periodic maintenance for the memory link graph:
- * 1. Re-embed memories whose updated_at > last link created_at (stale embeddings).
- * 2. Create/refresh neighbor links for recently updated memories.
+ * 1. Embed the memories that still have no embedding and were touched within maxAge (default 7 days).
+ * 2. Create/refresh neighbor links for the memories with an embedding that were touched within maxAge.
+ *    "Touched" is COALESCE(updated_at, created_at): saveMemory leaves updated_at NULL, so a memory nobody edited
+ *    counts from its creation time.
  * 3. Prune links below weightThreshold.
  * 4. Count orphan memories: have embedding but 0 outgoing links.
  *
@@ -466,9 +468,11 @@ export async function runLinkMaintenance(opts: {
   const { weightThreshold = 0.1, maxAge = 7 * 86400 } = opts
   const cutoff = Math.floor(Date.now() / 1000) - maxAge
 
+  // saveMemory does not write updated_at, so a memory nobody edited has it NULL: `NULL >= cutoff` is never true, and
+  // the nightly run would not see it. COALESCE takes the creation time for it.
   // Step 1: backfill embeddings for memories updated recently that lack one
   const needsEmbed = (await dbx.all(`SELECT id, content, keywords FROM memories
-     WHERE embedding_blob IS NULL AND updated_at >= ?`, cutoff)) as { id: number; content: string; keywords: string | null }[]
+     WHERE embedding_blob IS NULL AND COALESCE(updated_at, created_at) >= ?`, cutoff)) as { id: number; content: string; keywords: string | null }[]
 
   let reembedded = 0
   for (const row of needsEmbed) {
@@ -483,7 +487,7 @@ export async function runLinkMaintenance(opts: {
   }
 
   // Step 2: re-link memories with embedding updated recently
-  const toLink = (await dbx.all(`SELECT id FROM memories WHERE embedding_blob IS NOT NULL AND updated_at >= ?`, cutoff)) as { id: number }[]
+  const toLink = (await dbx.all(`SELECT id FROM memories WHERE embedding_blob IS NOT NULL AND COALESCE(updated_at, created_at) >= ?`, cutoff)) as { id: number }[]
 
   // One memory whose links cannot be written must not stop the run for all the others (and keep the nightly
   // maintenance failing): it is logged and counted, the run goes on.
