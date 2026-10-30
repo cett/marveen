@@ -215,6 +215,7 @@ if [[ -n "${EXTRACTED_DB:-}" && -f "${EXTRACTED_DB}" ]] && command -v sqlite3 >/
     else
       echo "  [WARN] MANIFEST.txt has no row counts (an archive from before the counts): nothing to compare against; the database has ${ACTUAL_TABLES} tables, ${ACTUAL_ROWS} rows"
       NOTE="${NOTE}WARN:no row counts in the manifest; "
+      NO_COUNTS=1
     fi
   else
     # Exact comparison: both counts were taken on the same snapshot, so any difference is damage.
@@ -278,6 +279,11 @@ echo "  2. npm run agent-tokens -- issue-operator"
 echo "  3. npm run agent-tokens -- rotate-shared   (the shared token file is not in the archive either; this mints a new one"
 echo "     and revokes the restored row, so an old shared token cannot come back to life; works with the dashboard stopped)"
 echo "  4. npm run agent-tokens -- check   (and scripts/doctor.sh)"
+# Last thing on screen, so a manual restore does not read "ALL CHECKS PASSED" as "the content was compared".
+if [[ ${NO_COUNTS:-0} -eq 1 ]]; then
+  echo ""
+  echo "verify-restore: WARNING -- this archive has no row counts in MANIFEST.txt (it was taken before the counts existed): the tables and rows in it were NOT compared against anything. A passing result only means the files are intact." >&2
+fi
 
 # Write to restore_log (best-effort; never abort on failure; DB_PATH is set at step 5b)
 if command -v sqlite3 >/dev/null 2>&1 && [[ -f "${DB_PATH}" ]]; then

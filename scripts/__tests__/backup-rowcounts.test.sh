@@ -107,6 +107,10 @@ echo "(e) an archive from before the counts"
 A="$(synth legacy "" "CREATE TABLE a(x); INSERT INTO a VALUES (1);")"
 OUT="$(verify "$A")"; RC=$?
 [ $RC -eq 0 ] && echo "$OUT" | grep -q 'WARN.*no row counts' && pass "normal mode: WARN, exit 0" || fail "legacy archive: exit $RC"
+LAST="$(echo "$OUT" | grep -v '^[[:space:]]*$' | tail -1)"
+echo "$LAST" | grep -q 'WARNING.*NOT compared' && pass "the warning is the LAST line of the output (a manual restore does not read the green summary)" || fail "last output line: $LAST"
+OUT2="$(verify "$VR/good.tar.gz")"
+echo "$OUT2" | grep -q 'NOT compared' && fail "an archive WITH counts got the not-compared warning" || pass "an archive with counts gets no such warning"
 OUT="$(verify --drill "$A")"; RC=$?
 [ $RC -eq 1 ] && echo "$OUT" | grep -q 'no row counts to compare' && pass "--drill: FAILS (nothing was compared)" || fail "legacy archive under --drill: exit $RC"
 
