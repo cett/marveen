@@ -155,38 +155,32 @@ elif [ -z "$(git status --porcelain --untracked-files=no 2>/dev/null)" ]; then
 else
   REVERTED="nem (a fa DIRTY, kezi beavatkozas kell)"
 fi
-# The alert goes out as the main agent through the API wrapper (its own token, the token never on a
-# command line); no wrapper, no alert.
-# git runs this hook inside whatever session ran the checkout, so a sub-agent's Bash inherits its launch identity
-# (CLAUDE_CONFIG_DIR, MARVEEN_AGENT_ID, MARVEEN_AGENT_TOKEN_FILE). With AGENT_API_STRICT=1 the wrapper refuses a
-# sub-agent session that asks for --token main (rule E1) and the alert would vanish into the `|| true` below, i.e.
-# the one branch switch worth an alert (a sub-agent in the prod tree) would be the one that goes unreported.
-# This is a system script acting on the coordinator's behalf, not the session: the call is made WITHOUT the
-# session's environment, exactly like a cron job. The wrapper's E1-E3 stay as they are for the session itself.
-# The environment is not just stripped of the identity (CLAUDE_CONFIG_DIR, MARVEEN_AGENT_ID, MARVEEN_AGENT_TOKEN_FILE
-# would make the wrapper read the sub-agent's token file for --token main): it is replaced (`env -i`) by a fixed PATH
-# and the one URL computed below. The call carries the MAIN agent's token, so nothing the session can set may steer it:
-# not the URL (DASHBOARD_BASE_URL, MARVEEN_WEB_PORT, WEB_PORT), not the token's location (MARVEEN_STORE_DIR,
-# MAIN_AGENT_ID), not the program the wrapper hands it to (a look-alike earlier on PATH).
+# The alert goes out through the API wrapper as WHOEVER RAN THE CHECKOUT (the wrapper's own identity: the session's
+# launch identity, else the agent the cwd names, which in the prod tree is the main agent); no wrapper, no alert.
+# It is deliberately NOT sent with `--token main`: git runs this hook inside the session that ran the checkout, and a
+# sub-agent session asking for the main agent's token is refused with AGENT_API_STRICT=1 (rule E1). Working around that
+# by dropping the session's environment would hand the MAIN token to whatever the session can steer (URL, PATH, store),
+# so the alert instead carries the caller's own token and the caller's own name. A message from a sub-agent to the main
+# agent is exactly what the alert is anyway: it also says WHO switched the prod tree.
+# The sender is not named in the body for a fleet-agent token: the server takes it from the token, and a different one
+# is refused (403). Only a token without that pinning (the main agent's) must name it, so a 400 is retried once
+# with the main agent as sender.
 API_WRAPPER="$PROD_ROOT/scripts/agent-api.sh"
 [ -r "$API_WRAPPER" ] || exit 0
-# 'from' must be a registered fleet agent id (the API rejects made-up names,
-# measured 2026-08-22) -- the source is named in the content prefix instead.
+# The recipient and the retry sender must be registered fleet agent ids (the API rejects made-up names, measured
+# 2026-08-22) -- the source is named in the content prefix instead.
 # The alert MUST name the tree it fired in: without it a test alert raised
 # from a scratch root is word-for-word identical to a real one, and the
 # reader starts an investigation (cost one wasted round on 2026-08-22).
-# Where the alert goes (MARVEEN_DASHBOARD_ORIGIN) and to whom (MARVEEN_GUARD_ALERT_TO) are read from the .env of the
-# guarded tree, NEVER from the environment of the session that ran the checkout: that call carries the main agent's
-# token. The origin must be http://localhost or http://127.0.0.1 with an optional port, anything else is ignored.
-ORIGIN="$(grep -E '^MARVEEN_DASHBOARD_ORIGIN=' "$PROD_ROOT/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
-[[ "$ORIGIN" =~ ^http://(localhost|127\.0\.0\.1)(:[0-9]{1,5})?$ ]] || ORIGIN="http://localhost:3420"
-# The sender and the default recipient are the install's own main agent (MAIN_AGENT_ID in the .env of the guarded
-# tree, read here at alert time, never baked in), not a fixed "marveen": on an install whose main agent has another
-# id the API rejects an unknown sender and the alert vanished into `|| true`. No .env or no id = the stock "marveen".
+ORIGIN="${MARVEEN_DASHBOARD_ORIGIN:-http://localhost:3420}"
+# The default recipient (and the sender of the retry) is the install's own main agent (MAIN_AGENT_ID in the .env of the
+# guarded tree, read here at alert time, never baked in), not a fixed "marveen": on an install whose main agent has
+# another id the API rejects an unknown recipient. No .env or no id = the stock "marveen".
 MAIN_ID="$(grep -E '^MAIN_AGENT_ID=' "$PROD_ROOT/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
 MAIN_ID="${MAIN_ID//[^a-zA-Z0-9_-]/}"
 MAIN_ID="${MAIN_ID:-marveen}"
-ALERT_TO="$(grep -E '^MARVEEN_GUARD_ALERT_TO=' "$PROD_ROOT/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
+# The override comes from the session's environment and goes into hand-built JSON: same filter as MAIN_ID.
+ALERT_TO="${MARVEEN_GUARD_ALERT_TO:-$MAIN_ID}"
 ALERT_TO="${ALERT_TO//[^a-zA-Z0-9_-]/}"
 ALERT_TO="${ALERT_TO:-$MAIN_ID}"
 # The body is hand-built JSON. A branch name may hold a double quote (git allows it), which ends the string early:
@@ -194,9 +188,15 @@ ALERT_TO="${ALERT_TO:-$MAIN_ID}"
 # unreported. Only path-safe characters are kept in the two values that come from the repository.
 BRANCH="${BRANCH//[^A-Za-z0-9._\/-]/_}"
 TOPLEVEL="${TOPLEVEL//[^A-Za-z0-9._\/ -]/_}"
-printf '%s' "{\"from\":\"$MAIN_ID\",\"to\":\"$ALERT_TO\",\"content\":\"[PROD-FA ORSEG, post-checkout hook] Fa: $TOPLEVEL -- agat valtott a(z) $BRANCH agra. (Ha ez az utvonal nem a telepites fo faja, ez PROBA, nem eles riasztas.) AUTO-VISSZAALLITAS: $REVERTED. Commitot a pre-commit hook blokkol; szandekos valtashoz MARVEEN_PROD_CHECKOUT_OK=1.\"}" \
-  | env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin \
-      DASHBOARD_BASE_URL="$ORIGIN" /bin/bash "$API_WRAPPER" --token main --max-time 5 POST /api/messages - >/dev/null 2>&1 || true
+TEXT="\"to\":\"$ALERT_TO\",\"content\":\"[PROD-FA ORSEG, post-checkout hook] Fa: $TOPLEVEL -- agat valtott a(z) $BRANCH agra. (Ha ez az utvonal nem a telepites fo faja, ez PROBA, nem eles riasztas.) AUTO-VISSZAALLITAS: $REVERTED. Commitot a pre-commit hook blokkol; szandekos valtashoz MARVEEN_PROD_CHECKOUT_OK=1.\"}"
+# send_alert <json-body>: the wrapper's stderr is kept (a failed send is reported below, never swallowed)
+send_alert() { printf '%s' "$1" | DASHBOARD_BASE_URL="$ORIGIN" bash "$API_WRAPPER" --max-time 5 POST /api/messages - 2>&1 >/dev/null; }
+ALERT_ERR="$(send_alert "{$TEXT")"; ALERT_RC=$?
+if [ "$ALERT_RC" -eq 22 ]; then ALERT_ERR="$(send_alert "{\"from\":\"$MAIN_ID\",$TEXT")"; ALERT_RC=$?; fi
+if [ "$ALERT_RC" -ne 0 ]; then
+  # The checkout itself is never failed, but the missing alert must not be silent: git shows a hook's stderr to the caller.
+  echo "marveen-prod-tree-guard: the branch-switch alert was NOT sent (agent-api exit $ALERT_RC): $(printf '%s' "$ALERT_ERR" | head -3 | tr '\n' ' ')" >&2
+fi
 exit 0
 EOF
 chmod +x "$HOOK_DIR/post-checkout"
