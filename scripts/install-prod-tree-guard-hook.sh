@@ -162,8 +162,12 @@ fi
 # sub-agent session that asks for --token main (rule E1) and the alert would vanish into the `|| true` below, i.e.
 # the one branch switch worth an alert (a sub-agent in the prod tree) would be the one that goes unreported.
 # This is a system script acting on the coordinator's behalf, not the session: the call is made WITHOUT the
-# session's launch identity, exactly like a cron job. The wrapper's E1-E3 stay as they are for the session itself.
-# MARVEEN_AGENT_TOKEN_FILE is dropped too: the wrapper would read THAT file for --token main (the sub-agent's token).
+# session's environment, exactly like a cron job. The wrapper's E1-E3 stay as they are for the session itself.
+# The environment is not just stripped of the identity (CLAUDE_CONFIG_DIR, MARVEEN_AGENT_ID, MARVEEN_AGENT_TOKEN_FILE
+# would make the wrapper read the sub-agent's token file for --token main): it is replaced (`env -i`) by a fixed PATH
+# and the one URL computed below. The call carries the MAIN agent's token, so nothing the session can set may steer it:
+# not the URL (DASHBOARD_BASE_URL, MARVEEN_WEB_PORT, WEB_PORT), not the token's location (MARVEEN_STORE_DIR,
+# MAIN_AGENT_ID), not the program the wrapper hands it to (a look-alike earlier on PATH).
 API_WRAPPER="$PROD_ROOT/scripts/agent-api.sh"
 [ -r "$API_WRAPPER" ] || exit 0
 # 'from' must be a registered fleet agent id (the API rejects made-up names,
@@ -171,22 +175,28 @@ API_WRAPPER="$PROD_ROOT/scripts/agent-api.sh"
 # The alert MUST name the tree it fired in: without it a test alert raised
 # from a scratch root is word-for-word identical to a real one, and the
 # reader starts an investigation (cost one wasted round on 2026-08-22).
-ORIGIN="${MARVEEN_DASHBOARD_ORIGIN:-http://localhost:3420}"
+# Where the alert goes (MARVEEN_DASHBOARD_ORIGIN) and to whom (MARVEEN_GUARD_ALERT_TO) are read from the .env of the
+# guarded tree, NEVER from the environment of the session that ran the checkout: that call carries the main agent's
+# token. The origin must be http://localhost or http://127.0.0.1 with an optional port, anything else is ignored.
+ORIGIN="$(grep -E '^MARVEEN_DASHBOARD_ORIGIN=' "$PROD_ROOT/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
+[[ "$ORIGIN" =~ ^http://(localhost|127\.0\.0\.1)(:[0-9]{1,5})?$ ]] || ORIGIN="http://localhost:3420"
 # The sender and the default recipient are the install's own main agent (MAIN_AGENT_ID in the .env of the guarded
 # tree, read here at alert time, never baked in), not a fixed "marveen": on an install whose main agent has another
 # id the API rejects an unknown sender and the alert vanished into `|| true`. No .env or no id = the stock "marveen".
 MAIN_ID="$(grep -E '^MAIN_AGENT_ID=' "$PROD_ROOT/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
 MAIN_ID="${MAIN_ID//[^a-zA-Z0-9_-]/}"
 MAIN_ID="${MAIN_ID:-marveen}"
-ALERT_TO="${MARVEEN_GUARD_ALERT_TO:-$MAIN_ID}"
+ALERT_TO="$(grep -E '^MARVEEN_GUARD_ALERT_TO=' "$PROD_ROOT/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
+ALERT_TO="${ALERT_TO//[^a-zA-Z0-9_-]/}"
+ALERT_TO="${ALERT_TO:-$MAIN_ID}"
 # The body is hand-built JSON. A branch name may hold a double quote (git allows it), which ends the string early:
 # the API answers 400 and the alert vanishes into the `|| true` below, so a branch switch with such a name would go
 # unreported. Only path-safe characters are kept in the two values that come from the repository.
 BRANCH="${BRANCH//[^A-Za-z0-9._\/-]/_}"
 TOPLEVEL="${TOPLEVEL//[^A-Za-z0-9._\/ -]/_}"
 printf '%s' "{\"from\":\"$MAIN_ID\",\"to\":\"$ALERT_TO\",\"content\":\"[PROD-FA ORSEG, post-checkout hook] Fa: $TOPLEVEL -- agat valtott a(z) $BRANCH agra. (Ha ez az utvonal nem a telepites fo faja, ez PROBA, nem eles riasztas.) AUTO-VISSZAALLITAS: $REVERTED. Commitot a pre-commit hook blokkol; szandekos valtashoz MARVEEN_PROD_CHECKOUT_OK=1.\"}" \
-  | env -u CLAUDE_CONFIG_DIR -u MARVEEN_AGENT_ID -u MARVEEN_AGENT_TOKEN_FILE \
-      DASHBOARD_BASE_URL="$ORIGIN" bash "$API_WRAPPER" --token main --max-time 5 POST /api/messages - >/dev/null 2>&1 || true
+  | env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin \
+      DASHBOARD_BASE_URL="$ORIGIN" /bin/bash "$API_WRAPPER" --token main --max-time 5 POST /api/messages - >/dev/null 2>&1 || true
 exit 0
 EOF
 chmod +x "$HOOK_DIR/post-checkout"

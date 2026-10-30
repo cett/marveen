@@ -35,6 +35,7 @@ make_tree() {
 #!/bin/sh
 echo "$*" >> "$(dirname "$0")/../wrapper-args.log"
 echo "CFG=${CLAUDE_CONFIG_DIR-unset} AID=${MARVEEN_AGENT_ID-unset} TF=${MARVEEN_AGENT_TOKEN_FILE-unset}" >> "$(dirname "$0")/../wrapper-env.log"
+echo "DBU=${DASHBOARD_BASE_URL-unset} SD=${MARVEEN_STORE_DIR-unset} MID=${MAIN_AGENT_ID-unset} WP=${WEB_PORT-unset}${MARVEEN_WEB_PORT-} PATH=$PATH" >> "$(dirname "$0")/../wrapper-env2.log"
 for a in "$@"; do if [ "$a" = "-" ]; then cat > "$(dirname "$0")/../wrapper-body.log"; fi; done
 exit 0
 EOF
@@ -72,9 +73,13 @@ assert_eq ".env without MAIN_AGENT_ID: marveen" "marveen" "$(field "$ROOT" from)
 make_tree d 'MAIN_AGENT_ID=bad;"id$(x)' yes
 switch "$ROOT"
 assert_eq "an id with shell or JSON characters is stripped to its safe part" "badidx" "$(field "$ROOT" from)"
-make_tree e "MAIN_AGENT_ID=mainbot" yes
-(cd "$ROOT" && MARVEEN_GUARD_ALERT_TO=someone git checkout -q -b feature 2>/dev/null)
-assert_eq "MARVEEN_GUARD_ALERT_TO still overrides the recipient" "someone" "$(field "$ROOT" to)"
+make_tree e "MAIN_AGENT_ID=mainbot
+MARVEEN_GUARD_ALERT_TO=some.one\"x" yes
+(cd "$ROOT" && git checkout -q -b feature 2>/dev/null)
+assert_eq "MARVEEN_GUARD_ALERT_TO in the .env of the tree overrides the recipient (filtered to a safe id)" "someonex" "$(field "$ROOT" to)"
+make_tree e2 "MAIN_AGENT_ID=mainbot" yes
+(cd "$ROOT" && MARVEEN_GUARD_ALERT_TO=victim git checkout -q -b feature 2>/dev/null)
+assert_eq "the recipient is NOT taken from the session environment" "mainbot" "$(field "$ROOT" to)"
 assert_eq "...and the sender stays the main agent" "mainbot" "$(field "$ROOT" from)"
 
 echo "the alert from a sub-agent session (AGENT_API_STRICT=1 refuses --token main there)"
@@ -85,29 +90,55 @@ make_tree h "MAIN_AGENT_ID=mainbot" yes
 assert_eq "the wrapper is called without the session's launch identity" "CFG=unset AID=unset TF=unset" "$(head -1 "$ROOT/wrapper-env.log" 2>/dev/null)"
 assert_eq "...and the alert still names the main agent as sender" "mainbot" "$(field "$ROOT" from)"
 
+# The call carries the main agent's token, so nothing the session sets may steer it: not the URL, the store, the main
+# agent id, the port, nor the PATH the wrapper finds curl on.
+make_tree h2 "MAIN_AGENT_ID=mainbot" yes
+(cd "$ROOT" && DASHBOARD_BASE_URL=http://evil.invalid:9 MARVEEN_DASHBOARD_ORIGIN=http://evil.invalid:9 MARVEEN_STORE_DIR=/tmp/evil-store \
+  MAIN_AGENT_ID=evil WEB_PORT=9 MARVEEN_WEB_PORT=9 PATH="/tmp/evil-bin:$PATH" git checkout -q -b feature 2>/dev/null)
+assert_eq "session URL, store, main id, port and PATH do not reach the wrapper" \
+  "DBU=http://localhost:3420 SD=unset MID=unset WP=unset PATH=/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin" "$(head -1 "$ROOT/wrapper-env2.log" 2>/dev/null)"
+make_tree h3 "MAIN_AGENT_ID=mainbot
+MARVEEN_DASHBOARD_ORIGIN=http://127.0.0.1:3555" yes
+(cd "$ROOT" && git checkout -q -b feature 2>/dev/null)
+case "$(head -1 "$ROOT/wrapper-env2.log" 2>/dev/null)" in "DBU=http://127.0.0.1:3555 "*) pass "a loopback origin in the .env of the tree is used" ;; *) fail "loopback origin not used: $(head -1 "$ROOT/wrapper-env2.log" 2>/dev/null)" ;; esac
+n=0
+for bad in "http://evil.invalid" "http://localhost:80@evil.invalid" "http://localhost.evil.invalid" "https://localhost" "http://localhost:3420/x"; do
+  n=$((n + 1))
+  make_tree "h4-$n" "MAIN_AGENT_ID=mainbot
+MARVEEN_DASHBOARD_ORIGIN=$bad" yes
+  (cd "$ROOT" && git checkout -q -b feature 2>/dev/null)
+  case "$(head -1 "$ROOT/wrapper-env2.log" 2>/dev/null)" in "DBU=http://localhost:3420 "*) pass "origin '$bad' from the .env is ignored" ;; *) fail "origin '$bad' was used: $(head -1 "$ROOT/wrapper-env2.log" 2>/dev/null)" ;; esac
+done
+
 # The same with the REAL wrapper and a fake curl: with the identity dropped the request goes out under the main
 # agent's token (the sub-agent's token file is not read); with the identity kept the wrapper refuses (exit 3, E1),
 # which is the failure the hook must not suffer.
 FAKEBIN="$TMP/fakebin"; mkdir -p "$FAKEBIN"
-cat > "$FAKEBIN/curl" <<'FAKE'
+# The hook runs the wrapper in a clean environment with a fixed PATH, so neither a PATH entry nor a variable can
+# carry the fake curl or its record path in: the fixture wrapper calls the fake by absolute path and the fake has
+# its record path written into it.
+cat > "$FAKEBIN/curl" <<FAKE
 #!/bin/bash
-# records that a request was made and the config fed on stdin (-K -); answers 200
-for a in "$@"; do if [ "$a" = "-K" ]; then cat >> "$FAKE_REC.cfg"; fi; done
-echo x >> "$FAKE_REC.calls"
+# records that a request was made, its arguments and the config fed on stdin (-K -); answers 200
+for a in "\$@"; do if [ "\$a" = "-K" ]; then cat >> "$TMP/rec-i.cfg"; fi; done
+echo x >> "$TMP/rec-i.calls"
+printf '%s\n' "\$@" >> "$TMP/rec-i.argv"
 printf '{}\n200'
 FAKE
 chmod +x "$FAKEBIN/curl"
 make_tree i "MAIN_AGENT_ID=mainbot" no
-cp "$SRC_DIR/agent-api.sh" "$ROOT/scripts/agent-api.sh"
+sed "s#| curl -K - #| $FAKEBIN/curl -K - #" "$SRC_DIR/agent-api.sh" > "$ROOT/scripts/agent-api.sh"
+grep -q "$FAKEBIN/curl -K -" "$ROOT/scripts/agent-api.sh" && pass "fixture: the wrapper copy calls the fake curl" || fail "fixture: the curl call in agent-api.sh changed, the test cannot inject its fake"
 mkdir -p "$ROOT/agents/sub-a"
 echo main-fixture-token > "$ROOT/.agent-token"; echo sub-fixture-token > "$ROOT/agents/sub-a/.agent-token"
-SUB_ENV=(CLAUDE_CONFIG_DIR="$ROOT/agents/sub-a/.claude-config" MARVEEN_AGENT_TOKEN_FILE="$ROOT/agents/sub-a/.agent-token" AGENT_API_STRICT=1 MAIN_AGENT_ID=mainbot)
-(cd "$ROOT" && env "${SUB_ENV[@]}" PATH="$FAKEBIN:$PATH" FAKE_REC="$TMP/rec-i" git checkout -q -b feature 2>/dev/null)
+SUB_ENV=(CLAUDE_CONFIG_DIR="$ROOT/agents/sub-a/.claude-config" MARVEEN_AGENT_TOKEN_FILE="$ROOT/agents/sub-a/.agent-token" AGENT_API_STRICT=1 MAIN_AGENT_ID=mainbot DASHBOARD_BASE_URL=http://evil.invalid:9)
+(cd "$ROOT" && env "${SUB_ENV[@]}" git checkout -q -b feature 2>/dev/null)
+if grep -q 'evil.invalid' "$TMP/rec-i.argv" 2>/dev/null; then fail "the session's DASHBOARD_BASE_URL was the request target"; elif grep -q 'http://localhost:3420/api/messages' "$TMP/rec-i.argv" 2>/dev/null; then pass "the request went to the tree's own dashboard, not the session's URL"; else fail "unexpected request target: $(cat "$TMP/rec-i.argv" 2>/dev/null)"; fi
 assert_eq "STRICT=1, sub-agent session: the alert request went out" "1" "$(wc -l < "$TMP/rec-i.calls" 2>/dev/null | tr -d ' ')"
 if grep -q 'main-fixture-token' "$TMP/rec-i.cfg" 2>/dev/null; then pass "it carried the main agent's token"; else fail "main token missing from the request"; fi
 if grep -q 'sub-fixture-token' "$TMP/rec-i.cfg" 2>/dev/null; then fail "the sub-agent's token file was read for --token main"; else pass "the sub-agent's token was not used"; fi
 # control: the same environment straight into the wrapper IS refused, so the test above would catch a regression
-(cd "$ROOT" && env "${SUB_ENV[@]}" PATH="$FAKEBIN:$PATH" FAKE_REC="$TMP/rec-ctl" bash scripts/agent-api.sh --token main GET /api/x >/dev/null 2>"$TMP/ctl.err"); ctl_rc=$?
+(cd "$ROOT" && env "${SUB_ENV[@]}" bash scripts/agent-api.sh --token main GET /api/x >/dev/null 2>"$TMP/ctl.err"); ctl_rc=$?
 assert_eq "control: the wrapper refuses that environment (exit 3)" "3" "$ctl_rc"
 if grep -q 'refused (E1)' "$TMP/ctl.err"; then pass "control: the refusal is rule E1"; else fail "control: no E1 text ($(cat "$TMP/ctl.err"))"; fi
 
