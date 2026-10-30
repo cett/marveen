@@ -355,7 +355,7 @@ describe('<channel opener neutralization', () => {
   })
 
   it('leaves look-alike words alone', () => {
-    for (const w of ['<channelization>', '<channels>', 'the channel is open', 'a < channelx', '<channel-x>', '<channel_x>', '<channel9>']) {
+    for (const w of ['<channelization>', '<channels>', 'the channel is open', 'a < channelx', '<channel-x>', '<channel-x', '<channel_x>', '<channel9>']) {
       expect(scrubFramingTags(w)).toBe(w)
     }
   })
@@ -370,7 +370,7 @@ describe('<channel opener neutralization', () => {
       scrubFramingTags(text)
       scrubSecurityTags(text)
       wrapTrustedPeer('agent:x', text)
-      expect(performance.now() - t0, JSON.stringify(text.slice(-12))).toBeLessThan(300)
+      expect(performance.now() - t0, JSON.stringify(text.slice(-12))).toBeLessThan(100)
     }
     // the same long run still ends in a neutralized tag when the name follows
     expect(scrubFramingTags(`<${spaces}channel src="x">`)).not.toMatch(/<\\s*channel/i)
