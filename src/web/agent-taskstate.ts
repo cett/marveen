@@ -80,13 +80,14 @@ function recordPath(agent: string): string {
   return join(STORE_DIR, `${sanitizeAgent(agent)}.json`)
 }
 
-// The replay sentinel must appear once, at the top of the block: a value that
-// carries its token (any case, with the = marks and text around it) is cut out
-// before anything else looks at it. Found by a plain search, not by a pattern with
-// a leading `=+`, which is quadratic on a long run of `=`.
-const SENTINEL_TOKEN_RX = /TASK-FOLYTATAS/i
-// How far from the token the surrounding `(NEM uj feladat) ===` part may reach.
-const SENTINEL_TAIL_MAX = 60
+// The replay sentinel must appear once, at the top of the block. A value that carries
+// its key word has it rewritten to a neutral form, wherever the word sits and whatever
+// decoration (= marks, spaces) surrounds it, so a forged sentinel line cannot be built:
+// a literal replacement of one fixed word, linear, with no pattern around it to blow
+// up. The neutral form has no hyphen, so it never matches again (applying the
+// normalizer twice gives the same text) and pieces cannot join into a new word.
+const SENTINEL_WORD_RX = /TASK-FOLYTATAS/gi
+const SENTINEL_WORD_NEUTRAL = '[task folytatas]'
 
 // A value is cut to this many times its cap before anything else runs on it.
 const RAW_CUT_FACTOR = 4
@@ -95,34 +96,12 @@ const RAW_CUT_FACTOR = 4
 // invisible and bidirectional-override characters that hide or reorder text.
 const CONTROL_RX = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/g
 
-// Cuts every sentinel token from an already whitespace-folded value, with the `=` run
-// and spaces before it and the `(...) ===` tail after it. Repeats until none is left:
-// cutting an inner sentinel can join the pieces around it into a new one
-// ("=== TASK-<sentinel>FOLYTATAS ... ===").
-function cutSentinel(text: string): string {
-  let cur = text
-  for (let m = SENTINEL_TOKEN_RX.exec(cur); m; m = SENTINEL_TOKEN_RX.exec(cur)) {
-    const tokenEnd = m.index + m[0].length
-    let from = m.index
-    while (from > 0 && cur[from - 1] === ' ') from--
-    while (from > 0 && cur[from - 1] === '=') from--
-    let to = tokenEnd
-    const eq = cur.indexOf('=', tokenEnd)
-    if (eq !== -1 && eq - tokenEnd <= SENTINEL_TAIL_MAX) {
-      to = eq
-      while (to < cur.length && cur[to] === '=') to++
-    }
-    cur = cur.slice(0, from) + ' ' + cur.slice(to)
-  }
-  return cur
-}
-
 /**
  * One value of the record, made safe to replay: no control characters, every run of
  * whitespace (newlines included) folded to one space so a value is one line, the
- * replay sentinel cut out, the framing tags (security tags and the channel opener)
- * neutralized, then capped. The order matters: the sentinel is cut BEFORE the tags
- * are scrubbed, so removing it cannot leave a tag glued together. Idempotent, so it
+ * replay sentinel word rewritten, the framing tags (security tags and the channel opener)
+ * neutralized, then capped. The order matters: the sentinel is rewritten BEFORE the tags
+ * are scrubbed, so the rewrite cannot leave a tag glued together. Idempotent, so it
  * is applied on write and again on read.
  */
 export function normalizeField(s: unknown, max: number): string {
@@ -130,11 +109,11 @@ export function normalizeField(s: unknown, max: number): string {
   // and runs of whitespace shrink a value, so the kept text can still fill the cap):
   // every pass below, the tag patterns included, then runs on a bounded string, not
   // on whatever size the request body allowed.
-  let folded = String(s ?? '')
+  const folded = String(s ?? '')
     .slice(0, max * RAW_CUT_FACTOR)
     .replace(CONTROL_RX, '')
     .replace(/\s+/g, ' ')
-  folded = cutSentinel(folded)
+    .replace(SENTINEL_WORD_RX, SENTINEL_WORD_NEUTRAL)
   return scrubFramingTags(folded).replace(/\s+/g, ' ').trim().slice(0, max).trim()
 }
 
