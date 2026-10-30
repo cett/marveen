@@ -101,7 +101,7 @@ describe('an agent-bound admin token under enforce', () => {
     expect(r.body.code).toBe('sender_token_mismatch')
   })
 
-  it('refuses another spelling of the token agent (the comparison is exact, as in the audit)', async () => {
+  it('refuses another case of the token agent (the comparison is on the sanitized id, case-sensitive)', async () => {
     const r = await post(BOUND_ADMIN, { from: 'Agent-A', to: 'agent-b', content: 'x' }, ENFORCE)
     expect(r.status).toBe(403)
     expect(r.body.code).toBe('sender_token_mismatch')
@@ -149,6 +149,28 @@ describe('an agent-bound admin token under enforce', () => {
     expect(r.status).toBe(403)
     expect(r.body.error).toBe('sender_not_in_allowlist')
     expect(refusedRows()).toEqual([])
+  })
+})
+
+describe('a from that sanitizes to the token agent', () => {
+  const ZWSP = String.fromCodePoint(0x200b)
+  const SPELLINGS: [string, string][] = [['a dot inside', 'agent.-a'], ['a trailing invisible character', `agent-a${ZWSP}`], ['padding', '  agent-a  ']]
+
+  it.each(SPELLINGS)('is stored as the token agent, not as the spelling used (%s)', async (_name, spelling) => {
+    for (const enforced of [ENFORCE, SHADOW]) {
+      expect((await post(BOUND_ADMIN, { from: spelling, to: 'agent-b', content: `x ${enforced}` }, enforced)).status).toBe(200)
+    }
+    expect(stored().map((m) => m.from_agent)).toEqual(['agent-a', 'agent-a'])
+    expect(declaredRows()).toEqual([])
+    expect(refusedRows()).toEqual([])
+  })
+
+  it('does not rewrite a spelling of ANOTHER agent: refused under enforce, stored as sent in shadow', async () => {
+    expect((await post(BOUND_ADMIN, { from: 'agent.-b', to: 'agent-c', content: 'x' }, ENFORCE)).status).toBe(403)
+    expect(stored()).toEqual([])
+    expect((await post(BOUND_ADMIN, { from: 'agent.-b', to: 'agent-c', content: 'x' }, SHADOW)).status).toBe(200)
+    expect(stored().map((m) => m.from_agent)).toEqual(['agent.-b'])
+    expect(declaredRows()).toMatchObject([{ declared_from: 'agent.-b' }])
   })
 })
 

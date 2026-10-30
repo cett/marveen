@@ -242,6 +242,10 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
         return true
       }
     }
+    // The comparison above is on the sanitized id (case-sensitive), so `agent-a.` or `agent-a` plus an invisible
+    // character names the token's agent too. The stored sender is then the token's own id, as for a fleet_agent,
+    // not the spelling the body used.
+    if (boundAgent && sanitizeAgentIdent(from) === sanitizeAgentIdent(boundAgent)) from = boundAgent
     // From-authentication: accept messages only from registered fleet agents.
     // The shared Bearer token is readable by any sub-agent, so without this
     // check any process with the token could inject messages as an arbitrary

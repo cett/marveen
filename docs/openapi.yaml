@@ -1836,10 +1836,12 @@ paths:
             `error` is a stable snake_case code; human detail is in `hint`.
             Codes: `sender_reserved`, `federated_sender_not_allowed`,
             `sender_not_in_allowlist`, `unknown_sender`.
-            `code: sender_token_mismatch`: the token names an agent (a fleet agent token, or
-            the main agent's / `agent-api.sh --agent X` admin token) and `from` is a different
-            sender. A fleet agent token is always refused; an agent-bound admin token only
-            under `TOKEN_IDENTITY_MODE=enforce` (the message is refused, not rewritten).
+            `code: sender_token_mismatch`: an agent-bound admin token (the main agent's, or the
+            one `agent-api.sh --agent X` sends) names `from` as a different sender, under
+            `TOKEN_IDENTITY_MODE=enforce` (the message is refused, not rewritten; the sender
+            is compared as a sanitized id, case-sensitive). A fleet agent token with a
+            different `from` is refused too, but with `error: forbidden` and a `hint`, without
+            this `code`.
           content:
             application/json:
               schema:
