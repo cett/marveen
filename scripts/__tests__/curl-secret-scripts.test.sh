@@ -84,7 +84,11 @@ case "$OUT" in *slackfixturevalue*) bad "the token was printed" ;; *) ok "the to
 # pre-pr-review.sh runs in a git repo (the install itself): a base commit, then the change under test.
 run_review() { # name, then: a shell snippet that makes the change and commits it
   new_install "$1"
-  printf '#!/bin/bash\nprintf %%s %q\n' "${VAULT_REPLY}" > "$INST/scripts/agent-api.sh"
+  case "${VAULT_STUB:-}" in
+    "") printf '#!/bin/bash\nprintf %%s %q\n' "${VAULT_REPLY}" > "$INST/scripts/agent-api.sh" ;;
+    REAL) cp "$ROOT/scripts/agent-api.sh" "$INST/scripts/agent-api.sh" ;;   # the real wrapper, to see its real refusal
+    *) printf '%s\n' "$VAULT_STUB" > "$INST/scripts/agent-api.sh" ;;
+  esac
   ( cd "$INST" && git init -q && git add -A && git -c user.name=t -c user.email=t@example.invalid commit -q -m base && git tag base \
     && eval "$2" && git add -A && git -c user.name=t -c user.email=t@example.invalid commit -q -m change ) >/dev/null 2>&1
   OUT="$(cd "$INST" && PATH="$FAKEBIN:$PATH" FAKE_REC="$REC" FAKE_STATE_DIR="$WORK" bash scripts/pre-pr-review.sh base 2>"$WORK/err-$1")"; RC=$?
@@ -118,7 +122,11 @@ VAULT_REPLY='{"value":"vaultfixturevalue"}'
 # The base holds a file with a secret shape; the change deletes the secret line (a) or the whole file (b).
 run_review_removed() { # name, change
   new_install "$1"
-  printf '#!/bin/bash\nprintf %%s %q\n' "${VAULT_REPLY}" > "$INST/scripts/agent-api.sh"
+  case "${VAULT_STUB:-}" in
+    "") printf '#!/bin/bash\nprintf %%s %q\n' "${VAULT_REPLY}" > "$INST/scripts/agent-api.sh" ;;
+    REAL) cp "$ROOT/scripts/agent-api.sh" "$INST/scripts/agent-api.sh" ;;   # the real wrapper, to see its real refusal
+    *) printf '%s\n' "$VAULT_STUB" > "$INST/scripts/agent-api.sh" ;;
+  esac
   printf 'token ghp_%s\nkept line\n' "$(printf 'B%.0s' $(seq 1 36))" > "$INST/old.txt"
   ( cd "$INST" && git init -q && git add -A && git -c user.name=t -c user.email=t@example.invalid commit -q -m base && git tag base \
     && eval "$2" && git add -A && git -c user.name=t -c user.email=t@example.invalid commit -q -m change ) >/dev/null 2>&1
@@ -143,6 +151,34 @@ VAULT_REPLY='{}'
 run_review nokeys 'echo "a harmless note" > notes.txt'
 [ "$RC" = 0 ] && [ "$CALLS" = 0 ] && ok "exit 0, curl not called" || bad "exit $RC, calls $CALLS"
 case "$OUT" in *"ChatGPT review skipped"*"Gemini review skipped"*) ok "both skips are reported" ;; *) bad "skip lines missing: $OUT" ;; esac
+
+echo "8) pre-pr-review.sh: a REFUSED vault read (wrapper exit 3) is not 'key not set': it stops and says why"
+VAULT_STUB='#!/bin/bash
+echo "agent-api: refused (E2): a sub-agent session (sub) asked for the operator token: ask the main agent through /api/messages" >&2
+exit 3'
+run_review refused 'echo "a harmless note" > notes.txt'
+[ "$RC" = 3 ] && ok "exit 3" || bad "exit $RC (wanted 3)"
+[ "$CALLS" = 0 ] && ok "curl was never called" || bad "curl was called $CALLS time(s)"
+case "$ERR" in *"REFUSED"*"refused (E2)"*) ok "the refusal and the wrapper's own reason are shown" ;; *) bad "no refusal text: $ERR" ;; esac
+case "$OUT$ERR" in *"review skipped"*) bad "a refusal was reported as a skipped review: $OUT$ERR" ;; *) ok "not reported as 'key not set'" ;; esac
+
+echo "8b) ...but a key that is simply not in the vault (HTTP 404, wrapper exit 22) is still the quiet skip"
+VAULT_STUB='#!/bin/bash
+echo "agent-api: HTTP 404 (GET /api/vault/X)" >&2
+exit 22'
+run_review notinvault 'echo "a harmless note" > notes.txt'
+[ "$RC" = 0 ] && [ "$CALLS" = 0 ] && ok "exit 0, curl not called" || bad "exit $RC, calls $CALLS"
+case "$OUT" in *"ChatGPT review skipped"*"Gemini review skipped"*) ok "both skips are reported" ;; *) bad "skip lines missing: $OUT" ;; esac
+
+echo "8c) the REAL wrapper, a session launched as a sub-agent, AGENT_API_STRICT=1: the script exits 3 with the E2 text"
+VAULT_STUB=REAL
+# the wrapper compares the config dir with its own pwd-normalised root: a TMPDIR with a trailing slash (macOS) must not defeat that
+export CLAUDE_CONFIG_DIR="$(cd "$WORK" && pwd)/inst-subsession/agents/sub/.claude-config" AGENT_API_STRICT=1 MAIN_AGENT_ID=mainbot
+run_review subsession 'echo "a harmless note" > notes.txt'
+unset CLAUDE_CONFIG_DIR AGENT_API_STRICT MAIN_AGENT_ID
+[ "$RC" = 3 ] && [ "$CALLS" = 0 ] && ok "exit 3, nothing sent" || bad "exit $RC, calls $CALLS: $ERR"
+case "$ERR" in *"refused (E2)"*) ok "the wrapper's E2 reason reaches the user" ;; *) bad "no E2 text: $ERR" ;; esac
+unset VAULT_STUB
 
 echo "TOTAL: $FAILS failure(s)"
 exit "$FAILS"

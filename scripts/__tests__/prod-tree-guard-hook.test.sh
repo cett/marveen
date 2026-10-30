@@ -2,11 +2,13 @@
 # Tests for the post-checkout hook that scripts/install-prod-tree-guard-hook.sh installs on the MAIN checkout.
 # Run: bash scripts/__tests__/prod-tree-guard-hook.test.sh
 #
-# The alert about a branch switch on the live tree is sent as the install's own main agent (MAIN_AGENT_ID of the
-# .env of the guarded tree, read when the alert is sent), through the API wrapper with the main agent's token. Not
-# as a fixed "marveen" (an unknown sender is rejected by the API, and the alert vanished into `|| true`), and not
-# with curl and the dashboard token file. Here the installer runs in a throw-away git repo, with a stub wrapper that
-# records its arguments and the request body, so nothing real is contacted.
+# The alert about a branch switch on the live tree goes to the install's own main agent (MAIN_AGENT_ID of the .env of
+# the guarded tree, read when the alert is sent) through the API wrapper, as WHOEVER RAN THE CHECKOUT: the wrapper's
+# own identity, no `--token main`, no `from` in the body (the server takes it from a fleet-agent token), and a retry
+# naming the main agent when the server insists on a sender (the main agent's token). A failed send is reported on
+# stderr, never swallowed. Not as a fixed "marveen" (an unknown recipient is rejected by the API), and not with curl
+# and the dashboard token file. Here the installer runs in a throw-away git repo, with a stub wrapper that records its
+# arguments and the request body, so nothing real is contacted; a second part runs the REAL wrapper with a fake curl.
 
 set -u
 
@@ -33,8 +35,17 @@ make_tree() {
     # records the arguments and, for a `-` body argument, the body from stdin
     cat > "$ROOT/scripts/agent-api.sh" <<'EOF'
 #!/bin/sh
-echo "$*" >> "$(dirname "$0")/../wrapper-args.log"
-for a in "$@"; do if [ "$a" = "-" ]; then cat > "$(dirname "$0")/../wrapper-body.log"; fi; done
+D="$(dirname "$0")/.."
+echo "$*" >> "$D/wrapper-args.log"
+echo "CFG=${CLAUDE_CONFIG_DIR-unset} AID=${MARVEEN_AGENT_ID-unset} TF=${MARVEEN_AGENT_TOKEN_FILE-unset} STRICT=${AGENT_API_STRICT-unset}" >> "$D/wrapper-env.log"
+echo "DBU=${DASHBOARD_BASE_URL-unset} SD=${MARVEEN_STORE_DIR-unset} MID=${MAIN_AGENT_ID-unset} WP=${WEB_PORT-unset}${MARVEEN_WEB_PORT-} PX=${http_proxy-unset}${HTTPS_PROXY-}${ALL_PROXY-} PATH=$PATH" >> "$D/wrapper-env2.log"
+for a in "$@"; do if [ "$a" = "-" ]; then cat > "$D/wrapper-body.log"; cat "$D/wrapper-body.log" >> "$D/wrapper-bodies.log"; echo >> "$D/wrapper-bodies.log"; fi; done
+# stub-mode: need-from = answer HTTP 400 (exit 22) to a body without "from" (what the server does for the main
+# agent's token); no-token = the wrapper's "no readable own token" (exit 3)
+case "$(cat "$D/stub-mode" 2>/dev/null)" in
+  need-from) grep -q '"from"' "$D/wrapper-body.log" || { echo "agent-api: HTTP 400 (POST /api/messages)" >&2; exit 22; } ;;
+  no-token) echo "agent-api: no readable own token (/x/.agent-token) for sub-a; the operator issues it with: npm run agent-tokens -- issue sub-a" >&2; exit 3 ;;
+esac
 exit 0
 EOF
     chmod +x "$ROOT/scripts/agent-api.sh"
@@ -51,12 +62,13 @@ EOF
 switch() { (cd "$1" && git checkout -q -b feature 2>/dev/null); }
 field() { sed -n "s/.*\"$2\":\"\([^\"]*\)\".*/\1/p" "$1/wrapper-body.log" 2>/dev/null | head -1; }
 
-echo "the alert is sent as the main agent of the guarded tree"
+echo "the alert goes to the main agent of the guarded tree, as the caller"
 make_tree a "MAIN_AGENT_ID=mainbot" yes
 switch "$ROOT"
-assert_eq "from is MAIN_AGENT_ID of the .env" "mainbot" "$(field "$ROOT" from)"
-assert_eq "the default recipient is the same main agent" "mainbot" "$(field "$ROOT" to)"
-if grep -q -- "--token main" "$ROOT/wrapper-args.log" 2>/dev/null; then pass "it goes through the wrapper with the main agent token"; else fail "wrapper not called with --token main ($(cat "$ROOT/wrapper-args.log" 2>/dev/null))"; fi
+assert_eq "the body names no sender (the server takes it from the token)" "" "$(field "$ROOT" from)"
+assert_eq "the default recipient is MAIN_AGENT_ID of the .env" "mainbot" "$(field "$ROOT" to)"
+if grep -q -- "--token\|--agent" "$ROOT/wrapper-args.log" 2>/dev/null; then fail "the wrapper was told whose identity to use ($(cat "$ROOT/wrapper-args.log"))"; else pass "no --token / --agent: the wrapper uses the caller's own identity"; fi
+assert_eq "one request when the server accepts it" "1" "$(wc -l < "$ROOT/wrapper-bodies.log" | tr -d ' ')"
 if grep -q "POST /api/messages" "$ROOT/wrapper-args.log" 2>/dev/null; then pass "it posts to /api/messages"; else fail "no POST /api/messages"; fi
 if grep -q "Fa: $ROOT" "$ROOT/wrapper-body.log" 2>/dev/null; then pass "the alert names the tree it fired in"; else fail "tree not named in the alert"; fi
 assert_eq "the clean tree is auto-reverted to develop" "develop" "$(git -C "$ROOT" rev-parse --abbrev-ref HEAD)"
@@ -64,17 +76,140 @@ assert_eq "the clean tree is auto-reverted to develop" "develop" "$(git -C "$ROO
 echo "fallbacks"
 make_tree b NOENV yes
 switch "$ROOT"
-assert_eq "no .env: the stock id marveen" "marveen" "$(field "$ROOT" from)"
+assert_eq "no .env: the stock id marveen" "marveen" "$(field "$ROOT" to)"
 make_tree c "OTHER=1" yes
 switch "$ROOT"
-assert_eq ".env without MAIN_AGENT_ID: marveen" "marveen" "$(field "$ROOT" from)"
+assert_eq ".env without MAIN_AGENT_ID: marveen" "marveen" "$(field "$ROOT" to)"
 make_tree d 'MAIN_AGENT_ID=bad;"id$(x)' yes
 switch "$ROOT"
-assert_eq "an id with shell or JSON characters is stripped to its safe part" "badidx" "$(field "$ROOT" from)"
+assert_eq "an id with shell or JSON characters is stripped to its safe part" "badidx" "$(field "$ROOT" to)"
 make_tree e "MAIN_AGENT_ID=mainbot" yes
 (cd "$ROOT" && MARVEEN_GUARD_ALERT_TO=someone git checkout -q -b feature 2>/dev/null)
 assert_eq "MARVEEN_GUARD_ALERT_TO still overrides the recipient" "someone" "$(field "$ROOT" to)"
-assert_eq "...and the sender stays the main agent" "mainbot" "$(field "$ROOT" from)"
+make_tree e2 "MAIN_AGENT_ID=mainbot" yes
+(cd "$ROOT" && MARVEEN_GUARD_ALERT_TO='some.one"x' git checkout -q -b feature 2>/dev/null)
+assert_eq "...filtered to a safe id like MAIN_AGENT_ID (it goes into hand-built JSON)" "someonex" "$(field "$ROOT" to)"
+if python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$ROOT/wrapper-body.log" 2>/dev/null; then pass "...and the body is valid JSON"; else fail "invalid JSON: $(cat "$ROOT/wrapper-body.log")"; fi
+
+echo "nothing the session sets may steer a call that can end on the main token (a session that dropped its identity)"
+# The wrapper is started in a CLEAN environment: only the variables that say WHO is calling are passed on.
+make_tree h2 "MAIN_AGENT_ID=mainbot" yes
+(cd "$ROOT" && DASHBOARD_BASE_URL=http://evil.invalid:9 MARVEEN_DASHBOARD_ORIGIN=http://evil.invalid:9 MARVEEN_STORE_DIR=/tmp/evil-store \
+  MAIN_AGENT_ID=evil WEB_PORT=9 MARVEEN_WEB_PORT=9 http_proxy=http://evil.invalid:8 HTTPS_PROXY=http://evil.invalid:8 ALL_PROXY=http://evil.invalid:8 \
+  PATH="/tmp/evil-bin:$PATH" git checkout -q -b feature 2>/dev/null)
+assert_eq "session URL, origin, store, main id, port, proxies and PATH do not reach the wrapper" \
+  "DBU=http://localhost:3420 SD=unset MID=unset WP=unset PX=unset PATH=/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin" "$(head -1 "$ROOT/wrapper-env2.log" 2>/dev/null)"
+make_tree h2b "MAIN_AGENT_ID=mainbot" yes
+(cd "$ROOT" && CLAUDE_CONFIG_DIR="$ROOT/agents/sub-a/.claude-config" MARVEEN_AGENT_ID=sub-a MARVEEN_AGENT_TOKEN_FILE="$ROOT/agents/sub-a/.agent-token" AGENT_API_STRICT=1 \
+  git checkout -q -b feature 2>/dev/null)
+assert_eq "...but the identity variables of the caller are passed on" "CFG=$ROOT/agents/sub-a/.claude-config AID=sub-a TF=$ROOT/agents/sub-a/.agent-token STRICT=1" "$(head -1 "$ROOT/wrapper-env.log" 2>/dev/null)"
+make_tree h3 "MAIN_AGENT_ID=mainbot
+MARVEEN_DASHBOARD_ORIGIN=http://127.0.0.1:3555" yes
+(cd "$ROOT" && MARVEEN_DASHBOARD_ORIGIN=http://evil.invalid:9 git checkout -q -b feature 2>/dev/null)
+case "$(head -1 "$ROOT/wrapper-env2.log" 2>/dev/null)" in "DBU=http://127.0.0.1:3555 "*) pass "a loopback origin in the .env of the tree is used (the session's is not)" ;; *) fail "loopback origin not used: $(head -1 "$ROOT/wrapper-env2.log" 2>/dev/null)" ;; esac
+n=0
+for bad in "http://evil.invalid" "http://localhost:80@evil.invalid" "http://localhost.evil.invalid" "https://localhost" "http://localhost:3420/x"; do
+  n=$((n + 1))
+  make_tree "h4-$n" "MAIN_AGENT_ID=mainbot
+MARVEEN_DASHBOARD_ORIGIN=$bad" yes
+  (cd "$ROOT" && git checkout -q -b feature 2>/dev/null)
+  case "$(head -1 "$ROOT/wrapper-env2.log" 2>/dev/null)" in "DBU=http://localhost:3420 "*) pass "origin '$bad' from the .env is ignored" ;; *) fail "origin '$bad' was used: $(head -1 "$ROOT/wrapper-env2.log" 2>/dev/null)" ;; esac
+done
+
+echo "the server insists on a sender (the main agent's token): one retry naming the main agent"
+make_tree r "MAIN_AGENT_ID=mainbot" yes
+echo need-from > "$ROOT/stub-mode"
+HOOK_ERR="$(cd "$ROOT" && git checkout -q -b feature 2>&1)"
+assert_eq "two requests" "2" "$(wc -l < "$ROOT/wrapper-bodies.log" | tr -d ' ')"
+assert_eq "the retry names the main agent as sender" "mainbot" "$(field "$ROOT" from)"
+assert_eq "nothing is reported as failed when the retry went through" "" "$HOOK_ERR"
+
+echo "a failed send is reported, never swallowed, and never fails the checkout"
+make_tree s "MAIN_AGENT_ID=mainbot" yes
+echo no-token > "$ROOT/stub-mode"
+HOOK_ERR="$(cd "$ROOT" && git checkout -q -b feature 2>&1)"; rc=$?
+assert_eq "the checkout succeeds" "0" "$rc"
+case "$HOOK_ERR" in *"alert was NOT sent (agent-api exit 3)"*"no readable own token"*) pass "a local error line names the exit code and the wrapper's reason" ;; *) fail "no local error line: '$HOOK_ERR'" ;; esac
+assert_eq "no retry on exit 3" "1" "$(wc -l < "$ROOT/wrapper-bodies.log" | tr -d ' ')"
+assert_eq "the tree was still auto-reverted" "develop" "$(git -C "$ROOT" rev-parse --abbrev-ref HEAD)"
+
+echo "the REAL wrapper and a fake curl: a sub-agent session under AGENT_API_STRICT=1, and the main agent"
+# The fake curl plays the server: a request on the MAIN agent's token needs a sender in the body (HTTP 400 without,
+# as the real server answers), a request on a sub-agent's token is accepted without one. It records every call.
+FAKEBIN="$TMP/fakebin"; mkdir -p "$FAKEBIN"
+# The hook starts the wrapper in a clean environment with a fixed PATH, so the fake curl cannot be found through PATH or
+# told where to record through a variable: the fixture wrapper calls it by absolute path, and it reads its record
+# prefix from a file.
+sed "s#__RECFILE__#$TMP/current-rec#g" > "$FAKEBIN/curl" <<'FAKE'
+#!/bin/bash
+R="$(cat __RECFILE__)"
+cfg=""; body=""; prev=""
+for a in "$@"; do
+  if [ "$a" = "-K" ]; then cfg="$(cat)"; fi
+  case "$prev" in --data-binary) body="$(cat "${a#@}" 2>/dev/null)" ;; esac
+  prev="$a"
+done
+echo "$cfg" >> "$R.cfg"; echo "$body" >> "$R.bodies"; printf '%s\n' "$@" >> "$R.argv"; echo x >> "$R.calls"
+case "$cfg" in
+  *main-fixture-token*) case "$body" in *'"from"'*) printf '{}\n200' ;; *) printf '{"error":"required"}\n400' ;; esac ;;
+  *) printf '{}\n200' ;;
+esac
+FAKE
+chmod +x "$FAKEBIN/curl"
+# real_tree <name>: a tree with the real wrapper and a token file for the main agent and for sub-a
+real_tree() {
+  make_tree "$1" "MAIN_AGENT_ID=mainbot" no
+  # the fixture wrapper is the real one with only its curl call pointed at the fake, by absolute path
+  sed "s#| curl -K - #| $FAKEBIN/curl -K - #" "$SRC_DIR/agent-api.sh" > "$ROOT/scripts/agent-api.sh"
+  grep -q "$FAKEBIN/curl -K -" "$ROOT/scripts/agent-api.sh" || fail "fixture: the curl call in agent-api.sh changed, the test cannot inject its fake"
+  mkdir -p "$ROOT/agents/sub-a"
+  echo main-fixture-token > "$ROOT/.agent-token"; echo sub-fixture-token > "$ROOT/agents/sub-a/.agent-token"
+  REC="$TMP/rec-$1"; echo "$REC" > "$TMP/current-rec"
+}
+
+real_tree i
+# the session also tries to steer the call: another URL, origin and proxy
+(cd "$ROOT" && env CLAUDE_CONFIG_DIR="$ROOT/agents/sub-a/.claude-config" AGENT_API_STRICT=1 DASHBOARD_BASE_URL=http://evil.invalid:9 MARVEEN_DASHBOARD_ORIGIN=http://evil.invalid:9 ALL_PROXY=http://evil.invalid:8 git checkout -q -b feature 2>"$TMP/i.err")
+if grep -q 'evil.invalid' "$REC.argv" 2>/dev/null; then fail "the request went to the session's URL: $(cat "$REC.argv")"; elif grep -q 'http://localhost:3420/api/messages' "$REC.argv" 2>/dev/null; then pass "the request went to the tree's own dashboard"; else fail "unexpected target: $(cat "$REC.argv" 2>/dev/null)"; fi
+assert_eq "STRICT=1, sub-agent session: exactly one request went out" "1" "$(wc -l < "$REC.calls" 2>/dev/null | tr -d ' ')"
+if grep -q 'sub-fixture-token' "$REC.cfg" 2>/dev/null; then pass "it carried the sub-agent's own token"; else fail "the sub-agent's token is missing from the request"; fi
+if grep -q 'main-fixture-token' "$REC.cfg" 2>/dev/null; then fail "the main agent's token was used by a sub-agent session"; else pass "the main agent's token was not used"; fi
+if grep -q '"from"' "$REC.bodies" 2>/dev/null; then fail "the body names a sender: $(cat "$REC.bodies")"; else pass "the body names no sender"; fi
+if grep -q '"to":"mainbot"' "$REC.bodies" 2>/dev/null; then pass "it is addressed to the main agent"; else fail "wrong recipient: $(cat "$REC.bodies" 2>/dev/null)"; fi
+assert_eq "nothing was reported as failed" "" "$(cat "$TMP/i.err")"
+# control: the main agent's token from that session IS refused (E1), so reverting the hook to --token main would fail the checks above
+(cd "$ROOT" && env CLAUDE_CONFIG_DIR="$ROOT/agents/sub-a/.claude-config" AGENT_API_STRICT=1 MAIN_AGENT_ID=mainbot bash scripts/agent-api.sh --token main GET /api/x >/dev/null 2>"$TMP/ctl.err"); ctl_rc=$?
+assert_eq "control: --token main from that session is refused (exit 3)" "3" "$ctl_rc"
+if grep -q 'refused (E1)' "$TMP/ctl.err"; then pass "control: the refusal is rule E1"; else fail "control: no E1 text ($(cat "$TMP/ctl.err"))"; fi
+
+# the main agent's own session (or a terminal in the prod tree): the cwd names the main agent, its token needs a sender
+real_tree k
+(cd "$ROOT" && env -u CLAUDE_CONFIG_DIR AGENT_API_STRICT=1 git checkout -q -b feature 2>"$TMP/k.err")
+assert_eq "main agent: two requests (without a sender, then with one)" "2" "$(wc -l < "$REC.calls" 2>/dev/null | tr -d ' ')"
+if grep -q '"from":"mainbot"' "$REC.bodies" 2>/dev/null; then pass "the retry names the main agent"; else fail "no sender in the retry: $(cat "$REC.bodies" 2>/dev/null)"; fi
+assert_eq "main agent: nothing was reported as failed" "" "$(cat "$TMP/k.err")"
+
+# A sub-agent that drops its launch identity is resolved from the cwd (the prod tree = the main agent), so its call
+# ends on the MAIN token. Whatever else the session sets must not steer where that goes.
+real_tree o
+(cd "$ROOT" && env -u CLAUDE_CONFIG_DIR DASHBOARD_BASE_URL=http://evil.invalid:9 MARVEEN_DASHBOARD_ORIGIN=http://evil.invalid:9 \
+  http_proxy=http://evil.invalid:8 ALL_PROXY=http://evil.invalid:8 git checkout -q -b feature 2>"$TMP/o.err")
+if grep -q 'main-fixture-token' "$REC.cfg" 2>/dev/null; then pass "dropped identity: the call is the main agent's (the premise of this case)"; else fail "premise: no main token call ($(cat "$REC.cfg" 2>/dev/null))"; fi
+if grep -q 'evil.invalid' "$REC.argv" "$REC.cfg" 2>/dev/null; then fail "the main token call went to / through the session's choice: $(cat "$REC.argv")"; else pass "the main token call did not go where the session pointed (URL, origin, proxy)"; fi
+if grep -q 'http://localhost:3420/api/messages' "$REC.argv" 2>/dev/null; then pass "it went to the dashboard of the tree"; else fail "unexpected target: $(cat "$REC.argv" 2>/dev/null)"; fi
+
+# a sub-agent without a token file: a local error line, the checkout goes on
+real_tree m
+rm -f "$ROOT/agents/sub-a/.agent-token"
+(cd "$ROOT" && env CLAUDE_CONFIG_DIR="$ROOT/agents/sub-a/.claude-config" AGENT_API_STRICT=1 git checkout -q -b feature 2>"$TMP/m.err"); rc=$?
+assert_eq "no token file: the checkout still succeeds" "0" "$rc"
+assert_eq "no token file: no request was made" "" "$(cat "$REC.calls" 2>/dev/null)"
+case "$(cat "$TMP/m.err")" in *"alert was NOT sent (agent-api exit 3)"*"no readable own token"*) pass "no token file: a local error line says why" ;; *) fail "no token file: '$(cat "$TMP/m.err")'" ;; esac
+
+echo "a branch name that would break the hand-built JSON body"
+make_tree j "MAIN_AGENT_ID=mainbot" yes
+(cd "$ROOT" && git checkout -q -b 'fe"at"ure' 2>/dev/null)
+if python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["to"]=="mainbot" and "PROD-FA" in d["content"]' "$ROOT/wrapper-body.log" 2>/dev/null; then pass "the body is valid JSON with a double quote in the branch name"; else fail "body is not valid JSON: $(cat "$ROOT/wrapper-body.log" 2>/dev/null)"; fi
 
 echo "no wrapper, no alert; the checkout is never failed"
 make_tree f "MAIN_AGENT_ID=mainbot" no
