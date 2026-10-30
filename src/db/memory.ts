@@ -4,6 +4,7 @@
 import { ALLOWED_CHAT_ID } from '../config.js'
 import { writeAgentAuditLog } from './audit.js'
 import { dbx } from './facade.js'
+import { BlankContentError, isBlankContent } from '../blank-content.js'
 import { floatsToBlob, generateEmbedding, linkToNeighbors, syncVecMemoryEmbeddingUpdate } from './vector.js'
 
 export interface Memory {
@@ -362,6 +363,8 @@ export async function updateMemory(
   keywords?: string,
   modifiedBy?: string,
 ): Promise<boolean> {
+  // The HTTP route checks this first; the DB layer refuses it too so no other caller can blank a memory.
+  if (isBlankContent(content)) throw new BlankContentError('updateMemory')
   const now = Math.floor(Date.now() / 1000)
 
   // One dbx.tx: the owner read, the version record and the update are one unit, as the synchronous function was

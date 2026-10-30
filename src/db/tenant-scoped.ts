@@ -14,6 +14,7 @@ import { KANBAN_SEQ_COLUMN, kanbanWriteClearsDispatch } from './kanban.js'
 import { dbx } from './facade.js'
 import { syncVecMemoryDelete } from './vector.js'
 import { assertNoReservedMarker } from '../server-markers.js'
+import { BlankContentError, isBlankContent } from '../blank-content.js'
 
 export interface ScopedMemory {
   id: number
@@ -83,6 +84,7 @@ export async function insertTenantMemory(tenantId: string, agentId: string, cate
 }
 
 export async function updateTenantMemory(tenantId: string, id: number, patch: { content?: string; category?: string }): Promise<boolean> {
+  if (patch.content !== undefined && isBlankContent(patch.content)) throw new BlankContentError('updateTenantMemory')
   const fields: string[] = []
   const params: unknown[] = []
   if (patch.content !== undefined) { fields.push('content = ?'); params.push(patch.content) }
