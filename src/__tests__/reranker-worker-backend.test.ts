@@ -165,6 +165,21 @@ describe('WorkerRerankBackend, a hung worker', () => {
     expect(backend.state().workerState).toBe('loading')
   })
 
+  it('leaves no watchdog timer behind once a call is answered, fails or is failed with the worker', async () => {
+    const { backend, workers } = setup()
+    const answered = backend.score('q', ['a'], undefined, 100)
+    const errored = backend.score('q', ['b'], undefined, 100)
+    const pending = backend.score('q', ['c'], undefined, 100)
+    expect(vi.getTimerCount()).toBe(3)
+    workers[0].reply({ id: 1, scores: [0.4] })
+    workers[0].reply({ id: 2, error: 'bad input' })
+    await Promise.all([answered, expect(errored).rejects.toThrow('bad input')])
+    expect(vi.getTimerCount()).toBe(1)
+    workers[0].emit('error', new Error('boom'))
+    await expect(pending).rejects.toThrow('boom')
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
   it('uses its own default when the call brings no watchdog time', async () => {
     const { backend, workers } = setup(1000, 50)
     const failed = expect(backend.score('q', ['a'])).rejects.toThrow('did not answer in time')
