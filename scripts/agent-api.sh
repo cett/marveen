@@ -39,6 +39,14 @@
 # before for its own directory); E1-E3 for the other tokens only warn under STRICT=0. A call with no sub-agent session (a system script, cron, the main agent) is never
 # touched. This is hygiene against the common slip, not a security boundary: agents share one OS user.
 #
+# Origin of a privileged token: --token main, operator and admin go only to a LOOPBACK dashboard (http or https on
+# localhost, 127.0.0.1 or [::1], an optional port). Any other DASHBOARD_BASE_URL (a remote host, a look-alike such as
+# localhost.example or localhost:80@host) exits 3 and NO request is made, in both AGENT_API_STRICT modes: these tokens
+# must not be sent to a place the environment of the caller picked. The main agent's token counts too, however the call
+# got there (a session that dropped its launch identity is resolved to the main agent from the cwd). Such a call also
+# ignores proxy variables (--noproxy '*'), which would route even a loopback URL elsewhere. A sub-agent's own token is
+# not limited.
+#
 # The token never appears on a command line: it is handed to curl as a config on STDIN
 # (`curl -K -`), the body goes through a 0600 temp file. A token that is present but REFUSED
 # (401, a revoked or stale file) is NOT retried on another token: that would hide the fault.
@@ -70,6 +78,9 @@ while [ $# -gt 0 ]; do
 done
 [ "$KIND" = "shared" ] && { echo "agent-api: --token shared no longer exists: the shared dashboard token is not used by agents any more (use agent, or admin for the main agent)" >&2; exit 2; }
 case "$KIND" in agent|operator|admin|main) : ;; *) echo "agent-api: --token must be agent, operator, admin or main" >&2; exit 2 ;; esac
+# main, operator and admin are privileged: they are sent only to a loopback origin (checked where the URL is built).
+# KIND is rewritten below (main and admin turn into the agent kind), so the asked-for kind is kept.
+ASKED_KIND="$KIND"
 [ $# -ge 2 ] || usage
 STRICT="${AGENT_API_STRICT:-0}"
 case "$STRICT" in 0|1) : ;; *) echo "agent-api: AGENT_API_STRICT must be 0 or 1" >&2; exit 2 ;; esac
@@ -181,13 +192,33 @@ else
 fi
 [ "${AGENT_API_VERBOSE:-}" = "1" ] && echo "agent-api: token source=$SOURCE agent=${AGENT:-?}" >&2
 PORT="${MARVEEN_WEB_PORT:-${WEB_PORT:-$(env_file_value WEB_PORT)}}"
-URL="${DASHBOARD_BASE_URL:-http://localhost:${PORT:-3420}}${APIPATH}"
+ORIGIN_URL="${DASHBOARD_BASE_URL:-http://localhost:${PORT:-3420}}"
+URL="${ORIGIN_URL}${APIPATH}"
+PRIVILEGED=0
+WHAT="--token $ASKED_KIND"
+case "$ASKED_KIND" in main|operator|admin) PRIVILEGED=1 ;; esac
+# The main agent's token is privileged however it was asked for: a call that merely resolved to the main agent (the
+# launch identity dropped, so the cwd names it; --agent / MARVEEN_AGENT_ID naming it; its token file given as
+# MARVEEN_AGENT_TOKEN_FILE) sends the same admin token.
+if [ "$PRIVILEGED" -eq 0 ] && { { [ -n "$AGENT" ] && [ "$AGENT" = "$MAIN" ]; } || [ "$TOKEN_PATH" = "$BASE/.agent-token" ]; }; then
+  PRIVILEGED=1; WHAT="the main agent's token (as '${AGENT:-?}')"
+fi
+if [ "$PRIVILEGED" -eq 1 ]; then
+  LOOPBACK_RE='^https?://(localhost|127\.0\.0\.1|\[::1\])(:[0-9]{1,5})?/?$'
+  if ! [[ "$ORIGIN_URL" =~ $LOOPBACK_RE ]]; then
+    # Show host and port only: the value may carry credentials (user:pass@) or control characters.
+    SHOWN="${ORIGIN_URL#*://}"; SHOWN="${SHOWN##*@}"; SHOWN="${SHOWN%%/*}"; SHOWN="${SHOWN//[^[:print:]]/?}"
+    echo "agent-api: refused: a call with $WHAT goes only to a loopback dashboard (http or https on localhost, 127.0.0.1 or [::1], optional port), not to '${SHOWN:0:80}': fix DASHBOARD_BASE_URL, or make the call with a sub-agent's own token" >&2
+    exit 3
+  fi
+fi
 
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/agent-api.XXXXXX")" || exit 1
 trap 'rm -rf "$TMP"' EXIT
 chmod 700 "$TMP"
 
 ARGS=(-sS -X "$METHOD" -w $'\n%{http_code}' -H "Content-Type: application/json")
+[ "$PRIVILEGED" -eq 1 ] && ARGS+=(--noproxy '*')
 [ -n "$AGENT" ] && ARGS+=(-H "X-Agent-Id: $AGENT")
 [ -n "$CFG_AGENT" ] && ARGS+=(-H "X-Caller-Config: $CFG_AGENT")
 case "$MAXTIME" in ""|*[!0-9]*) [ -z "$MAXTIME" ] || { echo "agent-api: --max-time takes whole seconds" >&2; exit 2; } ;; *) ARGS+=(--max-time "$MAXTIME") ;; esac
