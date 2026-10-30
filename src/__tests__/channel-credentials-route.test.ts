@@ -1,5 +1,5 @@
 // /api/channel-credentials: admin only; the responses never carry a token.
-import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest'
+import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll, vi } from 'vitest'
 import { EventEmitter } from 'node:events'
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -134,10 +134,12 @@ describe('POST /api/channel-credentials/check without agent_id (the sweep)', () 
   type Row = { agent_id: string; drift_state: string }
   const states = (body: Record<string, unknown>) => Object.fromEntries((body.adopted as Row[]).map((a) => [a.agent_id, a.drift_state]))
 
-  // The DB is shared by the whole file; the sweep covers every recorded channel, so start from none.
-  beforeEach(() => {
-    getDb().exec('DELETE FROM channel_allowed_chats; DELETE FROM channel_credential_baseline; DELETE FROM token_usage_shadow')
-  })
+  // The DB is shared by the whole file; the sweep covers every recorded channel, so start from none, and leave
+  // none behind: the rows these tests adopt would otherwise change what a test running after them sees
+  // (order-dependent under --sequence.shuffle).
+  const clearChannelRecords = () => getDb().exec('DELETE FROM channel_allowed_chats; DELETE FROM channel_credential_baseline; DELETE FROM token_usage_shadow')
+  beforeEach(clearChannelRecords)
+  afterEach(clearChannelRecords)
 
   it('answers only after every channel has been checked: the response carries the finished drift states', async () => {
     writeChannel('zed', TOKEN_ZED, { allowFrom: ['42'] })
