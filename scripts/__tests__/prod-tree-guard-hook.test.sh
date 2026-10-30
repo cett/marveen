@@ -34,6 +34,7 @@ make_tree() {
     cat > "$ROOT/scripts/agent-api.sh" <<'EOF'
 #!/bin/sh
 echo "$*" >> "$(dirname "$0")/../wrapper-args.log"
+echo "CFG=${CLAUDE_CONFIG_DIR-unset} AID=${MARVEEN_AGENT_ID-unset} TF=${MARVEEN_AGENT_TOKEN_FILE-unset}" >> "$(dirname "$0")/../wrapper-env.log"
 for a in "$@"; do if [ "$a" = "-" ]; then cat > "$(dirname "$0")/../wrapper-body.log"; fi; done
 exit 0
 EOF
@@ -75,6 +76,45 @@ make_tree e "MAIN_AGENT_ID=mainbot" yes
 (cd "$ROOT" && MARVEEN_GUARD_ALERT_TO=someone git checkout -q -b feature 2>/dev/null)
 assert_eq "MARVEEN_GUARD_ALERT_TO still overrides the recipient" "someone" "$(field "$ROOT" to)"
 assert_eq "...and the sender stays the main agent" "mainbot" "$(field "$ROOT" from)"
+
+echo "the alert from a sub-agent session (AGENT_API_STRICT=1 refuses --token main there)"
+# git runs the hook inside the session that ran the checkout, so a sub-agent's launch identity is in its environment.
+make_tree h "MAIN_AGENT_ID=mainbot" yes
+(cd "$ROOT" && CLAUDE_CONFIG_DIR="$ROOT/agents/sub-a/.claude-config" MARVEEN_AGENT_ID=sub-a MARVEEN_AGENT_TOKEN_FILE="$ROOT/agents/sub-a/.agent-token" \
+  git checkout -q -b feature 2>/dev/null)
+assert_eq "the wrapper is called without the session's launch identity" "CFG=unset AID=unset TF=unset" "$(head -1 "$ROOT/wrapper-env.log" 2>/dev/null)"
+assert_eq "...and the alert still names the main agent as sender" "mainbot" "$(field "$ROOT" from)"
+
+# The same with the REAL wrapper and a fake curl: with the identity dropped the request goes out under the main
+# agent's token (the sub-agent's token file is not read); with the identity kept the wrapper refuses (exit 3, E1),
+# which is the failure the hook must not suffer.
+FAKEBIN="$TMP/fakebin"; mkdir -p "$FAKEBIN"
+cat > "$FAKEBIN/curl" <<'FAKE'
+#!/bin/bash
+# records that a request was made and the config fed on stdin (-K -); answers 200
+for a in "$@"; do if [ "$a" = "-K" ]; then cat >> "$FAKE_REC.cfg"; fi; done
+echo x >> "$FAKE_REC.calls"
+printf '{}\n200'
+FAKE
+chmod +x "$FAKEBIN/curl"
+make_tree i "MAIN_AGENT_ID=mainbot" no
+cp "$SRC_DIR/agent-api.sh" "$ROOT/scripts/agent-api.sh"
+mkdir -p "$ROOT/agents/sub-a"
+echo main-fixture-token > "$ROOT/.agent-token"; echo sub-fixture-token > "$ROOT/agents/sub-a/.agent-token"
+SUB_ENV=(CLAUDE_CONFIG_DIR="$ROOT/agents/sub-a/.claude-config" MARVEEN_AGENT_TOKEN_FILE="$ROOT/agents/sub-a/.agent-token" AGENT_API_STRICT=1 MAIN_AGENT_ID=mainbot)
+(cd "$ROOT" && env "${SUB_ENV[@]}" PATH="$FAKEBIN:$PATH" FAKE_REC="$TMP/rec-i" git checkout -q -b feature 2>/dev/null)
+assert_eq "STRICT=1, sub-agent session: the alert request went out" "1" "$(wc -l < "$TMP/rec-i.calls" 2>/dev/null | tr -d ' ')"
+if grep -q 'main-fixture-token' "$TMP/rec-i.cfg" 2>/dev/null; then pass "it carried the main agent's token"; else fail "main token missing from the request"; fi
+if grep -q 'sub-fixture-token' "$TMP/rec-i.cfg" 2>/dev/null; then fail "the sub-agent's token file was read for --token main"; else pass "the sub-agent's token was not used"; fi
+# control: the same environment straight into the wrapper IS refused, so the test above would catch a regression
+(cd "$ROOT" && env "${SUB_ENV[@]}" PATH="$FAKEBIN:$PATH" FAKE_REC="$TMP/rec-ctl" bash scripts/agent-api.sh --token main GET /api/x >/dev/null 2>"$TMP/ctl.err"); ctl_rc=$?
+assert_eq "control: the wrapper refuses that environment (exit 3)" "3" "$ctl_rc"
+if grep -q 'refused (E1)' "$TMP/ctl.err"; then pass "control: the refusal is rule E1"; else fail "control: no E1 text ($(cat "$TMP/ctl.err"))"; fi
+
+echo "a branch name that would break the hand-built JSON body"
+make_tree j "MAIN_AGENT_ID=mainbot" yes
+(cd "$ROOT" && git checkout -q -b 'fe"at"ure' 2>/dev/null)
+if python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["to"]=="mainbot" and "PROD-FA" in d["content"]' "$ROOT/wrapper-body.log" 2>/dev/null; then pass "the body is valid JSON with a double quote in the branch name"; else fail "body is not valid JSON: $(cat "$ROOT/wrapper-body.log" 2>/dev/null)"; fi
 
 echo "no wrapper, no alert; the checkout is never failed"
 make_tree f "MAIN_AGENT_ID=mainbot" no

@@ -157,6 +157,13 @@ else
 fi
 # The alert goes out as the main agent through the API wrapper (its own token, the token never on a
 # command line); no wrapper, no alert.
+# git runs this hook inside whatever session ran the checkout, so a sub-agent's Bash inherits its launch identity
+# (CLAUDE_CONFIG_DIR, MARVEEN_AGENT_ID, MARVEEN_AGENT_TOKEN_FILE). With AGENT_API_STRICT=1 the wrapper refuses a
+# sub-agent session that asks for --token main (rule E1) and the alert would vanish into the `|| true` below, i.e.
+# the one branch switch worth an alert (a sub-agent in the prod tree) would be the one that goes unreported.
+# This is a system script acting on the coordinator's behalf, not the session: the call is made WITHOUT the
+# session's launch identity, exactly like a cron job. The wrapper's E1-E3 stay as they are for the session itself.
+# MARVEEN_AGENT_TOKEN_FILE is dropped too: the wrapper would read THAT file for --token main (the sub-agent's token).
 API_WRAPPER="$PROD_ROOT/scripts/agent-api.sh"
 [ -r "$API_WRAPPER" ] || exit 0
 # 'from' must be a registered fleet agent id (the API rejects made-up names,
@@ -172,8 +179,14 @@ MAIN_ID="$(grep -E '^MAIN_AGENT_ID=' "$PROD_ROOT/.env" 2>/dev/null | head -1 | c
 MAIN_ID="${MAIN_ID//[^a-zA-Z0-9_-]/}"
 MAIN_ID="${MAIN_ID:-marveen}"
 ALERT_TO="${MARVEEN_GUARD_ALERT_TO:-$MAIN_ID}"
+# The body is hand-built JSON. A branch name may hold a double quote (git allows it), which ends the string early:
+# the API answers 400 and the alert vanishes into the `|| true` below, so a branch switch with such a name would go
+# unreported. Only path-safe characters are kept in the two values that come from the repository.
+BRANCH="${BRANCH//[^A-Za-z0-9._\/-]/_}"
+TOPLEVEL="${TOPLEVEL//[^A-Za-z0-9._\/ -]/_}"
 printf '%s' "{\"from\":\"$MAIN_ID\",\"to\":\"$ALERT_TO\",\"content\":\"[PROD-FA ORSEG, post-checkout hook] Fa: $TOPLEVEL -- agat valtott a(z) $BRANCH agra. (Ha ez az utvonal nem a telepites fo faja, ez PROBA, nem eles riasztas.) AUTO-VISSZAALLITAS: $REVERTED. Commitot a pre-commit hook blokkol; szandekos valtashoz MARVEEN_PROD_CHECKOUT_OK=1.\"}" \
-  | DASHBOARD_BASE_URL="$ORIGIN" bash "$API_WRAPPER" --token main --max-time 5 POST /api/messages - >/dev/null 2>&1 || true
+  | env -u CLAUDE_CONFIG_DIR -u MARVEEN_AGENT_ID -u MARVEEN_AGENT_TOKEN_FILE \
+      DASHBOARD_BASE_URL="$ORIGIN" bash "$API_WRAPPER" --token main --max-time 5 POST /api/messages - >/dev/null 2>&1 || true
 exit 0
 EOF
 chmod +x "$HOOK_DIR/post-checkout"
