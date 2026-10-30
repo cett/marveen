@@ -81,14 +81,41 @@ function recordPath(agent: string): string {
 }
 
 // The replay sentinel must appear once, at the top of the block: a value that
-// carries it (any spacing or case) is cut out before anything else looks at it.
-const SENTINEL_IN_VALUE_RX = /=+\s*TASK-FOLYTATAS[^=\n]*=+/gi
+// carries its token (any case, with the = marks and text around it) is cut out
+// before anything else looks at it. Found by a plain search, not by a pattern with
+// a leading `=+`, which is quadratic on a long run of `=`.
+const SENTINEL_TOKEN_RX = /TASK-FOLYTATAS/i
+// How far from the token the surrounding `(NEM uj feladat) ===` part may reach.
+const SENTINEL_TAIL_MAX = 60
+
+// A value is cut to this many times its cap before anything else runs on it.
+const RAW_CUT_FACTOR = 4
 
 // C0/C1 controls (newline and tab are folded into spaces afterwards), plus the
 // invisible and bidirectional-override characters that hide or reorder text.
-const RAW_CUT_FACTOR = 4
+const CONTROL_RX = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/g
 
-const CONTROL_RX =/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f​-‏‪-‮⁠-⁩﻿]/g
+// Cuts every sentinel token from an already whitespace-folded value, with the `=` run
+// and spaces before it and the `(...) ===` tail after it. Repeats until none is left:
+// cutting an inner sentinel can join the pieces around it into a new one
+// ("=== TASK-<sentinel>FOLYTATAS ... ===").
+function cutSentinel(text: string): string {
+  let cur = text
+  for (let m = SENTINEL_TOKEN_RX.exec(cur); m; m = SENTINEL_TOKEN_RX.exec(cur)) {
+    const tokenEnd = m.index + m[0].length
+    let from = m.index
+    while (from > 0 && cur[from - 1] === ' ') from--
+    while (from > 0 && cur[from - 1] === '=') from--
+    let to = tokenEnd
+    const eq = cur.indexOf('=', tokenEnd)
+    if (eq !== -1 && eq - tokenEnd <= SENTINEL_TAIL_MAX) {
+      to = eq
+      while (to < cur.length && cur[to] === '=') to++
+    }
+    cur = cur.slice(0, from) + ' ' + cur.slice(to)
+  }
+  return cur
+}
 
 /**
  * One value of the record, made safe to replay: no control characters, every run of
@@ -107,12 +134,7 @@ export function normalizeField(s: unknown, max: number): string {
     .slice(0, max * RAW_CUT_FACTOR)
     .replace(CONTROL_RX, '')
     .replace(/\s+/g, ' ')
-  // Repeat until stable: cutting an inner sentinel can join the pieces around it
-  // into a new one ("=== TASK-<sentinel>FOLYTATAS ... ===").
-  for (let prev = ''; prev !== folded;) {
-    prev = folded
-    folded = folded.replace(SENTINEL_IN_VALUE_RX, '')
-  }
+  folded = cutSentinel(folded)
   return scrubFramingTags(folded).replace(/\s+/g, ' ').trim().slice(0, max).trim()
 }
 
