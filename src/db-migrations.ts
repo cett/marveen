@@ -230,6 +230,91 @@ function warnChecksumMismatch(
   }
 }
 
+// ── schema report ────────────────────────────────────────────────────────────
+
+/**
+ * How the recorded schema relates to the migration files this code ships.
+ *
+ *  - `dbAhead`     recorded versions ABOVE the highest file: the database is newer than this code
+ *                  (code rolled back, or a database taken from another branch).
+ *  - `missingFile` recorded versions at or below the highest file that have no file (historic gaps).
+ *  - `mismatched`  recorded checksum differs from the file and the version is not a known-safe edit.
+ *  - `pending`     files that are not recorded yet.
+ */
+export interface SchemaReport {
+  dbMax: number
+  codeMax: number
+  appliedCount: number
+  pending: number[]
+  dbAhead: number[]
+  missingFile: number[]
+  mismatched: number[]
+}
+
+/**
+ * Pure: compares the recorded set (version -> recorded checksum, null for legacy rows) with the
+ * migration files. No database access, so every shape of drift is testable with plain data.
+ */
+export function describeSchema(
+  applied: Map<number, string | null>,
+  files: ReadonlyArray<Pick<MigrationFile, 'version' | 'sql'>>,
+): SchemaReport {
+  const fileVersions = new Set(files.map((f) => f.version))
+  const recorded = [...applied.keys()].sort((a, b) => a - b)
+  const codeMax = files.length === 0 ? 0 : Math.max(...fileVersions)
+  const dbMax = recorded.length === 0 ? 0 : recorded[recorded.length - 1]
+  return {
+    dbMax,
+    codeMax,
+    appliedCount: recorded.length,
+    pending: files.filter((f) => !applied.has(f.version)).map((f) => f.version).sort((a, b) => a - b),
+    dbAhead: recorded.filter((v) => v > codeMax),
+    missingFile: recorded.filter((v) => v <= codeMax && !fileVersions.has(v)),
+    mismatched: files
+      .filter((f) => {
+        const recordedChecksum = applied.get(f.version)
+        return recordedChecksum != null && recordedChecksum !== sha256(f.sql) && !(f.version in KNOWN_SAFE_MISMATCHES)
+      })
+      .map((f) => f.version)
+      .sort((a, b) => a - b),
+  }
+}
+
+let lastSchemaReport: SchemaReport | null = null
+
+/** The report built by the last `applyMigrations` call (after the apply loop), or null before the first call. */
+export function getSchemaReport(): SchemaReport | null {
+  return lastSchemaReport
+}
+
+const SCHEMA_STRICT_ON = new Set(['1', 'true', 'yes', 'on'])
+const SCHEMA_STRICT_OFF = new Set(['', '0', 'false', 'no', 'off'])
+
+/**
+ * Reads SCHEMA_STRICT from the environment at call time. On: 1, true, yes, on. Off: unset, empty, 0,
+ * false, no, off (case and surrounding spaces ignored). Any other value is treated as OFF, because the
+ * default must never refuse to start, but it is not silent: it is logged as a WARN, so an operator who
+ * meant "on" (a typo, "01", "enabled") sees that the strict check is not active.
+ */
+function schemaStrictRequested(): boolean {
+  const raw = process.env.SCHEMA_STRICT
+  if (raw === undefined) return false
+  const value = raw.trim().toLowerCase()
+  if (SCHEMA_STRICT_ON.has(value)) return true
+  if (!SCHEMA_STRICT_OFF.has(value)) {
+    logger.warn(
+      { value: raw },
+      'SCHEMA_STRICT value is not understood, so the strict check is NOT active (the start is not refused). Use 1 to refuse a database that is newer than the code.',
+    )
+  }
+  return false
+}
+
+function loadRecorded(db: Database.Database): Map<number, string | null> {
+  const rows = db.prepare('SELECT version, checksum FROM schema_version').all() as { version: number; checksum: string | null }[]
+  return new Map(rows.map((r) => [r.version, r.checksum]))
+}
+
 // ── public API ───────────────────────────────────────────────────────────────
 
 /**
@@ -269,10 +354,16 @@ export function applyMigrations(db: Database.Database, migrationsDir?: string): 
   // What is recorded decides what is pending, not the highest recorded number: a migration merged
   // after a higher-numbered one (0075 landing after 0076) has a number BELOW the maximum yet was
   // never applied, and a "run everything above the maximum" rule would skip it for good.
-  const applied = new Set(
-    (db.prepare('SELECT version FROM schema_version').all() as { version: number }[]).map((r) => r.version),
-  )
-  const currentVersion = applied.size === 0 ? 0 : Math.max(...applied)
+  const applied = loadRecorded(db)
+  const currentVersion = applied.size === 0 ? 0 : Math.max(...applied.keys())
+
+  // A database newer than this code is accepted by default (a code-only rollback must still boot).
+  // SCHEMA_STRICT=1 (or true, yes, on; read here, at call time) refuses it before any pending migration is applied;
+  // verify instances and CI set it so a database taken from another branch is not touched silently.
+  const before = describeSchema(applied, files)
+  if (schemaStrictRequested() && before.dbAhead.length > 0) {
+    throw new Error(`Database schema is newer than the code: versions ${before.dbAhead.join(', ')}`)
+  }
 
   for (const m of files) {
     if (applied.has(m.version)) {
@@ -289,5 +380,25 @@ export function applyMigrations(db: Database.Database, migrationsDir?: string): 
     // Pending: apply it. Any error propagates up — the caller must decide
     // whether to abort the process (production) or fail the test.
     applyMigration(db, m)
+  }
+
+  // Report on what is recorded NOW, so `pending` is empty after a normal start.
+  const report = describeSchema(loadRecorded(db), files)
+  lastSchemaReport = report
+  logger.info(
+    { dbMax: report.dbMax, codeMax: report.codeMax, appliedCount: report.appliedCount },
+    `schema: db ${report.dbMax} / code ${report.codeMax}, applied ${report.appliedCount}`,
+  )
+  if (report.dbAhead.length > 0) {
+    logger.warn(
+      { dbAhead: report.dbAhead, dbMax: report.dbMax, codeMax: report.codeMax },
+      'Database schema is newer than this code: the code was probably rolled back, or the database comes from another branch. Starting anyway; set SCHEMA_STRICT=1 to refuse this.',
+    )
+  }
+  if (report.missingFile.length > 0) {
+    logger.info(
+      { missingFile: report.missingFile },
+      'Recorded migration versions without a file in this code (historic gaps).',
+    )
   }
 }
