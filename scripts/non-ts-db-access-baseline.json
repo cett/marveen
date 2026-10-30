@@ -30,7 +30,7 @@
         "PRAGMA": 6
       },
       "direct": {
-        "claudeclaw.db": 11,
+        "claudeclaw.db": 9,
         "sqlite3 CLI": 9
       }
     },

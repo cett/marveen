@@ -123,10 +123,11 @@ if [[ -f store/claudeclaw.db ]]; then
     echo "backup: ABORT -- the sqlite3 CLI is missing, so no consistent database snapshot and no row counts can be taken" >&2
     exit 2
   fi
-  SNAPSHOT="${STAGE}/repo/store/claudeclaw.db"
+  LIVE_DB=store/claudeclaw.db
+  SNAPSHOT="${STAGE}/repo/${LIVE_DB}"
   mkdir -p "$(dirname "${SNAPSHOT}")"
-  if ! sqlite3 store/claudeclaw.db ".backup '${SNAPSHOT}'"; then
-    echo "backup: ABORT -- sqlite3 .backup of store/claudeclaw.db failed" >&2
+  if ! sqlite3 "${LIVE_DB}" ".backup '${SNAPSHOT}'"; then
+    echo "backup: ABORT -- sqlite3 .backup of ${LIVE_DB} failed" >&2
     exit 2
   fi
   SNAP_IC="$(sqlite3 "${SNAPSHOT}" 'PRAGMA integrity_check(1);' 2>/dev/null || echo 'error')"
@@ -141,7 +142,7 @@ if [[ -f store/claudeclaw.db ]]; then
   rm -f "${SNAPSHOT}-wal" "${SNAPSHOT}-shm"
   # sqlite3 creates the snapshot with the default umask; the live file's mode is what the archive must carry
   # (the old cp -pR preserved it), because the archive holds the whole database.
-  chmod "$(stat -c '%a' store/claudeclaw.db 2>/dev/null || stat -f '%Lp' store/claudeclaw.db)" "${SNAPSHOT}" 2>/dev/null || chmod 600 "${SNAPSHOT}"
+  chmod "$(stat -c '%a' "${LIVE_DB}" 2>/dev/null || stat -f '%Lp' "${LIVE_DB}")" "${SNAPSHOT}" 2>/dev/null || chmod 600 "${SNAPSHOT}"
   if [[ -z "${SNAPSHOT_COUNTS}" ]]; then
     echo "backup: ABORT -- the database snapshot has no tables" >&2
     exit 2
