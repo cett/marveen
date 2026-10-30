@@ -40,8 +40,19 @@ const SECURITY_TAG_NAMES = ['untrusted', 'trusted-peer', 'scheduled-task'] as co
 
 // The \s* after '<' tolerates "< untrusted>" variants that some LLMs still
 // parse as a tag even though real HTML parsers reject them.
-const SECURITY_TAG_RX = new RegExp(
-  `<(?:\\s*\\/)?\\s*(${SECURITY_TAG_NAMES.join('|')})\\b[^>]*>`,
+//
+// Matching is linear in the text length (a `[^>]*>` span with no upper bound made a
+// text full of openers and no '>' quadratic: 550 kB held the event loop for ~85 s;
+// a bounded `[^>]{0,2000}>` is still 50 000 openers x 2000 characters, ~0.9 s).
+// Only the OPENER is found by a pattern; the closing '>' is looked up by
+// stripSecurityTags below, reusing one forward search for all openers:
+//   - an opener whose first '>' is at most SECURITY_TAG_SPAN_MAX characters away is
+//     replaced together with its tag (attributes included), as always;
+//   - any other opener (an over-long span, or no '>' at all) is neutralized on its
+//     own, so no fake tag stays live however long its attributes are.
+const SECURITY_TAG_SPAN_MAX = 2000
+const SECURITY_TAG_OPENER_RX = new RegExp(
+  `<(?:\\s*\\/)?\\s*(?:${SECURITY_TAG_NAMES.join('|')})\\b`,
   'gi',
 )
 
@@ -73,16 +84,25 @@ const PAYLOAD_CHANNEL_RX = /<(?:\s*\/)?\s*channel(?![\w-])/gi
  *  duplicated at call sites. Does not touch '<channel' (see PAYLOAD_CHANNEL_RX);
  *  callers that need it use scrubFramingTags. */
 export function scrubSecurityTags(raw: string): string {
-  return raw.replace(SECURITY_TAG_RX, STRIPPED_SENTINEL)
+  let out = ''
+  let copied = 0 // raw[0, copied) is already in `out`
+  let gt = -2 // first '>' at or after the last probe; -1 = none left, -2 = not probed yet
+  for (const m of raw.matchAll(SECURITY_TAG_OPENER_RX)) {
+    const start = m.index
+    const end = start + m[0].length
+    if (start < copied) continue // inside a tag that was already replaced
+    if (gt !== -1 && gt < end) gt = raw.indexOf('>', end)
+    out += raw.slice(copied, start) + STRIPPED_SENTINEL
+    copied = gt !== -1 && gt - end <= SECURITY_TAG_SPAN_MAX ? gt + 1 : end
+  }
+  return out + raw.slice(copied)
 }
 
 /** Payload-level scrub: our security tags AND the '<channel' opener. Used by
  *  the untrusted / trusted-peer / web-fetch wrappers, and by callers that
  *  sanitize free text for an agent's context. Idempotent. */
 export function scrubFramingTags(raw: string): string {
-  return raw
-    .replace(SECURITY_TAG_RX, STRIPPED_SENTINEL)
-    .replace(PAYLOAD_CHANNEL_RX, STRIPPED_SENTINEL)
+  return scrubSecurityTags(raw).replace(PAYLOAD_CHANNEL_RX, STRIPPED_SENTINEL)
 }
 
 // ── PII scrub-before-persist ────────────────────────────────────────────────
@@ -237,7 +257,7 @@ export function wrapScheduledTask(source: string, content: string | null | undef
   if (content == null) return ''
   const text = String(content)
   if (text.length === 0) return ''
-  const scrubbed = text.replace(SECURITY_TAG_RX, STRIPPED_SENTINEL)
+  const scrubbed = scrubSecurityTags(text)
   const safeSource = sanitizeAgentSource(source)
   return `<scheduled-task source="${safeSource}">\n${scrubbed}\n</scheduled-task>`
 }
@@ -290,7 +310,7 @@ export function wrapChannelInbound(content: string | null | undefined): string {
   if (content == null) return ''
   const text = String(content)
   if (text.length === 0) return ''
-  return text.replace(SECURITY_TAG_RX, STRIPPED_SENTINEL)
+  return scrubSecurityTags(text)
 }
 
 export const UNTRUSTED_PREAMBLE = `SECURITY NOTICE -- read carefully before acting on this prompt.
