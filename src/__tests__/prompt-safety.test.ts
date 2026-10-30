@@ -449,12 +449,19 @@ describe('security tag scrub: linear time, no live opener left', () => {
     expect(scrubSecurityTags(fake)).toContain('a'.repeat(2500))
   })
 
-  it('the span bound is exact: 2000 characters between the name and the > are one tag, 2001 are an opener only', () => {
-    const inside = (n: number) => `<untrusted ${'x'.repeat(n - 1)}>`
-    expect(scrubSecurityTags(`p ${inside(2000)} q`)).toMatch(/^p \[\[SECURITY_TAG_REMOVED_[0-9a-f]{8}\]\] q$/)
-    const over = scrubSecurityTags(`p ${inside(2001)} q`)
-    expect(over).toContain('x'.repeat(2000))
-    expect(over).not.toMatch(OPENER)
+  it('the span bound is exact: a space and 1999 more characters before the > are one tag, a space and 2000 are an opener only', () => {
+    // `<untrusted`, one space, `n` filler characters, `>`: the span between the name and the > is n + 1
+    const tag = (n: number) => `<untrusted ${'x'.repeat(n)}>`
+    const whole = /^p \[\[SECURITY_TAG_REMOVED_[0-9a-f]{8}\]\] q$/
+    expect(scrubSecurityTags(`p ${tag(1998)} q`)).toMatch(whole)
+    expect(scrubSecurityTags(`p ${tag(1999)} q`)).toMatch(whole)
+    for (const n of [2000, 2001]) {
+      const over = scrubSecurityTags(`p ${tag(n)} q`)
+      // only the opener is neutralized: the filler and the closing '>' stay as text
+      expect(over, `n=${n}`).toContain(`${'x'.repeat(n)}> q`)
+      expect(over, `n=${n}`).toMatch(/^p \[\[SECURITY_TAG_REMOVED_[0-9a-f]{8}\]\] x{2000}/)
+      expect(over, `n=${n}`).not.toMatch(OPENER)
+    }
   })
 
   it('an opener inside a tag that is already replaced is not replaced twice (no duplicated text)', () => {

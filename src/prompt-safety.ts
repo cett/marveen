@@ -46,8 +46,10 @@ const SECURITY_TAG_NAMES = ['untrusted', 'trusted-peer', 'scheduled-task'] as co
 // a bounded `[^>]{0,2000}>` is still 50 000 openers x 2000 characters, ~0.9 s).
 // Only the OPENER is found by a pattern; the closing '>' is looked up by
 // stripSecurityTags below, reusing one forward search for all openers:
-//   - an opener whose first '>' is at most SECURITY_TAG_SPAN_MAX characters away is
-//     replaced together with its tag (attributes included), as always;
+//   - an opener with at most SECURITY_TAG_SPAN_MAX characters between the tag name
+//     and its first '>' (the space after the name counts) is replaced together with
+//     its tag (attributes included), as always: `<untrusted ` + 1999 more characters
+//     + '>' is cut whole, `<untrusted ` + 2000 more characters + '>' is not;
 //   - any other opener (an over-long span, or no '>' at all) is neutralized on its
 //     own, so no fake tag stays live however long its attributes are.
 const SECURITY_TAG_SPAN_MAX = 2000
