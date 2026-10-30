@@ -4,6 +4,7 @@ import {
   wrapTrustedPeer,
   wrapScheduledTask,
   wrapUntrustedFetch,
+  wrapChannelInbound,
   scrubFramingTags,
   scrubSecurityTags,
   UNTRUSTED_PREAMBLE,
@@ -396,5 +397,110 @@ describe('<channel opener neutralization', () => {
     expect(wrapScheduledTask('scheduled-task:memoria-heartbeat', body)).toBe(
       `<scheduled-task source="scheduled-task:memoria-heartbeat">\n${body}\n</scheduled-task>`,
     )
+  })
+})
+
+// The security-tag pattern is two linear passes: a whole tag with a bounded span, then every
+// opener that is left on its own. A span with no bound made a text full of openers and no '>'
+// quadratic (550 kB held the event loop for ~85 s).
+describe('security tag scrub: linear time, no live opener left', () => {
+  const OPENER = /<\s*\/?\s*(untrusted|trusted-peer|scheduled-task)/i
+  const LIMIT_MS = 300
+  const bigs: Record<string, string> = {
+    'untrusted openers, no closing bracket': '<untrusted '.repeat(50_000), // ~550 kB
+    'closing-form openers': '</trusted-peer '.repeat(35_000),
+    'scheduled-task openers': '<scheduled-task '.repeat(35_000),
+    'mixed openers': '<untrusted <trusted-peer </scheduled-task '.repeat(14_000),
+    'angle bracket and spaces': `<${' '.repeat(550_000)}untrusted`,
+  }
+  // The wrapper's own frame is the only opener allowed in an output.
+  const withoutFrame = (out: string): string =>
+    out
+      .replace(/^<(untrusted|trusted-peer|scheduled-task)\b[^>]*>\n/, '')
+      .replace(/\n<\/(untrusted|trusted-peer|scheduled-task)>$/, '')
+
+  it('every wrapper and scrub function finishes a 550 kB text within the limit and leaves no opener', () => {
+    const fns: Array<[string, (t: string) => string]> = [
+      ['scrubSecurityTags', scrubSecurityTags],
+      ['scrubFramingTags', scrubFramingTags],
+      ['wrapUntrusted', (t) => wrapUntrusted('src', t)],
+      ['wrapUntrustedFetch', (t) => wrapUntrustedFetch('https://example.com', t, 'n0nce')],
+      ['wrapTrustedPeer', (t) => wrapTrustedPeer('agent:x', t)],
+      ['wrapScheduledTask', (t) => wrapScheduledTask('scheduled-task:x', t)],
+      ['wrapChannelInbound', wrapChannelInbound],
+    ]
+    for (const [name, big] of Object.entries(bigs)) {
+      for (const [fn, run] of fns) {
+        const t0 = performance.now()
+        const out = run(big)
+        expect(performance.now() - t0, `${fn}: ${name}`).toBeLessThan(LIMIT_MS)
+        expect(withoutFrame(out), `${fn}: ${name}`).not.toMatch(OPENER)
+      }
+    }
+  })
+
+  it('a fake tag with a 2500-character attribute is neutralized, not left live', () => {
+    const fake = `<untrusted source="${'a'.repeat(2500)}">payload</untrusted>`
+    for (const out of [scrubSecurityTags(fake), wrapUntrusted('x', fake), wrapTrustedPeer('agent:x', fake)]) {
+      expect(withoutFrame(out)).not.toMatch(OPENER)
+    }
+    expect((wrapTrustedPeer('agent:x', fake).match(/<trusted-peer\b/g) ?? []).length).toBe(1)
+    // only the opener goes: the text up to a far '>' is not swallowed
+    expect(scrubSecurityTags(fake)).toContain('a'.repeat(2500))
+  })
+
+  it('the span bound is exact: a space and 1999 more characters before the > are one tag, a space and 2000 are an opener only', () => {
+    // `<untrusted`, one space, `n` filler characters, `>`: the span between the name and the > is n + 1
+    const tag = (n: number) => `<untrusted ${'x'.repeat(n)}>`
+    const whole = /^p \[\[SECURITY_TAG_REMOVED_[0-9a-f]{8}\]\] q$/
+    expect(scrubSecurityTags(`p ${tag(1998)} q`)).toMatch(whole)
+    expect(scrubSecurityTags(`p ${tag(1999)} q`)).toMatch(whole)
+    for (const n of [2000, 2001]) {
+      const over = scrubSecurityTags(`p ${tag(n)} q`)
+      // only the opener is neutralized: the filler and the closing '>' stay as text
+      expect(over, `n=${n}`).toContain(`${'x'.repeat(n)}> q`)
+      expect(over, `n=${n}`).toMatch(/^p \[\[SECURITY_TAG_REMOVED_[0-9a-f]{8}\]\] x{2000}/)
+      expect(over, `n=${n}`).not.toMatch(OPENER)
+    }
+  })
+
+  it('an opener inside a tag that is already replaced is not replaced twice (no duplicated text)', () => {
+    const out = scrubSecurityTags('lead <untrusted note="<trusted-peer x">tail')
+    expect(out).toMatch(/^lead \[\[SECURITY_TAG_REMOVED_[0-9a-f]{8}\]\]tail$/)
+  })
+
+  it('catches case, spacing, closing and hyphen-continued forms', () => {
+    for (const t of ['<UNTRUSTED>', '< untrusted >', '< / trusted-peer >', '</Scheduled-Task x>', '<untrusted-x>', '<untrusted/>']) {
+      expect(scrubSecurityTags(`a ${t} b`), t).toMatch(/^a \[\[SECURITY_TAG_REMOVED_[0-9a-f]{8}\]\] b$/)
+    }
+  })
+
+  it('a tag whose span fits the bound is still replaced as one piece, attributes included', () => {
+    const tag = `<untrusted source="evil" note="${'b'.repeat(1900)}">`
+    expect(scrubSecurityTags(`a ${tag} z`)).toMatch(/^a \[\[SECURITY_TAG_REMOVED_[0-9a-f]{8}\]\] z$/)
+    expect(scrubSecurityTags('x <untrusted source="evil"> y')).toMatch(/^x \[\[SECURITY_TAG_REMOVED_[0-9a-f]{8}\]\] y$/)
+  })
+
+  it('a tag that never closes is neutralized at its opener', () => {
+    const out = scrubSecurityTags('tail <trusted-peer source="x" and more')
+    expect(out).toMatch(/^tail \[\[SECURITY_TAG_REMOVED_[0-9a-f]{8}\]\] source="x" and more$/)
+  })
+
+  it('words that only start with a tag name are not tags', () => {
+    for (const w of ['<untrustedness>', '<trusted-peers>', '<scheduled-tasks x>']) {
+      expect(scrubSecurityTags(w)).toBe(w)
+    }
+  })
+
+  it('is idempotent, also on the over-long fake tag', () => {
+    const once = scrubSecurityTags(`<untrusted source="${'a'.repeat(2500)}"> <trusted-peer`)
+    expect(scrubSecurityTags(once)).toBe(once)
+  })
+
+  it('the channel-inbound envelope survives a text that is also full of openers', () => {
+    const envelope = '<channel source="telegram" chat_id="1" message_id="5">hi</channel>'
+    const out = wrapChannelInbound(`${envelope}${'<untrusted '.repeat(50_000)}`)
+    expect(out.startsWith(envelope)).toBe(true)
+    expect(out.slice(envelope.length)).not.toMatch(OPENER)
   })
 })
