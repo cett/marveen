@@ -42,8 +42,10 @@
 # Origin of a privileged token: --token main, operator and admin go only to a LOOPBACK dashboard (http or https on
 # localhost, 127.0.0.1 or [::1], an optional port). Any other DASHBOARD_BASE_URL (a remote host, a look-alike such as
 # localhost.example or localhost:80@host) exits 3 and NO request is made, in both AGENT_API_STRICT modes: these tokens
-# must not be sent to a place the environment of the caller picked. Such a call also ignores proxy variables
-# (--noproxy '*'), which would route even a loopback URL elsewhere. The agent's own token (--token agent) is not limited.
+# must not be sent to a place the environment of the caller picked. The main agent's token counts too, however the call
+# got there (a session that dropped its launch identity is resolved to the main agent from the cwd). Such a call also
+# ignores proxy variables (--noproxy '*'), which would route even a loopback URL elsewhere. A sub-agent's own token is
+# not limited.
 #
 # The token never appears on a command line: it is handed to curl as a config on STDIN
 # (`curl -K -`), the body goes through a 0600 temp file. A token that is present but REFUSED
@@ -193,13 +195,20 @@ PORT="${MARVEEN_WEB_PORT:-${WEB_PORT:-$(env_file_value WEB_PORT)}}"
 ORIGIN_URL="${DASHBOARD_BASE_URL:-http://localhost:${PORT:-3420}}"
 URL="${ORIGIN_URL}${APIPATH}"
 PRIVILEGED=0
+WHAT="--token $ASKED_KIND"
 case "$ASKED_KIND" in main|operator|admin) PRIVILEGED=1 ;; esac
+# The main agent's token is privileged however it was asked for: a call that merely resolved to the main agent (the
+# launch identity dropped, so the cwd names it; --agent / MARVEEN_AGENT_ID naming it; its token file given as
+# MARVEEN_AGENT_TOKEN_FILE) sends the same admin token.
+if [ "$PRIVILEGED" -eq 0 ] && { { [ -n "$AGENT" ] && [ "$AGENT" = "$MAIN" ]; } || [ "$TOKEN_PATH" = "$BASE/.agent-token" ]; }; then
+  PRIVILEGED=1; WHAT="the main agent's token (as '${AGENT:-?}')"
+fi
 if [ "$PRIVILEGED" -eq 1 ]; then
   LOOPBACK_RE='^https?://(localhost|127\.0\.0\.1|\[::1\])(:[0-9]{1,5})?/?$'
   if ! [[ "$ORIGIN_URL" =~ $LOOPBACK_RE ]]; then
     # Show host and port only: the value may carry credentials (user:pass@) or control characters.
     SHOWN="${ORIGIN_URL#*://}"; SHOWN="${SHOWN##*@}"; SHOWN="${SHOWN%%/*}"; SHOWN="${SHOWN//[^[:print:]]/?}"
-    echo "agent-api: refused: a --token $ASKED_KIND call goes only to a loopback dashboard (http or https on localhost, 127.0.0.1 or [::1], optional port), not to '${SHOWN:0:80}': fix DASHBOARD_BASE_URL, or make the call with the agent's own token" >&2
+    echo "agent-api: refused: a call with $WHAT goes only to a loopback dashboard (http or https on localhost, 127.0.0.1 or [::1], optional port), not to '${SHOWN:0:80}': fix DASHBOARD_BASE_URL, or make the call with a sub-agent's own token" >&2
     exit 3
   fi
 fi

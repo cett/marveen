@@ -401,6 +401,31 @@ priv_reset; priv_call main "http://user:secretpw@evil.invalid:9"
 check "a refused origin is shown without its credentials" shown_without_credentials
 priv_reset; ERR="$(env -u MARVEEN_AGENT_ID -u CLAUDE_CONFIG_DIR WEB_PORT=4999 bash "$W" --agent m --token operator GET /api/x 2>&1 >/dev/null)"; RC=$?
 check "the default origin (localhost + WEB_PORT) is loopback: --token operator goes out" bash -c "test $RC -eq 0 && grep -qx 'http://localhost:4999/api/x' '$T/argv'"
+# 14b the main agent's token is privileged however the call got there (kind=agent that resolved to the main agent).
+# implicit_call NAME ORIGIN [ENV...]: run from the install root with the given env, the launch identity dropped
+implicit_call() {
+  local origin="$1"; shift
+  ERR="$(cd "$INSTALL" && env -u MARVEEN_AGENT_ID -u CLAUDE_CONFIG_DIR -u MARVEEN_AGENT_TOKEN_FILE "$@" DASHBOARD_BASE_URL="$origin" bash "$W" GET /api/x 2>&1 >/dev/null)"; RC=$?
+}
+for bad in "http://example.invalid:9" "http://localhost:80@evil.invalid" "https://evil.invalid"; do
+  for strict in 0 1; do
+    priv_reset; implicit_call "$bad" AGENT_API_STRICT=$strict
+    check "dropped launch identity, install root (cwd = main agent), '$bad' (STRICT=$strict): exit 3, no request" refused_ok
+  done
+  priv_reset; implicit_call "$bad" MARVEEN_AGENT_ID=m
+  check "MARVEEN_AGENT_ID naming the main agent, '$bad': exit 3, no request" refused_ok
+  priv_reset; ERR="$(env -u CLAUDE_CONFIG_DIR DASHBOARD_BASE_URL="$bad" bash "$W" --agent m GET /api/x 2>&1 >/dev/null)"; RC=$?
+  check "--agent naming the main agent, '$bad': exit 3, no request" refused_ok
+  priv_reset; ERR="$(env -u CLAUDE_CONFIG_DIR -u MARVEEN_AGENT_ID MARVEEN_AGENT_TOKEN_FILE="$INSTALL/.agent-token" DASHBOARD_BASE_URL="$bad" bash "$W" --agent a GET /api/x 2>&1 >/dev/null)"; RC=$?
+  check "the main agent's token FILE given explicitly for another agent, '$bad': exit 3, no request" refused_ok
+done
+priv_reset; echo other-tok > "$T/other-token"
+ERR="$(env -u CLAUDE_CONFIG_DIR -u MARVEEN_AGENT_ID MARVEEN_AGENT_TOKEN_FILE="$T/other-token" DASHBOARD_BASE_URL=http://example.invalid:9 bash "$W" --agent m GET /api/x 2>&1 >/dev/null)"; RC=$?
+check "acting as the main agent with a token file of its own choosing is limited too (the identity decides, not the file)" refused_ok
+priv_reset; implicit_call "http://localhost:3420"
+check "dropped launch identity to a loopback origin: the request goes out (with --noproxy)" bash -c "test $RC -eq 0 && test \"\$(cat '$T/calls')\" = 1 && grep -qx -- '--noproxy' '$T/argv'"
+priv_reset; ERR="$(cd "$INSTALL" && env -u MARVEEN_AGENT_ID CLAUDE_CONFIG_DIR="$INSTALL/agents/a/.claude-config" DASHBOARD_BASE_URL=http://example.invalid:9 bash "$W" GET /api/x 2>&1 >/dev/null)"; RC=$?
+check "a session launched as a sub-agent that stands in the install root acts as itself: its own token, not limited" bash -c "test $RC -eq 0 && grep -q 'Bearer own-a' '$T/stdin'"
 priv_reset; DASHBOARD_BASE_URL=http://example.invalid:9 bash "$W" --agent a GET /api/x >/dev/null 2>&1
 check "the agent's own token is NOT limited to loopback" bash -c "test \"\$(cat '$T/calls')\" = 1 && grep -q 'Bearer own-a' '$T/stdin'"
 check "...and its call keeps the proxy behaviour (no --noproxy)" bash -c "! grep -qx -- '--noproxy' '$T/argv'"
