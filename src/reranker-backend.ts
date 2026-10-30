@@ -29,7 +29,7 @@ export class InProcessRerankBackend implements RerankBackend {
   readonly mode = 'in-process' as const
   score(query: string, passages: string[], maxLength?: number): Promise<number[]> { return scorePairs(query, passages, maxLength) }
   state() { return { workerState: 'not-started' as const, loadMs: null } }
-  async dispose(): Promise<void> { _resetEngineForTests() }
+  dispose(): Promise<void> { _resetEngineForTests(); return Promise.resolve() }
 }
 
 /**
