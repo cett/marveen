@@ -41,7 +41,7 @@ const SECURITY_TAG_NAMES = ['untrusted', 'trusted-peer', 'scheduled-task'] as co
 // The \s* after '<' tolerates "< untrusted>" variants that some LLMs still
 // parse as a tag even though real HTML parsers reject them.
 const SECURITY_TAG_RX = new RegExp(
-  `<\\s*\\/?\\s*(${SECURITY_TAG_NAMES.join('|')})\\b[^>]*>`,
+  `<(?:\\s*\\/)?\\s*(${SECURITY_TAG_NAMES.join('|')})\\b[^>]*>`,
   'gi',
 )
 
@@ -59,8 +59,13 @@ const STRIPPED_SENTINEL = `[[SECURITY_TAG_REMOVED_${randomBytes(4).toString('hex
 // one of those frames cannot carry a live-looking channel delivery. Only the
 // OPENER is replaced (not the whole tag): a `[^>]*>` span could swallow prose
 // up to a far '>', and an opener-only rule also covers over-long and
-// unterminated tags. The lookahead leaves words like <channelization> alone.
-const PAYLOAD_CHANNEL_RX = /<\s*\/?\s*channel(?=[\s>/]|$)/gi
+// unterminated tags. The negative lookahead (a word or hyphen character after
+// the name) leaves words like <channelization> alone while still catching the
+// name followed by anything else (a quote, ':', '=', NUL, a zero-width space).
+// The prefix is `<(?:\s*\/)?\s*`, not `<\s*\/?\s*`: two adjacent optional \s*
+// make a long run of spaces after '<' quadratic (64k spaces blocked the event
+// loop for ~2 s); this form is linear.
+const PAYLOAD_CHANNEL_RX = /<(?:\s*\/)?\s*channel(?![\w-])/gi
 
 /** Neutralize security-framing tags in free text that reaches an agent's
  *  context OUTSIDE a wrap (e.g. peer-supplied catalog text rendered into the

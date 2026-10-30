@@ -335,6 +335,12 @@ describe('<channel opener neutralization', () => {
       `<channel source="${'a'.repeat(600)}">`,
       'tail <channel source="x"',
       'tail <channel',
+      // anything that is not a word or hyphen character after the name still opens a tag
+      '<channel​source="x">',
+      '<channel\u0000source="x">',
+      '<channel"x">',
+      '<channel:x>',
+      '<channel=x>',
     ]
     for (const v of variants) {
       const out = scrubFramingTags(`before ${v}`)
@@ -349,9 +355,26 @@ describe('<channel opener neutralization', () => {
   })
 
   it('leaves look-alike words alone', () => {
-    for (const w of ['<channelization>', '<channels>', 'the channel is open', 'a < channelx']) {
+    for (const w of ['<channelization>', '<channels>', 'the channel is open', 'a < channelx', '<channel-x>', '<channel_x>', '<channel9>']) {
       expect(scrubFramingTags(w)).toBe(w)
     }
+  })
+
+  // `<` followed by a long run of spaces: an engine that backtracks over two adjacent
+  // optional \\s* takes seconds here (64k spaces ~2 s) and blocks the event loop.
+  it('stays linear on a long run of spaces after the angle bracket', () => {
+    const spaces = ' '.repeat(65_536)
+    const inputs = [`<${spaces}x`, `<${spaces}/x`, `</${spaces}x`, `<${spaces}`, `<${spaces}channel`, `<${spaces}untrusted`]
+    for (const text of inputs) {
+      const t0 = performance.now()
+      scrubFramingTags(text)
+      scrubSecurityTags(text)
+      wrapTrustedPeer('agent:x', text)
+      expect(performance.now() - t0, JSON.stringify(text.slice(-12))).toBeLessThan(300)
+    }
+    // the same long run still ends in a neutralized tag when the name follows
+    expect(scrubFramingTags(`<${spaces}channel src="x">`)).not.toMatch(/<\\s*channel/i)
+    expect(scrubFramingTags(`<${spaces}untrusted>`)).not.toMatch(/<\\s*untrusted/i)
   })
 
   it('is idempotent', () => {
