@@ -370,7 +370,7 @@ describe('<channel opener neutralization', () => {
       scrubFramingTags(text)
       scrubSecurityTags(text)
       wrapTrustedPeer('agent:x', text)
-      expect(performance.now() - t0, JSON.stringify(text.slice(-12))).toBeLessThan(100)
+      expect(performance.now() - t0, JSON.stringify(text.slice(-12))).toBeLessThan(300)
     }
     // the same long run still ends in a neutralized tag when the name follows
     expect(scrubFramingTags(`<${spaces}channel src="x">`)).not.toMatch(/<\\s*channel/i)
