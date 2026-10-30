@@ -33,12 +33,14 @@ vi.mock('../web/agent-config.js', async (importOriginal) => {
 
 import { initDatabase, getDb, listAdoptedChats, getChannelCredentialBaseline } from '../db.js'
 import { MAIN_AGENT_ID } from '../config.js'
+import { logger } from '../logger.js'
 import {
   accessEntries,
   adoptChannel,
   adoptedDeliveryChat,
   channelTokenSecretId,
   checkChannelDrift,
+  checkAllChannelDrift,
   chatsFromAccessConfig,
   classifyDrift,
   forgetChannel,
@@ -318,6 +320,96 @@ describe('checkChannelDrift', () => {
     expect(await checkChannelDrift('zed', nowSec(), send)).toBe('access')
     await checkChannelDrift('zed', nowSec() + 300, send)
     expect(send).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('checkChannelDrift: the alarm is awaited', () => {
+  /** A send that finishes later than the check would on its own: only an awaiting check can observe `send-done`. */
+  function slowSend(log: string[]) {
+    return vi.fn(async (_text: string): Promise<boolean> => {
+      log.push('send-start')
+      await new Promise((r) => setTimeout(r, 15))
+      log.push('send-done')
+      return true
+    })
+  }
+
+  it('does not return before the owner message has been delivered', async () => {
+    const log: string[] = []
+    const send = slowSend(log)
+    writeChannel('zed', TOKEN_ZED, { allowFrom: ['42'] })
+    adoptChannel('zed', 'owner')
+    writeChannel('zed', FOREIGN, { allowFrom: ['42'] })
+
+    expect(await checkChannelDrift('zed', nowSec(), send)).toBe('token')
+    log.push('check-returned')
+
+    // Without the await the check returns while the send is still pending: 'check-returned' would come second.
+    expect(log).toEqual(['send-start', 'send-done', 'check-returned'])
+  })
+
+  it('a delivery failure is caught and logged by the check itself, not left as an unhandled rejection', async () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined)
+    try {
+      const send = vi.fn(async (_text: string): Promise<boolean> => { throw new Error('channel down') })
+      writeChannel('zed', TOKEN_ZED, { allowFrom: ['42'] })
+      adoptChannel('zed', 'owner')
+      writeChannel('zed', TOKEN_ZED, { allowFrom: [] })
+
+      expect(await checkChannelDrift('zed', nowSec(), send)).toBe('access')
+
+      // The inner catch ran (the outer 'drift check failed' catch would return null, not 'access').
+      expect(warn).toHaveBeenCalledWith(
+        expect.objectContaining({ agent: 'zed', err: expect.objectContaining({ message: 'channel down' }) }),
+        'channel-credentials: drift alarm could not be delivered',
+      )
+      expect(warn.mock.calls.some((c) => c[1] === 'channel-credentials: drift check failed')).toBe(false)
+    } finally {
+      warn.mockRestore()
+    }
+  })
+})
+
+describe('checkAllChannelDrift', () => {
+  it('checks every recorded channel one after the other and returns only when the last one is done', async () => {
+    const log: string[] = []
+    let running = 0
+    let maxRunning = 0
+    const send = vi.fn(async (text: string): Promise<boolean> => {
+      const who = text.includes('zed') ? 'zed' : 'amy'
+      running++
+      maxRunning = Math.max(maxRunning, running)
+      log.push(`start:${who}`)
+      await new Promise((r) => setTimeout(r, 15))
+      log.push(`done:${who}`)
+      running--
+      return true
+    })
+    writeChannel('zed', TOKEN_ZED, { allowFrom: ['42'] })
+    writeChannel('amy', TOKEN_AMY, { allowFrom: ['43'] })
+    adoptChannel('zed', 'owner')
+    adoptChannel('amy', 'owner')
+    writeChannel('zed', FOREIGN, { allowFrom: ['42'] })
+    writeChannel('amy', FOREIGN.replace('999999999', '888888888'), { allowFrom: ['43'] })
+
+    await checkAllChannelDrift(nowSec(), send)
+    log.push('sweep-returned')
+
+    // Both alarms went out and finished BEFORE the sweep returned (a sweep that does not await its checks
+    // returns first and leaves the sends running), and never two at once (the sweep is sequential).
+    expect(send).toHaveBeenCalledTimes(2)
+    expect(maxRunning).toBe(1)
+    expect(log).toHaveLength(5)
+    expect(log[4]).toBe('sweep-returned')
+    expect(log.slice(0, 4).map((e) => e.split(':')[0])).toEqual(['start', 'done', 'start', 'done'])
+    expect(getChannelCredentialBaseline('zed', 'telegram')).toMatchObject({ drift_state: 'token' })
+    expect(getChannelCredentialBaseline('amy', 'telegram')).toMatchObject({ drift_state: 'token' })
+  })
+
+  it('does nothing and sends nothing when no channel is recorded', async () => {
+    const send = vi.fn(async (_text: string) => true)
+    await expect(checkAllChannelDrift(nowSec(), send)).resolves.toBeUndefined()
+    expect(send).not.toHaveBeenCalled()
   })
 })
 
