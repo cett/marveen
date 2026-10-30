@@ -1,7 +1,7 @@
 /**
  * The worker backend (src/reranker-backend.ts) against a fake Worker, and the worker's request handler
- * (src/reranker-worker.ts) against a mocked model. The real thread is not started here: a Worker cannot load a .ts
- * file, so the thread itself is checked by the measurement on the compiled build.
+ * (src/reranker-worker.ts) against a mocked model. The real child is not forked here: it cannot load a .ts file, so
+ * the process with the model is checked on the compiled build (SIGTERM idle and with a rerank in flight, exit 0).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { EventEmitter } from 'node:events'
@@ -21,8 +21,12 @@ vi.mock('../logger.js', () => ({
 }))
 vi.mock('../web/sigterm-flush.js', () => ({ registerSigtermFlush }))
 
-import { WorkerRerankBackend, RerankUnavailableError, type WorkerLike } from '../reranker-backend.js'
-import { serveRerankRequest, _resetWorkerForTests, type RerankReply, type RerankRequest } from '../reranker-worker.js'
+import { spawn, type ChildProcess } from 'node:child_process'
+import { WorkerRerankBackend, ChildProcessWorker, childEnv, RerankUnavailableError, type WorkerLike } from '../reranker-backend.js'
+import {
+  serveRerankRequest, wireChildProcess, _resetWorkerForTests, RERANK_CHILD_ENV,
+  type RerankReply, type RerankRequest, type ChildProcessLike,
+} from '../reranker-worker.js'
 import { _resetEngineForTests } from '../reranker-engine.js'
 
 class FakeWorker extends EventEmitter {
@@ -221,6 +225,119 @@ describe('WorkerRerankBackend, after dispose()', () => {
     await backend.dispose()
     await expect(backend.score('q', ['a'])).rejects.toBeInstanceOf(RerankUnavailableError)
     expect(workers).toHaveLength(0)
+  })
+})
+
+// The model runs in a child process because stopping a worker thread (or exiting the process) while onnxruntime is in
+// the middle of a run aborts the whole process (SIGABRT, exit 134, measured on the compiled build: SIGTERM with a
+// rerank in flight, and worker.terminate() mid-run). A child is killed instead, which cannot take the dashboard down.
+class FakeChild extends EventEmitter {
+  sent: unknown[] = []
+  killed: string[] = []
+  exitCode: number | null = null
+  signalCode: NodeJS.Signals | null = null
+  unrefCalled = false
+  channel = { unrefCalled: false, unref() { this.unrefCalled = true } }
+  send(msg: unknown) { this.sent.push(msg); return true }
+  kill(signal: string) { this.killed.push(signal); return true }
+  unref() { this.unrefCalled = true }
+}
+const asChild = (c: FakeChild) => c as unknown as ChildProcess
+
+describe('ChildProcessWorker', () => {
+  it('sends requests over the IPC channel and passes replies, errors and exits through', () => {
+    const child = new FakeChild()
+    const w = new ChildProcessWorker(asChild(child))
+    const replies: unknown[] = []; const errors: Error[] = []; const exits: number[] = []
+    w.on('message', m => replies.push(m)); w.on('error', e => errors.push(e)); w.on('exit', c => exits.push(c))
+    w.postMessage({ id: 1, query: 'q', passages: ['a'] })
+    expect(child.sent).toEqual([{ id: 1, query: 'q', passages: ['a'] }])
+    child.emit('message', { id: 1, scores: [0.5] })
+    child.emit('error', new Error('spawn failed'))
+    child.emit('exit', 3, null)
+    expect(replies).toEqual([{ id: 1, scores: [0.5] }])
+    expect(errors.map(e => e.message)).toEqual(['spawn failed'])
+    expect(exits).toEqual([3])
+  })
+
+  it('reports a child killed by a signal as 128 + the signal number', () => {
+    const child = new FakeChild()
+    const exits: number[] = []
+    new ChildProcessWorker(asChild(child)).on('exit', c => exits.push(c))
+    child.emit('exit', null, 'SIGKILL')
+    expect(exits).toEqual([137])
+  })
+
+  it('terminates with SIGKILL and resolves when the child is gone', async () => {
+    const child = new FakeChild()
+    const done = new ChildProcessWorker(asChild(child)).terminate()
+    expect(child.killed).toEqual(['SIGKILL'])
+    child.emit('exit', null, 'SIGKILL')
+    expect(await done).toBe(137)
+  })
+
+  it('does not signal a child that already exited', async () => {
+    const child = new FakeChild()
+    child.exitCode = 0
+    expect(await new ChildProcessWorker(asChild(child)).terminate()).toBe(0)
+    expect(child.killed).toEqual([])
+  })
+
+  it('lets neither the child nor its IPC channel keep the dashboard process alive', () => {
+    const child = new FakeChild()
+    new ChildProcessWorker(asChild(child)).unref()
+    expect(child.unrefCalled).toBe(true)
+    expect(child.channel.unrefCalled).toBe(true)
+  })
+
+  it('kills a real child that is stuck in a busy loop, which a worker thread could not be stopped from', async () => {
+    const child = spawn(process.execPath, ['-e', 'process.on("message", () => {}); process.send("up"); for (;;) {}'], {
+      stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+    })
+    await new Promise<void>((resolve, reject) => { child.once('message', () => resolve()); child.once('error', reject) })
+    const code = await new ChildProcessWorker(child).terminate()
+    expect(code).toBe(137)
+    expect(child.signalCode).toBe('SIGKILL')
+  }, 15_000)
+})
+
+describe('childEnv', () => {
+  it('marks the child and passes on the paths and proxies the model needs, but no secret', () => {
+    const env = childEnv({
+      PATH: '/usr/bin', HOME: '/home/u', HTTPS_PROXY: 'http://proxy:3128',
+      TELEGRAM_BOT_TOKEN: 'secret-a', ANTHROPIC_API_KEY: 'secret-b', DASHBOARD_TOKEN: 'secret-c', MEMORY_RERANK_ENABLED: '1',
+    })
+    expect(env).toEqual({ [RERANK_CHILD_ENV]: '1', PATH: '/usr/bin', HOME: '/home/u', HTTPS_PROXY: 'http://proxy:3128' })
+  })
+})
+
+describe('wireChildProcess (the child side)', () => {
+  function fakeProc() {
+    let onMessage: (req: RerankRequest) => void = () => {}
+    let onDisconnect: () => void = () => {}
+    const sent: RerankReply[] = []
+    const killSelf = vi.fn()
+    const proc: ChildProcessLike = {
+      onMessage: cb => { onMessage = cb }, onDisconnect: cb => { onDisconnect = cb }, send: r => { sent.push(r) }, killSelf,
+    }
+    return { proc, sent, killSelf, message: (r: RerankRequest) => onMessage(r), disconnect: () => onDisconnect() }
+  }
+
+  it('answers a request over the channel', async () => {
+    mockModelFn.mockResolvedValue({ logits: { tolist: () => [[3]] } })
+    const f = fakeProc()
+    wireChildProcess(f.proc)
+    f.message({ id: 4, query: 'q', passages: ['good'] })
+    await vi.waitFor(() => expect(f.sent.some(r => 'id' in r && r.id === 4)).toBe(true))
+    expect(f.sent.map(r => ('type' in r ? r.type : r.id))).toEqual(['loaded', 4])
+  })
+
+  it('kills itself with SIGKILL when the parent goes away, instead of exiting gracefully', () => {
+    const f = fakeProc()
+    wireChildProcess(f.proc)
+    expect(f.killSelf).not.toHaveBeenCalled()
+    f.disconnect()
+    expect(f.killSelf).toHaveBeenCalledTimes(1)
   })
 })
 

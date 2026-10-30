@@ -4,9 +4,9 @@ import { AutoTokenizer, AutoModelForSequenceClassification } from '@huggingface/
 // Scores (query, passage) pairs for relevance. Lazy singleton. Xenova conversion provides the onnx/ folder needed
 // by transformers.js.
 //
-// This is the model side only: it runs wherever it is imported, which is the worker thread in production
+// This is the model side only: it runs wherever it is imported, which is the child process in production
 // (reranker-worker.ts) and the main thread in dev and tests (InProcessRerankBackend). It must not import anything
-// that touches the database or the logger, so the worker thread stays light.
+// that touches the database or the logger, so the child stays light.
 export const RERANKER_MODEL = 'Xenova/bge-reranker-base'
 
 type Tokenizer = Awaited<ReturnType<typeof AutoTokenizer.from_pretrained>>

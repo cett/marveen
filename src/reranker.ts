@@ -6,7 +6,7 @@ import { RERANK_WATCHDOG_FACTOR, RerankUnavailableError, createDefaultRerankBack
 // Cross-encoder rerank of the fused hybrid-search list.
 //
 // The forward pass is slow (about 0.7 s for ten candidates, 4-5 s for fifty) and, run on the main thread, stops the
-// event loop for its whole duration. So it runs on a backend (a worker thread in production, see reranker-backend.ts)
+// event loop for its whole duration. So it runs on a backend (a child process in production, see reranker-backend.ts)
 // behind a bounded queue with a time budget: a rerank that cannot finish in time hands back the order it was given
 // (the RRF order) instead of making the caller wait, and every such fallback is counted (getRerankStats), because a
 // fallback is otherwise an unnoticed drop in result quality.

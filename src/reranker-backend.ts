@@ -1,10 +1,12 @@
 import { existsSync } from 'node:fs'
-import { Worker } from 'node:worker_threads'
+import { fork, type ChildProcess } from 'node:child_process'
+import { constants as osConstants } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { logger } from './logger.js'
 import { registerSigtermFlush } from './web/sigterm-flush.js'
 import { scorePairs, _resetEngineForTests } from './reranker-engine.js'
 import type { RerankReply, RerankRequest } from './reranker-worker.js'
+import { RERANK_CHILD_ENV } from './reranker-worker.js'
 
 /** Scores (query, passage) pairs, 0..1 in passage order. One call at a time: the queue in reranker.ts serializes. */
 export interface RerankBackend {
@@ -30,7 +32,10 @@ export class InProcessRerankBackend implements RerankBackend {
   async dispose(): Promise<void> { _resetEngineForTests() }
 }
 
-/** The slice of node:worker_threads' Worker the backend uses; the tests pass a fake. */
+/**
+ * What the backend needs of the thing that runs the model: a child process in production (ChildProcessWorker), a
+ * fake in the tests. `terminate()` must stop it for good, however busy it is.
+ */
 export interface WorkerLike {
   postMessage(msg: RerankRequest): void
   on(event: 'message', cb: (msg: RerankReply) => void): unknown
@@ -57,7 +62,7 @@ const DEFAULT_WATCHDOG_MS = 9_000
 interface Pending { resolve: (scores: number[]) => void; reject: (err: Error) => void; watchdog: NodeJS.Timeout }
 
 /**
- * The model in a worker thread: spawned on first use, replaced after a crash or when it hangs (with a cooldown),
+ * The model in a worker (a child process in production): spawned on first use, replaced after a crash or when it hangs (with a cooldown),
  * stopped on SIGTERM and not started again after that.
  */
 export class WorkerRerankBackend implements RerankBackend {
@@ -97,9 +102,9 @@ export class WorkerRerankBackend implements RerankBackend {
     }
     const id = this.nextId++
     return new Promise<number[]>((resolve, reject) => {
-      // A native forward pass cannot be interrupted from inside the thread, and a worker that never answers would
-      // otherwise make every later call wait out its whole budget until the process restarts: past the watchdog
-      // time the thread is stopped and replaced after the cooldown.
+      // A native forward pass cannot be interrupted from inside, and a worker that never answers would otherwise
+      // make every later call wait out its whole budget until the process restarts: past the watchdog time the
+      // worker is killed and replaced after the cooldown.
       const watchdog = setTimeout(() => {
         if (this.pending.has(id)) this.retire(worker, new Error('reranker worker did not answer in time'), true)
       }, watchdogMs ?? this.watchdogMs)
@@ -140,7 +145,7 @@ export class WorkerRerankBackend implements RerankBackend {
     worker.on('exit', (code) => this.onGone(worker, new Error(`reranker worker exited with code ${code}`)))
     if (!this.flushRegistered) {
       this.flushRegistered = true
-      // A thread stopped mid-inference at process exit can take native runtime state down with it; stop it first.
+      // Kill the child before the database closes, so it is not left running (it also kills itself when the channel closes).
       registerSigtermFlush('reranker-worker', () => this.dispose())
     }
     return worker
@@ -178,7 +183,7 @@ export class WorkerRerankBackend implements RerankBackend {
     this.downUntil = this.now() + this.cooldownMs
     logger.warn({ err: err.message, cooldownMs: this.cooldownMs }, 'reranker worker is gone, falling back to the RRF order')
     this.failPending(err)
-    // Not awaited: stopping a thread that sits in native code may take long, and the callers are waiting on a
+    // Not awaited: the callers are waiting on a
     // fallback, not on this. Its late events are ignored, it is no longer this.worker.
     if (terminate) which.terminate().catch((e: unknown) => logger.warn({ err: e }, 'reranker worker: terminate failed'))
   }
@@ -190,11 +195,74 @@ export class WorkerRerankBackend implements RerankBackend {
   }
 }
 
-// The compiled worker sits next to this file in dist/. Under tsx and vitest only the .ts source exists, and a
-// Worker cannot load that: those runs keep the model on the main thread, as before.
-const WORKER_URL = new URL('./reranker-worker.js', import.meta.url)
+/**
+ * A forked child process as a WorkerLike. Messages travel over the IPC channel; terminate() is SIGKILL, which is
+ * what makes the child worth having over a worker thread: stopping a thread (or exiting the process) while
+ * onnxruntime is in the middle of a run aborts the whole process with SIGABRT, killing a child cannot.
+ */
+export class ChildProcessWorker implements WorkerLike {
+  constructor(private readonly child: ChildProcess) {}
+
+  postMessage(msg: RerankRequest): void {
+    this.child.send(msg)
+  }
+
+  on(event: 'message', cb: (msg: RerankReply) => void): unknown
+  on(event: 'error', cb: (err: Error) => void): unknown
+  on(event: 'exit', cb: (code: number) => void): unknown
+  on(event: 'message' | 'error' | 'exit', cb: ((msg: RerankReply) => void) | ((err: Error) => void) | ((code: number) => void)): unknown {
+    if (event === 'exit') {
+      // A signal-killed child has no exit code: report it as the conventional 128 + signal number (SIGKILL: 137).
+      return this.child.on('exit', (code, signal) => (cb as (code: number) => void)(code ?? (signal ? 128 + (osConstants.signals[signal] ?? 0) : -1)))
+    }
+    return this.child.on(event, cb as never)
+  }
+
+  terminate(): Promise<number> {
+    const child = this.child
+    if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve(child.exitCode ?? 137)
+    return new Promise<number>((resolve) => {
+      child.once('exit', (code) => resolve(code ?? 137))
+      child.kill('SIGKILL')
+    })
+  }
+
+  unref(): void {
+    // The child and its IPC channel must not keep the dashboard process alive on their own.
+    this.child.unref()
+    this.child.channel?.unref()
+  }
+}
+
+/** What the child gets of the dashboard's environment: enough to find its model cache and the network, no secrets. */
+const CHILD_ENV_PASSTHROUGH = [
+  'PATH', 'HOME', 'USER', 'TMPDIR', 'LANG', 'LC_ALL', 'TZ',
+  'HF_HOME', 'HF_ENDPOINT', 'HF_HUB_OFFLINE', 'TRANSFORMERS_CACHE', 'XDG_CACHE_HOME',
+  'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy',
+  'NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE',
+]
+
+export function childEnv(parent: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { [RERANK_CHILD_ENV]: '1' }
+  for (const key of CHILD_ENV_PASSTHROUGH) if (parent[key] !== undefined) env[key] = parent[key]
+  return env
+}
+
+// The compiled worker sits next to this file in dist/. Under tsx and vitest only the .ts source exists, and a child
+// cannot load that: those runs keep the model on the main thread, as before.
+const WORKER_PATH = fileURLToPath(new URL('./reranker-worker.js', import.meta.url))
+
+function spawnChild(): WorkerLike {
+  const child = fork(WORKER_PATH, [], {
+    env: childEnv(process.env),
+    // A debugger or profiler flag of the dashboard must not be inherited: two processes cannot share its port or file.
+    execArgv: process.execArgv.filter(arg => !/^--(inspect|cpu-prof|heap-prof)/.test(arg)),
+    stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
+  })
+  return new ChildProcessWorker(child)
+}
 
 export function createDefaultRerankBackend(): RerankBackend {
-  if (!existsSync(fileURLToPath(WORKER_URL))) return new InProcessRerankBackend()
-  return new WorkerRerankBackend({ spawn: () => new Worker(WORKER_URL) as unknown as WorkerLike })
+  if (!existsSync(WORKER_PATH)) return new InProcessRerankBackend()
+  return new WorkerRerankBackend({ spawn: spawnChild })
 }
