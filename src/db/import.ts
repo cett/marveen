@@ -5,6 +5,7 @@
 import { createHash } from 'node:crypto'
 import { dbx } from './facade.js'
 import { syncVecMemoryDelete } from './vector.js'
+import { isBlankContent } from '../blank-content.js'
 
 export type ImportSourceRow = {
   id: string; type: string; path: string; label: string | null
@@ -227,7 +228,12 @@ export async function upsertImportMemory(
   keywords: string,
   now: number,
   tenantId: string,
-): Promise<'added' | 'updated' | 'hash_match'> {
+): Promise<'added' | 'updated' | 'hash_match' | 'skipped_blank'> {
+  // A source that came out blank (an emptied file, a page that is only markup, a text of zero-width
+  // characters) says nothing worth keeping. Writing it would replace the memory's text with '' (no
+  // version row, the embedding dropped) or add an empty memory the memories trigger refuses, so the
+  // existing rows stay exactly as they are and the crawler counts the file as skipped.
+  if (isBlankContent(content)) return 'skipped_blank'
   // One transaction: the import row and its shadow `memories` row (and the link between them) are written
   // together; a failure half-way leaves no shadow row without its import row. The ANN entry of a shadow row
   // whose text changed is dropped after the commit (vec0 is not on the facade, see dropVecEntries).

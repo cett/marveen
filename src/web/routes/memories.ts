@@ -17,6 +17,7 @@ import {
 import { MAIN_AGENT_ID, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ } from '../../config.js'
 import { logger } from '../../logger.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
+import { BlankContentError, isBlankContent } from '../../blank-content.js'
 import { detectHomoglyphs, formatHomoglyphWarning } from '../../homoglyph.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
 import { actingAgentId, enforcedSelfScope } from '../fleet-agent-identity.js'
@@ -64,7 +65,7 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
   if (path === '/api/memories' && method === 'POST') {
     const body = await readBody(req)
     const data = JSON.parse(body.toString()) as { agent_id?: string; content: string; tier?: string; category?: string; keywords?: string }
-    if (!data.content?.trim()) { json(res, { error: 'required', field: 'content', hint: 'Content is required' }, 400); return true }
+    if (typeof data.content !== 'string' || isBlankContent(data.content)) { json(res, { error: 'required', field: 'content', hint: 'Content is required' }, 400); return true }
     if (containsSuspiciousContent(data.content)) {
       logger.warn({ agent: data.agent_id }, 'Memory content rejected: suspicious pattern')
       json(res, { error: 'forbidden', hint: 'Content rejected by security filter' }, 403)
@@ -269,10 +270,17 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/memories/import' && method === 'POST') {
     const body = await readBody(req)
-    const { agent_id, chunks } = JSON.parse(body.toString()) as { agent_id: string; chunks: string[] }
+    const { agent_id, chunks: rawChunks } = JSON.parse(body.toString()) as { agent_id: string; chunks: unknown }
 
-    if (!chunks || !Array.isArray(chunks) || chunks.length === 0) {
+    if (!rawChunks || !Array.isArray(rawChunks) || rawChunks.length === 0) {
       json(res, { error: 'required', field: 'chunks', hint: 'No chunks to import' }, 400)
+      return true
+    }
+    // A blank chunk is dropped here: saving it would be refused by the memories trigger halfway through the run.
+    const chunks = rawChunks.filter((c): c is string => typeof c === 'string' && !isBlankContent(c))
+    const skippedBlank = rawChunks.length - chunks.length
+    if (chunks.length === 0) {
+      json(res, { error: 'required', field: 'chunks', hint: 'Every chunk is blank, nothing to import' }, 400)
       return true
     }
 
@@ -363,8 +371,8 @@ Respond ONLY with JSON, nothing else:
       }
     }
 
-    logger.info({ agentId, imported, stats }, 'Migráció befejezve')
-    json(res, { ok: true, imported, stats })
+    logger.info({ agentId, imported, stats, skippedBlank }, 'Migráció befejezve')
+    json(res, { ok: true, imported, stats, skipped_blank: skippedBlank })
     return true
   }
 
@@ -722,11 +730,18 @@ Respond ONLY with JSON, nothing else:
       return true
     }
     const { content, category, tier, agent_id, keywords } = parsed
-    if (typeof content !== 'string' || content.trim() === '') {
+    if (typeof content !== 'string' || isBlankContent(content)) {
       json(res, { error: 'required', field: 'content', hint: 'content is required and must be a non-empty string' }, 400)
       return true
     }
-    if (await updateMemory(id, content, tier || category, agent_id, keywords)) { json(res, { ok: true }); return true }
+    try {
+      if (await updateMemory(id, content, tier || category, agent_id, keywords)) { json(res, { ok: true }); return true }
+    } catch (err) {
+      // The check above and the DB layer share isBlankContent; this keeps a future divergence a 400, not a 500.
+      if (!(err instanceof BlankContentError)) throw err
+      json(res, { error: 'required', field: 'content', hint: 'content is required and must be a non-empty string' }, 400)
+      return true
+    }
     json(res, { error: 'not_found' }, 404)
     return true
   }

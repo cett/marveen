@@ -230,4 +230,47 @@ describe('backfillImportShadowRows (the boot twin)', () => {
     expect(row.id).not.toBeNull()
     expect(db.prepare('SELECT agent_id, content FROM memories WHERE id = ?').get(row.id)).toEqual({ agent_id: 'import', content: 'imported text' })
   })
+
+  const ZWSP = String.fromCodePoint(0x200b)
+  const addImportRow = (id: string, fileName: string, content: string, updatedAt: number, shadowId: number | null = null): void => {
+    db.prepare(
+      `INSERT INTO import_memories (id, source_id, file_path, file_name, content_hash, content, keywords, memory_shadow_id, last_seen_at, created_at, updated_at)
+       VALUES (?, 's2', ?, ?, ?, ?, NULL, ?, 1, 1, ?)`,
+    ).run(id, `/docs/${fileName}`, fileName, `h-${id}`, content, shadowId, updatedAt)
+  }
+  const addSource = async (): Promise<void> => {
+    await insertImportSource({
+      id: 's2', type: 'local', path: '/docs/s2', label: 's2', intervalHours: 4, enabled: true, now: 100,
+      tenantId: 'default', vaultTokenRef: null, confluenceEmail: null, baseUrl: null,
+    })
+  }
+
+  it('skips an import row with no visible text: the rows after it still get their shadow, nothing throws', async () => {
+    await addSource()
+    addImportRow('blank', 'blank.md', ZWSP, 10)
+    addImportRow('real', 'real.md', 'a real text', 20)
+
+    expect(() => backfillImportShadowRows()).not.toThrow()
+
+    const shadow = (id: string) => (db.prepare('SELECT memory_shadow_id AS id FROM import_memories WHERE id = ?').get(id) as { id: number | null }).id
+    expect(shadow('blank')).toBeNull()
+    expect(shadow('real')).not.toBeNull()
+    expect((db.prepare('SELECT COUNT(*) AS n FROM memories WHERE agent_id = ?').get('import') as { n: number }).n).toBe(1)
+  })
+
+  it('leaves an html import row that strips to nothing as it is, import row and shadow row together', async () => {
+    await addSource()
+    const markup = '<html><body><p></p></body></html>'
+    const shadowId = (db.prepare(
+      `INSERT INTO memories (agent_id, content, category, keywords, chat_id, sector, created_at, accessed_at, updated_at)
+       VALUES ('import', ?, 'warm', NULL, 'import', 'semantic', 1, 1, 1) RETURNING id`,
+    ).get(markup) as { id: number }).id
+    addImportRow('html', 'page.html', markup, 5, shadowId)
+    addImportRow('pending', 'pending.md', 'a pending text', 6) // the strip pass only runs when a row needs a shadow
+
+    expect(() => backfillImportShadowRows()).not.toThrow()
+
+    expect((db.prepare('SELECT content FROM import_memories WHERE id = ?').get('html') as { content: string }).content).toBe(markup)
+    expect((db.prepare('SELECT content FROM memories WHERE id = ?').get(shadowId) as { content: string }).content).toBe(markup)
+  })
 })

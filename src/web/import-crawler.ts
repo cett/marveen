@@ -311,6 +311,11 @@ async function crawlLocalSource(
       const result = await upsertImportMemory(source.id, filePath, basename(filePath), hash, content, keywords, now, source.tenant_id)
       if (result === 'added') { counts.added++; totalSize += content.length }
       else if (result === 'updated') { counts.updated++ }
+      else if (result === 'skipped_blank') {
+        // Counted with the files that cannot be imported; the memory the file produced earlier stays as it was.
+        counts.skippedType++
+        logger.warn({ sourceId: source.id, filePath }, 'Import: source has no visible text, existing memory left unchanged')
+      }
       else { counts.skippedHash++ }
     }))
   }
@@ -550,6 +555,11 @@ async function crawlConfluenceSource(
       const result = await upsertImportMemory(source.id, filePath, fileName, hash, content, keywords, now, source.tenant_id)
       if (result === 'added') { counts.added++; totalSize += content.length }
       else if (result === 'updated') { counts.updated++ }
+      else if (result === 'skipped_blank') {
+        // Counted with the files that cannot be imported; the memory the file produced earlier stays as it was.
+        counts.skippedType++
+        logger.warn({ sourceId: source.id, filePath }, 'Import: source has no visible text, existing memory left unchanged')
+      }
       else { counts.skippedHash++ }
     }
   }
