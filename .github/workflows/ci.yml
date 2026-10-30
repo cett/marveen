@@ -238,13 +238,9 @@ jobs:
           echo "$HOME/bin" >> "$GITHUB_PATH"
 
       - name: Python tests
-        run: |
-          fail=0
-          for f in scripts/__tests__/*.test.py; do
-            echo "== $f =="
-            python3 "$f" || fail=1
-          done
-          exit $fail
+        # scripts/run-python-tests.sh runs the scripts/__tests__/*.test.py files 4 at a time, the slowest
+        # first, and prints them like the serial loop did (one "== file ==" block each, exit 1 on any failure).
+        run: bash scripts/run-python-tests.sh -j 4
 
       - name: SQLite dialect ratchet
         # No SQLite-specific SQL construct count may grow past
