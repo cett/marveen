@@ -47,7 +47,16 @@ DECISIONS = frozenset({'allow', 'deny', 'error'})
 # denied: the gate exited 2. gate_error: main() raised something the gate did not turn into a verdict (the
 # process ends with a traceback and exit 1, which Claude Code does NOT treat as a block). exit_code: any other
 # exit status.
-REASONS = frozenset({'denied', 'gate_error', 'exit_code'})
+REASONS = frozenset({'denied', 'gate_error', 'exit_code', 'input_too_large'})
+
+
+class DenyExit(SystemExit):
+    """A gate's exit 2 with a reason code of REASONS: `raise DenyExit(2, 'input_too_large')`. It exits exactly
+    like SystemExit(2); audited() records the code instead of the generic 'denied'."""
+
+    def __init__(self, code=2, reason='denied'):
+        super().__init__(code)
+        self.reason = reason
 
 BUSY_TIMEOUT_MS = 200
 WRITE_BUDGET_S = 1
@@ -199,6 +208,8 @@ def audited(gate, main, deny_row=False):
         main()
     except SystemExit as exc:
         decision, reason = _classify(exc.code)
+        if decision == 'deny':
+            reason = getattr(exc, 'reason', None) or reason
         finish(decision, reason)
         raise
     except Exception:

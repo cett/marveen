@@ -291,6 +291,9 @@ def _mask_subshell_markers(cmd: str) -> str:
 MAX_CMD_CHARS = 131072
 MAX_HEREDOC_OPENERS = 32
 MAX_OPENER_LINE_CHARS = 4096
+# The text the audit reads (an MCP email body, or what is recovered from a Bash command) may not be longer
+# than this; over it the gate DENIES ("too large to inspect"), like the command limit above.
+MAX_AUDIT_CHARS = 262144
 
 
 class InspectionLimit(Exception):
@@ -804,7 +807,37 @@ _HEREDOC_INTERP = re.compile(
 
 
 _HEREDOC_PIPE = re.compile(r"\|\s*(?:\S*/)?(python3?(?:\.\d+)?|node|tsx|ts-node|deno|bun|bash|sh|zsh|dash)\b", re.I)
-_HEREDOC_REDIRECT = re.compile(r"(?:^|[\s;&|(])(?:cat|tee)\b[^\n]*?(?:>>?|\btee(?:\s+-a)?)\s*(['\"]?)([^\s'\"<>;&|]+)\1")
+# `cat`/`tee` early on a line, then (anywhere later on the same line) a redirect or `tee`, then the target
+# file. This used to be ONE pattern with a lazy `[^\n]*?` in the middle, which searched the rest of the line
+# again from every `cat`/`tee` and was superlinear (a line of ` cat` x N: 40 kB 4.6 s). The head and the tail
+# are separate patterns now and the tail is tried at each candidate position of the line at most once.
+_HR_HEAD = re.compile(r"(?:^|[\s;&|(])(?:cat|tee)\b")
+_HR_TAIL = re.compile(r"(?:>>?|\btee(?:\s+-a)?)\s*(['\"]?)([^\s'\"<>;&|]+)\1")
+_HR_CAND = re.compile(r">|\btee")  # the only places _HR_TAIL can start
+
+
+def _heredoc_redirect_target(text: str):
+    """The file name a `cat`/`tee ... > FILE` at the start of a heredoc's line writes, or None.
+    Gives what `search(...).group(2)` of the old single pattern gave."""
+    tested_to = 0  # candidate positions before this index are known not to start a tail match
+    nl = -1  # end of the current line; looked up again only after it is passed
+    for head in _HR_HEAD.finditer(text):
+        end = head.end()
+        if nl < end:
+            nl = text.find("\n", end)
+            if nl == -1:
+                nl = len(text)
+        pos = max(tested_to, end)
+        while True:
+            cand = _HR_CAND.search(text, pos, nl)
+            if cand is None:
+                tested_to = max(tested_to, nl)
+                break
+            tail = _HR_TAIL.match(text, cand.start())
+            if tail:
+                return tail.group(2)
+            pos = cand.start() + 1
+    return None
 
 
 def _written_then_run(cmd: str, written: dict, depth: int) -> bool:
@@ -839,9 +872,9 @@ def _heredoc_program_sends(cmd: str, depth: int = 0) -> bool:
         line_start = cmd.rfind("\n", 0, start) + 1
         intro = cmd[start:intro_end]
         body = cmd[body_start:body_end]
-        w = _HEREDOC_REDIRECT.search(cmd[line_start:start] + intro)
-        if w:
-            written[w.group(2)] = body
+        target = _heredoc_redirect_target(cmd[line_start:start] + intro)
+        if target:
+            written[target] = body
         piped = _HEREDOC_PIPE.search(intro)
         if piped:
             if _WRAPPER_SHELL.match(piped.group(1)):
@@ -1196,14 +1229,29 @@ def _hit_context(prose: str, pos: int, length: int) -> str:
 # osztaly, mint a 2026-08-11-i `level` fajlnev-talalat. A javitas nem a szotarbol
 # vesz ki (az elrontana a valodi talalatokat is), hanem a technikai regiokat
 # vagja ki a vizsgalt szovegbol. A gondolatjel- es nev-ellenorzes NEM ezen fut.
+#
+# Linear in the text length. Two alternatives re-scanned a long run again from EVERY start inside
+# it: the email (`[\w.+-]+@`, a run with no '@' after it) and the path (`[\w-]*/`, a hyphenated run
+# with no '/' after it). One 550 kB word kept this pattern busy for over 90 s (20 kB: 2.3 s), and
+# a mail the audit cannot finish on would hang the gate (the live 8 s alarm turns that into a deny). A start inside a run cannot succeed when the
+# first start of that run failed (same run end, same next character), so only the first start of a
+# run is tried: the email needs a start that is not preceded by a run character, the path one that
+# is not preceded by a run character or is the first word start after up to three leading hyphens.
 TECHNICAL = re.compile(
-    r"""https?://\S+                # URL
-      | [\w.+-]+@[\w-]+\.[\w.]+     # email
-      | `[^`]*`                     # kod-span
-      | \b\w+(?:_\w+)+\b            # snake_case azonosito
-      | \b\w+\.[A-Za-z]{2,10}\b     # fajlnev / domain (video.mp4, marveen.io)
-      | \b[\w-]*/[\w/-]+            # utvonal / slug
+    r"""https?://\S+                                    # URL
+      | (?<![\w.+-])[\w.+-]+@[\w-]+\.[\w.]+             # email
+      | `[^`]*`                                         # kod-span
+      | \b\w+(?:_\w+)+\b                                # snake_case azonosito
+      | \b\w+\.[A-Za-z]{2,10}\b                         # fajlnev / domain (video.mp4, marveen.io)
+      | (?:(?<![\w-])|(?<=(?<![\w-])-)|(?<=(?<![\w-])--)|(?<=(?<![\w-])---))
+        \b[\w-]*/[\w/-]+                                # utvonal / slug
+      | \b/[\w/-]+                                      # ... that starts at the '/' after a word
     """,
+    re.X,
+)
+# The pre-fix pattern, kept for the differential test only.
+_TECHNICAL_OLD = re.compile(
+    r"""https?://\S+ | [\w.+-]+@[\w-]+\.[\w.]+ | `[^`]*` | \b\w+(?:_\w+)+\b | \b\w+\.[A-Za-z]{2,10}\b | \b[\w-]*/[\w/-]+""",
     re.X,
 )
 
@@ -1647,6 +1695,20 @@ def main():
         text, unreadable = collect_bash_body(cmd)
     else:
         sys.exit(0)
+
+    # A body over the limit is refused BEFORE any pattern runs over it (a length check is O(1)): the MCP
+    # send path had no cap, and a check that cannot finish inside the hook timeout lets the mail through.
+    if len(text) > MAX_AUDIT_CHARS:
+        sys.stderr.write(
+            "KIMENO-SZOVEG KAPU: TILTVA -- a kuldendo szoveg tul nagy ahhoz, hogy a kapu "
+            f"atvizsgalja ({len(text)} karakter, a hatar {MAX_AUDIT_CHARS}), es egy vizsgalhatatlan kuldes nem mehet at.\n"
+            "Bontsd kisebb reszekre (nagy szoveget fajlba irj a Write tool-lal), aztan kuldd ujra.\n"
+        )
+        try:
+            from gate_audit_lib import DenyExit  # the audit row then carries the reason code
+        except Exception:  # noqa: BLE001
+            sys.exit(2)
+        raise DenyExit(2, 'input_too_large')
 
     if unreadable or not text.strip():
         if tool == "Bash" and not unreadable and _depth_limit_is_sole_reason(cmd):
