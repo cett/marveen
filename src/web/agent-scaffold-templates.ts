@@ -263,6 +263,88 @@ export function ensureCheckpointSection(name: string): void {
   atomicWriteFileSync(claudeMdPath, updated)
 }
 
+// The hook policy text. The old wording said every hook is fail-closed on a timeout, a crash or any non-zero
+// exit and that this cannot be configured; the host does not do that: without onFailure "block" on the entry a
+// timeout, a hook that does not start and a non-zero exit other than 2 are non-blocking errors. The text now
+// states the real rule. Basis: vendor docs, the claude 2.1.310 binary text and an isolated load probe of the
+// settings key; a live deny on a real timeout has not been run. Same wording as the section in
+// templates/CLAUDE.md.template (new installs and the main agent); this block carries it to sub-agent CLAUDE.md
+// files that already exist (ensureHookPolicySection).
+const HOOK_POLICY_HEADING = '## Hook fail-closed policy'
+const HOOK_POLICY_BEGIN = '<!-- BEGIN GENERATED: hook-policy (auto-generated, do not edit by hand) -->'
+const HOOK_POLICY_END = '<!-- END GENERATED: hook-policy -->'
+const HOOK_POLICY_BLOCK_RE = new RegExp(
+  `${HOOK_POLICY_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${HOOK_POLICY_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
+)
+
+// The earlier hand-copied wording of the section (heading, blank line, one paragraph). A section that equals one
+// of these is replaced by the generated block; any other text under the heading is a hand edit and is left alone.
+const KNOWN_OLD_HOOK_POLICY_SECTIONS: readonly string[] = [
+  "## Hook fail-closed policy\n\nMinden hook (PreToolUse, PostToolUse, PreCompact, Stop) fail-closed: ha a hook script nem elérhető, crashel, timeout-ol (>10s), vagy nem-nulla exitCode-dal tér vissza, az eredmény DENY -- a művelet nem hajtódik végre. Fail-open kizárva. Ez nem konfigurálható. Logging hook (tool-log-capture) kivétel: az csak logol, crash/timeout esetén silent pass.",
+]
+
+export function buildHookPolicyBody(): string {
+  return [
+    "## Hook fail-closed policy",
+    "",
+    "Egy kapu-hook blokkol, ha exit 2-vel tér vissza, VAGY ha a bejegyzésén `\"onFailure\": \"block\"` áll és a hook hibázik: timeout, nem indul el, vagy az exit 2-től különböző nem-nulla kilépéssel ér véget. Az `onFailure: block` nélküli bejegyzésen a harness-timeout, a nem induló hook és az exit 2-től különböző kilépés NEM blokkol, a művelet lefut. Ezért minden kapu-bejegyzésen (PreToolUse: email-send, self-pace, egress, bash-egress-parser, destructive, auth-admin, secret-read, email-approval, outgoing-copy, tenant-skill és a WebFetch-kapu) kötelező az `\"onFailure\": \"block\"`. A `scripts/doctor.sh` ellenőrzi: kapu-bejegyzés a mező nélkül FAIL, és a telepített claude 2.1.295-nél régebbi is FAIL.",
+    "",
+    "Kivétel: a logging/capture hookok (tool-log-capture) csak logolnak, rajtuk nincs mező, crash vagy timeout esetén csendben átmennek. Stop, SubagentStop, TaskCompleted, TeammateIdle és az async hookok nem kapuk, rajtuk nincs hatása. UserPromptSubmit hookokon alapból nincs (információs), eseti kivétel Jónással.",
+    "",
+    "A kapunak a harness 10 másodperces timeoutja alatt kell végeznie (lineáris minták, méretplafon); az `onFailure` csak a végső védőháló. Futó session nem olvassa újra a settingset: indítás vagy respawn kell. Fail-open nem megengedett: kapu-bejegyzés `onFailure: block` nélkül nem kerülhet be.",
+  ].join('\n')
+}
+
+export type HookPolicySync = 'skipped' | 'unchanged' | 'added' | 'updated' | 'replaced' | 'left-manual'
+
+// Idempotently brings the hook policy section of a sub-agent's CLAUDE.md to the current text. Called on every
+// startAgentProcess() next to the other ensure*Section() functions and once for every agent at server start.
+//   - no file, unreadable file, the main agent: 'skipped' (the main agent's CLAUDE.md is edited by hand)
+//   - a marker block: replace ONLY the block ('updated', or 'unchanged' when identical, then nothing is written)
+//   - no block, a section under the heading that equals a KNOWN old text: replace that section ('replaced')
+//   - no block, a section under the heading that differs from every known text: a hand edit, NOT touched
+//     ('left-manual'; the caller logs the agent so the old wording does not stay unnoticed)
+//   - no heading at all: append the block ('added')
+// Writes are atomic.
+export function ensureHookPolicySection(name: string): HookPolicySync {
+  if (name === MAIN_AGENT_ID) return 'skipped'
+  const claudeMdPath = join(agentDir(name), 'CLAUDE.md')
+  if (!existsSync(claudeMdPath)) return 'skipped'
+  let existing: string
+  try {
+    existing = readFileSync(claudeMdPath, 'utf-8')
+  } catch {
+    return 'skipped'
+  }
+
+  const block = `${HOOK_POLICY_BEGIN}\n${buildHookPolicyBody()}\n${HOOK_POLICY_END}`
+  let updated: string
+  let status: HookPolicySync
+  if (HOOK_POLICY_BLOCK_RE.test(existing)) {
+    // A replacer function, not a string: "$&" in the text must never be read as a replacement pattern.
+    updated = existing.replace(HOOK_POLICY_BLOCK_RE, () => block)
+    status = 'updated'
+  } else {
+    const heading = new RegExp(`^${HOOK_POLICY_HEADING}[ \\t]*$`, 'm').exec(existing)
+    if (heading) {
+      const start = heading.index
+      const rest = existing.slice(start + heading[0].length)
+      const next = /^(?:## |<!-- BEGIN GENERATED)/m.exec(rest)
+      const end = next ? start + heading[0].length + next.index : existing.length
+      const section = existing.slice(start, end).replace(/\r\n/g, '\n').trimEnd()
+      if (!KNOWN_OLD_HOOK_POLICY_SECTIONS.includes(section)) return 'left-manual'
+      updated = existing.slice(0, start) + block + (end < existing.length ? '\n\n' : '\n') + existing.slice(end)
+      status = 'replaced'
+    } else {
+      updated = existing.trimEnd() + '\n\n' + block + '\n'
+      status = 'added'
+    }
+  }
+  if (updated === existing) return 'unchanged'
+  atomicWriteFileSync(claudeMdPath, updated)
+  return status
+}
+
 // Builds the text body that goes between the BEGIN/END markers.
 // Single source of truth -- called by both generateClaudeMd() (initial
 // generation) and ensureFleetRosterSection() (idempotent update on respawn).
