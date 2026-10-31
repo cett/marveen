@@ -33,6 +33,10 @@ SKIP_PARTS = ("__tests__", "migrations", "generated", "node_modules")
 RUN_TO_GT = re.compile(r"\[\^>\][*+]")
 # A lazy body closed by a closing tag: `.*?</`, `(.*?)</`, `[\s\S]*?</`, `[\s\S]*?<\/`.
 LAZY_TO_CLOSER = re.compile(r"(?:\.\*\?|\[\\s\\S\]\*\?)\)?<\\?/")
+# A lazy run of a negated class, closed by whatever follows: `[^\]\n]*?\]`, `[^\n]*?x`. It searches for its
+# closer again from every opener that has none before the class stops (the frame pattern of
+# tenant_context_lib was this shape: 550 kB of openers took ~225 s).
+LAZY_NEGATED_CLASS = re.compile(r"\[\^(?:\\.|[^\]\\])+\][*+]\?")
 
 COMMENT_PREFIXES = ("#", "//", "*", "/*")
 
@@ -54,6 +58,19 @@ ALLOWED = [
      "commit, nothing is let through"),
     ("src/web/routes/static.ts", "/(<script\\b[^>]*\\ssrc=\")\\/app\\.js(\")/",
      "bounded: the input is the repo's own web/index.html, never external text"),
+    # Lazy negated class (not a tag pattern, same error class). Not fixed here, listed for a decision.
+    ("scripts/hooks/outgoing-copy-gate.py", "_HEREDOC_REDIRECT = re.compile(",
+     "NOT bounded, open item: Bash command text (agent-authored, may carry pasted text); "
+     "measured superlinear, 7 s at 55 kB of ` cat`. The gate treats a timeout as no deny"),
+    ("scripts/hooks/bash-egress-parser.mjs", "[^\\\\n]*?\\\\s-[A-Za-z]*[cerEp]\\\\b",
+     "NOT bounded, open item: Bash command text; measured quadratic, 0.4 s at 55 kB of `sh `"),
+    ("src/pane-state.ts", "const IDLE_FOOTER_RX",
+     "bounded: matched against one line of a `tmux capture-pane -p` snapshot ([^\\n] cannot leave the line), "
+     "at most the pane width"),
+    ("src/pane-state.ts", "((?:[A-Za-z][\\w-]* ){1,3})on(?:",
+     "bounded: same pane line as the footer pattern above"),
+    ("src/web/update-checker.ts", "github\\.com[:/]([^/]+\\/[^/]+?)",
+     "bounded: the input is the git remote URL of the install, config-sized, and the pattern is anchored"),
 ]
 
 
@@ -68,7 +85,7 @@ def flagged_lines(text):
         s = line.strip()
         if not s or is_comment(s):
             continue
-        if RUN_TO_GT.search(s) or LAZY_TO_CLOSER.search(s):
+        if RUN_TO_GT.search(s) or LAZY_TO_CLOSER.search(s) or LAZY_NEGATED_CLASS.search(s):
             out.append((n, s))
     return out
 
@@ -134,6 +151,15 @@ class DetectorTest(unittest.TestCase):
             with self.subTest(line=line):
                 self.assertTrue(self.hit(line))
 
+    def test_lazy_negated_class_forms(self):
+        for line in (
+            "FRAME_RX = re.compile(r'\\[Uzenet\\b[^\\]\\n]*?\\]')",
+            "const RX = /start[^\\n]*?end/",
+            "rx = re.compile(r'(?:cat)[^\\n]+?>')",
+        ):
+            with self.subTest(line=line):
+                self.assertTrue(self.hit(line))
+
     def test_bounded_and_unrelated_patterns_pass(self):
         for line in (
             "rx = /<channel\\b[^>]{0,2000}>/",
@@ -141,6 +167,8 @@ class DetectorTest(unittest.TestCase):
             "a = re.compile(r'\\[[^\\]]*\\]')",
             "const q = /[^>]/",
             "x = re.compile(r'\\s*(.*?)\\s*$')",
+            "x = re.compile(r'[^\\n]*')",
+            "x = re.compile(r'[^\\n]{0,80}?z')",
             "",
         ):
             with self.subTest(line=line):

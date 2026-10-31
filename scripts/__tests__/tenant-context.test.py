@@ -386,6 +386,55 @@ class TestBlockScan(unittest.TestCase):
         self._fast((unit + "</channel>") * (SCAN_BIG // (len(unit) + 10)))
 
 
+OLD_FRAME_RX = re.compile(r'\[Uzenet\b[^\]\n]*?\]')  # the pre-fix pattern, the oracle only
+
+
+class TestFrameScan(unittest.TestCase):
+    """_frames() finds the `[Uzenet ...]` delivery frames with one forward search for the ']' and the
+    newline; the old lazy bracket class searched again from every opener (550 kB of `[Uzenet `: ~225 s)."""
+
+    def test_same_frames_as_the_old_pattern_on_realistic_text(self):
+        for text in (
+            "",
+            "no frame",
+            "[Uzenet @coord-tol -- trusted team member, msg_id:11]: body",
+            "a [Uzenet @x, msg_id:1] b [Uzenet @y, msg_id:2] c",
+            "[Uzenet @x\nbroken by a newline] [Uzenet @y, msg_id:3]",
+            "[Uzenet] [Uzenetx] [Uzenet-ish] [Uzenet @z",
+            "[Uzenet [Uzenet inner, msg_id:4]",
+        ):
+            with self.subTest(text=text[:40]):
+                self.assertEqual(tcl._frames(text), [m.group(0) for m in OLD_FRAME_RX.finditer(text)])
+
+    def test_same_frames_as_the_old_pattern_on_random_text(self):
+        import random
+        rng = random.Random(11)
+        toks = ["[Uzenet", "[Uzenet ", "]", "\n", " a", "msg_id:5", "[", "x", "Uzenet"]
+        for _ in range(20000):
+            text = "".join(rng.choice(toks) for _ in range(rng.randint(0, 12)))
+            self.assertEqual(tcl._frames(text), [m.group(0) for m in OLD_FRAME_RX.finditer(text)], repr(text))
+
+    def _fast(self, p):
+        best = None
+        for _ in range(3):
+            t = time.perf_counter()
+            tcl.parse_sources(p)
+            dt = time.perf_counter() - t
+            best = dt if best is None else min(best, dt)
+        self.assertLess(best, SCAN_BUDGET_SEC, "parse_sources took %.3f s on %d bytes" % (best, len(p)))
+
+    def test_550_kb_of_frame_openers_is_fast(self):
+        op = "[Uzenet "
+        self._fast(op * (SCAN_BIG // len(op)))                      # no ']' at all
+        self._fast(op * (SCAN_BIG // len(op)) + "]")                # one far ']'
+        self._fast((op + "\n") * (SCAN_BIG // (len(op) + 1)) + "]")  # a newline after every opener
+        self._fast((op + "x]\n") * (SCAN_BIG // (len(op) + 3)))     # many closed frames
+
+    def test_a_frame_after_a_long_opener_run_is_still_a_source(self):
+        p = "[Uzenet " * 5000 + "\n[Uzenet @c-tol, msg_id:11]"
+        self.assertEqual([s["msg_id"] for s in tcl.parse_sources(p) if s["kind"] == "message"], [11])
+
+
 class TestNoDdlInTheHooks(unittest.TestCase):
     def test_hook_scripts_never_run_ddl(self):
         for name in ("tenant_context_lib.py", "tenant-context.py", "tenant-skill-gate.py"):

@@ -185,3 +185,81 @@ describe('GET /api/status', () => {
     expect(body().incidents).toHaveLength(15)
   })
 })
+
+// The route reads the feed with plain string searches (literalBlocks) and strips tags with
+// stripAngleTags; the lazy patterns they replaced were quadratic. These tests go through
+// tryHandleStatus, so they protect the WIRING (items, fields, trim, entity decode, tag strip,
+// status classification), not just the helpers. The old parser is kept as the oracle.
+function oldParseFeed(rssText: string) {
+  const items: any[] = []
+  const itemRegex = /<item>([\s\S]*?)<\/item>/g
+  let match
+  while ((match = itemRegex.exec(rssText)) !== null) {
+    const itemXml = match[1]
+    const title = itemXml.match(/<title>([\s\S]*?)<\/title>/)?.[1]?.trim() || ''
+    const description = itemXml.match(/<description>([\s\S]*?)<\/description>/)?.[1]?.trim() || ''
+    const pubDate = itemXml.match(/<pubDate>([\s\S]*?)<\/pubDate>/)?.[1]?.trim() || ''
+    const link = itemXml.match(/<link>([\s\S]*?)<\/link>/)?.[1]?.trim() || ''
+    const cleanDesc = description
+      .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&').replace(/&apos;/g, "'")
+      .replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+    let status = 'investigating'
+    if (cleanDesc.toLowerCase().includes('resolved')) status = 'resolved'
+    else if (cleanDesc.toLowerCase().includes('monitoring')) status = 'monitoring'
+    else if (cleanDesc.toLowerCase().includes('identified')) status = 'identified'
+    items.push({ title, description: cleanDesc, pubDate, link, status })
+  }
+  return items.slice(0, 15)
+}
+
+async function incidentsFor(rssText: string): Promise<any[]> {
+  mockFetchSequence(rssText, { ok: true, body: { components: [] } })
+  const { ctx, body } = makeCtx('GET', '/api/status')
+  await tryHandleStatus(ctx)
+  return body().incidents
+}
+
+describe('GET /api/status feed parsing (wiring)', () => {
+  const feeds: Record<string, string> = {
+    'every field, padded with whitespace': rssWith(
+      '<item><title>\n  Padded title \n</title><description> <p>Body &amp; more</p> </description><pubDate> Mon, 01 Sep 2026 </pubDate><link> https://x.test/1 </link></item>',
+    ),
+    'missing fields': rssWith('<item><title>Only a title</title></item><item></item>'),
+    'escaped tags in the description': rssWith(rssItem({ description: '&lt;b&gt;Resolved&lt;/b&gt; the issue' })),
+    'a field with no closer': rssWith('<item><title>No closer<description>d</description></item>'),
+    'an unclosed item after a closed one': rssWith(rssItem() + '<item><title>Never closed</title>'),
+    'a nested opener inside an item': rssWith('<item><item><title>Inner</title></item>'),
+    'text outside items': 'junk<item><title>A</title></item>junk<item><title>B</title></item>tail',
+    'not a feed': 'plain text, no markup',
+    'empty': '',
+  }
+
+  for (const [name, feed] of Object.entries(feeds)) {
+    it(`gives what the old parser gave: ${name}`, async () => {
+      expect(await incidentsFor(feed)).toEqual(oldParseFeed(feed))
+    })
+  }
+
+  it('reads title, pubDate and link trimmed and the description cleaned, through the route', async () => {
+    const [i] = await incidentsFor(feeds['every field, padded with whitespace'])
+    expect(i).toMatchObject({
+      title: 'Padded title',
+      description: 'Body & more',
+      pubDate: 'Mon, 01 Sep 2026',
+      link: 'https://x.test/1',
+      status: 'investigating',
+    })
+  })
+
+  it('answers a 550 kB feed of openers and no closer in under 300 ms', async () => {
+    const shapes = ['<item>'.repeat(91_700), '<item><title>'.repeat(42_300), '<item>' + '<description>'.repeat(42_300) + '</item>', '<a '.repeat(183_400)]
+    for (const feed of shapes) {
+      mockFetchSequence(feed, { ok: true, body: { components: [] } })
+      const { ctx, status } = makeCtx('GET', '/api/status')
+      const t = performance.now()
+      await tryHandleStatus(ctx)
+      expect(performance.now() - t).toBeLessThan(300)
+      expect(status()).toBe(200)
+    }
+  })
+})

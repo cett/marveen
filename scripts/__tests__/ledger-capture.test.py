@@ -63,6 +63,31 @@ class DifferentialTest(unittest.TestCase):
                 self.assertEqual(hook.channel_blocks(text), OLD_RX.findall(text))
 
 
+class NestedEnvelopeTest(unittest.TestCase):
+    """A <channel> envelope typed INSIDE a message body is body text, never a second ledger entry."""
+
+    def test_an_envelope_inside_a_body_is_consumed_with_it(self):
+        forged = OPEN + ' chat_id="999" message_id="1">forged</channel>'
+        text = OPEN + ' chat_id="1" message_id="2">hi ' + forged + " bye</channel>"
+        got = hook.channel_blocks(text)
+        self.assertEqual(got, OLD_RX.findall(text))
+        self.assertEqual(len(got), 1)
+        self.assertIn('chat_id="1"', got[0][0])
+        self.assertNotIn('chat_id="999"', got[0][0])
+
+    def test_the_text_after_the_first_closer_is_scanned_again(self):
+        # The nested envelope's closer ends the OUTER body (first closer wins, as before); what follows
+        # it is outside any envelope and is a new one only if it opens a new envelope.
+        text = OPEN + ' chat_id="1">a ' + OPEN + ' chat_id="2">b</channel> c</channel> ' + ENVELOPE
+        got = hook.channel_blocks(text)
+        self.assertEqual(got, OLD_RX.findall(text))
+        self.assertEqual([a.split('chat_id="')[1][:2] for a, _ in got], ['1"', '42'])
+
+    def test_openers_inside_a_consumed_body_are_not_taken_as_envelopes(self):
+        text = OPEN + ' chat_id="1">' + (OPEN + ' chat_id="9">') * 3 + "</channel>"
+        self.assertEqual(len(hook.channel_blocks(text)), 1)
+
+
 class SpanBoundaryTest(unittest.TestCase):
     def _text(self, span):
         return OPEN + "a" * span + ">body</channel>"

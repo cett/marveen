@@ -39,8 +39,13 @@ BLOCK_OPEN_RX = re.compile(r'<(channel|trusted-peer|untrusted|scheduled-task)\b'
 # A real envelope carries a handful of short attributes; the attribute span of a block that
 # is accepted is at most this many characters (counted from the end of the tag name).
 BLOCK_ATTRS_MAX = 2000
-# Delivery frame written by the message router / drain endpoint OUTSIDE the wrapped body.
-FRAME_RX = re.compile(r'\[Uzenet\b[^\]\n]*?\]')
+# Delivery frame written by the message router / drain endpoint OUTSIDE the wrapped body:
+# `[Uzenet`, then anything but ']' and a newline, then the first ']'. Only the OPENER is a
+# pattern. The old single pattern, a lazy bracket class closed by ']', looked for its ']' again
+# from every opener that had none before the next newline, so a text of many `[Uzenet ` and no
+# ']' (550 kB: 68 750 openers) held the hook for ~225 s. _frames() looks up the first ']' and
+# the first newline once and reuses them for every later opener.
+FRAME_OPEN_RX = re.compile(r'\[Uzenet\b')
 MSG_ID_RX = re.compile(r'msg_id:(\d+)')
 CHANNEL_RX = re.compile(r'^[a-z][a-z0-9_-]{0,31}$')
 
@@ -102,6 +107,31 @@ def _iter_blocks(prompt):
         yield start, pos, tag, attrs, prompt[gt + 1:ci]
 
 
+def _frames(text):
+    """Every delivery frame `[Uzenet ... ]` in the text, left to right, non-overlapping.
+
+    An opener whose first ']' comes after a newline (or that has no ']' at all) is not a frame."""
+    found = []
+    pos = 0  # text[:pos] is inside a frame already taken
+    rb = -2  # first ']' at or after the last probe; -1 = none left, -2 = not probed yet
+    nl = -2  # first newline at or after the last probe; same convention
+    for m in FRAME_OPEN_RX.finditer(text):
+        start, end = m.span()
+        if start < pos:
+            continue
+        if rb != -1 and rb < end:
+            rb = text.find(']', end)
+        if rb == -1:
+            break  # no ']' left, so no later opener can close either
+        if nl != -1 and nl < end:
+            nl = text.find('\n', end)
+        if nl != -1 and nl < rb:
+            continue  # a newline comes before the ']': not a frame
+        found.append(text[start:rb + 1])
+        pos = rb + 1
+    return found
+
+
 def parse_sources(prompt):
     """List of source dicts found in the top-level structure of the prompt.
 
@@ -140,8 +170,8 @@ def parse_sources(prompt):
         # trusted-peer / untrusted blocks are message BODIES: only their frame line matters
     frame_parts.append(prompt[pos:])
     frame = "".join(frame_parts)
-    for fm in FRAME_RX.finditer(frame):
-        idm = MSG_ID_RX.search(fm.group(0))
+    for fm in _frames(frame):
+        idm = MSG_ID_RX.search(fm)
         if idm:
             sources.append({"kind": "message", "msg_id": int(idm.group(1))})
         else:
