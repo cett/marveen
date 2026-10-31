@@ -49,7 +49,37 @@ function newestTranscript(name: string): string | null {
   }
 }
 
-const CHANNEL_RE = /<channel\b[^>]*>([\s\S]*?)<\/channel>/g
+// The inner text of every <channel ...> envelope in a transcript entry.
+//
+// Matching is linear in the text length. The pattern this replaces,
+// /<channel\b[^>]*>([\s\S]*?)<\/channel>/g, had no upper bound on either span, so an entry
+// made of openers and no '>' (or no closer) was quadratic: one 550 kB transcript line held the
+// event loop for ~85 s. Only the OPENER is a pattern; the closing '>' and '</channel>' are
+// looked up with indexOf, and the result of each probe is reused by every later opener (the
+// algorithm of scrubSecurityTags in src/prompt-safety.ts). An opener with more than
+// CHANNEL_ATTRS_MAX characters between the tag name and its '>' is not an envelope.
+const CHANNEL_OPEN_RE = /<channel\b/g
+const CHANNEL_CLOSER = '</channel>'
+const CHANNEL_ATTRS_MAX = 2000
+
+export function channelBodies(text: string): string[] {
+  const out: string[] = []
+  let pos = 0 // text[0, pos) is inside an envelope already taken
+  let gt = -2 // first '>' at or after the last probe; -1 = none left, -2 = not probed yet
+  let closer = -2 // first '</channel>' at or after the last probe; same convention
+  for (const m of text.matchAll(CHANNEL_OPEN_RE)) {
+    const end = m.index + m[0].length
+    if (m.index < pos) continue
+    if (gt !== -1 && gt < end) gt = text.indexOf('>', end)
+    if (gt === -1) break // no '>' left, so no later opener can close either
+    if (gt - end > CHANNEL_ATTRS_MAX) continue // an over-long span is never a delivery frame
+    if (closer !== -1 && closer < gt + 1) closer = text.indexOf(CHANNEL_CLOSER, gt + 1)
+    if (closer === -1) break // no closer left, so no later opener can close either
+    out.push(text.slice(gt + 1, closer))
+    pos = closer + CHANNEL_CLOSER.length
+  }
+  return out
+}
 
 function clip(s: string): string {
   return s.length > MAX_TEXT ? s.slice(0, MAX_TEXT) + ' …' : s
@@ -94,10 +124,8 @@ function buildTimeline(file: string): Entry[] {
       // Only surface real inbound channel messages; skip tool results,
       // system-reminders and slash-command echoes.
       if (asText.includes('<channel')) {
-        let m: RegExpExecArray | null
-        CHANNEL_RE.lastIndex = 0
-        while ((m = CHANNEL_RE.exec(asText)) !== null) {
-          const inner = m[1].trim()
+        for (const body of channelBodies(asText)) {
+          const inner = body.trim()
           if (inner) entries.push({ ts, kind: 'in', text: clip(inner) })
         }
       }
