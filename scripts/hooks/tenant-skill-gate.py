@@ -43,7 +43,7 @@ def block(msg):
 # The only scanned field that is free text is a Bash command (Read/Edit/Write/NotebookEdit are scanned by
 # their file_path / notebook_path alone, never by their content, so a large Write is not touched by this
 # limit). The command is read word by word with shlex, a pure-Python lexer that grows a word by string
-# concatenation, so one very long word is quadratic: a 131072-character word costs about 0.6 s (Python 3.14) to 1.3 s (3.9) for the two passes, a 550 kB word
+# concatenation, so one very long word is quadratic: a 131072-character word costs about 0.6 s (Python 3.14) to 0.7 s (3.9; 1.3 s seen on a busier machine) for the two passes, a 550 kB word
 # took 13.6 s, past the host timeout, and a hook that runs into it is
 # non-blocking. Over the limit the gate DENIES before shlex runs; the check is O(1). The outgoing-copy
 # gate already refuses a Bash command over 128 KiB, so no command the fleet can send is above it.
@@ -64,8 +64,8 @@ def block_too_large(n):
 
 def block_path_word_too_long(n):
     sys.stderr.write(
-        "TENANT-SKILL-KAPU: egy utvonal-szo tul hosszu ahhoz, hogy a kapu feloldja "
-        "(%d karakter, a hatar %d; valodi utvonal nem hosszabb), es egy feloldhatatlan szo nem mehet at.\n"
+        "TENANT-SKILL-KAPU: egy utvonal-mezo tul hosszu ahhoz, hogy a kapu feloldja "
+        "(%d karakter, a hatar %d; valodi utvonal nem hosszabb), es egy feloldhatatlan utvonal nem mehet at.\n"
         % (n, MAX_PATH_WORD_CHARS)
     )
     try:
@@ -96,7 +96,10 @@ def skill_dirs_in(text, cwd, resolve=False):
     if base is not None:
         variants.append(os.path.normpath(base))
         if resolve:
-            variants.append(os.path.realpath(base))
+            # A word over MAX_PATH_WORD_CHARS is not resolved (see there); its textual and normpath variants
+            # above still are matched, both linear.
+            if len(text) <= MAX_PATH_WORD_CHARS:
+                variants.append(os.path.realpath(base))
     for v in variants:
         if "skills/" not in v.lower():
             continue
@@ -165,10 +168,17 @@ class DecodedCopyTooLarge(Exception):
 
 # os.path.realpath is quadratic in the number of components of ONE path: a single ~65000-component path word
 # (inside the command limit) took a median 2.6 s, p90 3.8 s, max 4.4 s for the whole gate on a loaded machine
-# (Python 3.9), too close to the 10 s host timeout. One path word cannot be longer than a real path (PATH_MAX is
-# 1024 on macOS, 4096 on Linux), and a longer one does not resolve on a real filesystem, so a word over this is
-# refused (input_too_large) before it is resolved. An O(1) length check per word; it bounds the realpath cost per
-# word to ~2000 components, and the sum over the words to what the command limit allows.
+# (Python 3.9), too close to the 10 s host timeout. A word over this length is therefore NOT resolved through
+# symlinks (an O(1) length check per word; it bounds the realpath cost per word to ~2000 components, and the sum
+# over the words to what the command limit allows). Why skip and not deny: the kernel refuses a path over
+# PATH_MAX (1024 on macOS, 4096 on Linux) with ENAMETOOLONG anyway, but the in-process Python realpath would
+# resolve it component by component; skipping avoids that, while a legitimate command that merely carries a long
+# word with a "/" in it (`echo <base64> | base64 -d`, `python3 -c`, `git commit -m`, `curl -d`) goes through. The
+# textual match and the lexical (posixpath.normpath) variant, both linear, still run on such a word, so a
+# `x/../` padding cannot hide a literal skill path. A DENY (input_too_large) stays for the fields that ARE a path:
+# the file_path / notebook_path of Read, Edit, Write, NotebookEdit and the path of Glob and Grep. A Glob/Grep
+# pattern or glob is free text and is only skipped when long. The remaining risk: a symlink reached through one
+# word longer than this is not followed.
 MAX_PATH_WORD_CHARS = 4096
 
 
@@ -192,8 +202,6 @@ def bash_skill_dirs(command, cwd=None):
         words[w] = None
     if sum(1 for w in words if w.startswith("~") and not w.startswith("~/") and w != "~") > MAX_TILDE_USERS:
         raise TooManyTildeUsers()
-    for w in words:
-        _check_path_word(w)   # before any word is resolved
     for word in words:
         for d in skill_dirs_in(word, cwd, resolve=True):
             if d not in found:
@@ -213,7 +221,8 @@ def extract(tool, inp, cwd):
             out += [("dir", d) for d in skill_dirs_in(str(inp.get(k) or ""), cwd, resolve=True)]
     elif tool in ("Glob", "Grep"):
         for k in ("path", "pattern", "glob"):
-            _check_path_word(str(inp.get(k) or ""))
+            if k == "path":   # a pattern / glob is free text: long ones are only not resolved
+                _check_path_word(str(inp.get(k) or ""))
             out += [("dir", d) for d in skill_dirs_in(str(inp.get(k) or ""), cwd, resolve=True)]
     elif tool == "Bash":
         out += [("dir", d) for d in bash_skill_dirs(str(inp.get("command") or ""), cwd)]
