@@ -363,12 +363,19 @@ export function createLogger(destination?: pino.DestinationStream): pino.Logger 
     },
   }
   if (destination) return withMaskedBindings(pino(options, destination))
+  // LOG_TO_STDERR=1 (opt-in): a command-line tool whose stdout is its result sets it before the db
+  // module loads, so startup lines (migrations, the schema report) cannot end up in the output a
+  // caller parses. The dashboard service does not set it: its stdout and stderr go to separate files.
+  const toStderr = process.env.LOG_TO_STDERR === '1'
+  if (toStderr && process.env.NODE_ENV === 'production') {
+    return withMaskedBindings(pino(options, pino.destination(2)))
+  }
   return withMaskedBindings(
     pino({
       ...options,
       transport:
         process.env.NODE_ENV !== 'production'
-          ? { target: 'pino-pretty', options: { colorize: true } }
+          ? { target: 'pino-pretty', options: { colorize: true, ...(toStderr ? { destination: 2 } : {}) } }
           : undefined,
     }),
   )

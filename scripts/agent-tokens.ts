@@ -12,6 +12,7 @@
 // token files are written 0600 next to each agent's files; this command prints the agent, what
 // happened and the FILE, never a token.
 
+import './lib/log-to-stderr.js'
 import { MAIN_AGENT_ID } from '../src/config.js'
 import { initDatabase, listApiTokenRows, revokeApiTokensForAgent } from '../src/db.js'
 import { listAgentNames } from '../src/web/agent-config.js'
