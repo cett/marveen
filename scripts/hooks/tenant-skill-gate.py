@@ -42,11 +42,12 @@ def block(msg):
 
 # The only scanned field that is free text is a Bash command (Read/Edit/Write/NotebookEdit are scanned by
 # their file_path / notebook_path alone, never by their content, so a large Write is not touched by this
-# limit). The command is read word by word with shlex, a pure-Python lexer of ~12-24 microseconds per
-# character: one 550 kB word took 13.6 s, past the host timeout, and a hook that runs into it is
+# limit). The command is read word by word with shlex, a pure-Python lexer that grows a word by string
+# concatenation, so one very long word is quadratic: a 131072-character word takes well under 1 s, a 550 kB word
+# took 13.6 s, past the host timeout, and a hook that runs into it is
 # non-blocking. Over the limit the gate DENIES before shlex runs; the check is O(1). The outgoing-copy
 # gate already refuses a Bash command over 128 KiB, so no command the fleet can send is above it.
-MAX_BASH_COMMAND_CHARS = 262144
+MAX_BASH_COMMAND_CHARS = 131072
 
 
 def block_too_large(n):

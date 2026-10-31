@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""scripts/hooks/tenant-skill-gate.py: a Bash command over MAX_BASH_COMMAND_CHARS (256 KiB) is refused before shlex runs.
+"""scripts/hooks/tenant-skill-gate.py: a Bash command over MAX_BASH_COMMAND_CHARS (128 KiB) is refused before shlex runs.
 
 The only scanned field that is free text is a Bash command; Read/Edit/Write/NotebookEdit are scanned by their
 file_path / notebook_path alone, so a large Write (its content) is NOT touched by the limit. The command is read
-with shlex, a pure-Python lexer of ~12-24 microseconds per character: one 550 kB word took 13.6 s, past the host
+with shlex, a pure-Python lexer that grows a word by string concatenation (quadratic in one long word): a
+131072-character word takes well under 1 s, one 550 kB word took 13.6 s, past the host
 timeout, and a hook that runs into it is non-blocking. Over the limit the gate DENIES (exit 2, reason code
 input_too_large) with an O(1) length check, before any tokenizing.
 
@@ -40,8 +41,10 @@ def run_gate(tool, tool_input):
 
 
 class LimitTest(unittest.TestCase):
-    def test_the_limit_is_256_kib(self):
-        self.assertEqual(load().MAX_BASH_COMMAND_CHARS, 262144)
+    def test_the_limit_is_128_kib_like_the_outgoing_copy_gate_command_limit(self):
+        # shlex is quadratic in one long word, so a higher limit gets close to the 10 s host timeout; 128 KiB
+        # (worst measured shape: well under 1 s) is the command limit the outgoing-copy gate already enforces.
+        self.assertEqual(load().MAX_BASH_COMMAND_CHARS, 131072)
 
     def test_the_boundary_is_exact(self):
         limit = load().MAX_BASH_COMMAND_CHARS
@@ -59,7 +62,7 @@ class LimitTest(unittest.TestCase):
             rc, out, secs = run_gate("Bash", {"command": cmd})
             self.assertEqual(rc, 2)
             self.assertIn(MARK, out)
-            self.assertLess(secs, 3)
+            self.assertLess(secs, 0.3)  # includes the interpreter start; the refusal itself is O(1)
 
     def test_a_large_write_or_edit_content_is_not_refused(self):
         big = "x" * 550_000
