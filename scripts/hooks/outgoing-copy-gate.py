@@ -291,6 +291,9 @@ def _mask_subshell_markers(cmd: str) -> str:
 MAX_CMD_CHARS = 131072
 MAX_HEREDOC_OPENERS = 32
 MAX_OPENER_LINE_CHARS = 4096
+# The text the audit reads (an MCP email body, or what is recovered from a Bash command) may not be longer
+# than this; over it the gate DENIES ("too large to inspect"), like the command limit above.
+MAX_AUDIT_CHARS = 262144
 
 
 class InspectionLimit(Exception):
@@ -1692,6 +1695,16 @@ def main():
         text, unreadable = collect_bash_body(cmd)
     else:
         sys.exit(0)
+
+    # A body over the limit is refused BEFORE any pattern runs over it (a length check is O(1)): the MCP
+    # send path had no cap, and a check that cannot finish inside the hook timeout lets the mail through.
+    if len(text) > MAX_AUDIT_CHARS:
+        sys.stderr.write(
+            "KIMENO-SZOVEG KAPU: TILTVA -- a kuldendo szoveg tul nagy ahhoz, hogy a kapu "
+            f"atvizsgalja ({len(text)} karakter, a hatar {MAX_AUDIT_CHARS}), es egy vizsgalhatatlan kuldes nem mehet at.\n"
+            "Bontsd kisebb reszekre (nagy szoveget fajlba irj a Write tool-lal), aztan kuldd ujra.\n"
+        )
+        sys.exit(2)
 
     if unreadable or not text.strip():
         if tool == "Bash" and not unreadable and _depth_limit_is_sole_reason(cmd):
