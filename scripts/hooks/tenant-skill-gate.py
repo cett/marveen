@@ -96,10 +96,13 @@ def skill_dirs_in(text, cwd, resolve=False):
     if base is not None:
         variants.append(os.path.normpath(base))
         if resolve:
-            # A word over MAX_PATH_WORD_CHARS is not resolved (see there); its textual and normpath variants
-            # above still are matched, both linear.
+            # A word over MAX_PATH_WORD_CHARS is not resolved as written (see there); its textual and normpath
+            # variants above are matched, both linear. When the NORMALIZED word is short enough (`link/` + `x/../` * N
+            # + `skill/SKILL.md` collapses to a short path) it is resolved: the cost is bounded by the short form.
             if len(text) <= MAX_PATH_WORD_CHARS:
                 variants.append(os.path.realpath(base))
+            elif len(variants[-1]) <= MAX_PATH_WORD_CHARS:
+                variants.append(os.path.realpath(variants[-1]))
     for v in variants:
         if "skills/" not in v.lower():
             continue
@@ -175,10 +178,11 @@ class DecodedCopyTooLarge(Exception):
 # resolve it component by component; skipping avoids that, while a legitimate command that merely carries a long
 # word with a "/" in it (`echo <base64> | base64 -d`, `python3 -c`, `git commit -m`, `curl -d`) goes through. The
 # textual match and the lexical (posixpath.normpath) variant, both linear, still run on such a word, so a
-# `x/../` padding cannot hide a literal skill path. A DENY (input_too_large) stays for the fields that ARE a path:
+# `x/../` padding cannot hide a literal skill path, and when the normalized word is within the limit it is
+# resolved too (padding collapses to a short path, so a symlink behind padding is followed). A DENY (input_too_large) stays for the fields that ARE a path:
 # the file_path / notebook_path of Read, Edit, Write, NotebookEdit and the path of Glob and Grep. A Glob/Grep
 # pattern or glob is free text and is only skipped when long. The remaining risk: a symlink reached through one
-# word longer than this is not followed.
+# word that is longer than this even after normalization (a non-collapsing word) is not followed.
 MAX_PATH_WORD_CHARS = 4096
 
 

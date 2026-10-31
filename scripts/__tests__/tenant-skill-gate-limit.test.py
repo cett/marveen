@@ -10,7 +10,8 @@ Over the limit the gate DENIES (exit 2, reason code input_too_large) with an O(1
 A path word over MAX_PATH_WORD_CHARS (4096) is NOT resolved: os.path.realpath is quadratic in the components of one
 path (a ~65000-component word: whole gate median 2.6 s, max 4.4 s on a loaded machine, Python 3.9). It is skipped and
 not refused, because a legitimate command carries long words with a "/" that are no path (base64, curl -d, python3 -c,
-git commit -m, a URL); its textual and normpath variants are still matched. The fields that ARE a path (file_path /
+git commit -m, a URL); its textual and normpath variants are still matched, and when the normalized form is within the
+limit (a `x/../` padding collapses) that form is resolved, so a symlink behind padding is followed. The fields that ARE a path (file_path /
 notebook_path, Glob and Grep path) are refused over the limit; a Grep / Glob pattern is free text and only skipped.
 
 Pinned here: the limit; the boundary (LIMIT - 1, LIMIT allowed through to the normal path, LIMIT + 1 refused);
@@ -173,6 +174,50 @@ class LimitTest(unittest.TestCase):
                 self.assertGreater(len(word), 4096)
                 self.assertIn("tenant-y-tool", mod.bash_skill_dirs("cat " + word, "/tmp"))
 
+    def _link_fixture(self):
+        """tmp/.claude-less tree: tmp/skills-root/secretskill/SKILL.md and tmp/link -> tmp/skills-root, where the
+        skills root is reached as .../.claude/skills only through the link, so only a followed symlink shows it."""
+        root = tempfile.mkdtemp(prefix="tsg-link-")
+        self.addCleanup(lambda: __import__("shutil").rmtree(root, ignore_errors=True))
+        real_skills = os.path.join(root, "real", ".claude", "skills")
+        os.makedirs(os.path.join(real_skills, "secretskill"))
+        os.symlink(real_skills, os.path.join(root, "link"))
+        return root
+
+    def test_a_symlink_behind_dot_dot_padding_is_followed_whatever_the_word_length(self):
+        # `link/` + `x/../` * N + `secretskill/SKILL.md`: the padding collapses to a short path, so the word is
+        # resolved through its normalized form even when it is longer than MAX_PATH_WORD_CHARS.
+        mod = load()
+        root = self._link_fixture()
+        for target in (3000, 4084, 4096, 4097, 4189, 8000, 100000):
+            prefix, suffix = root + "/link/", "secretskill/SKILL.md"
+            word = prefix + "x/../" * ((target - len(prefix) - len(suffix)) // 5) + suffix
+            with self.subTest(length=len(word)):
+                self.assertLessEqual(abs(len(word) - target), 5)
+                self.assertIn("secretskill", mod.bash_skill_dirs("cat " + word, "/tmp"))
+
+    def test_a_long_word_that_does_not_collapse_is_not_resolved_and_not_refused(self):
+        # The accepted remainder: a word over the limit even after normalization is neither followed nor refused.
+        mod = load()
+        root = self._link_fixture()
+        for n in (4097, 8000):
+            word = root + "/link/" + ("d/" * n)[:n] + "secretskill/SKILL.md"
+            with self.subTest(length=len(word)):
+                self.assertNotIn("secretskill", mod.bash_skill_dirs("cat " + word, "/tmp"))
+        rc, out, _ = run_gate("Bash", {"command": "cat " + word})
+        self.assertEqual(rc, 0, out[:200])
+
+    def test_mutant_without_the_resolve_of_the_normalized_word_loses_the_padded_symlink(self):
+        m = self._mutant("elif len(variants[-1]) <= MAX_PATH_WORD_CHARS:", "elif False:")
+        root = self._link_fixture()
+        prefix, suffix = root + "/link/", "secretskill/SKILL.md"
+        word = prefix + "x/../" * 1000 + suffix
+        self.assertGreater(len(word), 4096)
+        self.assertNotIn("secretskill", m.bash_skill_dirs("cat " + word, "/tmp"))
+        self.assertIn("secretskill", load().bash_skill_dirs("cat " + word, "/tmp"))
+        short = prefix + suffix   # unchanged for a short word
+        self.assertIn("secretskill", m.bash_skill_dirs("cat " + short, "/tmp"))
+
     def test_a_deep_path_field_is_refused_before_it_is_resolved(self):
         # One ~65000-component path inside a path field: os.path.realpath is quadratic in the components
         # (whole gate, loaded machine, Python 3.9: median 2.6 s, p90 3.8 s, max 4.4 s before the limit).
@@ -195,6 +240,8 @@ class LimitTest(unittest.TestCase):
         interpreters = [sys.executable] + [p for p in ("/usr/bin/python3",) if os.path.exists(p) and not os.path.samefile(p, sys.executable)]
         for py in interpreters:
             for tool, inp in (("Bash", {"command": deep}), ("Bash", {"command": "ls /tmp %s y" % deep[:60000]}),
+                              ("Bash", {"command": "ls " + "/" + "x/../" * 26000 + "y/z"}),   # collapses: resolved short
+                              ("Bash", {"command": "ls " + "link/" + "x/../" * 26000 + "y/z"}),
                               ("Glob", {"pattern": deep}), ("Grep", {"pattern": deep}), ("Grep", {"pattern": "x", "glob": deep})):
                 with self.subTest(python=py, tool=tool):
                     payload = {"tool_name": tool, "tool_input": inp, "cwd": "/tmp"}
