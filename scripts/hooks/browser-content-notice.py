@@ -118,7 +118,22 @@ SCAN_LIMIT = 200_000
 # Our own delimiters, mirrored from src/prompt-safety.ts. Scrubbing every known
 # tag (not just the one we open) means a nested <trusted-peer> inside the page
 # cannot resurface as a second open tag inside our envelope.
-SECURITY_TAG_RX = re.compile(r"<\s*/?\s*(untrusted|trusted-peer|scheduled-task|system-reminder)\b[^>]*>", re.I)
+#
+# Matching is linear in the text length. A `[^>]*>` span with no upper bound made
+# a page full of openers and no '>' quadratic (550 kB held the hook for ~85 s,
+# past the 10 s timeout). Only the OPENER is found by a pattern; scrub() looks up
+# the closing '>' with one forward str.find shared by all openers (the same
+# algorithm as scrubSecurityTags in src/prompt-safety.ts):
+#   - an opener with at most SECURITY_TAG_SPAN_MAX characters between the tag name
+#     and its first '>' is replaced together with its tag (attributes included);
+#   - any other opener (an over-long span, or no '>' at all) is neutralized on its
+#     own, so no fake tag stays live however long its attributes are.
+# The prefix is `<(?:\s*/)?\s*`, not `<\s*/?\s*`: two adjacent optional \s* make a
+# long run of spaces after '<' quadratic.
+SECURITY_TAG_SPAN_MAX = 2000
+SECURITY_TAG_OPENER_RX = re.compile(
+    r"<(?:\s*/)?\s*(?:untrusted|trusted-peer|scheduled-task|system-reminder)\b", re.I
+)
 
 # Class 1: forged framing. Our delimiters, the harness's reminder tag, and the
 # fleet's system-directive headers. A page containing any of these is trying to
@@ -126,8 +141,8 @@ SECURITY_TAG_RX = re.compile(r"<\s*/?\s*(untrusted|trusted-peer|scheduled-task|s
 # included deliberately: pre-injecting the scrub sentinel is how an attacker
 # fakes "this was already sanitised".
 FRAMING_PATTERNS = [
-    ("security-tag-forgery", re.compile(r"<\s*/?\s*(untrusted|trusted-peer|scheduled-task)\b", re.I)),
-    ("system-reminder-forgery", re.compile(r"<\s*/?\s*system-reminder\b", re.I)),
+    ("security-tag-forgery", re.compile(r"<(?:\s*/)?\s*(untrusted|trusted-peer|scheduled-task)\b", re.I)),
+    ("system-reminder-forgery", re.compile(r"<(?:\s*/)?\s*system-reminder\b", re.I)),
     ("directive-header-forgery", re.compile(r"\[(SYSTEM-DIREKTIVA|CONTEXT-GUARD|CONTEXT-RESTART-GATE|SYSTEM:)", re.I)),
     ("scrub-sentinel-forgery", re.compile(r"\[\[SECURITY_TAG_REMOVED_", re.I)),
     ("channel-envelope-forgery", re.compile(r"<\s*channel\s+source\s*=", re.I)),
@@ -165,7 +180,20 @@ STRIPPED_SENTINEL = "[[SECURITY_TAG_REMOVED_%s]]" % secrets.token_hex(4)
 
 
 def scrub(text):
-    return SECURITY_TAG_RX.sub(STRIPPED_SENTINEL, text)
+    out = []
+    copied = 0  # text[:copied] is already in `out`
+    gt = -2  # first '>' at or after the last probe; -1 = none left, -2 = not probed yet
+    for m in SECURITY_TAG_OPENER_RX.finditer(text):
+        start, end = m.start(), m.end()
+        if start < copied:
+            continue  # inside a tag that was already replaced
+        if gt != -1 and gt < end:
+            gt = text.find(">", end)
+        out.append(text[copied:start])
+        out.append(STRIPPED_SENTINEL)
+        copied = gt + 1 if gt != -1 and gt - end <= SECURITY_TAG_SPAN_MAX else end
+    out.append(text[copied:])
+    return "".join(out)
 
 
 def envelope(text, tool_name, source, nonce):

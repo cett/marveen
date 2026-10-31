@@ -23,12 +23,39 @@ import re
 import json
 import urllib.request
 
-CHANNEL_RX = re.compile(r'<channel\s+([^>]*)>', re.DOTALL)
+# Only the OPENER is a pattern. A `<channel\s+([^>]*)>` span with no upper bound made a
+# prompt full of openers and no '>' quadratic (550 kB held this hook for ~85 s, past
+# its timeout). channel_attr_strings() looks up the closing '>' with one forward
+# str.find shared by all openers, and takes an opener as a real envelope only when
+# its attribute string is at most CHANNEL_ATTRS_MAX characters; a real envelope is a
+# few hundred.
+CHANNEL_OPEN_RX = re.compile(r'<channel\s+')
+CHANNEL_ATTRS_MAX = 2000
 ATTR_RX = re.compile(r'(\w+)="([^"]*)"')
 STATE_FILE = os.path.expanduser("~/.claude/.telegram-ack-state")
 MAX_STATE = 500  # keep the last N acked keys, bounded
 TOKEN_ENV = os.path.expanduser("~/.claude/channels/telegram/.env")
 TOKEN_RX = re.compile(r'[0-9]+:[A-Za-z0-9_-]+')
+
+
+def channel_attr_strings(prompt):
+    """The attribute string of every <channel ...> envelope in the prompt, in order."""
+    found = []
+    copied = 0  # prompt[:copied] is inside an envelope already taken
+    gt = -2  # first '>' at or after the last probe; -1 = none left, -2 = not probed yet
+    for m in CHANNEL_OPEN_RX.finditer(prompt):
+        start, end = m.span()
+        if start < copied:
+            continue
+        if gt != -1 and gt < end:
+            gt = prompt.find('>', end)
+        if gt == -1:
+            break  # no '>' left, so no later opener can close either
+        if gt - end > CHANNEL_ATTRS_MAX:
+            continue  # not an envelope: an over-long span is never a delivery frame
+        found.append(prompt[end:gt])
+        copied = gt + 1
+    return found
 
 
 def load_state():
@@ -86,7 +113,7 @@ def main():
     state = load_state()
     seen = set(state)
     changed = False
-    for attrs_str in CHANNEL_RX.findall(prompt):
+    for attrs_str in channel_attr_strings(prompt):
         attrs = dict(ATTR_RX.findall(attrs_str))
         src = attrs.get("source", "")
         if "telegram" not in src:

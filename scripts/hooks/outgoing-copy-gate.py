@@ -1086,7 +1086,39 @@ def _name_correction() -> str:
 
 BAD_NAME = load_bad_name()
 ACCENTED = set("áéíóöőúüűÁÉÍÓÖŐÚÜŰ")
-TAG = re.compile(r"<[^>]+>")
+
+
+def _strip_tags(text: str) -> str:
+    """Replace every `<...>` tag (one or more characters between '<' and the first '>') with a
+    space, in one linear pass. The output is what the old regex substitution gave.
+
+    The regex looked for a '>' from every '<' that had none after it, so a body full of '<' and
+    no '>' was quadratic (550 kB: ~40 s). A hook still running at its timeout is not a deny, so
+    a slow audit is a fail-open. Here the '>' is found with one forward search that every later
+    '<' reuses. A '<' directly followed by '>' is not a tag (the regex needs one character
+    between), exactly as before.
+    """
+    out = []
+    copied = 0  # text[:copied] is already in `out`
+    scan = 0  # next position to look for a '<'
+    gt = -2  # first '>' at or after the last probe; -1 = none left, -2 = not probed yet
+    while True:
+        lt = text.find("<", scan)
+        if lt == -1:
+            break
+        if gt != -1 and gt <= lt:
+            gt = text.find(">", lt + 1)
+        if gt == -1:
+            break  # no '>' left, so no later '<' can close either
+        if gt == lt + 1:
+            scan = lt + 1  # "<>": no body, not a tag
+            continue
+        out.append(text[copied:lt])
+        out.append(" ")
+        copied = scan = gt + 1
+    out.append(text[copied:])
+    return "".join(out)
+
 
 # GATEKOTOJEL817 + GATEHYPH816 (2026-08-19 este, ket hamis pozitiv elo
 # gazda-beszelgetesben, ot perc alatt): a kapu nem tett kulonbseget PROZA es
@@ -1309,7 +1341,7 @@ def telegram_gate(tool_input: dict) -> None:
 
 def audit(text: str):
     """Return a list of human-readable problems."""
-    plain = TAG.sub(" ", text)
+    plain = _strip_tags(text)
     problems = []
     if EM_DASH in plain:
         problems.append(
