@@ -1770,7 +1770,7 @@ def _run_with_failclosed_net():
         sys.exit(2)
 
 
-def _run_audited():
+if __name__ == "__main__":
     # OTel H5b: count this run's outcome after the verdict (best effort, never changes it; see
     # gate_audit_lib.py). A missing or broken audit module leaves the gate exactly as it was.
     try:
@@ -1781,70 +1781,3 @@ def _run_audited():
         _run_with_failclosed_net()
     else:
         audited('outgoing-copy-gate', _run_with_failclosed_net, deny_row=True)
-
-
-# A hook still running at its timeout is NOT a deny: the host kills it and treats the call as
-# non-blocking, so a body the audit cannot finish on would be waved through UNCHECKED. Measured:
-# an email body of one 550 kB word (the MCP send path has no size cap, unlike the Bash path)
-# kept strip_technical() busy for over 90 s against a 10 s host timeout. The decision is
-# fail-closed: the work runs in a child process, the parent waits for it up to
-# GATE_DEADLINE_SEC (default below the host timeout), and when the child is not done in time
-# the parent kills it and DENIES (exit 2). The parent never touches stdin; the child reads it.
-DEADLINE_SEC_DEFAULT = 6.0
-
-
-def _deadline_seconds():
-    try:
-        v = float(os.environ.get("GATE_DEADLINE_SEC", ""))
-        if v > 0:
-            return v
-    except ValueError:
-        pass
-    return DEADLINE_SEC_DEFAULT
-
-
-def _run_with_deadline(work, seconds):
-    """Run work() in a forked child; DENY (exit 2) when it does not finish within `seconds`.
-
-    The child's exit status becomes the parent's; a child killed by a signal is a deny too.
-    Without fork() (no such platform here today) the work simply runs in-process."""
-    import signal
-    import time
-
-    if not hasattr(os, "fork"):
-        work()
-        return
-    pid = os.fork()
-    if pid == 0:
-        try:
-            work()
-        except SystemExit:
-            raise
-        except BaseException:  # noqa: BLE001 -- the child must never fall through into the parent's code
-            os._exit(2)
-        os._exit(0)
-    end = time.monotonic() + seconds
-    while True:
-        done, status = os.waitpid(pid, os.WNOHANG)
-        if done:
-            break
-        if time.monotonic() >= end:
-            try:
-                os.kill(pid, signal.SIGKILL)
-            except OSError:
-                pass
-            os.waitpid(pid, 0)
-            sys.stderr.write(
-                "KIMENO-SZOVEG KAPU: TILTVA -- a vizsgalat nem fejezodott be %.0f masodpercen belul "
-                "(tul nagy vagy kulonlegesen felepitett szoveg), es egy vizsgalhatatlan kuldes nem mehet at.\n"
-                "Bontsd kisebb reszekre, vagy irj a hosszu szoveget fajlba, aztan kuldd ujra.\n" % seconds
-            )
-            sys.exit(2)
-        time.sleep(0.005)
-    if os.WIFEXITED(status):
-        sys.exit(os.WEXITSTATUS(status))
-    sys.exit(2)  # killed by a signal (out of memory, crash): fail-closed
-
-
-if __name__ == "__main__":
-    _run_with_deadline(_run_audited, _deadline_seconds())
