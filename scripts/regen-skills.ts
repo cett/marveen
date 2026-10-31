@@ -19,6 +19,7 @@
  *   --check     Write nothing; list the skills / companion files / tenant
  *               copies that are in the DB but missing on disk. Exit 1 if any.
  */
+import './lib/log-to-stderr.js'
 import { initDatabase, countSkills } from '../src/db.js'
 import { regenSkillFilesFromSQL, findSkillFileGaps } from '../src/web/skill-regen.js'
 import { SKILL_SQL_REGEN } from '../src/config.js'
