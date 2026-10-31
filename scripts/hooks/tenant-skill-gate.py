@@ -129,14 +129,25 @@ def _ansi_c_decoded(command):
     return _ANSI_C_RX.sub(decode, command)
 
 
+# Every `~name` word is expanded with pwd.getpwnam, a directory-service lookup of ~0.15 ms on macOS, so a command of
+# 20000 distinct `~nameN` words costs ~3 s inside the size limit, too close to the 10 s host timeout on a loaded
+# machine. A real command names a handful of users; more distinct `~name` words than this is refused.
+MAX_TILDE_USERS = 256
+
+
+class TooManyTildeUsers(Exception):
+    pass
+
+
 def bash_skill_dirs(command, cwd=None):
     """Directory names a shell command points into: the textual match plus every path word (raw regex words
     and shell-dequoted words, relative ones joined to the session cwd) resolved through symlinks."""
     found = skill_dirs_in(command, None)
-    words = []
+    words = {}  # a dict keeps the order and de-duplicates in O(1); a list "in" test is quadratic in the word count
     for w in _BASH_PATH_RX.findall(command) + [w for w in _shell_words(command) if "/" in w or w.startswith("~")]:
-        if w not in words:
-            words.append(w)
+        words[w] = None
+    if sum(1 for w in words if w.startswith("~") and not w.startswith("~/") and w != "~") > MAX_TILDE_USERS:
+        raise TooManyTildeUsers()
     for word in words:
         for d in skill_dirs_in(word, cwd, resolve=True):
             if d not in found:
@@ -206,6 +217,8 @@ def main():
                 block("a(z) '%s' skill masik tenanthez tartozik, ez a keres a(z) '%s' tenanthe. A skill ebben a keresben nem hasznalhato." % (value, tenant))
     except SystemExit:
         raise
+    except TooManyTildeUsers:
+        block("a Bash parancs tobb mint %d kulonbozo ~felhasznalo szot tartalmaz, ezt a kapu nem vizsgalja at, ezert BLOKKOL." % MAX_TILDE_USERS)
     except Exception as exc:
         block("a kapu maga hibara futott (%s: %s), ezert BLOKKOL. Ez a kapu hibaja, nem a tied." % (type(exc).__name__, exc))
     sys.exit(0)

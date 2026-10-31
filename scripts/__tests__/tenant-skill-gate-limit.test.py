@@ -64,6 +64,41 @@ class LimitTest(unittest.TestCase):
             self.assertIn(MARK, out)
             self.assertLess(secs, 0.3)  # includes the interpreter start; the refusal itself is O(1)
 
+    def test_the_worst_shapes_inside_the_limit_finish_in_under_3_s(self):
+        # Inside the limit the cost is per distinct path word (realpath, expanduser), and the word list was
+        # de-duplicated with a list "in" test: 131072 characters of distinct `/pN` words took 4.1 s.
+        limit = load().MAX_BASH_COMMAND_CHARS
+        shapes = {
+            "distinct /pN words": "".join("/p%d " % i for i in range(30000))[:limit],
+            "distinct a/bN words": "".join("a/b%d " % i for i in range(30000))[:limit],
+            "one long path": ("/" + "a/" * limit)[:limit],
+            "../ repeated": ("../" * limit)[:limit],
+            "one long word": "x" * limit,
+        }
+        for name, cmd in shapes.items():
+            with self.subTest(shape=name):
+                self.assertEqual(len(cmd), limit)
+                rc, out, secs = run_gate("Bash", {"command": cmd})
+                self.assertEqual(rc, 0, out[:200])
+                self.assertLess(secs, 3)
+
+    def test_the_number_of_distinct_tilde_user_words_is_bounded(self):
+        # Each `~name` word is a pwd.getpwnam lookup (~0.15 ms on macOS): 20000 of them took ~3 s inside the size limit.
+        mod = load()
+        cap = mod.MAX_TILDE_USERS
+        self.assertEqual(cap, 256)
+        for n, refused in ((cap, False), (cap + 1, True)):
+            with self.subTest(users=n):
+                rc, out, secs = run_gate("Bash", {"command": " ".join("~u%d" % i for i in range(n))})
+                self.assertEqual(rc, 2 if refused else 0, out[:200])
+                self.assertEqual("tobb mint" in out, refused, out[:200])
+        rc, out, secs = run_gate("Bash", {"command": "".join("~u%d " % i for i in range(20000))[:mod.MAX_BASH_COMMAND_CHARS]})
+        self.assertEqual(rc, 2)
+        self.assertLess(secs, 1)
+        # `~` and `~/x` are the caller's own home, not a lookup: any number of them is fine.
+        rc, out, _ = run_gate("Bash", {"command": " ".join("~/f%d" % i for i in range(5000))})
+        self.assertEqual(rc, 0, out[:200])
+
     def test_a_large_write_or_edit_content_is_not_refused(self):
         big = "x" * 550_000
         for tool, inp in (("Write", {"file_path": "/tmp/notes.txt", "content": big}),
