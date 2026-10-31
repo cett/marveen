@@ -51,6 +51,7 @@ vi.mock('../web/agent-scaffold.js', () => ({
   ensureFleetRosterSection: vi.fn(),
   ensureNoReaderSection: vi.fn(),
   ensureWorkDocSection: vi.fn(),
+  ensureCheckpointSection: vi.fn(),
   writeAgentSettingsFromProfile: vi.fn(),
 }))
 vi.mock('../web/agent-team.js', () => ({ resolveAgentSecurityProfile: () => 'default' }))
