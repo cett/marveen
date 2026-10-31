@@ -58,12 +58,7 @@ ALLOWED = [
      "commit, nothing is let through"),
     ("src/web/routes/static.ts", "/(<script\\b[^>]*\\ssrc=\")\\/app\\.js(\")/",
      "bounded: the input is the repo's own web/index.html, never external text"),
-    # Lazy negated class (not a tag pattern, same error class). Not fixed here, listed for a decision.
-    ("scripts/hooks/outgoing-copy-gate.py", "_HEREDOC_REDIRECT = re.compile(",
-     "NOT bounded, open item: Bash command text (agent-authored, may carry pasted text); "
-     "measured superlinear, 7 s at 55 kB of ` cat`. The gate treats a timeout as no deny"),
-    ("scripts/hooks/bash-egress-parser.mjs", "[^\\\\n]*?\\\\s-[A-Za-z]*[cerEp]\\\\b",
-     "NOT bounded, open item: Bash command text; measured quadratic, 0.4 s at 55 kB of `sh `"),
+    # Lazy negated class (not a tag pattern, same error class).
     ("src/pane-state.ts", "const IDLE_FOOTER_RX",
      "bounded: matched against one line of a `tmux capture-pane -p` snapshot ([^\\n] cannot leave the line), "
      "at most the pane width"),
