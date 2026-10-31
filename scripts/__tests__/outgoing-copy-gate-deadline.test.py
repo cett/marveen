@@ -55,11 +55,13 @@ FINE_BODY = "Szia, a terv kész, és a többi is rendben van, de nem tudom hogy 
 
 
 class DeadlineTest(unittest.TestCase):
-    def test_an_input_that_outlasts_the_deadline_is_denied_quickly(self):
-        rc, out, secs = run_gate(email(SLOW_BODY), deadline=1)
-        self.assertEqual(rc, 2, out[:300])
-        self.assertIn(MARK, out)
-        self.assertLess(secs, 5, "the deny must come at the deadline, not when the audit would finish")
+    def test_the_gate_entry_point_runs_the_audit_under_the_deadline(self):
+        # The quadratic input that used to make the audit slow is linear now, so no real input outlasts a
+        # deadline reliably; the deny branch itself is pinned by RunWithDeadlineTest below, and this pins
+        # that the gate's entry point goes through it (a mutant that calls the audit directly fails here).
+        with open(GATE, encoding="utf-8") as fh:
+            src = fh.read()
+        self.assertIn("_run_with_deadline(_run_audited, _deadline_seconds())", src.split('if __name__ == "__main__":')[-1])
 
     def test_the_default_deadline_is_below_the_host_timeout(self):
         spec = importlib.util.spec_from_file_location("ocg_deadline", GATE)

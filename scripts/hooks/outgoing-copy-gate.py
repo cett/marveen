@@ -1226,14 +1226,29 @@ def _hit_context(prose: str, pos: int, length: int) -> str:
 # osztaly, mint a 2026-08-11-i `level` fajlnev-talalat. A javitas nem a szotarbol
 # vesz ki (az elrontana a valodi talalatokat is), hanem a technikai regiokat
 # vagja ki a vizsgalt szovegbol. A gondolatjel- es nev-ellenorzes NEM ezen fut.
+#
+# Linear in the text length. Two alternatives re-scanned a long run again from EVERY start inside
+# it: the email (`[\w.+-]+@`, a run with no '@' after it) and the path (`[\w-]*/`, a hyphenated run
+# with no '/' after it). One 550 kB word kept this pattern busy for over 90 s (20 kB: 2.3 s), and
+# a mail the audit cannot finish on leaves unchecked. A start inside a run cannot succeed when the
+# first start of that run failed (same run end, same next character), so only the first start of a
+# run is tried: the email needs a start that is not preceded by a run character, the path one that
+# is not preceded by a run character or is the first word start after up to three leading hyphens.
 TECHNICAL = re.compile(
-    r"""https?://\S+                # URL
-      | [\w.+-]+@[\w-]+\.[\w.]+     # email
-      | `[^`]*`                     # kod-span
-      | \b\w+(?:_\w+)+\b            # snake_case azonosito
-      | \b\w+\.[A-Za-z]{2,10}\b     # fajlnev / domain (video.mp4, marveen.io)
-      | \b[\w-]*/[\w/-]+            # utvonal / slug
+    r"""https?://\S+                                    # URL
+      | (?<![\w.+-])[\w.+-]+@[\w-]+\.[\w.]+             # email
+      | `[^`]*`                                         # kod-span
+      | \b\w+(?:_\w+)+\b                                # snake_case azonosito
+      | \b\w+\.[A-Za-z]{2,10}\b                         # fajlnev / domain (video.mp4, marveen.io)
+      | (?:(?<![\w-])|(?<=(?<![\w-])-)|(?<=(?<![\w-])--)|(?<=(?<![\w-])---))
+        \b[\w-]*/[\w/-]+                                # utvonal / slug
+      | \b/[\w/-]+                                      # ... that starts at the '/' after a word
     """,
+    re.X,
+)
+# The pre-fix pattern, kept for the differential test only.
+_TECHNICAL_OLD = re.compile(
+    r"""https?://\S+ | [\w.+-]+@[\w-]+\.[\w.]+ | `[^`]*` | \b\w+(?:_\w+)+\b | \b\w+\.[A-Za-z]{2,10}\b | \b[\w-]*/[\w/-]+""",
     re.X,
 )
 
