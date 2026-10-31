@@ -68,6 +68,9 @@ describe('the CLI list command', () => {
     const out = await cli(['list'])
     expect(out.status).toBe(0)
     expect(out.stdout).toContain('No dashboard users')
+    // First run on an empty store applies every migration; none of those log lines may reach stdout.
+    expect(out.stdout.trim().split('\n')).toHaveLength(1)
+    expect(out.stderr).toContain('Migration applied')
   }, 60_000)
 
   it('lists each login with its role and tenant', async () => {
@@ -88,6 +91,9 @@ describe('the CLI list command', () => {
     expect(lines[0]).toMatch(/^person-a {2}role=admin {2}tenant=global {2}created /)
     expect(lines[1]).toMatch(/^user-b {2}role=admin {2}tenant=tenant-b {2}created /)
     expect(lines[2]).toMatch(/^user-c \(disabled\) {2}role=viewer {2}tenant=global {2}created /)
+    // The startup schema report is a log line: it belongs on stderr, never in the output a caller parses.
+    expect(out.stdout).not.toContain('schema:')
+    expect(out.stderr).toContain('schema: db')
     // A listing never carries a password or its hash.
     expect(out.stdout).not.toContain(PASSWORD)
     expect(out.stdout).not.toMatch(/scrypt|\$/)

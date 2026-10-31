@@ -27,6 +27,7 @@
  *   npx tsx scripts/migrate-legacy-store-docs.ts --write       # upsert into workspace_docs, then verify
  *   npx tsx scripts/migrate-legacy-store-docs.ts --write --verify-only   # re-verify an already-written run
  */
+import './lib/log-to-stderr.js'
 import { readFileSync, existsSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
