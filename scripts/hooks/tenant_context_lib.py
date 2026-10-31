@@ -27,14 +27,25 @@ DEFAULT_TENANT = "default"
 # agent_tenant_context is owned by migration 0065. These hooks never run DDL: a missing table makes the prompt
 # hook refuse the prompt and the gate deny (fail closed), it is not created here.
 
-# One alternation, leftmost-first, non-overlapping: a tag block is consumed whole, so tags
-# nested inside a chat/peer body are part of that body and never separate sources.
-BLOCK_RX = re.compile(
-    r'<(channel|trusted-peer|untrusted|scheduled-task)\b([^>]*)>(.*?)</\1>',
-    re.DOTALL,
-)
-# Delivery frame written by the message router / drain endpoint OUTSIDE the wrapped body.
-FRAME_RX = re.compile(r'\[Uzenet\b[^\]\n]*?\]')
+# Leftmost-first, non-overlapping: a tag block is consumed whole, so tags nested inside a
+# chat/peer body are part of that body and never separate sources.
+#
+# Only the OPENER is a pattern. The old single pattern `<(..)\b([^>]*)>(.*?)</\1>` had no
+# upper bound on either span, so a prompt full of openers and no '>' (or no closer) was
+# quadratic: 550 kB held every UserPromptSubmit and every gate that parses the prompt for
+# ~85 s, past the 10 s hook timeout. _iter_blocks() finds the closing '>' and the closing
+# `</tag>` with forward str.find calls whose results are reused by every later opener.
+BLOCK_OPEN_RX = re.compile(r'<(channel|trusted-peer|untrusted|scheduled-task)\b')
+# A real envelope carries a handful of short attributes; the attribute span of a block that
+# is accepted is at most this many characters (counted from the end of the tag name).
+BLOCK_ATTRS_MAX = 2000
+# Delivery frame written by the message router / drain endpoint OUTSIDE the wrapped body:
+# `[Uzenet`, then anything but ']' and a newline, then the first ']'. Only the OPENER is a
+# pattern. The old single pattern, a lazy bracket class closed by ']', looked for its ']' again
+# from every opener that had none before the next newline, so a text of many `[Uzenet ` and no
+# ']' (550 kB: 68 750 openers) held the hook for ~225 s. _frames() looks up the first ']' and
+# the first newline once and reuses them for every later opener.
+FRAME_OPEN_RX = re.compile(r'\[Uzenet\b')
 MSG_ID_RX = re.compile(r'msg_id:(\d+)')
 CHANNEL_RX = re.compile(r'^[a-z][a-z0-9_-]{0,31}$')
 
@@ -64,6 +75,63 @@ def channel_name(source):
     return name if CHANNEL_RX.match(name) else None
 
 
+def _iter_blocks(prompt):
+    """Yield (start, end, tag, attrs, body) for each top-level tag block, left to right.
+
+    attrs is None when the opener's attribute span is longer than BLOCK_ATTRS_MAX: the block
+    is still consumed whole (as before, so its body is never read as sources) but its
+    attributes are never parsed, and parse_sources() turns it into an 'unknown' source for the
+    tags that decide a tenant. An opener with no '>' after it, or with no closing tag, is not a
+    block and is skipped, as before.
+    """
+    pos = 0  # prompt[:pos] is outside every block already yielded
+    gt = -2  # first '>' at or after the last probe; -1 = none left, -2 = not probed yet
+    closes = {}  # tag -> first '</tag>' at or after the last probe for that tag; -1 = none left
+    for m in BLOCK_OPEN_RX.finditer(prompt):
+        start, end = m.start(), m.end()
+        if start < pos:
+            continue
+        if gt != -1 and gt < end:
+            gt = prompt.find('>', end)
+        if gt == -1:
+            return  # no '>' left, so no later opener can close either
+        tag = m.group(1)
+        closer = '</' + tag + '>'
+        ci = closes.get(tag, -2)
+        if ci != -1 and ci < gt + 1:
+            ci = closes[tag] = prompt.find(closer, gt + 1)
+        if ci == -1:
+            continue
+        attrs = prompt[end:gt] if gt - end <= BLOCK_ATTRS_MAX else None
+        pos = ci + len(closer)
+        yield start, pos, tag, attrs, prompt[gt + 1:ci]
+
+
+def _frames(text):
+    """Every delivery frame `[Uzenet ... ]` in the text, left to right, non-overlapping.
+
+    An opener whose first ']' comes after a newline (or that has no ']' at all) is not a frame."""
+    found = []
+    pos = 0  # text[:pos] is inside a frame already taken
+    rb = -2  # first ']' at or after the last probe; -1 = none left, -2 = not probed yet
+    nl = -2  # first newline at or after the last probe; same convention
+    for m in FRAME_OPEN_RX.finditer(text):
+        start, end = m.span()
+        if start < pos:
+            continue
+        if rb != -1 and rb < end:
+            rb = text.find(']', end)
+        if rb == -1:
+            break  # no ']' left, so no later opener can close either
+        if nl != -1 and nl < end:
+            nl = text.find('\n', end)
+        if nl != -1 and nl < rb:
+            continue  # a newline comes before the ']': not a frame
+        found.append(text[start:rb + 1])
+        pos = rb + 1
+    return found
+
+
 def parse_sources(prompt):
     """List of source dicts found in the top-level structure of the prompt.
 
@@ -73,11 +141,17 @@ def parse_sources(prompt):
     sources = []
     frame_parts = []
     pos = 0
-    for m in BLOCK_RX.finditer(prompt):
-        frame_parts.append(prompt[pos:m.start()])
-        pos = m.end()
-        tag, attrs = m.group(1), m.group(2)
-        if _is_preamble_example(tag, attrs, m.group(3)):
+    for start, end, tag, attrs, body in _iter_blocks(prompt):
+        frame_parts.append(prompt[pos:start])
+        pos = end
+        if attrs is None:
+            # An over-long opener is never an accepted block. Only the tags that decide a
+            # tenant need to say so: trusted-peer / untrusted blocks are message bodies and
+            # contribute no source either way.
+            if tag in ("channel", "scheduled-task"):
+                sources.append({"kind": "unknown", "reason": "%s tag with an over-long attribute section" % tag})
+            continue
+        if _is_preamble_example(tag, attrs, body):
             continue
         if tag == "channel":
             channel = channel_name(_attr(attrs, "source"))
@@ -96,8 +170,8 @@ def parse_sources(prompt):
         # trusted-peer / untrusted blocks are message BODIES: only their frame line matters
     frame_parts.append(prompt[pos:])
     frame = "".join(frame_parts)
-    for fm in FRAME_RX.finditer(frame):
-        idm = MSG_ID_RX.search(fm.group(0))
+    for fm in _frames(frame):
+        idm = MSG_ID_RX.search(fm)
         if idm:
             sources.append({"kind": "message", "msg_id": int(idm.group(1))})
         else:
