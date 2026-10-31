@@ -33,9 +33,9 @@ def _rules():
 RULES = _rules()
 
 
-def run_gate(body):
+def run_gate(body, subject="teszt"):
     env = dict(os.environ, OUTGOING_COPY_GATE_RULES=RULES)
-    payload = {"tool_name": "mcp__gmail__gmail_send_email", "tool_input": {"to": ["a@b.test"], "subject": "teszt", "body": body}, "cwd": "/tmp"}
+    payload = {"tool_name": "mcp__gmail__gmail_send_email", "tool_input": {"to": ["a@b.test"], "subject": subject, "body": body}, "cwd": "/tmp"}
     t = time.perf_counter()
     p = subprocess.run([sys.executable, GATE], input=json.dumps(payload).encode(), capture_output=True, env=env, timeout=120)
     return p.returncode, (p.stdout + p.stderr).decode(errors="replace"), time.perf_counter() - t
@@ -79,6 +79,25 @@ class AuditLimitTest(unittest.TestCase):
                 self.assertEqual(MARK in out, refused, out[:200])
                 if refused:
                     self.assertEqual(rc, 2)
+
+    def test_whitespace_padding_counts_toward_the_limit(self):
+        # The limit is on the collected text as it is, not on a stripped copy: a body of the limit plus one
+        # characters that is mostly spaces is over the limit as well. (A mutant that measured len(text.strip())
+        # let a space-padded text past the limit; whitespace is cheap for the patterns, but the border is a border.)
+        spec = importlib.util.spec_from_file_location("ocg_pad", GATE)
+        g = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(g)
+        limit = g.MAX_AUDIT_CHARS
+        base = {"to": ["a@b.test"], "body": ""}  # no subject: the collected text is the body alone, padding at its end
+        for name, fill in (("spaces", " "), ("newlines", "\n"), ("tabs", "\t")):
+            for delta, refused in ((0, False), (1, True)):
+                with self.subTest(fill=name, collected=limit + delta):
+                    body = "Szia" + fill * (limit + delta - 4)
+                    self.assertEqual(len(g.collect_mcp_body(dict(base, body=body))), limit + delta)
+                    rc, out, _ = run_gate(body, subject="")
+                    self.assertEqual(MARK in out, refused, out[:200])
+                    if refused:
+                        self.assertEqual(rc, 2)
 
     def test_the_refusal_carries_the_reason_code_of_the_audit_lib(self):
         with open(GATE, encoding="utf-8") as fh:

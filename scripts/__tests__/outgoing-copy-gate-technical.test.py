@@ -12,6 +12,7 @@ Run: python3 <thisfile>   (OUTGOING_COPY_GATE_PATH names another gate file)   Ex
 import importlib.util
 import os
 import random
+import re
 import sys
 import time
 
@@ -56,11 +57,25 @@ for _ in range(80000):
     if g.strip_technical(s) != old(s):
         bad.append(s)
 # Documented deviation: only the first start of a run is tried, so a token that begins in the MIDDLE of a run
-# because another alternative consumed the run's front (e.g. `snake_a--/x`, `foo/bar+baz@x.cc`) is not stripped
-# any more. It needs two technical shapes glued together without a space; the dense fuzz above hits it in
-# about 0.15% of strings, and none of the realistic ones below.
-check("80000 dense random strings: at most 0.5% differ (the documented glued-token case)",
-      len(bad) <= 400, "%d differ, e.g. %r" % (len(bad), bad[:2]))
+# because another alternative consumed the run's front (e.g. `snake_a--/x`, `foo/bar+baz@x.cc`) is cut differently
+# from the old pattern. It needs two technical shapes glued together without a space, and it goes BOTH ways: the
+# new pattern can leave a word in the audited text that the old one hid (stricter), and it can hide a word that
+# the old one left (more lenient, e.g. `a@b.cx.com-/x.comBANNED@.mp4@a/b`). No attacker gain: a token of its own
+# (an email or file name shape with a space around it) is hidden by both. The fuzz is seeded, so the counts are
+# exact (the same on Python 3.9 and 3.14): a change in either direction, however small, fails here. The earlier
+# "at most 0.5%" bound let a regression below it through.
+def length_delta(s):
+    return len(g.strip_technical(s)) - len(old(s))
+
+
+stricter = sum(1 for s in bad if length_delta(s) > 0)
+more_lenient = sum(1 for s in bad if length_delta(s) < 0)
+check("80000 dense random strings: exactly 114 differ (the documented glued-token case)",
+      len(bad) == 114, "%d differ, e.g. %r" % (len(bad), bad[:2]))
+check("  the new pattern keeps more text (stricter) in 95 and hides more text (more lenient) in 17",
+      (stricter, more_lenient) == (95, 17), "stricter %d, more lenient %d" % (stricter, more_lenient))
+check("  every difference sits inside one space-free chunk (glued tokens), none across spaces",
+      all(any(g.strip_technical(c) != old(c) for c in re.split(r"\s+", s)) for s in bad))
 
 WORDS = ["szia", "a", "terv", "kész", "ok", "video_view", "snake_case_name", "marveen.io", "video.mp4", "x.com",
          "user@example.com", "a.b+c@mail.example.org", "https://example.test/a/b?c=1", "src/web/x.ts", "a-b/c-d",
