@@ -54,19 +54,6 @@ ALLOWED = [
      "commit, nothing is let through"),
     ("src/web/routes/static.ts", "/(<script\\b[^>]*\\ssrc=\")\\/app\\.js(\")/",
      "bounded: the input is the repo's own web/index.html, never external text"),
-    ("src/web/routes/status.ts", ".replace(/<[^>]+>/g, ' ')",
-     "the status feed of a fixed vendor host, not user text, and NOT capped by us (open item)"),
-    ("src/web/routes/status.ts", "const itemRegex",
-     "same feed as the line above: fixed vendor host, NOT capped by us (open item)"),
-    ("src/web/routes/status.ts", "itemXml.match(",
-     "same feed as the line above: one item of it, fixed vendor host (open item)"),
-    ("src/web/import-utils.ts", "<script[\\s\\S]*?<\\/script>",
-     "NOT bounded: a crawled page or file (local files are capped at 500 KB, a Confluence body is not); "
-     "a hostile 500 KB run of openers takes ~35 s (open item)"),
-    ("src/web/import-utils.ts", "<style[\\s\\S]*?<\\/style>",
-     "NOT bounded: same input as the script line above (open item)"),
-    ("src/web/import-utils.ts", ".replace(/<[^>]+>/g, ' ')",
-     "NOT bounded: same input as the script line above (open item)"),
 ]
 
 
