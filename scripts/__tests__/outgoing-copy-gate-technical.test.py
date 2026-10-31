@@ -3,7 +3,8 @@
 
 The TECHNICAL pattern re-scanned a long run from every start inside it (the email alternative on a run with no '@',
 the path alternative on a hyphenated run with no '/'): one 550 kB word kept the gate busy for over 90 s (20 kB: 2.3 s),
-and the MCP email path has no size cap, so the mail left unchecked. Only the first start of a run is tried now.
+and the MCP email path has no size cap. (Live, the main agent's email registration wraps the gate in an 8 s alarm that
+turns a stuck audit into a deny; run alone it just hangs.) Only the first start of a run is tried now.
 
 Pinned here: the output equals the old pattern's on realistic text and on random strings over the characters that
 matter; the deviations (documented) are listed; 550 kB hostile shapes take under 300 ms.
@@ -76,6 +77,17 @@ check("  the new pattern keeps more text (stricter) in 95 and hides more text (m
       (stricter, more_lenient) == (95, 17), "stricter %d, more lenient %d" % (stricter, more_lenient))
 check("  every difference sits inside one space-free chunk (glued tokens), none across spaces",
       all(any(g.strip_technical(c) != old(c) for c in re.split(r"\s+", s)) for s in bad))
+
+# Known glued examples, behavior pinned in both patterns (new output, then old output; the direction is in the name).
+GLUED = [
+    ("snake_a--/x", " --/x", "  ", "stricter: the new pattern leaves ' --/x' in the audited text"),
+    ("foo/bar+baz@x.cc", " +baz@ ", "  ", "stricter: the new pattern leaves ' +baz@ '"),
+    ("mp4_a--/x.com-ab_-_", " --/ -ab_-_", "  .com-ab_-_", "mixed: different cut, neither hides a letter word"),
+    ("a@b.cx.com-/x.comBANNED@.mp4@a/b", " -/ @.mp4@ ", "  .comBANNED@.mp4@ ", "more lenient: the new pattern hides 'BANNED', the old one showed it"),
+]
+for text, new_out, old_out, why in GLUED:
+    check("glued %r: new %r, old %r (%s)" % (text[:24], new_out, old_out, why),
+          g.strip_technical(text) == new_out and old(text) == old_out, "new %r old %r" % (g.strip_technical(text), old(text)))
 
 WORDS = ["szia", "a", "terv", "kész", "ok", "video_view", "snake_case_name", "marveen.io", "video.mp4", "x.com",
          "user@example.com", "a.b+c@mail.example.org", "https://example.test/a/b?c=1", "src/web/x.ts", "a-b/c-d",

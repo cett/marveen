@@ -1233,7 +1233,7 @@ def _hit_context(prose: str, pos: int, length: int) -> str:
 # Linear in the text length. Two alternatives re-scanned a long run again from EVERY start inside
 # it: the email (`[\w.+-]+@`, a run with no '@' after it) and the path (`[\w-]*/`, a hyphenated run
 # with no '/' after it). One 550 kB word kept this pattern busy for over 90 s (20 kB: 2.3 s), and
-# a mail the audit cannot finish on leaves unchecked. A start inside a run cannot succeed when the
+# a mail the audit cannot finish on would hang the gate (the live 8 s alarm turns that into a deny). A start inside a run cannot succeed when the
 # first start of that run failed (same run end, same next character), so only the first start of a
 # run is tried: the email needs a start that is not preceded by a run character, the path one that
 # is not preceded by a run character or is the first word start after up to three leading hyphens.
