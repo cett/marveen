@@ -804,7 +804,37 @@ _HEREDOC_INTERP = re.compile(
 
 
 _HEREDOC_PIPE = re.compile(r"\|\s*(?:\S*/)?(python3?(?:\.\d+)?|node|tsx|ts-node|deno|bun|bash|sh|zsh|dash)\b", re.I)
-_HEREDOC_REDIRECT = re.compile(r"(?:^|[\s;&|(])(?:cat|tee)\b[^\n]*?(?:>>?|\btee(?:\s+-a)?)\s*(['\"]?)([^\s'\"<>;&|]+)\1")
+# `cat`/`tee` early on a line, then (anywhere later on the same line) a redirect or `tee`, then the target
+# file. This used to be ONE pattern with a lazy `[^\n]*?` in the middle, which searched the rest of the line
+# again from every `cat`/`tee` and was superlinear (a line of ` cat` x N: 40 kB 4.6 s). The head and the tail
+# are separate patterns now and the tail is tried at each candidate position of the line at most once.
+_HR_HEAD = re.compile(r"(?:^|[\s;&|(])(?:cat|tee)\b")
+_HR_TAIL = re.compile(r"(?:>>?|\btee(?:\s+-a)?)\s*(['\"]?)([^\s'\"<>;&|]+)\1")
+_HR_CAND = re.compile(r">|\btee")  # the only places _HR_TAIL can start
+
+
+def _heredoc_redirect_target(text: str):
+    """The file name a `cat`/`tee ... > FILE` at the start of a heredoc's line writes, or None.
+    Gives what `search(...).group(2)` of the old single pattern gave."""
+    tested_to = 0  # candidate positions before this index are known not to start a tail match
+    nl = -1  # end of the current line; looked up again only after it is passed
+    for head in _HR_HEAD.finditer(text):
+        end = head.end()
+        if nl < end:
+            nl = text.find("\n", end)
+            if nl == -1:
+                nl = len(text)
+        pos = max(tested_to, end)
+        while True:
+            cand = _HR_CAND.search(text, pos, nl)
+            if cand is None:
+                tested_to = max(tested_to, nl)
+                break
+            tail = _HR_TAIL.match(text, cand.start())
+            if tail:
+                return tail.group(2)
+            pos = cand.start() + 1
+    return None
 
 
 def _written_then_run(cmd: str, written: dict, depth: int) -> bool:
@@ -839,9 +869,9 @@ def _heredoc_program_sends(cmd: str, depth: int = 0) -> bool:
         line_start = cmd.rfind("\n", 0, start) + 1
         intro = cmd[start:intro_end]
         body = cmd[body_start:body_end]
-        w = _HEREDOC_REDIRECT.search(cmd[line_start:start] + intro)
-        if w:
-            written[w.group(2)] = body
+        target = _heredoc_redirect_target(cmd[line_start:start] + intro)
+        if target:
+            written[target] = body
         piped = _HEREDOC_PIPE.search(intro)
         if piped:
             if _WRAPPER_SHELL.match(piped.group(1)):
