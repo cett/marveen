@@ -4,7 +4,7 @@
 The only scanned field that is free text is a Bash command; Read/Edit/Write/NotebookEdit are scanned by their
 file_path / notebook_path alone, so a large Write (its content) is NOT touched by the limit. The command is read
 with shlex, a pure-Python lexer that grows a word by string concatenation (quadratic in one long word): a
-131072-character word takes well under 1 s, one 550 kB word took 13.6 s, past the host
+131072-character word takes about 1 s per pass (about 2 s for the two passes), one 550 kB word took 13.6 s, past the host
 timeout, and a hook that runs into it is non-blocking. Over the limit the gate DENIES (exit 2, reason code
 input_too_large) with an O(1) length check, before any tokenizing.
 
@@ -43,7 +43,7 @@ def run_gate(tool, tool_input):
 class LimitTest(unittest.TestCase):
     def test_the_limit_is_128_kib_like_the_outgoing_copy_gate_command_limit(self):
         # shlex is quadratic in one long word, so a higher limit gets close to the 10 s host timeout; 128 KiB
-        # (worst measured shape: well under 1 s) is the command limit the outgoing-copy gate already enforces.
+        # (worst measured shape: about 1 s per pass, about 2 s for the two passes) is the command limit the outgoing-copy gate already enforces.
         self.assertEqual(load().MAX_BASH_COMMAND_CHARS, 131072)
 
     def test_the_boundary_is_exact(self):
