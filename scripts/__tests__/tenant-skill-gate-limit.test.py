@@ -82,6 +82,32 @@ class LimitTest(unittest.TestCase):
                 self.assertEqual(rc, 0, out[:200])
                 self.assertLess(secs, 3)
 
+    def test_the_decoded_ansi_c_copy_has_the_same_limit_as_the_command(self):
+        # shlex reads the command AND a copy with every $'...' decoded. Each `\'` inside a $'...' decodes to
+        # `'"'"'` (5 characters for 2), so a command inside the limit can decode to 2.5 times it.
+        mod = load()
+        limit = mod.MAX_BASH_COMMAND_CHARS
+
+        def quotes(k):
+            return "$'" + "\\'" * k + "'"
+
+        k_at_limit = (limit - 2) // 5  # decoded length is 5k + 2
+        self.assertEqual(len(mod._ansi_c_decoded(quotes(k_at_limit))), limit)
+        for k, refused in ((k_at_limit, False), (k_at_limit + 1, True)):
+            with self.subTest(decoded=len(mod._ansi_c_decoded(quotes(k)))):
+                cmd = quotes(k)
+                self.assertLessEqual(len(cmd), limit)
+                rc, out, secs = run_gate("Bash", {"command": cmd})
+                self.assertEqual(rc, 2 if refused else 0, out[:200])
+                self.assertEqual(MARK in out, refused, out[:200])
+        # the worst command inside the limit that decodes to 2.5 times it: refused before any lexing
+        cmd = quotes((limit - 3) // 2)
+        self.assertLessEqual(len(cmd), limit)
+        rc, out, secs = run_gate("Bash", {"command": cmd})
+        self.assertEqual(rc, 2)
+        self.assertIn(MARK, out)
+        self.assertLess(secs, 1)
+
     def test_the_number_of_distinct_tilde_user_words_is_bounded(self):
         # Each `~name` word is a pwd.getpwnam lookup (~0.15 ms on macOS): 20000 of them took ~3 s inside the size limit.
         mod = load()

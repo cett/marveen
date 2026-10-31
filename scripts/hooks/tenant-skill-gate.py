@@ -106,6 +106,10 @@ def _shell_words(command):
     # Two readings: the command as written, and with every $'...' (ANSI-C quoting, which shlex does not
     # decode) replaced by the text it spells ($'/.\x63laude/skills/x' -> '/.claude/skills/x').
     for text in (command, _ansi_c_decoded(command)):
+        # The decoded copy can be longer than the command: every `\'` inside a $'...' becomes `'"'"'`, so a
+        # command inside the limit can decode to 2.5 times it. The copy is lexed too, so it has the same limit.
+        if len(text) > MAX_BASH_COMMAND_CHARS:
+            raise DecodedCopyTooLarge(len(text))
         try:
             lex = shlex.shlex(text, posix=True, punctuation_chars=True)
             lex.whitespace_split = True
@@ -137,6 +141,12 @@ MAX_TILDE_USERS = 256
 
 class TooManyTildeUsers(Exception):
     pass
+
+
+class DecodedCopyTooLarge(Exception):
+    def __init__(self, n):
+        super().__init__(n)
+        self.n = n
 
 
 def bash_skill_dirs(command, cwd=None):
@@ -217,6 +227,8 @@ def main():
                 block("a(z) '%s' skill masik tenanthez tartozik, ez a keres a(z) '%s' tenanthe. A skill ebben a keresben nem hasznalhato." % (value, tenant))
     except SystemExit:
         raise
+    except DecodedCopyTooLarge as exc:
+        block_too_large(exc.n)
     except TooManyTildeUsers:
         block("a Bash parancs tobb mint %d kulonbozo ~felhasznalo szot tartalmaz, ezt a kapu nem vizsgalja at, ezert BLOKKOL." % MAX_TILDE_USERS)
     except Exception as exc:
