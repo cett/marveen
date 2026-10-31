@@ -942,3 +942,28 @@ export async function recordFleetSkillWriteDenied(
     warnThrottled(err, 'token-shadow: skill-denial record failed')
   }
 }
+
+/**
+ * Counts the refusal of a /api/messages POST whose `from` is not the agent of an agent-bound admin token
+ * (TOKEN_IDENTITY_MODE=enforce): category identity_refused, target = the sender it claimed. The route
+ * answers 403 sender_token_mismatch itself; the generic gate in web.ts does not see this case because it
+ * lets the main agent through as a caller. Never throws.
+ */
+export async function recordSenderTokenMismatch(
+  req: http.IncomingMessage,
+  tokenAgentId: string | undefined,
+  method: string,
+  rawPath: string,
+  claimedFrom: string,
+): Promise<void> {
+  try {
+    const caller = cleanAgentId(tokenAgentId)
+    if (!caller) return
+    await recordTokenShadow(
+      { method, route: normalizeRoute(rawPath), client: classifyClient(req.headers['user-agent']), caller, callerSource: 'token' },
+      { category: 'identity_refused', target: cleanAgentId(claimedFrom) || INVALID },
+    )
+  } catch (err) {
+    warnThrottled(err, 'token-shadow: sender mismatch record failed')
+  }
+}

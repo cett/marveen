@@ -24,6 +24,8 @@ import { claimsServerSender, findReservedMarker, reservedMarkerRefusal } from '.
 import { parseQualifiedId, formatQualifiedId } from '../federation/address.js'
 import { getFederationConfig } from '../federation/config.js'
 import { withBlackboardLock } from '../blackboard-lock.js'
+import { agentBoundAdminId } from '../fleet-agent-identity.js'
+import { recordSenderTokenMismatch } from '../token-shadow.js'
 import type { RouteContext } from './types.js'
 
 // Should closing a message produce a reverse "[Eredmény]" notification to its sender?
@@ -145,6 +147,15 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       }
       from = own
     }
+    // An agent-bound admin token (role admin, a token that names an agent: the main agent's, or the one
+    // `agent-api.sh --agent X` sends) speaks for that agent: an omitted or blank `from` is filled in the way
+    // a fleet_agent's is. A different `from` is judged below, after the reserved-sender checks. A partner
+    // tenant's token keeps the allowlist path further down, whatever it names.
+    const partnerTenantCall = ctx.tenantId != null && ctx.tenantId !== 'default'
+    const boundAgent = partnerTenantCall ? null : agentBoundAdminId(ctx)
+    if (boundAgent && (claimedFrom === undefined || claimedFrom === null || (typeof claimedFrom === 'string' && !claimedFrom.trim()))) {
+      from = boundAgent
+    }
     // Free-form handoff envelope -- a string is stored verbatim
     // (caller already serialized it), anything else is JSON.stringify'd so a
     // plain object body still round-trips through the TEXT column.
@@ -216,6 +227,25 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'sender_not_in_allowlist', hint: 'from must be a local agent id without "/"; federated senders are only accepted via /api/federation/inbox' }, 403)
       return true
     }
+    // The sender of an agent-bound admin token's message is the agent the token names. Under
+    // TOKEN_IDENTITY_MODE=enforce a different `from` is refused, not rewritten: a silent rewrite would hide the
+    // false-sender posts this exists to show (the generic identity gate in web.ts lets the main agent through
+    // as a caller, so the route has to decide). Shadow mode lets it pass and the audit row below records the
+    // claim as `declared_from`. Exempt, as in declaredFromOfAgentBoundAdmin: the platform senders (scheduler,
+    // system, SYSTEM_SENDER_IDS); the reserved-sender, coordinator and qualified-id refusals above come first.
+    if (boundAgent && ctx.identityEnforced) {
+      const mismatch = declaredFromOfAgentBoundAdmin(ctx, from)
+      if (mismatch !== null) {
+        logger.warn({ claimed: mismatch, tokenAgent: boundAgent }, 'Rejected /api/messages POST: from differs from the agent of the token')
+        await recordSenderTokenMismatch(req, boundAgent, method, path, mismatch)
+        json(res, { error: 'forbidden', code: 'sender_token_mismatch', hint: 'from must be the agent of the token' }, 403)
+        return true
+      }
+    }
+    // The comparison above is on the sanitized id (case-sensitive), so `agent-a.` or `agent-a` plus an invisible
+    // character names the token's agent too. The stored sender is then the token's own id, as for a fleet_agent,
+    // not the spelling the body used.
+    if (boundAgent && sanitizeAgentIdent(from) === sanitizeAgentIdent(boundAgent)) from = boundAgent
     // From-authentication: accept messages only from registered fleet agents.
     // The shared Bearer token is readable by any sub-agent, so without this
     // check any process with the token could inject messages as an arbitrary

@@ -1783,7 +1783,11 @@ paths:
               properties:
                 from:
                   type: string
-                  description: Sender agent id (registered fleet agent)
+                  description: >-
+                    Sender agent id (registered fleet agent). Optional for a token that names
+                    an agent (fleet agent token, agent-bound admin token): an omitted or blank
+                    value is the token's agent. Required for the operator token, a session and
+                    the shared token.
                 to:
                   type: string
                   description: Recipient agent id, or `"system/agent"` for federation
@@ -1832,6 +1836,12 @@ paths:
             `error` is a stable snake_case code; human detail is in `hint`.
             Codes: `sender_reserved`, `federated_sender_not_allowed`,
             `sender_not_in_allowlist`, `unknown_sender`.
+            `code: sender_token_mismatch`: an agent-bound admin token (the main agent's, or the
+            one `agent-api.sh --agent X` sends) names `from` as a different sender, under
+            `TOKEN_IDENTITY_MODE=enforce` (the message is refused, not rewritten; the sender
+            is compared as a sanitized id, case-sensitive). A fleet agent token with a
+            different `from` is refused too, but with `error: forbidden` and a `hint`, without
+            this `code`.
           content:
             application/json:
               schema:
