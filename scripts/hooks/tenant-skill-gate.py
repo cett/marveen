@@ -40,6 +40,27 @@ def block(msg):
     sys.exit(2)
 
 
+# The only scanned field that is free text is a Bash command (Read/Edit/Write/NotebookEdit are scanned by
+# their file_path / notebook_path alone, never by their content, so a large Write is not touched by this
+# limit). The command is read word by word with shlex, a pure-Python lexer of ~12-24 microseconds per
+# character: one 550 kB word took 13.6 s, past the host timeout, and a hook that runs into it is
+# non-blocking. Over the limit the gate DENIES before shlex runs; the check is O(1). The outgoing-copy
+# gate already refuses a Bash command over 128 KiB, so no command the fleet can send is above it.
+MAX_BASH_COMMAND_CHARS = 262144
+
+
+def block_too_large(n):
+    sys.stderr.write(
+        "TENANT-SKILL-KAPU: a Bash parancs tul nagy ahhoz, hogy a kapu atvizsgalja "
+        "(%d karakter, a hatar %d), es egy vizsgalhatatlan parancs nem mehet at.\n" % (n, MAX_BASH_COMMAND_CHARS)
+    )
+    try:
+        from gate_audit_lib import DenyExit  # the audit row then carries the reason code
+    except Exception:  # noqa: BLE001
+        sys.exit(2)
+    raise DenyExit(2, 'input_too_large')
+
+
 def skill_dirs_in(text, cwd, resolve=False):
     """Skill directory names a path/command string points into (best effort).
 
@@ -147,6 +168,8 @@ def main():
     tool = ev.get("tool_name") or ""
     inp = ev.get("tool_input") or {}
     cwd = ev.get("cwd") or ""
+    if tool == "Bash" and len(str(inp.get("command") or "")) > MAX_BASH_COMMAND_CHARS:
+        block_too_large(len(str(inp.get("command"))))
     try:
         targets = extract(tool, inp, cwd)
         if not targets:
