@@ -61,10 +61,29 @@ class AuditLimitTest(unittest.TestCase):
                 self.assertIn(MARK, out)
                 self.assertLess(secs, 3)
 
-    def test_a_body_just_under_the_limit_is_audited_not_refused_for_size(self):
-        # The limit counts the whole collected text (subject and the rest of the mail too), so stay a little under.
-        rc, out, _ = run_gate("x" * 262000)
-        self.assertNotIn(MARK, out)
+    def test_the_boundary_is_exact_on_the_collected_text(self):
+        # The limit counts the whole collected text (subject and the rest of the mail too): size the body so that
+        # the collected text is exactly LIMIT - 1, LIMIT and LIMIT + 1 characters.
+        spec = importlib.util.spec_from_file_location("ocg_bound", GATE)
+        g = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(g)
+        limit = g.MAX_AUDIT_CHARS
+        base = {"to": ["a@b.test"], "subject": "teszt", "body": ""}
+        overhead = len(g.collect_mcp_body(dict(base, body="x"))) - 1  # an empty body adds no separator
+        for delta, refused in ((-1, False), (0, False), (1, True)):
+            with self.subTest(collected=limit + delta):
+                body = "Szia " * ((limit + delta - overhead) // 5)
+                body += "x" * ((limit + delta - overhead) - len(body))
+                self.assertEqual(len(g.collect_mcp_body(dict(base, body=body))), limit + delta)
+                rc, out, _ = run_gate(body)
+                self.assertEqual(MARK in out, refused, out[:200])
+                if refused:
+                    self.assertEqual(rc, 2)
+
+    def test_the_refusal_carries_the_reason_code_of_the_audit_lib(self):
+        with open(GATE, encoding="utf-8") as fh:
+            src = fh.read()
+        self.assertIn("DenyExit(2, 'input_too_large')", src)
 
     def test_a_normal_send_is_unchanged(self):
         rc, out, _ = run_gate("Szia, a terv kész, és a többi is rendben van, de nem tudom hogy mikor lesz.")

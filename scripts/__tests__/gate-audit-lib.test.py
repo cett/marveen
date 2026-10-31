@@ -83,6 +83,38 @@ class LibCase(unittest.TestCase):
 
     # --- what is written -------------------------------------------------------------------------------
 
+    def test_input_too_large_is_a_known_reason_and_denyexit_carries_it(self):
+        self.assertIn('input_too_large', lib.REASONS)
+        self.assertTrue(lib.record('outgoing-copy-gate', 'deny', 'input_too_large', agent_id='agent-a', deny_row=True, db_path=self.db))
+        self.assertEqual(rows(self.db, 'SELECT gate, decision, reason, count FROM gate_decision_counts'),
+                         [('outgoing-copy-gate', 'deny', 'input_too_large', 1)])
+        e = lib.DenyExit(2, 'input_too_large')
+        self.assertIsInstance(e, SystemExit)
+        self.assertEqual((e.code, e.reason), (2, 'input_too_large'))
+
+    def test_audited_records_the_reason_of_a_denyexit_and_still_exits_2(self):
+        from unittest import mock
+        seen = []
+
+        def rec(gate, decision, reason, **kw):
+            seen.append((gate, decision, reason))
+            return True
+
+        def main():
+            raise lib.DenyExit(2, 'input_too_large')
+
+        def plain():
+            sys.exit(2)
+
+        with mock.patch.object(lib, 'record', rec), mock.patch.object(lib, '_trusted_agent_id', lambda: None):
+            with self.assertRaises(SystemExit) as cm:
+                lib.audited('g', main)
+            self.assertEqual(cm.exception.code, 2)
+            with self.assertRaises(SystemExit) as cm2:
+                lib.audited('g', plain)
+            self.assertEqual(cm2.exception.code, 2)
+        self.assertEqual(seen, [('g', 'deny', 'input_too_large'), ('g', 'deny', 'denied')])
+
     def test_deny_writes_a_count_and_a_row_with_only_the_allowed_columns(self):
         self.assertTrue(lib.record('secret-read-gate', 'deny', 'denied', agent_id='agent-a', deny_row=True, db_path=self.db))
         self.assertEqual(rows(self.db, 'SELECT gate, decision, reason, count FROM gate_decision_counts'),

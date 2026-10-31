@@ -1704,7 +1704,11 @@ def main():
             f"atvizsgalja ({len(text)} karakter, a hatar {MAX_AUDIT_CHARS}), es egy vizsgalhatatlan kuldes nem mehet at.\n"
             "Bontsd kisebb reszekre (nagy szoveget fajlba irj a Write tool-lal), aztan kuldd ujra.\n"
         )
-        sys.exit(2)
+        try:
+            from gate_audit_lib import DenyExit  # the audit row then carries the reason code
+        except Exception:  # noqa: BLE001
+            sys.exit(2)
+        raise DenyExit(2, 'input_too_large')
 
     if unreadable or not text.strip():
         if tool == "Bash" and not unreadable and _depth_limit_is_sole_reason(cmd):
