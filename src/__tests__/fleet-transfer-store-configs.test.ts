@@ -291,21 +291,22 @@ describe('exportFleet/importFleet -- autonomy (DB-backed)', () => {
 // files to system_config rows (#985 group 5/8) -- round-tripped through their
 // own store modules' getters/setters, not the file helpers above.
 describe('exportFleet/importFleet -- agentsDesired/modelFallback/terminalInputEnabled (DB-backed)', () => {
+  // 'agent-a' is this suite's MAIN_AGENT_ID, and the main agent is never part of the desired set, so these use 'agent-c'.
   it('exports agentsDesired as a sorted name array', async () => {
     const { setDesiredAgents } = await import('../web/agent-desired-state.js')
-    setDesiredAgents(['agent-b', 'agent-a'])
+    setDesiredAgents(['agent-b', 'agent-c'])
     const { exportFleet } = await import('../web/fleet-transfer.js')
-    expect(JSON.parse(exportFleet().data).dashboardSettings.agentsDesired).toEqual(['agent-a', 'agent-b'])
+    expect(JSON.parse(exportFleet().data).dashboardSettings.agentsDesired).toEqual(['agent-b', 'agent-c'])
   })
 
   it('import replaces the target agentsDesired set wholesale', async () => {
     const { setDesiredAgents, getDesiredAgents } = await import('../web/agent-desired-state.js')
     setDesiredAgents(['target-only'])
-    const fleetJson = JSON.stringify(baseFleetWith({ agentsDesired: ['agent-a', 'agent-b'] }))
+    const fleetJson = JSON.stringify(baseFleetWith({ agentsDesired: ['agent-c', 'agent-b'] }))
     const { importFleet } = await import('../web/fleet-transfer.js')
     const applied = importFleet(fleetJson, { apply: true }) as any
     expect(applied.ok).toBe(true)
-    expect([...getDesiredAgents()].sort()).toEqual(['agent-a', 'agent-b'])
+    expect([...getDesiredAgents()].sort()).toEqual(['agent-b', 'agent-c'])
   })
 
   it('exports only the modelFallback fields an operator actually set, no code-level defaults', async () => {
