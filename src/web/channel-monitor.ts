@@ -43,7 +43,7 @@ import {
   type StuckInputActionFacts,
 } from '../pane-state.js'
 import { detectsUsageLimit } from '../model-fallback.js'
-import { MAIN_CHANNELS_SESSION, MAIN_CHANNELS_PLIST } from './main-agent.js'
+import { MAIN_CHANNELS_SESSION, MAIN_CHANNELS_PLIST, isMainChannelsAgent } from './main-agent.js'
 import { restartLaunchdJob, type LaunchdExec } from './launchd-job-restart.js'
 import { notifyChannel } from '../notify.js'
 import { getProvider, channelStateDir, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
@@ -2110,11 +2110,12 @@ function memGateAllowsStart(agentName: string): boolean {
   }
 }
 
-async function reconcileDesiredAgents(): Promise<void> {
+export async function reconcileDesiredAgents(): Promise<void> {
   if (reconcileBurstInProgress) return
   const desired = getDesiredAgents()
   if (desired.size === 0) return
-  const down = [...desired].filter((name) => !isAgentRunning(name))
+  // The main agent is service-managed and never started from here (it would open a second, unused session).
+  const down = [...desired].filter((name) => !isMainChannelsAgent(name) && !isAgentRunning(name))
   if (down.length === 0) return
   reconcileBurstInProgress = true
   try {

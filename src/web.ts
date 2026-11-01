@@ -128,6 +128,7 @@ import { getDb } from './db.js'
 import type { RouteContext } from './web/routes/types.js'
 import { RouteDispatcher } from './web/routes/dispatcher.js'
 import { reconcileAgentsOnStartup, flushRunningStateToDesired } from './web/startup-reconciliation.js'
+import { pruneMainAgentFromDesired } from './web/agent-desired-state.js'
 import { startImportCrawler, stopImportCrawler } from './web/import-crawler.js'
 import { bootstrapDashboardToken } from './web/token-bootstrap.js'
 
@@ -652,6 +653,8 @@ export function startWebServer(port = 3420): http.Server {
   // are gone (accepting lost context). Fire-and-forget: errors are logged
   // internally and never bubble to the caller.
   if (!webOnly) {
+    // Drop a main-agent entry an earlier run left in the stored set before anything reads it.
+    try { pruneMainAgentFromDesired() } catch (err) { logger.warn({ err }, 'desired-state prune failed (non-fatal)') }
     reconcileAgentsOnStartup().catch(err =>
       logger.warn({ err }, 'startup-reconciliation: uncaught error (non-fatal)'),
     )

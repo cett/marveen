@@ -8,6 +8,7 @@ import {
   capturePane,
 } from './agent-process.js'
 import { getDesiredAgents, addDesiredAgent } from './agent-desired-state.js'
+import { isMainChannelsAgent } from './main-agent.js'
 import { readAllAutoRestartConfigs } from './auto-restart-store.js'
 import { detectPaneState } from '../pane-state.js'
 
@@ -52,9 +53,11 @@ export async function reconcileAgentsOnStartup(): Promise<void> {
   const autoRestartCfgs = readAllAutoRestartConfigs()
 
   // Candidates = union of explicitly desired agents and autoRestart-enabled agents.
-  const candidates = new Set<string>(desired)
+  // The main agent is never a candidate: its lifecycle is service-managed (the `<id>-channels` session), a
+  // start here would open a second, unused `agent-<id>` session next to it.
+  const candidates = new Set<string>([...desired].filter((name) => !isMainChannelsAgent(name)))
   for (const [name, cfg] of Object.entries(autoRestartCfgs)) {
-    if (cfg.enabled) candidates.add(name)
+    if (cfg.enabled && !isMainChannelsAgent(name)) candidates.add(name)
   }
 
   if (candidates.size === 0) {
@@ -124,6 +127,7 @@ export async function reconcileAgentsOnStartup(): Promise<void> {
 export function flushRunningStateToDesired(): void {
   const desired = getDesiredAgents()
   for (const name of listAgentNames()) {
+    if (isMainChannelsAgent(name)) continue
     try {
       if (!desired.has(name) && tmuxSessionExists(agentSessionName(name))) {
         addDesiredAgent(name)
