@@ -22,7 +22,7 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from timing_budget import LINEAR_CEILING_SEC  # noqa: E402  (the one ceiling of the linear-time tests)
+from timing_budget import LINEAR_CEILING_SEC, best_of, describe  # noqa: E402  (the ceiling and the cut-off timer of the linear-time tests)
 GATE = os.environ.get("OUTGOING_COPY_GATE_PATH") or os.path.join(os.path.dirname(HERE), "hooks", "outgoing-copy-gate.py")
 spec = importlib.util.spec_from_file_location("outgoing_copy_gate", GATE)
 g = importlib.util.module_from_spec(spec)
@@ -123,13 +123,8 @@ SHAPES = {
     "words": "szia terv kesz " * (BIG // 15),
 }
 for name, text in SHAPES.items():
-    best = None
-    for _ in range(3):
-        t = time.perf_counter()
-        g.strip_technical(text)
-        dt = time.perf_counter() - t
-        best = dt if best is None else min(best, dt)
-    check(name, best < BUDGET, "%.3f s on %d bytes" % (best, len(text)))
+    best = best_of(lambda: g.strip_technical(text))
+    check(name, best < BUDGET, "%s on %d bytes" % (describe(best), len(text)))
 
 if failed:
     print("FAILED: %d" % len(failed))
