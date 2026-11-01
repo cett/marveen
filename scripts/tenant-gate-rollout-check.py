@@ -10,7 +10,8 @@ Run it BEFORE and AFTER the dashboard restart that wires the hooks into the sub-
 Checks (each line is OK, WARN, FAIL or INFO):
   1. migrations 0064 (tenant_channel_bindings) and 0065 (agent_tenant_context) are applied, the tables exist
   2. the hook scripts exist in scripts/hooks
-  3. every sub-agent's settings.json carries both hooks in the current form (fail-closed command, gate matcher)
+  3. every sub-agent's settings.json carries both hooks in the current form (fail-closed command, gate matcher,
+     onFailure "block" on the gate entry; the other gates are checked by scripts/gate-onfailure-check.py)
   4. the main agent is NOT gated (it is exempt on purpose)
   5. live evidence per agent: an agent_tenant_context row means the hook ran for that agent (a wired agent
      with no row has not been restarted yet, or has not received a prompt since)
@@ -106,7 +107,7 @@ def load_settings(path):
 
 
 def hook_state(settings):
-    """-> (context_wired, gate_wired, gate_matcher_ok, fail_closed_ok)."""
+    """-> (context_wired, gate_wired, gate_matcher_ok, fail_closed_ok, on_failure_ok)."""
     hooks = (settings or {}).get("hooks") or {}
     ups = json.dumps(hooks.get("UserPromptSubmit") or [])
     gate_entry = None
@@ -118,7 +119,11 @@ def hook_state(settings):
     matcher_ok = bool(gate_entry) and gate_entry.get("matcher") == GATE_MATCHER
     blob = ups + json.dumps(gate_entry or {})
     fail_closed = ("command -v python3" in blob and "exit 2" in blob) if (context_wired or gate_wired) else False
-    return context_wired, gate_wired, matcher_ok, fail_closed
+    # The gate entry must carry onFailure "block": without it the host waves the tool call through when the hook
+    # times out or fails to start. The prompt hook (tenant-context.py) is not a gate and needs nothing.
+    on_failure_ok = bool(gate_entry) and all(
+        h.get("onFailure") == "block" for h in gate_entry.get("hooks") or [] if GATE_SCRIPT in json.dumps(h))
+    return context_wired, gate_wired, matcher_ok, fail_closed, on_failure_ok
 
 
 def check(root, status, status_error=None, status_level="FAIL"):
@@ -158,15 +163,16 @@ def check(root, status, status_error=None, status_level="FAIL"):
         if settings is None:
             add("FAIL", name, why)
             continue
-        ctx, gate, matcher_ok, fail_closed = hook_state(settings)
-        if ctx and gate and matcher_ok and fail_closed:
-            add("OK", name, "both hooks wired (fail-closed form, gate matcher current)")
+        ctx, gate, matcher_ok, fail_closed, on_failure_ok = hook_state(settings)
+        if ctx and gate and matcher_ok and fail_closed and on_failure_ok:
+            add("OK", name, "both hooks wired (fail-closed form, gate matcher current, onFailure block)")
             wired.append(name)
         elif not ctx and not gate:
             add("FAIL", name, "tenant hooks not wired yet (restart the dashboard: the startup backfill writes them)")
         else:
             missing = [n for n, ok in (("tenant-context", ctx), ("tenant-skill-gate", gate),
-                                       ("gate matcher", matcher_ok), ("fail-closed command", fail_closed)) if not ok]
+                                       ("gate matcher", matcher_ok), ("fail-closed command", fail_closed),
+                                       ("gate onFailure block", on_failure_ok)) if not ok]
             add("FAIL", name, "half-wired or stale: %s" % ", ".join(missing))
 
     if main_id:
@@ -175,7 +181,7 @@ def check(root, status, status_error=None, status_level="FAIL"):
         gated = False
         for p in settings_paths:
             s, _ = load_settings(p)
-            ctx, gate, _, _ = hook_state(s)
+            ctx, gate = hook_state(s)[:2]
             gated = gated or ctx or gate
         add("WARN" if gated else "OK", "main agent (%s)" % main_id,
             "is under the tenant gate but is meant to be exempt" if gated else "not gated (exempt on purpose)")

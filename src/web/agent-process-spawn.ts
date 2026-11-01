@@ -5,7 +5,7 @@ import { MAIN_AGENT_ID, SUBAGENT_INBOX_TEE } from '../config.js'
 import { logger } from '../logger.js'
 import { detectPaneState } from '../pane-state.js'
 import { agentDir, listAgentNames, readAgentAuthMode, readAgentClaudePlan, readAgentDisplayName, readAgentMemoryIsolation, readAgentModel, readAgentRemoteConfig, readAgentRemoteHost } from './agent-config.js'
-import { ensureAutonomySection, ensureCheckpointSection, ensureFleetRosterSection, ensureNoReaderSection, ensureWorkDocSection, writeAgentSettingsFromProfile } from './agent-scaffold.js'
+import { ensureAutonomySection, ensureCheckpointSection, ensureHookPolicySection, ensureFleetRosterSection, ensureNoReaderSection, ensureWorkDocSection, writeAgentSettingsFromProfile } from './agent-scaffold.js'
 import { resolveAgentSecurityProfile } from './agent-team.js'
 import { schedulePluginUnlockAfterRespawn } from './channel-plugin-unlock.js'
 import { reapChannelOrphans, reapDetachedChannelClaudes } from './channel-poller-reap.js'
@@ -231,6 +231,7 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
     ensureNoReaderSection(name)
     ensureWorkDocSection(name)
     ensureCheckpointSection(name)
+    if (ensureHookPolicySection(name) === 'left-manual') logger.warn({ agent: name }, 'hook policy section in CLAUDE.md is hand-edited, differs from the known old text or has an unpaired generated marker: left as is (the onFailure rule is not in it)')
     // A sub-agent must load ONLY its own channel plugin. The user-scope
     // enabledPlugins would otherwise make EVERY sub-agent spawn a telegram
     // (and slack/discord) poller that falls back to the main agent's bot

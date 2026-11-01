@@ -115,6 +115,67 @@ const _TMP_PREFIXES = ['/tmp/', '/var/tmp/', '/private/tmp/', '/dev/shm/']
 // Shared hook-entry type used by ensureAgentHooks and upgradeLegacyHookCommands.
 type HookEntry = { hooks?: Array<{ command?: string; timeout?: number; type?: string; prompt?: string; [k: string]: unknown }> }
 
+// The host treats a PreToolUse hook that times out, does not start or ends with a non-zero exit other than 2
+// as a NON-blocking error: the tool call runs. `onFailure: "block"` on the hook entry turns those cases into a
+// deny, like exit 2. Every gate entry carries it (a gate that cannot finish must not wave the call through);
+// logging / capture hooks do not (they only observe, a crash there must not stop a tool call). Accepted by
+// claude 2.1.295 and later (checked against 2.1.310: the key is in the settings schema, values "continue" |
+// "block"); doctor.sh fails on an older binary. A running session does not re-read settings: a respawn applies it.
+export const GATE_ON_FAILURE = 'block'
+
+// Script basenames of the PreToolUse gate hooks. A command that names one of them is a gate entry and must
+// carry GATE_ON_FAILURE (tests walk the tracked settings, the template and every injector against this list;
+// a new PreToolUse hook that is in neither this list nor the tests' non-gate list fails them).
+export const GATE_HOOK_SCRIPTS: readonly string[] = [
+  'email-send-gate.mjs',
+  'self-pace-gate.mjs',
+  'egress-gate.mjs',
+  'bash-egress-parser.mjs',
+  'destructive-gate.py',
+  'auth-admin-gate.py',
+  'secret-read-gate.py',
+  'email-approval-gate.py',
+  'outgoing-copy-gate.py',
+  'tenant-skill-gate.py',
+]
+
+export function isGateHookCommand(command: string): boolean {
+  return GATE_HOOK_SCRIPTS.some((script) => command.includes(`/${script}`))
+}
+
+// Put onFailure:"block" on every gate entry of a parsed settings object (PreToolUse only). Idempotent, touches
+// no other hook and no other field. true = something changed.
+export function syncGateOnFailure(settings: Record<string, unknown>): boolean {
+  const hooks = settings.hooks
+  if (!hooks || typeof hooks !== 'object') return false
+  const ptu = (hooks as Record<string, unknown>).PreToolUse
+  if (!Array.isArray(ptu)) return false
+  let changed = false
+  for (const entry of ptu as HookEntry[]) {
+    for (const hook of entry?.hooks ?? []) {
+      if (hook && typeof hook.command === 'string' && isGateHookCommand(hook.command) && hook.onFailure !== GATE_ON_FAILURE) {
+        hook.onFailure = GATE_ON_FAILURE
+        changed = true
+      }
+    }
+  }
+  return changed
+}
+
+// Idempotent migration for the sub-agents already scaffolded: their gate entries were written without
+// onFailure. Called at server startup next to the other ensure* steps. Skips an absent or unparseable file
+// and the main agent (its entries ship in the tracked project settings, see refuseMainAgentHookWrite).
+export function ensureGateOnFailure(name: string): boolean {
+  if (refuseMainAgentHookWrite(name, 'ensureGateOnFailure')) return false
+  const settingsPath = agentSettingsPath(name)
+  if (!existsSync(settingsPath)) return false
+  let settings: Record<string, unknown>
+  try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+  if (!syncGateOnFailure(settings)) return false
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return true
+}
+
 /**
  * Returns true when the command is unsafe to register in shared settings:
  *   (a) it references a path under a volatile tmpfs directory, OR
@@ -495,7 +556,7 @@ export function injectEmailSendGate(existing: Record<string, unknown>): void {
   if (isUnsafeHookCommand(command)) return
   const entry = {
     matcher: 'Bash|send_email',
-    hooks: [{ type: 'command', command, timeout: 10 }],
+    hooks: [{ type: 'command', command, timeout: 10, onFailure: GATE_ON_FAILURE }],
   }
   const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
   // Drop any prior email-gate entry (respawn re-runs this) before re-adding, so
@@ -585,7 +646,7 @@ export function injectSelfPaceGate(existing: Record<string, unknown>): void {
     // native-file route to the self-schedule store (gateDecision blocks a Write
     // to scheduled_tasks.json); a Bash-only matcher would leave that route open.
     matcher: 'ScheduleWakeup|CronCreate|CronDelete|CronList|RemoteTrigger|Bash|Write|Edit|MultiEdit|NotebookEdit',
-    hooks: [{ type: 'command', command, timeout: 10 }],
+    hooks: [{ type: 'command', command, timeout: 10, onFailure: GATE_ON_FAILURE }],
   }
   const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
   hooks.PreToolUse = [
@@ -608,7 +669,7 @@ export function injectEgressGate(existing: Record<string, unknown>): void {
   if (isUnsafeHookCommand(command)) return
   const entry = {
     matcher: 'WebFetch',
-    hooks: [{ type: 'command', command, timeout: 10 }],
+    hooks: [{ type: 'command', command, timeout: 10, onFailure: GATE_ON_FAILURE }],
   }
   const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
   hooks.PreToolUse = [
@@ -642,7 +703,7 @@ export function injectBashEgressParser(existing: Record<string, unknown>): void 
   if (isUnsafeHookCommand(command)) return
   const entry = {
     matcher: 'Bash',
-    hooks: [{ type: 'command', command, timeout: 10 }],
+    hooks: [{ type: 'command', command, timeout: 10, onFailure: GATE_ON_FAILURE }],
   }
   const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
   hooks.PreToolUse = [
@@ -678,7 +739,7 @@ export function injectDestructiveGate(existing: Record<string, unknown>): void {
   if (isUnsafeHookCommand(command)) return
   const entry = {
     matcher: 'Bash',
-    hooks: [{ type: 'command', command, timeout: 10 }],
+    hooks: [{ type: 'command', command, timeout: 10, onFailure: GATE_ON_FAILURE }],
   }
   const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
   // Drop any prior destructive-gate entry (respawn re-runs this) before
@@ -746,7 +807,7 @@ export function injectAuthAdminGate(existing: Record<string, unknown>): void {
   if (isUnsafeHookCommand(command)) return
   const entry = {
     matcher: 'Bash',
-    hooks: [{ type: 'command', command, timeout: 10 }],
+    hooks: [{ type: 'command', command, timeout: 10, onFailure: GATE_ON_FAILURE }],
   }
   const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
   hooks.PreToolUse = [
@@ -823,7 +884,7 @@ export function injectTenantHooks(existing: Record<string, unknown>): void {
   const ptu = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
   hooks.PreToolUse = [
     ...ptu.filter((e) => !JSON.stringify(e).includes(TENANT_SKILL_GATE_SCRIPT)),
-    { matcher: TENANT_SKILL_GATE_MATCHER, hooks: [{ type: 'command', command: gate, timeout: 10 }] },
+    { matcher: TENANT_SKILL_GATE_MATCHER, hooks: [{ type: 'command', command: gate, timeout: 10, onFailure: GATE_ON_FAILURE }] },
   ]
 }
 

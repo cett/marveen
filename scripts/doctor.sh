@@ -204,6 +204,26 @@ else
   fail ".claude/settings.json missing"
 fi
 
+# --- Gate hooks: onFailure ---
+# A PreToolUse gate entry without onFailure "block" is waved through when the hook times out or fails to start
+# (the host counts that as a non-blocking error). scripts/gate-onfailure-check.py reads the tracked project
+# settings, every sub-agent's settings and ~/.claude/settings.json, and the installed claude version (the key
+# needs 2.1.295 or later). Read-only; a FAIL line is a doctor failure.
+echo -e "\n${BOLD}Gate hooks (onFailure)${RESET}"
+if [ -f scripts/gate-onfailure-check.py ]; then
+  GATE_OF_OUT=$(python3 scripts/gate-onfailure-check.py 2>&1 || true)
+  while IFS= read -r gate_of_line; do
+    case "$gate_of_line" in
+      OK\ *)   ok   "$(echo "${gate_of_line#OK}" | sed 's/^ *//')" ;;
+      INFO\ *) ok   "$(echo "${gate_of_line#INFO}" | sed 's/^ *//')" ;;
+      WARN\ *) warn "$(echo "${gate_of_line#WARN}" | sed 's/^ *//')" ;;
+      FAIL\ *) fail "$(echo "${gate_of_line#FAIL}" | sed 's/^ *//')" ;;
+    esac
+  done <<< "$GATE_OF_OUT"
+else
+  fail "scripts/gate-onfailure-check.py missing"
+fi
+
 # --- .env keys ---
 echo -e "\n${BOLD}.env keys${RESET}"
 for key in MAIN_AGENT_ID BOT_NAME TELEGRAM_BOT_TOKEN ALLOWED_CHAT_ID; do
