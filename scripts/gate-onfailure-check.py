@@ -143,8 +143,8 @@ def check(root, home=None, version=None, version_reason="", main_agent=None):
         seen, missing = gates_without_field(settings)
         if missing:
             if subject == "agent %s" % main_agent:
-                fix = ("main agent: not written by the dashboard; add onFailure:block by hand or re-run the "
-                       "install-*-hook.sh, then restart the session")
+                fix = ("main agent: not written by the dashboard; add onFailure:block by hand, "
+                       "then restart the session")
             elif subject.startswith("agent "):
                 fix = "restart the dashboard (the startup backfill writes it), then respawn the agent"
             else:

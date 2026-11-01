@@ -113,7 +113,8 @@ class CheckTest(unittest.TestCase):
         main = self.by(res, "agent jarvis")[0]
         self.assertEqual(main[0], "FAIL")
         self.assertIn("main agent: not written by the dashboard", main[1])
-        self.assertIn("install-*-hook.sh", main[1])
+        self.assertIn("add onFailure:block by hand", main[1])
+        self.assertNotIn("install-", main[1])                      # no installer writes a gate entry
         self.assertNotIn("restart the dashboard", main[1])
         other = self.by(res, "agent a1")[0]
         self.assertIn("restart the dashboard", other[1])           # a sub-agent is unchanged
