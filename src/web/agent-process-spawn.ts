@@ -231,7 +231,7 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
     ensureNoReaderSection(name)
     ensureWorkDocSection(name)
     ensureCheckpointSection(name)
-    if (ensureHookPolicySection(name) === 'left-manual') logger.warn({ agent: name }, 'hook policy section in CLAUDE.md is hand-edited and differs from the known old text: left as is (the onFailure rule is not in it)')
+    if (ensureHookPolicySection(name) === 'left-manual') logger.warn({ agent: name }, 'hook policy section in CLAUDE.md is hand-edited, differs from the known old text or has an unpaired generated marker: left as is (the onFailure rule is not in it)')
     // A sub-agent must load ONLY its own channel plugin. The user-scope
     // enabledPlugins would otherwise make EVERY sub-agent spawn a telegram
     // (and slack/discord) poller that falls back to the main agent's bot

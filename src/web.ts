@@ -732,7 +732,7 @@ export function startWebServer(port = 3420): http.Server {
       if (authAdminPatched.length) logger.info({ patched: authAdminPatched }, 'auth-admin-gate Bash hook backfilled into agent settings.json')
       if (govPatched.length) logger.info({ patched: govPatched }, 'governance gate hook commands upgraded to absolute node path in agent settings.json')
       if (policyPatched.length) logger.info({ patched: policyPatched }, 'hook policy section written to agent CLAUDE.md')
-      if (policyLeftManual.length) logger.warn({ agents: policyLeftManual }, 'hook policy section in agent CLAUDE.md is hand-edited and differs from the known old text: left as is, it still carries the old wording')
+      if (policyLeftManual.length) logger.warn({ agents: policyLeftManual }, 'hook policy section in agent CLAUDE.md is hand-edited, differs from the known old text or has an unpaired generated marker: left as is, it still carries the old wording')
       if (onFailurePatched.length) logger.info({ patched: onFailurePatched }, 'onFailure:block set on the gate hook entries of agent settings (a respawn applies it)')
       if (skillUsagePatched.length) logger.info({ patched: skillUsagePatched }, 'skill-usage-capture PostToolUse matcher widened to Skill|Read|Bash in agent settings.json')
       if (watchdogPatched.length) logger.info({ patched: watchdogPatched }, 'context-watchdog PostToolUse hook backfilled into sub-agent settings.json')

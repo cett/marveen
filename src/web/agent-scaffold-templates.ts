@@ -287,7 +287,7 @@ export function buildHookPolicyBody(): string {
   return [
     "## Hook fail-closed policy",
     "",
-    "Egy kapu-hook blokkol, ha exit 2-vel tér vissza, VAGY ha a bejegyzésén `\"onFailure\": \"block\"` áll és a hook hibázik: timeout, nem indul el, vagy az exit 2-től különböző nem-nulla kilépéssel ér véget. Az `onFailure: block` nélküli bejegyzésen a harness-timeout, a nem induló hook és az exit 2-től különböző kilépés NEM blokkol, a művelet lefut. Ezért minden kapu-bejegyzésen (PreToolUse: email-send, self-pace, egress, bash-egress-parser, destructive, auth-admin, secret-read, email-approval, outgoing-copy, tenant-skill és a WebFetch-kapu) kötelező az `\"onFailure\": \"block\"`. A `scripts/doctor.sh` ellenőrzi: kapu-bejegyzés a mező nélkül FAIL, és a telepített claude 2.1.295-nél régebbi is FAIL.",
+    "Egy kapu-hook blokkol, ha exit 2-vel tér vissza, VAGY ha a bejegyzésén `\"onFailure\": \"block\"` áll és a hook hibázik: timeout, nem indul el, vagy az exit 2-től különböző nem-nulla kilépéssel ér véget. Az `onFailure: block` nélküli bejegyzésen a harness-timeout, a nem induló hook és az exit 2-től különböző kilépés NEM blokkol, a művelet lefut. Ezért minden kapu-bejegyzésen (PreToolUse: email-send, self-pace, egress, bash-egress-parser, destructive, auth-admin, secret-read, email-approval, outgoing-copy (in-process fut az email-approval bejegyzésén át), tenant-skill és a WebFetch-kapu) kötelező az `\"onFailure\": \"block\"`. A PostToolUse post-tool-injection-gate nincs a kötelező listán: az `onFailure` hatása PostToolUse-on nem igazolt. A `scripts/doctor.sh` ellenőrzi: kapu-bejegyzés a mező nélkül FAIL, és a telepített claude 2.1.295-nél régebbi is FAIL.",
     "",
     "Kivétel: a logging/capture hookok (tool-log-capture) csak logolnak, rajtuk nincs mező, crash vagy timeout esetén csendben átmennek. Stop, SubagentStop, TaskCompleted, TeammateIdle és az async hookok nem kapuk, rajtuk nincs hatása. UserPromptSubmit hookokon alapból nincs (információs), eseti kivétel Jónással.",
     "",
@@ -304,6 +304,7 @@ export type HookPolicySync = 'skipped' | 'unchanged' | 'added' | 'updated' | 're
 //   - no block, a section under the heading that equals a KNOWN old text: replace that section ('replaced')
 //   - no block, a section under the heading that differs from every known text: a hand edit, NOT touched
 //     ('left-manual'; the caller logs the agent so the old wording does not stay unnoticed)
+//   - an unpaired BEGIN or END marker (no complete block): NOT touched either ('left-manual')
 //   - no heading at all: append the block ('added')
 // Writes are atomic.
 export function ensureHookPolicySection(name: string): HookPolicySync {
@@ -320,7 +321,11 @@ export function ensureHookPolicySection(name: string): HookPolicySync {
   const block = `${HOOK_POLICY_BEGIN}\n${buildHookPolicyBody()}\n${HOOK_POLICY_END}`
   let updated: string
   let status: HookPolicySync
-  if (HOOK_POLICY_BLOCK_RE.test(existing)) {
+  const hasBlock = HOOK_POLICY_BLOCK_RE.test(existing)
+  // An unpaired marker (BEGIN without END, or END without BEGIN) is a damaged or hand-edited file: replacing
+  // around it would leave a stray marker and a duplicate section, so it is left as is and the caller logs it.
+  if (!hasBlock && (existing.includes(HOOK_POLICY_BEGIN) || existing.includes(HOOK_POLICY_END))) return 'left-manual'
+  if (hasBlock) {
     // A replacer function, not a string: "$&" in the text must never be read as a replacement pattern.
     updated = existing.replace(HOOK_POLICY_BLOCK_RE, () => block)
     status = 'updated'

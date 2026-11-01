@@ -123,6 +123,33 @@ describe('ensureHookPolicySection', () => {
     expect(read('agent-c')).toBe(nearly)
   })
 
+  it('leaves a file with an unpaired generated marker untouched (BEGIN without END, END without BEGIN, wrong order)', () => {
+    const cases: Record<string, string> = {
+      // the destructive case: an orphan BEGIN right above the KNOWN old section would otherwise get a second block
+      'orphan-begin-old': `# A\n\n${BEGIN}\n${OLD_SECTION}\n\n## Következő\n\nszöveg\n`,
+      'orphan-begin-only': `# A\n\n${BEGIN}\n\nSemmi több.\n`,
+      'orphan-end': `# A\n\n${HEADING}\n\nszöveg\n${END}\n`,
+      'end-before-begin': `# A\n\n${END}\n\n${BEGIN}\n${HEADING}\n\nrégi\n`,
+    }
+    for (const [name, text] of Object.entries(cases)) {
+      setup(name, text)
+      expect(ensureHookPolicySection(name), name).toBe('left-manual')
+      expect(read(name), name).toBe(text)
+    }
+  })
+
+  it('the text names the unproven PostToolUse hook and the in-process outgoing-copy gate', () => {
+    setup('agent-wording', '# A\n')
+    expect(ensureHookPolicySection('agent-wording')).toBe('added')
+    const body = read('agent-wording')
+    expect(body).toContain('post-tool-injection-gate nincs a kötelező listán')
+    expect(body).toContain('outgoing-copy (in-process fut az email-approval bejegyzésén át)')
+    // the template carries the same two sentences
+    const tpl = readFileSync(join(REPO_ROOT, 'templates', 'CLAUDE.md.template'), 'utf-8')
+    expect(tpl).toContain('post-tool-injection-gate nincs a kötelező listán')
+    expect(tpl).toContain('outgoing-copy (in-process fut az email-approval bejegyzésén át)')
+  })
+
   it('leaves the other generated blocks alone', () => {
     const other = '<!-- BEGIN GENERATED: autonomy-wiring (auto-generated, do not edit by hand) -->\nauton\n<!-- END GENERATED: autonomy-wiring -->\n'
     setup('agent-b', `# Agent B\n\n${other}`)
