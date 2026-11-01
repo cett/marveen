@@ -9,15 +9,19 @@ scrubSecurityTags in src/prompt-safety.ts.
 
 Pinned here: tags of at most 2000 characters are cut whole, as before; the old
 pattern and the new code agree on realistic input; an over-long or unterminated
-opener is neutralized on its own; 550 kB without a '>' stays well under a second.
+opener is neutralized on its own; 550 kB without a '>' stays under the linear ceiling (timing_budget.py).
 
 Privacy: neutral fixture names only.
 """
 import importlib.util
 import os
 import re
-import time
+import sys
 import unittest
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+from timing_budget import LINEAR_CEILING_SEC, best_of, describe  # noqa: E402  (the ceiling and the cut-off timer of the linear-time tests)
 
 _HOOK_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -34,17 +38,7 @@ OLD_RX = re.compile(
 S = hook.STRIPPED_SENTINEL
 SPAN = hook.SECURITY_TAG_SPAN_MAX
 BIG = 550_000
-BUDGET_SEC = 0.3
-
-
-def _best_of(fn, runs=3):
-    best = None
-    for _ in range(runs):
-        t = time.perf_counter()
-        fn()
-        dt = time.perf_counter() - t
-        best = dt if best is None else min(best, dt)
-    return best
+BUDGET_SEC = LINEAR_CEILING_SEC  # a linearity ceiling (timing_budget.py): the old pattern needs ~85 s on 550 kB
 
 
 class DifferentialTest(unittest.TestCase):
@@ -116,8 +110,8 @@ class SpanBoundaryTest(unittest.TestCase):
 class LinearTimeTest(unittest.TestCase):
     def _assert_fast(self, text):
         self.assertGreaterEqual(len(text), BIG - 100)
-        elapsed = _best_of(lambda: hook.scrub(text))
-        self.assertLess(elapsed, BUDGET_SEC, "scrub took %.3f s on %d bytes" % (elapsed, len(text)))
+        elapsed = best_of(lambda: hook.scrub(text))
+        self.assertLess(elapsed, BUDGET_SEC, "scrub took %s on %d bytes" % (describe(elapsed), len(text)))
 
     def test_openers_without_any_gt(self):
         for opener in ("<untrusted ", "<trusted-peer ", "<scheduled-task ", "<system-reminder ", "</untrusted "):
@@ -141,7 +135,8 @@ class LinearTimeTest(unittest.TestCase):
                 def run():
                     for _label, rx in hook.FRAMING_PATTERNS:
                         rx.search(text)
-                self.assertLess(_best_of(run), BUDGET_SEC)
+                elapsed = best_of(run)
+                self.assertLess(elapsed, BUDGET_SEC, "framing patterns took %s" % describe(elapsed))
 
 
 if __name__ == "__main__":

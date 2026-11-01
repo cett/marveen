@@ -19,6 +19,9 @@ function fuzz(seed: number, tokens: string[], count: number): string {
 }
 
 const BIG = 550_000
+// A linearity ceiling, not a speed claim: the old pattern needs far longer than this on 550 kB, the linear one stays
+// far below it, and a slow shared CI runner must not trip it.
+const MAX_MS = 2000
 function timeMs(fn: () => void): number {
   let best = Infinity
   for (let i = 0; i < 3; i++) {
@@ -59,7 +62,7 @@ describe('interpreterWithCodeFlag', () => {
     }
     for (const [name, text] of Object.entries(shapes)) {
       expect(text.length, name).toBeGreaterThan(BIG * 0.98)
-      expect(timeMs(() => interpreterWithCodeFlag(text)), name).toBeLessThan(300)
+      expect(timeMs(() => interpreterWithCodeFlag(text)), name).toBeLessThan(MAX_MS)
     }
   })
 })
@@ -78,8 +81,8 @@ describe('networkCapable', () => {
     expect(classify('echo "unterminated').deny).toBe(false)
   })
 
-  it('answers a 550 kB unparseable command in under 300 ms', () => {
+  it('answers a 550 kB unparseable command in under 2 s', () => {
     const text = '"' + 'sh '.repeat(BIG / 3)
-    expect(timeMs(() => classify(text))).toBeLessThan(300)
+    expect(timeMs(() => classify(text))).toBeLessThan(MAX_MS)
   })
 })

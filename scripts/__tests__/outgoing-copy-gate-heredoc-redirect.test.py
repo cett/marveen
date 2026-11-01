@@ -13,9 +13,10 @@ import os
 import random
 import re
 import sys
-import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+from timing_budget import LINEAR_CEILING_SEC, best_of, describe  # noqa: E402  (the ceiling and the cut-off timer of the linear-time tests)
 GATE = os.environ.get("OUTGOING_COPY_GATE_PATH") or os.path.join(os.path.dirname(HERE), "hooks", "outgoing-copy-gate.py")
 spec = importlib.util.spec_from_file_location("outgoing_copy_gate", GATE)
 g = importlib.util.module_from_spec(spec)
@@ -24,7 +25,9 @@ spec.loader.exec_module(g)
 # The pre-fix pattern, the oracle for the differential checks only.
 OLD = re.compile(r"(?:^|[\s;&|(])(?:cat|tee)\b[^\n]*?(?:>>?|\btee(?:\s+-a)?)\s*(['\"]?)([^\s'\"<>;&|]+)\1")
 BIG = 550_000
-BUDGET = 0.3
+# A linearity ceiling, not a speed claim (timing_budget.py): the old pattern needs seconds already at 40 kB (` cat` x N:
+# 4.6 s) and far longer at 550 kB, the linear one stays well under 0.1 s.
+BUDGET = LINEAR_CEILING_SEC
 failed = []
 
 
@@ -72,13 +75,8 @@ SHAPES = {
     "cat then long quote run": "cat > '" + "a" * BIG,
 }
 for name, text in SHAPES.items():
-    best = None
-    for _ in range(3):
-        t = time.perf_counter()
-        g._heredoc_redirect_target(text)
-        dt = time.perf_counter() - t
-        best = dt if best is None else min(best, dt)
-    check(name, best < BUDGET, "%.3f s on %d bytes" % (best, len(text)))
+    best = best_of(lambda: g._heredoc_redirect_target(text))
+    check(name, best < BUDGET, "%s on %d bytes" % (describe(best), len(text)))
 
 if failed:
     print("FAILED: %d" % len(failed))

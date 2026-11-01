@@ -7,7 +7,10 @@ and the MCP email path has no size cap. (Live, the main agent's email registrati
 turns a stuck audit into a deny; run alone it just hangs.) Only the first start of a run is tried now.
 
 Pinned here: the output equals the old pattern's on realistic text and on random strings over the characters that
-matter; the deviations (documented) are listed; 550 kB hostile shapes take under 300 ms.
+matter; the deviations (documented) are listed; 550 kB hostile shapes finish under BUDGET.
+BUDGET is a linearity ceiling, not a speed claim: the old quadratic pattern needs over 90 s on one 550 kB word, the
+linear one well under 0.1 s on a developer machine, so 2 s separates them by a wide margin and a slow shared CI runner
+(0.304 s was seen against a 0.3 s ceiling) cannot trip it.
 Run: python3 <thisfile>   (OUTGOING_COPY_GATE_PATH names another gate file)   Exit 0 = all pass.
 """
 import importlib.util
@@ -18,6 +21,8 @@ import sys
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+from timing_budget import LINEAR_CEILING_SEC, best_of, describe  # noqa: E402  (the ceiling and the cut-off timer of the linear-time tests)
 GATE = os.environ.get("OUTGOING_COPY_GATE_PATH") or os.path.join(os.path.dirname(HERE), "hooks", "outgoing-copy-gate.py")
 spec = importlib.util.spec_from_file_location("outgoing_copy_gate", GATE)
 g = importlib.util.module_from_spec(spec)
@@ -25,7 +30,7 @@ spec.loader.exec_module(g)
 
 OLD = g._TECHNICAL_OLD
 BIG = 550_000
-BUDGET = 0.3
+BUDGET = LINEAR_CEILING_SEC  # a linearity ceiling (timing_budget.py), not the runner speed
 failed = []
 
 
@@ -118,13 +123,8 @@ SHAPES = {
     "words": "szia terv kesz " * (BIG // 15),
 }
 for name, text in SHAPES.items():
-    best = None
-    for _ in range(3):
-        t = time.perf_counter()
-        g.strip_technical(text)
-        dt = time.perf_counter() - t
-        best = dt if best is None else min(best, dt)
-    check(name, best < BUDGET, "%.3f s on %d bytes" % (best, len(text)))
+    best = best_of(lambda: g.strip_technical(text))
+    check(name, best < BUDGET, "%s on %d bytes" % (describe(best), len(text)))
 
 if failed:
     print("FAILED: %d" % len(failed))
