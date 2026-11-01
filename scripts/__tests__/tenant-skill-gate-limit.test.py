@@ -32,6 +32,8 @@ import time
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+from timing_budget import LINEAR_CEILING_SEC  # noqa: E402  (the one ceiling of the linear-time tests)
 GATE = os.path.join(os.path.dirname(HERE), "hooks", "tenant-skill-gate.py")
 MARK = "tul nagy ahhoz"
 PATH_MARK = "utvonal-mezo tul hosszu"
@@ -83,7 +85,7 @@ class LimitTest(unittest.TestCase):
             rc, out, secs = run_gate("Bash", {"command": cmd})
             self.assertEqual(rc, 2)
             self.assertIn(MARK, out)
-            self.assertLess(secs, 2.0)  # includes the interpreter start (slow on a CI runner); the refusal itself is O(1), without the limit this takes seconds
+            self.assertLess(secs, LINEAR_CEILING_SEC)  # includes the interpreter start (slow on a CI runner); the refusal itself is O(1), without the limit this takes seconds
 
     def test_the_worst_shapes_inside_the_limit_finish_in_under_3_s(self):
         # Inside the limit the cost is per distinct path word (realpath, expanduser), and the word list was

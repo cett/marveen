@@ -16,6 +16,8 @@ import sys
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+from timing_budget import LINEAR_CEILING_SEC  # noqa: E402  (the one ceiling of the linear-time tests)
 GATE = os.environ.get("OUTGOING_COPY_GATE_PATH") or os.path.join(os.path.dirname(HERE), "hooks", "outgoing-copy-gate.py")
 spec = importlib.util.spec_from_file_location("outgoing_copy_gate", GATE)
 g = importlib.util.module_from_spec(spec)
@@ -24,9 +26,9 @@ spec.loader.exec_module(g)
 # The pre-fix pattern, the oracle for the differential checks only.
 OLD = re.compile(r"(?:^|[\s;&|(])(?:cat|tee)\b[^\n]*?(?:>>?|\btee(?:\s+-a)?)\s*(['\"]?)([^\s'\"<>;&|]+)\1")
 BIG = 550_000
-# A linearity ceiling, not a speed claim: the old pattern needs seconds already at 40 kB (` cat` x N: 4.6 s) and
-# far longer at 550 kB, the linear one stays well under 0.1 s, so 2 s separates them and a slow CI runner cannot trip it.
-BUDGET = 2.0
+# A linearity ceiling, not a speed claim (timing_budget.py): the old pattern needs seconds already at 40 kB (` cat` x N:
+# 4.6 s) and far longer at 550 kB, the linear one stays well under 0.1 s.
+BUDGET = LINEAR_CEILING_SEC
 failed = []
 
 

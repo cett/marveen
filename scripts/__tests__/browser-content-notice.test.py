@@ -9,15 +9,20 @@ scrubSecurityTags in src/prompt-safety.ts.
 
 Pinned here: tags of at most 2000 characters are cut whole, as before; the old
 pattern and the new code agree on realistic input; an over-long or unterminated
-opener is neutralized on its own; 550 kB without a '>' stays well under a second.
+opener is neutralized on its own; 550 kB without a '>' stays under the linear ceiling (timing_budget.py).
 
 Privacy: neutral fixture names only.
 """
 import importlib.util
 import os
 import re
+import sys
 import time
 import unittest
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+from timing_budget import LINEAR_CEILING_SEC  # noqa: E402  (the one ceiling of the linear-time tests)
 
 _HOOK_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -34,7 +39,7 @@ OLD_RX = re.compile(
 S = hook.STRIPPED_SENTINEL
 SPAN = hook.SECURITY_TAG_SPAN_MAX
 BIG = 550_000
-BUDGET_SEC = 0.3
+BUDGET_SEC = LINEAR_CEILING_SEC  # a linearity ceiling (timing_budget.py): the old pattern needs ~85 s on 550 kB
 
 
 def _best_of(fn, runs=3):

@@ -21,6 +21,8 @@ import sys
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+from timing_budget import LINEAR_CEILING_SEC  # noqa: E402  (the one ceiling of the linear-time tests)
 GATE = os.environ.get("OUTGOING_COPY_GATE_PATH") or os.path.join(os.path.dirname(HERE), "hooks", "outgoing-copy-gate.py")
 spec = importlib.util.spec_from_file_location("outgoing_copy_gate", GATE)
 g = importlib.util.module_from_spec(spec)
@@ -28,7 +30,7 @@ spec.loader.exec_module(g)
 
 OLD = g._TECHNICAL_OLD
 BIG = 550_000
-BUDGET = 2.0  # linearity ceiling (see the docstring), not the runner speed
+BUDGET = LINEAR_CEILING_SEC  # a linearity ceiling (timing_budget.py), not the runner speed
 failed = []
 
 
