@@ -104,6 +104,38 @@ class CheckTest(unittest.TestCase):
         self.assertEqual(usr[0], "FAIL")
         self.assertIn("by hand", usr[1])                    # the scaffold never writes the user-level file
 
+    def test_the_main_agents_own_settings_file_is_a_hand_edit_not_a_dashboard_restart(self):
+        # agents/<main>/.claude/settings.json is the cwd file of the main agent's second session; the startup
+        # backfill skips the main agent (refuseMainAgentHookWrite), so "restart the dashboard" would be untrue.
+        self.agent("jarvis", settings(gate("destructive-gate.py", None)))
+        self.agent("a1", settings(gate("destructive-gate.py", None)))
+        res = MOD.check(self.root, self.home, (2, 1, 310), "", main_agent="jarvis")
+        main = self.by(res, "agent jarvis")[0]
+        self.assertEqual(main[0], "FAIL")
+        self.assertIn("main agent: not written by the dashboard", main[1])
+        self.assertIn("install-*-hook.sh", main[1])
+        self.assertNotIn("restart the dashboard", main[1])
+        other = self.by(res, "agent a1")[0]
+        self.assertIn("restart the dashboard", other[1])           # a sub-agent is unchanged
+        self.assertNotIn("main agent", other[1])
+
+    def test_the_main_agent_id_comes_from_the_environment_then_dotenv_then_the_default(self):
+        saved = os.environ.pop("MAIN_AGENT_ID", None)
+        try:
+            self.assertEqual(MOD.main_agent_id(self.root), "marveen")
+            self.write(os.path.join(self.root, ".env"), "A=1\nMAIN_AGENT_ID=\"jarvis\"\n")
+            self.assertEqual(MOD.main_agent_id(self.root), "jarvis")
+            os.environ["MAIN_AGENT_ID"] = "other"
+            self.assertEqual(MOD.main_agent_id(self.root), "other")
+            # check() without an explicit main_agent uses it
+            os.environ["MAIN_AGENT_ID"] = "a1"
+            self.agent("a1", settings(gate("destructive-gate.py", None)))
+            self.assertIn("main agent:", self.by(self.run_check(), "agent a1")[0][1])
+        finally:
+            os.environ.pop("MAIN_AGENT_ID", None)
+            if saved is not None:
+                os.environ["MAIN_AGENT_ID"] = saved
+
     def test_a_non_gate_hook_is_ignored_and_a_file_without_gates_is_info(self):
         logger = {"type": "command", "command": 'python3 "/p/scripts/hooks/tool-log-capture.py"', "timeout": 5}
         self.project(settings(gate("destructive-gate.py"), logger, other={"PostToolUse": [{"hooks": [dict(gate("destructive-gate.py", None))]}]}))

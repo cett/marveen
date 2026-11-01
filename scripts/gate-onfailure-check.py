@@ -88,9 +88,27 @@ def _load(path):
         return None, "unreadable (%s)" % err
 
 
-def check(root, home=None, version=None, version_reason=""):
-    """version: the installed claude version tuple, or None with version_reason saying why."""
+def main_agent_id(root):
+    """The main agent's id: MAIN_AGENT_ID from the environment, else from root/.env, else the product default."""
+    value = os.environ.get("MAIN_AGENT_ID", "").strip()
+    if not value:
+        try:
+            with open(os.path.join(root, ".env")) as f:
+                for line in f:
+                    if line.startswith("MAIN_AGENT_ID="):
+                        value = line.split("=", 1)[1].strip().strip("\"'")
+                        break
+        except OSError:
+            pass
+    return value or "marveen"
+
+
+def check(root, home=None, version=None, version_reason="", main_agent=None):
+    """version: the installed claude version tuple, or None with version_reason saying why.
+    main_agent: the main agent's id (default: main_agent_id(root)); its agents/<id>/.claude/settings.json is not
+    written by the dashboard, so its hint is a hand edit."""
     results = []
+    main_agent = main_agent_id(root) if main_agent is None else main_agent
 
     def add(level, subject, message):
         results.append({"level": level, "subject": subject, "message": message})
@@ -124,8 +142,13 @@ def check(root, home=None, version=None, version_reason=""):
             continue
         seen, missing = gates_without_field(settings)
         if missing:
-            fix = ("restart the dashboard (the startup backfill writes it), then respawn the agent" if subject.startswith("agent ")
-                   else "add it by hand: the scaffold never writes this file")
+            if subject == "agent %s" % main_agent:
+                fix = ("main agent: not written by the dashboard; add onFailure:block by hand or re-run the "
+                       "install-*-hook.sh, then restart the session")
+            elif subject.startswith("agent "):
+                fix = "restart the dashboard (the startup backfill writes it), then respawn the agent"
+            else:
+                fix = "add it by hand: the scaffold never writes this file"
             add("FAIL", subject, "%d of %d gate entries without onFailure \"block\" (%s); %s"
                 % (len(missing), seen, "; ".join(re.sub(r"\s+", " ", m)[:60] for m in missing[:3]), fix))
         elif seen:
