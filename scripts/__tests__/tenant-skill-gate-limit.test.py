@@ -83,7 +83,7 @@ class LimitTest(unittest.TestCase):
             rc, out, secs = run_gate("Bash", {"command": cmd})
             self.assertEqual(rc, 2)
             self.assertIn(MARK, out)
-            self.assertLess(secs, 0.3)  # includes the interpreter start; the refusal itself is O(1)
+            self.assertLess(secs, 2.0)  # includes the interpreter start (slow on a CI runner); the refusal itself is O(1), without the limit this takes seconds
 
     def test_the_worst_shapes_inside_the_limit_finish_in_under_3_s(self):
         # Inside the limit the cost is per distinct path word (realpath, expanduser), and the word list was

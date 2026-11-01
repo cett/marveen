@@ -7,7 +7,10 @@ and the MCP email path has no size cap. (Live, the main agent's email registrati
 turns a stuck audit into a deny; run alone it just hangs.) Only the first start of a run is tried now.
 
 Pinned here: the output equals the old pattern's on realistic text and on random strings over the characters that
-matter; the deviations (documented) are listed; 550 kB hostile shapes take under 300 ms.
+matter; the deviations (documented) are listed; 550 kB hostile shapes finish under BUDGET.
+BUDGET is a linearity ceiling, not a speed claim: the old quadratic pattern needs over 90 s on one 550 kB word, the
+linear one well under 0.1 s on a developer machine, so 2 s separates them by a wide margin and a slow shared CI runner
+(0.304 s was seen against a 0.3 s ceiling) cannot trip it.
 Run: python3 <thisfile>   (OUTGOING_COPY_GATE_PATH names another gate file)   Exit 0 = all pass.
 """
 import importlib.util
@@ -25,7 +28,7 @@ spec.loader.exec_module(g)
 
 OLD = g._TECHNICAL_OLD
 BIG = 550_000
-BUDGET = 0.3
+BUDGET = 2.0  # linearity ceiling (see the docstring), not the runner speed
 failed = []
 
 

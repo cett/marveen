@@ -24,7 +24,9 @@ spec.loader.exec_module(g)
 # The pre-fix pattern, the oracle for the differential checks only.
 OLD = re.compile(r"(?:^|[\s;&|(])(?:cat|tee)\b[^\n]*?(?:>>?|\btee(?:\s+-a)?)\s*(['\"]?)([^\s'\"<>;&|]+)\1")
 BIG = 550_000
-BUDGET = 0.3
+# A linearity ceiling, not a speed claim: the old pattern needs seconds already at 40 kB (` cat` x N: 4.6 s) and
+# far longer at 550 kB, the linear one stays well under 0.1 s, so 2 s separates them and a slow CI runner cannot trip it.
+BUDGET = 2.0
 failed = []
 
 
