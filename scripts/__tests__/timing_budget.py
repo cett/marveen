@@ -24,6 +24,9 @@ LINEAR_CEILING_SEC = 2.0
 CUTOFF_SEC = LINEAR_CEILING_SEC + 1.0
 # Two cut-off runs of the three decide it; one stalled run (a paused CI runner) does not fail a linear gate.
 MAX_CUTOFFS = 2
+# Once one input in this process was cut off twice, slowness is confirmed and a single cut-off decides every later
+# input: a file full of quadratic shapes then fails in about 3 s per shape instead of 6 s.
+_slow_confirmed = False
 
 
 def _child(fn, conn):
@@ -41,7 +44,9 @@ def best_of(fn, runs=3, cutoff=CUTOFF_SEC):
     """The smallest wall-clock time of `runs` calls of fn(), in seconds; math.inf when the calls do not finish.
 
     Each call runs in its own forked child and is killed once `cutoff` seconds have passed; after MAX_CUTOFFS cut-off
-    calls the answer is math.inf at once (the remaining calls are not made). Format the result with describe()."""
+    calls (one, once a slow input is confirmed) the answer is math.inf at once (the remaining calls are not made). Format the result with describe()."""
+    global _slow_confirmed
+    limit = 1 if _slow_confirmed else MAX_CUTOFFS
     ctx = multiprocessing.get_context("fork")  # the closure and the big input are inherited, nothing is pickled
     best, cut = math.inf, 0
     for _ in range(runs):
@@ -64,7 +69,8 @@ def best_of(fn, runs=3, cutoff=CUTOFF_SEC):
             if got[0] == "error":
                 raise RuntimeError("measured call failed: %s" % got[1])
             best = min(best, got[1])
-        if cut >= MAX_CUTOFFS:
+        if cut >= limit:
+            _slow_confirmed = _slow_confirmed or cut >= MAX_CUTOFFS
             return math.inf
     return best
 
