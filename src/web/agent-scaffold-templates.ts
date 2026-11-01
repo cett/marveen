@@ -267,7 +267,8 @@ export function ensureCheckpointSection(name: string): void {
 // exit and that this cannot be configured; the host does not do that: without onFailure "block" on the entry a
 // timeout, a hook that does not start and a non-zero exit other than 2 are non-blocking errors. The text now
 // states the real rule. Basis: vendor docs, the claude 2.1.310 binary text and an isolated load probe of the
-// settings key; a live deny on a real timeout has not been run. Same wording as the section in
+// settings key, and a live probe of the timeout branch (2026-11-01; the other two branches were not tried live).
+// Same wording as the section in
 // templates/CLAUDE.md.template (new installs and the main agent); this block carries it to sub-agent CLAUDE.md
 // files that already exist (ensureHookPolicySection).
 const HOOK_POLICY_HEADING = '## Hook fail-closed policy'
@@ -291,7 +292,7 @@ export function buildHookPolicyBody(): string {
     "",
     "Kivétel: a logging/capture hookok (tool-log-capture) csak logolnak, rajtuk nincs mező, crash vagy timeout esetén csendben átmennek. Stop, SubagentStop, TaskCompleted, TeammateIdle és az async hookok nem kapuk, rajtuk nincs hatása. UserPromptSubmit hookokon alapból nincs (információs), eseti kivétel Jónással.",
     "",
-    "A kapunak a harness 10 másodperces timeoutja alatt kell végeznie (lineáris minták, méretplafon); az `onFailure` csak a végső védőháló. Futó session nem olvassa újra a settingset: indítás vagy respawn kell. Fail-open nem megengedett: kapu-bejegyzés `onFailure: block` nélkül nem kerülhet be.",
+    "A kapunak a harness 10 másodperces timeoutja alatt kell végeznie (lineáris minták, méretplafon); az `onFailure` csak a végső védőháló. Futó session nem olvassa újra a settingset: indítás vagy respawn kell. Fail-open nem megengedett: kapu-bejegyzés `onFailure: block` nélkül nem kerülhet be. Élő próba (2026-11-01, claude 2.1.310): a timeout-ág igazolt (`timeout: 1` és `sleep 5` mellett `onFailure: block` esetén a Bash hívás tiltva lett, a mező nélkül lefutott, exit 0 mellett `block`-kal is lefutott); a nem induló hook és az exit 2-től különböző kilépés ága élőben nem volt kipróbálva.",
   ].join('\n')
 }
 

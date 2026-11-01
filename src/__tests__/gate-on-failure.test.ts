@@ -8,7 +8,9 @@
 //
 // Evidence basis for the behavior itself: the vendor docs, the claude 2.1.310 binary text ("timed out; blocking
 // because onFailure is "block"") and an isolated load probe (the key is in the settings schema, values
-// "continue" | "block"). A live DENY on a real timeout has NOT been run (it needs a logged-in session).
+// "continue" | "block"). A live probe on 2026-11-01 (claude 2.1.310, logged-in terminal) confirmed the timeout
+// branch: timeout 1 + sleep 5 + onFailure block refused the Bash call, without the field it ran, exit 0 + block
+// ran. The hook that does not start and the exit other than 2 were not tried live.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'

@@ -195,11 +195,13 @@ describe('ensureHookPolicySection', () => {
     expect(block).not.toMatch(/a hook script nem elérhető, crashel, timeout-ol/)
   })
 
-  it('claims no live proof: the live deny on a real timeout has not been run', () => {
+  it('states the live probe exactly: the timeout branch is proven, the other two are not', () => {
     setup('agent-b', '# Agent B\n')
     ensureHookPolicySection('agent-b')
     const block = blockOf(read('agent-b'))
-    expect(block).not.toMatch(/élő(ben)? (bizonyít|próba|teszt)|live (proof|test)/i)
+    expect(block).toContain('Élő próba (2026-11-01, claude 2.1.310): a timeout-ág igazolt')
+    expect(block).toContain('a nem induló hook és az exit 2-től különböző kilépés ága élőben nem volt kipróbálva')
+    expect(block).not.toMatch(/mindhárom ág igazolt|minden ág igazolt/i)
   })
 })
 
