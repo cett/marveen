@@ -41,6 +41,7 @@ GATE_SCRIPTS = (
     "email-approval-gate.py",
     "outgoing-copy-gate.py",
     "tenant-skill-gate.py",
+    "shell-rescan-guard.py",
 )
 
 

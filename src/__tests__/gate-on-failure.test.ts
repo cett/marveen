@@ -27,6 +27,7 @@ import {
   injectBashEgressParser,
   injectDestructiveGate,
   injectAuthAdminGate,
+  injectShellRescanGuard,
   injectTenantHooks,
   agentSettingsPath,
 } from '../web/agent-scaffold.js'
@@ -112,6 +113,7 @@ describe('every injector writes the gate entry with onFailure:block', () => {
     ['injectBashEgressParser', injectBashEgressParser, 'bash-egress-parser.mjs'],
     ['injectDestructiveGate', injectDestructiveGate, 'destructive-gate.py'],
     ['injectAuthAdminGate', injectAuthAdminGate, 'auth-admin-gate.py'],
+    ['injectShellRescanGuard', injectShellRescanGuard, 'shell-rescan-guard.py'],
     ['injectTenantHooks', injectTenantHooks, 'tenant-skill-gate.py'],
   ]
   for (const [name, inject, script] of injectors) {

@@ -41,7 +41,7 @@ from urllib.parse import quote
 # Every gate that may record. A name outside this list is never written: `gate` becomes a column value.
 GATES = frozenset({
     'destructive-gate', 'secret-read-gate', 'email-approval-gate', 'outgoing-copy-gate',
-    'auth-admin-gate', 'tenant-skill-gate',
+    'auth-admin-gate', 'tenant-skill-gate', 'shell-rescan-guard',
 })
 DECISIONS = frozenset({'allow', 'deny', 'error'})
 # denied: the gate exited 2. gate_error: main() raised something the gate did not turn into a verdict (the

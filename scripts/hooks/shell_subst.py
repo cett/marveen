@@ -38,6 +38,10 @@ import re
 # backtracking.
 _HEREDOC_WORD = re.compile(r'(-?)[ \t]*((?:[^\s;&|<>()\'"\\]|\\[\s\S]|\'[^\']*\'|"[^"]*")+)')
 _BT_UNESCAPE = re.compile(r'\\([\\$`])')
+# ${v@P} (prompt-string expansion applied to the VALUE of v). Bounded on every side, and only tried at a `${`,
+# so it is linear in the text however hostile the text is.
+_PROMPT_EXPAND = re.compile(
+    r'\$\{!?(?:[A-Za-z_][A-Za-z0-9_]{0,63}(?:\[[^\]]{0,63}\])?|[0-9]{1,6}|[*@#?$!-])@P\}')
 _COMMENT_AFTER = ' \t\n;&|('
 
 
@@ -76,13 +80,26 @@ def _heredoc_bodies(text, start, pending):
     return out, pos
 
 
-def top_bodies(text, heredoc_body=False, limit=None):
+def _note_prompt_expand(text, i, events):
+    """`text[i:]` starts with `${`: record a ${v@P} there. The window keeps the regex's work per `${`
+    constant."""
+    if events is not None and _PROMPT_EXPAND.match(text, i, i + 160):
+        events.append(('D_PROMPT_EXPAND', i))
+
+
+def top_bodies(text, heredoc_body=False, limit=None, events=None):
     """The outermost substitution bodies of `text`, in order of appearance.
 
     `heredoc_body=True` reads `text` as an unquoted heredoc body: only `$( )`,
     backticks and backslashes mean anything there; quotes are literal.
     `limit`: stop reading once MORE than `limit` bodies were found (the caller denies
     past its own limit, so the rest of a hostile text is not worth reading).
+    `events`: an optional list. Each construct the shell RE-SCANS gets a (rule, position) appended:
+      E_BACKTICK_IN_DQ    a backtick inside a double-quoted string (at any nesting inside this text)
+      B_UNQUOTED_HEREDOC  a backtick in the body of an unquoted heredoc
+      D_PROMPT_EXPAND     ${v@P}
+    NOT events: a backtick in a backquote body, `$( )` in an unquoted heredoc and `$( )` in a double-quoted
+    string (the last two are everyday idioms). Positions are relative to `text`.
     """
     n = len(text)
     out = []
@@ -135,7 +152,12 @@ def top_bodies(text, heredoc_body=False, limit=None):
             elif c == '$' and text.startswith('(', i + 1):
                 push('sub', i + 2)
                 i += 2
+            elif c == '$' and text.startswith('{', i + 1):
+                _note_prompt_expand(text, i, events)
+                i += 2
             elif c == '`':
+                if events is not None:
+                    events.append(('E_BACKTICK_IN_DQ' if kind == 'dq' else 'B_UNQUOTED_HEREDOC', i))
                 push('bt', i + 1)
                 i += 1
             else:
@@ -155,6 +177,9 @@ def top_bodies(text, heredoc_body=False, limit=None):
             nxt = text[i + 1:i + 2]
             if nxt == '(':
                 push('sub', i + 2)
+                i += 2
+            elif nxt == '{':
+                _note_prompt_expand(text, i, events)
                 i += 2
             elif nxt == "'":
                 j = i + 2
@@ -196,7 +221,7 @@ def top_bodies(text, heredoc_body=False, limit=None):
             # The expanding heredoc body is text, not a command: only the
             # substitutions inside it run.
             for b in bodies:
-                out.extend(top_bodies(b, True, limit))
+                out.extend(top_bodies(b, True, limit, events))
             if limit is not None and len(out) > limit:
                 full = True
         else:

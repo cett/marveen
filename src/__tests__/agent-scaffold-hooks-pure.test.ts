@@ -26,6 +26,7 @@ import {
   renderQuarantineReader,
   destructiveGateCommand,
   authAdminGateCommand,
+  shellRescanGuardCommand,
   agentGetsEmailGate,
   agentGetsGovernanceGates,
   injectEmailSendGate,
@@ -33,6 +34,7 @@ import {
   injectEgressGate,
   injectDestructiveGate,
   injectAuthAdminGate,
+  injectShellRescanGuard,
 } from '../web/agent-scaffold-hooks.js'
 
 describe('hookCommand', () => {
@@ -58,6 +60,15 @@ describe('authAdminGateCommand', () => {
     const cmd = authAdminGateCommand('/some/script.py')
     expect(cmd).toBe(
       "command -v python3 >/dev/null 2>&1 || { echo 'auth-admin-gate: python3 not found -- DENY' >&2; exit 2; }; python3 \"/some/script.py\"",
+    )
+  })
+})
+
+describe('shellRescanGuardCommand', () => {
+  it('builds the same fail-closed python3 preamble, labelled with the shell-rescan guard', () => {
+    const cmd = shellRescanGuardCommand('/some/script.py')
+    expect(cmd).toBe(
+      "command -v python3 >/dev/null 2>&1 || { echo 'shell-rescan-guard: python3 not found -- DENY' >&2; exit 2; }; python3 \"/some/script.py\"",
     )
   })
 })
@@ -359,6 +370,31 @@ describe('inject*Gate helpers (idempotent PreToolUse wiring)', () => {
     const ptu = (existing.hooks as any).PreToolUse as unknown[]
     expect(ptu.filter((e) => JSON.stringify(e).includes('destructive-gate.py')).length).toBe(1)
     expect(ptu.filter((e) => JSON.stringify(e).includes('auth-admin-gate.py')).length).toBe(1)
+  })
+
+  it('injectShellRescanGuard adds exactly one Bash entry with the 10 s timeout and onFailure block, de-duped', () => {
+    const existing: Record<string, unknown> = {}
+    injectShellRescanGuard(existing)
+    injectShellRescanGuard(existing)
+    const ptu = (existing.hooks as any).PreToolUse as unknown[]
+    const matches = ptu.filter((e) => JSON.stringify(e).includes('shell-rescan-guard.py'))
+    expect(matches.length).toBe(1)
+    expect((matches[0] as any).matcher).toBe('Bash')
+    expect((matches[0] as any).hooks[0].timeout).toBe(10)
+    expect((matches[0] as any).hooks[0].onFailure).toBe('block')
+  })
+
+  it('the destructive, auth-admin and shell-rescan gates are separate Bash entries, none drops another', () => {
+    const existing: Record<string, unknown> = {}
+    injectDestructiveGate(existing)
+    injectShellRescanGuard(existing)
+    injectAuthAdminGate(existing)
+    injectShellRescanGuard(existing)
+    injectDestructiveGate(existing)
+    const ptu = (existing.hooks as any).PreToolUse as unknown[]
+    for (const script of ['destructive-gate.py', 'auth-admin-gate.py', 'shell-rescan-guard.py']) {
+      expect(ptu.filter((e) => JSON.stringify(e).includes(script)).length, script).toBe(1)
+    }
   })
 
   it('injectors preserve unrelated pre-existing PreToolUse entries', () => {

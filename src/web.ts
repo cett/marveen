@@ -19,7 +19,7 @@ import { detectLanIp } from './web/network-info.js'
 import { normalizePath, applyDeprecationHeaders } from './web/routes/versioning.js'
 import { instrumentHttpRequest } from './otel-http.js'
 import { AGENTS_BASE_DIR, listAgentNames } from './web/agent-config.js'
-import { ensureAgentHooks, ensureAgentStalenessHook, ensureEgressGate, ensureBashEgressParser, ensureDestructiveGate, ensureAuthAdminGate, ensureTenantHooks, ensureGovernanceGateCommands, ensureGateOnFailure, ensureHookPolicySection, ensureSkillUsageMatcher, ensureQuarantineReader, ensureContextWatchdogHook, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection, ensureWorkDocSection } from './web/agent-scaffold.js'
+import { ensureAgentHooks, ensureAgentStalenessHook, ensureEgressGate, ensureBashEgressParser, ensureDestructiveGate, ensureAuthAdminGate, ensureShellRescanGuard, ensureTenantHooks, ensureGovernanceGateCommands, ensureGateOnFailure, ensureHookPolicySection, ensureSkillUsageMatcher, ensureQuarantineReader, ensureContextWatchdogHook, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection, ensureWorkDocSection } from './web/agent-scaffold.js'
 import { watchEgressAllowlistBaseline, queueAllowlistReport } from './web/egress-allowlist-baseline.js'
 import { shouldRegisterHooks, pruneStaleHooksFromSettingsFile } from './web/hook-registration-guard.js'
 import { refreshMarveenBotUsername } from './web/telegram.js'
@@ -688,6 +688,7 @@ export function startWebServer(port = 3420): http.Server {
       const bashParserPatched: string[] = []
       const destructivePatched: string[] = []
       const authAdminPatched: string[] = []
+      const shellRescanPatched: string[] = []
       const tenantPatched: string[] = []
       const govPatched: string[] = []
       const onFailurePatched: string[] = []
@@ -709,6 +710,7 @@ export function startWebServer(port = 3420): http.Server {
         if (ensureBashEgressParser(agentName)) bashParserPatched.push(agentName)
         if (ensureDestructiveGate(agentName)) destructivePatched.push(agentName)
         if (ensureAuthAdminGate(agentName)) authAdminPatched.push(agentName)
+        if (ensureShellRescanGuard(agentName)) shellRescanPatched.push(agentName)
         if (ensureTenantHooks(agentName)) tenantPatched.push(agentName)
         if (ensureGovernanceGateCommands(agentName)) govPatched.push(agentName)
         if (ensureGateOnFailure(agentName)) onFailurePatched.push(agentName)
@@ -733,6 +735,7 @@ export function startWebServer(port = 3420): http.Server {
       if (tenantPatched.length) logger.info({ patched: tenantPatched }, 'tenant-context + tenant-skill-gate hooks backfilled into agent settings.json')
       if (destructivePatched.length) logger.info({ patched: destructivePatched }, 'destructive-gate Bash hook backfilled into agent settings.json')
       if (authAdminPatched.length) logger.info({ patched: authAdminPatched }, 'auth-admin-gate Bash hook backfilled into agent settings.json')
+      if (shellRescanPatched.length) logger.info({ patched: shellRescanPatched }, 'shell-rescan-guard Bash hook backfilled into agent settings.json')
       if (govPatched.length) logger.info({ patched: govPatched }, 'governance gate hook commands upgraded to absolute node path in agent settings.json')
       if (policyPatched.length) logger.info({ patched: policyPatched }, 'hook policy section written to agent CLAUDE.md')
       if (policyLeftManual.length) logger.warn({ agents: policyLeftManual }, 'hook policy section in agent CLAUDE.md is hand-edited, differs from the known old text or has an unpaired generated marker: left as is, it still carries the old wording')
