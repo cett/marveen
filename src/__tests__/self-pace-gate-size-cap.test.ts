@@ -36,6 +36,7 @@ describe('Bash command size cap', () => {
 
 describe('hostile shapes at the cap finish well inside the hook timeout', () => {
   const n = MAX_CMD_CHARS - 10
+  const HOOK_CPU_CEILING_MS = 8000
   const shapes: Array<[string, string]> = [
     ['parens', '('.repeat(n)],
     ['assignment after a paren', '(a='.repeat(Math.floor(n / 3))],
@@ -44,11 +45,16 @@ describe('hostile shapes at the cap finish well inside the hook timeout', () => 
     ['backticks', '`a'.repeat(Math.floor(n / 2))],
   ]
   for (const [name, command] of shapes) {
+    // CPU time of this (forked, serial) test process, not wall clock: the pattern is quadratic by design, and a
+    // wall-clock ceiling measures the machine load as much as the pattern (a loaded machine took 7-10 s of wall
+    // time for a gate that needs 1.5-3.6 s of CPU). The ceiling stays under the 10 s hook timeout, about 2x the
+    // slowest shape measured idle, so raising the cap (or a slower pattern) still fails here.
     it(name, () => {
-      const t0 = Date.now()
+      const c0 = process.cpuUsage()
       gateDecision('Bash', { command })
-      const ms = Date.now() - t0
-      expect(ms, `${name}: ${ms} ms`).toBeLessThan(6000)
+      const c = process.cpuUsage(c0)
+      const ms = Math.round((c.user + c.system) / 1000)
+      expect(ms, `${name}: ${ms} ms of CPU`).toBeLessThan(HOOK_CPU_CEILING_MS)
     })
   }
 })
