@@ -689,6 +689,82 @@ describe('a bracket in the command text never crashes the gate', () => {
     expect(bash('cp /tmp/x scripts/unrelated.s[h]')).toEqual({ deny: false })
     expect(bash('cp /tmp/x scripts/[u]nrelated.s[h]')).toEqual({ deny: false })
   })
+  it('a reversed range in a NEGATED class excludes nothing, so the protected file is still reached', () => {
+    expect(bash('cp /tmp/x scripts/self-pace-gate.mj[!t-r]')).toEqual({ deny: true, reason: 'gate-scripts' })
+    expect(bash('cp /tmp/x scripts/self-pace-gate.mj[^t-r]')).toEqual({ deny: true, reason: 'gate-scripts' })
+    expect(bash('cp /tmp/x scripts/self-pace-gate.mj[!t-r]x')).toEqual({ deny: false })
+    expect(bash('cp /tmp/x scripts/self-pace-gate.mj[!r-t]')).toEqual({ deny: false })
+  })
+  it('a ^ negates a class like a !, so a protected file outside the listed members is still reached', () => {
+    expect(bash('cp /tmp/x scripts/self-pace-gate.mj[^x]')).toEqual({ deny: true, reason: 'gate-scripts' })
+    expect(bash('cp /tmp/x scripts/self-pace-gate.mj[^s]')).toEqual({ deny: false })
+  })
+  it('a run of stars is one star and the stars beyond the sixteenth match anything, so the pattern cannot blow up', () => {
+    expect(bash('cp /tmp/x scripts/self-pace-gate.mj**********s')).toEqual({ deny: true, reason: 'gate-scripts' })
+    // 17 stars that really reach the gate script, then 3 more that a shell would not match: over-matched, denied
+    expect(bash('cp /tmp/x scripts/s*e*l*f*-*p*a*c*e*-*g*a*t*e*.*m*j*s')).toEqual({ deny: true, reason: 'gate-scripts' })
+    expect(bash('cp /tmp/x scripts/s*e*l*f*-*p*a*c*e*-*g*a*t*e*.*m*j*s*q*z*')).toEqual({ deny: true, reason: 'gate-scripts' })
+    expect(bash('cp /tmp/x scripts/s*e*l*f*q*z')).toEqual({ deny: false })
+    // (a reader of the word, so the over-matched stars cannot reach a protected file by themselves)
+    expect(bash(`echo ${'[a]]'.repeat(2000)}`)).toEqual({ deny: false })
+    expect(bash(`echo ${'a[b]]'.repeat(2000)}`)).toEqual({ deny: false })
+    expect(bash(`echo ${'[a]]'.repeat(15000)}`)).toEqual({ deny: false })
+  })
+  it('a glob word too long to inspect never throws and fails closed for a writer, a reader is still let through', () => {
+    expect(bash(`cp /tmp/x ${'['.repeat(100000)}`).deny).toBe(true)
+    expect(bash(`cp /tmp/x scripts/${'*'.repeat(40000)}`).deny).toBe(true)
+    expect(bash(`echo ${'['.repeat(100000)}`)).toEqual({ deny: false })
+    // a long word with no wildcard is not a glob at all
+    expect(bash(`cp /tmp/x scripts/${'a'.repeat(40000)}`)).toEqual({ deny: false })
+  })
+  it('a word padded with stars to any length still resolves to the file it names, before and after the length cap', () => {
+    for (const n of [3, 40000]) {
+      const pad = '*'.repeat(n)
+      for (const c of [`cp /tmp/x scripts/self-pace-gate.mj${pad}`, `cp /tmp/x scripts/self-pace${pad}`, `cp /tmp/x scripts/hooks/egress${pad}`, `cp /tmp/x scripts/${pad}self-pace-gate.mjs`, `cp /tmp/x scripts/hooks${pad}`]) {
+        expect({ n, c: c.slice(0, 60), r: bash(c) }).toEqual({ n, c: c.slice(0, 60), r: { deny: true, reason: 'gate-scripts' } })
+      }
+    }
+    // the same padding on a word that bash resolves to nothing protected stays allowed
+    expect(bash(`cp /tmp/x scripts/unrelated.s${'*'.repeat(40000)}z`)).toEqual({ deny: false })
+  })
+  it('wildcards separated by ? are one unit, and more than four separate stars are over-matched, so no pattern backtracks', () => {
+    touch(join(SCRIPTS(), 'hooks', 'a'.repeat(50)))
+    // 16 x (* then ?) is [^/]{16,}: it matches the 50-character name, so the writer is denied, and quickly
+    expect(timed(`cp /tmp/x scripts/hooks/${'*?'.repeat(16)}`, true)).toBeLessThan(LINEAR_CEILING_MS)
+    // five separate stars with literals between them: the fifth and the rest match anything, a late literal never backtracks
+    expect(timed(`echo scripts/hooks/${'a*'.repeat(30)}Zq`)).toBeLessThan(LINEAR_CEILING_MS)
+  })
+  // The time a word of N brackets may take is linear: 550 kB of each shape stays far below the ceiling the
+  // other linear-time gate tests use (an unbounded rescan per unclosed bracket needs ~17 s at 60 kB).
+  const LINEAR_CEILING_MS = 2000
+  const timed = (command: string, deny = false) => {
+    let best = Infinity
+    for (let k = 0; k < 3; k++) {
+      const t0 = performance.now()
+      const r = bash(command)
+      best = Math.min(best, performance.now() - t0)
+      expect(r.deny).toBe(deny)
+    }
+    return best
+  }
+  for (const [name, unit] of [['unclosed [', '['], ['unclosed [a', '[a'], ['stray ]', 'a[b]]'], ['stray class', '[a]]'], ['POSIX opener', '[[:'], ['escaped bracket', '[\\'], ['closed classes', '[a]']] as const) {
+    it(`550 kB of "${name}" is decided in linear time`, () => {
+      const command = `echo ${unit.repeat(Math.ceil(550000 / unit.length))}`
+      expect(timed(command)).toBeLessThan(LINEAR_CEILING_MS)
+    })
+  }
+  it('adjacent stars (a run of widened classes) are one star, so a late mismatch does not backtrack through them', () => {
+    // eight adjacent [^/]* against a 50-character name take ~9 s in V8, twelve over 100 s
+    touch(join(SCRIPTS(), 'hooks', 'abcdefghij'.repeat(5)))
+    expect(timed(`cp /tmp/x scripts/hooks/${'[a]]'.repeat(8)}Zq`)).toBeLessThan(LINEAR_CEILING_MS)
+    expect(timed(`cp /tmp/x scripts/hooks/${'*'.repeat(3)}${'[a]]'.repeat(8)}Zq`)).toBeLessThan(LINEAR_CEILING_MS)
+  })
+  // The same words below the length cap, where the budget and the "no ] left" shortcut are the only defence.
+  for (const [name, unit] of [['unclosed [', '['], ['unclosed [a', '[a'], ['POSIX opener', '[[:']] as const) {
+    it(`a 30 kB word of "${name}" is decided in linear time`, () => {
+      expect(timed(`echo ${unit.repeat(Math.ceil(30000 / unit.length))}`)).toBeLessThan(LINEAR_CEILING_MS / 4)
+    })
+  }
   it('an out-of-order range is read with its ends swapped: the gate over-matches, it never matches less', () => {
     expect(bash('cp /tmp/x scripts/self-pace-gate.mj[t-r]')).toEqual({ deny: true, reason: 'gate-scripts' })
     expect(bash('cp /tmp/x scripts/self-pace-gate.mj[z-t]')).toEqual({ deny: false })
