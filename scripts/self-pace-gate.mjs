@@ -456,13 +456,50 @@ function expandWord(w, vars, cwd) {
   }
   return s
 }
+// The regex source of a glob bracket class body (the text between [ and ]). The leading ! or ^ of the glob
+// negates; a backslash makes the next character a plain member (as in bash); an unescaped dash between two
+// members is a range. An out-of-order range (z-a) is read with its ends swapped: the gate over-matches what a
+// shell would call an empty range, it never matches less. A class RegExp still refuses falls back to any one
+// non-slash character, which also over-matches. Neither path throws.
+function globClass(body) {
+  const neg = body[0] === '!' || body[0] === '^'
+  const chars = []
+  for (let i = neg ? 1 : 0; i < body.length; i++) {
+    if (body[i] === '\\' && i + 1 < body.length) chars.push({ c: body[++i], lit: true })
+    else chars.push({ c: body[i], lit: false })
+  }
+  const esc = (c) => c.replace(/[\\[\]^-]/g, '\\$&')
+  let inner = ''
+  for (let i = 0; i < chars.length; i++) {
+    const isRange = i + 2 < chars.length && !chars[i + 1].lit && chars[i + 1].c === '-'
+    if (isRange) {
+      const lo = chars[i].c, hi = chars[i + 2].c
+      inner += lo <= hi ? esc(lo) + '-' + esc(hi) : esc(hi) + '-' + esc(lo)
+      i += 2
+    } else inner += esc(chars[i].c)
+  }
+  if (!inner) return null
+  const src = '[' + (neg ? '^' : '') + inner + ']'
+  try { new RegExp(src); return src } catch { return '[^/]' }
+}
 function globToRegex(abs) {
   let out = '^'
   for (let i = 0; i < abs.length; i++) {
     const c = abs[i]
     if (c === '*') { if (abs[i + 1] === '*') { out += '.*'; i++ } else out += '[^/]*' }
     else if (c === '?') out += '[^/]'
-    else if (c === '[') { const e = abs.indexOf(']', i + 2); if (e === -1) out += '\\['; else { out += abs.slice(i, e + 1); i = e } }
+    else if (c === '[') {
+      // A ] right after the [ (or after its ! / ^) is a member, not the end of the class.
+      let from = i + 1
+      if (abs[from] === '!' || abs[from] === '^') from++
+      if (abs[from] === ']') from++
+      let e = abs.indexOf(']', from)
+      while (e > 0 && abs[e - 1] === '\\') e = abs.indexOf(']', e + 1) // an escaped ] is a member too
+      const cls = e === -1 ? null : globClass(abs.slice(i + 1, e))
+      // An unclosed bracket is literal text, as in bash. A closed one always yields a class: the gate must
+      // reach a decision, never throw out of a Bash call.
+      if (cls) { out += cls; i = e } else out += '\\['
+    }
     else out += c.replace(/[.+^${}()|\\]/g, '\\$&')
   }
   return new RegExp(out + '$')

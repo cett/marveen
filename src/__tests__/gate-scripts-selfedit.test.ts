@@ -645,3 +645,42 @@ describe('env -S on the gate scripts and the allowlist', () => {
     expect(bash('env -S "node scripts/hooks/egress-gate.mjs"')).toEqual({ deny: false })
   })
 })
+
+describe('a bracket in the command text never crashes the gate', () => {
+  const hook = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'scripts', 'self-pace-gate.mjs')
+  const run = (command: string) => spawnSync(process.execPath, [hook], { input: JSON.stringify({ tool_name: 'Bash', tool_input: { command }, cwd: root }), encoding: 'utf-8' })
+
+  it('an out-of-order range, an empty negation and an unclosed bracket reach a decision instead of throwing', () => {
+    for (const c of [
+      'python3 -c "print(toEqual([agent-c, agent-b]))"', 'echo [c-b]x', 'ls [z-a]*', 'echo [!]', 'echo [^]', 'echo [', 'cat a[]b',
+    ]) expect({ c, r: bash(c) }).toEqual({ c, r: { deny: false } })
+  })
+  it('the hook process exits 0 and stays silent on such a command (a crash would be a block under onFailure:block)', () => {
+    const r = run('node -e "console.log([c-b])"')
+    expect(r.status).toBe(0)
+    expect(r.stdout).toBe('')
+  })
+  it('a valid class and a negated class still expand, so a protected path behind them is still denied', () => {
+    for (const c of ['cp /tmp/x scripts/self-pace-gat[e].mjs', 'cp /tmp/x scripts/self-pace-gate.mj[!x]', 'cp /tmp/x scripts/hook[s-s]/egress-gate.mjs', 'cp /tmp/x scripts/[a-z]elf-pace-gate.mjs']) {
+      expect({ c, r: bash(c) }).toEqual({ c, r: { deny: true, reason: 'gate-scripts' } })
+    }
+  })
+  it('a bracket inside a class is escaped, not read as nested syntax', () => {
+    expect(bash('cp /tmp/x scripts/self-pace-gate.mj[[]')).toEqual({ deny: false })
+    expect(bash('cp /tmp/x scripts/self-pace-gate.mj[s^]')).toEqual({ deny: true, reason: 'gate-scripts' })
+  })
+  it('a backslash makes the next class member a plain character, so the class still reaches the protected file', () => {
+    for (const c of ['cp /tmp/x scripts/self-pace-gat[\\e].mjs', 'cp /tmp/x scripts/self-pace-gate.mj[\\s\\-]', 'cp /tmp/x scripts/self-pace-gate.mj[\\]s]']) {
+      expect({ c, r: bash(c) }).toEqual({ c, r: { deny: true, reason: 'gate-scripts' } })
+    }
+  })
+  it('a ] right after the [ (or its negation) is a member: the class does not end there', () => {
+    expect(bash('cp /tmp/x scripts/self-pace-gate.mj[]s]')).toEqual({ deny: true, reason: 'gate-scripts' })
+    expect(bash('cp /tmp/x scripts/self-pace-gate.mj[!]x]')).toEqual({ deny: true, reason: 'gate-scripts' })
+    expect(bash('cp /tmp/x scripts/self-pace-gate.mj[!]s]')).toEqual({ deny: false })
+  })
+  it('an out-of-order range is read with its ends swapped: the gate over-matches, it never matches less', () => {
+    expect(bash('cp /tmp/x scripts/self-pace-gate.mj[t-r]')).toEqual({ deny: true, reason: 'gate-scripts' })
+    expect(bash('cp /tmp/x scripts/self-pace-gate.mj[z-t]')).toEqual({ deny: false })
+  })
+})
