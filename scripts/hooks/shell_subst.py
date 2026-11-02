@@ -95,9 +95,12 @@ def top_bodies(text, heredoc_body=False, limit=None, events=None):
     `limit`: stop reading once MORE than `limit` bodies were found (the caller denies
     past its own limit, so the rest of a hostile text is not worth reading).
     `events`: an optional list. Each construct the shell RE-SCANS gets a (rule, position) appended:
-      E_BACKTICK_IN_DQ    a backtick inside a double-quoted string (at any nesting inside this text)
+      E_BACKTICK_IN_DQ    a backtick inside a double-quoted string
       B_UNQUOTED_HEREDOC  a backtick in the body of an unquoted heredoc
       D_PROMPT_EXPAND     ${v@P}
+    Only constructs OUTSIDE every substitution of `text` are events: text inside a `$( )` / backquote body
+    is read by the caller's recursion as a command of its own, where a heredoc is recognised. Reading it
+    here as well mistook the body of `$(cat <<'EOF' ... EOF)` for shell text (a measured false positive).
     NOT events: a backtick in a backquote body, `$( )` in an unquoted heredoc and `$( )` in a double-quoted
     string (the last two are everyday idioms). Positions are relative to `text`.
     """
@@ -153,10 +156,10 @@ def top_bodies(text, heredoc_body=False, limit=None, events=None):
                 push('sub', i + 2)
                 i += 2
             elif c == '$' and text.startswith('{', i + 1):
-                _note_prompt_expand(text, i, events)
+                _note_prompt_expand(text, i, events if cmd_frames == 0 else None)
                 i += 2
             elif c == '`':
-                if events is not None:
+                if events is not None and cmd_frames == 0:
                     events.append(('E_BACKTICK_IN_DQ' if kind == 'dq' else 'B_UNQUOTED_HEREDOC', i))
                 push('bt', i + 1)
                 i += 1
@@ -179,7 +182,7 @@ def top_bodies(text, heredoc_body=False, limit=None, events=None):
                 push('sub', i + 2)
                 i += 2
             elif nxt == '{':
-                _note_prompt_expand(text, i, events)
+                _note_prompt_expand(text, i, events if cmd_frames == 0 else None)
                 i += 2
             elif nxt == "'":
                 j = i + 2
