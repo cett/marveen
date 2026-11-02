@@ -138,5 +138,40 @@ class TestShapeMatrix(unittest.TestCase):
                     self.assertEqual(v, "allow", "%s denied %r: %s %s" % (g.name, make(g.forbidden), p.stdout, p.stderr))
 
 
+class TestKnownLimitRuntimeText(unittest.TestCase):
+    """A STATED LIMIT, pinned so a change is a decision: text that only exists at run time (eval of a string
+    built from variables, source of a file written in the same command, bash -c of such a string) is not read
+    by the gates that match the command text. The forbidden command is split over two variables, so neither the
+    name nor the full command appears in the text. These cells are ALLOW today for the gates listed; when one
+    starts to deny (or a gate is added to the list) update this table and the CHANGELOG known-limit text.
+    The substitution reader stops the accidental form; it does not claim to stop a deliberate one."""
+
+    ALLOW = {
+        "eval": {"destructive-gate", "email-send-gate"},
+        "source": {"destructive-gate", "email-send-gate", "auth-admin-gate", "bash-egress-parser"},
+        "bash -c": {"destructive-gate", "email-send-gate"},
+    }
+
+    @staticmethod
+    def _form(kind, forbidden):
+        k = len(forbidden) // 2
+        a, b = forbidden[:k], forbidden[k:]
+        pre = "A='%s'; B='%s'; " % (a, b)
+        if kind == "eval":
+            return pre + 'eval "$A$B"'
+        if kind == "source":
+            return pre + 'printf \'%s\\n\' "$A$B" > "$TMPDIR/p.sh"; . "$TMPDIR/p.sh"'
+        return pre + 'bash -c "$A$B"'
+
+    def test_pinned_verdicts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for g in GATES:
+                cwd = tsg.CWD if g.name == "tenant-skill-gate" else ROOT
+                for kind, allowed in self.ALLOW.items():
+                    with self.subTest("%s / %s" % (g.name, kind)):
+                        v, _p = g.verdict(self._form(kind, g.forbidden), tmp, cwd)
+                        self.assertEqual(v, "allow" if g.name in allowed else "deny")
+
+
 if __name__ == "__main__":
     unittest.main()
