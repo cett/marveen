@@ -72,11 +72,12 @@ const SELF_PACE_BASH_PATTERNS = [
 // `PATH=/bin crontab -` are all caught. Trailing \b(?!-) so it never fires on
 // "netstat" / "crontab-helper.sh"; (?!\s*=) so a bare NAME=value assignment
 // (`at=$(...)`) is not mistaken for the `at` binary.
-// LINEAR: the value of an assignment and the path run only up to the next boundary character (`[^\s;&|(\x60]`,
-// the complement of SCHED_BOUNDARY). With `\S*` here every `(` or backtick of `((((...` opened a scan to the end of
-// the word and back (250 KB: 40 s); a boundary character inside the old `\S*` was always also a match start of its
-// own, so the verdict is the same (checked equal on 400,000 random strings, scheduler match and read exemption).
-const SCHED_PREFIX = String.raw`(?:(?:[A-Za-z_]\w*=[^\s;&|(\x60]*|sudo|env|command|exec|nice|builtin|time)\s+)*(?:[^\s;&|(\x60]*/)?`
+// NOT linear: on a long run of `(` or backticks every boundary opens a `\S*` scan to the end of the word, so the cost
+// is quadratic (60 KB: 2.3 s). The input size cap (MAX_CMD_CHARS) is what keeps it inside the hook timeout. Narrowing
+// `\S*` to stop at the next boundary changes verdicts: a wrapper word the list does not name, such as nohup in
+// `X=$(nohup <scheduler> ...)`, is caught only because the assignment value swallows `$(nohup`. Do not make the
+// pattern linear without a differential test that includes unlisted wrapper words.
+const SCHED_PREFIX = String.raw`(?:(?:[A-Za-z_]\w*=\S*|sudo|env|command|exec|nice|builtin|time)\s+)*(?:\S*/)?`
 // The command-boundary anchor includes `(` so a $(...) command substitution
 // (`X=$(crontab -)`) is caught, AND a backtick so a legacy `...` substitution
 // (`X=`crontab -r``) is caught too -- both run the enclosed command in a shell
@@ -1264,7 +1265,8 @@ export function normalizeShellEvasion(seg) {
     .replace(/\\(.)/g, '$1') // \X -> X (bash unescape of a backslash-escaped char)
 }
 
-export const MAX_CMD_CHARS = 262144
+// 64 KiB: the longest real call seen is about 32 KB, and SCHED_PREFIX is quadratic on a hostile shape (about 2.6 s at the cap).
+export const MAX_CMD_CHARS = 65536
 
 // Pure decision: does this tool call set up self-pace / self-injection?
 export function gateDecision(toolName, toolInput, opts = {}) {
