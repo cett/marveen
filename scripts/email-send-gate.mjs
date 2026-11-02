@@ -27,6 +27,7 @@
 import { readFileSync, realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { topBodies } from './shell-subst.mjs'
 
 // Bash command patterns that send mail. SUBGATEPOZ822 (2026-08-22): these are
 // no longer the primary trigger -- they matched CONTENT anywhere in the
@@ -754,7 +755,8 @@ function heredocProgramSends(cmd, depth = 0) {
   return writtenThenRun(cmd, written, depth)
 }
 
-export function isSendInvocation(cmd, depth = 0) {
+// The segment-level verdict of ONE command text, substitution bodies not looked into.
+function directSend(cmd, depth) {
   if (heredocProgramSends(cmd, depth)) return true
   let segments
   try {
@@ -775,6 +777,45 @@ export function isSendInvocation(cmd, depth = 0) {
   } catch {
     return SEND_PATTERNS.some((re) => re.test(cmd))
   }
+}
+
+// A command substitution RUNS, also inside double quotes, where the tokenizer keeps it as
+// text (`echo "$(sendmail x)"` is one `echo`). Each outermost body is judged as a command of
+// its own (the recursion finds the next level). Past a limit the gate does NOT guess: it
+// throws InspectionLimitError, which the caller turns into a DENY (fail-closed).
+export const MAX_SUBST_BODIES = 256
+export const MAX_SUBST_NEST = 8
+export const MAX_SUBST_CHARS = 131072 // total text of all bodies judged (a body nested k deep is read k times)
+export const INSPECT_MS = 4000
+let substBudget = { bodies: 0, chars: 0, deadline: 0 }
+
+function substitutionSends(cmd, depth, sd) {
+  for (const body of topBodies(cmd, false, MAX_SUBST_BODIES + 1)) {
+    // Every body counts, a blank one too: the reader stops after MAX + 1 bodies, so a gate that skipped
+    // blank ones before counting could be filled with them and never see the real one.
+    if (++substBudget.bodies > MAX_SUBST_BODIES) {
+      throw new InspectionLimitError(`more than ${MAX_SUBST_BODIES} command substitutions`)
+    }
+    if (!body.trim()) continue
+    substBudget.chars += body.length
+    if (substBudget.chars > MAX_SUBST_CHARS) {
+      throw new InspectionLimitError(`the command substitutions together are over ${MAX_SUBST_CHARS} characters`)
+    }
+    if (Date.now() > substBudget.deadline) {
+      throw new InspectionLimitError(`the inspection took longer than ${INSPECT_MS} ms`)
+    }
+    if (sd >= MAX_SUBST_NEST) {
+      throw new InspectionLimitError(`command substitutions nested deeper than ${MAX_SUBST_NEST}`)
+    }
+    if (isSendInvocation(body, depth, sd + 1)) return true
+  }
+  return false
+}
+
+export function isSendInvocation(cmd, depth = 0, sd = 0) {
+  if (depth === 0 && sd === 0) substBudget = { bodies: 0, chars: 0, deadline: Date.now() + INSPECT_MS }
+  if (directSend(cmd, depth)) return true
+  return substitutionSends(cmd, depth, sd)
 }
 
 // Outbound-shaped operations of the multiplexed manage_email tool. Each of

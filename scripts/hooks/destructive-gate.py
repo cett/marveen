@@ -57,25 +57,61 @@ UNTESTED-IN-PRODUCTION blocking gate fleet-wide is a policy call for the
 coordinator/owner, not something to flip on silently as a side effect of
 porting the file.
 """
+import bisect
 import hashlib
 import json
 import os
 import re
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ledger_lib  # noqa: E402
 import agent_token  # noqa: E402
+import shell_subst  # noqa: E402
 
 # Commands no agent decides on its own -- each destroys data or state
 # irreversibly, not a style preference.
 BANNED_CMDS = {'rm', 'mv', 'shred', 'sudo', 'mkfs', 'dd'}
 # Path prefixes that hold credential material.
 PROTECTED_RE = re.compile(r'/\.(ssh|aws|gnupg|gmail-mcp)(?=/|\s|$|["\'])')
-ENV_RE = re.compile(r'(?:^|[\s=:])(?:[^\s"\']*/)?\.env(?=$|[\s"\'`,;)\]}])')
+# A `.env` file name: `.env` at the start of a word or after `=`/`:`, or at the end of a path
+# (`/x/y/.env`), followed by the end of the text, whitespace or a closing character. The
+# regex this replaces, `(?:^|[\s=:])(?:[^\s"\']*/)?\.env(?=$|[\s"\'`,;)\]}])`, was
+# QUADRATIC (`a=a=a=...`: every `=` starts a scan to the end of the word and backs off for
+# the `/`): 250 KB of it ran longer than a minute, far past the 10 s hook timeout. The pass
+# below is one scan of the text with the same verdicts (the tests compare both on random text).
+_ENV_AFTER = set(' \t\n\r\f\v"\'`,;)]}')
+
+
+def _env_file_mentioned(text):
+    n = len(text)
+    run_begin = 0      # start of the current run of non-space, non-quote characters
+    sep_seen = False   # a `=` or `:` inside the current run
+    i = 0
+    while i < n:
+        ch = text[i]
+        if ch.isspace() or ch in '"\'':
+            run_begin = i + 1
+            sep_seen = False
+            i += 1
+            continue
+        if ch == '.' and text.startswith('.env', i) and (i + 4 >= n or text[i + 4] in _ENV_AFTER
+                                                           or text[i + 4].isspace()):
+            if i == 0:
+                return True
+            prev = text[i - 1]
+            if prev.isspace() or prev in '=:':
+                return True
+            if prev == '/' and (run_begin == 0 or text[run_begin - 1].isspace() or sep_seen):
+                return True
+        if ch in '=:':
+            sep_seen = True
+        i += 1
+    return False
 
 # Commands whose heredoc body is EXECUTED, not written to a file. Only these
 # keep their heredoc body in the scanned text.
@@ -236,6 +272,26 @@ def _comment_ranges(text):
     return out
 
 
+def _merge_ranges(ranges):
+    """Sorted, overlap-free union of the ranges (nested or overlapping ones join)."""
+    out = []
+    for a, b in sorted(ranges):
+        if out and a <= out[-1][1]:
+            if b > out[-1][1]:
+                out[-1] = (out[-1][0], b)
+        else:
+            out.append((a, b))
+    return out
+
+
+def _in_ranges(pos, ranges, starts):
+    """True when `pos` lies in one of `ranges` (sorted by start, disjoint; `starts` is
+    their start offsets). A bisect, not a scan: the scan per quoted span made the
+    whole pass quadratic on a command with many quoted spans and many ranges."""
+    k = bisect.bisect_right(starts, pos) - 1
+    return k >= 0 and pos < ranges[k][1]
+
+
 def _prose_quote_ranges(text, keep_ranges, code_ranges=()):
     """Ranges of quoted text that contains whitespace -- prose or data (a
     message body, a JSON payload, a regex, a test case), not a path.
@@ -246,6 +302,10 @@ def _prose_quote_ranges(text, keep_ranges, code_ranges=()):
     """
     state = _quote_map(text)
     out = []
+    keep_ranges = _merge_ranges(keep_ranges)
+    code_ranges = _merge_ranges(code_ranges)
+    keep_starts = [a for a, _b in keep_ranges]
+    code_starts = [a for a, _b in code_ranges]
     i = 0
     while i < len(text):
         if state[i]:
@@ -253,13 +313,13 @@ def _prose_quote_ranges(text, keep_ranges, code_ranges=()):
             while j < len(text) and state[j] == state[i]:
                 j += 1
             span = text[i:j]
-            inside_keep = any(a <= i < b for a, b in keep_ranges)
+            inside_keep = _in_ranges(i, keep_ranges, keep_starts)
             # Command substitution inside a quote EXECUTES -- the shell steps
             # back into command context there. Never treated as prose, or a
             # PORT="$(sed ...)" shape would lose a real block. The exception
             # only applies in shell context: inside an interpreter heredoc
             # body, a backtick or $( is just a character in Python/Node text.
-            in_code_body = any(a <= i < b for a, b in code_ranges)
+            in_code_body = _in_ranges(i, code_ranges, code_starts)
             runs_code = (not in_code_body) and ('$(' in span or chr(96) in span)
             if not inside_keep and not runs_code and re.search(r'\s', span):
                 out.append((i, j))
@@ -375,6 +435,17 @@ _NUMERIC = re.compile(r'^[0-9]+(\.[0-9]+)?[smhd]?$')
 # change can never recurse without bound. Exceeding it BLOCKS, it does not
 # pass through -- what the gate cannot follow, it does not allow.
 _MAX_NEST = 8
+# Limits of the command-substitution inspection (see shell_subst.py). Past any of
+# them the gate DENIES: what it cannot finish reading inside the hook timeout it
+# does not wave through. 256 KiB and 256 bodies are far above anything a real call
+# carries; 4 s leaves the 10 s hook timeout a wide margin.
+MAX_CMD_CHARS = 262144
+MAX_SUBST_BODIES = 256
+# Total text of all bodies judged (a body nested k deep is read k times): half the call cap, so a body
+# that is most of the command is refused before it is read again (the cost of a hostile one).
+MAX_SUBST_CHARS = 131072
+INSPECT_SECONDS = 4.0
+_budget = {'bodies': 0, 'chars': 0, 'deadline': None}
 
 
 def _bare_tokens(seg):
@@ -491,6 +562,14 @@ def _is_coordinator_push_allowed():
 
 
 def check_bash(cmd, agent_id=None, _depth=0):
+    if _depth == 0:
+        if len(cmd) > MAX_CMD_CHARS:
+            block('A parancs tul nagy (%d karakter, a hatar %d): a kapu nem tudja '
+                  'atvizsgalni, ezert nem engedi at. Nagy szoveget fajlba ird a Write '
+                  'tool-lal.' % (len(cmd), MAX_CMD_CHARS), agent_id, 'Bash')
+        _budget['bodies'] = 0
+        _budget['chars'] = 0
+        _budget['deadline'] = time.monotonic() + INSPECT_SECONDS
     text = scannable(cmd)
     for seg in segments(text):
         toks = _bare_tokens(seg)
@@ -515,7 +594,15 @@ def check_bash(cmd, agent_id=None, _depth=0):
                 block('git push: a kozos repoba valo iras kifele mutato, visszafordithatatlan '
                       'muvelet. Commitolni szabad, pusholni nem.', agent_id, 'Bash')
 
-        for sub in _sub_scripts(toks, idx):
+        # The -c script is read from the UNMODIFIED tokens too: _bare_tokens() turns every `(`
+        # into a space (so `(rm x)` finds its command), which also cut the `$(` out of a script
+        # like `bash -c 'echo "$(rm x)"'` before its body could be read.
+        raw_toks = _tokens(seg)
+        subs = _sub_scripts(toks, idx)
+        for extra in _sub_scripts(raw_toks, command_index(raw_toks)):
+            if extra not in subs:
+                subs.append(extra)
+        for sub in subs:
             if not sub or sub == cmd:
                 continue
             if _depth >= _MAX_NEST:
@@ -526,8 +613,36 @@ def check_bash(cmd, agent_id=None, _depth=0):
     m = PROTECTED_RE.search(text)
     if m:
         block('Hitelesito adatokat tartalmazo konyvtar: .%s' % m.group(1), agent_id, 'Bash')
-    if ENV_RE.search(text):
+    if _env_file_mentioned(text):
         block('.env fajl: hitelesito adatokat tartalmaz.', agent_id, 'Bash')
+
+    # A command substitution RUNS, also inside double quotes, where the segment
+    # splitter above keeps it as text. Each body is judged as a command of its
+    # own, one level deeper (the same depth bound as a wrapped -c script).
+    for body in shell_subst.top_bodies(cmd, False, MAX_SUBST_BODIES + 1):
+        # Every body counts, a blank one too: the reader stops after MAX + 1 bodies, so a gate that
+        # skipped blank ones before counting could be filled with them and never see the real one.
+        _budget['bodies'] += 1
+        if not body.strip():
+            if _budget['bodies'] > MAX_SUBST_BODIES:
+                block('Tul sok parancs-behelyettesites (tobb mint %d): a kapu nem tudja '
+                      'vegigkovetni, ezert nem engedi at.' % MAX_SUBST_BODIES, agent_id, 'Bash')
+            continue
+        if _budget['bodies'] > MAX_SUBST_BODIES:
+            block('Tul sok parancs-behelyettesites (tobb mint %d): a kapu nem tudja '
+                  'vegigkovetni, ezert nem engedi at.' % MAX_SUBST_BODIES, agent_id, 'Bash')
+        _budget['chars'] += len(body)
+        if _budget['chars'] > MAX_SUBST_CHARS:
+            block('A parancs-behelyettesitesek szovege egyutt tul nagy (%d karakter felett): '
+                  'a kapu nem tudja vegigkovetni, ezert nem engedi at.' % MAX_SUBST_CHARS,
+                  agent_id, 'Bash')
+        if time.monotonic() > _budget['deadline']:
+            block('A parancs atvizsgalasa tul sokaig tart: a kapu nem tudja befejezni, '
+                  'ezert nem engedi at.', agent_id, 'Bash')
+        if _depth >= _MAX_NEST:
+            block('Tul melyen agyazott parancs-behelyettesites (%d szint): a kapu nem '
+                  'tudja vegigkovetni, ezert nem engedi at.' % _depth, agent_id, 'Bash')
+        check_bash(body, agent_id, _depth + 1)
 
 
 def check_read(path, agent_id=None, tool_name=''):

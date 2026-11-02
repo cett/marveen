@@ -15,6 +15,7 @@ Privacy: only neutral fixture data; no real agent names, tokens, or chat IDs.
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -435,6 +436,152 @@ class TestCoordinatorPushAllowedUnit(unittest.TestCase):
         mock_subprocess.run.return_value.returncode = 0
         mock_subprocess.run.return_value.stdout = "agent-zack\n"
         self.assertFalse(hook._is_coordinator_push_allowed())
+
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from timing_budget import LINEAR_CEILING_SEC, best_of, describe  # noqa: E402
+
+
+class TestCommandSubstitution(unittest.TestCase):
+    """A command substitution RUNS, also inside double quotes. The segment splitter keeps quoted
+    text together (right for a grep pattern), so before the bodies were read, `echo "$(rm x)"` was
+    one `echo` and passed."""
+
+    X = "rm -rf /private/tmp/claude-501/probe-nonexistent-dir"
+
+    def _verdict(self, cmd):
+        with patch.object(hook, "_notify_block"):
+            try:
+                hook.check_bash(cmd)
+            except SystemExit as e:
+                return e.code
+        return 0
+
+    def test_runs_shapes_block(self):
+        x = self.X
+        for name, cmd in (
+            ("dq $()", 'echo "$(%s)"' % x),
+            ("dq backtick", 'echo "`%s`"' % x),
+            ("dq $() with text", 'echo "r: $(%s) done"' % x),
+            ("assignment", 'v="$(%s)"; echo ok' % x),
+            ("nested dq", 'echo "$(echo "$(%s)")"' % x),
+            ("unquoted heredoc", "cat <<EOF\n$(%s)\nEOF\n" % x),
+            ("process substitution", "diff <(%s) /dev/null" % x),
+            ("mv", 'echo "$(mv a b)"'),
+            ("sudo", 'echo "$(sudo ls)"'),
+            ("git push", 'echo "$(git push origin main)"'),
+            ("inside bash -c", "bash -c 'echo \"$(%s)\"'" % x),
+            ("credential path", 'echo "$(cat /home/probe-nonexistent/.ssh/id_probe)"'),
+            ("env file", 'echo "$(cat app/.env)"'),
+        ):
+            with self.subTest(name):
+                self.assertEqual(self._verdict(cmd), 2, cmd)
+
+    def test_text_shapes_pass(self):
+        x = self.X
+        for name, cmd in (
+            ("single quotes", "echo '$(%s)'" % x),
+            ("quoted heredoc", "cat <<'EOF'\n$(%s)\nEOF\n" % x),
+            ("escaped marker", 'echo "\\$(%s)"' % x),
+            ("commit message heredoc", "git commit -m \"$(cat <<'EOF'\nfix: rm -rf was discussed\nEOF\n)\""),
+            ("plain substitutions", 'echo "$(date)" `pwd` "$(git rev-parse HEAD)"'),
+            ("pipe inside a grep pattern in a body", 'echo "$(grep -E "a|b" file)"'),
+        ):
+            with self.subTest(name):
+                self.assertEqual(self._verdict(cmd), 0, cmd)
+
+    def test_limits_fail_closed(self):
+        n = hook.MAX_SUBST_BODIES
+        self.assertEqual(self._verdict('echo "$(a)" ' * n), 0)
+        self.assertEqual(self._verdict('echo "$(a)" ' * (n + 1)), 2)
+        d = hook._MAX_NEST
+        self.assertEqual(self._verdict('echo "$(' * d + "x" + ')"' * d), 0)
+        self.assertEqual(self._verdict('echo "$(' * (d + 2) + "x" + ')"' * (d + 2)), 2)
+        cap = hook.MAX_CMD_CHARS
+        self.assertEqual(self._verdict("echo " + "a" * (cap - 5)), 0)
+        self.assertEqual(self._verdict("echo " + "a" * (cap - 4)), 2)
+        body = "a" * 30000
+        self.assertEqual(self._verdict(('echo "$(%s)" ' % body) * (hook.MAX_SUBST_CHARS // 30000 + 1)), 2)
+
+    def test_blank_substitutions_cannot_hide_a_real_one_past_the_limit(self):
+        n = hook.MAX_SUBST_BODIES
+        self.assertEqual(self._verdict('echo "$()" ' * n + 'echo "$(rm -rf /private/tmp/claude-501/probe-nonexistent-dir)"'), 2)
+        self.assertEqual(self._verdict('echo "$()" ' * (n + 5) + "x"), 2)
+
+    def test_budget_is_per_call(self):
+        for _ in range(3):
+            self.assertEqual(self._verdict('echo "$(a)" ' * hook.MAX_SUBST_BODIES), 0)
+
+    def test_over_the_cap_is_denied_through_the_hook_entrypoint(self):
+        payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": "echo " + "a" * (hook.MAX_CMD_CHARS + 10)},
+                              "cwd": "/tmp/agents/agent-a"})
+        r = subprocess.run([sys.executable, _HOOK_PATH], input=payload, capture_output=True, text=True, timeout=20,
+                           env=dict(os.environ, WEB_PORT="9"))
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("tul nagy", r.stderr)
+
+
+class TestEnvScanEquivalence(unittest.TestCase):
+    """_env_file_mentioned() replaced a regex that was quadratic; on any text it must say what the regex said."""
+
+    REFERENCE = re.compile(r'(?:^|[\s=:])(?:[^\s"\']*/)?\.env(?=$|[\s"\'`,;)\]}])')
+
+    def test_same_verdict_as_the_regex_on_random_text(self):
+        import random
+        rnd = random.Random(7)
+        atoms = [".env", "/", "=", ":", " ", '"', "'", "a", "x/", ".", "e", "n", "v", ";", ")", "]", "}", "`", ",",
+                 "\n", "\t", "$", "env"]
+        for _ in range(60000):
+            s = "".join(rnd.choice(atoms) for _ in range(rnd.randint(0, 14)))
+            self.assertEqual(bool(self.REFERENCE.search(s)), hook._env_file_mentioned(s), repr(s))
+
+    def test_known_shapes(self):
+        for s, want in (
+            (".env", True), ("cat .env", True), ("cat /a/b/.env", True), ("FOO=/a/.env", True),
+            ('cat "/a/.env"', False), ("cat .environment", False), ("cat a.env", False),
+            ("cat x/.env;", True), ("echo .envrc", False), ("PATH=a:.env", True),
+        ):
+            with self.subTest(s):
+                self.assertEqual(hook._env_file_mentioned(s), want)
+
+
+class TestLinearTime(unittest.TestCase):
+    """The scans of the gate on a hostile command at the size cap. A hook still running at its timeout
+    does not block, so a slow scan is a fail-OPEN; the regex that looped on `a=a=a=...` took over a
+    minute at this size, and the per-span range lookup took twelve seconds on repeated `bash -c`."""
+
+    SIZE = 250000
+
+    def _timed(self, cmd):
+        def run():
+            with patch.object(hook, "_notify_block"):
+                try:
+                    hook.check_bash(cmd)
+                except SystemExit:
+                    pass
+        t = best_of(run)
+        self.assertLess(t, LINEAR_CEILING_SEC * 2, describe(t))
+
+    def test_env_scan(self):
+        self._timed("a=" * (self.SIZE // 2))
+        self._timed("a=/" * (self.SIZE // 3))
+        self._timed(" .en" * (self.SIZE // 4))
+
+    def test_many_quoted_spans_and_script_args(self):
+        self._timed('bash -c "a" ' * (self.SIZE // 12))
+        self._timed('python3 -c "x" ' * (self.SIZE // 15))
+        self._timed('"a" ' * (self.SIZE // 4))
+
+    def test_many_heredocs(self):
+        self._timed("cat <<A\n" * (self.SIZE // 8))
+
+    def test_unterminated_substitutions_are_cut_off_by_the_budgets(self):
+        self._timed("$(" * (self.SIZE // 2))
+        self._timed('"$(' * (self.SIZE // 3))
+        self._timed("`a" * (self.SIZE // 2))
+
+    def test_many_bodies(self):
+        self._timed('echo "$(a)" ' * (self.SIZE // 12))
 
 
 if __name__ == "__main__":

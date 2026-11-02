@@ -711,11 +711,20 @@ describe('a bracket in the command text never crashes the gate', () => {
     expect(bash(`echo ${'[a]]'.repeat(15000)}`)).toEqual({ deny: false })
   })
   it('a glob word too long to inspect never throws and fails closed for a writer, a reader is still let through', () => {
-    expect(bash(`cp /tmp/x ${'['.repeat(100000)}`).deny).toBe(true)
+    // 60000 brackets is above the glob word cap (32768) and below the command cap (64 KiB): the glob reader sees it
+    expect(bash(`cp /tmp/x ${'['.repeat(60000)}`).deny).toBe(true)
     expect(bash(`cp /tmp/x scripts/${'*'.repeat(40000)}`).deny).toBe(true)
-    expect(bash(`echo ${'['.repeat(100000)}`)).toEqual({ deny: false })
+    expect(bash(`echo ${'['.repeat(60000)}`)).toEqual({ deny: false })
     // a long word with no wildcard is not a glob at all
     expect(bash(`cp /tmp/x scripts/${'a'.repeat(40000)}`)).toEqual({ deny: false })
+  })
+  it('a command above the 64 KiB cap is denied outright, reader or writer, before any glob is read', () => {
+    expect(bash(`echo ${'['.repeat(100000)}`)).toEqual({ deny: true, reason: 'too-large' })
+    expect(bash(`cp /tmp/x ${'['.repeat(100000)}`)).toEqual({ deny: true, reason: 'too-large' })
+    expect(bash(`echo ${'a'.repeat(70000)}`)).toEqual({ deny: true, reason: 'too-large' })
+    // the cap is on the command text: the largest allowed command is still decided by the readers
+    expect(bash(`echo ${'['.repeat(65536 - 5)}`)).toEqual({ deny: false })
+    expect(bash(`echo ${'['.repeat(65536 - 4)}`)).toEqual({ deny: true, reason: 'too-large' })
   })
   it('a word padded with stars to any length still resolves to the file it names, before and after the length cap', () => {
     for (const n of [3, 40000]) {
@@ -734,7 +743,8 @@ describe('a bracket in the command text never crashes the gate', () => {
     // five separate stars with literals between them: the fifth and the rest match anything, a late literal never backtracks
     expect(timed(`echo scripts/hooks/${'a*'.repeat(30)}Zq`)).toBeLessThan(LINEAR_CEILING_MS)
   })
-  // The time a word of N brackets may take is linear: 550 kB of each shape stays far below the ceiling the
+  // The time a word of N brackets may take is linear: a command at the 64 KiB cap (the largest the self-pace gate
+  // reads; above it the cap denies before any glob is read) of each shape stays far below the ceiling the
   // other linear-time gate tests use (an unbounded rescan per unclosed bracket needs ~17 s at 60 kB).
   const LINEAR_CEILING_MS = 2000
   const timed = (command: string, deny = false) => {
@@ -748,8 +758,12 @@ describe('a bracket in the command text never crashes the gate', () => {
     return best
   }
   for (const [name, unit] of [['unclosed [', '['], ['unclosed [a', '[a'], ['stray ]', 'a[b]]'], ['stray class', '[a]]'], ['POSIX opener', '[[:'], ['escaped bracket', '[\\'], ['closed classes', '[a]']] as const) {
-    it(`550 kB of "${name}" is decided in linear time`, () => {
-      const command = `echo ${unit.repeat(Math.ceil(550000 / unit.length))}`
+    it(`64 KiB of "${name}" is decided in linear time, and 550 kB of it is denied by the cap`, () => {
+      // the largest whole number of units that still fits under the 64 KiB cap, after the "echo " prefix
+      const command = `echo ${unit.repeat(Math.floor((65536 - 5) / unit.length))}`
+      expect(command.length).toBeLessThanOrEqual(65536)
+      expect(command.length).toBeGreaterThan(65536 - 5 - unit.length)
+      expect(bash(`echo ${unit.repeat(Math.ceil(550000 / unit.length))}`)).toEqual({ deny: true, reason: 'too-large' })
       expect(timed(command)).toBeLessThan(LINEAR_CEILING_MS)
     })
   }
