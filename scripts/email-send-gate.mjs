@@ -785,12 +785,12 @@ function directSend(cmd, depth) {
 // throws InspectionLimitError, which the caller turns into a DENY (fail-closed).
 export const MAX_SUBST_BODIES = 256
 export const MAX_SUBST_NEST = 8
-export const MAX_SUBST_CHARS = 524288 // total text of all bodies judged (a body nested k deep is read k times)
+export const MAX_SUBST_CHARS = 131072 // total text of all bodies judged (a body nested k deep is read k times)
 export const INSPECT_MS = 4000
 let substBudget = { bodies: 0, chars: 0, deadline: 0 }
 
 function substitutionSends(cmd, depth, sd) {
-  for (const body of topBodies(cmd)) {
+  for (const body of topBodies(cmd, false, MAX_SUBST_BODIES + 1)) {
     if (!body.trim()) continue
     if (++substBudget.bodies > MAX_SUBST_BODIES) {
       throw new InspectionLimitError(`more than ${MAX_SUBST_BODIES} command substitutions`)

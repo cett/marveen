@@ -441,8 +441,9 @@ _MAX_NEST = 8
 # carries; 4 s leaves the 10 s hook timeout a wide margin.
 MAX_CMD_CHARS = 262144
 MAX_SUBST_BODIES = 256
-# Total text of all bodies judged (a body nested k deep is read k times): twice the call cap.
-MAX_SUBST_CHARS = 524288
+# Total text of all bodies judged (a body nested k deep is read k times): half the call cap, so a body
+# that is most of the command is refused before it is read again (the cost of a hostile one).
+MAX_SUBST_CHARS = 131072
 INSPECT_SECONDS = 4.0
 _budget = {'bodies': 0, 'chars': 0, 'deadline': None}
 
@@ -618,7 +619,7 @@ def check_bash(cmd, agent_id=None, _depth=0):
     # A command substitution RUNS, also inside double quotes, where the segment
     # splitter above keeps it as text. Each body is judged as a command of its
     # own, one level deeper (the same depth bound as a wrapped -c script).
-    for body in shell_subst.top_bodies(cmd):
+    for body in shell_subst.top_bodies(cmd, False, MAX_SUBST_BODIES + 1):
         if not body.strip():
             continue
         _budget['bodies'] += 1

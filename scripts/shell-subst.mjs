@@ -51,15 +51,17 @@ function heredocBodies(text, start, pending) {
   return { bodies: out, pos }
 }
 
-// The outermost substitution bodies of `text`, in order of appearance. heredocBody=true reads
+// The outermost substitution bodies of `text`, in order of appearance. `limit`: stop reading once MORE than that many
+// were found (the caller denies past its own limit, so the rest of a hostile text is not worth reading). heredocBody=true reads
 // `text` as an unquoted heredoc body: only `$( )`, backticks and backslashes mean anything.
-export function topBodies(text, heredocBody = false) {
+export function topBodies(text, heredocBody = false, limit = Infinity) {
   const n = text.length
   const out = []
   const stack = [] // frames: { kind, bodyStart, parens, record }
   let cmdFrames = 0 // frames that are command context (everything but a double quote)
   let pending = [] // heredocs opened on the current line
   const base = heredocBody ? 'hd' : 'cmd'
+  let full = false
   let i = 0
 
   const push = (kind, bodyStart) => {
@@ -73,10 +75,11 @@ export function topBodies(text, heredocBody = false) {
     if (f.record) {
       const body = text.slice(f.bodyStart, end)
       out.push(f.kind === 'bt' ? body.replace(BT_UNESCAPE, '$1') : body)
+      if (out.length > limit) full = true
     }
   }
 
-  while (i < n) {
+  while (i < n && !full) {
     const c = text[i]
     const kind = stack.length ? stack[stack.length - 1].kind : base
 
@@ -146,12 +149,13 @@ export function topBodies(text, heredocBody = false) {
       pending = []
       i = r.pos
       // The expanding heredoc body is text, not a command: only the substitutions in it run.
-      for (const b of r.bodies) for (const x of topBodies(b, true)) out.push(x)
+      for (const b of r.bodies) for (const x of topBodies(b, true, limit)) out.push(x)
+      if (out.length > limit) full = true
     } else {
       i++
     }
   }
 
-  while (stack.length) close(n) // an unterminated substitution takes the rest of the text
+  while (stack.length && !full) close(n) // an unterminated substitution takes the rest of the text
   return out
 }

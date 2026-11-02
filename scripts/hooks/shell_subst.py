@@ -76,11 +76,13 @@ def _heredoc_bodies(text, start, pending):
     return out, pos
 
 
-def top_bodies(text, heredoc_body=False):
+def top_bodies(text, heredoc_body=False, limit=None):
     """The outermost substitution bodies of `text`, in order of appearance.
 
     `heredoc_body=True` reads `text` as an unquoted heredoc body: only `$( )`,
     backticks and backslashes mean anything there; quotes are literal.
+    `limit`: stop reading once MORE than `limit` bodies were found (the caller denies
+    past its own limit, so the rest of a hostile text is not worth reading).
     """
     n = len(text)
     out = []
@@ -88,6 +90,7 @@ def top_bodies(text, heredoc_body=False):
     cmd_frames = 0   # frames that are command context (everything but a double quote)
     pending = []     # heredocs opened on the current line, bodies start after its newline
     base = 'hd' if heredoc_body else 'cmd'
+    full = False
     i = 0
 
     def push(kind, body_start):
@@ -97,15 +100,17 @@ def top_bodies(text, heredoc_body=False):
             cmd_frames += 1
 
     def close(end):
-        nonlocal cmd_frames
+        nonlocal cmd_frames, full
         kind, body_start, _parens, record = stack.pop()
         if kind != 'dq':
             cmd_frames -= 1
         if record and kind != 'dq':
             body = text[body_start:end]
             out.append(_BT_UNESCAPE.sub(r'\1', body) if kind == 'bt' else body)
+            if limit is not None and len(out) > limit:
+                full = True
 
-    while i < n:
+    while i < n and not full:
         c = text[i]
         kind = stack[-1][0] if stack else base
 
@@ -191,11 +196,13 @@ def top_bodies(text, heredoc_body=False):
             # The expanding heredoc body is text, not a command: only the
             # substitutions inside it run.
             for b in bodies:
-                out.extend(top_bodies(b, True))
+                out.extend(top_bodies(b, True, limit))
+            if limit is not None and len(out) > limit:
+                full = True
         else:
             i += 1
 
     # An unterminated substitution takes the rest of the text.
-    while stack:
+    while stack and not full:
         close(n)
     return out
