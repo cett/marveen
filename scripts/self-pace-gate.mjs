@@ -515,6 +515,9 @@ const MAX_GLOB_STARS = 4
 // path behind it is denied, the same fail-closed answer the size caps of the sibling gates give.
 const MAX_GLOB_WORD = 32768
 function globToRegex(abs) {
+  // Bash reads a run of stars as one (** is the same as *, here a star that may cross a slash), so the run is
+  // folded BEFORE the length check: a word padded with stars to any length is still read exactly.
+  abs = abs.replace(/\*{2,}/g, '**')
   if (abs.length > MAX_GLOB_WORD) return /^.*$/
   // Bounds, so that no word can make the gate slow or make RegExp throw (a block under onFailure:block):
   //  - one scan budget for the whole word: a class that never closes does not rescan the rest per bracket

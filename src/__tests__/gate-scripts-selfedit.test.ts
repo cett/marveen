@@ -717,6 +717,16 @@ describe('a bracket in the command text never crashes the gate', () => {
     // a long word with no wildcard is not a glob at all
     expect(bash(`cp /tmp/x scripts/${'a'.repeat(40000)}`)).toEqual({ deny: false })
   })
+  it('a word padded with stars to any length still resolves to the file it names, before and after the length cap', () => {
+    for (const n of [3, 40000]) {
+      const pad = '*'.repeat(n)
+      for (const c of [`cp /tmp/x scripts/self-pace-gate.mj${pad}`, `cp /tmp/x scripts/self-pace${pad}`, `cp /tmp/x scripts/hooks/egress${pad}`, `cp /tmp/x scripts/${pad}self-pace-gate.mjs`, `cp /tmp/x scripts/hooks${pad}`]) {
+        expect({ n, c: c.slice(0, 60), r: bash(c) }).toEqual({ n, c: c.slice(0, 60), r: { deny: true, reason: 'gate-scripts' } })
+      }
+    }
+    // the same padding on a word that bash resolves to nothing protected stays allowed
+    expect(bash(`cp /tmp/x scripts/unrelated.s${'*'.repeat(40000)}z`)).toEqual({ deny: false })
+  })
   it('wildcards separated by ? are one unit, and more than four separate stars are over-matched, so no pattern backtracks', () => {
     touch(join(SCRIPTS(), 'hooks', 'a'.repeat(50)))
     // 16 x (* then ?) is [^/]{16,}: it matches the 50-character name, so the writer is denied, and quickly
