@@ -495,11 +495,14 @@ function globClass(body) {
     const isRange = i + 2 < chars.length && !chars[i + 1].lit && chars[i + 1].c === '-'
     if (isRange) {
       const lo = chars[i].c, hi = chars[i + 2].c
-      inner += lo <= hi ? esc(lo) + '-' + esc(hi) : esc(hi) + '-' + esc(lo)
+      // A reversed range is swapped in a plain class (it matches more) and dropped in a negated one: there it
+      // is an empty exclusion, and swapping it would exclude more characters, i.e. match less than a shell.
+      if (lo <= hi) inner += esc(lo) + '-' + esc(hi)
+      else if (!neg) inner += esc(hi) + '-' + esc(lo)
       i += 2
     } else inner += esc(chars[i].c)
   }
-  if (!inner) return null
+  if (!inner) return neg ? '[^/]' : null // a negated class that excludes nothing matches any one character
   const src = '[' + (neg ? '^' : '') + inner + ']'
   try { new RegExp(src); return src } catch { return '[^/]' }
 }

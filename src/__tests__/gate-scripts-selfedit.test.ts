@@ -689,6 +689,12 @@ describe('a bracket in the command text never crashes the gate', () => {
     expect(bash('cp /tmp/x scripts/unrelated.s[h]')).toEqual({ deny: false })
     expect(bash('cp /tmp/x scripts/[u]nrelated.s[h]')).toEqual({ deny: false })
   })
+  it('a reversed range in a NEGATED class excludes nothing, so the protected file is still reached', () => {
+    expect(bash('cp /tmp/x scripts/self-pace-gate.mj[!t-r]')).toEqual({ deny: true, reason: 'gate-scripts' })
+    expect(bash('cp /tmp/x scripts/self-pace-gate.mj[^t-r]')).toEqual({ deny: true, reason: 'gate-scripts' })
+    expect(bash('cp /tmp/x scripts/self-pace-gate.mj[!t-r]x')).toEqual({ deny: false })
+    expect(bash('cp /tmp/x scripts/self-pace-gate.mj[!r-t]')).toEqual({ deny: false })
+  })
   it('a ^ negates a class like a !, so a protected file outside the listed members is still reached', () => {
     expect(bash('cp /tmp/x scripts/self-pace-gate.mj[^x]')).toEqual({ deny: true, reason: 'gate-scripts' })
     expect(bash('cp /tmp/x scripts/self-pace-gate.mj[^s]')).toEqual({ deny: false })
