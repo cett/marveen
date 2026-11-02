@@ -97,6 +97,11 @@ describe('the inspection limits fail closed (a deny, never a pass)', () => {
     expect(gateDecision('Bash', { command: cmd })).toMatchObject({ deny: true })
     expect(gateDecision('Bash', { command: cmd }).tooLarge).toBeTruthy()
   })
+  it('blank substitutions cannot hide a real one past the limit', () => {
+    const cmd = 'echo "$()" '.repeat(MAX_SUBST_BODIES) + `echo "$(${X})"`
+    expect(() => isSendInvocation(cmd)).toThrow(InspectionLimitError)
+    expect(gateDecision('Bash', { command: cmd }).deny).toBe(true)
+  })
   it('exactly at the body limit is still read', () => {
     expect(isSendInvocation('echo "$(a)" '.repeat(MAX_SUBST_BODIES))).toBe(false)
   })

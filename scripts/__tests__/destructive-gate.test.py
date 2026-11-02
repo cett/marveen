@@ -503,6 +503,11 @@ class TestCommandSubstitution(unittest.TestCase):
         body = "a" * 30000
         self.assertEqual(self._verdict(('echo "$(%s)" ' % body) * (hook.MAX_SUBST_CHARS // 30000 + 1)), 2)
 
+    def test_blank_substitutions_cannot_hide_a_real_one_past_the_limit(self):
+        n = hook.MAX_SUBST_BODIES
+        self.assertEqual(self._verdict('echo "$()" ' * n + 'echo "$(rm -rf /private/tmp/claude-501/probe-nonexistent-dir)"'), 2)
+        self.assertEqual(self._verdict('echo "$()" ' * (n + 5) + "x"), 2)
+
     def test_budget_is_per_call(self):
         for _ in range(3):
             self.assertEqual(self._verdict('echo "$(a)" ' * hook.MAX_SUBST_BODIES), 0)

@@ -620,9 +620,14 @@ def check_bash(cmd, agent_id=None, _depth=0):
     # splitter above keeps it as text. Each body is judged as a command of its
     # own, one level deeper (the same depth bound as a wrapped -c script).
     for body in shell_subst.top_bodies(cmd, False, MAX_SUBST_BODIES + 1):
-        if not body.strip():
-            continue
+        # Every body counts, a blank one too: the reader stops after MAX + 1 bodies, so a gate that
+        # skipped blank ones before counting could be filled with them and never see the real one.
         _budget['bodies'] += 1
+        if not body.strip():
+            if _budget['bodies'] > MAX_SUBST_BODIES:
+                block('Tul sok parancs-behelyettesites (tobb mint %d): a kapu nem tudja '
+                      'vegigkovetni, ezert nem engedi at.' % MAX_SUBST_BODIES, agent_id, 'Bash')
+            continue
         if _budget['bodies'] > MAX_SUBST_BODIES:
             block('Tul sok parancs-behelyettesites (tobb mint %d): a kapu nem tudja '
                   'vegigkovetni, ezert nem engedi at.' % MAX_SUBST_BODIES, agent_id, 'Bash')

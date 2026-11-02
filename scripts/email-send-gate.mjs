@@ -791,10 +791,12 @@ let substBudget = { bodies: 0, chars: 0, deadline: 0 }
 
 function substitutionSends(cmd, depth, sd) {
   for (const body of topBodies(cmd, false, MAX_SUBST_BODIES + 1)) {
-    if (!body.trim()) continue
+    // Every body counts, a blank one too: the reader stops after MAX + 1 bodies, so a gate that skipped
+    // blank ones before counting could be filled with them and never see the real one.
     if (++substBudget.bodies > MAX_SUBST_BODIES) {
       throw new InspectionLimitError(`more than ${MAX_SUBST_BODIES} command substitutions`)
     }
+    if (!body.trim()) continue
     substBudget.chars += body.length
     if (substBudget.chars > MAX_SUBST_CHARS) {
       throw new InspectionLimitError(`the command substitutions together are over ${MAX_SUBST_CHARS} characters`)
