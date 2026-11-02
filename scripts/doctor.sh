@@ -208,7 +208,7 @@ fi
 # A PreToolUse gate entry without onFailure "block" is waved through when the hook times out or fails to start
 # (the host counts that as a non-blocking error). scripts/gate-onfailure-check.py reads the tracked project
 # settings, every sub-agent's settings and ~/.claude/settings.json, and the installed claude version (the key
-# needs 2.1.295 or later). Read-only; a FAIL line is a doctor failure.
+# needs 2.1.314 or later). Read-only; a FAIL line is a doctor failure.
 echo -e "\n${BOLD}Gate hooks (onFailure)${RESET}"
 if [ -f scripts/gate-onfailure-check.py ]; then
   GATE_OF_OUT=$(python3 scripts/gate-onfailure-check.py 2>&1 || true)

@@ -6,11 +6,11 @@
 
 Why: the host counts a hook that times out, does not start or ends with a non-zero exit other than 2 as a
 NON-blocking error, so a gate that cannot finish waves the tool call through. `"onFailure": "block"` on the hook
-entry makes those cases a deny. The key is accepted by claude 2.1.295 and later (checked against 2.1.310), so an
-older binary is a FAIL as well.
+entry makes those cases a deny. The key is in the settings schema of claude 2.1.295 and later (checked against 2.1.310);
+the minimum this check requires is 2.1.314, and an older binary is a FAIL as well.
 
 Checks (each line is OK, WARN or FAIL):
-  1. the installed `claude --version` is at least 2.1.295 (WARN when the binary cannot be run or parsed)
+  1. the installed `claude --version` is at least 2.1.314 (WARN when the binary cannot be run or parsed)
   2. every gate entry in the tracked project settings, in every sub-agent's settings and in the user-level
      settings (~/.claude) has onFailure "block"; one line per settings file
 
@@ -29,7 +29,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_ROOT = os.path.dirname(HERE)
-MIN_CLAUDE = (2, 1, 295)
+MIN_CLAUDE = (2, 1, 314)
 GATE_SCRIPTS = (
     "email-send-gate.mjs",
     "self-pace-gate.mjs",
@@ -114,7 +114,7 @@ def check(root, home=None, version=None, version_reason="", main_agent=None):
         results.append({"level": level, "subject": subject, "message": message})
 
     if version is None:
-        add("WARN", "claude", "%s: the onFailure support (2.1.295 and later) is not checked" % (version_reason or "version unknown"))
+        add("WARN", "claude", "%s: the onFailure support (2.1.314 and later) is not checked" % (version_reason or "version unknown"))
     elif version < MIN_CLAUDE:
         add("FAIL", "claude", "%s is older than %s: onFailure is not honoured (or the settings are refused); update the binary"
             % (".".join(map(str, version)), ".".join(map(str, MIN_CLAUDE))))

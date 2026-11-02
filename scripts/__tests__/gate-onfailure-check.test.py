@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""scripts/gate-onfailure-check.py: a PreToolUse gate entry without onFailure "block", or a claude older than 2.1.295, FAILs.
+"""scripts/gate-onfailure-check.py: a PreToolUse gate entry without onFailure "block", or a claude older than 2.1.314, FAILs.
 
 The check reads the tracked project settings, every sub-agent's settings and the user-level settings, and the
 installed claude version. Nothing is written. The gate list is the one in src/web/agent-scaffold-hooks.ts
@@ -75,7 +75,7 @@ class CheckTest(unittest.TestCase):
     def user(self, cfg):
         self.write(os.path.join(self.home, ".claude", "settings.json"), cfg)
 
-    def run_check(self, version=(2, 1, 310), reason=""):
+    def run_check(self, version=(2, 1, 316), reason=""):
         return MOD.check(self.root, self.home, version, reason)
 
     def by(self, results, subject):
@@ -109,7 +109,7 @@ class CheckTest(unittest.TestCase):
         # backfill skips the main agent (refuseMainAgentHookWrite), so "restart the dashboard" would be untrue.
         self.agent("jarvis", settings(gate("destructive-gate.py", None)))
         self.agent("a1", settings(gate("destructive-gate.py", None)))
-        res = MOD.check(self.root, self.home, (2, 1, 310), "", main_agent="jarvis")
+        res = MOD.check(self.root, self.home, (2, 1, 316), "", main_agent="jarvis")
         main = self.by(res, "agent jarvis")[0]
         self.assertEqual(main[0], "FAIL")
         self.assertIn("main agent: not written by the dashboard", main[1])
@@ -163,7 +163,7 @@ class CheckTest(unittest.TestCase):
 
     def test_the_claude_version_gate(self):
         self.project(settings(gate()))
-        cases = [((2, 1, 294), "FAIL"), ((2, 1, 295), "OK"), ((2, 1, 310), "OK"), ((2, 0, 999), "FAIL"), ((3, 0, 0), "OK"), (None, "WARN")]
+        cases = [((2, 1, 313), "FAIL"), ((2, 1, 314), "OK"), ((2, 1, 295), "FAIL"), ((2, 1, 316), "OK"), ((2, 0, 999), "FAIL"), ((3, 0, 0), "OK"), (None, "WARN")]
         for version, level in cases:
             with self.subTest(version=version):
                 res = self.run_check(version, "cannot run `claude --version`")
@@ -198,9 +198,9 @@ class CliTest(unittest.TestCase):
             return p.returncode, json.loads(p.stdout)
 
     def test_exit_code_follows_the_fail_count(self):
-        code, out = self.run_cli("2.1.310 (Claude Code)", settings(gate()))
+        code, out = self.run_cli("2.1.316 (Claude Code)", settings(gate()))
         self.assertEqual((code, out["fail"]), (0, 0))
-        code, out = self.run_cli("2.1.310 (Claude Code)", settings(gate(on_failure=None)))
+        code, out = self.run_cli("2.1.316 (Claude Code)", settings(gate(on_failure=None)))
         self.assertEqual((code, out["fail"]), (1, 1))
         code, out = self.run_cli("2.1.100 (Claude Code)", settings(gate()))
         self.assertEqual((code, out["fail"]), (1, 1))

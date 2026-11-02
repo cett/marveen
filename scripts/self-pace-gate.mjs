@@ -72,7 +72,11 @@ const SELF_PACE_BASH_PATTERNS = [
 // `PATH=/bin crontab -` are all caught. Trailing \b(?!-) so it never fires on
 // "netstat" / "crontab-helper.sh"; (?!\s*=) so a bare NAME=value assignment
 // (`at=$(...)`) is not mistaken for the `at` binary.
-const SCHED_PREFIX = String.raw`(?:(?:[A-Za-z_]\w*=\S*|sudo|env|command|exec|nice|builtin|time)\s+)*(?:\S*/)?`
+// LINEAR: the value of an assignment and the path run only up to the next boundary character (`[^\s;&|(\x60]`,
+// the complement of SCHED_BOUNDARY). With `\S*` here every `(` or backtick of `((((...` opened a scan to the end of
+// the word and back (250 KB: 40 s); a boundary character inside the old `\S*` was always also a match start of its
+// own, so the verdict is the same (checked equal on 400,000 random strings, scheduler match and read exemption).
+const SCHED_PREFIX = String.raw`(?:(?:[A-Za-z_]\w*=[^\s;&|(\x60]*|sudo|env|command|exec|nice|builtin|time)\s+)*(?:[^\s;&|(\x60]*/)?`
 // The command-boundary anchor includes `(` so a $(...) command substitution
 // (`X=$(crontab -)`) is caught, AND a backtick so a legacy `...` substitution
 // (`X=`crontab -r``) is caught too -- both run the enclosed command in a shell
@@ -1260,6 +1264,8 @@ export function normalizeShellEvasion(seg) {
     .replace(/\\(.)/g, '$1') // \X -> X (bash unescape of a backslash-escaped char)
 }
 
+export const MAX_CMD_CHARS = 262144
+
 // Pure decision: does this tool call set up self-pace / self-injection?
 export function gateDecision(toolName, toolInput, opts = {}) {
   const name = String(toolName ?? '')
@@ -1272,6 +1278,10 @@ export function gateDecision(toolName, toolInput, opts = {}) {
     if (kind) return { deny: true, reason: kind }
   }
   if (name === 'Bash') {
+    // A command this big is not read: the scans below are not all linear (a few are n^1.5 on a hostile
+    // shape), and a hook still running at the host timeout is not a deny. Over the cap the call is refused,
+    // fail-closed, like the other gates (the real maximum seen is ~32 KB).
+    if (String(toolInput?.command ?? '').length > MAX_CMD_CHARS) return { deny: true, reason: 'too-large' }
     // Strip -d/--data payloads on the WHOLE command BEFORE splitting. A payload is
     // data, not an invocation; and since splitSegments is NOT quote-aware, a shell
     // separator (; && | &) INSIDE a dispatch body would otherwise orphan a fragment
@@ -1331,6 +1341,10 @@ const SETTINGS_GATE_MSG =
   '(plugin, hook, permission), kerd a fo agenst vagy a tulajdonost (inter-agent uzenet: fajl + miert). ' +
   'Olvasni (cat / jq / grep) szabad; a sajat worktree masolat szerkesztheto.'
 
+const TOO_LARGE_MSG =
+  'A parancs tul nagy (' + MAX_CMD_CHARS + ' karakter folott) ahhoz, hogy a kapu atvizsgalja (governance hard-gate), ' +
+  'es egy vizsgalhatatlan parancs nem mehet at. Nagy szoveget fajlba irj a Write tool-lal, aztan futtasd ujra.'
+
 function allow() { process.exit(0) }
 
 function deny(reason) {
@@ -1361,6 +1375,6 @@ if (isInvokedDirectly()) {
     allow() // malformed/empty input must never break the agent's tool calls
   }
   const { deny: shouldDeny, reason } = gateDecision(payload?.tool_name, payload?.tool_input, { cwd: payload?.cwd })
-  if (shouldDeny) deny(reason === 'egress-allowlist' ? ALLOWLIST_GATE_MSG : reason === 'gate-scripts' ? SCRIPTS_GATE_MSG : reason === 'agent-settings' ? SETTINGS_GATE_MSG : GATE_MSG)
+  if (shouldDeny) deny(reason === 'too-large' ? TOO_LARGE_MSG : reason === 'egress-allowlist' ? ALLOWLIST_GATE_MSG : reason === 'gate-scripts' ? SCRIPTS_GATE_MSG : reason === 'agent-settings' ? SETTINGS_GATE_MSG : GATE_MSG)
   allow()
 }

@@ -120,7 +120,7 @@ type HookEntry = { hooks?: Array<{ command?: string; timeout?: number; type?: st
 // deny, like exit 2. Every gate entry carries it (a gate that cannot finish must not wave the call through);
 // logging / capture hooks do not (they only observe, a crash there must not stop a tool call). Accepted by
 // claude 2.1.295 and later (checked against 2.1.310: the key is in the settings schema, values "continue" |
-// "block"); doctor.sh fails on an older binary. A running session does not re-read settings: a respawn applies it.
+// "block"); doctor.sh requires 2.1.314 or later and fails on an older binary. A running session does not re-read settings: a respawn applies it.
 export const GATE_ON_FAILURE = 'block'
 
 // Script basenames of the PreToolUse gate hooks. A command that names one of them is a gate entry and must
