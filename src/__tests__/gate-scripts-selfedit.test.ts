@@ -679,6 +679,16 @@ describe('a bracket in the command text never crashes the gate', () => {
     expect(bash('cp /tmp/x scripts/self-pace-gate.mj[!]x]')).toEqual({ deny: true, reason: 'gate-scripts' })
     expect(bash('cp /tmp/x scripts/self-pace-gate.mj[!]s]')).toEqual({ deny: false })
   })
+  it('a POSIX class, an equivalence class and a collating symbol match any one character, so the protected file is still reached', () => {
+    for (const c of ['cp /tmp/x scripts/self-pace-gate.mj[[:alpha:]]', 'cp /tmp/x scripts/self-pace-gate.mj[[=s=]]', 'cp /tmp/x scripts/self-pace-gate.mj[![:digit:]]', 'cp /tmp/x scripts/self-pace-gate.mj[[.s.]]']) {
+      expect({ c, r: bash(c) }).toEqual({ c, r: { deny: true, reason: 'gate-scripts' } })
+    }
+  })
+  it('a stray ] right after a class (an escaped ] whose backslash was removed earlier) widens it, a clean pair of classes does not', () => {
+    expect(bash('cp /tmp/x scripts/self-pace-gate.mj[a]s]')).toEqual({ deny: true, reason: 'gate-scripts' })
+    expect(bash('cp /tmp/x scripts/unrelated.s[h]')).toEqual({ deny: false })
+    expect(bash('cp /tmp/x scripts/[u]nrelated.s[h]')).toEqual({ deny: false })
+  })
   it('an out-of-order range is read with its ends swapped: the gate over-matches, it never matches less', () => {
     expect(bash('cp /tmp/x scripts/self-pace-gate.mj[t-r]')).toEqual({ deny: true, reason: 'gate-scripts' })
     expect(bash('cp /tmp/x scripts/self-pace-gate.mj[z-t]')).toEqual({ deny: false })
