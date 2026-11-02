@@ -506,12 +506,16 @@ function globClass(body) {
   const src = '[' + (neg ? '^' : '') + inner + ']'
   try { new RegExp(src); return src } catch { return '[^/]' }
 }
-const MAX_GLOB_STARS = 16
-// No file system path is this long (PATH_MAX is 1024 on macOS, 4096 on Linux), so a longer word names no
-// file and matches nothing. RegExp itself refuses a pattern far above this ("Regular expression too large").
+// At most this many separate unbounded wildcards of one word are expanded, the rest of the word matches
+// anything: separated by literals they still backtrack polynomially (a*a*a*..b on a name of a's), so the
+// degree is kept small. Protected names are short, a real glob rarely has more.
+const MAX_GLOB_STARS = 4
+// A word longer than this cannot be inspected (RegExp refuses a pattern far above it, "Regular expression too
+// large"); no path is this long, but the gate does not rely on that: it matches everything, so a protected
+// path behind it is denied, the same fail-closed answer the size caps of the sibling gates give.
 const MAX_GLOB_WORD = 32768
 function globToRegex(abs) {
-  if (abs.length > MAX_GLOB_WORD) return /(?!)/
+  if (abs.length > MAX_GLOB_WORD) return /^.*$/
   // Bounds, so that no word can make the gate slow or make RegExp throw (a block under onFailure:block):
   //  - one scan budget for the whole word: a class that never closes does not rescan the rest per bracket
   //    (lastClose rules most of them out in O(1)); when the budget runs out the rest of the word is
@@ -523,8 +527,17 @@ function globToRegex(abs) {
   const meter = { left: 4 * abs.length + 256 }
   let out = '^'
   let stars = 0
-  let lastStar = false
   let spent = false
+  // A run of adjacent wildcards (*, ?, a widened class) is ONE quantified unit: [^/]{min,} (or .{min,} when a
+  // ** is in it). Chained, they make a backtracking RegExp explode (eight [^/]* against a 50-character name
+  // take ~9 s); as one unit they cost nothing.
+  let run = null
+  const flush = () => {
+    if (!run) return
+    const any = run.wide ? '.' : '[^/]'
+    out += run.unbounded ? `${any}{${run.min},}` : `${any}{${run.min}}`
+    run = null
+  }
   for (let i = 0; i < abs.length; i++) {
     const c = abs[i]
     let star = null
@@ -548,13 +561,14 @@ function globToRegex(abs) {
       }
     }
     else piece = c.replace(/[.+^${}()|\\]/g, '\\$&')
-    if (star === null) { out += piece; lastStar = false; continue }
-    if (spent) { out = lastStar ? out.replace(/\[\^\/\]\*$/, '.*') : out + '.*'; break }
-    if (lastStar) { if (star === '.*') out = out.replace(/\[\^\/\]\*$/, '.*'); continue } // the wider star wins
-    if (++stars > MAX_GLOB_STARS) { out += '.*'; break }
-    out += star
-    lastStar = true
+    if (star === null && piece !== '[^/]') { flush(); out += piece; continue }
+    run ??= { min: 0, unbounded: false, wide: false }
+    if (star === null) { run.min++; continue } // a ? is one character of the run
+    if (spent || (!run.unbounded && ++stars > MAX_GLOB_STARS)) { run.unbounded = true; run.wide = true; flush(); break }
+    run.unbounded = true
+    if (star === '.*') run.wide = true
   }
+  flush()
   return new RegExp(out + '$')
 }
 function listDir(dir, ctx, depth = 0, out = []) {

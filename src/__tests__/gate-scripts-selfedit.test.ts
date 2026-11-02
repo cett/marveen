@@ -710,20 +710,30 @@ describe('a bracket in the command text never crashes the gate', () => {
     expect(bash(`echo ${'a[b]]'.repeat(2000)}`)).toEqual({ deny: false })
     expect(bash(`echo ${'[a]]'.repeat(15000)}`)).toEqual({ deny: false })
   })
-  it('a word longer than any path names no file: it neither throws nor matches', () => {
-    expect(bash(`cp /tmp/x ${'['.repeat(100000)}`)).toEqual({ deny: false })
+  it('a glob word too long to inspect never throws and fails closed for a writer, a reader is still let through', () => {
+    expect(bash(`cp /tmp/x ${'['.repeat(100000)}`).deny).toBe(true)
+    expect(bash(`cp /tmp/x scripts/${'*'.repeat(40000)}`).deny).toBe(true)
+    expect(bash(`echo ${'['.repeat(100000)}`)).toEqual({ deny: false })
+    // a long word with no wildcard is not a glob at all
     expect(bash(`cp /tmp/x scripts/${'a'.repeat(40000)}`)).toEqual({ deny: false })
+  })
+  it('wildcards separated by ? are one unit, and more than four separate stars are over-matched, so no pattern backtracks', () => {
+    touch(join(SCRIPTS(), 'hooks', 'a'.repeat(50)))
+    // 16 x (* then ?) is [^/]{16,}: it matches the 50-character name, so the writer is denied, and quickly
+    expect(timed(`cp /tmp/x scripts/hooks/${'*?'.repeat(16)}`, true)).toBeLessThan(LINEAR_CEILING_MS)
+    // five separate stars with literals between them: the fifth and the rest match anything, a late literal never backtracks
+    expect(timed(`echo scripts/hooks/${'a*'.repeat(30)}Zq`)).toBeLessThan(LINEAR_CEILING_MS)
   })
   // The time a word of N brackets may take is linear: 550 kB of each shape stays far below the ceiling the
   // other linear-time gate tests use (an unbounded rescan per unclosed bracket needs ~17 s at 60 kB).
   const LINEAR_CEILING_MS = 2000
-  const timed = (command: string) => {
+  const timed = (command: string, deny = false) => {
     let best = Infinity
     for (let k = 0; k < 3; k++) {
       const t0 = performance.now()
       const r = bash(command)
       best = Math.min(best, performance.now() - t0)
-      expect(r).toEqual({ deny: false })
+      expect(r.deny).toBe(deny)
     }
     return best
   }
