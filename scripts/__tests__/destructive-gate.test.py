@@ -13,6 +13,7 @@ worktree cwd is not enough to tell the coordinator and a sub-agent apart).
 Privacy: only neutral fixture data; no real agent names, tokens, or chat IDs.
 """
 import importlib.util
+import io
 import json
 import os
 import re
@@ -511,6 +512,34 @@ class TestCommandSubstitution(unittest.TestCase):
     def test_budget_is_per_call(self):
         for _ in range(3):
             self.assertEqual(self._verdict('echo "$(a)" ' * hook.MAX_SUBST_BODIES), 0)
+
+    def _verdict_and_stderr(self, cmd):
+        err = io.StringIO()
+        with patch.object(sys, "stderr", err):
+            code = self._verdict(cmd)
+        return code, err.getvalue()
+
+    def test_a_blown_deadline_denies_instead_of_passing(self):
+        # The wall-clock deadline is the last guard behind the character and body caps: if the reading
+        # of the bodies has taken longer than INSPECT_SECONDS, the gate refuses rather than guess.
+        # A deadline in the past makes the first non-blank body trip it, so the check is exercised
+        # without a 4 s sleep. The control proves the denial comes from the deadline, not from the input.
+        cmd = 'echo "$(a)"'
+        self.assertEqual(self._verdict(cmd), 0)
+        with patch.object(hook, "INSPECT_SECONDS", -1.0):
+            code, err = self._verdict_and_stderr(cmd)
+        self.assertEqual(code, 2)
+        self.assertIn("tul sokaig tart", err)
+
+    def test_the_deadline_is_reset_per_call(self):
+        with patch.object(hook, "INSPECT_SECONDS", -1.0):
+            self.assertEqual(self._verdict('echo "$(a)"'), 2)
+        self.assertEqual(self._verdict('echo "$(a)"'), 0)
+
+    def test_the_deadline_leaves_the_hook_timeout_a_margin(self):
+        # The harness kills a gate at 10 s; past that a hook without onFailure would let the call through.
+        self.assertGreater(hook.INSPECT_SECONDS, 0)
+        self.assertLessEqual(hook.INSPECT_SECONDS, 5.0)
 
     def _verdict_after(self, cmd, elapsed):
         """Verdict and stderr when the clock reads `elapsed` seconds more at the first body check than
