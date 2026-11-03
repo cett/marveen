@@ -22,6 +22,7 @@
 // or from stdin with --password-stdin for automation. No new dependencies:
 // node:readline for the prompt, the app's own db + password-hash modules.
 
+import './lib/log-to-stderr.js'
 import { createInterface } from 'node:readline'
 import { initDatabase, getDb, createDashboardUser, getDashboardUser, listDashboardUsers, deleteDashboardUser, updateDashboardUserPassword, logConfigChange } from '../src/db.js'
 import { hashPassword, assertPasswordPolicy, PasswordPolicyError } from '../src/web/password-hash.js'

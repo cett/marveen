@@ -117,6 +117,47 @@ describe('gateManualRestart', () => {
     expect(noSleep).toHaveBeenCalledWith(MANUAL_RESTART_INTERVAL_MS)
   })
 
+  // The sleep is the whole point of sampling "over time": the sleep that is not awaited makes the three captures
+  // happen back to back, so one glance is taken three times. A sleep stub that resolves at once (noSleep above)
+  // cannot see that; these two use a sleep that really takes a macrotask.
+  it('waits for each sleep to finish before the next capture: capture, sleep, capture, sleep, capture', async () => {
+    const events: string[] = []
+    const v = await gateManualRestart('agent-x', null, {
+      sessionExists: () => true,
+      command: () => 'claude.exe',
+      capture: () => { events.push('capture'); return IDLE_PANE },
+      sleep: async (ms: number) => {
+        events.push(`sleep-start:${ms}`)
+        await new Promise((r) => setTimeout(r, 5))
+        events.push('sleep-end')
+      },
+    })
+    expect(v).toEqual({ allow: true, reason: 'idle' })
+    expect(events).toEqual([
+      'capture',
+      `sleep-start:${MANUAL_RESTART_INTERVAL_MS}`, 'sleep-end', 'capture',
+      `sleep-start:${MANUAL_RESTART_INTERVAL_MS}`, 'sleep-end', 'capture',
+    ])
+  })
+
+  it('a pane that only settles after the interval has passed is read after the wait, not before it', async () => {
+    // Fake clock: a sleep advances it when it FINISHES. The pane shows idle only once the wait for that sample
+    // is over (sample i is due at i * interval). A gate that does not wait reads the pane too early: busy.
+    let clock = 0
+    let sample = 0
+    const v = await gateManualRestart('agent-x', null, {
+      sessionExists: () => true,
+      command: () => 'claude.exe',
+      sleep: async (ms: number) => {
+        await new Promise((r) => setTimeout(r, 5))
+        clock += ms
+      },
+      capture: () => (clock >= sample++ * MANUAL_RESTART_INTERVAL_MS ? IDLE_PANE : BUSY_PANE),
+    })
+    expect(v).toEqual({ allow: true, reason: 'idle' })
+    expect(clock).toBe((MANUAL_RESTART_SAMPLES - 1) * MANUAL_RESTART_INTERVAL_MS)
+  })
+
   it('a pane that is busy at the start refuses', async () => {
     expect(await gateManualRestart('agent-x', null, deps([BUSY_PANE]))).toEqual({ allow: false, reason: 'busy' })
   })

@@ -26,12 +26,16 @@ fi
 WEB_PORT="${WEB_PORT:-$(grep -E '^WEB_PORT=' "$(dirname "$0")/../.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d ' "' || true)}"
 WEB_PORT="${WEB_PORT:-3420}"
 # The vault read is admin:all: the operator's token, through the wrapper (never on a command line).
-
-get_secret() {
-  local id="$1"
-  local val
-  val="$(DASHBOARD_BASE_URL="http://localhost:${WEB_PORT}" bash "$INSTALL_DIR/scripts/agent-api.sh" --token operator GET "/api/vault/$id" 2>/dev/null)" || true
-  echo "$val" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('value',''))" 2>/dev/null || true
+# A key that is not in the vault (HTTP 404) or a dashboard that does not answer is still a quiet skip, as before.
+# A REFUSED read is not: the wrapper exits 3 and makes no request when the session this runs in was launched as a
+# sub-agent and AGENT_API_STRICT=1 (rule E2: only the main agent may use the operator token), or when the token
+# file is unusable. That must not look like "the key is not set", so it stops the script and says why.
+VAULT_ERR_FILE=""
+get_secret() { # get_secret VAR ID -> sets VAR to the value (empty when not available); returns 3 when refused
+  local _id="$2" _val _rc
+  _val="$(DASHBOARD_BASE_URL="http://localhost:${WEB_PORT}" bash "$INSTALL_DIR/scripts/agent-api.sh" --token operator GET "/api/vault/$_id" 2>"$VAULT_ERR_FILE")"; _rc=$?
+  if [ "$_rc" -eq 3 ]; then printf -v "$1" '%s' ""; return 3; fi
+  printf -v "$1" '%s' "$(echo "$_val" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('value',''))" 2>/dev/null || true)"
 }
 
 DIFF="$(git diff "$BASE"...HEAD)"
@@ -40,8 +44,17 @@ if [ -z "$DIFF" ]; then
   exit 0
 fi
 
-OPENAI_KEY="$(get_secret OPENAI_API_KEY)"
-GEMINI_KEY="$(get_secret GEMINI_API_KEY)"
+VAULT_ERR_FILE="$(mktemp "${TMPDIR:-/tmp}/pre-pr-review-err.XXXXXX")"
+trap 'rm -f "$VAULT_ERR_FILE"' EXIT
+OPENAI_KEY=""; GEMINI_KEY=""; VAULT_RC=0
+get_secret OPENAI_KEY OPENAI_API_KEY || VAULT_RC=$?
+if [ "$VAULT_RC" -eq 0 ]; then get_secret GEMINI_KEY GEMINI_API_KEY || VAULT_RC=$?; fi
+if [ "$VAULT_RC" -eq 3 ]; then
+  echo "[pre-pr-review] The vault read was REFUSED, so no key was read and nothing was reviewed (this is not 'key not set'):" >&2
+  sed 's/^/[pre-pr-review]   /' "$VAULT_ERR_FILE" >&2
+  echo "[pre-pr-review] This script needs the operator token. Run it from the main agent's session or from a terminal outside a sub-agent session; a sub-agent asks the main agent through /api/messages." >&2
+  exit 3
+fi
 if [ -z "$OPENAI_KEY" ] && [ -z "$GEMINI_KEY" ]; then
   echo "[pre-pr-review] OPENAI_API_KEY not set in vault: ChatGPT review skipped."
   echo "[pre-pr-review] GEMINI_API_KEY not set in vault: Gemini review skipped."
@@ -57,7 +70,7 @@ fi
 
 # The request bodies are files (a diff can exceed the argument-size limit), kept in a private temp dir.
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/pre-pr-review.XXXXXX")"
-trap 'rm -rf "$TMP"' EXIT
+trap 'rm -rf "$TMP"; rm -f "$VAULT_ERR_FILE"' EXIT
 chmod 700 "$TMP"
 
 PROMPT="You are a senior software engineer reviewing a pull request. Review the following git diff for correctness, security, and code quality. Be concise and specific. List any real issues found.\n\nDiff:\n\`\`\`\n$DIFF\n\`\`\`"

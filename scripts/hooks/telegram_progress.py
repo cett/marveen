@@ -22,6 +22,41 @@ PLACEHOLDER = "✍️ Dolgozom rajta…"   # ✍️ Dolgozom rajta…
 REACTION = "✍️"                            # ✍️
 
 
+# Only the OPENER is a pattern. A `<channel\b[^>]*\bsource="..."[^>]*>` span with no
+# upper bound made a prompt full of openers and no '>' quadratic (550 kB held this
+# hook for ~85 s). telegram_channel_tags() looks up the closing '>' with one forward
+# str.find shared by all openers, and takes an opener as a real envelope only when
+# the span up to that '>' is at most CHANNEL_TAG_MAX characters; a real envelope is
+# a few hundred.
+CHANNEL_OPEN_RX = re.compile(r'<channel\b')
+TELEGRAM_SOURCE_RX = re.compile(r'\bsource="[^"]*telegram[^"]*"')
+CHANNEL_TAG_MAX = 2000
+
+
+def telegram_channel_tags(prompt):
+    """Every <channel ... source="...telegram..."> opening tag in the prompt, whole."""
+    found = []
+    copied = 0  # prompt[:copied] is inside an envelope already taken
+    gt = -2  # first '>' at or after the last probe; -1 = none left, -2 = not probed yet
+    for m in CHANNEL_OPEN_RX.finditer(prompt):
+        start, end = m.span()
+        if start < copied:
+            continue
+        if gt != -1 and gt < end:
+            gt = prompt.find('>', end)
+        if gt == -1:
+            break  # no '>' left, so no later opener can close either
+        if gt - end > CHANNEL_TAG_MAX:
+            continue  # not an envelope: an over-long span is never a delivery frame
+        tag = prompt[start:gt + 1]
+        if TELEGRAM_SOURCE_RX.search(tag):
+            found.append(tag)
+        # Every opener up to this '>' sits inside this tag, and a source attribute
+        # that is not here is not in any shorter tag nested in it either.
+        copied = gt + 1
+    return found
+
+
 def state_dir():
     d = os.environ.get("TELEGRAM_STATE_DIR")
     if d:
@@ -92,7 +127,7 @@ def main():
     transcript_path = ev.get("transcript_path") or ""
     sd = state_dir()
 
-    blocks = re.findall(r'<channel\b[^>]*\bsource="[^"]*telegram[^"]*"[^>]*>', prompt)
+    blocks = telegram_channel_tags(prompt)
     if not blocks:
         return  # not a telegram turn — stay silent
     log(sd, f"[submit] sid={sid} blocks={len(blocks)} state_dir={sd}")

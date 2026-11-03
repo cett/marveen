@@ -245,23 +245,23 @@ describe('hasLiveTaskStateFile', () => {
   })
 
   it('fresh, non-empty, unconsumed record -> true', () => {
-    writeTaskState(AGENT, { nextAction: 'resume step 3', summary: 'mid-refactor' }, nowMs - 60_000)
+    writeTaskState(AGENT, { nextAction: 'resume step 3', summary: 'mid-refactor' }, nowMs - 60_000, AGENT)
     expect(hasLiveTaskStateFile(AGENT, nowMs)).toBe(true)
   })
 
   it('record older than the 10-minute fresh window -> false', () => {
-    writeTaskState(AGENT, { nextAction: 'resume step 3' }, nowMs - 11 * 60_000)
+    writeTaskState(AGENT, { nextAction: 'resume step 3' }, nowMs - 11 * 60_000, AGENT)
     expect(hasLiveTaskStateFile(AGENT, nowMs)).toBe(false)
   })
 
   it('record with an empty nextAction -> false (nothing to resume)', () => {
-    writeTaskState(AGENT, { nextAction: '   ' }, nowMs - 60_000)
+    writeTaskState(AGENT, { nextAction: '   ' }, nowMs - 60_000, AGENT)
     expect(hasLiveTaskStateFile(AGENT, nowMs)).toBe(false)
   })
 
   it('corrupt JSON on disk -> false (fail-open, does not throw)', () => {
     const dir = join(STORE_DIR, 'agent-taskstate')
-    if (!existsSync(dir)) writeTaskState(AGENT, { nextAction: 'x' }, nowMs)
+    if (!existsSync(dir)) writeTaskState(AGENT, { nextAction: 'x' }, nowMs, AGENT)
     writeFileSync(join(dir, `${AGENT}.json`), '{not valid json')
     expect(hasLiveTaskStateFile(AGENT, nowMs)).toBe(false)
   })

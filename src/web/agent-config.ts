@@ -553,10 +553,15 @@ export function listAllAgentNames(): string[] {
   })
 }
 
+// The SUB-agents. The main agent is never one of them, even when an `agents/<MAIN_AGENT_ID>` directory exists
+// (a leftover `.claude` / agent-config.json is enough): it is not run as `agent-<name>`, callers that want it
+// add MAIN_AGENT_ID themselves (`[MAIN_AGENT_ID, ...listAgentNames()]`), and counting that directory as a
+// sub-agent made the overview show a second, stopped copy of the running main agent ("1 ágens nem fut").
 export function listAgentNames(): string[] {
   if (!existsSync(AGENTS_BASE_DIR)) return []
   return readdirSync(AGENTS_BASE_DIR).filter((f) => {
     try {
+      if (f === MAIN_AGENT_ID) return false
       if (!statSync(join(AGENTS_BASE_DIR, f)).isDirectory()) return false
       // Hide technical workers explicitly opted out via the sentinel
       // file. Cheap fs stat -- one extra existsSync per agent dir per

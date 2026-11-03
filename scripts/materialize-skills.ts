@@ -20,6 +20,7 @@
  * Usage:
  *   npx tsx scripts/materialize-skills.ts [--dry-run]
  */
+import './lib/log-to-stderr.js'
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'

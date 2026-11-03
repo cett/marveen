@@ -75,7 +75,19 @@ export type PaneState = 'idle' | 'busy' | 'typing' | 'unknown' | 'error'
 // scrollback still will not match; it needs the shift+tab hint or a `·`
 // separated idle action, which is UI chrome that prose does not carry.
 // `← for agents` is the FleetView tail on current builds; older tails kept.
-const IDLE_FOOTER_RX = /(?:[A-Za-z][\w-]* ){1,3}on(?: \(shift\+tab to cycle\)| · [^\n]*?(?:ctrl\+t|↓ to manage|← for agents))|\? for shortcuts/
+//
+// A footer with a background MONITOR can also carry NO action hint at all: measured in a live session,
+// Claude Code renders `⏵⏵ bypass permissions on · 1 monitor` and nothing after the count. That shape has
+// no UI-chrome tail for the rule above to require, so it is matched by its own alternative, anchored to a
+// whole LINE instead: the line starts with the footer glyph (⏵⏵, or ⏸ for plan mode), names the mode, and
+// ends right after one or more `· N monitor(s)` counts. A bare `· N shell(s)` is deliberately NOT accepted
+// (the shells footer always carries a tail, so a bare one is a truncated frame; pane-state.test.ts pins it).
+// The anchor is the line, not the pane, because the footer is not always the last line (a status line can
+// sit below it).
+// Prose that quotes the footer does not start with the glyph, or continues after the count, so it stays
+// 'unknown' like before. The `m` flag only serves this alternative (the others carry no anchor); with it
+// `$` also stops before a CR, so a CRLF capture matches.
+const IDLE_FOOTER_RX = /(?:[A-Za-z][\w-]* ){1,3}on(?: \(shift\+tab to cycle\)| · [^\n]*?(?:ctrl\+t|↓ to manage|← for agents))|\? for shortcuts|^[ \t]*[⏵⏸]+ (?:[A-Za-z][\w-]* ){1,3}on(?: · \d+ monitors?)+[ \t]*$/m
 
 // Positive busy signals. ANY match anywhere in the pane means the turn
 // is mid-flight, even if the footer looks idle for a frame.

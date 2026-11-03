@@ -1,5 +1,5 @@
 // /api/channel-credentials: admin only; the responses never carry a token.
-import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest'
+import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll, vi } from 'vitest'
 import { EventEmitter } from 'node:events'
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -9,8 +9,15 @@ const TMP = vi.hoisted(() => ({
   dir: (require('node:fs') as typeof import('node:fs')).mkdtempSync(require('node:path').join(require('node:os').tmpdir(), 'chan-route-')),
 }))
 const vault = vi.hoisted(() => new Map<string, string>())
+const deliver = vi.hoisted(() => ({ fn: (async (_text: string) => true) as (text: string) => Promise<boolean> }))
 
 vi.mock('../logger.js', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() } }))
+// The sweep sends its drift alarm through deliverToChannel; replaced so no test reaches a real channel and the
+// delivery can be made slow (see the "check without agent_id" test).
+vi.mock('../notify.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../notify.js')>()),
+  deliverToChannel: (text: string) => deliver.fn(text),
+}))
 vi.mock('../web/vault.js', () => ({
   getSecret: (id: string) => vault.get(id) ?? null,
   setSecret: (id: string, _label: string, value: string) => { vault.set(id, value) },
@@ -25,7 +32,7 @@ vi.mock('../web/agent-config.js', async (importOriginal) => {
   return { ...actual, agentDir: (name: string) => join(TMP.dir, name), listAgentNames: () => ['zed', 'amy'] }
 })
 
-import { initDatabase } from '../db.js'
+import { initDatabase, getDb } from '../db.js'
 import { tryHandleChannelCredentials } from '../web/routes/channel-credentials.js'
 import { hasPermission, resolveRequiredPermission } from '../web/rbac.js'
 
@@ -60,6 +67,7 @@ async function call(method: string, path: string, body?: object, role: string = 
 beforeAll(() => { initDatabase(':memory:') })
 afterAll(() => { rmSync(TMP.dir, { recursive: true, force: true }) })
 beforeEach(() => {
+  deliver.fn = async () => true
   vault.clear()
   rmSync(TMP.dir, { recursive: true, force: true })
   mkdirSync(TMP.dir, { recursive: true })
@@ -119,6 +127,54 @@ describe('/api/channel-credentials', () => {
     expect((await call('POST', '/api/channel-credentials/check', { agent_id: 'zed' })).body).toEqual({ ok: true, agent_id: 'zed', drift_state: 'ok' })
     expect((await call('POST', '/api/channel-credentials/check', { agent_id: 'amy' })).status).toBe(404)
     expect((await call('POST', '/api/channel-credentials/check', { agent_id: '../x' })).status).toBe(400)
+  })
+})
+
+describe('POST /api/channel-credentials/check without agent_id (the sweep)', () => {
+  type Row = { agent_id: string; drift_state: string }
+  const states = (body: Record<string, unknown>) => Object.fromEntries((body.adopted as Row[]).map((a) => [a.agent_id, a.drift_state]))
+
+  // The DB is shared by the whole file; the sweep covers every recorded channel, so start from none, and leave
+  // none behind: the rows these tests adopt would otherwise change what a test running after them sees
+  // (order-dependent under --sequence.shuffle).
+  const clearChannelRecords = () => getDb().exec('DELETE FROM channel_allowed_chats; DELETE FROM channel_credential_baseline; DELETE FROM token_usage_shadow')
+  beforeEach(clearChannelRecords)
+  afterEach(clearChannelRecords)
+
+  it('answers only after every channel has been checked: the response carries the finished drift states', async () => {
+    writeChannel('zed', TOKEN_ZED, { allowFrom: ['42'] })
+    writeChannel('amy', TOKEN_AMY, { allowFrom: ['43'] })
+    await call('POST', '/api/channel-credentials/adopt', { agent_id: 'zed' })
+    await call('POST', '/api/channel-credentials/adopt', { agent_id: 'amy' })
+    // Both channels drift, and the owner message is slow: a route that does not wait for the sweep answers with
+    // the first channel's state already written and the second one still at its adopted 'ok'.
+    writeChannel('zed', '555555555:OTHER-token-ddddddddddddddddddddddd', { allowFrom: ['42'] })
+    writeChannel('amy', '666666666:OTHER-token-eeeeeeeeeeeeeeeeeeeeeee', { allowFrom: ['43'] })
+    const sent: string[] = []
+    deliver.fn = async (text) => { await new Promise((r) => setTimeout(r, 15)); sent.push(text); return true }
+
+    const r = await call('POST', '/api/channel-credentials/check', {})
+
+    expect(r.status).toBe(200)
+    expect(r.body.ok).toBe(true)
+    expect(states(r.body)).toEqual({ zed: 'token', amy: 'token' })
+    expect(sent).toHaveLength(2) // both alarms were delivered before the answer, not after it
+    expect(r.raw).not.toContain('OTHER-token')
+    expect(r.raw).not.toContain(TOKEN_ZED)
+    expect(r.raw).not.toContain(TOKEN_AMY)
+  })
+
+  it('with nothing drifting every adopted channel reads ok and no alarm is sent', async () => {
+    writeChannel('zed', TOKEN_ZED, { allowFrom: ['42'] })
+    await call('POST', '/api/channel-credentials/adopt', { agent_id: 'zed' })
+    const send = vi.fn(async (_text: string) => true)
+    deliver.fn = send
+
+    const r = await call('POST', '/api/channel-credentials/check', {})
+
+    expect(r.status).toBe(200)
+    expect(states(r.body)).toEqual({ zed: 'ok' })
+    expect(send).not.toHaveBeenCalled()
   })
 })
 

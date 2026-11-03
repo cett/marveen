@@ -41,6 +41,7 @@ export const KNOWN_HOOK_SCRIPTS: readonly string[] = [
   'context-watchdog.py',
   'destructive-gate.py',
   'auth-admin-gate.py',
+  'shell-rescan-guard.py',
   'tenant-context.py',
   'tenant-skill-gate.py',
 ]

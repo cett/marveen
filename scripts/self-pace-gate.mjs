@@ -72,6 +72,11 @@ const SELF_PACE_BASH_PATTERNS = [
 // `PATH=/bin crontab -` are all caught. Trailing \b(?!-) so it never fires on
 // "netstat" / "crontab-helper.sh"; (?!\s*=) so a bare NAME=value assignment
 // (`at=$(...)`) is not mistaken for the `at` binary.
+// NOT linear: on a long run of `(` or backticks every boundary opens a `\S*` scan to the end of the word, so the cost
+// is quadratic (60 KB: 2.3 s). The input size cap (MAX_CMD_CHARS) is what keeps it inside the hook timeout. Narrowing
+// `\S*` to stop at the next boundary changes verdicts: a wrapper word the list does not name, such as nohup in
+// `X=$(nohup <scheduler> ...)`, is caught only because the assignment value swallows `$(nohup`. Do not make the
+// pattern linear without a differential test that includes unlisted wrapper words.
 const SCHED_PREFIX = String.raw`(?:(?:[A-Za-z_]\w*=\S*|sudo|env|command|exec|nice|builtin|time)\s+)*(?:\S*/)?`
 // The command-boundary anchor includes `(` so a $(...) command substitution
 // (`X=$(crontab -)`) is caught, AND a backtick so a legacy `...` substitution
@@ -456,15 +461,122 @@ function expandWord(w, vars, cwd) {
   }
   return s
 }
+// The index of the ] that closes the glob class opened at abs[i]; -1 when it is not closed; -2 when the
+// scan budget of this word ran out (see globToRegex). `tails` holds the last index of each POSIX class
+// closer (":]", "=]", ".]"), so a "[:" with no closer after it costs nothing to rule out.
+function globClassEnd(abs, i, tails, meter) {
+  let j = i + 1
+  if (abs[j] === '!' || abs[j] === '^') j++
+  if (abs[j] === ']') j++ // a ] right after the [ (or its negation) is a member, not the end
+  for (; j < abs.length; j++) {
+    if (--meter.left < 0) return -2
+    const c = abs[j]
+    if (c === '\\') j++ // an escaped character is a member
+    else if (c === '[' && abs[j + 1] !== undefined && ':=.'.includes(abs[j + 1]) && tails[abs[j + 1]] >= j + 2) {
+      const close = abs.indexOf(abs[j + 1] + ']', j + 2) // [:alpha:] [=a=] [.-.] sit inside the class
+      meter.left -= close - j
+      j = close + 1
+    } else if (c === ']') return j
+  }
+  return -1
+}
+// The regex source of a glob bracket class body (the text between [ and ]). The leading ! or ^ of the glob
+// negates; a backslash makes the next character a plain member (as in bash); an unescaped dash between two
+// members is a range. An out-of-order range (z-a) is read with its ends swapped: the gate over-matches what a
+// shell would call an empty range, it never matches less. A class RegExp still refuses falls back to any one
+// non-slash character, which also over-matches. Neither path throws.
+function globClass(body) {
+  // A POSIX class, an equivalence class or a collating symbol: not modelled, matches any one character.
+  if (/\[[:=.]/.test(body)) return '[^/]'
+  const neg = body[0] === '!' || body[0] === '^'
+  const chars = []
+  for (let i = neg ? 1 : 0; i < body.length; i++) {
+    if (body[i] === '\\' && i + 1 < body.length) chars.push({ c: body[++i], lit: true })
+    else chars.push({ c: body[i], lit: false })
+  }
+  const esc = (c) => c.replace(/[\\[\]^-]/g, '\\$&')
+  let inner = ''
+  for (let i = 0; i < chars.length; i++) {
+    const isRange = i + 2 < chars.length && !chars[i + 1].lit && chars[i + 1].c === '-'
+    if (isRange) {
+      const lo = chars[i].c, hi = chars[i + 2].c
+      // A reversed range is swapped in a plain class (it matches more) and dropped in a negated one: there it
+      // is an empty exclusion, and swapping it would exclude more characters, i.e. match less than a shell.
+      if (lo <= hi) inner += esc(lo) + '-' + esc(hi)
+      else if (!neg) inner += esc(hi) + '-' + esc(lo)
+      i += 2
+    } else inner += esc(chars[i].c)
+  }
+  if (!inner) return neg ? '[^/]' : null // a negated class that excludes nothing matches any one character
+  const src = '[' + (neg ? '^' : '') + inner + ']'
+  try { new RegExp(src); return src } catch { return '[^/]' }
+}
+// At most this many separate unbounded wildcards of one word are expanded, the rest of the word matches
+// anything: separated by literals they still backtrack polynomially (a*a*a*..b on a name of a's), so the
+// degree is kept small. Protected names are short, a real glob rarely has more.
+const MAX_GLOB_STARS = 4
+// A word longer than this cannot be inspected (RegExp refuses a pattern far above it, "Regular expression too
+// large"); no path is this long, but the gate does not rely on that: it matches everything, so a protected
+// path behind it is denied, the same fail-closed answer the size caps of the sibling gates give.
+const MAX_GLOB_WORD = 32768
 function globToRegex(abs) {
+  // Bash reads a run of stars as one (** is the same as *, here a star that may cross a slash), so the run is
+  // folded BEFORE the length check: a word padded with stars to any length is still read exactly.
+  abs = abs.replace(/\*{2,}/g, '**')
+  if (abs.length > MAX_GLOB_WORD) return /^.*$/
+  // Bounds, so that no word can make the gate slow or make RegExp throw (a block under onFailure:block):
+  //  - one scan budget for the whole word: a class that never closes does not rescan the rest per bracket
+  //    (lastClose rules most of them out in O(1)); when the budget runs out the rest of the word is
+  //    over-matched, never skipped;
+  //  - a run of stars is one star, and at most MAX_GLOB_STARS stars are expanded: the rest matches anything.
+  //    Adjacent stars make a backtracking RegExp explode, thousands of them overflow its stack.
+  const lastClose = abs.lastIndexOf(']')
+  const tails = { ':': abs.lastIndexOf(':]'), '=': abs.lastIndexOf('=]'), '.': abs.lastIndexOf('.]') }
+  const meter = { left: 4 * abs.length + 256 }
   let out = '^'
+  let stars = 0
+  let spent = false
+  // A run of adjacent wildcards (*, ?, a widened class) is ONE quantified unit: [^/]{min,} (or .{min,} when a
+  // ** is in it). Chained, they make a backtracking RegExp explode (eight [^/]* against a 50-character name
+  // take ~9 s); as one unit they cost nothing.
+  let run = null
+  const flush = () => {
+    if (!run) return
+    const any = run.wide ? '.' : '[^/]'
+    out += run.unbounded ? `${any}{${run.min},}` : `${any}{${run.min}}`
+    run = null
+  }
   for (let i = 0; i < abs.length; i++) {
     const c = abs[i]
-    if (c === '*') { if (abs[i + 1] === '*') { out += '.*'; i++ } else out += '[^/]*' }
-    else if (c === '?') out += '[^/]'
-    else if (c === '[') { const e = abs.indexOf(']', i + 2); if (e === -1) out += '\\['; else { out += abs.slice(i, e + 1); i = e } }
-    else out += c.replace(/[.+^${}()|\\]/g, '\\$&')
+    let star = null
+    let piece = null
+    if (c === '*') { if (abs[i + 1] === '*') { star = '.*'; i++ } else star = '[^/]*' }
+    else if (c === '?') piece = '[^/]'
+    else if (c === '[') {
+      const e = i < lastClose ? globClassEnd(abs, i, tails, meter) : -1
+      if (e === -2) { star = '.*'; spent = true }
+      else {
+        const cls = e === -1 ? null : globClass(abs.slice(i + 1, e))
+        // An unclosed bracket is literal text, as in bash. A closed one always yields a class: the gate must
+        // reach a decision, never throw out of a Bash call.
+        if (cls) {
+          // A stray ] straight after the class (before any further [) means the quoting that was removed before
+          // this point may have hidden an escaped ] inside it: the structure is ambiguous, so everything up to
+          // that ] matches any run of non-slash characters. It over-matches, it never matches less.
+          const stray = /^[^[\]]*\]/.exec(abs.slice(e + 1))
+          if (stray) { star = '[^/]*'; i = e + stray[0].length } else { piece = cls; i = e }
+        } else piece = '\\['
+      }
+    }
+    else piece = c.replace(/[.+^${}()|\\]/g, '\\$&')
+    if (star === null && piece !== '[^/]') { flush(); out += piece; continue }
+    run ??= { min: 0, unbounded: false, wide: false }
+    if (star === null) { run.min++; continue } // a ? is one character of the run
+    if (spent || (!run.unbounded && ++stars > MAX_GLOB_STARS)) { run.unbounded = true; run.wide = true; flush(); break }
+    run.unbounded = true
+    if (star === '.*') run.wide = true
   }
+  flush()
   return new RegExp(out + '$')
 }
 function listDir(dir, ctx, depth = 0, out = []) {
@@ -1205,6 +1317,9 @@ export function normalizeShellEvasion(seg) {
     .replace(/\\(.)/g, '$1') // \X -> X (bash unescape of a backslash-escaped char)
 }
 
+// 64 KiB: the longest real call seen is about 32 KB, and SCHED_PREFIX is quadratic on a hostile shape (about 2.6 s at the cap).
+export const MAX_CMD_CHARS = 65536
+
 // Pure decision: does this tool call set up self-pace / self-injection?
 export function gateDecision(toolName, toolInput, opts = {}) {
   const name = String(toolName ?? '')
@@ -1217,6 +1332,10 @@ export function gateDecision(toolName, toolInput, opts = {}) {
     if (kind) return { deny: true, reason: kind }
   }
   if (name === 'Bash') {
+    // A command this big is not read: the scans below are not all linear (a few are n^1.5 on a hostile
+    // shape), and a hook still running at the host timeout is not a deny. Over the cap the call is refused,
+    // fail-closed, like the other gates (the real maximum seen is ~32 KB).
+    if (String(toolInput?.command ?? '').length > MAX_CMD_CHARS) return { deny: true, reason: 'too-large' }
     // Strip -d/--data payloads on the WHOLE command BEFORE splitting. A payload is
     // data, not an invocation; and since splitSegments is NOT quote-aware, a shell
     // separator (; && | &) INSIDE a dispatch body would otherwise orphan a fragment
@@ -1276,6 +1395,10 @@ const SETTINGS_GATE_MSG =
   '(plugin, hook, permission), kerd a fo agenst vagy a tulajdonost (inter-agent uzenet: fajl + miert). ' +
   'Olvasni (cat / jq / grep) szabad; a sajat worktree masolat szerkesztheto.'
 
+const TOO_LARGE_MSG =
+  'A parancs tul nagy (' + MAX_CMD_CHARS + ' karakter folott) ahhoz, hogy a kapu atvizsgalja (governance hard-gate), ' +
+  'es egy vizsgalhatatlan parancs nem mehet at. Nagy szoveget fajlba irj a Write tool-lal, aztan futtasd ujra.'
+
 function allow() { process.exit(0) }
 
 function deny(reason) {
@@ -1306,6 +1429,6 @@ if (isInvokedDirectly()) {
     allow() // malformed/empty input must never break the agent's tool calls
   }
   const { deny: shouldDeny, reason } = gateDecision(payload?.tool_name, payload?.tool_input, { cwd: payload?.cwd })
-  if (shouldDeny) deny(reason === 'egress-allowlist' ? ALLOWLIST_GATE_MSG : reason === 'gate-scripts' ? SCRIPTS_GATE_MSG : reason === 'agent-settings' ? SETTINGS_GATE_MSG : GATE_MSG)
+  if (shouldDeny) deny(reason === 'too-large' ? TOO_LARGE_MSG : reason === 'egress-allowlist' ? ALLOWLIST_GATE_MSG : reason === 'gate-scripts' ? SCRIPTS_GATE_MSG : reason === 'agent-settings' ? SETTINGS_GATE_MSG : GATE_MSG)
   allow()
 }

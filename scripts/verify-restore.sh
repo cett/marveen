@@ -18,14 +18,30 @@
 #      the replaced shared token back. The output ends with the token steps to run after a
 #      restore; restore_log gets "token-step pending".
 #
+#   8. Row counts: every table the backup recorded in MANIFEST.txt must exist in the archived database with
+#      the same number of rows (a database with no tables, a missing table, or a table that was filled at
+#      backup time and is empty now FAILS; the output says "N of M tables, X of Y rows"). An archive from before the counts
+#      only warns.
+#
+# --drill: the weekly restore drill (scripts/restore-drill.sh). Stricter: a missing sqlite3 CLI or an archive
+# without row counts FAILS instead of being skipped or warned about, because a drill that skips its checks
+# reports a healthy archive it never looked at.
+#
 # Exit codes: 0 = all checks passed, 1 = one or more checks failed.
 # Result is also written to restore_log in the live DB (if sqlite3 is present).
 
 set -euo pipefail
 
-ARCHIVE="${1:-}"
+DRILL=0
+ARCHIVE=""
+for arg in "$@"; do
+  case "${arg}" in
+    --drill) DRILL=1 ;;
+    *) ARCHIVE="${arg}" ;;
+  esac
+done
 if [[ -z "${ARCHIVE}" ]]; then
-  echo "Usage: $0 <archive.tar.gz>" >&2
+  echo "Usage: $0 [--drill] <archive.tar.gz>" >&2
   exit 1
 fi
 
@@ -136,7 +152,13 @@ echo "[5] DB integrity check..."
 TMPDIR_EXTRACT="$(mktemp -d -t verify-restore.XXXXXX)"
 trap 'rm -rf "${TMPDIR_EXTRACT}"' EXIT
 
-if tar -xzf "${ARCHIVE}" -C "${TMPDIR_EXTRACT}" repo/store/claudeclaw.db 2>/dev/null; then
+# The database and, in an archive from before the snapshot (backup.sh now archives one self-contained file),
+# its -wal/-shm: the check must look at the file set a real restore would put back.
+DB_ENTRIES=()
+for entry in repo/store/claudeclaw.db repo/store/claudeclaw.db-wal repo/store/claudeclaw.db-shm; do
+  if grep -qxF "${entry}" <<<"${ARCHIVE_LISTING}"; then DB_ENTRIES+=("${entry}"); fi
+done
+if [[ ${#DB_ENTRIES[@]} -gt 0 ]] && tar -xzf "${ARCHIVE}" -C "${TMPDIR_EXTRACT}" "${DB_ENTRIES[@]}" 2>/dev/null; then
   EXTRACTED_DB="${TMPDIR_EXTRACT}/repo/store/claudeclaw.db"
   if command -v sqlite3 >/dev/null 2>&1; then
     IC="$(sqlite3 "${EXTRACTED_DB}" 'PRAGMA integrity_check(1);' 2>/dev/null || echo 'error')"
@@ -148,12 +170,72 @@ if tar -xzf "${ARCHIVE}" -C "${TMPDIR_EXTRACT}" repo/store/claudeclaw.db 2>/dev/
       INTEGRITY_OK=0
     fi
   else
-    echo "  [SKIP] sqlite3 not found -- skipping DB integrity check"
-    INTEGRITY_OK=1
+    # Not "ok": nothing was checked, and restore_log must not say it was.
+    INTEGRITY_OK=0
+    if [[ ${DRILL} -eq 1 ]]; then
+      check_fail "sqlite3 not found -- the DB integrity check and the row counts could not run"
+    else
+      echo "  [SKIP] sqlite3 not found -- skipping DB integrity check"
+      NOTE="${NOTE}SKIP:integrity check not run (no sqlite3); "
+    fi
   fi
 else
   check_fail "Could not extract DB from archive"
   INTEGRITY_OK=0
+fi
+
+# 5a. Row counts. "The database opens and passes integrity_check" is also true of an empty one: a file with no
+# tables, or with every table empty, passes. backup.sh records the row count of every ordinary table in
+# MANIFEST.txt (counted on the archived snapshot itself), so what comes out of the archive must match it exactly.
+# db_rowcounts <db>: "table<TAB>rows" per ordinary table; virtual tables are skipped (vec0 needs its extension),
+# their shadow tables are ordinary and counted. Keep in sync with backup.sh.
+db_rowcounts() {
+  local db="$1" sql
+  sql="$(sqlite3 "${db}" "SELECT 'SELECT ''' || name || ''' || char(9) || count(*) FROM \"' || name || '\";' FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT GLOB '*[^A-Za-z0-9_]*' AND sql NOT LIKE 'CREATE VIRTUAL TABLE%' ORDER BY name;")"
+  [[ -n "${sql}" ]] || return 0
+  sqlite3 "${db}" "${sql}"
+}
+echo "[5a] Table and row counts against MANIFEST.txt..."
+if [[ -n "${EXTRACTED_DB:-}" && -f "${EXTRACTED_DB}" ]] && command -v sqlite3 >/dev/null 2>&1; then
+  ACTUAL_FILE="${TMPDIR_EXTRACT}/actual-rowcounts.tsv"
+  MANIFEST_FILE="${TMPDIR_EXTRACT}/manifest-rowcounts.tsv"
+  db_rowcounts "${EXTRACTED_DB}" > "${ACTUAL_FILE}" 2>/dev/null || true
+  : > "${MANIFEST_FILE}"
+  if tar -xzf "${ARCHIVE}" -C "${TMPDIR_EXTRACT}" MANIFEST.txt 2>/dev/null; then
+    sed -n '/^--- db-rowcounts/,$p' "${TMPDIR_EXTRACT}/MANIFEST.txt" | sed '1d' \
+      | grep -E "^[A-Za-z0-9_]+$(printf '\t')[0-9]+\$" > "${MANIFEST_FILE}" || true
+  fi
+  ACTUAL_TABLES="$(wc -l < "${ACTUAL_FILE}" | tr -d ' ')"
+  if [[ "${ACTUAL_TABLES}" -eq 0 ]]; then
+    check_fail "the archived database has no tables (an empty or wrong file)"
+  elif [[ ! -s "${MANIFEST_FILE}" ]]; then
+    ACTUAL_ROWS="$(awk -F'\t' '{s+=$2} END{print s+0}' "${ACTUAL_FILE}")"
+    if [[ ${DRILL} -eq 1 ]]; then
+      check_fail "MANIFEST.txt has no row counts to compare against (an archive from before the counts); the database has ${ACTUAL_TABLES} tables, ${ACTUAL_ROWS} rows"
+    else
+      echo "  [WARN] MANIFEST.txt has no row counts (an archive from before the counts): nothing to compare against; the database has ${ACTUAL_TABLES} tables, ${ACTUAL_ROWS} rows"
+      NOTE="${NOTE}WARN:no row counts in the manifest; "
+      NO_COUNTS=1
+    fi
+  else
+    # Exact comparison: both counts were taken on the same snapshot, so any difference is damage.
+    # EMPTY = filled at backup time, no rows now; MISSING = table gone; EXTRA = table the manifest does not know.
+    DIFFS="$(awk -F'\t' 'NR==FNR{m[$1]=$2; next} {a[$1]=$2}
+      END{ for(t in m){ if(!(t in a)) print "MISSING " t " (" m[t] " rows)"; else if(a[t]!=m[t]) print (a[t]==0 ? "EMPTY " : "DIFF ") t " (manifest " m[t] ", archive " a[t] ")" }
+           for(t in a) if(!(t in m)) print "EXTRA " t " (" a[t] " rows)" }' "${MANIFEST_FILE}" "${ACTUAL_FILE}" | sort)"
+    SUMMARY="$(awk -F'\t' 'NR==FNR{mt++; mr+=$2; m[$1]=$2; next} {if($1 in m){pt++; pr+=($2<m[$1]?$2:m[$1])}} END{print pt+0 " of " mt+0 " tables, " pr+0 " of " mr+0 " rows"}' "${MANIFEST_FILE}" "${ACTUAL_FILE}")"
+    if [[ -n "${DIFFS}" ]]; then
+      check_fail "row counts differ from MANIFEST.txt (${SUMMARY}): $(printf '%s' "${DIFFS}" | head -5 | tr '\n' ';')"
+    else
+      check_pass "${SUMMARY} -- every table present with the manifest's row count"
+    fi
+  fi
+else
+  if [[ ${DRILL} -eq 1 ]]; then
+    check_fail "row counts could not be checked (no extracted database or no sqlite3)"
+  else
+    echo "  [SKIP] no extracted database or no sqlite3 -- skipping the row count check"
+  fi
 fi
 
 # 5b. Shared token resurrection. The archive carries the `dashboard` token row (and the token file). When
@@ -197,6 +279,11 @@ echo "  2. npm run agent-tokens -- issue-operator"
 echo "  3. npm run agent-tokens -- rotate-shared   (the shared token file is not in the archive either; this mints a new one"
 echo "     and revokes the restored row, so an old shared token cannot come back to life; works with the dashboard stopped)"
 echo "  4. npm run agent-tokens -- check   (and scripts/doctor.sh)"
+# Last thing on screen, so a manual restore does not read "ALL CHECKS PASSED" as "the content was compared".
+if [[ ${NO_COUNTS:-0} -eq 1 ]]; then
+  echo ""
+  echo "verify-restore: WARNING -- this archive has no row counts in MANIFEST.txt (it was taken before the counts existed): the tables and rows in it were NOT compared against anything. A passing result only means the files are intact." >&2
+fi
 
 # Write to restore_log (best-effort; never abort on failure; DB_PATH is set at step 5b)
 if command -v sqlite3 >/dev/null 2>&1 && [[ -f "${DB_PATH}" ]]; then

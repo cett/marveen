@@ -21,6 +21,7 @@
 //
 // The real-data query set, the embedding cache and the baseline contain private memory content or
 // ids: keep them under store/ (gitignored), never commit them.
+import '../lib/log-to-stderr.js'
 import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'

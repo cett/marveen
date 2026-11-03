@@ -19,8 +19,8 @@ import { detectLanIp } from './web/network-info.js'
 import { normalizePath, applyDeprecationHeaders } from './web/routes/versioning.js'
 import { instrumentHttpRequest } from './otel-http.js'
 import { AGENTS_BASE_DIR, listAgentNames } from './web/agent-config.js'
-import { ensureAgentHooks, ensureAgentStalenessHook, ensureEgressGate, ensureBashEgressParser, ensureDestructiveGate, ensureAuthAdminGate, ensureTenantHooks, ensureGovernanceGateCommands, ensureSkillUsageMatcher, ensureQuarantineReader, ensureContextWatchdogHook, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection, ensureWorkDocSection } from './web/agent-scaffold.js'
 import { backfillQuarantineReaders } from './web/quarantine-backfill.js'
+import { ensureAgentHooks, ensureAgentStalenessHook, ensureEgressGate, ensureBashEgressParser, ensureDestructiveGate, ensureAuthAdminGate, ensureShellRescanGuard, ensureTenantHooks, ensureGovernanceGateCommands, ensureGateOnFailure, ensureHookPolicySection, ensureSkillUsageMatcher, ensureQuarantineReader, ensureContextWatchdogHook, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection, ensureWorkDocSection } from './web/agent-scaffold.js'
 import { watchEgressAllowlistBaseline, queueAllowlistReport } from './web/egress-allowlist-baseline.js'
 import { shouldRegisterHooks, pruneStaleHooksFromSettingsFile } from './web/hook-registration-guard.js'
 import { refreshMarveenBotUsername } from './web/telegram.js'
@@ -133,6 +133,7 @@ import type { RouteContext } from './web/routes/types.js'
 import { RouteDispatcher } from './web/routes/dispatcher.js'
 import { reconcileAgentsOnStartup, flushRunningStateToDesired } from './web/startup-reconciliation.js'
 import { registerSigtermFlush } from './web/sigterm-flush.js'
+import { pruneMainAgentFromDesired } from './web/agent-desired-state.js'
 import { startImportCrawler, stopImportCrawler } from './web/import-crawler.js'
 import { bootstrapDashboardToken } from './web/token-bootstrap.js'
 
@@ -677,7 +678,13 @@ export async function startWebServer(port = 3420): Promise<http.Server> {
   // are gone (accepting lost context). Fire-and-forget: errors are logged
   // internally and never bubble to the caller.
   if (!webOnly) {
-    runAs.system('boot-sequence', () => reconcileAgentsOnStartup()).catch(err =>
+    // Drop a main-agent entry an earlier run left in the stored set before anything reads it. The prune is a
+    // (now asynchronous) system_config write and must finish BEFORE reconcileAgentsOnStartup() reads the set, so
+    // both run in order inside the one boot-sequence task. A failed prune is logged and never blocks the reconcile.
+    runAs.system('boot-sequence', async () => {
+      try { await pruneMainAgentFromDesired() } catch (err) { logger.warn({ err }, 'desired-state prune failed (non-fatal)') }
+      await reconcileAgentsOnStartup()
+    }).catch(err =>
       logger.warn({ err }, 'startup-reconciliation: uncaught error (non-fatal)'),
     )
 
@@ -708,8 +715,12 @@ export async function startWebServer(port = 3420): Promise<http.Server> {
       const bashParserPatched: string[] = []
       const destructivePatched: string[] = []
       const authAdminPatched: string[] = []
+      const shellRescanPatched: string[] = []
       const tenantPatched: string[] = []
       const govPatched: string[] = []
+      const onFailurePatched: string[] = []
+      const policyPatched: string[] = []
+      const policyLeftManual: string[] = []
       const skillUsagePatched: string[] = []
       const watchdogPatched: string[] = []
       const quarantineAgents: string[] = []
@@ -727,8 +738,13 @@ export async function startWebServer(port = 3420): Promise<http.Server> {
         if (ensureBashEgressParser(agentName)) bashParserPatched.push(agentName)
         if (ensureDestructiveGate(agentName)) destructivePatched.push(agentName)
         if (ensureAuthAdminGate(agentName)) authAdminPatched.push(agentName)
+        if (ensureShellRescanGuard(agentName)) shellRescanPatched.push(agentName)
         if (ensureTenantHooks(agentName)) tenantPatched.push(agentName)
         if (ensureGovernanceGateCommands(agentName)) govPatched.push(agentName)
+        if (ensureGateOnFailure(agentName)) onFailurePatched.push(agentName)
+        const policySync = ensureHookPolicySection(agentName)
+        if (policySync === 'added' || policySync === 'updated' || policySync === 'replaced') policyPatched.push(agentName)
+        else if (policySync === 'left-manual') policyLeftManual.push(agentName)
         if (ensureSkillUsageMatcher(agentName)) skillUsagePatched.push(agentName)
         // No-op for MAIN_AGENT_ID (already covered via the project-tracked
         // .claude/settings.json) -- see ensureContextWatchdogHook's own comment.
@@ -752,7 +768,11 @@ export async function startWebServer(port = 3420): Promise<http.Server> {
       if (tenantPatched.length) logger.info({ patched: tenantPatched }, 'tenant-context + tenant-skill-gate hooks backfilled into agent settings.json')
       if (destructivePatched.length) logger.info({ patched: destructivePatched }, 'destructive-gate Bash hook backfilled into agent settings.json')
       if (authAdminPatched.length) logger.info({ patched: authAdminPatched }, 'auth-admin-gate Bash hook backfilled into agent settings.json')
+      if (shellRescanPatched.length) logger.info({ patched: shellRescanPatched }, 'shell-rescan-guard Bash hook backfilled into agent settings.json')
       if (govPatched.length) logger.info({ patched: govPatched }, 'governance gate hook commands upgraded to absolute node path in agent settings.json')
+      if (policyPatched.length) logger.info({ patched: policyPatched }, 'hook policy section written to agent CLAUDE.md')
+      if (policyLeftManual.length) logger.warn({ agents: policyLeftManual }, 'hook policy section in agent CLAUDE.md is hand-edited, differs from the known old text or has an unpaired generated marker: left as is, it still carries the old wording')
+      if (onFailurePatched.length) logger.info({ patched: onFailurePatched }, 'onFailure:block set on the gate hook entries of agent settings (a respawn applies it)')
       if (skillUsagePatched.length) logger.info({ patched: skillUsagePatched }, 'skill-usage-capture PostToolUse matcher widened to Skill|Read|Bash in agent settings.json')
       if (watchdogPatched.length) logger.info({ patched: watchdogPatched }, 'context-watchdog PostToolUse hook backfilled into sub-agent settings.json')
     } catch (err) {

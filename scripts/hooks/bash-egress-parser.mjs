@@ -940,9 +940,41 @@ function collectAliases(orig, masked, env) {
 const NETWORK_TOKEN = new RegExp(
   `(?:^|[^\\w.-])(?:${[...TOOL_NAMES, 'osascript', 'awk', 'gawk', 'eval'].map(escapeRx).join('|')})(?![\\w.-])` +
   '|[a-z][a-z0-9+.-]*:\\/\\/|\\/dev\\/(?:tcp|udp)\\/' +
-  '|\\b(?:python[\\d.]*|node(?:js)?|perl|ruby|php|deno|bun|(?:ba|z|da|k|c|tc)?sh)\\b[^\\n]*?\\s-[A-Za-z]*[cerEp]\\b|--eval',
+  '|--eval',
   'i',
 )
+// An interpreter or shell word with a code flag LATER ON THE SAME LINE. This used to be one pattern with a
+// lazy `[^\n]*?` between the two parts, which searched the rest of the line again from every interpreter
+// word (`sh ` x N: 55 kB 0.4 s, quadratic). The two parts are separate patterns now: the interpreter words
+// are word tokens that cannot overlap, so the line has a code flag after one of them exactly when it has one
+// after the FIRST of them, and that is one scan of the rest of the line.
+const INTERP_WORD = /\b(?:python[\d.]*|node(?:js)?|perl|ruby|php|deno|bun|(?:ba|z|da|k|c|tc)?sh)\b/i
+const LINE_CODE_FLAG = /\s-[A-Za-z]*[cerEp]\b/gi
+export function interpreterWithCodeFlag(raw) {
+  const text = String(raw)
+  let flagAt = -2 // start of the first code flag at or after the last probe; -1 = none left, -2 = not probed yet
+  let pos = 0
+  while (pos <= text.length) {
+    let lineEnd = text.indexOf('\n', pos)
+    if (lineEnd === -1) lineEnd = text.length
+    const head = INTERP_WORD.exec(text.slice(pos, lineEnd))
+    if (head) {
+      const from = pos + head.index + head[0].length
+      if (flagAt !== -1 && flagAt < from) {
+        LINE_CODE_FLAG.lastIndex = from
+        const m = LINE_CODE_FLAG.exec(text)
+        flagAt = m ? m.index : -1
+      }
+      // The flag starts with `\s`, which may be the newline that ends the line, so it may START at lineEnd.
+      if (flagAt !== -1 && flagAt <= lineEnd) return true
+    }
+    pos = lineEnd + 1
+  }
+  return false
+}
+export function networkCapable(text) {
+  return NETWORK_TOKEN.test(text) || interpreterWithCodeFlag(text)
+}
 const SHELL = /^(?:ba|z|da|k|c|tc|fi)?sh$/
 const isCodeFlag = (w) => CODE_FLAG.has(w) || (/^-[A-Za-z]{1,4}$/.test(w) && /[ceEp]$/.test(w))
 const isShellCFlag = (w) => /^-[A-Za-z]*c[A-Za-z]*$/.test(w)
@@ -1049,7 +1081,7 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
   const masked = maskInertLiterals(orig)
   if (masked === null || masked.length !== orig.length) {
     // FAIL CLOSED: not parseable AND network-capable -> deny; nothing network-capable -> pass.
-    return NETWORK_TOKEN.test(norm) ? { deny: true, reason: 'unparseable', hosts: [] } : { deny: false, reason: 'unparseable', hosts: [] }
+    return networkCapable(norm) ? { deny: true, reason: 'unparseable', hosts: [] } : { deny: false, reason: 'unparseable', hosts: [] }
   }
   const env = collectAssignments(orig, masked)
   const loops = collectLoops(orig, masked, env)

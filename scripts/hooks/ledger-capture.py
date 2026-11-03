@@ -16,10 +16,41 @@ import ledger_lib  # noqa: E402
 # <channel source="plugin:telegram:telegram" chat_id="X" message_id="Y" ... ts="Z">
 #   TEXT
 # </channel>
-CHANNEL_RX = re.compile(
-    r'<channel\s+source="plugin:telegram:telegram"([^>]*)>(.*?)</channel>',
-    re.DOTALL,
-)
+#
+# Only the OPENER is a pattern. The old single pattern `...([^>]*)>(.*?)</channel>` had no
+# upper bound on either span, so a prompt full of openers and no '>' (or no closer) was
+# quadratic (550 kB held this hook for ~20 s). channel_blocks() finds the closing '>' and
+# `</channel>` with forward str.find calls whose results every later opener reuses, and
+# takes an opener as an envelope only when its attribute span is at most
+# CHANNEL_ATTRS_MAX characters; a real one is a few hundred.
+CHANNEL_OPEN_RX = re.compile(r'<channel\s+source="plugin:telegram:telegram"')
+CHANNEL_CLOSER = '</channel>'
+CHANNEL_ATTRS_MAX = 2000
+
+
+def channel_blocks(prompt):
+    """[(attrs, text)] for every telegram <channel> envelope in the prompt, in order."""
+    found = []
+    pos = 0  # prompt[:pos] is inside an envelope already taken
+    gt = -2  # first '>' at or after the last probe; -1 = none left, -2 = not probed yet
+    ci = -2  # first closer at or after the last probe; -1 = none left, -2 = not probed yet
+    for m in CHANNEL_OPEN_RX.finditer(prompt):
+        start, end = m.span()
+        if start < pos:
+            continue
+        if gt != -1 and gt < end:
+            gt = prompt.find('>', end)
+        if gt == -1:
+            break  # no '>' left, so no later opener can close either
+        if gt - end > CHANNEL_ATTRS_MAX:
+            continue  # not an envelope: an over-long span is never a delivery frame
+        if ci != -1 and ci < gt + 1:
+            ci = prompt.find(CHANNEL_CLOSER, gt + 1)
+        if ci == -1:
+            break  # no closer left, so no later opener can close either
+        found.append((prompt[end:gt], prompt[gt + 1:ci]))
+        pos = ci + len(CHANNEL_CLOSER)
+    return found
 
 
 def _attr(attrs, name):
@@ -36,8 +67,7 @@ def main():
     if not agent_id:
         sys.exit(0)  # unknown cwd: not an agent, nothing to record
     prompt = payload.get("prompt") or ""
-    for m in CHANNEL_RX.finditer(prompt):
-        attrs, text = m.group(1), m.group(2)
+    for attrs, text in channel_blocks(prompt):
         chat_id = _attr(attrs, "chat_id")
         message_id = _attr(attrs, "message_id")
         ts = _attr(attrs, "ts")

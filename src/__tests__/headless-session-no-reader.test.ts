@@ -54,3 +54,10 @@ describe('work-document rule block wiring', () => {
     expect(read('src/web.ts')).toContain('ensureWorkDocSection(MAIN_AGENT_ID)')
   })
 })
+
+describe('checkpoint rule block wiring', () => {
+  it('is ensured on every sub-agent respawn, and not for the main agent at dashboard startup', () => {
+    expect(read('src/web/agent-process-spawn.ts')).toContain('ensureCheckpointSection(name)')
+    expect(read('src/web.ts')).not.toContain('ensureCheckpointSection')
+  })
+})

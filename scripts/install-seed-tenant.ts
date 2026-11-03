@@ -14,6 +14,7 @@
 //
 //   tsx scripts/install-seed-tenant.ts --main-agent-id <id> [--display-name <name>]
 
+import './lib/log-to-stderr.js'
 import { initDatabase, getTenant, updateTenant } from '../src/db.js'
 
 function arg(name: string): string | undefined {

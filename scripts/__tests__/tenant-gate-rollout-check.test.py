@@ -24,7 +24,8 @@ def cmd(script):
 def full_settings():
     return {"hooks": {
         "UserPromptSubmit": [{"hooks": [{"type": "command", "command": cmd("tenant-context.py")}]}],
-        "PreToolUse": [{"matcher": MATCHER, "hooks": [{"type": "command", "command": cmd("tenant-skill-gate.py")}]}],
+        "PreToolUse": [{"matcher": MATCHER, "hooks": [{"type": "command", "command": cmd("tenant-skill-gate.py"),
+                                                       "onFailure": "block"}]}],
     }}
 
 
@@ -141,6 +142,22 @@ class TestRolloutCheck(unittest.TestCase):
         for name in ("no-file", "none", "half", "stale"):
             self.assertEqual(self.levels(out, name), ["FAIL"], name)
         self.assertIn("gate matcher", [r["message"] for r in out["results"] if r["subject"] == "stale"][0])
+
+    def test_a_gate_entry_without_on_failure_block_fails(self):
+        for value in (None, "continue"):
+            with self.subTest(onFailure=value):
+                s = full_settings()
+                hook = s["hooks"]["PreToolUse"][0]["hooks"][0]
+                if value is None:
+                    del hook["onFailure"]
+                else:
+                    hook["onFailure"] = value
+                name = "noof-%s" % value
+                self.agent(name, s)
+                code, out = self.run_check()
+                self.assertEqual(code, 1)
+                self.assertEqual(self.levels(out, name), ["FAIL"])
+                self.assertIn("gate onFailure block", [r["message"] for r in out["results"] if r["subject"] == name][0])
 
     def test_non_fail_closed_command_fails(self):
         s = full_settings()

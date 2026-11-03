@@ -101,7 +101,7 @@ describe('task-state store I/O', () => {
   afterEach(() => clearTaskState(A))
 
   it('write -> read round-trips and arms (consumed=false, fresh ts)', () => {
-    writeTaskState(A, { summary: 's', nextAction: 'next', doneSteps: ['x'] }, NOW)
+    writeTaskState(A, { summary: 's', nextAction: 'next', doneSteps: ['x'] }, NOW, A)
     const r = readTaskState(A)!
     expect(r.consumed).toBe(false)
     expect(r.ts).toBe(NOW)
@@ -110,7 +110,7 @@ describe('task-state store I/O', () => {
   })
 
   it('markConsumed flips the flag so the next replay is suppressed', () => {
-    writeTaskState(A, { nextAction: 'next' }, NOW)
+    writeTaskState(A, { nextAction: 'next' }, NOW, A)
     markConsumed(A)
     const r = readTaskState(A)!
     expect(r.consumed).toBe(true)
@@ -118,7 +118,7 @@ describe('task-state store I/O', () => {
   })
 
   it('sweepOrphanTaskStates drops a record older than the TTL', () => {
-    writeTaskState(A, { nextAction: 'next' }, NOW)
+    writeTaskState(A, { nextAction: 'next' }, NOW, A)
     const swept = sweepOrphanTaskStates(NOW + TASKSTATE_TTL_MS + 1)
     expect(swept).toBeGreaterThanOrEqual(1)
     expect(readTaskState(A)).toBeNull()
@@ -126,7 +126,7 @@ describe('task-state store I/O', () => {
 
   it('sanitizes the agent name (no path traversal in the filename)', () => {
     // A traversal-y name must not escape the store dir; it sanitizes to safe chars.
-    writeTaskState('../../etc/passwd', { nextAction: 'x' }, NOW)
+    writeTaskState('../../etc/passwd', { nextAction: 'x' }, NOW, 'tester')
     // readable back via the same sanitized key, and no file outside the dir.
     const r = readTaskState('../../etc/passwd')
     expect(r).not.toBeNull()

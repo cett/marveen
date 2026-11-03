@@ -30,7 +30,34 @@ from datetime import datetime, timezone
 DEFAULT_THRESHOLD_SEC = 300
 
 # <channel source="..." chat_id="X" message_id="Y" ... ts="2026-06-24T05:40:30.000Z"> ... </channel>
-CHANNEL_RX = re.compile(r'<channel\s+([^>]*)>', re.DOTALL)
+# Only the OPENER is a pattern. A `<channel\s+([^>]*)>` span with no upper bound made a
+# prompt full of openers and no '>' quadratic (550 kB held this hook for ~85 s, past
+# its timeout). channel_attr_strings() looks up the closing '>' with one forward
+# str.find shared by all openers, and takes an opener as a real envelope only when
+# its attribute string is at most CHANNEL_ATTRS_MAX characters; a real envelope is a
+# few hundred.
+CHANNEL_OPEN_RX = re.compile(r'<channel\s+')
+CHANNEL_ATTRS_MAX = 2000
+
+
+def channel_attr_strings(prompt):
+    """The attribute string of every <channel ...> envelope in the prompt, in order."""
+    found = []
+    copied = 0  # prompt[:copied] is inside an envelope already taken
+    gt = -2  # first '>' at or after the last probe; -1 = none left, -2 = not probed yet
+    for m in CHANNEL_OPEN_RX.finditer(prompt):
+        start, end = m.span()
+        if start < copied:
+            continue
+        if gt != -1 and gt < end:
+            gt = prompt.find('>', end)
+        if gt == -1:
+            break  # no '>' left, so no later opener can close either
+        if gt - end > CHANNEL_ATTRS_MAX:
+            continue  # not an envelope: an over-long span is never a delivery frame
+        found.append(prompt[end:gt])
+        copied = gt + 1
+    return found
 
 
 def _attr(attrs, name):
@@ -75,8 +102,8 @@ def main():
 
     # Find the largest delivery gap across all <channel> blocks in this prompt.
     worst_gap = -1
-    for m in CHANNEL_RX.finditer(prompt):
-        ts = _parse_ts(_attr(m.group(1), "ts"))
+    for attrs in channel_attr_strings(prompt):
+        ts = _parse_ts(_attr(attrs, "ts"))
         if ts is None:
             continue
         gap = (now - ts).total_seconds()

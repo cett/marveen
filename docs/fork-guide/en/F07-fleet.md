@@ -45,10 +45,12 @@ Recipes, hooks and scripts call the API through `scripts/agent-api.sh`, which pi
 bash scripts/agent-api.sh [--agent ID] [--token agent|operator|admin|main] METHOD /api/... [BODY | - | @file]
 ```
 
-- `agent` (default) is the calling agent's own token; the agent comes from `--agent`, `MARVEEN_AGENT_ID`, or the working directory (`agents/<id>/`, the project root is the main agent).
+- `agent` (default) is the calling agent's own token; the agent comes from `--agent`, `MARVEEN_AGENT_ID`, the agent the session was launched as (its `CLAUDE_CONFIG_DIR`: `agents/<id>/.claude-config`, or the main agent's `.channels-config`), or the working directory (`agents/<id>/`, the project root is the main agent), in that order: the launch beats the working directory, so a sub-agent that changed into the project root still acts as itself (and one that runs it from another agent's directory acts as itself there too, not as that agent). A sub-agent with no token file of its own gets exit 3 (`no readable own token`, no request) instead of the main agent's token.
 - `operator` is the operator's token. `admin` is for a call that needs the admin role whoever makes it: the main agent uses its own token, every other agent is refused (exit 3) and asks the main agent through `/api/messages`. `main` acts as the main agent (system scripts).
 - The endpoints a regular agent token is refused on (agent start/stop/restart, vault, egress allowlist writes, global skill writes) are the main agent's or the operator's: use `--token admin` (main agent) or `--token operator`. An agent's own skill (`agent/<id>/<name>`) it may write with its own token; a global skill needs admin.
 - There is no shared-token kind and no fallback to it. `--token shared` is a usage error (exit 2). A missing or empty token file of the agent is exit 3 and **no request is made**; the same holds for `scripts/hooks/agent_token.py` (source `none` with an error) and `scripts/agent-api.mjs`. A token that is present but refused (revoked, stale) is never retried on another token: that would hide the fault.
+- A privileged token (`--token main`, `--token operator`, `--token admin`) goes only to a loopback dashboard: `http` or `https` on `localhost`, `127.0.0.1` or `[::1]`, with an optional port. Any other `DASHBOARD_BASE_URL` exits 3 and no request is made (in both `AGENT_API_STRICT` modes), and such a call ignores proxy variables. The main agent's token counts however the call got there (a session that dropped its launch identity is resolved to the main agent from the cwd in the install root). A sub-agent's own token is not limited.
+- `AGENT_API_STRICT` (environment, read on every call; `0` by default, `1`): a session launched as a sub-agent may not ask for the main agent's identity (`--token main`, `--token admin`: E1), the operator token (E2) or another agent's identity (`--agent` / `MARVEEN_AGENT_ID` naming someone else: E3). With `1` such a call exits 3 and **no request is made**; with `0` it goes out as before and stderr says it would be refused. `--token admin` from a sub-agent session is refused in both modes (as before for its own directory); E1-E3 for the other tokens only warn under `AGENT_API_STRICT=0`. A call with no sub-agent session (a system script, cron, the main agent) is never touched. This is hygiene against the common slip, not a security boundary: agents share one OS user. Two callers in the repository are made to work under `1`: the `post-checkout` hook of `install-prod-tree-guard-hook.sh` sends its alert as whoever ran the checkout (the caller's own token, no `--token main`; it also says who switched the prod tree) in a clean environment with a fixed `PATH` and the dashboard origin from the `.env` of the tree (loopback only), and a failed send prints a line on stderr, and `pre-pr-review.sh` stops with exit 3 and the wrapper's reason when its operator-token vault read is refused (it needs the main agent's session or a terminal outside a sub-agent session).
 - Exit code 0 on a 2xx, 22 on any other HTTP status (the status goes to stderr, the body is still printed), 2 on a usage error, 3 when there is no token to send.
 
 The dashboard still accepts the shared token until it is rotated (`agent-tokens rotate-shared`); after that the old value is a 401, counted as `shared_token_refused` in the shadow counter so a straggler that still holds it shows up.
@@ -143,13 +145,23 @@ Marveen supports multi-user operation: each tenant's data (memories, kanban, age
 | `agent` | Full read/write access to one tenant's data, no admin |
 | `read_only` | One tenant's data, read-only |
 | `viewer` | List memories, kanban, agents (without blackboard) |
+| `fleet_agent` | The role of a fleet agent's own API token (one per agent, `agent_id` names it; issued with `npm run agent-tokens`, see above). Memories, kanban and blackboard (read and write), schedules (read only: a write on the `default` tenant, which is where its token always sits, is a `403`, so schedule changes go through the main agent), agents (read only), approvals (it can file a request, never decide one), the machine endpoints an agent needs to run itself (ledger, agent state, daily log, artifacts, skills, voice replies in its own channel), scoped to the agent itself. Messages are send-only (`POST` and `PUT /api/messages`; `GET /api/messages` is a `403`). It reads the non-admin view of `GET /api/settings` and `/api/marveen` (`200`). No admin endpoint (agent lifecycle, vault, tokens, RBAC). It is not a tenant-user role: the token carries no tenant of its own. |
 
 ### Token management
 
-API tokens are managed at `/api/v1/admin/tokens`:
+API tokens are managed at `/api/v1/admin/tokens` (the legacy `/api/admin/tokens` is the same route). All four routes need `admin:all`. The raw token value is returned once, by the create and the rotate call; the list never carries it.
+
+| Route | What it does |
+|-------|--------------|
+| `GET /api/v1/admin/tokens` | List the tokens (`id`, `name`, `role`, `tenant_id`, `agent_id`, `created_at`, `expires_at`, `revoked_at`, `last_used_at`, `rotated_from`; no hash, no token) |
+| `POST /api/v1/admin/tokens` | Create a token. Body: `name` (required), `role` (required: `admin`, `agent`, `read_only`, `viewer` or `fleet_agent`), `tenant_id` (default `default`), `expires_in_days` (a number of days from now; left out, the token does not expire), `agent_id` (required for `fleet_agent`, an optional label on an `admin` token, refused for the other roles; must name a known agent). A `fleet_agent` token is always stored in the `default` tenant, whatever `tenant_id` says. Answers 201 with `token` and the row |
+| `POST /api/v1/admin/tokens/<id>/rotate` | New token value, the old one is revoked in the same step. Body (optional): `expires_in_days`; left out, the new token keeps the old expiry. `409 conflict` when the token is already revoked |
+| `DELETE /api/v1/admin/tokens/<id>/revoke` | Revoke without a replacement. `409 conflict` when it is already revoked. There is no `PATCH` on a token |
+
+`<id>` is the numeric `id` from the list. Examples:
 
 ```bash
-# Create a token
+# Create a tenant-user token that expires in 90 days
 bash scripts/agent-api.sh --token operator POST /api/v1/admin/tokens '{
     "name": "partner-token",
     "role": "agent",
@@ -159,11 +171,18 @@ bash scripts/agent-api.sh --token operator POST /api/v1/admin/tokens '{
 ```
 
 ```bash
+# Rotate it (the old value stops working at once), keeping the 90-day lifetime from now
+bash scripts/agent-api.sh --token operator POST /api/v1/admin/tokens/<id>/rotate '{"expires_in_days": 90}'
+```
+
+```bash
 # Revoke a token
 bash scripts/agent-api.sh --token operator DELETE /api/v1/admin/tokens/<id>/revoke
 ```
 
 (`POST /api/v1/admin/tokens/<id>/rotate` issues a replacement; there is no `PATCH` on a token.)
+
+A fleet agent's own token is normally issued with `npm run agent-tokens -- issue` (above), not by hand. While `APPROVAL_HUMAN_ONLY_ENFORCE` is on, create and rotate refuse a caller that is an agent (a `fleet_agent` token, any token that carries an `agent_id`, a device key or a federation peer) with `403 human_session_required`, unless a person is signed in to the dashboard; revoke is not limited that way. The same guard sits on the other credential-issuing routes: `POST /api/admin/browser-enroll-codes`, `POST /api/auth/device-keys` and the Bridge pairing. The operator token (role `admin`, no agent) is not an agent.
 
 ### Onboarding a B2B partner
 
@@ -173,7 +192,7 @@ An external partner (B2B tenant) receives an `agent`-role token scoped to their 
 2. Generate an `agent` token with an expiry (`expires_in_days`, e.g. 90)
 3. Deliver the token over a secure channel (not in plaintext email)
 4. Isolation test: a query for a `default` tenant memory using the new token must return an empty list
-5. Agree on a rotation process: the partner should request a new token at least 2 weeks before expiry
+5. Agree on a rotation process: the partner should request a new token at least 2 weeks before expiry. Rotating (`POST .../rotate`) revokes the old value at once, so deliver the new one right after the call
 
 ### RBAC mode, shadow log and rollback
 
