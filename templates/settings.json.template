@@ -127,6 +127,17 @@
             "onFailure": "block"
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v python3 >/dev/null 2>&1 || { echo 'shell-rescan-guard: python3 not found -- DENY' >&2; exit 2; }; python3 \"{{SCRIPTS_DIR}}/scripts/hooks/shell-rescan-guard.py\"",
+            "timeout": 10,
+            "onFailure": "block"
+          }
+        ]
       }
     ],
     "Stop": [

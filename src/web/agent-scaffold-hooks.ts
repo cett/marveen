@@ -137,6 +137,7 @@ export const GATE_HOOK_SCRIPTS: readonly string[] = [
   'email-approval-gate.py',
   'outgoing-copy-gate.py',
   'tenant-skill-gate.py',
+  'shell-rescan-guard.py',
 ]
 
 export function isGateHookCommand(command: string): boolean {
@@ -517,7 +518,9 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   // credential-path access are hard-blocked regardless of permission mode.
   // (e) auth-admin gate -- no dashboard-user/security-reset CLI (except `list`),
   // no --password-stdin, no write to the live store's auth tables.
-  // The MAIN_AGENT_ID is exempt from (a) and (b) but NOT from (c), (d) or (e) --
+  // (f) shell-rescan guard -- a backtick in a double-quoted string or an unquoted
+  // heredoc body, and ${v@P}, are refused (accidental re-evaluation of pasted prose).
+  // The MAIN_AGENT_ID is exempt from (a) and (b) but NOT from (c), (d), (e) or (f) --
   // every agent can be hijacked via an injected WebFetch call or a destructive
   // command, including the main one. Merge/deploy is NOT gated: the operator
   // authorizes those autonomously (so test/deploy runs are never blocked); the
@@ -529,6 +532,7 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   if (agentGetsBashEgressParser(name)) injectBashEgressParser(existing)
   injectDestructiveGate(existing)
   injectAuthAdminGate(existing)
+  injectShellRescanGuard(existing)
   if (name !== MAIN_AGENT_ID) injectTenantHooks(existing)
   atomicWriteFileSync(settingsPath, JSON.stringify(existing, null, 2))
 }
@@ -838,6 +842,62 @@ export function ensureAuthAdminGate(name: string): boolean {
   if (ptuJson.includes('auth-admin-gate.py') && hookCommandWired(ptuJson, command)) return false
   if (isUnsafeHookCommand(command)) return false
   injectAuthAdminGate(settings)
+  if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return true
+}
+
+// Fail-closed python3 preamble for the shell-rescan guard. Same form as destructiveGateCommand(); only the DENY
+// label differs. Exported for unit tests.
+export function shellRescanGuardCommand(scriptPath: string): string {
+  const miss = 'shell-rescan-guard: python3 not found -- DENY'
+  return `command -v python3 >/dev/null 2>&1 || { echo '${miss}' >&2; exit 2; }; python3 "${scriptPath}"`
+}
+
+// Idempotently wire the shell-rescan-guard PreToolUse hook: a Bash command whose own text the shell would
+// re-scan (a backtick inside a double-quoted string, a backtick in an unquoted heredoc body, ${v@P}) is
+// refused. It stops the ACCIDENTAL re-evaluation of data that drifted into a command; it does not stop a
+// deliberate one (eval, bash -c "$x") and says so in its refusal. Applied to ALL agents including
+// MAIN_AGENT_ID, like the destructive gate: any agent can paste prose into a command. Fail-closed with
+// onFailure:"block" (GATE_ON_FAILURE); no backstop, no comment escape.
+export function injectShellRescanGuard(existing: Record<string, unknown>): void {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  const command = shellRescanGuardCommand(join(SCRIPTS_DIR, 'scripts', 'hooks', 'shell-rescan-guard.py'))
+  // Registration guard: a /tmp or missing path must never enter shared settings.
+  if (isUnsafeHookCommand(command)) return
+  const entry = {
+    matcher: 'Bash',
+    hooks: [{ type: 'command', command, timeout: 10, onFailure: GATE_ON_FAILURE }],
+  }
+  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
+  hooks.PreToolUse = [
+    ...prev.filter((e) => !JSON.stringify(e).includes('shell-rescan-guard.py')),
+    entry,
+  ]
+}
+
+// Idempotent migration: ensure every sub-agent's settings.json carries the shell-rescan-guard hook. Called at
+// server startup next to ensureAuthAdminGate, so existing agents get it without a respawn. Returns true if the
+// file was updated. The main agent is exempt here for the same reason as ensureDestructiveGate: its copy ships
+// in the tracked project .claude/settings.json.
+export function ensureShellRescanGuard(name: string): boolean {
+  if (refuseMainAgentHookWrite(name, 'ensureShellRescanGuard')) return false
+  const settingsPath = agentSettingsPath(name)
+  let settings: Record<string, unknown> = {}
+  if (existsSync(settingsPath)) {
+    try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+  }
+  const command = shellRescanGuardCommand(join(SCRIPTS_DIR, 'scripts', 'hooks', 'shell-rescan-guard.py'))
+  const hooks = (settings.hooks && typeof settings.hooks === 'object')
+    ? settings.hooks as Record<string, unknown>
+    : {}
+  const ptu = Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse as unknown[] : []
+  const ptuJson = JSON.stringify(ptu)
+  if (ptuJson.includes('shell-rescan-guard.py') && hookCommandWired(ptuJson, command)) return false
+  if (isUnsafeHookCommand(command)) return false
+  injectShellRescanGuard(settings)
   if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
   atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
   return true

@@ -512,6 +512,47 @@ class TestCommandSubstitution(unittest.TestCase):
         for _ in range(3):
             self.assertEqual(self._verdict('echo "$(a)" ' * hook.MAX_SUBST_BODIES), 0)
 
+    def _verdict_after(self, cmd, elapsed):
+        """Verdict and stderr when the clock reads `elapsed` seconds more at the first body check than
+        it did when the call's deadline was set (the first monotonic() call of the call)."""
+        import contextlib
+        import io
+        reads = []
+
+        def fake_monotonic():
+            reads.append(1)
+            return 5000.0 if len(reads) == 1 else 5000.0 + elapsed
+
+        err = io.StringIO()
+        with patch.object(hook, "_notify_block"), patch.object(hook.time, "monotonic", fake_monotonic), \
+                contextlib.redirect_stderr(err):
+            try:
+                hook.check_bash(cmd)
+                code = 0
+            except SystemExit as e:
+                code = e.code
+        return code, err.getvalue()
+
+    def test_inspection_deadline_boundary(self):
+        # The deadline branch (G4): past INSPECT_SECONDS the gate denies, at it and before it does not.
+        # A fake clock pins all three sides, so the strict `>`, the constant and the denial itself are
+        # each held by a failing assertion (a swapped `>=`, a doubled constant and a removed branch all die).
+        cmd = 'echo "$(a)"'
+        limit = hook.INSPECT_SECONDS
+        self.assertEqual(self._verdict_after(cmd, 0.0)[0], 0)
+        self.assertEqual(self._verdict_after(cmd, limit - 0.5)[0], 0)
+        self.assertEqual(self._verdict_after(cmd, limit)[0], 0, "exactly at the deadline is not past it")
+        code, err = self._verdict_after(cmd, limit + 0.001)
+        self.assertEqual(code, 2)
+        self.assertIn("tul sokaig", err)
+
+    def test_inspection_deadline_leaves_margin_in_the_hook_timeout(self):
+        # The harness gives a gate 10 s; the deadline must fire well before that or it is no protection.
+        self.assertLessEqual(hook.INSPECT_SECONDS, 5.0)
+        self.assertEqual(self._verdict_after('echo "$(a)"', 5.0)[0], 2)
+        # ... and not so short that a slow but honest call is refused: the documented value is 4 s.
+        self.assertGreaterEqual(hook.INSPECT_SECONDS, 3.5)
+
     def test_over_the_cap_is_denied_through_the_hook_entrypoint(self):
         payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": "echo " + "a" * (hook.MAX_CMD_CHARS + 10)},
                               "cwd": "/tmp/agents/agent-a"})

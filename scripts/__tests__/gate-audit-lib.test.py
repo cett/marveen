@@ -420,6 +420,7 @@ GATE_CASES = {
     'outgoing-copy-gate': (True, {'tool_name': 'Bash', 'tool_input': {'command': 'echo ' + 'x' * 400000}}, {'tool_name': 'Bash', 'tool_input': {'command': 'echo ok'}}),
     'auth-admin-gate': (False, {'tool_name': 'Bash', 'tool_input': {'command': 'npm run dashboard-user add user-b'}}, {'tool_name': 'Bash', 'tool_input': {'command': 'echo ok'}}),
     'tenant-skill-gate': (True, '{', {'tool_name': 'Bash', 'tool_input': {'command': 'echo ok'}}),
+    'shell-rescan-guard': (True, {'tool_name': 'Bash', 'tool_input': {'command': 'echo "a ' + chr(96) + 'id' + chr(96) + ' b"'}}, {'tool_name': 'Bash', 'tool_input': {'command': 'echo ok'}}),
 }
 
 

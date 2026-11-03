@@ -18,6 +18,7 @@ import {
   injectDestructiveGate,
   ensureDestructiveGate,
   ensureAuthAdminGate,
+  ensureShellRescanGuard,
   ensureQuarantineReader,
   agentSettingsPath,
 } from '../web/agent-scaffold.js'
@@ -178,6 +179,43 @@ describe('ensureAuthAdminGate', () => {
   it('returns false when the existing settings.json is malformed', () => {
     writeFileSync(probeSettingsPath(), '{ not valid json')
     expect(ensureAuthAdminGate(PROBE)).toBe(false)
+  })
+})
+
+describe('ensureShellRescanGuard', () => {
+  it('refuses the main agent and leaves its settings file untouched', () => {
+    expect(ensureShellRescanGuard(MAIN_AGENT_ID)).toBe(false)
+    expect(readFileSync(mainSettings, 'utf-8')).toBe(MARKER)
+  })
+
+  it('wires the guard into a sub-agent once, with onFailure block, and is a no-op after', () => {
+    expect(ensureDestructiveGate(PROBE)).toBe(true)
+    expect(ensureShellRescanGuard(PROBE)).toBe(true)
+    expect(ensureShellRescanGuard(PROBE)).toBe(false)
+    const ptu = probePreToolUse() as Array<{ matcher: string; hooks: Array<{ command: string; timeout: number; onFailure?: string }> }>
+    const gate = ptu.filter((e) => e.hooks[0].command.includes('shell-rescan-guard.py'))
+    expect(gate).toHaveLength(1)
+    expect(gate[0].matcher).toBe('Bash')
+    expect(gate[0].hooks[0].timeout).toBe(10)
+    expect(gate[0].hooks[0].onFailure).toBe('block')
+    expect(gate[0].hooks[0].command).toContain('command -v python3')
+    expect(ptu.some((e) => e.hooks[0].command.includes('destructive-gate.py'))).toBe(true)
+  })
+
+  it('replaces a stale shell-rescan-guard entry that does not match the current command form', () => {
+    writeFileSync(probeSettingsPath(), JSON.stringify({
+      hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ command: 'python3 /old/path/shell-rescan-guard.py' }] }] },
+    }))
+    expect(ensureShellRescanGuard(PROBE)).toBe(true)
+    const ptu = probePreToolUse() as Array<{ matcher: string; hooks: Array<{ command: string }> }>
+    const gate = ptu.filter((e) => e.hooks[0].command.includes('shell-rescan-guard.py'))
+    expect(gate).toHaveLength(1)
+    expect(gate[0].hooks[0].command).not.toContain('/old/path/')
+  })
+
+  it('returns false when the existing settings.json is malformed', () => {
+    writeFileSync(probeSettingsPath(), '{ not valid json')
+    expect(ensureShellRescanGuard(PROBE)).toBe(false)
   })
 })
 
