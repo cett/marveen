@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
 import {
@@ -8,6 +8,7 @@ import {
   MAX_SUBST_BODIES,
   MAX_SUBST_NEST,
   MAX_SUBST_CHARS,
+  INSPECT_MS,
   // @ts-expect-error -- plain .mjs hook script, no types
 } from '../../scripts/email-send-gate.mjs'
 
@@ -121,6 +122,59 @@ describe('the inspection limits fail closed (a deny, never a pass)', () => {
     const cmd = (`echo "$(${body})" `).repeat(Math.ceil(MAX_SUBST_CHARS / 30000) + 1)
     expect(() => isSendInvocation(cmd)).toThrow(InspectionLimitError)
   })
+  // The test above sends 180 kB, which is over MAX_CMD_CHARS (128 KiB): the call cap trips first and the
+  // total-character cap behind it is never reached. Only a nested body is read more than once, so a command
+  // UNDER the call cap whose nested bodies add up past MAX_SUBST_CHARS reaches the guard on its own.
+  describe('the total character cap on the bodies (reached under the call cap)', () => {
+    const nest = (levels: number, size: number) => {
+      let body = 'a'.repeat(size)
+      for (let i = 0; i < levels; i++) body = `echo "$(${body})"`
+      return body
+    }
+    it('three 50 kB levels (a 50 kB command, 150 kB of bodies read) are refused by the body-text cap', () => {
+      const cmd = nest(3, 50000)
+      expect(cmd.length).toBeLessThan(131072) // MAX_CMD_CHARS: not the call cap
+      let err: unknown
+      try { isSendInvocation(cmd) } catch (e) { err = e }
+      expect(err).toBeInstanceOf(InspectionLimitError)
+      expect((err as Error).message).toContain('command substitutions together')
+      expect(gateDecision('Bash', { command: cmd }).deny).toBe(true)
+    })
+    it('two 50 kB levels (100 kB of bodies read) are still read', () => {
+      expect(isSendInvocation(nest(2, 50000))).toBe(false)
+    })
+  })
+
+  describe('the wall-clock deadline', () => {
+    afterEach(() => { vi.restoreAllMocks() })
+    // Each Date.now() call moves the clock past the whole allowance: the first call (the reset at the start of
+    // the call) sets the deadline, the next one (the check on the first non-blank body) is already past it.
+    // This exercises the check without a 4 s sleep; the control shows the same input is read on a real clock.
+    const jumpingClock = () => {
+      let t = 0
+      vi.spyOn(Date, 'now').mockImplementation(() => (t += INSPECT_MS + 1))
+    }
+    it('a call whose reading took longer than the allowance is refused, not passed', () => {
+      expect(isSendInvocation('echo "$(a)"')).toBe(false)
+      jumpingClock()
+      let err: unknown
+      try { isSendInvocation('echo "$(a)"') } catch (e) { err = e }
+      expect(err).toBeInstanceOf(InspectionLimitError)
+      expect((err as Error).message).toContain('took longer than')
+      expect(gateDecision('Bash', { command: 'echo "$(a)"' }).deny).toBe(true)
+    })
+    it('the deadline is reset per call', () => {
+      jumpingClock()
+      expect(() => isSendInvocation('echo "$(a)"')).toThrow(InspectionLimitError)
+      vi.restoreAllMocks()
+      expect(isSendInvocation('echo "$(a)"')).toBe(false)
+    })
+    it('the allowance leaves the 10 s hook timeout a margin', () => {
+      expect(INSPECT_MS).toBeGreaterThan(0)
+      expect(INSPECT_MS).toBeLessThanOrEqual(5000)
+    })
+  })
+
   it('the budget is per call, not carried over to the next command', () => {
     for (let i = 0; i < 3; i++) expect(isSendInvocation('echo "$(a)" '.repeat(MAX_SUBST_BODIES))).toBe(false)
   })
