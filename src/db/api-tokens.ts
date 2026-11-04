@@ -197,17 +197,21 @@ export async function replaceActiveApiToken(input: {
 }
 
 /**
- * Rotates the shared dashboard token (agent-tokens rotateSharedToken) in ONE transaction: the newest active
- * `dashboard` row is rotated (revoked WITH its hash kept), any older active one is revoked, and without an
- * active row a new one is inserted. `active` is listActiveApiTokensByName('dashboard', now), newest first.
+ * Rotates the shared dashboard token (agent-tokens rotateSharedToken) in ONE `immediate` transaction, and
+ * reads the active rows INSIDE it, as replaceActiveApiToken does: the newest active `dashboard` row is
+ * rotated (revoked WITH its hash kept), any older active one is revoked, and without an active row a new
+ * one is inserted. Reading under the write lock is what keeps a CLI rotation and the dashboard's own
+ * bootstrap (two processes) from working on a list that is already out of date and ending with two active
+ * `dashboard` rows. `rotated` tells whether a row was rotated (true) or the name got a fresh row (false).
  */
-export async function rotateSharedDashboardToken(active: ApiTokenRow[], tokenHash: string, now: number): Promise<ApiTokenRow> {
-  return dbx.tx(async (tx) => {
-    const [first, ...others] = active
+export async function rotateSharedDashboardToken(tokenHash: string, now: number): Promise<{ row: ApiTokenRow; rotated: boolean }> {
+  return dbx.tx(async () => {
+    const [first, ...others] = await listActiveApiTokensByName('dashboard', now)
     for (const stale of others) await revokeApiToken(stale.id, now)
-    if (first) return rotateApiToken(first, tokenHash, now, null)
-    return insertApiToken({ tokenHash, name: 'dashboard', role: 'admin', tenantId: 'default', createdAt: now, expiresAt: null, agentId: null })
-  })
+    if (first) return { row: await rotateApiToken(first, tokenHash, now, null), rotated: true }
+    const row = await insertApiToken({ tokenHash, name: 'dashboard', role: 'admin', tenantId: 'default', createdAt: now, expiresAt: null, agentId: null })
+    return { row, rotated: false }
+  }, { mode: 'immediate' })
 }
 
 /**
