@@ -113,12 +113,12 @@ describe('isRouteAllowed: federated target (owner decision A)', () => {
   // The module compares names exactly: a variant of an advertised or excluded name is a DIFFERENT name and is
   // not routed on the strength of the original (the caller hands over the name in the form the router delivers).
   it.each([
-    'Fleet-X', 'FLEET-X', 'fleet-x ', ' fleet-x', 'fleet-x\n', 'fleet-x​', 'fleet‐x', 'fleet-x/..', '@fleet-x', 'fleet-x\u0000',
+    'Fleet-X', 'FLEET-X', 'fleet-x ', ' fleet-x', 'fleet-x\n', 'fleet-x\u200b', 'fleet\u2010x', 'fleet-x/..', '@fleet-x', 'fleet-x\u0000',
   ])('a variant %j of an advertised agent is refused', (variant) => {
     expect(isRouteAllowed({ ...fed, toAgent: variant }, ctx)).toEqual({ ok: false, reason: 'federated_target_not_advertised' })
   })
   it.each([
-    'Heartbeat', 'HEARTBEAT', 'heartbeat ', 'heartbeat​', '@telegram-coordinator', 'Telegram-Coordinator', 'channel-coordinator\n',
+    'Heartbeat', 'HEARTBEAT', 'heartbeat ', 'heartbeat\u200b', '@telegram-coordinator', 'Telegram-Coordinator', 'channel-coordinator\n',
   ])('a variant %j of an excluded coordinator is refused', (variant) => {
     expect(isRouteAllowed({ ...fed, toAgent: variant }, ctx).ok).toBe(false)
   })
@@ -133,6 +133,49 @@ describe('isRouteAllowed: federated target (owner decision A)', () => {
     list = ['fleet-x', 'fleet-y']
     expect(isRouteAllowed({ ...fed, toAgent: 'fleet-y' }, live).ok).toBe(true)
   })
+})
+
+// The membership lists reach the module as a Set (production tables) or as an array: both containers must
+// compare EXACTLY. A name variant is a different name on either path; normalising (trim, case folding) inside
+// the lookup would route "Helper-T1" or " fleet-x" on the strength of the original entry.
+const CONTAINERS: Array<[string, (l: string[]) => ReadonlySet<string> | readonly string[]]> = [
+  ['Set', (l) => new Set(l)],
+  ['array', (l) => [...l]],
+]
+
+describe.each(CONTAINERS)('isRouteAllowed: exact membership on a %s list', (_name, wrap) => {
+  it.each(['Helper-T1', 'HELPER-T1', 'helper-t1 ', ' helper-t1', 'helper-t1\n', '@helper-t1', 'helper-t1\u200b', 'helper\u2010t1'])(
+    'partner_sender: the variant %j of an enabled tenant agent is refused',
+    (variant) => {
+      const c: RoutingContext = { ...ctx, tenantAgentIds: (t) => wrap(TENANTS[t]?.agents ?? []) }
+      const base = { senderClass: 'partner_sender', senderId: 'p-1', tenantId: 'tenant-1' }
+      expect(isRouteAllowed({ ...base, toAgent: variant }, c)).toEqual({ ok: false, reason: 'target_not_in_tenant' })
+      // the exact name still passes on the same context (the variants are refused for the name, not for the list)
+      expect(isRouteAllowed({ ...base, toAgent: 'helper-t1' }, c)).toEqual({ ok: true })
+    },
+  )
+
+  it.each(['Fleet-X', 'FLEET-X', 'fleet-x ', ' fleet-x', 'fleet-x\n', '@fleet-x', 'fleet-x\u200b', 'fleet\u2010x'])(
+    'federated: the variant %j of an advertised agent is refused',
+    (variant) => {
+      const c: RoutingContext = { ...ctx, advertisedAgentIds: () => wrap(ADVERTISED) }
+      const fed = { senderClass: 'federated', senderId: 'peer/agent', tenantId: null }
+      expect(isRouteAllowed({ ...fed, toAgent: variant }, c)).toEqual({ ok: false, reason: 'federated_target_not_advertised' })
+      expect(isRouteAllowed({ ...fed, toAgent: 'fleet-x' }, c)).toEqual({ ok: true })
+    },
+  )
+
+  // The reason is pinned: a normalising exclusion lookup would still refuse the variant, but as a
+  // coordinator, which is the wrong cell (and the wrong audit row).
+  it.each(['Heartbeat', 'HEARTBEAT', 'heartbeat ', ' heartbeat', 'heartbeat\n', '@heartbeat', 'heartbeat\u200b'])(
+    'federated: the variant %j of an excluded coordinator is not treated as the coordinator',
+    (variant) => {
+      const c: RoutingContext = { ...ctx, excludedAgentIds: wrap(['heartbeat', 'telegram-coordinator', 'channel-coordinator']) }
+      const fed = { senderClass: 'federated', senderId: 'peer/agent', tenantId: null }
+      expect(isRouteAllowed({ ...fed, toAgent: variant }, c)).toEqual({ ok: false, reason: 'federated_target_not_advertised' })
+      expect(isRouteAllowed({ ...fed, toAgent: 'heartbeat' }, c)).toEqual({ ok: false, reason: 'federated_target_is_coordinator' })
+    },
+  )
 })
 
 describe('isRouteAllowed: default-deny', () => {
