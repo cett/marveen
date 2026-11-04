@@ -4,10 +4,11 @@ import {
   createApproval, getApproval, resolveApproval, listApprovals, countApprovals,
   getApprovalStatusCounts, getOldestPendingApproval, expireTimedOutApprovals,
   createAgentMessage, writeAgentAuditLog, getAutonomyCategory, recordApprovalEvent,
-  createApprovalOnce, countApprovalsRequestedSince, isContentHash,
+  createApprovalOnce, countApprovalsRequestedSince, isContentHash, approvalContentHash,
   type Approval, type ApprovalResolvedVia,
 } from '../../db.js'
 import { logger } from '../../logger.js'
+import { sanitizeAgentIdent } from '../../prompt-safety.js'
 import { readBody, json } from '../http-helpers.js'
 import { denyForeignAgent, denyAgentBoundAdminForeign, agentBoundAdminId } from '../fleet-agent-identity.js'
 import { checkCategory, humanSessionOf, isHumanOnly, isEmailSendCategory, EMAIL_SEND_CATEGORY } from '../approval-human-only.js'
@@ -23,6 +24,13 @@ import { tryHandleApprovalUse } from './approvals-consume.js'
 import { systemJob } from '../../db/background-jobs.js'
 // Every approval gets a deadline: the category's timeout_minutes, or the 24 h ceiling for an unknown
 // category / NULL value / unreadable DB. The caller's timeout_seconds can only shorten it.
+/** True when `a` and `b` name the same agent: the same string, or the same normalised identifier (case-folded, sanitised). */
+function sameAgentIdent(a: string, b: string): boolean {
+  if (a === b) return true
+  const na = sanitizeAgentIdent(a).toLowerCase()
+  return na !== '' && na === sanitizeAgentIdent(b).toLowerCase()
+}
+
 async function getTimeoutAt(category: string, requestedSeconds: unknown): Promise<number> {
   let categoryMinutes: number | null = null
   try {
@@ -235,14 +243,25 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
 
     if (!emailSend) {
       const id = randomUUID()
+      const description = (action_description as string).trim()
+      const payload = typeof action_payload === 'string' ? action_payload : null
+      // The server binds every request to its content, so the approval can be used up once by that hash. It
+      // computes the hash from exactly the values stored on the row and the response returns it. A hash the
+      // requester sends must equal it (as on the email path): a requester-chosen value would let the hash
+      // stand for something other than the text the person decides on.
+      const boundHash = approvalContentHash({ category: storedCategory, agent_id: requester, tenant_id: requestTenant ?? 'default', action_description: description, action_payload: payload })
+      if (typeof content_hash === 'string' && content_hash !== boundHash) {
+        json(res, { error: 'invalid_value', field: 'content_hash', code: 'hash_mismatch', hint: 'content_hash does not match the hash the server computes from category, agent_id, tenant_id, action_description and action_payload; omit it to get the server hash back' }, 400)
+        return true
+      }
       const approval = await createApproval({
         id,
         agent_id: requester,
         category: storedCategory,
         human_only: await isHumanOnly(storedCategory),
-        action_description: (action_description as string).trim(),
-        action_payload: typeof action_payload === 'string' ? action_payload : null,
-        content_hash: typeof content_hash === 'string' ? content_hash : null,
+        action_description: description,
+        action_payload: payload,
+        content_hash: boundHash,
         timeout_at: await getTimeoutAt(storedCategory, timeout_seconds),
         tenant_id: requestTenant,
       })
@@ -472,7 +491,9 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     // authenticated principal above, so a body naming someone else no longer slips past it. It does not
     // close self-approval by itself (the main agent relays a human's decision under its own token); the
     // real control lives on the main-agent side (approval-request-handling skill).
-    if (target && effectiveResolvedBy === target.agent_id) {
+    // Compared exactly and on the normalised identifier (sanitizeAgentIdent, case-folded, as the create path does): a
+    // request filed under another spelling of the agent's id (an operator-token request names any string) is still its own.
+    if (target && sameAgentIdent(effectiveResolvedBy, target.agent_id)) {
       json(res, { error: 'forbidden', hint: 'The requesting agent cannot approve its own request' }, 403)
       return true
     }

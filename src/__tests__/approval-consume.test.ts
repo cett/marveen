@@ -5,7 +5,7 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import {
   initDatabase, getDb, createApproval, getApproval, resolveApproval, listApprovals, countApprovals,
   listApprovalEvents, consumeApproval, claimApproval, createApprovalOnce,
-  CONSUME_REPLAY_WINDOW_S,
+  CONSUME_REPLAY_WINDOW_S, approvalContentHash, isContentHash,
 } from '../db.js'
 
 const HASH = 'a'.repeat(64)
@@ -150,12 +150,14 @@ describe('consumeApproval', () => {
     expect(await consumeApproval({ ...base, id })).toMatchObject({ ok: false, reason: 'not_human_decided' })
   })
 
-  it('refuses a category without a hash binding as wrong_category, even with a matching hash', async () => {
+  it('uses up a row of any category by id (no category list), and a row without a hash never matches', async () => {
     const id = await decided({ category: 'file_delete', resolvedAt: NOW - 10 })
-    expect(await consumeApproval({ ...base, id })).toMatchObject({ ok: false, reason: 'wrong_category' })
+    expect(await consumeApproval({ ...base, id })).toMatchObject({ ok: true, replayed: false })
     const standing = await decided({ category: 'email_standing_recipient', resolvedAt: NOW - 10 })
-    expect(await consumeApproval({ ...base, id: standing })).toMatchObject({ ok: false, reason: 'wrong_category' })
-    expect((await getApproval(id))?.consumed_at).toBeNull()
+    expect(await consumeApproval({ ...base, id: standing })).toMatchObject({ ok: true })
+    const unhashed = await decided({ category: 'deploy', hash: null, resolvedAt: NOW - 10 })
+    expect(await consumeApproval({ ...base, id: unhashed })).toMatchObject({ ok: false, reason: 'hash_mismatch' })
+    expect((await getApproval(unhashed))?.consumed_at).toBeNull()
   })
 
   it('journals every refusal with its reason and the caller', async () => {
@@ -407,13 +409,13 @@ describe('a malformed content hash never matches, creates or uses up a row', () 
     expect((await getApproval(own))?.consumed_at).toBeNull()
   })
 
-  it('consumeApproval still answers not_found, agent_mismatch and wrong_category first for a malformed hash', async () => {
+  it('consumeApproval still answers not_found and agent_mismatch first for a malformed hash, then hash_mismatch', async () => {
     const other = await decided({ tenant: 'tenant-b', resolvedAt: NOW - 10 })
     const foreign = await decided({ agent: 'worker', resolvedAt: NOW - 10 })
     const file = await decided({ category: 'file_delete', resolvedAt: NOW - 10 })
     expect(await consumeApproval({ ...base, id: other, content_hash: UPPER })).toEqual({ ok: false, reason: 'not_found' })
     expect(await consumeApproval({ ...base, id: foreign, content_hash: UPPER })).toMatchObject({ ok: false, reason: 'agent_mismatch' })
-    expect(await consumeApproval({ ...base, id: file, content_hash: UPPER })).toMatchObject({ ok: false, reason: 'wrong_category' })
+    expect(await consumeApproval({ ...base, id: file, content_hash: UPPER })).toMatchObject({ ok: false, reason: 'hash_mismatch' })
   })
 
   it.each(BAD)('claimApproval refuses %s as hash_mismatch and touches nothing', async (_name, hash) => {
@@ -427,5 +429,34 @@ describe('a malformed content hash never matches, creates or uses up a row', () 
     const r = await createApprovalOnce({ id: 'new', agent_id: 'main', category: 'email_send', action_description: 'x', content_hash: hash as string, max_pending: 10 })
     expect(r).toEqual({ ok: false, reason: 'hash_mismatch' })
     expect(await getApproval('new')).toBeUndefined()
+  })
+})
+
+describe('approvalContentHash', () => {
+  const parts = { category: 'deploy', agent_id: 'main', tenant_id: 'default', action_description: 'deploy v2', action_payload: '{"v":2}' }
+
+  it('is a valid content hash, the same for the same input', () => {
+    expect(isContentHash(approvalContentHash(parts))).toBe(true)
+    expect(approvalContentHash({ ...parts })).toBe(approvalContentHash(parts))
+  })
+
+  it.each(['category', 'agent_id', 'tenant_id', 'action_description', 'action_payload'] as const)('a different %s gives a different hash', (field) => {
+    expect(approvalContentHash({ ...parts, [field]: 'changed' })).not.toBe(approvalContentHash(parts))
+  })
+
+  it('an absent payload differs from an empty one, and null equals undefined', () => {
+    const none = approvalContentHash({ ...parts, action_payload: null })
+    expect(approvalContentHash({ ...parts, action_payload: undefined })).toBe(none)
+    expect(approvalContentHash({ ...parts, action_payload: '' })).not.toBe(none)
+  })
+
+  it('does not depend on the order the fields are written in, and NFC-normalizes strings', () => {
+    const reordered = { action_payload: parts.action_payload, tenant_id: parts.tenant_id, action_description: parts.action_description, agent_id: parts.agent_id, category: parts.category }
+    expect(approvalContentHash(reordered)).toBe(approvalContentHash(parts))
+    expect(approvalContentHash({ ...parts, action_description: 'café' })).toBe(approvalContentHash({ ...parts, action_description: 'café' }))
+  })
+
+  it('does not let field boundaries blur (a value moved to the next field changes the hash)', () => {
+    expect(approvalContentHash({ ...parts, agent_id: 'main', tenant_id: 'x' })).not.toBe(approvalContentHash({ ...parts, agent_id: 'mainx', tenant_id: '' }))
   })
 })

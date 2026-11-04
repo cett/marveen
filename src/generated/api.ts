@@ -290,8 +290,8 @@ export interface ApprovalUsed {
 export interface ApprovalRefusal {
   error: 'conflict';
   /** Why nothing was used up. `already_consumed`, `not_approved`, `hash_mismatch`, `expired` (decided longer ago than `window_s`),
-`not_human_decided` (approved, but not by a person in a dashboard session) and `wrong_category` (the category has no hash binding)
-apply to both calls. The claim call adds `pending` (a request for this hash is still open), `rejected` and `none` (no request ever existed for this hash),
+`not_human_decided` (approved, but not by a person in a dashboard session where the category or the row is human-only, or `email_send`)
+apply to both calls. `wrong_category` is a claim answer only (a claim by hash is for `email_send`; any other category is used up by id). The claim call adds `pending` (a request for this hash is still open), `rejected` and `none` (no request ever existed for this hash),
 and, with `mode` `send` only, `already_used` (the approval was reserved and the use already sealed by a sender run; the gate keeps seeing `already_consumed`).
  */
   reason: 'already_consumed' | 'already_used' | 'not_approved' | 'hash_mismatch' | 'expired' | 'not_human_decided' | 'wrong_category' | 'pending' | 'rejected' | 'none';
