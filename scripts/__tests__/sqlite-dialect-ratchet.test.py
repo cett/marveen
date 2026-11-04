@@ -52,6 +52,27 @@ class CountTextTest(unittest.TestCase):
         self.assertEqual(mod.count_text("WHERE f MATCH ?")["FTS5 MATCH"], 1)
         self.assertEqual(mod.count_text("str.match(/x/)")["FTS5 MATCH"], 0)
 
+    def test_untyped_parameter_shapes_are_counted(self):
+        text = (
+            "WHERE (? IS NULL OR t = ?) AND (@agent IS NULL OR a = @agent) AND x IS NOT ? AND y IS @v\n"
+            "SET d = CASE WHEN ? THEN NULL ELSE d END, e = CASE WHEN ? THEN 1 ELSE 2 END"
+        )
+        c = mod.count_text(text)
+        self.assertEqual(c["param IS [NOT] NULL"], 2)
+        self.assertEqual(c["IS [NOT] <param>"], 2)
+        self.assertEqual(c["CASE WHEN ? THEN"], 2)
+
+    def test_typed_forms_are_not_counted(self):
+        text = (
+            "WHERE col IS NULL AND col IS NOT NULL AND (a IS NULL OR b = ?) AND c IS NOT DISTINCT FROM ?\n"
+            "SET d = CASE WHEN col = ? THEN 1 ELSE 2 END, e = CASE WHEN x IS NULL THEN 1 END, "
+            "f = COALESCE(?, f), g = CASE WHEN ? = 'ok' THEN 1 END"
+        )
+        c = mod.count_text(text)
+        self.assertEqual(c["param IS [NOT] NULL"], 0)
+        self.assertEqual(c["IS [NOT] <param>"], 0)
+        self.assertEqual(c["CASE WHEN ? THEN"], 0)
+
     def test_replace_into_counts_as_or_replace(self):
         self.assertEqual(mod.count_text("REPLACE INTO t VALUES (1)")["INSERT OR REPLACE"], 1)
 

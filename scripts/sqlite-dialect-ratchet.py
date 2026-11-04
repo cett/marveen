@@ -49,6 +49,12 @@ TOKENS = {
     "json_extract/json_each": (r"\bjson_(?:extract|each|set|object|group_array)\s*\(", re.I),
     "FTS5 MATCH": (r"\bMATCH\s+[?@:]", re.I),
     "vec0/sqlite-vec": (r"\bvec0\b|\bvec_distance|sqlite-vec|sqliteVec|sqlite_vec", re.I),
+    # PostgreSQL cannot type a parameter that is only compared with NULL, used as a bare CASE condition, or
+    # the right side of SQLite's null-safe `IS <value>` (a syntax error there). Build the condition into the
+    # SQL text when it is needed, or compare with a plain operator against a column.
+    "param IS [NOT] NULL": (r"(?:\?|@\w+)\s+IS\s+(?:NOT\s+)?NULL\b", re.I),
+    "IS [NOT] <param>": (r"\bIS\s+(?:NOT\s+)?(?:\?|@\w+)", re.I),
+    "CASE WHEN ? THEN": (r"\bCASE\s+WHEN\s+\?\s+THEN\b", re.I),
 }
 
 _BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.S)
