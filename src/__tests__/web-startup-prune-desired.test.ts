@@ -8,7 +8,8 @@
 // mcp-list-no-boot-warmup.test.ts does for its invariant.
 //
 // Mental-revert evidence: delete the call, move it below reconcileAgentsOnStartup(), or take it out of the
-// `if (!webOnly)` block, and an assertion below fails (checked with those three edits).
+// `if (!webOnly)` block, and an assertion below fails (checked with those three edits). Comment the call out with
+// `/* ... */` (one line or several) or a trailing `//`, and the call-site count fails: comments are blanked first.
 
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
@@ -18,12 +19,21 @@ import { fileURLToPath } from 'node:url'
 const projectRoot = join(fileURLToPath(import.meta.url), '..', '..', '..')
 const lines = readFileSync(join(projectRoot, 'src', 'web.ts'), 'utf-8').split('\n')
 
+// The source with every comment blanked out, line by line (same line count, so an index into it is an index into
+// `lines`). A call that sits inside a block comment, on one line (`/* await prune() */`) or over several, or after
+// a `//` on a code line, is not a call site. A `//` counts as a comment only at the start of the line or after
+// whitespace, so the `//` of a URL in a string does not hide the rest of its line.
+const uncommented = lines
+  .join('\n')
+  .replace(/\/\*[\s\S]*?\*\//g, (block) => block.replace(/[^\n]/g, ' '))
+  .split('\n')
+  .map((l) => l.replace(/(^|\s)\/\/.*$/, '$1'))
+
 // Call sites only: not the import line, not a comment.
 function callLines(name: string): number[] {
   const out: number[] = []
-  lines.forEach((l, i) => {
-    const t = l.trimStart()
-    if (t.startsWith('import ') || t.startsWith('//') || t.startsWith('*')) return
+  uncommented.forEach((l, i) => {
+    if (l.trimStart().startsWith('import ')) return
     if (new RegExp('\\b' + name + '\\s*\\(').test(l)) out.push(i)
   })
   return out
