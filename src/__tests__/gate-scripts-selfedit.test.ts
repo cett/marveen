@@ -841,6 +841,13 @@ describe('the gate neighbourhood (agent-api.sh, sync-hooks.sh, doctor.sh, gate-o
     expect(bash(`ls ${dir}`)).toEqual({ deny: false })
     expect(bash(`cp /tmp/x ${dir}/other-file.ts`)).toEqual({ deny: false })
   })
+  it.each(['src', 'src/web', 'src/security'])('the trailing-slash and absolute forms of %s are protected the same way (rm -rf src/)', (dir) => {
+    for (const command of [`rm -rf ${dir}/`, `mv ${dir}/ ${dir}.bak`, `ln -sfn /tmp/evil ${dir}/`, `rm -rf ${join(root, dir)}/`, `rm -rf ${join(root, dir)}`, `cp -r /tmp/new ${dir}/`]) {
+      expect({ command, r: bash(command) }).toEqual({ command, r: { deny: true, reason: 'gate-scripts' } })
+    }
+    expect(bash(`ls ${dir}/`)).toEqual({ deny: false })
+    expect(bash(`rm -rf ${dir}/`, wt)).toEqual({ deny: false })
+  })
   it('a plain run of the API wrapper and of the checkers is not a write', () => {
     for (const command of ['bash scripts/agent-api.sh --agent zack GET /api/agents', 'bash scripts/doctor.sh', 'python3 scripts/gate-onfailure-check.py', 'bash scripts/sync-hooks.sh --dry-run']) {
       expect({ command, r: bash(command) }).toEqual({ command, r: { deny: false } })
