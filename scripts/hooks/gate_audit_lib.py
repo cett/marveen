@@ -18,9 +18,20 @@ THE GATE'S VERDICT IS NEVER AT STAKE HERE (the rules of the H5b review):
   3. The gate imports this module inside try/except: a missing or broken file leaves the gate exactly as it
      was before (see the import stanza at the bottom of each gate).
   4. A row can carry only what is listed here: the gate name (from GATES), the decision (DECISIONS), a
-     reason code (REASONS, a fixed enum, never free text) and the agent id. This module never reads the hook
-     event: no command, file path, recipient, tool input or output can reach the write, because the module
-     does not have them.
+     reason code (REASONS, a fixed enum, never free text), the agent id and, on a deny row, the session id as
+     trace_id (see below). This module reads exactly ONE field of the hook event, session_id, through
+     note_event(); the field must pass clean_session_id (a short id alphabet, never a `w3c-` value) or it is
+     dropped. No command, file path, recipient, tool input or output can reach the write, because the module
+     is never handed them: a gate passes the event to note_event, which looks at that one key and keeps
+     nothing else.
+
+THE TRACE ID of a deny row is the RAW Claude session id, the string otel_spans.trace_id holds for that
+session's work, so the denial and the session's spans fall into one trace (D1 of the audit/OTel plan). It is
+the only thing the event contributes. There is no fallback: an event without a usable session_id leaves
+trace_id NULL (the environment is NOT consulted, nothing is derived or guessed). A `w3c-` value is refused
+here as it is on the server (D2): that prefix is the server's own statement about a traceparent that came
+with credentials, and a gate must not be able to make it. The session id goes to trace_id only; the session_id
+column of the row stays NULL, as before.
 
 WHO THE AGENT IS comes from the process, not from the event. The event's cwd follows the agent's own `cd`, so an
 agent could point it at another agent's directory and have its denials filed under that agent. The launcher
@@ -35,6 +46,7 @@ that deny is not counted. Pure stdlib.
 import os
 import signal
 import sqlite3
+import string
 import time
 from urllib.parse import quote
 
@@ -64,6 +76,45 @@ WRITE_BUDGET_S = 1
 
 class _WriteBudgetExceeded(Exception):
     pass
+
+
+# What a session id may look like in a trace_id column: the alphabet of a UUID or a hex id, at most this long
+# (the server applies the same limits to a trace id that comes from outside, callerTraceId in src/db/context.ts).
+MAX_SESSION_ID_LENGTH = 128
+_SESSION_ID_CHARS = frozenset(string.ascii_letters + string.digits + '._:-')
+
+# The session id the running gate was told about by note_event(); None until then. One gate process serves one event.
+_noted_session = None
+
+
+def clean_session_id(value):
+    """`value` when it may be stored as the trace_id of a deny row, else None. A str of 1..MAX_SESSION_ID_LENGTH
+    characters, all of them in the id alphabet (so no whitespace, quote, NUL or newline), not starting with
+    `w3c-` in any case. Pure; never raises."""
+    try:
+        if not isinstance(value, str) or not 0 < len(value) <= MAX_SESSION_ID_LENGTH:
+            return None
+        if value[:4].lower() == 'w3c-':
+            return None
+        if len(value) == 32 and all(ch in string.hexdigits for ch in value):
+            return None  # the shape of a server trace id: a session id is a UUID, a gate must not join a request trace
+        for ch in value:
+            if ch not in _SESSION_ID_CHARS:
+                return None
+        return value
+    except BaseException:  # noqa: BLE001
+        return None
+
+
+def note_event(event):
+    """Tell the audit which session the running gate belongs to. A gate calls it once, with the event it parsed;
+    the module looks at the `session_id` key of a dict and at nothing else, and keeps it only when it passes
+    clean_session_id. Anything else (not a dict, no key, an unusable value) clears the note. Never raises."""
+    global _noted_session
+    try:
+        _noted_session = clean_session_id(event.get('session_id')) if isinstance(event, dict) else None
+    except BaseException:  # noqa: BLE001
+        _noted_session = None
 
 
 def _classify(code):
@@ -135,7 +186,7 @@ def _db_path():
     return hook_db_path.db_path()
 
 
-def _write(path, gate, decision, reason, agent_id, deny_row):
+def _write(path, gate, decision, reason, agent_id, deny_row, session_id=None):
     now = int(time.time())
     con = sqlite3.connect('file:%s?mode=rw' % quote(path), uri=True, timeout=BUSY_TIMEOUT_MS / 1000.0)
     try:
@@ -146,12 +197,27 @@ def _write(path, gate, decision, reason, agent_id, deny_row):
             'ON CONFLICT(gate, decision, reason) DO UPDATE SET count = count + 1, updated_at = excluded.updated_at',
             (gate, decision, reason, now, now))
         if deny_row and decision == 'deny':
-            # No tool_name / content_hash / session_id on purpose: the row names the gate, the verdict, a
-            # reason code and the agent. (tenant_id stays NULL: a gate process cannot resolve it.)
-            con.execute(
-                'INSERT INTO hook_audit_log (ts, agent_id, hook_type, verdict, tool_name, content_hash, reason, '
-                'session_id, trigger_source) VALUES (?, ?, ?, ?, NULL, NULL, ?, NULL, ?)',
-                (now, agent_id, 'PreToolUse', 'deny', reason, gate))
+            # No tool_name / content_hash / session_id column on purpose: the row names the gate, the verdict, a
+            # reason code and the agent, plus the session id as trace_id when the event gave a usable one.
+            # (tenant_id stays NULL: a gate process cannot resolve it.)
+            trace_id = clean_session_id(session_id)
+            legacy = ('INSERT INTO hook_audit_log (ts, agent_id, hook_type, verdict, tool_name, content_hash, reason, '
+                      'session_id, trigger_source) VALUES (?, ?, ?, ?, NULL, NULL, ?, NULL, ?)')
+            legacy_args = (now, agent_id, 'PreToolUse', 'deny', reason, gate)
+            if trace_id is None:
+                con.execute(legacy, legacy_args)
+            else:
+                try:
+                    con.execute(
+                        'INSERT INTO hook_audit_log (ts, agent_id, hook_type, verdict, tool_name, content_hash, reason, '
+                        'session_id, trigger_source, trace_id) VALUES (?, ?, ?, ?, NULL, NULL, ?, NULL, ?, ?)',
+                        legacy_args + (trace_id,))
+                except sqlite3.OperationalError as exc:
+                    # A database that has not run migration 0088 yet has no trace_id column: file the row without
+                    # it rather than lose the denial (and, with it, the count written just above).
+                    if 'trace_id' not in str(exc):
+                        raise
+                    con.execute(legacy, legacy_args)
         con.commit()
     finally:
         con.close()
@@ -161,8 +227,9 @@ def _raise_budget(_signum, _frame):
     raise _WriteBudgetExceeded()
 
 
-def record(gate, decision, reason, agent_id=None, deny_row=False, db_path=None):
-    """Record one gate outcome. Returns True when it was written. NEVER raises: see the module docstring."""
+def record(gate, decision, reason, agent_id=None, deny_row=False, db_path=None, session_id=None):
+    """Record one gate outcome. Returns True when it was written. NEVER raises: see the module docstring.
+    `session_id` becomes the trace_id of a deny row when it passes clean_session_id."""
     try:
         if gate not in GATES or decision not in DECISIONS:
             return False
@@ -182,7 +249,7 @@ def record(gate, decision, reason, agent_id=None, deny_row=False, db_path=None):
         except BaseException:  # noqa: BLE001 -- no SIGALRM here (not the main thread, Windows): the sqlite timeouts still bound the write
             pass
         try:
-            _write(db_path or _db_path(), gate, decision, reason, agent_id, deny_row)
+            _write(db_path or _db_path(), gate, decision, reason, agent_id, deny_row, session_id)
             return True
         finally:
             if armed:
@@ -200,7 +267,7 @@ def audited(gate, main, deny_row=False):
 
     def finish(decision, reason):
         try:
-            record(gate, decision, reason, agent_id=_trusted_agent_id(), deny_row=deny_row)
+            record(gate, decision, reason, agent_id=_trusted_agent_id(), deny_row=deny_row, session_id=_noted_session)
         except BaseException:  # noqa: BLE001
             pass
 

@@ -95,10 +95,16 @@ def _skill_id_from_path(file_path: str) -> "str | None":
 GENERATED_MARKER = "<!-- GENERATED from the skills DB"
 
 
+# The session of the hook event being handled, set by main() and read by _post: the write-back is made on behalf of
+# that session, so the request carries its traceparent (dashboard_api.traceparent). None leaves the header out.
+_EVENT = {"session_id": None}
+
+
 def _post(payload: dict) -> str:
     """Send one write-back to the dashboard and return the message it logs.
     Raises when the dashboard cannot be reached or rejects the payload."""
-    return dashboard_api.request("POST", "/api/skill-sync", payload, timeout=POST_TIMEOUT)["message"]
+    return dashboard_api.request("POST", "/api/skill-sync", payload, timeout=POST_TIMEOUT,
+                                 session_id=_EVENT["session_id"])["message"]
 
 
 def read_generated_header(content: str) -> "tuple[str | None, bool] | None":
@@ -255,6 +261,7 @@ def main() -> None:
     tool_name = payload.get("tool_name", "")
     if tool_name not in HANDLED_TOOLS:
         sys.exit(0)
+    _EVENT["session_id"] = payload.get("session_id")
 
     tool_input = payload.get("tool_input") or {}
     file_path = tool_input.get("file_path", "")

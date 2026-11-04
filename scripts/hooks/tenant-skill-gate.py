@@ -233,11 +233,22 @@ def extract(tool, inp, cwd):
     return out
 
 
+def _note_session(event):
+    """Hand the session id of the event to the audit module, which files it as the trace_id of a deny row. Nothing
+    else of the event goes with it. Never raises and never changes the verdict."""
+    try:
+        from gate_audit_lib import note_event
+        note_event(event)
+    except Exception:  # noqa: BLE001 -- the audit is optional; the verdict never depends on it
+        pass
+
+
 def main():
     try:
         ev = json.loads(sys.stdin.read())
     except Exception:
         block("a bemenet nem olvashato, ezert BLOKKOL.")
+    _note_session(ev)
     tool = ev.get("tool_name") or ""
     inp = ev.get("tool_input") or {}
     cwd = ev.get("cwd") or ""

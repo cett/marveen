@@ -158,6 +158,11 @@ def _post(base_url, auth, endpoint, payload):
         pass
 
 
+# The session of the event being judged, set by main() once the event is parsed and read by _notify_block: block() is
+# called from a dozen helpers that have no event, and threading the id through each of them would touch every call.
+_EVENT = {'session_id': None}
+
+
 def _notify_block(agent_id, tool_name, reason):
     auth = agent_token.resolve(agent_id=agent_id, store_dir=os.path.join(_project_root(), 'store'))
     base_url = f'http://localhost:{_web_port()}/api'
@@ -167,6 +172,8 @@ def _notify_block(agent_id, tool_name, reason):
         'verdict': 'deny',
         'tool_name': tool_name,
         'reason': reason,
+        # The raw session id as the trace of the row (the server drops anything that is not a plain id).
+        'trace_id': _EVENT['session_id'] if isinstance(_EVENT['session_id'], str) else None,
     })
 
 
@@ -663,6 +670,7 @@ def main():
     tool = ev.get('tool_name') or ''
     inp = ev.get('tool_input') or {}
     cwd = ev.get('cwd') or ''
+    _EVENT['session_id'] = ev.get('session_id')
     try:
         agent_id = ledger_lib.agent_id_from_cwd(cwd)
     except Exception:

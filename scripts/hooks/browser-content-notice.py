@@ -405,6 +405,7 @@ def _notify_hook_audit(agent_id, session_id, tool_name, reason, content_hash):
                     "content_hash": content_hash,
                     "reason": reason,
                     "session_id": session_id,
+                    "trace_id": session_id,  # the raw session id: the trace of the session's spans (the server drops anything else)
                 }).encode(),
                 headers=auth.headers({"Content-Type": "application/json"}),
                 method="POST",

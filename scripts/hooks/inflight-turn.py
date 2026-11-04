@@ -63,11 +63,11 @@ def begin(payload, agent, api):
     api.request("POST", _path(agent, "begin"), {
         "prompt_head": prompt[:HEAD_CHARS],
         "prompt_hash": hashlib.sha256(prompt.encode("utf-8", "replace")).hexdigest()[:16],
-    }, timeout=WRITE_TIMEOUT, agent_id=agent)
+    }, timeout=WRITE_TIMEOUT, agent_id=agent, session_id=payload.get("session_id"))
 
 
 def end(payload, agent, api):
-    api.request("POST", _path(agent, "end"), {}, timeout=WRITE_TIMEOUT, agent_id=agent)
+    api.request("POST", _path(agent, "end"), {}, timeout=WRITE_TIMEOUT, agent_id=agent, session_id=payload.get("session_id"))
 
 
 def replay(payload, agent, api):
@@ -75,7 +75,7 @@ def replay(payload, agent, api):
     if not isinstance(source, str):
         return
     res = api.request("GET", _path(agent, "replay") + "?source=" + urllib.parse.quote(source, safe=""),
-                      timeout=READ_TIMEOUT, agent_id=agent) or {}
+                      timeout=READ_TIMEOUT, agent_id=agent, session_id=payload.get("session_id")) or {}
     text, turn_id = res.get("additionalContext"), res.get("turn_id")
     if not text or not turn_id:
         return
@@ -85,7 +85,8 @@ def replay(payload, agent, api):
                      ensure_ascii=False))
     sys.stdout.flush()
     try:
-        api.request("POST", _path(agent, "consume"), {"turn_id": turn_id}, timeout=WRITE_TIMEOUT, agent_id=agent)
+        api.request("POST", _path(agent, "consume"), {"turn_id": turn_id}, timeout=WRITE_TIMEOUT, agent_id=agent,
+                    session_id=payload.get("session_id"))
     except Exception:
         pass  # worst case the hint is offered once more at the next start
 

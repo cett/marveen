@@ -36,10 +36,23 @@ function writeInRequest(trace_id: unknown): Promise<void> {
 }
 
 describe('callerTraceId', () => {
-  it('keeps a session id, a UUID and a hex id', () => {
+  it('keeps a session id and a UUID', () => {
     expect(callerTraceId(SESSION)).toBe(SESSION)
-    expect(callerTraceId('a'.repeat(32))).toBe('a'.repeat(32))
     expect(callerTraceId('sess-a_1.2:3')).toBe('sess-a_1.2:3')
+  })
+
+  it.each([
+    ['32 lowercase hex (a server request trace id)', 'a'.repeat(32)],
+    ['32 uppercase hex', 'A'.repeat(32)],
+    ['32 mixed-case hex', 'aBcD'.repeat(8)],
+  ])('drops %s: a caller must not join a request trace', (_name, value) => {
+    expect(callerTraceId(value)).toBeNull()
+  })
+
+  it('keeps a value that is only near the server id shape', () => {
+    expect(callerTraceId('a'.repeat(31))).toBe('a'.repeat(31))
+    expect(callerTraceId('a'.repeat(33))).toBe('a'.repeat(33))
+    expect(callerTraceId('g'.repeat(32))).toBe('g'.repeat(32))
   })
 
   it.each([
@@ -51,6 +64,7 @@ describe('callerTraceId', () => {
     ['oversized', 'x'.repeat(129)],
     ['a space', 'sess a'],
     ['a newline', 'sess\na'],
+    ['a trailing newline', 'sess-a\n'],
     ['a quote', "sess'a"],
     ['a NUL byte', 'sess\u0000a'],
     ['a non-ASCII letter', 'sess-é'],
@@ -106,7 +120,7 @@ describe('insertHookAuditLog trace_id', () => {
   })
 
   it('a session id is never turned into the stored trace on its own: no trace_id sent means no session trace', async () => {
-    // Rick 14786: there is no session_id fallback. A caller that sends only session_id gets NULL outside a traced request.
+    // There is no session_id fallback: a caller that sends only session_id gets NULL outside a traced request.
     await insertHookAuditLog({ agent_id: 'agent-a', hook_type: 'PreToolUse', verdict: 'deny', session_id: SESSION })
     expect(await lastRow()).toEqual({ trace_id: null, span_id: null, session_id: SESSION })
   })

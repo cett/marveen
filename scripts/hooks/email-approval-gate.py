@@ -381,6 +381,16 @@ def _level_of(obj: Any) -> Tuple[int, Optional[bool]]:
     return effective, (enforce if isinstance(enforce, bool) else None)
 
 
+def _note_session(event):
+    '''Hand the session id of the event to the audit module, which files it as the trace_id of a deny row. Nothing
+    else of the event goes with it. Never raises and never changes the verdict.'''
+    try:
+        from gate_audit_lib import note_event
+        note_event(event)
+    except Exception:  # noqa: BLE001 -- the audit is optional; the verdict never depends on it
+        pass
+
+
 def decide(raw: str, log: Dict[str, Any]) -> str:
     """Run the whole gate. Returns the stdout text (a systemMessage or nothing) on an allow; raises Deny on a refusal."""
     # 2. input
@@ -390,6 +400,7 @@ def decide(raw: str, log: Dict[str, Any]) -> str:
         raise Deny('bad_input', _deny_text('a hook bemenete nem ertheto (nem JSON); egy vizsgalhatatlan hivas nem mehet at.'))
     if not isinstance(payload, dict) or not isinstance(payload.get('tool_name'), str) or not isinstance(payload.get('tool_input'), dict):
         raise Deny('bad_input', _deny_text('a hook bemenete nem ertheto (nincs tool_name vagy a tool_input nem objektum).'))
+    _note_session(payload)
     tool, tool_input = payload['tool_name'], payload['tool_input']
     log['tool'] = tool[:80]
 

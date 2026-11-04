@@ -146,6 +146,7 @@ def _notify_block(agent_id, session_id, tool_name, reason, content_hash) -> None
         'content_hash': content_hash,
         'reason': reason,
         'session_id': session_id,
+        'trace_id': session_id,  # the raw session id: the trace of the session's spans (the server drops anything else)
     })
 
     # Rare event by design -- worth a visible Telegram alert, not just a log
