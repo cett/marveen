@@ -373,6 +373,40 @@ describe('PATCH /api/v1/admin/users/:id', () => {
     expect(out.body.error).toBe('forbidden')
   })
 
+  it('returns 403 when an admin takes their own account out of the admin role, and writes nothing', async () => {
+    const selfUser = { ...SAMPLE_USER, username: 'admin-user', role: 'admin', tenant_id: null }
+    vi.mocked(db.getDashboardUserById).mockResolvedValue(selfUser as any)
+    vi.mocked(db.countActiveAdmins).mockResolvedValue(3)
+    vi.mocked(db.adminPatchDashboardUser).mockClear()
+    const { ctx, out } = makeCtx('PATCH', '/api/v1/admin/users/5', { role: 'viewer', tenant_id: 't1' })
+    await tryHandleAdminB2b(ctx)
+    expect(out.status).toBe(403)
+    expect(out.body).toEqual({ error: 'forbidden', hint: 'Cannot change the role of your own account' })
+    expect(db.adminPatchDashboardUser).not.toHaveBeenCalled()
+  })
+
+  it('returns 403 when the role change would demote the last active admin (pre-check, before the compare-and-set)', async () => {
+    const lastAdmin = { ...SAMPLE_USER, username: 'other-admin', role: 'admin', tenant_id: null }
+    vi.mocked(db.getDashboardUserById).mockResolvedValue(lastAdmin as any)
+    vi.mocked(db.countActiveAdmins).mockResolvedValue(1)
+    vi.mocked(db.adminPatchDashboardUser).mockClear()
+    const { ctx, out } = makeCtx('PATCH', '/api/v1/admin/users/5', { role: 'viewer', tenant_id: 't1' })
+    await tryHandleAdminB2b(ctx)
+    expect(out.status).toBe(403)
+    expect(out.body).toEqual({ error: 'forbidden', hint: 'Cannot remove the last administrator' })
+    expect(db.adminPatchDashboardUser).not.toHaveBeenCalled()
+  })
+
+  it('an admin keeping their own admin role while changing other fields is not blocked', async () => {
+    const selfUser = { ...SAMPLE_USER, username: 'admin-user', role: 'admin', tenant_id: null }
+    vi.mocked(db.getDashboardUserById).mockResolvedValue(selfUser as any)
+    vi.mocked(db.countActiveAdmins).mockResolvedValue(1)
+    vi.mocked(db.adminPatchDashboardUser).mockResolvedValue({ status: 'updated', user: selfUser as any })
+    const { ctx, out } = makeCtx('PATCH', '/api/v1/admin/users/5', { role: 'admin', display_name: 'Me' })
+    await tryHandleAdminB2b(ctx)
+    expect(out.status).toBe(200)
+  })
+
   it('returns 403 forbidden when disabling the last active admin', async () => {
     const lastAdmin = { ...SAMPLE_USER, username: 'other-admin', role: 'admin', tenant_id: null }
     vi.mocked(db.getDashboardUserById).mockResolvedValue(lastAdmin as any)
