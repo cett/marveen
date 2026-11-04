@@ -27,7 +27,7 @@ vi.mock('../notify.js', async (importOriginal) => ({
   deliverToChannel,
 }))
 
-import { initDatabase, getDb, getApproval, listApprovalEvents, resolveApproval, createApproval } from '../db.js'
+import { initDatabase, getDb, getApproval, listApprovalEvents, resolveApproval, createApproval, approvalContentHash } from '../db.js'
 import { tryHandleApprovals } from '../web/routes/approvals.js'
 import { parseEmailEnvelope } from '../web/email-envelope.js'
 import { APPROVAL_CONSUME_WINDOW_S, parseConsumeWindowSeconds } from '../config.js'
@@ -161,12 +161,91 @@ describe('POST /api/approvals/:id/consume', () => {
     expect(out.body.reason).toBe('expired')
   })
 
-  it('refuses a category that has no hash to bind', async () => {
-    await createApproval({ id: 'plain-1', agent_id: 'main-agent', category: 'deploy', action_description: 'x', content_hash: 'a'.repeat(64) })
+  it('a row without a hash cannot be used up (hash_mismatch), whatever the category', async () => {
+    await createApproval({ id: 'plain-1', agent_id: 'main-agent', category: 'deploy', action_description: 'x' })
     await resolveApproval('plain-1', 'approved', 'human:session:owner', null, 'dashboard_session')
     const out = await consume('plain-1', 'a'.repeat(64))
     expect(out.status).toBe(409)
-    expect(out.body.reason).toBe('wrong_category')
+    expect(out.body.reason).toBe('hash_mismatch')
+  })
+})
+
+describe('any Level 2 category: the server hashes the request and the approval is used up once', () => {
+  // email_standing_recipient is human-only: only a dashboard-session decision of it can be used up.
+  const BEARER_OK = ['deploy', 'file_delete', 'git_push']
+  const CATEGORIES = [...BEARER_OK, 'email_standing_recipient']
+  /** `agent` asks for approval in `category`; returns the created row as the response shows it. */
+  async function askPlain(category: string, caller: Caller = MAIN, agent = 'main-agent', description = 'do the thing', extra: Record<string, unknown> = {}) {
+    const out = await call('POST', '/api/approvals', caller, { agent_id: agent, category, action_description: description, ...extra })
+    expect(out.status).toBe(201)
+    return out.body as { id: string; content_hash: string; tenant_id: string }
+  }
+  const decide = (id: string, via: 'dashboard_session' | 'bearer') =>
+    resolveApproval(id, 'approved', via === 'bearer' ? 'agent:main-agent' : 'human:session:owner', null, via)
+
+  it('returns a content_hash computed from exactly the stored values', async () => {
+    const a = await askPlain('deploy', MAIN, 'main-agent', '  deploy v2  ', { action_payload: '{"v":2}' })
+    expect(a.content_hash).toBe(approvalContentHash({ category: 'deploy', agent_id: 'main-agent', tenant_id: 'default', action_description: 'deploy v2', action_payload: '{"v":2}' }))
+  })
+
+  it.each(BEARER_OK)('%s: first consume 200, second 409 already_consumed, with a bearer decision', async (category) => {
+    const a = await askPlain(category)
+    await decide(a.id, 'bearer')
+    const first = await consume(a.id, a.content_hash)
+    expect(first.status).toBe(200)
+    const second = await consume(a.id, a.content_hash, MAIN, { ref: 'other-ref' })
+    expect(second.status).toBe(409)
+    expect(second.body.reason).toBe('already_consumed')
+  })
+
+  it.each(CATEGORIES)('%s: a dashboard-session decision is consumable too', async (category) => {
+    const a = await askPlain(category)
+    await decide(a.id, 'dashboard_session')
+    expect((await consume(a.id, a.content_hash)).status).toBe(200)
+  })
+
+  it('another agent gets 403 agent_mismatch, a wrong hash 409 hash_mismatch, an old decision 409 expired; none of them use it up', async () => {
+    const a = await askPlain('deploy')
+    await decide(a.id, 'bearer')
+    const foreign = await consume(a.id, a.content_hash, WORKER)
+    expect(foreign.status).toBe(403)
+    expect(foreign.body.reason).toBe('agent_mismatch')
+    const wrong = await consume(a.id, hashOf(envelope()))
+    expect(wrong.status).toBe(409)
+    expect(wrong.body.reason).toBe('hash_mismatch')
+    getDb().prepare('UPDATE approvals SET resolved_at = ? WHERE id = ?').run(Math.floor(Date.now() / 1000) - APPROVAL_CONSUME_WINDOW_S - 5, a.id)
+    const old = await consume(a.id, a.content_hash)
+    expect(old.status).toBe(409)
+    expect(old.body.reason).toBe('expired')
+    expect((await getApproval(a.id))?.consumed_at).toBeNull()
+  })
+
+  it('two consumes racing for one approval: exactly one 200', async () => {
+    const a = await askPlain('deploy')
+    await decide(a.id, 'bearer')
+    const results = await Promise.all([consume(a.id, a.content_hash, MAIN, { ref: 'r1' }), consume(a.id, a.content_hash, MAIN, { ref: 'r2' })])
+    expect(results.map((r) => r.status).sort()).toEqual([200, 409])
+  })
+
+  it('a bearer decision does not count for email_send or for a human-only row (not_human_decided)', async () => {
+    const mail = await ask()
+    await decide(mail.id, 'bearer')
+    const m = await consume(mail.id, mail.hash)
+    expect(m.status).toBe(409)
+    expect(m.body.reason).toBe('not_human_decided')
+    const a = await askPlain('deploy')
+    getDb().prepare('UPDATE approvals SET human_only = 1 WHERE id = ?').run(a.id)
+    await decide(a.id, 'bearer')
+    const h = await consume(a.id, a.content_hash)
+    expect(h.status).toBe(409)
+    expect(h.body.reason).toBe('not_human_decided')
+    expect((await getApproval(a.id))?.consumed_at).toBeNull()
+  })
+
+  it('a hash the requester sent itself is kept as its own binding', async () => {
+    const own = 'c'.repeat(64)
+    const a = await askPlain('deploy', MAIN, 'main-agent', 'x', { content_hash: own })
+    expect(a.content_hash).toBe(own)
   })
 })
 

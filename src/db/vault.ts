@@ -1,6 +1,7 @@
 // Split from the former monolithic src/db.ts (see db/index.ts for the
 // re-export surface and boot orchestration).
 
+import { createHash } from 'node:crypto'
 import { dbx, type SqlOps } from './facade.js'
 
 export interface VaultSshKey {
@@ -265,10 +266,31 @@ export async function listApprovalEvents(approvalId: string): Promise<ApprovalEv
 }
 
 /**
- * Categories whose approval is bound to the hash of one exact action and can be used up once. Anything
- * else (a plain yes/no approval, an `email_standing_recipient` request) has no hash to consume.
+ * The one category that is decided only by a person in a dashboard session and is claimed by hash (the send
+ * gate and the official sender look its approvals up by the mail's hash). Every other category is consumed by
+ * id, and a decision by a bearer token counts. Kept here (not imported from the web layer) so the db layer
+ * has no upward import; the web layer's EMAIL_SEND_CATEGORY has the same value.
  */
-export const CONSUMABLE_APPROVAL_CATEGORIES: readonly string[] = ['email_send']
+export const HUMAN_DECIDED_CATEGORY = 'email_send'
+
+/**
+ * The hash that binds an approval to the exact request it covers: sha256 of the canonical JSON of
+ * {category, agent_id, tenant_id, action_description, action_payload}. Keys are sorted, every string is NFC
+ * normalized, an absent payload is null (so it differs from an empty string). The server computes it when
+ * the request is created and returns it; the requester hands it back to consume the approval once.
+ */
+export function approvalContentHash(parts: { category: string; agent_id: string; tenant_id: string; action_description: string; action_payload?: string | null }): string {
+  const fields: Record<string, string | null> = {
+    action_description: parts.action_description.normalize('NFC'),
+    action_payload: parts.action_payload == null ? null : parts.action_payload.normalize('NFC'),
+    agent_id: parts.agent_id.normalize('NFC'),
+    category: parts.category.normalize('NFC'),
+    tenant_id: parts.tenant_id.normalize('NFC'),
+  }
+  const sorted: Record<string, string | null> = {}
+  for (const key of Object.keys(fields).sort()) sorted[key] = fields[key] as string | null
+  return createHash('sha256').update(JSON.stringify(sorted), 'utf8').digest('hex')
+}
 
 /** A consume that arrives again with the same ref inside this many seconds is a retry, not a second use. */
 export const CONSUME_REPLAY_WINDOW_S = 60
@@ -277,7 +299,6 @@ export const CONSUME_REPLAY_WINDOW_S = 60
 export type ConsumeRefusal =
   | 'not_found'
   | 'agent_mismatch'
-  | 'wrong_category'
   | 'already_consumed'
   | 'not_approved'
   | 'hash_mismatch'
@@ -339,18 +360,21 @@ export async function journalConsumeRefusal(approval: Approval, reason: string, 
 }
 
 // The one write that uses an approval up. Every condition is in the WHERE, so the check and the write are
-// a single statement: of two callers racing for the same row exactly one changes it. The category list is
-// spliced in as bound parameters. A consumable approval is always decided by a person's dashboard
-// session, whatever the human_only snapshot of the row says.
+// a single statement: of two callers racing for the same row exactly one changes it. Any category can be
+// consumed (the row must carry a hash: a NULL hash never equals the caller's). The decision must have come
+// from a person's dashboard session when the category is the human-decided one or the row's human_only
+// snapshot says so; for any other row a bearer-token decision counts too. The category is the last bound
+// parameter.
 // With `seal`, the same write also stamps the effect (used_at / used_ref): the official sender, when no gate
 // reserved the approval before it, reserves and seals in one step.
 export function consumeStatement(seal = false): string {
-  const marks = CONSUMABLE_APPROVAL_CATEGORIES.map(() => '?').join(', ')
   return `
     UPDATE approvals SET consumed_at = ?, consumed_by = ?, consumed_ref = ?${seal ? ', used_at = ?, used_ref = ?' : ''}
-    WHERE id = ? AND category IN (${marks}) AND status = 'approved' AND consumed_at IS NULL
+    WHERE id = ? AND status = 'approved' AND consumed_at IS NULL
       AND content_hash = ? AND tenant_id = ? AND agent_id = ?
-      AND resolved_at >= ? AND resolved_via = 'dashboard_session'
+      AND resolved_at >= ?
+      AND (resolved_via = 'dashboard_session'
+           OR (resolved_via = 'bearer' AND category <> ? AND COALESCE(human_only, 0) = 0))
   `
 }
 
@@ -358,7 +382,7 @@ export function consumeStatement(seal = false): string {
 export async function useUpApproval(id: string, p: ConsumeParams, now: number, ref: string | null, seal = false, ops: SqlOps = dbx): Promise<boolean> {
   return (await ops.run(
     consumeStatement(seal),
-    now, p.principal, ref, ...(seal ? [now, ref] : []), id, ...CONSUMABLE_APPROVAL_CATEGORIES, p.content_hash, p.tenant_id, p.principal, now - p.window_s,
+    now, p.principal, ref, ...(seal ? [now, ref] : []), id, p.content_hash, p.tenant_id, p.principal, now - p.window_s, HUMAN_DECIDED_CATEGORY,
   )).changes > 0
 }
 
@@ -413,8 +437,8 @@ function isReplay(row: Approval, p: ConsumeParams, now: number): boolean {
 
 /**
  * Use up one approval by id. Succeeds only for an approved, unconsumed row of this tenant and this agent,
- * of a consumable category, bound to exactly this hash, decided by a human session no longer ago than
- * the window. The success and its journal row are one transaction; a refusal is classified from the row
+ * of any category, bound to exactly this hash, decided no longer ago than the window (by a person's
+ * dashboard session; a bearer decision counts too unless the category or the row is human-only). The success and its journal row are one transaction; a refusal is classified from the row
  * afterwards (the write itself never says why it matched nothing) and journalled best-effort.
  */
 export async function consumeApproval(p: ConsumeParams & { id: string }): Promise<ConsumeOutcome> {
@@ -434,7 +458,6 @@ export async function consumeApproval(p: ConsumeParams & { id: string }): Promis
     // Another tenant's row answers exactly like a missing one.
     if (!row || row.tenant_id !== p.tenant_id) return { ok: false, reason: 'not_found' }
     if (row.agent_id !== p.principal) return { ok: false, reason: 'agent_mismatch', approval: row }
-    if (!CONSUMABLE_APPROVAL_CATEGORIES.includes(row.category)) return { ok: false, reason: 'wrong_category', approval: row }
     if (!hashOk) return { ok: false, reason: 'hash_mismatch', approval: row }
     if (row.consumed_at != null) {
       if (isReplay(row, p, now)) return { ok: true, replayed: true, approval: row }
@@ -468,7 +491,8 @@ export async function claimApproval(p: ConsumeParams & { category: string; mode?
   const send = p.mode === 'send'
   // Adoption looks only a moment back (and never past the use window itself).
   const adoptSince = now - Math.min(p.window_s, SEND_ADOPT_WINDOW_S)
-  if (!CONSUMABLE_APPROVAL_CATEGORIES.includes(p.category)) return { ok: false, reason: 'wrong_category' }
+  // A claim by hash is the mail path's only: other categories are consumed by id.
+  if (p.category !== HUMAN_DECIDED_CATEGORY) return { ok: false, reason: 'wrong_category' }
   if (!isContentHash(p.content_hash)) return { ok: false, reason: 'hash_mismatch' }
   // The sender seals under its own reference: without one there would be nothing to retry or audit with.
   if (send && ref === null) throw new Error("claimApproval: mode 'send' needs a ref")

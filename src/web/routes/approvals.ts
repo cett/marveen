@@ -4,7 +4,7 @@ import {
   createApproval, getApproval, resolveApproval, listApprovals, countApprovals,
   getApprovalStatusCounts, getOldestPendingApproval, expireTimedOutApprovals,
   createAgentMessage, writeAgentAuditLog, getAutonomyCategory, recordApprovalEvent,
-  createApprovalOnce, countApprovalsRequestedSince, isContentHash,
+  createApprovalOnce, countApprovalsRequestedSince, isContentHash, approvalContentHash,
   type Approval, type ApprovalResolvedVia,
 } from '../../db.js'
 import { logger } from '../../logger.js'
@@ -235,14 +235,22 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
 
     if (!emailSend) {
       const id = randomUUID()
+      const description = (action_description as string).trim()
+      const payload = typeof action_payload === 'string' ? action_payload : null
+      // The server binds every request to its content, so the approval can be used up once by that hash. A hash
+      // the requester sent itself is kept as it is (its own binding); without one the server computes it from
+      // exactly the values stored on the row, and the response returns it.
+      const boundHash = typeof content_hash === 'string'
+        ? content_hash
+        : approvalContentHash({ category: storedCategory, agent_id: requester, tenant_id: requestTenant ?? 'default', action_description: description, action_payload: payload })
       const approval = await createApproval({
         id,
         agent_id: requester,
         category: storedCategory,
         human_only: await isHumanOnly(storedCategory),
-        action_description: (action_description as string).trim(),
-        action_payload: typeof action_payload === 'string' ? action_payload : null,
-        content_hash: typeof content_hash === 'string' ? content_hash : null,
+        action_description: description,
+        action_payload: payload,
+        content_hash: boundHash,
         timeout_at: await getTimeoutAt(storedCategory, timeout_seconds),
         tenant_id: requestTenant,
       })
