@@ -7,6 +7,8 @@ const TENANTS: Record<string, { main: string | null; agents: string[] }> = {
   'tenant-1': { main: 'main-t1', agents: ['main-t1', 'helper-t1'] },
   'tenant-2': { main: 'main-t2', agents: ['main-t2', 'helper-t2'] },
   'tenant-nomain': { main: null, agents: ['lonely'] },
+  // A tenant whose main agent is NOT in its enabled-agent list: the main-agent line of the partner route is the only way in.
+  'tenant-3': { main: 'main-t3', agents: ['helper-t3'] },
 }
 // Trusted pairs of the fleet (symmetric, as isTrustedPeer is): the owner's main agent trusts every fleet agent.
 const TRUSTED = new Set(['fleet-x>fleet-y', 'fleet-y>fleet-x', 'fleet-x>main-a', 'main-a>fleet-x'])
@@ -53,6 +55,18 @@ describe('isRouteAllowed: the allowed targets of each sender class (full matrix)
     expect(allowedTargets({ senderClass: 'partner_sender', senderId: 'p-2', tenantId: 'tenant-2' })).toEqual(['main-t2', 'helper-t2'])
   })
 
+  it('partner_sender: a tenant whose main agent is not in its agent list still reaches its main agent (and its helper), nothing else', () => {
+    const base = { senderClass: 'partner_sender', senderId: 'p-3', tenantId: 'tenant-3' }
+    expect(isRouteAllowed({ ...base, toAgent: 'main-t3' }, ctx)).toEqual({ ok: true })
+    expect(isRouteAllowed({ ...base, toAgent: 'helper-t3' }, ctx)).toEqual({ ok: true })
+    for (const to of ['main-t1', 'helper-t1', 'main-a', 'stranger']) {
+      expect(isRouteAllowed({ ...base, toAgent: to }, ctx)).toEqual({ ok: false, reason: 'target_not_in_tenant' })
+    }
+    // the same tenant as a tenant_user: only the main agent
+    expect(isRouteAllowed({ ...base, senderClass: 'tenant_user', toAgent: 'main-t3' }, ctx)).toEqual({ ok: true })
+    expect(isRouteAllowed({ ...base, senderClass: 'tenant_user', toAgent: 'helper-t3' }, ctx).ok).toBe(false)
+  })
+
   it('fleet_agent: exactly the trusted-peer pairs', () => {
     expect(allowedTargets({ senderClass: 'fleet_agent', senderId: 'fleet-x', tenantId: 'default' })).toEqual(['main-a', 'fleet-y'])
     expect(allowedTargets({ senderClass: 'fleet_agent', senderId: 'fleet-z', tenantId: 'default' })).toEqual([])
@@ -94,6 +108,22 @@ describe('isRouteAllowed: federated target (owner decision A)', () => {
 
   it('an unknown or unadvertised agent is refused', () => {
     expect(isRouteAllowed({ ...fed, toAgent: 'stranger' }, ctx)).toEqual({ ok: false, reason: 'federated_target_not_advertised' })
+  })
+
+  // The module compares names exactly: a variant of an advertised or excluded name is a DIFFERENT name and is
+  // not routed on the strength of the original (the caller hands over the name in the form the router delivers).
+  it.each([
+    'Fleet-X', 'FLEET-X', 'fleet-x ', ' fleet-x', 'fleet-x\n', 'fleet-x​', 'fleet‐x', 'fleet-x/..', '@fleet-x', 'fleet-x\u0000',
+  ])('a variant %j of an advertised agent is refused', (variant) => {
+    expect(isRouteAllowed({ ...fed, toAgent: variant }, ctx)).toEqual({ ok: false, reason: 'federated_target_not_advertised' })
+  })
+  it.each([
+    'Heartbeat', 'HEARTBEAT', 'heartbeat ', 'heartbeat​', '@telegram-coordinator', 'Telegram-Coordinator', 'channel-coordinator\n',
+  ])('a variant %j of an excluded coordinator is refused', (variant) => {
+    expect(isRouteAllowed({ ...fed, toAgent: variant }, ctx).ok).toBe(false)
+  })
+  it('a variant is refused even for the owner main agent', () => {
+    for (const variant of ['Main-A', 'main-a ', '@main-a']) expect(isRouteAllowed({ ...fed, toAgent: variant }, ctx).ok, variant).toBe(false)
   })
 
   it('the advertised list is read at decision time (one source, no copy)', () => {
