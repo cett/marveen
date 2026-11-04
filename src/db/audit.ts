@@ -3,7 +3,7 @@
 
 import { logger } from '../logger.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
-import { dbx } from './facade.js'
+import { dbx, type SqlOps } from './facade.js'
 import { likeContains } from './like.js'
 import { upsertOtelSpan } from './observability.js'
 import { dashboardUserTenant, resolveWriteTenant } from './write-tenant.js'
@@ -369,17 +369,19 @@ export async function listHookAuditLog(opts: {
   return dbx.all<HookAuditLogEntry>(`SELECT * FROM hook_audit_log ${where} ORDER BY ts DESC LIMIT ?`, ...params, limit)
 }
 
-export async function pruneHookAuditLog(olderThanSecs = 30 * 86400): Promise<void> {
+/** Delete the hook audit rows older than the window; returns how many went. `ops` is the transaction the
+ *  deletion belongs to (a caller that logs the deletion passes its own). */
+export async function pruneHookAuditLog(olderThanSecs = 30 * 86400, ops: SqlOps = dbx): Promise<number> {
   const cutoff = Math.floor(Date.now() / 1000) - olderThanSecs
-  await dbx.run('DELETE FROM hook_audit_log WHERE ts < ?', cutoff)
+  return (await ops.run('DELETE FROM hook_audit_log WHERE ts < ?', cutoff)).changes
 }
 
 // otel_spans.start_ms is milliseconds (unlike every other audit table's
 // second-resolution created_at/ts), so the cutoff and default window are
 // both computed in ms here to avoid an off-by-1000x prune.
-export async function pruneOtelSpans(olderThanMs = 30 * 86400000): Promise<void> {
-  const cutoff = Date.now() - olderThanMs
-  await dbx.run('DELETE FROM otel_spans WHERE start_ms < ?', cutoff)
+export async function pruneOtelSpans(olderThanMs = 30 * 86400000, ops: SqlOps = dbx, nowMs: number = Date.now()): Promise<number> {
+  const cutoff = nowMs - olderThanMs
+  return (await ops.run('DELETE FROM otel_spans WHERE start_ms < ?', cutoff)).changes
 }
 
 // Pass null for oldValue/newValue when the registry entry is secret:true --
@@ -508,8 +510,8 @@ export interface AgentAuditLogRow {
 
 export async function writeAgentAuditLog(opts: {
   agent_id: string
-  entity: 'memory' | 'kanban' | 'message' | 'agent' | 'blackboard' | 'approval' | 'schedule'
-  action: 'create' | 'update' | 'delete' | 'pii_scrub_bypass' | 'pii_scrub_attempt_denied' | 'reserved_marker_denied' | 'skip_not_live' | 'timeout_sweep' | 'mass_skip' | 'skip_tenant_mismatch' | 'review_requested' | 'activate' | 'toggle' | 'retarget' | 'envelope_hash_mismatch' | 'consume' | 'create_refused'
+  entity: 'memory' | 'kanban' | 'message' | 'agent' | 'blackboard' | 'approval' | 'schedule' | 'system'
+  action: 'create' | 'update' | 'delete' | 'retention_prune' | 'pii_scrub_bypass' | 'pii_scrub_attempt_denied' | 'reserved_marker_denied' | 'skip_not_live' | 'timeout_sweep' | 'mass_skip' | 'skip_tenant_mismatch' | 'review_requested' | 'activate' | 'toggle' | 'retarget' | 'envelope_hash_mismatch' | 'consume' | 'create_refused'
   entity_id?: string | number | null
   detail?: Record<string, unknown> | null
   /** A tenant the caller already resolved (a writer inside a transaction cannot look it up on the facade there);
@@ -668,26 +670,94 @@ export async function queryAuditLog(opts: {
   return { entries: parts.slice(offset, offset + limit), total }
 }
 
-// Prune all three audit tables to AUDIT_LOG_RETENTION_DAYS. Called from the
-// daily decay sweep so old entries do not accumulate indefinitely.
-export async function pruneAuditLogs(): Promise<void> {
+/** What one retention sweep removed, per table, with the cut it used. */
+export interface AuditPruneResult {
+  /** Rows deleted per table. */
+  deleted: Record<string, number>
+  deletedTotal: number
+  /** The audit tables' window and cut (epoch seconds). */
+  cutoffDays: number
+  cutoffTs: number
+  /** The span table's own window and cut (epoch milliseconds). */
+  otelCutoffDays: number
+  otelCutoffMs: number
+  /** Spans the cut removed that had not been exported (counted before the delete, in the same transaction). */
+  unexportedDeleted: number
+  /** OTEL_EXPORT_ENABLED at the time of the sweep: with the export off, every deleted span counts as unexported. */
+  exportEnabled: boolean
+}
+
+/** Who ran a retention prune and how, for the journal row. */
+export interface PruneActor { agentId: string; trigger: 'sweep' | 'manual'; actorKind?: string }
+
+// The journal row of a prune. It is written AFTER the deletes, so a prune never removes its own record (the row
+// itself then lives for the audit window like any other); tenant NULL: the cut is global, not a tenant's.
+async function writePruneJournal(actor: PruneActor, detail: Record<string, unknown>): Promise<void> {
+  await writeAgentAuditLog({
+    agent_id: actor.agentId,
+    entity: 'system',
+    action: 'retention_prune',
+    detail: { trigger: actor.trigger, ...(actor.actorKind ? { actor_kind: actor.actorKind } : {}), ...detail },
+    tenant_id: null,
+  })
+}
+
+// Prune the audit tables to AUDIT_LOG_RETENTION_DAYS and the span table to OTEL_SPAN_RETENTION_DAYS. Called from
+// the daily decay sweep so old entries do not accumulate indefinitely. The deletes, the count of the spans that
+// were never exported and the journal row are ONE transaction: no deletion without its record, no record
+// without the deletion. The row counts come from the statements themselves, not from a second query.
+export async function pruneAuditLogs(): Promise<AuditPruneResult> {
   const retentionDays = Number(getEffectiveSettingValue('AUDIT_LOG_RETENTION_DAYS'))
   const cutoff = Math.floor(Date.now() / 1000) - retentionDays * 86400
-  await dbx.run('DELETE FROM config_change_log WHERE created_at < ?', cutoff)
-  await dbx.run('DELETE FROM idea_status_log WHERE created_at < ?', cutoff)
-  await dbx.run('DELETE FROM store_file_audit WHERE created_at < ?', cutoff)
-  await dbx.run('DELETE FROM agent_audit_log WHERE created_at < ?', cutoff)
-  // hook_audit_log had no automatic sweep at all -- pruneHookAuditLog() only
-  // ever ran when POST /api/hook-audit/prune was called by hand. At ~1074
-  // rows/day (one row per PreToolUse/PostToolUse/PreCompact/Stop verdict)
-  // that leaked unbounded. Reuses the same AUDIT_LOG_RETENTION_DAYS setting
-  // (already 90 days by default) rather than adding a second retention knob.
-  await pruneHookAuditLog(retentionDays * 86400)
   // otel_spans has its own retention knob (OTEL_SPAN_RETENTION_DAYS, default
   // 30) rather than reusing AUDIT_LOG_RETENTION_DAYS -- spans are a much
   // higher-volume, shorter-lived trace record than the audit tables above.
   const otelRetentionDays = Number(getEffectiveSettingValue('OTEL_SPAN_RETENTION_DAYS'))
-  await pruneOtelSpans(otelRetentionDays * 86400000)
+  const exportEnabled = getEffectiveSettingValue('OTEL_EXPORT_ENABLED') === '1'
+  return dbx.tx(async (tx) => {
+    const deleted: Record<string, number> = {}
+    for (const table of ['config_change_log', 'idea_status_log', 'store_file_audit', 'agent_audit_log']) {
+      deleted[table] = (await tx.run(`DELETE FROM ${table} WHERE created_at < ?`, cutoff)).changes
+    }
+    // hook_audit_log had no automatic sweep at all -- pruneHookAuditLog() only
+    // ever ran when POST /api/hook-audit/prune was called by hand. At ~1074
+    // rows/day (one row per PreToolUse/PostToolUse/PreCompact/Stop verdict)
+    // that leaked unbounded. Reuses the same AUDIT_LOG_RETENTION_DAYS setting
+    // (already 90 days by default) rather than adding a second retention knob.
+    deleted.hook_audit_log = await pruneHookAuditLog(retentionDays * 86400, tx)
+    // The count and the delete must use the same cut, so the clock is read once and both get it.
+    const nowMs = Date.now()
+    const otelCutoffMs = nowMs - otelRetentionDays * 86400000
+    const unexportedDeleted = ((await tx.get<{ n: number }>(
+      'SELECT COUNT(*) AS n FROM otel_spans WHERE exported_at IS NULL AND start_ms < ?', otelCutoffMs,
+    ))?.n) ?? 0
+    deleted.otel_spans = await pruneOtelSpans(otelRetentionDays * 86400000, tx, nowMs)
+    const deletedTotal = Object.values(deleted).reduce((a, b) => a + b, 0)
+    const result: AuditPruneResult = {
+      deleted, deletedTotal, cutoffDays: retentionDays, cutoffTs: cutoff,
+      otelCutoffDays: otelRetentionDays, otelCutoffMs, unexportedDeleted, exportEnabled,
+    }
+    await writePruneJournal({ agentId: 'system', trigger: 'sweep' }, {
+      tables: deleted, deleted_total: deletedTotal,
+      cutoff_days: retentionDays, cutoff_ts: cutoff,
+      otel_cutoff_days: otelRetentionDays, otel_cutoff_ms: otelCutoffMs,
+      unexported_deleted: unexportedDeleted, export_enabled: exportEnabled,
+    })
+    return result
+  }, { mode: 'immediate' })
+}
+
+/** The manual prune of the hook audit log (POST /api/hook-audit/prune), journaled with who asked: the delete and
+ *  the row are one transaction. Returns the number of rows removed. */
+export async function pruneHookAuditLogJournaled(olderThanSecs: number, actor: Omit<PruneActor, 'trigger'>): Promise<number> {
+  return dbx.tx(async (tx) => {
+    const removed = await pruneHookAuditLog(olderThanSecs, tx)
+    await writePruneJournal({ ...actor, trigger: 'manual' }, {
+      tables: { hook_audit_log: removed }, deleted_total: removed,
+      cutoff_days: olderThanSecs / 86400, cutoff_ts: Math.floor(Date.now() / 1000) - olderThanSecs,
+    })
+    return removed
+  }, { mode: 'immediate' })
 }
 
 export interface TokenUsagePruneResult {

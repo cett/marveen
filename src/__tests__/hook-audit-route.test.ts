@@ -5,7 +5,7 @@
 
 import { describe, it, expect, beforeEach } from 'vitest'
 import { EventEmitter } from 'node:events'
-import { initDatabase, listHookAuditLog } from '../db.js'
+import { initDatabase, listHookAuditLog, getDb } from '../db.js'
 import { tryHandleHookAudit } from '../web/routes/hook-audit.js'
 import type { RouteContext } from '../web/routes/types.js'
 
@@ -185,21 +185,32 @@ describe('POST /api/hook-audit/prune', () => {
     const handled = await tryHandleHookAudit(ctx)
     expect(handled).toBe(true)
     expect(out.status).toBe(200)
-    expect(out.body).toEqual({ ok: true })
+    expect(out.body).toEqual({ ok: true, deleted: 0 })
   })
 
   it('prunes entries older than older_than_secs', async () => {
     await tryHandleHookAudit(makeCtx('POST', '/api/hook-audit', {
       hook_type: 'PostToolUse', verdict: 'deny', reason: 'will-be-pruned',
     }).ctx)
+    // The window is at least one day, so the row is aged by hand: two days old, one day window.
+    getDb().prepare('UPDATE hook_audit_log SET ts = ts - 172800').run()
 
-    // Negative older_than_secs pushes the cutoff into the future, so the
-    // just-inserted row is guaranteed to be older than it regardless of
-    // second-boundary timing -- avoids a same-second race with `ts >= cutoff`.
-    await tryHandleHookAudit(makeCtx('POST', '/api/hook-audit/prune', { older_than_secs: -10 }).ctx)
+    const { ctx, out } = makeCtx('POST', '/api/hook-audit/prune', { older_than_secs: 86400 })
+    await tryHandleHookAudit(ctx)
+    expect(out.body).toEqual({ ok: true, deleted: 1 })
 
     const rows = await listHookAuditLog()
     expect(rows).toHaveLength(0)
+  })
+
+  it('keeps an entry newer than the window', async () => {
+    await tryHandleHookAudit(makeCtx('POST', '/api/hook-audit', {
+      hook_type: 'PostToolUse', verdict: 'deny', reason: 'stays',
+    }).ctx)
+    const { ctx, out } = makeCtx('POST', '/api/hook-audit/prune', { older_than_secs: 86400 })
+    await tryHandleHookAudit(ctx)
+    expect(out.body).toEqual({ ok: true, deleted: 0 })
+    expect(await listHookAuditLog()).toHaveLength(1)
   })
 })
 

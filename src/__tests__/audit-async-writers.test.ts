@@ -9,6 +9,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type http from 'node:http'
 import { db, dbx } from '../db.js'
+import { sqliteOps } from '../db/facade.js'
 import {
   deleteRbacShadowRowsBefore, insertHookAuditLog, insertRbacShadowRow, logConfigChange, logSkillUsage,
   logStoreFileEvent, pruneAuditLogs, pruneHookAuditLog, pruneOtelSpans, pruneTokenUsage,
@@ -40,6 +41,16 @@ function slowDriver() {
 
 function failingDriver() {
   return vi.spyOn(dbx, 'run').mockRejectedValue(new Error('driver down'))
+}
+
+/** The same late answer one level down: the driver both `dbx.run` and a transaction handle (`tx.run`) end in.
+ *  The sweep runs inside a transaction, whose statements do not go through `dbx.run`. */
+function slowDriverBelowFacade() {
+  const real = sqliteOps.run.bind(sqliteOps)
+  return vi.spyOn(sqliteOps, 'run').mockImplementation(async (sql: string, ...params: unknown[]) => {
+    await sleep(15)
+    return real(sql, ...params)
+  })
 }
 
 const NOW = Math.floor(Date.now() / 1000)
@@ -112,11 +123,14 @@ describe('audit prunes: every statement is awaited (slow driver)', () => {
     db.prepare("INSERT INTO agent_audit_log (agent_id, entity, action, created_at) VALUES ('a', 'agent', 'create', ?)").run(OLD)
     db.prepare("INSERT INTO hook_audit_log (ts, hook_type, verdict) VALUES (?, 'Stop', 'allow')").run(OLD)
     db.prepare("INSERT INTO otel_spans (trace_id, span_id, agent_id, operation, start_ms, end_ms, status) VALUES ('t', 's', 'a', 'tool.x', ?, ?, 'ok')").run(OLD * 1000, OLD * 1000 + 5)
-    slowDriver()
+    slowDriverBelowFacade()
     await pruneAuditLogs()
-    for (const table of ['config_change_log', 'idea_status_log', 'store_file_audit', 'agent_audit_log', 'hook_audit_log', 'otel_spans']) {
+    for (const table of ['config_change_log', 'idea_status_log', 'store_file_audit', 'hook_audit_log', 'otel_spans']) {
       expect(count(`SELECT COUNT(*) AS n FROM ${table}`), table).toBe(0)
     }
+    // The old agent_audit_log row is gone; what is left is the sweep's own journal row, written after the deletes.
+    expect(count('SELECT COUNT(*) AS n FROM agent_audit_log WHERE action = \'create\''), 'old row').toBe(0)
+    expect(count('SELECT COUNT(*) AS n FROM agent_audit_log WHERE action = \'retention_prune\''), 'journal row').toBe(1)
   })
 
   it('pruneHookAuditLog and pruneOtelSpans', async () => {
@@ -328,8 +342,9 @@ describe('queryAuditLog: the total of every source is a number (a lost await wou
 describe('prune statements: a failure of any one statement reaches the caller', () => {
   /** The driver fails only the statement that starts with `prefix`; every other statement runs. */
   function failOnly(prefix: string) {
-    const real = dbx.run.bind(dbx)
-    return vi.spyOn(dbx, 'run').mockImplementation(async (sql: string, ...params: unknown[]) => {
+    // One level below the facade, so a statement inside a transaction (the sweep) is reached as well.
+    const real = sqliteOps.run.bind(sqliteOps)
+    return vi.spyOn(sqliteOps, 'run').mockImplementation(async (sql: string, ...params: unknown[]) => {
       if (sql.trimStart().startsWith(prefix)) throw new Error('statement down')
       return real(sql, ...params)
     })
