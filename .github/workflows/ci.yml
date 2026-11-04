@@ -275,6 +275,7 @@ jobs:
         run: |
           npm ci --prefix tools/eslint --ignore-scripts
           node tools/eslint/check-fixture.mjs
+          node tools/eslint/tests-ratchet-selftest.mjs
 
       - name: Db codemod self-test (fixture, FAILS the build)
         # tools/codemod moves a src/db module onto the async facade. It has its own toolchain (ts-morph with its
@@ -296,13 +297,14 @@ jobs:
           node tools/eslint/summarize.mjs "$RUNNER_TEMP/eslint-async.json" 15
           exit $status
 
-      - name: Async lint report for the tests (report only)
-        # The test files are rewritten module by module with the waves (they stay warnings, ESLINT_ASYNC_TESTS=1),
-        # so this step never fails the build; it keeps the count in the log.
-        continue-on-error: true
+      - name: Async lint ratchet for the tests (FAILS the build on a new finding)
+        # The test files are still warnings (ESLINT_ASYNC_TESTS=1), but a finding above tools/eslint/tests-baseline.json
+        # fails the build. no-floating-promises and await-thenable are at zero in the tests: a new one is a dropped
+        # `await`, which leaves a negative assertion green on a run that has not finished. The summary is printed first.
         run: |
           ESLINT_ASYNC_TESTS=1 tools/eslint/node_modules/.bin/eslint -c tools/eslint/eslint.config.mjs -f json -o "$RUNNER_TEMP/eslint-async-tests.json" src || true
           node tools/eslint/summarize.mjs "$RUNNER_TEMP/eslint-async-tests.json" 15
+          node tools/eslint/tests-ratchet.mjs "$RUNNER_TEMP/eslint-async-tests.json"
 
       - name: Shell tests
         # #813: scripts/__tests__/*.test.sh (channels.sh / vault-inject /
