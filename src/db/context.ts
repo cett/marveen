@@ -123,6 +123,29 @@ export function currentTraceColumns(): [string | null, string | null] {
   return t ? [t.traceId, t.spanId] : [null, null]
 }
 
+/** The longest trace id a caller-supplied value may have: a session id or a UUID is 36 characters, a hex id 32. */
+const MAX_CALLER_TRACE_ID_LENGTH = 128
+/** The characters of a session id, a UUID or a hex id. Anything else (a space, a quote, a control character) is not an id. */
+const CALLER_TRACE_ID_PATTERN = /^[A-Za-z0-9._:-]+$/
+
+/**
+ * A trace id that came from OUTSIDE the server (a request body, a hook script) in the form an audit row may store, or
+ * null when it must not be stored as given.
+ *
+ * The rule (D2 of the audit/OTel plan): a `w3c-` value in an audit column means "the trace of a traceparent that came
+ * with credentials", and only the server's own context (currentTraceColumns) may say that. A caller that writes
+ * `w3c-<hex>` itself would place its row into a trace it has no claim to, so the value is dropped, never hashed or
+ * rewritten; the writer then falls back to the server's own trace. A non-string, an empty or oversized string and
+ * anything outside the id alphabet are dropped the same way. The match on the prefix is case-insensitive.
+ */
+export function callerTraceId(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  if (value.length === 0 || value.length > MAX_CALLER_TRACE_ID_LENGTH) return null
+  if (!CALLER_TRACE_ID_PATTERN.test(value)) return null
+  if (value.slice(0, 4).toLowerCase() === 'w3c-') return null
+  return value
+}
+
 /** The context of the running call, or undefined when none was set. */
 export function currentDbContext(): DbContext | undefined {
   return store.getStore()
