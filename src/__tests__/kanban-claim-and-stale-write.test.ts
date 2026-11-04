@@ -153,6 +153,33 @@ describe('PUT /api/kanban/:id with expected_updated_at', () => {
     expect(await updateKanbanCard(CARD, { title: 'Fresh' }, undefined, { expectedUpdatedAt: v })).toBe(true)
   })
 
+  // The stale check at the top of updateKanbanCard is not only a fast path in front of the guarded UPDATE: it also
+  // runs BEFORE the field validation, so a stale write is refused (false) even when its fields are invalid. Without it
+  // the same call would throw on the invalid due_date. The UPDATE's own condition cannot give this answer.
+  it('updateKanbanCard answers false, and does not throw, for a stale version with an invalid due_date; a fresh version throws', async () => {
+    const before = row(CARD)
+    const invalid = { title: 'Never written', due_date: 'not-a-date' as unknown as number }
+    expect(await updateKanbanCard(CARD, invalid, undefined, { expectedUpdatedAt: before.updated_at - 1 })).toBe(false)
+    // the same fields on the CURRENT version are what throws: the due_date really is invalid at this layer
+    await expect(updateKanbanCard(CARD, invalid, undefined, { expectedUpdatedAt: before.updated_at })).rejects.toThrow(/Invalid due_date/)
+    expect(row(CARD)).toEqual(before)
+  })
+
+  // The route validates due_date itself before it calls updateKanbanCard, so there the invalid value is a 400 whether the
+  // version is stale or not (it never reaches the db layer); a stale version with a VALID due_date is the 409.
+  it('PUT: a stale version with an invalid due_date is the route\'s 400 (not a 409, not a 500) and writes nothing; with a valid one it is the 409', async () => {
+    const v = row(CARD).updated_at
+    getDb().prepare('UPDATE kanban_cards SET updated_at = ? WHERE id = ?').run(v + 5, CARD)
+    const before = row(CARD)
+    const bad = await callAs(await asAdmin(), 'PUT', `/api/kanban/${CARD}`, { title: 'Lost update', due_date: 'not-a-date', expected_updated_at: v })
+    expect(bad.status).toBe(400)
+    expect(bad.body).toMatchObject({ error: 'invalid_value', field: 'due_date' })
+    const good = await callAs(await asAdmin(), 'PUT', `/api/kanban/${CARD}`, { title: 'Lost update', due_date: '2026-12-31', expected_updated_at: v })
+    expect(good.status).toBe(409)
+    expect(good.body).toMatchObject({ error: 'stale_revision', current_updated_at: v + 5 })
+    expect(row(CARD)).toEqual(before)
+  })
+
   // PostgreSQL cannot type a bare `? IS NULL` parameter, so the guard is in the SQL only when the caller asks for it.
   describe('the guard is in the UPDATE only when expected_updated_at is given', () => {
     // The UPDATE of the card row, with the parameters it ran with.
