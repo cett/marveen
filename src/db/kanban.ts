@@ -356,11 +356,11 @@ export async function updateKanbanCard(
   // The row update and the depth cascade over its subtree are one transaction (they ran without a yield before).
   const ok = await dbx.tx(async (tx) => {
     const updated = (await tx.run(`UPDATE kanban_cards SET title=?, description=?, status=?, assignee=?, priority=?, project=?, parent_id=?, depth=?, due_date=?, sort_order=?, updated_at=?, archived_at=?, blocked_by=?, blocked_reason=?, waiting_for=?, resolved_by=?,
-     dispatched_at=CASE WHEN ? THEN NULL ELSE dispatched_at END
+     dispatched_at=${kanbanWriteClearsDispatch(f.status) ? 'NULL' : 'dispatched_at'}
      WHERE id=?${guarded ? ' AND updated_at=?' : ''}`, f.title, f.description, f.status, f.assignee, f.priority, f.project, f.parent_id, f.depth, f.due_date, f.sort_order, f.updated_at, f.archived_at,
     f.blocked_by, f.blocked_reason, f.waiting_for, f.resolved_by,
-    // In SQL and not as a value read earlier: a stamp set between the read and the write must not be overwritten.
-    kanbanWriteClearsDispatch(f.status) ? 1 : 0,
+    // The clear is part of the SQL text (`dispatched_at=NULL` or the column itself), not a value read earlier and not
+    // a bare parameter in a CASE (untyped on PostgreSQL): a stamp set between the read and the write is not overwritten.
     id,
     // Stale-write guard: with expectedUpdatedAt the UPDATE matches only the version the caller read. The condition is
     // in the SQL only then (a bare `? IS NULL` parameter has no type on PostgreSQL and would fail every plain PUT).

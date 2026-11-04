@@ -174,7 +174,18 @@ describe('PUT /api/kanban/:id with expected_updated_at', () => {
       expect(u.sql).not.toMatch(/IS NULL OR updated_at/)
       expect(u.sql).not.toMatch(/\?\s+IS NULL/)
       expect(u.sql).not.toMatch(/AND updated_at=\?/)
+      expect(u.sql).not.toMatch(/CASE\s+WHEN\s+\?/)
       expect((u.sql.match(/\?/g) ?? []).length).toBe(u.params.length)
+    })
+
+    it('the dispatch stamp is cleared in the SQL text, not by a CASE parameter: NULL when the write leaves in_progress, the column itself otherwise', async () => {
+      // A title-only write keeps the stamp; a write that moves the card out of in_progress clears it.
+      getDb().prepare("UPDATE kanban_cards SET status = 'in_progress', dispatched_at = 123 WHERE id = ?").run(CARD)
+      const keep = await runUpdate()
+      expect(keep.sql).toMatch(/dispatched_at=dispatched_at/)
+      expect((getDb().prepare('SELECT dispatched_at FROM kanban_cards WHERE id = ?').get(CARD) as { dispatched_at: number | null }).dispatched_at).toBe(123)
+      expect(await updateKanbanCard(CARD, { status: 'done' })).toBe(true)
+      expect((getDb().prepare('SELECT dispatched_at FROM kanban_cards WHERE id = ?').get(CARD) as { dispatched_at: number | null }).dispatched_at).toBeNull()
     })
 
     it('a guarded write adds exactly AND updated_at=? and the expected version is its last parameter', async () => {
