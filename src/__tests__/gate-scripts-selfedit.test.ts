@@ -848,6 +848,36 @@ describe('the gate neighbourhood (agent-api.sh, sync-hooks.sh, doctor.sh, gate-o
     expect(bash(`ls ${dir}/`)).toEqual({ deny: false })
     expect(bash(`rm -rf ${dir}/`, wt)).toEqual({ deny: false })
   })
+  // The directories above the protected sources are LOOSE ancestors: only a command that moves, removes, re-links or
+  // rewrites them is denied. A strict ancestor (the scripts/ rule) would also refuse these version-control reads and
+  // staging commands, which the day-to-day work in the install needs.
+  it.each(['src', 'src/web', 'src/security'])('the loose ancestor %s keeps git add / diff / log / status working', (dir) => {
+    for (const command of [`git add ${dir}`, `git diff ${dir}`, `git log --oneline -- ${dir}`, `git status ${dir}`]) {
+      expect({ command, r: bash(command) }).toEqual({ command, r: { deny: false } })
+    }
+  })
+  it.each(['src/web/other.ts', 'src/security/other.ts', 'src/web/routes/approvals.ts'])('control: a plain copy onto the neighbour %s inside a loose ancestor is still allowed', (rel) => {
+    expect(bash(`cp /tmp/x ${rel}`)).toEqual({ deny: false })
+    expect(bash(`echo x > ${rel}`)).toEqual({ deny: false })
+  })
+  it('the refusal text names every file of the gate neighbourhood, so the sub-agent learns what is protected', () => {
+    const hook = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'scripts', 'self-pace-gate.mjs')
+    const installRoot = dirname(dirname(hook))
+    // Any protected path yields the same text; the hook runs against the install it lives in.
+    const out = spawnSync(process.execPath, [hook], {
+      input: JSON.stringify({ tool_name: 'Write', tool_input: { file_path: join(installRoot, 'scripts', 'doctor.sh'), content: 'x' }, cwd: installRoot }),
+      encoding: 'utf-8',
+    })
+    const reason: string = JSON.parse(out.stdout).hookSpecificOutput.permissionDecisionReason
+    // The list is "scripts/agent-api.sh, sync-hooks.sh, ... secret-gate.ts, src/web/... es src/security/secret-gate.ts fajlokat":
+    // the scripts/ ones by basename after the first full path, the two sources by path. Read the list itself, so
+    // src/security/secret-gate.ts cannot stand in for a dropped scripts/secret-gate.ts.
+    const m = /scripts\/agent-api\.sh([^:]*?) fajlokat/.exec(reason)
+    expect(m).not.toBeNull()
+    const named = ('scripts/agent-api.sh' + (m as RegExpExecArray)[1]).split(/, | es /).map((x) => x.trim())
+    const expected = ADJACENT_FILES.map((rel, i) => (rel.startsWith('scripts/') && i > 0 ? rel.slice('scripts/'.length) : rel))
+    expect(named).toEqual(expected)
+  })
   it('a plain run of the API wrapper and of the checkers is not a write', () => {
     for (const command of ['bash scripts/agent-api.sh --agent zack GET /api/agents', 'bash scripts/doctor.sh', 'python3 scripts/gate-onfailure-check.py', 'bash scripts/sync-hooks.sh --dry-run']) {
       expect({ command, r: bash(command) }).toEqual({ command, r: { deny: false } })
