@@ -5,7 +5,7 @@ import {
   deleteKanbanCard, moveKanbanCard, archiveKanbanCard, unarchiveKanbanCard,
   getKanbanComments, addKanbanComment, getKanbanCardEvents, listKanbanProjects,
   getKanbanCard, getChildCards, getSubtree, reparentKanbanCard, propagateStatus,
-  createAgentMessage, markKanbanCardDispatched, releaseKanbanCardDispatch,
+  createAgentMessage, markKanbanCardDispatched, releaseKanbanCardDispatch, claimKanbanCard,
   getKanbanSeqByIdPrefix,
   listLabels, getLabel, createLabel, updateLabel, deleteLabel,
   addLabelToCard, removeLabelFromCard, getLabelsForAllCards, getLabelsForCard,
@@ -448,12 +448,25 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // The id is always generated here: an `id` in the body is ignored. A caller-picked id could take a
     // route word (`labels`, `search`, ...) and shadow a static route, and an id that exists in another
     // tenant would answer differently from one that does not.
-    const id = randomUUID().slice(0, 8)
-    try {
-      await createKanbanCard({ ...data, id, tenant_id: effectiveTenantId ?? 'default' })
-    } catch (err) {
-      logger.error({ err }, 'Failed to create kanban card')
-      json(res, { error: 'internal_error', hint: 'Failed to create card' }, 500)
+    // An id that is already taken (a clash of two 8-character ids) is a new draw, three times at most, then a 409;
+    // any other failure is a 500.
+    let id = ''
+    let idTaken = false
+    for (let attempt = 0; attempt < 3; attempt++) {
+      id = randomUUID().slice(0, 8)
+      try {
+        await createKanbanCard({ ...data, id, tenant_id: effectiveTenantId ?? 'default' })
+        idTaken = false
+        break
+      } catch (err) {
+        if (/UNIQUE constraint failed: kanban_cards\.id/i.test(String((err as Error)?.message))) { idTaken = true; continue }
+        logger.error({ err }, 'Failed to create kanban card')
+        json(res, { error: 'internal_error', hint: 'Failed to create card' }, 500)
+        return true
+      }
+    }
+    if (idTaken) {
+      json(res, { error: 'conflict', reason: 'id_taken', hint: 'Could not allocate a free card id; retry' }, 409)
       return true
     }
     try {
@@ -490,10 +503,35 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
         return true
       }
     }
+    // Optional stale-write guard: expected_updated_at is the updated_at the caller read; the write is refused (409)
+    // when the card has changed since. It is not a column and is not written. Absent = the plain update.
+    let expectedUpdatedAt: number | undefined
+    if ('expected_updated_at' in data) {
+      const v = data.expected_updated_at
+      delete data.expected_updated_at
+      if (v !== null && v !== undefined) {
+        if (typeof v !== 'number' || !Number.isInteger(v)) {
+          json(res, { error: 'invalid_value', field: 'expected_updated_at', hint: 'expected_updated_at must be the integer updated_at the card had when it was read' }, 400)
+          return true
+        }
+        expectedUpdatedAt = v
+      }
+    }
     // updateKanbanCard writes the audit row itself, attributed to the caller.
-    if (await updateKanbanCard(id, data, kanbanAuditActor(ctx))) {
+    const updated = expectedUpdatedAt !== undefined
+      ? await updateKanbanCard(id, data, kanbanAuditActor(ctx), { expectedUpdatedAt })
+      : await updateKanbanCard(id, data, kanbanAuditActor(ctx))
+    if (updated) {
       json(res, { ok: true })
       return true
+    }
+    if (expectedUpdatedAt !== undefined) {
+      // No row matched: a missing card is a 404, a card that moved on since the caller read it is a 409.
+      const current = await getKanbanCard(id)
+      if (current && current.updated_at !== expectedUpdatedAt) {
+        json(res, { error: 'stale_revision', current_updated_at: current.updated_at, hint: 'The card changed since you read it; read it again and retry' }, 409)
+        return true
+      }
     }
     json(res, { error: 'not_found', hint: 'Kártya nem található' }, 404)
     return true
@@ -509,6 +547,45 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     await revertIdeaFromKanban(id)
     if (await deleteKanbanCard(id)) { json(res, { ok: true }); return true }
     json(res, { error: 'not_found', hint: 'Kártya nem található' }, 404)
+    return true
+  }
+
+  // POST /api/kanban/:id/claim -- take the card as its assignee, atomically. No body. The claimant is the agent of the
+  // token, else the signed-in user, else the X-Agent-Id (only a claim, audited as self_declared). 409 when another
+  // assignee already holds the card; claiming one's own card again is a 200. Each claim is written to the audit log.
+  const kanbanClaimMatch = path.match(/^\/api\/kanban\/([^/]+)\/claim$/)
+  if (kanbanClaimMatch && method === 'POST') {
+    const id = decodeURIComponent(kanbanClaimMatch[1])
+    if (!isAdmin && effectiveTenantId !== null) {
+      const ownedCard = await scopeToTenant(effectiveTenantId).kanban.get(id)
+      if (!ownedCard) { json(res, { error: 'not_found', hint: 'Kártya nem található' }, 404); return true }
+    }
+    const raw = (await readBody(req)).toString()
+    const claimBody = raw.trim() === '' ? {} : JSON.parse(raw)
+    if (claimBody === null || typeof claimBody !== 'object' || Array.isArray(claimBody)) {
+      json(res, { error: 'invalid_value', field: 'body', hint: 'The body must be a JSON object' }, 400)
+      return true
+    }
+    // The claimant is who the caller IS (token agent, signed-in user), or the X-Agent-Id it declares (recorded as
+    // self_declared, like every card edit). A name in the body is not an identity and is not accepted.
+    const actor = kanbanAuditActor(ctx)
+    if (Object.keys(claimBody).length > 0) {
+      json(res, { error: 'invalid_value', field: Object.keys(claimBody)[0], hint: 'The claim takes no body; the claimant is the caller' }, 400)
+      return true
+    }
+    if (!actor) { json(res, { error: 'required', field: 'agent', hint: 'Authenticate as an agent or send X-Agent-Id' }, 400); return true }
+    const claimant = actor.id
+    const outcome = await claimKanbanCard(id, claimant)
+    if (outcome.status === 'not_found') { json(res, { error: 'not_found', hint: 'Kártya nem található' }, 404); return true }
+    if (outcome.status === 'taken') {
+      json(res, { error: 'conflict', reason: 'already_claimed', assignee: outcome.assignee, hint: 'Another agent holds this card' }, 409)
+      return true
+    }
+    try {
+      // The same audit trail as a card edit: who claimed, and whether that identity was proven or declared.
+      await writeAgentAuditLog({ agent_id: claimant, entity: 'kanban', action: 'update', entity_id: id, detail: { op: 'claim', actor_source: actor.source } })
+    } catch { /* audit failure must not abort the claim */ }
+    json(res, { ok: true, id, assignee: claimant })
     return true
   }
 

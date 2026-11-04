@@ -316,9 +316,19 @@ export function kanbanWriteClearsDispatch(nextStatus: string): boolean {
   return nextStatus !== 'in_progress'
 }
 
-export async function updateKanbanCard(id: string, fields: Partial<Omit<KanbanCard, 'id' | 'created_at'>>, actor?: KanbanAuditActor): Promise<boolean> {
+/**
+ * Full-card update. false = no row matched: the card does not exist, a parent change was refused, OR (with
+ * opts.expectedUpdatedAt) the card changed since the caller read it; the route tells the cases apart with a re-read.
+ */
+export async function updateKanbanCard(
+  id: string,
+  fields: Partial<Omit<KanbanCard, 'id' | 'created_at'>>,
+  actor?: KanbanAuditActor,
+  opts?: { expectedUpdatedAt?: number },
+): Promise<boolean> {
   const card = await getKanbanCard(id)
   if (!card) return false
+  if (opts?.expectedUpdatedAt !== undefined && card.updated_at !== opts.expectedUpdatedAt) return false
   if ('due_date' in fields) {
     const due = parseKanbanDueDate(fields.due_date)
     if (due === undefined) throw new Error('Invalid due_date: an integer epoch in seconds, a YYYY-MM-DD date or null')
@@ -346,11 +356,13 @@ export async function updateKanbanCard(id: string, fields: Partial<Omit<KanbanCa
   const ok = await dbx.tx(async (tx) => {
     const updated = (await tx.run(`UPDATE kanban_cards SET title=?, description=?, status=?, assignee=?, priority=?, project=?, parent_id=?, depth=?, due_date=?, sort_order=?, updated_at=?, archived_at=?, blocked_by=?, blocked_reason=?, waiting_for=?, resolved_by=?,
      dispatched_at=CASE WHEN ? THEN NULL ELSE dispatched_at END
-     WHERE id=?`, f.title, f.description, f.status, f.assignee, f.priority, f.project, f.parent_id, f.depth, f.due_date, f.sort_order, f.updated_at, f.archived_at,
+     WHERE id=? AND (? IS NULL OR updated_at=?)`, f.title, f.description, f.status, f.assignee, f.priority, f.project, f.parent_id, f.depth, f.due_date, f.sort_order, f.updated_at, f.archived_at,
     f.blocked_by, f.blocked_reason, f.waiting_for, f.resolved_by,
     // In SQL and not as a value read earlier: a stamp set between the read and the write must not be overwritten.
     kanbanWriteClearsDispatch(f.status) ? 1 : 0,
     id,
+    // Stale-write guard: with expectedUpdatedAt the UPDATE matches only the version the caller read.
+    opts?.expectedUpdatedAt ?? null, opts?.expectedUpdatedAt ?? null,
     )).changes > 0
     if (updated && parentChanging) await cascadeDepth(id, newDepth, tx)
     return updated
@@ -554,6 +566,29 @@ export async function markKanbanCardDispatched(id: string): Promise<boolean> {
 // Gives the guard back when the wake-up could not be sent, so the next move to in_progress tries again.
 export async function releaseKanbanCardDispatch(id: string): Promise<void> {
   await dbx.run('UPDATE kanban_cards SET dispatched_at=NULL WHERE id=?', id)
+}
+
+export type KanbanClaimOutcome =
+  | { status: 'claimed' }
+  | { status: 'taken'; assignee: string }
+  | { status: 'not_found' }
+
+/**
+ * Atomic claim: ONE conditional UPDATE sets the assignee, and only when the card has none or already has this
+ * agent, so two agents that read the card as unassigned at the same moment cannot both take it (exactly one UPDATE
+ * changes a row). Claiming a card the agent already holds succeeds again (idempotent). An archived card cannot be
+ * claimed. 'taken' and 'not_found' are told apart by a read AFTER the refused write; only the answer depends on it.
+ */
+export async function claimKanbanCard(id: string, agent: string): Promise<KanbanClaimOutcome> {
+  const now = Math.floor(Date.now() / 1000)
+  const res = await dbx.run(
+    "UPDATE kanban_cards SET assignee=?, updated_at=? WHERE id=? AND archived_at IS NULL AND (assignee IS NULL OR assignee='' OR assignee=?)",
+    agent, now, id, agent,
+  )
+  if (res.changes > 0) return { status: 'claimed' }
+  const card = await getKanbanCard(id)
+  if (!card || card.archived_at) return { status: 'not_found' }
+  return { status: 'taken', assignee: card.assignee ?? '' }
 }
 
 export async function archiveKanbanCard(id: string): Promise<boolean> {
