@@ -301,6 +301,19 @@ components:
           type: boolean
           enum: [true]
 
+    KanbanClaimResponse:
+      type: object
+      required: [ok, id, assignee]
+      properties:
+        ok:
+          type: boolean
+          enum: [true]
+        id:
+          type: string
+        assignee:
+          type: string
+          description: The claimant, now the card's assignee
+
     ChannelBinding:
       type: object
       required: [agent_id, channel, external_id, tenant_id, created_by, created_at, updated_at]
@@ -2054,6 +2067,13 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "409":
+          description: >-
+            No free card id could be allocated after three attempts (`conflict`, `reason` = `id_taken`); retry.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /kanban/{id}:
     parameters:
@@ -2087,6 +2107,10 @@ paths:
       tags: [kanban]
       operationId: updateKanbanCard
       summary: Update kanban card fields
+      description: >-
+        With `expected_updated_at` the update is a compare-and-set: it is written only if the card's `updated_at`
+        is still that value. If the card changed since, nothing is written and the answer is a 409
+        `stale_revision` carrying `current_updated_at`. Without it the update is unconditional.
       requestBody:
         required: true
         content:
@@ -2094,6 +2118,11 @@ paths:
             schema:
               type: object
               properties:
+                expected_updated_at:
+                  type: [integer, "null"]
+                  description: >-
+                    The `updated_at` the card had when the caller read it. Not a column and never written.
+                    Absent or null = unconditional update. A non-integer value is a 400 (`invalid_value`).
                 title:
                   type: string
                 description:
@@ -2121,8 +2150,22 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/OkResponse"
+        "400":
+          description: Validation error (`invalid_value`, e.g. a non-integer `expected_updated_at`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "404":
           description: Card not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >-
+            The card changed after the caller read it (`stale_revision`); the body carries `current_updated_at`.
+            Only possible with `expected_updated_at`.
           content:
             application/json:
               schema:
@@ -2140,6 +2183,51 @@ paths:
                 $ref: "#/components/schemas/OkResponse"
         "404":
           description: Card not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /kanban/{id}/claim:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      tags: [kanban]
+      operationId: claimKanbanCard
+      summary: Claim a kanban card as its assignee (atomic)
+      description: >-
+        Takes the card as the caller, in one conditional write, so two agents cannot both take the same card.
+        The claimant is the agent of the token, else the signed-in user, else the `X-Agent-Id` header (a
+        declared identity, recorded as such in the audit log). The request takes no body; a body key is a 400
+        (`invalid_value`). Claiming a card the caller already holds is a 200. A card held by another assignee
+        answers 409 `conflict` with `reason` = `already_claimed` and the current `assignee`. Each claim is
+        written to the audit log.
+      responses:
+        "200":
+          description: Claimed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KanbanClaimResponse"
+        "400":
+          description: >-
+            A body was sent (`invalid_value`), or no claimant could be determined (`required`, `field` = `agent`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Card not found, or a card of another tenant for a non-admin caller
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Another assignee already holds the card (`conflict`, `reason` = `already_claimed`, `assignee`)
           content:
             application/json:
               schema:
