@@ -2939,7 +2939,11 @@ paths:
       tags: [blackboard]
       operationId: updateBlackboardEntry
       summary: Partially update a blackboard row by id
-      description: Admin only (no per-role permission entry maps to this path -- the RBAC gate falls back to admin:all).
+      description: >-
+        Admin only (no per-role permission entry maps to this path -- the RBAC gate falls back to admin:all).
+        The write is also scoped to the caller, in the UPDATE itself: an admin may write any row, a fleet
+        agent only the row of its own agent, any other role only a row of its own tenant (never a shared
+        `_multi_` row). A row outside that scope answers 404, like a missing id, so ids cannot be probed.
       requestBody:
         required: true
         content:
@@ -2981,7 +2985,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "404":
-          description: Row not found
+          description: Row not found, or outside the caller's write scope (tenant / owner agent)
           content:
             application/json:
               schema:

@@ -4,6 +4,8 @@ import {
   createTenant,
   resolveAgentTenant,
   upsertBlackboard,
+  updateBlackboardRowById,
+  getBlackboardRowById,
   findBlackboardRowByAgent,
   listBlackboardHistory,
   setTenantAgentAvailability,
@@ -102,5 +104,49 @@ describe('listBlackboardHistory: tenant filter', () => {
 
     const all = await listBlackboardHistory({})
     expect(all).toHaveLength(2)
+  })
+})
+
+describe('updateBlackboardRowById: write scope is part of the UPDATE', () => {
+  const FIELDS = { status: 'done', summary: 'patched', task_ref: null, blocked_by: null, blocked_reason: null }
+
+  it('a tenant scope writes a row of that tenant and reports it', async () => {
+    await setTenantAgentAvailability('tenant-a', 'agent-a', true)
+    const row = await upsertBlackboard('agent-a', { status: 'active', summary: 'mine' })
+    expect(await updateBlackboardRowById(row.id, FIELDS, { tenantId: 'tenant-a' })).toBe(true)
+    expect((await getBlackboardRowById(row.id))!.summary).toBe('patched')
+  })
+
+  it('a tenant scope does not write a row of another tenant', async () => {
+    await setTenantAgentAvailability('tenant-b', 'agent-e', true)
+    const row = await upsertBlackboard('agent-e', { status: 'active', summary: 'theirs' })
+    expect(await updateBlackboardRowById(row.id, FIELDS, { tenantId: 'tenant-a' })).toBe(false)
+    const after = (await getBlackboardRowById(row.id))!
+    expect(after.summary).toBe('theirs')
+    expect(after.status).toBe('active')
+  })
+
+  it('a tenant scope never writes a shared (_multi_) row', async () => {
+    await setTenantAgentAvailability('tenant-a', 'agent-b', true)
+    await setTenantAgentAvailability('tenant-b', 'agent-b', true)
+    const row = await upsertBlackboard('agent-b', { status: 'active', summary: 'shared' })
+    expect(await updateBlackboardRowById(row.id, FIELDS, { tenantId: 'tenant-a' })).toBe(false)
+    expect((await getBlackboardRowById(row.id))!.summary).toBe('shared')
+  })
+
+  it('an owner scope writes only that agent\'s row', async () => {
+    const mine = await upsertBlackboard('agent-x', { status: 'active', summary: 'mine' })
+    const other = await upsertBlackboard('agent-y', { status: 'active', summary: 'other' })
+    expect(await updateBlackboardRowById(other.id, FIELDS, { ownerAgentId: 'agent-x' })).toBe(false)
+    expect((await getBlackboardRowById(other.id))!.summary).toBe('other')
+    expect(await updateBlackboardRowById(mine.id, FIELDS, { ownerAgentId: 'agent-x' })).toBe(true)
+    expect((await getBlackboardRowById(mine.id))!.summary).toBe('patched')
+  })
+
+  it('without a scope (admin) any row is written; an unknown id reports false', async () => {
+    await setTenantAgentAvailability('tenant-b', 'agent-e', true)
+    const row = await upsertBlackboard('agent-e', { status: 'active', summary: 'theirs' })
+    expect(await updateBlackboardRowById(row.id, FIELDS)).toBe(true)
+    expect(await updateBlackboardRowById('nope0000', FIELDS)).toBe(false)
   })
 })
