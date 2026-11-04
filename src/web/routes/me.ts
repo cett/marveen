@@ -34,15 +34,15 @@ export async function tryHandleMe(ctx: RouteContext): Promise<boolean> {
     return true
   }
 
-  const user = getDashboardUser(auth.user)
+  const user = await getDashboardUser(auth.user)
   if (!user) {
     json(res, { error: 'not_found', field: 'user' }, 404)
     return true
   }
 
   if (method === 'GET') {
-    const tenant = user.tenant_id ? getTenant(user.tenant_id) : undefined
-    const sessions = listUserSessions(user.id)
+    const tenant = user.tenant_id ? await getTenant(user.tenant_id) : undefined
+    const sessions = await listUserSessions(user.id)
     json(res, {
       username: user.username,
       display_name: user.display_name ?? null,
@@ -98,11 +98,13 @@ export async function tryHandleMe(ctx: RouteContext): Promise<boolean> {
       return true
     }
 
-    const updated = adminPatchDashboardUser(user.id, patch)
-    if (!updated) {
+    // The patch holds display_name / email only, so it never carries the last-admin condition: 'last_admin' cannot come back.
+    const outcome = await adminPatchDashboardUser(user.id, patch)
+    if (outcome.status !== 'updated') {
       json(res, { error: 'not_found', field: 'user' }, 404)
       return true
     }
+    const updated = outcome.user
 
     json(res, {
       username: updated.username,

@@ -18,6 +18,7 @@ vi.mock('../web/password-hash.js', () => ({
   hashPassword: vi.fn().mockResolvedValue('$hash$'),
 }))
 
+vi.mock('../web/vault.js', () => ({ secretsExistForTenant: vi.fn().mockReturnValue(false) }))
 vi.mock('../db.js', () => ({
   getDb: vi.fn().mockReturnValue({
     prepare: vi.fn().mockReturnValue({
@@ -39,14 +40,15 @@ vi.mock('../db.js', () => ({
   listPartnerSenders: vi.fn(),
   createPartnerSender: vi.fn(),
   disablePartnerSender: vi.fn(),
-  listTenantAgentAvailability: vi.fn().mockReturnValue([]),
+  listTenantAgentAvailability: vi.fn().mockResolvedValue([]),
   setTenantAgentAvailability: vi.fn(),
   syncVecMemoryDelete: vi.fn(),
+  writeAdminAuditLog: vi.fn().mockResolvedValue(undefined),
 }))
 
 vi.mock('../web/auth-device-keys.js', () => ({
-  listDeviceKeys: vi.fn().mockReturnValue([]),
-  assignDeviceKeyTenant: vi.fn().mockReturnValue(true),
+  listDeviceKeys: vi.fn().mockResolvedValue([]),
+  assignDeviceKeyTenant: vi.fn().mockResolvedValue(true),
 }))
 
 vi.mock('../prompt-safety.js', () => ({
@@ -68,6 +70,7 @@ vi.mock('../logger.js', () => ({
 }))
 
 import * as db from '../db.js'
+import { secretsExistForTenant } from '../web/vault.js'
 import { tryHandleAdminB2b } from '../web/routes/admin-b2b.js'
 import { normalizePath } from '../web/routes/versioning.js'
 
@@ -123,7 +126,7 @@ describe('DELETE /api/v1/admin/tenants/:id', () => {
   })
 
   it('returns 404 when tenant does not exist', async () => {
-    vi.mocked(db.getTenant).mockReturnValue(undefined)
+    vi.mocked(db.getTenant).mockResolvedValue(undefined)
     const { ctx, out } = makeAdminCtx('DELETE', '/api/v1/admin/tenants/no-such-tenant')
     await tryHandleAdminB2b(ctx)
     expect(out.status).toBe(404)
@@ -131,9 +134,20 @@ describe('DELETE /api/v1/admin/tenants/:id', () => {
     expect(vi.mocked(db.deleteTenant)).not.toHaveBeenCalled()
   })
 
+  it('repeats the delete for an id with no tenant row when the vault still holds its secrets (the earlier vault write failed)', async () => {
+    vi.mocked(db.getTenant).mockResolvedValue(undefined)
+    vi.mocked(secretsExistForTenant).mockReturnValueOnce(true)
+    vi.mocked(db.deleteTenant).mockResolvedValue({ memoriesDeleted: 0, secretsDeleted: 2, scheduleNames: [], purged: {}, exclusiveAgents: [] })
+    const { ctx, out } = makeAdminCtx('DELETE', '/api/v1/admin/tenants/half-gone')
+    await tryHandleAdminB2b(ctx)
+    expect(out.status).toBe(200)
+    expect(out.body.secrets_deleted).toBe(2)
+    expect(vi.mocked(db.deleteTenant)).toHaveBeenCalledWith('half-gone')
+  })
+
   it('returns 200 with ok and cascade summary for a valid tenant', async () => {
-    vi.mocked(db.getTenant).mockReturnValue(SAMPLE_TENANT)
-    vi.mocked(db.deleteTenant).mockReturnValue({ memoriesDeleted: 7, secretsDeleted: 2, scheduleNames: [], purged: { token_usage: 3 }, exclusiveAgents: ['agent-x'] })
+    vi.mocked(db.getTenant).mockResolvedValue(SAMPLE_TENANT)
+    vi.mocked(db.deleteTenant).mockResolvedValue({ memoriesDeleted: 7, secretsDeleted: 2, scheduleNames: [], purged: { token_usage: 3 }, exclusiveAgents: ['agent-x'] })
     const { ctx, out } = makeAdminCtx('DELETE', '/api/v1/admin/tenants/acme-corp')
     await tryHandleAdminB2b(ctx)
     expect(out.status).toBe(200)
@@ -147,8 +161,8 @@ describe('DELETE /api/v1/admin/tenants/:id', () => {
   })
 
   it('removes the file mirror of exactly the schedules the tenant delete dropped', async () => {
-    vi.mocked(db.getTenant).mockReturnValue(SAMPLE_TENANT)
-    vi.mocked(db.deleteTenant).mockReturnValue({ memoriesDeleted: 0, secretsDeleted: 0, scheduleNames: ['job-a', 'job-b'], purged: {}, exclusiveAgents: [] })
+    vi.mocked(db.getTenant).mockResolvedValue(SAMPLE_TENANT)
+    vi.mocked(db.deleteTenant).mockResolvedValue({ memoriesDeleted: 0, secretsDeleted: 0, scheduleNames: ['job-a', 'job-b'], purged: {}, exclusiveAgents: [] })
     mockRemoveFiles.mockClear()
     const { ctx, out } = makeAdminCtx('DELETE', '/api/v1/admin/tenants/acme-corp')
     await tryHandleAdminB2b(ctx)
@@ -157,9 +171,50 @@ describe('DELETE /api/v1/admin/tenants/:id', () => {
     expect(mockRemoveFiles).toHaveBeenCalledWith(['job-a', 'job-b'])
   })
 
+  describe('a vault failure after the commit', () => {
+    // deleteTenant rejects with the file error and carries the committed part on it: the schedule names exist only
+    // there (a repeated delete finds no rows), so the file mirror and the audit row must not wait for the vault.
+    const vaultFailure = () => Object.assign(new Error('vault write failed'), {
+      tenantDeleteSqlResult: { memoriesDeleted: 4, scheduleNames: ['job-a', 'job-b'], purged: { token_usage: 1 }, exclusiveAgents: ['agent-x'] },
+    })
+
+    it('still removes the file mirror of the schedules the committed delete dropped, writes the audit row and then fails', async () => {
+      vi.mocked(db.getTenant).mockResolvedValue(SAMPLE_TENANT)
+      vi.mocked(db.deleteTenant).mockRejectedValue(vaultFailure())
+      vi.mocked(db.writeAdminAuditLog).mockClear()
+      mockRemoveFiles.mockClear()
+      const { ctx } = makeAdminCtx('DELETE', '/api/v1/admin/tenants/acme-corp')
+      await expect(tryHandleAdminB2b(ctx)).rejects.toThrow('vault write failed')
+      expect(mockRemoveFiles).toHaveBeenCalledWith(['job-a', 'job-b'])
+      expect(vi.mocked(db.writeAdminAuditLog)).toHaveBeenCalledWith(
+        expect.anything(), 'admin.tenant.delete', 'acme-corp',
+        expect.objectContaining({ vault_purge_failed: true, memories_deleted: 4, schedules_deleted: 2, secrets_deleted: 0 }),
+      )
+    })
+
+    it('a failing file cleanup does not hide the vault error', async () => {
+      vi.mocked(db.getTenant).mockResolvedValue(SAMPLE_TENANT)
+      vi.mocked(db.deleteTenant).mockRejectedValue(vaultFailure())
+      mockRemoveFiles.mockImplementationOnce(() => { throw new Error('disk gone') })
+      const { ctx } = makeAdminCtx('DELETE', '/api/v1/admin/tenants/acme-corp')
+      await expect(tryHandleAdminB2b(ctx)).rejects.toThrow('vault write failed')
+    })
+
+    it('an error that carries no committed part (the transaction failed) does no cleanup and writes no audit row', async () => {
+      vi.mocked(db.getTenant).mockResolvedValue(SAMPLE_TENANT)
+      vi.mocked(db.deleteTenant).mockRejectedValue(new Error('constraint'))
+      vi.mocked(db.writeAdminAuditLog).mockClear()
+      mockRemoveFiles.mockClear()
+      const { ctx } = makeAdminCtx('DELETE', '/api/v1/admin/tenants/acme-corp')
+      await expect(tryHandleAdminB2b(ctx)).rejects.toThrow('constraint')
+      expect(mockRemoveFiles).not.toHaveBeenCalled()
+      expect(vi.mocked(db.writeAdminAuditLog)).not.toHaveBeenCalled()
+    })
+  })
+
   it('calls deleteTenant with the correct tenantId', async () => {
-    vi.mocked(db.getTenant).mockReturnValue(SAMPLE_TENANT)
-    vi.mocked(db.deleteTenant).mockReturnValue({ memoriesDeleted: 0, secretsDeleted: 0, scheduleNames: [], purged: {}, exclusiveAgents: [] })
+    vi.mocked(db.getTenant).mockResolvedValue(SAMPLE_TENANT)
+    vi.mocked(db.deleteTenant).mockResolvedValue({ memoriesDeleted: 0, secretsDeleted: 0, scheduleNames: [], purged: {}, exclusiveAgents: [] })
     const { ctx } = makeAdminCtx('DELETE', '/api/v1/admin/tenants/acme-corp')
     await tryHandleAdminB2b(ctx)
     expect(vi.mocked(db.deleteTenant)).toHaveBeenCalledOnce()

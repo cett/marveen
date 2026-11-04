@@ -83,10 +83,10 @@ describe('reconcileAgentsOnStartup: the main agent', () => {
 })
 
 describe('flushRunningStateToDesired: the main agent', () => {
-  it('does not add the main agent even though an agent-<id> session exists', () => {
+  it('does not add the main agent even though an agent-<id> session exists', async () => {
     mockListAgentNames.mockReturnValue(['boss', 'worker-a'])
     mockSessionExistsOnHost.mockReturnValue(true)
-    flushRunningStateToDesired()
+    await flushRunningStateToDesired()
     expect(mockAddDesiredAgent).not.toHaveBeenCalledWith('boss')
     expect(mockAddDesiredAgent).toHaveBeenCalledWith('worker-a')
   })

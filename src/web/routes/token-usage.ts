@@ -17,7 +17,7 @@ export async function tryHandleTokenUsage(ctx: RouteContext): Promise<boolean> {
   if (path === '/api/token-usage/collect' && method === 'POST') {
     try {
       const result = await collectTokenUsage()
-      correlateWithKanban()
+      await correlateWithKanban()
       json(res, { ok: true, ...result })
     } catch (err) {
       logger.error({ err }, 'Token usage collection failed')
@@ -29,7 +29,7 @@ export async function tryHandleTokenUsage(ctx: RouteContext): Promise<boolean> {
   if (path === '/api/token-usage/summary' && method === 'GET') {
     const from = url.searchParams.get('from')
     const to = url.searchParams.get('to')
-    const summary = getTokenSummary(
+    const summary = await getTokenSummary(
       from ? parseInt(from) : undefined,
       to ? parseInt(to) : undefined,
     )
@@ -42,7 +42,7 @@ export async function tryHandleTokenUsage(ctx: RouteContext): Promise<boolean> {
     const from = url.searchParams.get('from')
     const to = url.searchParams.get('to')
     const agent = url.searchParams.get('agent') || undefined
-    const timeline = getTokenTimeline(
+    const timeline = await getTokenTimeline(
       bucketMinutes,
       from ? parseInt(from) : undefined,
       to ? parseInt(to) : undefined,
@@ -56,7 +56,7 @@ export async function tryHandleTokenUsage(ctx: RouteContext): Promise<boolean> {
     const from = url.searchParams.get('from')
     const to = url.searchParams.get('to')
     const agent = url.searchParams.get('agent') || undefined
-    json(res, getModelDistribution(
+    json(res, await getModelDistribution(
       from ? parseInt(from) : undefined,
       to ? parseInt(to) : undefined,
       agent,
@@ -68,7 +68,7 @@ export async function tryHandleTokenUsage(ctx: RouteContext): Promise<boolean> {
     const from = url.searchParams.get('from')
     const to = url.searchParams.get('to')
     const agent = url.searchParams.get('agent') || undefined
-    json(res, getToolStats(
+    json(res, await getToolStats(
       from ? parseInt(from) : undefined,
       to ? parseInt(to) : undefined,
       agent,
@@ -84,7 +84,7 @@ export async function tryHandleTokenUsage(ctx: RouteContext): Promise<boolean> {
     const offset = parseInt(url.searchParams.get('offset') || '0')
     const minTokens = url.searchParams.get('min_tokens')
     const q = url.searchParams.get('q') || undefined
-    const details = getTokenDetails({
+    const details = await getTokenDetails({
       agent,
       from: from ? parseInt(from) : undefined,
       to: to ? parseInt(to) : undefined,

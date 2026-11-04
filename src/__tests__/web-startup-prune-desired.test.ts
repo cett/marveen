@@ -42,7 +42,12 @@ describe('web.ts startup: pruneMainAgentFromDesired()', () => {
     expect(prune[0]).toBeLessThan(reconcile[0])
   })
 
-  it('is called inside the `if (!webOnly)` block that also holds reconcileAgentsOnStartup()', () => {
+  it('is awaited (the prune is an asynchronous system_config write that must finish before the reconcile reads the set)', () => {
+    expect(lines[prune[0]]).toMatch(/\bawait pruneMainAgentFromDesired\(\)/)
+    expect(lines[reconcile[0]]).toMatch(/\bawait reconcileAgentsOnStartup\(\)/)
+  })
+
+  it('runs in the same boot-sequence task as reconcileAgentsOnStartup(), inside the `if (!webOnly)` block', () => {
     const indent = (l: string): number => l.length - l.trimStart().length
     // The enclosing block of a line is the nearest line above it with a smaller indent.
     const enclosing = (at: number): number => {
@@ -50,8 +55,11 @@ describe('web.ts startup: pruneMainAgentFromDesired()', () => {
       while (i >= 0 && (lines[i].trim() === '' || indent(lines[i]) >= indent(lines[at]))) i--
       return i
     }
-    expect(enclosing(prune[0])).toBeGreaterThanOrEqual(0)
-    expect(lines[enclosing(prune[0])]).toBe('  if (!webOnly) {')
-    expect(enclosing(reconcile[0])).toBe(enclosing(prune[0]))
+    const task = enclosing(prune[0])
+    expect(task).toBeGreaterThanOrEqual(0)
+    // Same task: one `await` after the other, so the order above is the execution order.
+    expect(enclosing(reconcile[0])).toBe(task)
+    expect(lines[task].trim()).toMatch(/^runAs\.system\('boot-sequence', async \(\) => \{$/)
+    expect(lines[enclosing(task)]).toBe('  if (!webOnly) {')
   })
 })

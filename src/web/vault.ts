@@ -258,6 +258,13 @@ export function purgeSecretsForTenant(tenantId: string): number {
   return removed
 }
 
+// True while vault.json still holds an entry of this tenant. After deleteTenant() committed its SQL part and the
+// vault write then failed, the entries of the deleted tenant stay here: the tenant routes use this to refuse a
+// new tenant with that id (it would inherit them) and to let the delete be repeated for an id with no tenant row.
+export function secretsExistForTenant(tenantId: string): boolean {
+  return readVault().entries.some(e => e.tenant_id === tenantId)
+}
+
 // Looks up which tenant actually owns an entry, regardless of the caller's
 // own tenant -- used by routes for the cross-tenant ownership check (404 for
 // a non-admin whose tenant doesn't match) and to let an admin fetch/delete an

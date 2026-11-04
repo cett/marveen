@@ -1,13 +1,13 @@
 // Test suite for store-watcher.ts's I/O orchestration (coverage series).
-// store-watcher.test.ts already covers setStoreWriteActor/clearStoreWriteActor
-// and startStoreWatcher/stopStoreWatcher as smoke tests against the REAL
+// store-watcher.test.ts already covers startStoreWatcher/stopStoreWatcher
+// as smoke tests against the REAL
 // fs.watch; none of that exercises the actual event-classification logic
 // inside the watch callback (system-file filtering, creation detection,
-// dedup, sensitive-name flagging, actor attribution). This file mocks
+// dedup, sensitive-name flagging, no actor attribution). This file mocks
 // node:fs entirely, captures the callback registered with watch(), and
 // drives it directly with synthetic (eventType, filename) pairs.
 //
-// Module-level state (knownFiles / recentEvents / currentWriteActor /
+// Module-level state (knownFiles / recentEvents /
 // watcher) is reset via vi.resetModules() + a fresh dynamic import per test.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
@@ -57,7 +57,7 @@ beforeEach(() => {
   })
   mockStatSync.mockReset()
   mockReaddirSync.mockReset().mockReturnValue([]) // empty store by default at scan time
-  mockLogStoreFileEvent.mockReset()
+  mockLogStoreFileEvent.mockReset().mockResolvedValue(undefined)
   mockLoggerInfo.mockReset()
   mockLoggerWarn.mockReset()
 })
@@ -149,7 +149,7 @@ describe('watch callback: event classification', () => {
     const { startStoreWatcher } = await loadWatcher()
     startStoreWatcher()
     capturedCallback!('rename', 'config-overrides.json')
-    expect(mockLogStoreFileEvent).toHaveBeenCalledWith('config-overrides.json', 'create', 0, 10, null, undefined)
+    expect(mockLogStoreFileEvent).toHaveBeenCalledWith('config-overrides.json', 'create', 0, 10)
   })
 
   // The S8B retirement migration renames the file to this suffix as its
@@ -194,7 +194,7 @@ describe('watch callback: event classification', () => {
     const { startStoreWatcher } = await loadWatcher()
     startStoreWatcher()
     capturedCallback!('rename', 'HANDOFF.md')
-    expect(mockLogStoreFileEvent).toHaveBeenCalledWith('HANDOFF.md', 'create', 0, 123, null, undefined)
+    expect(mockLogStoreFileEvent).toHaveBeenCalledWith('HANDOFF.md', 'create', 0, 123)
   })
 
   // Every current SENSITIVE_NAMES entry is also a SYSTEM_FILES entry, so the
@@ -242,56 +242,37 @@ describe('watch callback: event classification', () => {
     expect(mockLogStoreFileEvent).toHaveBeenCalledTimes(1)
   })
 
-  it('attributes the write actor set just before the event, then clears it', async () => {
+  it('logs a new file without an actor or a tenant: the audit is unattributed', async () => {
     mockStatSync.mockReturnValue({ size: 5 })
-    const { startStoreWatcher, setStoreWriteActor } = await loadWatcher()
+    const { startStoreWatcher } = await loadWatcher()
     startStoreWatcher()
-    setStoreWriteActor('kanban-route')
-    capturedCallback!('rename', 'attributed.md')
-    expect(mockLogStoreFileEvent).toHaveBeenCalledWith('attributed.md', 'create', 0, 5, 'kanban-route', undefined)
-
-    // The slot must be consumed -- a later event with no actor set gets null.
     capturedCallback!('rename', 'unattributed.md')
-    expect(mockLogStoreFileEvent).toHaveBeenLastCalledWith('unattributed.md', 'create', 0, 5, null, undefined)
+    // Exactly four arguments: no actor and no tenant slot is passed on (the row gets agent NULL).
+    expect(mockLogStoreFileEvent).toHaveBeenCalledTimes(1)
+    expect(mockLogStoreFileEvent.mock.calls[0]).toEqual(['unattributed.md', 'create', 0, 5])
   })
 
-  it('hands the tenant a route announced to the log, null (fleet scope) included, and clears it with the actor', async () => {
+  it('a denylisted system-file event logs nothing and does not touch the next event', async () => {
     mockStatSync.mockReturnValue({ size: 5 })
-    const { startStoreWatcher, setStoreWriteActor } = await loadWatcher()
+    const { startStoreWatcher } = await loadWatcher()
     startStoreWatcher()
-    setStoreWriteActor('dashboard', 'acme')
-    capturedCallback!('rename', 'tenant-file.json')
-    expect(mockLogStoreFileEvent).toHaveBeenLastCalledWith('tenant-file.json', 'create', 0, 5, 'dashboard', 'acme')
-
-    setStoreWriteActor('dashboard', null)
-    capturedCallback!('rename', 'fleet-file.json')
-    expect(mockLogStoreFileEvent).toHaveBeenLastCalledWith('fleet-file.json', 'create', 0, 5, 'dashboard', null)
-
-    // Consumed: the next event carries neither actor nor tenant.
-    capturedCallback!('rename', 'later.json')
-    expect(mockLogStoreFileEvent).toHaveBeenLastCalledWith('later.json', 'create', 0, 5, null, undefined)
-  })
-
-  it('clears the write-actor slot even for a denylisted system-file event', async () => {
-    mockStatSync.mockReturnValue({ size: 5 })
-    const { startStoreWatcher, setStoreWriteActor } = await loadWatcher()
-    startStoreWatcher()
-    setStoreWriteActor('some-route')
-    capturedCallback!('rename', 'claudeclaw.db') // denylisted -> consumes but does not log
+    capturedCallback!('rename', 'claudeclaw.db')
     capturedCallback!('rename', 'after-system-event.md')
-    expect(mockLogStoreFileEvent).toHaveBeenCalledWith('after-system-event.md', 'create', 0, 5, null, undefined)
+    expect(mockLogStoreFileEvent).toHaveBeenCalledTimes(1)
+    expect(mockLogStoreFileEvent.mock.calls[0]).toEqual(['after-system-event.md', 'create', 0, 5])
   })
 
   it('a logStoreFileEvent failure is caught and logged as a warning', async () => {
     mockStatSync.mockReturnValue({ size: 5 })
-    mockLogStoreFileEvent.mockImplementationOnce(() => { throw new Error('db locked') })
+    mockLogStoreFileEvent.mockRejectedValueOnce(new Error('db locked'))
     const { startStoreWatcher } = await loadWatcher()
     startStoreWatcher()
     expect(() => capturedCallback!('rename', 'c.md')).not.toThrow()
-    expect(mockLoggerWarn).toHaveBeenCalledWith(
+    // The write is async: its failure reaches the logger a few microtasks after the callback returned.
+    await vi.waitFor(() => expect(mockLoggerWarn).toHaveBeenCalledWith(
       expect.objectContaining({ err: expect.any(Error), rel: 'c.md' }),
       'store-watcher: failed to log new file event',
-    )
+    ))
   })
 
   it('normalizes a Windows-style backslash path to forward slashes', async () => {
@@ -299,7 +280,7 @@ describe('watch callback: event classification', () => {
     const { startStoreWatcher } = await loadWatcher()
     startStoreWatcher()
     capturedCallback!('rename', 'sub\\nested.md')
-    expect(mockLogStoreFileEvent).toHaveBeenCalledWith('sub/nested.md', 'create', 0, 5, null, undefined)
+    expect(mockLogStoreFileEvent).toHaveBeenCalledWith('sub/nested.md', 'create', 0, 5)
   })
 })
 

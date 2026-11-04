@@ -31,19 +31,19 @@ describe('parseKanbanDueDate', () => {
 })
 
 describe('the db layer', () => {
-  it('stores a date string as the UTC-midnight epoch on create and on update', () => {
-    createKanbanCard({ id: 'c1', title: 't', due_date: '2026-07-15' })
+  it('stores a date string as the UTC-midnight epoch on create and on update', async () => {
+    await createKanbanCard({ id: 'c1', title: 't', due_date: '2026-07-15' })
     expect(stored('c1')).toEqual({ due_date: 1784073600, t: 'integer' })
-    expect(updateKanbanCard('c1', { due_date: '2026-10-29' as unknown as number })).toBe(true)
+    expect(await updateKanbanCard('c1', { due_date: '2026-10-29' as unknown as number })).toBe(true)
     expect(stored('c1').due_date).toBe(1793232000)
-    expect(updateKanbanCard('c1', { due_date: null })).toBe(true)
+    expect(await updateKanbanCard('c1', { due_date: null })).toBe(true)
     expect(stored('c1').t).toBe('null')
   })
 
-  it('throws on an invalid value instead of writing it', () => {
-    expect(() => createKanbanCard({ id: 'c2', title: 't', due_date: 'tomorrow' })).toThrow(/due_date/)
-    createKanbanCard({ id: 'c3', title: 't' })
-    expect(() => updateKanbanCard('c3', { due_date: 'soon' as unknown as number })).toThrow(/due_date/)
+  it('throws on an invalid value instead of writing it', async () => {
+    await expect(createKanbanCard({ id: 'c2', title: 't', due_date: 'tomorrow' })).rejects.toThrow(/due_date/)
+    await createKanbanCard({ id: 'c3', title: 't' })
+    await expect(updateKanbanCard('c3', { due_date: 'soon' as unknown as number })).rejects.toThrow(/due_date/)
     expect(stored('c3').t).toBe('null')
   })
 })

@@ -27,6 +27,8 @@ afterAll(() => {
   rmSync(TMP_ROOT, { recursive: true, force: true })
 })
 
+// The main agent's channel pairing is written under the home directory: keep it in the throwaway root, not the real one.
+vi.mock('node:os', async (importOriginal) => ({ ...(await importOriginal<typeof import('node:os')>()), homedir: () => TMP_ROOT }))
 vi.mock('../logger.js', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }))
 vi.mock('../web/agent-config.js', () => ({ AGENTS_BASE_DIR: '/mock/agents', listAgentNames: () => [], invalidateModelProfileMapCache: () => {} }))
 vi.mock('../web/atomic-write.js', async () => {
@@ -49,7 +51,7 @@ vi.mock('../env.js', () => ({ updateEnvFile: vi.fn() }))
 import { writeFileSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-function seedSourceFleet() {
+async function seedSourceFleet() {
   const now = Math.floor(Date.now() / 1000)
   const db = getDb()
 
@@ -78,19 +80,19 @@ function seedSourceFleet() {
   }), 'utf-8')
 
   // model-fallback is DB-backed now (system_config, #985 group 5/8), not a file.
-  setSystemConfig('model_fallback_enabled', '1')
-  setSystemConfig('model_fallback_chain', JSON.stringify(['source-chain', 'source-chain-2']))
-  setSystemConfig('model_fallback_revert_after_minutes', '60')
-  setFederationConfigRaw(JSON.stringify({ enabled: true, systemId: 'source-system' }))
+  await setSystemConfig('model_fallback_enabled', '1')
+  await setSystemConfig('model_fallback_chain', JSON.stringify(['source-chain', 'source-chain-2']))
+  await setSystemConfig('model_fallback_revert_after_minutes', '60')
+  await setFederationConfigRaw(JSON.stringify({ enabled: true, systemId: 'source-system' }))
   writeFileSync(join(STORE_DIR, 'costops-config.json'), JSON.stringify({ version: 1, currency: 'USD', budgets: [] }), 'utf-8')
   // egress_allowlist is DB-backed (migration 0056) -- every fresh initDatabase()
   // call above already seeded the 199 baseline domains; these two are this
   // test's own additions on top of that baseline.
-  insertEgressAllowlistEntry({ value: 'source.example.com', type: 'domain' })
-  insertEgressAllowlistEntry({ value: 'shared.example.com', type: 'domain' })
+  await insertEgressAllowlistEntry({ value: 'source.example.com', type: 'domain' })
+  await insertEgressAllowlistEntry({ value: 'shared.example.com', type: 'domain' })
 }
 
-function resetToFreshTarget(preserveEgressDomains: string[] | null) {
+async function resetToFreshTarget(preserveEgressDomains: string[] | null) {
   initDatabase(':memory:') // re-seeds the 199 baseline egress_allowlist domains fresh
   writeFileSync(join(STORE_DIR, 'vault.json'), JSON.stringify({ entries: [] }), 'utf-8')
   writeFileSync(join(STORE_DIR, '.vault-key'), '', 'utf-8')
@@ -98,7 +100,7 @@ function resetToFreshTarget(preserveEgressDomains: string[] | null) {
   // initDatabase(':memory:') above -- no file to reset.
   writeFileSync(join(STORE_DIR, 'costops-config.json'), '{}', 'utf-8')
   for (const domain of preserveEgressDomains ?? []) {
-    insertEgressAllowlistEntry({ value: domain, type: 'domain' })
+    await insertEgressAllowlistEntry({ value: domain, type: 'domain' })
   }
 }
 
@@ -110,22 +112,22 @@ beforeEach(() => {
 describe('end-to-end: export a fully-populated source fleet, apply onto a fresh target', () => {
   it('recreates every P1-P4 section correctly in a single combined run', async () => {
     const { exportFleet, importFleet } = await import('../web/fleet-transfer.js')
-    seedSourceFleet()
+    await seedSourceFleet()
 
-    const exported = exportFleet({ vaultPassword: 'correct-horse-battery-staple' })
+    const exported = await exportFleet({ vaultPassword: 'correct-horse-battery-staple' })
 
     // Fresh target: empty DB, and a target that already has its OWN egress domain
     // (to prove the merge, not overwrite, semantics survive a full combined run).
-    resetToFreshTarget(['target-only.example.com', 'shared.example.com'])
+    await resetToFreshTarget(['target-only.example.com', 'shared.example.com'])
 
-    const dry = importFleet(exported.data, { apply: false, vaultPassword: 'correct-horse-battery-staple' }) as any
+    const dry = await importFleet(exported.data, { apply: false, vaultPassword: 'correct-horse-battery-staple' }) as any
     expect(dry.errors).toEqual([])
     expect(dry.wouldCreate.schedules).toBe(1)
     expect(dry.wouldCreate.importSources).toBe(1)
     expect(dry.wouldCreate.vaultSshKeys).toBe(1)
     expect(dry.wouldCreate.vaultSshServers).toBe(1)
 
-    const applied = importFleet(exported.data, { apply: true, vaultPassword: 'correct-horse-battery-staple' }) as any
+    const applied = await importFleet(exported.data, { apply: true, vaultPassword: 'correct-horse-battery-staple' }) as any
     expect(applied.ok).toBe(true)
     expect(applied.imported.schedules).toBe(1)
     expect(applied.imported.importSources).toBe(1)
@@ -158,19 +160,19 @@ describe('end-to-end: export a fully-populated source fleet, apply onto a fresh 
     // P3: egress_allowlist MERGED (DB, migration 0056), not overwritten -- the
     // target's own domain survives alongside the 199 migration-seeded baseline
     // and the source's own domain.
-    const mergedDomains = listEgressAllowlistRows(null).filter((r) => r.type === 'domain').map((r) => r.value)
+    const mergedDomains = (await listEgressAllowlistRows(null)).filter((r) => r.type === 'domain').map((r) => r.value)
     expect(mergedDomains).toEqual(expect.arrayContaining(['shared.example.com', 'source.example.com', 'target-only.example.com']))
     expect(mergedDomains).toContain('github.com') // the 199-domain baseline survived the merge too
   })
 
   it('re-applying the same encrypted export a second time is a clean no-op (fully idempotent combined run)', async () => {
     const { exportFleet, importFleet } = await import('../web/fleet-transfer.js')
-    seedSourceFleet()
-    const exported = exportFleet({ vaultPassword: 'correct-horse-battery-staple' })
+    await seedSourceFleet()
+    const exported = await exportFleet({ vaultPassword: 'correct-horse-battery-staple' })
 
-    resetToFreshTarget(null)
-    importFleet(exported.data, { apply: true, vaultPassword: 'correct-horse-battery-staple' })
-    const secondApply = importFleet(exported.data, { apply: true, vaultPassword: 'correct-horse-battery-staple' }) as any
+    await resetToFreshTarget(null)
+    await importFleet(exported.data, { apply: true, vaultPassword: 'correct-horse-battery-staple' })
+    const secondApply = await importFleet(exported.data, { apply: true, vaultPassword: 'correct-horse-battery-staple' }) as any
     expect(secondApply.ok).toBe(true)
 
     expect(getDb().prepare('SELECT * FROM schedules WHERE id = ?').all('morning-chain')).toHaveLength(1)

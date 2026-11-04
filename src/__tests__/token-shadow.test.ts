@@ -10,6 +10,8 @@ import type http from 'node:http'
 import {
   initDatabase, getDb, upsertBlackboard, createKanbanCard, saveAgentMemory, upsertSchedule,
 } from '../db.js'
+import { saveWorkspaceDoc } from '../db/workspace.js'
+import { bumpTokenShadow, deleteTokenShadowRowsBefore } from '../db/token-shadow.js'
 import type { AuthResult } from '../web/auth-gate.js'
 import { checkPermission } from '../web/authz.js'
 import { readBody } from '../web/http-helpers.js'
@@ -25,7 +27,7 @@ import {
 // The shared agent is the one with no tenant to act in; every other agent has one.
 vi.mock('../db/write-tenant.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../db/write-tenant.js')>()),
-  resolveWriteTenant: (agentId: string | null | undefined) => (!agentId || agentId === 'agent-shared' ? null : 'default'),
+  resolveWriteTenant: (agentId: string | null | undefined) => Promise.resolve(!agentId || agentId === 'agent-shared' ? null : 'default'),
 }))
 vi.mock('../config.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../config.js')>()), MAIN_AGENT_ID: 'agent-main' }))
 
@@ -52,10 +54,10 @@ async function drain(req: http.IncomingMessage): Promise<Buffer> {
   return p
 }
 
-function observe(auth: AuthResult, method: string, pathWithQuery: string, headers: Record<string, string> = {}, body?: unknown) {
+async function observe(auth: AuthResult, method: string, pathWithQuery: string, headers: Record<string, string> = {}, body?: unknown) {
   const req = fakeReq(headers, body)
   const url = new URL(`http://localhost:3420${pathWithQuery}`)
-  observeTokenUsage(req, auth, method, url.pathname, url)
+  await observeTokenUsage(req, auth, method, url.pathname, url)
   return req
 }
 
@@ -210,11 +212,11 @@ describe('collectBodyAgents', () => {
 })
 
 describe('shared_token_use', () => {
-  it('counts the shared token per route template and caller, a self-declaration marked as such', () => {
-    observe(sharedAuth, 'GET', '/api/kanban', { 'x-agent-id': 'agent-a', 'user-agent': 'curl/8.4' })
-    observe(sharedAuth, 'GET', '/api/kanban?status=done', { 'x-agent-id': 'Agent-A', 'user-agent': 'curl/8.4' })
-    observe(sharedAuth, 'GET', '/api/kanban/242e55bc', { 'x-agent-id': 'agent-a' })
-    observe(sharedAuth, 'GET', '/api/kanban', {})
+  it('counts the shared token per route template and caller, a self-declaration marked as such', async () => {
+    await observe(sharedAuth, 'GET', '/api/kanban', { 'x-agent-id': 'agent-a', 'user-agent': 'curl/8.4' })
+    await observe(sharedAuth, 'GET', '/api/kanban?status=done', { 'x-agent-id': 'Agent-A', 'user-agent': 'curl/8.4' })
+    await observe(sharedAuth, 'GET', '/api/kanban/242e55bc', { 'x-agent-id': 'agent-a' })
+    await observe(sharedAuth, 'GET', '/api/kanban', {})
     expect(rows('shared_token_use').map((r) => [r.route, r.caller, r.caller_source, r.client, r.count])).toEqual([
       ['/api/kanban', '', 'none', 'none', 1],
       ['/api/kanban', 'agent-a', 'self_declared', 'curl', 2],
@@ -222,28 +224,28 @@ describe('shared_token_use', () => {
     ])
   })
 
-  it('counts the enrolled shared token the same way', () => {
-    observe(enrolledSharedAuth, 'GET', '/api/kanban', { 'x-agent-id': 'agent-a' })
+  it('counts the enrolled shared token the same way', async () => {
+    await observe(enrolledSharedAuth, 'GET', '/api/kanban', { 'x-agent-id': 'agent-a' })
     expect(rows('shared_token_use').map((r) => [r.caller, r.caller_source, r.count])).toEqual([['agent-a', 'self_declared', 1]])
   })
 
-  it('does not count the other credentials, the main-agent token, the operator token or a fleet token', () => {
-    observe(operatorAuth, 'GET', '/api/kanban')
-    observe(sessionAuth, 'GET', '/api/kanban')
-    observe(mainAdminAuth, 'GET', '/api/kanban')
-    observe(fleetAuth('agent-a'), 'GET', '/api/kanban')
+  it('does not count the other credentials, the main-agent token, the operator token or a fleet token', async () => {
+    await observe(operatorAuth, 'GET', '/api/kanban')
+    await observe(sessionAuth, 'GET', '/api/kanban')
+    await observe(mainAdminAuth, 'GET', '/api/kanban')
+    await observe(fleetAuth('agent-a'), 'GET', '/api/kanban')
     expect(total('shared_token_use')).toBe(0)
   })
 
-  it('does not count its own admin read (reading the counter must not move it)', () => {
-    observe(sharedAuth, 'GET', '/api/token-shadow?days=3', { 'x-agent-id': 'agent-a' })
-    observe(sharedAuth, 'GET', '/api/v1/token-shadow')
+  it('does not count its own admin read (reading the counter must not move it)', async () => {
+    await observe(sharedAuth, 'GET', '/api/token-shadow?days=3', { 'x-agent-id': 'agent-a' })
+    await observe(sharedAuth, 'GET', '/api/v1/token-shadow')
     expect(rows()).toEqual([])
   })
 
-  it('the canonical and the legacy path spelling are one route', () => {
-    observe(sharedAuth, 'GET', '/api/v1/kanban', { 'x-agent-id': 'agent-a' })
-    observe(sharedAuth, 'GET', '/api/kanban', { 'x-agent-id': 'agent-a' })
+  it('the canonical and the legacy path spelling are one route', async () => {
+    await observe(sharedAuth, 'GET', '/api/v1/kanban', { 'x-agent-id': 'agent-a' })
+    await observe(sharedAuth, 'GET', '/api/kanban', { 'x-agent-id': 'agent-a' })
     expect(rows('shared_token_use')).toHaveLength(1)
     expect(total('shared_token_use')).toBe(2)
   })
@@ -251,7 +253,7 @@ describe('shared_token_use', () => {
 
 describe('shared_token_use on /api/messages: the sender the body names', () => {
   const post = async (headers: Record<string, string>, body?: unknown) => {
-    const req = observe(sharedAuth, 'POST', '/api/messages', headers, body)
+    const req = await observe(sharedAuth, 'POST', '/api/messages', headers, body)
     await drain(req)
   }
   const uses = () => rows('shared_token_use').map((r) => [r.caller, r.caller_source, r.target, r.count])
@@ -272,26 +274,29 @@ describe('shared_token_use on /api/messages: the sender the body names', () => {
     await post({})
     expect(uses()).toEqual([['', 'none', '', 4], ['', 'none', '_invalid', 1]])
   })
-  it('every request is counted exactly once, also when the body is never read (the close flushes it)', () => {
-    const req = observe(sharedAuth, 'POST', '/api/messages', {}, { from: 'agent-b' })
+  it('every request is counted exactly once, also when the body is never read (the close flushes it)', async () => {
+    const req = await observe(sharedAuth, 'POST', '/api/messages', {}, { from: 'agent-b' })
     expect(total('shared_token_use')).toBe(0)
     req.emit('close')
     req.emit('close')
+    // The close handler starts the flush and does not wait for it: wait for the one row, then for anything late.
+    await vi.waitFor(() => expect(total('shared_token_use')).toBe(1))
+    await new Promise((resolve) => setImmediate(resolve))
     expect(uses()).toEqual([['', 'none', '', 1]])
   })
   it('a body read after the close is not counted a second time', async () => {
-    const req = observe(sharedAuth, 'POST', '/api/messages', {}, { from: 'agent-b' })
+    const req = await observe(sharedAuth, 'POST', '/api/messages', {}, { from: 'agent-b' })
     req.emit('close')
     await drain(req)
     expect(total('shared_token_use')).toBe(1)
   })
-  it('a read of /api/messages and the other routes are counted at once, with no target', () => {
-    observe(sharedAuth, 'GET', '/api/messages', { 'x-agent-id': 'agent-a' })
-    observe(sharedAuth, 'POST', '/api/kanban', { 'x-agent-id': 'agent-a' })
+  it('a read of /api/messages and the other routes are counted at once, with no target', async () => {
+    await observe(sharedAuth, 'GET', '/api/messages', { 'x-agent-id': 'agent-a' })
+    await observe(sharedAuth, 'POST', '/api/kanban', { 'x-agent-id': 'agent-a' })
     expect(uses()).toEqual([['agent-a', 'self_declared', '', 1], ['agent-a', 'self_declared', '', 1]])
   })
   it('only the shared token is labelled: a fleet token is counted as before', async () => {
-    const req = observe(fleetAuth('agent-a'), 'POST', '/api/messages', {}, { from: 'agent-b' })
+    const req = await observe(fleetAuth('agent-a'), 'POST', '/api/messages', {}, { from: 'agent-b' })
     await drain(req)
     expect(total('shared_token_use')).toBe(0)
     expect(rows('agent_id_mismatch').map((r) => r.target)).toEqual(['agent-b'])
@@ -303,31 +308,31 @@ describe('shared_token_use on /api/messages: the sender the body names', () => {
 })
 
 describe('agent_id_mismatch (own-scoped endpoints, first the ledger)', () => {
-  it('a fleet token of agent-a naming agent-b in the path', () => {
-    observe(fleetAuth('agent-a'), 'GET', '/api/conversation-ledger/agent-b/recent')
+  it('a fleet token of agent-a naming agent-b in the path', async () => {
+    await observe(fleetAuth('agent-a'), 'GET', '/api/conversation-ledger/agent-b/recent')
     expect(rows('agent_id_mismatch').map((r) => [r.route, r.caller, r.caller_source, r.target, r.count]))
       .toEqual([['/api/conversation-ledger/:agent/recent', 'agent-a', 'token', 'agent-b', 1]])
   })
-  it('naming itself is not a mismatch', () => {
-    observe(fleetAuth('agent-a'), 'GET', '/api/conversation-ledger/agent-a/recent')
-    observe(fleetAuth('agent-a'), 'GET', '/api/daily-log?agent=agent-a')
+  it('naming itself is not a mismatch', async () => {
+    await observe(fleetAuth('agent-a'), 'GET', '/api/conversation-ledger/agent-a/recent')
+    await observe(fleetAuth('agent-a'), 'GET', '/api/daily-log?agent=agent-a')
     expect(total('agent_id_mismatch')).toBe(0)
   })
-  it('a shared-token caller declaring agent-a and naming agent-b is a mismatch with a self_declared caller', () => {
-    observe(sharedAuth, 'GET', '/api/daily-log?agent=agent-b', { 'x-agent-id': 'agent-a' })
+  it('a shared-token caller declaring agent-a and naming agent-b is a mismatch with a self_declared caller', async () => {
+    await observe(sharedAuth, 'GET', '/api/daily-log?agent=agent-b', { 'x-agent-id': 'agent-a' })
     expect(rows('agent_id_mismatch').map((r) => [r.caller, r.caller_source, r.target])).toEqual([['agent-a', 'self_declared', 'agent-b']])
   })
-  it('the main agent, with either credential, acts across agents without a hit', () => {
-    observe(mainAdminAuth, 'GET', '/api/conversation-ledger/agent-b/recent')
-    observe(sharedAuth, 'GET', '/api/conversation-ledger/agent-b/recent', { 'x-agent-id': MAIN })
+  it('the main agent, with either credential, acts across agents without a hit', async () => {
+    await observe(mainAdminAuth, 'GET', '/api/conversation-ledger/agent-b/recent')
+    await observe(sharedAuth, 'GET', '/api/conversation-ledger/agent-b/recent', { 'x-agent-id': MAIN })
     expect(total('agent_id_mismatch')).toBe(0)
   })
-  it('a shared-token request that declares nobody has no caller to be a mismatch of', () => {
-    observe(sharedAuth, 'GET', '/api/conversation-ledger/agent-b/recent')
+  it('a shared-token request that declares nobody has no caller to be a mismatch of', async () => {
+    await observe(sharedAuth, 'GET', '/api/conversation-ledger/agent-b/recent')
     expect(total('agent_id_mismatch')).toBe(0)
   })
   it('the ledger batch body: every entry is looked at, a repeat of one agent counts once', async () => {
-    const req = observe(fleetAuth('agent-a'), 'POST', '/api/conversation-ledger', {}, {
+    const req = await observe(fleetAuth('agent-a'), 'POST', '/api/conversation-ledger', {}, {
       entries: [{ agent_id: 'agent-a' }, { agent_id: 'agent-b' }, { agent_id: 'agent-b' }, { agent_id: 'agent-c' }],
     })
     expect(total('agent_id_mismatch')).toBe(0) // nothing is known before the body is read
@@ -335,12 +340,12 @@ describe('agent_id_mismatch (own-scoped endpoints, first the ledger)', () => {
     expect(rows('agent_id_mismatch').map((r) => [r.target, r.count])).toEqual([['agent-b', 1], ['agent-c', 1]])
   })
   it('messages: the from of the sender', async () => {
-    const req = observe(fleetAuth('agent-a'), 'POST', '/api/messages', {}, { from: 'agent-b', to: 'agent-c', content: 'x' })
+    const req = await observe(fleetAuth('agent-a'), 'POST', '/api/messages', {}, { from: 'agent-b', to: 'agent-c', content: 'x' })
     await drain(req)
     expect(rows('agent_id_mismatch').map((r) => [r.route, r.target])).toEqual([['/api/messages', 'agent-b']]) // `to` is a recipient, not an identity
   })
   it('a name in both the query and the body is counted once per request', async () => {
-    const req = observe(fleetAuth('agent-a'), 'POST', '/api/daily-log?agent=agent-b', {}, { agent_id: 'agent-b' })
+    const req = await observe(fleetAuth('agent-a'), 'POST', '/api/daily-log?agent=agent-b', {}, { agent_id: 'agent-b' })
     await drain(req)
     expect(total('agent_id_mismatch')).toBe(1)
   })
@@ -348,12 +353,12 @@ describe('agent_id_mismatch (own-scoped endpoints, first the ledger)', () => {
 
 describe('foreign_row_access (endpoints reachable by permission only)', () => {
   it('blackboard: the body names another agent row, and the id of another agent row', async () => {
-    const own = upsertBlackboard('agent-a', { summary: 's' })
-    const foreign = upsertBlackboard('agent-b', { summary: 's' })
-    await drain(observe(fleetAuth('agent-a'), 'POST', '/api/blackboard', {}, { agent_id: 'agent-b', summary: 'x' }))
-    await drain(observe(fleetAuth('agent-a'), 'PATCH', `/api/blackboard/${foreign.id}`, {}, { status: 'done' }))
-    observe(fleetAuth('agent-a'), 'PATCH', `/api/blackboard/${own.id}`)
-    observe(fleetAuth('agent-a'), 'GET', '/api/blackboard/history?agent_id=agent-b')
+    const own = await upsertBlackboard('agent-a', { summary: 's' })
+    const foreign = await upsertBlackboard('agent-b', { summary: 's' })
+    await drain(await observe(fleetAuth('agent-a'), 'POST', '/api/blackboard', {}, { agent_id: 'agent-b', summary: 'x' }))
+    await drain(await observe(fleetAuth('agent-a'), 'PATCH', `/api/blackboard/${foreign.id}`, {}, { status: 'done' }))
+    await observe(fleetAuth('agent-a'), 'PATCH', `/api/blackboard/${own.id}`)
+    await observe(fleetAuth('agent-a'), 'GET', '/api/blackboard/history?agent_id=agent-b')
     expect(rows('foreign_row_access').map((r) => [r.method, r.route, r.target, r.count])).toEqual([
       ['POST', '/api/blackboard', 'agent-b', 1],
       ['PATCH', '/api/blackboard/:id', 'agent-b', 1],
@@ -364,28 +369,28 @@ describe('foreign_row_access (endpoints reachable by permission only)', () => {
     ])
   })
   it('memories: a write that claims another agent, and a row owned by another agent', async () => {
-    const mine = saveAgentMemory('agent-a', 'c1', 'warm').id
-    const theirs = saveAgentMemory('agent-b', 'c2', 'warm').id
-    await drain(observe(fleetAuth('agent-a'), 'POST', '/api/memories', {}, { agent_id: 'agent-b', content: 'x' }))
-    await drain(observe(fleetAuth('agent-a'), 'PUT', `/api/memories/${theirs}`, {}, { content: 'y' }))
-    observe(fleetAuth('agent-a'), 'DELETE', `/api/memories/${mine}`)
-    observe(fleetAuth('agent-a'), 'GET', '/api/memories?agent=agent-b')
+    const mine = (await saveAgentMemory('agent-a', 'c1', 'warm')).id
+    const theirs = (await saveAgentMemory('agent-b', 'c2', 'warm')).id
+    await drain(await observe(fleetAuth('agent-a'), 'POST', '/api/memories', {}, { agent_id: 'agent-b', content: 'x' }))
+    await drain(await observe(fleetAuth('agent-a'), 'PUT', `/api/memories/${theirs}`, {}, { content: 'y' }))
+    await observe(fleetAuth('agent-a'), 'DELETE', `/api/memories/${mine}`)
+    await observe(fleetAuth('agent-a'), 'GET', '/api/memories?agent=agent-b')
     expect(rows('foreign_row_access').map((r) => [r.method, r.route, r.target, r.count])).toEqual([
       ['GET', '/api/memories', 'agent-b', 1],
       ['POST', '/api/memories', 'agent-b', 1],
       ['PUT', '/api/memories/:id', 'agent-b', 1],
     ])
   })
-  it('memories: only the shared tier is readable across agents, nothing else of another agent is', () => {
-    const sharedRow = saveAgentMemory('agent-b', 'for everyone', 'shared').id
-    const privateRow = saveAgentMemory('agent-b', 'mine alone', 'warm').id
-    observe(fleetAuth('agent-a'), 'GET', '/api/memories?agent=agent-b&category=shared')
-    observe(fleetAuth('agent-a'), 'GET', '/api/memories?agent=agent-b&tier=shared&category=shared')
-    observe(fleetAuth('agent-a'), 'GET', `/api/memories/${sharedRow}`)
-    observe(fleetAuth('agent-a'), 'GET', `/api/memories/${privateRow}`)
-    observe(fleetAuth('agent-a'), 'GET', '/api/memories?agent=agent-b&category=warm')
-    observe(fleetAuth('agent-a'), 'GET', '/api/memories/graph?agent=agent-b&category=shared')
-    observe(fleetAuth('agent-a'), 'GET', `/api/memories/${sharedRow}/detail`)
+  it('memories: only the shared tier is readable across agents, nothing else of another agent is', async () => {
+    const sharedRow = (await saveAgentMemory('agent-b', 'for everyone', 'shared')).id
+    const privateRow = (await saveAgentMemory('agent-b', 'mine alone', 'warm')).id
+    await observe(fleetAuth('agent-a'), 'GET', '/api/memories?agent=agent-b&category=shared')
+    await observe(fleetAuth('agent-a'), 'GET', '/api/memories?agent=agent-b&tier=shared&category=shared')
+    await observe(fleetAuth('agent-a'), 'GET', `/api/memories/${sharedRow}`)
+    await observe(fleetAuth('agent-a'), 'GET', `/api/memories/${privateRow}`)
+    await observe(fleetAuth('agent-a'), 'GET', '/api/memories?agent=agent-b&category=warm')
+    await observe(fleetAuth('agent-a'), 'GET', '/api/memories/graph?agent=agent-b&category=shared')
+    await observe(fleetAuth('agent-a'), 'GET', `/api/memories/${sharedRow}/detail`)
     expect(rows('foreign_row_read').map((r) => [r.route, r.target, r.count])).toEqual([
       ['/api/memories', 'agent-b', 2],
       ['/api/memories/:id', 'agent-b', 1],
@@ -397,49 +402,49 @@ describe('foreign_row_access (endpoints reachable by permission only)', () => {
       ['/api/memories/graph', 'agent-b', 1],
     ])
   })
-  it('memories: the exemption reads the tier the way the route does, so a second value cannot widen it', () => {
+  it('memories: the exemption reads the tier the way the route does, so a second value cannot widen it', async () => {
     for (const q of [
       'category=shared&tier=warm', 'tier=warm&category=shared', 'category=shared&category=warm', 'tier=shared&tier=hot',
       'category=SHARED', 'tier=%20shared', 'category=', 'tier=&category=',
-    ]) observe(fleetAuth('agent-a'), 'GET', `/api/memories?agent=agent-b&${q}`)
+    ]) await observe(fleetAuth('agent-a'), 'GET', `/api/memories?agent=agent-b&${q}`)
     expect(total('foreign_row_read')).toBe(0)
     expect(total('foreign_row_access')).toBe(8)
   })
-  it('memories: a shared row by id is exempt only as a plain read, not with its history or on behalf of an agent', () => {
-    const sharedRow = saveAgentMemory('agent-b', 'for everyone', 'shared').id
-    observe(fleetAuth('agent-a'), 'GET', `/api/memories/${sharedRow}`)
-    observe(fleetAuth('agent-a'), 'GET', `/api/memories/${sharedRow}?include=versions`)
-    observe(fleetAuth('agent-a'), 'GET', `/api/memories/${sharedRow}?agent_id=agent-c`)
-    observe(fleetAuth('agent-a'), 'GET', `/api/memories/${sharedRow}?agent=agent-c`)
+  it('memories: a shared row by id is exempt only as a plain read, not with its history or on behalf of an agent', async () => {
+    const sharedRow = (await saveAgentMemory('agent-b', 'for everyone', 'shared')).id
+    await observe(fleetAuth('agent-a'), 'GET', `/api/memories/${sharedRow}`)
+    await observe(fleetAuth('agent-a'), 'GET', `/api/memories/${sharedRow}?include=versions`)
+    await observe(fleetAuth('agent-a'), 'GET', `/api/memories/${sharedRow}?agent_id=agent-c`)
+    await observe(fleetAuth('agent-a'), 'GET', `/api/memories/${sharedRow}?agent=agent-c`)
     expect(total('foreign_row_read')).toBe(1)
     expect(total('foreign_row_access')).toBe(5) // include=versions: the owner; agent_id / agent: the owner and the named agent
   })
   it('memories: a write is never exempt, even when it says category=shared', async () => {
-    const sharedRow = saveAgentMemory('agent-b', 'for everyone', 'shared').id
-    observe(fleetAuth('agent-a'), 'PUT', `/api/memories/${sharedRow}?category=shared`)
-    observe(fleetAuth('agent-a'), 'DELETE', `/api/memories/${sharedRow}`)
+    const sharedRow = (await saveAgentMemory('agent-b', 'for everyone', 'shared')).id
+    await observe(fleetAuth('agent-a'), 'PUT', `/api/memories/${sharedRow}?category=shared`)
+    await observe(fleetAuth('agent-a'), 'DELETE', `/api/memories/${sharedRow}`)
     expect(total('foreign_row_read')).toBe(0)
     expect(rows('foreign_row_access').map((r) => [r.method, r.target])).toEqual([['DELETE', 'agent-b'], ['PUT', 'agent-b']])
   })
-  it('agents: a path naming another agent is counted per route template, the list and literals are not', () => {
-    observe(fleetAuth('agent-a'), 'GET', '/api/agents/agent-b/conversation')
-    observe(fleetAuth('agent-a'), 'GET', '/api/agents/agent-b')
-    observe(fleetAuth('agent-a'), 'GET', '/api/agents/agent-a/security')
-    observe(fleetAuth('agent-a'), 'GET', '/api/agents')
-    observe(fleetAuth('agent-a'), 'GET', '/api/agents/activity')
+  it('agents: a path naming another agent is counted per route template, the list and literals are not', async () => {
+    await observe(fleetAuth('agent-a'), 'GET', '/api/agents/agent-b/conversation')
+    await observe(fleetAuth('agent-a'), 'GET', '/api/agents/agent-b')
+    await observe(fleetAuth('agent-a'), 'GET', '/api/agents/agent-a/security')
+    await observe(fleetAuth('agent-a'), 'GET', '/api/agents')
+    await observe(fleetAuth('agent-a'), 'GET', '/api/agents/activity')
     expect(rows('agent_id_mismatch').map((r) => [r.route, r.target])).toEqual([
       ['/api/agents/:agent', 'agent-b'],
       ['/api/agents/:agent/conversation', 'agent-b'],
     ])
     expect(normalizeRoute('/api/agents/export-all')).toBe('/api/agents/export-all')
   })
-  it('kanban: the card assignee and the assignee filter', () => {
-    createKanbanCard({ id: 'card-own', title: 't', assignee: 'agent-a' })
-    createKanbanCard({ id: 'card-foreign', title: 't', assignee: 'agent-b' })
-    observe(fleetAuth('agent-a'), 'PATCH', '/api/kanban/card-own')
-    observe(fleetAuth('agent-a'), 'PATCH', '/api/kanban/card-foreign')
-    observe(fleetAuth('agent-a'), 'GET', '/api/kanban?assignee=agent-b')
-    observe(fleetAuth('agent-a'), 'GET', '/api/kanban/labels')
+  it('kanban: the card assignee and the assignee filter', async () => {
+    await createKanbanCard({ id: 'card-own', title: 't', assignee: 'agent-a' })
+    await createKanbanCard({ id: 'card-foreign', title: 't', assignee: 'agent-b' })
+    await observe(fleetAuth('agent-a'), 'PATCH', '/api/kanban/card-own')
+    await observe(fleetAuth('agent-a'), 'PATCH', '/api/kanban/card-foreign')
+    await observe(fleetAuth('agent-a'), 'GET', '/api/kanban?assignee=agent-b')
+    await observe(fleetAuth('agent-a'), 'GET', '/api/kanban/labels')
     // kanban is scoped by tenant, enforce never refuses it: every hit is informational
     expect(rows('foreign_row_access')).toEqual([])
     expect(rows('foreign_row_read').map((r) => [r.method, r.route, r.target])).toEqual([
@@ -447,87 +452,102 @@ describe('foreign_row_access (endpoints reachable by permission only)', () => {
       ['PATCH', '/api/kanban/:id', 'agent-b'],
     ])
   })
+  it('workspace docs: the owner of the doc an id addresses is looked up (asynchronously) and held against the caller', async () => {
+    const own = await saveWorkspaceDoc({ agent_id: 'agent-a', tenant_id: 'default', title: 'own', content: 'c', content_type: 'text', type: 'notes' })
+    const foreign = await saveWorkspaceDoc({ agent_id: 'agent-b', tenant_id: 'default', title: 'foreign', content: 'c', content_type: 'text', type: 'notes' })
+    await observe(fleetAuth('agent-a'), 'PATCH', `/api/workspace/${own.id}`)
+    await observe(fleetAuth('agent-a'), 'PATCH', `/api/workspace/${foreign.id}`)
+    await observe(fleetAuth('agent-a'), 'DELETE', `/api/workspace/${foreign.id}`)
+    await observe(fleetAuth('agent-a'), 'GET', `/api/workspace/${foreign.id}`)
+    await observe(fleetAuth('agent-a'), 'PATCH', '/api/workspace/no-such-doc')
+    // a write on another agent's doc is what enforce refuses; the read of it is allowed and only counted
+    expect(rows('foreign_row_access').map((r) => [r.method, r.route, r.target])).toEqual([
+      ['DELETE', '/api/workspace/:id', 'agent-b'],
+      ['PATCH', '/api/workspace/:id', 'agent-b'],
+    ])
+    expect(rows('foreign_row_read').map((r) => [r.method, r.route, r.target])).toEqual([['GET', '/api/workspace/:id', 'agent-b']])
+  })
   it('schedules: the owner of the task a name addresses, and the agent of a new one', async () => {
     const task = { prompt: 'p', description: 'd', schedule: '* * * * *', type: 'task' as const, enabled: true, tenant_id: null, skip_if_busy: false, force_send: false }
-    upsertSchedule('task-own', { ...task, agent: 'agent-a' })
-    upsertSchedule('task-foreign', { ...task, agent: 'agent-b' })
-    observe(fleetAuth('agent-a'), 'PUT', '/api/schedules/task-own')
-    observe(fleetAuth('agent-a'), 'DELETE', '/api/schedules/task-foreign')
-    observe(fleetAuth('agent-a'), 'GET', '/api/schedules/tick-status')
-    await drain(observe(fleetAuth('agent-a'), 'POST', '/api/schedules', {}, { name: 'n', agent: 'agent-c' }))
+    await upsertSchedule('task-own', { ...task, agent: 'agent-a' })
+    await upsertSchedule('task-foreign', { ...task, agent: 'agent-b' })
+    await observe(fleetAuth('agent-a'), 'PUT', '/api/schedules/task-own')
+    await observe(fleetAuth('agent-a'), 'DELETE', '/api/schedules/task-foreign')
+    await observe(fleetAuth('agent-a'), 'GET', '/api/schedules/tick-status')
+    await drain(await observe(fleetAuth('agent-a'), 'POST', '/api/schedules', {}, { name: 'n', agent: 'agent-c' }))
     expect(rows('foreign_row_access').map((r) => [r.method, r.route, r.target])).toEqual([
       ['POST', '/api/schedules', 'agent-c'],
       ['DELETE', '/api/schedules/:name', 'agent-b'],
     ])
   })
-  it('a shared-token request is held to the same rule, by its self-declared caller', () => {
-    createKanbanCard({ id: 'card-foreign', title: 't', assignee: 'agent-b' })
-    observe(sharedAuth, 'PATCH', '/api/kanban/card-foreign', { 'x-agent-id': 'agent-a' })
+  it('a shared-token request is held to the same rule, by its self-declared caller', async () => {
+    await createKanbanCard({ id: 'card-foreign', title: 't', assignee: 'agent-b' })
+    await observe(sharedAuth, 'PATCH', '/api/kanban/card-foreign', { 'x-agent-id': 'agent-a' })
     expect(rows('foreign_row_read').map((r) => [r.caller, r.caller_source, r.target])).toEqual([['agent-a', 'self_declared', 'agent-b']])
   })
-  it('a row that does not exist, or has no owner, is not a hit', () => {
-    createKanbanCard({ id: 'card-nobody', title: 't' })
-    observe(fleetAuth('agent-a'), 'PATCH', '/api/kanban/card-missing')
-    observe(fleetAuth('agent-a'), 'PATCH', '/api/kanban/card-nobody')
-    observe(fleetAuth('agent-a'), 'PUT', '/api/memories/999999')
+  it('a row that does not exist, or has no owner, is not a hit', async () => {
+    await createKanbanCard({ id: 'card-nobody', title: 't' })
+    await observe(fleetAuth('agent-a'), 'PATCH', '/api/kanban/card-missing')
+    await observe(fleetAuth('agent-a'), 'PATCH', '/api/kanban/card-nobody')
+    await observe(fleetAuth('agent-a'), 'PUT', '/api/memories/999999')
     expect(total('foreign_row_access')).toBe(0)
   })
-  it('a failing row-owner lookup is swallowed and the rest of the request is still counted', () => {
+  it('a failing row-owner lookup is swallowed and the rest of the request is still counted', async () => {
     getDb().exec('DROP TABLE kanban_cards')
-    expect(() => observe(sharedAuth, 'PATCH', '/api/kanban/card-x', { 'x-agent-id': 'agent-a' })).not.toThrow()
+    await expect(observe(sharedAuth, 'PATCH', '/api/kanban/card-x', { 'x-agent-id': 'agent-a' })).resolves.toBeTruthy()
     expect(total('shared_token_use')).toBe(1)
   })
 })
 
 describe('unscoped_read', () => {
-  it('the main agent lists across agents by design and is never counted', () => {
-    observe(mainAdminAuth, 'GET', '/api/memories')
-    observe(sharedAuth, 'GET', '/api/workspace', { 'x-agent-id': MAIN })
+  it('the main agent lists across agents by design and is never counted', async () => {
+    await observe(mainAdminAuth, 'GET', '/api/memories')
+    await observe(sharedAuth, 'GET', '/api/workspace', { 'x-agent-id': MAIN })
     expect(total('unscoped_read')).toBe(0)
   })
 
-  it('a listing of memories or workspace documents with no agent filter reads across agents', () => {
-    observe(fleetAuth('agent-a'), 'GET', '/api/memories')
-    observe(fleetAuth('agent-a'), 'GET', '/api/workspace?q=x')
-    observe(fleetAuth('agent-a'), 'GET', '/api/memories?agent=agent-a')
-    observe(fleetAuth('agent-a'), 'GET', '/api/memories/search?agent=agent-a')
-    observe(fleetAuth('agent-a'), 'POST', '/api/memories') // a write is not a listing
-    observe(fleetAuth('agent-a'), 'GET', '/api/blackboard') // visible to all by design: not counted
+  it('a listing of memories or workspace documents with no agent filter reads across agents', async () => {
+    await observe(fleetAuth('agent-a'), 'GET', '/api/memories')
+    await observe(fleetAuth('agent-a'), 'GET', '/api/workspace?q=x')
+    await observe(fleetAuth('agent-a'), 'GET', '/api/memories?agent=agent-a')
+    await observe(fleetAuth('agent-a'), 'GET', '/api/memories/search?agent=agent-a')
+    await observe(fleetAuth('agent-a'), 'POST', '/api/memories') // a write is not a listing
+    await observe(fleetAuth('agent-a'), 'GET', '/api/blackboard') // visible to all by design: not counted
     expect(rows('unscoped_read').map((r) => [r.route, r.target, r.count])).toEqual([['/api/memories', '*', 1], ['/api/workspace', '*', 1]])
   })
 })
 
 describe('tenant context', () => {
-  it('a fleet token refused for a shared agent with no tenant context is counted by the web gate', () => {
-    recordTenantContextRefusal(fakeReq({ 'user-agent': 'node' }), { kind: 'token', role: 'fleet_agent', tokenName: 'fleet_agent:agent-shared', agentId: 'agent-shared', tenantContextMissing: true }, 'GET', '/api/memories')
+  it('a fleet token refused for a shared agent with no tenant context is counted by the web gate', async () => {
+    await recordTenantContextRefusal(fakeReq({ 'user-agent': 'node' }), { kind: 'token', role: 'fleet_agent', tokenName: 'fleet_agent:agent-shared', agentId: 'agent-shared', tenantContextMissing: true }, 'GET', '/api/memories')
     expect(rows('missing_tenant_context').map((r) => [r.route, r.caller, r.caller_source, r.client, r.target, r.count])).toEqual([['/api/memories', 'agent-shared', 'token', 'node', 'no_row', 1]])
   })
-  it('the refusal counter ignores a credential that is not a token naming an agent', () => {
-    recordTenantContextRefusal(fakeReq(), sharedAuth, 'GET', '/api/memories')
-    recordTenantContextRefusal(fakeReq(), sessionAuth, 'GET', '/api/memories')
+  it('the refusal counter ignores a credential that is not a token naming an agent', async () => {
+    await recordTenantContextRefusal(fakeReq(), sharedAuth, 'GET', '/api/memories')
+    await recordTenantContextRefusal(fakeReq(), sessionAuth, 'GET', '/api/memories')
     expect(total('missing_tenant_context')).toBe(0)
   })
-  it('a shared-token request declaring a shared agent without ?tenant= is counted, with it or for another agent it is not', () => {
-    observe(sharedAuth, 'GET', '/api/kanban', { 'x-agent-id': 'agent-shared' })
-    observe(sharedAuth, 'GET', '/api/kanban?tenant=tenant-a', { 'x-agent-id': 'agent-shared' })
-    observe(sharedAuth, 'GET', '/api/kanban', { 'x-agent-id': 'agent-a' })
-    observe(sharedAuth, 'GET', '/api/kanban', {})
+  it('a shared-token request declaring a shared agent without ?tenant= is counted, with it or for another agent it is not', async () => {
+    await observe(sharedAuth, 'GET', '/api/kanban', { 'x-agent-id': 'agent-shared' })
+    await observe(sharedAuth, 'GET', '/api/kanban?tenant=tenant-a', { 'x-agent-id': 'agent-shared' })
+    await observe(sharedAuth, 'GET', '/api/kanban', { 'x-agent-id': 'agent-a' })
+    await observe(sharedAuth, 'GET', '/api/kanban', {})
     expect(rows('missing_tenant_context').map((r) => [r.caller, r.caller_source, r.count])).toEqual([['agent-shared', 'self_declared', 1]])
   })
-  it('a shared-token miss carries the same reason label as a fleet-token refusal', () => {
-    observe(sharedAuth, 'GET', '/api/kanban', { 'x-agent-id': 'agent-shared' })
+  it('a shared-token miss carries the same reason label as a fleet-token refusal', async () => {
+    await observe(sharedAuth, 'GET', '/api/kanban', { 'x-agent-id': 'agent-shared' })
     getDb().prepare('INSERT INTO agent_tenant_context (agent_id, tenant_id, status, updated_at) VALUES (?, ?, ?, ?)').run('agent-shared', 'tenant-a', 'conflict', Math.floor(Date.now() / 1000))
     resetTokenShadowForTests()
-    observe(sharedAuth, 'GET', '/api/kanban', { 'x-agent-id': 'agent-shared' })
+    await observe(sharedAuth, 'GET', '/api/kanban', { 'x-agent-id': 'agent-shared' })
     expect(rows('missing_tenant_context').map((r) => [r.caller_source, r.target, r.count])).toEqual([['self_declared', 'conflict', 1], ['self_declared', 'no_row', 1]])
   })
-  it('GET /api/memories of a shared agent without a tenant, from the shared token and from a fleet token', () => {
-    observe(sharedAuth, 'GET', '/api/memories?agent=agent-shared', { 'x-agent-id': MAIN })
-    observe(fleetAuth('agent-a'), 'GET', '/api/memories?agent_id=agent-shared')
-    observe(sharedAuth, 'GET', '/api/memories?agent=agent-shared&tenant=tenant-a')
-    observe(sharedAuth, 'GET', '/api/memories?agent=agent-a')
-    observe(sharedAuth, 'POST', '/api/memories?agent=agent-shared')
-    observe(mainAdminAuth, 'GET', '/api/memories?agent=agent-shared') // an admin token has a tenant of its own to scope by
+  it('GET /api/memories of a shared agent without a tenant, from the shared token and from a fleet token', async () => {
+    await observe(sharedAuth, 'GET', '/api/memories?agent=agent-shared', { 'x-agent-id': MAIN })
+    await observe(fleetAuth('agent-a'), 'GET', '/api/memories?agent_id=agent-shared')
+    await observe(sharedAuth, 'GET', '/api/memories?agent=agent-shared&tenant=tenant-a')
+    await observe(sharedAuth, 'GET', '/api/memories?agent=agent-a')
+    await observe(sharedAuth, 'POST', '/api/memories?agent=agent-shared')
+    await observe(mainAdminAuth, 'GET', '/api/memories?agent=agent-shared') // an admin token has a tenant of its own to scope by
     expect(rows('shared_agent_memories_no_tenant').map((r) => [r.caller, r.caller_source, r.target])).toEqual([
       ['agent-a', 'token', 'agent-shared'],
       [MAIN, 'self_declared', 'agent-shared'],
@@ -536,11 +556,11 @@ describe('tenant context', () => {
 })
 
 describe('fleet_skill_write_denied', () => {
-  it('counts a refused skill write by the owner of the skill, empty for its own', () => {
-    recordFleetSkillWriteDenied(fakeReq(), 'agent-a', 'PUT', '/api/skills/sql/agent%2Fagent-b%2Fx', 'agent/agent-b/x')
-    recordFleetSkillWriteDenied(fakeReq(), 'agent-a', 'PUT', '/api/skills/sql/global%2Fy', 'global/y')
-    recordFleetSkillWriteDenied(fakeReq(), 'agent-a', 'POST', '/api/skills/sql', '')
-    recordFleetSkillWriteDenied(fakeReq(), 'agent-a', 'DELETE', '/api/skills/sql/agent%2Fagent-a%2Fz', 'agent/agent-a/z')
+  it('counts a refused skill write by the owner of the skill, empty for its own', async () => {
+    await recordFleetSkillWriteDenied(fakeReq(), 'agent-a', 'PUT', '/api/skills/sql/agent%2Fagent-b%2Fx', 'agent/agent-b/x')
+    await recordFleetSkillWriteDenied(fakeReq(), 'agent-a', 'PUT', '/api/skills/sql/global%2Fy', 'global/y')
+    await recordFleetSkillWriteDenied(fakeReq(), 'agent-a', 'POST', '/api/skills/sql', '')
+    await recordFleetSkillWriteDenied(fakeReq(), 'agent-a', 'DELETE', '/api/skills/sql/agent%2Fagent-a%2Fz', 'agent/agent-a/z')
     expect(rows('fleet_skill_write_denied').map((r) => [r.method, r.route, r.caller, r.caller_source, r.target])).toEqual([
       ['POST', '/api/skills/sql', 'agent-a', 'token', ''],
       ['DELETE', '/api/skills/sql/:id', 'agent-a', 'token', ''],
@@ -548,8 +568,8 @@ describe('fleet_skill_write_denied', () => {
       ['PUT', '/api/skills/sql/:id', 'agent-a', 'token', 'global'],
     ])
   })
-  it('a call without a token agent counts nothing', () => {
-    recordFleetSkillWriteDenied(fakeReq(), undefined, 'PUT', '/api/skills/sql/x', 'x')
+  it('a call without a token agent counts nothing', async () => {
+    await recordFleetSkillWriteDenied(fakeReq(), undefined, 'PUT', '/api/skills/sql/x', 'x')
     expect(rows()).toEqual([])
   })
 })
@@ -558,53 +578,77 @@ describe('the writer', () => {
   const base = { method: 'GET', route: '/api/kanban', client: 'curl', caller: 'agent-a', callerSource: 'self_declared' as const }
   const T0 = Date.UTC(2026, 9, 9, 12, 0, 0) / 1000
 
-  it('upserts one row per shape with a counter and the last timestamp', () => {
-    recordTokenShadow(base, { category: 'shared_token_use', target: '' }, T0)
-    recordTokenShadow(base, { category: 'shared_token_use', target: '' }, T0 + 5)
+  it('upserts one row per shape with a counter and the last timestamp', async () => {
+    await recordTokenShadow(base, { category: 'shared_token_use', target: '' }, T0)
+    await recordTokenShadow(base, { category: 'shared_token_use', target: '' }, T0 + 5)
     expect(rows()).toHaveLength(1)
     expect(rows()[0]).toMatchObject({ day: '2026-10-09', count: 2 })
     expect((getDb().prepare('SELECT last_ts FROM token_usage_shadow').get() as { last_ts: number }).last_ts).toBe(T0 + 5)
   })
 
-  it('splits on the UTC day boundary', () => {
+  it('splits on the UTC day boundary', async () => {
     const midnight = Date.UTC(2026, 9, 10, 0, 0, 0) / 1000
-    recordTokenShadow(base, { category: 'shared_token_use', target: '' }, midnight - 1)
-    recordTokenShadow(base, { category: 'shared_token_use', target: '' }, midnight)
+    await recordTokenShadow(base, { category: 'shared_token_use', target: '' }, midnight - 1)
+    await recordTokenShadow(base, { category: 'shared_token_use', target: '' }, midnight)
     expect(rows().map((r) => [r.day, r.count])).toEqual([['2026-10-09', 1], ['2026-10-10', 1]])
   })
 
-  it('folds shapes beyond the daily cap into one overflow row and loses no hit', () => {
+  it('folds shapes beyond the daily cap into one overflow row and loses no hit', async () => {
     for (let i = 0; i < MAX_ROWS_PER_DAY + 50; i++) {
-      recordTokenShadow({ ...base, caller: `agent-${i}` }, { category: 'shared_token_use', target: '' }, T0)
+      await recordTokenShadow({ ...base, caller: `agent-${i}` }, { category: 'shared_token_use', target: '' }, T0)
     }
     const all = rows()
     expect(all.length).toBe(MAX_ROWS_PER_DAY + 1) // the cap, plus the one overflow row
     expect(all.find((r) => r.route === '_overflow')).toMatchObject({ category: 'shared_token_use', caller: '_overflow', count: 50 })
     expect(all.reduce((n, r) => n + r.count, 0)).toBe(MAX_ROWS_PER_DAY + 50)
     // A shape already in the table keeps counting under its own key after the cap is reached.
-    recordTokenShadow({ ...base, caller: 'agent-0' }, { category: 'shared_token_use', target: '' }, T0)
+    await recordTokenShadow({ ...base, caller: 'agent-0' }, { category: 'shared_token_use', target: '' }, T0)
     expect(all.length).toBe(rows().length)
     expect(rows().find((r) => r.caller === 'agent-0')?.count).toBe(2)
   })
 
-  it('the cap survives a process restart (the day state is rebuilt from the table)', () => {
-    for (let i = 0; i < MAX_ROWS_PER_DAY; i++) recordTokenShadow({ ...base, caller: `agent-${i}` }, { category: 'shared_token_use', target: '' }, T0)
+  it('overlapping first records of one new shape count one row toward the cap, not one each', async () => {
+    const shape = (i: number) => ({ ...base, caller: `agent-${i}` })
+    const hit = { category: 'shared_token_use' as const, target: '' }
+    // MAX - 41 rows in the table, then 40 records of ONE new shape in the same tick: one row, so MAX - 40 in all
+    for (let i = 0; i < MAX_ROWS_PER_DAY - 41; i++) await recordTokenShadow(shape(i), hit, T0)
+    await Promise.all(Array.from({ length: 40 }, () => recordTokenShadow(shape(9000), hit, T0)))
+    expect(rows().find((r) => r.caller === 'agent-9000')?.count).toBe(40)
+    // 40 more distinct shapes: the cap (MAX rows) is reached exactly at the 40th, nothing is folded earlier
+    for (let i = 0; i < 40; i++) await recordTokenShadow(shape(9001 + i), hit, T0)
+    expect(rows().filter((r) => r.route !== '_overflow')).toHaveLength(MAX_ROWS_PER_DAY)
+    expect(rows().find((r) => r.route === '_overflow')).toBeUndefined()
+  })
+
+  it('the cap survives a process restart (the day state is rebuilt from the table)', async () => {
+    for (let i = 0; i < MAX_ROWS_PER_DAY; i++) await recordTokenShadow({ ...base, caller: `agent-${i}` }, { category: 'shared_token_use', target: '' }, T0)
     resetTokenShadowForTests()
-    recordTokenShadow({ ...base, caller: 'agent-new' }, { category: 'shared_token_use', target: '' }, T0)
-    recordTokenShadow({ ...base, caller: 'agent-1' }, { category: 'shared_token_use', target: '' }, T0)
+    await recordTokenShadow({ ...base, caller: 'agent-new' }, { category: 'shared_token_use', target: '' }, T0)
+    await recordTokenShadow({ ...base, caller: 'agent-1' }, { category: 'shared_token_use', target: '' }, T0)
     expect(rows().find((r) => r.caller === 'agent-new')).toBeUndefined()
     expect(rows().find((r) => r.route === '_overflow')?.count).toBe(1)
     expect(rows().find((r) => r.caller === 'agent-1')?.count).toBe(2)
   })
 
-  it('prunes days beyond the retention window, at most once an hour', () => {
+  it('prunes days beyond the retention window, at most once an hour', async () => {
     const old = Date.UTC(2026, 9, 9, 12, 0, 0) / 1000 - (RETENTION_DAYS + 1) * 86400
     const keep = Date.UTC(2026, 9, 9, 12, 0, 0) / 1000 - (RETENTION_DAYS - 1) * 86400
-    recordTokenShadow(base, { category: 'shared_token_use', target: '' }, old) // sets the throttle at `old`
-    recordTokenShadow(base, { category: 'shared_token_use', target: '' }, keep)
+    await recordTokenShadow(base, { category: 'shared_token_use', target: '' }, old) // sets the throttle at `old`
+    await recordTokenShadow(base, { category: 'shared_token_use', target: '' }, keep)
     expect(rows().map((r) => r.day)).toEqual([new Date(old * 1000).toISOString().slice(0, 10), new Date(keep * 1000).toISOString().slice(0, 10)].sort())
-    recordTokenShadow(base, { category: 'shared_token_use', target: '' }, T0) // an hour+ later: prune runs
+    await recordTokenShadow(base, { category: 'shared_token_use', target: '' }, T0) // an hour+ later: prune runs
     expect(rows().map((r) => r.day).sort()).toEqual([new Date(keep * 1000).toISOString().slice(0, 10), '2026-10-09'].sort())
+  })
+
+  it('deleteTokenShadowRowsBefore returns how many rows it removed and keeps the day it names', async () => {
+    const key = (day: string, caller: string) => ({ day, category: 'shared_token_use', method: 'GET', route: '/api/kanban', caller, callerSource: 'self_declared' as const, client: 'curl', target: '' })
+    await bumpTokenShadow(key('2026-10-07', 'agent-a'), T0)
+    await bumpTokenShadow(key('2026-10-08', 'agent-a'), T0)
+    await bumpTokenShadow(key('2026-10-08', 'agent-b'), T0)
+    await bumpTokenShadow(key('2026-10-09', 'agent-a'), T0)
+    expect(await deleteTokenShadowRowsBefore('2026-10-09')).toBe(3)
+    expect(rows().map((r) => r.day)).toEqual(['2026-10-09'])
+    expect(await deleteTokenShadowRowsBefore('2026-10-09')).toBe(0)
   })
 
   it('the table rejects an unknown caller source', () => {
@@ -618,8 +662,8 @@ describe('fail-safe: the counter never reaches a request', () => {
   it('a missing table makes the recorder return false, not throw, and the observer neither', async () => {
     getDb().exec('DROP TABLE token_usage_shadow')
     resetTokenShadowForTests()
-    expect(recordTokenShadow({ method: 'GET', route: '/r', client: 'none', caller: 'agent-a', callerSource: 'token' }, { category: 'shared_token_use', target: '' })).toBe(false)
-    const req = observe(sharedAuth, 'POST', '/api/daily-log?agent=agent-b', { 'x-agent-id': 'agent-a' }, { agent_id: 'agent-c' })
+    expect(await recordTokenShadow({ method: 'GET', route: '/r', client: 'none', caller: 'agent-a', callerSource: 'token' }, { category: 'shared_token_use', target: '' })).toBe(false)
+    const req = await observe(sharedAuth, 'POST', '/api/daily-log?agent=agent-b', { 'x-agent-id': 'agent-a' }, { agent_id: 'agent-c' })
     expect(await drain(req)).toEqual(Buffer.from(JSON.stringify({ agent_id: 'agent-c' }))) // the handler still gets its body, untouched
   })
 
@@ -632,13 +676,13 @@ describe('fail-safe: the counter never reaches a request', () => {
     } finally {
       spy.mockRestore()
       const mod = await import('../web/token-shadow.js')
-      ;(await import('../web/http-helpers.js')).setRequestBodyObserver((r, b) => mod.observeRequestBody(r, b))
+      ;(await import('../web/http-helpers.js')).setRequestBodyObserver(async (r, b) => mod.observeRequestBody(r, b))
     }
   })
 
   it('a body that is not JSON, empty, or too large counts nothing and raises nothing', async () => {
     for (const body of ['not json', '', '{"agent_id":"' + 'x'.repeat(300 * 1024) + '"}']) {
-      const req = observe(fleetAuth('agent-a'), 'POST', '/api/daily-log', {}, body)
+      const req = await observe(fleetAuth('agent-a'), 'POST', '/api/daily-log', {}, body)
       await drain(req)
     }
     expect(total('agent_id_mismatch')).toBe(0)
@@ -650,7 +694,7 @@ describe('fail-safe: the counter never reaches a request', () => {
   })
 
   it('a GET is never registered for a body read', async () => {
-    const req = observe(fleetAuth('agent-a'), 'GET', '/api/daily-log')
+    const req = await observe(fleetAuth('agent-a'), 'GET', '/api/daily-log')
     await drain(req)
     expect(rows()).toEqual([])
   })
@@ -672,11 +716,11 @@ describe('GET /api/token-shadow', () => {
     return out
   }
 
-  beforeEach(() => {
-    recordTokenShadow(base, { category: 'shared_token_use', target: '' }, T)
-    recordTokenShadow(base, { category: 'shared_token_use', target: '' }, T)
-    recordTokenShadow({ ...base, route: '/api/conversation-ledger/:agent/recent', callerSource: 'token' }, { category: 'agent_id_mismatch', target: 'agent-b' }, T)
-    recordTokenShadow({ ...base, caller: 'agent-c', route: '/api/odd_route' }, { category: 'shared_token_use', target: '' }, T - 3 * 86400)
+  beforeEach(async () => {
+    await recordTokenShadow(base, { category: 'shared_token_use', target: '' }, T)
+    await recordTokenShadow(base, { category: 'shared_token_use', target: '' }, T)
+    await recordTokenShadow({ ...base, route: '/api/conversation-ledger/:agent/recent', callerSource: 'token' }, { category: 'agent_id_mismatch', target: 'agent-b' }, T)
+    await recordTokenShadow({ ...base, caller: 'agent-c', route: '/api/odd_route' }, { category: 'shared_token_use', target: '' }, T - 3 * 86400)
   })
 
   it('is admin-only: every other role is a 403 and sees nothing', async () => {

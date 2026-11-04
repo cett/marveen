@@ -55,15 +55,15 @@ export async function tryHandleImportMemories(ctx: RouteContext): Promise<boolea
   const effectiveTenantId: string = tenantParam ?? (isAdmin ? 'default' : (ctx.tenantId ?? 'default'))
 
   /** Looks up a source's tenant_id; returns null if the source does not exist. */
-  function getSourceTenantId(id: string): string | null {
+  async function getSourceTenantId(id: string): Promise<string | null> {
     return getImportSourceTenantId(id)
   }
 
   /** Cross-tenant ownership guard for a single source. Writes a 403/404 and
    *  returns true when access should be denied; caller must `return true` in
    *  that case. */
-  function denySourceAccess(id: string): boolean {
-    const tenantId = getSourceTenantId(id)
+  async function denySourceAccess(id: string): Promise<boolean> {
+    const tenantId = await getSourceTenantId(id)
     if (tenantId === null) { json(res, { error: 'not_found' }, 404); return true }
     if (!isAdmin && tenantId !== (ctx.tenantId ?? 'default')) {
       json(res, { error: 'forbidden', hint: 'Source belongs to a different tenant' }, 403)
@@ -74,7 +74,7 @@ export async function tryHandleImportMemories(ctx: RouteContext): Promise<boolea
 
   // ── GET /api/import/sources ──────────────────────────────────────────────
   if (path === '/api/import/sources' && method === 'GET') {
-    json(res, listImportSources(isAdmin && tenantParam === null ? null : effectiveTenantId))
+    json(res, await listImportSources(isAdmin && tenantParam === null ? null : effectiveTenantId))
     return true
   }
 
@@ -117,7 +117,7 @@ export async function tryHandleImportMemories(ctx: RouteContext): Promise<boolea
 
     const now = Math.floor(Date.now() / 1000)
     const id = genId()
-    insertImportSource({
+    await insertImportSource({
       id, type: data.type, path: data.path.trim(), label: data.label?.trim() || null,
       intervalHours, enabled: data.enabled !== false, now, tenantId, vaultTokenRef, confluenceEmail, baseUrl,
     })
@@ -131,7 +131,7 @@ export async function tryHandleImportMemories(ctx: RouteContext): Promise<boolea
   const sourceMatch = path.match(/^\/api\/import\/sources\/([a-zA-Z0-9_-]+)$/)
   if (sourceMatch && method === 'PUT') {
     const id = sourceMatch[1]
-    if (denySourceAccess(id)) return true
+    if (await denySourceAccess(id)) return true
     const body = await readBody(req)
     const data = JSON.parse(body.toString()) as {
       label?: string; interval_hours?: number; enabled?: boolean; path?: string
@@ -147,7 +147,7 @@ export async function tryHandleImportMemories(ctx: RouteContext): Promise<boolea
     }
 
     // denySourceAccess above proved the row exists
-    const existing = getImportSource(id)!
+    const existing = (await getImportSource(id))!
 
     // Same token-precondition as creation, re-checked here because enabling
     // (or re-pointing vault_token_ref/base_url on) a Confluence source is
@@ -185,7 +185,7 @@ export async function tryHandleImportMemories(ctx: RouteContext): Promise<boolea
     if (data.vault_token_ref !== undefined) patch.vault_token_ref = data.vault_token_ref?.trim() || null
     if (data.confluence_email !== undefined) patch.confluence_email = data.confluence_email?.trim() || null
     if (data.base_url !== undefined) patch.base_url = normaliseConfluenceBaseUrl(data.base_url)
-    updateImportSource(id, now, patch)
+    await updateImportSource(id, now, patch)
     json(res, { ok: true })
     return true
   }
@@ -193,8 +193,8 @@ export async function tryHandleImportMemories(ctx: RouteContext): Promise<boolea
   // ── DELETE /api/import/sources/:id ──────────────────────────────────────
   if (sourceMatch && method === 'DELETE') {
     const id = sourceMatch[1]
-    if (denySourceAccess(id)) return true
-    if (!deleteImportSource(id)) { json(res, { error: 'not_found' }, 404); return true }
+    if (await denySourceAccess(id)) return true
+    if (!await deleteImportSource(id)) { json(res, { error: 'not_found' }, 404); return true }
     json(res, { ok: true })
     return true
   }
@@ -203,7 +203,7 @@ export async function tryHandleImportMemories(ctx: RouteContext): Promise<boolea
   const syncMatch = path.match(/^\/api\/import\/sources\/([a-zA-Z0-9_-]+)\/sync$/)
   if (syncMatch && method === 'POST') {
     const id = syncMatch[1]
-    if (denySourceAccess(id)) return true
+    if (await denySourceAccess(id)) return true
     // Fire-and-forget; the crawl runs in the background
     crawlSource(id).catch(err => logger.error({ sourceId: id, err }, 'Manual sync error'))
     json(res, { ok: true, queued: true })
@@ -214,14 +214,14 @@ export async function tryHandleImportMemories(ctx: RouteContext): Promise<boolea
   const logMatch = path.match(/^\/api\/import\/sources\/([a-zA-Z0-9_-]+)\/log$/)
   if (logMatch && method === 'GET') {
     const id = logMatch[1]
-    if (denySourceAccess(id)) return true
-    json(res, listImportAuditLogForSource(id))
+    if (await denySourceAccess(id)) return true
+    json(res, await listImportAuditLogForSource(id))
     return true
   }
 
   // ── GET /api/import/log ──────────────────────────────────────────────────
   if (path === '/api/import/log' && method === 'GET') {
-    json(res, listImportAuditLog(isAdmin && tenantParam === null ? null : effectiveTenantId))
+    json(res, await listImportAuditLog(isAdmin && tenantParam === null ? null : effectiveTenantId))
     return true
   }
 
@@ -229,8 +229,8 @@ export async function tryHandleImportMemories(ctx: RouteContext): Promise<boolea
   const wipeSourceMatch = path.match(/^\/api\/import\/sources\/([a-zA-Z0-9_-]+)\/memories$/)
   if (wipeSourceMatch && method === 'DELETE') {
     const id = wipeSourceMatch[1]
-    if (denySourceAccess(id)) return true
-    json(res, { ok: true, deleted: wipeImportMemories(id) })
+    if (await denySourceAccess(id)) return true
+    json(res, { ok: true, deleted: await wipeImportMemories(id) })
     return true
   }
 
@@ -239,7 +239,7 @@ export async function tryHandleImportMemories(ctx: RouteContext): Promise<boolea
   // endpoints above which are tenant-scoped.
   if (path === '/api/import/memories' && method === 'DELETE') {
     if (!isAdmin) { json(res, { error: 'forbidden', hint: 'Admin role required' }, 403); return true }
-    const changes = wipeImportMemories()
+    const changes = await wipeImportMemories()
     logger.info({ deleted: changes }, 'Import memories wiped')
     json(res, { ok: true, deleted: changes })
     return true
@@ -247,7 +247,7 @@ export async function tryHandleImportMemories(ctx: RouteContext): Promise<boolea
 
   // ── GET /api/import/stats ─────────────────────────────────────────────────
   if (path === '/api/import/stats' && method === 'GET') {
-    json(res, getImportStats(isAdmin && tenantParam === null ? null : effectiveTenantId))
+    json(res, await getImportStats(isAdmin && tenantParam === null ? null : effectiveTenantId))
     return true
   }
 
@@ -262,7 +262,7 @@ export async function tryHandleImportMemories(ctx: RouteContext): Promise<boolea
 
     if (!q) { json(res, { items: [], total: 0, offset, limit }); return true }
 
-    const { items, total } = searchImportMemories(q, isAdmin && tenantParam === null ? null : effectiveTenantId, limit, offset)
+    const { items, total } = await searchImportMemories(q, isAdmin && tenantParam === null ? null : effectiveTenantId, limit, offset)
     json(res, { items, total, offset, limit })
     return true
   }

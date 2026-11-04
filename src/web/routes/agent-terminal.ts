@@ -102,7 +102,7 @@ export async function tryHandleAgentTerminal(ctx: RouteContext): Promise<boolean
         json(res, { error: 'invalid_value', field: 'enabled', hint: 'Provide {enabled:boolean}' }, 400)
         return true
       }
-      const next = writeTerminalInputEnabled(enabled)
+      const next = await writeTerminalInputEnabled(enabled)
       logger.warn({
         enabled: next,
         remote: ctx.req.socket?.remoteAddress ?? 'unknown',

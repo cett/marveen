@@ -388,6 +388,7 @@ bash scripts/doctor.sh
 | `unknown_hash` | the database has never seen this token (an older database under newer files, or the reverse) | `issue` replaces it |
 | `revoked` | the token was revoked or has expired | `issue` replaces it |
 | `wrong_role` | the file holds a valid token of another subject or role | `issue` replaces it |
+| `multiple_active` | the file token is valid, but its name has more than one active row (a fifth column names the token name and the count); the other rows belong to nobody | `issue --rotate` (`issue-operator --rotate`): a plain `issue` keeps the valid file and leaves the extra rows |
 | `shared_mismatch` | `store/.dashboard-token` does not hash to the active `dashboard` row | `rotate-shared` (step 3) |
 | `shared_in_env` | `DASHBOARD_TOKEN` is set in `.env` or the environment; the archive carries `.env`, and the variable overrides the token file | remove it from `.env`, then `rotate-shared` |
 

@@ -20,15 +20,15 @@ export function dailyLogSummaryCommand(installDir: string, webPort: number, agen
 }
 
 /** Seeds the task once. Returns true when a row was inserted. */
-export function ensureDailyLogSummaryTask(
+export async function ensureDailyLogSummaryTask(
   storeDir: string = STORE_DIR,
   projectRoot: string = PROJECT_ROOT,
   agent: string = MAIN_AGENT_ID,
   webPort: number = WEB_PORT,
-): boolean {
+): Promise<boolean> {
   const marker = join(storeDir, SEEDED_MARKER)
   if (existsSync(marker)) return false
-  const inserted = seedScheduleIfAbsent(DAILY_LOG_SUMMARY_TASK, {
+  const inserted = await seedScheduleIfAbsent(DAILY_LOG_SUMMARY_TASK, {
     prompt: '',
     description: 'Esti napi összefoglaló a napi naplóba (LLM nélkül): az aznapi új memóriák, kanban-mozgások, munkadokumentumok és merge-elt PR-ek a scripts/daily-log-summary.py-ból, a fő agent nevében. Naponta egyszer ír (a meglévő bejegyzést nem duplázza), üres napon is egy rövid sort. Hiba esetén (nem 0 exit kód) riasztás.',
     schedule: DAILY_LOG_SUMMARY_CRON,

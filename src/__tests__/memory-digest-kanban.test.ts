@@ -12,11 +12,11 @@ vi.mock('../db.js', () => ({
   touchMemory: vi.fn(),
   saveMemory: vi.fn(),
   decayMemories: vi.fn().mockReturnValue(undefined),
-  pruneAuditLogs: vi.fn().mockReturnValue(undefined),
-  pruneTokenUsage: vi.fn().mockReturnValue({ pruned: 0 }),
-  pruneBlackboardHistory: vi.fn().mockReturnValue(0),
-  pruneConversationLog: vi.fn().mockReturnValue(0),
-  pruneAgentMessages: vi.fn().mockReturnValue(0),
+  pruneAuditLogs: vi.fn().mockResolvedValue(undefined),
+  pruneTokenUsage: vi.fn().mockResolvedValue({ pruned: 0 }),
+  pruneBlackboardHistory: vi.fn().mockResolvedValue(0),
+  pruneConversationLog: vi.fn().mockResolvedValue(0),
+  pruneAgentMessages: vi.fn().mockResolvedValue(0),
   getMemoriesForChat: vi.fn().mockReturnValue([]),
   listKanbanCardsSummary: vi.fn().mockReturnValue([]),
 }))
@@ -74,18 +74,18 @@ beforeEach(() => {
 })
 
 describe('buildKanbanContext', () => {
-  it('returns an empty string when there are no cards', () => {
-    mockListKanbanCardsSummary.mockReturnValue([])
-    expect(buildKanbanContext()).toBe('')
+  it('returns an empty string when there are no cards', async () => {
+    mockListKanbanCardsSummary.mockResolvedValue([])
+    expect(await buildKanbanContext()).toBe('')
   })
 
-  it('groups cards by their Hungarian status label, with priority emoji and assignee', () => {
+  it('groups cards by their Hungarian status label, with priority emoji and assignee', async () => {
     mockListKanbanCardsSummary.mockReturnValue([
       { id: 'c1', title: 'Fix the thing', status: 'in_progress', priority: 'urgent', assignee: 'agent-a' },
       { id: 'c2', title: 'Write docs', status: 'planned', priority: 'low', assignee: null },
     ] as unknown as ReturnType<typeof db.listKanbanCardsSummary>)
 
-    const out = buildKanbanContext()
+    const out = await buildKanbanContext()
 
     expect(out).toContain('[Kanban tabla]')
     expect(out).toContain('Folyamatban:')
@@ -94,12 +94,12 @@ describe('buildKanbanContext', () => {
     expect(out).toContain('🔵 Write docs [c2]')
   })
 
-  it('falls back to the raw status string and a neutral priority dot for unknown values', () => {
+  it('falls back to the raw status string and a neutral priority dot for unknown values', async () => {
     mockListKanbanCardsSummary.mockReturnValue([
       { id: 'c3', title: 'Mystery card', status: 'archived', priority: 'weird', assignee: null },
     ] as unknown as ReturnType<typeof db.listKanbanCardsSummary>)
 
-    const out = buildKanbanContext()
+    const out = await buildKanbanContext()
 
     expect(out).toContain('archived:')
     expect(out).toContain('⚪ Mystery card [c3]')
@@ -142,13 +142,13 @@ describe('saveConversationTurn', () => {
 })
 
 describe('runDecaySweep', () => {
-  it('runs every prune/decay step and logs a combined summary', () => {
-    vi.mocked(db.pruneTokenUsage).mockReturnValue({ pruned: 3 } as unknown as ReturnType<typeof db.pruneTokenUsage>)
-    vi.mocked(db.pruneBlackboardHistory).mockReturnValue(2 as unknown as ReturnType<typeof db.pruneBlackboardHistory>)
-    vi.mocked(db.pruneConversationLog).mockReturnValue(1 as unknown as ReturnType<typeof db.pruneConversationLog>)
-    vi.mocked(db.pruneAgentMessages).mockReturnValue(4 as unknown as ReturnType<typeof db.pruneAgentMessages>)
+  it('runs every prune/decay step and logs a combined summary', async () => {
+    vi.mocked(db.pruneTokenUsage).mockResolvedValue({ pruned: 3 } as unknown as Awaited<ReturnType<typeof db.pruneTokenUsage>>)
+    vi.mocked(db.pruneBlackboardHistory).mockResolvedValue(2 as unknown as Awaited<ReturnType<typeof db.pruneBlackboardHistory>>)
+    vi.mocked(db.pruneConversationLog).mockResolvedValue(1 as unknown as Awaited<ReturnType<typeof db.pruneConversationLog>>)
+    vi.mocked(db.pruneAgentMessages).mockResolvedValue(4 as unknown as Awaited<ReturnType<typeof db.pruneAgentMessages>>)
 
-    runDecaySweep()
+    await runDecaySweep()
 
     expect(db.decayMemories).toHaveBeenCalledTimes(1)
     expect(db.pruneAuditLogs).toHaveBeenCalledTimes(1)
@@ -167,11 +167,11 @@ describe('runDailyDigest', () => {
   const now = Math.floor(Date.now() / 1000)
 
   function memory(id: number, content: string, ageSeconds: number) {
-    return { id, content, created_at: now - ageSeconds } as unknown as ReturnType<typeof db.getMemoriesForChat>[number]
+    return { id, content, created_at: now - ageSeconds } as unknown as Awaited<ReturnType<typeof db.getMemoriesForChat>>[number]
   }
 
   it('skips digest generation when fewer than 2 memories were recorded today', async () => {
-    mockGetMemoriesForChat.mockReturnValue([memory(1, 'only one thing happened', 3600)])
+    mockGetMemoriesForChat.mockResolvedValue([memory(1, 'only one thing happened', 3600)])
 
     const result = await runDailyDigest('chat-1')
 
@@ -181,7 +181,7 @@ describe('runDailyDigest', () => {
   })
 
   it('ignores memories older than 24h when counting today\'s activity', async () => {
-    mockGetMemoriesForChat.mockReturnValue([
+    mockGetMemoriesForChat.mockResolvedValue([
       memory(1, 'today A', 3600),
       memory(2, 'yesterday B', 2 * 86400),
       memory(3, 'yesterday C', 3 * 86400),
@@ -194,7 +194,7 @@ describe('runDailyDigest', () => {
   })
 
   it('generates and saves a digest as an episodic memory when there is enough activity', async () => {
-    mockGetMemoriesForChat.mockReturnValue([
+    mockGetMemoriesForChat.mockResolvedValue([
       memory(1, 'worked on the coverage series', 3600),
       memory(2, 'opened a pull request', 7200),
     ])
@@ -212,7 +212,7 @@ describe('runDailyDigest', () => {
   })
 
   it('returns null without saving when the sub-agent produces no text', async () => {
-    mockGetMemoriesForChat.mockReturnValue([
+    mockGetMemoriesForChat.mockResolvedValue([
       memory(1, 'worked on A', 3600),
       memory(2, 'worked on B', 7200),
     ])
@@ -225,7 +225,7 @@ describe('runDailyDigest', () => {
   })
 
   it('returns null and logs an error when the sub-agent invocation throws', async () => {
-    mockGetMemoriesForChat.mockReturnValue([
+    mockGetMemoriesForChat.mockResolvedValue([
       memory(1, 'worked on A', 3600),
       memory(2, 'worked on B', 7200),
     ])

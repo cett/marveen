@@ -94,8 +94,8 @@ defineGauge('marveen.channel.handoff.oldest_pending_age', 's', () => {
 // A gate (destructive-gate, secret-read-gate ...) and its verdict: allow, deny, or error (a gate process that
 // ended with neither 0 nor 2). `reason` is the fixed code of a deny or error and is left out for an allow.
 // Counts only: nothing of the call the gate looked at is ever stored.
-defineObservableCounter('marveen.gate.decisions', '{decision}', () => {
-  return getGateDecisionCounts().map((r) => ({
+defineObservableCounter('marveen.gate.decisions', '{decision}', async () => {
+  return (await getGateDecisionCounts()).map((r) => ({
     attrs: {
       'marveen.gate': r.gate,
       'marveen.gate.decision': r.decision,

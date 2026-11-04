@@ -22,14 +22,14 @@ vi.mock('../db.js', () => ({
   getSkill: vi.fn(),
   createSkill: vi.fn(),
   updateSkill: vi.fn(),
-  deleteSkill: vi.fn().mockReturnValue(true),
+  deleteSkill: vi.fn().mockResolvedValue(true),
   seedSkillIfAbsent: vi.fn(),
-  listSkillsForTenant: vi.fn().mockReturnValue([]),
-  listAllSkills: vi.fn().mockReturnValue([]),
+  listSkillsForTenant: vi.fn().mockResolvedValue([]),
+  listAllSkills: vi.fn().mockResolvedValue([]),
   grantSkillAccess: vi.fn(),
-  revokeSkillAccess: vi.fn().mockReturnValue(true),
-  listSkillAccess: vi.fn().mockReturnValue([]),
-  listSkillFiles: vi.fn().mockReturnValue([]),
+  revokeSkillAccess: vi.fn().mockResolvedValue(true),
+  listSkillAccess: vi.fn().mockResolvedValue([]),
+  listSkillFiles: vi.fn().mockResolvedValue([]),
 }))
 
 import { tryHandleSkills } from '../web/routes/skills.js'
@@ -74,11 +74,11 @@ const row = (id: string) => ({ id, name: 'n', description: '', content: 'c', ten
 describe('/api/skills/sql/:id with percent-encoded ids', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mockGetSkill.mockImplementation(((id: string) => row(id)) as any)
-    mockUpdateSkill.mockImplementation(((id: string, patch: any) => ({ ...row(id), ...patch })) as any)
-    mockDeleteSkill.mockReturnValue(true)
-    mockListAccess.mockReturnValue([])
-    mockRevoke.mockReturnValue(true)
+    mockGetSkill.mockImplementation(((id: string) => Promise.resolve(row(id))) as any)
+    mockUpdateSkill.mockImplementation(((id: string, patch: any) => Promise.resolve({ ...row(id), ...patch })) as any)
+    mockDeleteSkill.mockResolvedValue(true)
+    mockListAccess.mockResolvedValue([])
+    mockRevoke.mockResolvedValue(true)
   })
 
   it('URL.pathname keeps %2F intact (the property the route relies on)', () => {
@@ -140,7 +140,7 @@ describe('/api/skills/sql/:id with percent-encoded ids', () => {
   }
 
   it('an unknown encoded id is a clean 404, not a fall-through', async () => {
-    mockGetSkill.mockReturnValue(undefined as any)
+    mockGetSkill.mockResolvedValue(undefined as any)
     const { ctx, out } = makeCtx('GET', `/api/skills/sql/${encodeURIComponent('global/nope')}`)
     expect(await tryHandleSkills(ctx)).toBe(true)
     expect(out.status).toBe(404)

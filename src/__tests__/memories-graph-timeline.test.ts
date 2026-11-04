@@ -79,10 +79,10 @@ function makeCtx(
 function mockQueries(
   nodes: any[], edges: any[], tierChangedVersions: any[] = [], degrees: any[] = []
 ) {
-  vi.mocked(listMemoryGraphNodesInWindow).mockReturnValue(nodes)
-  vi.mocked(listMemoryLinksAmong).mockReturnValue(edges)
-  vi.mocked(listMemoryLinkDegrees).mockReturnValue(degrees)
-  vi.mocked(listCategoryChangesInWindow).mockReturnValue(tierChangedVersions)
+  vi.mocked(listMemoryGraphNodesInWindow).mockResolvedValue(nodes)
+  vi.mocked(listMemoryLinksAmong).mockResolvedValue(edges)
+  vi.mocked(listMemoryLinkDegrees).mockResolvedValue(degrees)
+  vi.mocked(listCategoryChangesInWindow).mockResolvedValue(tierChangedVersions)
 }
 
 describe('GET /api/memories/graph/timeline', () => {

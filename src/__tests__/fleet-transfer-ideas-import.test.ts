@@ -22,6 +22,8 @@ afterAll(() => {
   rmSync(TMP_ROOT, { recursive: true, force: true })
 })
 
+// The main agent's channel pairing is written under the home directory: keep it in the throwaway root, not the real one.
+vi.mock('node:os', async (importOriginal) => ({ ...(await importOriginal<typeof import('node:os')>()), homedir: () => TMP_ROOT }))
 vi.mock('../logger.js', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }))
 vi.mock('../web/agent-config.js', () => ({ AGENTS_BASE_DIR: '/mock/agents', listAgentNames: () => [], invalidateModelProfileMapCache: () => {} }))
 vi.mock('../web/atomic-write.js', () => ({ atomicWriteFileSync: vi.fn() }))
@@ -71,7 +73,7 @@ describe('importFleet -- ideaBox', () => {
       ideaBox: { ideas: [idea({ id: undefined, title: 'no id' }), idea({ id: null, title: 'null id' }), idea({ id: '', title: 'empty id' }), idea()], comments: [], statusLog: [] },
     })
     for (let i = 0; i < 2; i++) {
-      const applied = importFleet(fleetJson, { apply: true }) as any
+      const applied = await importFleet(fleetJson, { apply: true }) as any
       expect(applied.ok).toBe(true)
     }
     const db = getDb()
@@ -85,7 +87,7 @@ describe('importFleet -- ideaBox', () => {
       ...MINIMAL_FLEET_FIELDS,
       ideaBox: { ideas: [idea({ id: 'no-title', title: null }), idea({ id: 'bad-status', status: 'bogus' }), idea({ id: 'good' }), idea({ id: 'good' })], comments: [], statusLog: [] },
     })
-    expect((importFleet(fleetJson, { apply: true }) as any).ok).toBe(true)
+    expect((await importFleet(fleetJson, { apply: true }) as any).ok).toBe(true)
     const ids = (getDb().prepare('SELECT id FROM idea_box ORDER BY id').all() as { id: string }[]).map((r) => r.id)
     expect(ids).toEqual(['good'])
   })

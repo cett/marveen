@@ -45,10 +45,10 @@ export function buildRolloutDeps(): RolloutDeps {
       const pane = capturePane(sessionOf(t), null)
       return pane != null && paneLooksIdle(pane)
     },
-    restart: (t) => {
+    restart: async (t) => {
       if (t.isMain) { restartMainChannelsSession(); return }
       // --continue: the conversation resumes on the new build.
-      const r = restartAgentProcess(t.name, { fresh: false })
+      const r = await restartAgentProcess(t.name, { fresh: false })
       if (!r.ok) throw new Error(r.hint || r.error || 'restart failed')
     },
   }
@@ -56,9 +56,11 @@ export function buildRolloutDeps(): RolloutDeps {
 
 export function startClaudeUpdateRolloutRunner(): NodeJS.Timeout {
   const deps = buildRolloutDeps()
-  function tick() {
-    try { rolloutStep(deps) } catch (err) { logger.warn({ err }, 'claude-update: rollout tick failed') }
+  async function tick() {
+    try { await rolloutStep(deps) } catch (err) { logger.warn({ err }, 'claude-update: rollout tick failed') }
   }
-  setTimeout(tick, INITIAL_DELAY_MS)
-  return setInterval(tick, INTERVAL_MS)
+  // tick catches everything itself, so the timer only starts it.
+  const run = () => { void tick() }
+  setTimeout(run, INITIAL_DELAY_MS)
+  return setInterval(run, INTERVAL_MS)
 }

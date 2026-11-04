@@ -52,17 +52,17 @@ beforeEach(async () => {
   schedules = await import('../web/routes/schedules.js')
   ledger = await import('../web/schedule-skip-ledger.js')
 
-  dbMod.createTenant('acme', 'Acme')
-  dbMod.updateTenant('acme', { main_agent_id: 'acme-lead' })
-  dbMod.setTenantAgentAvailability('acme', 'acme-lead', true)
-  dbMod.setTenantAgentAvailability('acme', 'acme-aux', true)
-  dbMod.createTenant('beta', 'Beta')
-  dbMod.setTenantAgentAvailability('beta', 'beta-one', true)
-  dbMod.createTenant('gamma', 'Gamma')
-  dbMod.setTenantAgentAvailability('gamma', 'g-one', true)
-  dbMod.setTenantAgentAvailability('gamma', 'g-two', true)
-  dbMod.setTenantAgentAvailability('acme', 'shared-agent', true)
-  dbMod.setTenantAgentAvailability('default', 'shared-agent', true)
+  await dbMod.createTenant('acme', 'Acme')
+  await dbMod.updateTenant('acme', { main_agent_id: 'acme-lead' })
+  await dbMod.setTenantAgentAvailability('acme', 'acme-lead', true)
+  await dbMod.setTenantAgentAvailability('acme', 'acme-aux', true)
+  await dbMod.createTenant('beta', 'Beta')
+  await dbMod.setTenantAgentAvailability('beta', 'beta-one', true)
+  await dbMod.createTenant('gamma', 'Gamma')
+  await dbMod.setTenantAgentAvailability('gamma', 'g-one', true)
+  await dbMod.setTenantAgentAvailability('gamma', 'g-two', true)
+  await dbMod.setTenantAgentAvailability('acme', 'shared-agent', true)
+  await dbMod.setTenantAgentAvailability('default', 'shared-agent', true)
 })
 
 afterEach(() => {
@@ -102,7 +102,7 @@ const post = (tenant: string, body?: object, caller: Caller = 'human') =>
   call('admin', 'POST', `/api/admin/tenants/${tenant}/starter-pack`, body, caller)
 const get = (tenant: string, caller: Caller = 'human') =>
   call('admin', 'GET', `/api/admin/tenants/${tenant}/starter-pack`, undefined, caller)
-const row = (name: string) => dbMod.getScheduleFromDb(name)
+const row = async (name: string) => dbMod.getScheduleFromDb(name)
 const mirror = (name: string) => JSON.parse(readFileSync(join(tmp, '.claude', 'scheduled-tasks', name, 'task-config.json'), 'utf-8')) as Record<string, unknown>
 const auditCount = (action: string) =>
   (dbMod.getDb().prepare('SELECT COUNT(*) AS n FROM agent_audit_log WHERE action = ?').get(action) as { n: number }).n
@@ -112,7 +112,7 @@ describe('creating the starter task', () => {
     const r = await post('acme')
     expect(r.status).toBe(201)
     expect(r.body).toMatchObject({ ok: true, tenant_id: 'acme', agent: 'acme-lead', state: 'created', created: ['acme-starter-daily-summary'], skipped: [], retargeted: [] })
-    const rows = dbMod.listSchedulesFromDb({ tenantId: 'acme' })
+    const rows = await dbMod.listSchedulesFromDb({ tenantId: 'acme' })
     expect(rows).toHaveLength(1)
     expect(rows[0]).toMatchObject({ id: 'acme-starter-daily-summary', tenant_id: 'acme', agent: 'acme-lead', status: 'draft', enabled: 0, type: 'task', schedule: '30 21 * * *' })
     expect(mirror('acme-starter-daily-summary')).toMatchObject({ status: 'draft', enabled: false, agent: 'acme-lead', tenantId: 'acme' })
@@ -125,7 +125,7 @@ describe('creating the starter task', () => {
 
   it('the stored prompt is rendered for the tenant and its agent, with no placeholder left', async () => {
     await post('acme')
-    const prompt = row('acme-starter-daily-summary')!.prompt
+    const prompt = (await row('acme-starter-daily-summary'))!.prompt
     expect(prompt).not.toContain('{{')
     expect(prompt).toContain('tenant=acme')
     expect(prompt).toContain('agent=acme-lead')
@@ -133,11 +133,11 @@ describe('creating the starter task', () => {
 
   it('is not an upsert: a second POST creates nothing and leaves hand edits alone', async () => {
     await post('acme')
-    io.writeScheduledTask('acme-starter-daily-summary', { prompt: 'edited by hand', schedule: '5 4 * * *', enabled: true, status: 'live' })
+    await io.writeScheduledTask('acme-starter-daily-summary', { prompt: 'edited by hand', schedule: '5 4 * * *', enabled: true, status: 'live' })
     const again = await post('acme')
     expect(again.status).toBe(200)
     expect(again.body).toMatchObject({ created: [], skipped: [{ name: 'acme-starter-daily-summary', reason: 'exists' }], retargeted: [] })
-    expect(row('acme-starter-daily-summary')).toMatchObject({ prompt: 'edited by hand', schedule: '5 4 * * *', enabled: 1, status: 'live' })
+    expect(await row('acme-starter-daily-summary')).toMatchObject({ prompt: 'edited by hand', schedule: '5 4 * * *', enabled: 1, status: 'live' })
     expect(auditCount('create')).toBe(1)
   })
 
@@ -159,14 +159,14 @@ describe('agent resolution', () => {
     const r = await post('acme', { agent_id: 'acme-aux' })
     expect(r.status).toBe(201)
     expect(r.body['agent']).toBe('acme-aux')
-    expect(row('acme-starter-daily-summary')!.agent).toBe('acme-aux')
+    expect((await row('acme-starter-daily-summary'))!.agent).toBe('acme-aux')
   })
 
   it('two enabled agents and no main agent: 400 required agent_id, nothing written', async () => {
     const r = await post('gamma')
     expect(r.status).toBe(400)
     expect(r.body).toMatchObject({ error: 'required', field: 'agent_id' })
-    expect(dbMod.listSchedulesFromDb({ tenantId: 'gamma' })).toHaveLength(0)
+    expect(await dbMod.listSchedulesFromDb({ tenantId: 'gamma' })).toHaveLength(0)
     const ok = await post('gamma', { agent_id: 'g-two' })
     expect(ok.status).toBe(201)
     expect(ok.body['agent']).toBe('g-two')
@@ -176,7 +176,7 @@ describe('agent resolution', () => {
     const r = await post('acme', { agent_id: 'shared-agent' })
     expect(r.status).toBe(409)
     expect(r.body).toMatchObject({ error: 'conflict', field: 'agent_id' })
-    expect(dbMod.listSchedulesFromDb({ tenantId: 'acme' })).toHaveLength(0)
+    expect(await dbMod.listSchedulesFromDb({ tenantId: 'acme' })).toHaveLength(0)
   })
 
   it('refuses the fleet main agent, an unknown agent and an agent of no tenant', async () => {
@@ -184,51 +184,51 @@ describe('agent resolution', () => {
       const r = await post('acme', { agent_id })
       expect(r.status).toBe(400)
     }
-    expect(dbMod.listSchedulesFromDb({ tenantId: 'acme' })).toHaveLength(0)
+    expect(await dbMod.listSchedulesFromDb({ tenantId: 'acme' })).toHaveLength(0)
   })
 
   it('refuses the default tenant, a missing tenant and a disabled tenant', async () => {
     expect((await post('default')).status).toBe(400)
     expect((await post('nope')).status).toBe(404)
-    dbMod.updateTenant('beta', { disabled: true })
+    await dbMod.updateTenant('beta', { disabled: true })
     expect((await post('beta')).status).toBe(404)
-    expect(dbMod.listSchedulesFromDb().filter(r => r.id.endsWith('starter-daily-summary'))).toHaveLength(0)
+    expect((await dbMod.listSchedulesFromDb()).filter(r => r.id.endsWith('starter-daily-summary'))).toHaveLength(0)
   })
 })
 
 describe('draft cap and the skip ledger', () => {
   it('the draft cap does not stop the starter task: it is written with 20 open drafts already there', async () => {
-    for (let i = 0; i < 20; i++) io.writeScheduledTask(`acme-d${i}`, { prompt: 'p', schedule: '0 9 * * *', agent: 'acme-lead', tenantId: 'acme', status: 'draft', enabled: false })
+    for (let i = 0; i < 20; i++) await io.writeScheduledTask(`acme-d${i}`, { prompt: 'p', schedule: '0 9 * * *', agent: 'acme-lead', tenantId: 'acme', status: 'draft', enabled: false })
     const r = await post('acme')
     expect(r.status).toBe(201)
   })
 
   it('it does count against the cap: with 19 drafts plus the starter task, a 20th create is refused', async () => {
     await post('acme')
-    for (let i = 0; i < 19; i++) io.writeScheduledTask(`acme-d${i}`, { prompt: 'p', schedule: '0 9 * * *', agent: 'acme-lead', tenantId: 'acme', status: 'draft', enabled: false })
+    for (let i = 0; i < 19; i++) await io.writeScheduledTask(`acme-d${i}`, { prompt: 'p', schedule: '0 9 * * *', agent: 'acme-lead', tenantId: 'acme', status: 'draft', enabled: false })
     const created = await call('schedules', 'POST', '/api/schedules', { name: 'acme-extra', prompt: 'p', schedule: '0 9 * * *', agent: 'acme-lead', tenant_id: 'acme' }, 'agent-token')
     expect(created.status).toBe(400)
   })
 
   it('a draft + disabled starter task is classified disabled: no skipped_not_live row, not part of a mass skip', async () => {
     await post('acme')
-    const r = row('acme-starter-daily-summary')!
+    const r = (await row('acme-starter-daily-summary'))!
     expect(ledger.classifyTask({ enabled: r.enabled === 1, status: r.status })).toBe('disabled')
   })
 })
 
 describe('name collisions and tenant deletion', () => {
   it('two tenant ids that sanitize to the same name: the second is refused, the first row stays', async () => {
-    dbMod.createTenant('co-x', 'Co X')
-    dbMod.createTenant('co--x', 'Co XX')
-    dbMod.setTenantAgentAvailability('co-x', 'co-a', true)
-    dbMod.setTenantAgentAvailability('co--x', 'co-b', true)
+    await dbMod.createTenant('co-x', 'Co X')
+    await dbMod.createTenant('co--x', 'Co XX')
+    await dbMod.setTenantAgentAvailability('co-x', 'co-a', true)
+    await dbMod.setTenantAgentAvailability('co--x', 'co-b', true)
     const first = await post('co-x')
     expect(first.status).toBe(201)
     const second = await post('co--x')
     expect(second.status).toBe(409)
-    expect(row('co-x-starter-daily-summary')).toMatchObject({ tenant_id: 'co-x', agent: 'co-a' })
-    expect(row('co-x-starter-daily-summary')).toBeDefined()
+    expect(await row('co-x-starter-daily-summary')).toMatchObject({ tenant_id: 'co-x', agent: 'co-a' })
+    expect(await row('co-x-starter-daily-summary')).toBeDefined()
   })
 
   it('deleting the tenant removes its starter row, its file mirror and nobody else\'s', async () => {
@@ -237,9 +237,9 @@ describe('name collisions and tenant deletion', () => {
     expect(existsSync(join(tmp, '.claude', 'scheduled-tasks', 'acme-starter-daily-summary'))).toBe(true)
     const del = await call('admin', 'DELETE', '/api/admin/tenants/acme')
     expect(del.status).toBe(200)
-    expect(row('acme-starter-daily-summary')).toBeUndefined()
+    expect(await row('acme-starter-daily-summary')).toBeUndefined()
     expect(existsSync(join(tmp, '.claude', 'scheduled-tasks', 'acme-starter-daily-summary'))).toBe(false)
-    expect(row('beta-starter-daily-summary')).toBeDefined()
+    expect(await row('beta-starter-daily-summary')).toBeDefined()
   })
 })
 
@@ -247,13 +247,13 @@ describe('who can reach it', () => {
   it('a tenant user gets 403 on POST and GET, and nothing is written', async () => {
     expect((await post('acme', undefined, 'tenant-user')).status).toBe(403)
     expect((await get('acme', 'tenant-user')).status).toBe(403)
-    expect(dbMod.listSchedulesFromDb({ tenantId: 'acme' })).toHaveLength(0)
+    expect(await dbMod.listSchedulesFromDb({ tenantId: 'acme' })).toHaveLength(0)
   })
 
   it('GET only reads: it reports the row and what a create would pick, and writes nothing', async () => {
     const before = await get('acme')
     expect(before.body).toMatchObject({ exists: false, state: 'absent', task: null, resolution: { agent: 'acme-lead', reason: 'main_agent' } })
-    expect(dbMod.listSchedulesFromDb({ tenantId: 'acme' })).toHaveLength(0)
+    expect(await dbMod.listSchedulesFromDb({ tenantId: 'acme' })).toHaveLength(0)
     await post('acme')
     const after = await get('acme')
     expect(after.body).toMatchObject({ exists: true, state: 'ok', task: { agent: 'acme-lead', status: 'draft', enabled: false } })

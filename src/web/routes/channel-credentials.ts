@@ -23,13 +23,13 @@ import type { RouteContext } from './types.js'
 
 const BASE = '/api/channel-credentials'
 
-function summary(agentId: string): Record<string, unknown> | null {
-  const b = getChannelCredentialBaseline(agentId, CHANNEL_PROVIDER)
+async function summary(agentId: string): Promise<Record<string, unknown> | null> {
+  const b = await getChannelCredentialBaseline(agentId, CHANNEL_PROVIDER)
   if (!b) return null
   return {
     agent_id: agentId,
     provider: b.provider,
-    chats: listAdoptedChats(agentId, CHANNEL_PROVIDER),
+    chats: await listAdoptedChats(agentId, CHANNEL_PROVIDER),
     adopted_by: b.adopted_by,
     adopted_at: b.adopted_at,
     last_checked_at: b.last_checked_at,
@@ -59,8 +59,9 @@ export async function tryHandleChannelCredentials(ctx: RouteContext): Promise<bo
   }
 
   if (path === BASE && method === 'GET') {
-    const adopted = listChannelCredentialBaselines().map((b) => summary(b.agent_id)).filter((s) => s !== null)
-    json(res, { adopted, unadopted: listUnadoptedChannelAgents() })
+    const baselines = await listChannelCredentialBaselines()
+    const adopted = (await Promise.all(baselines.map((b) => summary(b.agent_id)))).filter((s) => s !== null)
+    json(res, { adopted, unadopted: await listUnadoptedChannelAgents() })
     return true
   }
 
@@ -71,7 +72,7 @@ export async function tryHandleChannelCredentials(ctx: RouteContext): Promise<bo
     if (!agentId) { json(res, { error: 'required', field: 'agent_id', hint: 'agent_id required' }, 400); return true }
     if (!isValidChannelAgentId(agentId)) { json(res, { error: 'invalid_value', field: 'agent_id', hint: 'Invalid agent_id' }, 400); return true }
     const adoptedBy = ctx.auth?.user ?? ctx.auth?.tokenName ?? 'admin'
-    const result = adoptChannel(agentId, adoptedBy)
+    const result = await adoptChannel(agentId, adoptedBy)
     if (!result.ok) {
       if (result.reason === 'token_in_use') {
         json(res, { error: 'conflict', field: 'agent_id', hint: 'This bot token is already recorded for another agent' }, 409)
@@ -99,7 +100,8 @@ export async function tryHandleChannelCredentials(ctx: RouteContext): Promise<bo
       return true
     }
     await checkAllChannelDrift()
-    json(res, { ok: true, adopted: listChannelCredentialBaselines().map((b) => summary(b.agent_id)).filter((s) => s !== null) })
+    const baselines = await listChannelCredentialBaselines()
+    json(res, { ok: true, adopted: (await Promise.all(baselines.map((b) => summary(b.agent_id)))).filter((s) => s !== null) })
     return true
   }
 

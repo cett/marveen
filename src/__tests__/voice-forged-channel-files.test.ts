@@ -100,7 +100,7 @@ beforeEach(() => {
 describe('POST /api/voice/tts with forged channel files', () => {
   it('a forged access.json does not widen the chats: the extra chat is refused, nothing is spawned', async () => {
     writeChannel(TOKEN_ZED, { allowFrom: ['42'] })
-    expect(adoptChannel('zed', 'owner').ok).toBe(true)
+    expect((await adoptChannel('zed', 'owner')).ok).toBe(true)
     writeChannel(TOKEN_ZED, { allowFrom: ['42', '666'] }) // the agent writes its own file
 
     // an old client still sends its state_dir; it is ignored
@@ -116,7 +116,7 @@ describe('POST /api/voice/tts with forged channel files', () => {
 
   it('a foreign token in .env is not the one the server sends with', async () => {
     writeChannel(TOKEN_ZED, { allowFrom: ['42'] })
-    adoptChannel('zed', 'owner')
+    await adoptChannel('zed', 'owner')
     writeChannel(FOREIGN, { allowFrom: ['42'] })
 
     const out = await tts({ text: 'hi', chat_id: '42', state_dir: chanDir() })
@@ -136,7 +136,7 @@ describe('POST /api/voice/tts with forged channel files', () => {
 
   it('an agent token cannot speak as another agent by naming it', async () => {
     writeChannel(TOKEN_ZED, { allowFrom: ['42'] })
-    adoptChannel('zed', 'owner')
+    await adoptChannel('zed', 'owner')
     const out = await tts({ text: 'hi', chat_id: '42', agent_id: 'amy' })
     expect(out.status).toBe(403)
     expect(spoken()).toHaveLength(0)

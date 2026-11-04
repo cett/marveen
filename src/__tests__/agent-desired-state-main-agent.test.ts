@@ -35,72 +35,72 @@ function stored(): string[] {
 }
 
 describe('getDesiredAgents', () => {
-  it('leaves the main agent out of a stored set that holds it', () => {
-    dbMod.setSystemConfig('agents_desired', JSON.stringify(['boss', 'worker-a']))
+  it('leaves the main agent out of a stored set that holds it', async () => {
+    await dbMod.setSystemConfig('agents_desired', JSON.stringify(['boss', 'worker-a']))
     expect([...store.getDesiredAgents()]).toEqual(['worker-a'])
   })
 
-  it('returns a sub-agent unchanged', () => {
-    dbMod.setSystemConfig('agents_desired', JSON.stringify(['worker-a', 'worker-b']))
+  it('returns a sub-agent unchanged', async () => {
+    await dbMod.setSystemConfig('agents_desired', JSON.stringify(['worker-a', 'worker-b']))
     expect([...store.getDesiredAgents()].sort()).toEqual(['worker-a', 'worker-b'])
   })
 })
 
 describe('addDesiredAgent', () => {
-  it('does not record the main agent (a start request or the shutdown flush for it)', () => {
-    store.addDesiredAgent('boss')
+  it('does not record the main agent (a start request or the shutdown flush for it)', async () => {
+    await store.addDesiredAgent('boss')
     expect(dbMod.getSystemConfig('agents_desired')).toBeUndefined()
     expect(store.getDesiredAgents().has('boss')).toBe(false)
   })
 
-  it('does not write the main agent back when a sub-agent is added to a set that held it', () => {
-    dbMod.setSystemConfig('agents_desired', JSON.stringify(['boss']))
-    store.addDesiredAgent('worker-a')
+  it('does not write the main agent back when a sub-agent is added to a set that held it', async () => {
+    await dbMod.setSystemConfig('agents_desired', JSON.stringify(['boss']))
+    await store.addDesiredAgent('worker-a')
     expect(stored()).toEqual(['worker-a'])
   })
 
-  it('still records a sub-agent', () => {
-    store.addDesiredAgent('worker-a')
+  it('still records a sub-agent', async () => {
+    await store.addDesiredAgent('worker-a')
     expect(stored()).toEqual(['worker-a'])
   })
 })
 
 describe('setDesiredAgents (fleet-transfer import)', () => {
-  it('drops the main agent from an imported list', () => {
-    store.setDesiredAgents(['boss', 'worker-b', 'worker-a'])
+  it('drops the main agent from an imported list', async () => {
+    await store.setDesiredAgents(['boss', 'worker-b', 'worker-a'])
     expect(stored()).toEqual(['worker-a', 'worker-b'])
   })
 })
 
 describe('pruneMainAgentFromDesired', () => {
-  it('removes the main agent from the stored row and reports it', () => {
-    dbMod.setSystemConfig('agents_desired', JSON.stringify(['boss', 'worker-a']))
-    expect(store.pruneMainAgentFromDesired()).toBe(true)
+  it('removes the main agent from the stored row and reports it', async () => {
+    await dbMod.setSystemConfig('agents_desired', JSON.stringify(['boss', 'worker-a']))
+    expect(await store.pruneMainAgentFromDesired()).toBe(true)
     expect(stored()).toEqual(['worker-a'])
   })
 
-  it('removes a row that held only the main agent down to an empty list', () => {
-    dbMod.setSystemConfig('agents_desired', JSON.stringify(['boss']))
-    expect(store.pruneMainAgentFromDesired()).toBe(true)
+  it('removes a row that held only the main agent down to an empty list', async () => {
+    await dbMod.setSystemConfig('agents_desired', JSON.stringify(['boss']))
+    expect(await store.pruneMainAgentFromDesired()).toBe(true)
     expect(stored()).toEqual([])
   })
 
-  it('is a no-op the second time (one-time migration)', () => {
-    dbMod.setSystemConfig('agents_desired', JSON.stringify(['boss', 'worker-a']))
-    expect(store.pruneMainAgentFromDesired()).toBe(true)
-    expect(store.pruneMainAgentFromDesired()).toBe(false)
+  it('is a no-op the second time (one-time migration)', async () => {
+    await dbMod.setSystemConfig('agents_desired', JSON.stringify(['boss', 'worker-a']))
+    expect(await store.pruneMainAgentFromDesired()).toBe(true)
+    expect(await store.pruneMainAgentFromDesired()).toBe(false)
     expect(stored()).toEqual(['worker-a'])
   })
 
-  it('does not touch a row without the main agent', () => {
+  it('does not touch a row without the main agent', async () => {
     const raw = '["worker-b","worker-a"]' // deliberately unsorted: a rewrite would sort it
-    dbMod.setSystemConfig('agents_desired', raw)
-    expect(store.pruneMainAgentFromDesired()).toBe(false)
+    await dbMod.setSystemConfig('agents_desired', raw)
+    expect(await store.pruneMainAgentFromDesired()).toBe(false)
     expect(dbMod.getSystemConfig('agents_desired')?.value).toBe(raw)
   })
 
-  it('does nothing without a stored row', () => {
-    expect(store.pruneMainAgentFromDesired()).toBe(false)
+  it('does nothing without a stored row', async () => {
+    expect(await store.pruneMainAgentFromDesired()).toBe(false)
     expect(dbMod.getSystemConfig('agents_desired')).toBeUndefined()
   })
 })

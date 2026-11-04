@@ -211,7 +211,10 @@ export async function maybeWakeSubAgentsForTelegram(now: number): Promise<void> 
         maxDebounceMs: SUB_TELEGRAM_WAKE_MAX_DEBOUNCE_MS,
       })) continue
 
-      sendPromptToSession(session, SUB_TELEGRAM_WAKE_NUDGE, host)
+      // Fire-and-forget on purpose: the send waits for an idle pane and must not hold up the sweep of the
+      // other agents. A failure is logged, not an unhandled rejection.
+      void sendPromptToSession(session, SUB_TELEGRAM_WAKE_NUDGE, host)
+        .catch((err) => logger.warn({ err, agent: name }, 'telegram-inbox-wake: nudge send failed'))
       state.lastWakeAt = now
       state.attempts += 1
       logger.info({ agent: name, session, ageMs: Math.round(inboxAgeMs), attempt: state.attempts }, 'telegram-inbox-wake: nudged idle sub-agent (pending inbox)')

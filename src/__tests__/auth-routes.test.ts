@@ -1,10 +1,11 @@
-import { describe, it, expect, beforeAll, beforeEach } from 'vitest'
+import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest'
+import { logger } from '../logger.js'
 import type http from 'node:http'
 import { Readable } from 'node:stream'
-import { initDatabase, getDb, getDashboardUser } from '../db.js'
+import { initDatabase, getDb, getDashboardUser, dbx } from '../db.js'
 import { tryHandleAuth } from '../web/routes/auth.js'
 import { requiresAuth, parseCookies, SESSION_COOKIE_NAME } from '../web/auth-gate.js'
-import { resolveSession, _clearSessionCacheForTest } from '../web/auth-sessions.js'
+import { resolveSession, _clearSessionCacheForTest, _cacheForTest } from '../web/auth-sessions.js'
 import { _resetThrottleForTest } from '../web/login-throttle.js'
 import type { RouteContext } from '../web/routes/types.js'
 
@@ -136,6 +137,34 @@ describe('POST /api/auth/login', () => {
     expect(cookieHeader(res)).toContain('Secure')
   })
 
+  // The row is written before the cache entry and before the cookie: a failed insert must leave neither, or the
+  // cookie would work until the next restart and then vanish.
+  it('a failed session insert sets no cookie and leaves no cache entry', async () => {
+    await seedUser('alice')
+    const original = dbx.run.bind(dbx)
+    const seen: string[] = []
+    const spy = vi.spyOn(dbx, 'run').mockImplementation(async (sql: string, ...params: unknown[]) => {
+      seen.push(sql)
+      if (/INSERT INTO auth_sessions/.test(sql)) throw new Error('database unavailable')
+      return original(sql, ...params)
+    })
+    const res = mkRes()
+    const ctx: RouteContext = {
+      req: mkReq({ body: { username: 'alice', password: GOOD_PW } }),
+      res: res as unknown as http.ServerResponse,
+      path: '/api/auth/login',
+      method: 'POST',
+      url: new URL('http://127.0.0.1:3420/api/auth/login'),
+      auth: undefined,
+    }
+    await expect(tryHandleAuth(ctx)).rejects.toThrow('database unavailable')
+    spy.mockRestore()
+    expect(seen.at(-1)).toMatch(/INSERT INTO auth_sessions/)
+    expect(res.headers['Set-Cookie']).toBeUndefined()
+    expect(_cacheForTest.size).toBe(0)
+    expect(getDb().prepare('SELECT COUNT(*) AS c FROM auth_sessions').get()).toEqual({ c: 0 })
+  })
+
   it('mints a fresh session id on every login (fixation defence)', async () => {
     await seedUser('alice')
     const a = await call('POST', '/api/auth/login', { body: { username: 'alice', password: GOOD_PW } })
@@ -148,12 +177,12 @@ describe('POST /api/auth/login', () => {
     await seedUser('alice')
     const first = await call('POST', '/api/auth/login', { body: { username: 'alice', password: GOOD_PW } })
     const oldToken = cookieToken(first.res)
-    expect(resolveSession(oldToken)).not.toBeNull()
+    expect(await resolveSession(oldToken)).not.toBeNull()
     await call('POST', '/api/auth/login', {
       headers: { cookie: `${SESSION_COOKIE_NAME}=${oldToken}` },
       body: { username: 'alice', password: GOOD_PW },
     })
-    expect(resolveSession(oldToken)).toBeNull()
+    expect(await resolveSession(oldToken)).toBeNull()
   })
 
   it('returns IDENTICAL 401 bodies for bad user vs bad password', async () => {
@@ -189,7 +218,7 @@ describe('POST /api/auth/logout', () => {
     })
     expect(out.res.statusCode).toBe(200)
     expect(cookieHeader(out.res)).toContain('Max-Age=0')
-    expect(resolveSession(token)).toBeNull()
+    expect(await resolveSession(token)).toBeNull()
   })
 })
 
@@ -233,8 +262,8 @@ describe('POST /api/auth/password', () => {
       headers: { cookie: `${SESSION_COOKIE_NAME}=${callerToken}` },
       body: { current_password: GOOD_PW, new_password: 'rotated-password' },
     })
-    expect(resolveSession(otherToken)).toBeNull()
-    expect(resolveSession(callerToken)).not.toBeNull()
+    expect(await resolveSession(otherToken)).toBeNull()
+    expect(await resolveSession(callerToken)).not.toBeNull()
   })
 
   it('enforces the password policy on the new password', async () => {
@@ -279,10 +308,14 @@ describe('users CRUD', () => {
     await seedUser('alice')
     const login = await call('POST', '/api/auth/login', { body: { username: 'alice', password: GOOD_PW } })
     const token = cookieToken(login.res)
+    const info = vi.spyOn(logger, 'info')
     const del = await call('DELETE', '/api/auth/users/alice', { auth: TOKEN_AUTH })
     expect(del.res.statusCode).toBe(200)
-    expect(getDashboardUser('alice')).toBeUndefined()
-    expect(resolveSession(token)).toBeNull()
+    expect(await getDashboardUser('alice')).toBeUndefined()
+    expect(await resolveSession(token)).toBeNull()
+    // The log line carries the settled count (a number), not a pending Promise.
+    expect(info).toHaveBeenCalledWith({ username: 'alice', remaining: 0 }, 'dashboard user deleted')
+    info.mockRestore()
   })
 
   it('still allows a SESSION principal to manage users (existing behavior)', async () => {
@@ -315,10 +348,10 @@ describe('credential-kind allowlists (default-deny for future kinds)', () => {
       expect(list.res.statusCode).toBe(403)
       const create = await call('POST', '/api/auth/users', { auth, body: { username: 'mallory', password: GOOD_PW } })
       expect(create.res.statusCode).toBe(403)
-      expect(getDashboardUser('mallory')).toBeUndefined()
+      expect(await getDashboardUser('mallory')).toBeUndefined()
       const del = await call('DELETE', '/api/auth/users/alice', { auth })
       expect(del.res.statusCode).toBe(403)
-      expect(getDashboardUser('alice')).toBeDefined()
+      expect(await getDashboardUser('alice')).toBeDefined()
       const reset = await call('POST', '/api/auth/password', { auth, body: { username: 'alice', new_password: 'stolen-reset-pw' } })
       expect(reset.res.statusCode).toBe(403)
       // the old password must still work after the denied reset attempt

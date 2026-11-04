@@ -1,4 +1,4 @@
-import { getSystemConfig, setSystemConfig } from '../db/system-config.js'
+import { getSystemConfig, setSystemConfig, updateSystemConfig } from '../db/system-config.js'
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID } from '../config.js'
 
@@ -28,13 +28,18 @@ import { MAIN_AGENT_ID } from '../config.js'
 // as isMainChannelsAgent() in main-agent.ts, which this module must not import: that file reads more config.)
 const KEY = 'agents_desired'
 
+function parseDesired(raw: string | undefined): Set<string> {
+  if (raw === undefined) return new Set()
+  const parsed = JSON.parse(raw)
+  if (Array.isArray(parsed)) return new Set(parsed.filter((x): x is string => typeof x === 'string'))
+  return new Set()
+}
+
+// The stored list as it is, the main agent included if an earlier build wrote it. A read stays synchronous (the
+// system_config cache answers it); only the writes below are asynchronous.
 function readStored(): string[] {
   try {
-    const row = getSystemConfig(KEY)
-    if (!row) return []
-    const parsed = JSON.parse(row.value)
-    if (Array.isArray(parsed)) return parsed.filter((x): x is string => typeof x === 'string')
-    return []
+    return [...parseDesired(getSystemConfig(KEY)?.value)]
   } catch (err) {
     logger.warn({ err }, 'Could not read agents_desired from system_config; treating as empty')
     return []
@@ -45,47 +50,71 @@ export function getDesiredAgents(): Set<string> {
   return new Set(readStored().filter((name) => name !== MAIN_AGENT_ID))
 }
 
-function writeDesired(set: Set<string>): void {
+// One read-modify-write of the stored set: the current set is read from the database inside the write
+// transaction (updateSystemConfig), so two overlapping add/remove calls both land. A stored value that cannot
+// be parsed counts as empty, as getDesiredAgents() reads it. The main agent is dropped from the set before
+// `change` sees it and so never survives a write (the same as getDesiredAgents() hiding it on a read).
+// `change` returns whether it changed the set.
+// A failed write is logged and answered with false, never thrown (the callers are start/stop paths).
+async function changeDesired(change: (set: Set<string>) => boolean): Promise<boolean> {
   try {
-    setSystemConfig(KEY, JSON.stringify([...set].filter((name) => name !== MAIN_AGENT_ID).sort()))
+    return await updateSystemConfig(KEY, (current) => {
+      let set: Set<string>
+      try { set = parseDesired(current) } catch { set = new Set() }
+      set.delete(MAIN_AGENT_ID)
+      return change(set) ? JSON.stringify([...set].sort()) : undefined
+    })
   } catch (err) {
     logger.error({ err }, 'Failed to persist agents_desired to system_config')
+    return false
   }
 }
 
-export function addDesiredAgent(name: string): void {
+export async function addDesiredAgent(name: string): Promise<void> {
   if (name === MAIN_AGENT_ID) return
-  const set = getDesiredAgents()
-  if (set.has(name)) return
-  set.add(name)
-  writeDesired(set)
-  logger.info({ agent: name }, 'Agent added to desired run-state')
+  const added = await changeDesired((set) => {
+    if (set.has(name)) return false
+    set.add(name)
+    return true
+  })
+  if (added) logger.info({ agent: name }, 'Agent added to desired run-state')
 }
 
-export function removeDesiredAgent(name: string): void {
-  const set = getDesiredAgents()
-  if (!set.delete(name)) return
-  writeDesired(set)
-  logger.info({ agent: name }, 'Agent removed from desired run-state')
+export async function removeDesiredAgent(name: string): Promise<void> {
+  const removed = await changeDesired((set) => set.delete(name))
+  if (removed) logger.info({ agent: name }, 'Agent removed from desired run-state')
 }
 
 /** Whole-value replace, for fleet-transfer import -- the identity-takeover model
  *  treats this field as source-authoritative, same as the other P3 overwrite
  *  fields (see DashboardSettingsExport in fleet-transfer.ts). Unlike
  *  add/removeDesiredAgent, this does not merge onto the current set. */
-export function setDesiredAgents(names: string[]): void {
-  writeDesired(new Set(names))
+export async function setDesiredAgents(names: string[]): Promise<void> {
+  try {
+    await setSystemConfig(KEY, JSON.stringify([...new Set(names)].filter((name) => name !== MAIN_AGENT_ID).sort()))
+  } catch (err) {
+    logger.error({ err }, 'Failed to persist agents_desired to system_config')
+  }
 }
 
 /** One-time cleanup for installs whose stored set still holds the main agent (an earlier start request
- *  or the shutdown flush wrote it). Reads the stored value as it is, drops the main agent and writes it back; a
- *  set without it is not touched, so running it on every start is a no-op after the first. Returns true
- *  when it rewrote the row. getDesiredAgents() hides the entry already, this removes it from the row, which
- *  fleet-transfer and a manual read of system_config show too. */
-export function pruneMainAgentFromDesired(): boolean {
-  const stored = readStored()
-  if (!stored.includes(MAIN_AGENT_ID)) return false
-  writeDesired(new Set(stored))
-  logger.info('Main agent removed from the stored desired run-state (its lifecycle is service-managed)')
-  return true
+ *  or the shutdown flush wrote it). Reads the stored value inside the write transaction, drops the main agent and
+ *  writes it back; a set without it is not touched (the update answers undefined), so running it on every start
+ *  is a no-op after the first. Resolves true when it rewrote the row. getDesiredAgents() hides the entry already,
+ *  this removes it from the row, which fleet-transfer and a manual read of system_config show too. Asynchronous:
+ *  the caller awaits it (startup runs it before the desired set is read). */
+export async function pruneMainAgentFromDesired(): Promise<boolean> {
+  try {
+    const pruned = await updateSystemConfig(KEY, (current) => {
+      let stored: string[]
+      try { stored = [...parseDesired(current)] } catch { return undefined }
+      if (!stored.includes(MAIN_AGENT_ID)) return undefined
+      return JSON.stringify(stored.filter((name) => name !== MAIN_AGENT_ID).sort())
+    })
+    if (pruned) logger.info('Main agent removed from the stored desired run-state (its lifecycle is service-managed)')
+    return pruned
+  } catch (err) {
+    logger.error({ err }, 'Failed to persist agents_desired to system_config')
+    return false
+  }
 }

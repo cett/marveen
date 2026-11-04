@@ -18,7 +18,7 @@ export function ledgerSpoolDir(): string {
 /** Insert every spooled turn (idempotent) and delete the files. Returns the
  *  number of rows inserted. A file is claimed by renaming it first, so a hook
  *  appending at the same moment starts a fresh file instead of losing lines. */
-export function flushLedgerSpool(dir = ledgerSpoolDir()): number {
+export async function flushLedgerSpool(dir = ledgerSpoolDir()): Promise<number> {
   if (!existsSync(dir)) return 0
   let inserted = 0
   for (const name of readdirSync(dir)) {
@@ -37,7 +37,7 @@ export function flushLedgerSpool(dir = ledgerSpoolDir()): number {
         try { raw = JSON.parse(t) } catch { continue }
         const turn = parseLedgerEntry(raw)
         if (typeof turn === 'string') continue
-        if (logLedgerTurn(turn)) inserted++
+        if (await logLedgerTurn(turn)) inserted++
       }
       unlinkSync(claimed)
     } catch (err) {

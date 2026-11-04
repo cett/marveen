@@ -38,8 +38,8 @@ export function readContextGuardConfig(name: string): ContextGuardConfig {
  *  `tenantId` stamps ownership for the RBAC own-tenant-vs-cross-tenant check
  *  (agents-process.ts) -- defaults to 'default' for callers with no tenant
  *  context (tests, scripts). */
-export function writeContextGuardConfig(name: string, cfg: unknown, tenantId = 'default'): ContextGuardConfig {
+export async function writeContextGuardConfig(name: string, cfg: unknown, tenantId = 'default'): Promise<ContextGuardConfig> {
   const normalized = normalizeContextGuardConfig(cfg)
-  setAgentSetting(name, 'context_guard', normalized, tenantId)
+  await setAgentSetting(name, 'context_guard', normalized, tenantId)
   return normalized
 }

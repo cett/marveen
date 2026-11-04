@@ -381,20 +381,20 @@ const googlechatProvider: ChannelProvider = {
   stateDir: 'googlechat',
   chatIdFormat: 'space resource name (e.g. spaces/AAAA)',
 
-  async sendMessage() {
+  sendMessage() {
     // Direct dashboard send is not supported for Google Chat; the agent
     // delivers via the plugin's reply tool inside its own session.
-    throw new Error('googlechat: direct dashboard send not supported (delivery via plugin MCP tools)')
+    return Promise.reject(new Error('googlechat: direct dashboard send not supported (delivery via plugin MCP tools)'))
   },
 
-  async sendPhoto() {
-    throw new Error('googlechat: direct dashboard send not supported (delivery via plugin MCP tools)')
+  sendPhoto() {
+    return Promise.reject(new Error('googlechat: direct dashboard send not supported (delivery via plugin MCP tools)'))
   },
 
-  async validateToken() {
+  validateToken() {
     // No token model; real validation happens in the plugin (service-account
     // key + Pub/Sub). Report ok so channel-config flows don't false-negative.
-    return { ok: true, botName: 'Google Chat' }
+    return Promise.resolve({ ok: true, botName: 'Google Chat' })
   },
 
   formatMessage: (text) => text,
@@ -421,21 +421,21 @@ const teamsProvider: ChannelProvider = {
   stateDir: 'teams',
   chatIdFormat: 'Teams conversation id (managed by the plugin per pairing)',
 
-  async sendMessage() {
+  sendMessage() {
     // Direct dashboard send is not supported for Teams; the agent delivers via
     // the plugin's reply tool inside its own session (Bot Framework outbound
     // needs the per-conversation serviceUrl + a client_credentials token).
-    throw new Error('teams: direct dashboard send not supported (delivery via plugin MCP tools)')
+    return Promise.reject(new Error('teams: direct dashboard send not supported (delivery via plugin MCP tools)'))
   },
 
-  async sendPhoto() {
-    throw new Error('teams: direct dashboard send not supported (delivery via plugin MCP tools)')
+  sendPhoto() {
+    return Promise.reject(new Error('teams: direct dashboard send not supported (delivery via plugin MCP tools)'))
   },
 
-  async validateToken() {
+  validateToken() {
     // No simple token model; real validation happens in the plugin (app id +
     // secret + tenant, JWT). Report ok so channel-config flows don't false-negative.
-    return { ok: true, botName: 'Microsoft Teams' }
+    return Promise.resolve({ ok: true, botName: 'Microsoft Teams' })
   },
 
   formatMessage: (text) => text,

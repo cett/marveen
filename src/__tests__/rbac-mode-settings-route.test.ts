@@ -40,8 +40,8 @@ import { runRbacGate } from '../web/rbac-shadow-log.js'
 const HASH = '$scrypt$ln=16,r=8,p=1$c2FsdA==$a2V5'
 let cookies: Record<string, string>
 
-function makeUser(name: string, role: string, tenant: string | null): string {
-  const u = createDashboardUser(name, HASH)
+async function makeUser(name: string, role: string, tenant: string | null): Promise<string> {
+  const u = await createDashboardUser(name, HASH)
   db.prepare('UPDATE dashboard_users SET role = ?, tenant_id = ? WHERE id = ?').run(role, tenant, u.id)
   return createSession({ userId: u.id, username: u.username })
 }
@@ -126,19 +126,19 @@ function noticesToMainAgent(): string[] {
   return (db.prepare("SELECT content FROM agent_messages WHERE to_agent = 'main-agent'").all() as Array<{ content: string }>).map((r) => r.content)
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   flags.enforce = true
   flags.unreadable = false
   initDatabase(':memory:')
   _clearSessionCacheForTest()
   stopRbacModeRefresh()
   cookies = {
-    owner: makeUser('owner', 'admin', null),
-    tenantAdmin: makeUser('tadmin', 'admin', 'tenant-a'),
-    viewer: makeUser('viewer', 'viewer', null),
+    owner: await makeUser('owner', 'admin', null),
+    tenantAdmin: await makeUser('tadmin', 'admin', 'tenant-a'),
+    viewer: await makeUser('viewer', 'viewer', null),
   }
-  setSystemConfig('RBAC_MODE', 'enforce', 'db')
-  refreshRbacMode(undefined)
+  await setSystemConfig('RBAC_MODE', 'enforce', 'db')
+  await refreshRbacMode(undefined)
 })
 
 afterEach(() => {
@@ -278,9 +278,9 @@ describe('loosening needs the human-only switch on', () => {
   })
 
   it('does not hold tightening back: an admin token tightens with the switch off', async () => {
-    setSystemConfig('RBAC_MODE', 'shadow', 'db')
-    logConfigChange('RBAC_MODE', 'enforce', 'shadow', 'owner')
-    refreshRbacMode(undefined)
+    await setSystemConfig('RBAC_MODE', 'shadow', 'db')
+    await logConfigChange('RBAC_MODE', 'enforce', 'shadow', 'owner')
+    await refreshRbacMode(undefined)
     flags.enforce = false
     expect((await post(CALLERS['adminToken']!, tighten)).status).toBe(200)
     expect(storedValue()).toBe('enforce')
@@ -290,10 +290,10 @@ describe('loosening needs the human-only switch on', () => {
   describe('the chain: token creates a user, the user logs in, the user loosens', () => {
     const NEW_USER = { username: 'minted-admin', password: 'correct-horse-battery-1', role: 'admin' }
 
-    function loginAs(username: string): Caller {
+    async function loginAs(username: string): Promise<Caller> {
       // The login route only verifies the password and then issues exactly this session.
       const u = db.prepare('SELECT id, username FROM dashboard_users WHERE username = ?').get(username) as { id: number; username: string }
-      return { auth: { kind: 'session', user: username } as AuthResult, role: 'admin', cookie: createSession({ userId: u.id, username: u.username }) }
+      return { auth: { kind: 'session', user: username } as AuthResult, role: 'admin', cookie: await createSession({ userId: u.id, username: u.username }) }
     }
 
     it('switch OFF: the token does mint a global admin, and that admin still cannot loosen', async () => {
@@ -303,7 +303,7 @@ describe('loosening needs the human-only switch on', () => {
         expect(minted.status, who).toBe(201)
         const row = db.prepare('SELECT role, tenant_id FROM dashboard_users WHERE username = ?').get(`minted-${who}`) as { role: string; tenant_id: string | null }
         expect(row).toEqual({ role: 'admin', tenant_id: null })
-        const r = await post(loginAs(`minted-${who}`), loosen)
+        const r = await post(await loginAs(`minted-${who}`), loosen)
         expect(r.status, who).toBe(403)
         expect(r.body.code).toBe('human_only_enforce_required')
       }
@@ -326,10 +326,10 @@ describe('loosening needs the human-only switch on', () => {
 })
 
 describe('tightening RBAC_MODE', () => {
-  beforeEach(() => {
-    setSystemConfig('RBAC_MODE', 'shadow', 'db')
-    logConfigChange('RBAC_MODE', 'enforce', 'shadow', 'owner')
-    refreshRbacMode(undefined)
+  beforeEach(async () => {
+    await setSystemConfig('RBAC_MODE', 'shadow', 'db')
+    await logConfigChange('RBAC_MODE', 'enforce', 'shadow', 'owner')
+    await refreshRbacMode(undefined)
     expect(getRbacMode()).toBe('shadow')
   })
 
@@ -354,26 +354,26 @@ describe('the gate follows the mode without a restart', () => {
   // A viewer session writing a setting is a denial in enforce mode and a would-deny in shadow mode.
   const viewer = { kind: 'session', user: 'viewer', role: 'viewer', tenantId: 'tenant-a' } as unknown as AuthResult
 
-  function gate(): { passed: boolean; status: number } {
+  async function gate(): Promise<{ passed: boolean; status: number }> {
     let status = 200
     const res = {
       writeHead: (c: number) => { status = c },
       setHeader: () => {},
       end: () => {},
     }
-    const passed = runRbacGate(viewer, 'POST', '/api/settings', res as unknown as http.ServerResponse, getRbacMode())
+    const passed = await runRbacGate(viewer, 'POST', '/api/settings', res as unknown as http.ServerResponse, getRbacMode())
     return { passed, status }
   }
 
   it('blocks in enforce, passes in shadow, blocks again after the switch back', async () => {
-    expect(gate().passed).toBe(false)
-    expect(gate().status).toBe(403)
+    expect((await gate()).passed).toBe(false)
+    expect((await gate()).status).toBe(403)
 
     expect((await post({ auth: { kind: 'session', user: 'owner' } as AuthResult, role: 'admin', cookie: cookies['owner'] }, loosen)).status).toBe(200)
-    expect(gate().passed).toBe(true)
+    expect((await gate()).passed).toBe(true)
 
     expect((await post(CALLERS['adminToken']!, tighten)).status).toBe(200)
-    expect(gate().passed).toBe(false)
+    expect((await gate()).passed).toBe(false)
   })
 
   it('web.ts hands the gate the live getter and no longer imports a boot-time constant', () => {
@@ -392,23 +392,23 @@ describe('GET /api/settings reports what the gate applies for RBAC_MODE', () => 
   })
 
   it('a journalled shadow: value shadow, no reason', async () => {
-    setSystemConfig('RBAC_MODE', 'shadow', 'db')
-    logConfigChange('RBAC_MODE', 'enforce', 'shadow', 'owner')
-    refreshRbacMode(undefined)
+    await setSystemConfig('RBAC_MODE', 'shadow', 'db')
+    await logConfigChange('RBAC_MODE', 'enforce', 'shadow', 'owner')
+    await refreshRbacMode(undefined)
     expect(await rbacRow()).toMatchObject({ value: 'shadow', stored: 'shadow', reason: null })
   })
 
   it('an unlogged hand-written shadow: value enforce (what the gate uses), stored shadow, reason says why', async () => {
-    setSystemConfig('RBAC_MODE', 'shadow', 'db')
-    refreshRbacMode(undefined)
+    await setSystemConfig('RBAC_MODE', 'shadow', 'db')
+    await refreshRbacMode(undefined)
     expect(getRbacMode()).toBe('enforce')
     expect(await rbacRow()).toMatchObject({ value: 'enforce', stored: 'shadow', reason: 'unlogged_shadow' })
   })
 
   it('the env brake over a stored shadow: value enforce, stored shadow, reason env_enforce', async () => {
-    setSystemConfig('RBAC_MODE', 'shadow', 'db')
-    logConfigChange('RBAC_MODE', 'enforce', 'shadow', 'owner')
-    refreshRbacMode('enforce')
+    await setSystemConfig('RBAC_MODE', 'shadow', 'db')
+    await logConfigChange('RBAC_MODE', 'enforce', 'shadow', 'owner')
+    await refreshRbacMode('enforce')
     expect(await rbacRow()).toMatchObject({ value: 'enforce', stored: 'shadow', reason: 'env_enforce' })
   })
 

@@ -18,10 +18,15 @@ export * from './audit.js'
 export * from './autonomy.js'
 export * from './claude-plans.js'
 export * from './channel-credentials.js'
+export { reloadSystemConfigCache, clearSystemConfigCache } from './config-cache.js'
+export { reloadModelProfileMapCache, clearModelProfileMapCache } from './model-profile-map-cache.js'
+export { reloadAgentSettingsCache, clearAgentSettingsCache } from './agent-settings-cache.js'
+export * from './context.js'
 export * from './conversation-ledger.js'
 export * from './cost-budgets.js'
 export * from './device-keys.js'
 export * from './egress-allowlist.js'
+export * from './facade.js'
 export * from './kanban.js'
 export * from './memory.js'
 export * from './misc.js'
@@ -48,15 +53,18 @@ import { join } from 'node:path'
 import { STORE_DIR, MAIN_AGENT_ID } from '../config.js'
 import { initDatabase as connectionInitDatabase, db } from './connection.js'
 import { backfillImportShadowRows, initVecSupport, migrateExistingEmbeddingsToBLOB } from './vector.js'
-import { replaceClaudePlanRows, activatePlanForAgent, type ClaudePlanType } from './claude-plans.js'
-import { migrateConfigOverridesToSystemConfig, migrateGroup5StateFromFiles, getSystemConfig, setSystemConfig } from './system-config.js'
+import { replaceClaudePlanRowsSync, activatePlanForAgentSync, type ClaudePlanType } from './claude-plans.js'
+import { migrateConfigOverridesToSystemConfig, migrateGroup5StateFromFiles, getSystemConfig, setSystemConfigSync } from './system-config.js'
 import { migrateScheduleLastRunFromFile } from './tasks.js'
 import { importAgentSettingsFromFile, type AgentSettingKey } from './agent-settings.js'
-import { getAgentState, setAgentState, importAgentStateFromFile, type AgentStateKey } from './agent-state.js'
+import { getAgentStateSync, setAgentStateSync, importAgentStateFromFile, type AgentStateKey } from './agent-state.js'
 import { migrateCostBudgetsFromFile } from './cost-budgets.js'
 import { migrateVaultBindingsFromFile } from './vault-bindings.js'
 import { migrateFederationConfigFromFile } from './federation.js'
-import { resolveAgentOwningTenantId } from './agents.js'
+import { loadSystemConfigCache } from './config-cache.js'
+import { loadModelProfileMapCache } from './model-profile-map-cache.js'
+import { loadAgentSettingsCache } from './agent-settings-cache.js'
+import { resolveAgentOwningTenantIdSync } from './agents.js'
 import { logger } from '../logger.js'
 
 export function initDatabase(dbPathOverride?: string): void {
@@ -75,7 +83,11 @@ export function initDatabase(dbPathOverride?: string): void {
   // Create shadow rows in memories for any import_memories entries that lack
   // them. Must run after initVecSupport so that vec0 is loaded and the
   // vec_memories virtual table exists before the backfill inserts into it.
-  void backfillImportShadowRows().catch(err => logger.warn({ err }, 'Import shadow backfill failed'))
+  try {
+    backfillImportShadowRows()
+  } catch (err) {
+    logger.warn({ err }, 'Import shadow backfill failed')
+  }
 
   // One-time seed of the claude_plans_registry / agent_active_plans DB mirror
   // from the two JSON side-cars (#886). UNLIKE migrateTaskRunsFromJson in
@@ -159,6 +171,20 @@ export function initDatabase(dbPathOverride?: string): void {
   // getSystemConfig() guard in migrateFederationConfigFromFile takes the
   // place of INSERT OR IGNORE here since there's only one row to skip).
   migrateFederationConfigFromFile()
+
+  // Last step, after every migrator that writes system_config: fill the synchronous write-through cache the
+  // configuration readers are served from (config-cache.ts). Runs again on every re-initialisation.
+  loadSystemConfigCache()
+
+  // model_profile_map has no file migrator (migration 0054 seeds it directly) -- just the equivalent
+  // synchronous write-through cache load (model-profile-map-cache.ts), for the same reason.
+  loadModelProfileMapCache()
+
+  // agent_settings DOES have a file migrator (migrateAgentSettingsFromFiles() above, at the
+  // "Migration 0058" step) -- same every-boot-but-effectively-once shape as the others. The
+  // synchronous write-through cache (agent-settings-cache.ts) loads last, after that migrator has
+  // run, so a freshly-imported row is already in the cache the first time a reader asks for it.
+  loadAgentSettingsCache()
 }
 
 // Migration 0057 (#985 group 2/8) file retirement, mirroring
@@ -217,7 +243,7 @@ function migrateAgentSettingsFromFiles(): void {
     try {
       const raw = JSON.parse(readFileSync(p, 'utf-8'))
       if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
-        importAgentSettingsFromFile(key, raw as Record<string, unknown>, resolveAgentOwningTenantId)
+        importAgentSettingsFromFile(key, raw as Record<string, unknown>, resolveAgentOwningTenantIdSync)
       }
     } catch (err) {
       logger.warn({ err, file }, 'agent settings migration: failed to parse file, skipping')
@@ -325,11 +351,11 @@ export function retireFederationConfigFile(): void {
 function migrateKanbanAuditStateFromFile(): void {
   const p = join(STORE_DIR, 'kanban-audit-state.json')
   if (!existsSync(p)) return
-  if (getAgentState(MAIN_AGENT_ID, 'kanban_audit_last_audit_at')) return
+  if (getAgentStateSync(MAIN_AGENT_ID, 'kanban_audit_last_audit_at')) return
   try {
     const raw = JSON.parse(readFileSync(p, 'utf-8')) as { last_audit_at?: unknown }
     if (typeof raw?.last_audit_at === 'number' && Number.isFinite(raw.last_audit_at)) {
-      setAgentState(MAIN_AGENT_ID, 'kanban_audit_last_audit_at', raw.last_audit_at)
+      setAgentStateSync(MAIN_AGENT_ID, 'kanban_audit_last_audit_at', raw.last_audit_at)
     }
   } catch (err) {
     logger.warn({ err, file: 'kanban-audit-state.json' }, 'kanban-audit state migration: failed to parse file, skipping')
@@ -361,7 +387,7 @@ function migrateScheduleStateFromFiles(): void {
       try {
         const raw = JSON.parse(readFileSync(tickStatePath, 'utf-8')) as { lastTickMs?: unknown }
         if (typeof raw?.lastTickMs === 'number' && Number.isFinite(raw.lastTickMs)) {
-          setSystemConfig('schedule_last_tick_ms', String(raw.lastTickMs))
+          setSystemConfigSync('schedule_last_tick_ms', String(raw.lastTickMs))
         }
       } catch (err) {
         logger.warn({ err }, 'schedule state migration: failed to parse schedule-tick-state.json, skipping')
@@ -382,7 +408,7 @@ function seedClaudePlansRegistryMirror(): void {
       try {
         const raw = JSON.parse(readFileSync(plansPath, 'utf-8'))
         if (Array.isArray(raw)) {
-          const plans: Parameters<typeof replaceClaudePlanRows>[0] = []
+          const plans: Parameters<typeof replaceClaudePlanRowsSync>[0] = []
           for (const entry of raw) {
             if (!entry || typeof entry !== 'object') continue
             const o = entry as Record<string, unknown>
@@ -396,7 +422,7 @@ function seedClaudePlansRegistryMirror(): void {
               expectedEmail: isNonEmptyString(o.expectedEmail) ? o.expectedEmail : undefined,
             })
           }
-          replaceClaudePlanRows(plans)
+          replaceClaudePlanRowsSync(plans)
         }
       } catch (err) {
         logger.warn({ err }, 'claude-plans-registry mirror seed: failed to read/parse claude-plans.json, skipping')
@@ -420,7 +446,7 @@ function seedClaudePlansRegistryMirror(): void {
             // claude-plans.json since the state file was last written) throws
             // here. Per-entry try/catch so one stale reference cannot abort
             // the whole seed (and therefore initDatabase()) on upgrade.
-            try { activatePlanForAgent(agentId, planId, 'manual') }
+            try { activatePlanForAgentSync(agentId, planId, 'manual') }
             catch (err) { logger.warn({ err, agentId, planId }, 'claude-plans-registry mirror seed: skipping stale activePlanByAgent entry') }
           }
         }

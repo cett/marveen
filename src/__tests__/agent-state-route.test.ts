@@ -3,13 +3,12 @@
 
 import { describe, it, expect, beforeEach } from 'vitest'
 import { EventEmitter } from 'node:events'
-import { initDatabase, getAgentState } from '../db.js'
+import { getAgentState } from '../db.js'
+import { useTestDb } from './helpers/with-test-db.js'
 import { tryHandleAgentState } from '../web/routes/agent-state.js'
 import type { RouteContext } from '../web/routes/types.js'
 
-beforeEach(() => {
-  initDatabase(':memory:')
-})
+useTestDb()
 
 function makeCtx(method: string, path: string, body?: unknown): { ctx: RouteContext; out: { status: number; body: unknown } } {
   const buf = body === undefined ? Buffer.alloc(0) : Buffer.from(typeof body === 'string' ? body : JSON.stringify(body))
@@ -60,7 +59,7 @@ describe('/api/agent-state/:agent/:key', () => {
     await tryHandleAgentState(makeCtx('PUT', '/api/agent-state/agent-a/kanban_audit_last_audit_at', { value: 1800000600 }).ctx)
     // Same text a plain SQL "state_value = '1800000600'" would have left, so the
     // shell pre-check's CAST(state_value AS INTEGER) semantics are unchanged.
-    expect(getAgentState('agent-a', 'kanban_audit_last_audit_at')?.state_value).toBe('1800000600')
+    expect((await getAgentState('agent-a', 'kanban_audit_last_audit_at'))?.state_value).toBe('1800000600')
     const get = makeCtx('GET', '/api/agent-state/agent-a/kanban_audit_last_audit_at')
     await tryHandleAgentState(get.ctx)
     expect((get.out.body as { value: number }).value).toBe(1800000600)
@@ -71,7 +70,7 @@ describe('/api/agent-state/:agent/:key', () => {
     await tryHandleAgentState(ctx)
     expect(out.status).toBe(400)
     expect(out.body).toMatchObject({ error: 'invalid_value', field: 'state_key' })
-    expect(getAgentState('agent-a', 'anything_else' as never)).toBeUndefined()
+    expect(await getAgentState('agent-a', 'anything_else' as never)).toBeUndefined()
   })
 
   it('rejects an agent id that is not a plain name', async () => {
@@ -91,7 +90,7 @@ describe('/api/agent-state/:agent/:key', () => {
     const bad = makeCtx('PUT', '/api/agent-state/agent-a/gate_run_state', '{nope')
     await tryHandleAgentState(bad.ctx)
     expect(bad.out.status).toBe(400)
-    expect(getAgentState('agent-a', 'gate_run_state')).toBeUndefined()
+    expect(await getAgentState('agent-a', 'gate_run_state')).toBeUndefined()
   })
 
   it('does not handle other paths or methods', async () => {

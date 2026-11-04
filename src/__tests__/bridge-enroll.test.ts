@@ -84,7 +84,7 @@ describe('bridgeEnroll', () => {
     expect(outcome.installId).toBe(installId)
     expect(authKeysContent()).toContain(`${RESTRICT_OPTIONS} ${line}`)
 
-    const keys = listDeviceKeys()
+    const keys = await listDeviceKeys()
     expect(keys).toHaveLength(1)
     expect(keys[0]).toMatchObject({ name: 'device-a', installId })
 
@@ -94,7 +94,7 @@ describe('bridgeEnroll', () => {
     // The bundle carries the DEVICE key, not the shared dashboard token...
     expect(bundle.dashboardToken).toMatch(/^mvdk_/)
     // ...and that key actually authenticates as a device principal.
-    const r = resolveAuth(
+    const r = await resolveAuth(
       { headers: { authorization: `Bearer ${bundle.dashboardToken}` } } as unknown as http.IncomingMessage,
       new URL('http://127.0.0.1:3420/api/agents'), '/api/agents', 'GET', TOKEN,
       false,
@@ -112,18 +112,18 @@ describe('bridgeEnroll', () => {
     // Exactly one authorized_keys line and one device key for the install id.
     const lines = authKeysContent().trim().split('\n')
     expect(lines).toHaveLength(1)
-    expect(listDeviceKeys()).toHaveLength(1)
-    expect(listDeviceKeys()[0]!.name).toBe('device-b-repaired')
+    expect(await listDeviceKeys()).toHaveLength(1)
+    expect((await listDeviceKeys())[0]!.name).toBe('device-b-repaired')
     // The FIRST bundle's key is dead; the second lives.
     const firstKey = decodeBundle(first.bundle).dashboardToken!
     const secondKey = decodeBundle(second.bundle).dashboardToken!
-    const gate = (k: string) => resolveAuth(
+    const gate = async (k: string) => resolveAuth(
       { headers: { authorization: `Bearer ${k}` } } as unknown as http.IncomingMessage,
       new URL('http://127.0.0.1:3420/api/agents'), '/api/agents', 'GET', TOKEN,
       false,
     )
-    expect(gate(firstKey)).toEqual({ kind: 'none' })
-    expect(gate(secondKey).kind).toBe('device')
+    expect(await gate(firstKey)).toEqual({ kind: 'none' })
+    expect((await gate(secondKey)).kind).toBe('device')
   })
 
   it('fails hard without a host key and leaves NO side effects', async () => {
@@ -132,14 +132,14 @@ describe('bridgeEnroll', () => {
       bridgeEnroll({ keyLine: line, name: 'x' }, testDeps({ keyscan: async () => null })),
     ).rejects.toThrow(RemoteEnrollError)
     expect(authKeysContent()).toBe('')
-    expect(listDeviceKeys()).toHaveLength(0)
+    expect(await listDeviceKeys()).toHaveLength(0)
   })
 
   it('rejects a garbage key line before touching anything', async () => {
     await expect(
       bridgeEnroll({ keyLine: 'ssh-rsa AAAA nope', name: 'x' }, testDeps()),
     ).rejects.toThrow(RemoteEnrollError)
-    expect(listDeviceKeys()).toHaveLength(0)
+    expect(await listDeviceKeys()).toHaveLength(0)
   })
 
   it('preserves foreign authorized_keys lines byte-for-byte', async () => {
@@ -214,7 +214,7 @@ describe('POST /api/security/bridge-enroll (HTTP)', () => {
       const r = await call(tryHandleSecurity, 'POST', '/api/security/bridge-enroll', { auth, body: { key_line: 'x', name: 'y' } })
       expect(r.statusCode).toBe(403)
     }
-    expect(listDeviceKeys()).toHaveLength(0)
+    expect(await listDeviceKeys()).toHaveLength(0)
   })
 
   it('400s on a missing name or invalid key line without side effects', async () => {
@@ -222,7 +222,7 @@ describe('POST /api/security/bridge-enroll (HTTP)', () => {
     expect(bad1.statusCode).toBe(400)
     const bad2 = await call(tryHandleSecurity, 'POST', '/api/security/bridge-enroll', { auth: { kind: 'token' }, body: { key_line: 'not a key', name: 'ok name' } })
     expect(bad2.statusCode).toBe(400)
-    expect(listDeviceKeys()).toHaveLength(0)
+    expect(await listDeviceKeys()).toHaveLength(0)
   })
 
   it('enrolls end-to-end over the route (MARVEEN_SSH_DIR seam) and audits', async () => {
@@ -235,11 +235,11 @@ describe('POST /api/security/bridge-enroll (HTTP)', () => {
     if (r.statusCode === 400) {
       // No host key obtainable in this environment -- the documented hard-fail
       // path; assert it stayed side-effect-free.
-      expect(listDeviceKeys()).toHaveLength(0)
+      expect(await listDeviceKeys()).toHaveLength(0)
       return
     }
     expect(r.statusCode).toBe(201)
-    expect(findDeviceKeyByInstallId(installId)).not.toBeNull()
+    expect(await findDeviceKeyByInstallId(installId)).not.toBeNull()
     const audit = getDb().prepare("SELECT new_value FROM config_change_log WHERE key='security.bridge_enroll'").all() as { new_value: string }[]
     expect(audit).toHaveLength(1)
     // The active MARVEEN_SSH_DIR override must be visible in the audit row.
@@ -256,7 +256,7 @@ describe('DELETE /api/auth/device-keys/:id for a paired key', () => {
     expect(r.statusCode).toBe(200)
     expect(r.json().ssh_removed).toBe(true)
     expect(authKeysContent()).toBe('')
-    expect(listDeviceKeys()).toHaveLength(0)
+    expect(await listDeviceKeys()).toHaveLength(0)
     const audit = getDb().prepare("SELECT new_value FROM config_change_log WHERE key='security.bridge_revoke'").all() as { new_value: string }[]
     expect(audit).toHaveLength(1)
     expect(audit[0]!.new_value).toContain('ssh_removed=true')

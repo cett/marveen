@@ -180,6 +180,8 @@ bash scripts/agent-api.sh --token operator POST /api/v1/admin/tokens/<id>/rotate
 bash scripts/agent-api.sh --token operator DELETE /api/v1/admin/tokens/<id>/revoke
 ```
 
+(`POST /api/v1/admin/tokens/<id>/rotate` issues a replacement; there is no `PATCH` on a token.)
+
 A fleet agent's own token is normally issued with `npm run agent-tokens -- issue` (above), not by hand. While `APPROVAL_HUMAN_ONLY_ENFORCE` is on, create and rotate refuse a caller that is an agent (a `fleet_agent` token, any token that carries an `agent_id`, a device key or a federation peer) with `403 human_session_required`, unless a person is signed in to the dashboard; revoke is not limited that way. The same guard sits on the other credential-issuing routes: `POST /api/admin/browser-enroll-codes`, `POST /api/auth/device-keys` and the Bridge pairing. The operator token (role `admin`, no agent) is not an agent.
 
 ### Onboarding a B2B partner

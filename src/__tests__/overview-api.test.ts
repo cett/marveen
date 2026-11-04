@@ -194,8 +194,8 @@ describe('GET /api/overview — tasksToday tenant scoping', () => {
   }
 
   it('admin with ?tenant filter counts only the runs of that tenant\'s schedules', async () => {
-    createTenant('tenant-a', 'Tenant A')
-    createTenant('tenant-b', 'Tenant B')
+    await createTenant('tenant-a', 'Tenant A')
+    await createTenant('tenant-b', 'Tenant B')
     seedSchedule('t1', 'tenant-a', 'agent-a')
     seedSchedule('t2', 'tenant-b', 'agent-b')
     seedRun('t1', 'agent-a')
@@ -210,7 +210,7 @@ describe('GET /api/overview — tasksToday tenant scoping', () => {
   })
 
   it('a tenant with no schedules returns 0 tasksToday, not an error', async () => {
-    createTenant('tenant-empty', 'Empty Tenant')
+    await createTenant('tenant-empty', 'Empty Tenant')
     seedSchedule('t1', 'default', 'agent-a')
     seedRun('t1', 'agent-a')
 
@@ -220,10 +220,10 @@ describe('GET /api/overview — tasksToday tenant scoping', () => {
   })
 
   it('a shared agent\'s runs count for the tenant of each schedule (the old agent-based scoping lost them in every tenant)', async () => {
-    createTenant('tenant-a', 'Tenant A')
-    createTenant('tenant-b', 'Tenant B')
-    setTenantAgentAvailability('tenant-a', 'shared-agent', true)
-    setTenantAgentAvailability('tenant-b', 'shared-agent', true) // 2 enabled rows -> '_multi_'
+    await createTenant('tenant-a', 'Tenant A')
+    await createTenant('tenant-b', 'Tenant B')
+    await setTenantAgentAvailability('tenant-a', 'shared-agent', true)
+    await setTenantAgentAvailability('tenant-b', 'shared-agent', true) // 2 enabled rows -> '_multi_'
     seedSchedule('ta', 'tenant-a', 'shared-agent')
     seedSchedule('tb', 'tenant-b', 'shared-agent')
     seedRun('ta', 'shared-agent')
@@ -245,7 +245,7 @@ describe('GET /api/overview — tasksToday tenant scoping', () => {
 describe('GET /api/overview — tokensToday tenant scoping', () => {
   it('admin with ?tenant filter counts only that tenant\'s token_usage rows', async () => {
     const db = getDb()
-    createTenant('tenant-a', 'Tenant A')
+    await createTenant('tenant-a', 'Tenant A')
     const startOfDay = new Date()
     startOfDay.setHours(0, 0, 0, 0)
     const todaySec = Math.floor(startOfDay.getTime() / 1000) + 3600
@@ -265,7 +265,7 @@ describe('GET /api/overview — tokensToday tenant scoping', () => {
 
   it('"_multi_" (shared-agent) token_usage rows are excluded from a tenant\'s scoped view', async () => {
     const db = getDb()
-    createTenant('tenant-a', 'Tenant A')
+    await createTenant('tenant-a', 'Tenant A')
     const startOfDay = new Date()
     startOfDay.setHours(0, 0, 0, 0)
     const todaySec = Math.floor(startOfDay.getTime() / 1000) + 3600
@@ -315,8 +315,8 @@ describe('GET /api/overview — pendingApprovals', () => {
 
   it('counts only pending approvals', async () => {
     // Fix-revert proof: removing the pendingApprovals COUNT query returns 0.
-    createApproval({ id: 'ap-1', agent_id: 'agent-a', category: 'test', action_description: 'do something' })
-    createApproval({ id: 'ap-2', agent_id: 'agent-a', category: 'test', action_description: 'do something else' })
+    await createApproval({ id: 'ap-1', agent_id: 'agent-a', category: 'test', action_description: 'do something' })
+    await createApproval({ id: 'ap-2', agent_id: 'agent-a', category: 'test', action_description: 'do something else' })
     // Resolve one
     getDb().prepare("UPDATE approvals SET status='approved', resolved_at=? WHERE id='ap-2'").run(Math.floor(Date.now() / 1000))
 
@@ -327,8 +327,8 @@ describe('GET /api/overview — pendingApprovals', () => {
 
   it('admin with ?tenant filter counts only that tenant\'s pending approvals', async () => {
     // Fix-revert proof: without tenant scoping this would return 2, not 1.
-    createApproval({ id: 'ap-a', agent_id: 'agent-a', category: 'test', action_description: 'a', tenant_id: 'tenant-a' })
-    createApproval({ id: 'ap-b', agent_id: 'agent-a', category: 'test', action_description: 'b', tenant_id: 'tenant-b' })
+    await createApproval({ id: 'ap-a', agent_id: 'agent-a', category: 'test', action_description: 'a', tenant_id: 'tenant-a' })
+    await createApproval({ id: 'ap-b', agent_id: 'agent-a', category: 'test', action_description: 'b', tenant_id: 'tenant-b' })
 
     const { ctx, out } = fakeCtx('/api/overview?tenant=tenant-a', 'GET', { role: 'admin' })
     await tryHandleOverview(ctx)
@@ -336,8 +336,8 @@ describe('GET /api/overview — pendingApprovals', () => {
   })
 
   it('admin without ?tenant filter counts pending approvals across all tenants', async () => {
-    createApproval({ id: 'ap-a', agent_id: 'agent-a', category: 'test', action_description: 'a', tenant_id: 'tenant-a' })
-    createApproval({ id: 'ap-b', agent_id: 'agent-a', category: 'test', action_description: 'b', tenant_id: 'tenant-b' })
+    await createApproval({ id: 'ap-a', agent_id: 'agent-a', category: 'test', action_description: 'a', tenant_id: 'tenant-a' })
+    await createApproval({ id: 'ap-b', agent_id: 'agent-a', category: 'test', action_description: 'b', tenant_id: 'tenant-b' })
 
     const { ctx, out } = fakeCtx('/api/overview', 'GET', { role: 'admin' })
     await tryHandleOverview(ctx)
@@ -415,7 +415,7 @@ describe('GET /api/overview — activity feed 4h filter', () => {
 
 describe('GET /api/overview, activity feed approvals', () => {
   it('includes a recent approval with its status', async () => {
-    createApproval({ id: 'ap-feed', agent_id: 'agent-a', category: 'email_send', action_description: 'send the weekly mail' })
+    await createApproval({ id: 'ap-feed', agent_id: 'agent-a', category: 'email_send', action_description: 'send the weekly mail' })
 
     const { ctx, out } = fakeCtx('/api/overview')
     await tryHandleOverview(ctx)
@@ -424,7 +424,7 @@ describe('GET /api/overview, activity feed approvals', () => {
   })
 
   it('a failing approvals read leaves the feed without them, answers 200 and logs the error', async () => {
-    createApproval({ id: 'ap-feed', agent_id: 'agent-a', category: 'email_send', action_description: 'send the weekly mail' })
+    await createApproval({ id: 'ap-feed', agent_id: 'agent-a', category: 'email_send', action_description: 'send the weekly mail' })
     getDb().exec('ALTER TABLE approvals RENAME COLUMN requested_at TO requested_at_gone')
     const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined)
     try {
@@ -480,8 +480,8 @@ describe('GET /api/overview — agents.list lastActive', () => {
 
 describe('GET /api/overview — skills tenant scoping', () => {
   it('admin with ?tenant filter counts only that tenant\'s own + granted skills', async () => {
-    createSkill({ id: 'sk-a', name: 'Skill A', content: 'x', tenant_id: 'tenant-a' })
-    createSkill({ id: 'sk-b', name: 'Skill B', content: 'x', tenant_id: 'tenant-b' })
+    await createSkill({ id: 'sk-a', name: 'Skill A', content: 'x', tenant_id: 'tenant-a' })
+    await createSkill({ id: 'sk-b', name: 'Skill B', content: 'x', tenant_id: 'tenant-b' })
 
     const { ctx, out } = fakeCtx('/api/overview?tenant=tenant-a', 'GET', { role: 'admin' })
     await tryHandleOverview(ctx)
@@ -491,7 +491,7 @@ describe('GET /api/overview — skills tenant scoping', () => {
   })
 
   it('admin without ?tenant filter falls back to the fleet-wide filesystem count', async () => {
-    createSkill({ id: 'sk-a', name: 'Skill A', content: 'x', tenant_id: 'tenant-a' })
+    await createSkill({ id: 'sk-a', name: 'Skill A', content: 'x', tenant_id: 'tenant-a' })
 
     const { ctx, out } = fakeCtx('/api/overview', 'GET', { role: 'admin' })
     await tryHandleOverview(ctx)
@@ -634,8 +634,8 @@ describe('GET /api/overview — non-admin response omits fleet-level fields', ()
 // ---------------------------------------------------------------------------
 
 describe('GET /api/overview — errorSpans', () => {
-  function span(id: string, over: Partial<Parameters<typeof upsertOtelSpan>[0]> = {}) {
-    upsertOtelSpan({
+  async function span(id: string, over: Partial<Parameters<typeof upsertOtelSpan>[0]> = {}) {
+    await upsertOtelSpan({
       trace_id: `t-${id}`, span_id: id, parent_span_id: null, agent_id: 'agent-a', operation: 'schedule.run',
       start_ms: Date.now() - 60_000, end_ms: Date.now() - 59_000, status: 'error',
       attributes: JSON.stringify({ schedule: 'nightly', schedule_type: 'command' }), ...over,
@@ -651,13 +651,13 @@ describe('GET /api/overview — errorSpans', () => {
 
   it('lists the 4-hour error and timeout spans newest first, with a short label', async () => {
     const now = Date.now()
-    span('a', { start_ms: now - 3_000_000, end_ms: now - 2_999_000 })
-    span('b', {
+    await span('a', { start_ms: now - 3_000_000, end_ms: now - 2_999_000 })
+    await span('b', {
       operation: 'http.server', agent_id: 'dashboard', start_ms: now - 1_000_000, end_ms: now - 999_000, status: 'timeout',
       attributes: JSON.stringify({ http_method: 'POST', http_route: '/api/messages', http_status: 500 }),
     })
-    span('old', { start_ms: now - 5 * 3_600_000, end_ms: now - 5 * 3_600_000 + 10 })
-    span('fine', { status: 'ok' })
+    await span('old', { start_ms: now - 5 * 3_600_000, end_ms: now - 5 * 3_600_000 + 10 })
+    await span('fine', { status: 'ok' })
     const { ctx, out } = fakeCtx('/api/overview')
     await tryHandleOverview(ctx)
     expect(out.body.errors4h).toBe(2)
@@ -669,7 +669,7 @@ describe('GET /api/overview — errorSpans', () => {
   })
 
   it('shows at most 20 spans while errors4h keeps the full count', async () => {
-    for (let i = 0; i < 25; i++) span(`s${i}`, { start_ms: Date.now() - 1000 - i })
+    for (let i = 0; i < 25; i++) await span(`s${i}`, { start_ms: Date.now() - 1000 - i })
     const { ctx, out } = fakeCtx('/api/overview')
     await tryHandleOverview(ctx)
     expect(out.body.errors4h).toBe(25)
@@ -677,7 +677,7 @@ describe('GET /api/overview — errorSpans', () => {
   })
 
   it('never returns the raw attributes', async () => {
-    span('x', { attributes: JSON.stringify({ schedule: 'nightly', secret: 'TOKEN-VALUE' }) })
+    await span('x', { attributes: JSON.stringify({ schedule: 'nightly', secret: 'TOKEN-VALUE' }) })
     const { ctx, out } = fakeCtx('/api/overview')
     await tryHandleOverview(ctx)
     expect(JSON.stringify(out.body.errorSpans)).not.toContain('TOKEN-VALUE')

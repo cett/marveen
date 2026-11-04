@@ -58,16 +58,16 @@ function fakeCtx(path: string, method: string): {
   }
 }
 
-afterEach(() => {
+afterEach(async () => {
   rmSync(agentDir(THROWAWAY), { recursive: true, force: true })
-  removeDesiredAgent(THROWAWAY)
+  await removeDesiredAgent(THROWAWAY)
 })
 
 describe('DELETE /api/agents/:name and the desired run-state', () => {
   it('removes the name from agents-desired.json, not just the directory', async () => {
     mkdirSync(agentDir(THROWAWAY), { recursive: true })
     mkdirSync(STORE_DIR, { recursive: true })
-    addDesiredAgent(THROWAWAY)
+    await addDesiredAgent(THROWAWAY)
 
     // Positive control on the instrument itself: if the desired-state file did
     // not hold the name to begin with, the assertion below would pass on a
@@ -87,8 +87,8 @@ describe('DELETE /api/agents/:name and the desired run-state', () => {
     const bystander = 'zz-desired-state-bystander'
     mkdirSync(agentDir(THROWAWAY), { recursive: true })
     mkdirSync(STORE_DIR, { recursive: true })
-    addDesiredAgent(THROWAWAY)
-    addDesiredAgent(bystander)
+    await addDesiredAgent(THROWAWAY)
+    await addDesiredAgent(bystander)
     try {
       const { ctx } = fakeCtx(`/api/agents/${THROWAWAY}`, 'DELETE')
       await tryHandleAgents(ctx, join(PROJECT_ROOT, 'web'))
@@ -96,13 +96,13 @@ describe('DELETE /api/agents/:name and the desired run-state', () => {
       // test above while silently un-desiring the entire fleet.
       expect(getDesiredAgents().has(bystander)).toBe(true)
     } finally {
-      removeDesiredAgent(bystander)
+      await removeDesiredAgent(bystander)
     }
   })
 
   it('does not touch the desired state when the agent does not exist', async () => {
     mkdirSync(STORE_DIR, { recursive: true })
-    addDesiredAgent(THROWAWAY)
+    await addDesiredAgent(THROWAWAY)
 
     // 404 path: no directory to delete, so nothing was decided about intent.
     // Clearing here would let a stray DELETE of a mistyped name knock a running

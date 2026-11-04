@@ -85,14 +85,14 @@ vi.mock('../web/vault.js', () => ({
 }))
 
 vi.mock('../web/vault-bindings.js', () => ({
-  getBindings: vi.fn().mockReturnValue([]),
-  addBinding: vi.fn(),
-  removeBinding: vi.fn().mockReturnValue(true),
-  removeBindingsForSecret: vi.fn(),
-  syncSecret: vi.fn().mockReturnValue({ updated: 0, errors: [] }),
-  syncAllBindings: vi.fn().mockReturnValue({ updated: 0, errors: [] }),
+  getBindings: vi.fn().mockResolvedValue([]),
+  addBinding: vi.fn().mockResolvedValue(undefined),
+  removeBinding: vi.fn().mockResolvedValue(true),
+  removeBindingsForSecret: vi.fn().mockResolvedValue(undefined),
+  syncSecret: vi.fn().mockResolvedValue({ updated: 0, errors: [] }),
+  syncAllBindings: vi.fn().mockResolvedValue({ updated: 0, errors: [] }),
   scanMcpConfigs: vi.fn().mockReturnValue([]),
-  unsyncBinding: vi.fn(),
+  unsyncBinding: vi.fn().mockResolvedValue(undefined),
 }))
 
 vi.mock('../web/mcp-list.js', () => ({
@@ -165,10 +165,10 @@ beforeEach(() => {
   vi.mocked(listSecrets).mockReturnValue([])
   vi.mocked(findSecretTenant).mockReturnValue(null)
   vi.mocked(getSecret).mockReturnValue(null)
-  vi.mocked(getBindings).mockReturnValue([])
-  vi.mocked(removeBinding).mockReturnValue(true)
-  vi.mocked(syncSecret).mockReturnValue({ updated: 0, errors: [] })
-  vi.mocked(syncAllBindings).mockReturnValue({ updated: 0, errors: [] })
+  vi.mocked(getBindings).mockResolvedValue([])
+  vi.mocked(removeBinding).mockResolvedValue(true)
+  vi.mocked(syncSecret).mockResolvedValue({ updated: 0, errors: [] })
+  vi.mocked(syncAllBindings).mockResolvedValue({ updated: 0, errors: [] })
   vi.mocked(scanMcpConfigs).mockReturnValue([])
   for (const k of Object.keys(mockFsFiles)) delete mockFsFiles[k]
   for (const k of Object.keys(mockFsDirs)) delete mockFsDirs[k]
@@ -309,7 +309,7 @@ describe('GitHub repo connectors', () => {
   })
 
   it('POST stores env vars in the vault and installs with the resulting mapping', async () => {
-    vi.mocked(installGitHubRepo).mockResolvedValue({
+    vi.mocked(installGitHubRepo).mockReturnValue({
       repo: { url: 'https://github.com/owner/repo', name: 'owner--repo', path: '/tmp/repo', installedAt: '2026-09-12T00:00:00Z' },
       requiredEnvVars: ['API_KEY'],
     })
@@ -327,7 +327,7 @@ describe('GitHub repo connectors', () => {
   })
 
   it('POST installs without an env mapping when no env vars are given', async () => {
-    vi.mocked(installGitHubRepo).mockResolvedValue({
+    vi.mocked(installGitHubRepo).mockReturnValue({
       repo: { url: 'https://github.com/owner/repo', name: 'owner--repo', path: '/tmp/repo', installedAt: '2026-09-12T00:00:00Z' },
       requiredEnvVars: [],
     })
@@ -697,7 +697,7 @@ describe('GET/DELETE /api/vault/:id', () => {
 
 describe('Vault bindings', () => {
   it('GET returns the current bindings', async () => {
-    vi.mocked(getBindings).mockReturnValue([{ vaultSecretId: 'a', envVar: 'X', targets: [] }])
+    vi.mocked(getBindings).mockResolvedValue([{ vaultSecretId: 'a', envVar: 'X', targets: [] }])
     const { ctx, out } = makeCtx('GET', '/api/vault/bindings')
     await tryHandleConnectors(ctx)
     expect(out.body).toEqual({ bindings: [{ vaultSecretId: 'a', envVar: 'X', targets: [] }] })
@@ -712,7 +712,7 @@ describe('Vault bindings', () => {
 
   it('POST resolves targets by serverName when no explicit targets are given', async () => {
     setMockFile('/tmp/mock-root/.mcp.json', JSON.stringify({ mcpServers: { 'my-server': { command: 'x' } } }))
-    vi.mocked(syncSecret).mockReturnValue({ updated: 1, errors: [] })
+    vi.mocked(syncSecret).mockResolvedValue({ updated: 1, errors: [] })
     const { ctx, out } = makeCtx('POST', '/api/vault/bindings', { vaultSecretId: 'sec', envVar: 'X', serverName: 'my-server' })
     await tryHandleConnectors(ctx)
     expect(out.body).toEqual({ ok: true, synced: 1, errors: [] })
@@ -722,7 +722,7 @@ describe('Vault bindings', () => {
   })
 
   it('DELETE returns not_found when the binding does not exist', async () => {
-    vi.mocked(removeBinding).mockReturnValue(false)
+    vi.mocked(removeBinding).mockResolvedValue(false)
     const { ctx, out } = makeCtx('DELETE', '/api/vault/bindings/sec/X')
     await tryHandleConnectors(ctx)
     expect(out.status).toBe(404)
@@ -730,7 +730,7 @@ describe('Vault bindings', () => {
   })
 
   it('DELETE returns ok:true when removed', async () => {
-    vi.mocked(removeBinding).mockReturnValue(true)
+    vi.mocked(removeBinding).mockResolvedValue(true)
     const { ctx, out } = makeCtx('DELETE', '/api/vault/bindings/sec/X')
     await tryHandleConnectors(ctx)
     expect(out.body).toEqual({ ok: true })
@@ -739,7 +739,7 @@ describe('Vault bindings', () => {
 
 describe('POST /api/vault/sync', () => {
   it('returns the sync result merged with ok:true', async () => {
-    vi.mocked(syncAllBindings).mockReturnValue({ updated: 3, errors: ['one error'] })
+    vi.mocked(syncAllBindings).mockResolvedValue({ updated: 3, errors: ['one error'] })
     const { ctx, out } = makeCtx('POST', '/api/vault/sync')
     await tryHandleConnectors(ctx)
     expect(out.body).toEqual({ ok: true, updated: 3, errors: ['one error'] })
@@ -772,7 +772,7 @@ describe('POST /api/vault/import', () => {
 
   it('creates a binding and syncs it when createBinding is true', async () => {
     setMockFile('/tmp/mock-root/.mcp.json', JSON.stringify({ mcpServers: { s1: { env: { X: 'v' } } } }))
-    vi.mocked(syncSecret).mockReturnValue({ updated: 1, errors: [] })
+    vi.mocked(syncSecret).mockResolvedValue({ updated: 1, errors: [] })
     const { ctx, out } = makeCtx('POST', '/api/vault/import', {
       imports: [{ serverName: 's1', envVar: 'X', vaultId: 'v1', label: 'l', createBinding: true, targets: [{ mcpFilePath: '/tmp/mock-root/.mcp.json', serverName: 's1' }] }],
     })

@@ -46,8 +46,8 @@ vi.mock('../db.js', () => ({
   createAgentMessage: vi.fn(),
   revokeApiTokensForAgent: vi.fn(),
   getOpenKanbanCountsByAssignee: vi.fn().mockReturnValue([]),
-  getEnabledAgentsForTenant: vi.fn().mockReturnValue([]),
-  isTenantAgentEnabled: vi.fn().mockReturnValue(true),
+  getEnabledAgentsForTenant: vi.fn().mockResolvedValue([]),
+  isTenantAgentEnabled: vi.fn().mockResolvedValue(true),
 }))
 vi.mock('../web/telegram.js', () => ({
   sendAvatarChangeMessage: vi.fn().mockResolvedValue(undefined),
@@ -85,7 +85,7 @@ vi.mock('../web/token-usage.js', () => ({
   getTokenSummary: vi.fn().mockReturnValue([]),
 }))
 vi.mock('../web/scheduled-tasks-io.js', () => ({
-  listScheduledTasks: vi.fn().mockReturnValue([]),
+  listScheduledTasks: vi.fn().mockResolvedValue([]),
 }))
 vi.mock('../web/federation/onboarding.js', () => ({
   ensureFederationClaudeMdSection: vi.fn(),
@@ -263,7 +263,7 @@ describe('agents-crud routes (extended)', () => {
   })
 
   it('GET /api/agents/:name as non-admin 404s when agent not enabled for their tenant', async () => {
-    vi.mocked(isTenantAgentEnabled).mockReturnValueOnce(false)
+    vi.mocked(isTenantAgentEnabled).mockResolvedValueOnce(false)
     const { ctx, statusCode } = makeCtx({ method: 'GET', path: '/api/agents/test-agent', role: 'viewer', tenantId: 'acme' })
     expect(await tryHandleAgentsCrud(ctx, WEB_DIR)).toBe(true)
     expect(statusCode()).toBe(404)
@@ -271,7 +271,7 @@ describe('agents-crud routes (extended)', () => {
   })
 
   it('GET /api/agents/:name as non-admin 200s + redacts mcpJson when enabled for their tenant', async () => {
-    vi.mocked(isTenantAgentEnabled).mockReturnValueOnce(true)
+    vi.mocked(isTenantAgentEnabled).mockResolvedValueOnce(true)
     vi.mocked(getAgentDetail).mockClear()
     const { ctx, statusCode } = makeCtx({ method: 'GET', path: '/api/agents/test-agent', role: 'viewer', tenantId: 'acme' })
     expect(await tryHandleAgentsCrud(ctx, WEB_DIR)).toBe(true)
@@ -288,10 +288,10 @@ describe('agents-crud routes (extended)', () => {
   })
 
   it('GET /api/agents as non-admin returns only tenant-enabled agents', async () => {
-    vi.mocked(listAgentSummaries).mockReturnValueOnce([
+    vi.mocked(listAgentSummaries).mockResolvedValueOnce([
       { name: 'peter' }, { name: 'zack' }, { name: 'zoe' },
-    ] as ReturnType<typeof listAgentSummaries>)
-    vi.mocked(getEnabledAgentsForTenant).mockReturnValueOnce(['peter'])
+    ] as Awaited<ReturnType<typeof listAgentSummaries>>)
+    vi.mocked(getEnabledAgentsForTenant).mockResolvedValueOnce(['peter'])
     const { ctx, responseBody } = makeCtx({ method: 'GET', path: '/api/agents', role: 'viewer', tenantId: 'acme' })
     expect(await tryHandleAgentsCrud(ctx, WEB_DIR)).toBe(true)
     expect(getEnabledAgentsForTenant).toHaveBeenCalledWith('acme')
@@ -300,9 +300,9 @@ describe('agents-crud routes (extended)', () => {
   })
 
   it('GET /api/agents as admin bypasses tenant scoping and returns the full fleet', async () => {
-    vi.mocked(listAgentSummaries).mockReturnValueOnce([
+    vi.mocked(listAgentSummaries).mockResolvedValueOnce([
       { name: 'peter' }, { name: 'zack' }, { name: 'zoe' },
-    ] as ReturnType<typeof listAgentSummaries>)
+    ] as Awaited<ReturnType<typeof listAgentSummaries>>)
     vi.mocked(getEnabledAgentsForTenant).mockClear()
     const { ctx, responseBody } = makeCtx({ method: 'GET', path: '/api/agents', role: 'admin' })
     expect(await tryHandleAgentsCrud(ctx, WEB_DIR)).toBe(true)
@@ -648,11 +648,11 @@ describe('agents-crud routes (extended)', () => {
     vi.mocked(tokenUsage.getTokenSummary).mockReturnValueOnce([
       { agent: 'test-agent', totalCalls: 10, totalInput: 50000, totalOutput: 5000, totalCacheRead: 0, totalCacheWrite: 0 },
     ] as any)
-    vi.mocked(db.getOpenKanbanCountsByAssignee).mockReturnValueOnce([
+    vi.mocked(db.getOpenKanbanCountsByAssignee).mockResolvedValueOnce([
       { assignee: 'test-agent', priority: 'urgent', cnt: 2 },
       { assignee: 'test-agent', priority: 'low', cnt: 1 },
     ])
-    vi.mocked(schedIO.listScheduledTasks).mockReturnValueOnce([
+    vi.mocked(schedIO.listScheduledTasks).mockResolvedValueOnce([
       { name: 'task-a', schedule: '*/30 * * * *', agent: 'test-agent', enabled: true, description: '', prompt: '', createdAt: 0, type: 'task', skipIfBusy: false, forceSend: false },
       { name: 'task-b', schedule: '0 * * * *', agent: 'test-agent', enabled: true, description: '', prompt: '', createdAt: 0, type: 'heartbeat', skipIfBusy: false, forceSend: false },
       { name: 'task-c', schedule: '0 */6 * * *', agent: 'test-agent', enabled: true, description: '', prompt: '', createdAt: 0, type: 'task', skipIfBusy: false, forceSend: false },
@@ -821,16 +821,16 @@ describe('agent readers are tenant-scoped like GET /api/agents', async () => {
     vi.mocked(agentTeam.readAgentTeam).mockImplementation(((n: string) => ({
       ...TEAMS[n], autoDelegation: false, trustFrom: [], trustSources: [],
     })) as never)
-    vi.mocked(getEnabledAgentsForTenant).mockImplementation((t: string) => ENABLED[t] ?? [])
-    vi.mocked(isTenantAgentEnabled).mockImplementation((t: string, a: string) => (ENABLED[t] ?? []).includes(a))
+    vi.mocked(getEnabledAgentsForTenant).mockImplementation((t: string) => Promise.resolve(ENABLED[t] ?? []))
+    vi.mocked(isTenantAgentEnabled).mockImplementation((t: string, a: string) => Promise.resolve((ENABLED[t] ?? []).includes(a)))
   }
   // The file-level mock's default, captured before any test overrides it.
-  const FILE_TENANT_FIELDS = helpers.tenantSummaryFields('any')
+  const FILE_TENANT_FIELDS = await helpers.tenantSummaryFields('any')
   function reset(): void {
-    vi.mocked(helpers.tenantSummaryFields).mockReturnValue(FILE_TENANT_FIELDS)
+    vi.mocked(helpers.tenantSummaryFields).mockResolvedValue(FILE_TENANT_FIELDS)
     vi.mocked(agentConfig.listAgentNames).mockReturnValue([])
-    vi.mocked(getEnabledAgentsForTenant).mockReturnValue([])
-    vi.mocked(isTenantAgentEnabled).mockReturnValue(true)
+    vi.mocked(getEnabledAgentsForTenant).mockResolvedValue([])
+    vi.mocked(isTenantAgentEnabled).mockResolvedValue(true)
   }
 
   async function graph(role: RouteContext['role'], tenantId?: RouteContext['tenantId']) {
@@ -906,7 +906,7 @@ describe('agent readers are tenant-scoped like GET /api/agents', async () => {
 
     it('admin sees every agent, the main node, and the tenant fields', async () => {
       seed()
-      vi.mocked(helpers.tenantSummaryFields).mockReturnValue({
+      vi.mocked(helpers.tenantSummaryFields).mockResolvedValue({
         primaryTenantId: 'acme',
         tenantIds: ['default', 'acme'],
         tenantNames: { default: 'Fleet (default)', acme: 'Acme tenant' },
@@ -958,7 +958,7 @@ describe('agent readers are tenant-scoped like GET /api/agents', async () => {
 
     it('detail: a shared agent shows the caller their own tenant only', async () => {
       seed()
-      vi.mocked(isTenantAgentEnabled).mockReturnValue(true)
+      vi.mocked(isTenantAgentEnabled).mockResolvedValue(true)
       vi.mocked(helpers.getAgentDetail).mockReturnValueOnce(summary('test-agent') as never)
       try {
         const { ctx, responseBody } = makeCtx({ method: 'GET', path: '/api/agents/test-agent', role: 'agent', tenantId: 'acme' })

@@ -61,7 +61,7 @@ describe('POST /api/hook-audit', () => {
     expect(out.status).toBe(200)
     expect(out.body).toEqual({ ok: true })
 
-    const rows = listHookAuditLog()
+    const rows = await listHookAuditLog()
     expect(rows).toHaveLength(1)
     expect(rows[0].reason).toBe('injection_pattern_ignore_instructions')
   })
@@ -97,14 +97,14 @@ describe('POST /api/hook-audit', () => {
     })
     await tryHandleHookAudit(ctx)
     expect(out.status).toBe(200)
-    const rows = listHookAuditLog()
+    const rows = await listHookAuditLog()
     expect(rows[0].trigger_source).toBe('watchdog')
   })
 
   it('leaves trigger_source null when not provided', async () => {
     const { ctx } = makeCtx('POST', '/api/hook-audit', { hook_type: 'PostToolUse', verdict: 'deny' })
     await tryHandleHookAudit(ctx)
-    const rows = listHookAuditLog()
+    const rows = await listHookAuditLog()
     expect(rows[0].trigger_source).toBeNull()
   })
 
@@ -198,7 +198,7 @@ describe('POST /api/hook-audit/prune', () => {
     // second-boundary timing -- avoids a same-second race with `ts >= cutoff`.
     await tryHandleHookAudit(makeCtx('POST', '/api/hook-audit/prune', { older_than_secs: -10 }).ctx)
 
-    const rows = listHookAuditLog()
+    const rows = await listHookAuditLog()
     expect(rows).toHaveLength(0)
   })
 })
@@ -215,7 +215,7 @@ describe('POST /api/hook-audit accepts the handoff verdict', () => {
     const handled = await tryHandleHookAudit(ctx)
     expect(handled).toBe(true)
     expect(out.status).toBe(200)
-    const rows = listHookAuditLog({ verdict: 'handoff' })
+    const rows = await listHookAuditLog({ verdict: 'handoff' })
     expect(rows).toHaveLength(1)
   })
 })

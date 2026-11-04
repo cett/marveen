@@ -27,7 +27,7 @@ vi.mock('../web/agent-config.js', () => ({
   AGENTS_BASE_DIR: join(FAKE_PROJECT, 'agents'),
   listAgentNames: () => ['agent-b'],
 }))
-vi.mock('../db.js', () => ({ getSkill: vi.fn(), listAllSkills: vi.fn().mockReturnValue([]), listSkillFiles: vi.fn().mockReturnValue([]), seedSkillFileIfAbsent: vi.fn() }))
+vi.mock('../db.js', () => ({ getSkill: vi.fn(), listAllSkills: vi.fn().mockResolvedValue([]), listSkillFiles: vi.fn().mockResolvedValue([]), seedSkillFileIfAbsent: vi.fn() }))
 vi.mock('../logger.js', () => ({ logger: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() } }))
 
 import { removeGeneratedSkillFile } from '../web/skill-regen.js'
@@ -43,56 +43,56 @@ function seed(name: string, content: string) {
 describe('removeGeneratedSkillFile', () => {
   beforeEach(() => { flag.on = true })
 
-  it('removes the generated SKILL.md and the now-empty skill directory', () => {
+  it('removes the generated SKILL.md and the now-empty skill directory', async () => {
     seed('gone', 'body')
-    expect(removeGeneratedSkillFile('global/gone', 'body', 'fleet')).toEqual({ removed: true, reason: null })
+    expect(await removeGeneratedSkillFile('global/gone', 'body', 'fleet')).toEqual({ removed: true, reason: null })
     expect(existsSync(dir('gone'))).toBe(false)
   })
 
-  it('keeps a hand-edited file (content differs from the deleted row) and says so', () => {
+  it('keeps a hand-edited file (content differs from the deleted row) and says so', async () => {
     seed('edited', 'hand edited text')
-    expect(removeGeneratedSkillFile('global/edited', 'row content', 'fleet')).toEqual({ removed: false, reason: 'modified_on_disk' })
+    expect(await removeGeneratedSkillFile('global/edited', 'row content', 'fleet')).toEqual({ removed: false, reason: 'modified_on_disk' })
     expect(readFileSync(join(dir('edited'), 'SKILL.md'), 'utf-8')).toBe('hand edited text')
   })
 
-  it('removes SKILL.md but keeps the directory while companion files remain', () => {
+  it('removes SKILL.md but keeps the directory while companion files remain', async () => {
     seed('withscripts', 'body')
     mkdirSync(join(dir('withscripts'), 'scripts'), { recursive: true })
     writeFileSync(join(dir('withscripts'), 'scripts', 'run.sh'), 'echo hi')
-    expect(removeGeneratedSkillFile('global/withscripts', 'body', 'fleet').removed).toBe(true)
+    expect((await removeGeneratedSkillFile('global/withscripts', 'body', 'fleet')).removed).toBe(true)
     expect(existsSync(join(dir('withscripts'), 'SKILL.md'))).toBe(false)
     expect(existsSync(join(dir('withscripts'), 'scripts', 'run.sh'))).toBe(true)
   })
 
-  it('removes an agent-local file at its agent path', () => {
+  it('removes an agent-local file at its agent path', async () => {
     const p = join(FAKE_PROJECT, 'agents', 'agent-b', '.claude', 'skills', 'loc')
     mkdirSync(p, { recursive: true })
     writeFileSync(join(p, 'SKILL.md'), 'x')
-    expect(removeGeneratedSkillFile('agent/agent-b/loc', 'x', 'fleet').removed).toBe(true)
+    expect((await removeGeneratedSkillFile('agent/agent-b/loc', 'x', 'fleet')).removed).toBe(true)
     expect(existsSync(p)).toBe(false)
   })
 
-  it('reports absent when there is no file', () => {
-    expect(removeGeneratedSkillFile('global/never-existed', 'x', 'fleet')).toEqual({ removed: false, reason: 'absent' })
+  it('reports absent when there is no file', async () => {
+    expect(await removeGeneratedSkillFile('global/never-existed', 'x', 'fleet')).toEqual({ removed: false, reason: 'absent' })
   })
 
-  it('never touches the fleet skill dirs for a non-fleet (B2B tenant) skill (tenant copies: skill-regen-tenant.test.ts)', () => {
+  it('never touches the fleet skill dirs for a non-fleet (B2B tenant) skill (tenant copies: skill-regen-tenant.test.ts)', async () => {
     seed('tenantish', 'x')
-    expect(removeGeneratedSkillFile('global/tenantish', 'x', 'acme')).toEqual({ removed: false, reason: 'absent' })
+    expect(await removeGeneratedSkillFile('global/tenantish', 'x', 'acme')).toEqual({ removed: false, reason: 'absent' })
     expect(existsSync(dir('tenantish'))).toBe(true)
   })
 
-  it('rejects traversal and unknown id shapes without touching disk', () => {
+  it('rejects traversal and unknown id shapes without touching disk', async () => {
     seed('victim', 'x')
-    expect(removeGeneratedSkillFile('global/../victim', 'x', 'fleet').reason).toBe('unrecognized_id')
-    expect(removeGeneratedSkillFile('weird', 'x', 'fleet').reason).toBe('unrecognized_id')
+    expect((await removeGeneratedSkillFile('global/../victim', 'x', 'fleet')).reason).toBe('unrecognized_id')
+    expect((await removeGeneratedSkillFile('weird', 'x', 'fleet')).reason).toBe('unrecognized_id')
     expect(existsSync(dir('victim'))).toBe(true)
   })
 
-  it('is a no-op while the kill-switch is off', () => {
+  it('is a no-op while the kill-switch is off', async () => {
     seed('keepme', 'body')
     flag.on = false
-    expect(removeGeneratedSkillFile('global/keepme', 'body', 'fleet')).toEqual({ removed: false, reason: 'disabled' })
+    expect(await removeGeneratedSkillFile('global/keepme', 'body', 'fleet')).toEqual({ removed: false, reason: 'disabled' })
     expect(existsSync(join(dir('keepme'), 'SKILL.md'))).toBe(true)
   })
 })

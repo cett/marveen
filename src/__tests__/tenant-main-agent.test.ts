@@ -6,10 +6,10 @@ import { getDb } from '../db.js'
 // main-agent badge and tenant visibility chips. Real in-memory SQLite so a
 // broken query is caught even when route-level tests mock db.js entirely.
 
-beforeEach(() => {
+beforeEach(async () => {
   initDatabase(':memory:')
-  createTenant('acme', 'Acme')
-  createTenant('other-co', 'Other Co')
+  await createTenant('acme', 'Acme')
+  await createTenant('other-co', 'Other Co')
 })
 
 // updateTenant() also accepts main_agent_id (see 'updateTenant' describe
@@ -20,61 +20,61 @@ function setMainAgent(tenantId: string, agentId: string | null): void {
 }
 
 describe('getTenantForMainAgent', () => {
-  it('returns undefined when no tenant designates this agent as main', () => {
-    expect(getTenantForMainAgent('agent-a')).toBeUndefined()
+  it('returns undefined when no tenant designates this agent as main', async () => {
+    expect(await getTenantForMainAgent('agent-a')).toBeUndefined()
   })
 
-  it('returns the tenant whose main_agent_id matches', () => {
+  it('returns the tenant whose main_agent_id matches', async () => {
     setMainAgent('acme', 'agent-a')
-    const tenant = getTenantForMainAgent('agent-a')
+    const tenant = await getTenantForMainAgent('agent-a')
     expect(tenant?.id).toBe('acme')
     expect(tenant?.display_name).toBe('Acme')
   })
 
-  it('does not match a different agent', () => {
+  it('does not match a different agent', async () => {
     setMainAgent('acme', 'agent-a')
-    expect(getTenantForMainAgent('agent-b')).toBeUndefined()
+    expect(await getTenantForMainAgent('agent-b')).toBeUndefined()
   })
 
-  it('excludes a disabled tenant even if main_agent_id still points at this agent', () => {
+  it('excludes a disabled tenant even if main_agent_id still points at this agent', async () => {
     setMainAgent('acme', 'agent-a')
-    updateTenant('acme', { disabled: true })
-    expect(getTenantForMainAgent('agent-a')).toBeUndefined()
+    await updateTenant('acme', { disabled: true })
+    expect(await getTenantForMainAgent('agent-a')).toBeUndefined()
   })
 })
 
 describe('updateTenant main_agent_id patch', () => {
-  it('sets main_agent_id via the patch and getTenantForMainAgent then finds it', () => {
-    const updated = updateTenant('acme', { main_agent_id: 'agent-a' })
+  it('sets main_agent_id via the patch and getTenantForMainAgent then finds it', async () => {
+    const updated = await updateTenant('acme', { main_agent_id: 'agent-a' })
     expect(updated?.main_agent_id).toBe('agent-a')
-    expect(getTenantForMainAgent('agent-a')?.id).toBe('acme')
+    expect((await getTenantForMainAgent('agent-a'))?.id).toBe('acme')
   })
 
-  it('leaves main_agent_id untouched when the patch omits it', () => {
-    updateTenant('acme', { main_agent_id: 'agent-a' })
-    const updated = updateTenant('acme', { display_name: 'Acme Renamed' })
+  it('leaves main_agent_id untouched when the patch omits it', async () => {
+    await updateTenant('acme', { main_agent_id: 'agent-a' })
+    const updated = await updateTenant('acme', { display_name: 'Acme Renamed' })
     expect(updated?.main_agent_id).toBe('agent-a')
     expect(updated?.display_name).toBe('Acme Renamed')
   })
 
-  it('can combine main_agent_id and display_name in a single patch (install-seed use case)', () => {
-    const updated = updateTenant('acme', { main_agent_id: 'agent-b', display_name: 'Main fleet' })
+  it('can combine main_agent_id and display_name in a single patch (install-seed use case)', async () => {
+    const updated = await updateTenant('acme', { main_agent_id: 'agent-b', display_name: 'Main fleet' })
     expect(updated?.main_agent_id).toBe('agent-b')
     expect(updated?.display_name).toBe('Main fleet')
   })
 })
 
 describe('getTenantsForAgent', () => {
-  it('returns an empty list for an agent with no availability rows', () => {
-    expect(getTenantsForAgent('agent-a')).toEqual([])
+  it('returns an empty list for an agent with no availability rows', async () => {
+    expect(await getTenantsForAgent('agent-a')).toEqual([])
   })
 
-  it('returns only the tenant ids this agent is enabled=1 for', () => {
-    setTenantAgentAvailability('acme', 'agent-a', true)
-    setTenantAgentAvailability('other-co', 'agent-a', true)
-    setTenantAgentAvailability('acme', 'agent-b', false)
+  it('returns only the tenant ids this agent is enabled=1 for', async () => {
+    await setTenantAgentAvailability('acme', 'agent-a', true)
+    await setTenantAgentAvailability('other-co', 'agent-a', true)
+    await setTenantAgentAvailability('acme', 'agent-b', false)
 
-    expect(getTenantsForAgent('agent-a').sort()).toEqual(['acme', 'other-co'])
-    expect(getTenantsForAgent('agent-b')).toEqual([])
+    expect((await getTenantsForAgent('agent-a')).sort()).toEqual(['acme', 'other-co'])
+    expect(await getTenantsForAgent('agent-b')).toEqual([])
   })
 })

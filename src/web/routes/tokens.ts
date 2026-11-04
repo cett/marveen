@@ -21,10 +21,12 @@ import {
   insertApiToken,
   revokeApiToken,
   rotateApiToken,
+  ApiTokenAlreadyRevokedError,
   type ApiTokenRow,
 } from '../../db.js'
 import { logger } from '../../logger.js'
 import { MAIN_AGENT_ID } from '../../config.js'
+import { isReservedTokenName } from '../../reserved-token-names.js'
 import { isKnownAgent } from '../agent-config.js'
 import { readBody, json } from '../http-helpers.js'
 import { denyAgentCredentialIssue } from '../session-only-guard.js'
@@ -75,13 +77,13 @@ export async function tryHandleAdminTokens(ctx: RouteContext): Promise<boolean> 
 
   // GET /api/admin/tokens
   if (method === 'GET' && path === '/api/admin/tokens') {
-    json(res, listApiTokenRows().map(toPublic))
+    json(res, (await listApiTokenRows()).map(toPublic))
     return true
   }
 
   // POST /api/admin/tokens -- create
   if (method === 'POST' && path === '/api/admin/tokens') {
-    if (denyAgentCredentialIssue(ctx, 'admin.token.create')) return true
+    if (await denyAgentCredentialIssue(ctx, 'admin.token.create')) return true
     let parsed: { name?: unknown; role?: unknown; tenant_id?: unknown; expires_in_days?: unknown; agent_id?: unknown }
     try {
       const buf = await readBody(ctx.req)
@@ -97,6 +99,12 @@ export async function tryHandleAdminTokens(ctx: RouteContext): Promise<boolean> 
     const agentId = typeof parsed.agent_id === 'string' ? parsed.agent_id.trim() : ''
 
     if (!name) { json(res, { error: 'required', field: 'name', hint: 'name is required' }, 400); return true }
+    // The server's own token names (operator, dashboard, main-agent:*, fleet-agent:*) are not for callers to pick.
+    if (isReservedTokenName(name)) {
+      // `conflict` is the canonical token for a name that is taken; `reason` tells the caller why.
+      json(res, { error: 'conflict', field: 'name', reason: 'reserved_name', hint: 'this name is reserved for the server\'s own tokens (operator, dashboard, main-agent:*, fleet-agent:*)' }, 409)
+      return true
+    }
     if (!VALID_ROLES.has(role)) {
       json(res, { error: 'invalid_value', field: 'role', hint: `role must be one of: ${[...VALID_ROLES].join(', ')}` }, 400)
       return true
@@ -132,7 +140,7 @@ export async function tryHandleAdminTokens(ctx: RouteContext): Promise<boolean> 
     const hash = sha256hex(rawToken)
 
     try {
-      const row = insertApiToken({ tokenHash: hash, name, role, tenantId, createdAt: now, expiresAt, agentId: agentId || null })
+      const row = await insertApiToken({ tokenHash: hash, name, role, tenantId, createdAt: now, expiresAt, agentId: agentId || null })
       logger.info({ tokenId: row.id, name, role, tenantId, agentId: agentId || null }, 'api_token created')
       // Return the raw token value ONCE -- it cannot be recovered after this response.
       json(res, { token: rawToken, ...toPublic(row) }, 201)
@@ -146,7 +154,7 @@ export async function tryHandleAdminTokens(ctx: RouteContext): Promise<boolean> 
   // POST /api/admin/tokens/:id/rotate
   const rotateMatch = /^\/api\/admin\/tokens\/(\d+)\/rotate$/.exec(path)
   if (method === 'POST' && rotateMatch) {
-    if (denyAgentCredentialIssue(ctx, 'admin.token.rotate')) return true
+    if (await denyAgentCredentialIssue(ctx, 'admin.token.rotate')) return true
     const id = Number(rotateMatch[1])
 
     let parsed: { expires_in_days?: unknown } = {}
@@ -159,7 +167,7 @@ export async function tryHandleAdminTokens(ctx: RouteContext): Promise<boolean> 
       return true
     }
 
-    const old = getApiTokenRowById(id)
+    const old = await getApiTokenRowById(id)
     if (!old) { json(res, { error: 'not_found', hint: 'token not found' }, 404); return true }
     // deliberate: discriminating error response, admin-gated
     if (old.revoked_at !== null) { json(res, { error: 'conflict', hint: 'token already revoked' }, 409); return true }
@@ -173,10 +181,13 @@ export async function tryHandleAdminTokens(ctx: RouteContext): Promise<boolean> 
 
     try {
       // Revokes the old token atomically with creating the replacement.
-      const newRow = rotateApiToken(old, hash, now, expiresAt)
+      const newRow = await rotateApiToken(old, hash, now, expiresAt)
       logger.info({ oldId: id, newId: newRow.id, name: old.name }, 'api_token rotated')
       json(res, { token: rawToken, ...toPublic(newRow) })
     } catch (e) {
+      // A concurrent rotation or revoke won between the check above and the transaction: same answer as the
+      // pre-check, not a server error.
+      if (e instanceof ApiTokenAlreadyRevokedError) { json(res, { error: 'conflict', hint: 'token already revoked' }, 409); return true }
       logger.error({ err: e }, 'api_token rotate failed')
       json(res, { error: 'internal_error', hint: 'failed to rotate token' }, 500)
     }
@@ -187,13 +198,13 @@ export async function tryHandleAdminTokens(ctx: RouteContext): Promise<boolean> 
   const revokeMatch = /^\/api\/admin\/tokens\/(\d+)\/revoke$/.exec(path)
   if (method === 'DELETE' && revokeMatch) {
     const id = Number(revokeMatch[1])
-    const row = getApiTokenRowById(id)
+    const row = await getApiTokenRowById(id)
     if (!row) { json(res, { error: 'not_found', hint: 'token not found' }, 404); return true }
     // deliberate: discriminating error response, admin-gated
     if (row.revoked_at !== null) { json(res, { error: 'conflict', hint: 'token already revoked' }, 409); return true }
 
     const now = Math.floor(Date.now() / 1000)
-    revokeApiToken(id, now)
+    await revokeApiToken(id, now)
     logger.info({ tokenId: id, name: row.name }, 'api_token revoked')
     json(res, { revoked: true, id })
     return true

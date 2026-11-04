@@ -77,8 +77,8 @@ vi.mock('../web/routes/agents-helpers.js', async (importOriginal) => {
 vi.mock('../db.js', () => ({
   createAgentMessage: vi.fn(),
   getDb: vi.fn().mockReturnValue({ prepare: vi.fn().mockReturnValue({ all: vi.fn().mockReturnValue([]) }) }),
-  getEnabledAgentsForTenant: vi.fn().mockReturnValue([]),
-  isTenantAgentEnabled: vi.fn().mockReturnValue(true),
+  getEnabledAgentsForTenant: vi.fn().mockResolvedValue([]),
+  isTenantAgentEnabled: vi.fn().mockResolvedValue(true),
 }))
 vi.mock('../web/telegram.js', () => ({
   sendAvatarChangeMessage: vi.fn().mockResolvedValue(undefined),
@@ -109,7 +109,7 @@ vi.mock('../web/model-suggest.js', () => ({
   suggestForAgent: vi.fn().mockReturnValue({ model: 'claude-haiku-4-5', reason: 'low-traffic' }),
 }))
 vi.mock('../web/token-usage.js', () => ({ getTokenSummary: vi.fn().mockReturnValue([]) }))
-vi.mock('../web/scheduled-tasks-io.js', () => ({ listScheduledTasks: vi.fn().mockReturnValue([]) }))
+vi.mock('../web/scheduled-tasks-io.js', () => ({ listScheduledTasks: vi.fn().mockResolvedValue([]) }))
 vi.mock('../web/federation/onboarding.js', () => ({ ensureFederationClaudeMdSection: vi.fn() }))
 vi.mock('../web/claude-plans.js', () => ({
   readClaudePlans: vi.fn().mockReturnValue([]),

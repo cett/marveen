@@ -60,6 +60,7 @@ import {
   type StuckToolCallThresholds,
 } from '../pane-state.js'
 
+import { systemJob } from '../db/background-jobs.js'
 const TMUX = resolveFromPath('tmux')
 
 // CPU-profile guard (#248): the genuine wedge is a render loop blocked on stdio
@@ -336,6 +337,7 @@ export function startStuckToolCallWatcher(): NodeJS.Timeout {
       logger.debug({ err }, 'stuck-tool-call-watcher: main session check error')
     }
   }
-  setTimeout(() => { void sweep() }, INITIAL_DELAY_MS)
-  return setInterval(() => { void sweep() }, INTERVAL_MS)
+  const run = systemJob('stuck-tool-call', () => { void sweep() })
+  setTimeout(run, INITIAL_DELAY_MS)
+  return setInterval(run, INTERVAL_MS)
 }

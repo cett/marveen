@@ -43,16 +43,16 @@ beforeEach(async () => {
   dbMod.initDatabase(':memory:')
   route = await import('../web/routes/schedules.js')
 
-  dbMod.createTenant('tenant-b', 'Tenant B')
-  dbMod.updateTenant('tenant-b', { main_agent_id: 'tenant-agent' })
-  dbMod.setTenantAgentAvailability('tenant-b', 'tenant-agent', true)
-  dbMod.setTenantAgentAvailability('tenant-b', 'shared-agent', true)
-  dbMod.setTenantAgentAvailability('default', 'shared-agent', true)
+  await dbMod.createTenant('tenant-b', 'Tenant B')
+  await dbMod.updateTenant('tenant-b', { main_agent_id: 'tenant-agent' })
+  await dbMod.setTenantAgentAvailability('tenant-b', 'tenant-agent', true)
+  await dbMod.setTenantAgentAvailability('tenant-b', 'shared-agent', true)
+  await dbMod.setTenantAgentAvailability('default', 'shared-agent', true)
 
   const base = { description: 'd', prompt: 'p', schedule: '0 9 * * *', enabled: true, skip_if_busy: false, force_send: false }
-  dbMod.upsertSchedule('t-default', { ...base, agent: 'fleet-agent', type: 'task', tenant_id: 'default', status: 'live' })
-  dbMod.upsertSchedule('t-tenant-b', { ...base, agent: 'tenant-agent', type: 'task', tenant_id: 'tenant-b', status: 'live' })
-  dbMod.upsertSchedule('t-legacy', { ...base, agent: 'fleet-agent', type: 'task', tenant_id: null, status: 'live' })
+  await dbMod.upsertSchedule('t-default', { ...base, agent: 'fleet-agent', type: 'task', tenant_id: 'default', status: 'live' })
+  await dbMod.upsertSchedule('t-tenant-b', { ...base, agent: 'tenant-agent', type: 'task', tenant_id: 'tenant-b', status: 'live' })
+  await dbMod.upsertSchedule('t-legacy', { ...base, agent: 'fleet-agent', type: 'task', tenant_id: null, status: 'live' })
 })
 
 afterEach(() => {
@@ -86,8 +86,8 @@ async function call(method: string, path: string, body?: object, caller: Caller 
   return out as { status: number; body: Record<string, unknown> & unknown[] }
 }
 
-const row = (name: string) => {
-  const r = dbMod.getScheduleFromDb(name)
+const row = async (name: string) => {
+  const r = await dbMod.getScheduleFromDb(name)
   if (!r) return undefined
   const { updated_at: _u, ...rest } = r as unknown as Record<string, unknown>
   return rest
@@ -95,24 +95,24 @@ const row = (name: string) => {
 
 describe('PUT body allowlist', () => {
   it('drops status, tenantId and the runner-script keys for every caller', async () => {
-    dbMod.upsertSchedule('t-draft', {
+    await dbMod.upsertSchedule('t-draft', {
       description: 'd', prompt: 'p', schedule: '0 9 * * *', agent: 'fleet-agent', type: 'task',
       enabled: true, skip_if_busy: false, force_send: false, tenant_id: 'default', status: 'draft',
     })
-    const before = row('t-draft')
+    const before = await row('t-draft')
     const out = await call('PUT', '/api/schedules/t-draft', {
       status: 'live', tenantId: 'tenant-b', preCheck: '/tmp/evil.sh', catchUpMaxAgeMinutes: 9, stuckAfterMinutes: 9,
       requires: { mcp_servers: ['x'] }, description: 'edited',
     }, 'agent-token')
     expect(out.status).toBe(200)
     // Only the allowed field moved: a draft stays a draft, the tenant stays.
-    expect(row('t-draft')).toEqual({ ...before, description: 'edited' })
+    expect(await row('t-draft')).toEqual({ ...before, description: 'edited' })
   })
 
   it('a tenant caller cannot re-point a task at another agent', async () => {
-    const before = row('t-tenant-b')
+    const before = await row('t-tenant-b')
     await call('PUT', '/api/schedules/t-tenant-b', { agent: 'shared-agent', description: 'x' }, { tenant: 'tenant-b' })
-    expect(row('t-tenant-b')).toEqual({ ...before, description: 'x' })
+    expect(await row('t-tenant-b')).toEqual({ ...before, description: 'x' })
   })
 
   const everyField = {
@@ -123,7 +123,7 @@ describe('PUT body allowlist', () => {
     const out = await call('PUT', '/api/schedules/t-default', everyField, 'human')
     expect(out.status).toBe(200)
     expect(out.body).toEqual({ ok: true })
-    expect(row('t-default')).toMatchObject({
+    expect(await row('t-default')).toMatchObject({
       description: 'a', prompt: 'b', schedule: '5 4 * * *', agent: 'shared-agent', skip_if_busy: 1, force_send: 1, enabled: 0,
       status: 'live', tenant_id: 'default',
     })
@@ -133,7 +133,7 @@ describe('PUT body allowlist', () => {
     const out = await call('PUT', '/api/schedules/t-default', everyField, 'agent-token')
     expect(out.status).toBe(200)
     expect(out.body).toMatchObject({ ok: true, status: 'pending_review', review_required: true })
-    expect(row('t-default')).toMatchObject({
+    expect(await row('t-default')).toMatchObject({
       description: 'a', prompt: 'b', schedule: '5 4 * * *', agent: 'shared-agent', skip_if_busy: 1, force_send: 1, enabled: 0,
       status: 'pending_review', tenant_id: 'default',
     })
@@ -148,19 +148,19 @@ describe('PUT agent change keeps the (tenant, agent) pair valid', () => {
     ['an agent that does not exist', 't-default', 'nobody'],
     ['a default-only agent on an tenant-b task', 't-tenant-b', 'fleet-agent'],
   ])('rejects %s', async (_label, task, agent) => {
-    const before = row(task)
+    const before = await row(task)
     const out = await call('PUT', `/api/schedules/${task}`, { agent })
     expect(out.status).toBe(400)
     expect(out.body).toMatchObject({ error: 'invalid_value', field: 'agent' })
-    expect(row(task)).toEqual(before)
+    expect(await row(task)).toEqual(before)
   })
 
   it('accepts a shared agent on both tenants, and "all" on the default tenant', async () => {
     expect((await call('PUT', '/api/schedules/t-tenant-b', { agent: 'shared-agent' })).status).toBe(200)
-    expect(row('t-tenant-b')).toMatchObject({ agent: 'shared-agent' })
+    expect(await row('t-tenant-b')).toMatchObject({ agent: 'shared-agent' })
     expect((await call('PUT', '/api/schedules/t-default', { agent: 'shared-agent' })).status).toBe(200)
     expect((await call('PUT', '/api/schedules/t-default', { agent: 'all' })).status).toBe(200)
-    expect(row('t-default')).toMatchObject({ agent: 'all' })
+    expect(await row('t-default')).toMatchObject({ agent: 'all' })
   })
 
   it('re-sending the stored agent never trips the check (a legacy pair stays editable)', async () => {
@@ -179,42 +179,42 @@ describe('PUT tenant move', () => {
     const out = await call('PUT', '/api/schedules/t-default', { tenant_id: 'tenant-b', agent: 'shared-agent' })
     expect(out.status).toBe(200)
     expect(out.body).toMatchObject({ ok: true, tenant_id: 'tenant-b', status: 'draft' })
-    expect(row('t-default')).toMatchObject({ tenant_id: 'tenant-b', status: 'draft', agent: 'shared-agent' })
+    expect(await row('t-default')).toMatchObject({ tenant_id: 'tenant-b', status: 'draft', agent: 'shared-agent' })
   })
 
   it('refuses the move when the stored agent does not serve the target tenant', async () => {
-    const before = row('t-default')
+    const before = await row('t-default')
     const out = await call('PUT', '/api/schedules/t-default', { tenant_id: 'tenant-b' })
     expect(out.status).toBe(400)
     expect(out.body).toMatchObject({ error: 'invalid_value', field: 'tenant_id' })
-    expect(row('t-default')).toEqual(before)
+    expect(await row('t-default')).toEqual(before)
   })
 
   it('refuses a move to a missing or disabled tenant', async () => {
-    dbMod.updateTenant('tenant-b', { disabled: true })
-    const before = row('t-tenant-b')
+    await dbMod.updateTenant('tenant-b', { disabled: true })
+    const before = await row('t-tenant-b')
     for (const tenant_id of ['nope', 'tenant-b']) {
       const out = await call('PUT', '/api/schedules/t-default', { tenant_id, agent: 'shared-agent' })
       expect(out.status).toBe(400)
     }
-    expect(row('t-default')).toMatchObject({ tenant_id: 'default' })
-    expect(row('t-tenant-b')).toEqual(before)
+    expect(await row('t-default')).toMatchObject({ tenant_id: 'default' })
+    expect(await row('t-tenant-b')).toEqual(before)
   })
 
   it.each([
     ['an agent-token admin', 'agent-token' as Caller],
     ['a tenant caller', { tenant: 'default' } as Caller],
   ])('is refused for %s and changes nothing', async (_label, caller) => {
-    const before = row('t-default')
+    const before = await row('t-default')
     const out = await call('PUT', '/api/schedules/t-default', { tenant_id: 'tenant-b', agent: 'shared-agent' }, caller)
     expect(out.status).toBe(403)
-    expect(row('t-default')).toEqual(before)
+    expect(await row('t-default')).toEqual(before)
   })
 
   it('moving to the tenant it is already in is a no-op, not a draft reset', async () => {
     const out = await call('PUT', '/api/schedules/t-default', { tenant_id: 'default' }, 'agent-token')
     expect(out.status).toBe(200)
-    expect(row('t-default')).toMatchObject({ status: 'live', tenant_id: 'default' })
+    expect(await row('t-default')).toMatchObject({ status: 'live', tenant_id: 'default' })
   })
 })
 
@@ -235,10 +235,10 @@ describe('GET /api/schedules/agents', () => {
 })
 
 describe('pending retries are scoped to the schedule\'s tenant', () => {
-  beforeEach(() => {
-    dbMod.upsertPendingTaskRetry('t-default', 'fleet-agent', 1000, 'busy')
-    dbMod.upsertPendingTaskRetry('t-tenant-b', 'tenant-agent', 1000, 'busy')
-    dbMod.upsertPendingTaskRetry('gone-task', 'fleet-agent', 1000, 'busy')
+  beforeEach(async () => {
+    await dbMod.upsertPendingTaskRetry('t-default', 'fleet-agent', 1000, 'busy')
+    await dbMod.upsertPendingTaskRetry('t-tenant-b', 'tenant-agent', 1000, 'busy')
+    await dbMod.upsertPendingTaskRetry('gone-task', 'fleet-agent', 1000, 'busy')
   })
   const tasks = (b: unknown) => (b as { task_name?: string; taskName?: string; name?: string }[]).map(r => r.task_name ?? r.taskName ?? r.name).sort()
 
@@ -249,14 +249,14 @@ describe('pending retries are scoped to the schedule\'s tenant', () => {
   })
 
   it('a tenant caller cannot cancel another tenant\'s retry (or one whose schedule is gone)', async () => {
-    const all = dbMod.listPendingTaskRetries()
+    const all = await dbMod.listPendingTaskRetries()
     for (const r of all.filter(x => x.task_name !== 't-tenant-b')) {
       const out = await call('DELETE', `/api/schedules/pending/${r.id}`, undefined, { tenant: 'tenant-b' })
       expect(out.status).toBe(404)
     }
-    expect(dbMod.listPendingTaskRetries().map(r => r.task_name).sort()).toEqual(['gone-task', 't-default', 't-tenant-b'])
+    expect((await dbMod.listPendingTaskRetries()).map(r => r.task_name).sort()).toEqual(['gone-task', 't-default', 't-tenant-b'])
     const own = all.find(x => x.task_name === 't-tenant-b')!
     expect((await call('DELETE', `/api/schedules/pending/${own.id}`, undefined, { tenant: 'tenant-b' })).status).toBe(200)
-    expect(dbMod.listPendingTaskRetries().map(r => r.task_name).sort()).toEqual(['gone-task', 't-default'])
+    expect((await dbMod.listPendingTaskRetries()).map(r => r.task_name).sort()).toEqual(['gone-task', 't-default'])
   })
 })

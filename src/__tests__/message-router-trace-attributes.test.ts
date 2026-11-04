@@ -12,7 +12,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 const mockGetPendingMessages = vi.fn()
 const mockUpsertOtelSpan = vi.fn()
-const mockStampMessageTrace = vi.fn((..._a: unknown[]) => true)
+const mockStampMessageTrace = vi.fn((..._a: unknown[]) => Promise.resolve(true))
 
 vi.mock('../logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() },
@@ -26,14 +26,14 @@ vi.mock('../config.js', async (importOriginal) => ({
 
 vi.mock('../db.js', () => ({
   getPendingMessages: (toAgent?: string) => {
-    if (toAgent) return [] // per-agent query for reconnect pre-pass
-    return mockGetPendingMessages()
+    if (toAgent) return Promise.resolve([]) // per-agent query for reconnect pre-pass
+    return Promise.resolve(mockGetPendingMessages())
   },
-  markMessageDelivered: (..._a: unknown[]) => true,
-  markMessageFailed: (..._a: unknown[]) => true,
-  markMessageDone: (..._a: unknown[]) => true,
-  markMessageNoSession: (..._a: unknown[]) => true,
-  createAgentMessage: (..._a: unknown[]) => ({ id: 999 }),
+  markMessageDelivered: (..._a: unknown[]) => Promise.resolve(true),
+  markMessageFailed: (..._a: unknown[]) => Promise.resolve(true),
+  markMessageDone: (..._a: unknown[]) => Promise.resolve(true),
+  markMessageNoSession: (..._a: unknown[]) => Promise.resolve(true),
+  createAgentMessage: (..._a: unknown[]) => Promise.resolve(({ id: 999 })),
   stampMessageTrace: (...a: unknown[]) => mockStampMessageTrace(...a),
   upsertOtelSpan: (...a: unknown[]) => mockUpsertOtelSpan(...a),
   closeOtelSpan: (..._a: unknown[]) => false,
@@ -91,7 +91,7 @@ function makePending() {
 describe('message-router: inter-agent span attributes', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mockStampMessageTrace.mockReturnValue(true)
+    mockStampMessageTrace.mockResolvedValue(true)
   })
 
   it('fills upsertOtelSpan attributes with msg_id/from/to as JSON', async () => {
@@ -106,11 +106,26 @@ describe('message-router: inter-agent span attributes', () => {
   })
 
   it('does not call upsertOtelSpan when stampMessageTrace reports already-stamped', async () => {
-    mockStampMessageTrace.mockReturnValue(false)
+    mockStampMessageTrace.mockResolvedValue(false)
     mockGetPendingMessages.mockReturnValue(makePending())
 
     await runMessageRouterTick()
 
     expect(mockUpsertOtelSpan).not.toHaveBeenCalled()
+  })
+
+  it('the span stamped on one message becomes the parent of the next message of the chain', async () => {
+    const nowSec = Math.floor(Date.now() / 1000)
+    const link = (id: number, from: string, to: string) => ({ id, from_agent: from, to_agent: to, content: 'x', created_at: nowSec, trace_id: null, span_id: null })
+    mockGetPendingMessages.mockReturnValue([link(51, 'orin', 'dex'), link(52, 'dex', 'cat')])
+
+    await runMessageRouterTick()
+
+    expect(mockStampMessageTrace).toHaveBeenCalledTimes(2)
+    const [, traceA, spanA] = mockStampMessageTrace.mock.calls[0] as [number, string, string, string | null]
+    const [, traceB, , parentB] = mockStampMessageTrace.mock.calls[1] as [number, string, string, string | null]
+    expect(typeof spanA).toBe('string')
+    expect(parentB).toBe(spanA)
+    expect(traceB).toBe(traceA)
   })
 })

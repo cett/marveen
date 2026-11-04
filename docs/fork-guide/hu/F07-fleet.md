@@ -180,6 +180,8 @@ bash scripts/agent-api.sh --token operator POST /api/v1/admin/tokens/<id>/rotate
 bash scripts/agent-api.sh --token operator DELETE /api/v1/admin/tokens/<id>/revoke
 ```
 
+(A `POST /api/v1/admin/tokens/<id>/rotate` új tokent ad a régi helyett; tokenre nincs `PATCH`.)
+
 Egy flotta-ágens saját tokenjét általában az `npm run agent-tokens -- issue` állítja ki (fent), nem kézzel. Amíg az `APPROVAL_HUMAN_ONLY_ENFORCE` be van kapcsolva, a létrehozás és a rotálás `403 human_session_required`-et ad az ágens hívónak (`fleet_agent` token, bármely `agent_id`-t hordozó token, eszközkulcs vagy föderációs társ), hacsak nincs személy bejelentkezve a dashboardra; a visszavonást ez nem korlátozza. Ugyanez az őr áll a többi hitelesítő-kiadó útvonalon is: `POST /api/admin/browser-enroll-codes`, `POST /api/auth/device-keys` és a Bridge-párosítás. Az operátor token (`admin` szerepkör, ágens nélkül) nem ágens.
 
 ### B2B partner beléptetése

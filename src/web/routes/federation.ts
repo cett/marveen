@@ -10,10 +10,12 @@
 //     federation-token carve-out is an exact path+method whitelist).
 //
 // Config-mutating handlers follow one hard rule: the read->mutate->write
-// section is fully SYNCHRONOUS (body is awaited BEFORE it starts). Any await
-// inside that window would let a concurrent rotate/DELETE interleave and
-// resurrect a removed peer with its old token -- a security regression, not
-// just a lost update.
+// of a peer change (add, patch, remove, rotate) is ONE transaction on the
+// stored document (mutateFederationConfig in federation/config.ts): the body
+// is awaited BEFORE it starts and the step inside is pure code. Building the
+// next document from the cached config and writing it back after an await
+// would let a concurrent rotate/DELETE interleave and resurrect a removed
+// peer with its old token -- a security regression, not just a lost update.
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { PROJECT_ROOT, MAIN_AGENT_ID, BOT_NAME } from '../../config.js'
@@ -31,6 +33,7 @@ import {
   federationFileHealth,
   validateFederationConfig,
   writeFederationConfig,
+  mutateFederationConfig,
   setFederationEnabledPreservingFile,
   setFederationRoutingModePreservingFile,
   removeFederationStore,
@@ -291,14 +294,41 @@ function refuseIfConfigUnhealthy(res: RouteContext['res']): boolean {
   return false
 }
 
+// The four peer mutations (add, patch, remove, rotate) run through mutateFederationConfig: the stored document
+// is read and written in one transaction, so the step below is pure code. A step either refuses (the reply to
+// send, nothing written) or says what to write and what the handler needs afterwards.
+type FederationRefusal = { refuse: { status: number; body: unknown } }
+type FederationStepResult<T> = FederationRefusal | { done: T }
+
+function reject(body: unknown, status: number): { result: FederationRefusal } {
+  return { result: { refuse: { status, body } } }
+}
+
+/** Answer a refused mutation (or an unhealthy stored document) and return undefined; else the step's value
+ *  (null when the step carries none, so callers tell the cases apart with `=== undefined`). */
+function settleMutation<T>(
+  res: RouteContext['res'],
+  outcome: { result: FederationRefusal | { done: T } } | { unhealthy: true },
+): T | undefined {
+  if ('unhealthy' in outcome) {
+    json(res, { error: 'conflict', hint: 'federation config failed validation -- fix or remove it before editing peers' }, 409)
+    return undefined
+  }
+  if ('refuse' in outcome.result) {
+    json(res, outcome.result.refuse.body, outcome.result.refuse.status)
+    return undefined
+  }
+  return outcome.result.done
+}
+
 // Closes the master switch for a disable path (flag-only flip of the raw document) and says whether the
 // caller must stop. The flip answers false for two different reasons: the stored document is unreadable
 // garbage (the validator already fail-closes it to disabled, nothing is left open, a remove has to be able
 // to clear it) or the write threw and the cache still says enabled (the gate is open, so reporting a
 // disable would be a lie, and the poller, the queue and the stored peers must not be touched). Only the
 // second one answers here. Returns true when it wrote a 500 (caller stops).
-function refuseIfDisableFailed(res: RouteContext['res']): boolean {
-  if (setFederationEnabledPreservingFile(false)) return false
+async function refuseIfDisableFailed(res: RouteContext['res']): Promise<boolean> {
+  if (await setFederationEnabledPreservingFile(false)) return false
   if (!getFederationConfig().enabled) return false
   logger.error({ fed: true }, 'federation: disable failed, the master switch is still on')
   json(res, { error: 'internal_error', hint: 'federation disable failed, federation stays enabled' }, 500)
@@ -376,7 +406,7 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
     // Content is stored VERBATIM: normalizeKanbanRefs must not run here -- it
     // would rewrite the PEER's #hex card refs against the LOCAL board
     // (content corruption + a card-id oracle for the peer).
-    const msg = createAgentMessage(verdict.from, verdict.to, verdict.content)
+    const msg = await createAgentMessage(verdict.from, verdict.to, verdict.content)
     if (callerPeerId !== null && verdict.ref !== null) rememberRef(`${callerPeerId}:${verdict.ref}`, msg.id)
     logger.info({ fedIn: true, callerPeer: callerPeerId, id: msg.id, from: verdict.from, to: verdict.to, ref: verdict.ref }, 'federation inbox: message accepted')
     json(res, { id: msg.id, ref: verdict.ref }, 202)
@@ -505,10 +535,10 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
       // loss).
       const wantsDisable = payload !== null && typeof payload === 'object' && (payload as Record<string, unknown>).enabled !== true
       if (wantsDisable) {
-        if (refuseIfDisableFailed(res)) return true
+        if (await refuseIfDisableFailed(res)) return true
         resetPeerBackoff()
         resetFederationPollerCache()
-        const failed = failPendingFederatedMessages(undefined, 'Federation disabled while pending')
+        const failed = await failPendingFederatedMessages(undefined, 'Federation disabled while pending')
         ensureFederationClaudeMdSection()
         logger.warn({ fed: true, failedPending: failed.length }, 'federation: disabled via PUT (invalid body, flag-only flip)')
         json(res, peersView(getFederationConfig()))
@@ -517,19 +547,20 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'invalid_value', hint: `Invalid federation config: ${validated}` }, 400)
       return true
     }
-    // Synchronous validate->write->cache (no await in between). Well-formed
-    // enabled:false documents are persisted AS GIVEN: peers stay editable
+    // Whole-document replace (last write wins by design; the peer routes use
+    // mutateFederationConfig for the changes that must not lose each other).
+    // Well-formed enabled:false documents are persisted AS GIVEN: peers stay editable
     // while the master switch is off (pairing naturally precedes opening the
     // perimeter).
     const removedByPut = getFederationConfig().peers
       .map((p) => p.id)
       .filter((id) => !validated.peers.some((p) => p.id === id))
-    writeFederationConfig(validated)
+    await writeFederationConfig(validated)
     // A full-document PUT can drop peers just like DELETE; run the same
     // per-peer purges so a re-added peer's fresh low message ids are not
     // replay-acked by stale dedup entries (and backoff/poller state is clean).
     for (const id of removedByPut) {
-      failPendingFederatedMessages(id, `Federation peer '${id}' removed via PUT`)
+      await failPendingFederatedMessages(id, `Federation peer '${id}' removed via PUT`)
       purgeInboxDedup(id)
       resetPeerBackoff(id)
       resetFederationPollerCache(id)
@@ -537,7 +568,7 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
     if (!validated.enabled) {
       resetPeerBackoff()
       resetFederationPollerCache()
-      const failed = failPendingFederatedMessages(undefined, 'Federation disabled while pending')
+      const failed = await failPendingFederatedMessages(undefined, 'Federation disabled while pending')
       if (failed.length) logger.warn({ fed: true, failedPending: failed.length }, 'federation: pending outbound messages failed on disable')
     }
     ensureFederationClaudeMdSection()
@@ -555,12 +586,12 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
     const payload = await readJsonBody(ctx)
     if (isErr(payload)) return true
     const enabled = payload !== null && typeof payload === 'object' && (payload as Record<string, unknown>).enabled === true
-    const flipped = setFederationEnabledPreservingFile(enabled)
+    const flipped = await setFederationEnabledPreservingFile(enabled)
     if (!flipped) { json(res, { error: 'conflict', hint: 'federation config failed validation -- federation stays disabled; fix or remove it' }, 409); return true }
     if (!enabled) {
       resetPeerBackoff()
       resetFederationPollerCache()
-      const failed = failPendingFederatedMessages(undefined, 'Federation disabled while pending')
+      const failed = await failPendingFederatedMessages(undefined, 'Federation disabled while pending')
       if (failed.length) logger.warn({ fed: true, failedPending: failed.length }, 'federation: pending outbound messages failed on disable')
     }
     ensureFederationClaudeMdSection()
@@ -579,7 +610,7 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
     if (typeof mode !== 'string' || !FEDERATION_ROUTING_MODES.includes(mode as FederationRoutingMode)) {
       json(res, { error: 'invalid_value', field: 'mode', hint: `invalid mode (${FEDERATION_ROUTING_MODES.join('|')})` }, 400); return true
     }
-    if (!setFederationRoutingModePreservingFile(mode as FederationRoutingMode)) {
+    if (!await setFederationRoutingModePreservingFile(mode as FederationRoutingMode)) {
       json(res, { error: 'conflict', hint: 'federation config unreadable -- routing mode not persisted' }, 409); return true
     }
     ensureFederationClaudeMdSection()
@@ -596,47 +627,51 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
     if (payload === null || typeof payload !== 'object') { json(res, { error: 'invalid_value', hint: 'Body must be a JSON object' }, 400); return true }
     if (refuseIfConfigUnhealthy(res)) return true
     const p = payload as Record<string, unknown>
-    // --- synchronous read->mutate->write section (no await below) ---
-    const cfg = getFederationConfig()
-    if (!isValidIdSegment(p.id)) { json(res, { error: 'invalid_value', field: 'id', hint: 'invalid peer id' }, 400); return true }
-    // Case-insensitive ids, stored lowercase (the operator keeps typing the
-    // display name 'Teodor' for the slug 'teodor' -- see L1).
-    const id = (p.id as string).toLowerCase()
-    if (id === (cfg.systemId || MAIN_AGENT_ID).toLowerCase()) { json(res, { error: 'invalid_value', field: 'id', hint: 'peer id equals own systemId' }, 400); return true }
-    if (cfg.peers.some((peer) => peer.id === id)) { json(res, { error: 'conflict', hint: `peer '${id}' already exists` }, 409); return true }
-    if (!isAcceptablePeerBaseUrl(p.baseUrl)) { json(res, { error: 'invalid_value', field: 'baseUrl', hint: 'invalid baseUrl (https required; http only on loopback)' }, 400); return true }
-    let addWindow: number | undefined
-    if (p.abandonWindowMinutes !== undefined && p.abandonWindowMinutes !== null) {
-      if (typeof p.abandonWindowMinutes !== 'number' || !Number.isInteger(p.abandonWindowMinutes)
-        || p.abandonWindowMinutes < MIN_ABANDON_WINDOW_MINUTES || p.abandonWindowMinutes > MAX_ABANDON_WINDOW_MINUTES) {
-        json(res, { error: 'invalid_value', field: 'abandonWindowMinutes', hint: `invalid abandonWindowMinutes (${MIN_ABANDON_WINDOW_MINUTES}..${MAX_ABANDON_WINDOW_MINUTES})` }, 400); return true
+    // read->mutate->write in ONE transaction on the stored document (mutateFederationConfig): an overlapping
+    // add / patch / remove / rotate reads what the previous one wrote, so none is lost
+    const outcome = await mutateFederationConfig<FederationStepResult<{ id: string; peer: FederationPeer; inboundToken: string }>>((cfg) => {
+      if (!isValidIdSegment(p.id)) { return reject({ error: 'invalid_value', field: 'id', hint: 'invalid peer id' }, 400) }
+      // Case-insensitive ids, stored lowercase (the operator keeps typing the
+      // display name 'Teodor' for the slug 'teodor' -- see L1).
+      const id = (p.id as string).toLowerCase()
+      if (id === (cfg.systemId || MAIN_AGENT_ID).toLowerCase()) { return reject({ error: 'invalid_value', field: 'id', hint: 'peer id equals own systemId' }, 400) }
+      if (cfg.peers.some((peer) => peer.id === id)) { return reject({ error: 'conflict', hint: `peer '${id}' already exists` }, 409) }
+      if (!isAcceptablePeerBaseUrl(p.baseUrl)) { return reject({ error: 'invalid_value', field: 'baseUrl', hint: 'invalid baseUrl (https required; http only on loopback)' }, 400) }
+      let addWindow: number | undefined
+      if (p.abandonWindowMinutes !== undefined && p.abandonWindowMinutes !== null) {
+        if (typeof p.abandonWindowMinutes !== 'number' || !Number.isInteger(p.abandonWindowMinutes)
+          || p.abandonWindowMinutes < MIN_ABANDON_WINDOW_MINUTES || p.abandonWindowMinutes > MAX_ABANDON_WINDOW_MINUTES) {
+          return reject({ error: 'invalid_value', field: 'abandonWindowMinutes', hint: `invalid abandonWindowMinutes (${MIN_ABANDON_WINDOW_MINUTES}..${MAX_ABANDON_WINDOW_MINUTES})` }, 400)
+        }
+        addWindow = p.abandonWindowMinutes
       }
-      addWindow = p.abandonWindowMinutes
-    }
-    if (p.shareCapabilitySummaries !== undefined && typeof p.shareCapabilitySummaries !== 'boolean') {
-      json(res, { error: 'invalid_value', field: 'shareCapabilitySummaries', hint: 'invalid shareCapabilitySummaries (boolean)' }, 400); return true
-    }
-    const inboundToken = generatePeerInboundToken()
-    const peer: FederationPeer = {
-      id,
-      baseUrl: (p.baseUrl as string).replace(/\/+$/, ''),
-      outboundToken: typeof p.outboundToken === 'string' ? p.outboundToken.trim() : '',
-      inboundToken,
-      trust: 'untrusted',
-      ...(addWindow !== undefined ? { abandonWindowMinutes: addWindow } : {}),
-      ...(p.shareCapabilitySummaries === true ? { shareCapabilitySummaries: true } : {}),
-    }
-    // Carry routingMode forward: validateFederationConfig defaults an absent
-    // routingMode to catalog-first, so omitting it here would silently reset
-    // the owner's delegation-mode choice on every peer add (same round-trip
-    // hazard the shareCapabilitySummaries note guards against).
-    const next: FederationConfig = { enabled: cfg.enabled, systemId: cfg.systemId || MAIN_AGENT_ID, routingMode: cfg.routingMode, peers: [...cfg.peers, peer] }
-    const validated = validateFederationConfig(next)
-    if (typeof validated === 'string') { json(res, { error: 'invalid_value', hint: `Invalid peer: ${validated}` }, 400); return true }
-    writeFederationConfig(validated)
+      if (p.shareCapabilitySummaries !== undefined && typeof p.shareCapabilitySummaries !== 'boolean') {
+        return reject({ error: 'invalid_value', field: 'shareCapabilitySummaries', hint: 'invalid shareCapabilitySummaries (boolean)' }, 400)
+      }
+      const inboundToken = generatePeerInboundToken()
+      const peer: FederationPeer = {
+        id,
+        baseUrl: (p.baseUrl as string).replace(/\/+$/, ''),
+        outboundToken: typeof p.outboundToken === 'string' ? p.outboundToken.trim() : '',
+        inboundToken,
+        trust: 'untrusted',
+        ...(addWindow !== undefined ? { abandonWindowMinutes: addWindow } : {}),
+        ...(p.shareCapabilitySummaries === true ? { shareCapabilitySummaries: true } : {}),
+      }
+      // Carry routingMode forward: validateFederationConfig defaults an absent
+      // routingMode to catalog-first, so omitting it here would silently reset
+      // the owner's delegation-mode choice on every peer add (same round-trip
+      // hazard the shareCapabilitySummaries note guards against).
+      const next: FederationConfig = { enabled: cfg.enabled, systemId: cfg.systemId || MAIN_AGENT_ID, routingMode: cfg.routingMode, peers: [...cfg.peers, peer] }
+      const validated = validateFederationConfig(next)
+      if (typeof validated === 'string') { return reject({ error: 'invalid_value', hint: `Invalid peer: ${validated}` }, 400) }
+      return { next: validated, result: { done: { id, peer, inboundToken } } }
+    })
+    const added = settleMutation(res, outcome)
+    if (added === undefined) return true
     ensureFederationClaudeMdSection()
-    logger.warn({ fed: true, peer: id }, 'federation: peer added, inbound token minted')
-    json(res, { peer: peerView(peer), inboundToken }, 201)
+    logger.warn({ fed: true, peer: added.id }, 'federation: peer added, inbound token minted')
+    json(res, { peer: peerView(added.peer), inboundToken: added.inboundToken }, 201)
     return true
   }
 
@@ -653,52 +688,59 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
       if (isErr(payload)) return true
       if (payload === null || typeof payload !== 'object') { json(res, { error: 'invalid_value', hint: 'Body must be a JSON object' }, 400); return true }
       const p = payload as Record<string, unknown>
-      // --- synchronous read->mutate->write section ---
-      const cfg = getFederationConfig()
-      const existing = cfg.peers.find((peer) => peer.id === id)
-      if (!existing) { json(res, { error: 'not_found', hint: 'Unknown peer' }, 404); return true }
-      const updated: FederationPeer = { ...existing }
-      if (p.baseUrl !== undefined) {
-        if (!isAcceptablePeerBaseUrl(p.baseUrl)) { json(res, { error: 'invalid_value', field: 'baseUrl', hint: 'invalid baseUrl' }, 400); return true }
-        updated.baseUrl = (p.baseUrl as string).replace(/\/+$/, '')
-      }
-      if (p.outboundToken !== undefined) {
-        if (p.outboundToken === '' || p.outboundToken === null) updated.outboundToken = ''
-        else if (typeof p.outboundToken === 'string' && p.outboundToken.trim().length >= FEDERATION_MIN_TOKEN_LENGTH) updated.outboundToken = p.outboundToken.trim()
-        else { json(res, { error: 'invalid_value', field: 'outboundToken', hint: `invalid outboundToken (min ${FEDERATION_MIN_TOKEN_LENGTH} chars, or empty)` }, 400); return true }
-      }
-      if (p.abandonWindowMinutes !== undefined) {
-        if (p.abandonWindowMinutes === null) delete updated.abandonWindowMinutes
-        else if (typeof p.abandonWindowMinutes === 'number' && Number.isInteger(p.abandonWindowMinutes)
-          && p.abandonWindowMinutes >= MIN_ABANDON_WINDOW_MINUTES && p.abandonWindowMinutes <= MAX_ABANDON_WINDOW_MINUTES) {
-          updated.abandonWindowMinutes = p.abandonWindowMinutes
-        } else { json(res, { error: 'invalid_value', field: 'abandonWindowMinutes', hint: `invalid abandonWindowMinutes (${MIN_ABANDON_WINDOW_MINUTES}..${MAX_ABANDON_WINDOW_MINUTES})` }, 400); return true }
-      }
-      if (p.shareCapabilitySummaries !== undefined) {
-        if (typeof p.shareCapabilitySummaries !== 'boolean') { json(res, { error: 'invalid_value', field: 'shareCapabilitySummaries', hint: 'invalid shareCapabilitySummaries (boolean)' }, 400); return true }
-        if (p.shareCapabilitySummaries) updated.shareCapabilitySummaries = true
-        else delete updated.shareCapabilitySummaries
-      }
-      const next: FederationConfig = { ...cfg, peers: cfg.peers.map((peer) => (peer.id === id ? updated : peer)) }
-      const validated = validateFederationConfig(next)
-      if (typeof validated === 'string') { json(res, { error: 'invalid_value', hint: `Invalid peer update: ${validated}` }, 400); return true }
-      writeFederationConfig(validated)
+      // read->mutate->write in ONE transaction on the stored document (mutateFederationConfig): an overlapping
+      // add / patch / remove / rotate reads what the previous one wrote, so none is lost
+      const outcome = await mutateFederationConfig<FederationStepResult<{ updated: FederationPeer }>>((cfg) => {
+        const existing = cfg.peers.find((peer) => peer.id === id)
+        if (!existing) { return reject({ error: 'not_found', hint: 'Unknown peer' }, 404) }
+        const updated: FederationPeer = { ...existing }
+        if (p.baseUrl !== undefined) {
+          if (!isAcceptablePeerBaseUrl(p.baseUrl)) { return reject({ error: 'invalid_value', field: 'baseUrl', hint: 'invalid baseUrl' }, 400) }
+          updated.baseUrl = (p.baseUrl as string).replace(/\/+$/, '')
+        }
+        if (p.outboundToken !== undefined) {
+          if (p.outboundToken === '' || p.outboundToken === null) updated.outboundToken = ''
+          else if (typeof p.outboundToken === 'string' && p.outboundToken.trim().length >= FEDERATION_MIN_TOKEN_LENGTH) updated.outboundToken = p.outboundToken.trim()
+          else { return reject({ error: 'invalid_value', field: 'outboundToken', hint: `invalid outboundToken (min ${FEDERATION_MIN_TOKEN_LENGTH} chars, or empty)` }, 400) }
+        }
+        if (p.abandonWindowMinutes !== undefined) {
+          if (p.abandonWindowMinutes === null) delete updated.abandonWindowMinutes
+          else if (typeof p.abandonWindowMinutes === 'number' && Number.isInteger(p.abandonWindowMinutes)
+            && p.abandonWindowMinutes >= MIN_ABANDON_WINDOW_MINUTES && p.abandonWindowMinutes <= MAX_ABANDON_WINDOW_MINUTES) {
+            updated.abandonWindowMinutes = p.abandonWindowMinutes
+          } else { return reject({ error: 'invalid_value', field: 'abandonWindowMinutes', hint: `invalid abandonWindowMinutes (${MIN_ABANDON_WINDOW_MINUTES}..${MAX_ABANDON_WINDOW_MINUTES})` }, 400) }
+        }
+        if (p.shareCapabilitySummaries !== undefined) {
+          if (typeof p.shareCapabilitySummaries !== 'boolean') { return reject({ error: 'invalid_value', field: 'shareCapabilitySummaries', hint: 'invalid shareCapabilitySummaries (boolean)' }, 400) }
+          if (p.shareCapabilitySummaries) updated.shareCapabilitySummaries = true
+          else delete updated.shareCapabilitySummaries
+        }
+        const next: FederationConfig = { ...cfg, peers: cfg.peers.map((peer) => (peer.id === id ? updated : peer)) }
+        const validated = validateFederationConfig(next)
+        if (typeof validated === 'string') { return reject({ error: 'invalid_value', hint: `Invalid peer update: ${validated}` }, 400) }
+        return { next: validated, result: { done: { updated } } }
+      })
+      const patched = settleMutation(res, outcome)
+      if (patched === undefined) return true
       resetPeerBackoff(id) // a token/url fix should get a fresh attempt now, not after the old backoff
       ensureFederationClaudeMdSection()
       logger.warn({ fed: true, peer: id }, 'federation: peer updated')
-      json(res, peerView(updated))
+      json(res, peerView(patched.updated))
       return true
     }
 
     // DELETE: remove the peer + purge everything scoped to it.
-    // --- synchronous read->mutate->write section ---
-    const cfg = getFederationConfig()
-    if (!cfg.peers.some((peer) => peer.id === id)) { json(res, { error: 'not_found', hint: 'Unknown peer' }, 404); return true }
-    const next: FederationConfig = { ...cfg, peers: cfg.peers.filter((peer) => peer.id !== id) }
-    const validated = validateFederationConfig(next)
-    if (typeof validated === 'string') { json(res, { error: 'invalid_value', hint: `Invalid config after removal: ${validated}` }, 400); return true }
-    writeFederationConfig(validated)
-    const failed = failPendingFederatedMessages(id, `Federation peer '${id}' removed while pending`)
+    // read->mutate->write in ONE transaction on the stored document (mutateFederationConfig): an overlapping
+    // add / patch / remove / rotate reads what the previous one wrote, so none is lost
+    const outcome = await mutateFederationConfig<FederationStepResult<null>>((cfg) => {
+      if (!cfg.peers.some((peer) => peer.id === id)) { return reject({ error: 'not_found', hint: 'Unknown peer' }, 404) }
+      const next: FederationConfig = { ...cfg, peers: cfg.peers.filter((peer) => peer.id !== id) }
+      const validated = validateFederationConfig(next)
+      if (typeof validated === 'string') { return reject({ error: 'invalid_value', hint: `Invalid config after removal: ${validated}` }, 400) }
+      return { next: validated, result: { done: null } }
+    })
+    if (settleMutation(res, outcome) === undefined) return true
+    const failed = await failPendingFederatedMessages(id, `Federation peer '${id}' removed while pending`)
     purgeInboxDedup(id)
     resetPeerBackoff(id)
     resetFederationPollerCache(id)
@@ -727,29 +769,33 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
     const id = decodeURIComponent(rotateMatch[1]).toLowerCase()
     if (!isValidIdSegment(id)) { json(res, { error: 'invalid_value', field: 'id', hint: 'invalid peer id' }, 400); return true }
     if (refuseIfConfigUnhealthy(res)) return true
-    // --- synchronous read->mutate->write section ---
-    const cfg = getFederationConfig()
-    const existing = cfg.peers.find((peer) => peer.id === id)
-    if (!existing) { json(res, { error: 'not_found', hint: 'Unknown peer' }, 404); return true }
-    const fresh = generatePeerInboundToken()
-    const next: FederationConfig = { ...cfg, peers: cfg.peers.map((peer) => (peer.id === id ? { ...peer, inboundToken: fresh } : peer)) }
-    const validated = validateFederationConfig(next)
-    if (typeof validated === 'string') { json(res, { error: 'invalid_value', hint: `Invalid config after rotation: ${validated}` }, 400); return true }
-    writeFederationConfig(validated)
+    // read->mutate->write in ONE transaction on the stored document (mutateFederationConfig): an overlapping
+    // add / patch / remove / rotate reads what the previous one wrote, so none is lost
+    const outcome = await mutateFederationConfig<FederationStepResult<{ fresh: string }>>((cfg) => {
+      const existing = cfg.peers.find((peer) => peer.id === id)
+      if (!existing) { return reject({ error: 'not_found', hint: 'Unknown peer' }, 404) }
+      const fresh = generatePeerInboundToken()
+      const next: FederationConfig = { ...cfg, peers: cfg.peers.map((peer) => (peer.id === id ? { ...peer, inboundToken: fresh } : peer)) }
+      const validated = validateFederationConfig(next)
+      if (typeof validated === 'string') { return reject({ error: 'invalid_value', hint: `Invalid config after rotation: ${validated}` }, 400) }
+      return { next: validated, result: { done: { fresh } } }
+    })
+    const rotated = settleMutation(res, outcome)
+    if (rotated === undefined) return true
     logger.warn({ fed: true, peer: id }, 'federation: inbound token rotated -- the peer must update its outbound token')
-    json(res, { id, inboundToken: fresh })
+    json(res, { id, inboundToken: rotated.fresh })
     return true
   }
 
   // Full removal: the built-in counterpart of the manual round-1 teardown.
-  // Ordering is load-bearing: (1) flag off + cache refreshed synchronously
-  // (gate closes immediately), (2) queued rows failed, (3) files deleted via
+  // Ordering is load-bearing: (1) flag off, awaited, cache refreshed right
+  // after the write (gate closes before the next step), (2) queued rows failed, (3) files deleted via
   // the config module (cache cleared without trusting fs.watch), (4) memory
   // purges. Later commits extend this with poller-cache + CLAUDE.md steps.
   if (path === '/api/federation/remove' && method === 'POST') {
-    if (refuseIfDisableFailed(res)) return true
-    const failed = failPendingFederatedMessages(undefined, 'Federation removed while pending')
-    removeFederationStore()
+    if (await refuseIfDisableFailed(res)) return true
+    const failed = await failPendingFederatedMessages(undefined, 'Federation removed while pending')
+    await removeFederationStore()
     purgeInboxDedup()
     resetPeerBackoff()
     resetFederationPollerCache()

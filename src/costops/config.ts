@@ -108,23 +108,23 @@ export interface ConfigLoadResult {
  * backfill from such a file into the table is migrateCostBudgetsFromFile()
  * (src/db/cost-budgets.ts), wired into initDatabase().
  */
-export function loadCostopsConfig(): ConfigLoadResult {
+export async function loadCostopsConfig(): Promise<ConfigLoadResult> {
   if (!existsSync(COSTOPS_CONFIG_PATH)) {
     ensureExampleConfig()
     // Fresh arrays every call: a caller that mutates the returned config
     // in place (e.g. pushing a new budget before saving) must never corrupt
     // the shared EMPTY_CONFIG singleton for the rest of the process.
-    return { config: { ...EMPTY_CONFIG, fixed_costs: [], budgets: listCostBudgets() }, exists: false, errors: [] }
+    return { config: { ...EMPTY_CONFIG, fixed_costs: [], budgets: await listCostBudgets() }, exists: false, errors: [] }
   }
   let raw: unknown
   try {
     raw = JSON.parse(readFileSync(COSTOPS_CONFIG_PATH, 'utf-8'))
   } catch (err) {
     logger.warn({ err }, 'costops-config.json is not valid JSON')
-    return { config: { ...EMPTY_CONFIG, fixed_costs: [], budgets: listCostBudgets() }, exists: true, errors: ['config is not valid JSON'] }
+    return { config: { ...EMPTY_CONFIG, fixed_costs: [], budgets: await listCostBudgets() }, exists: true, errors: ['config is not valid JSON'] }
   }
   const obj = (raw && typeof raw === 'object') ? raw as Record<string, unknown> : {}
-  return validateConfig({ ...obj, budgets: listCostBudgets() })
+  return validateConfig({ ...obj, budgets: await listCostBudgets() })
 }
 
 /**
@@ -137,11 +137,11 @@ export function loadCostopsConfig(): ConfigLoadResult {
  * is gone, not merely left un-upserted); `version`/`currency`/`fixed_costs`
  * still go to the file.
  */
-export function saveCostopsConfig(config: CostOpsConfig): ConfigLoadResult {
+export async function saveCostopsConfig(config: CostOpsConfig): Promise<ConfigLoadResult> {
   const validated = validateConfig(config)
   const { budgets, ...fileConfig } = validated.config
   writeFileSync(COSTOPS_CONFIG_PATH, JSON.stringify(fileConfig, null, 2) + '\n', 'utf-8')
-  replaceCostBudgets('default', budgets)
+  await replaceCostBudgets('default', budgets)
   return validated
 }
 

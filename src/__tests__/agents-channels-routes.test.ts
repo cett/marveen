@@ -63,8 +63,8 @@ vi.mock('../web/telegram.js', () => ({
 }))
 vi.mock('../web/agent-process.js', () => ({
   isAgentRunning: vi.fn().mockReturnValue(false),
-  startAgentProcess: vi.fn().mockReturnValue({ ok: true }),
-  stopAgentProcess: vi.fn().mockReturnValue({ ok: true }),
+  startAgentProcess: vi.fn().mockResolvedValue({ ok: true }),
+  stopAgentProcess: vi.fn().mockResolvedValue({ ok: true }),
   agentSessionName: vi.fn().mockImplementation((n: string) => `agent-${n}`),
   sendPromptToSession: vi.fn().mockReturnValue({ ok: true }),
   capturePane: vi.fn().mockReturnValue(null),
@@ -93,8 +93,8 @@ vi.mock('../web/routes/agents-helpers.js', async (importOriginal) => {
   }
 })
 vi.mock('../db.js', () => ({
-  listPendingChannelRequests: vi.fn().mockReturnValue([]),
-  updateChannelRequestStatus: vi.fn().mockReturnValue(true),
+  listPendingChannelRequests: vi.fn().mockResolvedValue([]),
+  updateChannelRequestStatus: vi.fn().mockResolvedValue(true),
 }))
 vi.mock('../web/plugin-ids.js', () => ({
   CHANNEL_PLUGIN_IDS: { telegram: 'plugin:telegram', slack: 'plugin:slack', discord: 'plugin:discord' },

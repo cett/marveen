@@ -36,21 +36,21 @@ describe('seedScheduleIfAbsent INSERT OR IGNORE', () => {
     requires: null,
   }
 
-  it('inserts the row on first call and returns true', () => {
-    const inserted = seedScheduleIfAbsent(id, baseOpts)
+  it('inserts the row on first call and returns true', async () => {
+    const inserted = await seedScheduleIfAbsent(id, baseOpts)
     expect(inserted).toBe(true)
-    const row = getScheduleFromDb(id)
+    const row = await getScheduleFromDb(id)
     expect(row).not.toBeNull()
     expect(row!.prompt).toBe('original prompt')
   })
 
-  it('second call with different data returns false (no insert)', () => {
-    const inserted = seedScheduleIfAbsent(id, { ...baseOpts, prompt: 'overwrite attempt' })
+  it('second call with different data returns false (no insert)', async () => {
+    const inserted = await seedScheduleIfAbsent(id, { ...baseOpts, prompt: 'overwrite attempt' })
     expect(inserted).toBe(false)
   })
 
-  it('row still contains original data after second call', () => {
-    const row = getScheduleFromDb(id)
+  it('row still contains original data after second call', async () => {
+    const row = await getScheduleFromDb(id)
     expect(row).not.toBeNull()
     expect(row!.prompt).toBe('original prompt')
     expect(row!.description).toBe('original description')

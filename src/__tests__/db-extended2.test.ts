@@ -67,78 +67,78 @@ afterAll(() => {
 // --- Session management ---
 
 describe('session functions', () => {
-  it('setSession + getSession roundtrip', () => {
-    setSession('test-sess-1', 'sess-abc', 3)
-    const s = getSession('test-sess-1')
+  it('setSession + getSession roundtrip', async () => {
+    await setSession('test-sess-1', 'sess-abc', 3)
+    const s = await getSession('test-sess-1')
     expect(s?.sessionId).toBe('sess-abc')
     expect(s?.messageCount).toBe(3)
   })
 
-  it('getSession returns undefined for unknown chatId', () => {
-    expect(getSession('test-sess-unknown-x99')).toBeUndefined()
+  it('getSession returns undefined for unknown chatId', async () => {
+    expect(await getSession('test-sess-unknown-x99')).toBeUndefined()
   })
 
-  it('incrementSessionCount increments and returns new count', () => {
-    setSession('test-sess-2', 'sess-def', 0)
-    const count = incrementSessionCount('test-sess-2')
+  it('incrementSessionCount increments and returns new count', async () => {
+    await setSession('test-sess-2', 'sess-def', 0)
+    const count = await incrementSessionCount('test-sess-2')
     expect(count).toBe(1)
-    const count2 = incrementSessionCount('test-sess-2')
+    const count2 = await incrementSessionCount('test-sess-2')
     expect(count2).toBe(2)
   })
 
-  it('clearSession removes the session', () => {
-    setSession('test-sess-3', 'sess-ghi', 5)
-    clearSession('test-sess-3')
-    expect(getSession('test-sess-3')).toBeUndefined()
+  it('clearSession removes the session', async () => {
+    await setSession('test-sess-3', 'sess-ghi', 5)
+    await clearSession('test-sess-3')
+    expect(await getSession('test-sess-3')).toBeUndefined()
   })
 })
 
 // --- Memory functions ---
 
 describe('memory functions', () => {
-  beforeAll(() => {
-    saveAgentMemory('db2-test-memo', 'Active task about integration tests', 'hot', 'testing,unit')
-    saveAgentMemory('db2-test-memo', 'Config preference: use vitest', 'warm', 'vitest,config')
-    saveAgentMemory('db2-test-memo', 'Old decision log', 'cold', 'history')
+  beforeAll(async () => {
+    await saveAgentMemory('db2-test-memo', 'Active task about integration tests', 'hot', 'testing,unit')
+    await saveAgentMemory('db2-test-memo', 'Config preference: use vitest', 'warm', 'vitest,config')
+    await saveAgentMemory('db2-test-memo', 'Old decision log', 'cold', 'history')
   })
 
-  it('searchMemories returns results for matching query', () => {
-    const results = searchMemories('integration', 'chat-x', 3)
+  it('searchMemories returns results for matching query', async () => {
+    const results = await searchMemories('integration', 'chat-x', 3)
     // FTS search on agent memories - may return empty if no chat-specific memories
     expect(Array.isArray(results)).toBe(true)
   })
 
-  it('touchMemory updates accessed_at', () => {
-    const mems = getMemoriesForChat('chat-x', 10)
-    saveAgentMemory('db2-test-touch', 'Touchable memory', 'hot', '')
+  it('touchMemory updates accessed_at', async () => {
+    const mems = await getMemoriesForChat('chat-x', 10)
+    await saveAgentMemory('db2-test-touch', 'Touchable memory', 'hot', '')
     const all = getDb().prepare("SELECT id FROM memories WHERE agent_id = 'db2-test-touch'").all() as { id: number }[]
     if (all.length > 0) {
-      expect(() => touchMemory(all[0].id)).not.toThrow()
+      await expect(touchMemory(all[0].id)).resolves.toBeUndefined()
     }
   })
 
-  it('touchMemoriesAccessed with empty ids is a no-op', () => {
-    expect(() => touchMemoriesAccessed([])).not.toThrow()
+  it('touchMemoriesAccessed with empty ids is a no-op', async () => {
+    await expect(touchMemoriesAccessed([])).resolves.toBeUndefined()
   })
 
-  it('touchMemoriesAccessed updates accessed_at for given ids', () => {
+  it('touchMemoriesAccessed updates accessed_at for given ids', async () => {
     const all = getDb().prepare("SELECT id FROM memories WHERE agent_id = 'db2-test-touch'").all() as { id: number }[]
     if (all.length > 0) {
-      expect(() => touchMemoriesAccessed(all.map(r => r.id))).not.toThrow()
+      await expect(touchMemoriesAccessed(all.map(r => r.id))).resolves.toBeUndefined()
     }
   })
 
-  it('decayMemories runs without throwing', () => {
-    expect(() => decayMemories()).not.toThrow()
+  it('decayMemories runs without throwing', async () => {
+    await expect(decayMemories()).resolves.toBeUndefined()
   })
 
-  it('getMemoriesForChat returns memories', () => {
-    const mems = getMemoriesForChat('chat-x', 5)
+  it('getMemoriesForChat returns memories', async () => {
+    const mems = await getMemoriesForChat('chat-x', 5)
     expect(Array.isArray(mems)).toBe(true)
   })
 
-  it('getMemoryStats returns totals', () => {
-    const stats = getMemoryStats()
+  it('getMemoryStats returns totals', async () => {
+    const stats = await getMemoryStats()
     expect(typeof stats.total).toBe('number')
     expect(typeof stats.withEmbedding).toBe('number')
     expect(typeof stats.byAgent).toBe('object')
@@ -146,48 +146,48 @@ describe('memory functions', () => {
     expect(stats.total).toBeGreaterThan(0)
   })
 
-  it('getMemoryStats(tenantId) scopes total/byTier/importCount to that tenant only', () => {
-    const globalBefore = getMemoryStats()
-    saveAgentMemory('stat-tenant-a', 'tenant A memory', 'hot', undefined, false, 'stat-tenant-a-id')
-    saveAgentMemory('stat-tenant-b', 'tenant B memory', 'hot', undefined, false, 'stat-tenant-b-id')
+  it('getMemoryStats(tenantId) scopes total/byTier/importCount to that tenant only', async () => {
+    const globalBefore = await getMemoryStats()
+    await saveAgentMemory('stat-tenant-a', 'tenant A memory', 'hot', undefined, false, 'stat-tenant-a-id')
+    await saveAgentMemory('stat-tenant-b', 'tenant B memory', 'hot', undefined, false, 'stat-tenant-b-id')
 
-    const statsA = getMemoryStats('stat-tenant-a-id')
+    const statsA = await getMemoryStats('stat-tenant-a-id')
     expect(statsA.total).toBe(1)
     expect(statsA.byAgent['stat-tenant-a']).toBe(1)
     expect(statsA.byAgent['stat-tenant-b']).toBeUndefined()
 
-    const statsB = getMemoryStats('stat-tenant-b-id')
+    const statsB = await getMemoryStats('stat-tenant-b-id')
     expect(statsB.total).toBe(1)
     expect(statsB.byAgent['stat-tenant-b']).toBe(1)
 
     // No tenantId still returns the unfiltered fleet-wide total (backward compat).
-    const globalAfter = getMemoryStats()
+    const globalAfter = await getMemoryStats()
     expect(globalAfter.total).toBe(globalBefore.total + 2)
   })
 
-  it('getMemoryStats.withEmbedding counts embedding_blob, not just the legacy JSON column', () => {
+  it('getMemoryStats.withEmbedding counts embedding_blob, not just the legacy JSON column', async () => {
     const db = getDb()
     // Simulate the post-0005-migration state: a memory whose vector lives in the
     // binary embedding_blob column, with the legacy `embedding` JSON column NULL.
-    const before = getMemoryStats().withEmbedding
+    const before = (await getMemoryStats()).withEmbedding
     // 768-dim to satisfy the vec_memories(embedding FLOAT[768]) insert trigger.
     const buf = Buffer.from(new Float32Array(768).fill(0.1).buffer)
     db.prepare(
       "INSERT INTO memories (chat_id, content, sector, salience, created_at, accessed_at, agent_id, category, embedding, embedding_blob) VALUES ('c', 'blob-only vector', 'semantic', 1.0, unixepoch(), unixepoch(), 'stat-blob-test', 'warm', NULL, ?)"
     ).run(buf)
-    expect(getMemoryStats().withEmbedding).toBe(before + 1)
+    expect((await getMemoryStats()).withEmbedding).toBe(before + 1)
   })
 
-  it('updateMemory updates content and returns true', () => {
+  it('updateMemory updates content and returns true', async () => {
     const all = getDb().prepare("SELECT id FROM memories WHERE agent_id = 'db2-test-memo' LIMIT 1").all() as { id: number }[]
     if (all.length > 0) {
-      const ok = updateMemory(all[0].id, 'Updated content text', 'warm', 'db2-test-memo', 'updated')
+      const ok = await updateMemory(all[0].id, 'Updated content text', 'warm', 'db2-test-memo', 'updated')
       expect(ok).toBe(true)
     }
   })
 
-  it('updateMemory returns false for non-existent id', () => {
-    const ok = updateMemory(999999, 'no such mem', 'hot')
+  it('updateMemory returns false for non-existent id', async () => {
+    const ok = await updateMemory(999999, 'no such mem', 'hot')
     expect(ok).toBe(false)
   })
 })
@@ -197,9 +197,9 @@ describe('memory functions', () => {
 describe('getAgentMemories / getMemoriesForChat pagination', () => {
   const AGENT = 'db2-page-agent'
 
-  beforeAll(() => {
+  beforeAll(async () => {
     for (let i = 0; i < 25; i++) {
-      saveAgentMemory(AGENT, `page memory ${i}`, 'warm', '')
+      await saveAgentMemory(AGENT, `page memory ${i}`, 'warm', '')
     }
   })
 
@@ -207,16 +207,16 @@ describe('getAgentMemories / getMemoriesForChat pagination', () => {
     getDb().exec(`DELETE FROM memories WHERE agent_id = '${AGENT}'`)
   })
 
-  it('countAgentMemories reports a total independent of limit, not just the page length', () => {
-    const page = getAgentMemories(AGENT, 10)
+  it('countAgentMemories reports a total independent of limit, not just the page length', async () => {
+    const page = await getAgentMemories(AGENT, 10)
     expect(page.length).toBe(10)
-    expect(countAgentMemories(AGENT)).toBe(25)
+    expect(await countAgentMemories(AGENT)).toBe(25)
   })
 
-  it('getAgentMemories offset pages are contiguous, non-overlapping, and match an unpaged fetch', () => {
-    const page1 = getAgentMemories(AGENT, 10, undefined, undefined, 0)
-    const page2 = getAgentMemories(AGENT, 10, undefined, undefined, 10)
-    const page3 = getAgentMemories(AGENT, 10, undefined, undefined, 20)
+  it('getAgentMemories offset pages are contiguous, non-overlapping, and match an unpaged fetch', async () => {
+    const page1 = await getAgentMemories(AGENT, 10, undefined, undefined, 0)
+    const page2 = await getAgentMemories(AGENT, 10, undefined, undefined, 10)
+    const page3 = await getAgentMemories(AGENT, 10, undefined, undefined, 20)
     expect(page1.length).toBe(10)
     expect(page2.length).toBe(10)
     expect(page3.length).toBe(5)
@@ -226,33 +226,33 @@ describe('getAgentMemories / getMemoriesForChat pagination', () => {
     const ids3 = page3.map(m => m.id)
     expect(new Set([...ids1, ...ids2, ...ids3]).size).toBe(25)
 
-    const unpaged = getAgentMemories(AGENT, 30)
+    const unpaged = await getAgentMemories(AGENT, 30)
     expect([...ids1, ...ids2, ...ids3]).toEqual(unpaged.map(m => m.id))
   })
 
-  it('an out-of-range offset returns an empty page but keeps the real total', () => {
-    const page = getAgentMemories(AGENT, 10, undefined, undefined, 10_000)
+  it('an out-of-range offset returns an empty page but keeps the real total', async () => {
+    const page = await getAgentMemories(AGENT, 10, undefined, undefined, 10_000)
     expect(page).toEqual([])
-    expect(countAgentMemories(AGENT)).toBe(25)
+    expect(await countAgentMemories(AGENT)).toBe(25)
   })
 
-  it('the cache key includes offset, so page 2 is not served page 1\'s cached rows', () => {
-    const page1 = getAgentMemories(AGENT, 10, undefined, undefined, 0)
-    const page2 = getAgentMemories(AGENT, 10, undefined, undefined, 10)
+  it('the cache key includes offset, so page 2 is not served page 1\'s cached rows', async () => {
+    const page1 = await getAgentMemories(AGENT, 10, undefined, undefined, 0)
+    const page2 = await getAgentMemories(AGENT, 10, undefined, undefined, 10)
     expect(page1.map(m => m.id)).not.toEqual(page2.map(m => m.id))
   })
 
-  it('getMemoriesForChat/countMemoriesForChat offset pages match an unpaged fetch of the same window', () => {
+  it('getMemoriesForChat/countMemoriesForChat offset pages match an unpaged fetch of the same window', async () => {
     // Scoped to this agent's own category via the SQL-level category filter,
     // not chat_id (every saveAgentMemory row shares the same ALLOWED_CHAT_ID),
     // so the count here is exact regardless of what other tests in this file
     // have already inserted.
-    const totalWarm = countMemoriesForChat(ALLOWED_CHAT_ID, undefined, 'warm')
+    const totalWarm = await countMemoriesForChat(ALLOWED_CHAT_ID, undefined, 'warm')
     expect(totalWarm).toBeGreaterThanOrEqual(25)
 
-    const page1 = getMemoriesForChat(ALLOWED_CHAT_ID, 10, undefined, 'warm', 0)
-    const page2 = getMemoriesForChat(ALLOWED_CHAT_ID, 10, undefined, 'warm', 10)
-    const unpaged = getMemoriesForChat(ALLOWED_CHAT_ID, 20, undefined, 'warm', 0)
+    const page1 = await getMemoriesForChat(ALLOWED_CHAT_ID, 10, undefined, 'warm', 0)
+    const page2 = await getMemoriesForChat(ALLOWED_CHAT_ID, 10, undefined, 'warm', 10)
+    const unpaged = await getMemoriesForChat(ALLOWED_CHAT_ID, 20, undefined, 'warm', 0)
     expect([...page1, ...page2].map(m => m.id)).toEqual(unpaged.map(m => m.id))
   })
 })
@@ -260,23 +260,23 @@ describe('getAgentMemories / getMemoriesForChat pagination', () => {
 // --- Daily logs ---
 
 describe('daily log functions', () => {
-  it('appendDailyLog + getDailyLog roundtrip', () => {
-    appendDailyLog('db2-test-logs', 'First log entry')
-    appendDailyLog('db2-test-logs', 'Second log entry')
+  it('appendDailyLog + getDailyLog roundtrip', async () => {
+    await appendDailyLog('db2-test-logs', 'First log entry')
+    await appendDailyLog('db2-test-logs', 'Second log entry')
     const today = new Date().toLocaleDateString('en-CA', { timeZone: APP_TZ })
-    const logs = getDailyLog('db2-test-logs', today)
+    const logs = await getDailyLog('db2-test-logs', today)
     expect(logs.length).toBeGreaterThanOrEqual(2)
     expect(logs[0].content).toBe('First log entry')
   })
 
-  it('getDailyLogDates returns distinct dates', () => {
-    const dates = getDailyLogDates('db2-test-logs')
+  it('getDailyLogDates returns distinct dates', async () => {
+    const dates = await getDailyLogDates('db2-test-logs')
     expect(Array.isArray(dates)).toBe(true)
     expect(dates.length).toBeGreaterThanOrEqual(1)
   })
 
-  it('getDailyLog returns empty array for unknown agent', () => {
-    const logs = getDailyLog('unknown-agent-x99', '2020-01-01')
+  it('getDailyLog returns empty array for unknown agent', async () => {
+    const logs = await getDailyLog('unknown-agent-x99', '2020-01-01')
     expect(logs).toEqual([])
   })
 })
@@ -284,50 +284,50 @@ describe('daily log functions', () => {
 // --- Background tasks ---
 
 describe('background task functions', () => {
-  it('createBackgroundTaskAtomic creates a task when under concurrency limit', () => {
-    const task = createBackgroundTaskAtomic('db2-bg-1', 'db2-test-agent', 'run tests', 'sess-x', 5)
+  it('createBackgroundTaskAtomic creates a task when under concurrency limit', async () => {
+    const task = await createBackgroundTaskAtomic('db2-bg-1', 'db2-test-agent', 'run tests', 'sess-x', 5)
     expect(task).not.toBeNull()
     expect(task?.id).toBe('db2-bg-1')
     expect(task?.status).toBe('running')
   })
 
-  it('createBackgroundTaskAtomic returns null when at concurrency limit', () => {
+  it('createBackgroundTaskAtomic returns null when at concurrency limit', async () => {
     // maxConcurrent=0 means no slots available
-    const task = createBackgroundTaskAtomic('db2-bg-zero', 'db2-test-agent', 'blocked', 'sess-y', 0)
+    const task = await createBackgroundTaskAtomic('db2-bg-zero', 'db2-test-agent', 'blocked', 'sess-y', 0)
     expect(task).toBeNull()
   })
 
-  it('getRunningBackgroundTasks returns running tasks', () => {
-    const tasks = getRunningBackgroundTasks()
+  it('getRunningBackgroundTasks returns running tasks', async () => {
+    const tasks = await getRunningBackgroundTasks()
     expect(tasks.some(t => t.id === 'db2-bg-1')).toBe(true)
   })
 
-  it('getBackgroundTask retrieves a task by id', () => {
-    const t = getBackgroundTask('db2-bg-1')
+  it('getBackgroundTask retrieves a task by id', async () => {
+    const t = await getBackgroundTask('db2-bg-1')
     expect(t?.agent_id).toBe('db2-test-agent')
   })
 
-  it('countRunningBackgroundTasks returns correct count', () => {
-    const count = countRunningBackgroundTasks('db2-test-agent')
+  it('countRunningBackgroundTasks returns correct count', async () => {
+    const count = await countRunningBackgroundTasks('db2-test-agent')
     expect(count).toBeGreaterThanOrEqual(1)
   })
 
-  it('finishBackgroundTask marks task as done', () => {
-    finishBackgroundTask('db2-bg-1', 'done', 'output text')
-    const t = getBackgroundTask('db2-bg-1')
+  it('finishBackgroundTask marks task as done', async () => {
+    await finishBackgroundTask('db2-bg-1', 'done', 'output text')
+    const t = await getBackgroundTask('db2-bg-1')
     expect(t?.status).toBe('done')
     expect(t?.output).toBe('output text')
   })
 
-  it('getBackgroundTasks can filter by agentId and includeFinished', () => {
-    const all = getBackgroundTasks('db2-test-agent', true)
+  it('getBackgroundTasks can filter by agentId and includeFinished', async () => {
+    const all = await getBackgroundTasks('db2-test-agent', true)
     expect(all.some(t => t.id === 'db2-bg-1')).toBe(true)
-    const running = getBackgroundTasks('db2-test-agent', false)
+    const running = await getBackgroundTasks('db2-test-agent', false)
     expect(running.every(t => t.status === 'running')).toBe(true)
   })
 
-  it('markOrphanedTasksFailed returns a count', () => {
-    const count = markOrphanedTasksFailed()
+  it('markOrphanedTasksFailed returns a count', async () => {
+    const count = await markOrphanedTasksFailed()
     expect(typeof count).toBe('number')
   })
 })
@@ -337,58 +337,58 @@ describe('background task functions', () => {
 describe('scheduled task functions', () => {
   const taskId = 'db2-sched-1'
 
-  it('createTask + getTask roundtrip', () => {
+  it('createTask + getTask roundtrip', async () => {
     const nextRun = Math.floor(Date.now() / 1000) + 3600
-    createTask(taskId, 'db2-test-chat', 'daily check', '0 9 * * *', nextRun)
-    const t = getTask(taskId)
+    await createTask(taskId, 'db2-test-chat', 'daily check', '0 9 * * *', nextRun)
+    const t = await getTask(taskId)
     expect(t?.id).toBe(taskId)
     expect(t?.status).toBe('active')
   })
 
-  it('listTasks returns the created task', () => {
-    const tasks = listTasks()
+  it('listTasks returns the created task', async () => {
+    const tasks = await listTasks()
     expect(tasks.some(t => t.id === taskId)).toBe(true)
   })
 
-  it('getDueTasks returns tasks with next_run in the past', () => {
+  it('getDueTasks returns tasks with next_run in the past', async () => {
     const pastRun = Math.floor(Date.now() / 1000) - 60
-    createTask('db2-sched-due', 'db2-test-chat', 'overdue', '* * * * *', pastRun)
-    const due = getDueTasks()
+    await createTask('db2-sched-due', 'db2-test-chat', 'overdue', '* * * * *', pastRun)
+    const due = await getDueTasks()
     expect(due.some(t => t.id === 'db2-sched-due')).toBe(true)
   })
 
-  it('updateTaskAfterRun updates last_run and next_run', () => {
+  it('updateTaskAfterRun updates last_run and next_run', async () => {
     const newNext = Math.floor(Date.now() / 1000) + 7200
-    updateTaskAfterRun(taskId, newNext, 'success')
-    const t = getTask(taskId)
+    await updateTaskAfterRun(taskId, newNext, 'success')
+    const t = await getTask(taskId)
     expect(t?.next_run).toBe(newNext)
     expect(t?.last_result).toBe('success')
   })
 
-  it('pauseTask pauses and resumeTask resumes', () => {
-    const paused = pauseTask(taskId)
+  it('pauseTask pauses and resumeTask resumes', async () => {
+    const paused = await pauseTask(taskId)
     expect(paused).toBe(true)
-    expect(getTask(taskId)?.status).toBe('paused')
-    const resumed = resumeTask(taskId)
+    expect((await getTask(taskId))?.status).toBe('paused')
+    const resumed = await resumeTask(taskId)
     expect(resumed).toBe(true)
-    expect(getTask(taskId)?.status).toBe('active')
+    expect((await getTask(taskId))?.status).toBe('active')
   })
 
-  it('updateTask changes prompt and schedule', () => {
+  it('updateTask changes prompt and schedule', async () => {
     const newNext = Math.floor(Date.now() / 1000) + 3600
-    const ok = updateTask(taskId, 'new prompt', '0 10 * * *', newNext)
+    const ok = await updateTask(taskId, 'new prompt', '0 10 * * *', newNext)
     expect(ok).toBe(true)
-    expect(getTask(taskId)?.prompt).toBe('new prompt')
+    expect((await getTask(taskId))?.prompt).toBe('new prompt')
   })
 
-  it('deleteTask removes the task', () => {
-    const ok = deleteTask('db2-sched-due')
+  it('deleteTask removes the task', async () => {
+    const ok = await deleteTask('db2-sched-due')
     expect(ok).toBe(true)
-    expect(getTask('db2-sched-due')).toBeUndefined()
+    expect(await getTask('db2-sched-due')).toBeUndefined()
   })
 
-  it('getActiveScheduledTaskCount returns count and nextRun', () => {
-    const result = getActiveScheduledTaskCount()
+  it('getActiveScheduledTaskCount returns count and nextRun', async () => {
+    const result = await getActiveScheduledTaskCount()
     expect(typeof result.count).toBe('number')
     // nextRun is null if no active tasks, or a number
     expect(result.nextRun === null || typeof result.nextRun === 'number').toBe(true)
@@ -398,44 +398,44 @@ describe('scheduled task functions', () => {
 // --- Kanban extended ---
 
 describe('kanban extended functions', () => {
-  it('listKanbanCardsSummary returns cards with required fields', () => {
-    createKanbanCard({ id: 'db2-card-1', title: 'Test card', status: 'planned', priority: 'normal' })
-    const summary = listKanbanCardsSummary()
+  it('listKanbanCardsSummary returns cards with required fields', async () => {
+    await createKanbanCard({ id: 'db2-card-1', title: 'Test card', status: 'planned', priority: 'normal' })
+    const summary = await listKanbanCardsSummary()
     expect(Array.isArray(summary)).toBe(true)
     const card = summary.find(c => c.id === 'db2-card-1')
     expect(card?.title).toBe('Test card')
   })
 
-  it('markKanbanCardDispatched marks a card as dispatched', () => {
-    const ok = markKanbanCardDispatched('db2-card-1')
+  it('markKanbanCardDispatched marks a card as dispatched', async () => {
+    const ok = await markKanbanCardDispatched('db2-card-1')
     expect(ok).toBe(true)
     const db = getDb()
     const row = db.prepare("SELECT dispatched_at FROM kanban_cards WHERE id = 'db2-card-1'").get() as any
     expect(row?.dispatched_at).not.toBeNull()
   })
 
-  it('archiveKanbanCard archives a card', () => {
-    const ok = archiveKanbanCard('db2-card-1')
+  it('archiveKanbanCard archives a card', async () => {
+    const ok = await archiveKanbanCard('db2-card-1')
     expect(ok).toBe(true)
   })
 
-  it('unarchiveKanbanCard restores an archived card', () => {
-    const ok = unarchiveKanbanCard('db2-card-1')
+  it('unarchiveKanbanCard restores an archived card', async () => {
+    const ok = await unarchiveKanbanCard('db2-card-1')
     expect(ok).toBe(true)
     const db = getDb()
     const row = db.prepare("SELECT archived_at FROM kanban_cards WHERE id = 'db2-card-1'").get() as any
     expect(row?.archived_at).toBeNull()
   })
 
-  it('listArchivedKanbanCards returns archived cards', () => {
-    archiveKanbanCard('db2-card-1')
-    const archived = listArchivedKanbanCards({ limit: 100 })
+  it('listArchivedKanbanCards returns archived cards', async () => {
+    await archiveKanbanCard('db2-card-1')
+    const archived = await listArchivedKanbanCards({ limit: 100 })
     expect(archived.some(c => c.id === 'db2-card-1')).toBe(true)
   })
 
-  it('listKanbanProjects returns project list', () => {
-    createKanbanCard({ id: 'db2-card-2', title: 'Project card', status: 'planned', priority: 'high', project: 'my-project' })
-    const projects = listKanbanProjects()
+  it('listKanbanProjects returns project list', async () => {
+    await createKanbanCard({ id: 'db2-card-2', title: 'Project card', status: 'planned', priority: 'high', project: 'my-project' })
+    const projects = await listKanbanProjects()
     expect(projects).toContain('my-project')
   })
 })
@@ -443,15 +443,15 @@ describe('kanban extended functions', () => {
 // --- Task runs ---
 
 describe('task run functions', () => {
-  it('appendTaskRun inserts a run entry', () => {
-    appendTaskRun('db2-task-heartbeat', 'agent-a', 'fired')
-    const history = listTaskRunHistory('db2-task-heartbeat', 10)
+  it('appendTaskRun inserts a run entry', async () => {
+    await appendTaskRun('db2-task-heartbeat', 'agent-a', 'fired')
+    const history = await listTaskRunHistory('db2-task-heartbeat', 10)
     expect(history.length).toBeGreaterThanOrEqual(1)
     expect(history[0].status).toBe('fired')
   })
 
-  it('listTaskRunHistory returns tokens_est as null or number', () => {
-    const history = listTaskRunHistory('db2-task-heartbeat', 10)
+  it('listTaskRunHistory returns tokens_est as null or number', async () => {
+    const history = await listTaskRunHistory('db2-task-heartbeat', 10)
     expect(history[0].tokens_est === null || typeof history[0].tokens_est === 'number').toBe(true)
   })
 })
@@ -459,23 +459,23 @@ describe('task run functions', () => {
 // --- Telegram history ---
 
 describe('telegram history functions', () => {
-  it('saveTelegramMessage + getTelegramHistory roundtrip', () => {
-    saveTelegramMessage('db2-tg-chat1', 'msg-1', 'in', 'Hello from user', 'user-999')
-    saveTelegramMessage('db2-tg-chat1', 'msg-2', 'out', 'Hello back!', undefined)
-    const history = getTelegramHistory('db2-tg-chat1', 50)
+  it('saveTelegramMessage + getTelegramHistory roundtrip', async () => {
+    await saveTelegramMessage('db2-tg-chat1', 'msg-1', 'in', 'Hello from user', 'user-999')
+    await saveTelegramMessage('db2-tg-chat1', 'msg-2', 'out', 'Hello back!', undefined)
+    const history = await getTelegramHistory('db2-tg-chat1', 50)
     expect(history.length).toBeGreaterThanOrEqual(2)
     expect(history.some(h => h.text === 'Hello from user')).toBe(true)
   })
 
-  it('INSERT OR IGNORE prevents duplicate message_ids', () => {
-    saveTelegramMessage('db2-tg-chat1', 'msg-1', 'in', 'Duplicate attempt')
-    const history = getTelegramHistory('db2-tg-chat1', 50)
+  it('INSERT OR IGNORE prevents duplicate message_ids', async () => {
+    await saveTelegramMessage('db2-tg-chat1', 'msg-1', 'in', 'Duplicate attempt')
+    const history = await getTelegramHistory('db2-tg-chat1', 50)
     const msgOnes = history.filter(h => h.message_id === 'msg-1')
     expect(msgOnes.length).toBe(1)
   })
 
-  it('getTelegramHistory returns empty for unknown chat', () => {
-    const history = getTelegramHistory('db2-tg-unknown-x99', 10)
+  it('getTelegramHistory returns empty for unknown chat', async () => {
+    const history = await getTelegramHistory('db2-tg-unknown-x99', 10)
     expect(history).toEqual([])
   })
 })
@@ -483,93 +483,93 @@ describe('telegram history functions', () => {
 // --- Ideas ---
 
 describe('idea box functions', () => {
-  it('createIdea + listIdeas roundtrip', () => {
-    createIdea({ id: 'db2-idea-1', title: 'Great idea', description: 'Details here', category: 'Fejlesztes', status: 'new', source: 'agent-a', kanban_id: null, impact: 4, effort: 2, tenant_id: 'default' })
-    const { items: ideas } = listIdeas()
+  it('createIdea + listIdeas roundtrip', async () => {
+    await createIdea({ id: 'db2-idea-1', title: 'Great idea', description: 'Details here', category: 'Fejlesztes', status: 'new', source: 'agent-a', kanban_id: null, impact: 4, effort: 2, tenant_id: 'default' })
+    const { items: ideas } = await listIdeas()
     expect(ideas.some(i => i.id === 'db2-idea-1')).toBe(true)
   })
 
-  it('listIdeas filters by status', () => {
-    const { items: newIdeas } = listIdeas({ status: 'new' })
+  it('listIdeas filters by status', async () => {
+    const { items: newIdeas } = await listIdeas({ status: 'new' })
     expect(newIdeas.some(i => i.id === 'db2-idea-1')).toBe(true)
-    const { items: reviewedIdeas } = listIdeas({ status: 'reviewed' })
+    const { items: reviewedIdeas } = await listIdeas({ status: 'reviewed' })
     expect(reviewedIdeas.some(i => i.id === 'db2-idea-1')).toBe(false)
   })
 
-  it('listIdeas filters by category', () => {
-    const { items: cats } = listIdeas({ category: 'Fejlesztes' })
+  it('listIdeas filters by category', async () => {
+    const { items: cats } = await listIdeas({ category: 'Fejlesztes' })
     expect(cats.some(i => i.id === 'db2-idea-1')).toBe(true)
   })
 
-  it('updateIdea updates fields', () => {
-    const ok = updateIdea('db2-idea-1', { status: 'reviewed', title: 'Updated idea', impact: 5 })
+  it('updateIdea updates fields', async () => {
+    const ok = await updateIdea('db2-idea-1', { status: 'reviewed', title: 'Updated idea', impact: 5 })
     expect(ok).toBe(true)
-    const { items: ideas } = listIdeas({ status: 'reviewed' })
+    const { items: ideas } = await listIdeas({ status: 'reviewed' })
     const idea = ideas.find(i => i.id === 'db2-idea-1')
     expect(idea?.title).toBe('Updated idea')
     expect(idea?.impact).toBe(5)
   })
 
-  it('listIdeaCategories returns known categories', () => {
-    const cats = listIdeaCategories()
+  it('listIdeaCategories returns known categories', async () => {
+    const cats = await listIdeaCategories()
     expect(cats).toContain('Fejlesztes')
   })
 
-  it('addIdeaComment + getIdeaComments roundtrip', () => {
-    const comment = addIdeaComment('db2-idea-1', 'agent-d', 'This is a great idea!')
+  it('addIdeaComment + getIdeaComments roundtrip', async () => {
+    const comment = await addIdeaComment('db2-idea-1', 'agent-d', 'This is a great idea!')
     expect(comment.idea_id).toBe('db2-idea-1')
     expect(comment.author).toBe('agent-d')
-    const comments = getIdeaComments('db2-idea-1')
+    const comments = await getIdeaComments('db2-idea-1')
     expect(comments.some(c => c.content === 'This is a great idea!')).toBe(true)
   })
 
-  it('logIdeaStatusChange + getIdeaStatusLog roundtrip', () => {
-    logIdeaStatusChange('db2-idea-1', 'new', 'reviewed', 'agent-d', 'Looks good')
-    const log = getIdeaStatusLog('db2-idea-1')
+  it('logIdeaStatusChange + getIdeaStatusLog roundtrip', async () => {
+    await logIdeaStatusChange('db2-idea-1', 'new', 'reviewed', 'agent-d', 'Looks good')
+    const log = await getIdeaStatusLog('db2-idea-1')
     expect(log.some(l => l.to_status === 'reviewed' && l.actor === 'agent-d')).toBe(true)
   })
 
-  it('revertIdeaFromKanban reverts a kanban idea to reviewed', () => {
-    createIdea({ id: 'db2-idea-2', title: 'Kanban idea', description: null, category: 'Egyeb', status: 'kanban', source: 'agent-f', kanban_id: 'db2-card-k1', impact: null, effort: null, tenant_id: 'default' })
-    const reverted = revertIdeaFromKanban('db2-card-k1')
+  it('revertIdeaFromKanban reverts a kanban idea to reviewed', async () => {
+    await createIdea({ id: 'db2-idea-2', title: 'Kanban idea', description: null, category: 'Egyeb', status: 'kanban', source: 'agent-f', kanban_id: 'db2-card-k1', impact: null, effort: null, tenant_id: 'default' })
+    const reverted = await revertIdeaFromKanban('db2-card-k1')
     expect(reverted).toBe('db2-idea-2')
-    const { items: ideas } = listIdeas()
+    const { items: ideas } = await listIdeas()
     const idea = ideas.find(i => i.id === 'db2-idea-2')
     expect(idea?.status).toBe('reviewed')
     expect(idea?.kanban_id).toBeNull()
   })
 
-  it('revertIdeaFromKanban returns null for unknown kanban card', () => {
-    const result = revertIdeaFromKanban('no-such-card')
+  it('revertIdeaFromKanban returns null for unknown kanban card', async () => {
+    const result = await revertIdeaFromKanban('no-such-card')
     expect(result).toBeNull()
   })
 
-  it('deleteIdea removes the idea', () => {
-    const ok = deleteIdea('db2-idea-1')
+  it('deleteIdea removes the idea', async () => {
+    const ok = await deleteIdea('db2-idea-1')
     expect(ok).toBe(true)
-    const { items: ideas } = listIdeas()
+    const { items: ideas } = await listIdeas()
     expect(ideas.some(i => i.id === 'db2-idea-1')).toBe(false)
   })
 
-  it('listIdeas paginates with limit/offset and reports the unpaginated total', () => {
-    createIdea({ id: 'db2-idea-p1', title: 'P1', description: null, category: 'Egyeb', status: 'new', source: 'agent-a', kanban_id: null, impact: null, effort: null, tenant_id: 'default' })
-    createIdea({ id: 'db2-idea-p2', title: 'P2', description: null, category: 'Egyeb', status: 'new', source: 'agent-a', kanban_id: null, impact: null, effort: null, tenant_id: 'default' })
-    const page1 = listIdeas({ status: 'new', limit: 1, offset: 0 })
+  it('listIdeas paginates with limit/offset and reports the unpaginated total', async () => {
+    await createIdea({ id: 'db2-idea-p1', title: 'P1', description: null, category: 'Egyeb', status: 'new', source: 'agent-a', kanban_id: null, impact: null, effort: null, tenant_id: 'default' })
+    await createIdea({ id: 'db2-idea-p2', title: 'P2', description: null, category: 'Egyeb', status: 'new', source: 'agent-a', kanban_id: null, impact: null, effort: null, tenant_id: 'default' })
+    const page1 = await listIdeas({ status: 'new', limit: 1, offset: 0 })
     expect(page1.items).toHaveLength(1)
     expect(page1.total).toBeGreaterThanOrEqual(2)
-    const page2 = listIdeas({ status: 'new', limit: 1, offset: 1 })
+    const page2 = await listIdeas({ status: 'new', limit: 1, offset: 1 })
     expect(page2.items).toHaveLength(1)
     expect(page2.items[0].id).not.toBe(page1.items[0].id)
   })
 
-  it("listIdeas status:'active' matches new-or-reviewed only", () => {
-    const { items } = listIdeas({ status: 'active' })
+  it("listIdeas status:'active' matches new-or-reviewed only", async () => {
+    const { items } = await listIdeas({ status: 'active' })
     expect(items.every(i => i.status === 'new' || i.status === 'reviewed')).toBe(true)
     expect(items.some(i => i.status === 'kanban')).toBe(false)
   })
 
-  it('getIdeaStatusCounts tallies by status, tenant-scoped', () => {
-    const counts = getIdeaStatusCounts('default')
+  it('getIdeaStatusCounts tallies by status, tenant-scoped', async () => {
+    const counts = await getIdeaStatusCounts('default')
     expect(counts.new).toBeGreaterThanOrEqual(2)
     expect(typeof counts.kanban).toBe('number')
   })
@@ -588,8 +588,8 @@ describe('vault SSH functions', () => {
     expect(computeSshKeyStatus(server)).toBe('ok')
   })
 
-  it('createVaultSshKey + getVaultSshKey roundtrip', () => {
-    const key = createVaultSshKey({
+  it('createVaultSshKey + getVaultSshKey roundtrip', async () => {
+    const key = await createVaultSshKey({
       id: 'db2-key-1',
       label: 'Test Key',
       username: 'root',
@@ -600,17 +600,17 @@ describe('vault SSH functions', () => {
       tenant_id: 'default',
     })
     expect(key.id).toBe('db2-key-1')
-    const retrieved = getVaultSshKey('db2-key-1')
+    const retrieved = await getVaultSshKey('db2-key-1')
     expect(retrieved?.label).toBe('Test Key')
   })
 
-  it('listVaultSshKeys returns created key', () => {
-    const keys = listVaultSshKeys()
+  it('listVaultSshKeys returns created key', async () => {
+    const keys = await listVaultSshKeys()
     expect(keys.some(k => k.id === 'db2-key-1')).toBe(true)
   })
 
-  it('listVaultSshKeys(tenantId) filters to that tenant only', () => {
-    createVaultSshKey({
+  it('listVaultSshKeys(tenantId) filters to that tenant only', async () => {
+    await createVaultSshKey({
       id: 'db2-key-tenant',
       label: 'Tenant Key',
       username: 'deploy',
@@ -620,21 +620,21 @@ describe('vault SSH functions', () => {
       key_type: 'ed25519',
       tenant_id: 'eszter',
     })
-    expect(listVaultSshKeys('eszter').every(k => k.id === 'db2-key-tenant')).toBe(true)
-    expect(listVaultSshKeys('default').some(k => k.id === 'db2-key-tenant')).toBe(false)
-    expect(listVaultSshKeys(null).some(k => k.id === 'db2-key-tenant')).toBe(true)
-    deleteVaultSshKey('db2-key-tenant')
+    expect((await listVaultSshKeys('eszter')).every(k => k.id === 'db2-key-tenant')).toBe(true)
+    expect((await listVaultSshKeys('default')).some(k => k.id === 'db2-key-tenant')).toBe(false)
+    expect((await listVaultSshKeys(null)).some(k => k.id === 'db2-key-tenant')).toBe(true)
+    await deleteVaultSshKey('db2-key-tenant')
   })
 
-  it('deleteVaultSshKey removes key and unassigns servers', () => {
-    const result = deleteVaultSshKey('db2-key-1')
+  it('deleteVaultSshKey removes key and unassigns servers', async () => {
+    const result = await deleteVaultSshKey('db2-key-1')
     expect(result.deleted).toBe(true)
     expect(result.unassigned).toBeGreaterThanOrEqual(0)
-    expect(getVaultSshKey('db2-key-1')).toBeUndefined()
+    expect(await getVaultSshKey('db2-key-1')).toBeUndefined()
   })
 
-  it('createVaultSshServer + getVaultSshServer roundtrip', () => {
-    const server = createVaultSshServer({
+  it('createVaultSshServer + getVaultSshServer roundtrip', async () => {
+    const server = await createVaultSshServer({
       id: 'db2-srv-1',
       name: 'Test Server',
       host: '192.168.1.1',
@@ -646,17 +646,17 @@ describe('vault SSH functions', () => {
     expect(server.id).toBe('db2-srv-1')
     expect(server.ssh_key_id).toBeNull()
     expect(server.tenant_id).toBe('default')
-    const retrieved = getVaultSshServer('db2-srv-1')
+    const retrieved = await getVaultSshServer('db2-srv-1')
     expect(retrieved?.name).toBe('Test Server')
   })
 
-  it('listVaultSshServers returns created server', () => {
-    const servers = listVaultSshServers()
+  it('listVaultSshServers returns created server', async () => {
+    const servers = await listVaultSshServers()
     expect(servers.some(s => s.id === 'db2-srv-1')).toBe(true)
   })
 
-  it('listVaultSshServers(tenantId) filters by tenant', () => {
-    createVaultSshServer({
+  it('listVaultSshServers(tenantId) filters by tenant', async () => {
+    await createVaultSshServer({
       id: 'db2-srv-eszter',
       name: 'Eszter Server',
       host: '192.168.1.2',
@@ -665,23 +665,23 @@ describe('vault SSH functions', () => {
       description: null,
       tenant_id: 'eszter',
     })
-    expect(listVaultSshServers('eszter').map(s => s.id)).toEqual(['db2-srv-eszter'])
-    expect(listVaultSshServers('default').some(s => s.id === 'db2-srv-eszter')).toBe(false)
-    expect(listVaultSshServers(null).some(s => s.id === 'db2-srv-eszter')).toBe(true)
-    deleteVaultSshServer('db2-srv-eszter')
+    expect((await listVaultSshServers('eszter')).map(s => s.id)).toEqual(['db2-srv-eszter'])
+    expect((await listVaultSshServers('default')).some(s => s.id === 'db2-srv-eszter')).toBe(false)
+    expect((await listVaultSshServers(null)).some(s => s.id === 'db2-srv-eszter')).toBe(true)
+    await deleteVaultSshServer('db2-srv-eszter')
   })
 
-  it('updateVaultSshServer updates fields', () => {
-    const ok = updateVaultSshServer('db2-srv-1', { port: 2222, description: 'Updated' })
+  it('updateVaultSshServer updates fields', async () => {
+    const ok = await updateVaultSshServer('db2-srv-1', { port: 2222, description: 'Updated' })
     expect(ok).toBe(true)
-    const srv = getVaultSshServer('db2-srv-1')
+    const srv = await getVaultSshServer('db2-srv-1')
     expect(srv?.port).toBe(2222)
     expect(srv?.description).toBe('Updated')
   })
 
-  it('deleteVaultSshServer removes server', () => {
-    const ok = deleteVaultSshServer('db2-srv-1')
+  it('deleteVaultSshServer removes server', async () => {
+    const ok = await deleteVaultSshServer('db2-srv-1')
     expect(ok).toBe(true)
-    expect(getVaultSshServer('db2-srv-1')).toBeUndefined()
+    expect(await getVaultSshServer('db2-srv-1')).toBeUndefined()
   })
 })

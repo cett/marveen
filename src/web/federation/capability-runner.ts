@@ -28,6 +28,7 @@ import {
   summarySourceHash,
 } from './capabilities.js'
 
+import { systemJob } from '../../db/background-jobs.js'
 export const CAPABILITY_RUNNER_INITIAL_DELAY_MS = 65_000 // free slot (5/10/20/25/30/35/40/45/50/55/90 taken)
 export const CAPABILITY_RUNNER_INTERVAL_MS = 5 * 60_000
 // Cold start (empty cache) may take a slightly bigger batch so a fresh
@@ -78,8 +79,9 @@ function tick(): void {
 }
 
 export function startCapabilitySummaryRunner(): NodeJS.Timeout {
-  setTimeout(tick, CAPABILITY_RUNNER_INITIAL_DELAY_MS).unref()
-  return setInterval(tick, CAPABILITY_RUNNER_INTERVAL_MS)
+  const run = systemJob('capability-runner', tick)
+  setTimeout(run, CAPABILITY_RUNNER_INITIAL_DELAY_MS).unref()
+  return setInterval(run, CAPABILITY_RUNNER_INTERVAL_MS)
 }
 
 /** Test seam. */

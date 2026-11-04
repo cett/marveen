@@ -16,7 +16,7 @@ const row = (id: string, over: Record<string, unknown> = {}) => ({
 })
 
 describe('listDbRunnableTaskNames', () => {
-  it('lists enabled + live rows only: DB-disabled and draft / pending_review rows are out', () => {
+  it('lists enabled + live rows only: DB-disabled and draft / pending_review rows are out', async () => {
     rows.list = [
       row('live-a'),
       row('off', { enabled: 0 }),
@@ -24,11 +24,11 @@ describe('listDbRunnableTaskNames', () => {
       row('review', { status: 'pending_review' }),
       row('live-b', { type: 'command' }),
     ]
-    expect(listDbRunnableTaskNames()).toEqual(['live-a', 'live-b'])
+    expect(await listDbRunnableTaskNames()).toEqual(['live-a', 'live-b'])
   })
 
-  it('is empty for an empty table', () => {
+  it('is empty for an empty table', async () => {
     rows.list = []
-    expect(listDbRunnableTaskNames()).toEqual([])
+    expect(await listDbRunnableTaskNames()).toEqual([])
   })
 })

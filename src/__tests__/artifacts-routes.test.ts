@@ -101,7 +101,7 @@ describe('POST /api/artifacts', () => {
   })
 
   it('calls createArtifact and returns 201 with id (new insert)', async () => {
-    mockCreate.mockReturnValue({ id: 'abc-123', updated: false })
+    mockCreate.mockResolvedValue({ id: 'abc-123', updated: false })
     const { ctx, out } = makeCtx('POST', '/api/artifacts', {
       agent_id: 'agent-a', title: 'My artifact', kind: 'html', content: '<h1>hi</h1>',
     }, { role: 'viewer', tenantId: 'tenant-a' })
@@ -119,7 +119,7 @@ describe('POST /api/artifacts', () => {
   })
 
   it('non-admin: body tenant_id is silently overridden with caller tenant', async () => {
-    mockCreate.mockReturnValue({ id: 'x', updated: false })
+    mockCreate.mockResolvedValue({ id: 'x', updated: false })
     const { ctx } = makeCtx('POST', '/api/artifacts', {
       agent_id: 'a', title: 'T', kind: 'text', content: 'hi', tenant_id: 'other-tenant',
     }, { role: 'viewer', tenantId: 'my-tenant' })
@@ -129,7 +129,7 @@ describe('POST /api/artifacts', () => {
   })
 
   it('admin: body tenant_id is accepted as-is', async () => {
-    mockCreate.mockReturnValue({ id: 'x', updated: false })
+    mockCreate.mockResolvedValue({ id: 'x', updated: false })
     const { ctx } = makeCtx('POST', '/api/artifacts', {
       agent_id: 'a', title: 'T', kind: 'text', content: 'hi', tenant_id: 'other-tenant',
     }, { role: 'admin', tenantId: null })
@@ -139,7 +139,7 @@ describe('POST /api/artifacts', () => {
   })
 
   it('returns 200 when cloud_url UPSERT updates an existing artifact', async () => {
-    mockCreate.mockReturnValue({ id: 'existing-id', updated: true })
+    mockCreate.mockResolvedValue({ id: 'existing-id', updated: true })
     const { ctx, out } = makeCtx('POST', '/api/artifacts', {
       agent_id: 'agent-a', title: 'Cloud v2', kind: 'html', content: '<h1>v2</h1>',
       source: 'cloud:artifact', cloud_url: 'https://cloud.example.test/art/1',
@@ -153,7 +153,7 @@ describe('POST /api/artifacts', () => {
   })
 
   it('encodes binary content from base64', async () => {
-    mockCreate.mockReturnValue({ id: 'bin-1', updated: false })
+    mockCreate.mockResolvedValue({ id: 'bin-1', updated: false })
     const raw = Buffer.from([0x00, 0xff])
     const { ctx, out } = makeCtx('POST', '/api/artifacts', {
       agent_id: 'agent-a', title: 'Bin', kind: 'binary', content: raw.toString('base64'),
@@ -170,8 +170,8 @@ describe('POST /api/artifacts', () => {
 describe('GET /api/artifacts', () => {
   it('returns { items, total, offset, limit } from listArtifacts/countArtifacts', async () => {
     const rows = [{ id: '1', title: 'A', kind: 'text' }]
-    mockList.mockReturnValue(rows)
-    mockCount.mockReturnValue(1)
+    mockList.mockResolvedValue(rows)
+    mockCount.mockResolvedValue(1)
     const { ctx, out } = makeCtx('GET', '/api/artifacts?agent=agent-a&kind=text', undefined, { role: 'viewer', tenantId: 'tenant-a' })
     const handled = await tryHandleArtifacts(ctx)
     expect(handled).toBe(true)
@@ -182,32 +182,32 @@ describe('GET /api/artifacts', () => {
   })
 
   it('non-admin list scoped to caller tenant', async () => {
-    mockList.mockReturnValue([])
-    mockCount.mockReturnValue(0)
+    mockList.mockResolvedValue([])
+    mockCount.mockResolvedValue(0)
     const { ctx } = makeCtx('GET', '/api/artifacts', undefined, { role: 'viewer', tenantId: 'my-tenant' })
     await tryHandleArtifacts(ctx)
     expect(mockList).toHaveBeenCalledWith(expect.objectContaining({ tenant_id: 'my-tenant' }))
   })
 
   it('admin list without ?tenant= passes undefined tenant_id (all tenants)', async () => {
-    mockList.mockReturnValue([])
-    mockCount.mockReturnValue(0)
+    mockList.mockResolvedValue([])
+    mockCount.mockResolvedValue(0)
     const { ctx } = makeCtx('GET', '/api/artifacts', undefined, { role: 'admin', tenantId: null })
     await tryHandleArtifacts(ctx)
     expect(mockList).toHaveBeenCalledWith(expect.objectContaining({ tenant_id: undefined }))
   })
 
   it('admin list with ?tenant= scopes to that tenant', async () => {
-    mockList.mockReturnValue([])
-    mockCount.mockReturnValue(0)
+    mockList.mockResolvedValue([])
+    mockCount.mockResolvedValue(0)
     const { ctx } = makeCtx('GET', '/api/artifacts?tenant=specific-tenant', undefined, { role: 'admin', tenantId: null })
     await tryHandleArtifacts(ctx)
     expect(mockList).toHaveBeenCalledWith(expect.objectContaining({ tenant_id: 'specific-tenant' }))
   })
 
   it('does not call createArtifact', async () => {
-    mockList.mockReturnValue([])
-    mockCount.mockReturnValue(0)
+    mockList.mockResolvedValue([])
+    mockCount.mockResolvedValue(0)
     const { ctx } = makeCtx('GET', '/api/artifacts')
     await tryHandleArtifacts(ctx)
     expect(mockCreate).not.toHaveBeenCalled()
@@ -222,8 +222,8 @@ describe('GET /api/artifacts', () => {
   })
 
   it('passes explicit limit/offset through to listArtifacts and the response envelope', async () => {
-    mockList.mockReturnValue([])
-    mockCount.mockReturnValue(42)
+    mockList.mockResolvedValue([])
+    mockCount.mockResolvedValue(42)
     const { ctx, out } = makeCtx('GET', '/api/artifacts?limit=10&offset=20')
     await tryHandleArtifacts(ctx)
     expect(mockList).toHaveBeenCalledWith(expect.objectContaining({ limit: 10, offset: 20 }))
@@ -235,14 +235,14 @@ describe('GET /api/artifacts', () => {
 
 describe('GET /api/artifacts/:id', () => {
   it('returns 404 for unknown id', async () => {
-    mockGet.mockReturnValue(undefined)
+    mockGet.mockResolvedValue(undefined)
     const { ctx, out } = makeCtx('GET', '/api/artifacts/no-such-id')
     await tryHandleArtifacts(ctx)
     expect(out.status).toBe(404)
   })
 
   it('returns artifact with decoded content for text kind', async () => {
-    mockGet.mockReturnValue({
+    mockGet.mockResolvedValue({
       id: 'x1', agent_id: 'agent-a', tenant_id: 'tenant-a', title: 'T', kind: 'text', mime: 'text/plain',
       content: Buffer.from('hello', 'utf-8'), meta: '{}', source: null,
       created_at: 1000, updated_at: 1001,
@@ -259,7 +259,7 @@ describe('GET /api/artifacts/:id', () => {
 
   it('returns binary content as base64', async () => {
     const raw = Buffer.from([0xca, 0xfe])
-    mockGet.mockReturnValue({
+    mockGet.mockResolvedValue({
       id: 'b1', agent_id: 'agent-a', tenant_id: 'tenant-a', title: 'B', kind: 'binary', mime: 'application/octet-stream',
       content: raw, meta: '{}', source: null, created_at: 0, updated_at: 0,
     })
@@ -269,7 +269,7 @@ describe('GET /api/artifacts/:id', () => {
   })
 
   it('returns 404 (anti-enum) when caller is from different tenant', async () => {
-    mockGet.mockReturnValue({
+    mockGet.mockResolvedValue({
       id: 'x2', agent_id: 'agent-a', tenant_id: 'other-tenant', title: 'T', kind: 'text', mime: 'text/plain',
       content: Buffer.from('secret', 'utf-8'), meta: '{}', source: null, created_at: 0, updated_at: 0,
     })
@@ -279,7 +279,7 @@ describe('GET /api/artifacts/:id', () => {
   })
 
   it('admin can read any tenant artifact', async () => {
-    mockGet.mockReturnValue({
+    mockGet.mockResolvedValue({
       id: 'x3', agent_id: 'agent-a', tenant_id: 'other-tenant', title: 'T', kind: 'text', mime: 'text/plain',
       content: Buffer.from('data', 'utf-8'), meta: '{}', source: null, created_at: 0, updated_at: 0,
     })
@@ -293,7 +293,7 @@ describe('GET /api/artifacts/:id', () => {
 
 describe('DELETE /api/artifacts/:id', () => {
   it('returns 200 ok when found and same tenant', async () => {
-    mockGet.mockReturnValue({ id: 'del-id', tenant_id: 'tenant-a' })
+    mockGet.mockResolvedValue({ id: 'del-id', tenant_id: 'tenant-a' })
     const { ctx, out } = makeCtx('DELETE', '/api/artifacts/del-id', undefined, { role: 'viewer', tenantId: 'tenant-a' })
     const handled = await tryHandleArtifacts(ctx)
     expect(handled).toBe(true)
@@ -303,14 +303,14 @@ describe('DELETE /api/artifacts/:id', () => {
   })
 
   it('returns 404 when not found', async () => {
-    mockGet.mockReturnValue(undefined)
+    mockGet.mockResolvedValue(undefined)
     const { ctx, out } = makeCtx('DELETE', '/api/artifacts/ghost')
     await tryHandleArtifacts(ctx)
     expect(out.status).toBe(404)
   })
 
   it('returns 404 (anti-enum) when caller is from different tenant', async () => {
-    mockGet.mockReturnValue({ id: 'x', tenant_id: 'other-tenant' })
+    mockGet.mockResolvedValue({ id: 'x', tenant_id: 'other-tenant' })
     const { ctx, out } = makeCtx('DELETE', '/api/artifacts/x', undefined, { role: 'viewer', tenantId: 'my-tenant' })
     await tryHandleArtifacts(ctx)
     expect(out.status).toBe(404)
@@ -322,7 +322,7 @@ describe('DELETE /api/artifacts/:id', () => {
 
 describe('PATCH /api/artifacts/:id', () => {
   it('returns 200 ok when rename succeeds (same tenant)', async () => {
-    mockGet.mockReturnValue({ id: 'art-r1', tenant_id: 'tenant-a' })
+    mockGet.mockResolvedValue({ id: 'art-r1', tenant_id: 'tenant-a' })
     const { ctx, out } = makeCtx('PATCH', '/api/artifacts/art-r1', { title: 'New name' }, { role: 'viewer', tenantId: 'tenant-a' })
     const handled = await tryHandleArtifacts(ctx)
     expect(handled).toBe(true)
@@ -332,7 +332,7 @@ describe('PATCH /api/artifacts/:id', () => {
   })
 
   it('returns 404 when artifact is not found', async () => {
-    mockGet.mockReturnValue(undefined)
+    mockGet.mockResolvedValue(undefined)
     const { ctx, out } = makeCtx('PATCH', '/api/artifacts/ghost-id', { title: 'Whatever' })
     await tryHandleArtifacts(ctx)
     expect(out.status).toBe(404)
@@ -340,7 +340,7 @@ describe('PATCH /api/artifacts/:id', () => {
   })
 
   it('returns 404 (anti-enum) when caller is from different tenant', async () => {
-    mockGet.mockReturnValue({ id: 'art-x', tenant_id: 'other-tenant' })
+    mockGet.mockResolvedValue({ id: 'art-x', tenant_id: 'other-tenant' })
     const { ctx, out } = makeCtx('PATCH', '/api/artifacts/art-x', { title: 'New' }, { role: 'viewer', tenantId: 'my-tenant' })
     await tryHandleArtifacts(ctx)
     expect(out.status).toBe(404)
@@ -348,7 +348,7 @@ describe('PATCH /api/artifacts/:id', () => {
   })
 
   it('returns 400 when title is missing', async () => {
-    mockGet.mockReturnValue({ id: 'art-r2', tenant_id: 'tenant-a' })
+    mockGet.mockResolvedValue({ id: 'art-r2', tenant_id: 'tenant-a' })
     const { ctx, out } = makeCtx('PATCH', '/api/artifacts/art-r2', {}, { tenantId: 'tenant-a' })
     await tryHandleArtifacts(ctx)
     expect(out.status).toBe(400)
@@ -357,7 +357,7 @@ describe('PATCH /api/artifacts/:id', () => {
   })
 
   it('returns 400 when title is an empty string', async () => {
-    mockGet.mockReturnValue({ id: 'art-r3', tenant_id: 'tenant-a' })
+    mockGet.mockResolvedValue({ id: 'art-r3', tenant_id: 'tenant-a' })
     const { ctx, out } = makeCtx('PATCH', '/api/artifacts/art-r3', { title: '   ' }, { tenantId: 'tenant-a' })
     await tryHandleArtifacts(ctx)
     expect(out.status).toBe(400)
@@ -366,7 +366,7 @@ describe('PATCH /api/artifacts/:id', () => {
   })
 
   it('returns 400 when title exceeds ARTIFACT_TITLE_MAX_LENGTH', async () => {
-    mockGet.mockReturnValue({ id: 'art-r4', tenant_id: 'tenant-a' })
+    mockGet.mockResolvedValue({ id: 'art-r4', tenant_id: 'tenant-a' })
     const { ctx, out } = makeCtx('PATCH', '/api/artifacts/art-r4', { title: 'a'.repeat(251) }, { tenantId: 'tenant-a' })
     await tryHandleArtifacts(ctx)
     expect(out.status).toBe(400)
@@ -375,7 +375,7 @@ describe('PATCH /api/artifacts/:id', () => {
   })
 
   it('trims whitespace from title before calling renameArtifact', async () => {
-    mockGet.mockReturnValue({ id: 'art-r5', tenant_id: 'tenant-a' })
+    mockGet.mockResolvedValue({ id: 'art-r5', tenant_id: 'tenant-a' })
     const { ctx, out } = makeCtx('PATCH', '/api/artifacts/art-r5', { title: '  Trimmed  ' }, { tenantId: 'tenant-a' })
     await tryHandleArtifacts(ctx)
     expect(out.status).toBe(200)
@@ -403,7 +403,7 @@ describe('non-matching paths', () => {
 
 describe('POST /api/artifacts/:id/view-token', () => {
   it('returns token, exp, and url for a known artifact', async () => {
-    mockGet.mockReturnValue({ id: 'art-1', tenant_id: 'tenant-a', mime: 'text/html; charset=utf-8', kind: 'html', content: Buffer.from('<h1>x</h1>') })
+    mockGet.mockResolvedValue({ id: 'art-1', tenant_id: 'tenant-a', mime: 'text/html; charset=utf-8', kind: 'html', content: Buffer.from('<h1>x</h1>') })
     const { ctx, out } = makeCtx('POST', '/api/artifacts/art-1/view-token', undefined, { tenantId: 'tenant-a' })
     await tryHandleArtifacts(ctx)
     expect(out.status).toBe(200)
@@ -416,7 +416,7 @@ describe('POST /api/artifacts/:id/view-token', () => {
   })
 
   it('returns 404 for an unknown artifact', async () => {
-    mockGet.mockReturnValue(undefined)
+    mockGet.mockResolvedValue(undefined)
     const { ctx, out } = makeCtx('POST', '/api/artifacts/ghost/view-token')
     await tryHandleArtifacts(ctx)
     expect(out.status).toBe(404)
@@ -434,7 +434,7 @@ describe('GET /api/artifacts/:id/view', () => {
   }
 
   it('serves content with CSP and nosniff headers for a valid token', async () => {
-    mockGet.mockReturnValue({ id: ARTIFACT_ID, mime: 'text/html; charset=utf-8', kind: 'html', content: HTML_CONTENT })
+    mockGet.mockResolvedValue({ id: ARTIFACT_ID, mime: 'text/html; charset=utf-8', kind: 'html', content: HTML_CONTENT })
     const nowSec = Math.floor(Date.now() / 1000)
     const { token, exp } = signViewToken(ARTIFACT_ID, nowSec)
     const { ctx, out } = makeViewCtx(ARTIFACT_ID, token, exp)

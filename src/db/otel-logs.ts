@@ -8,7 +8,7 @@
 //      first time the export runs, so enabling it does not replay the history of an audit table.
 
 import { randomBytes } from 'node:crypto'
-import { db } from './connection.js'
+import { dbx } from './facade.js'
 
 export const OTEL_LOG_SOURCES = [
   'approval_events', 'rbac_shadow_log', 'config_change_log', 'agent_audit_log', 'hook_audit_log',
@@ -94,45 +94,41 @@ export interface OtelLogRows {
   kanban_card_events: KanbanEventExportRow[]
 }
 
-function currentMaxId(source: OtelLogSource): number {
+async function currentMaxId(source: OtelLogSource): Promise<number> {
   // One fixed statement per source: a table name is never built from a variable.
-  const row = (() => {
-    switch (source) {
-      case 'approval_events': return db.prepare('SELECT MAX(id) AS m FROM approval_events').get()
-      case 'rbac_shadow_log': return db.prepare('SELECT MAX(id) AS m FROM rbac_shadow_log').get()
-      case 'config_change_log': return db.prepare('SELECT MAX(id) AS m FROM config_change_log').get()
-      case 'agent_audit_log': return db.prepare('SELECT MAX(id) AS m FROM agent_audit_log').get()
-      case 'hook_audit_log': return db.prepare('SELECT MAX(id) AS m FROM hook_audit_log').get()
-      case 'fleet_blackboard_history': return db.prepare('SELECT MAX(id) AS m FROM fleet_blackboard_history').get()
-      case 'kanban_card_events': return db.prepare('SELECT MAX(id) AS m FROM kanban_card_events').get()
-    }
-  })() as { m: number | null } | undefined
+  let row: { m: number | null } | undefined
+  switch (source) {
+    case 'approval_events': row = await dbx.get('SELECT MAX(id) AS m FROM approval_events'); break
+    case 'rbac_shadow_log': row = await dbx.get('SELECT MAX(id) AS m FROM rbac_shadow_log'); break
+    case 'config_change_log': row = await dbx.get('SELECT MAX(id) AS m FROM config_change_log'); break
+    case 'agent_audit_log': row = await dbx.get('SELECT MAX(id) AS m FROM agent_audit_log'); break
+    case 'hook_audit_log': row = await dbx.get('SELECT MAX(id) AS m FROM hook_audit_log'); break
+    case 'fleet_blackboard_history': row = await dbx.get('SELECT MAX(id) AS m FROM fleet_blackboard_history'); break
+    case 'kanban_card_events': row = await dbx.get('SELECT MAX(id) AS m FROM kanban_card_events'); break
+  }
   return row?.m ?? 0
 }
 
 // The cursor of one source; created at the source's current highest id when it does not exist yet.
-export function getOtelLogCursor(source: OtelLogSource): number {
-  const existing = db.prepare('SELECT last_id FROM otel_logs_export_state WHERE source = ?').get(source) as
-    { last_id: number } | undefined
+export async function getOtelLogCursor(source: OtelLogSource): Promise<number> {
+  const existing = await dbx.get<{ last_id: number }>('SELECT last_id FROM otel_logs_export_state WHERE source = ?', source)
   if (existing) return existing.last_id
-  const start = currentMaxId(source)
-  db.prepare('INSERT INTO otel_logs_export_state (source, last_id) VALUES (?, ?) ON CONFLICT(source) DO NOTHING').run(source, start)
-  const row = db.prepare('SELECT last_id FROM otel_logs_export_state WHERE source = ?').get(source) as { last_id: number }
+  const start = await currentMaxId(source)
+  await dbx.run('INSERT INTO otel_logs_export_state (source, last_id) VALUES (?, ?) ON CONFLICT(source) DO NOTHING', source, start)
+  const row = (await dbx.get('SELECT last_id FROM otel_logs_export_state WHERE source = ?', source)) as { last_id: number }
   return row.last_id
 }
 
 // Moves a cursor forward, never back (a stale caller cannot make the export replay rows).
-export function setOtelLogCursor(source: OtelLogSource, lastId: number): void {
-  db.prepare(
-    `INSERT INTO otel_logs_export_state (source, last_id) VALUES (?, ?)
-     ON CONFLICT(source) DO UPDATE SET last_id = CASE WHEN excluded.last_id > otel_logs_export_state.last_id THEN excluded.last_id ELSE otel_logs_export_state.last_id END`,
-  ).run(source, lastId)
+export async function setOtelLogCursor(source: OtelLogSource, lastId: number): Promise<void> {
+  await dbx.run(`INSERT INTO otel_logs_export_state (source, last_id) VALUES (?, ?)
+     ON CONFLICT(source) DO UPDATE SET last_id = CASE WHEN excluded.last_id > otel_logs_export_state.last_id THEN excluded.last_id ELSE otel_logs_export_state.last_id END`, source, lastId)
 }
 
 // The salt of the actor pseudonym, created on first use. 32 random bytes, hex.
-export function getOtelLogHashSalt(): string {
-  db.prepare('INSERT INTO otel_logs_hash_salt (id, salt) VALUES (1, ?) ON CONFLICT(id) DO NOTHING').run(randomBytes(32).toString('hex'))
-  return (db.prepare('SELECT salt FROM otel_logs_hash_salt WHERE id = 1').get() as { salt: string }).salt
+export async function getOtelLogHashSalt(): Promise<string> {
+  await dbx.run('INSERT INTO otel_logs_hash_salt (id, salt) VALUES (1, ?) ON CONFLICT(id) DO NOTHING', randomBytes(32).toString('hex'))
+  return ((await dbx.get('SELECT salt FROM otel_logs_hash_salt WHERE id = 1')) as { salt: string }).salt
 }
 
 // Gate verdict counts (migration 0083), for the marveen.gate.decisions counter: one row per gate, decision and
@@ -144,42 +140,27 @@ export interface GateDecisionCountRow {
   count: number
   first_at: number
 }
-export function getGateDecisionCounts(): GateDecisionCountRow[] {
-  return db.prepare('SELECT gate, decision, reason, count, first_at FROM gate_decision_counts ORDER BY gate, decision, reason')
-    .all() as GateDecisionCountRow[]
+export async function getGateDecisionCounts(): Promise<GateDecisionCountRow[]> {
+  return dbx.all<GateDecisionCountRow>('SELECT gate, decision, reason, count, first_at FROM gate_decision_counts ORDER BY gate, decision, reason')
 }
 
 // The next batch of every source, oldest first, `limit` rows per source. rbac 'permitted' rows are not
 // exported: that is request-level traffic of non-admin callers, a volume the log stream should not carry
 // (the refusals, which is what an audit reads, are exported).
-export function getOtelLogBatch(limit: number): OtelLogRows {
+export async function getOtelLogBatch(limit: number): Promise<OtelLogRows> {
   return {
-    approval_events: db.prepare(
-      `SELECT id, approval_id, tenant_id, event, reason, actor, created_at
-       FROM approval_events WHERE id > ? ORDER BY id ASC LIMIT ?`,
-    ).all(getOtelLogCursor('approval_events'), limit) as ApprovalEventLogRow[],
-    rbac_shadow_log: db.prepare(
-      `SELECT id, ts, tenant_id, principal_kind, principal, role, method, permission, decision, reason
-       FROM rbac_shadow_log WHERE id > ? AND decision != 'permitted' ORDER BY id ASC LIMIT ?`,
-    ).all(getOtelLogCursor('rbac_shadow_log'), limit) as RbacDecisionLogRow[],
-    config_change_log: db.prepare(
-      `SELECT id, key, actor, created_at FROM config_change_log WHERE id > ? ORDER BY id ASC LIMIT ?`,
-    ).all(getOtelLogCursor('config_change_log'), limit) as ConfigChangeExportRow[],
-    agent_audit_log: db.prepare(
-      `SELECT id, agent_id, entity, action, created_at FROM agent_audit_log WHERE id > ? ORDER BY id ASC LIMIT ?`,
-    ).all(getOtelLogCursor('agent_audit_log'), limit) as AgentAuditExportRow[],
+    approval_events: await dbx.all<ApprovalEventLogRow>(`SELECT id, approval_id, tenant_id, event, reason, actor, created_at
+       FROM approval_events WHERE id > ? ORDER BY id ASC LIMIT ?`, await getOtelLogCursor('approval_events'), limit),
+    rbac_shadow_log: await dbx.all<RbacDecisionLogRow>(`SELECT id, ts, tenant_id, principal_kind, principal, role, method, permission, decision, reason
+       FROM rbac_shadow_log WHERE id > ? AND decision != 'permitted' ORDER BY id ASC LIMIT ?`, await getOtelLogCursor('rbac_shadow_log'), limit),
+    config_change_log: await dbx.all<ConfigChangeExportRow>(`SELECT id, key, actor, created_at FROM config_change_log WHERE id > ? ORDER BY id ASC LIMIT ?`, await getOtelLogCursor('config_change_log'), limit),
+    agent_audit_log: await dbx.all<AgentAuditExportRow>(`SELECT id, agent_id, entity, action, created_at FROM agent_audit_log WHERE id > ? ORDER BY id ASC LIMIT ?`, await getOtelLogCursor('agent_audit_log'), limit),
     // Only the refusals. tool_name, content_hash and session_id are not read: the row says which gate said no,
     // for which agent, with which reason code. (The allow rows of browser-content-notice and the handoff rows of
     // the context watchdog are not security events.)
-    hook_audit_log: db.prepare(
-      `SELECT id, ts, agent_id, hook_type, verdict, trigger_source, reason, tenant_id
-       FROM hook_audit_log WHERE id > ? AND verdict IN ('deny', 'defer') ORDER BY id ASC LIMIT ?`,
-    ).all(getOtelLogCursor('hook_audit_log'), limit) as HookAuditExportRow[],
-    fleet_blackboard_history: db.prepare(
-      `SELECT id, agent_id, status, created_at FROM fleet_blackboard_history WHERE id > ? ORDER BY id ASC LIMIT ?`,
-    ).all(getOtelLogCursor('fleet_blackboard_history'), limit) as BlackboardExportRow[],
-    kanban_card_events: db.prepare(
-      `SELECT id, card_id, from_status, to_status, actor, created_at FROM kanban_card_events WHERE id > ? ORDER BY id ASC LIMIT ?`,
-    ).all(getOtelLogCursor('kanban_card_events'), limit) as KanbanEventExportRow[],
+    hook_audit_log: await dbx.all<HookAuditExportRow>(`SELECT id, ts, agent_id, hook_type, verdict, trigger_source, reason, tenant_id
+       FROM hook_audit_log WHERE id > ? AND verdict IN ('deny', 'defer') ORDER BY id ASC LIMIT ?`, await getOtelLogCursor('hook_audit_log'), limit),
+    fleet_blackboard_history: await dbx.all<BlackboardExportRow>(`SELECT id, agent_id, status, created_at FROM fleet_blackboard_history WHERE id > ? ORDER BY id ASC LIMIT ?`, await getOtelLogCursor('fleet_blackboard_history'), limit),
+    kanban_card_events: await dbx.all<KanbanEventExportRow>(`SELECT id, card_id, from_status, to_status, actor, created_at FROM kanban_card_events WHERE id > ? ORDER BY id ASC LIMIT ?`, await getOtelLogCursor('kanban_card_events'), limit),
   }
 }

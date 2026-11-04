@@ -24,6 +24,7 @@ import { PROJECT_ROOT, STORE_DIR } from '../config.js'
 import { readEnvFile } from '../env.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
 
+import { systemJob } from '../db/background-jobs.js'
 // Mirrors KEEPALIVE_RESPAWN_GRACE_MS from channel-monitor.ts (15 min).
 // Not imported directly to avoid a circular module dependency: channel-monitor.ts
 // lazy-imports inbound-probe.ts; inbound-probe.ts uses dynamic import() of
@@ -429,14 +430,14 @@ export function startInboundProber(): void {
 
   // TS-side check loop: runs at the same interval as the prober's send loop.
   // Each tick: re-spawn the prober if it died, then check the transcript.
-  setInterval(() => {
+  setInterval(systemJob('inbound-probe', () => {
     try {
       spawnProber()
       checkInboundProbeDeafness(probeIntervalMs * PROBE_TIMEOUT_MULTIPLIER)
     } catch (err) {
       logger.error({ err }, 'Inbound probe check tick failed')
     }
-  }, probeIntervalMs)
+  }), probeIntervalMs)
 
   logger.info({ probeIntervalMs }, 'Inbound prober started')
 }

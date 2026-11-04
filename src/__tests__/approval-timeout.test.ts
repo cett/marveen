@@ -65,45 +65,45 @@ describe('approval deadline in the DB', () => {
   const now = () => Math.floor(Date.now() / 1000)
   beforeEach(() => { initDatabase(':memory:') })
 
-  it('a request past its deadline cannot be approved or rejected, even before the sweeper ran', () => {
-    createApproval({ id: 'late', agent_id: 'a', category: 'email_send', action_description: 'x', timeout_at: now() - 1 })
-    expect(resolveApproval('late', 'approved', 'human')).toBe(false)
-    expect(resolveApproval('late', 'rejected', 'human')).toBe(false)
-    expect(getApproval('late')?.status).toBe('pending')
+  it('a request past its deadline cannot be approved or rejected, even before the sweeper ran', async () => {
+    await createApproval({ id: 'late', agent_id: 'a', category: 'email_send', action_description: 'x', timeout_at: now() - 1 })
+    expect(await resolveApproval('late', 'approved', 'human')).toBe(false)
+    expect(await resolveApproval('late', 'rejected', 'human')).toBe(false)
+    expect((await getApproval('late'))?.status).toBe('pending')
   })
 
-  it('a request exactly at its deadline is already expired', () => {
-    createApproval({ id: 'edge', agent_id: 'a', category: 'email_send', action_description: 'x', timeout_at: now() })
-    expect(resolveApproval('edge', 'approved', 'human')).toBe(false)
+  it('a request exactly at its deadline is already expired', async () => {
+    await createApproval({ id: 'edge', agent_id: 'a', category: 'email_send', action_description: 'x', timeout_at: now() })
+    expect(await resolveApproval('edge', 'approved', 'human')).toBe(false)
   })
 
-  it('a request before its deadline and one without a deadline can still be approved', () => {
-    createApproval({ id: 'open', agent_id: 'a', category: 'email_send', action_description: 'x', timeout_at: now() + 600 })
-    createApproval({ id: 'none', agent_id: 'a', category: 'email_send', action_description: 'x', timeout_at: null })
-    expect(resolveApproval('open', 'approved', 'human')).toBe(true)
-    expect(resolveApproval('none', 'approved', 'human')).toBe(true)
+  it('a request before its deadline and one without a deadline can still be approved', async () => {
+    await createApproval({ id: 'open', agent_id: 'a', category: 'email_send', action_description: 'x', timeout_at: now() + 600 })
+    await createApproval({ id: 'none', agent_id: 'a', category: 'email_send', action_description: 'x', timeout_at: null })
+    expect(await resolveApproval('open', 'approved', 'human')).toBe(true)
+    expect(await resolveApproval('none', 'approved', 'human')).toBe(true)
   })
 
-  it('the timeout status itself can still be recorded on an expired request', () => {
-    createApproval({ id: 'exp', agent_id: 'a', category: 'email_send', action_description: 'x', timeout_at: now() - 1 })
-    expect(resolveApproval('exp', 'timeout', 'agent-a')).toBe(true)
-    expect(getApproval('exp')?.status).toBe('timeout')
+  it('the timeout status itself can still be recorded on an expired request', async () => {
+    await createApproval({ id: 'exp', agent_id: 'a', category: 'email_send', action_description: 'x', timeout_at: now() - 1 })
+    expect(await resolveApproval('exp', 'timeout', 'agent-a')).toBe(true)
+    expect((await getApproval('exp'))?.status).toBe('timeout')
   })
 
-  it('the sweeper marks an expired request as timeout and says it was the system', () => {
-    createApproval({ id: 's1', agent_id: 'a', category: 'email_send', action_description: 'x', timeout_at: now() - 5 })
-    createApproval({ id: 's2', agent_id: 'a', category: 'email_send', action_description: 'x', timeout_at: now() + 600 })
-    expect(expireTimedOutApprovals()).toBe(1)
-    expect(getApproval('s1')).toMatchObject({ status: 'timeout', resolved_by: 'system:timeout' })
-    expect(getApproval('s2')).toMatchObject({ status: 'pending', resolved_by: null })
+  it('the sweeper marks an expired request as timeout and says it was the system', async () => {
+    await createApproval({ id: 's1', agent_id: 'a', category: 'email_send', action_description: 'x', timeout_at: now() - 5 })
+    await createApproval({ id: 's2', agent_id: 'a', category: 'email_send', action_description: 'x', timeout_at: now() + 600 })
+    expect(await expireTimedOutApprovals()).toBe(1)
+    expect(await getApproval('s1')).toMatchObject({ status: 'timeout', resolved_by: 'system:timeout' })
+    expect(await getApproval('s2')).toMatchObject({ status: 'pending', resolved_by: null })
   })
 
-  it('the sweeper leaves a decided request alone even when its deadline is in the past', () => {
-    createApproval({ id: 'done', agent_id: 'a', category: 'email_send', action_description: 'x', timeout_at: now() + 600 })
-    resolveApproval('done', 'approved', 'human')
+  it('the sweeper leaves a decided request alone even when its deadline is in the past', async () => {
+    await createApproval({ id: 'done', agent_id: 'a', category: 'email_send', action_description: 'x', timeout_at: now() + 600 })
+    await resolveApproval('done', 'approved', 'human')
     getDb().prepare("UPDATE approvals SET timeout_at = ? WHERE id = 'done'").run(now() - 100)
-    expect(expireTimedOutApprovals()).toBe(0)
-    expect(getApproval('done')).toMatchObject({ status: 'approved', resolved_by: 'human' })
+    expect(await expireTimedOutApprovals()).toBe(0)
+    expect(await getApproval('done')).toMatchObject({ status: 'approved', resolved_by: 'human' })
   })
 })
 
@@ -133,18 +133,18 @@ describe('migration 0067', () => {
     expect(timeouts()).toEqual(once)
   })
 
-  it('gives a pending request without a deadline one derived from when it was asked, and leaves the rest', () => {
+  it('gives a pending request without a deadline one derived from when it was asked, and leaves the rest', async () => {
     const d = getDb()
-    createApproval({ id: 'old-pending', agent_id: 'a', category: 'email_send', action_description: 'x' })
-    createApproval({ id: 'has-deadline', agent_id: 'a', category: 'email_send', action_description: 'x', timeout_at: 99 })
-    createApproval({ id: 'was-approved', agent_id: 'a', category: 'email_send', action_description: 'x' })
-    resolveApproval('was-approved', 'approved', 'human')
+    await createApproval({ id: 'old-pending', agent_id: 'a', category: 'email_send', action_description: 'x' })
+    await createApproval({ id: 'has-deadline', agent_id: 'a', category: 'email_send', action_description: 'x', timeout_at: 99 })
+    await createApproval({ id: 'was-approved', agent_id: 'a', category: 'email_send', action_description: 'x' })
+    await resolveApproval('was-approved', 'approved', 'human')
     d.prepare("UPDATE approvals SET requested_at = 1000 WHERE id IN ('old-pending', 'has-deadline', 'was-approved')").run()
     d.exec(sql)
-    expect(getApproval('old-pending')?.timeout_at).toBe(1000 + HOUR)
-    expect(getApproval('has-deadline')?.timeout_at).toBe(99)
-    expect(getApproval('was-approved')?.timeout_at).toBeNull()
+    expect((await getApproval('old-pending'))?.timeout_at).toBe(1000 + HOUR)
+    expect((await getApproval('has-deadline'))?.timeout_at).toBe(99)
+    expect((await getApproval('was-approved'))?.timeout_at).toBeNull()
     // and the next sweep tick expires the old one
-    expect(expireTimedOutApprovals()).toBe(2)
+    expect(await expireTimedOutApprovals()).toBe(2)
   })
 })

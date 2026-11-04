@@ -19,13 +19,13 @@ const PROBE = 'handoffmarker-probe'
 const probeDir = join(PROJECT_ROOT, 'agents', PROBE)
 const handoffPath = join(probeDir, 'HANDOFF.md')
 
-beforeEach(() => {
+beforeEach(async () => {
   initDatabase(':memory:')
   if (existsSync(join(probeDir, 'HANDOFF.md'))) {
     throw new Error(`refusing: agents/${PROBE} looks like a live agent`)
   }
   mkdirSync(probeDir, { recursive: true })
-  replaceClaudePlanRows([{ id: 'team-x', label: 'Team X', configDir: '/tmp/x', planType: 'team', channelsAllowed: true }])
+  await replaceClaudePlanRows([{ id: 'team-x', label: 'Team X', configDir: '/tmp/x', planType: 'team', channelsAllowed: true }])
 })
 
 afterEach(() => {
@@ -33,65 +33,65 @@ afterEach(() => {
 })
 
 describe('appendActivePlanMarkerToHandoff', () => {
-  it('appends a marker line when the agent has an active plan and HANDOFF.md exists', () => {
+  it('appends a marker line when the agent has an active plan and HANDOFF.md exists', async () => {
     writeFileSync(handoffPath, '# Handoff\n\nDid some work.\n')
-    activatePlanForAgent(PROBE, 'team-x', 'rotation')
-    appendActivePlanMarkerToHandoff(PROBE)
+    await activatePlanForAgent(PROBE, 'team-x', 'rotation')
+    await appendActivePlanMarkerToHandoff(PROBE)
     const content = readFileSync(handoffPath, 'utf-8')
     expect(content).toContain('Did some work.')
     expect(content).toContain('<!-- claude-plan-id: team-x -->')
   })
 
-  it('replaces a stale marker rather than duplicating it', () => {
+  it('replaces a stale marker rather than duplicating it', async () => {
     writeFileSync(handoffPath, '# Handoff\n\n<!-- claude-plan-id: old-plan -->\n')
-    activatePlanForAgent(PROBE, 'team-x', 'rotation')
-    appendActivePlanMarkerToHandoff(PROBE)
+    await activatePlanForAgent(PROBE, 'team-x', 'rotation')
+    await appendActivePlanMarkerToHandoff(PROBE)
     const content = readFileSync(handoffPath, 'utf-8')
     expect(content.match(/claude-plan-id:/g)).toHaveLength(1)
     expect(content).toContain('<!-- claude-plan-id: team-x -->')
   })
 
-  it('is a no-op when the agent has no active plan binding', () => {
+  it('is a no-op when the agent has no active plan binding', async () => {
     writeFileSync(handoffPath, '# Handoff\n')
-    appendActivePlanMarkerToHandoff(PROBE)
+    await appendActivePlanMarkerToHandoff(PROBE)
     expect(readFileSync(handoffPath, 'utf-8')).toBe('# Handoff\n')
   })
 
-  it('is a no-op (does not throw) when HANDOFF.md does not exist', () => {
-    activatePlanForAgent(PROBE, 'team-x', 'rotation')
+  it('is a no-op (does not throw) when HANDOFF.md does not exist', async () => {
+    await activatePlanForAgent(PROBE, 'team-x', 'rotation')
     expect(() => appendActivePlanMarkerToHandoff(PROBE)).not.toThrow()
     expect(existsSync(handoffPath)).toBe(false)
   })
 })
 
 describe('recoverActivePlanFromHandoff', () => {
-  it('restores the binding from a marker with source=handoff-recovery', () => {
+  it('restores the binding from a marker with source=handoff-recovery', async () => {
     writeFileSync(handoffPath, '# Handoff\n\n<!-- claude-plan-id: team-x -->\n')
-    recoverActivePlanFromHandoff(PROBE)
-    const plan = getActivePlanForAgent(PROBE)
+    await recoverActivePlanFromHandoff(PROBE)
+    const plan = await getActivePlanForAgent(PROBE)
     expect(plan).toMatchObject({ id: 'team-x', source: 'handoff-recovery' })
   })
 
-  it('is a no-op when HANDOFF.md has no marker', () => {
+  it('is a no-op when HANDOFF.md has no marker', async () => {
     writeFileSync(handoffPath, '# Handoff\n\nNo marker here.\n')
-    recoverActivePlanFromHandoff(PROBE)
-    expect(getActivePlanForAgent(PROBE)).toBeNull()
+    await recoverActivePlanFromHandoff(PROBE)
+    expect(await getActivePlanForAgent(PROBE)).toBeNull()
   })
 
-  it('is a no-op (does not throw) when HANDOFF.md does not exist', () => {
+  it('is a no-op (does not throw) when HANDOFF.md does not exist', async () => {
     expect(() => recoverActivePlanFromHandoff(PROBE)).not.toThrow()
-    expect(getActivePlanForAgent(PROBE)).toBeNull()
+    expect(await getActivePlanForAgent(PROBE)).toBeNull()
   })
 
-  it('full round trip: append survives a deactivate (simulated stop), recover restores it', () => {
+  it('full round trip: append survives a deactivate (simulated stop), recover restores it', async () => {
     writeFileSync(handoffPath, '# Handoff\n')
-    activatePlanForAgent(PROBE, 'team-x', 'rotation')
-    appendActivePlanMarkerToHandoff(PROBE)
+    await activatePlanForAgent(PROBE, 'team-x', 'rotation')
+    await appendActivePlanMarkerToHandoff(PROBE)
     // Simulate restartAgentProcess's stop step, which runs after the marker
     // is written but before the next launch reads it back.
-    deactivatePlanForAgent(PROBE)
-    expect(getActivePlanForAgent(PROBE)).toBeNull()
-    recoverActivePlanFromHandoff(PROBE)
-    expect(getActivePlanForAgent(PROBE)).toMatchObject({ id: 'team-x', source: 'handoff-recovery' })
+    await deactivatePlanForAgent(PROBE)
+    expect(await getActivePlanForAgent(PROBE)).toBeNull()
+    await recoverActivePlanFromHandoff(PROBE)
+    expect(await getActivePlanForAgent(PROBE)).toMatchObject({ id: 'team-x', source: 'handoff-recovery' })
   })
 })

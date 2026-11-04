@@ -23,30 +23,30 @@ vi.mock('../config.js', () => ({
 }))
 
 vi.mock('../db.js', () => ({
-  createApproval: vi.fn().mockReturnValue({
+  createApproval: vi.fn().mockResolvedValue({
     id: 'appr-uuid-1', agent_id: 'agent-d', category: 'file_write',
     action_description: 'Write to /etc', status: 'pending',
     created_at: 1700000000, timeout_at: null, resolved_by: null, resolved_at: null,
   }),
-  getApproval: vi.fn().mockReturnValue({
+  getApproval: vi.fn().mockResolvedValue({
     id: 'appr-uuid-1', agent_id: 'agent-d', category: 'file_write',
     action_description: 'Write to /etc', status: 'pending',
     created_at: 1700000000, timeout_at: null, resolved_by: null, resolved_at: null,
   }),
-  resolveApproval: vi.fn().mockReturnValue({
+  resolveApproval: vi.fn().mockResolvedValue({
     id: 'appr-uuid-1', agent_id: 'agent-d', category: 'file_write',
     action_description: 'Write to /etc', status: 'approved',
     created_at: 1700000000, timeout_at: null, resolved_by: 'user', resolved_at: 1700001000,
   }),
-  listApprovals: vi.fn().mockReturnValue([{
+  listApprovals: vi.fn().mockResolvedValue([{
     id: 'appr-uuid-1', agent_id: 'agent-d', category: 'file_write',
     action_description: 'Write to /etc', status: 'pending',
     created_at: 1700000000, timeout_at: null, resolved_by: null, resolved_at: null,
   }]),
-  countApprovals: vi.fn().mockReturnValue(1),
-  getApprovalStatusCounts: vi.fn().mockReturnValue({ pending: 1, approved: 0, rejected: 0, timeout: 0 }),
-  getOldestPendingApproval: vi.fn().mockReturnValue(undefined),
-  expireTimedOutApprovals: vi.fn().mockReturnValue(0),
+  countApprovals: vi.fn().mockResolvedValue(1),
+  getApprovalStatusCounts: vi.fn().mockResolvedValue({ pending: 1, approved: 0, rejected: 0, timeout: 0 }),
+  getOldestPendingApproval: vi.fn().mockResolvedValue(undefined),
+  expireTimedOutApprovals: vi.fn().mockResolvedValue(0),
   createAgentMessage: vi.fn(),
   writeAgentAuditLog: vi.fn(),
   listHumanOnlyCategoryKeys: vi.fn().mockReturnValue([]),
@@ -150,7 +150,7 @@ describe('tryHandleApprovals', () => {
 
   it('GET /api/approvals/:id returns 404 for unknown id', async () => {
     const db = await import('../db.js')
-    vi.mocked(db.getApproval).mockReturnValueOnce(null as any)
+    vi.mocked(db.getApproval).mockResolvedValueOnce(null as any)
     const { ctx, out } = makeCtx('GET', '/api/approvals/nonexistent')
     const handled = await tryHandleApprovals(ctx)
     expect(handled).toBe(true)
@@ -161,8 +161,8 @@ describe('tryHandleApprovals', () => {
     const db = await import('../db.js')
     // First call: guard check (pending). Second call: final fetch (approved).
     vi.mocked(db.getApproval)
-      .mockReturnValueOnce({ id: 'appr-uuid-1', agent_id: 'agent-d', category: 'file_write', action_description: 'x', status: 'pending', created_at: 0, timeout_at: null, resolved_by: null, resolved_at: null } as any)
-      .mockReturnValueOnce({ id: 'appr-uuid-1', agent_id: 'agent-d', category: 'file_write', action_description: 'x', status: 'approved', created_at: 0, timeout_at: null, resolved_by: 'user', resolved_at: 1 } as any)
+      .mockResolvedValueOnce({ id: 'appr-uuid-1', agent_id: 'agent-d', category: 'file_write', action_description: 'x', status: 'pending', created_at: 0, timeout_at: null, resolved_by: null, resolved_at: null } as any)
+      .mockResolvedValueOnce({ id: 'appr-uuid-1', agent_id: 'agent-d', category: 'file_write', action_description: 'x', status: 'approved', created_at: 0, timeout_at: null, resolved_by: 'user', resolved_at: 1 } as any)
     const { ctx, out } = makeCtx('PATCH', '/api/approvals/appr-uuid-1', {
       status: 'approved',
       resolved_by: 'user',
@@ -222,7 +222,7 @@ describe('startApprovalTimeoutSweeper', () => {
     vi.useFakeTimers()
     const db = await import('../db.js')
     vi.mocked(db.writeAgentAuditLog).mockClear()
-    vi.mocked(db.expireTimedOutApprovals).mockReturnValueOnce(2)
+    vi.mocked(db.expireTimedOutApprovals).mockResolvedValueOnce(2)
     const handle = startApprovalTimeoutSweeper()
     await vi.advanceTimersByTimeAsync(60_000)
     expect(vi.mocked(db.writeAgentAuditLog)).toHaveBeenCalledWith(
@@ -236,7 +236,7 @@ describe('startApprovalTimeoutSweeper', () => {
     vi.useFakeTimers()
     const db = await import('../db.js')
     vi.mocked(db.writeAgentAuditLog).mockClear()
-    vi.mocked(db.expireTimedOutApprovals).mockReturnValueOnce(0)
+    vi.mocked(db.expireTimedOutApprovals).mockResolvedValueOnce(0)
     const handle = startApprovalTimeoutSweeper()
     await vi.advanceTimersByTimeAsync(60_000)
     expect(vi.mocked(db.writeAgentAuditLog)).not.toHaveBeenCalledWith(

@@ -26,13 +26,13 @@ interface CounterDef extends BaseDef { kind: 'counter' }
 interface HistogramDef extends BaseDef { kind: 'histogram'; bounds: readonly number[] }
 interface GaugeDef extends BaseDef {
   kind: 'gauge'
-  collect: () => { attrs?: MetricAttrs; value: number }[]
+  collect: () => { attrs?: MetricAttrs; value: number }[] | Promise<{ attrs?: MetricAttrs; value: number }[]>
 }
 // A cumulative, monotonic sum whose running value lives in the database (written by another process, such as
 // the gate hooks), read when an export happens. `startMs` is when the oldest series began counting.
 interface ObservableCounterDef extends BaseDef {
   kind: 'observable_counter'
-  collect: () => { attrs?: MetricAttrs; value: number; startMs?: number }[]
+  collect: () => { attrs?: MetricAttrs; value: number; startMs?: number }[] | Promise<{ attrs?: MetricAttrs; value: number; startMs?: number }[]>
 }
 type MetricDef = CounterDef | HistogramDef | GaugeDef | ObservableCounterDef
 
@@ -135,7 +135,7 @@ export interface RegistryMetric {
 
 // Every metric that currently has data, in OTLP/JSON shape. Empty when nothing was recorded yet.
 // 2 = AGGREGATION_TEMPORALITY_CUMULATIVE.
-export function collectRegistryMetrics(nowMs = Date.now()): RegistryMetric[] {
+export async function collectRegistryMetrics(nowMs = Date.now()): Promise<RegistryMetric[]> {
   const out: RegistryMetric[] = []
   const start = nano(startedAtMs)
   const now = nano(nowMs)
@@ -155,7 +155,7 @@ export function collectRegistryMetrics(nowMs = Date.now()): RegistryMetric[] {
     } else if (def.kind === 'observable_counter') {
       let points: { attrs?: MetricAttrs; value: number; startMs?: number }[] = []
       try {
-        points = def.collect()
+        points = await def.collect()
       } catch {
         continue // unreadable, skipped, never fatal to the export
       }
@@ -188,7 +188,7 @@ export function collectRegistryMetrics(nowMs = Date.now()): RegistryMetric[] {
     } else {
       let points: { attrs?: MetricAttrs; value: number }[] = []
       try {
-        points = def.collect()
+        points = await def.collect()
       } catch {
         continue // a gauge that cannot be read is skipped, never fatal to the export
       }

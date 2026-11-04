@@ -84,41 +84,41 @@ describe('resetStreakIfPreviousSession (pure)', () => {
 })
 
 describe('reconcileRunState: the reset reaches agent_state', () => {
-  it('a previous-session streak is nulled in the returned state AND in the persisted row', () => {
+  it('a previous-session streak is nulled in the returned state AND in the persisted row', async () => {
     const agent = uniq('agent-a')
-    writeGateRunState(agent, { firstBlockedAt: SESSION_START - 5 * HOUR_MS, lastAlertAt: SESSION_START - HOUR_MS, lastClearAt: 777 })
-    const r = reconcileRunState(agent, SESSION_START)
+    await writeGateRunState(agent, { firstBlockedAt: SESSION_START - 5 * HOUR_MS, lastAlertAt: SESSION_START - HOUR_MS, lastClearAt: 777 })
+    const r = await reconcileRunState(agent, SESSION_START)
     expect(r).toEqual({ firstBlockedAt: null, lastAlertAt: null, lastClearAt: 777 })
     // Re-read from the store: this is what the NEXT sweep sees.
-    expect(readGateRunState(agent)).toEqual({ firstBlockedAt: null, lastAlertAt: null, lastClearAt: 777 })
+    expect(await readGateRunState(agent)).toEqual({ firstBlockedAt: null, lastAlertAt: null, lastClearAt: 777 })
   })
 
-  it('a streak of the current session is left in the store as is', () => {
+  it('a streak of the current session is left in the store as is', async () => {
     const agent = uniq('agent-b')
     const state = { firstBlockedAt: SESSION_START + 60_000, lastAlertAt: SESSION_START + 120_000, lastClearAt: null }
-    writeGateRunState(agent, state)
-    expect(reconcileRunState(agent, SESSION_START)).toEqual(state)
-    expect(readGateRunState(agent)).toEqual(state)
+    await writeGateRunState(agent, state)
+    expect(await reconcileRunState(agent, SESSION_START)).toEqual(state)
+    expect(await readGateRunState(agent)).toEqual(state)
   })
 
-  it('unknown session start: nothing is reset or rewritten (guard cannot run)', () => {
+  it('unknown session start: nothing is reset or rewritten (guard cannot run)', async () => {
     const agent = uniq('agent-c')
     const state = { firstBlockedAt: SESSION_START - 5 * HOUR_MS, lastAlertAt: SESSION_START - HOUR_MS, lastClearAt: null }
-    writeGateRunState(agent, state)
-    expect(reconcileRunState(agent, null)).toEqual(state)
-    expect(readGateRunState(agent)).toEqual(state)
+    await writeGateRunState(agent, state)
+    expect(await reconcileRunState(agent, null)).toEqual(state)
+    expect(await readGateRunState(agent)).toEqual(state)
   })
 
-  it('an agent with no stored state reconciles to the empty state', () => {
-    expect(reconcileRunState(uniq('agent-d'), SESSION_START)).toEqual({ firstBlockedAt: null, lastAlertAt: null, lastClearAt: null })
+  it('an agent with no stored state reconciles to the empty state', async () => {
+    expect(await reconcileRunState(uniq('agent-d'), SESSION_START)).toEqual({ firstBlockedAt: null, lastAlertAt: null, lastClearAt: null })
   })
 
-  it('the false alarm end to end: inherited streak + null tokens alerts, after the reset it does not', () => {
+  it('the false alarm end to end: inherited streak + null tokens alerts, after the reset it does not', async () => {
     const agent = uniq('agent-e')
-    writeGateRunState(agent, { firstBlockedAt: SESSION_START - 5 * HOUR_MS, lastAlertAt: null, lastClearAt: null })
-    const inherited = readGateRunState(agent)
+    await writeGateRunState(agent, { firstBlockedAt: SESSION_START - 5 * HOUR_MS, lastAlertAt: null, lastClearAt: null })
+    const inherited = await readGateRunState(agent)
     expect(decideGate(BASE_INPUTS, CFG, inherited.firstBlockedAt).action).toBe('block-alert') // the bug
-    const fixed = reconcileRunState(agent, SESSION_START)
+    const fixed = await reconcileRunState(agent, SESSION_START)
     const d = decideGate(BASE_INPUTS, CFG, fixed.firstBlockedAt)
     expect(d.action).toBe('block')
     expect(d.reason).toMatch(/context-tokens-unmeasurable/)

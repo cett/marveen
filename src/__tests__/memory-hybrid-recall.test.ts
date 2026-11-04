@@ -58,7 +58,7 @@ function makeMemory(id: number, content: string, sector: 'semantic' | 'episodic'
 
 beforeEach(() => {
   vi.clearAllMocks()
-  mockRecentMemories.mockReturnValue([])
+  mockRecentMemories.mockResolvedValue([])
 })
 
 describe('buildMemoryContext uses hybridSearch', () => {
@@ -85,7 +85,7 @@ describe('buildMemoryContext uses hybridSearch', () => {
     const m1 = makeMemory(1, 'hybrid result one')
     const m2 = makeMemory(2, 'recent memory')
     mockHybridSearch.mockResolvedValue([m1, m2])
-    mockRecentMemories.mockReturnValue([m2, makeMemory(3, 'extra recent')])
+    mockRecentMemories.mockResolvedValue([m2, makeMemory(3, 'extra recent')])
 
     const result = await buildMemoryContext('chat-1', 'query')
     // m2 appears in both -- should appear only once
@@ -110,7 +110,7 @@ describe('buildMemoryContext uses hybridSearch', () => {
 
   it('gracefully returns empty when hybridSearch resolves empty and no recent', async () => {
     mockHybridSearch.mockResolvedValue([])
-    mockRecentMemories.mockReturnValue([])
+    mockRecentMemories.mockResolvedValue([])
     const result = await buildMemoryContext('chat-1', 'nothing here')
     expect(result).toBe('')
   })

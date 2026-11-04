@@ -32,6 +32,8 @@ afterAll(() => {
   rmSync(TMP_ROOT, { recursive: true, force: true })
 })
 
+// The main agent's channel pairing is written under the home directory: keep it in the throwaway root, not the real one.
+vi.mock('node:os', async (importOriginal) => ({ ...(await importOriginal<typeof import('node:os')>()), homedir: () => TMP_ROOT }))
 vi.mock('../logger.js', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }))
 vi.mock('../web/agent-config.js', () => ({ AGENTS_BASE_DIR: '/mock/agents', listAgentNames: () => [], invalidateModelProfileMapCache: () => {} }))
 vi.mock('../web/atomic-write.js', async () => {
@@ -97,7 +99,7 @@ describe('exportFleet -- vault_ssh_keys/servers metadata', () => {
     const keyId = insertSshKey()
     insertSshServer(keyId)
 
-    const plain = JSON.parse(exportFleet().data)
+    const plain = JSON.parse((await exportFleet()).data)
     expect(plain.vaultSshKeys).toHaveLength(1)
     expect(plain.vaultSshKeys[0].public_key).toContain('ssh-ed25519')
     expect(plain.vaultSshServers).toHaveLength(1)
@@ -109,7 +111,7 @@ describe('exportFleet -- vault_ssh_keys/servers metadata', () => {
     seedVaultSecret()
     insertSshKey()
 
-    const result = exportFleet() // no vaultPassword -- plaintext export
+    const result = await exportFleet() // no vaultPassword -- plaintext export
     expect(result.data).not.toContain(PRIVATE_KEY_MARKER)
     // sanity: the export DID happen and the key metadata is there, so this isn't
     // a vacuously-true "didn't export anything" pass
@@ -121,7 +123,7 @@ describe('exportFleet -- vault_ssh_keys/servers metadata', () => {
     seedVaultSecret()
     insertSshKey()
 
-    const result = exportFleet({ vaultPassword: 'correct-horse-battery-staple' })
+    const result = await exportFleet({ vaultPassword: 'correct-horse-battery-staple' })
     const wrapper = JSON.parse(result.data)
     expect(wrapper.enc).toBe(1)
     // the outer encrypted blob must not leak the marker in the open
@@ -140,14 +142,14 @@ describe('importFleet -- vault_ssh_keys/servers round-trip', () => {
     const keyId = insertSshKey()
     insertSshServer(keyId)
 
-    const exported = exportFleet({ vaultPassword: 'correct-horse-battery-staple' })
+    const exported = await exportFleet({ vaultPassword: 'correct-horse-battery-staple' })
 
     initDatabase(':memory:') // fresh target DB
     // fresh target filesystem too -- simulate a clean install with no prior vault
     if (existsSync(join(STORE_DIR, 'vault.json'))) writeFileSync(join(STORE_DIR, 'vault.json'), JSON.stringify({ entries: [] }))
     if (existsSync(join(STORE_DIR, '.vault-key'))) writeFileSync(join(STORE_DIR, '.vault-key'), '')
 
-    const applied = importFleet(exported.data, { apply: true, vaultPassword: 'correct-horse-battery-staple' }) as any
+    const applied = await importFleet(exported.data, { apply: true, vaultPassword: 'correct-horse-battery-staple' }) as any
     expect(applied.ok).toBe(true)
     expect(applied.imported.vaultSshKeys).toBe(1)
     expect(applied.imported.vaultSshServers).toBe(1)
@@ -169,11 +171,11 @@ describe('importFleet -- vault_ssh_keys/servers round-trip', () => {
     const { exportFleet, importFleet } = await import('../web/fleet-transfer.js')
     const keyId = insertSshKey()
     insertSshServer(keyId)
-    const exported = exportFleet()
+    const exported = await exportFleet()
 
     initDatabase(':memory:')
-    importFleet(exported.data, { apply: true })
-    importFleet(exported.data, { apply: true })
+    await importFleet(exported.data, { apply: true })
+    await importFleet(exported.data, { apply: true })
 
     expect(getDb().prepare('SELECT * FROM vault_ssh_keys WHERE id = ?').all('abc123')).toHaveLength(1)
     expect(getDb().prepare('SELECT * FROM vault_ssh_servers WHERE id = ?').all('srv-1')).toHaveLength(1)
@@ -182,10 +184,10 @@ describe('importFleet -- vault_ssh_keys/servers round-trip', () => {
   it('dry-run warns that private key material is missing when the vault section is absent', async () => {
     const { exportFleet, importFleet } = await import('../web/fleet-transfer.js')
     insertSshKey() // no seedVaultSecret() -- no vault files on this "source"
-    const exported = exportFleet() // plaintext, no vault section
+    const exported = await exportFleet() // plaintext, no vault section
 
     initDatabase(':memory:')
-    const dry = importFleet(exported.data, { apply: false }) as any
+    const dry = await importFleet(exported.data, { apply: false }) as any
     expect(dry.wouldCreate.vaultSshKeys).toBe(1)
     expect(dry.warnings.some((w: string) => w.includes('PRIVÁT'))).toBe(true)
   })
@@ -203,7 +205,7 @@ describe('importFleet -- vault_ssh_keys/servers round-trip', () => {
       vaultSshServers: [{ id: 'bad-srv' }, { id: 'good-srv', name: 'n', host: 'h', username: 'u', created_at: now, updated_at: now }],
       dashboardSettings: { autonomy: {}, autoRestart: {}, agentsDesired: {}, norbertPersonal: {}, modelFallback: {}, federation: {}, costopsConfig: {}, egressAllowlist: {} },
     })
-    const applied = importFleet(fleetJson, { apply: true }) as any
+    const applied = await importFleet(fleetJson, { apply: true }) as any
     expect(applied.ok).toBe(true)
     expect(getDb().prepare('SELECT * FROM vault_ssh_keys WHERE id = ?').get('bad-key')).toBeUndefined()
     expect(getDb().prepare('SELECT * FROM vault_ssh_keys WHERE id = ?').get('good-key')).toBeTruthy()

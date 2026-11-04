@@ -2,7 +2,7 @@
 // is a closed whitelist: the table and column names below are never taken from
 // the fleet file, only the values are.
 
-import { db } from './connection.js'
+import { dbx } from './facade.js'
 
 type Row = Record<string, unknown>
 type RowLike = object
@@ -16,9 +16,9 @@ const EXPORT_TABLES = [
 
 export type FleetExportTable = typeof EXPORT_TABLES[number]
 
-export function exportTableRows(table: FleetExportTable): Row[] {
+export async function exportTableRows(table: FleetExportTable): Promise<Row[]> {
   if (!EXPORT_TABLES.includes(table)) throw new Error(`Fleet export: unknown table ${String(table)}`)
-  return db.prepare(`SELECT * FROM ${table}`).all() as Row[]
+  return dbx.all<Row>(`SELECT * FROM ${table}`)
 }
 
 /**
@@ -82,17 +82,17 @@ const ID_TABLES = ['kanban_cards', 'labels', 'schedules', 'import_sources', 'vau
 export type FleetIdTable = typeof ID_TABLES[number]
 
 /** True when the table already has a row with this id. */
-export function fleetRowIdExists(table: FleetIdTable, id: unknown): boolean {
+export async function fleetRowIdExists(table: FleetIdTable, id: unknown): Promise<boolean> {
   if (!ID_TABLES.includes(table)) throw new Error(`Fleet diff: unknown table ${String(table)}`)
-  return !!db.prepare(`SELECT 1 FROM ${table} WHERE id = ?`).get(id)
+  return !!await dbx.get(`SELECT 1 FROM ${table} WHERE id = ?`, id)
 }
 
 /** True when the table already has a row matching `dedupeBy` of the given row. */
-export function fleetRowExists(table: FleetImportTable, row: RowLike): boolean {
+export async function fleetRowExists(table: FleetImportTable, row: RowLike): Promise<boolean> {
   const { dedupeBy } = IMPORT_TABLES[table]
   if (dedupeBy.length === 0) throw new Error(`Fleet import: ${table} has no natural key`)
   const where = dedupeBy.map((c) => `${c} = ?`).join(' AND ')
-  return !!db.prepare(`SELECT 1 FROM ${table} WHERE ${where}`).get(...dedupeBy.map((c) => (row as Row)[c]))
+  return !!await dbx.get(`SELECT 1 FROM ${table} WHERE ${where}`, ...dedupeBy.map((c) => (row as Row)[c]))
 }
 
 /**
@@ -100,46 +100,51 @@ export function fleetRowExists(table: FleetImportTable, row: RowLike): boolean {
  * `row[column]` (undefined -> NULL): defaults and forced values (a disabled
  * schedule, a cleared last_run_at) are the caller's to put in the row.
  * Returns how many rows were inserted.
+ *
+ * The loop is one transaction of its own (a savepoint when the caller already holds one): the "does a row like
+ * this exist" read and the insert after it must not be split by another caller's write, which the synchronous
+ * version could not be. Without it two overlapping imports both see "absent" and insert the same memory twice.
  */
-export function importFleetRows(table: FleetImportTable, rows: readonly RowLike[]): number {
+export async function importFleetRows(table: FleetImportTable, rows: readonly RowLike[]): Promise<number> {
   const { columns, dedupeBy } = IMPORT_TABLES[table]
-  const stmt = db.prepare(
+  const sql =
     `INSERT INTO ${table} (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')})` +
     (dedupeBy.length === 0 ? ' ON CONFLICT DO NOTHING' : '')
-  )
-  let inserted = 0
-  for (const row of rows) {
-    if (dedupeBy.length > 0 && fleetRowExists(table, row)) continue
-    inserted += stmt.run(...columns.map((c) => (row as Row)[c] ?? null)).changes
-  }
-  return inserted
+  return dbx.tx(async () => {
+    let inserted = 0
+    for (const row of rows) {
+      if (dedupeBy.length > 0 && await fleetRowExists(table, row)) continue
+      inserted += (await dbx.run(sql, ...columns.map((c) => (row as Row)[c] ?? null))).changes
+    }
+    return inserted
+  })
 }
 
 /** Everything in `memories`, across every agent_id, oldest first per agent. */
-export function exportMemoryRows<T>(): T[] {
-  return db.prepare(
-    `SELECT agent_id, content, sector, salience, created_at, accessed_at,
+export async function exportMemoryRows<T>(): Promise<T[]> {
+  return dbx.all<T>(`SELECT agent_id, content, sector, salience, created_at, accessed_at,
             category, auto_generated, keywords
-     FROM memories ORDER BY agent_id ASC, created_at ASC`
-  ).all() as T[]
+     FROM memories ORDER BY agent_id ASC, created_at ASC`)
 }
 
-export function exportDailyLogRows<T>(): T[] {
-  return db.prepare(
-    'SELECT agent_id, date, content, created_at FROM daily_logs ORDER BY agent_id ASC, date ASC'
-  ).all() as T[]
+export async function exportDailyLogRows<T>(): Promise<T[]> {
+  return dbx.all<T>('SELECT agent_id, date, content, created_at FROM daily_logs ORDER BY agent_id ASC, date ASC')
 }
 
 /** Ids of the tenants that are not disabled. */
-export function listEnabledTenantIds(): string[] {
-  return (db.prepare('SELECT id FROM tenants WHERE disabled_at IS NULL').all() as { id: string }[]).map((r) => r.id)
+export async function listEnabledTenantIds(): Promise<string[]> {
+  return ((await dbx.all('SELECT id FROM tenants WHERE disabled_at IS NULL')) as { id: string }[]).map((r) => r.id)
 }
 
-export function rebuildMemoriesFts(): void {
-  db.prepare("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')").run()
+export async function rebuildMemoriesFts(): Promise<void> {
+  await dbx.run("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')")
 }
 
-/** Run `fn` in one transaction; any throw rolls every write back. */
-export function inFleetImportTransaction(fn: () => void): void {
-  db.transaction(fn)()
+/**
+ * Run `fn` in one transaction; any throw or rejection rolls every write back. The body holds the connection's
+ * transaction lock from BEGIN to COMMIT: only `dbx` calls and pure row policy in it, no other I/O. The calls
+ * inside join the open transaction through the facade's transaction scope, so `fn` takes no handle.
+ */
+export async function inFleetImportTransaction(fn: () => Promise<void>): Promise<void> {
+  await dbx.tx(async () => { await fn() })
 }

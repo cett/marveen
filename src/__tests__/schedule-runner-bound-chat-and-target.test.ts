@@ -34,36 +34,35 @@ describe('resolveBoundChatId', () => {
     return dir
   }
 
-  it('resolves the first DM allowlist entry', () => {
+  it('resolves the first DM allowlist entry', async () => {
     const dir = withAccessJson({ allowFrom: ['555000111'], groups: {} })
-    expect(resolveBoundChatId('some-agent')).toBe('555000111')
+    expect(await resolveBoundChatId('some-agent')).toBe('555000111')
     rmSync(dir, { recursive: true, force: true })
   })
 
-  it('falls back to the first group when allowFrom is empty', () => {
+  it('falls back to the first group when allowFrom is empty', async () => {
     const dir = withAccessJson({ allowFrom: [], groups: { '-100999888': {} } })
-    expect(resolveBoundChatId('some-agent')).toBe('-100999888')
+    expect(await resolveBoundChatId('some-agent')).toBe('-100999888')
     rmSync(dir, { recursive: true, force: true })
   })
 
-  it('returns null when access.json does not exist', () => {
+  it('returns null when access.json does not exist', async () => {
     const dir = withAccessJson(undefined)
-    expect(resolveBoundChatId('some-agent')).toBeNull()
+    expect(await resolveBoundChatId('some-agent')).toBeNull()
     rmSync(dir, { recursive: true, force: true })
   })
 
-  it('returns null for an unparsable access.json rather than throwing', () => {
+  it('returns null for an unparsable access.json rather than throwing', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'bound-chat-'))
     mockChannelStateDir.mockReturnValue(dir)
     writeFileSync(join(dir, 'access.json'), '{not json')
-    expect(() => resolveBoundChatId('some-agent')).not.toThrow()
-    expect(resolveBoundChatId('some-agent')).toBeNull()
+    await expect(resolveBoundChatId('some-agent')).resolves.toBeNull()
     rmSync(dir, { recursive: true, force: true })
   })
 
-  it('reads the bound chat for the MAIN_AGENT_ID via the no-agentDir channelStateDir overload', () => {
+  it('reads the bound chat for the MAIN_AGENT_ID via the no-agentDir channelStateDir overload', async () => {
     const dir = withAccessJson({ allowFrom: ['777000111'], groups: {} })
-    expect(resolveBoundChatId(MAIN_AGENT_ID)).toBe('777000111')
+    expect(await resolveBoundChatId(MAIN_AGENT_ID)).toBe('777000111')
     expect(mockChannelStateDir).toHaveBeenCalledWith('telegram')
     rmSync(dir, { recursive: true, force: true })
   })

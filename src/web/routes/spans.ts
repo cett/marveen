@@ -10,12 +10,12 @@ import type { RouteContext } from './types.js'
 // the same way (resolveAgentTenant against the tenant_agent_availability
 // opt-in matrix). Admin (including every fleet agent on the shared
 // dashboard-token bearer) is unrestricted.
-function tenantBlocked(ctx: RouteContext, agentId: string): boolean {
+async function tenantBlocked(ctx: RouteContext, agentId: string): Promise<boolean> {
   // A fleet_agent token writes the spans of its own agent only (see fleet-agent-identity.ts).
   if (ctx.role === 'fleet_agent') return !callerMayActAs(ctx, agentId)
   if (ctx.role === 'admin') return false
   const callerTenant = ctx.tenantId ?? 'default'
-  return resolveAgentTenant(agentId) !== callerTenant
+  return await resolveAgentTenant(agentId) !== callerTenant
 }
 
 export async function tryHandleSpans(ctx: RouteContext): Promise<boolean> {
@@ -54,14 +54,14 @@ export async function tryHandleSpans(ctx: RouteContext): Promise<boolean> {
     // the create-on-close upsert path both require it) -- a bare close of an
     // already-existing span carries no agent_id and was already tenant-checked
     // when it was opened.
-    if (data.agent_id && tenantBlocked(ctx, data.agent_id)) {
+    if (data.agent_id && await tenantBlocked(ctx, data.agent_id)) {
       json(res, { error: 'forbidden', hint: 'agent not in your tenant' }, 403)
       return true
     }
     // A fleet_agent may also not touch a span another agent opened: the bare close above carries no
     // agent_id, and an open with a known span id would overwrite the row.
     if (ctx.role === 'fleet_agent') {
-      const existing = getOtelTrace(data.trace_id).find(s => s.span_id === data.span_id)
+      const existing = (await getOtelTrace(data.trace_id)).find(s => s.span_id === data.span_id)
       if (existing && !callerMayActAs(ctx, existing.agent_id)) {
         json(res, { error: 'forbidden', hint: 'A fleet agent token may only act as its own agent' }, 403)
         return true
@@ -69,14 +69,14 @@ export async function tryHandleSpans(ctx: RouteContext): Promise<boolean> {
     }
     if (data.end_ms !== undefined) {
       // Close path: update end_ms + status
-      const ok = closeOtelSpan(data.trace_id, data.span_id, data.end_ms, data.status ?? 'ok')
+      const ok = await closeOtelSpan(data.trace_id, data.span_id, data.end_ms, data.status ?? 'ok')
       if (!ok) {
         // Span may not exist yet -- treat as upsert-close (agent sent single event)
         if (!data.agent_id || !data.operation || data.start_ms === undefined) {
           json(res, { error: 'not_found', hint: 'span not found; provide agent_id, operation, start_ms to create and close in one call' }, 404)
           return true
         }
-        upsertOtelSpan({
+        await upsertOtelSpan({
           trace_id: data.trace_id, span_id: data.span_id,
           parent_span_id: data.parent_span_id ?? null,
           agent_id: data.agent_id, operation: data.operation,
@@ -91,7 +91,7 @@ export async function tryHandleSpans(ctx: RouteContext): Promise<boolean> {
         json(res, { error: 'required', hint: 'agent_id, operation, and start_ms required to open a span' }, 400)
         return true
       }
-      upsertOtelSpan({
+      await upsertOtelSpan({
         trace_id: data.trace_id, span_id: data.span_id,
         parent_span_id: data.parent_span_id ?? null,
         agent_id: data.agent_id, operation: data.operation,
@@ -107,8 +107,13 @@ export async function tryHandleSpans(ctx: RouteContext): Promise<boolean> {
   // GET /api/traces -- list recent traces
   if (path === '/api/traces' && method === 'GET') {
     const limit = Math.min(parseInt(url.searchParams.get('limit') ?? '50'), 200)
-    let traces = listOtelTraces(limit)
-    if (!isAdmin) traces = traces.filter(t => resolveAgentTenant(t.root_agent) === callerTenant)
+    let traces = await listOtelTraces(limit)
+    if (!isAdmin) {
+      // resolveAgentTenant is asynchronous: resolve every root agent first, then filter on the plain values
+      // (a Promise returned from a filter callback is always truthy).
+      const tenants = await Promise.all(traces.map(t => resolveAgentTenant(t.root_agent)))
+      traces = traces.filter((_, i) => tenants[i] === callerTenant)
+    }
     json(res, traces)
     return true
   }
@@ -117,11 +122,11 @@ export async function tryHandleSpans(ctx: RouteContext): Promise<boolean> {
   const traceMatch = path.match(/^\/api\/traces\/([^/]+)$/)
   if (traceMatch && method === 'GET') {
     const traceId = traceMatch[1]
-    const spans = getOtelTrace(traceId)
+    const spans = await getOtelTrace(traceId)
     if (!spans.length) { json(res, { error: 'not_found', hint: 'trace not found' }, 404); return true }
     // Tenant check against the root span's agent (spans are ordered by
     // start_ms ASC, so spans[0] is the trace's origin).
-    if (!isAdmin && resolveAgentTenant(spans[0].agent_id) !== callerTenant) {
+    if (!isAdmin && await resolveAgentTenant(spans[0].agent_id) !== callerTenant) {
       json(res, { error: 'not_found', hint: 'trace not found' }, 404)
       return true
     }
@@ -143,14 +148,17 @@ export async function tryHandleSpans(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'invalid_value', hint: 'from and to must be unix timestamps in milliseconds' }, 400)
       return true
     }
-    if (agentParam && tenantBlocked(ctx, agentParam)) {
+    if (agentParam && await tenantBlocked(ctx, agentParam)) {
       json(res, { error: 'forbidden', hint: 'agent not in your tenant' }, 403)
       return true
     }
-    let spans = queryOtelSpans({ agent: agentParam, fromMs, toMs, limit })
+    let spans = await queryOtelSpans({ agent: agentParam, fromMs, toMs, limit })
     // No agent filter supplied: a non-admin caller gets their own tenant's
     // spans only, never the whole fleet's.
-    if (!agentParam && !isAdmin) spans = spans.filter(s => resolveAgentTenant(s.agent_id) === callerTenant)
+    if (!agentParam && !isAdmin) {
+      const tenants = await Promise.all(spans.map(s => resolveAgentTenant(s.agent_id)))
+      spans = spans.filter((_, i) => tenants[i] === callerTenant)
+    }
     const payload = spansToOtelJson(spans, undefined, readOtelExportOptions())
     res.writeHead(200, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify(payload))

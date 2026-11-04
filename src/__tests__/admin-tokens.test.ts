@@ -10,6 +10,7 @@ vi.mock('../db.js', () => ({
   insertApiToken: vi.fn(),
   revokeApiToken: vi.fn(),
   rotateApiToken: vi.fn(),
+  ApiTokenAlreadyRevokedError: class ApiTokenAlreadyRevokedError extends Error {},
 }))
 
 vi.mock('../logger.js', () => ({
@@ -68,7 +69,7 @@ beforeEach(() => {
 
 describe('GET /api/v1/admin/tokens', () => {
   it('returns token list without token_hash field', async () => {
-    vi.mocked(db.listApiTokenRows).mockReturnValue([SAMPLE_TOKEN_ROW])
+    vi.mocked(db.listApiTokenRows).mockResolvedValue([SAMPLE_TOKEN_ROW])
 
     const { ctx, out } = makeCtx('GET', '/api/v1/admin/tokens')
     const handled = await tryHandleAdminTokens(ctx)
@@ -82,7 +83,7 @@ describe('GET /api/v1/admin/tokens', () => {
   })
 
   it('returns empty list when no tokens exist', async () => {
-    vi.mocked(db.listApiTokenRows).mockReturnValue([])
+    vi.mocked(db.listApiTokenRows).mockResolvedValue([])
 
     const { ctx, out } = makeCtx('GET', '/api/v1/admin/tokens')
     const handled = await tryHandleAdminTokens(ctx)
@@ -97,7 +98,7 @@ describe('GET /api/v1/admin/tokens', () => {
 
 describe('POST /api/v1/admin/tokens', () => {
   it('creates a token and returns 201 with raw token value', async () => {
-    vi.mocked(db.insertApiToken).mockReturnValue(SAMPLE_TOKEN_ROW)
+    vi.mocked(db.insertApiToken).mockResolvedValue(SAMPLE_TOKEN_ROW)
 
     const { ctx, out } = makeCtx('POST', '/api/v1/admin/tokens', { name: 'ci-token', role: 'agent' })
     const handled = await tryHandleAdminTokens(ctx)
@@ -160,11 +161,60 @@ describe('POST /api/v1/admin/tokens', () => {
 
 // ── POST /api/v1/admin/tokens/:id/rotate ─────────────────────────────────────
 
+// The server's own token names are not for an admin API caller to pick: a second active row under one of them
+// is reported by `agent-tokens check` as multiple_active (and its `--rotate` fix revokes the real token too),
+// and the name is the audit principal.
+describe('POST /api/v1/admin/tokens: reserved names', () => {
+  const RESERVED = [
+    'operator', 'dashboard', 'main-agent:alpha', 'fleet-agent:alpha',
+    'Operator', 'OPERATOR', 'DASHBOARD', 'Main-Agent:Alpha', 'FLEET-AGENT:alpha',
+    ' operator ', '\toperator', 'oper ator', 'dash board', 'main-agent: alpha', 'fleet- agent :alpha',
+    'fleet-agent:', 'main-agent:',
+    'ｏｐｅｒａｔｏｒ', 'opera​tor', 'fleet-agent​:alpha',
+  ]
+
+  it.each(RESERVED)('refuses %j with 409 conflict (reserved_name) and writes nothing', async (name) => {
+    const { ctx, out } = makeCtx('POST', '/api/v1/admin/tokens', { name, role: 'admin' })
+    const handled = await tryHandleAdminTokens(ctx)
+
+    expect(handled).toBe(true)
+    expect(out.status).toBe(409)
+    expect(out.body).toMatchObject({ error: 'conflict', field: 'name', reason: 'reserved_name' })
+    expect(db.insertApiToken).not.toHaveBeenCalled()
+  })
+
+  it('refuses a reserved name with every role, a fleet_agent token included', async () => {
+    for (const body of [
+      { name: 'fleet-agent:alpha', role: 'fleet_agent', agent_id: 'alpha' },
+      { name: 'Operator', role: 'read_only' },
+      { name: 'dashboard', role: 'viewer', tenant_id: 'acme' },
+    ]) {
+      const { ctx, out } = makeCtx('POST', '/api/v1/admin/tokens', body)
+      await tryHandleAdminTokens(ctx)
+      expect(out.status).toBe(409)
+    }
+    expect(db.insertApiToken).not.toHaveBeenCalled()
+  })
+
+  it.each(['ci-token', 'operators', 'operator-2', 'ci-dashboard', 'dashboard-ci', 'main-agent', 'fleet-agent', 'browser 2026-10-25 ab12'])(
+    'a free name (%j) still creates the token: 201',
+    async (name) => {
+      vi.mocked(db.insertApiToken).mockResolvedValue({ ...SAMPLE_TOKEN_ROW, name })
+
+      const { ctx, out } = makeCtx('POST', '/api/v1/admin/tokens', { name, role: 'admin' })
+      await tryHandleAdminTokens(ctx)
+
+      expect(out.status).toBe(201)
+      expect(vi.mocked(db.insertApiToken).mock.calls[0][0].name).toBe(name)
+    },
+  )
+})
+
 describe('POST /api/v1/admin/tokens/:id/rotate', () => {
   it('rotates a valid token and returns new raw token', async () => {
     const newRow = { ...SAMPLE_TOKEN_ROW, id: 2, rotated_from: 1 }
-    vi.mocked(db.getApiTokenRowById).mockReturnValue(SAMPLE_TOKEN_ROW)
-    vi.mocked(db.rotateApiToken).mockReturnValue(newRow)
+    vi.mocked(db.getApiTokenRowById).mockResolvedValue(SAMPLE_TOKEN_ROW)
+    vi.mocked(db.rotateApiToken).mockResolvedValue(newRow)
 
     const { ctx, out } = makeCtx('POST', '/api/v1/admin/tokens/1/rotate')
     const handled = await tryHandleAdminTokens(ctx)
@@ -178,8 +228,19 @@ describe('POST /api/v1/admin/tokens/:id/rotate', () => {
     expect(vi.mocked(db.rotateApiToken).mock.calls[0][0]).toBe(SAMPLE_TOKEN_ROW)
   })
 
+  it('returns 409, not 500, when a concurrent rotation or revoke wins after the pre-check', async () => {
+    vi.mocked(db.getApiTokenRowById).mockResolvedValue(SAMPLE_TOKEN_ROW)
+    vi.mocked(db.rotateApiToken).mockRejectedValue(new db.ApiTokenAlreadyRevokedError(1))
+
+    const { ctx, out } = makeCtx('POST', '/api/v1/admin/tokens/1/rotate')
+    expect(await tryHandleAdminTokens(ctx)).toBe(true)
+
+    expect(out.status).toBe(409)
+    expect(out.body.error).toBe('conflict')
+  })
+
   it('returns 404 when token not found', async () => {
-    vi.mocked(db.getApiTokenRowById).mockReturnValue(undefined)
+    vi.mocked(db.getApiTokenRowById).mockResolvedValue(undefined)
 
     const { ctx, out } = makeCtx('POST', '/api/v1/admin/tokens/999/rotate')
     const handled = await tryHandleAdminTokens(ctx)
@@ -191,7 +252,7 @@ describe('POST /api/v1/admin/tokens/:id/rotate', () => {
 
   it('returns 409 when token already revoked', async () => {
     const revoked = { ...SAMPLE_TOKEN_ROW, revoked_at: 1800000001 }
-    vi.mocked(db.getApiTokenRowById).mockReturnValue(revoked)
+    vi.mocked(db.getApiTokenRowById).mockResolvedValue(revoked)
 
     const { ctx, out } = makeCtx('POST', '/api/v1/admin/tokens/1/rotate')
     const handled = await tryHandleAdminTokens(ctx)
@@ -206,7 +267,7 @@ describe('POST /api/v1/admin/tokens/:id/rotate', () => {
 
 describe('DELETE /api/v1/admin/tokens/:id/revoke', () => {
   it('revokes a valid token and returns { revoked: true, id }', async () => {
-    vi.mocked(db.getApiTokenRowById).mockReturnValue(SAMPLE_TOKEN_ROW)
+    vi.mocked(db.getApiTokenRowById).mockResolvedValue(SAMPLE_TOKEN_ROW)
 
     const { ctx, out } = makeCtx('DELETE', '/api/v1/admin/tokens/1/revoke')
     const handled = await tryHandleAdminTokens(ctx)
@@ -219,7 +280,7 @@ describe('DELETE /api/v1/admin/tokens/:id/revoke', () => {
   })
 
   it('returns 404 when token not found', async () => {
-    vi.mocked(db.getApiTokenRowById).mockReturnValue(undefined)
+    vi.mocked(db.getApiTokenRowById).mockResolvedValue(undefined)
 
     const { ctx, out } = makeCtx('DELETE', '/api/v1/admin/tokens/999/revoke')
     const handled = await tryHandleAdminTokens(ctx)
@@ -231,7 +292,7 @@ describe('DELETE /api/v1/admin/tokens/:id/revoke', () => {
 
   it('returns 409 when token already revoked', async () => {
     const revoked = { ...SAMPLE_TOKEN_ROW, revoked_at: 1800000001 }
-    vi.mocked(db.getApiTokenRowById).mockReturnValue(revoked)
+    vi.mocked(db.getApiTokenRowById).mockResolvedValue(revoked)
 
     const { ctx, out } = makeCtx('DELETE', '/api/v1/admin/tokens/1/revoke')
     const handled = await tryHandleAdminTokens(ctx)

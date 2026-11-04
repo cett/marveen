@@ -38,9 +38,9 @@ beforeAll(() => {
   initDatabase(':memory:')
 })
 
-beforeEach(() => {
+beforeEach(async () => {
   rmSync(join(TMP, CAPABILITY_CACHE_FILENAME), { force: true })
-  _clearFederationConfigForTest()
+  await _clearFederationConfigForTest()
   rmSync(join(TMP, '.dashboard-token'), { force: true })
   _setCapabilityStoreDirForTest(TMP)
   _setFederationStoreDirForTest(TMP)
@@ -92,8 +92,8 @@ describe('containsPrivateData (deterministic outbound scrub)', () => {
     expect(containsPrivateData('reads store/.dashboard-token for auth')).toBe('token path')
   })
 
-  it('catches configured peer tokens and the dashboard token value', () => {
-    _seedFederationConfigForTest({
+  it('catches configured peer tokens and the dashboard token value', async () => {
+    await _seedFederationConfigForTest({
       enabled: true, systemId: 'localsys',
       peers: [{ id: 'teodor', baseUrl: 'https://mini.example', inboundToken: IN_TOKEN, outboundToken: OUT_TOKEN }],
     })

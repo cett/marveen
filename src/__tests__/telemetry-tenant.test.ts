@@ -124,140 +124,140 @@ describe('migration 0077 backfill (Q3b)', () => {
 })
 
 describe('resolveWriteTenant', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     initDatabase(':memory:')
-    createTenant('acme', 'Acme')
-    createTenant('beta', 'Beta')
-    setTenantAgentAvailability('acme', 'solo', true)
-    setTenantAgentAvailability('acme', 'shared', true)
-    setTenantAgentAvailability('beta', 'shared', true)
+    await createTenant('acme', 'Acme')
+    await createTenant('beta', 'Beta')
+    await setTenantAgentAvailability('acme', 'solo', true)
+    await setTenantAgentAvailability('acme', 'shared', true)
+    await setTenantAgentAvailability('beta', 'shared', true)
   })
 
   const setContext = (agent: string, tenant: string, status = 'bound', ageSeconds = 0) =>
     db.prepare('INSERT OR REPLACE INTO agent_tenant_context (agent_id, tenant_id, status, updated_at) VALUES (?, ?, ?, ?)')
       .run(agent, tenant, status, Math.floor(Date.now() / 1000) - ageSeconds)
 
-  it('is NULL for no agent', () => {
-    expect(resolveWriteTenant(null)).toBeNull()
-    expect(resolveWriteTenant('')).toBeNull()
+  it('is NULL for no agent', async () => {
+    expect(await resolveWriteTenant(null)).toBeNull()
+    expect(await resolveWriteTenant('')).toBeNull()
   })
 
-  it('is the one tenant a single-tenant agent serves, default for an agent that serves none', () => {
-    expect(resolveWriteTenant('solo')).toBe('acme')
-    expect(resolveWriteTenant('fleet-internal')).toBe('default')
+  it('is the one tenant a single-tenant agent serves, default for an agent that serves none', async () => {
+    expect(await resolveWriteTenant('solo')).toBe('acme')
+    expect(await resolveWriteTenant('fleet-internal')).toBe('default')
   })
 
-  it('counts the tenant an agent coordinates', () => {
-    updateTenant('beta', { main_agent_id: 'boss' })
-    expect(resolveWriteTenant('boss')).toBe('beta')
-    setTenantAgentAvailability('acme', 'boss', true)
-    expect(resolveWriteTenant('boss')).toBeNull()
+  it('counts the tenant an agent coordinates', async () => {
+    await updateTenant('beta', { main_agent_id: 'boss' })
+    expect(await resolveWriteTenant('boss')).toBe('beta')
+    await setTenantAgentAvailability('acme', 'boss', true)
+    expect(await resolveWriteTenant('boss')).toBeNull()
   })
 
-  it('is NULL for a shared agent without a fresh context, never default', () => {
-    expect(resolveWriteTenant('shared')).toBeNull()
+  it('is NULL for a shared agent without a fresh context, never default', async () => {
+    expect(await resolveWriteTenant('shared')).toBeNull()
     setContext('shared', 'beta', 'bound', 999_999)
-    expect(resolveWriteTenant('shared')).toBeNull()
+    expect(await resolveWriteTenant('shared')).toBeNull()
     setContext('shared', '', 'unknown')
-    expect(resolveWriteTenant('shared')).toBeNull()
+    expect(await resolveWriteTenant('shared')).toBeNull()
   })
 
-  it('takes the fresh context of a shared agent, and only for a tenant it still serves', () => {
+  it('takes the fresh context of a shared agent, and only for a tenant it still serves', async () => {
     setContext('shared', 'beta')
-    expect(resolveWriteTenant('shared')).toBe('beta')
+    expect(await resolveWriteTenant('shared')).toBe('beta')
     setContext('shared', 'initech')
-    expect(resolveWriteTenant('shared')).toBeNull()
+    expect(await resolveWriteTenant('shared')).toBeNull()
   })
 
-  it('lets a fresh context win over the single served tenant', () => {
+  it('lets a fresh context win over the single served tenant', async () => {
     setContext('solo', 'default', 'default')
-    expect(resolveWriteTenant('solo')).toBe('default')
+    expect(await resolveWriteTenant('solo')).toBe('default')
   })
 })
 
 describe('the writers stamp the tenant', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     initDatabase(':memory:')
-    createTenant('acme', 'Acme')
-    createTenant('beta', 'Beta')
-    setTenantAgentAvailability('acme', 'solo', true)
-    setTenantAgentAvailability('acme', 'shared', true)
-    setTenantAgentAvailability('beta', 'shared', true)
+    await createTenant('acme', 'Acme')
+    await createTenant('beta', 'Beta')
+    await setTenantAgentAvailability('acme', 'solo', true)
+    await setTenantAgentAvailability('acme', 'shared', true)
+    await setTenantAgentAvailability('beta', 'shared', true)
     db.prepare("INSERT INTO agent_tenant_context (agent_id, tenant_id, status, updated_at) VALUES ('shared', 'beta', 'bound', ?)")
       .run(Math.floor(Date.now() / 1000))
   })
 
-  it('otel_spans: the first stamp survives the upsert that closes the span', () => {
-    upsertOtelSpan({ trace_id: 't', span_id: '1', agent_id: 'solo', operation: 'op', start_ms: 1, parent_span_id: null, attributes: null })
-    upsertOtelSpan({ trace_id: 't', span_id: '2', agent_id: 'shared', operation: 'op', start_ms: 1, parent_span_id: null, attributes: null })
+  it('otel_spans: the first stamp survives the upsert that closes the span', async () => {
+    await upsertOtelSpan({ trace_id: 't', span_id: '1', agent_id: 'solo', operation: 'op', start_ms: 1, parent_span_id: null, attributes: null })
+    await upsertOtelSpan({ trace_id: 't', span_id: '2', agent_id: 'shared', operation: 'op', start_ms: 1, parent_span_id: null, attributes: null })
     db.prepare("UPDATE agent_tenant_context SET tenant_id = 'acme' WHERE agent_id = 'shared'").run()
-    upsertOtelSpan({ trace_id: 't', span_id: '2', agent_id: 'shared', operation: 'op', start_ms: 1, parent_span_id: null, attributes: null, end_ms: 2, status: 'ok' })
+    await upsertOtelSpan({ trace_id: 't', span_id: '2', agent_id: 'shared', operation: 'op', start_ms: 1, parent_span_id: null, attributes: null, end_ms: 2, status: 'ok' })
     expect(tenantsOf('otel_spans', "span_id IN ('1','2')")).toEqual(['acme', 'beta'])
   })
 
-  it('daily_logs, background_tasks, skill_usage', () => {
-    appendDailyLog('solo', 'a')
-    appendDailyLog('shared', 'b')
+  it('daily_logs, background_tasks, skill_usage', async () => {
+    await appendDailyLog('solo', 'a')
+    await appendDailyLog('shared', 'b')
     expect(tenantsOf('daily_logs')).toEqual(['acme', 'beta'])
-    createBackgroundTaskAtomic('b1', 'shared', 'p', 'tmux', 5)
+    await createBackgroundTaskAtomic('b1', 'shared', 'p', 'tmux', 5)
     expect(tenantsOf('background_tasks')).toEqual(['beta'])
-    logSkillUsage('solo', 'sk', 'tool_call', 's1')
-    logSkillUsage('shared', 'sk', 'tool_call', 's2')
+    await logSkillUsage('solo', 'sk', 'tool_call', 's1')
+    await logSkillUsage('shared', 'sk', 'tool_call', 's2')
     expect(tenantsOf('skill_usage')).toEqual(['acme', 'beta'])
   })
 
-  it('task_runs: the schedule decides, the agent only when there is no such schedule', () => {
+  it('task_runs: the schedule decides, the agent only when there is no such schedule', async () => {
     db.prepare("INSERT INTO schedules (id, schedule, agent, tenant_id) VALUES ('nightly', '0 3 * * *', 'shared', 'acme')").run()
-    appendTaskRun('nightly', 'shared')
-    appendTaskRun('adhoc', 'shared')
-    appendTaskRun('adhoc', 'solo')
+    await appendTaskRun('nightly', 'shared')
+    await appendTaskRun('adhoc', 'shared')
+    await appendTaskRun('adhoc', 'solo')
     expect(tenantsOf('task_runs')).toEqual(['acme', 'beta', 'acme'])
   })
 
-  it('hook_audit_log, store_file_audit, agent_audit_log; an event with no agent is NULL', () => {
-    insertHookAuditLog({ agent_id: 'shared', hook_type: 'PreToolUse', verdict: 'allow' })
-    insertHookAuditLog({ hook_type: 'PreToolUse', verdict: 'allow' })
+  it('hook_audit_log, store_file_audit, agent_audit_log; an event with no agent is NULL', async () => {
+    await insertHookAuditLog({ agent_id: 'shared', hook_type: 'PreToolUse', verdict: 'allow' })
+    await insertHookAuditLog({ hook_type: 'PreToolUse', verdict: 'allow' })
     expect(tenantsOf('hook_audit_log')).toEqual(['beta', null])
-    logStoreFileEvent('f', 'write', 0, 1, 'solo')
-    logStoreFileEvent('f', 'write', 0, 1, null)
+    await logStoreFileEvent('f', 'write', 0, 1, 'solo')
+    await logStoreFileEvent('f', 'write', 0, 1, null)
     expect(tenantsOf('store_file_audit')).toEqual(['acme', null])
     // The dashboard is an actor, not an agent: never filed under default. An announced tenant wins,
     // null included; a shared agent without context stays unknown.
-    logStoreFileEvent('f', 'create', 0, 1, 'dashboard')
-    logStoreFileEvent('f', 'create', 0, 1, 'dashboard', 'beta')
-    logStoreFileEvent('f', 'create', 0, 1, 'solo', null)
-    logStoreFileEvent('f', 'create', 0, 1, 'solo', 'beta')
+    await logStoreFileEvent('f', 'create', 0, 1, 'dashboard')
+    await logStoreFileEvent('f', 'create', 0, 1, 'dashboard', 'beta')
+    await logStoreFileEvent('f', 'create', 0, 1, 'solo', null)
+    await logStoreFileEvent('f', 'create', 0, 1, 'solo', 'beta')
     expect(tenantsOf('store_file_audit', "event_type = 'create'")).toEqual([null, 'beta', null, 'beta'])
-    writeAgentAuditLog({ agent_id: 'shared', entity: 'kanban', action: 'create' })
+    await writeAgentAuditLog({ agent_id: 'shared', entity: 'kanban', action: 'create' })
     expect(tenantsOf('agent_audit_log')).toEqual(['beta'])
   })
 
-  it('an admin audit row takes the tenant of the dashboard user, NULL for the global admin', () => {
+  it('an admin audit row takes the tenant of the dashboard user, NULL for the global admin', async () => {
     db.prepare("INSERT INTO dashboard_users (username, password_hash, created_at, updated_at, tenant_id) VALUES ('tadmin', 'x', 0, 0, 'acme'), ('root', 'x', 0, 0, NULL)").run()
-    writeAdminAuditLog('TAdmin', 'tenant.update', 'acme', {})
-    writeAdminAuditLog('root', 'tenant.create', 'beta', {})
-    writeAdminAuditLog('ghost', 'x', 'y', {})
+    await writeAdminAuditLog('TAdmin', 'tenant.update', 'acme', {})
+    await writeAdminAuditLog('root', 'tenant.create', 'beta', {})
+    await writeAdminAuditLog('ghost', 'x', 'y', {})
     expect(tenantsOf('agent_audit_log', "entity = 'admin'")).toEqual(['acme', null, null])
   })
 })
 
 describe('token rollups keep the tenants of a shared agent apart', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     initDatabase(':memory:')
-    createTenant('acme', 'Acme')
-    createTenant('beta', 'Beta')
+    await createTenant('acme', 'Acme')
+    await createTenant('beta', 'Beta')
   })
 
   const raw = (tenant: string, ts: number, tokens: number) =>
     db.prepare("INSERT INTO token_usage (agent, session_id, timestamp, input_tokens, model, tenant_id) VALUES ('shared', ?, ?, ?, 'm', ?)")
       .run(`s-${tenant}-${ts}`, ts, tokens, tenant)
 
-  it('one daily and one monthly row per tenant, and the tenant budget sees the old months', () => {
+  it('one daily and one monthly row per tenant, and the tenant budget sees the old months', async () => {
     const old = Math.floor(Date.now() / 1000) - 100 * 86400
     raw('acme', old, 10)
     raw('acme', old + 60, 5)
     raw('beta', old + 120, 7)
-    pruneTokenUsage()
+    await pruneTokenUsage()
     const daily = db.prepare('SELECT tenant_id, input_tokens, row_count FROM token_usage_daily ORDER BY tenant_id').all()
     expect(daily).toEqual([
       { tenant_id: 'acme', input_tokens: 15, row_count: 2 },
@@ -268,23 +268,23 @@ describe('token rollups keep the tenants of a shared agent apart', () => {
       { tenant_id: 'acme', input_tokens: 15 },
       { tenant_id: 'beta', input_tokens: 7 },
     ])
-    expect(getMonthlyTokenSpend({ tenant: 'acme' }, old)).toBe(15)
-    expect(getMonthlyTokenSpend({ tenant: 'beta' }, old)).toBe(7)
-    expect(getMonthlyTokenSpend({}, old)).toBe(22)
+    expect(await getMonthlyTokenSpend({ tenant: 'acme' }, old)).toBe(15)
+    expect(await getMonthlyTokenSpend({ tenant: 'beta' }, old)).toBe(7)
+    expect(await getMonthlyTokenSpend({}, old)).toBe(22)
   })
 })
 
 describe('labels belong to a tenant', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     initDatabase(':memory:')
-    createTenant('acme', 'Acme')
+    await createTenant('acme', 'Acme')
   })
 
-  it('a new label is default unless a tenant is named, and the list narrows to a tenant', () => {
-    const a = createLabel({ id: 'a', name: 'bug', color: '#fff' })
-    const b = createLabel({ id: 'b', name: 'bug', color: '#fff', tenant_id: 'acme' })
+  it('a new label is default unless a tenant is named, and the list narrows to a tenant', async () => {
+    const a = await createLabel({ id: 'a', name: 'bug', color: '#fff' })
+    const b = await createLabel({ id: 'b', name: 'bug', color: '#fff', tenant_id: 'acme' })
     expect([a.tenant_id, b.tenant_id]).toEqual(['default', 'acme'])
-    expect(listLabels('acme').map(l => l.id)).toEqual(['b'])
-    expect(listLabels(null).map(l => l.id).sort()).toEqual(['a', 'b'])
+    expect((await listLabels('acme')).map(l => l.id)).toEqual(['b'])
+    expect((await listLabels(null)).map(l => l.id).sort()).toEqual(['a', 'b'])
   })
 })

@@ -123,7 +123,7 @@ const UUID_V4_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9
 // setup_required }. authenticated keeps its exact old meaning for token callers (existing probes
 // parse only that field): a valid bearer -> authenticated:true. A device key is
 // an authenticated principal too (method:'device', device:<key name>).
-function statusPayload(ctx: RouteContext) {
+async function statusPayload(ctx: RouteContext) {
   const { auth } = ctx
   const authenticated = auth?.kind === 'token' || auth?.kind === 'session' || auth?.kind === 'device'
   const method = authenticated ? auth!.kind : null
@@ -147,8 +147,8 @@ function statusPayload(ctx: RouteContext) {
     role,
     tenant_id,
     human_only_enforced,
-    login_available: countDashboardUsers(false) >= 1,
-    setup_required: countDashboardUsers(true) === 0,
+    login_available: await countDashboardUsers(false) >= 1,
+    setup_required: await countDashboardUsers(true) === 0,
   }
 }
 
@@ -156,7 +156,7 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method, auth } = ctx
 
   if (path === '/api/auth/status' && method === 'GET') {
-    json(res, statusPayload(ctx))
+    json(res, await statusPayload(ctx))
     return true
   }
 
@@ -181,7 +181,7 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
       return true
     }
 
-    const user = username ? getDashboardUser(username) : undefined
+    const user = username ? await getDashboardUser(username) : undefined
     let ok = false
     if (user && !user.disabled && password) {
       ok = await verifyPassword(password, user.password_hash)
@@ -201,8 +201,8 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
     // Session fixation defence: if a (valid) session cookie accompanied the
     // login, revoke it -- login always mints a fresh id.
     const presented = parseCookies(req.headers.cookie)[SESSION_COOKIE_NAME]
-    if (presented) revokeSession(presented)
-    const token = createSession(
+    if (presented) await revokeSession(presented)
+    const token = await createSession(
       { userId: user.id, username: user.username },
       { userAgent: str(req.headers['user-agent']) || null, remoteNote: isHttps(req) ? 'https' : 'loopback' },
     )
@@ -213,7 +213,7 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/auth/logout' && method === 'POST') {
     const presented = parseCookies(req.headers.cookie)[SESSION_COOKIE_NAME]
-    if (presented) revokeSession(presented)
+    if (presented) await revokeSession(presented)
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Set-Cookie': clearCookie(req), 'Cache-Control': 'private, no-store' })
     res.end(JSON.stringify({ ok: true }))
     return true
@@ -224,8 +224,8 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'unauthorized', hint: 'A valid session is required' }, 401)
       return true
     }
-    const user = getDashboardUser(auth.user)
-    if (user) revokeAllForUser(user.id)
+    const user = await getDashboardUser(auth.user)
+    if (user) await revokeAllForUser(user.id)
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Set-Cookie': clearCookie(req), 'Cache-Control': 'private, no-store' })
     res.end(JSON.stringify({ ok: true }))
     return true
@@ -236,12 +236,12 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'unauthorized', hint: 'A valid session is required' }, 401)
       return true
     }
-    const user = getDashboardUser(auth.user)
+    const user = await getDashboardUser(auth.user)
     if (!user) {
       json(res, { error: 'not_found', field: 'user' }, 404)
       return true
     }
-    json(res, { sessions: listUserSessions(user.id) })
+    json(res, { sessions: await listUserSessions(user.id) })
     return true
   }
 
@@ -255,9 +255,9 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
     }
     const newPassword = str(body.new_password)
 
-    let user = undefined as ReturnType<typeof getDashboardUser>
+    let user = undefined as Awaited<ReturnType<typeof getDashboardUser>>
     if (auth?.kind === 'session' && auth.user) {
-      user = getDashboardUser(auth.user)
+      user = await getDashboardUser(auth.user)
       if (!user) {
         json(res, { error: 'not_found', field: 'user' }, 404)
         return true
@@ -270,12 +270,12 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
       }
     } else if (auth?.kind === 'token') {
       // With enforcement on and a dashboard user present, the bearer may not reset anyone's password.
-      if (denyUnlessHumanSession(ctx, 'auth.password.reset')) return true
+      if (await denyUnlessHumanSession(ctx, 'auth.password.reset')) return true
       // Bearer break-glass: may omit current_password but must name the target.
       // EXPLICITLY token-only -- a reset without the current password is the
       // strongest action here and must never leak to weaker credential kinds.
       const username = str(body.username)
-      user = username ? getDashboardUser(username) : undefined
+      user = username ? await getDashboardUser(username) : undefined
       if (!user) {
         json(res, { error: 'not_found', field: 'user' }, 404)
         return true
@@ -292,17 +292,17 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
       return true
     }
     const hash = await hashPassword(newPassword)
-    updateDashboardUserPassword(user.id, hash)
+    await updateDashboardUserPassword(user.id, hash)
     // Revoke every other session of this user; keep the caller's own if present.
     const presented = parseCookies(req.headers.cookie)[SESSION_COOKIE_NAME]
-    revokeAllForUser(user.id, presented ?? undefined)
+    await revokeAllForUser(user.id, presented ?? undefined)
     if (auth?.kind === 'token') {
       // Break-glass reset (no current_password proven): leave a durable audit
       // row and ping the operator's channel. Only the username goes into the
       // trail, never credential material. Fire-and-forget: the reset must
       // succeed with or without a wired channel (notifySecurityEvent is
       // silent when none is configured).
-      logConfigChange('security.break_glass_password_reset', null, user.username, 'token')
+      await logConfigChange('security.break_glass_password_reset', null, user.username, 'token')
       logger.warn({ username: user.username }, 'break-glass password reset via bearer token')
       void notifySecurityEvent(`🔑 Break-glass jelszó-reset a dashboardon: "${user.username}" jelszavát a hozzáférési tokennel állították át. Ha nem te voltál, futtasd: npm run dashboard-user -- security:reset`)
     }
@@ -315,12 +315,12 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
       json(res, FORBIDDEN_KIND, 403)
       return true
     }
-    json(res, { users: listDashboardUsers() })
+    json(res, { users: await listDashboardUsers() })
     return true
   }
 
   if (path === '/api/auth/users' && method === 'POST') {
-    if (denyUnlessHumanSession(ctx, 'auth.user.create')) return true
+    if (await denyUnlessHumanSession(ctx, 'auth.user.create')) return true
     if (!kindAllowed(auth, USER_ADMIN_KINDS)) {
       json(res, FORBIDDEN_KIND, 403)
       return true
@@ -338,7 +338,7 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'invalid_value', field: 'username', hint: '1-64 chars: letters, digits, . _ -' }, 400)
       return true
     }
-    if (getDashboardUser(username)) {
+    if (await getDashboardUser(username)) {
       json(res, { error: 'conflict' }, 409)
       return true
     }
@@ -349,9 +349,9 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
       return true
     }
     const hash = await hashPassword(password)
-    let created: ReturnType<typeof createDashboardUser>
+    let created: Awaited<ReturnType<typeof createDashboardUser>>
     try {
-      created = createDashboardUser(username, hash)
+      created = await createDashboardUser(username, hash)
     } catch (err) {
       // A second request with the same name passed the check above while this one hashed the password.
       if (isUniqueViolationOn(err, 'dashboard_users.username')) {
@@ -370,7 +370,7 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
       json(res, FORBIDDEN_KIND, 403)
       return true
     }
-    json(res, { keys: listDeviceKeys() })
+    json(res, { keys: await listDeviceKeys() })
     return true
   }
 
@@ -379,7 +379,7 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
       json(res, FORBIDDEN_KIND, 403)
       return true
     }
-    if (denyAgentCredentialIssue(ctx, 'auth.device_key.create')) return true
+    if (await denyAgentCredentialIssue(ctx, 'auth.device_key.create')) return true
     let body: Record<string, unknown>
     try {
       body = await parseJsonBody(req)
@@ -411,7 +411,7 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
       }
       installId = body.install_id
     }
-    const minted = createDeviceKey(name, { expiresInDays, installId })
+    const minted = await createDeviceKey(name, { expiresInDays, installId })
     logger.info({ id: minted.id, name: minted.name, expiresAt: minted.expiresAt, installId: minted.installId ?? undefined }, 'device key minted')
     // `key` is the one and only disclosure of the raw credential.
     json(res, { ok: true, id: minted.id, name: minted.name, key: minted.key, created_at: minted.createdAt, expires_at: minted.expiresAt, install_id: minted.installId }, 201)
@@ -425,8 +425,8 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
       return true
     }
     const id = Number(deviceKeyMatch[1])
-    const key = getDeviceKey(id)
-    if (!key || !revokeDeviceKey(id)) {
+    const key = await getDeviceKey(id)
+    if (!key || !await revokeDeviceKey(id)) {
       json(res, { error: 'not_found', field: 'device_key' }, 404)
       return true
     }
@@ -442,7 +442,7 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
         logger.error({ err, id, installId: key.installId }, 'device key revoked but authorized_keys removal failed')
         sshRemoved = false
       }
-      logConfigChange('security.bridge_revoke', null, `${key.name} (${key.installId}) ssh_removed=${sshRemoved}${sshDirOverride() ? ' sshdir_override=1' : ''}`, auth!.kind)
+      await logConfigChange('security.bridge_revoke', null, `${key.name} (${key.installId}) ssh_removed=${sshRemoved}${sshDirOverride() ? ' sshdir_override=1' : ''}`, auth!.kind)
     }
     logger.info({ id, name: key.name, installId: key.installId ?? undefined, sshRemoved }, 'device key revoked')
     json(res, { ok: true, ...(key.installId ? { ssh_removed: sshRemoved } : {}) })
@@ -451,21 +451,21 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
 
   const delMatch = /^\/api\/auth\/users\/([^/]+)$/.exec(path)
   if (delMatch && method === 'DELETE') {
-    if (denyUnlessHumanSession(ctx, 'auth.user.delete')) return true
+    if (await denyUnlessHumanSession(ctx, 'auth.user.delete')) return true
     if (!kindAllowed(auth, USER_ADMIN_KINDS)) {
       json(res, FORBIDDEN_KIND, 403)
       return true
     }
     const username = decodeURIComponent(delMatch[1]!)
-    const user = getDashboardUser(username)
+    const user = await getDashboardUser(username)
     if (!user) {
       json(res, { error: 'not_found', field: 'user' }, 404)
       return true
     }
-    deleteDashboardUser(username)
-    revokeAllForUser(user.id)
+    await deleteDashboardUser(username)
+    await revokeAllForUser(user.id)
     // Deleting the last user is the documented way to return to token-only mode.
-    logger.info({ username, remaining: countDashboardUsers(true) }, 'dashboard user deleted')
+    logger.info({ username, remaining: await countDashboardUsers(true) }, 'dashboard user deleted')
     json(res, { ok: true })
     return true
   }

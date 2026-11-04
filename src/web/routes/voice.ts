@@ -272,7 +272,7 @@ export async function tryHandleVoice(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'conflict', field: 'agent_id', hint: 'Channel not adopted: the owner records it with POST /api/channel-credentials/adopt' }, 409)
       return true
     }
-    if (!serverMaySendTo(agentId, chatId)) {
+    if (!(await serverMaySendTo(agentId, chatId))) {
       json(res, { error: 'forbidden', field: 'chat_id', hint: 'chat_id is not on this agent\'s adopted chat list' }, 403)
       return true
     }

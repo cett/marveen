@@ -4,7 +4,6 @@ import { logger } from '../../logger.js'
 import { SETTINGS_REGISTRY, validateSettingValue } from '../../config-registry.js'
 import { getEffectiveSettingValue, setOverride } from '../../settings-store.js'
 import { logConfigChange } from '../../db.js'
-import { setStoreWriteActor } from '../../store-watcher.js'
 import { RBAC_MODE_KEY, parseRbacMode, refreshRbacMode, describeRbacMode } from '../rbac-mode.js'
 import { denyUnlessHumanSessionAlways, denyUnlessHumanOnlyEnforced } from '../session-only-guard.js'
 import type { RouteContext } from './types.js'
@@ -104,7 +103,7 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
       // off a token can create the dashboard admin that would loosen the gate, so loosening is refused then.
       if (
         looseningRbac &&
-        denyUnlessHumanOnlyEnforced(
+        await denyUnlessHumanOnlyEnforced(
           ctx,
           'settings.rbac_mode.loosen',
           'Switching the RBAC gate to shadow is only possible while APPROVAL_HUMAN_ONLY_ENFORCE is on; with it off a token can create the dashboard user that would do it',
@@ -114,7 +113,7 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
       }
       if (
         looseningRbac &&
-        denyUnlessHumanSessionAlways(
+        await denyUnlessHumanSessionAlways(
           ctx,
           'settings.rbac_mode.loosen',
           'Switching the RBAC gate to shadow needs a person logged in to the dashboard as a global admin',
@@ -124,11 +123,8 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
       }
 
       const resolvedActor = typeof actor === 'string' && actor ? actor : 'dashboard'
-      // A setting is fleet-wide: no tenant. The actor string comes from the request body, so it is
-      // an audit label only and never decides a tenant.
-      setStoreWriteActor(resolvedActor, null)
       const oldValue = getEffectiveSettingValue(key)
-      const result = setOverride(key, value)
+      const result = await setOverride(key, value)
       if (!result.ok) {
         json(res, { error: 'internal_error', hint: result.error }, 500)
         return true
@@ -143,11 +139,11 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
       // step that introduced the exposure.
       const loggedOldValue = def.secret ? SECRET_MASK : oldValue
       const loggedNewValue = def.secret ? SECRET_MASK : validation.value!
-      logConfigChange(key, loggedOldValue, loggedNewValue, resolvedActor)
+      await logConfigChange(key, loggedOldValue, loggedNewValue, resolvedActor)
       logger.info({ key, oldValue: loggedOldValue, newValue: loggedNewValue }, 'Setting updated')
       if (isRbacMode) {
         // The write and its journal row are both in: the cache can now read a consistent pair.
-        refreshRbacMode()
+        await refreshRbacMode()
         // The notice to the main agent comes from refreshRbacMode (every switch to shadow); the actor is in the journal.
         if (looseningRbac) {
           logger.warn({ actor: resolvedActor, oldValue }, 'RBAC_MODE set to shadow: the RBAC gate no longer blocks')

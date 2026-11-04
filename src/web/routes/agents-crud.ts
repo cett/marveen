@@ -165,8 +165,8 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
     // rides along on a shared agent. Admin bypasses (role check, not
     // tenantId === null -- see RouteContext). Same rule as /api/team/graph via
     // agent-tenant-scope.ts.
-    const visible = visibleAgentSet(ctx)
-    const list = listAgentSummaries()
+    const visible = await visibleAgentSet(ctx)
+    const list = await listAgentSummaries()
     jsonMaybeGzip(req, res, visible === null
       ? list
       : list.filter(a => visible.has(a.name)).map(a => scopeTenantFieldsToCaller(a, ctx)))
@@ -208,7 +208,7 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
 
     // Non-admin: only the agents their tenant may see, and never the main
     // agent's channels session (the tail is live pane output).
-    const visible = visibleAgentSet(ctx)
+    const visible = await visibleAgentSet(ctx)
 
     // Main agent runs in the --channels session, not agent-<name>.
     if (visible === null) {
@@ -253,13 +253,13 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
 
     // Token usage: per-agent average input tokens/call over the last 30 days
     const thirtyDaysAgo = Math.floor(Date.now() / 1000) - 30 * 24 * 3600
-    const tokenSummaries = getTokenSummary(thirtyDaysAgo)
+    const tokenSummaries = await getTokenSummary(thirtyDaysAgo)
     const tokenMap = new Map(
       tokenSummaries.map(s => [s.agent, s.totalCalls > 0 ? s.totalInput / s.totalCalls : 0])
     )
 
     // Kanban: open and urgent/high card counts per assignee
-    const kanbanRows = getOpenKanbanCountsByAssignee()
+    const kanbanRows = await getOpenKanbanCountsByAssignee()
     const kanbanMap = new Map<string, { open: number; urgent: number }>()
     for (const row of kanbanRows) {
       if (!row.assignee) continue
@@ -287,7 +287,7 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
     }
     const schedFreqMap = new Map<string, number>()
     try {
-      for (const task of listScheduledTasks()) {
+      for (const task of await listScheduledTasks()) {
         if (!task.enabled) continue
         const freq = cronFreqPerDay(task.schedule)
         schedFreqMap.set(task.agent, (schedFreqMap.get(task.agent) ?? 0) + freq)
@@ -341,11 +341,11 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
     if (!description) { json(res, { error: 'required', field: 'description', hint: 'description is required' }, 400); return true }
     if (existsSync(agentDir(name))) { json(res, { error: 'conflict', hint: 'An agent with this name already exists' }, 409); return true }
 
-    scaffoldAgentDir(name)
+    await scaffoldAgentDir(name)
     // The agent's own API token (agents/<name>/.agent-token, 0600). A failure does not undo the
     // agent: it still works on the shared token, and `npm run agent-tokens -- issue <name>` retries.
     try {
-      issueAgentToken(name)
+      await issueAgentToken(name)
     } catch (err) {
       logger.warn({ err, name }, 'agent token could not be issued; issue it with `npm run agent-tokens`')
     }
@@ -412,7 +412,7 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
     }
 
     try {
-      writeAgentAuditLog({ agent_id: 'system', entity: 'agent', action: 'create', entity_id: name, detail: { model, profileId } })
+      await writeAgentAuditLog({ agent_id: 'system', entity: 'agent', action: 'create', entity_id: name, detail: { model, profileId } })
     } catch { /* audit failure must not abort agent creation */ }
 
     // Notifications are deliberately OUTSIDE the try above. They used to sit
@@ -430,7 +430,7 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
       for (const target of [MAIN_AGENT_ID, ...runningAgents]) {
         // The description is caller-written free text inside a message that goes out as `system`, which
         // the marker filter trusts: one line, so no line of it can start with a server-only marker.
-        createAgentMessage('system', target, `Uj csapattag erkezett: ${name}. Leirasa: ${oneLine(description)}. Udv neki ha legkozelebb beszeltek!`)
+        await createAgentMessage('system', target, `Uj csapattag erkezett: ${name}. Leirasa: ${oneLine(description)}. Udv neki ha legkozelebb beszeltek!`)
       }
     } catch (err) {
       logger.warn({ err, name }, 'Agent created, but the team notification failed')
@@ -559,7 +559,7 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
     // no tenant-membership fields (another tenant's name must not leak), and no
     // edge or delegatesTo entry pointing at an agent they cannot see. An agent
     // whose manager is hidden simply becomes a root of their chart.
-    const visible = visibleAgentSet(ctx)
+    const visible = await visibleAgentSet(ctx)
     if (visible === null) {
       nodes.push({
         id: MAIN_AGENT_ID,
@@ -583,7 +583,7 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
         securityProfile: readAgentSecurityProfile(agentName),
       }
       if (visible !== null) { nodes.push(base); continue }
-      const { primaryTenantId, tenantIds, tenantNames } = tenantSummaryFields(agentName)
+      const { primaryTenantId, tenantIds, tenantNames } = await tenantSummaryFields(agentName)
       const primaryTenantName = primaryTenantId ? tenantNames[primaryTenantId] : undefined
       nodes.push({
         ...base,
@@ -831,10 +831,10 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
     // (not 403) so the tenant can't distinguish "not mine" from "doesn't
     // exist". mcpJson is always redacted for non-admin, even when the agent
     // is enabled for their tenant (may hold credentials/endpoints).
-    if (!callerCanSeeAgent(ctx, name)) {
+    if (!await callerCanSeeAgent(ctx, name)) {
       json(res, { error: 'not_found', field: 'name' }, 404); return true
     }
-    json(res, scopeTenantFieldsToCaller(getAgentDetail(name, !isAdmin), ctx))
+    json(res, scopeTenantFieldsToCaller(await getAgentDetail(name, !isAdmin), ctx))
     return true
   }
 
@@ -959,20 +959,20 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
     // agent dir, and the agent "returns" as an empty draft that still reports
     // running=true. stopAgentProcess() reads config from the dir for its orphan
     // reap, so it must run while the dir still exists.
-    if (isAgentRunning(name)) stopAgentProcess(name)
+    if (isAgentRunning(name)) await stopAgentProcess(name)
     // Clear the desired run-state so the reconciler stops trying to start a
     // non-existent agent (#857). A stale entry also starts a same-named new
     // agent immediately on next create -- unasked.
-    removeDesiredAgent(name)
+    await removeDesiredAgent(name)
     // A deleted agent keeps no credential (its token file goes with the directory).
-    revokeApiTokensForAgent(name, Math.floor(Date.now() / 1000))
+    await revokeApiTokensForAgent(name, Math.floor(Date.now() / 1000))
     rmSync(dir, { recursive: true, force: true })
     // The server-side channel record (vault token, adopted chats) must not outlive the agent: a new
     // agent of the same name would otherwise inherit the old bot and its chat list.
-    forgetChannel(name)
+    await forgetChannel(name)
     cleanupTeamReferences(name)
     try {
-      writeAgentAuditLog({ agent_id: 'system', entity: 'agent', action: 'delete', entity_id: name })
+      await writeAgentAuditLog({ agent_id: 'system', entity: 'agent', action: 'delete', entity_id: name })
     } catch { /* audit failure must not abort agent deletion */ }
     json(res, { ok: true })
     return true

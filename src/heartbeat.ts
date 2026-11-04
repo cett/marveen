@@ -264,9 +264,9 @@ export function formatHeartbeatCardLabel(card: { id: string; title: string }): s
   return `[${card.id}] ${title}`
 }
 
-function collectKanban(): HeartbeatData['kanban'] {
+async function collectKanban(): Promise<HeartbeatData['kanban']> {
   try {
-    const summary = getHeartbeatKanbanSummary()
+    const summary = await getHeartbeatKanbanSummary()
     return {
       urgent: summary.urgent.length,
       in_progress: summary.in_progress.length,
@@ -293,10 +293,10 @@ function collectSystem(): SystemInfo {
 async function collectData(): Promise<HeartbeatData> {
   const [calendar, kanban, system] = await Promise.all([
     collectCalendar(),
-    Promise.resolve(collectKanban()),
+    Promise.resolve(await collectKanban()),
     Promise.resolve(collectSystem()),
   ])
-  const tasks = getActiveScheduledTaskCount()
+  const tasks = await getActiveScheduledTaskCount()
   return { timestamp: new Date(), calendar, kanban, system, tasks }
 }
 
@@ -511,19 +511,23 @@ let heartbeatTimeout: ReturnType<typeof setTimeout> | null = null
 let stopped = false
 
 function scheduleNext(delayMs: number): void {
-  heartbeatTimeout = setTimeout(async () => {
-    await executeHeartbeat().catch((err) => logger.error({ err }, 'Heartbeat hiba'))
-
-    if (stopped) return
-
-    const nextDelayMs = msUntilNextHeartbeat()
-    const nextRun = new Date(Date.now() + nextDelayMs)
-    logger.info(
-      { nextRun: nextRun.toLocaleString('hu-HU', { timeZone: APP_TZ }) },
-      `Heartbeat kovetkezo: ${nextRun.toLocaleTimeString('hu-HU', { timeZone: APP_TZ })}`
-    )
-    scheduleNext(nextDelayMs)
+  heartbeatTimeout = setTimeout(() => {
+    void runHeartbeatTick().catch((err) => logger.error({ err }, 'Heartbeat tick hiba'))
   }, delayMs)
+}
+
+async function runHeartbeatTick(): Promise<void> {
+  await executeHeartbeat().catch((err) => logger.error({ err }, 'Heartbeat hiba'))
+
+  if (stopped) return
+
+  const nextDelayMs = msUntilNextHeartbeat()
+  const nextRun = new Date(Date.now() + nextDelayMs)
+  logger.info(
+    { nextRun: nextRun.toLocaleString('hu-HU', { timeZone: APP_TZ }) },
+    `Heartbeat kovetkezo: ${nextRun.toLocaleTimeString('hu-HU', { timeZone: APP_TZ })}`
+  )
+  scheduleNext(nextDelayMs)
 }
 
 export function initHeartbeat(): void {

@@ -2,7 +2,7 @@
 // lifecycle (hashing, cache, debounce, expiry policy) lives in
 // web/auth-device-keys.ts; this module only owns the SQL.
 
-import { db } from './connection.js'
+import { dbx } from './facade.js'
 
 export interface DeviceKeyRow {
   id: number
@@ -23,58 +23,54 @@ export interface DeviceKeyAuthRow {
 
 const INFO_COLUMNS = 'id, name, created_at, last_used_at, expires_at, install_id, tenant_id'
 
-export function insertDeviceKey(
+export async function insertDeviceKey(
   keyHash: string,
   name: string,
   createdAt: number,
   expiresAt: number | null,
   installId: string | null,
-): number {
-  const { id } = db
-    .prepare('INSERT INTO device_keys (key_hash, name, created_at, last_used_at, expires_at, install_id) VALUES (?, ?, ?, ?, ?, ?) RETURNING id')
-    .get(keyHash, name, createdAt, null, expiresAt, installId) as { id: number }
+): Promise<number> {
+  const { id } = (await dbx.get('INSERT INTO device_keys (key_hash, name, created_at, last_used_at, expires_at, install_id) VALUES (?, ?, ?, ?, ?, ?) RETURNING id', keyHash, name, createdAt, null, expiresAt, installId)) as { id: number }
   return id
 }
 
-export function deleteDeviceKeyByHash(keyHash: string): void {
-  db.prepare('DELETE FROM device_keys WHERE key_hash = ?').run(keyHash)
+export async function deleteDeviceKeyByHash(keyHash: string): Promise<void> {
+  await dbx.run('DELETE FROM device_keys WHERE key_hash = ?', keyHash)
 }
 
-export function getDeviceKeyAuthRowByHash(keyHash: string): DeviceKeyAuthRow | undefined {
-  return db
-    .prepare('SELECT id, name, last_used_at, expires_at FROM device_keys WHERE key_hash = ?')
-    .get(keyHash) as DeviceKeyAuthRow | undefined
+export async function getDeviceKeyAuthRowByHash(keyHash: string): Promise<DeviceKeyAuthRow | undefined> {
+  return dbx.get<DeviceKeyAuthRow>('SELECT id, name, last_used_at, expires_at FROM device_keys WHERE key_hash = ?', keyHash)
 }
 
 /** Returns the number of rows touched (0 = the key no longer exists). */
-export function touchDeviceKeyLastUsed(keyHash: string, now: number): number {
-  return db.prepare('UPDATE device_keys SET last_used_at = ? WHERE key_hash = ?').run(now, keyHash).changes
+export async function touchDeviceKeyLastUsed(keyHash: string, now: number): Promise<number> {
+  return (await dbx.run('UPDATE device_keys SET last_used_at = ? WHERE key_hash = ?', now, keyHash)).changes
 }
 
-export function listDeviceKeyRows(): DeviceKeyRow[] {
-  return db.prepare(`SELECT ${INFO_COLUMNS} FROM device_keys ORDER BY created_at DESC`).all() as DeviceKeyRow[]
+export async function listDeviceKeyRows(): Promise<DeviceKeyRow[]> {
+  return dbx.all<DeviceKeyRow>(`SELECT ${INFO_COLUMNS} FROM device_keys ORDER BY created_at DESC`)
 }
 
-export function getDeviceKeyRowById(id: number): DeviceKeyRow | undefined {
-  return db.prepare(`SELECT ${INFO_COLUMNS} FROM device_keys WHERE id = ?`).get(id) as DeviceKeyRow | undefined
+export async function getDeviceKeyRowById(id: number): Promise<DeviceKeyRow | undefined> {
+  return dbx.get<DeviceKeyRow>(`SELECT ${INFO_COLUMNS} FROM device_keys WHERE id = ?`, id)
 }
 
-export function getDeviceKeyRowByInstallId(installId: string): DeviceKeyRow | undefined {
-  return db.prepare(`SELECT ${INFO_COLUMNS} FROM device_keys WHERE install_id = ?`).get(installId) as DeviceKeyRow | undefined
+export async function getDeviceKeyRowByInstallId(installId: string): Promise<DeviceKeyRow | undefined> {
+  return dbx.get<DeviceKeyRow>(`SELECT ${INFO_COLUMNS} FROM device_keys WHERE install_id = ?`, installId)
 }
 
-export function deleteDeviceKeyById(id: number): number {
-  return db.prepare('DELETE FROM device_keys WHERE id = ?').run(id).changes
+export async function deleteDeviceKeyById(id: number): Promise<number> {
+  return (await dbx.run('DELETE FROM device_keys WHERE id = ?', id)).changes
 }
 
-export function deleteAllDeviceKeys(): number {
-  return db.prepare('DELETE FROM device_keys').run().changes
+export async function deleteAllDeviceKeys(): Promise<number> {
+  return (await dbx.run('DELETE FROM device_keys')).changes
 }
 
-export function deleteExpiredDeviceKeys(now: number): number {
-  return db.prepare('DELETE FROM device_keys WHERE expires_at IS NOT NULL AND expires_at < ?').run(now).changes
+export async function deleteExpiredDeviceKeys(now: number): Promise<number> {
+  return (await dbx.run('DELETE FROM device_keys WHERE expires_at IS NOT NULL AND expires_at < ?', now)).changes
 }
 
-export function setDeviceKeyTenant(id: number, tenantId: string | null): number {
-  return db.prepare('UPDATE device_keys SET tenant_id = ? WHERE id = ?').run(tenantId, id).changes
+export async function setDeviceKeyTenant(id: number, tenantId: string | null): Promise<number> {
+  return (await dbx.run('UPDATE device_keys SET tenant_id = ? WHERE id = ?', tenantId, id)).changes
 }

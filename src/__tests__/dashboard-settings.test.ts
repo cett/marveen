@@ -140,23 +140,23 @@ describe('dashboard-settings: detectRequiredEnvVars', () => {
 })
 
 describe('dashboard-settings: GitHub repo install', () => {
-  it('rejects an invalid GitHub URL', async () => {
-    const res = await installGitHubRepo('not-a-url')
+  it('rejects an invalid GitHub URL', () => {
+    const res = installGitHubRepo('not-a-url')
     expect(res).toEqual({ error: 'invalid_value', field: 'url', hint: 'Invalid GitHub URL' })
   })
 
-  it('rejects when already installed', async () => {
+  it('rejects when already installed', () => {
     mockExisting.add(REPOS_DIR + '/acme--widget')
     mockFiles[SETTINGS_PATH] = JSON.stringify({ githubRepos: [{ name: 'acme--widget', url: 'x', path: 'p', installedAt: 'now' }] })
-    const res = await installGitHubRepo('https://github.com/acme/widget')
+    const res = installGitHubRepo('https://github.com/acme/widget')
     expect(res).toEqual({ error: 'conflict', hint: 'Already installed: acme--widget' })
     expect(rmSync).not.toHaveBeenCalled()
   })
 
-  it('wipes a stale target dir not in settings, then clones fresh', async () => {
+  it('wipes a stale target dir not in settings, then clones fresh', () => {
     mockExisting.add(REPOS_DIR + '/acme--widget')
     const progress: string[] = []
-    const res = await installGitHubRepo('https://github.com/acme/widget.git', undefined, p => progress.push(p.stage))
+    const res = installGitHubRepo('https://github.com/acme/widget.git', undefined, p => progress.push(p.stage))
     expect(rmSync).toHaveBeenCalledWith(REPOS_DIR + '/acme--widget', { recursive: true, force: true })
     expect(mkdirSync).toHaveBeenCalledWith(REPOS_DIR, { recursive: true })
     expect(execSync).toHaveBeenCalledWith(
@@ -169,32 +169,32 @@ describe('dashboard-settings: GitHub repo install', () => {
     expect(getExternalProjectPaths()).toContain(REPOS_DIR + '/acme--widget')
   })
 
-  it('cleans up and returns internal_error when the clone fails', async () => {
+  it('cleans up and returns internal_error when the clone fails', () => {
     vi.mocked(execSync).mockImplementationOnce(() => { throw new Error('clone boom') })
-    const res = await installGitHubRepo('https://github.com/acme/widget')
+    const res = installGitHubRepo('https://github.com/acme/widget')
     expect(res).toEqual({ error: 'internal_error', hint: 'Clone failed' })
     expect(rmSync).toHaveBeenCalledWith(REPOS_DIR + '/acme--widget', { recursive: true, force: true })
   })
 
-  it('runs npm install when package.json is present, and tolerates its failure', async () => {
+  it('runs npm install when package.json is present, and tolerates its failure', () => {
     mockExisting.add(REPOS_DIR + '/acme--widget/package.json')
     vi.mocked(execSync).mockImplementationOnce(() => '') // git clone
     vi.mocked(execSync).mockImplementationOnce(() => { throw new Error('npm boom') }) // npm install
-    const res = await installGitHubRepo('https://github.com/acme/widget')
+    const res = installGitHubRepo('https://github.com/acme/widget')
     expect(res).toMatchObject({ repo: { name: 'acme--widget' } })
     expect(execSync).toHaveBeenCalledTimes(2)
   })
 
-  it('surfaces detected required env vars and stores provided envVars', async () => {
+  it('surfaces detected required env vars and stores provided envVars', () => {
     mockExisting.add(REPOS_DIR + '/acme--widget/.mcp.json')
     mockFiles[REPOS_DIR + '/acme--widget/.mcp.json'] = JSON.stringify({ mcpServers: { a: { env: { TOKEN: 'x' } } } })
-    const res = await installGitHubRepo('https://github.com/acme/widget', { TOKEN: 'vault:1' })
+    const res = installGitHubRepo('https://github.com/acme/widget', { TOKEN: 'vault:1' })
     expect(res).toMatchObject({ repo: { envVars: { TOKEN: 'vault:1' } }, requiredEnvVars: ['TOKEN'] })
   })
 
-  it('does not duplicate an already-listed external project path', async () => {
+  it('does not duplicate an already-listed external project path', () => {
     mockFiles[SETTINGS_PATH] = JSON.stringify({ externalProjectPaths: [REPOS_DIR + '/acme--widget'] })
-    await installGitHubRepo('https://github.com/acme/widget')
+    installGitHubRepo('https://github.com/acme/widget')
     expect(getExternalProjectPaths().filter(p => p === REPOS_DIR + '/acme--widget')).toHaveLength(1)
   })
 })

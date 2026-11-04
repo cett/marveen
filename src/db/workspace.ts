@@ -10,7 +10,7 @@
 //   binary ≤ 16 MB
 
 import { randomBytes } from 'node:crypto'
-import { db } from './connection.js'
+import { dbx, type Tx } from './facade.js'
 import { generateEmbedding, floatsToBlob } from './vector.js'
 import { logger } from '../logger.js'
 
@@ -69,11 +69,11 @@ function nanoid12(): string {
 
 let _vecSupported: boolean | null = null
 
-function vecEnabled(): boolean {
+async function vecEnabled(): Promise<boolean> {
   if (_vecSupported !== null) return _vecSupported
   try {
     // Probe: if the virtual table exists, the extension is loaded.
-    db.prepare("SELECT 1 FROM vec_workspace_docs LIMIT 1").raw(true).all()
+    await dbx.all('SELECT 1 FROM vec_workspace_docs LIMIT 1')
     _vecSupported = true
   } catch {
     _vecSupported = false
@@ -81,17 +81,23 @@ function vecEnabled(): boolean {
   return _vecSupported
 }
 
-function syncVecDelete(docId: string): void {
-  if (!vecEnabled()) return
-  try { db.prepare('DELETE FROM vec_workspace_docs WHERE doc_id = ?').run(docId) } catch { /* no-op */ }
+// The vec index is best effort: a failing statement is swallowed. Both helpers run on the caller's transaction and
+// wrap their statements in a nested one (a savepoint), so a swallowed failure rolls back its own statements only and
+// never leaves the surrounding transaction in an aborted state.
+async function syncVecDelete(tx: Tx, docId: string): Promise<void> {
+  if (!(await vecEnabled())) return
+  try {
+    await tx.tx(async (t) => { await t.run('DELETE FROM vec_workspace_docs WHERE doc_id = ?', docId) })
+  } catch { /* no-op */ }
 }
 
-function syncVecUpsert(docId: string, agentId: string, tenantId: string, embeddingBlob: Buffer): void {
-  if (!vecEnabled()) return
+async function syncVecUpsert(tx: Tx, docId: string, agentId: string, tenantId: string, embeddingBlob: Buffer): Promise<void> {
+  if (!(await vecEnabled())) return
   try {
-    db.prepare('DELETE FROM vec_workspace_docs WHERE doc_id = ?').run(docId)
-    db.prepare('INSERT OR IGNORE INTO vec_workspace_docs(doc_id, agent_id, tenant_id, embedding) VALUES(?, ?, ?, ?)')
-      .run(docId, agentId, tenantId, embeddingBlob)
+    await tx.tx(async (t) => {
+      await t.run('DELETE FROM vec_workspace_docs WHERE doc_id = ?', docId)
+      await t.run('INSERT OR IGNORE INTO vec_workspace_docs(doc_id, agent_id, tenant_id, embedding) VALUES(?, ?, ?, ?)', docId, agentId, tenantId, embeddingBlob)
+    })
   } catch { /* no-op */ }
 }
 
@@ -110,7 +116,7 @@ export interface SaveWorkspaceDocInput {
   embedding_blob?: Buffer | null
 }
 
-export function saveWorkspaceDoc(input: SaveWorkspaceDocInput): WorkspaceDoc {
+export async function saveWorkspaceDoc(input: SaveWorkspaceDocInput): Promise<WorkspaceDoc> {
   const now = Math.floor(Date.now() / 1000)
   const content = input.content ?? null
   const contentBlob = input.content_blob ?? null
@@ -118,80 +124,77 @@ export function saveWorkspaceDoc(input: SaveWorkspaceDocInput): WorkspaceDoc {
     ? Buffer.byteLength(content, 'utf8')
     : (contentBlob ? contentBlob.byteLength : 0)
 
-  if (input.doc_key) {
-    // UPSERT: check if (agent_id, doc_key) already exists
-    const existing = db.prepare(
-      'SELECT id FROM workspace_docs WHERE agent_id = ? AND doc_key = ?'
-    ).get(input.agent_id, input.doc_key) as { id: string } | undefined
+  // The embedding arrives precomputed (input.embedding_blob), so nothing slow runs inside the transaction. The
+  // lookup, the write and the vec sync are one unit: a concurrent save of the same (agent_id, doc_key) cannot
+  // interleave between the existence check and the UPDATE/INSERT.
+  return dbx.tx(async (tx) => {
+    if (input.doc_key) {
+      // UPSERT: check if (agent_id, doc_key) already exists
+      const existing = await tx.get<{ id: string }>('SELECT id FROM workspace_docs WHERE agent_id = ? AND doc_key = ?', input.agent_id, input.doc_key)
 
-    if (existing) {
-      db.prepare(`
-        UPDATE workspace_docs
-        SET title = ?, content = ?, content_blob = ?, content_type = ?, type = ?,
-            task_ref = ?, size_bytes = ?, embedding_blob = ?, updated_at = ?
-        WHERE id = ?
-      `).run(
-        input.title, content, contentBlob, input.content_type, input.type,
-        input.task_ref ?? null, sizeBytes, input.embedding_blob ?? null, now,
-        existing.id
-      )
-      const row = db.prepare('SELECT * FROM workspace_docs WHERE id = ?').get(existing.id) as DbRow
-      if (input.embedding_blob && input.content_type !== 'binary') {
-        syncVecUpsert(existing.id, input.agent_id, input.tenant_id, input.embedding_blob)
+      if (existing) {
+        await tx.run(`
+          UPDATE workspace_docs
+          SET title = ?, content = ?, content_blob = ?, content_type = ?, type = ?,
+              task_ref = ?, size_bytes = ?, embedding_blob = ?, updated_at = ?
+          WHERE id = ?
+        `, input.title, content, contentBlob, input.content_type, input.type,
+          input.task_ref ?? null, sizeBytes, input.embedding_blob ?? null, now,
+          existing.id
+        )
+        const row = (await tx.get('SELECT * FROM workspace_docs WHERE id = ?', existing.id)) as DbRow
+        if (input.embedding_blob && input.content_type !== 'binary') {
+          await syncVecUpsert(tx, existing.id, input.agent_id, input.tenant_id, input.embedding_blob)
+        }
+        return rowToDoc(row)
       }
-      return rowToDoc(row)
     }
-  }
 
-  // INSERT new
-  const id = nanoid12()
-  db.prepare(`
-    INSERT INTO workspace_docs
-      (id, agent_id, tenant_id, doc_key, title, content, content_blob, content_type,
-       type, task_ref, size_bytes, embedding_blob, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    id, input.agent_id, input.tenant_id, input.doc_key ?? null,
-    input.title, content, contentBlob, input.content_type,
-    input.type, input.task_ref ?? null, sizeBytes,
-    input.embedding_blob ?? null, now, now
-  )
-  const row = db.prepare('SELECT * FROM workspace_docs WHERE id = ?').get(id) as DbRow
-  if (input.embedding_blob && input.content_type !== 'binary') {
-    syncVecUpsert(id, input.agent_id, input.tenant_id, input.embedding_blob)
-  }
-  return rowToDoc(row)
+    // INSERT new
+    const id = nanoid12()
+    await tx.run(`
+      INSERT INTO workspace_docs
+        (id, agent_id, tenant_id, doc_key, title, content, content_blob, content_type,
+         type, task_ref, size_bytes, embedding_blob, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, id, input.agent_id, input.tenant_id, input.doc_key ?? null,
+      input.title, content, contentBlob, input.content_type,
+      input.type, input.task_ref ?? null, sizeBytes,
+      input.embedding_blob ?? null, now, now
+    )
+    const row = (await tx.get('SELECT * FROM workspace_docs WHERE id = ?', id)) as DbRow
+    if (input.embedding_blob && input.content_type !== 'binary') {
+      await syncVecUpsert(tx, id, input.agent_id, input.tenant_id, input.embedding_blob)
+    }
+    return rowToDoc(row)
+  })
 }
 
 // Lightweight auth-gate check: returns id/agent_id/tenant_id/content_type/title
 // without touching last_accessed_at.  Use this before any ownership/tenant gate.
-export function peekWorkspaceDoc(id: string): Pick<WorkspaceDoc, 'id' | 'agent_id' | 'tenant_id' | 'content_type' | 'title'> | null {
-  const row = db.prepare(
-    'SELECT id, agent_id, tenant_id, content_type, title FROM workspace_docs WHERE id = ?'
-  ).get(id) as Pick<WorkspaceDoc, 'id' | 'agent_id' | 'tenant_id' | 'content_type' | 'title'> | undefined
+export async function peekWorkspaceDoc(id: string): Promise<Pick<WorkspaceDoc, 'id' | 'agent_id' | 'tenant_id' | 'content_type' | 'title'> | null> {
+  const row = await dbx.get<Pick<WorkspaceDoc, 'id' | 'agent_id' | 'tenant_id' | 'content_type' | 'title'>>('SELECT id, agent_id, tenant_id, content_type, title FROM workspace_docs WHERE id = ?', id)
   return row ?? null
 }
 
 // Freshness probe for callers (context-guard) that only need "when was this
 // (agent_id, doc_key) doc last written", polled on a tight interval -- must
 // NOT touch last_accessed_at (that's a read-access signal, not a write one).
-export function getWorkspaceDocUpdatedAtMs(agentId: string, docKey: string): number | null {
-  const row = db.prepare(
-    'SELECT updated_at FROM workspace_docs WHERE agent_id = ? AND doc_key = ?'
-  ).get(agentId, docKey) as { updated_at: number } | undefined
+export async function getWorkspaceDocUpdatedAtMs(agentId: string, docKey: string): Promise<number | null> {
+  const row = await dbx.get<{ updated_at: number }>('SELECT updated_at FROM workspace_docs WHERE agent_id = ? AND doc_key = ?', agentId, docKey)
   return row ? row.updated_at * 1000 : null
 }
 
-export function getWorkspaceDoc(id: string): WorkspaceDoc | null {
-  const row = db.prepare('SELECT * FROM workspace_docs WHERE id = ?').get(id) as DbRow | undefined
+export async function getWorkspaceDoc(id: string): Promise<WorkspaceDoc | null> {
+  const row = await dbx.get<DbRow>('SELECT * FROM workspace_docs WHERE id = ?', id)
   if (!row) return null
   const now = Math.floor(Date.now() / 1000)
-  db.prepare('UPDATE workspace_docs SET last_accessed_at = ? WHERE id = ?').run(now, id)
+  await dbx.run('UPDATE workspace_docs SET last_accessed_at = ? WHERE id = ?', now, id)
   return rowToDoc(row)
 }
 
-export function getWorkspaceDocBlob(id: string): Buffer | null {
-  const row = db.prepare('SELECT content_blob FROM workspace_docs WHERE id = ?').get(id) as { content_blob: Buffer | null } | undefined
+export async function getWorkspaceDocBlob(id: string): Promise<Buffer | null> {
+  const row = await dbx.get<{ content_blob: Buffer | null }>('SELECT content_blob FROM workspace_docs WHERE id = ?', id)
   return row?.content_blob ?? null
 }
 
@@ -230,19 +233,19 @@ export interface WorkspaceDocSearchResult {
  * pass `undefined` only for an already-verified admin caller -- see
  * GET /api/memories in web/routes/memories.ts for the one call site.
  */
-export function searchWorkspaceDocs(
+export async function searchWorkspaceDocs(
   q: string,
   opts: { agentId?: string; tenantId?: string; limit: number },
-): WorkspaceDocSearchResult[] {
+): Promise<WorkspaceDocSearchResult[]> {
   const { where, params } = workspaceDocsWhere({ agentId: opts.agentId, tenantId: opts.tenantId }, 'wd.')
-  return db.prepare(`
+  return dbx.all<WorkspaceDocSearchResult>(`
     SELECT wd.id, wd.title, wd.agent_id, wd.tenant_id, wd.type,
            wd.task_ref, wd.doc_key, wd.created_at, wd.updated_at,
            snippet(workspace_docs_fts, -1, '[', ']', '...', 15) AS snippet
     ${ftsFrom(where)}
     ORDER BY rank
     LIMIT ?
-  `).all(...params, ftsEscape(q), opts.limit) as WorkspaceDocSearchResult[]
+  `, ...params, ftsEscape(q), opts.limit)
 }
 
 // The one place that joins the FTS index to workspace_docs (alias wd): `where` is a workspaceDocsWhere(.., 'wd.')
@@ -265,19 +268,19 @@ export async function vectorSearchDocs(
   q: string,
   opts: { agentId?: string; tenantId?: string; limit: number },
 ): Promise<WorkspaceDocSearchResult[]> {
-  if (!vecEnabled()) return []
+  if (!(await vecEnabled())) return []
   const queryEmbedding = await generateEmbedding(q).catch(() => null)
   if (!queryEmbedding) return []
 
   try {
     const queryBlob = floatsToBlob(queryEmbedding)
-    const annRows = db.prepare(`
+    const annRows = (await dbx.all(`
       SELECT doc_id, distance
       FROM vec_workspace_docs
       WHERE embedding MATCH ?
         AND k = ?
       ORDER BY distance
-    `).all(queryBlob, BigInt(opts.limit * 2)) as { doc_id: string; distance: number }[]
+    `, queryBlob, BigInt(opts.limit * 2))) as { doc_id: string; distance: number }[]
 
     if (annRows.length === 0) return []
 
@@ -289,12 +292,12 @@ export async function vectorSearchDocs(
     const where = conditions.length ? `AND ${conditions.join(' AND ')}` : ''
     const placeholders = ids.map(() => '?').join(',')
 
-    const rows = db.prepare(`
+    const rows = (await dbx.all(`
       SELECT id, title, agent_id, tenant_id, type, task_ref, doc_key,
              created_at, updated_at, content
       FROM workspace_docs
       WHERE id IN (${placeholders}) ${where}
-    `).all(...params) as (WorkspaceDocSearchResult & { content: string | null })[]
+    `, ...params)) as (WorkspaceDocSearchResult & { content: string | null })[]
 
     const distMap = new Map(annRows.map(r => [r.doc_id, r.distance]))
     return rows
@@ -328,7 +331,7 @@ export async function hybridSearchDocs(
   const RRF_K = 60
   const overfetch = { ...opts, limit: opts.limit * 2 }
 
-  const ftsResults = searchWorkspaceDocs(q, overfetch)
+  const ftsResults = await searchWorkspaceDocs(q, overfetch)
   const vecResults = await vectorSearchDocs(q, overfetch)
 
   const scores = new Map<string, number>()
@@ -402,12 +405,12 @@ export interface WorkspaceDocSearchHit extends WorkspaceDoc {
  * documents; `undefined`/`null` means no tenant filter and is for an already verified admin caller only.
  * Rows carry metadata and a snippet, never the body. Binary documents have no text and so no hits.
  */
-export function searchWorkspaceDocsPage(q: string, filter: ListWorkspaceDocsFilter): { items: WorkspaceDocSearchHit[]; total: number } {
+export async function searchWorkspaceDocsPage(q: string, filter: ListWorkspaceDocsFilter): Promise<{ items: WorkspaceDocSearchHit[]; total: number }> {
   const match = ftsAllTerms(q)
   if (!match) return { items: [], total: 0 }
   const { where, params } = workspaceDocsWhere(filter, 'wd.')
   const from = ftsFrom(where)
-  const total = (db.prepare(`SELECT COUNT(*) AS n ${from}`).get(...params, match) as { n: number }).n
+  const total = ((await dbx.get(`SELECT COUNT(*) AS n ${from}`, ...params, match)) as { n: number }).n
   let sql = `SELECT wd.id, wd.agent_id, wd.tenant_id, wd.doc_key, wd.title, wd.content_type, wd.type, wd.task_ref,
                     wd.size_bytes, wd.created_at, wd.updated_at, wd.last_accessed_at,
                     snippet(workspace_docs_fts, -1, '[', ']', '...', 15) AS snippet
@@ -417,11 +420,11 @@ export function searchWorkspaceDocsPage(q: string, filter: ListWorkspaceDocsFilt
     sql += ' LIMIT ?'; pageParams.push(filter.limit)
     if (filter.offset && filter.offset > 0) { sql += ' OFFSET ?'; pageParams.push(filter.offset) }
   }
-  const rows = db.prepare(sql).all(...pageParams) as (DbRow & { snippet: string | null })[]
+  const rows = (await dbx.all(sql, ...pageParams)) as (DbRow & { snippet: string | null })[]
   return { items: rows.map(r => ({ ...rowToDocMeta(r), snippet: r.snippet })), total }
 }
 
-export function listWorkspaceDocs(filter: ListWorkspaceDocsFilter): WorkspaceDoc[] {
+export async function listWorkspaceDocs(filter: ListWorkspaceDocsFilter): Promise<WorkspaceDoc[]> {
   const select = filter.metaOnly
     ? 'SELECT id, agent_id, tenant_id, doc_key, title, content_type, type, task_ref, size_bytes, created_at, updated_at, last_accessed_at'
     : 'SELECT *'
@@ -431,13 +434,13 @@ export function listWorkspaceDocs(filter: ListWorkspaceDocsFilter): WorkspaceDoc
     sql += ' LIMIT ?'; params.push(filter.limit)
     if (filter.offset && filter.offset > 0) { sql += ' OFFSET ?'; params.push(filter.offset) }
   }
-  const rows = db.prepare(sql).all(...params) as DbRow[]
+  const rows = await dbx.all<DbRow>(sql, ...params)
   return rows.map(r => filter.metaOnly ? rowToDocMeta(r) : rowToDoc(r))
 }
 
-export function countWorkspaceDocs(filter: ListWorkspaceDocsFilter): number {
+export async function countWorkspaceDocs(filter: ListWorkspaceDocsFilter): Promise<number> {
   const { where, params } = workspaceDocsWhere(filter)
-  const row = db.prepare(`SELECT COUNT(*) AS n FROM workspace_docs ${where}`).get(...params) as { n: number }
+  const row = (await dbx.get(`SELECT COUNT(*) AS n FROM workspace_docs ${where}`, ...params)) as { n: number }
   return row.n
 }
 
@@ -450,37 +453,40 @@ export interface PatchWorkspaceDocInput {
   embedding_blob?: Buffer | null
 }
 
-export function patchWorkspaceDoc(id: string, patch: PatchWorkspaceDocInput): WorkspaceDoc | null {
-  const existing = db.prepare('SELECT * FROM workspace_docs WHERE id = ?').get(id) as DbRow | undefined
-  if (!existing) return null
+export async function patchWorkspaceDoc(id: string, patch: PatchWorkspaceDocInput): Promise<WorkspaceDoc | null> {
+  // Read-modify-write: the merge below depends on the row as read, so the read and the UPDATE share one transaction
+  // and a concurrent patch cannot be silently overwritten with a stale merge.
+  return dbx.tx(async (tx) => {
+    const existing = await tx.get<DbRow>('SELECT * FROM workspace_docs WHERE id = ?', id)
+    if (!existing) return null
 
-  const now = Math.floor(Date.now() / 1000)
-  const newContent = 'content' in patch ? patch.content ?? null : existing.content
-  const newBlob = 'content_blob' in patch ? patch.content_blob ?? null : existing.content_blob
-  const sizeBytes = newContent
-    ? Buffer.byteLength(newContent, 'utf8')
-    : (newBlob ? newBlob.byteLength : 0)
+    const now = Math.floor(Date.now() / 1000)
+    const newContent = 'content' in patch ? patch.content ?? null : existing.content
+    const newBlob = 'content_blob' in patch ? patch.content_blob ?? null : existing.content_blob
+    const sizeBytes = newContent
+      ? Buffer.byteLength(newContent, 'utf8')
+      : (newBlob ? newBlob.byteLength : 0)
 
-  db.prepare(`
-    UPDATE workspace_docs
-    SET title = ?, content = ?, content_blob = ?, type = ?, task_ref = ?,
-        size_bytes = ?, embedding_blob = ?, updated_at = ?
-    WHERE id = ?
-  `).run(
-    patch.title ?? existing.title,
-    newContent, newBlob,
-    patch.type ?? existing.type,
-    'task_ref' in patch ? patch.task_ref ?? null : existing.task_ref,
-    sizeBytes,
-    patch.embedding_blob ?? existing.embedding_blob,
-    now, id
-  )
+    await tx.run(`
+      UPDATE workspace_docs
+      SET title = ?, content = ?, content_blob = ?, type = ?, task_ref = ?,
+          size_bytes = ?, embedding_blob = ?, updated_at = ?
+      WHERE id = ?
+    `, patch.title ?? existing.title,
+      newContent, newBlob,
+      patch.type ?? existing.type,
+      'task_ref' in patch ? patch.task_ref ?? null : existing.task_ref,
+      sizeBytes,
+      patch.embedding_blob ?? existing.embedding_blob,
+      now, id
+    )
 
-  if (patch.embedding_blob && existing.content_type !== 'binary') {
-    syncVecUpsert(id, existing.agent_id, existing.tenant_id, patch.embedding_blob)
-  }
-  const row = db.prepare('SELECT * FROM workspace_docs WHERE id = ?').get(id) as DbRow
-  return rowToDoc(row)
+    if (patch.embedding_blob && existing.content_type !== 'binary') {
+      await syncVecUpsert(tx, id, existing.agent_id, existing.tenant_id, patch.embedding_blob)
+    }
+    const row = (await tx.get('SELECT * FROM workspace_docs WHERE id = ?', id)) as DbRow
+    return rowToDoc(row)
+  })
 }
 
 /**
@@ -497,17 +503,17 @@ export async function storeWorkspaceDocEmbedding(
 ): Promise<void> {
   if (!text.trim()) return
 
+  // The embedding call (HTTP to Ollama) runs before the transaction opens, never inside it.
   const embedding = await generateEmbedding(text).catch(() => null)
   if (!embedding) return
 
-  const existing = db.prepare(
-    'SELECT content_type FROM workspace_docs WHERE id = ?'
-  ).get(id) as { content_type: WorkspaceContentType } | undefined
-  if (!existing || existing.content_type === 'binary') return
-
   const blob = floatsToBlob(embedding)
-  db.prepare('UPDATE workspace_docs SET embedding_blob = ? WHERE id = ?').run(blob, id)
-  syncVecUpsert(id, agentId, tenantId, blob)
+  await dbx.tx(async (tx) => {
+    const existing = await tx.get<{ content_type: WorkspaceContentType }>('SELECT content_type FROM workspace_docs WHERE id = ?', id)
+    if (!existing || existing.content_type === 'binary') return
+    await tx.run('UPDATE workspace_docs SET embedding_blob = ? WHERE id = ?', blob, id)
+    await syncVecUpsert(tx, id, agentId, tenantId, blob)
+  })
 }
 
 /**
@@ -517,18 +523,20 @@ export async function storeWorkspaceDocEmbedding(
  * content, and sleeps 100ms between rows so as not to overwhelm Ollama.
  */
 export async function backfillWorkspaceDocs(): Promise<number> {
-  const rows = db.prepare(`
+  const rows = (await dbx.all(`
     SELECT id, agent_id, tenant_id, title, content FROM workspace_docs
     WHERE embedding_blob IS NULL AND content_type != 'binary' AND content IS NOT NULL
-  `).all() as { id: string; agent_id: string; tenant_id: string; title: string; content: string }[]
+  `)) as { id: string; agent_id: string; tenant_id: string; title: string; content: string }[]
 
   let count = 0
   for (const row of rows) {
     const embedding = await generateEmbedding(`${row.title} ${row.content}`).catch(() => null)
     if (embedding) {
       const blob = floatsToBlob(embedding)
-      db.prepare('UPDATE workspace_docs SET embedding_blob = ? WHERE id = ?').run(blob, row.id)
-      syncVecUpsert(row.id, row.agent_id, row.tenant_id, blob)
+      await dbx.tx(async (tx) => {
+        await tx.run('UPDATE workspace_docs SET embedding_blob = ? WHERE id = ?', blob, row.id)
+        await syncVecUpsert(tx, row.id, row.agent_id, row.tenant_id, blob)
+      })
       count++
     }
     // Small delay to not overwhelm Ollama
@@ -537,10 +545,12 @@ export async function backfillWorkspaceDocs(): Promise<number> {
   return count
 }
 
-export function deleteWorkspaceDoc(id: string): boolean {
-  syncVecDelete(id)
-  const res = db.prepare('DELETE FROM workspace_docs WHERE id = ?').run(id)
-  return res.changes > 0
+export async function deleteWorkspaceDoc(id: string): Promise<boolean> {
+  return dbx.tx(async (tx) => {
+    await syncVecDelete(tx, id)
+    const res = await tx.run('DELETE FROM workspace_docs WHERE id = ?', id)
+    return res.changes > 0
+  })
 }
 
 // ── TTL sweeper ──────────────────────────────────────────────────────────────
@@ -550,25 +560,27 @@ export function deleteWorkspaceDoc(id: string): boolean {
 //   - updated_at older than ttlDays
 // Returns count of deleted rows.
 
-export function sweepExpiredWorkspaceDocs(ttlDays: number): number {
+export async function sweepExpiredWorkspaceDocs(ttlDays: number): Promise<number> {
   const ttlSeconds = ttlDays * 86400
   const now = Math.floor(Date.now() / 1000)
 
-  // Collect IDs to delete first (so we can clean vec index).
-  const toDelete = db.prepare(`
-    SELECT wd.id FROM workspace_docs wd
-    LEFT JOIN kanban_cards kc ON kc.id = wd.task_ref
-    WHERE
-      (wd.task_ref IS NULL OR kc.status = 'done')
-      AND (? - wd.updated_at) > ?
-      AND wd.content_type != 'binary'
-  `).all(now, ttlSeconds) as { id: string }[]
+  // The id collection and the deletes share one transaction, so the vec index is cleaned for exactly the rows
+  // the DELETE removes.
+  return dbx.tx(async (tx) => {
+    // Collect IDs to delete first (so we can clean vec index).
+    const toDelete = await tx.all<{ id: string }>(`
+      SELECT wd.id FROM workspace_docs wd
+      LEFT JOIN kanban_cards kc ON kc.id = wd.task_ref
+      WHERE
+        (wd.task_ref IS NULL OR kc.status = 'done')
+        AND (? - wd.updated_at) > ?
+        AND wd.content_type != 'binary'
+    `, now, ttlSeconds)
 
-  if (!toDelete.length) return 0
+    if (!toDelete.length) return 0
 
-  const tx = db.transaction(() => {
-    for (const { id } of toDelete) syncVecDelete(id)
-    db.prepare(`
+    for (const { id } of toDelete) await syncVecDelete(tx, id)
+    await tx.run(`
       DELETE FROM workspace_docs
       WHERE id IN (
         SELECT wd.id FROM workspace_docs wd
@@ -578,9 +590,7 @@ export function sweepExpiredWorkspaceDocs(ttlDays: number): number {
           AND (? - wd.updated_at) > ?
           AND wd.content_type != 'binary'
       )
-    `).run(now, ttlSeconds)
+    `, now, ttlSeconds)
+    return toDelete.length
   })
-  tx()
-  return toDelete.length
 }
-

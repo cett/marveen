@@ -13,12 +13,19 @@
 
 const HEX8_REF_RE = /#([a-f0-9]{8})\b/gi
 
-export type SeqLookup = (idPrefix: string) => number | null
+export type SeqLookup = (idPrefix: string) => number | null | Promise<number | null>
 
-export function normalizeKanbanRefs(content: string, lookup: SeqLookup): string {
+export async function normalizeKanbanRefs(content: string, lookup: SeqLookup): Promise<string> {
   if (!content || content.indexOf('#') === -1) return content
+  // The lookup hits the database: resolve every distinct token first (in order of appearance), then rewrite
+  // synchronously, so the replace callback never has to await.
+  const seqs = new Map<string, number | null>()
+  for (const m of content.matchAll(HEX8_REF_RE)) {
+    const hex = m[1].toLowerCase()
+    if (!seqs.has(hex)) seqs.set(hex, await lookup(hex))
+  }
   return content.replace(HEX8_REF_RE, (match, hex: string) => {
-    const seq = lookup(hex.toLowerCase())
+    const seq = seqs.get(hex.toLowerCase())
     if (seq == null) return match
     return `#${seq}`
   })

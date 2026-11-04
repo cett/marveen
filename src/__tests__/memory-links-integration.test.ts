@@ -38,10 +38,10 @@ function insertMemoryWithEmbedding(content: string, floats?: number[]): number {
 }
 
 describe('upsertMemoryLink', () => {
-  it('creates a new link and returns a row id', () => {
+  it('creates a new link and returns a row id', async () => {
     const src = insertMemoryWithEmbedding('src memory')
     const dst = insertMemoryWithEmbedding('dst memory')
-    const linkId = upsertMemoryLink(src, dst, 'explicit', 0.8)
+    const linkId = await upsertMemoryLink(src, dst, 'explicit', 0.8)
     expect(typeof linkId).toBe('number')
     const row = getDb().prepare('SELECT * FROM memory_links WHERE id = ?').get(linkId) as any
     expect(row).toBeDefined()
@@ -51,11 +51,11 @@ describe('upsertMemoryLink', () => {
     expect(row.weight).toBeCloseTo(0.8)
   })
 
-  it('updates weight on conflict (upsert semantics)', () => {
+  it('updates weight on conflict (upsert semantics)', async () => {
     const src = insertMemoryWithEmbedding('upsert src')
     const dst = insertMemoryWithEmbedding('upsert dst')
-    upsertMemoryLink(src, dst, 'semantic', 0.5)
-    upsertMemoryLink(src, dst, 'semantic', 0.95)
+    await upsertMemoryLink(src, dst, 'semantic', 0.5)
+    await upsertMemoryLink(src, dst, 'semantic', 0.95)
     const row = getDb()
       .prepare('SELECT weight FROM memory_links WHERE src_id = ? AND dst_id = ? AND link_type = ?')
       .get(src, dst, 'semantic') as any
@@ -64,46 +64,46 @@ describe('upsertMemoryLink', () => {
 })
 
 describe('getMemoryNeighbors', () => {
-  it('returns neighbors ordered by weight descending', () => {
+  it('returns neighbors ordered by weight descending', async () => {
     const src = insertMemoryWithEmbedding('neighbor src')
     const d1 = insertMemoryWithEmbedding('neighbor low')
     const d2 = insertMemoryWithEmbedding('neighbor high')
-    upsertMemoryLink(src, d1, 'semantic', 0.4)
-    upsertMemoryLink(src, d2, 'semantic', 0.9)
-    const neighbors = getMemoryNeighbors(src, 10)
+    await upsertMemoryLink(src, d1, 'semantic', 0.4)
+    await upsertMemoryLink(src, d2, 'semantic', 0.9)
+    const neighbors = await getMemoryNeighbors(src, 10)
     expect(neighbors.length).toBe(2)
     expect(neighbors[0].memory.id).toBe(d2)
     expect(neighbors[0].weight).toBeCloseTo(0.9)
     expect(neighbors[1].memory.id).toBe(d1)
   })
 
-  it('returns empty array when memory has no links', () => {
+  it('returns empty array when memory has no links', async () => {
     const lone = insertMemoryWithEmbedding('lone memory')
-    expect(getMemoryNeighbors(lone)).toEqual([])
+    expect(await getMemoryNeighbors(lone)).toEqual([])
   })
 
-  it('touches last_traversed_at on the edges', () => {
+  it('touches last_traversed_at on the edges', async () => {
     const src = insertMemoryWithEmbedding('traverse src')
     const dst = insertMemoryWithEmbedding('traverse dst')
-    upsertMemoryLink(src, dst, 'cooccurrence', 0.7)
+    await upsertMemoryLink(src, dst, 'cooccurrence', 0.7)
     const before = getDb().prepare('SELECT last_traversed_at FROM memory_links WHERE src_id = ?').get(src) as any
     expect(before.last_traversed_at).toBeNull()
-    getMemoryNeighbors(src, 5)
+    await getMemoryNeighbors(src, 5)
     const after = getDb().prepare('SELECT last_traversed_at FROM memory_links WHERE src_id = ?').get(src) as any
     expect(after.last_traversed_at).toBeGreaterThan(0)
   })
 })
 
 describe('pruneMemoryLinks', () => {
-  it('removes links below weight threshold', () => {
+  it('removes links below weight threshold', async () => {
     const src = insertMemoryWithEmbedding('prune src')
     const d1 = insertMemoryWithEmbedding('prune keep')
     const d2 = insertMemoryWithEmbedding('prune remove')
-    upsertMemoryLink(src, d1, 'semantic', 0.8)
-    upsertMemoryLink(src, d2, 'entity', 0.05)
-    const removed = pruneMemoryLinks(0.1)
+    await upsertMemoryLink(src, d1, 'semantic', 0.8)
+    await upsertMemoryLink(src, d2, 'entity', 0.05)
+    const removed = await pruneMemoryLinks(0.1)
     expect(removed).toBeGreaterThanOrEqual(1)
-    const remaining = getMemoryNeighbors(src, 10)
+    const remaining = await getMemoryNeighbors(src, 10)
     const ids = remaining.map(n => n.memory.id)
     expect(ids).toContain(d1)
     expect(ids).not.toContain(d2)

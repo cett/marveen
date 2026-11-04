@@ -30,54 +30,54 @@ function insertMemory(content: string): number {
 }
 
 describe('getLinksForMemories', () => {
-  it('returns an empty array for an empty id list without querying the DB', () => {
-    expect(getLinksForMemories([])).toEqual([])
+  it('returns an empty array for an empty id list without querying the DB', async () => {
+    expect(await getLinksForMemories([])).toEqual([])
   })
 
-  it('returns links where the id is the src', () => {
+  it('returns links where the id is the src', async () => {
     const a = insertMemory('a')
     const b = insertMemory('b')
-    upsertMemoryLink(a, b, 'semantic', 0.5)
-    const links = getLinksForMemories([a])
+    await upsertMemoryLink(a, b, 'semantic', 0.5)
+    const links = await getLinksForMemories([a])
     expect(links).toHaveLength(1)
     expect(links[0].src_id).toBe(a)
     expect(links[0].dst_id).toBe(b)
   })
 
-  it('returns links where the id is the dst', () => {
+  it('returns links where the id is the dst', async () => {
     const a = insertMemory('c')
     const b = insertMemory('d')
-    upsertMemoryLink(a, b, 'explicit', 0.6)
-    const links = getLinksForMemories([b])
+    await upsertMemoryLink(a, b, 'explicit', 0.6)
+    const links = await getLinksForMemories([b])
     expect(links).toHaveLength(1)
     expect(links[0].src_id).toBe(a)
     expect(links[0].dst_id).toBe(b)
   })
 
-  it('does not duplicate a link when both endpoints are in the id set', () => {
+  it('does not duplicate a link when both endpoints are in the id set', async () => {
     const a = insertMemory('e')
     const b = insertMemory('f')
-    upsertMemoryLink(a, b, 'semantic', 0.7)
-    const links = getLinksForMemories([a, b])
+    await upsertMemoryLink(a, b, 'semantic', 0.7)
+    const links = await getLinksForMemories([a, b])
     expect(links).toHaveLength(1)
   })
 
-  it('excludes links whose endpoints are both outside the id set', () => {
+  it('excludes links whose endpoints are both outside the id set', async () => {
     const a = insertMemory('g')
     const b = insertMemory('h')
     const unrelated = insertMemory('i')
-    upsertMemoryLink(a, b, 'semantic', 0.4)
-    const links = getLinksForMemories([unrelated])
+    await upsertMemoryLink(a, b, 'semantic', 0.4)
+    const links = await getLinksForMemories([unrelated])
     expect(links).toEqual([])
   })
 
-  it('orders results by weight descending', () => {
+  it('orders results by weight descending', async () => {
     const a = insertMemory('j')
     const b = insertMemory('k')
     const c = insertMemory('l')
-    upsertMemoryLink(a, b, 'semantic', 0.2)
-    upsertMemoryLink(a, c, 'semantic', 0.9)
-    const links = getLinksForMemories([a])
+    await upsertMemoryLink(a, b, 'semantic', 0.2)
+    await upsertMemoryLink(a, c, 'semantic', 0.9)
+    const links = await getLinksForMemories([a])
     expect(links).toHaveLength(2)
     expect(links[0].weight).toBeGreaterThan(links[1].weight)
     expect(links[0].dst_id).toBe(c)

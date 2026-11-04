@@ -61,21 +61,21 @@ describe('recency decay formula', () => {
 
 describe('vectorSearch recency + rerank pipeline', () => {
   it('returns FTS results (hybridSearch) when no embeddings are set', async () => {
-    saveAgentMemory('agent-a', 'recency pipeline test memory', 'warm', 'recency pipeline')
+    await saveAgentMemory('agent-a', 'recency pipeline test memory', 'warm', 'recency pipeline')
     const results = await hybridSearch('agent-a', 'recency pipeline', 5)
     expect(Array.isArray(results)).toBe(true)
     expect(results.length).toBeGreaterThan(0)
   })
 
   it('hybridSearch returns valid array even when reranker returns empty', async () => {
-    saveAgentMemory('agent-a', 'another test memory', 'warm', 'test')
+    await saveAgentMemory('agent-a', 'another test memory', 'warm', 'test')
     mockRerank.mockResolvedValueOnce([])
     const results = await hybridSearch('agent-a', 'test', 5)
     expect(Array.isArray(results)).toBe(true)
   })
 
   it('hybridSearch is resilient when reranker throws', async () => {
-    saveAgentMemory('agent-a', 'resilience test', 'warm', 'resilience')
+    await saveAgentMemory('agent-a', 'resilience test', 'warm', 'resilience')
     mockRerank.mockRejectedValueOnce(new Error('onnx runtime error'))
     const results = await hybridSearch('agent-a', 'resilience', 5)
     expect(Array.isArray(results)).toBe(true)

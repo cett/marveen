@@ -84,9 +84,9 @@ describe('seeding into the schedules DB', () => {
     rmSync(tmp, { recursive: true, force: true })
   })
 
-  it('a fresh install gets it as a command row in the default tenant, no prompt', () => {
-    expect(io.seedSchedulesFromFilesIfEmpty()).toBe(1)
-    expect(dbMod.getScheduleFromDb('rbac-shadow-monitor')).toMatchObject({
+  it('a fresh install gets it as a command row in the default tenant, no prompt', async () => {
+    expect(await io.seedSchedulesFromFilesIfEmpty()).toBe(1)
+    expect(await dbMod.getScheduleFromDb('rbac-shadow-monitor')).toMatchObject({
       type: 'command', prompt: '', enabled: 1, agent: 'main-agent', schedule: '30 7 * * *',
       fail_threshold: 1, status: 'live', tenant_id: 'default',
       command: expect.stringContaining("/opt/marveen/scripts/rbac-shadow-summary.py"),

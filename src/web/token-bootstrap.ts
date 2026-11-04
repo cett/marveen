@@ -16,13 +16,13 @@
 
 import { createHash } from 'node:crypto'
 import { logger } from '../logger.js'
-import { enrollDashboardApiToken } from '../db.js'
+import { enrollDashboardApiTokenSync } from '../db.js'
 
 export function bootstrapDashboardToken(rawToken: string): void {
   try {
     const hash = createHash('sha256').update(rawToken).digest('hex')
     const now = Math.floor(Date.now() / 1000)
-    if (enrollDashboardApiToken(hash, now) > 0) {
+    if (enrollDashboardApiTokenSync(hash, now) > 0) {
       logger.info('api_tokens: dashboard token enrolled (role=admin, no expiry); earlier dashboard rows revoked')
     }
   } catch (err) {

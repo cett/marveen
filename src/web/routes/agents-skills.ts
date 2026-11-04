@@ -145,9 +145,9 @@ export async function tryHandleAgentsSkills(ctx: RouteContext): Promise<boolean>
         const desc = readSkillDescription(join(skillsDir, dirName))
         const importSqlId = importIsGlobal ? `global/${dirName}` : `agent/${name}/${dirName}`
         try {
-          seedSkillIfAbsent({ id: importSqlId, name: dirName, description: desc, content, tenant_id: 'fleet', is_global: importIsGlobal })
+          await seedSkillIfAbsent({ id: importSqlId, name: dirName, description: desc, content, tenant_id: 'fleet', is_global: importIsGlobal })
           // scripts/, references/ ... of the archive belong in the DB too (skill_files).
-          importCompanionFilesOfDir(importSqlId, join(skillsDir, dirName))
+          await importCompanionFilesOfDir(importSqlId, join(skillsDir, dirName))
         } catch (sqlErr) {
           logger.warn({ dirName, err: sqlErr }, 'Failed to upsert imported skill into SQL')
         }
@@ -185,7 +185,7 @@ export async function tryHandleAgentsSkills(ctx: RouteContext): Promise<boolean>
     }
     if (!existsSync(skillDir)) { json(res, { error: 'not_found', hint: 'Skill not found' }, 404); return true }
     const deleteSqlId = name === MAIN_AGENT_ID ? `global/${skillName}` : `agent/${name}/${skillName}`
-    deleteSkill(deleteSqlId)
+    await deleteSkill(deleteSqlId)
     rmSync(skillDir, { recursive: true, force: true })
     json(res, { ok: true })
     return true
@@ -199,15 +199,15 @@ export async function tryHandleAgentsSkills(ctx: RouteContext): Promise<boolean>
     if (name === MAIN_AGENT_ID) {
       // The main agent's skill root IS the global ~/.claude/skills dir; these
       // skills are deletable from this view.
-      skills = listGlobalFleetSkills().map((row) => skillRowToAgentSkill(row, 'global', true))
+      skills = (await listGlobalFleetSkills()).map((row) => skillRowToAgentSkill(row, 'global', true))
     } else {
       // Sub-agents own a small agents/<name>/.claude/skills set (deletable) but
       // at runtime ALSO inherit every global ~/.claude/skills entry. List both;
       // the inherited ones are not deletable from a single agent's view (they
       // are shared) and a local skill shadows a global one of the same name.
-      const local = listAgentOwnedSkills(name).map((row) => skillRowToAgentSkill(row, 'agent', true))
+      const local = (await listAgentOwnedSkills(name)).map((row) => skillRowToAgentSkill(row, 'agent', true))
       const localNames = new Set(local.map((s) => s.name))
-      const inherited = listGlobalFleetSkills()
+      const inherited = (await listGlobalFleetSkills())
         .map((row) => skillRowToAgentSkill(row, 'global', false))
         .filter((s) => !localNames.has(s.name))
       skills = [...local, ...inherited]
@@ -239,7 +239,7 @@ export async function tryHandleAgentsSkills(ctx: RouteContext): Promise<boolean>
     const agentSqlId = agentName === MAIN_AGENT_ID ? `global/${skillName}` : `agent/${agentName}/${skillName}`
     const agentIsGlobal = agentName === MAIN_AGENT_ID
     try {
-      createSkill({ id: agentSqlId, name: skillName, description, content: skillMd, tenant_id: 'fleet', is_global: agentIsGlobal })
+      await createSkill({ id: agentSqlId, name: skillName, description, content: skillMd, tenant_id: 'fleet', is_global: agentIsGlobal })
     } catch {
       json(res, { error: 'conflict', hint: 'Skill already exists' }, 409)
       return true
@@ -249,7 +249,7 @@ export async function tryHandleAgentsSkills(ctx: RouteContext): Promise<boolean>
     // no direct file write here. regenSingleSkillFile pushes the SQL row to disk immediately
     // (a no-op, logged, while SKILL_SQL_REGEN=0) rather than the route
     // writing the file itself -- matches the /api/skills/sql POST precedent.
-    regenSingleSkillFile(agentSqlId)
+    await regenSingleSkillFile(agentSqlId)
 
     json(res, { ok: true, name: skillName })
     return true

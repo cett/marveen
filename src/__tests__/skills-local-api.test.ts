@@ -11,24 +11,24 @@ import { join } from 'node:path'
 const { skillStore } = vi.hoisted(() => ({ skillStore: new Map<string, any>() }))
 
 vi.mock('../db.js', () => ({
-  getSkill: vi.fn().mockImplementation((id: string) => skillStore.get(id)),
+  getSkill: vi.fn().mockImplementation((id: string) => Promise.resolve(skillStore.get(id))),
   createSkill: vi.fn().mockImplementation((opts: any) => {
     const row = { ...opts, is_global: opts.is_global ? 1 : 0, created_by: null, created_at: 0, updated_at: 0 }
     skillStore.set(opts.id, row)
-    return row
+    return Promise.resolve(row)
   }),
   updateSkill: vi.fn().mockImplementation((id: string, patch: any) => {
     const row = { ...skillStore.get(id), ...patch }
     skillStore.set(id, row)
-    return row
+    return Promise.resolve(row)
   }),
-  deleteSkill: vi.fn().mockReturnValue(true),
-  seedSkillIfAbsent: vi.fn().mockReturnValue(true),
-  listSkillsForTenant: vi.fn().mockReturnValue([]),
-  listAllSkills: vi.fn().mockReturnValue([]),
+  deleteSkill: vi.fn().mockResolvedValue(true),
+  seedSkillIfAbsent: vi.fn().mockResolvedValue(true),
+  listSkillsForTenant: vi.fn().mockResolvedValue([]),
+  listAllSkills: vi.fn().mockResolvedValue([]),
   grantSkillAccess: vi.fn(),
-  revokeSkillAccess: vi.fn().mockReturnValue(true),
-  listSkillAccess: vi.fn().mockReturnValue([]),
+  revokeSkillAccess: vi.fn().mockResolvedValue(true),
+  listSkillAccess: vi.fn().mockResolvedValue([]),
 }))
 
 import { tryHandleSkills } from '../web/routes/skills.js'

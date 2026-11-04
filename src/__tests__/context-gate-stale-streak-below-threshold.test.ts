@@ -85,56 +85,56 @@ describe('resetStreakIfBelowThreshold (pure)', () => {
 })
 
 describe('reconcileStreakWithContext: the reset reaches agent_state', () => {
-  it('returned state AND the persisted row are reset, so the next sweep does not see the old clock', () => {
+  it('returned state AND the persisted row are reset, so the next sweep does not see the old clock', async () => {
     const agent = uniq('agent-a')
-    writeGateRunState(agent, STALE)
-    const r = reconcileStreakWithContext(agent, readGateRunState(agent), 90_000, CFG.thresholdTokens)
+    await writeGateRunState(agent, STALE)
+    const r = await reconcileStreakWithContext(agent, await readGateRunState(agent), 90_000, CFG.thresholdTokens)
     expect(r).toEqual({ firstBlockedAt: null, lastAlertAt: null, lastClearAt: 5 })
-    expect(readGateRunState(agent)).toEqual({ firstBlockedAt: null, lastAlertAt: null, lastClearAt: 5 })
+    expect(await readGateRunState(agent)).toEqual({ firstBlockedAt: null, lastAlertAt: null, lastClearAt: 5 })
   })
 
-  it('over the threshold nothing is rewritten', () => {
+  it('over the threshold nothing is rewritten', async () => {
     const agent = uniq('agent-b')
-    writeGateRunState(agent, STALE)
-    reconcileStreakWithContext(agent, readGateRunState(agent), 500_000, CFG.thresholdTokens)
-    expect(readGateRunState(agent)).toEqual(STALE)
+    await writeGateRunState(agent, STALE)
+    await reconcileStreakWithContext(agent, await readGateRunState(agent), 500_000, CFG.thresholdTokens)
+    expect(await readGateRunState(agent)).toEqual(STALE)
   })
 })
 
 describe('the false alarm end to end', () => {
-  it('stale clock + context back over the threshold + mid-turn pane: alerted before, a plain block now', () => {
+  it('stale clock + context back over the threshold + mid-turn pane: alerted before, a plain block now', async () => {
     const agent = uniq('agent-c')
-    writeGateRunState(agent, STALE)
+    await writeGateRunState(agent, STALE)
 
     // Before the fix: the first sweep over the threshold measures from the 4-day-old clock.
-    const before = decideGate(BUSY_OVER_THRESHOLD, CFG, readGateRunState(agent).firstBlockedAt)
+    const before = decideGate(BUSY_OVER_THRESHOLD, CFG, (await readGateRunState(agent)).firstBlockedAt)
     expect(before.action).toBe('block-alert')
     expect(before.reason).toMatch(/pane-busy/)
 
     // The context was compacted in between: a sweep under the threshold ends the streak ...
-    reconcileStreakWithContext(agent, readGateRunState(agent), 80_000, CFG.thresholdTokens)
+    await reconcileStreakWithContext(agent, await readGateRunState(agent), 80_000, CFG.thresholdTokens)
     // ... so when it climbs back over, the clock starts from nothing.
-    const after = decideGate(BUSY_OVER_THRESHOLD, CFG, readGateRunState(agent).firstBlockedAt)
+    const after = decideGate(BUSY_OVER_THRESHOLD, CFG, (await readGateRunState(agent)).firstBlockedAt)
     expect(after.action).toBe('block')
     expect(after.reason).toMatch(/pane-busy/)
   })
 
-  it('a genuine streak (context stays over the threshold, blocked for hours) still alerts', () => {
+  it('a genuine streak (context stays over the threshold, blocked for hours) still alerts', async () => {
     const agent = uniq('agent-d')
-    writeGateRunState(agent, { firstBlockedAt: NOW - 5 * HOUR_MS, lastAlertAt: null, lastClearAt: null })
-    const s = reconcileStreakWithContext(agent, readGateRunState(agent), 450_000, CFG.thresholdTokens)
+    await writeGateRunState(agent, { firstBlockedAt: NOW - 5 * HOUR_MS, lastAlertAt: null, lastClearAt: null })
+    const s = await reconcileStreakWithContext(agent, await readGateRunState(agent), 450_000, CFG.thresholdTokens)
     expect(decideGate(BUSY_OVER_THRESHOLD, CFG, s.firstBlockedAt).action).toBe('block-alert')
   })
 })
 
 describe('wiring', () => {
-  it('checkAgent reconciles the streak with the measured context before deciding', () => {
+  it('checkAgent reconciles the streak with the measured context before deciding', async () => {
     const src = readFileSync(new URL('../web/context-restart-gate-runner.ts', import.meta.url), 'utf8')
     const body = src.slice(src.indexOf('async function checkAgent'))
-    const reconcile = body.indexOf('reconcileStreakWithContext(')
+    const reconcile = body.indexOf('await reconcileStreakWithContext(')
     const decide = body.indexOf('decideGate(')
     expect(reconcile).toBeGreaterThan(-1)
     expect(reconcile).toBeLessThan(decide)
-    expect(body).toMatch(/reconcileStreakWithContext\(\s*name, reconcileRunState\(name, sessionStartMs\), inputs\.contextTokens, cfg\.thresholdTokens\)/)
+    expect(body).toMatch(/reconcileStreakWithContext\(\s*name, await reconcileRunState\(name, sessionStartMs\), inputs\.contextTokens, cfg\.thresholdTokens\)/)
   })
 })

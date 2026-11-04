@@ -121,14 +121,14 @@ afterEach(() => {
 })
 
 // First sweep fires at 50s, then every 60s.
-const firstSweep = () => vi.advanceTimersByTime(50_000 + 1)
-const minutes = (n: number) => vi.advanceTimersByTime(n * MIN)
+const firstSweep = () => vi.advanceTimersByTimeAsync(50_000 + 1)
+const minutes = (n: number) => vi.advanceTimersByTimeAsync(n * MIN)
 
 describe('downgrade leaves the operator config alone', () => {
   it('pins the agent in the overlay, never writes .env / agent-config', async () => {
     ctx.panes['main-channels'] = LIMIT_PANE
     await boot()
-    firstSweep()
+    await firstSweep()
 
     expect(stateFile()['main']).toMatchObject({ primary: OPUS55, current: SONNET })
     expect(m.hardRestart).toHaveBeenCalledTimes(1)
@@ -141,7 +141,7 @@ describe('downgrade leaves the operator config alone', () => {
   it('a sub-agent downgrade goes through the same overlay, not agent-config.json', async () => {
     ctx.panes['sub-session'] = LIMIT_PANE
     await boot()
-    firstSweep()
+    await firstSweep()
 
     expect(stateFile()['sub']).toMatchObject({ primary: SONNET, current: HAIKU })
     expect(m.restartAgentProcess).toHaveBeenCalledWith('sub', { fresh: false })
@@ -157,7 +157,7 @@ describe('revert survives a dashboard restart and lands on the agent own primary
       JSON.stringify({ main: { primary: OPUS55, current: SONNET, downgradedAt } }),
     )
     await boot() // "dashboard restarted": nothing in memory
-    firstSweep()
+    await firstSweep()
 
     expect(stateFile()['main']).toBeUndefined()
     expect(m.hardRestart).toHaveBeenCalledTimes(1)
@@ -178,7 +178,7 @@ describe('revert survives a dashboard restart and lands on the agent own primary
       JSON.stringify({ main: { primary: OPUS55, current: SONNET, downgradedAt: Date.now() - 10 * MIN } }),
     )
     await boot()
-    firstSweep()
+    await firstSweep()
 
     expect(stateFile()['main']).toMatchObject({ current: SONNET })
     expect(m.hardRestart).not.toHaveBeenCalled()
@@ -190,7 +190,7 @@ describe('revert survives a dashboard restart and lands on the agent own primary
       JSON.stringify({ sub: { primary: SONNET, current: HAIKU, downgradedAt: Date.now() - 90 * MIN } }),
     )
     await boot()
-    firstSweep()
+    await firstSweep()
 
     expect(stateFile()['sub']).toBeUndefined()
     expect(m.restartAgentProcess).toHaveBeenCalledTimes(1)
@@ -206,7 +206,7 @@ describe('revert survives a dashboard restart and lands on the agent own primary
       JSON.stringify({ main: { primary: OPUS55, current: SONNET, downgradedAt: Date.now() - 5 * MIN } }),
     )
     await boot()
-    firstSweep()
+    await firstSweep()
 
     expect(stateFile()['main']).toBeUndefined()
     expect(m.hardRestart).not.toHaveBeenCalled()
@@ -215,7 +215,7 @@ describe('revert survives a dashboard restart and lands on the agent own primary
   it('a corrupt state file behaves like "nothing downgraded"', async () => {
     writeFileSync(join(ctx.store, 'model-fallback-state.json'), '{not json')
     await boot()
-    firstSweep()
+    await firstSweep()
 
     expect(m.hardRestart).not.toHaveBeenCalled()
     expect(state.getFallbackOverride('main')).toBeNull()
@@ -226,15 +226,15 @@ describe('cooldown stops the 60s cascade', () => {
   it('a pane that still shows the banner after the respawn does not trigger a second downgrade', async () => {
     ctx.panes['main-channels'] = LIMIT_PANE
     await boot()
-    firstSweep()
+    await firstSweep()
     expect(stateFile()['main']).toMatchObject({ current: SONNET })
 
     // The 13:29 -> 13:30 incident: next sweep 60s later, banner still visible.
-    vi.advanceTimersByTime(MIN)
+    await vi.advanceTimersByTimeAsync(MIN)
     expect(stateFile()['main']).toMatchObject({ current: SONNET })
     expect(m.hardRestart).toHaveBeenCalledTimes(1)
 
-    minutes(8) // still inside the 10 minute cooldown
+    await minutes(8) // still inside the 10 minute cooldown
     expect(stateFile()['main']).toMatchObject({ current: SONNET })
     expect(m.hardRestart).toHaveBeenCalledTimes(1)
   })
@@ -242,8 +242,8 @@ describe('cooldown stops the 60s cascade', () => {
   it('after the cooldown a banner that is still there moves one more step down', async () => {
     ctx.panes['main-channels'] = LIMIT_PANE
     await boot()
-    firstSweep()
-    minutes(11)
+    await firstSweep()
+    await minutes(11)
 
     expect(stateFile()['main']).toMatchObject({ primary: OPUS55, current: HAIKU })
     expect(m.hardRestart).toHaveBeenCalledTimes(2)
@@ -256,7 +256,7 @@ describe('cooldown stops the 60s cascade', () => {
     )
     ctx.panes['main-channels'] = LIMIT_PANE
     await boot()
-    firstSweep()
+    await firstSweep()
 
     expect(stateFile()['main']).toMatchObject({ current: SONNET })
     expect(m.hardRestart).not.toHaveBeenCalled()
@@ -268,8 +268,8 @@ describe('false positives', () => {
     ctx.panes['main-channels'] = paneWith(APPROACHING)
     ctx.panes['sub-session'] = paneWith(APPROACHING)
     await boot()
-    firstSweep()
-    minutes(3)
+    await firstSweep()
+    await minutes(3)
 
     expect(stateFile()).toEqual({})
     expect(m.hardRestart).not.toHaveBeenCalled()
@@ -280,7 +280,7 @@ describe('false positives', () => {
     ctx.idle = false
     ctx.panes['main-channels'] = LIMIT_PANE
     await boot()
-    firstSweep()
+    await firstSweep()
 
     expect(stateFile()).toEqual({})
     expect(m.hardRestart).not.toHaveBeenCalled()
@@ -292,7 +292,7 @@ describe('a failed respawn does not leave a phantom downgrade', () => {
     ctx.mainRestartOk = false
     ctx.panes['main-channels'] = LIMIT_PANE
     await boot()
-    firstSweep()
+    await firstSweep()
 
     expect(m.hardRestart).toHaveBeenCalledTimes(1)
     expect(stateFile()['main']).toBeUndefined()
@@ -303,7 +303,7 @@ describe('a failed respawn does not leave a phantom downgrade', () => {
     const entry = { primary: OPUS55, current: SONNET, downgradedAt: Date.now() - 90 * MIN }
     writeFileSync(join(ctx.store, 'model-fallback-state.json'), JSON.stringify({ main: entry }))
     await boot()
-    firstSweep()
+    await firstSweep()
 
     expect(m.hardRestart).toHaveBeenCalledTimes(1)
     expect(stateFile()['main']).toEqual(entry)

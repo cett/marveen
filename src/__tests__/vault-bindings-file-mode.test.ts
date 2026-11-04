@@ -47,8 +47,8 @@ describe('VAULTMODE818 (revised, #985 group 7/8): vault bindings are DB-backed, 
     try {
       const dbMod = await import('../db.js')
       dbMod.initDatabase(':memory:')
-      dbMod.upsertVaultBinding('default', { vaultSecretId: 's1', envVar: 'API_KEY', targets: [] })
-      dbMod.deleteVaultBinding('default', 's1', 'API_KEY')
+      await dbMod.upsertVaultBinding('default', { vaultSecretId: 's1', envVar: 'API_KEY', targets: [] })
+      await dbMod.deleteVaultBinding('default', 's1', 'API_KEY')
       expect(existsSync(join(storeDir, 'vault-bindings.json'))).toBe(false)
     } finally {
       delete process.env['MARVEEN_STORE_DIR']
@@ -62,7 +62,7 @@ describe('VAULTMODE818 (revised, #985 group 7/8): vault bindings are DB-backed, 
       const dbMod = await import('../db.js')
       const dbPath = join(storeDir, 'claudeclaw.db')
       dbMod.initDatabase(dbPath)
-      dbMod.upsertVaultBinding('default', { vaultSecretId: 's1', envVar: 'API_KEY', targets: [] })
+      await dbMod.upsertVaultBinding('default', { vaultSecretId: 's1', envVar: 'API_KEY', targets: [] })
       expect(statSync(dbPath).mode & 0o777).toBe(0o600)
     } finally {
       delete process.env['MARVEEN_STORE_DIR']
@@ -80,13 +80,13 @@ describe('VAULTMODE818 (revised, #985 group 7/8): vault bindings are DB-backed, 
       // vaultSecretId is a REFERENCE (the id vault.ts looks up), never the
       // decrypted secret string itself -- vault-bindings.ts has no import of
       // vault.ts's getSecret() anywhere near addBinding()/getBindings().
-      addBinding({
+      await addBinding({
         vaultSecretId: 'my-api-key-id',
         envVar: 'API_KEY',
         targets: [{ mcpFilePath: '/mock/.mcp.json', serverName: 'srv' }],
       })
 
-      const bindings = getBindings()
+      const bindings = await getBindings()
       expect(bindings).toHaveLength(1)
       const serialized = JSON.stringify(bindings)
       // Structural guarantee: the object has exactly the metadata shape, no

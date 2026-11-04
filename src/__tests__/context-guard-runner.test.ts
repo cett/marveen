@@ -69,7 +69,7 @@ vi.mock('../db.js', () => ({
 }))
 
 vi.mock('../db/workspace.js', () => ({
-  getWorkspaceDocUpdatedAtMs: vi.fn(() => null),
+  getWorkspaceDocUpdatedAtMs: vi.fn(() => Promise.resolve(null)),
 }))
 
 vi.mock('../web/claude-plan-handoff-marker.js', () => ({

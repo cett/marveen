@@ -128,28 +128,28 @@ describe('validateConfig', () => {
 })
 
 describe('loadCostopsConfig', () => {
-  it('writes the placeholder example and returns an empty non-existent config when no file is present', () => {
+  it('writes the placeholder example and returns an empty non-existent config when no file is present', async () => {
     expect(existsSync(mod.COSTOPS_CONFIG_PATH)).toBe(false)
-    const r = mod.loadCostopsConfig()
+    const r = await mod.loadCostopsConfig()
     expect(r.exists).toBe(false)
     expect(r.errors).toEqual([])
     expect(r.config).toEqual({ version: 1, currency: 'HUF', fixed_costs: [], budgets: [] })
     expect(existsSync(mod.COSTOPS_EXAMPLE_PATH)).toBe(true)
   })
 
-  it('reports a parse error for malformed JSON without throwing', () => {
+  it('reports a parse error for malformed JSON without throwing', async () => {
     writeFileSync(mod.COSTOPS_CONFIG_PATH, '{ not json', 'utf-8')
-    const r = mod.loadCostopsConfig()
+    const r = await mod.loadCostopsConfig()
     expect(r.exists).toBe(true)
     expect(r.errors).toEqual(['config is not valid JSON'])
     expect(r.config.fixed_costs).toEqual([])
   })
 
-  it('validates a well-formed existing config file', () => {
+  it('validates a well-formed existing config file', async () => {
     writeFileSync(mod.COSTOPS_CONFIG_PATH, JSON.stringify({
       version: 2, currency: 'USD', fixed_costs: [{ source_id: 'x', amount: 10 }], budgets: [],
     }), 'utf-8')
-    const r = mod.loadCostopsConfig()
+    const r = await mod.loadCostopsConfig()
     expect(r.exists).toBe(true)
     expect(r.errors).toEqual([])
     expect(r.config.version).toBe(2)
@@ -158,8 +158,8 @@ describe('loadCostopsConfig', () => {
 })
 
 describe('saveCostopsConfig', () => {
-  it('re-validates and persists the normalized config to disk', () => {
-    const result = mod.saveCostopsConfig({
+  it('re-validates and persists the normalized config to disk', async () => {
+    const result = await mod.saveCostopsConfig({
       version: 1, currency: 'HUF',
       fixed_costs: [{ source_id: 'x', name: 'x', provider: 'other', source_type: 'manual', amount: 7 }],
       budgets: [],
@@ -171,8 +171,8 @@ describe('saveCostopsConfig', () => {
     expect(onDisk.fixed_costs[0].amount).toBe(7)
   })
 
-  it('drops invalid entries on save the same way validateConfig would', () => {
-    const result = mod.saveCostopsConfig({
+  it('drops invalid entries on save the same way validateConfig would', async () => {
+    const result = await mod.saveCostopsConfig({
       version: 1, currency: 'HUF',
       fixed_costs: [{ source_id: '', name: '', provider: '', source_type: '', amount: 1 }],
       budgets: [],

@@ -41,7 +41,7 @@ vi.mock('../db.js', () => ({
   get expireTimedOutApprovals() { return mockExpireTimedOutApprovals },
   get createAgentMessage() { return mockCreateAgentMessage },
   listHumanOnlyCategoryKeys: () => [],
-  recordApprovalEvent: () => undefined,
+  recordApprovalEvent: () => Promise.resolve(),
 }))
 
 import { tryHandleApprovals } from '../web/routes/approvals.js'
@@ -80,17 +80,17 @@ const RESOLVED_APPROVAL = {
 
 beforeEach(() => {
   vi.clearAllMocks()
-  mockGetApproval.mockReturnValue(PENDING_APPROVAL)
-  mockResolveApproval.mockReturnValue(RESOLVED_APPROVAL)
-  mockListApprovals.mockReturnValue([])
-  mockExpireTimedOutApprovals.mockReturnValue(0)
+  mockGetApproval.mockResolvedValue(PENDING_APPROVAL)
+  mockResolveApproval.mockResolvedValue(RESOLVED_APPROVAL)
+  mockListApprovals.mockResolvedValue([])
+  mockExpireTimedOutApprovals.mockResolvedValue(0)
 })
 
 describe('PATCH /api/approvals/:id -- session-auth attribution', () => {
   it('uses ctx.auth.user as resolved_by when session-auth, ignoring body value', async () => {
     mockGetApproval
-      .mockReturnValueOnce(PENDING_APPROVAL)
-      .mockReturnValueOnce({ ...RESOLVED_APPROVAL, resolved_by: 'alice' })
+      .mockResolvedValueOnce(PENDING_APPROVAL)
+      .mockResolvedValueOnce({ ...RESOLVED_APPROVAL, resolved_by: 'alice' })
 
     const { ctx, out } = makeCtx(
       'PATCH', '/api/approvals/appr-001',
@@ -105,8 +105,8 @@ describe('PATCH /api/approvals/:id -- session-auth attribution', () => {
 
   it('resolved_by in response reflects the session username, not the body value', async () => {
     mockGetApproval
-      .mockReturnValueOnce(PENDING_APPROVAL)
-      .mockReturnValueOnce({ ...RESOLVED_APPROVAL, resolved_by: 'alice' })
+      .mockResolvedValueOnce(PENDING_APPROVAL)
+      .mockResolvedValueOnce({ ...RESOLVED_APPROVAL, resolved_by: 'alice' })
 
     const { ctx, out } = makeCtx(
       'PATCH', '/api/approvals/appr-001',

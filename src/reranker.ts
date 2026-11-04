@@ -1,89 +1,208 @@
-import { AutoTokenizer, AutoModelForSequenceClassification } from '@huggingface/transformers'
 import { logger } from './logger.js'
 import type { Memory } from './db.js'
+import { RERANKER_MODEL, _resetEngineForTests } from './reranker-engine.js'
+import { RERANK_WATCHDOG_FACTOR, RerankUnavailableError, createDefaultRerankBackend, type RerankBackend } from './reranker-backend.js'
 
-// bge-reranker-base (Xenova ONNX): ~180 MB q8, mBERT base (104 languages incl. hu).
-// Scores (query, passage) pairs for relevance. ~150-400 ms CPU latency per batch.
-// Lazy singleton. Xenova conversion provides the onnx/ folder needed by transformers.js.
-const RERANKER_MODEL = 'Xenova/bge-reranker-base'
+// Cross-encoder rerank of the fused hybrid-search list.
+//
+// The forward pass is slow (about 0.7 s for ten candidates, 4-5 s for fifty) and, run on the main thread, stops the
+// event loop for its whole duration. So it runs on a backend (a child process in production, see reranker-backend.ts)
+// behind a bounded queue with a time budget: a rerank that cannot finish in time hands back the order it was given
+// (the RRF order) instead of making the caller wait, and every such fallback is counted (getRerankStats), because a
+// fallback is otherwise an unnoticed drop in result quality.
 
-type Tokenizer = Awaited<ReturnType<typeof AutoTokenizer.from_pretrained>>
-type Model = Awaited<ReturnType<typeof AutoModelForSequenceClassification.from_pretrained>>
+/** Longest a rerank may take, from the call to the answer, queue wait and model load included. */
+export const RERANK_BUDGET_MS = 3000
 
-let tokenizerInstance: Tokenizer | null = null
-let modelInstance: Model | null = null
-let loadPromise: Promise<void> | null = null
+/**
+ * Most reranks outstanding at once, the running one included. With one worker and about 1.2 s per rerank of ten
+ * candidates, a second one finishes inside the budget (about 2.4 s) and a third could not, so it is turned away at
+ * once instead of queueing for a timeout.
+ */
+export const RERANK_MAX_PENDING = 2
 
-async function getRanker(): Promise<{ tokenizer: Tokenizer; model: Model }> {
-  if (tokenizerInstance && modelInstance) return { tokenizer: tokenizerInstance, model: modelInstance }
-  if (!loadPromise) {
-    loadPromise = Promise.all([
-      AutoTokenizer.from_pretrained(RERANKER_MODEL),
-      AutoModelForSequenceClassification.from_pretrained(RERANKER_MODEL, { dtype: 'q8' }),
-    ]).then(([tok, mod]) => {
-      tokenizerInstance = tok as Tokenizer
-      modelInstance = mod as Model
-    }).catch(err => {
-      loadPromise = null
-      throw err
-    })
-  }
-  await loadPromise
-  return { tokenizer: tokenizerInstance!, model: modelInstance! }
+export type RerankFallbackReason = 'timeout' | 'queue_full' | 'error' | 'unavailable'
+
+export interface RerankStats {
+  mode: RerankBackend['mode']
+  workerState: ReturnType<RerankBackend['state']>['workerState']
+  /** Time the worker needed to load the model, once it did. */
+  modelLoadMs: number | null
+  startedAt: number
+  /** Monotonic since the process started; a measurement window is the difference of two answers. */
+  calls: number
+  reranked: number
+  fallbacks: Record<RerankFallbackReason, number>
+  fallbackTotal: number
+  running: number
+  waiting: number
+  lastRerankMs: number | null
+  maxRerankMs: number
 }
 
 export interface RerankOptions {
   topK?: number
   maxCandidates?: number
+  /** Overrides RERANK_BUDGET_MS for this call. */
+  budgetMs?: number
+  /** Token cap of a (query, passage) pair; the model's own limit (512) when absent. */
+  maxLength?: number
+}
+
+type Outcome = { ok: true; scores: number[] } | { ok: false; reason: RerankFallbackReason }
+
+interface Job {
+  query: string
+  passages: string[]
+  maxLength?: number
+  budgetMs: number
+  timer: NodeJS.Timeout
+  resolve: (outcome: Outcome) => void
+}
+
+let backend: RerankBackend | null = null
+let running: Job | null = null
+let waiting: Job[] = []
+let stats = freshStats()
+let lastFallbackLogAt = 0
+
+function freshStats() {
+  return {
+    startedAt: Date.now(),
+    calls: 0,
+    reranked: 0,
+    fallbacks: { timeout: 0, queue_full: 0, error: 0, unavailable: 0 } as Record<RerankFallbackReason, number>,
+    lastRerankMs: null as number | null,
+    maxRerankMs: 0,
+  }
+}
+
+function getBackend(): RerankBackend {
+  if (!backend) backend = createDefaultRerankBackend()
+  return backend
+}
+
+function settle(job: Job, outcome: Outcome): void {
+  // Settled by whichever comes first (answer, timeout); the second call finds the promise already resolved.
+  clearTimeout(job.timer)
+  waiting = waiting.filter(j => j !== job)
+  job.resolve(outcome)
+}
+
+function pump(): void {
+  if (running) return
+  const next = waiting.shift()
+  if (!next) return
+  running = next
+  const started = Date.now()
+  getBackend().score(next.query, next.passages, next.maxLength, next.budgetMs * RERANK_WATCHDOG_FACTOR).then(
+    scores => {
+      const ms = Date.now() - started
+      stats.lastRerankMs = ms
+      stats.maxRerankMs = Math.max(stats.maxRerankMs, ms)
+      settle(next, { ok: true, scores })
+    },
+    (err: unknown) => {
+      logger.debug({ err, model: RERANKER_MODEL }, 'Cross-encoder rerank failed')
+      settle(next, { ok: false, reason: err instanceof RerankUnavailableError ? 'unavailable' : 'error' })
+    },
+  ).finally(() => {
+    // The slot frees when the backend is done, not when the caller gave up: a timed-out forward pass cannot be
+    // cancelled, and the next one must not start on top of it.
+    running = null
+    pump()
+  })
+}
+
+function submit(query: string, passages: string[], budgetMs: number, maxLength?: number): Promise<Outcome> {
+  const outstanding = (running ? 1 : 0) + waiting.length
+  if (outstanding >= RERANK_MAX_PENDING) return Promise.resolve({ ok: false, reason: 'queue_full' })
+  return new Promise<Outcome>(resolve => {
+    const job: Job = {
+      query,
+      passages,
+      maxLength,
+      budgetMs,
+      timer: setTimeout(() => settle(job, { ok: false, reason: 'timeout' }), budgetMs),
+      resolve,
+    }
+    waiting.push(job)
+    pump()
+  })
+}
+
+function noteFallback(reason: RerankFallbackReason): void {
+  stats.fallbacks[reason]++
+  // One line a minute at most: a stuck worker would otherwise log on every search.
+  const now = Date.now()
+  if (now - lastFallbackLogAt >= 60_000) {
+    lastFallbackLogAt = now
+    logger.warn({ reason, fallbacks: { ...stats.fallbacks } }, 'Cross-encoder rerank fell back to the RRF order')
+  }
 }
 
 /**
  * Re-ranks candidate memories by relevance to query using a cross-encoder.
  *
- * Uses AutoTokenizer + AutoModelForSequenceClassification directly so that
- * (query, passage) pairs are tokenized as [CLS] query [SEP] passage [SEP]
- * sequences. The single output logit per pair is passed through sigmoid to
- * produce a 0..1 relevance score, then candidates are sorted descending.
+ * Resolves with the best `topK` of the first `maxCandidates` candidates, highest score first. When the rerank cannot
+ * be had in time (budget exceeded, queue full, model or worker failure) it resolves with the candidates in the order
+ * they came in and counts a fallback; it never rejects.
  */
 export async function rerank(
   query: string,
   candidates: Memory[],
   opts: RerankOptions = {}
 ): Promise<Memory[]> {
-  const { topK = candidates.length, maxCandidates = candidates.length } = opts
+  const { topK = candidates.length, maxCandidates = candidates.length, budgetMs = RERANK_BUDGET_MS, maxLength } = opts
   const pool = candidates.slice(0, maxCandidates)
   if (pool.length === 0) return []
 
-  try {
-    const { tokenizer, model } = await getRanker()
-
-    // Encode each (query, passage) pair: [CLS] query [SEP] passage [SEP]
-    // The text_pair array route is the only correct way to get sentence-pair
-    // tokenization from transformers.js -- passing {text, text_pair} objects
-    // to a pipeline._call() does NOT work (it expects flat strings).
-    const queries = pool.map(() => query)
-    const passages = pool.map(m => m.content)
-    const inputs = tokenizer(queries, { text_pair: passages, padding: true, truncation: true })
-
-    const outputs = await (model as (inputs: unknown) => Promise<{ logits: { tolist(): number[][] } }>)(inputs)
-    // logits shape: [batch_size, 1] -- one relevance logit per (query, passage) pair
-    const logitRows = outputs.logits.tolist()
-    const scores = logitRows.map(row => 1 / (1 + Math.exp(-(row[0] ?? 0))))
-
-    return pool
-      .map((m, i) => ({ memory: m, score: scores[i] ?? 0 }))
-      .sort((a, b) => b.score - a.score)
-      .slice(0, topK)
-      .map(r => r.memory)
-  } catch (err) {
-    logger.debug({ err, model: RERANKER_MODEL }, 'Cross-encoder rerank failed, keeping original order')
+  stats.calls++
+  const outcome = await submit(query, pool.map(m => m.content), budgetMs, maxLength)
+  if (!outcome.ok) {
+    noteFallback(outcome.reason)
     return pool.slice(0, topK)
   }
+  stats.reranked++
+  return pool
+    .map((m, i) => ({ memory: m, score: outcome.scores[i] ?? 0 }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, topK)
+    .map(r => r.memory)
+}
+
+export function getRerankStats(): RerankStats {
+  const current = getBackend()
+  const b = current.state()
+  const fallbackTotal = Object.values(stats.fallbacks).reduce((a, n) => a + n, 0)
+  return {
+    mode: current.mode,
+    workerState: b.workerState,
+    modelLoadMs: b.loadMs,
+    startedAt: stats.startedAt,
+    calls: stats.calls,
+    reranked: stats.reranked,
+    fallbacks: { ...stats.fallbacks },
+    fallbackTotal,
+    running: running ? 1 : 0,
+    waiting: waiting.length,
+    lastRerankMs: stats.lastRerankMs,
+    maxRerankMs: stats.maxRerankMs,
+  }
+}
+
+// Exposed for testing only -- swaps the backend and clears the queue and the counters between tests.
+export function _setRerankBackendForTests(next: RerankBackend | null): void {
+  for (const job of [running, ...waiting]) if (job) clearTimeout(job.timer)
+  running = null
+  waiting = []
+  backend = next
+  stats = freshStats()
+  lastFallbackLogAt = 0
 }
 
 // Exposed for testing only -- allows resetting the singleton between tests.
 export function _resetRankerForTests(): void {
-  tokenizerInstance = null
-  modelInstance = null
-  loadPromise = null
+  _setRerankBackendForTests(null)
+  _resetEngineForTests()
 }

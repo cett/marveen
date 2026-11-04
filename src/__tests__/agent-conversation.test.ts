@@ -16,12 +16,12 @@ beforeAll(() => {
 // fetched the GLOBAL last-N then JS-filtered, so a rarely-active agent's thread
 // looked empty. These cover the SQL-filtered replacement + threads aggregation.
 describe('getAgentConversation', () => {
-  it('returns ONLY this agent\'s messages, newest-first', () => {
+  it('returns ONLY this agent\'s messages, newest-first', async () => {
     const a = 'tconv-alpha'
-    createAgentMessage(a, 'marveen', 'a1')
-    createAgentMessage('marveen', a, 'a2')
-    createAgentMessage('someone-else', 'third', 'noise') // must not leak in
-    const conv = getAgentConversation(a, 50)
+    await createAgentMessage(a, 'marveen', 'a1')
+    await createAgentMessage('marveen', a, 'a2')
+    await createAgentMessage('someone-else', 'third', 'noise') // must not leak in
+    const conv = await getAgentConversation(a, 50)
     expect(conv.length).toBe(2)
     expect(conv.every(m => m.from_agent === a || m.to_agent === a)).toBe(true)
     // newest-first: a2 (later id) before a1
@@ -29,28 +29,28 @@ describe('getAgentConversation', () => {
     expect(conv[1].content).toBe('a1')
   })
 
-  it('respects the limit', () => {
+  it('respects the limit', async () => {
     const a = 'tconv-limit'
-    for (let i = 0; i < 5; i++) createAgentMessage(a, 'marveen', `m${i}`)
-    expect(getAgentConversation(a, 3).length).toBe(3)
+    for (let i = 0; i < 5; i++) await createAgentMessage(a, 'marveen', `m${i}`)
+    expect((await getAgentConversation(a, 3)).length).toBe(3)
   })
 
-  it('caps the limit at 200 and floors it at 1', () => {
+  it('caps the limit at 200 and floors it at 1', async () => {
     const a = 'tconv-cap'
-    createAgentMessage(a, 'marveen', 'x')
-    expect(getAgentConversation(a, 99999).length).toBeLessThanOrEqual(200)
-    expect(getAgentConversation(a, 0).length).toBe(1) // floored to >=1, one row exists
+    await createAgentMessage(a, 'marveen', 'x')
+    expect((await getAgentConversation(a, 99999)).length).toBeLessThanOrEqual(200)
+    expect((await getAgentConversation(a, 0)).length).toBe(1) // floored to >=1, one row exists
   })
 
-  it('paginates older with beforeId (scroll-up)', () => {
+  it('paginates older with beforeId (scroll-up)', async () => {
     const a = 'tconv-page'
     const ids: number[] = []
-    for (let i = 0; i < 6; i++) ids.push(createAgentMessage(a, 'marveen', `p${i}`).id)
+    for (let i = 0; i < 6; i++) ids.push((await createAgentMessage(a, 'marveen', `p${i}`)).id)
     // newest-first page of 3 -> the 3 highest ids
-    const page1 = getAgentConversation(a, 3)
+    const page1 = await getAgentConversation(a, 3)
     expect(page1.map(m => m.id)).toEqual([ids[5], ids[4], ids[3]])
     // next older page: before the oldest id we have (ids[3])
-    const page2 = getAgentConversation(a, 3, ids[3])
+    const page2 = await getAgentConversation(a, 3, ids[3])
     expect(page2.map(m => m.id)).toEqual([ids[2], ids[1], ids[0]])
     // no overlap between pages
     expect(page2.every(m => m.id < ids[3])).toBe(true)
@@ -58,12 +58,12 @@ describe('getAgentConversation', () => {
 })
 
 describe('getAgentConversationThreads', () => {
-  it('lists a peer with its count + most-recent message', () => {
+  it('lists a peer with its count + most-recent message', async () => {
     const a = 'tthread-peer'
-    createAgentMessage(a, 'marveen', 't1')
-    createAgentMessage('marveen', a, 't2')
-    const last = createAgentMessage(a, 'marveen', 't3-last')
-    const threads = getAgentConversationThreads()
+    await createAgentMessage(a, 'marveen', 't1')
+    await createAgentMessage('marveen', a, 't2')
+    const last = await createAgentMessage(a, 'marveen', 't3-last')
+    const threads = await getAgentConversationThreads()
     const row = threads.find(t => t.agent === a)
     expect(row).toBeDefined()
     expect(row!.count).toBe(3)
@@ -71,11 +71,11 @@ describe('getAgentConversationThreads', () => {
     expect(row!.lastMessage?.content).toBe('t3-last')
   })
 
-  it('excludes CHAT_SYSTEM_AGENTS as thread rows but still counts their messages for the peer', () => {
+  it('excludes CHAT_SYSTEM_AGENTS as thread rows but still counts their messages for the peer', async () => {
     const a = 'tthread-withsys'
-    createAgentMessage('heartbeat', a, 'hb-to-peer')
-    createAgentMessage(a, 'channel-coordinator', 'peer-to-coord')
-    const threads = getAgentConversationThreads()
+    await createAgentMessage('heartbeat', a, 'hb-to-peer')
+    await createAgentMessage(a, 'channel-coordinator', 'peer-to-coord')
+    const threads = await getAgentConversationThreads()
     const agents = threads.map(t => t.agent)
     // system agents never appear as their own thread row
     expect(agents).not.toContain('heartbeat')
@@ -87,12 +87,12 @@ describe('getAgentConversationThreads', () => {
     expect(row?.count).toBe(2)
   })
 
-  it('is sorted newest-first by last message', () => {
+  it('is sorted newest-first by last message', async () => {
     const older = 'tthread-older'
     const newer = 'tthread-newer'
-    createAgentMessage(older, 'marveen', 'old')
-    createAgentMessage(newer, 'marveen', 'new')
-    const threads = getAgentConversationThreads()
+    await createAgentMessage(older, 'marveen', 'old')
+    await createAgentMessage(newer, 'marveen', 'new')
+    const threads = await getAgentConversationThreads()
     const iOlder = threads.findIndex(t => t.agent === older)
     const iNewer = threads.findIndex(t => t.agent === newer)
     expect(iNewer).toBeGreaterThanOrEqual(0)

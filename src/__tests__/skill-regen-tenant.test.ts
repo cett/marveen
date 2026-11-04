@@ -38,11 +38,11 @@ vi.mock('../web/agent-config.js', () => ({
 }))
 vi.mock('../logger.js', () => ({ logger: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() } }))
 vi.mock('../db.js', () => ({
-  getSkill: vi.fn((id: string) => store.get(id)),
-  listAllSkills: vi.fn(() => [...store.values()]),
-  listSkillAccess: vi.fn((id: string) => (grants.get(id) ?? []).map(t => ({ skill_id: id, tenant_id: t }))),
-  getEnabledAgentsForTenant: vi.fn((t: string) => avail.get(t) ?? []),
-  getTenantsForAgent: vi.fn((a: string) => [...avail.entries()].filter(([, agents]) => agents.includes(a)).map(([t]) => t)),
+  getSkill: vi.fn((id: string) => Promise.resolve(store.get(id))),
+  listAllSkills: vi.fn(() => Promise.resolve([...store.values()])),
+  listSkillAccess: vi.fn((id: string) => Promise.resolve((grants.get(id) ?? []).map(t => ({ skill_id: id, tenant_id: t })))),
+  getEnabledAgentsForTenant: vi.fn((t: string) => Promise.resolve(avail.get(t) ?? [])),
+  getTenantsForAgent: vi.fn((a: string) => Promise.resolve([...avail.entries()].filter(([, agents]) => agents.includes(a)).map(([t]) => t))),
 }))
 
 import { regenSingleSkillFile, regenSkillFilesFromSQL, regenTenantSkillFiles, removeGeneratedSkillFile, tenantSkillDirName } from '../web/skill-regen.js'
@@ -67,9 +67,9 @@ beforeEach(() => {
 })
 
 describe('tenant skill file generation', () => {
-  it('writes the skill, with a tenant header, to every enabled agent of the owning tenant', () => {
+  it('writes the skill, with a tenant header, to every enabled agent of the owning tenant', async () => {
     row(ID, 'acme'); avail.set('acme', ['ann', 'bob'])
-    expect(regenSingleSkillFile(ID)).toEqual({ written: true, skipped: false, reason: null })
+    expect(await regenSingleSkillFile(ID)).toEqual({ written: true, skipped: false, reason: null })
     for (const a of ['ann', 'bob']) {
       const f = readFileSync(agentSkill(a, ID), 'utf-8')
       expect(f).toBe(addGeneratedHeader(store.get(ID).content, ID, { tenant: true }))
@@ -78,95 +78,95 @@ describe('tenant skill file generation', () => {
     expect(existsSync(agentSkill('cy', ID))).toBe(false)
   })
 
-  it('is DB-only when the tenant has no agent (not_file_backed)', () => {
+  it('is DB-only when the tenant has no agent (not_file_backed)', async () => {
     row(ID, 'acme')
-    expect(regenSingleSkillFile(ID)).toEqual({ written: false, skipped: true, reason: 'not_file_backed' })
+    expect(await regenSingleSkillFile(ID)).toEqual({ written: false, skipped: true, reason: 'not_file_backed' })
   })
 
-  it('ignores enabled agents that do not exist on disk and the main agent', () => {
+  it('ignores enabled agents that do not exist on disk and the main agent', async () => {
     row(ID, 'acme'); avail.set('acme', ['ghost', 'marveen'])
-    expect(regenSingleSkillFile(ID).reason).toBe('not_file_backed')
+    expect((await regenSingleSkillFile(ID)).reason).toBe('not_file_backed')
     expect(existsSync(join(FAKE_PROJECT, 'agents', 'ghost'))).toBe(false)
     expect(existsSync(join(FAKE_PROJECT, '.claude'))).toBe(false)
   })
 
-  it('never writes to the main agent even when it is enabled for the tenant AND has a directory on disk', () => {
+  it('never writes to the main agent even when it is enabled for the tenant AND has a directory on disk', async () => {
     // The plain "not on disk" case above is filtered by the directory check alone; this one only the
     // main-agent exclusion stops: the main agent's skills dir is project-wide, not a tenant's own.
     mkAgent('marveen')
     row(ID, 'acme'); avail.set('acme', ['marveen', 'ann'])
-    expect(regenSingleSkillFile(ID)).toEqual({ written: true, skipped: false, reason: null })
+    expect(await regenSingleSkillFile(ID)).toEqual({ written: true, skipped: false, reason: null })
     expect(existsSync(agentSkill('ann', ID))).toBe(true)
     expect(existsSync(agentSkill('marveen', ID))).toBe(false)
     expect(existsSync(join(FAKE_PROJECT, '.claude'))).toBe(false)
     // the bulk (startup) pass and the per-tenant pass agree
-    regenSkillFilesFromSQL()
-    regenTenantSkillFiles('acme')
+    await regenSkillFilesFromSQL()
+    await regenTenantSkillFiles('acme')
     expect(existsSync(agentSkill('marveen', ID))).toBe(false)
   })
 
-  it('a second regen with unchanged content is content_equal', () => {
+  it('a second regen with unchanged content is content_equal', async () => {
     row(ID, 'acme'); avail.set('acme', ['ann'])
-    regenSingleSkillFile(ID)
-    expect(regenSingleSkillFile(ID)).toEqual({ written: false, skipped: true, reason: 'content_equal' })
+    await regenSingleSkillFile(ID)
+    expect(await regenSingleSkillFile(ID)).toEqual({ written: false, skipped: true, reason: 'content_equal' })
   })
 
-  it('a grant adds the grantee tenant agents, a revoke removes only the generated copies', () => {
+  it('a grant adds the grantee tenant agents, a revoke removes only the generated copies', async () => {
     row(ID, 'acme'); avail.set('acme', ['ann']); avail.set('beta', ['bob'])
-    regenSingleSkillFile(ID)
+    await regenSingleSkillFile(ID)
     expect(existsSync(agentSkill('bob', ID))).toBe(false)
 
     grants.set(ID, ['beta'])
-    regenSingleSkillFile(ID)
+    await regenSingleSkillFile(ID)
     expect(existsSync(agentSkill('bob', ID))).toBe(true)
     expect(existsSync(agentSkill('ann', ID))).toBe(true)
 
     grants.set(ID, [])
-    expect(regenSingleSkillFile(ID)).toEqual({ written: false, skipped: false, reason: null })
+    expect(await regenSingleSkillFile(ID)).toEqual({ written: false, skipped: false, reason: null })
     expect(existsSync(agentSkill('bob', ID))).toBe(false)
     expect(existsSync(join(FAKE_PROJECT, 'agents', 'bob', '.claude', 'skills', ID))).toBe(false)   // empty dir cleaned up
     expect(existsSync(agentSkill('ann', ID))).toBe(true)
   })
 
-  it('does not touch a hand-made skill that has the same directory name', () => {
+  it('does not touch a hand-made skill that has the same directory name', async () => {
     row(ID, 'acme'); avail.set('acme', ['ann'])
     mkdirSync(join(FAKE_PROJECT, 'agents', 'ann', '.claude', 'skills', ID), { recursive: true })
     writeFileSync(agentSkill('ann', ID), 'my own skill\n')
-    const r = regenSingleSkillFile(ID)
+    const r = await regenSingleSkillFile(ID)
     expect(readFileSync(agentSkill('ann', ID), 'utf-8')).toBe('my own skill\n')
     expect(r.written).toBe(false)
   })
 
-  it('does not overwrite a generated FLEET-style header of another skill in that directory', () => {
+  it('does not overwrite a generated FLEET-style header of another skill in that directory', async () => {
     row(ID, 'acme'); avail.set('acme', ['ann'])
     mkdirSync(join(FAKE_PROJECT, 'agents', 'ann', '.claude', 'skills', ID), { recursive: true })
     const other = addGeneratedHeader('other body\n', 'agent/ann/other')
     writeFileSync(agentSkill('ann', ID), other)
-    regenSingleSkillFile(ID)
+    await regenSingleSkillFile(ID)
     expect(readFileSync(agentSkill('ann', ID), 'utf-8')).toBe(other)
   })
 
-  it('restores a drifted generated copy from the DB', () => {
+  it('restores a drifted generated copy from the DB', async () => {
     row(ID, 'acme'); avail.set('acme', ['ann'])
-    regenSingleSkillFile(ID)
+    await regenSingleSkillFile(ID)
     writeFileSync(agentSkill('ann', ID), addGeneratedHeader('tampered\n', ID, { tenant: true }))
-    regenSingleSkillFile(ID)
+    await regenSingleSkillFile(ID)
     expect(stripGeneratedHeader(readFileSync(agentSkill('ann', ID), 'utf-8'))).toBe(store.get(ID).content)
   })
 
-  it('an availability change moves the files (regenTenantSkillFiles)', () => {
+  it('an availability change moves the files (regenTenantSkillFiles)', async () => {
     row(ID, 'acme'); avail.set('acme', ['ann'])
-    regenSingleSkillFile(ID)
+    await regenSingleSkillFile(ID)
     avail.set('acme', ['bob'])
-    expect(regenTenantSkillFiles('acme')).toEqual({ written: 1, removed: 1, errors: 0 })
+    expect(await regenTenantSkillFiles('acme')).toEqual({ written: 1, removed: 1, errors: 0 })
     expect(existsSync(agentSkill('ann', ID))).toBe(false)
     expect(existsSync(agentSkill('bob', ID))).toBe(true)
   })
 
-  it('regenTenantSkillFiles leaves other tenants and fleet skills alone', () => {
+  it('regenTenantSkillFiles leaves other tenants and fleet skills alone', async () => {
     row(ID, 'acme'); row('other-skill', 'zeta'); avail.set('acme', ['ann']); avail.set('zeta', ['cy'])
     row('global/x', 'fleet')
-    expect(regenTenantSkillFiles('acme').written).toBe(1)
+    expect((await regenTenantSkillFiles('acme')).written).toBe(1)
     expect(existsSync(agentSkill('cy', 'other-skill'))).toBe(false)
   })
 
@@ -179,41 +179,41 @@ describe('tenant skill file generation', () => {
 })
 
 describe('delete and bulk regen', () => {
-  it('delete removes the generated copy from every agent, keeps a hand-edited one', () => {
+  it('delete removes the generated copy from every agent, keeps a hand-edited one', async () => {
     row(ID, 'acme'); avail.set('acme', ['ann', 'bob'])
-    regenSingleSkillFile(ID)
+    await regenSingleSkillFile(ID)
     const content = store.get(ID).content
     writeFileSync(agentSkill('bob', ID), addGeneratedHeader('hand edited\n', ID, { tenant: true }))
     store.delete(ID)
-    expect(removeGeneratedSkillFile(ID, content, 'acme')).toEqual({ removed: true, reason: null })
+    expect(await removeGeneratedSkillFile(ID, content, 'acme')).toEqual({ removed: true, reason: null })
     expect(existsSync(agentSkill('ann', ID))).toBe(false)
     expect(existsSync(agentSkill('bob', ID))).toBe(true)
   })
 
-  it('delete of a DB-only tenant skill reports absent', () => {
-    expect(removeGeneratedSkillFile(ID, 'x', 'acme')).toEqual({ removed: false, reason: 'absent' })
+  it('delete of a DB-only tenant skill reports absent', async () => {
+    expect(await removeGeneratedSkillFile(ID, 'x', 'acme')).toEqual({ removed: false, reason: 'absent' })
   })
 
-  it('bulk regen generates tenant files and sweeps generated copies whose row is gone', () => {
+  it('bulk regen generates tenant files and sweeps generated copies whose row is gone', async () => {
     row(ID, 'acme'); avail.set('acme', ['ann'])
     mkdirSync(join(FAKE_PROJECT, 'agents', 'bob', '.claude', 'skills', 'gone-skill'), { recursive: true })
     writeFileSync(agentSkill('bob', 'gone-skill'), addGeneratedHeader(FM, 'acme-gone-skill', { tenant: true }))
     mkdirSync(join(FAKE_PROJECT, 'agents', 'bob', '.claude', 'skills', 'mine'), { recursive: true })
     writeFileSync(agentSkill('bob', 'mine'), 'hand made\n')
 
-    const res = regenSkillFilesFromSQL()
+    const res = await regenSkillFilesFromSQL()
     expect(res.errors).toBe(0)
     expect(existsSync(agentSkill('ann', ID))).toBe(true)
     expect(existsSync(agentSkill('bob', 'gone-skill'))).toBe(false)
     expect(readFileSync(agentSkill('bob', 'mine'), 'utf-8')).toBe('hand made\n')
   })
 
-  it('bulk regen never removes a fleet-style header copy while sweeping', () => {
+  it('bulk regen never removes a fleet-style header copy while sweeping', async () => {
     row(ID, 'acme')
     mkdirSync(join(FAKE_PROJECT, 'agents', 'bob', '.claude', 'skills', 'fleetish'), { recursive: true })
     const f = addGeneratedHeader(FM, 'agent/bob/fleetish')
     writeFileSync(agentSkill('bob', 'fleetish'), f)
-    regenSkillFilesFromSQL()
+    await regenSkillFilesFromSQL()
     expect(readFileSync(agentSkill('bob', 'fleetish'), 'utf-8')).toBe(f)
   })
 })

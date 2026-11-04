@@ -8,7 +8,7 @@ const mocks = vi.hoisted(() => ({
   getStaleMemories: vi.fn().mockReturnValue([]),
   getMemoryVersions: vi.fn().mockReturnValue([]),
   updateMemory: vi.fn().mockReturnValue(true),
-  runMemoryMaintenance: vi.fn().mockReturnValue({ warmToCold: 2, coldToWarm: 1, prunedVersions: 5 }),
+  runMemoryMaintenance: vi.fn().mockResolvedValue({ warmToCold: 2, coldToWarm: 1, prunedVersions: 5 }),
   getMemoryById: vi.fn(),
 }))
 

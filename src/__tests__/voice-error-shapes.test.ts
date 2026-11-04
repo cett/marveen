@@ -50,7 +50,7 @@ vi.mock('node:child_process', () => ({
 // The server-side record has its own tests (channel-credentials.test.ts).
 vi.mock('../web/channel-credentials.js', () => ({
   getChannelBotToken: vi.fn().mockReturnValue('123456:TEST-TOKEN-dddddddddddddddd'),
-  serverMaySendTo: vi.fn().mockReturnValue(true),
+  serverMaySendTo: vi.fn().mockResolvedValue(true),
   isValidChannelAgentId: (id: string) => /^[a-zA-Z0-9_-]+$/.test(id),
 }))
 

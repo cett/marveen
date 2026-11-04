@@ -27,9 +27,15 @@ afterAll(() => {
   rmSync(TMP_ROOT, { recursive: true, force: true })
 })
 
+// The main agent's channel pairing is written under the home directory: keep it in the throwaway root, not the real one.
+vi.mock('node:os', async (importOriginal) => ({ ...(await importOriginal<typeof import('node:os')>()), homedir: () => TMP_ROOT }))
 vi.mock('../logger.js', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }))
 vi.mock('../web/agent-config.js', () => ({ AGENTS_BASE_DIR: '/mock/agents', listAgentNames: () => [], invalidateModelProfileMapCache: () => {} }))
-vi.mock('../web/atomic-write.js', () => ({ atomicWriteFileSync: vi.fn() }))
+// A real write: the import stages each file and renames it into place after the commit.
+vi.mock('../web/atomic-write.js', async () => {
+  const { writeFileSync } = await import('node:fs')
+  return { atomicWriteFileSync: (path: string, content: string) => writeFileSync(path, content, 'utf-8') }
+})
 vi.mock('../web/scheduled-tasks-io.js', () => ({ SCHEDULED_TASKS_DIR: TASKS_DIR }))
 vi.mock('../config.js', () => ({
   PROJECT_ROOT: TMP_ROOT,
@@ -98,7 +104,7 @@ describe('exportFleet -- importSources', () => {
       vault_token_ref: 'conf-token-1', confluence_email: 'user@example.com', base_url: 'https://example.atlassian.net',
     })
 
-    const result = exportFleet()
+    const result = await exportFleet()
     const fleet = JSON.parse(result.data)
     expect(fleet.importSources).toHaveLength(2)
     expect(fleet.importSources.every((s: any) => s.enabled === 0 && s.last_run_at === null)).toBe(true)
@@ -113,11 +119,11 @@ describe('importFleet -- importSources', () => {
   it('dry-run reports the source as new and warns about disabled/vault-dependent re-enable', async () => {
     const { exportFleet, importFleet } = await import('../web/fleet-transfer.js')
     insertImportSource({ id: 'local-docs' })
-    const exported = exportFleet()
+    const exported = await exportFleet()
 
     initDatabase(':memory:') // fresh target -- no sources yet
 
-    const dry = importFleet(exported.data, { apply: false }) as any
+    const dry = await importFleet(exported.data, { apply: false }) as any
     expect(dry.wouldCreate.importSources).toBe(1)
     expect(dry.warnings.some((w: string) => w.includes('import-forrás'))).toBe(true)
   })
@@ -128,11 +134,11 @@ describe('importFleet -- importSources', () => {
       id: 'conf-space', type: 'confluence', path: 'MYSPACE', enabled: 1, last_run_at: 1700000000,
       vault_token_ref: 'conf-token-1', confluence_email: 'user@example.com', base_url: 'https://example.atlassian.net',
     })
-    const exported = exportFleet()
+    const exported = await exportFleet()
 
     initDatabase(':memory:') // fresh target
 
-    const applied = importFleet(exported.data, { apply: true }) as any
+    const applied = await importFleet(exported.data, { apply: true }) as any
     expect(applied.ok).toBe(true)
     expect(applied.imported.importSources).toBe(1)
 
@@ -150,11 +156,11 @@ describe('importFleet -- importSources', () => {
   it('is idempotent on id -- re-applying the same export does not duplicate the row', async () => {
     const { exportFleet, importFleet } = await import('../web/fleet-transfer.js')
     insertImportSource({ id: 'local-docs' })
-    const exported = exportFleet()
+    const exported = await exportFleet()
 
     initDatabase(':memory:')
-    importFleet(exported.data, { apply: true })
-    importFleet(exported.data, { apply: true })
+    await importFleet(exported.data, { apply: true })
+    await importFleet(exported.data, { apply: true })
 
     const rows = getDb().prepare('SELECT * FROM import_sources WHERE id = ?').all('local-docs') as any[]
     expect(rows).toHaveLength(1)
@@ -169,7 +175,7 @@ describe('importFleet -- importSources', () => {
         { id: 'good-row', type: 'local', path: '/tmp/x', created_at: 1, updated_at: 1 },
       ],
     })
-    const applied = importFleet(fleetJson, { apply: true }) as any
+    const applied = await importFleet(fleetJson, { apply: true }) as any
     expect(applied.ok).toBe(true)
     expect(getDb().prepare('SELECT * FROM import_sources WHERE id = ?').get('bad-row')).toBeUndefined()
     expect(getDb().prepare('SELECT * FROM import_sources WHERE id = ?').get('good-row')).toBeTruthy()
@@ -184,12 +190,12 @@ describe('importFleet -- importSources', () => {
        VALUES ('mem-1', 'local-docs', '/home/user/docs/a.md', 'a.md', 'hash1', 'content', ?, ?, ?)`
     ).run(now, now, now)
 
-    const exported = exportFleet()
+    const exported = await exportFleet()
     const fleet = JSON.parse(exported.data)
     expect(fleet.importMemories).toBeUndefined()
 
     initDatabase(':memory:')
-    importFleet(exported.data, { apply: true })
+    await importFleet(exported.data, { apply: true })
     expect(getDb().prepare('SELECT COUNT(*) AS n FROM import_memories').get() as any).toEqual({ n: 0 })
   })
 })

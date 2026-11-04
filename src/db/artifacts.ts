@@ -1,4 +1,4 @@
-import { db } from './connection.js'
+import { dbx } from './facade.js'
 import { generateEmbedding } from './vector.js'
 import { logger } from '../logger.js'
 
@@ -59,11 +59,11 @@ const DEFAULT_MIME: Record<ArtifactKind, string> = {
 }
 
 /** The agent that stored the artifact with this cloud URL, if any. */
-export function getArtifactAgentByCloudUrl(cloudUrl: string): string | undefined {
-  return (db.prepare('SELECT agent_id FROM artifacts WHERE cloud_url = ?').get(cloudUrl) as { agent_id: string } | undefined)?.agent_id
+export async function getArtifactAgentByCloudUrl(cloudUrl: string): Promise<string | undefined> {
+  return (await dbx.get<{ agent_id: string }>('SELECT agent_id FROM artifacts WHERE cloud_url = ?', cloudUrl))?.agent_id
 }
 
-export function createArtifact(params: CreateArtifactParams): { id: string; updated: boolean } {
+export async function createArtifact(params: CreateArtifactParams): Promise<{ id: string; updated: boolean }> {
   const mime = params.mime ?? DEFAULT_MIME[params.kind]
   const meta = JSON.stringify(params.meta ?? {})
 
@@ -73,10 +73,12 @@ export function createArtifact(params: CreateArtifactParams): { id: string; upda
     // UPSERT path: dedup on cloud_url; only updates rows that are already
     // cloud-sourced (WHERE source = 'cloud:artifact') to prevent accidental
     // overwrites of locally-created artifacts that happen to share a URL.
-    const existing = db.prepare('SELECT id FROM artifacts WHERE cloud_url = ?')
-      .get(params.cloud_url) as { id: string } | undefined
+    // The existing-row read and the UPSERT are two awaits, no longer one synchronous step. Two concurrent calls
+    // for the same cloud_url both end in one row (the unique cloud_url protects it, the last writer wins), but
+    // `updated` can report false for both when neither saw the other's insert. Accepted: the flag is advisory.
+    const existing = await dbx.get<{ id: string }>('SELECT id FROM artifacts WHERE cloud_url = ?', params.cloud_url)
     const source = params.source ?? 'cloud:artifact'
-    const row = db.prepare(`
+    const row = (await dbx.get(`
       INSERT INTO artifacts (agent_id, tenant_id, title, kind, mime, content, meta, source, cloud_url)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(cloud_url) DO UPDATE SET
@@ -85,19 +87,18 @@ export function createArtifact(params: CreateArtifactParams): { id: string; upda
         updated_at = unixepoch()
       WHERE source = 'cloud:artifact'
       RETURNING id
-    `).get(
-      params.agent_id, tenantId, params.title, params.kind, mime, params.content, meta, source, params.cloud_url,
-    ) as { id: string }
+    `, params.agent_id, tenantId, params.title, params.kind, mime, params.content, meta, source, params.cloud_url,
+    )) as { id: string }
     storeArtifactEmbedding(row.id, params.title, meta).catch(() => { /* non-critical */ })
     return { id: row.id, updated: !!existing }
   }
 
   // Standard insert path (no cloud_url)
-  const row = db.prepare(`
+  const row = (await dbx.get(`
     INSERT INTO artifacts (agent_id, tenant_id, title, kind, mime, content, meta, source)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     RETURNING id
-  `).get(params.agent_id, tenantId, params.title, params.kind, mime, params.content, meta, params.source ?? null) as { id: string }
+  `, params.agent_id, tenantId, params.title, params.kind, mime, params.content, meta, params.source ?? null)) as { id: string }
   // Fire-and-forget: index title+meta embedding for semantic search
   storeArtifactEmbedding(row.id, params.title, meta).catch(() => { /* non-critical */ })
   return { id: row.id, updated: false }
@@ -118,7 +119,7 @@ export async function storeArtifactEmbedding(
   const embedding = await generateEmbedding(text).catch(() => null)
   if (!embedding) return
 
-  const rowRow = db.prepare('SELECT rowid FROM artifacts WHERE id = ?').get(id) as { rowid: number } | undefined
+  const rowRow = await dbx.get<{ rowid: number }>('SELECT rowid FROM artifacts WHERE id = ?', id)
   if (!rowRow) return
 
   // Encode as little-endian Float32 buffer (same format as vec_memories)
@@ -128,8 +129,8 @@ export async function storeArtifactEmbedding(
   try {
     // vec0 virtual tables have no ON CONFLICT upsert, so this stays OR REPLACE
     // until the pgvector phase replaces the table.
-    db.prepare('INSERT OR REPLACE INTO vec_artifacts(artifact_rowid, embedding) VALUES(?, ?)').run(BigInt(rowRow.rowid), buf)
-    const { c } = db.prepare('SELECT COUNT(*) as c FROM vec_artifacts').get() as { c: number }
+    await dbx.run('INSERT OR REPLACE INTO vec_artifacts(artifact_rowid, embedding) VALUES(?, ?)', BigInt(rowRow.rowid), buf)
+    const { c } = (await dbx.get('SELECT COUNT(*) as c FROM vec_artifacts')) as { c: number }
     if (c >= VEC_REBUILD_THRESHOLD) {
       logger.warn({ vec_count: c }, 'vec_artifacts index approaching rebuild threshold; consider running a periodic VACUUM or re-index')
     }
@@ -147,7 +148,7 @@ export interface ListArtifactsOptions {
   offset?: number
 }
 
-export function listArtifacts(opts: ListArtifactsOptions = {}): ArtifactSummary[] {
+export async function listArtifacts(opts: ListArtifactsOptions = {}): Promise<ArtifactSummary[]> {
   const limit = Math.min(opts.limit ?? 50, 200)
   const offset = opts.offset ?? 0
 
@@ -161,14 +162,14 @@ export function listArtifacts(opts: ListArtifactsOptions = {}): ArtifactSummary[
     const agentCond  = agentBind.length  ? 'AND a.agent_id = ?'   : ''
     const tenantCond = tenantBind.length ? 'AND a.tenant_id = ?'  : ''
     const kindCond   = kindBind.length   ? 'AND a.kind = ?'       : ''
-    return db.prepare(`
+    return dbx.all<ArtifactSummary>(`
       SELECT a.id, a.agent_id, a.tenant_id, a.title, a.kind, a.mime, a.meta, a.source, a.cloud_url, a.created_at, a.updated_at
       FROM artifacts a
       WHERE a.rowid IN (SELECT rowid FROM artifacts_fts WHERE artifacts_fts MATCH ?)
       ${agentCond} ${tenantCond} ${kindCond}
       ORDER BY a.created_at DESC
       LIMIT ? OFFSET ?
-    `).all(ftsEscape(q), ...agentBind, ...tenantBind, ...kindBind, limit, offset) as ArtifactSummary[]
+    `, ftsEscape(q), ...agentBind, ...tenantBind, ...kindBind, limit, offset)
   }
 
   const conditions: string[] = []
@@ -176,20 +177,20 @@ export function listArtifacts(opts: ListArtifactsOptions = {}): ArtifactSummary[
   if (tenantBind.length) conditions.push('tenant_id = ?')
   if (kindBind.length)   conditions.push('kind = ?')
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
-  return db.prepare(`
+  return dbx.all<ArtifactSummary>(`
     SELECT id, agent_id, tenant_id, title, kind, mime, meta, source, cloud_url, created_at, updated_at
     FROM artifacts
     ${where}
     ORDER BY created_at DESC
     LIMIT ? OFFSET ?
-  `).all(...agentBind, ...tenantBind, ...kindBind, limit, offset) as ArtifactSummary[]
+  `, ...agentBind, ...tenantBind, ...kindBind, limit, offset)
 }
 
 // Grand-total count for the same filter shape listArtifacts() applies, so a
 // paginated list can show "X-Y / total" without fetching every row. Kept as
 // a separate query (not folded into listArtifacts) so existing callers that
 // treat its return value as a plain array are unaffected.
-export function countArtifacts(opts: Omit<ListArtifactsOptions, 'limit' | 'offset'> = {}): number {
+export async function countArtifacts(opts: Omit<ListArtifactsOptions, 'limit' | 'offset'> = {}): Promise<number> {
 
   const agentBind  = opts.agent ? [opts.agent] : []
   const tenantBind = opts.tenant_id !== undefined ? [opts.tenant_id] : []
@@ -200,12 +201,12 @@ export function countArtifacts(opts: Omit<ListArtifactsOptions, 'limit' | 'offse
     const agentCond  = agentBind.length  ? 'AND a.agent_id = ?'   : ''
     const tenantCond = tenantBind.length ? 'AND a.tenant_id = ?'  : ''
     const kindCond   = kindBind.length   ? 'AND a.kind = ?'       : ''
-    const { c } = db.prepare(`
+    const { c } = (await dbx.get(`
       SELECT COUNT(*) AS c
       FROM artifacts a
       WHERE a.rowid IN (SELECT rowid FROM artifacts_fts WHERE artifacts_fts MATCH ?)
       ${agentCond} ${tenantCond} ${kindCond}
-    `).get(ftsEscape(q), ...agentBind, ...tenantBind, ...kindBind) as { c: number }
+    `, ftsEscape(q), ...agentBind, ...tenantBind, ...kindBind)) as { c: number }
     return c
   }
 
@@ -214,8 +215,7 @@ export function countArtifacts(opts: Omit<ListArtifactsOptions, 'limit' | 'offse
   if (tenantBind.length) conditions.push('tenant_id = ?')
   if (kindBind.length)   conditions.push('kind = ?')
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
-  const { c } = db.prepare(`SELECT COUNT(*) AS c FROM artifacts ${where}`)
-    .get(...agentBind, ...tenantBind, ...kindBind) as { c: number }
+  const { c } = (await dbx.get(`SELECT COUNT(*) AS c FROM artifacts ${where}`, ...agentBind, ...tenantBind, ...kindBind)) as { c: number }
   return c
 }
 
@@ -225,16 +225,12 @@ function ftsEscape(term: string): string {
   return `"${term.replace(/"/g, '""')}"`
 }
 
-export function getArtifact(id: string): ArtifactRow | undefined {
-  return db
-    .prepare('SELECT * FROM artifacts WHERE id = ?')
-    .get(id) as ArtifactRow | undefined
+export async function getArtifact(id: string): Promise<ArtifactRow | undefined> {
+  return dbx.get<ArtifactRow>('SELECT * FROM artifacts WHERE id = ?', id)
 }
 
-export function deleteArtifact(id: string): boolean {
-  const result = db
-    .prepare('DELETE FROM artifacts WHERE id = ?')
-    .run(id)
+export async function deleteArtifact(id: string): Promise<boolean> {
+  const result = await dbx.run('DELETE FROM artifacts WHERE id = ?', id)
   return result.changes > 0
 }
 
@@ -245,13 +241,11 @@ export const ARTIFACT_TITLE_MAX_LENGTH = 250
  * not found. The FTS index is updated automatically via the artifacts_fts_au
  * trigger defined in migration 0010.
  */
-export function renameArtifact(id: string, title: string): boolean {
-  const result = db
-    .prepare('UPDATE artifacts SET title = ? WHERE id = ?')
-    .run(title, id)
+export async function renameArtifact(id: string, title: string): Promise<boolean> {
+  const result = await dbx.run('UPDATE artifacts SET title = ? WHERE id = ?', title, id)
   if (result.changes === 0) return false
   // Re-index embedding so semantic search reflects the new title (fire-and-forget)
-  const row = db.prepare('SELECT meta FROM artifacts WHERE id = ?').get(id) as { meta: string } | undefined
+  const row = await dbx.get<{ meta: string }>('SELECT meta FROM artifacts WHERE id = ?', id)
   if (row) storeArtifactEmbedding(id, title, row.meta).catch(() => { /* non-critical */ })
   return true
 }
@@ -264,11 +258,11 @@ export interface ArtifactStats {
   vec_rebuild_suggested: boolean
 }
 
-export function getArtifactStats(): ArtifactStats {
-  const { c: artifact_count } = db.prepare('SELECT COUNT(*) as c FROM artifacts').get() as { c: number }
+export async function getArtifactStats(): Promise<ArtifactStats> {
+  const { c: artifact_count } = (await dbx.get('SELECT COUNT(*) as c FROM artifacts')) as { c: number }
   let vec_count = -1
   try {
-    const row = db.prepare('SELECT COUNT(*) as c FROM vec_artifacts').get() as { c: number } | undefined
+    const row = await dbx.get<{ c: number }>('SELECT COUNT(*) as c FROM vec_artifacts')
     if (row) vec_count = row.c
   } catch {
     // sqlite-vec extension unavailable -- graceful no-op

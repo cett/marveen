@@ -30,24 +30,24 @@ const ignored = (message: string): SkillSyncResult => ({ ok: true, ignored: true
 
 /** True when the agent has an enabled availability row for the skill's owning
  *  tenant or for a tenant it is granted to (the recipients regen writes to). */
-function agentQualifies(skillId: string, ownerTenant: string, agentId: string): boolean {
-  const tenants = [...new Set([ownerTenant, ...listSkillAccess(skillId).map(g => g.tenant_id)])].sort()
+async function agentQualifies(skillId: string, ownerTenant: string, agentId: string): Promise<boolean> {
+  const tenants = [...new Set([ownerTenant, ...(await listSkillAccess(skillId)).map(g => g.tenant_id)])].sort()
   return agentHasEnabledAvailability(agentId, tenants)
 }
 
-function touchContent(skillId: string, content: string): void {
-  setSkillContent(skillId, stripGeneratedHeader(content), Math.floor(Date.now() / 1000))
+async function touchContent(skillId: string, content: string): Promise<void> {
+  await setSkillContent(skillId, stripGeneratedHeader(content), Math.floor(Date.now() / 1000))
 }
 
 /** A plain SKILL.md (global/<dir> or agent/<id>/<dir>): update the row, or create it as a fleet skill. */
-export function syncSkillContent(skillId: string, content: string): SkillSyncResult {
+export async function syncSkillContent(skillId: string, content: string): Promise<SkillSyncResult> {
   if (!SKILL_ID.test(skillId)) return { ok: false, message: 'skill_id is not a file-backed skill id' }
-  if (getSkill(skillId)) {
-    touchContent(skillId, content)
+  if (await getSkill(skillId)) {
+    await touchContent(skillId, content)
   } else {
     const now = Math.floor(Date.now() / 1000)
     const name = skillId.slice(skillId.lastIndexOf('/') + 1)
-    insertFleetSkillFromFile(skillId, name, stripGeneratedHeader(content), skillId.startsWith('global/'), now)
+    await insertFleetSkillFromFile(skillId, name, stripGeneratedHeader(content), skillId.startsWith('global/'), now)
   }
   return done(`upserted ${skillId}`)
 }
@@ -56,37 +56,37 @@ export function syncSkillContent(skillId: string, content: string): SkillSyncRes
  *  The header is only a claim an agent could forge, so the edit is applied only
  *  when the copy sits where regen would put it (exact directory name) and the
  *  agent qualifies for the row's tenant (owner or granted). */
-export function syncTenantSkill(headerId: string, agentId: string, dirName: string, content: string): SkillSyncResult {
+export async function syncTenantSkill(headerId: string, agentId: string, dirName: string, content: string): Promise<SkillSyncResult> {
   if (!SEGMENT.test(agentId)) return { ok: false, message: 'agent_id must be a plain agent name' }
   if (dirName !== tenantSkillDirName(headerId)) return ignored(`tenant header id ${headerId} does not match directory ${dirName}, ignored`)
-  const row = getSkill(headerId)
+  const row = await getSkill(headerId)
   if (!row || row.tenant_id === 'fleet') return ignored(`no tenant skill ${headerId} in the DB, ignored`)
-  if (!agentQualifies(headerId, row.tenant_id, agentId)) return ignored(`agent ${agentId} does not qualify for tenant skill ${headerId}, ignored`)
-  touchContent(headerId, content)
+  if (!await agentQualifies(headerId, row.tenant_id, agentId)) return ignored(`agent ${agentId} does not qualify for tenant skill ${headerId}, ignored`)
+  await touchContent(headerId, content)
   return done(`updated tenant skill ${headerId}`)
 }
 
 /** A companion file (scripts/, references/, ...) of a skill was edited. Only for
  *  a skill that already has a row (SKILL.md creates rows); for a generated
  *  tenant copy `tenantAgent` is the agent whose directory it sits in. */
-export function syncCompanionFile(
+export async function syncCompanionFile(
   skillId: string, relPath: string, content: Buffer, mode: number | undefined, tenantAgent: string | null,
-): SkillSyncResult {
+): Promise<SkillSyncResult> {
   const rel = normalizeSkillRelPath(relPath)
   if (!rel) return ignored(`companion path ${relPath} not accepted, ignored`)
   if (content.length > MAX_SKILL_FILE_BYTES) return ignored(`companion ${rel} over the size limit, ignored`)
-  const row = getSkill(skillId)
+  const row = await getSkill(skillId)
   if (!row) return ignored(`no skill ${skillId} in the DB yet, companion ignored`)
   if (tenantAgent !== null) {
     if (!SEGMENT.test(tenantAgent)) return { ok: false, message: 'tenant_agent must be a plain agent name' }
-    if (row.tenant_id === 'fleet' || !agentQualifies(skillId, row.tenant_id, tenantAgent)) {
+    if (row.tenant_id === 'fleet' || !await agentQualifies(skillId, row.tenant_id, tenantAgent)) {
       return ignored(`agent ${tenantAgent} does not qualify for tenant skill ${skillId}, ignored`)
     }
   }
-  if (!getSkillFile(skillId, rel)) {
-    const n = countSkillFiles(skillId)
+  if (!await getSkillFile(skillId, rel)) {
+    const n = await countSkillFiles(skillId)
     if (n >= MAX_SKILL_FILES_PER_SKILL) return ignored(`skill ${skillId} already has ${n} companion files, ignored`)
   }
-  putSkillFile(skillId, rel, content, mode)
+  await putSkillFile(skillId, rel, content, mode)
   return done(`stored companion ${rel} of ${skillId}`)
 }

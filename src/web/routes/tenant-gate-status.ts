@@ -8,6 +8,6 @@ import type { RouteContext } from './types.js'
 // Read-only. Under /api/admin/, so the RBAC prefix rule makes it admin-only.
 export async function tryHandleTenantGateStatus(ctx: RouteContext): Promise<boolean> {
   if (ctx.path !== '/api/admin/tenant-gate-status' || ctx.method !== 'GET') return false
-  json(ctx.res, getTenantGateStatus())
+  json(ctx.res, await getTenantGateStatus())
   return true
 }

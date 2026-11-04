@@ -40,17 +40,17 @@ vi.mock('../web/agent-scaffold.js', () => ({ generateSkillMd: vi.fn() }))
 vi.mock('../web/multipart.js', () => ({ parseMultipart: vi.fn().mockReturnValue({ file: null }) }))
 vi.mock('../logger.js', () => ({ logger: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() } }))
 vi.mock('../db.js', () => ({
-  getSkill: vi.fn((id: string) => store.get(id)),
-  createSkill: vi.fn((o: any) => { const r = { created_by: null, created_at: 0, updated_at: 0, ...o, is_global: o.is_global ? 1 : 0 }; store.set(o.id, r); return r }),
-  updateSkill: vi.fn((id: string, p: any) => { const r = { ...store.get(id), ...p }; store.set(id, r); return r }),
-  deleteSkill: vi.fn((id: string) => store.delete(id)),
+  getSkill: vi.fn((id: string) => Promise.resolve(store.get(id))),
+  createSkill: vi.fn((o: any) => { const r = { created_by: null, created_at: 0, updated_at: 0, ...o, is_global: o.is_global ? 1 : 0 }; store.set(o.id, r); return Promise.resolve(r) }),
+  updateSkill: vi.fn((id: string, p: any) => { const r = { ...store.get(id), ...p }; store.set(id, r); return Promise.resolve(r) }),
+  deleteSkill: vi.fn((id: string) => Promise.resolve(store.delete(id))),
   seedSkillIfAbsent: vi.fn(),
-  listSkillsForTenant: vi.fn().mockReturnValue([]),
-  listAllSkills: vi.fn(() => [...store.values()]),
+  listSkillsForTenant: vi.fn().mockResolvedValue([]),
+  listAllSkills: vi.fn(() => Promise.resolve([...store.values()])),
   grantSkillAccess: vi.fn(),
   revokeSkillAccess: vi.fn(),
-  listSkillAccess: vi.fn().mockReturnValue([]),
-  listSkillFiles: vi.fn().mockReturnValue([]),
+  listSkillAccess: vi.fn().mockResolvedValue([]),
+  listSkillFiles: vi.fn().mockResolvedValue([]),
 }))
 
 import { tryHandleSkills } from '../web/routes/skills.js'

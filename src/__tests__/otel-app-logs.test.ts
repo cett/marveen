@@ -263,9 +263,9 @@ describe('through tick', () => {
     expect(getOtelExporterStatus().logs.rejected).toBe(1)
   })
 
-  it('reports the lines it had to drop as marveen.log.dropped', () => {
+  it('reports the lines it had to drop as marveen.log.dropped', async () => {
     for (let i = 0; i < app.MAX_BUFFER + 3; i++) app.captureLogCall(WARN, [`distinct ${i} y`])
-    const m = collectRegistryMetrics().find((x) => x.name === 'marveen.log.dropped')!
+    const m = (await collectRegistryMetrics()).find((x) => x.name === 'marveen.log.dropped')!
     expect((m.sum!.dataPoints as any[])[0].asInt).toBe('3')
   })
 })

@@ -25,8 +25,8 @@ const TMP = mkdtempSync(join(tmpdir(), 'fed-lifecycle-test-'))
 const IN_TOKEN = 'a'.repeat(64)
 const OUT_TOKEN = 'b'.repeat(64)
 
-function writeConfigFile(obj: unknown): void {
-  _seedFederationConfigForTest(obj as Record<string, unknown>)
+async function writeConfigFile(obj: unknown): Promise<void> {
+  await _seedFederationConfigForTest(obj as Record<string, unknown>)
 }
 
 function fakeCtx(method: string, path: string, body?: string): { ctx: RouteContext; res: { statusCode: number; body: string } } {
@@ -61,8 +61,8 @@ beforeAll(() => {
   initDatabase(':memory:')
 })
 
-beforeEach(() => {
-  _clearFederationConfigForTest()
+beforeEach(async () => {
+  await _clearFederationConfigForTest()
   _setFederationStoreDirForTest(TMP)
   _resetInboxDedupForTest()
 })
@@ -72,51 +72,51 @@ afterAll(() => {
 })
 
 describe('failPendingFederatedMessages (db helper)', () => {
-  it('fails ONLY pending qualified rows; per-peer scoping is exact-prefix (no LIKE underscore wildcard)', () => {
-    const pTeodor = createAgentMessage('a', 'teodor/x', 'p1')
-    const pUnderscore = createAgentMessage('a', 'te_dor/x', 'p2') // '_' would be a LIKE wildcard
-    const pLocal = createAgentMessage('a', 'localagent', 'p3')
-    const delivered = createAgentMessage('a', 'teodor/y', 'p4')
-    markMessageDelivered(delivered.id)
+  it('fails ONLY pending qualified rows; per-peer scoping is exact-prefix (no LIKE underscore wildcard)', async () => {
+    const pTeodor = await createAgentMessage('a', 'teodor/x', 'p1')
+    const pUnderscore = await createAgentMessage('a', 'te_dor/x', 'p2') // '_' would be a LIKE wildcard
+    const pLocal = await createAgentMessage('a', 'localagent', 'p3')
+    const delivered = await createAgentMessage('a', 'teodor/y', 'p4')
+    await markMessageDelivered(delivered.id)
 
-    const failed = failPendingFederatedMessages('te_dor', 'peer removed')
+    const failed = await failPendingFederatedMessages('te_dor', 'peer removed')
     expect(failed).toEqual([pUnderscore.id]) // teodor/x must NOT be swept
-    expect(getAgentMessage(pTeodor.id)?.status).toBe('pending')
-    expect(getAgentMessage(pLocal.id)?.status).toBe('pending')
-    expect(getAgentMessage(delivered.id)?.status).toBe('delivered') // history untouched
+    expect((await getAgentMessage(pTeodor.id))?.status).toBe('pending')
+    expect((await getAgentMessage(pLocal.id))?.status).toBe('pending')
+    expect((await getAgentMessage(delivered.id))?.status).toBe('delivered') // history untouched
 
-    const all = failPendingFederatedMessages(undefined, 'disabled')
+    const all = await failPendingFederatedMessages(undefined, 'disabled')
     expect(all).toEqual([pTeodor.id]) // only the remaining pending qualified row
-    expect(getAgentMessage(pTeodor.id)?.result).toBe('disabled')
+    expect((await getAgentMessage(pTeodor.id))?.result).toBe('disabled')
   })
 
-  it('per-peer scoping is case-insensitive (L1): pre-normalization uppercase rows are purged too', () => {
-    const upper = createAgentMessage('a', 'Teodor/x', 'legacy row')
-    const other = createAgentMessage('a', 'cecil/x', 'other peer')
-    const failed = failPendingFederatedMessages('teodor', 'peer removed')
+  it('per-peer scoping is case-insensitive (L1): pre-normalization uppercase rows are purged too', async () => {
+    const upper = await createAgentMessage('a', 'Teodor/x', 'legacy row')
+    const other = await createAgentMessage('a', 'cecil/x', 'other peer')
+    const failed = await failPendingFederatedMessages('teodor', 'peer removed')
     expect(failed).toEqual([upper.id])
-    expect(getAgentMessage(other.id)?.status).toBe('pending')
-    failPendingFederatedMessages(undefined, 'cleanup')
+    expect((await getAgentMessage(other.id))?.status).toBe('pending')
+    await failPendingFederatedMessages(undefined, 'cleanup')
   })
 })
 
 describe('markMessageDelivered status guard', () => {
-  it('refuses to flip a non-pending row (concurrent bulk-fail vs in-flight send)', () => {
-    const msg = createAgentMessage('a', 'teodor/x', 'race')
-    failPendingFederatedMessages('teodor', 'Federation removed while pending')
-    expect(markMessageDelivered(msg.id)).toBe(false)
-    expect(getAgentMessage(msg.id)?.status).toBe('failed')
-    expect(getAgentMessage(msg.id)?.result).toBe('Federation removed while pending')
+  it('refuses to flip a non-pending row (concurrent bulk-fail vs in-flight send)', async () => {
+    const msg = await createAgentMessage('a', 'teodor/x', 'race')
+    await failPendingFederatedMessages('teodor', 'Federation removed while pending')
+    expect(await markMessageDelivered(msg.id)).toBe(false)
+    expect((await getAgentMessage(msg.id))?.status).toBe('failed')
+    expect((await getAgentMessage(msg.id))?.result).toBe('Federation removed while pending')
 
-    const done = createAgentMessage('a', 'b', 'done-first')
-    markMessageDone(done.id, 'ok')
-    expect(markMessageDelivered(done.id)).toBe(false)
+    const done = await createAgentMessage('a', 'b', 'done-first')
+    await markMessageDone(done.id, 'ok')
+    expect(await markMessageDelivered(done.id)).toBe(false)
   })
 })
 
 describe('peer lifecycle endpoints', () => {
   it('POST /peers mints an inbound token, returns it once, list stays redacted', async () => {
-    writeConfigFile({ enabled: true, systemId: 'localsys', peers: [] })
+    await writeConfigFile({ enabled: true, systemId: 'localsys', peers: [] })
     const created = await call('POST', '/api/federation/peers', { id: 'teodor', baseUrl: 'https://mini.example' })
     expect(created.statusCode).toBe(201)
     const minted = created.json.inboundToken as string
@@ -134,7 +134,7 @@ describe('peer lifecycle endpoints', () => {
   })
 
   it('shareCapabilitySummaries survives every mutation path (L5): add, PATCH, rotate, sibling DELETE, enabled flip', async () => {
-    writeConfigFile({ enabled: true, systemId: 'localsys', peers: [] })
+    await writeConfigFile({ enabled: true, systemId: 'localsys', peers: [] })
     const created = await call('POST', '/api/federation/peers', { id: 'teodor', baseUrl: 'https://mini.example', shareCapabilitySummaries: true })
     expect(created.statusCode).toBe(201)
     expect(created.json.peer).toMatchObject({ shareCapabilitySummaries: true })
@@ -158,7 +158,7 @@ describe('peer lifecycle endpoints', () => {
   })
 
   it('routingMode: endpoint sets it, GET reflects it, and it SURVIVES peer add + enabled flip + PATCH (round-trip)', async () => {
-    writeConfigFile({ enabled: true, systemId: 'localsys', peers: [] })
+    await writeConfigFile({ enabled: true, systemId: 'localsys', peers: [] })
     expect((await call('GET', '/api/federation/peers')).json.routingMode).toBe('catalog-first') // default
     expect((await call('POST', '/api/federation/routing-mode', { mode: 'strong' })).statusCode).toBe(200)
     expect((await call('GET', '/api/federation/peers')).json.routingMode).toBe('strong')
@@ -173,7 +173,7 @@ describe('peer lifecycle endpoints', () => {
   })
 
   it('peer ids are case-insensitive end to end (L1): uppercase add stores lowercase, uppercase URL id resolves', async () => {
-    writeConfigFile({ enabled: true, systemId: 'localsys', peers: [] })
+    await writeConfigFile({ enabled: true, systemId: 'localsys', peers: [] })
     const created = await call('POST', '/api/federation/peers', { id: 'Teodor', baseUrl: 'https://mini.example' })
     expect(created.statusCode).toBe(201)
     expect(created.json.peer).toMatchObject({ id: 'teodor' })
@@ -186,7 +186,7 @@ describe('peer lifecycle endpoints', () => {
   })
 
   it('PATCH edits baseUrl/outboundToken/abandonWindowMinutes with validation', async () => {
-    writeConfigFile({ enabled: true, systemId: 'localsys', peers: [{ id: 'teodor', baseUrl: 'https://mini.example', inboundToken: IN_TOKEN }] })
+    await writeConfigFile({ enabled: true, systemId: 'localsys', peers: [{ id: 'teodor', baseUrl: 'https://mini.example', inboundToken: IN_TOKEN }] })
     const ok = await call('PATCH', '/api/federation/peers/teodor', { outboundToken: OUT_TOKEN, abandonWindowMinutes: 1440 })
     expect(ok.statusCode).toBe(200)
     expect(ok.json).toMatchObject({ hasOutboundToken: true, abandonWindowMinutes: 1440 })
@@ -200,7 +200,7 @@ describe('peer lifecycle endpoints', () => {
   })
 
   it('rotate mints a fresh token and invalidates the old one in config', async () => {
-    writeConfigFile({ enabled: true, systemId: 'localsys', peers: [{ id: 'teodor', baseUrl: 'https://mini.example', inboundToken: IN_TOKEN }] })
+    await writeConfigFile({ enabled: true, systemId: 'localsys', peers: [{ id: 'teodor', baseUrl: 'https://mini.example', inboundToken: IN_TOKEN }] })
     const rotated = await call('POST', '/api/federation/peers/teodor/rotate-inbound-token')
     expect(rotated.statusCode).toBe(200)
     const fresh = rotated.json.inboundToken as string
@@ -209,31 +209,31 @@ describe('peer lifecycle endpoints', () => {
   })
 
   it('DELETE removes the peer and fails ONLY its pending messages', async () => {
-    writeConfigFile({
+    await writeConfigFile({
       enabled: true, systemId: 'localsys',
       peers: [
         { id: 'teodor', baseUrl: 'https://mini.example', inboundToken: IN_TOKEN },
         { id: 'cecil', baseUrl: 'https://c.example', inboundToken: 'c'.repeat(64) },
       ],
     })
-    const mine = createAgentMessage('a', 'teodor/x', 'to-removed-peer')
-    const other = createAgentMessage('a', 'cecil/x', 'to-kept-peer')
+    const mine = await createAgentMessage('a', 'teodor/x', 'to-removed-peer')
+    const other = await createAgentMessage('a', 'cecil/x', 'to-kept-peer')
     const del = await call('DELETE', '/api/federation/peers/teodor')
     expect(del.statusCode).toBe(200)
     expect(getFederationConfig().peers.map((p) => p.id)).toEqual(['cecil'])
-    expect(getAgentMessage(mine.id)?.status).toBe('failed')
-    expect(getAgentMessage(other.id)?.status).toBe('pending')
+    expect((await getAgentMessage(mine.id))?.status).toBe('failed')
+    expect((await getAgentMessage(other.id))?.status).toBe('pending')
   })
 })
 
 describe('master switch + full removal', () => {
   it('POST /enabled false is LOSSLESS for config but deterministic for the queue', async () => {
-    writeConfigFile({ enabled: true, systemId: 'localsys', peers: [{ id: 'teodor', baseUrl: 'https://mini.example', inboundToken: IN_TOKEN, outboundToken: OUT_TOKEN }] })
-    const q = createAgentMessage('a', 'teodor/x', 'queued')
+    await writeConfigFile({ enabled: true, systemId: 'localsys', peers: [{ id: 'teodor', baseUrl: 'https://mini.example', inboundToken: IN_TOKEN, outboundToken: OUT_TOKEN }] })
+    const q = await createAgentMessage('a', 'teodor/x', 'queued')
     const off = await call('POST', '/api/federation/enabled', { enabled: false })
     expect(off.json.enabled).toBe(false)
     expect((off.json.peers as unknown[]).length).toBe(1) // peers survive
-    expect(getAgentMessage(q.id)?.status).toBe('failed') // queue is deterministic
+    expect((await getAgentMessage(q.id))?.status).toBe('failed') // queue is deterministic
 
     const on = await call('POST', '/api/federation/enabled', { enabled: true })
     expect(on.json.enabled).toBe(true)
@@ -241,7 +241,7 @@ describe('master switch + full removal', () => {
   })
 
   it('peers are editable while DISABLED (pairing precedes opening the perimeter)', async () => {
-    writeConfigFile({ enabled: false, systemId: 'localsys', peers: [] })
+    await writeConfigFile({ enabled: false, systemId: 'localsys', peers: [] })
     const created = await call('POST', '/api/federation/peers', { id: 'teodor', baseUrl: 'https://mini.example' })
     expect(created.statusCode).toBe(201)
     const cfg = getFederationConfig()
@@ -261,7 +261,7 @@ describe('master switch + full removal', () => {
   it('refuses peer mutations on an invalid-but-present file (no silent peer-destroy)', async () => {
     // A hand-edited file with one bad peer fail-closes the VIEW to peers:[];
     // an add/patch/delete/rotate must 409, not overwrite the recoverable file.
-    writeConfigFile({ enabled: true, systemId: 'localsys', peers: [{ id: 'teodor', baseUrl: 'https://mini.example', inboundToken: 'short' }] })
+    await writeConfigFile({ enabled: true, systemId: 'localsys', peers: [{ id: 'teodor', baseUrl: 'https://mini.example', inboundToken: 'short' }] })
     expect(getFederationConfig().peers).toHaveLength(0) // fail-closed view
     expect((await call('POST', '/api/federation/peers', { id: 'cecil', baseUrl: 'https://c.example' })).statusCode).toBe(409)
     expect((await call('PATCH', '/api/federation/peers/teodor', { baseUrl: 'https://x.example' })).statusCode).toBe(409)
@@ -273,14 +273,14 @@ describe('master switch + full removal', () => {
   })
 
   it('a {"__error":true} body is treated as data, not a parse failure (no hung request)', async () => {
-    writeConfigFile({ enabled: false, systemId: 'localsys', peers: [] })
+    await writeConfigFile({ enabled: false, systemId: 'localsys', peers: [] })
     // Must produce a real HTTP response (not hang); it is an invalid peer body -> 400.
     const r = await call('POST', '/api/federation/peers', { __error: true })
     expect(r.statusCode).toBe(400)
   })
 
   it('POST /peers accepts an abandonWindowMinutes on add', async () => {
-    writeConfigFile({ enabled: true, systemId: 'localsys', peers: [] })
+    await writeConfigFile({ enabled: true, systemId: 'localsys', peers: [] })
     const created = await call('POST', '/api/federation/peers', { id: 'teodor', baseUrl: 'https://mini.example', abandonWindowMinutes: 1440 })
     expect(created.statusCode).toBe(201)
     expect(getFederationConfig().peers[0].abandonWindowMinutes).toBe(1440)
@@ -288,22 +288,22 @@ describe('master switch + full removal', () => {
   })
 
   it('enabling an invalid-but-parseable file 409s instead of reporting a false success', async () => {
-    writeConfigFile({ enabled: false, systemId: 'localsys', peers: 'oops' })
+    await writeConfigFile({ enabled: false, systemId: 'localsys', peers: 'oops' })
     const r = await call('POST', '/api/federation/enabled', { enabled: true })
     expect(r.statusCode).toBe(409)
     expect(getFederationConfig().enabled).toBe(false)
   })
 
   it('POST /remove purges files, queue and answers idempotently', async () => {
-    writeConfigFile({ enabled: true, systemId: 'localsys', peers: [{ id: 'teodor', baseUrl: 'https://mini.example', inboundToken: IN_TOKEN }] })
+    await writeConfigFile({ enabled: true, systemId: 'localsys', peers: [{ id: 'teodor', baseUrl: 'https://mini.example', inboundToken: IN_TOKEN }] })
     writeFileSync(join(TMP, '.federation-token'), 'legacy'.repeat(11))
-    const q = createAgentMessage('a', 'teodor/x', 'queued-at-removal')
+    const q = await createAgentMessage('a', 'teodor/x', 'queued-at-removal')
     const rm = await call('POST', '/api/federation/remove')
     expect(rm.json.ok).toBe(true)
     expect(getFederationConfigRaw()).toBeUndefined()
     expect(existsSync(join(TMP, '.federation-token'))).toBe(false)
     expect(getFederationConfig().enabled).toBe(false)
-    expect(getAgentMessage(q.id)?.status).toBe('failed')
+    expect((await getAgentMessage(q.id))?.status).toBe('failed')
     const again = await call('POST', '/api/federation/remove')
     expect(again.json.ok).toBe(true)
   })

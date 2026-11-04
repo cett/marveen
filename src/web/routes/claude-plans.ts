@@ -32,8 +32,8 @@ import type { RouteContext } from './types.js'
 // main-agent boot path reads) -- the agent_active_plans row is only for the
 // blackboard badge / dashboard / handoff-recovery, so a mirror failure must
 // never fail the rotation itself.
-function mirrorActivation(agentId: string, planId: string): void {
-  try { activatePlanForAgent(agentId, planId, 'rotation') } catch { /* see comment above */ }
+async function mirrorActivation(agentId: string, planId: string): Promise<void> {
+  try { await activatePlanForAgent(agentId, planId, 'rotation') } catch { /* see comment above */ }
 }
 
 function isRotationEnabled(): boolean {
@@ -164,7 +164,7 @@ export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> 
       // so the state has to be on disk before the process that will read it
       // comes up.
       writeClaudePlansState(applyRotation(readClaudePlansState(), MAIN_AGENT_ID, targetPlanId))
-      mirrorActivation(MAIN_AGENT_ID, targetPlanId)
+      await mirrorActivation(MAIN_AGENT_ID, targetPlanId)
 
       const result = hardRestartMarveenChannels()
       if (!result.ok) {
@@ -194,7 +194,7 @@ export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> 
       json(res, { error: 'internal_error', hint: result.error || `Restart failed for agent ${agentId}` }, 500)
       return true
     }
-    mirrorActivation(agentId, targetPlanId)
+    await mirrorActivation(agentId, targetPlanId)
     logger.info({ agentId, targetPlanId }, 'Claude plan rotation: agent restarted')
     json(res, { ok: true, agentId, activePlanId: targetPlanId })
     return true

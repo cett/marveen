@@ -45,11 +45,11 @@ function validateId(id: string): boolean {
   return /^[a-z0-9][a-z0-9-]{0,63}$/.test(id)
 }
 
-function buildKeyMap(servers: VaultSshServer[]): Map<string, VaultSshKey> {
+async function buildKeyMap(servers: VaultSshServer[]): Promise<Map<string, VaultSshKey>> {
   const keyIds = [...new Set(servers.map(s => s.ssh_key_id).filter(Boolean) as string[])]
   const map = new Map<string, VaultSshKey>()
   for (const id of keyIds) {
-    const k = getVaultSshKey(id)
+    const k = await getVaultSshKey(id)
     if (k) map.set(id, k)
   }
   return map
@@ -69,8 +69,8 @@ export async function tryHandleVaultSsh(ctx: RouteContext): Promise<boolean> {
   const tenantParam = isAdmin ? (ctx.url.searchParams.get('tenant') ?? null) : null
   const effectiveTenantId: string | null = tenantParam ?? (isAdmin ? null : (ctx.tenantId ?? 'default'))
 
-  function resolveServerAccess(id: string): VaultSshServer | null {
-    const server = getVaultSshServer(id)
+  async function resolveServerAccess(id: string): Promise<VaultSshServer | null> {
+    const server = await getVaultSshServer(id)
     if (!server) { json(res, { error: 'not_found', hint: `Server "${id}" not found` }, 404); return null }
     if (!isAdmin && server.tenant_id !== effectiveTenantId) {
       json(res, { error: 'not_found', hint: `Server "${id}" not found` }, 404)
@@ -82,8 +82,8 @@ export async function tryHandleVaultSsh(ctx: RouteContext): Promise<boolean> {
   // GET /api/vault/ssh-servers
   if (path === '/api/vault/ssh-servers' && method === 'GET') {
     const scopeTenantId = isAdmin && tenantParam === null ? null : effectiveTenantId
-    const servers = listVaultSshServers(scopeTenantId)
-    const keyMap = buildKeyMap(servers)
+    const servers = await listVaultSshServers(scopeTenantId)
+    const keyMap = await buildKeyMap(servers)
     json(res, { servers: servers.map(s => toApiShape(s, s.ssh_key_id ? keyMap.get(s.ssh_key_id) : null)) })
     return true
   }
@@ -111,7 +111,7 @@ export async function tryHandleVaultSsh(ctx: RouteContext): Promise<boolean> {
         return true
       }
 
-      if (getVaultSshServer(id)) {
+      if (await getVaultSshServer(id)) {
         json(res, { error: 'conflict', hint: `Server with id "${id}" already exists` }, 409)
         return true
       }
@@ -120,7 +120,7 @@ export async function tryHandleVaultSsh(ctx: RouteContext): Promise<boolean> {
         ? ((typeof data.tenant_id === 'string' && data.tenant_id.trim()) || effectiveTenantId || 'default')
         : (ctx.tenantId ?? 'default')
 
-      const server = createVaultSshServer({ id, name, host, port, username: user, description: desc || null, tenant_id: targetTenantId })
+      const server = await createVaultSshServer({ id, name, host, port, username: user, description: desc || null, tenant_id: targetTenantId })
       logger.info({ id }, 'vault ssh server created')
       json(res, { server: toApiShape(server) }, 201)
     } catch (err) {
@@ -136,7 +136,7 @@ export async function tryHandleVaultSsh(ctx: RouteContext): Promise<boolean> {
   if (singleMatch && method === 'PUT') {
     const id = decodeURIComponent(singleMatch[1])
     try {
-      const existing = resolveServerAccess(id)
+      const existing = await resolveServerAccess(id)
       if (!existing) return true
 
       const body = await readBody(req)
@@ -150,16 +150,16 @@ export async function tryHandleVaultSsh(ctx: RouteContext): Promise<boolean> {
       if (data.desc !== undefined)           patch.description = typeof data.desc === 'string' ? (data.desc.trim() || null) : null
       // Key assignment: sshKeyId (assign existing pool key) or null (unassign)
       if (data.sshKeyId !== undefined) {
-        if (data.sshKeyId !== null && !getVaultSshKey(data.sshKeyId)) {
+        if (data.sshKeyId !== null && !await getVaultSshKey(data.sshKeyId)) {
           json(res, { error: 'not_found', field: 'sshKeyId', hint: `SSH key "${data.sshKeyId}" not found` }, 404)
           return true
         }
         patch.ssh_key_id = data.sshKeyId ?? null
       }
 
-      updateVaultSshServer(id, patch)
-      const updated = getVaultSshServer(id)!
-      const key = updated.ssh_key_id ? getVaultSshKey(updated.ssh_key_id) : null
+      await updateVaultSshServer(id, patch)
+      const updated = (await getVaultSshServer(id))!
+      const key = updated.ssh_key_id ? await getVaultSshKey(updated.ssh_key_id) : null
       logger.info({ id }, 'vault ssh server updated')
       json(res, { server: toApiShape(updated, key) })
     } catch (err) {
@@ -172,8 +172,8 @@ export async function tryHandleVaultSsh(ctx: RouteContext): Promise<boolean> {
   // DELETE /api/vault/ssh-servers/:id
   if (singleMatch && method === 'DELETE') {
     const id = decodeURIComponent(singleMatch[1])
-    if (!resolveServerAccess(id)) return true
-    deleteVaultSshServer(id)
+    if (!await resolveServerAccess(id)) return true
+    await deleteVaultSshServer(id)
     logger.info({ id }, 'vault ssh server deleted')
     json(res, { ok: true })
     return true
@@ -184,7 +184,7 @@ export async function tryHandleVaultSsh(ctx: RouteContext): Promise<boolean> {
   const genKeyMatch = path.match(/^\/api\/vault\/ssh-servers\/([^/]+)\/generate-key$/)
   if (genKeyMatch && method === 'POST') {
     const id = decodeURIComponent(genKeyMatch[1])
-    const server = resolveServerAccess(id)
+    const server = await resolveServerAccess(id)
     if (!server) return true
     try {
       let keyUser = server.username
@@ -210,11 +210,11 @@ export async function tryHandleVaultSsh(ctx: RouteContext): Promise<boolean> {
       // resolveServerAccess, so server.tenant_id is the caller's tenant (or
       // the server's actual tenant for an admin).
       const { createVaultSshKey } = await import('../../db.js')
-      createVaultSshKey({ id: keyId, label, username: keyUser, vault_key_id: vaultKeyId, public_key: publicKey, fingerprint, key_type: 'ed25519', tenant_id: server.tenant_id })
+      await createVaultSshKey({ id: keyId, label, username: keyUser, vault_key_id: vaultKeyId, public_key: publicKey, fingerprint, key_type: 'ed25519', tenant_id: server.tenant_id })
 
-      updateVaultSshServer(id, { ssh_key_id: keyId })
-      const updated = getVaultSshServer(id)!
-      const key = getVaultSshKey(keyId)!
+      await updateVaultSshServer(id, { ssh_key_id: keyId })
+      const updated = (await getVaultSshServer(id))!
+      const key = (await getVaultSshKey(keyId))!
       logger.info({ id, keyId, fingerprint }, 'SSH keypair generated and assigned to server')
       json(res, { server: toApiShape(updated, key), publicKey, fingerprint })
     } catch (err: any) {
@@ -228,11 +228,11 @@ export async function tryHandleVaultSsh(ctx: RouteContext): Promise<boolean> {
   const pubKeyMatch = path.match(/^\/api\/vault\/ssh-servers\/([^/]+)\/public-key$/)
   if (pubKeyMatch && method === 'GET') {
     const id = decodeURIComponent(pubKeyMatch[1])
-    const server = resolveServerAccess(id)
+    const server = await resolveServerAccess(id)
     if (!server) return true
     // deliberate: discriminating error response, admin-gated
     if (!server.ssh_key_id) { json(res, { error: 'not_found', hint: 'No key assigned to this server' }, 404); return true }
-    const key = getVaultSshKey(server.ssh_key_id)
+    const key = await getVaultSshKey(server.ssh_key_id)
     // deliberate: discriminating error response, admin-gated
     if (!key) { json(res, { error: 'not_found', hint: 'Assigned key not found' }, 404); return true }
     json(res, { publicKey: key.public_key, fingerprint: key.fingerprint, keyType: key.key_type })

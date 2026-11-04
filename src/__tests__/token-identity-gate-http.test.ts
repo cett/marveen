@@ -30,15 +30,15 @@ let reached: Buffer[]
 beforeEach(async () => {
   initDatabase(':memory:')
   resetTokenShadowForTests()
-  insertApiToken({
+  await insertApiToken({
     tokenHash: sha('tok-alpha'), name: 'fleet_agent:alpha', role: 'fleet_agent', tenantId: 'default',
     createdAt: Math.floor(Date.now() / 1000) - 10, expiresAt: null, agentId: 'alpha',
   })
   reached = []
   server = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost')
-    const auth = resolveAuth(req, url, url.pathname, req.method ?? 'GET', SHARED, true)
-    observeTokenUsage(req, auth, req.method ?? 'GET', url.pathname, url)
+    const auth = await resolveAuth(req, url, url.pathname, req.method ?? 'GET', SHARED, true)
+    await observeTokenUsage(req, auth, req.method ?? 'GET', url.pathname, url)
     if (await answerIdentityRefusal(req, res)) return
     // The route behind the gate: it reads the body again, with its own cap, and answers its own
     // 413 on overflow exactly as a real route does (schedules.ts, skills.ts, skill-sync.ts).
@@ -151,7 +151,7 @@ describe('the enforce gate and a body over the cap of its route', () => {
     const body = Buffer.from(JSON.stringify({ agent: 'alpha', pad: 'x'.repeat(bytes) }))
     setImmediate(() => { req.emit('data', body); req.emit('end') })
     const url = new URL(`http://localhost:3420${path}`)
-    observeTokenUsage(req, resolveAuth(req, url, url.pathname, 'POST', SHARED, true), 'POST', url.pathname, url)
+    await observeTokenUsage(req, await resolveAuth(req, url, url.pathname, 'POST', SHARED, true), 'POST', url.pathname, url)
     const sent: { status?: number; body?: string } = {}
     const res = {
       writeHead: (status: number) => { sent.status = status },

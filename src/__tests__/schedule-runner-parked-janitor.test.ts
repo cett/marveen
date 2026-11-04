@@ -50,12 +50,12 @@ vi.mock('../db.js', () => ({
   deletePendingTaskRetry: (...a: unknown[]) => mockDeletePendingRetry(...a),
   updatePendingTaskRetry: (...a: unknown[]) => mockUpdatePendingRetry(...(a as [unknown, unknown, unknown, unknown])),
   insertPendingTaskRetryIfNew: vi.fn(),
-  markPendingTaskRetryAlert: vi.fn(() => false),
+  markPendingTaskRetryAlert: vi.fn(() => Promise.resolve(false)),
   clearPendingTaskRetryAlert: vi.fn(),
   markScheduledTaskKanbanWaiting: vi.fn(),
-  upsertBlackboard: vi.fn(() => ({ id: 'bb000001', agent_id: '', task_ref: null, status: 'active', summary: '', updated_at: 0 })),
+  upsertBlackboard: vi.fn(() => Promise.resolve(({ id: 'bb000001', agent_id: '', task_ref: null, status: 'active', summary: '', updated_at: 0 }))),
   findActiveKanbanCardByTitle: vi.fn(() => undefined),
-  findBlackboardRowByAgent: vi.fn(() => ({ id: 'bb000001', agent_id: '', task_ref: null, status: 'active', summary: '', updated_at: 0, tenant_id: 'default' })),
+  findBlackboardRowByAgent: vi.fn(() => Promise.resolve(({ id: 'bb000001', agent_id: '', task_ref: null, status: 'active', summary: '', updated_at: 0, tenant_id: 'default' }))),
   updateScheduleLastRun: vi.fn(),
   clearScheduleLastRunIfMatches: vi.fn(),
   // schedule_last_tick_ms (migration 0057, #985 group 2/8): undefined ->
@@ -146,7 +146,7 @@ describe('schedule runner: stale-parked-input janitor on the retry queue', () =>
     // A quiet moment: no cron occurrence for the fixture, so only the
     // pending-retry loop acts.
     vi.setSystemTime(new Date('2026-08-14T10:30:00.000Z'))
-    mockListScheduledTasks.mockReturnValue([PARKED_TASK])
+    mockListScheduledTasks.mockResolvedValue([PARKED_TASK])
     mockSessionExists.mockReturnValue(true)
     mockSessionReady.mockResolvedValue(false)
     mockClearParked.mockResolvedValue(true)
@@ -245,7 +245,7 @@ describe('schedule runner: pending retry survives a missing target session', () 
     // A quiet moment (no cron occurrence for the fixture) so only the
     // pending-retry loop acts.
     vi.setSystemTime(new Date('2026-07-31T10:30:00.000Z'))
-    mockListScheduledTasks.mockReturnValue([DAILY])
+    mockListScheduledTasks.mockResolvedValue([DAILY])
     // The target session is gone and auto-start fails => attemptFireTask
     // resolves 'missing'.
     mockSessionExists.mockReturnValue(false)

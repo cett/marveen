@@ -154,7 +154,7 @@ const IDENTITY_SEND_DELAY_MS = 5000
 // (resumeMarveenSession / respawnMarveenSessionFresh), which previously left the
 // main session without its identity after auto-recovery. Fire-and-forget; all
 // errors are swallowed/logged so a missed setup never tears down the caller.
-export async function scheduleIdentitySetup(session: string, displayName: string, host: string | null = null): Promise<void> {
+export function scheduleIdentitySetup(session: string, displayName: string, host: string | null = null): void {
   setTimeout(() => {
     void (async () => {
       try {

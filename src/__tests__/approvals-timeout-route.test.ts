@@ -114,7 +114,7 @@ describe('PATCH /api/approvals/:id on an expired request', () => {
     const out = await call('PATCH', '/api/approvals/old', { status: 'approved', resolved_by: 'human' })
     expect(out.status).toBe(409)
     expect(out.body.hint).toBe('Approval has expired')
-    expect(getApproval('old')?.status).toBe('pending')
+    expect((await getApproval('old'))?.status).toBe('pending')
   })
 
   it('still approves a request that has time left', async () => {

@@ -46,13 +46,13 @@ export interface SetOverrideResult {
 // Validates against the registry, then writes to the system_config DB
 // (source='db'). Validation happens before the write, so an invalid value
 // never reaches the DB.
-export function setOverride(key: string, rawValue: unknown): SetOverrideResult {
+export async function setOverride(key: string, rawValue: unknown): Promise<SetOverrideResult> {
   const def = getSettingDefinition(key)
   if (!def) return { ok: false, error: `Ismeretlen kulcs: ${key}` }
 
   const validation = validateSettingValue(def, rawValue)
   if (!validation.ok) return { ok: false, error: validation.error }
 
-  setSystemConfig(key, String(validation.value!), 'db')
+  await setSystemConfig(key, String(validation.value!), 'db')
   return { ok: true }
 }

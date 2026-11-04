@@ -4,7 +4,8 @@
 // queries see only their own tenant's imported content.
 
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { initDatabase, getDb } from '../db.js'
+import { getDb } from '../db.js'
+import { useTestDb } from './helpers/with-test-db.js'
 
 vi.mock('../logger.js', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }))
 
@@ -19,15 +20,13 @@ function createSource(db: ReturnType<typeof getDb>, id: string, tenantId: string
 }
 
 describe('upsertImportMemory: tenant propagation', () => {
-  beforeEach(() => {
-    initDatabase(':memory:')
-  })
+  useTestDb()
 
-  it('stamps tenantId on both the new import_memories row and its shadow memories row', () => {
+  it('stamps tenantId on both the new import_memories row and its shadow memories row', async () => {
     const db = getDb()
     createSource(db, 'src-a', 'tenant-crawl-a')
     const now = Math.floor(Date.now() / 1000)
-    const result = upsertImportMemory('src-a', '/docs/note.txt', 'note.txt', 'hash1', 'quarterly budget notes', 'budget', now, 'tenant-crawl-a')
+    const result = await upsertImportMemory('src-a', '/docs/note.txt', 'note.txt', 'hash1', 'quarterly budget notes', 'budget', now, 'tenant-crawl-a')
     expect(result).toBe('added')
 
     const memRow = db.prepare(
@@ -40,13 +39,13 @@ describe('upsertImportMemory: tenant propagation', () => {
     expect(shadowRow.tenant_id).toBe('tenant-crawl-a')
   })
 
-  it('keeps rows in separate tenants distinguishable when two sources share a file path', () => {
+  it('keeps rows in separate tenants distinguishable when two sources share a file path', async () => {
     const db = getDb()
     createSource(db, 'src-a', 'tenant-a')
     createSource(db, 'src-b', 'tenant-b')
     const now = Math.floor(Date.now() / 1000)
-    upsertImportMemory('src-a', '/docs/shared-name.txt', 'shared-name.txt', 'hashA', 'content A', 'kw', now, 'tenant-a')
-    upsertImportMemory('src-b', '/docs/shared-name.txt', 'shared-name.txt', 'hashB', 'content B', 'kw', now, 'tenant-b')
+    await upsertImportMemory('src-a', '/docs/shared-name.txt', 'shared-name.txt', 'hashA', 'content A', 'kw', now, 'tenant-a')
+    await upsertImportMemory('src-b', '/docs/shared-name.txt', 'shared-name.txt', 'hashB', 'content B', 'kw', now, 'tenant-b')
 
     const rowA = db.prepare("SELECT tenant_id FROM import_memories WHERE source_id = 'src-a'").get() as { tenant_id: string }
     const rowB = db.prepare("SELECT tenant_id FROM import_memories WHERE source_id = 'src-b'").get() as { tenant_id: string }
@@ -54,13 +53,13 @@ describe('upsertImportMemory: tenant propagation', () => {
     expect(rowB.tenant_id).toBe('tenant-b')
   })
 
-  it('updating existing content (hash change) does not clobber the shadow row tenant_id', () => {
+  it('updating existing content (hash change) does not clobber the shadow row tenant_id', async () => {
     const db = getDb()
     createSource(db, 'src-c', 'tenant-crawl-c')
     const now = Math.floor(Date.now() / 1000)
-    upsertImportMemory('src-c', '/docs/versioned.txt', 'versioned.txt', 'hash-v1', 'version one', 'kw', now, 'tenant-crawl-c')
+    await upsertImportMemory('src-c', '/docs/versioned.txt', 'versioned.txt', 'hash-v1', 'version one', 'kw', now, 'tenant-crawl-c')
 
-    const result = upsertImportMemory('src-c', '/docs/versioned.txt', 'versioned.txt', 'hash-v2', 'version two', 'kw', now + 10, 'tenant-crawl-c')
+    const result = await upsertImportMemory('src-c', '/docs/versioned.txt', 'versioned.txt', 'hash-v2', 'version two', 'kw', now + 10, 'tenant-crawl-c')
     expect(result).toBe('updated')
 
     const memRow = db.prepare(
@@ -73,12 +72,12 @@ describe('upsertImportMemory: tenant propagation', () => {
     expect(shadowRow.tenant_id).toBe('tenant-crawl-c')
   })
 
-  it('a matching hash (no-op re-scan) still leaves the shadow row tenant_id intact', () => {
+  it('a matching hash (no-op re-scan) still leaves the shadow row tenant_id intact', async () => {
     const db = getDb()
     createSource(db, 'src-d', 'tenant-crawl-d')
     const now = Math.floor(Date.now() / 1000)
-    upsertImportMemory('src-d', '/docs/stable.txt', 'stable.txt', 'stable-hash', 'stable content', 'kw', now, 'tenant-crawl-d')
-    const result = upsertImportMemory('src-d', '/docs/stable.txt', 'stable.txt', 'stable-hash', 'stable content', 'kw', now + 10, 'tenant-crawl-d')
+    await upsertImportMemory('src-d', '/docs/stable.txt', 'stable.txt', 'stable-hash', 'stable content', 'kw', now, 'tenant-crawl-d')
+    const result = await upsertImportMemory('src-d', '/docs/stable.txt', 'stable.txt', 'stable-hash', 'stable content', 'kw', now + 10, 'tenant-crawl-d')
     expect(result).toBe('hash_match')
 
     const memRow = db.prepare("SELECT tenant_id, memory_shadow_id FROM import_memories WHERE source_id = 'src-d'").get() as { tenant_id: string; memory_shadow_id: number }

@@ -7,7 +7,6 @@ import {
   type ModelProfileMapRow,
 } from '../../db.js'
 import { isModelProfileId, MODEL_PROFILE_IDS } from '../../model-profiles.js'
-import { invalidateModelProfileMapCache } from '../agent-config.js'
 import type { RouteContext } from './types.js'
 
 // Wire shape: camelCase profileId/modelId, mirroring the autonomy route's
@@ -51,8 +50,9 @@ export async function tryHandleModelProfiles(ctx: RouteContext): Promise<boolean
         return true
       }
 
-      setModelProfileMapEntry(profileId, modelId.trim(), 'dashboard')
-      invalidateModelProfileMapCache()
+      // setModelProfileMapEntry is write-through (db/model-profile-map-cache.ts): the
+      // read below already sees the update, no separate cache invalidation needed.
+      await setModelProfileMapEntry(profileId, modelId.trim(), 'dashboard')
       const updated = getModelProfileMapEntry(profileId)
       logger.info({ profileId, modelId: modelId.trim() }, 'Model profile map entry updated')
       json(res, { ok: true, ...toWireEntry(updated as ModelProfileMapRow) })

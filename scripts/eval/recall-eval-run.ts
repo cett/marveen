@@ -48,7 +48,7 @@ export async function runCases(
     if (c.kind === 'memory') {
       const permitted = (m: MemBlob) =>
         (m.agent_id === c.agentId || m.category === 'shared') && (!c.tenantId || m.tenant_id === c.tenantId)
-      stages.fts = searchAgentMemories(c.agentId!, c.text, FINAL_LIMIT * 2, c.tenantId).map((m) => String(m.id))
+      stages.fts = (await searchAgentMemories(c.agentId!, c.text, FINAL_LIMIT * 2, c.tenantId)).map((m) => String(m.id))
       // vec_prod: what production does inside hybridSearch(limit=10): ANN k=limit*2*5, filter, recency-sort.
       const ann = db
         .prepare('SELECT memory_id, distance FROM vec_memories WHERE embedding MATCH ? AND k = ? ORDER BY distance')
@@ -70,7 +70,7 @@ export async function runCases(
       stages.final = (await hybridSearch(c.agentId!, c.text, FINAL_LIMIT, c.tenantId)).map((m) => String(m.id))
     } else if (c.kind === 'doc') {
       const o = { agentId: c.agentId, tenantId: c.tenantId, limit: FINAL_LIMIT }
-      stages.fts = searchWorkspaceDocs(c.text, { ...o, limit: FINAL_LIMIT * 2 }).map((d) => d.id)
+      stages.fts = (await searchWorkspaceDocs(c.text, { ...o, limit: FINAL_LIMIT * 2 })).map((d) => d.id)
       stages.vec_prod = (await vectorSearchDocs(c.text, o)).map((d) => d.id)
       stages.final = (await hybridSearchDocs(c.text, o)).map((d) => d.id)
     } else {

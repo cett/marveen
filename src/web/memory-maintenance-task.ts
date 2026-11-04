@@ -40,8 +40,8 @@ export function isStockInlineMemoryMaintenanceCommand(command: string, installDi
 }
 
 /** Moves a stock-command memory-maintenance row to the script. Returns true when the row was changed. */
-export function ensureMemoryMaintenanceCommand(installDir: string = PROJECT_ROOT, webPort: number = WEB_PORT): boolean {
-  const row = getScheduleFromDb(MEMORY_MAINTENANCE_TASK)
+export async function ensureMemoryMaintenanceCommand(installDir: string = PROJECT_ROOT, webPort: number = WEB_PORT): Promise<boolean> {
+  const row = await getScheduleFromDb(MEMORY_MAINTENANCE_TASK)
   if (!row || row.type !== 'command' || !row.command) return false
   if (!new RegExp(`^${AGENT_ID}$`).test(row.agent)) return false
   if (!isStockInlineMemoryMaintenanceCommand(row.command, installDir)) return false
@@ -51,6 +51,6 @@ export function ensureMemoryMaintenanceCommand(installDir: string = PROJECT_ROOT
     logger.warn({ task: MEMORY_MAINTENANCE_TASK, agent: row.agent }, 'memory-maintenance: the command names another agent than the task, leaving it as it is')
     return false
   }
-  patchSchedule(MEMORY_MAINTENANCE_TASK, { command: memoryMaintenanceCommand(installDir, webPort, row.agent) })
+  await patchSchedule(MEMORY_MAINTENANCE_TASK, { command: memoryMaintenanceCommand(installDir, webPort, row.agent) })
   return true
 }

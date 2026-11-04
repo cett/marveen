@@ -47,27 +47,27 @@ beforeEach(() => {
 })
 
 describe('the chat a scheduled task reports to', () => {
-  it('before adoption it is still the first entry of access.json (legacy source)', () => {
+  it('before adoption it is still the first entry of access.json (legacy source)', async () => {
     writeChannel({ allowFrom: ['42'] })
-    expect(resolveBoundChatId('zed')).toBe('42')
+    expect(await resolveBoundChatId('zed')).toBe('42')
   })
 
-  it('after adoption a forged access.json cannot redirect the result', () => {
+  it('after adoption a forged access.json cannot redirect the result', async () => {
     writeChannel({ allowFrom: ['42'] })
-    expect(adoptChannel('zed', 'owner').ok).toBe(true)
+    expect((await adoptChannel('zed', 'owner')).ok).toBe(true)
     writeChannel({ allowFrom: ['666', '42'] }) // the agent reorders / extends its own file
 
-    expect(resolveBoundChatId('zed')).toBe('42')
-    expect(buildTaskDeliveryPrefix({ name: 'daily', tenantId: 'default' }, 'zed')).toContain('chat_id: 42,')
-    expect(buildTaskDeliveryPrefix({ name: 'daily', tenantId: 'default' }, 'zed')).not.toContain('666')
+    expect(await resolveBoundChatId('zed')).toBe('42')
+    expect(await buildTaskDeliveryPrefix({ name: 'daily', tenantId: 'default' }, 'zed')).toContain('chat_id: 42,')
+    expect(await buildTaskDeliveryPrefix({ name: 'daily', tenantId: 'default' }, 'zed')).not.toContain('666')
   })
 
-  it('an adopted channel with no chats delivers nowhere, even if the file names one', () => {
+  it('an adopted channel with no chats delivers nowhere, even if the file names one', async () => {
     writeChannel({ allowFrom: [] })
-    expect(adoptChannel('zed', 'owner').ok).toBe(true)
+    expect((await adoptChannel('zed', 'owner')).ok).toBe(true)
     writeChannel({ allowFrom: ['666'] })
 
-    expect(resolveBoundChatId('zed')).toBeNull()
-    expect(buildTaskDeliveryPrefix({ name: 'daily', tenantId: 'default' }, 'zed')).not.toContain('chat_id')
+    expect(await resolveBoundChatId('zed')).toBeNull()
+    expect(await buildTaskDeliveryPrefix({ name: 'daily', tenantId: 'default' }, 'zed')).not.toContain('chat_id')
   })
 })

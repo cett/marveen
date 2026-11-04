@@ -27,7 +27,7 @@ let inserted = 0
 let skipped = 0
 for (const t of tasks) {
   try {
-    const seeded = seedScheduleIfAbsent(t.name, {
+    const seeded = await seedScheduleIfAbsent(t.name, {
       prompt:                   t.prompt ?? '',
       description:              t.description ?? '',
       schedule:                 t.schedule,
@@ -60,4 +60,4 @@ for (const t of tasks) {
 }
 
 console.log(`\nDone: ${inserted} newly inserted, ${skipped} already existed (preserved).`)
-console.log(`DB now has ${countSchedules()} schedule rows.`)
+console.log(`DB now has ${await countSchedules()} schedule rows.`)

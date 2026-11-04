@@ -1,0 +1,9 @@
+{
+  "name": "marveen-db-codemod",
+  "private": true,
+  "type": "module",
+  "description": "ts-morph codemod that moves a src/db module onto the async db facade (own toolchain, separate from the root TypeScript).",
+  "dependencies": {
+    "ts-morph": "28.0.0"
+  }
+}

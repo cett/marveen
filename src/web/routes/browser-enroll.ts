@@ -35,7 +35,7 @@ export async function tryHandleBrowserEnroll(ctx: RouteContext): Promise<boolean
   const { path, method, req, res } = ctx
 
   if (method === 'POST' && path === '/api/admin/browser-enroll-codes') {
-    if (denyAgentCredentialIssue(ctx, 'admin.browser_enroll_code.create')) return true
+    if (await denyAgentCredentialIssue(ctx, 'admin.browser_enroll_code.create')) return true
     if (!isGlobalAdmin(ctx)) {
       json(res, { error: 'forbidden', hint: 'Only a global admin can issue a browser enrollment code' }, 403)
       return true
@@ -77,7 +77,7 @@ export async function tryHandleBrowserEnroll(ctx: RouteContext): Promise<boolean
     const name = `browser ${new Date(now * 1000).toISOString().slice(0, 10)} ${randomBytes(2).toString('hex')}`
     const rawToken = generateToken()
     try {
-      const row = insertApiToken({ tokenHash: sha256hex(rawToken), name, role: 'admin', tenantId: 'default', createdAt: now, expiresAt: null })
+      const row = await insertApiToken({ tokenHash: sha256hex(rawToken), name, role: 'admin', tenantId: 'default', createdAt: now, expiresAt: null })
       logger.info({ tokenId: row.id, name }, 'browser enrolled: api_token created')
       // The raw token is returned ONCE; only its hash is stored.
       json(res, { token: rawToken, id: row.id, name: row.name }, 201)

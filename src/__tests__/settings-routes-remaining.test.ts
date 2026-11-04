@@ -16,7 +16,6 @@ const mocks = vi.hoisted(() => ({
   getEffectiveSettingValue: vi.fn(),
   setOverride: vi.fn(),
   logConfigChange: vi.fn(),
-  setStoreWriteActor: vi.fn(),
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }))
 
@@ -38,7 +37,6 @@ vi.mock('../settings-store.js', () => ({
   setOverride: mocks.setOverride,
 }))
 vi.mock('../db.js', () => ({ logConfigChange: mocks.logConfigChange }))
-vi.mock('../store-watcher.js', () => ({ setStoreWriteActor: mocks.setStoreWriteActor }))
 vi.mock('../logger.js', () => ({ logger: mocks.logger }))
 // The RBAC_MODE branch of the route is covered by rbac-mode-settings-route.test.ts; these files only
 // exercise the generic settings branches, so the RBAC helpers are inert here.
@@ -197,8 +195,6 @@ describe('tryHandleSettings', () => {
       expect(await tryHandleSettings(ctx)).toBe(true)
       expect(status()).toBe(200)
       expect(body()).toMatchObject({ ok: true, key: 'test.visible', value: '1', requiresRestart: false })
-      // A setting is fleet-wide (tenant null), and the actor string never decides a tenant.
-      expect(mocks.setStoreWriteActor).toHaveBeenCalledWith('dashboard', null)
       expect(mocks.logConfigChange).toHaveBeenCalledWith('test.visible', '0', '1', 'dashboard')
     })
 
@@ -209,7 +205,6 @@ describe('tryHandleSettings', () => {
         method: 'POST', path: '/api/settings', body: { key: 'test.visible', value: 'x', actor: 'jonas' },
       })
       await tryHandleSettings(ctx)
-      expect(mocks.setStoreWriteActor).toHaveBeenCalledWith('jonas', null)
       expect(mocks.logConfigChange).toHaveBeenCalledWith('test.visible', expect.anything(), 'secret-value', 'jonas')
       expect((body() as any).key).toBe('test.visible')
     })

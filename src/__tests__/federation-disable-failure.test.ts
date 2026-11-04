@@ -65,9 +65,9 @@ beforeAll(() => {
   initDatabase(':memory:')
 })
 
-beforeEach(() => {
+beforeEach(async () => {
   db.exec('DROP TRIGGER IF EXISTS fed_cfg_block_insert; DROP TRIGGER IF EXISTS fed_cfg_block_update')
-  _clearFederationConfigForTest()
+  await _clearFederationConfigForTest()
   _setFederationStoreDirForTest(TMP)
   _resetInboxDedupForTest()
 })
@@ -78,17 +78,17 @@ afterAll(() => {
 
 describe('PUT /api/federation/peers with a body that is not a valid config (flag-only disable)', () => {
   it('disables a healthy store (positive control)', async () => {
-    _seedFederationConfigForTest(ENABLED_DOC)
-    const q = createAgentMessage('a', 'teodor/x', 'queued')
+    await _seedFederationConfigForTest(ENABLED_DOC)
+    const q = await createAgentMessage('a', 'teodor/x', 'queued')
     const r = await call('PUT', '/api/federation/peers', { enabled: false, peers: 'oops' })
     expect(r.statusCode).toBe(200)
     expect(getFederationConfig().enabled).toBe(false)
-    expect(getAgentMessage(q.id)?.status).toBe('failed')
+    expect((await getAgentMessage(q.id))?.status).toBe('failed')
   })
 
   it('answers 500 and leaves the switch on, the queue and the stored peers alone when the write fails', async () => {
-    _seedFederationConfigForTest(ENABLED_DOC)
-    const q = createAgentMessage('a', 'teodor/x', 'queued')
+    await _seedFederationConfigForTest(ENABLED_DOC)
+    const q = await createAgentMessage('a', 'teodor/x', 'queued')
     const before = getFederationConfigRaw()
     breakConfigWrites()
     const r = await call('PUT', '/api/federation/peers', { enabled: false, peers: 'oops' })
@@ -97,22 +97,22 @@ describe('PUT /api/federation/peers with a body that is not a valid config (flag
     expect(String(r.json.hint)).toMatch(/stays enabled/)
     expect(getFederationConfig().enabled).toBe(true)
     expect(getFederationConfigRaw()).toBe(before)
-    expect(getAgentMessage(q.id)?.status).toBe('pending')
+    expect((await getAgentMessage(q.id))?.status).toBe('pending')
   })
 })
 
 describe('POST /api/federation/remove', () => {
   it('clears a healthy store (positive control)', async () => {
-    _seedFederationConfigForTest(ENABLED_DOC)
+    await _seedFederationConfigForTest(ENABLED_DOC)
     const r = await call('POST', '/api/federation/remove')
     expect(r.json.ok).toBe(true)
     expect(getFederationConfigRaw()).toBeUndefined()
   })
 
   it('answers 500 and removes nothing when the disable write fails', async () => {
-    _seedFederationConfigForTest(ENABLED_DOC)
+    await _seedFederationConfigForTest(ENABLED_DOC)
     writeFileSync(join(TMP, '.federation-token'), 'legacy'.repeat(11))
-    const q = createAgentMessage('a', 'teodor/x', 'queued')
+    const q = await createAgentMessage('a', 'teodor/x', 'queued')
     const before = getFederationConfigRaw()
     breakConfigWrites()
     const r = await call('POST', '/api/federation/remove')
@@ -121,17 +121,17 @@ describe('POST /api/federation/remove', () => {
     expect(getFederationConfig().enabled).toBe(true)
     expect(getFederationConfigRaw()).toBe(before)
     expect(existsSync(join(TMP, '.federation-token'))).toBe(true)
-    expect(getAgentMessage(q.id)?.status).toBe('pending')
+    expect((await getAgentMessage(q.id))?.status).toBe('pending')
   })
 
   it('still clears a stored document that is unreadable garbage (already fail-closed)', async () => {
-    _seedFederationConfigForTest('not json {')
+    await _seedFederationConfigForTest('not json {')
     expect(getFederationConfig().enabled).toBe(false)
-    const q = createAgentMessage('a', 'teodor/x', 'queued')
+    const q = await createAgentMessage('a', 'teodor/x', 'queued')
     const r = await call('POST', '/api/federation/remove')
     expect(r.statusCode).toBe(200)
     expect(r.json.ok).toBe(true)
     expect(getFederationConfigRaw()).toBeUndefined()
-    expect(getAgentMessage(q.id)?.status).toBe('failed')
+    expect((await getAgentMessage(q.id))?.status).toBe('failed')
   })
 })

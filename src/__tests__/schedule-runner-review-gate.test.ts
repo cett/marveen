@@ -37,7 +37,7 @@ describe('review-gate: isTaskLive is imported and wired into all three fire site
   })
 
   it('gate 2 -- the pending-retry queue drops a retry for a task that is no longer live', () => {
-    const idx = SRC.indexOf('const pendingRows = listPendingTaskRetries()')
+    const idx = SRC.indexOf('const pendingRows = await listPendingTaskRetries()')
     expect(idx).toBeGreaterThan(0)
     const block = SRC.slice(idx, idx + 1500)
     expect(block).toMatch(/if \(!taskDef\.enabled \|\| !isTaskLive\(taskDef\)\)/)
@@ -63,7 +63,7 @@ describe('review-gate: isTaskLive is imported and wired into all three fire site
     // Ordering sanity check: the retry queue (gate 2) is scanned, THEN the
     // cron loop (gate 3) fires due occurrences -- a single missing/duplicated
     // gate would otherwise be easy to miss in a future refactor.
-    const retryIdx = SRC.indexOf('const pendingRows = listPendingTaskRetries()')
+    const retryIdx = SRC.indexOf('const pendingRows = await listPendingTaskRetries()')
     const cronIdx = SRC.indexOf('for (const task of tasks) {')
     expect(cronIdx).toBeGreaterThan(retryIdx)
   })

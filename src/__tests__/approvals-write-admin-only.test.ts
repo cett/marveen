@@ -52,11 +52,11 @@ async function callAs(auth: AuthResult, method: string, path: string, body?: unk
   return out
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   initDatabase(':memory:')
-  createTenant('acme', 'Acme')
-  createApproval({ id: 'appr-acme', agent_id: 'alpha', category: 'deploy', action_description: 'acme deploy', tenant_id: 'acme' })
-  createApproval({ id: 'appr-default', agent_id: 'alpha', category: 'deploy', action_description: 'default deploy', tenant_id: 'default' })
+  await createTenant('acme', 'Acme')
+  await createApproval({ id: 'appr-acme', agent_id: 'alpha', category: 'deploy', action_description: 'acme deploy', tenant_id: 'acme' })
+  await createApproval({ id: 'appr-default', agent_id: 'alpha', category: 'deploy', action_description: 'default deploy', tenant_id: 'default' })
 })
 
 describe('approvals:write by role', () => {
@@ -79,14 +79,14 @@ describe('PATCH /api/approvals/:id', () => {
     const out = await callAs(session(role, 'acme'), 'PATCH', path, { status: 'approved' })
     expect(out.status).toBe(403)
     expect(String(out.body.reason)).toContain('approvals:write')
-    expect(getApproval('appr-acme')?.status).toBe('pending')
+    expect((await getApproval('appr-acme'))?.status).toBe('pending')
   })
 
   it.each(['viewer', 'read_only'] as const)('%s also gets 403 on a request of another tenant, and on a rejection', async (role) => {
     expect((await callAs(session(role, 'acme'), 'PATCH', '/api/approvals/appr-default', { status: 'approved' })).status).toBe(403)
     expect((await callAs(session(role, 'acme'), 'PATCH', '/api/approvals/appr-acme', { status: 'rejected' })).status).toBe(403)
-    expect(getApproval('appr-default')?.status).toBe('pending')
-    expect(getApproval('appr-acme')?.status).toBe('pending')
+    expect((await getApproval('appr-default'))?.status).toBe('pending')
+    expect((await getApproval('appr-acme'))?.status).toBe('pending')
   })
 
   it('a viewer still reads the approvals of the tenant (approvals:read stays)', async () => {
@@ -97,6 +97,6 @@ describe('PATCH /api/approvals/:id', () => {
   it('an admin resolves the request through the route (200) and the row changes', async () => {
     const out = await callAs(session('admin', null), 'PATCH', '/api/approvals/appr-acme', { status: 'approved' })
     expect(out.status).toBe(200)
-    expect(getApproval('appr-acme')?.status).toBe('approved')
+    expect((await getApproval('appr-acme'))?.status).toBe('approved')
   })
 })

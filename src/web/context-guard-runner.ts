@@ -45,6 +45,7 @@ import {
   type GuardInputs,
 } from '../context-guard.js'
 
+import { runAsAgentJob } from '../db/background-jobs.js'
 // Fleet context guard (kanban #81): acts BEFORE a session drowns in its own
 // context. Sweep every agent (main included) every five minutes; at actPct ask the
 // agent to write HANDOFF.md, then fresh-restart it and inject a resume prompt
@@ -92,7 +93,7 @@ export function clearRestartFailures(name: string): void {
 }
 
 /** Count one failed restart; the third in a row raises exactly one message, further ones stay quiet until a success resets the series. */
-export function noteRestartFailure(name: string, err: unknown): void {
+export async function noteRestartFailure(name: string, err: unknown): Promise<void> {
   const entry = restartFailures.get(name) ?? { count: 0, alerted: false }
   entry.count += 1
   restartFailures.set(name, entry)
@@ -106,7 +107,7 @@ export function noteRestartFailure(name: string, err: unknown): void {
       // The patient's own queue is no alert sink (main-agent delivery is pull-based): use the channel.
       notifyChannel(text).catch(() => {})
     } else {
-      createAgentMessage(name, MAIN_AGENT_ID, text, 'context-guard restart failure alert')
+      await createAgentMessage(name, MAIN_AGENT_ID, text, 'context-guard restart failure alert')
     }
   } catch (alertErr) {
     logger.warn({ err: alertErr, name }, 'context-guard: restart-failure alert could not be raised')
@@ -260,8 +261,8 @@ const HANDOFF_DOC_KEY = 'handoff'
 // different cwd/config-dir than workingDirFor() assumes); the file mtime is
 // kept as a fallback for a handoff written before an agent's skill picked up
 // the SQL step, so freshness detection does not go blind mid-rollout.
-function handoffMtime(name: string): number | null {
-  const sqlMtime = getWorkspaceDocUpdatedAtMs(name, HANDOFF_DOC_KEY)
+async function handoffMtime(name: string): Promise<number | null> {
+  const sqlMtime = await getWorkspaceDocUpdatedAtMs(name, HANDOFF_DOC_KEY)
   if (sqlMtime !== null) return sqlMtime
   try { return statSync(handoffPathFor(name)).mtimeMs } catch { return null }
 }
@@ -405,7 +406,7 @@ function measurePct(name: string, cfgLimit: number | null): number | null {
   return tokens / limit
 }
 
-function performRestart(name: string): void {
+async function performRestart(name: string): Promise<void> {
   if (name === MAIN_AGENT_ID) {
     // Platform-correct main-session restart. This was a hardcoded
     // `/bin/launchctl kickstart`, which exists only on macOS: on Linux every
@@ -424,7 +425,7 @@ function performRestart(name: string): void {
     const res = hardRestartMarveenChannels()
     if (!res.ok) throw new Error(res.error ?? 'main channels hard restart failed')
   } else {
-    restartAgentProcess(name, { fresh: true })
+    await restartAgentProcess(name, { fresh: true })
   }
 }
 
@@ -476,7 +477,7 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
     paneIdle: paneState === 'idle',
     paneBusy: paneState === 'busy',
     sessionReady,
-    handoffMtime: needPct ? handoffMtime(name) : null,
+    handoffMtime: needPct ? await handoffMtime(name) : null,
     paneSaturated: pane !== null ? paneShowsContextSaturation(pane) : false,
     // Context-size probe, paid for only when the idle-flush tier is armed.
     // Note the condition is cfg.idleFlushEnabled, NOT cfg.enabled: the two
@@ -605,9 +606,9 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
         // ride in the just-written HANDOFF.md to be recovered on the next
         // launch (see claude-plan-handoff-marker.ts). Must run before
         // performRestart, while the DB row this reads still exists.
-        appendActivePlanMarkerToHandoff(name)
+        await appendActivePlanMarkerToHandoff(name)
         try {
-          performRestart(name)
+          await performRestart(name)
         } catch (err) {
           // guardStates was advanced to the post-restart phase BEFORE this
           // switch, so a failed restart would otherwise be filed as a completed
@@ -617,7 +618,7 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
           // claim the restart on the message queue.
           guardStates.set(name, state)
           logger.error({ err, name, reason: decision.reason }, 'context-guard: restart FAILED -- state rolled back for retry')
-          noteRestartFailure(name, err)
+          await noteRestartFailure(name, err)
           break
         }
         clearRestartFailures(name)
@@ -630,7 +631,7 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
           reason: decision.reason,
         })
         try {
-          createAgentMessage(
+          await createAgentMessage(
             name,
             MAIN_AGENT_ID,
             `[CONTEXT-GUARD] Ujrainditottam a(z) "${name}" agentet -- ok: ${decision.reason}` +
@@ -657,7 +658,7 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
         break
       }
       case 'inject-resume': {
-        const hadHandoff = inputs.handoffMtime !== null || handoffMtime(name) !== null
+        const hadHandoff = inputs.handoffMtime !== null || await handoffMtime(name) !== null
         // Staleness was measured at RESTART time and rode here in the state;
         // measuring now would be meaningless (the old session is gone).
         let outcome: Awaited<ReturnType<typeof sendPromptToSession>>
@@ -758,11 +759,12 @@ export function startContextGuardRunner(): NodeJS.Timeout {
   async function sweep() {
     const now = Date.now()
     noteGuardSweep(now)
-    try { await checkAgent(MAIN_AGENT_ID, now) } catch (err) { logger.debug({ err }, 'context-guard: main check error') }
+    try { await runAsAgentJob('context-guard', MAIN_AGENT_ID, () => checkAgent(MAIN_AGENT_ID, now)) } catch (err) { logger.debug({ err }, 'context-guard: main check error') }
     for (const name of listAgentNames()) {
-      try { await checkAgent(name, now) } catch (err) { logger.debug({ err, agent: name }, 'context-guard: agent check error') }
+      try { await runAsAgentJob('context-guard', name, () => checkAgent(name, now)) } catch (err) { logger.debug({ err, agent: name }, 'context-guard: agent check error') }
     }
   }
-  setTimeout(sweep, INITIAL_DELAY_MS)
-  return setInterval(sweep, INTERVAL_MS)
+  const tick = () => { void sweep().catch((err) => logger.error({ err }, 'context-guard: sweep tick failed')) }
+  setTimeout(tick, INITIAL_DELAY_MS)
+  return setInterval(tick, INTERVAL_MS)
 }

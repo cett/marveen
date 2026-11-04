@@ -14,6 +14,7 @@ import {
   type ModelResolution,
 } from '../model-profiles.js'
 import { listModelProfileMap } from '../db/model-profile-map.js'
+import { reloadModelProfileMapCache } from '../db/model-profile-map-cache.js'
 import { getFallbackOverride } from './model-fallback-state.js'
 
 export const AGENTS_BASE_DIR = join(PROJECT_ROOT, 'agents')
@@ -124,41 +125,31 @@ export function readMainModelConfigured(): string {
 // agent that names a concrete `model` keeps working untouched, which is every
 // agent today.
 //
-// 90s TTL cache (product decision, see design doc): the table only has 4 rows
-// and every agent model-resolution call hits this, so a cache avoids a SELECT
-// per call, but the map only changes on rare deployment-level edits. The
-// dashboard PATCH endpoint calls invalidateModelProfileMapCache() explicitly
-// on every write, so the TTL is a safety net, not the only freshness
-// guarantee -- a stale read is at most 90s old even if invalidation is ever
-// missed.
-const MODEL_PROFILE_MAP_CACHE_TTL_MS = 90_000
-
-let cachedProfileMap: { state: ModelProfileMapState | null; fetchedAt: number } | null = null
-
+// listModelProfileMap() is itself served from a synchronous write-through
+// cache now (model-profile-map-cache.ts): every write to the table
+// updates that cache before returning, so there is no staleness window left
+// to paper over here, unlike the retired 90s TTL this used to carry. This
+// function stays, and is still `readModelProfileMap()`, so every hot-path
+// caller (agent spawn/restart, the model-fallback runner, federation
+// capabilities) keeps calling the same name unchanged.
 export function readModelProfileMap(): ModelProfileMapState | null {
-  const now = Date.now()
-  if (cachedProfileMap && now - cachedProfileMap.fetchedAt < MODEL_PROFILE_MAP_CACHE_TTL_MS) {
-    return cachedProfileMap.state
-  }
-  let state: ModelProfileMapState | null
   try {
     const rows = listModelProfileMap()
-    if (rows.length === 0) {
-      state = null
-    } else {
-      const profiles: Record<string, string> = {}
-      for (const row of rows) profiles[row.profile_id] = row.model_id
-      state = validateModelProfileMap({ profiles })
-    }
+    if (rows.length === 0) return null
+    const profiles: Record<string, string> = {}
+    for (const row of rows) profiles[row.profile_id] = row.model_id
+    return validateModelProfileMap({ profiles })
   } catch {
-    state = { ok: false, error: 'profile_map_read_error' }
+    return { ok: false, error: 'profile_map_read_error' }
   }
-  cachedProfileMap = { state, fetchedAt: now }
-  return state
 }
 
+// Forces the db-layer cache to re-read the table. Needed only when something wrote the table directly,
+// bypassing setModelProfileMapEntry/upsertModelProfileMapEntry's own write-through (a test's raw db.exec(),
+// or belt-and-suspenders after the route/import writers below, which are already write-through and so no
+// longer strictly need it).
 export function invalidateModelProfileMapCache(): void {
-  cachedProfileMap = null
+  reloadModelProfileMapCache()
 }
 
 // Full resolution result, for callers that need to show or log WHY an agent is

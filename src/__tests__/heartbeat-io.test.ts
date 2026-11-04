@@ -178,7 +178,7 @@ beforeEach(() => {
   mockReaddirSync.mockReturnValue([])
   mockGetEffectiveSettingValue.mockImplementation((key: string) => (key === 'HEARTBEAT_START_HOUR' ? 8 : 21))
   mockGetHeartbeatKanbanSummary.mockReturnValue({ urgent: [], in_progress: [], waiting: [] })
-  mockGetActiveScheduledTaskCount.mockReturnValue({ count: 0, nextRun: null })
+  mockGetActiveScheduledTaskCount.mockResolvedValue({ count: 0, nextRun: null })
   mockGetCalendarEvents.mockResolvedValue([])
   mockRunAgent.mockResolvedValue({ text: null })
   mockGetMainParkedState.mockReturnValue(null)
@@ -282,7 +282,7 @@ describe('collectData', () => {
       waiting: [{ id: 'W1', title: 'waiting card' }],
     })
     mockStatSync.mockReturnValueOnce({ size: 10 * 1024 * 1024 } as ReturnType<typeof mockStatSync>)
-    mockGetActiveScheduledTaskCount.mockReturnValueOnce({ count: 4, nextRun: 123456 })
+    mockGetActiveScheduledTaskCount.mockResolvedValueOnce({ count: 4, nextRun: 123456 })
 
     const data = await collectData()
 

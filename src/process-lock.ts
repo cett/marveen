@@ -89,7 +89,7 @@ export interface AcquirePortLockOptions {
   postKillPollMs?: number
 }
 
-const DEFAULT_GRACE_MS = 1500
+export const DEFAULT_GRACE_MS = 1500
 const DEFAULT_POST_KILL_DRAIN_MS = 2000
 const DEFAULT_POST_KILL_POLL_MS = 100
 

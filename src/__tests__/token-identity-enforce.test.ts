@@ -15,19 +15,20 @@ import { initDatabase, insertApiToken, saveAgentMemory, getDb } from '../db.js'
 import { resolveAuth } from '../web/auth-gate.js'
 import { answerIdentityRefusal, identityRefusal, inspectBodyAgents, observeTokenUsage, resetTokenShadowForTests } from '../web/token-shadow.js'
 import { readBody, RequestBodyTooLargeError } from '../web/http-helpers.js'
+import * as wsDb from '../db/workspace.js'
 
 // A switch for the one test that makes the tenant lookup of the counting side fail.
 const tenantFault = vi.hoisted(() => ({ on: false }))
 vi.mock('../db/write-tenant.js', async (importOriginal) => {
   const orig = await importOriginal<typeof import('../db/write-tenant.js')>()
-  return { ...orig, resolveWriteTenant: (a: string | null | undefined) => { if (tenantFault.on) throw new Error('tenant lookup failed'); return orig.resolveWriteTenant(a) } }
+  return { ...orig, resolveWriteTenant: async (a: string | null | undefined) => { if (tenantFault.on) throw new Error('tenant lookup failed'); return orig.resolveWriteTenant(a) } }
 })
 
 vi.mock('../config.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../config.js')>()), MAIN_AGENT_ID: 'main-agent' }))
 
 const sha = (s: string) => createHash('sha256').update(s).digest('hex')
 const NOW = () => Math.floor(Date.now() / 1000)
-const mint = (raw: string, agentId: string | null, role: 'fleet_agent' | 'admin' = 'fleet_agent') =>
+const mint = async (raw: string, agentId: string | null, role: 'fleet_agent' | 'admin' = 'fleet_agent') =>
   insertApiToken({ tokenHash: sha(raw), name: `${role}:${agentId ?? 'none'}`, role, tenantId: 'default', createdAt: NOW() - 10, expiresAt: null, agentId })
 
 const SHARED = 'the-file-token'
@@ -55,16 +56,16 @@ async function send(
   ;(req as unknown as { destroy: () => void }).destroy = () => {}
   setImmediate(() => { req.emit('data', buf); req.emit('end') })
   const url = new URL(`http://localhost:3420${path}`)
-  const auth = resolveAuth(req, url, url.pathname, method, SHARED, true)
-  observeTokenUsage(req, auth, method, url.pathname, url)
+  const auth = await resolveAuth(req, url, url.pathname, method, SHARED, true)
+  await observeTokenUsage(req, auth, method, url.pathname, url)
   return { req, refusal: await identityRefusal(req) }
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   initDatabase(':memory:')
   resetTokenShadowForTests()
-  mint('tok-alpha', 'alpha')
-  mint('tok-main', 'main-agent', 'admin')
+  await mint('tok-alpha', 'alpha')
+  await mint('tok-main', 'main-agent', 'admin')
 })
 
 describe('enforce: the path and the query', () => {
@@ -232,8 +233,8 @@ describe('enforce: which endpoints refuse what (T0 matrix)', () => {
   })
 
   it('memories: a shared row by id is readable, another agent\'s private row and its sub-routes are not', async () => {
-    const shared = saveAgentMemory('beta', 'for all', 'shared').id
-    const priv = saveAgentMemory('beta', 'private', 'warm').id
+    const shared = (await saveAgentMemory('beta', 'for all', 'shared')).id
+    const priv = (await saveAgentMemory('beta', 'private', 'warm')).id
     expect((await send('alpha', 'GET', `/api/memories/${shared}`)).refusal).toBeNull()
     expect((await send('alpha', 'GET', `/api/memories/${priv}`)).refusal?.target).toBe('beta')
     expect((await send('alpha', 'GET', `/api/memories/${shared}/detail`)).refusal?.target).toBe('beta')
@@ -290,7 +291,7 @@ describe('identity_refused: every refusal is counted', () => {
     ;(req as unknown as { destroy: () => void }).destroy = () => {}
     setImmediate(() => { req.emit('data', buf); req.emit('end') })
     const url = new URL(`http://localhost:3420${path}`)
-    observeTokenUsage(req, resolveAuth(req, url, url.pathname, method, SHARED, true), method, url.pathname, url)
+    await observeTokenUsage(req, await resolveAuth(req, url, url.pathname, method, SHARED, true), method, url.pathname, url)
     const out = { status: 0 }
     const res = { writeHead(code: number) { out.status = code }, setHeader() {}, end() {} } as unknown as http.ServerResponse
     return { refused: await answerIdentityRefusal(req, res), status: out.status }
@@ -337,10 +338,10 @@ describe('the switch and its wiring', () => {
 
   it('web.ts runs the identity gate only in enforce mode, after the counter and before dispatch', () => {
     expect(WEB_SRC.match(/\banswerIdentityRefusal\(/g)?.length).toBe(1)
-    const observeAt = WEB_SRC.indexOf('observeTokenUsage(req, auth, method, path, url)')
+    const observeAt = WEB_SRC.indexOf('await observeTokenUsage(req, auth, method, path, url)')
     const guardAt = WEB_SRC.indexOf("if (TOKEN_IDENTITY_MODE === 'enforce' && requiresAuth(path, method))")
     const refuseAt = WEB_SRC.indexOf('answerIdentityRefusal(req, res)')
-    const dispatchAt = WEB_SRC.indexOf('await dispatcher.dispatch(routeCtx)')
+    const dispatchAt = WEB_SRC.indexOf('dispatcher.dispatch(routeCtx)')
     expect(observeAt).toBeGreaterThan(-1)
     expect(guardAt).toBeGreaterThan(observeAt)
     expect(refuseAt).toBeGreaterThan(guardAt)
@@ -349,6 +350,18 @@ describe('the switch and its wiring', () => {
 
   it('web.ts hands the switch to the routes through the context, the only way a route learns of it', () => {
     expect(WEB_SRC).toContain("identityEnforced: TOKEN_IDENTITY_MODE === 'enforce'")
+  })
+})
+
+describe('enforce on /api/workspace/:id: the row owner is looked up asynchronously', () => {
+  const doc = (agent: string) => wsDb.saveWorkspaceDoc({ agent_id: agent, tenant_id: 'default', title: 't', content: 'c', content_type: 'text', type: 'notes' })
+
+  it('alpha PATCH/DELETE on beta\'s doc is refused (enforce), on its own doc it is not, GET of a foreign doc is allowed', async () => {
+    const foreign = await doc('beta'); const own = await doc('alpha')
+    expect((await send('alpha', 'PATCH', `/api/workspace/${foreign.id}`, { title: 'x' })).refusal).toMatchObject({ caller: 'alpha', target: 'beta' })
+    expect((await send('alpha', 'DELETE', `/api/workspace/${foreign.id}`)).refusal).toMatchObject({ target: 'beta' })
+    expect((await send('alpha', 'PATCH', `/api/workspace/${own.id}`, { title: 'x' })).refusal).toBeNull()
+    expect((await send('alpha', 'GET', `/api/workspace/${foreign.id}`)).refusal).toBeNull()
   })
 })
 
@@ -385,6 +398,17 @@ describe('enforce fails closed when the check cannot be made', () => {
     getDb().exec('DROP TABLE memories')
     const sent = await send('alpha', 'GET', '/api/memories/5')
     expect(sent.refusal).toMatchObject({ caller: 'alpha', target: '_undecided', undecided: true })
+  })
+
+  it('the workspace owner lookup is asynchronous: a rejected promise refuses the write as undecided', async () => {
+    const spy = vi.spyOn(wsDb, 'peekWorkspaceDoc').mockRejectedValueOnce(new Error('db down'))
+    try {
+      const sent = await send('alpha', 'PATCH', '/api/workspace/doc-1', {})
+      expect(sent.refusal).toMatchObject({ caller: 'alpha', target: '_undecided', undecided: true })
+      expect(spy).toHaveBeenCalledTimes(1)
+    } finally {
+      spy.mockRestore()
+    }
   })
 
   it('a lookup that works but finds nothing is not a failure: a missing row is the route\'s 404', async () => {
@@ -431,7 +455,7 @@ describe('enforce fails closed when the check cannot be made', () => {
     ;(req as unknown as { destroy: () => void }).destroy = () => {}
     setImmediate(() => { req.emit('error', new Error('socket hang up')) })
     const url = new URL('http://localhost:3420/api/workspace')
-    observeTokenUsage(req, resolveAuth(req, url, url.pathname, 'POST', SHARED, true), 'POST', url.pathname, url)
+    await observeTokenUsage(req, await resolveAuth(req, url, url.pathname, 'POST', SHARED, true), 'POST', url.pathname, url)
     expect(await identityRefusal(req)).toMatchObject({ caller: 'alpha', undecided: true })
   })
 
@@ -443,7 +467,7 @@ describe('enforce fails closed when the check cannot be made', () => {
     // No 'error' is emitted here: nothing reads this body, so no listener would catch it (an unhandled 'error' event
     // is an uncaught exception). The point is that the gate does not even try to read a body it cannot refuse on.
     const url = new URL('http://localhost:3420/api/kanban')
-    observeTokenUsage(req, resolveAuth(req, url, url.pathname, 'POST', SHARED, true), 'POST', url.pathname, url)
+    await observeTokenUsage(req, await resolveAuth(req, url, url.pathname, 'POST', SHARED, true), 'POST', url.pathname, url)
     expect(await identityRefusal(req)).toBeNull()
     expect(req.listenerCount('data')).toBe(0)
     expect(req.listenerCount('error')).toBe(0)
@@ -468,7 +492,7 @@ describe('enforce fails closed: who it applies to', () => {
       ;(req as unknown as { destroy: () => void }).destroy = () => {}
       setImmediate(() => { req.emit('data', Buffer.from('{}')); req.emit('end') })
       const url = new URL('http://localhost:3420/api/workspace/doc-1')
-      observeTokenUsage(req, auth as never, 'PATCH', url.pathname, url)
+      await observeTokenUsage(req, auth as never, 'PATCH', url.pathname, url)
       expect(await identityRefusal(req)).toBeNull()
     }
   })
@@ -494,10 +518,10 @@ describe('enforce fails closed: who it applies to', () => {
       return { req, url }
     }
     const read = faulty('GET', '/api/workspace/doc-1')
-    observeTokenUsage(read.req, resolveAuth(read.req, read.url, read.url.pathname, 'GET', SHARED, true), 'GET', read.url.pathname, read.url)
+    await observeTokenUsage(read.req, await resolveAuth(read.req, read.url, read.url.pathname, 'GET', SHARED, true), 'GET', read.url.pathname, read.url)
     expect(await identityRefusal(read.req)).toBeNull()
     const write = faulty('PATCH', '/api/workspace/doc-1')
-    observeTokenUsage(write.req, resolveAuth(write.req, write.url, write.url.pathname, 'PATCH', SHARED, true), 'PATCH', write.url.pathname, write.url)
+    await observeTokenUsage(write.req, await resolveAuth(write.req, write.url, write.url.pathname, 'PATCH', SHARED, true), 'PATCH', write.url.pathname, write.url)
     expect(await identityRefusal(write.req)).toMatchObject({ caller: 'alpha', undecided: true })
   })
 })

@@ -85,15 +85,15 @@ function rawRetentionDays(): number | null {
   return Number.isFinite(n) && n > 0 ? n : null
 }
 
-export function getCardTokenUsage(
+export async function getCardTokenUsage(
   cardId: string,
   opts: { botName: string; mainAgentId: string; now?: number; retentionDays?: number | null },
-): CardTokenUsage | null {
-  const card = getKanbanCard(cardId)
+): Promise<CardTokenUsage | null> {
+  const card = await getKanbanCard(cardId)
   if (!card) return null
   const now = opts.now ?? Math.floor(Date.now() / 1000)
   const agent = tokenAgentForAssignee(card.assignee, opts)
-  const windows = inProgressWindows(getKanbanCardEvents(cardId), now)
+  const windows = inProgressWindows(await getKanbanCardEvents(cardId), now)
   // The prune keeps rows with timestamp >= now - retention; a window that starts before that has lost rows.
   const retentionDays = opts.retentionDays !== undefined ? opts.retentionDays : rawRetentionDays()
   const dataExpired = retentionDays !== null && windows.some((w) => w.from < now - retentionDays * 86400)
@@ -102,12 +102,12 @@ export function getCardTokenUsage(
     dataExpired, retentionDays,
   }
   if (!agent) return empty
-  empty.dataUntil = getLastTokenUsageTimestamp(agent)
+  empty.dataUntil = await getLastTokenUsageTimestamp(agent)
   if (windows.length === 0) return empty
 
   const byModel = new Map<string, CardTokenModelRow>()
   for (const w of windows) {
-    for (const r of sumTokenUsageByModel(agent, w.from, w.to)) {
+    for (const r of await sumTokenUsageByModel(agent, w.from, w.to)) {
       const key = r.model ?? ''
       const acc = byModel.get(key)
       if (!acc) { byModel.set(key, { ...r }); continue }
@@ -133,8 +133,8 @@ export function getCardTokenUsage(
   const names = [agent]
   if (agent === opts.mainAgentId.toLowerCase()) names.push(opts.botName.toLowerCase())
   let overlappingCards = 0
-  for (const otherId of listOtherCardIdsWithProgressEvents(cardId, names)) {
-    const ow = inProgressWindows(getKanbanCardEvents(otherId), now)
+  for (const otherId of await listOtherCardIdsWithProgressEvents(cardId, names)) {
+    const ow = inProgressWindows(await getKanbanCardEvents(otherId), now)
     if (ow.some((x) => windows.some((w) => x.from < w.to && w.from < x.to))) overlappingCards++
   }
 

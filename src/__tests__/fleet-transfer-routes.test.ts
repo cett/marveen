@@ -7,11 +7,13 @@ import type { RouteContext } from '../web/routes/types.js'
 
 const mocks = vi.hoisted(() => {
   class MockUserFacingError extends Error {}
+  class MockImportConflictError extends Error {}
   return {
     exportFleet: vi.fn(),
     importFleet: vi.fn(),
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     MockUserFacingError,
+    MockImportConflictError,
   }
 })
 
@@ -22,6 +24,7 @@ vi.mock('../web/fleet-transfer.js', () => ({
   importFleet: mocks.importFleet,
   MIN_VAULT_PASSWORD_LEN: 8,
   UserFacingError: mocks.MockUserFacingError,
+  ImportConflictError: mocks.MockImportConflictError,
 }))
 
 import { tryHandleFleet } from '../web/routes/fleet.js'
@@ -138,6 +141,16 @@ describe('tryHandleFleet -- POST /api/fleet/import', () => {
     const { ctx, status } = makeCtx({ method: 'POST', path: '/api/fleet/import', body: '{}' })
     await tryHandleFleet(ctx)
     expect(status()).toBe(500)
+  })
+
+  it('returns 409 conflict with the hint when the import cannot run (a backup left behind, an import in progress), and does not log it as a failure', async () => {
+    mocks.importFleet.mockImplementationOnce(() => { throw new mocks.MockImportConflictError('stale backup: restore or remove it') })
+    mocks.logger.error.mockClear()
+    const { ctx, status, rawBody } = makeCtx({ method: 'POST', path: '/api/fleet/import', body: '{}' })
+    await tryHandleFleet(ctx)
+    expect(status()).toBe(409)
+    expect(JSON.parse(rawBody()!.toString())).toEqual({ error: 'conflict', hint: 'stale backup: restore or remove it' })
+    expect(mocks.logger.error).not.toHaveBeenCalled()
   })
 })
 

@@ -31,9 +31,9 @@ export function readTerminalInputEnabled(): boolean {
 }
 
 /** Persist the toggle. Returns the new state. */
-export function writeTerminalInputEnabled(enabled: boolean): boolean {
+export async function writeTerminalInputEnabled(enabled: boolean): Promise<boolean> {
   const next = enabled === true
-  setSystemConfig(KEY, next ? '1' : '0')
+  await setSystemConfig(KEY, next ? '1' : '0')
   return next
 }
 

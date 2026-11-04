@@ -89,11 +89,11 @@ export function detectRequiredEnvVars(repoPath: string): string[] {
   } catch { return [] }
 }
 
-export async function installGitHubRepo(
+export function installGitHubRepo(
   url: string,
   envVars?: Record<string, string>,
   onProgress?: (p: GitHubInstallProgress) => void,
-): Promise<{ repo: GitHubRepo, requiredEnvVars?: string[], error?: never } | { repo?: never, requiredEnvVars?: string[], error: string, hint?: string, field?: string }> {
+): { repo: GitHubRepo, requiredEnvVars?: string[], error?: never } | { repo?: never, requiredEnvVars?: string[], error: string, hint?: string, field?: string } {
   const parsed = parseGitHubUrl(url)
   if (!parsed) return { error: 'invalid_value', field: 'url', hint: 'Invalid GitHub URL' }
 

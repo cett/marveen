@@ -46,7 +46,7 @@ beforeAll(() => {
   initDatabase(':memory:')
 })
 
-beforeEach(() => {
+beforeEach(async () => {
   settings.OTEL_EXPORT_ENABLED = '0'
   settings.OTEL_EXPORTER_OTLP_ENDPOINT = ''
   settings.OTEL_EXPORTER_OTLP_HEADERS = ''
@@ -54,19 +54,19 @@ beforeEach(() => {
   for (const k of Object.keys(envFile)) delete envFile[k]
   resetOtelExporterStatus()
   resetMetricValues()
-  setOtelMetricsExportWatermark(0)
+  await setOtelMetricsExportWatermark(0)
   getDb().exec("DELETE FROM otel_spans WHERE trace_id LIKE 'trace-tick-test-%'")
   getDb().exec("DELETE FROM token_usage WHERE agent LIKE 'agent-tick-test-%'")
   vi.restoreAllMocks()
 })
 
-function seedClosedSpan(traceId: string, spanId: string) {
-  upsertOtelSpan({
+async function seedClosedSpan(traceId: string, spanId: string) {
+  await upsertOtelSpan({
     trace_id: traceId, span_id: spanId, parent_span_id: null,
     agent_id: 'agent-tick-test', operation: 'test.op', start_ms: 1000,
     attributes: null,
   })
-  closeOtelSpan(traceId, spanId, 2000, 'ok')
+  await closeOtelSpan(traceId, spanId, 2000, 'ok')
 }
 
 describe('tick', () => {
@@ -74,7 +74,7 @@ describe('tick', () => {
     settings.OTEL_EXPORT_ENABLED = '0'
     settings.OTEL_EXPORTER_OTLP_ENDPOINT = 'http://collector.local:4318'
     const fetchSpy = vi.spyOn(global, 'fetch')
-    seedClosedSpan('trace-tick-test-1', 'span-1')
+    await seedClosedSpan('trace-tick-test-1', 'span-1')
 
     await tick()
 
@@ -85,7 +85,7 @@ describe('tick', () => {
     settings.OTEL_EXPORT_ENABLED = '1'
     settings.OTEL_EXPORTER_OTLP_ENDPOINT = ''
     const fetchSpy = vi.spyOn(global, 'fetch')
-    seedClosedSpan('trace-tick-test-2', 'span-2')
+    await seedClosedSpan('trace-tick-test-2', 'span-2')
 
     await tick()
 
@@ -95,7 +95,7 @@ describe('tick', () => {
   it('posts unexported spans to <endpoint>/v1/traces and marks them exported on success', async () => {
     settings.OTEL_EXPORT_ENABLED = '1'
     settings.OTEL_EXPORTER_OTLP_ENDPOINT = 'http://collector.local:4318'
-    seedClosedSpan('trace-tick-test-3', 'span-3')
+    await seedClosedSpan('trace-tick-test-3', 'span-3')
     const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }))
 
     await tick()
@@ -106,31 +106,31 @@ describe('tick', () => {
     const body = JSON.parse(String((tracesCall![1] as RequestInit).body))
     expect(body.resourceSpans.length).toBeGreaterThan(0)
 
-    const remaining = getUnexportedOtelSpans(1000).map(s => s.trace_id)
+    const remaining = (await getUnexportedOtelSpans(1000)).map(s => s.trace_id)
     expect(remaining).not.toContain('trace-tick-test-3')
   })
 
   it('leaves a span unmarked (retried next tick) when the collector rejects the trace POST', async () => {
     settings.OTEL_EXPORT_ENABLED = '1'
     settings.OTEL_EXPORTER_OTLP_ENDPOINT = 'http://collector.local:4318'
-    seedClosedSpan('trace-tick-test-4', 'span-4')
+    await seedClosedSpan('trace-tick-test-4', 'span-4')
     vi.spyOn(global, 'fetch').mockResolvedValue(new Response('nope', { status: 500 }))
 
     await tick()
 
-    const remaining = getUnexportedOtelSpans(1000).map(s => s.trace_id)
+    const remaining = (await getUnexportedOtelSpans(1000)).map(s => s.trace_id)
     expect(remaining).toContain('trace-tick-test-4')
   })
 
   it('never throws when fetch itself rejects (network error) -- fail-open', async () => {
     settings.OTEL_EXPORT_ENABLED = '1'
     settings.OTEL_EXPORTER_OTLP_ENDPOINT = 'http://collector.local:4318'
-    seedClosedSpan('trace-tick-test-5', 'span-5')
+    await seedClosedSpan('trace-tick-test-5', 'span-5')
     vi.spyOn(global, 'fetch').mockRejectedValue(new Error('ECONNREFUSED'))
 
     await expect(tick()).resolves.toBeUndefined()
 
-    const remaining = getUnexportedOtelSpans(1000).map(s => s.trace_id)
+    const remaining = (await getUnexportedOtelSpans(1000)).map(s => s.trace_id)
     expect(remaining).toContain('trace-tick-test-5')
   })
 
@@ -138,11 +138,11 @@ describe('tick', () => {
     settings.OTEL_EXPORT_ENABLED = '1'
     settings.OTEL_EXPORTER_OTLP_ENDPOINT = 'http://collector.local:4318'
     vi.spyOn(global, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }))
-    const before = getOtelMetricsExportState().last_export_ms
+    const before = (await getOtelMetricsExportState()).last_export_ms
 
     await tick()
 
-    expect(getOtelMetricsExportState().last_export_ms).toBeGreaterThan(before)
+    expect((await getOtelMetricsExportState()).last_export_ms).toBeGreaterThan(before)
   })
 
   it('posts token-usage metrics to <endpoint>/v1/metrics when usage exists in the window', async () => {
@@ -209,7 +209,7 @@ describe('transport behaviour', () => {
 
   it('sends the configured headers, keeps Content-Type JSON, and refuses to follow a redirect', async () => {
     enable({ OTEL_EXPORTER_OTLP_HEADERS: 'Authorization=Bearer%20tok,X-Org=o1,Content-Type=text/plain' })
-    seedClosedSpan('trace-tick-test-h1', 'span-h1')
+    await seedClosedSpan('trace-tick-test-h1', 'span-h1')
     const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }))
 
     await tick()
@@ -221,19 +221,19 @@ describe('transport behaviour', () => {
 
   it('does not export at all when headers would cross plain http to a public host', async () => {
     enable({ OTEL_EXPORTER_OTLP_ENDPOINT: 'http://otel.example.com:4318', OTEL_EXPORTER_OTLP_HEADERS: 'Authorization=Bearer%20tok' })
-    seedClosedSpan('trace-tick-test-h2', 'span-h2')
+    await seedClosedSpan('trace-tick-test-h2', 'span-h2')
     const fetchSpy = vi.spyOn(global, 'fetch')
 
     await tick()
 
     expect(fetchSpy).not.toHaveBeenCalled()
-    expect(getUnexportedOtelSpans(1000).map(s => s.trace_id)).toContain('trace-tick-test-h2')
+    expect((await getUnexportedOtelSpans(1000)).map(s => s.trace_id)).toContain('trace-tick-test-h2')
   })
 
   it('binds the headers to the .env endpoint: an endpoint written to the settings table cannot receive them', async () => {
     enable({ OTEL_EXPORTER_OTLP_HEADERS: 'Authorization=Bearer%20tok' })
     settings.OTEL_EXPORTER_OTLP_ENDPOINT = 'https://attacker.example' // settings-table value, e.g. a repointed endpoint
-    seedClosedSpan('trace-tick-test-bind1', 'span-bind1')
+    await seedClosedSpan('trace-tick-test-bind1', 'span-bind1')
     const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }))
 
     await tick()
@@ -247,7 +247,7 @@ describe('transport behaviour', () => {
   it('exports nothing when headers are in .env but the endpoint is only in the settings table', async () => {
     enable({ OTEL_EXPORTER_OTLP_HEADERS: 'Authorization=Bearer%20tok' })
     delete envFile.OTEL_EXPORTER_OTLP_ENDPOINT
-    seedClosedSpan('trace-tick-test-bind2', 'span-bind2')
+    await seedClosedSpan('trace-tick-test-bind2', 'span-bind2')
     const fetchSpy = vi.spyOn(global, 'fetch')
 
     await tick()
@@ -258,7 +258,7 @@ describe('transport behaviour', () => {
   it('ignores headers written to the settings table (the headers are .env only)', async () => {
     enable()
     settings.OTEL_EXPORTER_OTLP_HEADERS = 'Authorization=Bearer%20fromdb' // not read at all
-    seedClosedSpan('trace-tick-test-bind3', 'span-bind3')
+    await seedClosedSpan('trace-tick-test-bind3', 'span-bind3')
     const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }))
 
     await tick()
@@ -269,7 +269,7 @@ describe('transport behaviour', () => {
 
   it('does not export to an endpoint that is not an http(s) URL', async () => {
     enable({ OTEL_EXPORTER_OTLP_ENDPOINT: 'grpc://collector:4317' })
-    seedClosedSpan('trace-tick-test-h3', 'span-h3')
+    await seedClosedSpan('trace-tick-test-h3', 'span-h3')
     const fetchSpy = vi.spyOn(global, 'fetch')
     await tick()
     expect(fetchSpy).not.toHaveBeenCalled()
@@ -277,24 +277,24 @@ describe('transport behaviour', () => {
 
   it('counts a partialSuccess rejection, marks the batch exported and does not retry it', async () => {
     enable()
-    seedClosedSpan('trace-tick-test-p1', 'span-p1')
+    await seedClosedSpan('trace-tick-test-p1', 'span-p1')
     vi.spyOn(global, 'fetch').mockResolvedValue(
       new Response('{"partialSuccess":{"rejectedSpans":"1","errorMessage":"bad"}}', { status: 200 }))
 
     await tick()
 
-    expect(getUnexportedOtelSpans(1000).map(s => s.trace_id)).not.toContain('trace-tick-test-p1')
+    expect((await getUnexportedOtelSpans(1000)).map(s => s.trace_id)).not.toContain('trace-tick-test-p1')
     expect(getOtelExporterStatus().traces.rejected).toBe(1)
   })
 
   it('discards a batch the collector rejects for good (400) so it cannot block the ones behind it', async () => {
     enable()
-    seedClosedSpan('trace-tick-test-d1', 'span-d1')
+    await seedClosedSpan('trace-tick-test-d1', 'span-d1')
     vi.spyOn(global, 'fetch').mockResolvedValue(new Response('bad payload', { status: 400 }))
 
     await tick()
 
-    expect(getUnexportedOtelSpans(1000).map(s => s.trace_id)).not.toContain('trace-tick-test-d1')
+    expect((await getUnexportedOtelSpans(1000)).map(s => s.trace_id)).not.toContain('trace-tick-test-d1')
     const t = getOtelExporterStatus().traces
     expect(t.rejected).toBe(1)
     expect(t.failures).toBe(1)
@@ -303,12 +303,12 @@ describe('transport behaviour', () => {
 
   it('keeps the batch on 401 (a wrong header is fixable) and backs off: the next tick does not call the collector', async () => {
     enable()
-    seedClosedSpan('trace-tick-test-b1', 'span-b1')
+    await seedClosedSpan('trace-tick-test-b1', 'span-b1')
     const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue(new Response('no', { status: 401 }))
 
     await tick()
     expect(callsTo(fetchSpy, '/v1/traces')).toHaveLength(1)
-    expect(getUnexportedOtelSpans(1000).map(s => s.trace_id)).toContain('trace-tick-test-b1')
+    expect((await getUnexportedOtelSpans(1000)).map(s => s.trace_id)).toContain('trace-tick-test-b1')
     const t = getOtelExporterStatus().traces
     expect(t.consecutiveFailures).toBe(1)
     expect(t.lastError).toContain('401')
@@ -320,7 +320,7 @@ describe('transport behaviour', () => {
 
   it('retries after the backoff has passed, and a success clears the failure streak', async () => {
     enable()
-    seedClosedSpan('trace-tick-test-b2', 'span-b2')
+    await seedClosedSpan('trace-tick-test-b2', 'span-b2')
     const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValueOnce(new Response('x', { status: 503 }))
     await tick()
     expect(getOtelExporterStatus().traces.consecutiveFailures).toBe(1)
@@ -334,12 +334,12 @@ describe('transport behaviour', () => {
     }
     expect(callsTo(fetchSpy, '/v1/traces')).toHaveLength(2)
     expect(getOtelExporterStatus().traces.consecutiveFailures).toBe(0)
-    expect(getUnexportedOtelSpans(1000).map(s => s.trace_id)).not.toContain('trace-tick-test-b2')
+    expect((await getUnexportedOtelSpans(1000)).map(s => s.trace_id)).not.toContain('trace-tick-test-b2')
   })
 
   it('honors Retry-After when it is longer than the backoff', async () => {
     enable()
-    seedClosedSpan('trace-tick-test-b3', 'span-b3')
+    await seedClosedSpan('trace-tick-test-b3', 'span-b3')
     vi.spyOn(global, 'fetch').mockResolvedValue(new Response('slow down', { status: 429, headers: { 'Retry-After': '1800' } }))
     await tick()
     expect(getOtelExporterStatus().traces.nextAttemptMs - Date.now()).toBeGreaterThan(25 * 60_000)
@@ -347,10 +347,10 @@ describe('transport behaviour', () => {
 
   it('reports its own failures and rejections to the collector as counters once it answers again', async () => {
     enable()
-    seedClosedSpan('trace-tick-test-s1', 'span-s1')
+    await seedClosedSpan('trace-tick-test-s1', 'span-s1')
     const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValueOnce(new Response('x', { status: 500 }))
     await tick()
-    seedClosedSpan('trace-tick-test-s2', 'span-s2')
+    await seedClosedSpan('trace-tick-test-s2', 'span-s2')
 
     vi.useFakeTimers({ now: Date.now() + 15 * 60_000, toFake: ['Date'] })
     try {

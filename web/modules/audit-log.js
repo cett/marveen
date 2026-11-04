@@ -147,6 +147,13 @@ function _sourceLabel(source) {
   return source === 'hook' ? 'Hook' : 'Ügynök'
 }
 
+// A row without an actor (a store file nobody announced, a hook row with no agent) reads "ismeretlen",
+// not an empty cell: a blank looks like a rendering fault. A store row carries its actor as `agent`.
+function _actorCell(entry) {
+  const actor = entry.agent_id ?? entry.agent
+  return actor ? escapeHtml(actor) : 'ismeretlen'
+}
+
 function _entityCell(entry) {
   if (entry.source === 'hook') return escapeHtml(entry.hook_type ?? '')
   return escapeHtml(entry.entity ?? '')
@@ -207,7 +214,7 @@ function _renderAuditLogTable(entries) {
     <tr data-entry-idx="${idx}" class="audit-log-row-clickable" title="Kattints a részletekért">
       <td>${_formatTime(entry.created_at)}</td>
       <td>${_sourceLabel(entry.source)}</td>
-      <td>${escapeHtml(entry.agent_id ?? '')}</td>
+      <td>${_actorCell(entry)}</td>
       <td>${_entityCell(entry)}</td>
       <td>${_actionCell(entry)}</td>
       <td>${_detailCell(entry)}</td>

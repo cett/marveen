@@ -137,23 +137,23 @@ describe('POST /api/approvals by the main agent token', () => {
     const created = await open(MAIN, ' MAIN-X ')
     expect(created.status).toBe(201)
     const id = created.body.id as string
-    expect(getApproval(id)?.agent_id).toBe('main-x')
+    expect((await getApproval(id))?.agent_id).toBe('main-x')
     const r = await call(MAIN, 'PATCH', `/api/approvals/${id}`, { status: 'approved' })
     expect(r.status).toBe(403)
-    expect(getApproval(id)?.status).toBe('pending')
+    expect((await getApproval(id))?.status).toBe('pending')
   })
 
   it('the comparison is on the normalised id: stray characters fall away, and the stored id is still the token\'s', async () => {
     const created = await open(MAIN, 'ma.in-x')
     expect(created.status).toBe(201)
-    expect(getApproval(created.body.id as string)?.agent_id).toBe('main-x')
+    expect((await getApproval(created.body.id as string))?.agent_id).toBe('main-x')
   })
 
   it('a token id with upper case is compared case-insensitively too, and the stored id is the token\'s', async () => {
     const mixed: Who = { ...MAIN, tokenAgentId: 'Main-X' }
     const created = await open(mixed, 'main-x')
     expect(created.status).toBe(201)
-    expect(getApproval(created.body.id as string)?.agent_id).toBe('Main-X')
+    expect((await getApproval(created.body.id as string))?.agent_id).toBe('Main-X')
     expect((await open(mixed, 'agent-d')).status).toBe(403)
     // the token side is normalised the same way as the declared side
     const dotted: Who = { ...MAIN, tokenAgentId: 'ma.in-X' }
@@ -173,7 +173,7 @@ describe('POST /api/approvals by the main agent token', () => {
     const id = created.body.id as string
     const r = await call(MAIN, 'PATCH', `/api/approvals/${id}`, { status: 'approved' })
     expect(r.status).toBe(403)
-    expect(getApproval(id)?.status).toBe('pending')
+    expect((await getApproval(id))?.status).toBe('pending')
   })
 })
 

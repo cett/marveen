@@ -87,7 +87,7 @@ export async function tryHandleConversationLedger(ctx: RouteContext): Promise<bo
       return true
     }
     let inserted = 0
-    for (const turn of turns) if (logLedgerTurn(turn)) inserted++
+    for (const turn of turns) if (await logLedgerTurn(turn)) inserted++
     json(res, { ok: true, received: turns.length, inserted })
     return true
   }
@@ -111,10 +111,10 @@ export async function tryHandleConversationLedger(ctx: RouteContext): Promise<bo
     if (!Number.isInteger(limit) || limit < 1 || limit > LEDGER_RECENT_MAX) {
       return bad(ctx, 'limit', `limit must be an integer between 1 and ${LEDGER_RECENT_MAX}`)
     }
-    json(res, { turns: recentLedgerTurns(agentId, limit) })
+    json(res, { turns: await recentLedgerTurns(agentId, limit) })
     return true
   }
 
-  json(res, { open_question: openLedgerQuestion(agentId) })
+  json(res, { open_question: await openLedgerQuestion(agentId) })
   return true
 }

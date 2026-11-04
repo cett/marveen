@@ -122,52 +122,52 @@ beforeEach(() => {
 // ── getBindings / addBinding / removeBinding ────────────────────────────────
 
 describe('getBindings', () => {
-  it('returns an empty list when the DB has no rows', () => {
-    expect(getBindings()).toEqual([])
+  it('returns an empty list when the DB has no rows', async () => {
+    expect(await getBindings()).toEqual([])
   })
 
-  it('returns the bindings from the DB', () => {
+  it('returns the bindings from the DB', async () => {
     seedBindings([{ vaultSecretId: 's1', envVar: 'API_KEY', targets: [] }])
-    expect(getBindings()).toEqual([{ vaultSecretId: 's1', envVar: 'API_KEY', targets: [] }])
+    expect(await getBindings()).toEqual([{ vaultSecretId: 's1', envVar: 'API_KEY', targets: [] }])
   })
 })
 
 describe('addBinding', () => {
-  it('upserts a new binding into the DB via upsertVaultBinding', () => {
-    addBinding({ vaultSecretId: 's1', envVar: 'API_KEY', targets: [] })
+  it('upserts a new binding into the DB via upsertVaultBinding', async () => {
+    await addBinding({ vaultSecretId: 's1', envVar: 'API_KEY', targets: [] })
     expect(upsertVaultBinding).toHaveBeenCalledTimes(1)
     expect(upsertVaultBinding).toHaveBeenCalledWith('default', { vaultSecretId: 's1', envVar: 'API_KEY', targets: [] })
-    expect(getBindings()).toEqual([{ vaultSecretId: 's1', envVar: 'API_KEY', targets: [] }])
+    expect(await getBindings()).toEqual([{ vaultSecretId: 's1', envVar: 'API_KEY', targets: [] }])
   })
 
-  it('replaces an existing binding with the same vaultSecretId + envVar', () => {
+  it('replaces an existing binding with the same vaultSecretId + envVar', async () => {
     seedBindings([{ vaultSecretId: 's1', envVar: 'API_KEY', targets: [{ mcpFilePath: '/a', serverName: 'x' }] }])
-    addBinding({ vaultSecretId: 's1', envVar: 'API_KEY', targets: [{ mcpFilePath: '/b', serverName: 'y' }] })
-    const bindings = getBindings()
+    await addBinding({ vaultSecretId: 's1', envVar: 'API_KEY', targets: [{ mcpFilePath: '/b', serverName: 'y' }] })
+    const bindings = await getBindings()
     expect(bindings).toHaveLength(1)
     expect(bindings[0].targets).toEqual([{ mcpFilePath: '/b', serverName: 'y' }])
   })
 })
 
 describe('removeBinding', () => {
-  it('returns false when no matching binding exists', () => {
+  it('returns false when no matching binding exists', async () => {
     seedBindings([{ vaultSecretId: 's1', envVar: 'API_KEY', targets: [] }])
-    expect(removeBinding('s2', 'OTHER')).toBe(false)
+    expect(await removeBinding('s2', 'OTHER')).toBe(false)
     expect(deleteVaultBinding).toHaveBeenCalledWith('default', 's2', 'OTHER')
   })
 
-  it('removes the matching binding and returns true', () => {
+  it('removes the matching binding and returns true', async () => {
     seedBindings([
       { vaultSecretId: 's1', envVar: 'API_KEY', targets: [] },
       { vaultSecretId: 's2', envVar: 'OTHER', targets: [] },
     ])
-    expect(removeBinding('s1', 'API_KEY')).toBe(true)
-    expect(getBindings()).toEqual([{ vaultSecretId: 's2', envVar: 'OTHER', targets: [] }])
+    expect(await removeBinding('s1', 'API_KEY')).toBe(true)
+    expect(await getBindings()).toEqual([{ vaultSecretId: 's2', envVar: 'OTHER', targets: [] }])
   })
 })
 
 describe('removeBindingsForSecret', () => {
-  it('strips the env var from every target file and unwraps the command when no vault refs remain', () => {
+  it('strips the env var from every target file and unwraps the command when no vault refs remain', async () => {
     seedBindings([
       { vaultSecretId: 's1', envVar: 'API_KEY', targets: [{ mcpFilePath: '/mcp.json', serverName: 'srv' }] },
       { vaultSecretId: 's2', envVar: 'OTHER', targets: [] },
@@ -184,7 +184,7 @@ describe('removeBindingsForSecret', () => {
       },
     }))
 
-    removeBindingsForSecret('s1')
+    await removeBindingsForSecret('s1')
 
     const [path, content] = atomicWriteFileSync.mock.calls[0]
     expect(path).toBe('/mcp.json')
@@ -195,10 +195,10 @@ describe('removeBindingsForSecret', () => {
     expect(written.mcpServers.srv._vaultOriginalCommand).toBeUndefined()
 
     // Binding for s1 is gone, s2 untouched.
-    expect(getBindings()).toEqual([{ vaultSecretId: 's2', envVar: 'OTHER', targets: [] }])
+    expect(await getBindings()).toEqual([{ vaultSecretId: 's2', envVar: 'OTHER', targets: [] }])
   })
 
-  it('keeps the wrapper command when another env var still references vault:', () => {
+  it('keeps the wrapper command when another env var still references vault:', async () => {
     seedBindings([
       { vaultSecretId: 's1', envVar: 'API_KEY', targets: [{ mcpFilePath: '/mcp.json', serverName: 'srv' }] },
     ])
@@ -213,35 +213,35 @@ describe('removeBindingsForSecret', () => {
       },
     }))
 
-    removeBindingsForSecret('s1')
+    await removeBindingsForSecret('s1')
 
     const [, content] = atomicWriteFileSync.mock.calls[0]
     const written = JSON.parse(content as string)
     expect(written.mcpServers.srv.command).toBe('/tmp/mock-root/scripts/vault-env-wrapper.sh')
   })
 
-  it('skips a target whose server config has no env block, without throwing', () => {
+  it('skips a target whose server config has no env block, without throwing', async () => {
     seedBindings([
       { vaultSecretId: 's1', envVar: 'API_KEY', targets: [{ mcpFilePath: '/mcp.json', serverName: 'srv' }] },
     ])
     setMockFile('/mcp.json', JSON.stringify({ mcpServers: { srv: { command: 'x' } } }))
 
-    expect(() => removeBindingsForSecret('s1')).not.toThrow()
+    await expect(removeBindingsForSecret('s1')).resolves.not.toThrow()
     // No env block -> the per-target write is skipped. Unlike the pre-
     // migration file store, there is no separate bindings-store write to
     // fall back to, so atomicWriteFileSync is never called at all here.
     expect(atomicWriteFileSync).not.toHaveBeenCalled()
-    expect(getBindings()).toEqual([])
+    expect(await getBindings()).toEqual([])
   })
 
-  it('swallows a per-target failure (malformed target file) and still drops the binding', () => {
+  it('swallows a per-target failure (malformed target file) and still drops the binding', async () => {
     seedBindings([
       { vaultSecretId: 's1', envVar: 'API_KEY', targets: [{ mcpFilePath: '/broken.json', serverName: 'srv' }] },
     ])
     setMockFile('/broken.json', '{not json')
 
-    expect(() => removeBindingsForSecret('s1')).not.toThrow()
-    expect(getBindings()).toEqual([])
+    await expect(removeBindingsForSecret('s1')).resolves.not.toThrow()
+    expect(await getBindings()).toEqual([])
   })
 })
 
@@ -356,24 +356,24 @@ describe('scanMcpConfigs', () => {
 // ── syncSecret ───────────────────────────────────────────────────────────────
 
 describe('syncSecret', () => {
-  it('returns updated:0 when there are no bindings for the secret', () => {
-    expect(syncSecret('s1')).toEqual({ updated: 0, errors: [] })
+  it('returns updated:0 when there are no bindings for the secret', async () => {
+    expect(await syncSecret('s1')).toEqual({ updated: 0, errors: [] })
   })
 
-  it('returns an error when the vault secret itself is missing', () => {
+  it('returns an error when the vault secret itself is missing', async () => {
     seedBindings([{ vaultSecretId: 's1', envVar: 'API_KEY', targets: [{ mcpFilePath: '/mcp.json', serverName: 'srv' }] }])
     vi.mocked(getSecret).mockReturnValue(null)
-    const result = syncSecret('s1')
+    const result = await syncSecret('s1')
     expect(result.updated).toBe(0)
     expect(result.errors).toEqual(['Vault secret "s1" not found'])
   })
 
-  it('writes the vault: reference and wraps the command on success', () => {
+  it('writes the vault: reference and wraps the command on success', async () => {
     seedBindings([{ vaultSecretId: 's1', envVar: 'API_KEY', targets: [{ mcpFilePath: '/mcp.json', serverName: 'srv' }] }])
     setMockFile('/mcp.json', JSON.stringify({ mcpServers: { srv: { command: 'orig-cmd', args: ['--x'] } } }))
     vi.mocked(getSecret).mockReturnValue('the-secret-value')
 
-    const result = syncSecret('s1')
+    const result = await syncSecret('s1')
     expect(result).toEqual({ updated: 1, errors: [] })
 
     const [path, content] = atomicWriteFileSync.mock.calls[0]
@@ -384,34 +384,34 @@ describe('syncSecret', () => {
     expect(written.mcpServers.srv.args).toEqual(['orig-cmd', '--x'])
   })
 
-  it('does not wrap a remote (url-based) server, only sets env', () => {
+  it('does not wrap a remote (url-based) server, only sets env', async () => {
     seedBindings([{ vaultSecretId: 's1', envVar: 'API_KEY', targets: [{ mcpFilePath: '/mcp.json', serverName: 'srv' }] }])
     setMockFile('/mcp.json', JSON.stringify({ mcpServers: { srv: { url: 'https://example.test' } } }))
     vi.mocked(getSecret).mockReturnValue('v')
 
-    syncSecret('s1')
+    await syncSecret('s1')
     const [, content] = atomicWriteFileSync.mock.calls[0]
     const written = JSON.parse(content as string)
     expect(written.mcpServers.srv.command).toBeUndefined()
     expect(written.mcpServers.srv.env.API_KEY).toBe('vault:s1')
   })
 
-  it('reports an error and skips when the target server is not found', () => {
+  it('reports an error and skips when the target server is not found', async () => {
     seedBindings([{ vaultSecretId: 's1', envVar: 'API_KEY', targets: [{ mcpFilePath: '/mcp.json', serverName: 'missing' }] }])
     setMockFile('/mcp.json', JSON.stringify({ mcpServers: {} }))
     vi.mocked(getSecret).mockReturnValue('v')
 
-    const result = syncSecret('s1')
+    const result = await syncSecret('s1')
     expect(result.updated).toBe(0)
     expect(result.errors).toEqual(['Server "missing" not found in /mcp.json'])
   })
 
-  it('captures a per-target write failure as an error without throwing', () => {
+  it('captures a per-target write failure as an error without throwing', async () => {
     seedBindings([{ vaultSecretId: 's1', envVar: 'API_KEY', targets: [{ mcpFilePath: '/broken.json', serverName: 'srv' }] }])
     setMockFile('/broken.json', '{not json')
     vi.mocked(getSecret).mockReturnValue('v')
 
-    const result = syncSecret('s1')
+    const result = await syncSecret('s1')
     expect(result.updated).toBe(0)
     expect(result.errors).toHaveLength(1)
     expect(result.errors[0]).toMatch(/^Failed to update \/broken\.json:/)
@@ -421,7 +421,7 @@ describe('syncSecret', () => {
 // ── unsyncBinding ────────────────────────────────────────────────────────────
 
 describe('unsyncBinding', () => {
-  it('removes the env var from every matching target and unwraps when safe', () => {
+  it('removes the env var from every matching target and unwraps when safe', async () => {
     seedBindings([
       { vaultSecretId: 's1', envVar: 'API_KEY', targets: [{ mcpFilePath: '/mcp.json', serverName: 'srv' }] },
       { vaultSecretId: 's1', envVar: 'OTHER', targets: [] },
@@ -437,7 +437,7 @@ describe('unsyncBinding', () => {
       },
     }))
 
-    unsyncBinding('s1', 'API_KEY')
+    await unsyncBinding('s1', 'API_KEY')
 
     const [, content] = atomicWriteFileSync.mock.calls[0]
     const written = JSON.parse(content as string)
@@ -445,26 +445,26 @@ describe('unsyncBinding', () => {
     expect(written.mcpServers.srv.command).toBe('orig-cmd')
   })
 
-  it('does nothing when the server config has no env block', () => {
+  it('does nothing when the server config has no env block', async () => {
     seedBindings([{ vaultSecretId: 's1', envVar: 'API_KEY', targets: [{ mcpFilePath: '/mcp.json', serverName: 'srv' }] }])
     setMockFile('/mcp.json', JSON.stringify({ mcpServers: { srv: { command: 'x' } } }))
 
-    unsyncBinding('s1', 'API_KEY')
+    await unsyncBinding('s1', 'API_KEY')
     expect(atomicWriteFileSync).not.toHaveBeenCalled()
   })
 
-  it('swallows a malformed target file without throwing', () => {
+  it('swallows a malformed target file without throwing', async () => {
     seedBindings([{ vaultSecretId: 's1', envVar: 'API_KEY', targets: [{ mcpFilePath: '/broken.json', serverName: 'srv' }] }])
     setMockFile('/broken.json', 'not json')
 
-    expect(() => unsyncBinding('s1', 'API_KEY')).not.toThrow()
+    await expect(unsyncBinding('s1', 'API_KEY')).resolves.not.toThrow()
   })
 })
 
 // ── syncAllBindings ──────────────────────────────────────────────────────────
 
 describe('syncAllBindings', () => {
-  it('aggregates updated counts and errors across every distinct secret id', () => {
+  it('aggregates updated counts and errors across every distinct secret id', async () => {
     seedBindings([
       { vaultSecretId: 's1', envVar: 'API_KEY', targets: [{ mcpFilePath: '/mcp1.json', serverName: 'srv1' }] },
       { vaultSecretId: 's2', envVar: 'OTHER_KEY', targets: [{ mcpFilePath: '/mcp2.json', serverName: 'missing' }] },
@@ -473,12 +473,12 @@ describe('syncAllBindings', () => {
     setMockFile('/mcp2.json', JSON.stringify({ mcpServers: {} }))
     vi.mocked(getSecret).mockReturnValue('v')
 
-    const result = syncAllBindings()
+    const result = await syncAllBindings()
     expect(result.updated).toBe(1)
     expect(result.errors).toEqual(['Server "missing" not found in /mcp2.json'])
   })
 
-  it('returns updated:0 and no errors when there are no bindings at all', () => {
-    expect(syncAllBindings()).toEqual({ updated: 0, errors: [] })
+  it('returns updated:0 and no errors when there are no bindings at all', async () => {
+    expect(await syncAllBindings()).toEqual({ updated: 0, errors: [] })
   })
 })

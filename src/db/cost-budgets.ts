@@ -12,6 +12,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { db } from './connection.js'
+import { dbx } from './facade.js'
 import { STORE_DIR } from '../config.js'
 import { logger } from '../logger.js'
 import type { BudgetEntry } from '../costops/config.js'
@@ -43,13 +44,12 @@ function rowToBudgetEntry(row: CostBudgetRow): BudgetEntry {
   }
 }
 
-export function listCostBudgets(tenantId: string = 'default'): BudgetEntry[] {
-  const rows = db
-    .prepare(
-      `SELECT id, name, scope, scope_ref, amount, currency, warning_threshold, hard_threshold, block_on_hard, tenant_id
-       FROM cost_budgets WHERE tenant_id = ? ORDER BY id`
-    )
-    .all(tenantId) as CostBudgetRow[]
+export async function listCostBudgets(tenantId: string = 'default'): Promise<BudgetEntry[]> {
+  const rows = await dbx.all<CostBudgetRow>(
+    `SELECT id, name, scope, scope_ref, amount, currency, warning_threshold, hard_threshold, block_on_hard, tenant_id
+     FROM cost_budgets WHERE tenant_id = ? ORDER BY id`,
+    tenantId,
+  )
   return rows.map(rowToBudgetEntry)
 }
 
@@ -57,32 +57,31 @@ export function listCostBudgets(tenantId: string = 'default'): BudgetEntry[] {
 // behavior of saveCostopsConfig() overwriting the entire file (so a budget
 // removed by the caller's in-memory edit actually disappears, not just an
 // upsert of what's present).
-export function replaceCostBudgets(tenantId: string, budgets: BudgetEntry[]): void {
+export async function replaceCostBudgets(tenantId: string, budgets: BudgetEntry[]): Promise<void> {
   const now = Math.floor(Date.now() / 1000)
-  const tx = db.transaction(() => {
-    db.prepare('DELETE FROM cost_budgets WHERE tenant_id = ?').run(tenantId)
-    const stmt = db.prepare(
-      `INSERT INTO cost_budgets
-         (id, name, scope, scope_ref, amount, currency, warning_threshold, hard_threshold, block_on_hard, tenant_id, created_at, updated_at)
-       VALUES (@id, @name, @scope, @scope_ref, @amount, @currency, @warning_threshold, @hard_threshold, @block_on_hard, @tenant_id, @now, @now)`
-    )
+  await dbx.tx(async (tx) => {
+    await tx.run('DELETE FROM cost_budgets WHERE tenant_id = ?', tenantId)
     for (const b of budgets) {
-      stmt.run({
-        id: b.id,
-        name: b.name ?? b.id,
-        scope: b.scope ?? 'global',
-        scope_ref: b.scope_ref ?? null,
-        amount: b.amount,
-        currency: b.currency ?? 'HUF',
-        warning_threshold: b.warning_threshold ?? 0.8,
-        hard_threshold: b.hard_threshold ?? 1.0,
-        block_on_hard: b.block_on_hard === true ? 1 : 0,
-        tenant_id: tenantId,
-        now,
-      })
+      await tx.run(
+        `INSERT INTO cost_budgets
+           (id, name, scope, scope_ref, amount, currency, warning_threshold, hard_threshold, block_on_hard, tenant_id, created_at, updated_at)
+         VALUES (@id, @name, @scope, @scope_ref, @amount, @currency, @warning_threshold, @hard_threshold, @block_on_hard, @tenant_id, @now, @now)`,
+        {
+          id: b.id,
+          name: b.name ?? b.id,
+          scope: b.scope ?? 'global',
+          scope_ref: b.scope_ref ?? null,
+          amount: b.amount,
+          currency: b.currency ?? 'HUF',
+          warning_threshold: b.warning_threshold ?? 0.8,
+          hard_threshold: b.hard_threshold ?? 1.0,
+          block_on_hard: b.block_on_hard === true ? 1 : 0,
+          tenant_id: tenantId,
+          now,
+        },
+      )
     }
   })
-  tx()
 }
 
 // One-time backfill of an existing install's store/costops-config.json
@@ -91,6 +90,7 @@ export function replaceCostBudgets(tenantId: string, budgets: BudgetEntry[]): vo
 // later DB edit is never overwritten by a stale re-read, and a fresh
 // install with no file gets zero rows -- matching loadCostopsConfig()'s own
 // pre-migration default of an empty budgets array. Safe to call on every boot.
+// @boot-sync-twin
 export function migrateCostBudgetsFromFile(): number {
   const filePath = join(STORE_DIR, 'costops-config.json')
   if (!existsSync(filePath)) return 0
@@ -148,12 +148,12 @@ function localMonthKey(nowSec: number): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
 }
 
-export function getMonthlyTokenSpend(filter: TokenSpendFilter, nowSec: number): number {
+export async function getMonthlyTokenSpend(filter: TokenSpendFilter, nowSec: number): Promise<number> {
   if (filter.tenant) {
     // Raw rows plus the rolled-up months (token_usage_monthly carries tenant_id since migration
     // 0077), the same dual source as the agent query below. Rollup rows written before the column
     // existed hold '_multi_' for a shared agent and are not counted against any one tenant.
-    const row = db.prepare(`
+    const row = await dbx.get<{ total: number }>(`
       SELECT
         COALESCE((
           SELECT SUM(${TOKEN_SUM_EXPR}) FROM token_usage_monthly
@@ -168,12 +168,12 @@ export function getMonthlyTokenSpend(filter: TokenSpendFilter, nowSec: number): 
             AND tenant_id = @tenant
         ), 0)
         AS total
-    `).get({ nowSec, month: localMonthKey(nowSec), tenant: filter.tenant }) as { total: number }
-    return row.total
+    `, { nowSec, month: localMonthKey(nowSec), tenant: filter.tenant })
+    return row!.total
   }
 
   const agent = filter.agent ?? null
-  const row = db.prepare(`
+  const row = await dbx.get<{ total: number }>(`
     SELECT
       COALESCE((
         SELECT SUM(${TOKEN_SUM_EXPR}) FROM token_usage_monthly
@@ -188,6 +188,6 @@ export function getMonthlyTokenSpend(filter: TokenSpendFilter, nowSec: number): 
           AND (@agent IS NULL OR agent = @agent)
       ), 0)
       AS total
-  `).get({ nowSec, agent }) as { total: number }
-  return row.total
+  `, { nowSec, agent })
+  return row!.total
 }

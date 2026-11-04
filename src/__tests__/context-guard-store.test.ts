@@ -7,7 +7,7 @@
 // test in this suite) -- a shared :memory: DB can carry real fleet rows
 // alongside the test's own.
 import { describe, it, expect, beforeAll, afterEach } from 'vitest'
-import { initDatabase, getDb } from '../db.js'
+import { initDatabase, getDb, reloadAgentSettingsCache } from '../db.js'
 import {
   readContextGuardConfig,
   readAllContextGuardConfigs,
@@ -21,6 +21,7 @@ beforeAll(() => {
 
 afterEach(() => {
   getDb().exec("DELETE FROM agent_settings WHERE agent_id LIKE 'test-cg-%'")
+  reloadAgentSettingsCache() // the raw DELETE above bypasses the write-through cache (agent-settings-cache.ts)
 })
 
 describe('readContextGuardConfig', () => {
@@ -28,28 +29,28 @@ describe('readContextGuardConfig', () => {
     expect(readContextGuardConfig('test-cg-agent-a')).toEqual(DEFAULT_CONTEXT_GUARD)
   })
 
-  it('returns disabled defaults for an agent with no entry', () => {
-    writeContextGuardConfig('test-cg-other', { enabled: true })
+  it('returns disabled defaults for an agent with no entry', async () => {
+    await writeContextGuardConfig('test-cg-other', { enabled: true })
     expect(readContextGuardConfig('test-cg-agent-a')).toEqual(DEFAULT_CONTEXT_GUARD)
   })
 
-  it('returns the stored value after a write', () => {
-    writeContextGuardConfig('test-cg-agent-a', { enabled: true })
+  it('returns the stored value after a write', async () => {
+    await writeContextGuardConfig('test-cg-agent-a', { enabled: true })
     expect(readContextGuardConfig('test-cg-agent-a').enabled).toBe(true)
   })
 })
 
 describe('writeContextGuardConfig', () => {
-  it('normalizes and persists a config', () => {
-    const saved = writeContextGuardConfig('test-cg-agent-d', { enabled: true })
+  it('normalizes and persists a config', async () => {
+    const saved = await writeContextGuardConfig('test-cg-agent-d', { enabled: true })
     expect(saved.enabled).toBe(true)
     expect(readContextGuardConfig('test-cg-agent-d').enabled).toBe(true)
   })
 
-  it('overwrites an existing entry without affecting others', () => {
-    writeContextGuardConfig('test-cg-agent-a', { enabled: true })
-    writeContextGuardConfig('test-cg-agent-d', { enabled: false })
-    writeContextGuardConfig('test-cg-agent-a', { enabled: false })
+  it('overwrites an existing entry without affecting others', async () => {
+    await writeContextGuardConfig('test-cg-agent-a', { enabled: true })
+    await writeContextGuardConfig('test-cg-agent-d', { enabled: false })
+    await writeContextGuardConfig('test-cg-agent-a', { enabled: false })
     expect(readContextGuardConfig('test-cg-agent-a').enabled).toBe(false)
     expect(readContextGuardConfig('test-cg-agent-d').enabled).toBe(false)
   })
@@ -58,11 +59,12 @@ describe('writeContextGuardConfig', () => {
     getDb().prepare(
       `INSERT INTO agent_settings (agent_id, setting_key, setting_value, tenant_id) VALUES (?, 'context_guard', 'INVALID', 'default')`,
     ).run('test-cg-agent-a')
+    reloadAgentSettingsCache() // the raw INSERT above bypasses the write-through cache
     expect(readContextGuardConfig('test-cg-agent-a')).toEqual(DEFAULT_CONTEXT_GUARD)
   })
 
-  it('stamps the given tenant_id on the row', () => {
-    writeContextGuardConfig('test-cg-agent-t', { enabled: true }, 'eszter')
+  it('stamps the given tenant_id on the row', async () => {
+    await writeContextGuardConfig('test-cg-agent-t', { enabled: true }, 'eszter')
     const row = getDb().prepare(
       `SELECT tenant_id FROM agent_settings WHERE agent_id = ? AND setting_key = 'context_guard'`,
     ).get('test-cg-agent-t') as { tenant_id: string }
@@ -71,9 +73,9 @@ describe('writeContextGuardConfig', () => {
 })
 
 describe('readAllContextGuardConfigs', () => {
-  it('returns every persisted agent, normalized', () => {
-    writeContextGuardConfig('test-cg-agent-a', { enabled: true })
-    writeContextGuardConfig('test-cg-agent-d', { enabled: false })
+  it('returns every persisted agent, normalized', async () => {
+    await writeContextGuardConfig('test-cg-agent-a', { enabled: true })
+    await writeContextGuardConfig('test-cg-agent-d', { enabled: false })
     const all = readAllContextGuardConfigs()
     expect(all['test-cg-agent-a']?.enabled).toBe(true)
     expect(all['test-cg-agent-d']?.enabled).toBe(false)
