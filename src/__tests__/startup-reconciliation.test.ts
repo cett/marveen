@@ -139,6 +139,23 @@ describe('reconcileAgentsOnStartup', () => {
 
     expect(mockStartAgentProcess).not.toHaveBeenCalled()
     expect(mockRestartAgentProcess).not.toHaveBeenCalled()
+    // Already in the desired set: the reconnect writes nothing (the `!desired.has(name)` guard).
+    expect(mockAddDesiredAgent).not.toHaveBeenCalled()
+  })
+
+  it('writes the desired set only for the reconnected agents that are not in it yet', async () => {
+    // agent-a is desired (no write), agent-b is live only through autoRestart (written once), agent-c is stale (restarted, not written).
+    mockGetDesiredAgents.mockReturnValue(new Set(['agent-a', 'agent-c']))
+    mockReadAllAutoRestartConfigs.mockReturnValue({ 'agent-b': { enabled: true } })
+    mockSessionExistsOnHost.mockReturnValue(true)
+    mockCapturePane.mockImplementation((session) => (session === 'agent-agent-c' ? 'stale pane' : 'pane content'))
+    mockDetectPaneState.mockImplementation((pane) => (pane === 'stale pane' ? 'unknown' : 'idle'))
+
+    await reconcileAgentsOnStartup()
+
+    expect(mockAddDesiredAgent.mock.calls).toEqual([['agent-b']])
+    expect(mockRestartAgentProcess.mock.calls).toEqual([['agent-c']])
+    expect(mockStartAgentProcess).not.toHaveBeenCalled()
   })
 
   it('calls addDesiredAgent for a reconnected session not already in desired set', async () => {
