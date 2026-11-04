@@ -242,10 +242,15 @@ describe('any Level 2 category: the server hashes the request and the approval i
     expect((await getApproval(a.id))?.consumed_at).toBeNull()
   })
 
-  it('a hash the requester sent itself is kept as its own binding', async () => {
-    const own = 'c'.repeat(64)
-    const a = await askPlain('deploy', MAIN, 'main-agent', 'x', { content_hash: own })
-    expect(a.content_hash).toBe(own)
+  it('a hash the requester sends must equal the server hash: another one is 400 hash_mismatch and nothing is written', async () => {
+    const before = (getDb().prepare('SELECT COUNT(*) AS n FROM approvals').get() as { n: number }).n
+    const bad = await call('POST', '/api/approvals', MAIN, { agent_id: 'main-agent', category: 'deploy', action_description: 'x', content_hash: 'c'.repeat(64) })
+    expect(bad.status).toBe(400)
+    expect(bad.body).toMatchObject({ field: 'content_hash', code: 'hash_mismatch' })
+    expect((getDb().prepare('SELECT COUNT(*) AS n FROM approvals').get() as { n: number }).n).toBe(before)
+    const own = approvalContentHash({ category: 'deploy', agent_id: 'main-agent', tenant_id: 'default', action_description: 'x', action_payload: null })
+    const ok = await askPlain('deploy', MAIN, 'main-agent', 'x', { content_hash: own })
+    expect(ok.content_hash).toBe(own)
   })
 })
 

@@ -292,21 +292,28 @@ describe('telling the owner', () => {
 })
 
 describe('other categories are as they were', () => {
-  it('still need a description, take no envelope, and may carry a hash', async () => {
+  it('still need a description, take no envelope, and may carry the server hash (any other hash is refused)', async () => {
     const noDesc = await call('POST', '/api/approvals', ADMIN, { agent_id: 'worker', category: 'file_write' })
     expect(noDesc.status).toBe(400)
     expect(noDesc.body.field).toBe('action_description')
-    const hash = 'c'.repeat(64)
+    const first = await call('POST', '/api/approvals', WORKER_TOKEN, { agent_id: 'worker', category: 'file_write', action_description: 'write', action_payload: 'free text' })
+    expect(first.status).toBe(201)
+    const hash = first.body.content_hash as string
+    expect(hash).toMatch(/^[0-9a-f]{64}$/)
     const ok = await call('POST', '/api/approvals', WORKER_TOKEN, { agent_id: 'worker', category: 'file_write', action_description: 'write', content_hash: hash, action_payload: 'free text' })
     expect(ok.status).toBe(201)
     expect(ok.body).toMatchObject({ content_hash: hash, action_payload: 'free text', human_only: 0 })
+    const other = await call('POST', '/api/approvals', WORKER_TOKEN, { agent_id: 'worker', category: 'file_write', action_description: 'write', content_hash: 'c'.repeat(64), action_payload: 'free text' })
+    expect(other.status).toBe(400)
+    expect(other.body).toMatchObject({ field: 'content_hash', code: 'hash_mismatch' })
     expect((await call('POST', '/api/approvals', ADMIN, { agent_id: 'worker', category: 'file_write', action_description: 'w', content_hash: 'nope' })).status).toBe(400)
   })
 
   it('email_standing_recipient is human-only but takes a description and any agent', async () => {
     const out = await call('POST', '/api/approvals', WORKER_TOKEN, { agent_id: 'worker', category: 'email_standing_recipient', action_description: 'add a@example.com' })
     expect(out.status).toBe(201)
-    expect(out.body).toMatchObject({ human_only: 1, content_hash: null })
+    // Every request carries the server's hash now (it is what a consume is bound to); the email envelope hash is another matter.
+    expect(out.body).toMatchObject({ human_only: 1, content_hash: expect.stringMatching(/^[0-9a-f]{64}$/) })
   })
 })
 

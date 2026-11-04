@@ -51,6 +51,7 @@ vi.mock('../db.js', () => ({
   writeAgentAuditLog: vi.fn(),
   listHumanOnlyCategoryKeys: vi.fn().mockReturnValue([]),
   recordApprovalEvent: vi.fn(),
+  approvalContentHash: vi.fn().mockReturnValue('d'.repeat(64)),
 }))
 
 import { tryHandleApprovals, startApprovalTimeoutSweeper } from '../web/routes/approvals.js'

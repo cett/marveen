@@ -237,12 +237,15 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       const id = randomUUID()
       const description = (action_description as string).trim()
       const payload = typeof action_payload === 'string' ? action_payload : null
-      // The server binds every request to its content, so the approval can be used up once by that hash. A hash
-      // the requester sent itself is kept as it is (its own binding); without one the server computes it from
-      // exactly the values stored on the row, and the response returns it.
-      const boundHash = typeof content_hash === 'string'
-        ? content_hash
-        : approvalContentHash({ category: storedCategory, agent_id: requester, tenant_id: requestTenant ?? 'default', action_description: description, action_payload: payload })
+      // The server binds every request to its content, so the approval can be used up once by that hash. It
+      // computes the hash from exactly the values stored on the row and the response returns it. A hash the
+      // requester sends must equal it (as on the email path): a requester-chosen value would let the hash
+      // stand for something other than the text the person decides on.
+      const boundHash = approvalContentHash({ category: storedCategory, agent_id: requester, tenant_id: requestTenant ?? 'default', action_description: description, action_payload: payload })
+      if (typeof content_hash === 'string' && content_hash !== boundHash) {
+        json(res, { error: 'invalid_value', field: 'content_hash', code: 'hash_mismatch', hint: 'content_hash does not match the hash the server computes from category, agent_id, tenant_id, action_description and action_payload; omit it to get the server hash back' }, 400)
+        return true
+      }
       const approval = await createApproval({
         id,
         agent_id: requester,

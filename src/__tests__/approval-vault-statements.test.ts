@@ -74,7 +74,6 @@ describe('consume by id and by hash: each condition of the guarded write', () =>
   // One broken condition per row: the control row (nothing broken) is used up, every other one is not.
   const cases: Array<[string, (id: string) => void, Partial<typeof params> & { id?: string }]> = [
     ['an unknown id', () => undefined, { id: 'nope' }],
-    ['a category that is not consumable', (id) => { db.prepare("UPDATE approvals SET category = 'other' WHERE id = ?").run(id) }, {}],
     ['a request still pending', (id) => { db.prepare("UPDATE approvals SET status = 'pending' WHERE id = ?").run(id) }, {}],
     ['a rejected request', (id) => { db.prepare("UPDATE approvals SET status = 'rejected' WHERE id = ?").run(id) }, {}],
     ['a row used up already', (id) => { db.prepare('UPDATE approvals SET consumed_at = 1 WHERE id = ?').run(id) }, {}],
@@ -90,6 +89,18 @@ describe('consume by id and by hash: each condition of the guarded write', () =>
     const id = await approved()
     expect(await useUpApproval(id, params, NOW, 'r-1')).toBe(true)
     expect(await getApproval(id)).toMatchObject({ consumed_at: NOW, consumed_by: 'agent-a', consumed_ref: 'r-1', used_at: null })
+  })
+
+  it('the guarded write has no category list: a row of another category is used up too, a bearer decision only when it is not human-only', async () => {
+    const id = await approved()
+    db.prepare("UPDATE approvals SET category = 'other', human_only = 0, resolved_via = 'bearer' WHERE id = ?").run(id)
+    expect(await useUpApproval(id, params, NOW, 'r-1')).toBe(true)
+    const human = await approved()
+    db.prepare("UPDATE approvals SET category = 'other', human_only = 1, resolved_via = 'bearer' WHERE id = ?").run(human)
+    expect(await useUpApproval(human, params, NOW, 'r-2')).toBe(false)
+    const mail = await approved()
+    db.prepare("UPDATE approvals SET human_only = 0, resolved_via = 'bearer' WHERE id = ?").run(mail)
+    expect(await useUpApproval(mail, params, NOW, 'r-3')).toBe(false)
   })
 
   it('with seal it stamps the effect too', async () => {
