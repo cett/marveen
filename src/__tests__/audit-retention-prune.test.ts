@@ -50,7 +50,8 @@ describe('pruneAuditLogs: the journal row', () => {
     seedSpans()
     const r = await pruneAuditLogs()
     expect(r.deleted).toEqual({
-      config_change_log: 2, idea_status_log: 0, store_file_audit: 0, agent_audit_log: 1, hook_audit_log: 3, otel_spans: 3,
+      config_change_log: 2, idea_status_log: 0, store_file_audit: 0, agent_audit_log: 1, approval_events: 0, kanban_card_events: 0,
+      import_audit_log: 0, restore_log: 0, hook_audit_log: 3, otel_spans: 3,
     })
     expect(r.deletedTotal).toBe(9)
     const rows = pruneRows()

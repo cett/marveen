@@ -715,6 +715,12 @@ export interface AuditPruneResult {
   unexportedDeleted: number
   /** OTEL_EXPORT_ENABLED at the time of the sweep: with the export off, every deleted span counts as unexported. */
   exportEnabled: boolean
+  /**
+   * Rows the cut removed from a table the OTLP log export reads by cursor (approval_events, kanban_card_events) that the
+   * cursor had not yet passed, so they were never exported as log records (counted before the delete, same transaction;
+   * a source without a cursor row counts every deleted row). The span table's equivalent is `unexportedDeleted`.
+   */
+  unexportedLogsDeleted: Record<string, number>
 }
 
 /** Who ran a retention prune and how, for the journal row. */
@@ -732,6 +738,11 @@ async function writePruneJournal(actor: PruneActor, detail: Record<string, unkno
   })
 }
 
+// The audit-window tables the OTLP log export reads by cursor (otel_logs_export_state), pruned by the same sweep as the
+// rest. approval_events is the security journal of the approval flow and had no cleanup at all (only a tenant delete
+// removed rows); kanban_card_events had none either. Fixed literals: a table name is never built from a variable.
+const CURSORED_LOG_TABLES = ['approval_events', 'kanban_card_events'] as const
+
 // Prune the audit tables to AUDIT_LOG_RETENTION_DAYS and the span table to OTEL_SPAN_RETENTION_DAYS. Called from
 // the daily decay sweep so old entries do not accumulate indefinitely. The deletes, the count of the spans that
 // were never exported and the journal row are ONE transaction: no deletion without its record, no record
@@ -746,9 +757,24 @@ export async function pruneAuditLogs(): Promise<AuditPruneResult> {
   const exportEnabled = getEffectiveSettingValue('OTEL_EXPORT_ENABLED') === '1'
   return dbx.tx(async (tx) => {
     const deleted: Record<string, number> = {}
-    for (const table of ['config_change_log', 'idea_status_log', 'store_file_audit', 'agent_audit_log']) {
+    // The OTLP log sources read by cursor: count what the cursor has not passed BEFORE the delete, so the loss of a
+    // stalled log export is visible in the journal row exactly as the loss of unexported spans is.
+    const unexportedLogsDeleted: Record<string, number> = {
+      approval_events: ((await tx.get<{ n: number }>(
+        `SELECT COUNT(*) AS n FROM approval_events WHERE created_at < ?
+           AND id > COALESCE((SELECT last_id FROM otel_logs_export_state WHERE source = 'approval_events'), 0)`, cutoff,
+      ))?.n) ?? 0,
+      kanban_card_events: ((await tx.get<{ n: number }>(
+        `SELECT COUNT(*) AS n FROM kanban_card_events WHERE created_at < ?
+           AND id > COALESCE((SELECT last_id FROM otel_logs_export_state WHERE source = 'kanban_card_events'), 0)`, cutoff,
+      ))?.n) ?? 0,
+    }
+    for (const table of ['config_change_log', 'idea_status_log', 'store_file_audit', 'agent_audit_log', ...CURSORED_LOG_TABLES]) {
       deleted[table] = (await tx.run(`DELETE FROM ${table} WHERE created_at < ?`, cutoff)).changes
     }
+    // The two tables whose time column is not called created_at.
+    deleted.import_audit_log = (await tx.run('DELETE FROM import_audit_log WHERE run_at < ?', cutoff)).changes
+    deleted.restore_log = (await tx.run('DELETE FROM restore_log WHERE restored_at < ?', cutoff)).changes
     // hook_audit_log had no automatic sweep at all -- pruneHookAuditLog() only
     // ever ran when POST /api/hook-audit/prune was called by hand. At ~1074
     // rows/day (one row per PreToolUse/PostToolUse/PreCompact/Stop verdict)
@@ -765,13 +791,14 @@ export async function pruneAuditLogs(): Promise<AuditPruneResult> {
     const deletedTotal = Object.values(deleted).reduce((a, b) => a + b, 0)
     const result: AuditPruneResult = {
       deleted, deletedTotal, cutoffDays: retentionDays, cutoffTs: cutoff,
-      otelCutoffDays: otelRetentionDays, otelCutoffMs, unexportedDeleted, exportEnabled,
+      otelCutoffDays: otelRetentionDays, otelCutoffMs, unexportedDeleted, exportEnabled, unexportedLogsDeleted,
     }
     await writePruneJournal({ agentId: 'system', trigger: 'sweep' }, {
       tables: deleted, deleted_total: deletedTotal,
       cutoff_days: retentionDays, cutoff_ts: cutoff,
       otel_cutoff_days: otelRetentionDays, otel_cutoff_ms: otelCutoffMs,
       unexported_deleted: unexportedDeleted, export_enabled: exportEnabled,
+      unexported_logs_deleted: unexportedLogsDeleted,
     })
     return result
   }, { mode: 'immediate' })

@@ -160,7 +160,7 @@ Log retention, telemetry, and backup policies.
 
 | Key | Description |
 |-----|-------------|
-| `AUDIT_LOG_RETENTION_DAYS` | Days to keep audit log entries |
+| `AUDIT_LOG_RETENTION_DAYS` | Days to keep audit log entries (config changes, agent and hook audit, approval events, kanban card events, import runs, restore log). A row's `trace_id` can be resolved to its spans only while the spans still exist (`OTEL_SPAN_RETENTION_DAYS`, 30 by default). The RBAC shadow log keeps 30 days, the token-usage shadow log 90 |
 | `AUDIT_LOG_MAX_ENTRIES` | Maximum number of audit log entries to retain |
 
 ### Token usage retention
