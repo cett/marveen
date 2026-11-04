@@ -170,6 +170,57 @@ describe('POST /api/approvals/:id/consume', () => {
   })
 })
 
+describe('self-approval: the deciding principal is never the requesting agent', () => {
+  const patch = (id: string, caller: Caller, body: Record<string, unknown> = { status: 'approved' }) => call('PATCH', `/api/approvals/${id}`, caller, body)
+  const request = async (caller: Caller, agent: string, category = 'deploy') => {
+    const out = await call('POST', '/api/approvals', caller, { agent_id: agent, category, action_description: 'do it' })
+    expect(out.status).toBe(201)
+    return out.body as { id: string; content_hash: string; agent_id: string }
+  }
+  const status = async (id: string) => (await getApproval(id))?.status
+
+  it('a fleet-agent token can not decide anything, not even its own request', async () => {
+    const a = await request(WORKER, 'worker')
+    const out = await patch(a.id, WORKER)
+    expect(out.status).toBe(403)
+    expect(await status(a.id)).toBe('pending')
+  })
+
+  it('the main agent token can not approve its own request, whatever the body names as resolver', async () => {
+    const a = await request(MAIN_ADMIN, 'main-agent')
+    for (const body of [{ status: 'approved' }, { status: 'approved', resolved_by: 'someone-else' }, { status: 'approved', resolved_by: 'human:session:owner' }]) {
+      const out = await patch(a.id, MAIN_ADMIN, body)
+      expect(out.status).toBe(403)
+      expect(out.body.hint).toMatch(/cannot approve its own request/)
+    }
+    expect(await status(a.id)).toBe('pending')
+  })
+
+  it('a request filed under another spelling of the main agent id is still its own (case, stray characters)', async () => {
+    for (const spelling of ['Main-Agent', 'MAIN-AGENT', 'main-agent​']) {
+      const a = await request(SHARED, spelling)
+      const out = await patch(a.id, MAIN_ADMIN)
+      expect({ spelling, status: out.status }).toEqual({ spelling, status: 403 })
+      expect(await status(a.id)).toBe('pending')
+    }
+  })
+
+  it('the main agent token decides another agent\'s request (a bearer decision, recorded under its own id) and the worker can use it up once', async () => {
+    const a = await request(WORKER, 'worker')
+    const out = await patch(a.id, MAIN_ADMIN, { status: 'approved', resolved_by: 'declared-label' })
+    expect(out.status).toBe(200)
+    expect(await getApproval(a.id)).toMatchObject({ status: 'approved', resolved_by: 'main-agent', resolved_via: 'bearer' })
+    expect((await consume(a.id, a.content_hash, WORKER)).status).toBe(200)
+    expect((await consume(a.id, a.content_hash, WORKER, { ref: 'again' })).status).toBe(409)
+  })
+
+  it('a person\'s dashboard session decides the main agent\'s own request', async () => {
+    const a = await request(MAIN_ADMIN, 'main-agent')
+    expect((await patch(a.id, OWNER_SESSION)).status).toBe(200)
+    expect((await consume(a.id, a.content_hash, MAIN)).status).toBe(200)
+  })
+})
+
 describe('any Level 2 category: the server hashes the request and the approval is used up once', () => {
   // email_standing_recipient is human-only: only a dashboard-session decision of it can be used up.
   const BEARER_OK = ['deploy', 'file_delete', 'git_push']

@@ -8,6 +8,7 @@ import {
   type Approval, type ApprovalResolvedVia,
 } from '../../db.js'
 import { logger } from '../../logger.js'
+import { sanitizeAgentIdent } from '../../prompt-safety.js'
 import { readBody, json } from '../http-helpers.js'
 import { denyForeignAgent, denyAgentBoundAdminForeign, agentBoundAdminId } from '../fleet-agent-identity.js'
 import { checkCategory, humanSessionOf, isHumanOnly, isEmailSendCategory, EMAIL_SEND_CATEGORY } from '../approval-human-only.js'
@@ -23,6 +24,13 @@ import { tryHandleApprovalUse } from './approvals-consume.js'
 import { systemJob } from '../../db/background-jobs.js'
 // Every approval gets a deadline: the category's timeout_minutes, or the 24 h ceiling for an unknown
 // category / NULL value / unreadable DB. The caller's timeout_seconds can only shorten it.
+/** True when `a` and `b` name the same agent: the same string, or the same normalised identifier (case-folded, sanitised). */
+function sameAgentIdent(a: string, b: string): boolean {
+  if (a === b) return true
+  const na = sanitizeAgentIdent(a).toLowerCase()
+  return na !== '' && na === sanitizeAgentIdent(b).toLowerCase()
+}
+
 async function getTimeoutAt(category: string, requestedSeconds: unknown): Promise<number> {
   let categoryMinutes: number | null = null
   try {
@@ -483,7 +491,9 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     // authenticated principal above, so a body naming someone else no longer slips past it. It does not
     // close self-approval by itself (the main agent relays a human's decision under its own token); the
     // real control lives on the main-agent side (approval-request-handling skill).
-    if (target && effectiveResolvedBy === target.agent_id) {
+    // Compared exactly and on the normalised identifier (sanitizeAgentIdent, case-folded, as the create path does): a
+    // request filed under another spelling of the agent's id (an operator-token request names any string) is still its own.
+    if (target && sameAgentIdent(effectiveResolvedBy, target.agent_id)) {
       json(res, { error: 'forbidden', hint: 'The requesting agent cannot approve its own request' }, 403)
       return true
     }
