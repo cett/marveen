@@ -194,5 +194,51 @@ class MainTest(unittest.TestCase):
         self.assertIn("a.ts", out)
 
 
+class UntypedCaseParamLockInTest(unittest.TestCase):
+    """The committed baseline holds `CASE WHEN ? THEN` at 0: PostgreSQL cannot type the
+    bare parameter, so the shape must not come back. These tests use the REAL committed
+    baseline (only the scanned source tree is a throwaway), so raising the committed
+    number again, or dropping the token, fails here."""
+
+    TOKEN = "CASE WHEN ? THEN"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.src = os.path.join(self.tmp.name, "src")
+        # the committed baseline, resolved from the script location (not the patched path)
+        self.committed = os.path.join(os.path.dirname(_SCRIPT_PATH), "sqlite-dialect-baseline.json")
+        patcher = patch.multiple(mod, SRC_DIR=self.src, BASELINE_PATH=self.committed)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _run(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = mod.main([])
+        return rc, buf.getvalue()
+
+    def test_committed_baseline_holds_the_token_at_zero(self):
+        counts = mod.load_baseline(self.committed)
+        self.assertIn(self.TOKEN, counts)
+        self.assertEqual(counts[self.TOKEN], 0)
+
+    def test_a_reintroduced_untyped_case_parameter_fails_the_check(self):
+        _write(self.src, "db/q.ts", "db.prepare('UPDATE t SET d = CASE WHEN ? THEN NULL ELSE d END')\n")
+        rc, out = self._run()
+        self.assertEqual(rc, 1, out)
+        self.assertIn("GREW " + self.TOKEN, out)
+
+    def test_a_typed_form_does_not_trip_the_lock_in(self):
+        _write(self.src, "db/q.ts", "db.prepare('UPDATE t SET d = CASE WHEN col = ? THEN NULL ELSE d END')\n")
+        rc, out = self._run()
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("GREW", out)
+
+    def test_the_real_source_tree_has_none(self):
+        totals, per_file = mod.scan(os.path.join(os.path.dirname(os.path.dirname(_SCRIPT_PATH)), "src"))
+        self.assertEqual(totals[self.TOKEN], 0, per_file)
+
+
 if __name__ == "__main__":
     unittest.main()
