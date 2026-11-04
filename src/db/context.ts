@@ -30,6 +30,15 @@ export interface DbContext {
   name?: string
   tenantId?: string
   agentId?: string
+  /** The trace of the unit of work (a request, an inter-agent message), set by `withTrace`; see its comment. */
+  traceId?: string
+  spanId?: string
+}
+
+/** The trace a unit of work runs in: the id the `otel_spans` rows of it carry, and the span of that unit itself. */
+export interface DbTrace {
+  traceId: string
+  spanId: string
 }
 
 const store = new AsyncLocalStorage<DbContext>()
@@ -57,6 +66,27 @@ export const runAs = {
  */
 export function withDbContext<T>(ctx: DbContext | undefined, fn: () => T): T {
   return ctx === undefined ? fn() : store.run(ctx, fn)
+}
+
+/**
+ * Runs `fn` in the running context plus a trace, so a writer deep in the call (the audit log, a log record) can say which
+ * request or message it belongs to without a parameter. Without a running context there is nothing to attach the trace
+ * to: `fn` runs as it is (a trace alone would make a call look scoped when it is not).
+ *
+ * The trace is NOT inherited by a nested `runAs`: that replaces the whole context, as it always did. Whoever opens a
+ * nested `runAs` inside a traced unit of work and wants the trace there calls `withTrace(currentTrace(), ...)` inside it.
+ */
+export function withTrace<T>(trace: DbTrace, fn: () => T): T {
+  const traceId = requireId('trace', trace.traceId)
+  const spanId = requireId('trace', trace.spanId)
+  const current = store.getStore()
+  return current === undefined ? fn() : store.run({ ...current, traceId, spanId }, fn)
+}
+
+/** The trace of the running call, or undefined when it carries none (no context, or a context without a trace). */
+export function currentTrace(): DbTrace | undefined {
+  const ctx = store.getStore()
+  return ctx?.traceId && ctx.spanId ? { traceId: ctx.traceId, spanId: ctx.spanId } : undefined
 }
 
 /** The context of the running call, or undefined when none was set. */

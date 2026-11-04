@@ -38,6 +38,7 @@ import { recordDelivery } from './delivery-intent.js'
 import { oneLine } from './approval-owner-notice.js'
 
 import { systemJob } from '../db/background-jobs.js'
+import { withTrace } from '../db/context.js'
 // A message that cannot be delivered within this window (target session never
 // exists / stays busy) is marked failed so it stops clogging the pending
 // queue and we stop re-scanning it forever. Matches the scheduled-task retry
@@ -262,6 +263,15 @@ const deliveredTraceCtx = new Map<string, { trace_id: string; span_id: string }>
 
 function generateTraceId(): string { return randomUUID() }
 function generateSpanId(): string { return randomUUID().replace(/-/g, '').slice(0, 16) }
+
+/**
+ * Runs `fn` in the trace of an inter-agent message: the trace_id / span_id its row carries (the router's own tick
+ * context has none, and a restart loses `deliveredTraceCtx`, so the row is the only source). A message without a trace
+ * (channel-inbound, or one not stamped yet) runs `fn` as it is.
+ */
+export function withMessageTrace<T>(msg: Pick<AgentMessage, 'trace_id' | 'span_id'>, fn: () => T): T {
+  return msg.trace_id && msg.span_id ? withTrace({ traceId: msg.trace_id, spanId: msg.span_id }, fn) : fn()
+}
 
 // Stamps a trace context onto an unstamped pending message, using either an
 // inherited context (propagation) or a freshly generated root trace.
@@ -546,6 +556,9 @@ export async function runMessageRouterTick(): Promise<void> {
       // the catch-less try/finally, aborting delivery for every younger
       // message and retrying the same poison row forever -- permanent
       // head-of-line blockage of ALL local delivery. Mark it failed instead.
+      // The trace the failure writes below run in: what the row carries, or what was stamped on it this tick. The local
+      // `msg` stays as the queue returned it (recordMessageFailure keys on it), so the stamp is kept apart.
+      let traceRef: Pick<AgentMessage, 'trace_id' | 'span_id'> = msg
       try {
       const ageMs = now - msg.created_at * 1000
       // The main agent runs in `${MAIN_AGENT_ID}-channels`, not `agent-${name}`,
@@ -708,6 +721,9 @@ export async function runMessageRouterTick(): Promise<void> {
           ? { trace_id: msg.trace_id, span_id: msg.span_id }
           : await stampTraceOnMessage(msg, now)
         traceCtx = effective
+        // The row now holds this trace (stamped just above, or read from the queue after a restart): the failure writes
+        // below, and in the outer catch, run in it via withMessageTrace.
+        traceRef = effective
       }
 
       // Voice auto-mode: if this is a channel-inbound voice message, run STT
@@ -775,20 +791,20 @@ export async function runMessageRouterTick(): Promise<void> {
           continue
         }
         logger.error({ err, id: msg.id, failCount }, 'Failed to inject agent message after retries, giving up')
-        if (!await markMessageFailed(msg.id, `Failed to inject into tmux session after ${failCount} attempts`)) {
+        if (!await withMessageTrace(traceRef, () => markMessageFailed(msg.id, `Failed to inject into tmux session after ${failCount} attempts`))) {
           logger.warn({ id: msg.id }, 'markMessageFailed affected 0 rows (deleted concurrently?)')
         }
-        await recordMessageFailure(msg, 'inject_failed')
-        await notifyOrchestratorOfFailedHandoff(msg, `tmux inject failed ${failCount}x`)
+        await withMessageTrace(traceRef, () => recordMessageFailure(msg, 'inject_failed'))
+        await withMessageTrace(traceRef, () => notifyOrchestratorOfFailedHandoff(msg, `tmux inject failed ${failCount}x`))
         routerInjectFailures.delete(msg.id)
         routerLoggedMisses.delete(msg.id)
       }
       } catch (err) {
         logger.warn({ err, id: msg.id, to: msg.to_agent }, 'Agent message processing threw; marking failed so the queue cannot wedge')
-        if (!await markMessageFailed(msg.id, `Delivery error: ${String(err).slice(0, 200)}`)) {
+        if (!await withMessageTrace(traceRef, () => markMessageFailed(msg.id, `Delivery error: ${String(err).slice(0, 200)}`))) {
           logger.warn({ id: msg.id }, 'markMessageFailed affected 0 rows (deleted concurrently?)')
         }
-        await recordMessageFailure(msg, 'error')
+        await withMessageTrace(traceRef, () => recordMessageFailure(msg, 'error'))
         routerLoggedMisses.delete(msg.id)
       }
     }

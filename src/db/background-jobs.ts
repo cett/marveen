@@ -16,7 +16,7 @@
 // of src (the recipe is in docs/db-facade.md), never reach a facade call. The counter confirms it in operation: such a
 // file showing up in `getDbContextStats().sites` is a classification bug.
 
-import { runAs } from './context.js'
+import { runAs, withTrace, type DbTrace } from './context.js'
 
 export type JobRole = 'system' | 'agent' | 'hybrid' | 'tenant-loop'
 
@@ -96,7 +96,10 @@ export const NOT_DB_TIMER_FILES: Record<string, string> = {
  * Any other authenticated session role without a tenant is the separate, expected job `http-global-viewer`, so the unexpected count
  * stays clean and the PostgreSQL step can give it its own, restricted role. What it may read across tenants is decided there.
  */
-export function runAsRequest<T>(who: { authenticated: boolean; role: string | undefined; agentId?: string; tenantId: string | null }, fn: () => T): T {
+export function runAsRequest<T>(who: { authenticated: boolean; role: string | undefined; agentId?: string; tenantId: string | null; trace?: DbTrace }, work: () => T): T {
+  // The request's trace rides in the context the branch below opens, for every principal alike.
+  const { trace } = who
+  const fn = trace ? () => withTrace(trace, work) : work
   if (!who.authenticated) return runAs.system('http-public', fn)
   // An agent token without a tenant runs as the agent in the `default` tenant, the fallback of `resolveTenantId`. That is
   // today's rule, not the final one (Phase 2 decides it).
