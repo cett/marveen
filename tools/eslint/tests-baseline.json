@@ -1,0 +1,189 @@
+{
+  "src/__tests__/agent-sdk-session-id.test.ts": {
+    "require-await": 1
+  },
+  "src/__tests__/agent-worker-cwd-io.test.ts": {
+    "require-await": 1
+  },
+  "src/__tests__/agents-channels-gaps.test.ts": {
+    "require-await": 1
+  },
+  "src/__tests__/agents-channels-routes-extended.test.ts": {
+    "require-await": 1
+  },
+  "src/__tests__/approval-owner-notice.test.ts": {
+    "require-await": 3
+  },
+  "src/__tests__/approvals-email-ui.test.ts": {
+    "require-await": 6
+  },
+  "src/__tests__/approvals-human-only-ui.test.ts": {
+    "require-await": 4
+  },
+  "src/__tests__/auth-bootstrap-url-token.test.ts": {
+    "require-await": 6
+  },
+  "src/__tests__/auth-entry.test.ts": {
+    "require-await": 14
+  },
+  "src/__tests__/bridge-enroll.test.ts": {
+    "require-await": 2
+  },
+  "src/__tests__/channel-conflict-probe.test.ts": {
+    "require-await": 4
+  },
+  "src/__tests__/channel-coordinator.test.ts": {
+    "require-await": 3
+  },
+  "src/__tests__/channel-credentials-route.test.ts": {
+    "require-await": 3
+  },
+  "src/__tests__/channel-credentials.test.ts": {
+    "require-await": 10
+  },
+  "src/__tests__/channel-provider.test.ts": {
+    "require-await": 15
+  },
+  "src/__tests__/channel-request-watcher.test.ts": {
+    "require-await": 4
+  },
+  "src/__tests__/context-gate-stale-streak-below-threshold.test.ts": {
+    "require-await": 1
+  },
+  "src/__tests__/context-guard-resume-persist.test.ts": {
+    "require-await": 2
+  },
+  "src/__tests__/context-guard-runner-io.test.ts": {
+    "require-await": 3
+  },
+  "src/__tests__/context-guard-runner.test.ts": {
+    "require-await": 1
+  },
+  "src/__tests__/context-restart-gate-runner.test.ts": {
+    "require-await": 1
+  },
+  "src/__tests__/db-facade-tx.test.ts": {
+    "require-await": 6
+  },
+  "src/__tests__/dispatcher.test.ts": {
+    "require-await": 13
+  },
+  "src/__tests__/federation-bridge.test.ts": {
+    "require-await": 6
+  },
+  "src/__tests__/federation-capabilities.test.ts": {
+    "require-await": 6
+  },
+  "src/__tests__/federation-directory.test.ts": {
+    "require-await": 1
+  },
+  "src/__tests__/federation-poller.test.ts": {
+    "require-await": 5
+  },
+  "src/__tests__/graph-mail-io.test.ts": {
+    "require-await": 5
+  },
+  "src/__tests__/heartbeat-io.test.ts": {
+    "require-await": 2
+  },
+  "src/__tests__/heartbeat-unit.test.ts": {
+    "require-await": 1
+  },
+  "src/__tests__/import-crawler-confluence.test.ts": {
+    "no-misused-promises": 19,
+    "require-await": 14
+  },
+  "src/__tests__/import-memories.test.ts": {
+    "require-await": 1
+  },
+  "src/__tests__/import-strip-markup-entities.test.ts": {
+    "require-await": 2
+  },
+  "src/__tests__/inbox-nudge-watcher-tick.test.ts": {
+    "require-await": 2
+  },
+  "src/__tests__/invalid-json-body.test.ts": {
+    "no-misused-promises": 1
+  },
+  "src/__tests__/kanban-dispatch-no-card-text.test.ts": {
+    "require-await": 1
+  },
+  "src/__tests__/kanban-id-routes-tenant.test.ts": {
+    "require-await": 1
+  },
+  "src/__tests__/memories-blank-content-routes.test.ts": {
+    "require-await": 1
+  },
+  "src/__tests__/memories-put-blank-db-refusal.test.ts": {
+    "require-await": 1
+  },
+  "src/__tests__/memory-link-maintenance-null-updated-at.test.ts": {
+    "require-await": 2
+  },
+  "src/__tests__/message-router-notify.test.ts": {
+    "require-await": 1
+  },
+  "src/__tests__/message-router-trace-attributes.test.ts": {
+    "require-await": 1
+  },
+  "src/__tests__/message-router-voice-stt.test.ts": {
+    "require-await": 3
+  },
+  "src/__tests__/openrouter-models.test.ts": {
+    "require-await": 4
+  },
+  "src/__tests__/otel-genai-duration.test.ts": {
+    "require-await": 2
+  },
+  "src/__tests__/pane-writers-under-send-lock.test.ts": {
+    "require-await": 2
+  },
+  "src/__tests__/process-lock.test.ts": {
+    "require-await": 2
+  },
+  "src/__tests__/quarantine-backfill.test.ts": {
+    "require-await": 3
+  },
+  "src/__tests__/reauth-healer-check-session.test.ts": {
+    "require-await": 1
+  },
+  "src/__tests__/recipe-migrate.test.ts": {
+    "require-await": 2
+  },
+  "src/__tests__/remote-enroll-device-key.test.ts": {
+    "require-await": 1
+  },
+  "src/__tests__/restart-gate-ui.test.ts": {
+    "require-await": 1
+  },
+  "src/__tests__/schedule-runner-parked-janitor.test.ts": {
+    "require-await": 2
+  },
+  "src/__tests__/session-only-user-routes.test.ts": {
+    "require-await": 2
+  },
+  "src/__tests__/session-send-lock.test.ts": {
+    "require-await": 4
+  },
+  "src/__tests__/status-routes.test.ts": {
+    "require-await": 3
+  },
+  "src/__tests__/stuck-tool-call-children.test.ts": {
+    "require-await": 1
+  },
+  "src/__tests__/telegram-client-probe-high-water.test.ts": {
+    "require-await": 3
+  },
+  "src/__tests__/telegram-inbox-wake-io.test.ts": {
+    "require-await": 1
+  },
+  "src/__tests__/token-identity-gate-http.test.ts": {
+    "no-misused-promises": 1
+  },
+  "src/__tests__/token-usage-collect.test.ts": {
+    "require-await": 4
+  },
+  "src/__tests__/update-checker-coverage.test.ts": {
+    "require-await": 1
+  }
+}

@@ -51,6 +51,9 @@ describe('addDesiredAgent', () => {
     await store.addDesiredAgent('boss')
     expect(dbMod.getSystemConfig('agents_desired')).toBeUndefined()
     expect(store.getDesiredAgents().has('boss')).toBe(false)
+    // positive control: the fixture does record, so the undefined row above is the filter and not a dead store
+    await store.addDesiredAgent('worker-a')
+    expect(stored()).toEqual(['worker-a'])
   })
 
   it('does not write the main agent back when a sub-agent is added to a set that held it', async () => {
@@ -97,6 +100,11 @@ describe('pruneMainAgentFromDesired', () => {
     await dbMod.setSystemConfig('agents_desired', raw)
     expect(await store.pruneMainAgentFromDesired()).toBe(false)
     expect(dbMod.getSystemConfig('agents_desired')?.value).toBe(raw)
+    // positive control: the same fixture does rewrite a row that holds the main agent, so the no-op above is the
+    // function leaving a clean row alone and not a prune that never runs
+    await dbMod.setSystemConfig('agents_desired', '["boss","worker-b","worker-a"]')
+    expect(await store.pruneMainAgentFromDesired()).toBe(true)
+    expect(stored()).toEqual(['worker-a', 'worker-b'])
   })
 
   it('does nothing without a stored row', async () => {
