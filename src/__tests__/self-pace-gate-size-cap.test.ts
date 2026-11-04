@@ -4,10 +4,10 @@ import { join } from 'node:path'
 // @ts-expect-error -- plain .mjs hook script, no types
 import { gateDecision, MAX_CMD_CHARS } from '../../scripts/self-pace-gate.mjs'
 
-// The self-pace gate had no input size cap, and its scheduler pattern (SCHED_PREFIX) is quadratic on a long run
-// of `(` or backticks (250 KB: 40 s, far past the 10 s hook timeout; a hook still running at its timeout does
-// not block). The pattern is NOT made linear here: narrowing its `\S*` changes verdicts (see the comment at
-// SCHED_PREFIX). The cap keeps the quadratic cost inside the timeout instead.
+// The self-pace gate had no input size cap, and its old scheduler regex was quadratic on a long run of `(` or
+// backticks (250 KB: 40 s, far past the 10 s hook timeout; a hook still running at its timeout does not block).
+// The scheduler check is linear now (self-pace-gate-linear.test.ts), but other scans of the gate are not all linear
+// (the backtick-pair shape below still takes about 2.5 s at the cap), so the cap stays as the outer bound.
 
 const GATE = join(__dirname, '..', '..', 'scripts', 'self-pace-gate.mjs')
 const run = (command: string) =>
@@ -36,8 +36,8 @@ describe('Bash command size cap', () => {
 
 describe('hostile shapes at the cap finish well inside the hook timeout', () => {
   const n = MAX_CMD_CHARS - 10
-  // The budget is relative to the machine, not an absolute number of milliseconds. The pattern is quadratic by
-  // design, so the cost at the cap is pure CPU speed times a fixed amount of backtracking: a CI runner 2.5x slower than
+  // The budget is relative to the machine, not an absolute number of milliseconds. Some scans of the gate are
+  // superlinear, so the cost at the cap is pure CPU speed times a fixed amount of backtracking: a CI runner 2.5x slower than
   // a laptop takes 2.5x as long (backticks: 3-4 s of CPU on an idle laptop, 9.3 s on one CI run, which broke an
   // absolute 8 s ceiling although nothing in the gate had changed). So the cost of every shape is divided by the cost
   // of a fixed reference job measured in the same process, right before and right after the shape, and the RATIO is
@@ -85,7 +85,7 @@ describe('hostile shapes at the cap finish well inside the hook timeout', () => 
 })
 
 // Verdicts of the scheduler pattern, pinned so a later change cannot narrow them unnoticed. The wrapper-word rows are
-// the ones a boundary-limited rewrite of SCHED_PREFIX loses (an unlisted wrapper word inside a substitution).
+// the ones a boundary-limited rewrite of the wrapper prefix loses (an unlisted wrapper word inside a substitution).
 describe('the scheduler verdicts', () => {
   for (const [cmd, deny] of [
     ['crontab -r', true],

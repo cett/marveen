@@ -72,12 +72,14 @@ const SELF_PACE_BASH_PATTERNS = [
 // `PATH=/bin crontab -` are all caught. Trailing \b(?!-) so it never fires on
 // "netstat" / "crontab-helper.sh"; (?!\s*=) so a bare NAME=value assignment
 // (`at=$(...)`) is not mistaken for the `at` binary.
-// NOT linear: on a long run of `(` or backticks every boundary opens a `\S*` scan to the end of the word, so the cost
-// is quadratic (60 KB: 2.3 s). The input size cap (MAX_CMD_CHARS) is what keeps it inside the hook timeout. Narrowing
-// `\S*` to stop at the next boundary changes verdicts: a wrapper word the list does not name, such as nohup in
-// `X=$(nohup <scheduler> ...)`, is caught only because the assignment value swallows `$(nohup`. Do not make the
-// pattern linear without a differential test that includes unlisted wrapper words.
-const SCHED_PREFIX = String.raw`(?:(?:[A-Za-z_]\w*=\S*|sudo|env|command|exec|nice|builtin|time)\s+)*(?:\S*/)?`
+// The match is done by a procedural, linear matcher (makePrefixedMatcher below), NOT by one regex. The equivalent
+// regex, `(^|[;&|(`]\s*)PREFIX TAIL` with PREFIX = `(?:(?:[A-Za-z_]\w*=\S*|sudo|env|command|exec|nice|builtin|time)\s+)*(?:\S*/)?`,
+// is quadratic: on a long run of `(` or backticks every boundary opens a `\S*` scan to the end of the word (60 KB: 2.3 s).
+// The verdicts are the regex's, exactly: narrowing `\S*` would change them (a wrapper word the list does not name, such
+// as nohup in `X=$(nohup <scheduler> ...)`, is caught only because the assignment value swallows `$(nohup`), so the
+// matcher keeps the same language and only changes how it is searched. The old regexes live in the tests as the oracle
+// of a differential fuzz; do not change the language here without changing them there.
+// The input size cap (MAX_CMD_CHARS) stays as the outer bound.
 // The command-boundary anchor includes `(` so a $(...) command substitution
 // (`X=$(crontab -)`) is caught, AND a backtick so a legacy `...` substitution
 // (`X=`crontab -r``) is caught too -- both run the enclosed command in a shell
@@ -95,13 +97,91 @@ const AT_INVOCATION = String.raw`(?=\s*$|\s+-|\s*<|\s+(?:now|noon|midnight|teati
 // Every real self-pace vector (load/bootstrap/submit/kickstart/start/enable/...)
 // takes a subcommand word. A job label and a path both fail and pass as prose.
 const LAUNCHCTL_SUBCOMMAND = String.raw`(?=\s*$|\s+-|\s+[a-z][a-z-]*(?:\s|$))`
-const SCHEDULER_RX = new RegExp(
-  String.raw`(^|${SCHED_BOUNDARY}\s*)${SCHED_PREFIX}(?:(?:crontab|systemd-run)\b(?!-)(?!\s*=)|launchctl\b(?!-)(?!\s*=)${LAUNCHCTL_SUBCOMMAND}|(?:batch|at)\b(?!-)(?!\s*=)${AT_INVOCATION})`,
-  'i',
-)
+const SCHEDULER_TAIL = String.raw`(?:(?:crontab|systemd-run)\b(?!-)(?!\s*=)|launchctl\b(?!-)(?!\s*=)${LAUNCHCTL_SUBCOMMAND}|(?:batch|at)\b(?!-)(?!\s*=)${AT_INVOCATION})`
 // ...but allow a pure READ-listing of one's own schedule (parity with the store /
 // schedule-API read exemptions): crontab -l, launchctl list/print, atq.
-const SCHEDULER_READ_RX = new RegExp(String.raw`(^|${SCHED_BOUNDARY}\s*)${SCHED_PREFIX}(crontab\s+-l\b|launchctl\s+(?:list|print|dumpstate|blame|examine)\b|atq\b)`, 'i')
+const SCHEDULER_READ_TAIL = String.raw`(crontab\s+-l\b|launchctl\s+(?:list|print|dumpstate|blame|examine)\b|atq\b)`
+
+// Linear equivalent of `(^|[;&|(`]\s*)PREFIX TAIL` (flag i), as a boolean test. PREFIX is any number of wrapper words,
+// each followed by whitespace (a NAME=value word, or one of sudo/env/command/exec/nice/builtin/time), then an optional
+// `\S*/` (a path ending in a slash, TAIL right after it). A start position is the string start (no whitespace skipped
+// there) or the first non-space after a boundary char. Per position i (a non-space char):
+//   final(i)   = TAIL matches at i, or a `/` in i's own word is followed by a TAIL match
+//   wrapper(i) = i starts a whole word that is a wrapper and is followed by whitespace
+//   R[i]       = final(i) || (wrapper(i) && R[start of the next word])
+// R is filled right to left, so every position is evaluated once and a long chain of wrappers costs nothing extra.
+export function makePrefixedMatcher(tailSource) {
+  const tail = new RegExp(tailSource, 'iy')
+  const wrapperKw = /(?:sudo|env|command|exec|nice|builtin|time)(?=\s)/iy
+  const isSpace = (ch) => /\s/.test(ch)
+  const isWordCh = (c) => (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || c === 95 || (c >= 97 && c <= 122)
+  const isLetterOrUnderscore = (c) => (c >= 65 && c <= 90) || c === 95 || (c >= 97 && c <= 122)
+  return function test(seg) {
+    const s = String(seg ?? '')
+    const n = s.length
+    if (n === 0) return false
+    // sp[i]: whitespace; wordEnd[i]: end (exclusive) of the non-space run containing i; nextNonSpace[i]: first non-space >= i;
+    // wEnd[i]: end of the \w run starting at i.
+    const sp = new Uint8Array(n + 1)
+    for (let i = 0; i < n; i++) sp[i] = isSpace(s[i]) ? 1 : 0
+    sp[n] = 1
+    const wordEnd = new Int32Array(n + 1)
+    const nextNonSpace = new Int32Array(n + 2)
+    const wEnd = new Int32Array(n + 2)
+    wordEnd[n] = n
+    nextNonSpace[n] = n
+    nextNonSpace[n + 1] = n
+    wEnd[n] = n
+    wEnd[n + 1] = n
+    for (let i = n - 1; i >= 0; i--) {
+      wordEnd[i] = sp[i] ? i : wordEnd[i + 1]
+      nextNonSpace[i] = sp[i] ? nextNonSpace[i + 1] : i
+      wEnd[i] = isWordCh(s.charCodeAt(i)) ? wEnd[i + 1] : i
+    }
+    const memo = new Int8Array(n + 2).fill(-1)
+    const tailAt = (t) => {
+      if (t >= n) return false
+      if (memo[t] < 0) {
+        tail.lastIndex = t
+        memo[t] = tail.test(s) ? 1 : 0
+      }
+      return memo[t] === 1
+    }
+    // slash[i]: a `/` at or after i inside i's own word, with TAIL right after it
+    const slash = new Uint8Array(n + 2)
+    const R = new Uint8Array(n + 2)
+    for (let i = n - 1; i >= 0; i--) {
+      if (sp[i]) continue
+      slash[i] = (s.charCodeAt(i) === 47 && tailAt(i + 1)) || (i + 1 < n && !sp[i + 1] && slash[i + 1]) ? 1 : 0
+      let r = tailAt(i) || slash[i] === 1
+      // a wrapper must be followed by whitespace and then more: at the string end R[n] is 0, so a last-word wrapper never matches
+      if (!r) {
+        let wrapper = false
+        if (isLetterOrUnderscore(s.charCodeAt(i))) {
+          const w = wEnd[i + 1]
+          wrapper = w < n && s.charCodeAt(w) === 61 // NAME=
+        }
+        if (!wrapper) {
+          wrapperKw.lastIndex = i
+          wrapper = wrapperKw.test(s)
+        }
+        if (wrapper) r = R[nextNonSpace[wordEnd[i]]] === 1
+      }
+      R[i] = r ? 1 : 0
+    }
+    if (!sp[0] && R[0]) return true
+    for (let b = 0; b < n; b++) {
+      const c = s.charCodeAt(b)
+      if (c === 59 || c === 38 || c === 124 || c === 40 || c === 96) {
+        const start = nextNonSpace[b + 1]
+        if (start < n && R[start]) return true
+      }
+    }
+    return false
+  }
+}
+export const schedulerMatch = makePrefixedMatcher(SCHEDULER_TAIL)
+export const schedulerReadMatch = makePrefixedMatcher(SCHEDULER_READ_TAIL)
 
 // The Claude self-schedule store. Blocked for WRITE on any route (a Bash write,
 // or the native Write/Edit/NotebookEdit tool); a read/grep is legit diagnostics.
@@ -1127,7 +1207,7 @@ export function allowlistBashSegmentAllowed(seg) {
 //     enough (the quoted ; must be immediately followed by a blocked binary at a
 //     segment start) that a full shell-tokenizer is not warranted here.
 //   - A $(...) or backtick substitution that assigns a scheduler result
-//     (`X=$(crontab -)`, `X=`crontab -``) is caught by SCHEDULER_RX's boundary
+//     (`X=$(crontab -)`, `X=`crontab -``) is caught by schedulerMatch's boundary
 //     anchor, which now includes both `(` and the backtick.
 export function splitSegments(command) {
   return String(command ?? '')
@@ -1151,7 +1231,7 @@ export function splitSegments(command) {
 // grep pattern quoted inside an inter-agent message,
 //   Minta: stop.sh <bar> launchctl <bar> com.janna.dashboard
 // The `<bar>` split it, the middle piece trimmed down to the bare word
-// `launchctl`, and SCHEDULER_RX's end-of-segment branch reads a bare `launchctl`
+// `launchctl`, and schedulerMatch's end-of-segment branch reads a bare `launchctl`
 // as a real (interactive) invocation -- correctly, for a real command line.
 // Nothing was scheduled; five messages simply never went out. From outside, a
 // hard-gate denial is indistinguishable from an agent that stayed silent.
@@ -1182,7 +1262,7 @@ export function splitSegments(command) {
 // NOTE ON THE SHAPE OF THIS FIX. The first attempt made the SEGMENTER
 // quote-aware and left the regexes alone. It failed one corpus case:
 //   echo 'grep: foo <bar> crontab <bar> bar'
-// stayed denied, because SCHEDULER_RX carries its OWN boundary anchor
+// stayed denied, because schedulerMatch carries its OWN boundary anchor
 // (SCHED_BOUNDARY includes the bar), so it re-finds a command position INSIDE a
 // segment. Keeping the quoted text in the segment at all was the mistake. The
 // `launchctl` cases passed only by luck -- LAUNCHCTL_SUBCOMMAND's lookahead
@@ -1264,7 +1344,7 @@ export function maskInertLiterals(command) {
 // single-quoted '...', ANSI-C $'...', and double-quoted "..." WITHOUT
 // $(...)/backtick. A payload that can run a command substitution (double-quoted
 // with $(...) / backticks) is left intact so a real command-substitution payload
-// is not blanked. Such a payload is then still denied by SCHEDULER_RX, whose
+// is not blanked. Such a payload is then still denied by schedulerMatch, whose
 // boundary anchor recognises both `$(` and the backtick as a command boundary,
 // so a scheduler binary inside either substitution form is caught. The data FLAG
 // itself is kept, so HTTP-write detection (-d /
@@ -1297,7 +1377,7 @@ export function stripDataPayloads(seg) {
 // and same literal-only quote handling as stripDataPayloads: single-quoted,
 // ANSI-C $'...', and double-quoted WITHOUT $(...)/backtick are blanked; a
 // double-quoted message that CAN command-substitute (`git commit -m "$(crontab
-// -r)"`) is left intact so SCHEDULER_RX still catches the real substitution.
+// -r)"`) is left intact so schedulerMatch still catches the real substitution.
 // Scoped to git commit/tag/stash so a `-m` on an unrelated binary is untouched.
 export function stripGitCommitMessages(command) {
   const cmd = String(command ?? '')
@@ -1333,7 +1413,7 @@ export function normalizeShellEvasion(seg) {
     .replace(/\\(.)/g, '$1') // \X -> X (bash unescape of a backslash-escaped char)
 }
 
-// 64 KiB: the longest real call seen is about 32 KB, and SCHED_PREFIX is quadratic on a hostile shape (about 2.6 s at the cap).
+// 64 KiB: the longest real call seen is about 32 KB. The scheduler matcher is linear; the cap bounds the other scans (a few are n^1.5 on a hostile shape).
 export const MAX_CMD_CHARS = 65536
 
 // Pure decision: does this tool call set up self-pace / self-injection?
@@ -1368,7 +1448,7 @@ export function gateDecision(toolName, toolInput, opts = {}) {
       // still caught; the scheduler/store/API checks below use the RAW seg (scoped).
       if (SELF_PACE_BASH_PATTERNS.some((re) => re.test(normalizeShellEvasion(seg)))) return { deny: true }
       // scheduler binaries: deny the exec/submit forms, allow pure read-listing
-      if (SCHEDULER_RX.test(seg) && !SCHEDULER_READ_RX.test(seg)) return { deny: true }
+      if (schedulerMatch(seg) && !schedulerReadMatch(seg)) return { deny: true }
       // self-schedule store: block WRITE only (a read/grep is legit diagnostics)
       if (SCHEDULE_STORE_RX.test(seg) && WRITE_INTENT_RX.test(seg)) return { deny: true }
       // dashboard schedule API: block WRITE methods only (GET list/pending is legit)
