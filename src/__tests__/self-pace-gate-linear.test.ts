@@ -31,7 +31,7 @@ function prng(seed: number) {
 }
 
 const TOKENS = [
-  ';', '&', '|', '(', '`', '$(', '&&', '||', ' ', ' ', ' ', '\t', '\n', ' ', '/', '/usr/bin/', './', '=', 'A=', 'A=1', '_x=', 'x1=', '1=',
+  ';', '&', '|', '(', '`', '$(', '&&', '||', ' ', ' ', ' ', '\t', '\n', '\u00a0', '/', '/usr/bin/', './', '=', 'A=', 'A=1', '_x=', 'x1=', '1=',
   'nohup', 'sudo', 'env', 'command', 'exec', 'nice', 'builtin', 'time', 'SUDO', 'sudoers', 'envx', 'crontab', 'CRONTAB', 'crontabs', 'crontab-',
   'systemd-run', 'launchctl', 'list', 'print', 'dumpstate', 'blame', 'examine', 'load', 'at', 'AT', 'batch', 'atq', 'now', '5:30', 'noon', '-l', '-r',
   '-', '-x', '<', '$', 'a', 'x', 'foo', '12', '2pm', 'tomorrow', '+1',
@@ -164,7 +164,7 @@ describe('hostile shapes at the cap run linear', () => {
     ['at chain', rep('at ')],
     ['spaces', ' '.repeat(n)],
     ['boundary then spaces', rep('; ')],
-    ['tabs and nbsp', rep('\t ')],
+    ['tabs and nbsp', rep('\t\u00a0')],
   ]
   for (const [name, command] of shapes) {
     it(name, () => {
