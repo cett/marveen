@@ -1,12 +1,13 @@
-// The retention sweep also covers the four journals that had no cleanup: approval_events, kanban_card_events,
-// import_audit_log and restore_log. They go with the audit window (AUDIT_LOG_RETENTION_DAYS), in the same
-// transaction as the rest and the journal row, and the two that the OTLP log export reads by cursor report how many
-// of the rows they lost the cursor had not yet passed.
+// The retention sweep also covers the three journals that had no cleanup: approval_events, import_audit_log and
+// restore_log. They go with the audit window (AUDIT_LOG_RETENTION_DAYS), in the same transaction as the rest and the
+// journal row, and approval_events (read by the OTLP log export by cursor) reports how many of the rows it lost the
+// cursor had not yet passed. kanban_card_events is NOT pruned (owner decision): the card timeline and the card token
+// cost read it, so even a very old event survives the sweep.
 //
 // Privacy: neutral fixtures only (agent-a, card-a, approval-a, source-a).
 import { describe, it, expect } from 'vitest'
 import { useTestDb } from './helpers/with-test-db.js'
-import { getDb, pruneAuditLogs, setSystemConfig } from '../db.js'
+import { getDb, getKanbanCardEvents, pruneAuditLogs, setSystemConfig } from '../db.js'
 
 useTestDb()
 
@@ -39,22 +40,19 @@ function setCursor(source: string, lastId: number): void {
   getDb().prepare('INSERT INTO otel_logs_export_state (source, last_id) VALUES (?, ?) ON CONFLICT(source) DO UPDATE SET last_id = excluded.last_id').run(source, lastId)
 }
 
-describe('the four journals are pruned to the audit window', () => {
+describe('the three journals are pruned to the audit window', () => {
   it('deletes the rows older than the window and keeps the rest, per table', async () => {
     insertSource()
     insertApproval(OLD()); insertApproval(OLD()); insertApproval(KEPT()); insertApproval(nowSec())
-    insertKanban(OLD()); insertKanban(KEPT())
     insertImportRun(OLD()); insertImportRun(OLD()); insertImportRun(OLD()); insertImportRun(nowSec())
     insertRestore(OLD()); insertRestore(KEPT())
 
     const r = await pruneAuditLogs()
 
     expect(r.deleted.approval_events).toBe(2)
-    expect(r.deleted.kanban_card_events).toBe(1)
     expect(r.deleted.import_audit_log).toBe(3)
     expect(r.deleted.restore_log).toBe(1)
     expect(count('approval_events')).toBe(2)
-    expect(count('kanban_card_events')).toBe(1)
     expect(count('import_audit_log')).toBe(1)
     expect(count('restore_log')).toBe(1)
   })
@@ -82,28 +80,54 @@ describe('the four journals are pruned to the audit window', () => {
 
   it('reports the new tables with a zero count on an empty database', async () => {
     const r = await pruneAuditLogs()
-    for (const t of ['approval_events', 'kanban_card_events', 'import_audit_log', 'restore_log']) expect(r.deleted[t]).toBe(0)
-    expect(r.unexportedLogsDeleted).toEqual({ approval_events: 0, kanban_card_events: 0 })
+    for (const t of ['approval_events', 'import_audit_log', 'restore_log']) expect(r.deleted[t]).toBe(0)
+    expect(r.unexportedLogsDeleted).toEqual({ approval_events: 0 })
+  })
+})
+
+describe('kanban_card_events is not pruned', () => {
+  it('every event survives the sweep, a 200-day-old one and one 91 days old included', async () => {
+    insertKanban(nowSec() - 200 * DAY); insertKanban(OLD()); insertKanban(KEPT()); insertKanban(nowSec())
+    const r = await pruneAuditLogs()
+    expect(count('kanban_card_events')).toBe(4)
+    expect(Object.keys(r.deleted)).not.toContain('kanban_card_events')
+    expect(Object.keys(r.unexportedLogsDeleted)).not.toContain('kanban_card_events')
+  })
+
+  it('stays out of the journal row and survives with an export cursor and a short window too', async () => {
+    const k = insertKanban(nowSec() - 200 * DAY)
+    setCursor('kanban_card_events', k - 1)
+    await setSystemConfig('AUDIT_LOG_RETENTION_DAYS', '5', 'db')
+    await pruneAuditLogs()
+    expect(count('kanban_card_events')).toBe(1)
+    const row = getDb().prepare("SELECT detail FROM agent_audit_log WHERE action = 'retention_prune'").get() as { detail: string }
+    const detail = JSON.parse(row.detail)
+    expect(Object.keys(detail.tables)).not.toContain('kanban_card_events')
+    expect(Object.keys(detail.unexported_logs_deleted)).not.toContain('kanban_card_events')
+  })
+
+  it('the event timeline of an old card still reads in full', async () => {
+    insertKanban(nowSec() - 300 * DAY)
+    await pruneAuditLogs()
+    const events = await getKanbanCardEvents('card-a')
+    expect(events).toHaveLength(1)
   })
 })
 
 describe('the rows the OTLP log cursor had not passed', () => {
   it('without a cursor row every deleted row counts as never exported', async () => {
     insertApproval(OLD()); insertApproval(OLD()); insertApproval(KEPT())
-    insertKanban(OLD())
     const r = await pruneAuditLogs()
-    expect(r.unexportedLogsDeleted).toEqual({ approval_events: 2, kanban_card_events: 1 })
+    expect(r.unexportedLogsDeleted).toEqual({ approval_events: 2 })
   })
 
   it('only the rows above the cursor count; the ones it already passed were exported', async () => {
     const a = insertApproval(OLD()); const b = insertApproval(OLD()); insertApproval(OLD())
-    const k1 = insertKanban(OLD()); insertKanban(OLD())
     setCursor('approval_events', b)
-    setCursor('kanban_card_events', k1)
     expect(a).toBeLessThan(b)
     const r = await pruneAuditLogs()
     expect(r.deleted.approval_events).toBe(3)
-    expect(r.unexportedLogsDeleted).toEqual({ approval_events: 1, kanban_card_events: 1 })
+    expect(r.unexportedLogsDeleted).toEqual({ approval_events: 1 })
   })
 
   it('a cursor at or beyond the last old row means nothing was lost', async () => {
@@ -121,20 +145,12 @@ describe('the rows the OTLP log cursor had not passed', () => {
     expect(r.unexportedLogsDeleted.approval_events).toBe(1)
   })
 
-  it('each source reads its own cursor', async () => {
-    insertApproval(OLD()); const k = insertKanban(OLD())
-    setCursor('approval_events', 1_000_000)
-    setCursor('kanban_card_events', k - 1)
-    const r = await pruneAuditLogs()
-    expect(r.unexportedLogsDeleted).toEqual({ approval_events: 0, kanban_card_events: 1 })
-  })
-
   it('the journal row carries the counts', async () => {
-    insertApproval(OLD()); insertKanban(OLD())
+    insertApproval(OLD())
     await pruneAuditLogs()
     const row = getDb().prepare("SELECT detail FROM agent_audit_log WHERE action = 'retention_prune'").get() as { detail: string }
     const detail = JSON.parse(row.detail)
-    expect(detail.unexported_logs_deleted).toEqual({ approval_events: 1, kanban_card_events: 1 })
+    expect(detail.unexported_logs_deleted).toEqual({ approval_events: 1 })
     expect(detail.tables.approval_events).toBe(1)
     expect(detail.tables.import_audit_log).toBe(0)
     expect(detail.tables.restore_log).toBe(0)

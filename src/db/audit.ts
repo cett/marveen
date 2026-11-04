@@ -716,9 +716,9 @@ export interface AuditPruneResult {
   /** OTEL_EXPORT_ENABLED at the time of the sweep: with the export off, every deleted span counts as unexported. */
   exportEnabled: boolean
   /**
-   * Rows the cut removed from a table the OTLP log export reads by cursor (approval_events, kanban_card_events) that the
-   * cursor had not yet passed, so they were never exported as log records (counted before the delete, same transaction;
-   * a source without a cursor row counts every deleted row). The span table's equivalent is `unexportedDeleted`.
+   * Rows the cut removed from a table the OTLP log export reads by cursor (approval_events) that the cursor had not
+   * yet passed, so they were never exported as log records (counted before the delete, same transaction; a source
+   * without a cursor row counts every deleted row). The span table's equivalent is `unexportedDeleted`.
    */
   unexportedLogsDeleted: Record<string, number>
 }
@@ -740,8 +740,9 @@ async function writePruneJournal(actor: PruneActor, detail: Record<string, unkno
 
 // The audit-window tables the OTLP log export reads by cursor (otel_logs_export_state), pruned by the same sweep as the
 // rest. approval_events is the security journal of the approval flow and had no cleanup at all (only a tenant delete
-// removed rows); kanban_card_events had none either. Fixed literals: a table name is never built from a variable.
-const CURSORED_LOG_TABLES = ['approval_events', 'kanban_card_events'] as const
+// removed rows). kanban_card_events is NOT pruned on purpose (owner decision): the card timeline and the card token
+// cost read it, so its data stays. Fixed literals: a table name is never built from a variable.
+const CURSORED_LOG_TABLES = ['approval_events'] as const
 
 // Prune the audit tables to AUDIT_LOG_RETENTION_DAYS and the span table to OTEL_SPAN_RETENTION_DAYS. Called from
 // the daily decay sweep so old entries do not accumulate indefinitely. The deletes, the count of the spans that
@@ -763,10 +764,6 @@ export async function pruneAuditLogs(): Promise<AuditPruneResult> {
       approval_events: ((await tx.get<{ n: number }>(
         `SELECT COUNT(*) AS n FROM approval_events WHERE created_at < ?
            AND id > COALESCE((SELECT last_id FROM otel_logs_export_state WHERE source = 'approval_events'), 0)`, cutoff,
-      ))?.n) ?? 0,
-      kanban_card_events: ((await tx.get<{ n: number }>(
-        `SELECT COUNT(*) AS n FROM kanban_card_events WHERE created_at < ?
-           AND id > COALESCE((SELECT last_id FROM otel_logs_export_state WHERE source = 'kanban_card_events'), 0)`, cutoff,
       ))?.n) ?? 0,
     }
     for (const table of ['config_change_log', 'idea_status_log', 'store_file_audit', 'agent_audit_log', ...CURSORED_LOG_TABLES]) {

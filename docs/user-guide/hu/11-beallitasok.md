@@ -160,7 +160,7 @@ Naplók, telemetria és mentési politikák.
 
 | Kulcs | Leírás |
 |-------|--------|
-| `AUDIT_LOG_RETENTION_DAYS` | Hány napig őrizze az audit-naplóbejegyzéseket (config-változások, ágens- és hook-audit, jóváhagyási események, kanban-kártya események, import-futások, visszaállítás-napló). A sor `trace_id`-ja csak addig oldható fel a szakaszaira, amíg azok léteznek (`OTEL_SPAN_RETENTION_DAYS`, alapból 30). Az RBAC árnyék-napló 30 napig, a token-használati árnyék-napló 90 napig él |
+| `AUDIT_LOG_RETENTION_DAYS` | Hány napig őrizze az audit-naplóbejegyzéseket (config-változások, ágens- és hook-audit, jóváhagyási események, import-futások, visszaállítás-napló). A kanban-kártya események nem törlődnek (a kártya-idővonal és a kártya-token-költség adata). A sor `trace_id`-ja csak addig oldható fel a szakaszaira, amíg azok léteznek (`OTEL_SPAN_RETENTION_DAYS`, alapból 30). Az RBAC árnyék-napló 30 napig, a token-használati árnyék-napló 90 napig él |
 | `AUDIT_LOG_MAX_ENTRIES` | Az audit-napló maximális bejegyzésszáma |
 
 ### Token-használat megőrzése

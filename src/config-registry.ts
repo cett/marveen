@@ -358,7 +358,7 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     default: 90,
     min: 1,
     max: 3650,
-    description: 'Az audit napló (config-változások, ötletláda-audit, store-fájl események, ágens-audit, hook-verdiktek, jóváhagyási események, kanban-kártya események, import-futások, visszaállítás-napló) megőrzési ideje napokban. Régebbi bejegyzések a napi sweepkor törlődnek. Nem ide tartozik: az RBAC árnyék-napló 30 napig él (RETENTION_DAYS a kódban), a token-használati árnyék-napló 90 napig. Az audit-sor trace_id-ja csak az OTEL_SPAN_RETENTION_DAYS első napjaiban oldható fel a hozzá tartozó szakaszra.',
+    description: 'Az audit napló (config-változások, ötletláda-audit, store-fájl események, ágens-audit, hook-verdiktek, jóváhagyási események, import-futások, visszaállítás-napló) megőrzési ideje napokban. Régebbi bejegyzések a napi sweepkor törlődnek. Nem ide tartozik: a kanban-kártya események (a kártya-idővonal és a kártya-token-költség adata, nem törlődik), az RBAC árnyék-napló (30 napig él, RETENTION_DAYS a kódban) és a token-használati árnyék-napló (90 napig). Az audit-sor trace_id-ja csak az OTEL_SPAN_RETENTION_DAYS első napjaiban oldható fel a hozzá tartozó szakaszra.',
     module: 'audit',
     secret: false,
     requiresRestart: false,
