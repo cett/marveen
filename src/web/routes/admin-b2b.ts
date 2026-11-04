@@ -353,16 +353,21 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
       }
     }
 
-    // Self-disable protection: the requesting admin cannot disable themselves.
-    if (patch.disabled === true) {
-      const actor = ctx.auth?.user
-      if (actor && existing.username.toLowerCase() === actor.toLowerCase()) {
-        json(res, { error: 'forbidden', hint: 'Cannot disable your own account' }, 403); return true
-      }
-      // Last-admin protection: cannot disable the last active admin.
-      if (existing.role === 'admin' && await countActiveAdmins() <= 1) {
-        json(res, { error: 'forbidden', hint: 'Cannot remove the last administrator' }, 403); return true
-      }
+    // Self protection: the requesting admin cannot disable themselves or take their own account out of the admin
+    // role. (A role change that keeps the role is no demotion and passes.)
+    const actor = ctx.auth?.user
+    const isSelf = Boolean(actor) && existing.username.toLowerCase() === (actor as string).toLowerCase()
+    const demotes = existing.role === 'admin' && patch.role !== undefined && patch.role !== 'admin'
+    if (patch.disabled === true && isSelf) {
+      json(res, { error: 'forbidden', hint: 'Cannot disable your own account' }, 403); return true
+    }
+    if (demotes && isSelf) {
+      json(res, { error: 'forbidden', hint: 'Cannot change the role of your own account' }, 403); return true
+    }
+    // Last-admin protection: cannot disable or demote the last active admin. A disabled admin is not in the active
+    // count, so changing its role or disabling it again takes nobody out of it (the UPDATE's condition says the same).
+    if ((patch.disabled === true || demotes) && existing.role === 'admin' && !existing.disabled && await countActiveAdmins() <= 1) {
+      json(res, { error: 'forbidden', hint: 'Cannot remove the last administrator' }, 403); return true
     }
 
     // The checks above are fast paths; the UPDATE itself refuses to take the last active admin out of the admin set

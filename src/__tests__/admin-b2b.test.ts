@@ -373,6 +373,55 @@ describe('PATCH /api/v1/admin/users/:id', () => {
     expect(out.body.error).toBe('forbidden')
   })
 
+  it('returns 403 when an admin takes their own account out of the admin role, and writes nothing', async () => {
+    const selfUser = { ...SAMPLE_USER, username: 'admin-user', role: 'admin', tenant_id: null }
+    vi.mocked(db.getDashboardUserById).mockResolvedValue(selfUser as any)
+    vi.mocked(db.countActiveAdmins).mockResolvedValue(3)
+    vi.mocked(db.adminPatchDashboardUser).mockClear()
+    const { ctx, out } = makeCtx('PATCH', '/api/v1/admin/users/5', { role: 'viewer', tenant_id: 't1' })
+    await tryHandleAdminB2b(ctx)
+    expect(out.status).toBe(403)
+    expect(out.body).toEqual({ error: 'forbidden', hint: 'Cannot change the role of your own account' })
+    expect(db.adminPatchDashboardUser).not.toHaveBeenCalled()
+  })
+
+  it('returns 403 when the role change would demote the last active admin (pre-check, before the compare-and-set)', async () => {
+    const lastAdmin = { ...SAMPLE_USER, username: 'other-admin', role: 'admin', tenant_id: null }
+    vi.mocked(db.getDashboardUserById).mockResolvedValue(lastAdmin as any)
+    vi.mocked(db.countActiveAdmins).mockResolvedValue(1)
+    vi.mocked(db.adminPatchDashboardUser).mockClear()
+    const { ctx, out } = makeCtx('PATCH', '/api/v1/admin/users/5', { role: 'viewer', tenant_id: 't1' })
+    await tryHandleAdminB2b(ctx)
+    expect(out.status).toBe(403)
+    expect(out.body).toEqual({ error: 'forbidden', hint: 'Cannot remove the last administrator' })
+    expect(db.adminPatchDashboardUser).not.toHaveBeenCalled()
+  })
+
+  it('a DISABLED admin is not in the active count: demoting it, or disabling it again, is not a last-admin refusal', async () => {
+    const disabledAdmin = { ...SAMPLE_USER, username: 'other-admin', role: 'admin', tenant_id: null, disabled: 1 }
+    vi.mocked(db.getDashboardUserById).mockResolvedValue(disabledAdmin as any)
+    vi.mocked(db.countActiveAdmins).mockResolvedValue(1)
+    vi.mocked(db.adminPatchDashboardUser).mockClear()
+    vi.mocked(db.adminPatchDashboardUser).mockResolvedValue({ status: 'updated', user: disabledAdmin as any })
+    const demote = makeCtx('PATCH', '/api/v1/admin/users/5', { role: 'viewer', tenant_id: 't1' })
+    await tryHandleAdminB2b(demote.ctx)
+    expect(demote.out.status).toBe(200)
+    const again = makeCtx('PATCH', '/api/v1/admin/users/5', { disabled: true })
+    await tryHandleAdminB2b(again.ctx)
+    expect(again.out.status).toBe(200)
+    expect(db.adminPatchDashboardUser).toHaveBeenCalledTimes(2)
+  })
+
+  it('an admin keeping their own admin role while changing other fields is not blocked', async () => {
+    const selfUser = { ...SAMPLE_USER, username: 'admin-user', role: 'admin', tenant_id: null }
+    vi.mocked(db.getDashboardUserById).mockResolvedValue(selfUser as any)
+    vi.mocked(db.countActiveAdmins).mockResolvedValue(1)
+    vi.mocked(db.adminPatchDashboardUser).mockResolvedValue({ status: 'updated', user: selfUser as any })
+    const { ctx, out } = makeCtx('PATCH', '/api/v1/admin/users/5', { role: 'admin', display_name: 'Me' })
+    await tryHandleAdminB2b(ctx)
+    expect(out.status).toBe(200)
+  })
+
   it('returns 403 forbidden when disabling the last active admin', async () => {
     const lastAdmin = { ...SAMPLE_USER, username: 'other-admin', role: 'admin', tenant_id: null }
     vi.mocked(db.getDashboardUserById).mockResolvedValue(lastAdmin as any)
@@ -431,6 +480,130 @@ describe('POST /api/v1/admin/users -- profile fields', () => {
     expect(out.status).toBe(400)
     expect(out.body.error).toBe('invalid_value')
     expect(out.body.field).toBe('email')
+  })
+})
+
+// Edge cases of the self-protection and last-admin pre-checks of PATCH /admin/users/:id. Every "passes" case asserts
+// that the update was really attempted with the expected patch, every "refused" case that nothing was written, so a
+// guard that fires too early (or not at all) cannot hide behind a status code alone.
+describe('PATCH /api/v1/admin/users/:id -- self-protection and last-admin edges', () => {
+  const adminRow = (username: string) => ({ ...SAMPLE_USER, username, role: 'admin', tenant_id: null })
+  const viewerRow = { ...SAMPLE_USER, username: 'some-viewer', role: 'viewer', tenant_id: 'acme-corp' }
+  // makeCtx always uses the actor 'admin-user'; override the authenticated principal per case.
+  const withActor = (c: ReturnType<typeof makeCtx>, auth: unknown) => {
+    ;(c.ctx as any).auth = auth
+    return c
+  }
+  const prep = (row: any, activeAdmins: number) => {
+    vi.mocked(db.getDashboardUserById).mockResolvedValue(row)
+    vi.mocked(db.getTenant).mockResolvedValue(SAMPLE_TENANT)
+    vi.mocked(db.countActiveAdmins).mockResolvedValue(activeAdmins)
+    vi.mocked(db.adminPatchDashboardUser).mockClear()
+    vi.mocked(db.adminPatchDashboardUser).mockResolvedValue({ status: 'updated', user: row })
+  }
+
+  // usernames are case-insensitive: the same account in another case is still "self", on either side of the compare
+  describe.each([
+    ['admin-user', 'Admin-User'],
+    ['Admin-User', 'admin-user'],
+    ['admin-user', 'ADMIN-USER'],
+    ['ADMIN-USER', 'admin-user'],
+  ])('row %j, session user %j', (rowName, actorName) => {
+    it('a self-demotion is refused and nothing is written', async () => {
+      prep(adminRow(rowName), 3)
+      const c = withActor(makeCtx('PATCH', '/api/v1/admin/users/5', { role: 'viewer', tenant_id: 'acme-corp' }), { kind: 'session', user: actorName })
+      await tryHandleAdminB2b(c.ctx)
+      expect(c.out.status).toBe(403)
+      expect(c.out.body).toEqual({ error: 'forbidden', hint: 'Cannot change the role of your own account' })
+      expect(db.adminPatchDashboardUser).not.toHaveBeenCalled()
+    })
+
+    it('a self-disable is refused and nothing is written', async () => {
+      prep(adminRow(rowName), 3)
+      const c = withActor(makeCtx('PATCH', '/api/v1/admin/users/5', { disabled: true }), { kind: 'session', user: actorName })
+      await tryHandleAdminB2b(c.ctx)
+      expect(c.out.status).toBe(403)
+      expect(c.out.body).toEqual({ error: 'forbidden', hint: 'Cannot disable your own account' })
+      expect(db.adminPatchDashboardUser).not.toHaveBeenCalled()
+    })
+  })
+
+  it('a different user name is not "self" (a prefix or a substring of the actor does not match)', async () => {
+    for (const rowName of ['admin-use', 'admin-user2', 'xadmin-user']) {
+      prep(adminRow(rowName), 3)
+      const c = makeCtx('PATCH', '/api/v1/admin/users/5', { role: 'viewer', tenant_id: 'acme-corp' })
+      await tryHandleAdminB2b(c.ctx)
+      expect(c.out.status, rowName).toBe(200)
+      expect(db.adminPatchDashboardUser, rowName).toHaveBeenCalledTimes(1)
+    }
+  })
+
+  it.each([
+    ['no user on the session principal', { kind: 'session' }],
+    ['no auth object at all', undefined],
+  ])('%s: nobody is "self", demoting another admin (3 active) passes and writes, no crash', async (_label, auth) => {
+    prep(adminRow('other-admin'), 3)
+    const c = withActor(makeCtx('PATCH', '/api/v1/admin/users/5', { role: 'viewer', tenant_id: 'acme-corp' }), auth)
+    await tryHandleAdminB2b(c.ctx)
+    expect(c.out.status).toBe(200)
+    expect(db.adminPatchDashboardUser).toHaveBeenCalledWith(5, { role: 'viewer', tenant_id: 'acme-corp' })
+  })
+
+  it('a patch WITHOUT a role is no demotion: the last admin\'s display name changes', async () => {
+    prep(adminRow('other-admin'), 1)
+    const c = makeCtx('PATCH', '/api/v1/admin/users/5', { display_name: 'Ops Admin' })
+    await tryHandleAdminB2b(c.ctx)
+    expect(c.out.status).toBe(200)
+    expect(db.adminPatchDashboardUser).toHaveBeenCalledWith(5, { display_name: 'Ops Admin' })
+  })
+
+  it('a patch WITHOUT a role is no demotion: an admin edits their OWN email, display name and password (one active admin)', async () => {
+    const bodies: Array<[object, object]> = [
+      [{ email: 'ops@example.test' }, { email: 'ops@example.test' }],
+      [{ display_name: 'Me' }, { display_name: 'Me' }],
+      [{ password: 'supersecret123' }, { password_hash: '$hash$' }],
+    ]
+    for (const [body, expected] of bodies) {
+      prep(adminRow('admin-user'), 1)
+      const c = makeCtx('PATCH', '/api/v1/admin/users/5', body)
+      await tryHandleAdminB2b(c.ctx)
+      expect(c.out.status, JSON.stringify(Object.keys(body))).toBe(200)
+      expect(db.adminPatchDashboardUser).toHaveBeenCalledWith(5, expected)
+    }
+  })
+
+  it('a NON-admin target is never a last-admin refusal: disabling it and changing its role pass with one active admin', async () => {
+    prep(viewerRow, 1)
+    const disable = makeCtx('PATCH', '/api/v1/admin/users/5', { disabled: true })
+    await tryHandleAdminB2b(disable.ctx)
+    expect(disable.out.status).toBe(200)
+    expect(db.adminPatchDashboardUser).toHaveBeenCalledWith(5, { disabled: true })
+    prep(viewerRow, 1)
+    const change = makeCtx('PATCH', '/api/v1/admin/users/5', { role: 'agent', tenant_id: 'acme-corp' })
+    await tryHandleAdminB2b(change.ctx)
+    expect(change.out.status).toBe(200)
+    expect(db.adminPatchDashboardUser).toHaveBeenCalledWith(5, { role: 'agent', tenant_id: 'acme-corp' })
+  })
+
+  it('the last-admin threshold is exactly one: with TWO active admins another admin can be demoted or disabled', async () => {
+    prep(adminRow('other-admin'), 2)
+    const demote = makeCtx('PATCH', '/api/v1/admin/users/5', { role: 'viewer', tenant_id: 'acme-corp' })
+    await tryHandleAdminB2b(demote.ctx)
+    expect(demote.out.status).toBe(200)
+    expect(db.adminPatchDashboardUser).toHaveBeenCalledWith(5, { role: 'viewer', tenant_id: 'acme-corp' })
+    prep(adminRow('other-admin'), 2)
+    const disable = makeCtx('PATCH', '/api/v1/admin/users/5', { disabled: true })
+    await tryHandleAdminB2b(disable.ctx)
+    expect(disable.out.status).toBe(200)
+    expect(db.adminPatchDashboardUser).toHaveBeenCalledWith(5, { disabled: true })
+  })
+
+  it('re-enabling the own account ({disabled:false}) is not a self-disable', async () => {
+    prep(adminRow('admin-user'), 1)
+    const c = makeCtx('PATCH', '/api/v1/admin/users/5', { disabled: false })
+    await tryHandleAdminB2b(c.ctx)
+    expect(c.out.status).toBe(200)
+    expect(db.adminPatchDashboardUser).toHaveBeenCalledWith(5, { disabled: false })
   })
 })
 
