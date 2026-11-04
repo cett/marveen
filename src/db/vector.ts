@@ -578,10 +578,14 @@ export function migrateExistingEmbeddingsToBLOB(): number {
 // @sqlite-only: writes the sqlite-vec `vec0` table (the PostgreSQL phase moves it to pgvector, D4). Inside a dbx.tx
 // body the call joins the open transaction (same connection, the lock does not wait in the body), so a rollback of
 // that transaction takes the vec entry delete with it, provided the call is awaited inside the body.
+// The delete runs in a nested transaction (a SAVEPOINT inside a body, a transaction of its own outside one), as the
+// workspace helpers do: its failure is swallowed, and on PostgreSQL a statement that failed inside an open
+// transaction aborts the whole of it (25P02) unless it ran in a savepoint that was rolled back. On SQLite the
+// savepoint changes nothing observable; it keeps the swallow safe for the pooled backend.
 export async function syncVecMemoryDelete(id: number): Promise<void> {
   if (!vecExtensionLoaded) return
   try {
-    await dbx.run('DELETE FROM vec_memories WHERE memory_id = ?', BigInt(id))
+    await dbx.tx(async (tx) => { await tx.run('DELETE FROM vec_memories WHERE memory_id = ?', BigInt(id)) })
   } catch { /* vec0 unavailable at runtime -- no-op */ }
 }
 
