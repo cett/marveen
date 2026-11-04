@@ -18,6 +18,19 @@ let wt: string // a git worktree copy of it
 const SCRIPTS = () => join(root, 'scripts')
 const touch = (p: string, body = '// x\n') => { mkdirSync(dirname(p), { recursive: true }); writeFileSync(p, body) }
 
+// The gate's neighbourhood outside scripts/hooks and scripts/lib: the API wrapper, the hook installer, the fail-closed
+// checkers, the secret gate and the hook-registration guard. Their NEIGHBOURS (same directory, other name) stay editable.
+const ADJACENT_FILES = [
+  'scripts/agent-api.sh',
+  'scripts/sync-hooks.sh',
+  'scripts/doctor.sh',
+  'scripts/gate-onfailure-check.py',
+  'scripts/secret-gate.ts',
+  'src/web/hook-registration-guard.ts',
+  'src/security/secret-gate.ts',
+]
+const ADJACENT_NEIGHBOURS = ['src/web/routes/approvals.ts', 'src/web/other.ts', 'src/security/other.ts', 'scripts/other-tool.sh']
+
 beforeEach(() => {
   base = mkdtempSync(join(tmpdir(), 'gate-scripts-'))
   root = join(base, 'marveen')
@@ -29,6 +42,7 @@ beforeEach(() => {
     touch(join(r, 'scripts', 'hooks', 'egress-gate.mjs'))
     touch(join(r, 'scripts', 'hooks', 'memory-save.sh'))
     touch(join(r, 'scripts', 'lib', 'homoglyph.py'))
+    for (const rel of [...ADJACENT_FILES, ...ADJACENT_NEIGHBOURS]) touch(join(r, rel))
     touch(join(r, 'templates', 'egress-vendor-hosts.json'), '{"hosts":[]}')
   }
   touch(join(root, 'store', 'egress-allowlist.json'), '{"domains":[]}')
@@ -782,5 +796,50 @@ describe('a bracket in the command text never crashes the gate', () => {
   it('an out-of-order range is read with its ends swapped: the gate over-matches, it never matches less', () => {
     expect(bash('cp /tmp/x scripts/self-pace-gate.mj[t-r]')).toEqual({ deny: true, reason: 'gate-scripts' })
     expect(bash('cp /tmp/x scripts/self-pace-gate.mj[z-t]')).toEqual({ deny: false })
+  })
+})
+
+describe('the gate neighbourhood (agent-api.sh, sync-hooks.sh, doctor.sh, gate-onfailure-check.py, secret-gate, hook-registration-guard)', () => {
+  const tools = ['Write', 'Edit', 'MultiEdit', 'NotebookEdit'] as const
+  const input = (tool: string, path: string) => (tool === 'NotebookEdit' ? { notebook_path: path } : { file_path: path })
+
+  for (const tool of tools) {
+    it.each(ADJACENT_FILES)(`${tool} on %s is denied as a gate script`, (rel) => {
+      expect(gateDecision(tool, input(tool, join(root, rel)), opts(root))).toEqual({ deny: true, reason: 'gate-scripts' })
+    })
+  }
+  it.each(ADJACENT_FILES)('%s: a relative path and a symlink under another name are denied too', (rel) => {
+    expect(file('Edit', rel, root).reason).toBe('gate-scripts')
+    const link = join(base, `alias-${rel.replace(/\//g, '-')}`)
+    symlinkSync(join(root, rel), link)
+    expect(file('Write', link).reason).toBe('gate-scripts')
+  })
+  it.each(ADJACENT_FILES)('%s: the same file in a git worktree copy is editable', (rel) => {
+    expect(file('Edit', join(wt, rel), wt)).toEqual({ deny: false })
+  })
+  it.each(ADJACENT_NEIGHBOURS)('%s: a neighbour in the same directory is not protected', (rel) => {
+    expect(file('Edit', join(root, rel))).toEqual({ deny: false })
+    expect(bash(`cp /tmp/x ${rel}`)).toEqual({ deny: false })
+  })
+  it.each(ADJACENT_FILES)('%s: Bash writes, moves, removals and in-place edits are denied', (rel) => {
+    for (const command of [`cp /tmp/x ${rel}`, `echo x >> ${rel}`, `sed -i '' s/a/b/ ${rel}`, `mv /tmp/x ${rel}`, `rm ${rel}`, `tee ${rel} < /tmp/x`, `git checkout -- ${rel}`]) {
+      expect({ command, r: bash(command) }).toEqual({ command, r: { deny: true, reason: 'gate-scripts' } })
+    }
+  })
+  it.each(ADJACENT_FILES)('%s: plain reads, diffs and version-control reads stay allowed; so do the same writes in a worktree copy', (rel) => {
+    for (const command of [`cat ${rel}`, `grep -n x ${rel}`, `diff ${rel} /tmp/other`, `git diff develop -- ${rel}`, `git add ${rel}`]) {
+      expect({ command, r: bash(command) }).toEqual({ command, r: { deny: false } })
+    }
+    expect(bash(`cp /tmp/x ${rel}`, wt)).toEqual({ deny: false })
+  })
+  it('a plain run of the API wrapper and of the checkers is not a write', () => {
+    for (const command of ['bash scripts/agent-api.sh --agent zack GET /api/agents', 'bash scripts/doctor.sh', 'python3 scripts/gate-onfailure-check.py', 'bash scripts/sync-hooks.sh --dry-run']) {
+      expect({ command, r: bash(command) }).toEqual({ command, r: { deny: false } })
+    }
+  })
+  it('the protected set names every one of them (a file dropped from the list fails here)', () => {
+    const set = protectedSet(opts(root)).entries as Array<{ real: string; kind: string }>
+    const reals = new Set(set.filter((e) => e.kind === 'gate-scripts').map((e) => e.real))
+    for (const rel of ADJACENT_FILES) expect({ rel, listed: reals.has(realpathSync(join(root, rel))) }).toEqual({ rel, listed: true })
   })
 })

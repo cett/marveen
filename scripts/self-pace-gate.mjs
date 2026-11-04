@@ -220,6 +220,10 @@ function realOrSelf(p) {
   return parent === p ? p : join(realOrSelf(parent), basename(p))
 }
 
+// Files of a gate's neighbourhood that sit outside scripts/hooks and scripts/lib (see protectedSet).
+const GATE_ADJACENT_SCRIPTS = ['agent-api.sh', 'sync-hooks.sh', 'doctor.sh', 'gate-onfailure-check.py', 'secret-gate.ts']
+const GATE_ADJACENT_SOURCES = [['src', 'web', 'hook-registration-guard.ts'], ['src', 'security', 'secret-gate.ts']]
+
 // The protected set of an install. `entries` are real paths (dir: true = the directory and all below);
 // `ancestors` are the directories that CONTAIN protected paths (a move/remove of one removes them).
 export function protectedSet(opts = {}) {
@@ -239,6 +243,13 @@ export function protectedSet(opts = {}) {
   if (opts.allowlistPath) add(opts.allowlistPath, false, 'egress-allowlist')
   for (const f of ['self-pace-gate.mjs', 'email-send-gate.mjs']) add(join(scriptsDir, f), false, 'gate-scripts')
   for (const d of ['hooks', 'lib']) add(join(scriptsDir, d), true, 'gate-scripts')
+  // Gate-adjacent files outside hooks/ and lib/: whoever can rewrite them can switch a gate off or act as another
+  // agent. agent-api.sh carries every /api call and its token handling; sync-hooks.sh installs the hook registrations;
+  // doctor.sh and gate-onfailure-check.py are the fail-closed checkers; secret-gate.ts is the commit-time secret gate.
+  for (const f of GATE_ADJACENT_SCRIPTS) add(join(scriptsDir, f), false, 'gate-scripts')
+  // hook-registration-guard.ts self-heals the hook registrations; src/security/secret-gate.ts is the secret gate's engine.
+  const installRoot = dirname(scriptsDir)
+  for (const f of GATE_ADJACENT_SOURCES) add(join(installRoot, ...f), false, 'gate-scripts')
   // Directories that CONTAIN protected paths. Moving, removing or re-linking one removes or replaces
   // them. `strict`: any command that is not a plain read is denied (scripts/ also holds the gates by
   // name). `loose`: only commands that move, remove, link, extract or rewrite (see DESTRUCTIVE), so
@@ -1383,8 +1394,9 @@ const ALLOWLIST_GATE_MSG =
 
 const SCRIPTS_GATE_MSG =
   'Kapu- es hook-scriptek vedve (governance hard-gate). Sub-agentkent NEM irhatod ennek a telepitesnek a ' +
-  'scripts/self-pace-gate.mjs, scripts/email-send-gate.mjs, scripts/hooks/ es scripts/lib/ fajljait: ezek RAD ' +
-  'vonatkozo kapuk. Ha egy kapu hibas vagy modositani kell, kerd a fo agenst (inter-agent uzenet: fajl + miert). ' +
+  'scripts/self-pace-gate.mjs, scripts/email-send-gate.mjs, scripts/hooks/ es scripts/lib/ fajljait, sem a ' +
+  'scripts/agent-api.sh, sync-hooks.sh, doctor.sh, gate-onfailure-check.py, secret-gate.ts, src/web/hook-registration-guard.ts ' +
+  'es src/security/secret-gate.ts fajlokat: ezek RAD vonatkozo kapuk vagy a kapuk ellenorzoi. Ha egy kapu hibas vagy modositani kell, kerd a fo agenst (inter-agent uzenet: fajl + miert). ' +
   'Olvasni (cat / grep / diff) es futtatni (node scripts/hooks/x.mjs, python3 scripts/hooks/x.py) szabad; ' +
   'a sajat worktree masolat szerkesztheto.'
 
