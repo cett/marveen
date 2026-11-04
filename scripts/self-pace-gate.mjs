@@ -258,6 +258,11 @@ export function protectedSet(opts = {}) {
   for (const s of storeDirs) ancestors.push({ real: s, strict: false, kind: 'egress-allowlist' })
   const root = dirname(scriptsDir)
   ancestors.push({ real: root, strict: false, kind: 'gate-scripts' })
+  // The directories above the protected sources (src, src/web, src/security): moving, removing or re-linking one
+  // takes the protected file with it or swaps it for another. Loose, so a plain write to a neighbour keeps working.
+  const sourceDirs = new Set()
+  for (const f of GATE_ADJACENT_SOURCES) for (let i = 1; i < f.length; i++) sourceDirs.add(join(installRoot, ...f.slice(0, i)))
+  for (const d of sourceDirs) ancestors.push({ real: realOrSelf(d), strict: false, kind: 'gate-scripts' })
   // The Claude Code settings files of the sub-agents (and of the install root): a settings.local.json
   // with {"disableAllHooks": true} switches every gate off. Per agent, by PATTERN under agents/ (see
   // agentSettingsKind), because an agent may not exist yet; the root ones are plain entries.

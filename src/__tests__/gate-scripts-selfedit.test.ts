@@ -832,6 +832,15 @@ describe('the gate neighbourhood (agent-api.sh, sync-hooks.sh, doctor.sh, gate-o
     }
     expect(bash(`cp /tmp/x ${rel}`, wt)).toEqual({ deny: false })
   })
+  it.each(['src', 'src/web', 'src/security'])('the directory %s that holds a protected source cannot be moved, removed, re-linked or overwritten', (dir) => {
+    for (const command of [`mv ${dir} ${dir}.bak`, `rm -rf ${dir}`, `ln -sfn /tmp/evil ${dir}`, `cp -r /tmp/new ${dir}`]) {
+      expect({ command, r: bash(command) }).toEqual({ command, r: { deny: true, reason: 'gate-scripts' } })
+    }
+    // in a worktree copy the same commands are fine, and a plain read / a write to a neighbour in the install is too
+    expect(bash(`mv ${dir} ${dir}.bak`, wt)).toEqual({ deny: false })
+    expect(bash(`ls ${dir}`)).toEqual({ deny: false })
+    expect(bash(`cp /tmp/x ${dir}/other-file.ts`)).toEqual({ deny: false })
+  })
   it('a plain run of the API wrapper and of the checkers is not a write', () => {
     for (const command of ['bash scripts/agent-api.sh --agent zack GET /api/agents', 'bash scripts/doctor.sh', 'python3 scripts/gate-onfailure-check.py', 'bash scripts/sync-hooks.sh --dry-run']) {
       expect({ command, r: bash(command) }).toEqual({ command, r: { deny: false } })
