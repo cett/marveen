@@ -35,6 +35,16 @@ describe('syncVecMemoryDelete', () => {
     expect(vecIds()).toEqual([42])
   })
 
+  it('outside a transaction it opens its own transaction (BEGIN, COMMIT) and no savepoint', async () => {
+    const sql = recordExec()
+    await syncVecMemoryDelete(41)
+    expect(sql).toContain('BEGIN')
+    expect(sql).toContain('COMMIT')
+    expect(sql.indexOf('BEGIN')).toBeLessThan(sql.indexOf('COMMIT'))
+    expect(sql.some((s) => /^SAVEPOINT /.test(s))).toBe(false)
+    expect(vecIds()).toEqual([42])
+  })
+
   it('inside a transaction body it runs in a savepoint, and the commit keeps the delete', async () => {
     const sql = recordExec()
     await dbx.tx(async () => { await syncVecMemoryDelete(41) })
@@ -64,7 +74,11 @@ describe('syncVecMemoryDelete', () => {
       await syncVecMemoryDelete(41)
       await tx.run('INSERT INTO vec_memories(memory_id, embedding) VALUES (?, ?)', BigInt(43), EMB)
     })
-    expect(sql.some((s) => /^ROLLBACK TO dbx_sp_\d+$/.test(s))).toBe(true)
+    const rollbackAt = sql.findIndex((s) => /^ROLLBACK TO dbx_sp_\d+$/.test(s))
+    expect(rollbackAt).toBeGreaterThan(-1)
+    // the savepoint is released right after the rollback to it, under the same name; without the RELEASE it would
+    // stay open inside the surrounding transaction
+    expect(sql[rollbackAt + 1]).toBe(`RELEASE ${sql[rollbackAt].replace('ROLLBACK TO ', '')}`)
     vi.restoreAllMocks()
     expect(vecIds()).toEqual([41, 42, 43])
   })
