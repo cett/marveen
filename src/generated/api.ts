@@ -110,6 +110,13 @@ export interface OkResponse {
   ok: boolean;
 }
 
+export interface KanbanClaimResponse {
+  ok: boolean;
+  id: string;
+  /** The claimant, now the card's assignee */
+  assignee: string;
+}
+
 export interface ChannelBinding {
   agent_id: string;
   channel: string;
@@ -523,6 +530,8 @@ export type GetKanbanCardResponse = KanbanCard
 export type UpdateKanbanCardResponse = OkResponse
 
 export type DeleteKanbanCardResponse = OkResponse
+
+export type ClaimKanbanCardResponse = KanbanClaimResponse
 
 export type MoveKanbanCardResponse = OkResponse
 
