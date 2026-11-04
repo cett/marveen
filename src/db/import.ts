@@ -4,6 +4,7 @@
 
 import { createHash } from 'node:crypto'
 import { dbx } from './facade.js'
+import { likeContains } from './like.js'
 import { syncVecMemoryDelete } from './vector.js'
 import { isBlankContent } from '../blank-content.js'
 
@@ -160,21 +161,21 @@ export async function searchImportMemories(
 ): Promise<{ items: unknown[]; total: number }> {
   const tc = tenantId === null ? '' : ' AND s.tenant_id = ?'
   const tp = tenantId === null ? [] : [tenantId]
-  const like = `%${query}%`
+  const like = likeContains(query)
   const params = [like, like, like, ...tp]
   const items = await dbx.all(`
       SELECT im.id, im.source_id, im.file_path, im.file_name, im.keywords,
              substr(im.content, 1, 300) AS preview, im.created_at, im.updated_at
       FROM import_memories im
       JOIN import_sources s ON s.id = im.source_id
-      WHERE (im.content LIKE ? OR im.keywords LIKE ? OR im.file_name LIKE ?)${tc}
+      WHERE (im.content LIKE ? ESCAPE '\\' OR im.keywords LIKE ? ESCAPE '\\' OR im.file_name LIKE ? ESCAPE '\\')${tc}
       ORDER BY im.updated_at DESC LIMIT ? OFFSET ?
     `, ...params, limit, offset)
   const total = ((await dbx.get(`
       SELECT COUNT(*) AS n
       FROM import_memories im
       JOIN import_sources s ON s.id = im.source_id
-      WHERE (im.content LIKE ? OR im.keywords LIKE ? OR im.file_name LIKE ?)${tc}
+      WHERE (im.content LIKE ? ESCAPE '\\' OR im.keywords LIKE ? ESCAPE '\\' OR im.file_name LIKE ? ESCAPE '\\')${tc}
     `, ...params)) as { n: number }).n
   return { items, total }
 }
