@@ -141,21 +141,59 @@ describe('replaceActiveApiToken', () => {
 // rotation that fails must roll the WHOLE outer transaction back, not just its own part: the other rows it
 // revokes in the same transaction must stay as they were.
 describe('rotation nested in a larger transaction', () => {
-  it('rotateSharedDashboardToken: a lost rotation leaves the older active rows active', async () => {
-    const newest = await mint('dashboard', 'newest-hash', 'admin')
-    const older = await mint('dashboard', 'older-hash', 'admin')
-    await revokeApiToken(newest.id, NOW - 5)
+  it('rotateSharedDashboardToken: a rotation that fails leaves every active row active', async () => {
+    // Two active rows: the older one is revoked first, then the rotation of the newest fails on the UNIQUE
+    // hash of the replacement. The revoke of the older row must roll back with it.
+    await mint('dashboard', 'older-hash', 'admin')
+    await mint('dashboard', 'newest-hash', 'admin')
+    await mint('t-taken', 'taken-hash')
     const before = count()
 
-    await expect(rotateSharedDashboardToken([newest, older], 'new-hash', NOW)).rejects.toBeInstanceOf(ApiTokenAlreadyRevokedError)
+    await expect(rotateSharedDashboardToken('taken-hash', NOW)).rejects.toThrow()
 
     expect(count()).toBe(before)
-    expect(await activeHashes('dashboard')).toEqual(['older-hash'])
+    expect(await activeHashes('dashboard')).toEqual(['newest-hash', 'older-hash'])
   })
 
   it('the normal rotation still completes (the nesting does not deadlock)', async () => {
-    const shared = await mint('dashboard', 'shared-hash', 'admin')
-    const sharedNext = await rotateSharedDashboardToken([shared], 'shared-new', NOW)
-    expect(await activeHashes('dashboard')).toEqual([sharedNext.token_hash])
+    await mint('dashboard', 'shared-hash', 'admin')
+    const { row, rotated } = await rotateSharedDashboardToken('shared-new', NOW)
+    expect(rotated).toBe(true)
+    expect(await activeHashes('dashboard')).toEqual([row.token_hash])
+  })
+
+  it('without an active dashboard row it mints one and says it did not rotate', async () => {
+    const { row, rotated } = await rotateSharedDashboardToken('first-hash', NOW)
+    expect(rotated).toBe(false)
+    expect(row.name).toBe('dashboard')
+    expect(await activeHashes('dashboard')).toEqual(['first-hash'])
+  })
+
+  it('reads the active rows itself: a row added after the caller looked is revoked, not left active', async () => {
+    // The old shape took the list from the caller. Here the only input is the new hash, so whatever is
+    // active when the transaction runs is what gets rotated or revoked.
+    await mint('dashboard', 'one-hash', 'admin')
+    await mint('dashboard', 'two-hash', 'admin')
+    await rotateSharedDashboardToken('rot-hash', NOW)
+    expect(await activeHashes('dashboard')).toEqual(['rot-hash'])
+  })
+
+  it('two overlapping rotations leave exactly one active dashboard row', async () => {
+    await mint('dashboard', 'start-hash', 'admin')
+    await Promise.all([rotateSharedDashboardToken('rot-1', NOW), rotateSharedDashboardToken('rot-2', NOW)])
+    const active = await activeHashes('dashboard')
+    expect(active).toHaveLength(1)
+    expect(['rot-1', 'rot-2']).toContain(active[0])
+  })
+
+  it('opens its transaction IMMEDIATE (the active rows are read under the write lock)', async () => {
+    await mint('dashboard', 'start-hash', 'admin')
+    const original = dbx.tx.bind(dbx)
+    const spy = vi.spyOn(dbx, 'tx').mockImplementation((fn, opts) => original(fn, opts))
+
+    await rotateSharedDashboardToken('rot-hash', NOW)
+
+    expect(spy.mock.calls[0][1]).toEqual({ mode: 'immediate' })
+    spy.mockRestore()
   })
 })

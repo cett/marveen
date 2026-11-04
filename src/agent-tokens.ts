@@ -172,9 +172,9 @@ export async function rotateSharedToken(opts: { now?: number } = {}): Promise<Ro
   atomicWriteFileSync(path, raw, { mode: 0o600 })
   const hash = sha256(raw)
 
-  const active = await listActiveApiTokensByName('dashboard', now)
-  const row = await rotateSharedDashboardToken(active, hash, now)
-  return { status: active.length > 0 ? 'rotated' : 'issued', path, tokenId: row.id }
+  // The active rows are read inside the transaction (see rotateSharedDashboardToken), not here.
+  const { row, rotated } = await rotateSharedDashboardToken(hash, now)
+  return { status: rotated ? 'rotated' : 'issued', path, tokenId: row.id }
 }
 
 export type ArchiveSharedAge = 'predates' | 'current' | 'unknown'
