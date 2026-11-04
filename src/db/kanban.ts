@@ -686,9 +686,10 @@ export async function listArchivedKanbanCards(opts: {
 
 /** The project names of the active cards; `tenantId` limits them to that tenant (omitted or null = every tenant). */
 export async function listKanbanProjects(tenantId?: string | null): Promise<string[]> {
+  // The tenant condition is in the SQL only when a tenant is given (a bare `? IS NULL` parameter has no type on PostgreSQL).
   const rows = (await dbx.all(`SELECT DISTINCT project FROM kanban_cards
-     WHERE project IS NOT NULL AND project != '' AND archived_at IS NULL AND (? IS NULL OR tenant_id = ?)
-     ORDER BY project`, tenantId ?? null, tenantId ?? null)) as Array<{ project: string }>
+     WHERE project IS NOT NULL AND project != '' AND archived_at IS NULL${tenantId != null ? ' AND tenant_id = ?' : ''}
+     ORDER BY project`, ...(tenantId != null ? [tenantId] : []))) as Array<{ project: string }>
   return rows.map(r => r.project)
 }
 
