@@ -43,6 +43,15 @@ function spyFacade(): string[] {
   return seen
 }
 
+/** Records the text of every db.exec (BEGIN, COMMIT, SAVEPOINT, ROLLBACK TO, RELEASE) from now on. */
+function recordExec(): string[] {
+  const seen: string[] = []
+  const db = getDb()
+  const original = db.exec.bind(db)
+  vi.spyOn(db, 'exec').mockImplementation((sql: string) => { seen.push(sql); return original(sql) })
+  return seen
+}
+
 describe('adminPatchDashboardUser: the last active admin', () => {
   it('refuses to demote the last active admin and leaves the row as it was', async () => {
     const a = await provisionDashboardUser('only-admin', 'h', 'admin', null)
@@ -217,6 +226,46 @@ describe('deleteTenant: one transaction on the tx handle', () => {
     getDb().exec("CREATE TRIGGER tenant_delete_blocked BEFORE DELETE ON tenants BEGIN SELECT RAISE(ABORT, 'blocked'); END")
     await expect(deleteTenant('gone')).rejects.toThrow(/blocked/)
     expect(getDb().prepare('SELECT COUNT(*) AS n FROM vec_memories WHERE memory_id = ?').get(BigInt(id))).toEqual({ n: 1 })
+  })
+
+  // The vec_workspace_docs delete is best effort (its failure is swallowed), so it runs in a savepoint inside the
+  // delete transaction. On SQLite a failed statement leaves the transaction usable anyway; on PostgreSQL the swallowed
+  // failure would abort the whole transaction (25P02) without the savepoint. So the statements are watched.
+  it('the vec_workspace_docs delete runs in a savepoint: a failure there is swallowed, rolled back and released, the tenant delete commits', async (ctx) => {
+    if (!vecExtensionLoaded) ctx.skip()
+    await createTenant('gone', 'Gone')
+    seedTenantRows('gone')
+    const sql = recordExec()
+    const db = getDb()
+    const realPrepare = db.prepare.bind(db)
+    vi.spyOn(db, 'prepare').mockImplementation(((text: string) => {
+      if (/^DELETE FROM vec_workspace_docs WHERE tenant_id/.test(text)) throw new Error('vec0 unavailable')
+      return realPrepare(text)
+    }) as typeof db.prepare)
+    await deleteTenant('gone')
+    vi.restoreAllMocks()
+    // the seeded memory row has its own vec entry delete (a savepoint of its own, released); the failing one is the only
+    // savepoint that is rolled back: opened right before, released right after, under the same name
+    const rollbackAt = sql.findIndex((s) => /^ROLLBACK TO dbx_sp_\d+$/.test(s))
+    expect(rollbackAt).toBeGreaterThan(0)
+    const name = sql[rollbackAt].replace('ROLLBACK TO ', '')
+    expect(sql[rollbackAt - 1]).toBe(`SAVEPOINT ${name}`)
+    expect(sql[rollbackAt + 1]).toBe(`RELEASE ${name}`)
+    // the outer transaction went on and committed: the tenant is gone with its rows
+    expect(sql[sql.length - 1]).toBe('COMMIT')
+    expect(rows('tenants', 'id', 'gone')).toBe(0)
+    expect(rows('dashboard_users', 'tenant_id', 'gone')).toBe(0)
+    expect(rows('memories', 'tenant_id', 'gone')).toBe(0)
+  })
+
+  it('without a failure both vec deletes (the memory row and the workspace docs) are savepoints that are released, never rolled back', async (ctx) => {
+    if (!vecExtensionLoaded) ctx.skip()
+    await createTenant('gone', 'Gone')
+    seedTenantRows('gone')
+    const sql = recordExec()
+    await deleteTenant('gone')
+    expect(sql.filter((s) => /^(SAVEPOINT|RELEASE|ROLLBACK TO) /.test(s)))
+      .toEqual(['SAVEPOINT dbx_sp_1', 'RELEASE dbx_sp_1', 'SAVEPOINT dbx_sp_2', 'RELEASE dbx_sp_2'])
   })
 })
 
