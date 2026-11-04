@@ -160,7 +160,7 @@ describe('PUT /api/kanban/:id with expected_updated_at', () => {
       const seen: Array<{ sql: string; params: unknown[] }> = []
       const real = dbx.tx.bind(dbx)
       const spy = vi.spyOn(dbx, 'tx').mockImplementation((fn: (tx: any) => Promise<unknown>, o?: any) =>
-        real((tx: any) => fn({ ...tx, run: async (sql: string, ...params: unknown[]) => { seen.push({ sql, params }); return tx.run(sql, ...params) } }), o) as never)
+        real((tx: any) => fn({ ...tx, run: async (sql: string, ...params: unknown[]) => { seen.push({ sql, params }); return await tx.run(sql, ...params) } }), o) as never)
       try {
         expect(await updateKanbanCard(CARD, { title: `T${Math.random()}` }, undefined, opts)).toBe(true)
       } finally { spy.mockRestore() }
