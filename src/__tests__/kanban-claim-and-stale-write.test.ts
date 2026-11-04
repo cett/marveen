@@ -6,6 +6,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { EventEmitter } from 'node:events'
 import { createHash } from 'node:crypto'
 import type http from 'node:http'
+import { dbx } from '../db/facade.js'
 import { initDatabase, getDb, insertApiToken, createKanbanCard, claimKanbanCard, updateKanbanCard } from '../db.js'
 import { resolveAuth, type AuthResult } from '../web/auth-gate.js'
 import { checkPermission, resolveRole, resolveTenantId } from '../web/authz.js'
@@ -150,6 +151,39 @@ describe('PUT /api/kanban/:id with expected_updated_at', () => {
     const v = row(CARD).updated_at
     expect(await updateKanbanCard(CARD, { title: 'Stale' }, undefined, { expectedUpdatedAt: v - 1 })).toBe(false)
     expect(await updateKanbanCard(CARD, { title: 'Fresh' }, undefined, { expectedUpdatedAt: v })).toBe(true)
+  })
+
+  // PostgreSQL cannot type a bare `? IS NULL` parameter, so the guard is in the SQL only when the caller asks for it.
+  describe('the guard is in the UPDATE only when expected_updated_at is given', () => {
+    // The UPDATE of the card row, with the parameters it ran with.
+    async function runUpdate(opts?: { expectedUpdatedAt?: number }): Promise<{ sql: string; params: unknown[] }> {
+      const seen: Array<{ sql: string; params: unknown[] }> = []
+      const real = dbx.tx.bind(dbx)
+      const spy = vi.spyOn(dbx, 'tx').mockImplementation((fn: (tx: any) => Promise<unknown>, o?: any) =>
+        real((tx: any) => fn({ ...tx, run: async (sql: string, ...params: unknown[]) => { seen.push({ sql, params }); return tx.run(sql, ...params) } }), o) as never)
+      try {
+        expect(await updateKanbanCard(CARD, { title: `T${Math.random()}` }, undefined, opts)).toBe(true)
+      } finally { spy.mockRestore() }
+      const update = seen.find((s) => s.sql.includes('UPDATE kanban_cards SET title'))
+      if (!update) throw new Error('no card UPDATE seen')
+      return update
+    }
+
+    it('a plain write has no updated_at condition and no bare IS NULL parameter', async () => {
+      const u = await runUpdate()
+      expect(u.sql).not.toMatch(/IS NULL OR updated_at/)
+      expect(u.sql).not.toMatch(/\?\s+IS NULL/)
+      expect(u.sql).not.toMatch(/AND updated_at=\?/)
+      expect((u.sql.match(/\?/g) ?? []).length).toBe(u.params.length)
+    })
+
+    it('a guarded write adds exactly AND updated_at=? and the expected version is its last parameter', async () => {
+      const v = row(CARD).updated_at
+      const u = await runUpdate({ expectedUpdatedAt: v })
+      expect(u.sql).toMatch(/WHERE id=\? AND updated_at=\?/)
+      expect((u.sql.match(/\?/g) ?? []).length).toBe(u.params.length)
+      expect(u.params[u.params.length - 1]).toBe(v)
+    })
   })
 })
 

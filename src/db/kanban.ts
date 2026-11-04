@@ -352,17 +352,19 @@ export async function updateKanbanCard(
   }
 
   const f = { ...card, ...fields, depth: newDepth, updated_at: now }
+  const guarded = opts?.expectedUpdatedAt !== undefined
   // The row update and the depth cascade over its subtree are one transaction (they ran without a yield before).
   const ok = await dbx.tx(async (tx) => {
     const updated = (await tx.run(`UPDATE kanban_cards SET title=?, description=?, status=?, assignee=?, priority=?, project=?, parent_id=?, depth=?, due_date=?, sort_order=?, updated_at=?, archived_at=?, blocked_by=?, blocked_reason=?, waiting_for=?, resolved_by=?,
      dispatched_at=CASE WHEN ? THEN NULL ELSE dispatched_at END
-     WHERE id=? AND (? IS NULL OR updated_at=?)`, f.title, f.description, f.status, f.assignee, f.priority, f.project, f.parent_id, f.depth, f.due_date, f.sort_order, f.updated_at, f.archived_at,
+     WHERE id=?${guarded ? ' AND updated_at=?' : ''}`, f.title, f.description, f.status, f.assignee, f.priority, f.project, f.parent_id, f.depth, f.due_date, f.sort_order, f.updated_at, f.archived_at,
     f.blocked_by, f.blocked_reason, f.waiting_for, f.resolved_by,
     // In SQL and not as a value read earlier: a stamp set between the read and the write must not be overwritten.
     kanbanWriteClearsDispatch(f.status) ? 1 : 0,
     id,
-    // Stale-write guard: with expectedUpdatedAt the UPDATE matches only the version the caller read.
-    opts?.expectedUpdatedAt ?? null, opts?.expectedUpdatedAt ?? null,
+    // Stale-write guard: with expectedUpdatedAt the UPDATE matches only the version the caller read. The condition is
+    // in the SQL only then (a bare `? IS NULL` parameter has no type on PostgreSQL and would fail every plain PUT).
+    ...(guarded ? [opts?.expectedUpdatedAt] : []),
     )).changes > 0
     if (updated && parentChanging) await cascadeDepth(id, newDepth, tx)
     return updated
