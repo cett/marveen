@@ -40,16 +40,16 @@ const mockWriteAgentAuditLog = vi.fn()
 // about the activePlan field override this per-test.
 const mockListActivePlansForAgents = vi.fn<(agentIds: string[]) => Map<string, object>>(() => new Map())
 const mockDeactivatePlanForAgent = vi.fn()
-vi.mock('../db.js', () => ({
+vi.mock('../db.js', async () => ({
   listBlackboardRows: (limit: number, tenantId?: string | null) => Promise.resolve(mockListBlackboardRows(limit, tenantId)),
   getLastOutboundMessageTimes: (ids: string[], since: number) => Promise.resolve(mockGetLastOutboundMessageTimes(ids, since)),
   getLastBlackboardChangeTimes: (ids: string[]) => Promise.resolve(mockGetLastBlackboardChangeTimes(ids)),
   blackboardRowExistsForAgent: (agentId: string) => Promise.resolve(mockBlackboardRowExistsForAgent(agentId)),
   getBlackboardRowById: (id: string) => Promise.resolve(mockGetBlackboardRowById(id)),
   updateBlackboardRowById: (id: string, fields: unknown, scope?: unknown) => Promise.resolve(mockUpdateBlackboardRowById(id, fields, scope)),
-  // The real scope predicate (pure), so the route's pre-read check is exercised, not mocked away.
-  blackboardRowInScope: (row: { agent_id: string; tenant_id?: string }, scope?: { tenantId: string } | { ownerAgentId: string }) =>
-    !scope ? true : 'tenantId' in scope ? row.tenant_id === scope.tenantId : row.agent_id === scope.ownerAgentId,
+  // The REAL scope predicate from its module (pure, no database), so the route's pre-read check is exercised
+  // against the shipped code, not against a copy of it.
+  blackboardRowInScope: (await vi.importActual<typeof import('../db/agents.js')>('../db/agents.js')).blackboardRowInScope,
   insertBlackboardHistory: (a: unknown) => Promise.resolve(mockInsertBlackboardHistory(a)),
   listBlackboardHistory: (a: unknown) => Promise.resolve(mockListBlackboardHistory(a)),
   upsertBlackboard: (agent_id: unknown, data: unknown) => Promise.resolve(mockUpsertBlackboard(agent_id, data)),
