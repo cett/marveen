@@ -41,11 +41,38 @@ def _in_scope(tool_name: str) -> bool:
     return tool_name.startswith('mcp__') or tool_name == 'WebFetch'
 
 
-# "Level A" -- explicit injection phrases only, (name, compiled pattern).
+# Role keyword followed by a colon. The newline-before part of the fake-turn marker is checked by
+# _FakeTurnMarker, not by the regex (see there).
+_TURN_KEYWORD_RX = re.compile(r'(?i)(Human|Assistant|System)\s*:')
+
+
+class _FakeTurnMarker:
+    """`(?i)\\n\\s*(Human|Assistant|System)\\s*:` without its quadratic cost.
+
+    The tool response is not ours: a hostile page can be megabytes of newlines. With `\\n\\s*` in front, the
+    regex engine starts an attempt at every `\\n` and each attempt walks the whole whitespace run, so a run of
+    n newlines costs n^2 (40 000 newlines: 13 s, on the hook's 10 s timeout). Here the keyword is found first
+    (a linear scan; each keyword's `\\s*:` tail is walked once), then the whitespace run right BEFORE it is
+    walked once; the marker holds exactly when that run contains a newline. A whitespace run belongs to one
+    keyword, so the total work is linear. `search` returns the match or None, like a compiled pattern.
+    """
+
+    def search(self, text: str):
+        for m in _TURN_KEYWORD_RX.finditer(text):
+            start = m.start()
+            j = start
+            while j > 0 and text[j - 1].isspace():
+                j -= 1
+            if '\n' in text[j:start]:
+                return m
+        return None
+
+
+# "Level A" -- explicit injection phrases only, (name, matcher with .search(text)).
 _PATTERNS = [
     ('ignore_instructions', re.compile(r'(?i)\bignore (all )?(previous|prior|above) instructions?\b')),
     ('forget_everything', re.compile(r'(?i)\bforget (everything|all|previous)\b')),
-    ('fake_turn_marker', re.compile(r'(?i)\n\s*(Human|Assistant|System)\s*:')),
+    ('fake_turn_marker', _FakeTurnMarker()),
     ('chatml_marker', re.compile(r'(?i)<\|im_(start|end)\|>')),
     ('llama_inst_marker', re.compile(r'\[INST\]|\[/INST\]')),
 ]
