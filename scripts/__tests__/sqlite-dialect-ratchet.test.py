@@ -73,6 +73,45 @@ class CountTextTest(unittest.TestCase):
         self.assertEqual(c["IS [NOT] <param>"], 0)
         self.assertEqual(c["CASE WHEN ? THEN"], 0)
 
+    def test_not_null_and_not_param_branches_are_counted(self):
+        c = mod.count_text("WHERE (? IS NOT NULL) AND (@agent IS NOT NULL) AND a IS NOT ? AND b IS NOT @v")
+        self.assertEqual(c["param IS [NOT] NULL"], 2)
+        self.assertEqual(c["IS [NOT] <param>"], 2)
+
+    def test_shapes_split_over_several_lines_are_counted(self):
+        text = (
+            "WHERE (?\n   IS\n  NULL OR t = ?)\n"
+            "AND (@agent\n IS\n NOT\n NULL)\n"
+            "AND x IS\n   ?\n"
+            "AND y IS NOT\n  @v\n"
+            "SET d = CASE\n  WHEN\n  ?\n  THEN NULL ELSE d END"
+        )
+        c = mod.count_text(text)
+        self.assertEqual(c["param IS [NOT] NULL"], 2)
+        self.assertEqual(c["IS [NOT] <param>"], 2)
+        self.assertEqual(c["CASE WHEN ? THEN"], 1)
+
+    def test_lowercase_and_mixed_case_shapes_are_counted(self):
+        c = mod.count_text("where (? is null or t = ?) and (@a Is Not Null) and x is ? and y Is Not @v and d = case when ? then 1 end")
+        self.assertEqual(c["param IS [NOT] NULL"], 2)
+        self.assertEqual(c["IS [NOT] <param>"], 2)
+        self.assertEqual(c["CASE WHEN ? THEN"], 1)
+
+    def test_word_boundaries_keep_look_alikes_out(self):
+        text = (
+            "THIS ? AND THIS @v AND ? IS NULLABLE AND @a IS NULLIF(b, c) "
+            "AND SUBCASE WHEN ? THEN 1 AND CASE WHEN ? THENCE 1"
+        )
+        c = mod.count_text(text)
+        self.assertEqual(c["IS [NOT] <param>"], 0)       # `THIS ?` is not `IS ?`
+        self.assertEqual(c["param IS [NOT] NULL"], 0)    # `IS NULLABLE` / `IS NULLIF(` are not `IS NULL`
+        self.assertEqual(c["CASE WHEN ? THEN"], 0)       # `SUBCASE`, `THENCE`
+
+    def test_is_distinct_from_a_param_is_the_typed_form_and_not_counted(self):
+        c = mod.count_text("WHERE end_ms IS DISTINCT FROM ? OR status IS NOT DISTINCT FROM @s")
+        self.assertEqual(c["IS [NOT] <param>"], 0)
+        self.assertEqual(c["param IS [NOT] NULL"], 0)
+
     def test_replace_into_counts_as_or_replace(self):
         self.assertEqual(mod.count_text("REPLACE INTO t VALUES (1)")["INSERT OR REPLACE"], 1)
 

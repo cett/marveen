@@ -214,9 +214,12 @@ export async function upsertOtelSpan(span: Omit<OtelSpan, 'end_ms' | 'status'> &
 }
 
 export async function closeOtelSpan(traceId: string, spanId: string, endMs: number, status: OtelSpan['status']): Promise<boolean> {
+  // `IS DISTINCT FROM` is the null-safe "changed?" test on both engines (SQLite 3.39+, PostgreSQL), and unlike SQLite's
+  // `IS NOT ?` PostgreSQL types the parameter from the column. A plain `<>` is NOT enough: the route passes `end_ms`
+  // straight from the request body, so a `null` end compared with `<>` is unknown and would keep a stale export mark.
   return (await dbx.run(`
     UPDATE otel_spans SET
-      exported_at = CASE WHEN exported_at IS NOT NULL AND (end_ms IS NULL OR end_ms <> ? OR status IS NULL OR status <> ?) THEN NULL ELSE exported_at END,
+      exported_at = CASE WHEN exported_at IS NOT NULL AND (end_ms IS DISTINCT FROM ? OR status IS DISTINCT FROM ?) THEN NULL ELSE exported_at END,
       end_ms = ?, status = ?
     WHERE trace_id = ? AND span_id = ?
   `, endMs, status, endMs, status, traceId, spanId)).changes > 0
