@@ -11,14 +11,22 @@ const TENANTS: Record<string, { main: string | null; agents: string[] }> = {
 // Trusted pairs of the fleet (symmetric, as isTrustedPeer is): the owner's main agent trusts every fleet agent.
 const TRUSTED = new Set(['fleet-x>fleet-y', 'fleet-y>fleet-x', 'fleet-x>main-a', 'main-a>fleet-x'])
 
+const ADVERTISED = ['fleet-x', 'fleet-y', 'helper-shared', 'heartbeat', 'helper-t2']
+
 const ctx: RoutingContext = {
   ownerMainAgentId: OWNER_MAIN,
   tenantMainAgentId: (t) => TENANTS[t]?.main,
   tenantAgentIds: (t) => new Set(TENANTS[t]?.agents ?? []),
   isTrustedPeer: (from, to) => TRUSTED.has(`${from}>${to}`),
+  // What the manifest advertises (catalogAgentNames). Two entries are advertised BY MISTAKE on purpose: a
+  // coordinator and an agent of a non-default tenant; the module must still refuse them.
+  advertisedAgentIds: () => ADVERTISED,
+  excludedAgentIds: new Set(['heartbeat', 'telegram-coordinator', 'channel-coordinator']),
+  isNonDefaultTenantAgent: (id) => Object.values(TENANTS).some((t) => t.main === id || t.agents.includes(id)),
 }
 
-const TARGETS = ['main-a', 'main-t1', 'helper-t1', 'main-t2', 'helper-t2', 'lonely', 'fleet-y', 'stranger']
+const TARGETS = ['main-a', 'main-t1', 'helper-t1', 'main-t2', 'helper-t2', 'lonely', 'fleet-x', 'fleet-y', 'helper-shared',
+  'heartbeat', 'telegram-coordinator', 'channel-coordinator', 'stranger']
 
 function allowedTargets(base: Omit<RouteRequest, 'toAgent'>): string[] {
   return TARGETS.filter((to) => isRouteAllowed({ ...base, toAgent: to }, ctx).ok)
@@ -50,8 +58,50 @@ describe('isRouteAllowed: the allowed targets of each sender class (full matrix)
     expect(allowedTargets({ senderClass: 'fleet_agent', senderId: 'fleet-z', tenantId: 'default' })).toEqual([])
   })
 
-  it('federated: only the owner main agent', () => {
-    expect(allowedTargets({ senderClass: 'federated', senderId: 'peer/agent', tenantId: null })).toEqual(['main-a'])
+  it('federated: the owner main agent and the advertised agents, minus coordinators and non-default tenants', () => {
+    expect(allowedTargets({ senderClass: 'federated', senderId: 'peer/agent', tenantId: null }))
+      .toEqual(['main-a', 'fleet-x', 'fleet-y', 'helper-shared'])
+  })
+})
+
+describe('isRouteAllowed: federated target (owner decision A)', () => {
+  const fed = { senderClass: 'federated', senderId: 'peer/agent', tenantId: null }
+
+  it('every agent the manifest advertises is routable, except what the exclusions remove; nothing else is', () => {
+    const clean = ADVERTISED.filter((a) => !['heartbeat', 'telegram-coordinator', 'channel-coordinator'].includes(a) && !ctx.isNonDefaultTenantAgent(a))
+    const routable = [...clean, 'main-a']
+    for (const to of [...TARGETS, ...ADVERTISED]) {
+      expect(isRouteAllowed({ ...fed, toAgent: to }, ctx).ok, to).toBe(routable.includes(to))
+    }
+  })
+
+  it('a coordinator is refused even when it is advertised', () => {
+    expect(isRouteAllowed({ ...fed, toAgent: 'heartbeat' }, ctx)).toEqual({ ok: false, reason: 'federated_target_is_coordinator' })
+    expect(isRouteAllowed({ ...fed, toAgent: 'telegram-coordinator' }, ctx)).toEqual({ ok: false, reason: 'federated_target_is_coordinator' })
+  })
+
+  it('an agent of a non-default tenant is refused even when it is advertised (and its main agent too)', () => {
+    expect(isRouteAllowed({ ...fed, toAgent: 'helper-t2' }, ctx)).toEqual({ ok: false, reason: 'federated_target_in_other_tenant' })
+    expect(isRouteAllowed({ ...fed, toAgent: 'main-t1' }, ctx)).toEqual({ ok: false, reason: 'federated_target_in_other_tenant' })
+  })
+
+  it('the exclusions win over the owner main agent role (a misconfigured context cannot open a hole)', () => {
+    const odd: RoutingContext = { ...ctx, ownerMainAgentId: 'heartbeat' }
+    expect(isRouteAllowed({ ...fed, toAgent: 'heartbeat' }, odd).ok).toBe(false)
+    const odd2: RoutingContext = { ...ctx, isNonDefaultTenantAgent: (id) => id === 'main-a' }
+    expect(isRouteAllowed({ ...fed, toAgent: 'main-a' }, odd2).ok).toBe(false)
+  })
+
+  it('an unknown or unadvertised agent is refused', () => {
+    expect(isRouteAllowed({ ...fed, toAgent: 'stranger' }, ctx)).toEqual({ ok: false, reason: 'federated_target_not_advertised' })
+  })
+
+  it('the advertised list is read at decision time (one source, no copy)', () => {
+    let list: string[] = ['fleet-x']
+    const live: RoutingContext = { ...ctx, advertisedAgentIds: () => list }
+    expect(isRouteAllowed({ ...fed, toAgent: 'fleet-y' }, live).ok).toBe(false)
+    list = ['fleet-x', 'fleet-y']
+    expect(isRouteAllowed({ ...fed, toAgent: 'fleet-y' }, live).ok).toBe(true)
   })
 })
 
@@ -130,6 +180,6 @@ describe('isRouteAllowed: refusal reasons are specific (they go into the audit r
     expect(reasonOf({ senderClass: 'owner', senderId: 'o', tenantId: 'default', toAgent: 'main-t1' })).toBe('target_not_owner_main_agent')
     expect(reasonOf({ senderClass: 'partner_sender', senderId: 'p', tenantId: 'tenant-1', toAgent: 'main-t2' })).toBe('target_not_in_tenant')
     expect(reasonOf({ senderClass: 'fleet_agent', senderId: 'fleet-z', tenantId: 'default', toAgent: 'main-a' })).toBe('not_trusted_peer')
-    expect(reasonOf({ senderClass: 'federated', senderId: 'peer/agent', tenantId: null, toAgent: 'main-t1' })).toBe('federated_target_not_owner_main_agent')
+    expect(reasonOf({ senderClass: 'federated', senderId: 'peer/agent', tenantId: null, toAgent: 'stranger' })).toBe('federated_target_not_advertised')
   })
 })
