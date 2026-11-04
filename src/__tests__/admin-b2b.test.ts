@@ -397,6 +397,21 @@ describe('PATCH /api/v1/admin/users/:id', () => {
     expect(db.adminPatchDashboardUser).not.toHaveBeenCalled()
   })
 
+  it('a DISABLED admin is not in the active count: demoting it, or disabling it again, is not a last-admin refusal', async () => {
+    const disabledAdmin = { ...SAMPLE_USER, username: 'other-admin', role: 'admin', tenant_id: null, disabled: 1 }
+    vi.mocked(db.getDashboardUserById).mockResolvedValue(disabledAdmin as any)
+    vi.mocked(db.countActiveAdmins).mockResolvedValue(1)
+    vi.mocked(db.adminPatchDashboardUser).mockClear()
+    vi.mocked(db.adminPatchDashboardUser).mockResolvedValue({ status: 'updated', user: disabledAdmin as any })
+    const demote = makeCtx('PATCH', '/api/v1/admin/users/5', { role: 'viewer', tenant_id: 't1' })
+    await tryHandleAdminB2b(demote.ctx)
+    expect(demote.out.status).toBe(200)
+    const again = makeCtx('PATCH', '/api/v1/admin/users/5', { disabled: true })
+    await tryHandleAdminB2b(again.ctx)
+    expect(again.out.status).toBe(200)
+    expect(db.adminPatchDashboardUser).toHaveBeenCalledTimes(2)
+  })
+
   it('an admin keeping their own admin role while changing other fields is not blocked', async () => {
     const selfUser = { ...SAMPLE_USER, username: 'admin-user', role: 'admin', tenant_id: null }
     vi.mocked(db.getDashboardUserById).mockResolvedValue(selfUser as any)

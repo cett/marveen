@@ -364,8 +364,9 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
     if (demotes && isSelf) {
       json(res, { error: 'forbidden', hint: 'Cannot change the role of your own account' }, 403); return true
     }
-    // Last-admin protection: cannot disable or demote the last active admin.
-    if ((patch.disabled === true || demotes) && existing.role === 'admin' && await countActiveAdmins() <= 1) {
+    // Last-admin protection: cannot disable or demote the last active admin. A disabled admin is not in the active
+    // count, so changing its role or disabling it again takes nobody out of it (the UPDATE's condition says the same).
+    if ((patch.disabled === true || demotes) && existing.role === 'admin' && !existing.disabled && await countActiveAdmins() <= 1) {
       json(res, { error: 'forbidden', hint: 'Cannot remove the last administrator' }, 403); return true
     }
 
