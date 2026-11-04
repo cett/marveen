@@ -7,6 +7,7 @@ import { dbx, type SqlOps } from './facade.js'
 import { likeContains } from './like.js'
 import { upsertOtelSpan } from './observability.js'
 import { dashboardUserTenant, resolveWriteTenant } from './write-tenant.js'
+import { currentTraceColumns } from './context.js'
 
 // mcp__<server>__<tool> -- split into (server, tool) for the OTel span
 // attributes. Split on the FIRST "__" so a server name that itself contains
@@ -332,7 +333,7 @@ export async function insertHookAuditLog(entry: {
   trigger_source?: string | null
 }): Promise<void> {
   const now = Math.floor(Date.now() / 1000)
-  await dbx.run('INSERT INTO hook_audit_log (ts, agent_id, hook_type, verdict, tool_name, content_hash, reason, session_id, trigger_source, tenant_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', now,
+  await dbx.run('INSERT INTO hook_audit_log (ts, agent_id, hook_type, verdict, tool_name, content_hash, reason, session_id, trigger_source, tenant_id, trace_id, span_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', now,
     entry.agent_id ?? null,
     entry.hook_type,
     entry.verdict,
@@ -342,6 +343,7 @@ export async function insertHookAuditLog(entry: {
     entry.session_id ?? null,
     entry.trigger_source ?? null,
     await resolveWriteTenant(entry.agent_id),
+    ...currentTraceColumns(),
   )
 }
 
@@ -394,7 +396,7 @@ export async function logConfigChange(
   actor: string,
 ): Promise<void> {
   const now = Math.floor(Date.now() / 1000)
-  await dbx.run('INSERT INTO config_change_log (key, old_value, new_value, actor, created_at) VALUES (?, ?, ?, ?, ?)', key, oldValue === null ? null : String(oldValue), newValue === null ? null : String(newValue), actor, now)
+  await dbx.run('INSERT INTO config_change_log (key, old_value, new_value, actor, created_at, trace_id, span_id) VALUES (?, ?, ?, ?, ?, ?, ?)', key, oldValue === null ? null : String(oldValue), newValue === null ? null : String(newValue), actor, now, ...currentTraceColumns())
 }
 
 // Newest journalled value for one key, or undefined when the key was never journalled. The same
@@ -496,6 +498,10 @@ export interface AuditLogEntry {
   content_hash?: string | null
   reason?: string | null
   session_id?: string | null
+  // trace (config, agent and hook rows): the request or message whose work wrote the row; null for a row written before
+  // the columns existed or outside a traced context
+  trace_id?: string | null
+  span_id?: string | null
 }
 
 export interface AgentAuditLogRow {
@@ -506,6 +512,8 @@ export interface AgentAuditLogRow {
   entity_id: string | null
   detail: string | null
   created_at: number
+  trace_id?: string | null
+  span_id?: string | null
 }
 
 export async function writeAgentAuditLog(opts: {
@@ -518,12 +526,13 @@ export async function writeAgentAuditLog(opts: {
    *  undefined resolves it from the agent, null is written as the unknown tenant. */
   tenant_id?: string | null
 }): Promise<void> {
-  await dbx.run('INSERT INTO agent_audit_log (agent_id, entity, action, entity_id, detail, tenant_id) VALUES (?, ?, ?, ?, ?, ?)', opts.agent_id,
+  await dbx.run('INSERT INTO agent_audit_log (agent_id, entity, action, entity_id, detail, tenant_id, trace_id, span_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', opts.agent_id,
     opts.entity,
     opts.action,
     opts.entity_id != null ? String(opts.entity_id) : null,
     opts.detail != null ? JSON.stringify(opts.detail) : null,
     opts.tenant_id !== undefined ? opts.tenant_id : await resolveWriteTenant(opts.agent_id),
+    ...currentTraceColumns(),
   )
 }
 
@@ -539,19 +548,25 @@ async function countRows(table: string, whereSql: string, params: unknown[]): Pr
   return ((await dbx.get(`SELECT COUNT(*) AS n FROM ${table} ${whereSql}`, ...params)) as { n: number }).n
 }
 
+/** The audit sources whose table keeps a trace_id / span_id (migration 0088). */
+export const AUDIT_TRACE_SOURCES: ReadonlySet<AuditSource> = new Set<AuditSource>(['config', 'agent', 'hook'])
+
 export async function queryAuditLog(opts: {
   sources: AuditSource[]
   from?: number
   to?: number
   q?: string
   agent?: string
+  /** Only the rows written in this trace. The sources without a trace column (idea, file audit, diary) are left out. */
+  trace_id?: string
   limit: number
   /** Rows to skip in the final, merged+sorted result (default 0). */
   offset?: number
 }): Promise<AuditLogQueryResult> {
-  const { sources, from, to, q, agent, limit, offset = 0 } = opts
+  const { sources, from, to, q, agent, trace_id, limit, offset = 0 } = opts
   const all: AuditSource[] = ['config', 'idea', 'store', 'diary', 'agent', 'hook']
-  const active = sources.length > 0 ? sources : all
+  // A trace lookup answers only from the sources that keep a trace: asking the others would mix in rows that can never match.
+  const active = (sources.length > 0 ? sources : all).filter((s) => !trace_id || AUDIT_TRACE_SOURCES.has(s))
 
   // Offset-based pagination over a UNION of independently-sorted per-source
   // queries has no single index to page on: each source is asked for its
@@ -573,7 +588,8 @@ export async function queryAuditLog(opts: {
     if (from) { whereSql += ' AND created_at >= ?'; params.push(from) }
     if (to)   { whereSql += ' AND created_at <= ?'; params.push(to) }
     if (q)    { whereSql += ' AND (key LIKE ? OR old_value LIKE ? OR new_value LIKE ? OR actor LIKE ?)'; const p = `%${q}%`; params.push(p, p, p, p) }
-    const rows = await dbx.all<ConfigChangeLogRow>(`SELECT id, key, old_value, new_value, actor, created_at FROM config_change_log ${whereSql} ORDER BY created_at DESC, id DESC LIMIT ?`, ...params, fetchLimit)
+    if (trace_id) { whereSql += ' AND trace_id = ?'; params.push(trace_id) }
+    const rows = await dbx.all<ConfigChangeLogRow>(`SELECT id, key, old_value, new_value, actor, created_at, trace_id, span_id FROM config_change_log ${whereSql} ORDER BY created_at DESC, id DESC LIMIT ?`, ...params, fetchLimit)
     for (const r of rows) parts.push({ ...r, source: 'config' })
     total += await countRows('config_change_log', whereSql, params)
   }
@@ -632,11 +648,13 @@ export async function queryAuditLog(opts: {
     if (to)    { whereSql += ' AND created_at <= ?'; params.push(to) }
     if (agent) { whereSql += ' AND agent_id = ?'; params.push(agent) }
     if (q)     { whereSql += ' AND (agent_id LIKE ? OR entity LIKE ? OR action LIKE ? OR detail LIKE ?)'; const p = `%${q}%`; params.push(p, p, p, p) }
-    const rows = await dbx.all<AgentAuditLogRow>(`SELECT id, agent_id, entity, action, entity_id, detail, created_at FROM agent_audit_log ${whereSql} ORDER BY created_at DESC, id DESC LIMIT ?`, ...params, fetchLimit)
+    if (trace_id) { whereSql += ' AND trace_id = ?'; params.push(trace_id) }
+    const rows = await dbx.all<AgentAuditLogRow>(`SELECT id, agent_id, entity, action, entity_id, detail, created_at, trace_id, span_id FROM agent_audit_log ${whereSql} ORDER BY created_at DESC, id DESC LIMIT ?`, ...params, fetchLimit)
     for (const r of rows) parts.push({
       id: r.id, source: 'agent', created_at: r.created_at,
       agent_id: r.agent_id, entity: r.entity, action: r.action,
       entity_id: r.entity_id ?? undefined, detail: r.detail ?? undefined,
+      trace_id: r.trace_id ?? null, span_id: r.span_id ?? null,
     })
     total += await countRows('agent_audit_log', whereSql, params)
   }
@@ -651,15 +669,17 @@ export async function queryAuditLog(opts: {
     if (to)    { whereSql += ' AND ts <= ?'; params.push(to) }
     if (agent) { whereSql += ' AND agent_id = ?'; params.push(agent) }
     if (q)     { whereSql += ' AND (agent_id LIKE ? OR hook_type LIKE ? OR verdict LIKE ? OR tool_name LIKE ? OR reason LIKE ?)'; const p = `%${q}%`; params.push(p, p, p, p, p) }
-    const rows = (await dbx.all(`SELECT id, agent_id, hook_type, verdict, tool_name, content_hash, reason, session_id, ts AS created_at FROM hook_audit_log ${whereSql} ORDER BY ts DESC, id DESC LIMIT ?`, ...params, fetchLimit)) as Array<{
+    if (trace_id) { whereSql += ' AND trace_id = ?'; params.push(trace_id) }
+    const rows = (await dbx.all(`SELECT id, agent_id, hook_type, verdict, tool_name, content_hash, reason, session_id, trace_id, span_id, ts AS created_at FROM hook_audit_log ${whereSql} ORDER BY ts DESC, id DESC LIMIT ?`, ...params, fetchLimit)) as Array<{
       id: number; agent_id: string | null; hook_type: string; verdict: string
       tool_name: string | null; content_hash: string | null; reason: string | null
-      session_id: string | null; created_at: number
+      session_id: string | null; trace_id: string | null; span_id: string | null; created_at: number
     }>
     for (const r of rows) parts.push({
       id: r.id, source: 'hook', created_at: r.created_at,
       agent_id: r.agent_id ?? undefined, hook_type: r.hook_type, verdict: r.verdict,
       tool_name: r.tool_name, content_hash: r.content_hash, reason: r.reason, session_id: r.session_id,
+      trace_id: r.trace_id, span_id: r.span_id,
     })
     total += await countRows('hook_audit_log', whereSql, params)
   }
@@ -927,8 +947,8 @@ export async function insertRbacShadowRow(row: {
   reason: string
 }): Promise<void> {
   await dbx.run(`INSERT INTO rbac_shadow_log
-       (ts, tenant_id, principal_kind, principal, role, method, route, permission, decision, reason)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, row.ts, row.tenantId, row.principalKind, row.principal, row.role, row.method, row.route, row.permission, row.decision, row.reason)
+       (ts, tenant_id, principal_kind, principal, role, method, route, permission, decision, reason, trace_id, span_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, row.ts, row.tenantId, row.principalKind, row.principal, row.role, row.method, row.route, row.permission, row.decision, row.reason, ...currentTraceColumns())
 }
 
 /** Deletes rows older than the cutoff (unix seconds). Returns the number removed. */
@@ -993,5 +1013,5 @@ export async function summarizeRbacShadowRows(f: Pick<ShadowLogFilter, 'from' | 
 
 /** Admin-console audit row; `entity` is fixed to 'admin' and the actor is a dashboard user name. */
 export async function writeAdminAuditLog(actor: string, action: string, targetId: string | number, detail: Record<string, unknown>): Promise<void> {
-  await dbx.run('INSERT INTO agent_audit_log (agent_id, entity, action, entity_id, detail, tenant_id) VALUES (?, ?, ?, ?, ?, ?)', actor, 'admin', action, String(targetId), JSON.stringify(detail), await dashboardUserTenant(actor))
+  await dbx.run('INSERT INTO agent_audit_log (agent_id, entity, action, entity_id, detail, tenant_id, trace_id, span_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', actor, 'admin', action, String(targetId), JSON.stringify(detail), await dashboardUserTenant(actor), ...currentTraceColumns())
 }

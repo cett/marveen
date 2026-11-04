@@ -3,6 +3,9 @@ import { queryAuditLog, type AuditSource } from '../../db.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
 import type { RouteContext } from './types.js'
 
+// 1-128 characters of the alphabet trace ids use (hex, `w3c-` prefix, session ids with dashes/dots/colons/underscores).
+const TRACE_ID_RE = /^[A-Za-z0-9_.:-]{1,128}$/
+
 const VALID_SOURCES = new Set<AuditSource>(['config', 'idea', 'store', 'diary', 'agent', 'hook'])
 
 export async function tryHandleAuditLog(ctx: RouteContext): Promise<boolean> {
@@ -41,6 +44,15 @@ export async function tryHandleAuditLog(ctx: RouteContext): Promise<boolean> {
   // Agent filter (meaningful for diary source; silently ignored for others).
   const agent = (params.get('agent') ?? '').trim() || undefined
 
+  // Trace filter: the rows written in one trace (config, agent and hook sources; the others keep none). The id is
+  // whatever the audit column holds (a server hex id, `w3c-<hex>`, a session id), so only its shape is checked.
+  const traceRaw = (params.get('trace_id') ?? '').trim()
+  if (traceRaw && !TRACE_ID_RE.test(traceRaw)) {
+    json(res, { error: 'invalid_value', field: 'trace_id', hint: 'Invalid "trace_id" parameter' }, 400)
+    return true
+  }
+  const trace_id = traceRaw || undefined
+
   // Per-request limit, capped at registry max.
   const maxEntries = Number(getEffectiveSettingValue('AUDIT_LOG_MAX_ENTRIES'))
   const limitParam = params.get('limit')
@@ -60,7 +72,7 @@ export async function tryHandleAuditLog(ctx: RouteContext): Promise<boolean> {
     return true
   }
 
-  const { entries, total } = await queryAuditLog({ sources, from, to, q, agent, limit, offset })
+  const { entries, total } = await queryAuditLog({ sources, from, to, q, agent, trace_id, limit, offset })
   json(res, { entries, total, offset, limit })
   return true
 }

@@ -113,6 +113,16 @@ export function currentTrace(): DbTrace | undefined {
   return ctx?.traceId && ctx.spanId ? { traceId: ctx.traceId, spanId: ctx.spanId } : undefined
 }
 
+/**
+ * The `[trace_id, span_id]` an audit writer stores for the running call: the trace of the context, or `[null, null]`
+ * (no context, or a context without a trace). The columns are nullable, and rows written before they existed stay NULL.
+ * A value in the column is ALWAYS the server's own: it comes from here, never from a request body.
+ */
+export function currentTraceColumns(): [string | null, string | null] {
+  const t = currentTrace()
+  return t ? [t.traceId, t.spanId] : [null, null]
+}
+
 /** The context of the running call, or undefined when none was set. */
 export function currentDbContext(): DbContext | undefined {
   return store.getStore()

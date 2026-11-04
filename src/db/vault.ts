@@ -3,6 +3,7 @@
 
 import { createHash } from 'node:crypto'
 import { dbx, type SqlOps } from './facade.js'
+import { currentTraceColumns } from './context.js'
 
 export interface VaultSshKey {
   id: string
@@ -235,8 +236,8 @@ interface ApprovalEventParams {
 }
 
 const INSERT_APPROVAL_EVENT_SQL = `
-  INSERT INTO approval_events (approval_id, tenant_id, event, reason, actor, ref, created_at)
-  VALUES (?, ?, ?, ?, ?, ?, ?)
+  INSERT INTO approval_events (approval_id, tenant_id, event, reason, actor, ref, created_at, trace_id, span_id)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 `
 
 const approvalEventArgs = (params: ApprovalEventParams): unknown[] => [
@@ -247,6 +248,7 @@ const approvalEventArgs = (params: ApprovalEventParams): unknown[] => [
   params.actor ?? null,
   params.ref ?? null,
   Math.floor(Date.now() / 1000),
+  ...currentTraceColumns(),
 ]
 
 export interface ApprovalEvent {
