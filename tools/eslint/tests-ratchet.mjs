@@ -21,12 +21,17 @@ const here = path.dirname(fileURLToPath(import.meta.url))
 const root = path.resolve(here, '../..')
 export const BASELINE_PATH = path.join(here, 'tests-baseline.json')
 
-/** @returns {{ counts: Map<string, number>, fatal: string[] }} key = "<repo-relative file>|<rule>" */
+/**
+ * @returns {{ counts: Map<string, number>, fatal: string[], testFiles: number }} key = "<repo-relative file>|<rule>";
+ * `testFiles` is the number of entries of the report that are files under src/__tests__ (with or without findings).
+ */
 export function countFindings(report) {
   const counts = new Map()
   const fatal = []
+  let testFiles = 0
   for (const file of report) {
     const rel = path.relative(root, file.filePath).split(path.sep).join('/')
+    if (rel.startsWith('src/__tests__/')) testFiles++
     for (const m of file.messages) {
       if (m.fatal) fatal.push(`${rel}: ${m.message}`)
       if (!m.ruleId) continue
@@ -34,7 +39,7 @@ export function countFindings(report) {
       counts.set(key, (counts.get(key) ?? 0) + 1)
     }
   }
-  return { counts, fatal }
+  return { counts, fatal, testFiles }
 }
 
 /** baseline: { "<file>": { "<rule>": n } } -> Map in the same key shape as countFindings */
@@ -77,10 +82,17 @@ function main() {
     console.error('usage: node tests-ratchet.mjs <eslint-json-file> [--write]')
     process.exit(2)
   }
-  const { counts, fatal } = countFindings(JSON.parse(readFileSync(file, 'utf8')))
+  const { counts, fatal, testFiles } = countFindings(JSON.parse(readFileSync(file, 'utf8')))
   if (fatal.length > 0) {
     console.error(`async lint ratchet: ${fatal.length} file(s) could not be linted (a type the linter cannot resolve hides findings):`)
     for (const line of fatal) console.error(`  ${line}`)
+    process.exit(1)
+  }
+  // Fail closed: a report with no test file at all (an empty list, or only non-test files) proves nothing. It is what
+  // a lint step that did not run over the tests produces, and it would pass as "zero findings" and, with --write,
+  // wipe the baseline. A deleted or renamed test does not trip this: the other test files are still in the report.
+  if (testFiles === 0) {
+    console.error('async lint ratchet FAILED: the report holds no file under src/__tests__, so it says nothing about the tests (is the lint step linting src with ESLINT_ASYNC_TESTS=1?).')
     process.exit(1)
   }
   if (flag === '--write') {
