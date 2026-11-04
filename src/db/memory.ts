@@ -425,11 +425,9 @@ export async function updateMemory(
 // graph, detail). tenantId undefined = unscoped (admin default).
 // ---------------------------------------------------------------------------
 
-// A "contains" pattern for LIKE ... ESCAPE '\': the wildcards of the user's text (% and _) and the escape
-// character itself match literally, so a query of "%" or "_" is not a match-everything search.
-export function likeContains(text: string): string {
-  return `%${text.replace(/[\\%_]/g, (c) => `\\${c}`)}%`
-}
+// The LIKE pattern builder lives in like.ts (audit.ts and import.ts use it too and memory.ts imports audit.ts).
+export { likeContains } from './like.js'
+import { likeContains } from './like.js'
 
 function memoryTenantFilter(tenantId: string | undefined): { clause: string; params: string[] } {
   return tenantId ? { clause: ' AND tenant_id = ?', params: [tenantId] } : { clause: '', params: [] }

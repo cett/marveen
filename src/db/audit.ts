@@ -4,6 +4,7 @@
 import { logger } from '../logger.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
 import { dbx } from './facade.js'
+import { likeContains } from './like.js'
 import { upsertOtelSpan } from './observability.js'
 import { dashboardUserTenant, resolveWriteTenant } from './write-tenant.js'
 
@@ -602,7 +603,7 @@ export async function queryAuditLog(opts: {
     if (from)  { logWhereSql += ' AND created_at >= ?'; logParams.push(from) }
     if (to)    { logWhereSql += ' AND created_at <= ?'; logParams.push(to) }
     if (agent) { logWhereSql += ' AND agent_id = ?'; logParams.push(agent) }
-    if (q)     { logWhereSql += ' AND content LIKE ?'; logParams.push(`%${q}%`) }
+    if (q)     { logWhereSql += " AND content LIKE ? ESCAPE '\\'"; logParams.push(likeContains(q)) }
     const logRows = (await dbx.all(`SELECT id, agent_id, content, created_at FROM daily_logs ${logWhereSql} ORDER BY created_at DESC, id DESC LIMIT ?`, ...logParams, fetchLimit)) as Array<{ id: number; agent_id: string; content: string; created_at: number }>
     for (const r of logRows) parts.push({ id: r.id, source: 'diary', created_at: r.created_at, agent_id: r.agent_id, content: r.content, entry_type: 'log' })
     total += await countRows('daily_logs', logWhereSql, logParams)
@@ -613,7 +614,7 @@ export async function queryAuditLog(opts: {
     if (from)  { memWhereSql += ' AND created_at >= ?'; memParams.push(from) }
     if (to)    { memWhereSql += ' AND created_at <= ?'; memParams.push(to) }
     if (agent) { memWhereSql += ' AND agent_id = ?'; memParams.push(agent) }
-    if (q)     { memWhereSql += ' AND (content LIKE ? OR keywords LIKE ?)'; memParams.push(`%${q}%`, `%${q}%`) }
+    if (q)     { memWhereSql += " AND (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\')"; memParams.push(likeContains(q), likeContains(q)) }
     const memRows = (await dbx.all(`SELECT id, agent_id, content, category, keywords, created_at FROM memories ${memWhereSql} ORDER BY created_at DESC, id DESC LIMIT ?`, ...memParams, fetchLimit)) as Array<{ id: number; agent_id: string; content: string; category: string; keywords: string | null; created_at: number }>
     for (const r of memRows) parts.push({ id: r.id, source: 'diary', created_at: r.created_at, agent_id: r.agent_id, content: r.content, category: r.category, keywords: r.keywords ?? undefined, entry_type: 'memory' })
     total += await countRows('memories', memWhereSql, memParams)
