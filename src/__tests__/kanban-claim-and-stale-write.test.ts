@@ -7,7 +7,7 @@ import { EventEmitter } from 'node:events'
 import { createHash } from 'node:crypto'
 import type http from 'node:http'
 import { dbx } from '../db/facade.js'
-import { initDatabase, getDb, insertApiToken, createKanbanCard, claimKanbanCard, updateKanbanCard } from '../db.js'
+import { initDatabase, getDb, insertApiToken, createKanbanCard, claimKanbanCard, updateKanbanCard, createTenant } from '../db.js'
 import { resolveAuth, type AuthResult } from '../web/auth-gate.js'
 import { checkPermission, resolveRole, resolveTenantId } from '../web/authz.js'
 import { tryHandleKanban } from '../web/routes/kanban.js'
@@ -241,5 +241,174 @@ describe('POST /api/kanban: a taken id', () => {
     expect(out.status).toBe(409)
     expect(out.body).toMatchObject({ error: 'conflict', reason: 'id_taken' })
     expect(inserts).toBe(3)
+  })
+})
+
+// Edges of the claim route, the guard parsing and the id redraw.
+
+// A call with a hand-built request context (the principal, the tenant and the raw body are what the cases vary).
+type CtxOpts = { role?: string; tenantId?: string | null; tokenAgentId?: string; agentId?: string; auth?: unknown; raw?: string }
+async function callCtx(o: CtxOpts, method: string, path: string, body?: unknown) {
+  const buf = o.raw !== undefined ? Buffer.from(o.raw) : body === undefined ? Buffer.alloc(0) : Buffer.from(JSON.stringify(body))
+  const req = new EventEmitter() as unknown as http.IncomingMessage
+  req.method = method
+  req.headers = {}
+  ;(req as unknown as { destroy: () => void }).destroy = () => {}
+  setImmediate(() => { req.emit('data', buf); req.emit('end') })
+  const out: { status: number; body: any } = { status: 200, body: {} }
+  const res = {
+    writeHead(s: number) { out.status = s },
+    setHeader() {},
+    end(b?: string | Buffer) {
+      if (!b) return
+      try { out.body = JSON.parse(Buffer.isBuffer(b) ? b.toString('utf-8') : b) } catch { /* not JSON */ }
+    },
+  } as unknown as http.ServerResponse
+  const url = new URL(`http://localhost:3420${path}`)
+  const ctx = { req, res, path: url.pathname, method, url, role: o.role ?? 'admin', tenantId: o.tenantId ?? null, tokenAgentId: o.tokenAgentId, agentId: o.agentId, auth: o.auth } as unknown as RouteContext
+  if (await tryHandleKanban(ctx)) return out
+  out.status = 404
+  return out
+}
+const claimAudit = (id: string) => (getDb().prepare("SELECT agent_id, detail FROM agent_audit_log WHERE entity = 'kanban' AND action = 'update' AND entity_id = ? ORDER BY rowid").all(id) as { agent_id: string; detail: string }[])
+  .map((r) => ({ agent: r.agent_id, ...JSON.parse(r.detail) }))
+const tenantCaller = (tenantId: string, extra: CtxOpts = {}): CtxOpts => ({ role: 'agent', tenantId, ...extra })
+
+describe('POST /api/kanban/:id/claim -- tenant boundary', () => {
+  beforeEach(async () => {
+    await createTenant('tenant-x', 'Tenant X')
+    await createKanbanCard({ id: 'card-x', title: 'Foreign card', tenant_id: 'tenant-x' })
+  })
+
+  it('a tenant-bound caller cannot claim a card of another tenant, free or held: 404, the holder is not leaked, nothing is written', async () => {
+    const caller = tenantCaller('default', { tokenAgentId: 'agent-a', agentId: 'agent-a' })
+    const free = await callCtx(caller, 'POST', '/api/kanban/card-x/claim')
+    expect(free.status).toBe(404)
+    expect(row('card-x').assignee).toBeNull()
+    getDb().prepare("UPDATE kanban_cards SET assignee = 'holder-x' WHERE id = 'card-x'").run()
+    const held = await callCtx(caller, 'POST', '/api/kanban/card-x/claim')
+    expect(held.status).toBe(404)
+    expect(JSON.stringify(held.body)).not.toContain('holder-x')
+    expect(row('card-x').assignee).toBe('holder-x')
+    expect(claimAudit('card-x')).toEqual([])
+  })
+
+  it('the same caller can claim a card of its OWN tenant (the 404 above is the tenant line, not a general refusal)', async () => {
+    const out = await callCtx(tenantCaller('tenant-x', { tokenAgentId: 'agent-a', agentId: 'agent-a' }), 'POST', '/api/kanban/card-x/claim')
+    expect(out.status).toBe(200)
+    expect(row('card-x').assignee).toBe('agent-a')
+  })
+})
+
+describe('POST /api/kanban/:id/claim -- identity, audit, body, archived', () => {
+  it('the agent of the token wins over a different X-Agent-Id, and the audit row says token', async () => {
+    const out = await callCtx({ role: 'admin', tokenAgentId: 'agent-a', agentId: 'agent-b' }, 'POST', `/api/kanban/${CARD}/claim`)
+    expect(out.status).toBe(200)
+    expect(out.body.assignee).toBe('agent-a')
+    expect(row(CARD).assignee).toBe('agent-a')
+    expect(claimAudit(CARD)[0]).toMatchObject({ agent: 'agent-a', op: 'claim', actor_source: 'token' })
+  })
+
+  it('a signed-in user claims as that user (session); a bare X-Agent-Id claims as that agent (self_declared)', async () => {
+    const session = await callCtx({ role: 'admin', auth: { kind: 'session', user: 'user-1' } }, 'POST', `/api/kanban/${CARD}/claim`)
+    expect(session.status).toBe(200)
+    expect(row(CARD).assignee).toBe('user-1')
+    expect(claimAudit(CARD)[0]).toMatchObject({ agent: 'user-1', actor_source: 'session' })
+    await createKanbanCard({ id: 'card-2', title: 'Second', tenant_id: 'default' })
+    const declared = await callCtx({ role: 'admin', agentId: 'agent-b' }, 'POST', '/api/kanban/card-2/claim')
+    expect(declared.status).toBe(200)
+    expect(claimAudit('card-2')[0]).toMatchObject({ agent: 'agent-b', actor_source: 'self_declared' })
+  })
+
+  it('a caller with no identity at all is a 400 required, not a crash, and nothing is written', async () => {
+    const out = await callCtx({ role: 'admin' }, 'POST', `/api/kanban/${CARD}/claim`)
+    expect(out.status).toBe(400)
+    expect(out.body).toMatchObject({ error: 'required', field: 'agent' })
+    expect(row(CARD).assignee).toBeNull()
+  })
+
+  it('a failing audit write does not abort the claim', async () => {
+    getDb().exec('DROP TABLE agent_audit_log')
+    const out = await callCtx({ role: 'admin', tokenAgentId: 'agent-a', agentId: 'agent-a' }, 'POST', `/api/kanban/${CARD}/claim`)
+    expect(out.status).toBe(200)
+    expect(row(CARD).assignee).toBe('agent-a')
+  })
+
+  it.each([['null', 'null'], ['an empty array', '[]'], ['a number', '5'], ['a string', '"x"']])('%s as the body is a 400 and claims nothing', async (_label, raw) => {
+    const out = await callCtx({ role: 'admin', tokenAgentId: 'agent-a', agentId: 'agent-a', raw }, 'POST', `/api/kanban/${CARD}/claim`)
+    expect(out.status).toBe(400)
+    expect(out.body).toMatchObject({ error: 'invalid_value', field: 'body' })
+    expect(row(CARD).assignee).toBeNull()
+  })
+
+  it('an empty object body is a normal claim', async () => {
+    const out = await callCtx({ role: 'admin', tokenAgentId: 'agent-a', agentId: 'agent-a', raw: '{}' }, 'POST', `/api/kanban/${CARD}/claim`)
+    expect(out.status).toBe(200)
+    expect(row(CARD).assignee).toBe('agent-a')
+  })
+
+  it('an archived card is a 404 through the route, also with a holder set (never 409 or 200)', async () => {
+    getDb().prepare("UPDATE kanban_cards SET archived_at = 1, assignee = 'agent-b' WHERE id = ?").run(CARD)
+    const admin = await callCtx({ role: 'admin', tokenAgentId: 'agent-a', agentId: 'agent-a' }, 'POST', `/api/kanban/${CARD}/claim`)
+    expect(admin.status).toBe(404)
+    const bound = await callCtx(tenantCaller('default', { tokenAgentId: 'agent-a', agentId: 'agent-a' }), 'POST', `/api/kanban/${CARD}/claim`)
+    expect(bound.status).toBe(404)
+    expect(row(CARD).assignee).toBe('agent-b')
+  })
+
+  it('a card whose assignee is the empty string can be claimed', async () => {
+    getDb().prepare("UPDATE kanban_cards SET assignee = '' WHERE id = ?").run(CARD)
+    expect(await claimKanbanCard(CARD, 'agent-a')).toEqual({ status: 'claimed' })
+    expect(row(CARD).assignee).toBe('agent-a')
+  })
+
+  it('a claim moves updated_at, so a PUT that read the card before the claim is stale (409)', async () => {
+    getDb().prepare('UPDATE kanban_cards SET updated_at = 1000 WHERE id = ?').run(CARD)
+    expect(await claimKanbanCard(CARD, 'agent-a')).toEqual({ status: 'claimed' })
+    expect(row(CARD).updated_at).toBeGreaterThan(1000)
+    const put = await callAs(await asAdmin(), 'PUT', `/api/kanban/${CARD}`, { title: 'Late', expected_updated_at: 1000 })
+    expect(put.status).toBe(409)
+    expect(row(CARD).title).toBe('Unassigned card')
+  })
+})
+
+describe('PUT /api/kanban/:id expected_updated_at -- parsing and refusals', () => {
+  it('a fractional guard is a 400 and writes nothing; null means "no guard" and the PUT goes through', async () => {
+    const fractional = await callAs(await asAdmin(), 'PUT', `/api/kanban/${CARD}`, { title: 'x', expected_updated_at: 1.5 })
+    expect(fractional.status).toBe(400)
+    expect(fractional.body).toMatchObject({ error: 'invalid_value', field: 'expected_updated_at' })
+    expect(row(CARD).title).toBe('Unassigned card')
+    const none = await callAs(await asAdmin(), 'PUT', `/api/kanban/${CARD}`, { title: 'y', expected_updated_at: null })
+    expect(none.status).toBe(200)
+    expect(row(CARD).title).toBe('y')
+  })
+
+  it('a write the update refuses for another reason (a parent change into the own subtree) with the CURRENT version is not a stale 409', async () => {
+    await createKanbanCard({ id: 'child-1', title: 'Child', tenant_id: 'default', parent_id: CARD } as any)
+    const before = row(CARD)
+    const out = await callAs(await asAdmin(), 'PUT', `/api/kanban/${CARD}`, { parent_id: 'child-1', expected_updated_at: before.updated_at })
+    expect(out.status).not.toBe(409)
+    expect(out.body.error).not.toBe('stale_revision')
+    expect(row(CARD)).toEqual(before)
+  })
+})
+
+describe('POST /api/kanban -- the id redraw', () => {
+  it('two clashes and then a free id: the card is created once and answered 200 (not a 409 for a card that exists)', async () => {
+    const real = getDb().prepare.bind(getDb())
+    let inserts = 0
+    const spy = vi.spyOn(getDb(), 'prepare').mockImplementation(((text: string) => {
+      if (/^INSERT INTO kanban_cards/.test(text.trim())) {
+        inserts++
+        if (inserts <= 2) throw Object.assign(new Error('UNIQUE constraint failed: kanban_cards.id'), { code: 'SQLITE_CONSTRAINT_PRIMARYKEY' })
+      }
+      return real(text)
+    }) as never)
+    try {
+      const out = await callAs(await asAdmin(), 'POST', '/api/kanban', { title: 'After clashes' })
+      expect(out.status).toBe(200)
+      expect(inserts).toBe(3)
+    } finally { spy.mockRestore() }
+    expect((getDb().prepare("SELECT COUNT(*) AS c FROM kanban_cards WHERE title = 'After clashes'").get() as { c: number }).c).toBe(1)
   })
 })
