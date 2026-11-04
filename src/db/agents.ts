@@ -884,11 +884,29 @@ export async function getLastBlackboardChangeTimes(agentIds: string[]): Promise<
         GROUP BY agent_id`, ...agentIds)) as { agent_id: string; last_changed_at: number }[]
 }
 
+/**
+ * Who may write a blackboard row by id: a tenant (the row must carry that tenant_id) or an owner (the
+ * row must belong to that agent). Omitted = unconditional (admin). The condition is part of the UPDATE,
+ * so a row that changed hands between the caller's read and this write is not written.
+ */
+export type BlackboardWriteScope = { tenantId: string } | { ownerAgentId: string }
+
+export function blackboardRowInScope(row: Pick<BlackboardRow, 'agent_id' | 'tenant_id'>, scope: BlackboardWriteScope | undefined): boolean {
+  if (!scope) return true
+  if ('tenantId' in scope) return row.tenant_id === scope.tenantId
+  return row.agent_id === scope.ownerAgentId
+}
+
+/** True when a row was written; false when the id does not exist or the row is outside `scope`. */
 export async function updateBlackboardRowById(
   id: string,
   fields: { status: string; summary: string; task_ref: string | null | undefined; blocked_by: string | null; blocked_reason: string | null },
-): Promise<void> {
-  await dbx.run(`
-    UPDATE fleet_blackboard SET status = ?, summary = ?, task_ref = ?, blocked_by = ?, blocked_reason = ?, updated_at = unixepoch() WHERE id = ?
-  `, fields.status, fields.summary, fields.task_ref, fields.blocked_by, fields.blocked_reason, id)
+  scope?: BlackboardWriteScope,
+): Promise<boolean> {
+  const cond = !scope ? '' : 'tenantId' in scope ? ' AND tenant_id = ?' : ' AND agent_id = ?'
+  const extra = !scope ? [] : ['tenantId' in scope ? scope.tenantId : scope.ownerAgentId]
+  const res = await dbx.run(`
+    UPDATE fleet_blackboard SET status = ?, summary = ?, task_ref = ?, blocked_by = ?, blocked_reason = ?, updated_at = unixepoch() WHERE id = ?${cond}
+  `, fields.status, fields.summary, fields.task_ref, fields.blocked_by, fields.blocked_reason, id, ...extra)
+  return res.changes > 0
 }

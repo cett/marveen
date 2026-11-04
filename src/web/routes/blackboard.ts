@@ -1,4 +1,4 @@
-import { listBlackboardRows, getBlackboardRowById, blackboardRowExistsForAgent, getLastOutboundMessageTimes, getLastBlackboardChangeTimes, updateBlackboardRowById, insertBlackboardHistory, listBlackboardHistory, resolveAgentTenant, upsertBlackboard, writeAgentAuditLog, deactivatePlanForAgent, listActivePlansForAgents, type BlackboardRow, type ActivePlanForAgent } from '../../db.js'
+import { listBlackboardRows, getBlackboardRowById, blackboardRowExistsForAgent, getLastOutboundMessageTimes, getLastBlackboardChangeTimes, updateBlackboardRowById, blackboardRowInScope, insertBlackboardHistory, listBlackboardHistory, resolveAgentTenant, upsertBlackboard, writeAgentAuditLog, deactivatePlanForAgent, listActivePlansForAgents, type BlackboardRow, type BlackboardWriteScope, type ActivePlanForAgent } from '../../db.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import { callerMayActAs } from '../fleet-agent-identity.js'
@@ -111,9 +111,10 @@ async function patchBlackboard(id: string, data: {
   blocked_by?: string | null
   blocked_reason?: string | null
   resolved_by?: string | null
-}): Promise<BlackboardRow | undefined> {
+}, scope?: BlackboardWriteScope): Promise<BlackboardRow | undefined> {
   const row = await getBlackboardRowById(id)
-  if (!row) return undefined
+  // A row outside the caller's scope answers like a missing one, so ids cannot be probed across tenants.
+  if (!row || !blackboardRowInScope(row, scope)) return undefined
   const status = data.status ?? row.status
   const summary = data.summary ?? row.summary
   const task_ref = Object.prototype.hasOwnProperty.call(data, 'task_ref') ? data.task_ref : row.task_ref
@@ -122,7 +123,9 @@ async function patchBlackboard(id: string, data: {
   // the moment it moves away from 'blocked'.
   const blocked_by = status === 'blocked' ? (data.blocked_by ?? row.blocked_by ?? null) : null
   const blocked_reason = status === 'blocked' ? (data.blocked_reason ?? row.blocked_reason ?? null) : null
-  await updateBlackboardRowById(id, { status, summary, task_ref, blocked_by, blocked_reason })
+  // The scope is also part of the UPDATE itself: a row that moved to another tenant or owner since the read
+  // above is not written (and then answers 404 like any row the caller may not touch).
+  if (!await updateBlackboardRowById(id, { status, summary, task_ref, blocked_by, blocked_reason }, scope)) return undefined
   const updated = await getBlackboardRowById(id) as BlackboardRow
   // Only record history when the patch actually changed something.
   const changed =
@@ -145,6 +148,17 @@ async function patchBlackboard(id: string, data: {
     try { await deactivatePlanForAgent(updated.agent_id) } catch { /* best-effort */ }
   }
   return updated
+}
+
+/**
+ * Which rows a PATCH by id may touch. Admin: any. A fleet agent: only its own agent's row (a token that
+ * names no agent matches nothing). Every other role: only rows of its own tenant, so a shared ('_multi_')
+ * row is never writable by id for them -- the same rule as the POST write guard and the tenant-narrowed reads.
+ */
+function patchScopeFor(ctx: Pick<RouteContext, 'role' | 'tenantId' | 'tokenAgentId'>): BlackboardWriteScope | undefined {
+  if (ctx.role === 'admin') return undefined
+  if (ctx.role === 'fleet_agent') return { ownerAgentId: ctx.tokenAgentId ?? '' }
+  return { tenantId: ctx.tenantId ?? 'default' }
 }
 
 const VALID_STATUS = new Set(['active', 'done', 'blocked', 'stale', 'assigned'])
@@ -256,7 +270,7 @@ export async function tryHandleBlackboard(ctx: RouteContext): Promise<boolean> {
       blocked_by: body.blocked_by !== undefined ? (body.blocked_by as string | null) : undefined,
       blocked_reason: body.blocked_reason !== undefined ? (body.blocked_reason as string | null) : undefined,
       resolved_by: body.resolved_by !== undefined ? (body.resolved_by as string | null) : undefined,
-    })
+    }, patchScopeFor(ctx))
     if (!updated) { json(res, { error: 'not_found', hint: 'not found' }, 404); return true }
     try {
       await writeAgentAuditLog({ agent_id: updated.agent_id, entity: 'blackboard', action: 'update', entity_id: updated.id, detail: { status: updated.status, task_ref: updated.task_ref } })

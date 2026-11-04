@@ -10,6 +10,7 @@ const ROW_A = {
   status: 'active',
   summary: 'Working on feature X',
   updated_at: 1700000000,
+  tenant_id: 'default',
 }
 const ROW_B = {
   id: 'bb000002',
@@ -18,6 +19,7 @@ const ROW_B = {
   status: 'done',
   summary: 'Finished refactor',
   updated_at: 1700001000,
+  tenant_id: 'default',
 }
 
 // ---------- db mock ----------
@@ -26,7 +28,7 @@ const mockGetLastOutboundMessageTimes = vi.fn<(agentIds: string[], sinceSec: num
 const mockGetLastBlackboardChangeTimes = vi.fn<(agentIds: string[]) => object[]>(() => [])
 const mockBlackboardRowExistsForAgent = vi.fn<(agentId: string) => boolean>(() => false)
 const mockGetBlackboardRowById = vi.fn<(id: string) => object | undefined>(() => undefined)
-const mockUpdateBlackboardRowById = vi.fn()
+const mockUpdateBlackboardRowById = vi.fn<(id: string, fields: unknown, scope?: unknown) => boolean>(() => true)
 const mockInsertBlackboardHistory = vi.fn()
 const mockListBlackboardHistory = vi.fn<(opts?: unknown) => object[]>(() => [])
 const mockUpsertBlackboard = vi.fn<(agent_id: unknown, data: unknown) => object>(() => ({ ...ROW_A }))
@@ -44,7 +46,10 @@ vi.mock('../db.js', () => ({
   getLastBlackboardChangeTimes: (ids: string[]) => Promise.resolve(mockGetLastBlackboardChangeTimes(ids)),
   blackboardRowExistsForAgent: (agentId: string) => Promise.resolve(mockBlackboardRowExistsForAgent(agentId)),
   getBlackboardRowById: (id: string) => Promise.resolve(mockGetBlackboardRowById(id)),
-  updateBlackboardRowById: (id: string, fields: unknown) => Promise.resolve(mockUpdateBlackboardRowById(id, fields)),
+  updateBlackboardRowById: (id: string, fields: unknown, scope?: unknown) => Promise.resolve(mockUpdateBlackboardRowById(id, fields, scope)),
+  // The real scope predicate (pure), so the route's pre-read check is exercised, not mocked away.
+  blackboardRowInScope: (row: { agent_id: string; tenant_id?: string }, scope?: { tenantId: string } | { ownerAgentId: string }) =>
+    !scope ? true : 'tenantId' in scope ? row.tenant_id === scope.tenantId : row.agent_id === scope.ownerAgentId,
   insertBlackboardHistory: (a: unknown) => Promise.resolve(mockInsertBlackboardHistory(a)),
   listBlackboardHistory: (a: unknown) => Promise.resolve(mockListBlackboardHistory(a)),
   upsertBlackboard: (agent_id: unknown, data: unknown) => Promise.resolve(mockUpsertBlackboard(agent_id, data)),
@@ -402,7 +407,7 @@ describe('PATCH /api/blackboard/:id', () => {
     expect(handled).toBe(true)
     expect(out.status).toBe(200)
     expect((out.body as { row: { status: string } }).row.status).toBe('done')
-    expect(mockUpdateBlackboardRowById).toHaveBeenCalledWith('bb000001', expect.objectContaining({ status: 'done', summary: 'Finished' }))
+    expect(mockUpdateBlackboardRowById).toHaveBeenCalledWith('bb000001', expect.objectContaining({ status: 'done', summary: 'Finished' }), { tenantId: 'default' })
     expect(mockInsertBlackboardHistory).toHaveBeenCalledOnce()
     expect(mockInsertBlackboardHistory).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'done' })
@@ -439,6 +444,83 @@ describe('PATCH /api/blackboard/:id', () => {
     const { ctx, out } = makeCtx('PATCH', '/api/blackboard/bb000001', { summary: 'y'.repeat(501) })
     await tryHandleBlackboard(ctx)
     expect(out.status).toBe(400)
+  })
+
+  describe('write scope (tenant / owner)', () => {
+    const FOREIGN = { ...ROW_A, id: 'bb000009', agent_id: 'agent-z', tenant_id: 'tenant-other' }
+    const SHARED = { ...ROW_A, id: 'bb000008', agent_id: 'agent-s', tenant_id: '_multi_' }
+
+    function expectNothingWritten(out: { status: number; body: unknown }) {
+      expect(out.status).toBe(404)
+      expect(mockUpdateBlackboardRowById).not.toHaveBeenCalled()
+      expect(mockInsertBlackboardHistory).not.toHaveBeenCalled()
+      expect(mockWriteAgentAuditLog).not.toHaveBeenCalled()
+      expect(mockDeactivatePlanForAgent).not.toHaveBeenCalled()
+    }
+
+    it('a tenant caller cannot patch a row of another tenant (404, same as a missing id)', async () => {
+      mockGetBlackboardRowById.mockReturnValueOnce({ ...FOREIGN })
+      const { ctx, out } = makeCtx('PATCH', '/api/blackboard/bb000009', { status: 'done' }, { role: 'editor' as never, tenantId: 'tenant-mine' })
+      await tryHandleBlackboard(ctx)
+      expectNothingWritten(out)
+    })
+
+    it('a tenant caller cannot patch a shared (_multi_) row', async () => {
+      mockGetBlackboardRowById.mockReturnValueOnce({ ...SHARED })
+      const { ctx, out } = makeCtx('PATCH', '/api/blackboard/bb000008', { status: 'done' }, { role: 'editor' as never, tenantId: 'tenant-mine' })
+      await tryHandleBlackboard(ctx)
+      expectNothingWritten(out)
+    })
+
+    it('a tenant caller patches a row of its own tenant, scoped to that tenant', async () => {
+      const own = { ...ROW_A, tenant_id: 'tenant-mine' }
+      mockGetBlackboardRowById.mockReturnValueOnce(own).mockReturnValueOnce({ ...own, status: 'done' })
+      const { ctx, out } = makeCtx('PATCH', '/api/blackboard/bb000001', { status: 'done' }, { role: 'editor' as never, tenantId: 'tenant-mine' })
+      await tryHandleBlackboard(ctx)
+      expect(out.status).toBe(200)
+      expect(mockUpdateBlackboardRowById).toHaveBeenCalledWith('bb000001', expect.anything(), { tenantId: 'tenant-mine' })
+    })
+
+    it('a fleet agent cannot patch another agent\'s row, even in its own tenant', async () => {
+      mockGetBlackboardRowById.mockReturnValueOnce({ ...ROW_B })
+      const { ctx, out } = makeCtx('PATCH', '/api/blackboard/bb000002', { status: 'active' }, { role: 'fleet_agent', tenantId: 'default', tokenAgentId: 'agent-a' })
+      await tryHandleBlackboard(ctx)
+      expectNothingWritten(out)
+    })
+
+    it('a fleet agent patches its own row, scoped to the owner', async () => {
+      mockGetBlackboardRowById.mockReturnValueOnce({ ...ROW_A }).mockReturnValueOnce({ ...ROW_A, status: 'done' })
+      const { ctx, out } = makeCtx('PATCH', '/api/blackboard/bb000001', { status: 'done' }, { role: 'fleet_agent', tenantId: 'default', tokenAgentId: 'agent-a' })
+      await tryHandleBlackboard(ctx)
+      expect(out.status).toBe(200)
+      expect(mockUpdateBlackboardRowById).toHaveBeenCalledWith('bb000001', expect.anything(), { ownerAgentId: 'agent-a' })
+    })
+
+    it('a fleet agent whose token names no agent patches nothing', async () => {
+      mockGetBlackboardRowById.mockReturnValueOnce({ ...ROW_A })
+      const { ctx, out } = makeCtx('PATCH', '/api/blackboard/bb000001', { status: 'done' }, { role: 'fleet_agent', tenantId: 'default' })
+      await tryHandleBlackboard(ctx)
+      expectNothingWritten(out)
+    })
+
+    it('admin patches a row of any tenant, unscoped', async () => {
+      mockGetBlackboardRowById.mockReturnValueOnce({ ...FOREIGN }).mockReturnValueOnce({ ...FOREIGN, status: 'done' })
+      const { ctx, out } = makeCtx('PATCH', '/api/blackboard/bb000009', { status: 'done' }, { role: 'admin', tenantId: null })
+      await tryHandleBlackboard(ctx)
+      expect(out.status).toBe(200)
+      expect(mockUpdateBlackboardRowById).toHaveBeenCalledWith('bb000009', expect.anything(), undefined)
+    })
+
+    it('when the conditional UPDATE writes nothing (row moved since the read) the answer is 404 and nothing else is written', async () => {
+      mockGetBlackboardRowById.mockReturnValueOnce({ ...ROW_A })
+      mockUpdateBlackboardRowById.mockReturnValueOnce(false)
+      const { ctx, out } = makeCtx('PATCH', '/api/blackboard/bb000001', { status: 'done' })
+      await tryHandleBlackboard(ctx)
+      expect(out.status).toBe(404)
+      expect(mockInsertBlackboardHistory).not.toHaveBeenCalled()
+      expect(mockWriteAgentAuditLog).not.toHaveBeenCalled()
+      expect(mockDeactivatePlanForAgent).not.toHaveBeenCalled()
+    })
   })
 
   it('does not handle non-matching path', async () => {
