@@ -166,8 +166,9 @@ describe('deleteTenantMemory', () => {
     expect(await deleteTenantMemory('acme', id)).toBe(true)
     expect(memoryExists(id)).toBe(false)
     expect(vecExists(id)).toBe(false)
-    // syncVecMemoryDelete is the one facade call inside the body: it joins the open transaction (same scope)
-    expect(spy.insideBody()).toBe(1)
+    // syncVecMemoryDelete opens a nested transaction (a savepoint) in the open one and deletes on that handle: it
+    // makes no get / run / all call on dbx itself
+    expect(spy.insideBody()).toBe(0)
   })
 })
 
