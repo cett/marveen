@@ -53,14 +53,29 @@ describe('withTrace', () => {
     }))
   })
 
-  it('is NOT inherited by a nested runAs (which replaces the whole context), and the outer trace is back after it', () => {
-    runAs.system('job-a', () => withTrace(T1, () => {
-      runAs.system('job-b', () => expect(currentTrace()).toBeUndefined())
-      expect(currentTrace()).toEqual(T1)
-      // the way to carry it on is explicit
-      const carried = currentTrace()!
-      runAs.system('job-b', () => withTrace(carried, () => expect(currentTrace()).toEqual(T1)))
+  it('a nested runAs replaces the identity and KEEPS the trace, for every runAs variant; the outer context is back after it', async () => {
+    await runAs.system('job-a', () => withTrace(T1, async () => {
+      expect(runAs.system('job-b', () => currentDbContext())).toEqual({ role: 'system', name: 'job-b', ...T1 })
+      expect(runAs.tenant('tenant-a', () => currentDbContext())).toEqual({ role: 'tenant', tenantId: 'tenant-a', ...T1 })
+      expect(runAs.agent('agent-a', 'tenant-a', () => currentDbContext())).toEqual({ role: 'agent', agentId: 'agent-a', tenantId: 'tenant-a', ...T1 })
+      // also across an await inside the nested run
+      expect(await runAs.system('job-b', async () => { await sleep(1); return currentTrace() })).toEqual(T1)
+      expect(currentDbContext()).toEqual({ role: 'system', name: 'job-a', ...T1 })
     }))
+  })
+
+  it('a nested runAs inside a run WITHOUT a trace has none, and a nested withTrace still overrides the inherited one', () => {
+    runAs.system('job-a', () => runAs.system('job-b', () => expect(currentTrace()).toBeUndefined()))
+    runAs.system('job-a', () => withTrace(T1, () => runAs.system('job-b', () => withTrace(T2, () => expect(currentTrace()).toEqual(T2)))))
+  })
+
+  it('a runAs opened outside any context (a timer, a close handler) gets no trace from the request that created it', async () => {
+    const seen: unknown[] = []
+    const timer = setTimeout(() => runAs.system('job-b', () => seen.push(currentTrace())), 5)
+    await runAs.system('job-a', () => withTrace(T1, () => sleep(1)))
+    await sleep(15)
+    clearTimeout(timer)
+    expect(seen).toEqual([undefined])
   })
 })
 

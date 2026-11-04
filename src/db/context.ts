@@ -15,7 +15,8 @@
 //   - the context follows `await` and a `setTimeout` created INSIDE `runAs`,
 //   - it does NOT reach a `setInterval` / `setTimeout` callback created BEFORE `runAs`: that callback keeps the
 //     context of where it was created. A tick that touches the db has to open its own `runAs` (waves 3 and 4),
-//   - a nested `runAs` replaces the context and the outer one is back when it returns,
+//   - a nested `runAs` replaces the IDENTITY and keeps the trace (traceId/spanId, set by `withTrace`) of the outer
+//     context, because it is still the same request; the outer context is back when it returns,
 //   - this store is independent of the transaction scope in tx-lock.ts and of the tenant request context.
 
 import { AsyncLocalStorage } from 'node:async_hooks'
@@ -48,15 +49,26 @@ function requireId(kind: string, value: string): string {
   return value
 }
 
+/**
+ * The context a `runAs` opens: the NEW identity, plus the trace of the context it is opened in (if there is one). A nested
+ * `runAs` inside a request is still that request, so the identity is replaced and the trace is kept: dropping it
+ * silently is exactly the gap the trace in the context closes. A `runAs` opened outside any context (a timer, a close
+ * handler) has no trace to keep.
+ */
+function inheritTrace(ctx: DbContext): DbContext {
+  const outer = store.getStore()
+  return outer?.traceId && outer.spanId ? { ...ctx, traceId: outer.traceId, spanId: outer.spanId } : ctx
+}
+
 export const runAs = {
   system<T>(name: string, fn: () => T): T {
-    return store.run({ role: 'system', name: requireId('system', name) }, fn)
+    return store.run(inheritTrace({ role: 'system', name: requireId('system', name) }), fn)
   },
   tenant<T>(tenantId: string, fn: () => T): T {
-    return store.run({ role: 'tenant', tenantId: requireId('tenant', tenantId) }, fn)
+    return store.run(inheritTrace({ role: 'tenant', tenantId: requireId('tenant', tenantId) }), fn)
   },
   agent<T>(agentId: string, tenantId: string, fn: () => T): T {
-    return store.run({ role: 'agent', agentId: requireId('agent', agentId), tenantId: requireId('agent', tenantId) }, fn)
+    return store.run(inheritTrace({ role: 'agent', agentId: requireId('agent', agentId), tenantId: requireId('agent', tenantId) }), fn)
   },
 }
 
@@ -73,8 +85,7 @@ export function withDbContext<T>(ctx: DbContext | undefined, fn: () => T): T {
  * request or message it belongs to without a parameter. Without a running context there is nothing to attach the trace
  * to: `fn` runs as it is (a trace alone would make a call look scoped when it is not).
  *
- * The trace is NOT inherited by a nested `runAs`: that replaces the whole context, as it always did. Whoever opens a
- * nested `runAs` inside a traced unit of work and wants the trace there calls `withTrace(currentTrace(), ...)` inside it.
+ * A nested `runAs` replaces the identity but keeps this trace (see `inheritTrace`); a callback created before the run does not get it.
  */
 export function withTrace<T>(trace: DbTrace, fn: () => T): T {
   const traceId = requireId('trace', trace.traceId)
