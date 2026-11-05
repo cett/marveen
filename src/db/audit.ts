@@ -535,8 +535,11 @@ export async function writeAgentAuditLog(opts: {
   /** A tenant the caller already resolved (a writer inside a transaction cannot look it up on the facade there);
    *  undefined resolves it from the agent, null is written as the unknown tenant. */
   tenant_id?: string | null
-}): Promise<void> {
-  await dbx.run('INSERT INTO agent_audit_log (agent_id, entity, action, entity_id, detail, tenant_id, trace_id, span_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', opts.agent_id,
+}, ops: SqlOps = dbx): Promise<void> {
+  // `ops` is the transaction the row belongs to when the caller writes it inside one (the retention prune journal does);
+  // the default is the facade, which every other caller keeps using. A caller inside a transaction also passes
+  // `tenant_id`, so the tenant lookup below never runs on the facade there.
+  await ops.run('INSERT INTO agent_audit_log (agent_id, entity, action, entity_id, detail, tenant_id, trace_id, span_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', opts.agent_id,
     opts.entity,
     opts.action,
     opts.entity_id != null ? String(opts.entity_id) : null,
@@ -731,14 +734,17 @@ export interface PruneActor { agentId: string; trigger: 'sweep' | 'manual'; acto
 
 // The journal row of a prune. It is written AFTER the deletes, so a prune never removes its own record (the row
 // itself then lives for the audit window like any other); tenant NULL: the cut is global, not a tenant's.
-async function writePruneJournal(actor: PruneActor, detail: Record<string, unknown>): Promise<void> {
+// `tx` is the transaction of the prune: the row is part of it ("no deletion without its record"), so it is written on
+// the transaction handle, not on the facade. Both callers run inside a transaction; the parameter is required so a
+// future caller cannot forget it.
+async function writePruneJournal(actor: PruneActor, detail: Record<string, unknown>, tx: SqlOps): Promise<void> {
   await writeAgentAuditLog({
     agent_id: actor.agentId,
     entity: 'system',
     action: 'retention_prune',
     detail: { trigger: actor.trigger, ...(actor.actorKind ? { actor_kind: actor.actorKind } : {}), ...detail },
     tenant_id: null,
-  })
+  }, tx)
 }
 
 // approval_events is the security journal of the approval flow and the OTLP log export reads it by cursor
@@ -810,7 +816,7 @@ export async function pruneAuditLogs(): Promise<AuditPruneResult> {
       otel_cutoff_days: otelRetentionDays, otel_cutoff_ms: otelCutoffMs,
       unexported_deleted: unexportedDeleted, export_enabled: exportEnabled,
       unexported_logs_deleted: unexportedLogsDeleted,
-    })
+    }, tx)
     return result
   }, { mode: 'immediate' })
 }
@@ -823,7 +829,7 @@ export async function pruneHookAuditLogJournaled(olderThanSecs: number, actor: O
     await writePruneJournal({ ...actor, trigger: 'manual' }, {
       tables: { hook_audit_log: removed }, deleted_total: removed,
       cutoff_days: olderThanSecs / 86400, cutoff_ts: Math.floor(Date.now() / 1000) - olderThanSecs,
-    })
+    }, tx)
     return removed
   }, { mode: 'immediate' })
 }
