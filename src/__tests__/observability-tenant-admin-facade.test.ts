@@ -267,6 +267,31 @@ describe('deleteTenant: one transaction on the tx handle', () => {
     expect(sql.filter((s) => /^(SAVEPOINT|RELEASE|ROLLBACK TO) /.test(s)))
       .toEqual(['SAVEPOINT dbx_sp_1', 'RELEASE dbx_sp_1', 'SAVEPOINT dbx_sp_2', 'RELEASE dbx_sp_2'])
   })
+
+  // The tenant scoping of the two workspace deletes: a flipped (<>) or widened (OR 1=1) predicate would drop the
+  // sibling's rows, so the sibling needs its own workspace_docs and vec_workspace_docs rows to lose.
+  it('drops the workspace docs and their vec rows of the deleted tenant only: the sibling keeps both', async (ctx) => {
+    if (!vecExtensionLoaded) ctx.skip()
+    await createTenant('gone', 'Gone')
+    await createTenant('sibling', 'Sibling')
+    const blob = Buffer.from(new Float32Array(768).fill(0.1).buffer)
+    for (const tenant of ['gone', 'sibling']) {
+      for (const n of [1, 2]) {
+        const id = `wd-${tenant}-${n}`
+        getDb().prepare("INSERT INTO workspace_docs (id, agent_id, tenant_id, doc_key, title, content, content_type, type, size_bytes, created_at, updated_at, last_accessed_at) VALUES (?, ?, ?, ?, 't', 'c', 'text', 'notes', 1, 0, 0, 0)")
+          .run(id, `agent-${tenant}`, tenant, `notes/${tenant}-${n}`)
+        getDb().prepare('INSERT INTO vec_workspace_docs(doc_id, agent_id, tenant_id, embedding) VALUES (?, ?, ?, ?)')
+          .run(id, `agent-${tenant}`, tenant, blob)
+      }
+    }
+    expect(rows('workspace_docs', 'tenant_id', 'gone')).toBe(2)
+    expect(rows('vec_workspace_docs', 'tenant_id', 'gone')).toBe(2)
+    await deleteTenant('gone')
+    expect(rows('workspace_docs', 'tenant_id', 'gone')).toBe(0)
+    expect(rows('vec_workspace_docs', 'tenant_id', 'gone')).toBe(0)
+    expect(rows('workspace_docs', 'tenant_id', 'sibling')).toBe(2)
+    expect(rows('vec_workspace_docs', 'tenant_id', 'sibling')).toBe(2)
+  })
 })
 
 describe('deleteTenant: the vault file step', () => {
