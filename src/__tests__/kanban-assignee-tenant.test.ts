@@ -702,6 +702,23 @@ describe('PUT /api/kanban/:id: the tenant verdict judges a change, not the value
     expect(out.body).toMatchObject({ error: 'invalid_value', field: 'assignee' })
   })
 
+  // The stored value is a list an admin wrote and the body names only a part of it: that is a DIFFERENT value (plain
+  // equality), so the foreign part is judged. A prefix test in either direction would skip the verdict here.
+  it.each([
+    ['a foreign first part of the stored list', 'main-b, beta', 'main-b'],
+    ['a foreign first part followed by blanks', 'main-b   ', 'main-b'],
+  ])('a body that is only a prefix of the stored value is a 404, the card is not changed and nothing is updated: %s', async (_l, stored, body) => {
+    setAssignee('card-default', stored)
+    const before = cardState('card-default')
+    const audits = auditCount()
+    const out = await callAs(await callerAuth('default'), 'PUT', '/api/kanban/card-default', { title: 'Renamed', assignee: body })
+    expect(out.status).toBe(404)
+    expect(out.body).toMatchObject({ error: 'not_found', field: 'assignee' })
+    expect(cardState('card-default')).toEqual(before)
+    expect(auditCount()).toBe(audits)
+    expect(update.calls).toEqual([]) // updateKanbanCard is never called
+  })
+
   it('the type rule still runs on a card that holds a foreign agent', async () => {
     setAssignee('card-default', 'main-b')
     const out = await callAs(await callerAuth('default'), 'PUT', '/api/kanban/card-default', { assignee: ['main-b'] })
@@ -825,6 +842,38 @@ describe('the assignee is at most 500 characters, for every caller', () => {
   it('counts UTF-16 units (.length): 251 two-unit characters are over the cap', async () => {
     const out = await callAs(await callerAuth('default'), 'PUT', '/api/kanban/card-default', { assignee: '\u{1F600}'.repeat(MAX_ASSIGNEE_LENGTH / 2 + 1) })
     expect(out.status).toBe(400)
+  })
+
+  // The unit is the UTF-16 length, not the byte length: 500 two-byte letters are 1000 bytes and pass, 250 surrogate pairs
+  // are 500 units (also 1000 bytes) and pass, 251 pairs are 502 units and fail. A byte-length rule would fail the first
+  // two on every route.
+  const THREE_ROUTES = ['PUT', 'POST', 'accept'] as const
+  const sendAssignee = async (route: (typeof THREE_ROUTES)[number], assignee: string) => {
+    const auth = await callerAuth('default')
+    if (route === 'PUT') return callAs(auth, 'PUT', '/api/kanban/card-default', { assignee })
+    if (route === 'POST') return callAs(auth, 'POST', '/api/kanban', { title: 'Wide assignee', assignee })
+    return callAs(auth, 'POST', acceptPath('card-default'), { subtasks: [sub('a'), sub('b', { assignee })] })
+  }
+
+  it.each(THREE_ROUTES)('%s: 500 two-byte letters (1000 bytes, 500 units) pass', async (route) => {
+    const value = 'é'.repeat(MAX_ASSIGNEE_LENGTH)
+    expect(value.length).toBe(500)
+    expect(Buffer.byteLength(value)).toBe(1000)
+    expect((await sendAssignee(route, value)).status).toBe(200)
+  })
+
+  it.each(THREE_ROUTES)('%s: 250 surrogate pairs (500 units) pass', async (route) => {
+    const value = '\u{1F600}'.repeat(MAX_ASSIGNEE_LENGTH / 2)
+    expect(value.length).toBe(500)
+    expect((await sendAssignee(route, value)).status).toBe(200)
+  })
+
+  it.each(THREE_ROUTES)('%s: 251 surrogate pairs (502 units) are a 400', async (route) => {
+    const value = '\u{1F600}'.repeat(MAX_ASSIGNEE_LENGTH / 2 + 1)
+    expect(value.length).toBe(502)
+    const out = await sendAssignee(route, value)
+    expect(out.status).toBe(400)
+    expect(out.body).toMatchObject({ error: 'invalid_value' })
   })
 })
 
