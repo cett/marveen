@@ -8,7 +8,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import {
   recordDelivery, clearDeliveries, matchDeliveryTail, removeDeliveryByMsgId, _registrySize,
-  TAIL_MATCH_MIN_CHARS,
 } from '../web/delivery-intent.js'
 
 const LEDGER = { msgId: 101, toAgent: 'agent-a', tenantId: 'tenant-x' }
@@ -73,9 +72,9 @@ describe('what does not match (each is a near miss that would clear a human draf
 
   it('a box shorter than the minimum is never attributed, the minimum itself is', () => {
     // The frame ends in one 40-char token, so a suffix of exactly 40 and one of 39 chars are both verbatim tails.
-    recordDelivery('session-a', `lead ${'a'.repeat(30)} ${'b'.repeat(TAIL_MATCH_MIN_CHARS)}`, '101', LEDGER)
-    expect(matchDeliveryTail('session-a', 'b'.repeat(TAIL_MATCH_MIN_CHARS)).kind).toBe('match')
-    expect(matchDeliveryTail('session-a', 'b'.repeat(TAIL_MATCH_MIN_CHARS - 1)).kind).toBe('none')
+    recordDelivery('session-a', `lead ${'a'.repeat(30)} ${'b'.repeat(40)}`, '101', LEDGER)
+    expect(matchDeliveryTail('session-a', 'b'.repeat(40)).kind).toBe('match')
+    expect(matchDeliveryTail('session-a', 'b'.repeat(39)).kind).toBe('none')
   })
 
   it('an empty or blank box is none', () => {

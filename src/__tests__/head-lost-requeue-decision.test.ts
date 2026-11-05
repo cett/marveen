@@ -1,4 +1,4 @@
-// decideStuckInputAction: the 'clear-requeue' branch (1267). Pure matrix cells, no tmux, no DB. The branch needs ALL of:
+// decideStuckInputAction: the 'clear-requeue' branch. Pure matrix cells, no tmux, no DB. The branch needs ALL of:
 // a sub-agent session (allowPlainReinject), parked plain text, a non-truncated-block box, more than one row, a UNIQUE
 // tail attribution and a requeue budget that is not spent. Every other cell is the decision it was before this branch.
 
@@ -32,6 +32,17 @@ describe('clear-requeue (matrix row 2)', () => {
   it('needs no escalation: the confirm window of the recovery is the only wait', () => {
     expect(decideStuckInputAction(facts({ escalate: false }))).toBe('clear-requeue')
     expect(decideStuckInputAction(facts({ escalate: true }))).toBe('clear-requeue')
+  })
+})
+
+describe('the row-count boundary', () => {
+  it('two rows is enough for the move, one row keeps the legacy Enter', () => {
+    expect(decideStuckInputAction(facts({ rowCount: 2 }))).toBe('clear-requeue')
+    expect(decideStuckInputAction(facts({ rowCount: 1 }))).toBe('enter')
+  })
+
+  it('an empty count (no rows) is not a head-lost box either', () => {
+    expect(decideStuckInputAction(facts({ rowCount: 0 }))).toBe('enter')
   })
 })
 

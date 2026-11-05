@@ -1,4 +1,4 @@
-// Head-lost requeue (1267): a sub-agent's input box holds only the TAIL of an inter-agent frame the router pasted (the TUI
+// Head-lost requeue: a sub-agent's input box holds only the TAIL of an inter-agent frame the router pasted (the TUI
 // dropped the leading rows). The recovery positively attributes the box to the delivery (verbatim suffix of exactly one
 // fresh delivery with a ledger row), clears the box, verifies it is empty, and only then flips the ledger row
 // delivered -> pending, so the router wraps the message again from the DB. This file drives the real
@@ -386,6 +386,24 @@ describe('the ledger flip throws after the clear', () => {
   })
 })
 
+describe('what the failure log carries', () => {
+  it('only ids and the error: no pane text, no message text, in the arguments, the error or the message', async () => {
+    const m = await deliver()
+    term.pane = headLost(m.frame)
+    flip.fail = true
+    await tick()
+    const failed = logCalls.warn.filter((c) => String(c[1]).includes('cleared but the requeue failed'))
+    expect(failed).toHaveLength(1)
+    const args = failed[0]![0] as Record<string, unknown>
+    expect(Object.keys(args).sort()).toEqual(['attempt', 'err', 'msgId', 'session'])
+    const err = args.err as Error
+    expect(err).toBeInstanceOf(Error)
+    const dumped = JSON.stringify([{ ...args, err: { message: err.message, stack: err.stack ?? '' } }, failed[0]![1]])
+    expect(dumped).not.toContain('filler')
+    expect(dumped).not.toContain(BODY.slice(0, 30))
+  })
+})
+
 describe('the ledger flip changes no row (matrix row 8, edit (e))', () => {
   it('a message that is already done is left alone and its record is KEPT', async () => {
     const m = await deliver()
@@ -446,26 +464,36 @@ describe('the budget: one requeue per message id (matrix row 6)', () => {
     expect(alerts.sent[0]).not.toContain('filler')
   })
 
-  it('the memory is bounded: past 200 ids the oldest is forgotten and may be requeued once more', async () => {
-    const first = await deliver()
-    term.pane = headLost(first.frame)
-    await tick()
-    for (let i = 0; i < 200; i++) {
+  it('exactly 200 message ids are remembered: the 201st requeue forgets only the oldest', async () => {
+    const msgs: Msg[] = []
+    const requeueNew = async (i: number) => {
       clearDeliveries(SESSION)
       const m = await deliver(SESSION, TO, 'default', `${BODY} unique${i}`)
       term.pane = headLost(m.frame)
       await tick()
+      msgs.push(m)
     }
-    // `first` is the oldest of 201 and was forgotten: a new head-lost park of it is requeued again.
-    clearDeliveries(SESSION)
-    await markMessageDelivered(first.id)
-    recordDelivery(SESSION, first.frame, String(first.id), { msgId: first.id, toAgent: TO, tenantId: 'default' })
-    term.pane = headLost(first.frame)
-    term.clearCalls = 0
-    await tick()
-    expect(term.clearCalls).toBe(1)
-    expect(await statusOf(first.id)).toBe('pending')
-  }, 60_000)
+    /** Park the message head-lost again; true when the budget held it (nothing was cleared). */
+    const heldAsSpent = async (m: Msg) => {
+      clearDeliveries(SESSION)
+      await markMessageDelivered(m.id)
+      recordDelivery(SESSION, m.frame, String(m.id), { msgId: m.id, toAgent: TO, tenantId: 'default' })
+      term.pane = headLost(m.frame)
+      const before = term.clearCalls
+      await tick()
+      return term.clearCalls === before
+    }
+    for (let i = 0; i < 200; i++) await requeueNew(i)
+    // 200 remembered: the oldest and the newest are both still spent (a cap of 199, or an eviction at 200, would have lost the oldest).
+    expect(await heldAsSpent(msgs[0]!)).toBe(true)
+    expect(await heldAsSpent(msgs[199]!)).toBe(true)
+    await requeueNew(200)
+    // The 201st evicted exactly the oldest: the second is still spent, the 201st is spent, the first may be requeued again.
+    expect(await heldAsSpent(msgs[1]!)).toBe(true)
+    expect(await heldAsSpent(msgs[200]!)).toBe(true)
+    expect(await heldAsSpent(msgs[0]!)).toBe(false)
+    expect(await statusOf(msgs[0]!.id)).toBe('pending')
+  }, 120_000)
 })
 
 describe('what stays a hold (a human draft must never be cleared)', () => {

@@ -5,7 +5,7 @@
 import { describe, it, expect, beforeAll } from 'vitest'
 import {
   initDatabase, createAgentMessage, markMessageDelivered, markMessageDone, markMessageFailed,
-  requeueDeliveredMessage, getPendingMessages, claimPendingForAgent,
+  requeueDeliveredMessage, getPendingMessages, claimPendingForAgent, setMessageResult,
 } from '../db.js'
 import { dbx } from '../db/facade.js'
 
@@ -75,13 +75,20 @@ describe('requeueDeliveredMessage', () => {
 
   it('leaves the trace columns, the result and completed_at alone: the span closes once, at the real answer', async () => {
     const m = await delivered('agent-a-7')
+    // Give the columns real values first: an untouched NULL proves nothing about a statement that would clear them.
+    await setMessageResult(m.id, 'note-a')
+    await dbx.run('UPDATE agent_messages SET completed_at = ? WHERE id = ?', 1700000000, m.id)
     const before = (await row(m.id))!
+    expect(before.result).toBe('note-a')
+    expect(before.completed_at).toBe(1700000000)
     await requeueDeliveredMessage(m.id, 'agent-a-7', 'default')
     const after = (await row(m.id))!
     for (const col of ['trace_id', 'span_id', 'parent_span_id', 'result', 'completed_at', 'created_at', 'content', 'from_agent', 'to_agent', 'tenant_id']) {
       expect(after[col], col).toEqual(before[col])
     }
     expect(after.trace_id).toBe(TRACE.trace_id)
+    expect(after.result).toBe('note-a')
+    expect(after.completed_at).toBe(1700000000)
   })
 
   it('a requeued row can be delivered again exactly once (delivered -> pending -> delivered)', async () => {
