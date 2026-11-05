@@ -160,7 +160,8 @@ Naplók, telemetria és mentési politikák.
 
 | Kulcs | Leírás |
 |-------|--------|
-| `AUDIT_LOG_RETENTION_DAYS` | Hány napig őrizze az audit-naplóbejegyzéseket (config-változások, ágens- és hook-audit, jóváhagyási események, import-futások, visszaállítás-napló). A kanban-kártya események nem törlődnek (a kártya-idővonal és a kártya-token-költség adata). A sor `trace_id`-ja csak addig oldható fel a szakaszaira, amíg azok léteznek (`OTEL_SPAN_RETENTION_DAYS`, alapból 30). Az RBAC árnyék-napló 30 napig, a token-használati árnyék-napló 90 napig él |
+| `AUDIT_LOG_RETENTION_DAYS` | Hány napig őrizze az audit-naplóbejegyzéseket (config-változások, ágens- és hook-audit, import-futások, visszaállítás-napló). A jóváhagyási eseményeknek saját beállítása van: `APPROVAL_EVENTS_RETENTION_DAYS`. A kanban-kártya események nem törlődnek (a kártya-idővonal és a kártya-token-költség adata). A sor `trace_id`-ja csak addig oldható fel a szakaszaira, amíg azok léteznek (`OTEL_SPAN_RETENTION_DAYS`, alapból 30). Az RBAC árnyék-napló 30 napig, a token-használati árnyék-napló 90 napig él |
+| `APPROVAL_EVENTS_RETENTION_DAYS` | Hány napig őrizze a jóváhagyási eseményeket, a jóváhagyási folyamat biztonsági naplóját (alapból 365, tartomány 1-3650). A régebbi bejegyzések a napi sweepkor törlődnek, az OTLP log-exportban még el nem küldöttek is (a sweep rekordja megszámolja őket). Szándékosan hosszabb az általános audit-megőrzésnél. A kanban-kártya események nem törlődnek |
 | `AUDIT_LOG_MAX_ENTRIES` | Az audit-napló maximális bejegyzésszáma |
 
 ### Token-használat megőrzése

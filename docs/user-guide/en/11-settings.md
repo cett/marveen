@@ -160,7 +160,8 @@ Log retention, telemetry, and backup policies.
 
 | Key | Description |
 |-----|-------------|
-| `AUDIT_LOG_RETENTION_DAYS` | Days to keep audit log entries (config changes, agent and hook audit, approval events, import runs, restore log). Kanban card events are not deleted (the card timeline and card token cost read them). A row's `trace_id` can be resolved to its spans only while the spans still exist (`OTEL_SPAN_RETENTION_DAYS`, 30 by default). The RBAC shadow log keeps 30 days, the token-usage shadow log 90 |
+| `AUDIT_LOG_RETENTION_DAYS` | Days to keep audit log entries (config changes, agent and hook audit, import runs, restore log). Approval events have their own setting, `APPROVAL_EVENTS_RETENTION_DAYS`. Kanban card events are not deleted (the card timeline and card token cost read them). A row's `trace_id` can be resolved to its spans only while the spans still exist (`OTEL_SPAN_RETENTION_DAYS`, 30 by default). The RBAC shadow log keeps 30 days, the token-usage shadow log 90 |
+| `APPROVAL_EVENTS_RETENTION_DAYS` | Days to keep approval events, the security journal of the approval flow (default 365, range 1 to 3650). Older entries are deleted by the daily sweep, including ones the OTLP log export has not sent yet (the sweep record counts them). Kept longer than the general audit log on purpose. Kanban card events are not deleted |
 | `AUDIT_LOG_MAX_ENTRIES` | Maximum number of audit log entries to retain |
 
 ### Token usage retention

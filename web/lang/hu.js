@@ -1301,6 +1301,7 @@ window._i18n.hu = {
   'settings.desc.IDEA_BREAKDOWN_MAX_SUBTASKS': 'Az "Kanbanra (AI)" ötlet-bontás során generált részfeladatok maximális száma.',
   'settings.desc.IDEA_STALE_DAYS':             'Ennyi napnyi mozdulatlanság után kap "Elavult" jelzést egy "új" státuszú ötlet.',
   'settings.desc.AUDIT_LOG_RETENTION_DAYS':    'Az audit napló (config-változások, ötletláda-audit, store-fájl események) megőrzési ideje napokban. Régebbi bejegyzések a napi sweepkor törlődnek.',
+  'settings.desc.APPROVAL_EVENTS_RETENTION_DAYS': 'A jóváhagyási események, a jóváhagyási folyamat biztonsági naplójának megőrzési ideje napokban. Régebbi bejegyzések a napi sweepkor törlődnek. Hosszabb az általános audit-megőrzésnél, a kanban-kártya események nem törlődnek.',
   'settings.desc.AUDIT_LOG_MAX_ENTRIES':       'Az audit napló összes forrásra vetített maximális bejegyzésszáma. Az API lekérések ennél soha nem adnak vissza többet (forrásanként egyéni limit: AUDIT_LOG_MAX_ENTRIES / 3).',
   'settings.desc.TOKEN_USAGE_RETENTION_DAYS':  'A nyers token-használati napló megőrzési ideje napokban. A napi sweep ennél régebbi sorokat aggregálja (napi/havi összesítők), majd törli.',
   'settings.desc.TOKEN_USAGE_DAILY_RETENTION_DAYS':  'A napi token-összesítők megőrzési ideje napokban. Az összesítők megőrzik az agent/model bontású napi tokenszámokat a számlázási és költségaudithoz.',

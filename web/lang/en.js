@@ -979,6 +979,7 @@ window._i18n.en = {
   'settings.desc.IDEA_BREAKDOWN_MAX_SUBTASKS': 'Maximum number of subtasks generated during "To Kanban (AI)" idea breakdown.',
   'settings.desc.IDEA_STALE_DAYS':             'Days of inactivity after which a "new" status idea receives a "Stale" indicator.',
   'settings.desc.AUDIT_LOG_RETENTION_DAYS':    'Retention period in days for the audit log (config changes, idea box audit, store file events). Older entries are deleted during the daily sweep.',
+  'settings.desc.APPROVAL_EVENTS_RETENTION_DAYS': 'Retention period in days for the approval events, the security journal of the approval flow. Older entries are deleted during the daily sweep. Kept longer than the general audit log; kanban card events are not deleted.',
   'settings.desc.AUDIT_LOG_MAX_ENTRIES':       'Maximum number of entries in the audit log across all sources. API requests never return more than this (per-source limit: AUDIT_LOG_MAX_ENTRIES / 3).',
   'settings.desc.TOKEN_USAGE_RETENTION_DAYS':  'Retention period in days for the raw token usage log. The daily sweep aggregates rows older than this into daily/monthly rollups, then deletes them.',
   'settings.desc.TOKEN_USAGE_DAILY_RETENTION_DAYS':  'Retention period in days for daily token rollups. Rollups preserve per-agent/model daily token counts for billing and cost-audit purposes.',
