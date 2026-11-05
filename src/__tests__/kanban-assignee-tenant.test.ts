@@ -856,7 +856,7 @@ describe('the assignee is at most 500 characters, for every caller', () => {
   }
 
   it.each(THREE_ROUTES)('%s: 500 two-byte letters (1000 bytes, 500 units) pass', async (route) => {
-    const value = 'é'.repeat(MAX_ASSIGNEE_LENGTH)
+    const value = '\u00e9'.repeat(MAX_ASSIGNEE_LENGTH)
     expect(value.length).toBe(500)
     expect(Buffer.byteLength(value)).toBe(1000)
     expect((await sendAssignee(route, value)).status).toBe(200)
