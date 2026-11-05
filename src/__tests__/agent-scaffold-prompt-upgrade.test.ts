@@ -235,6 +235,69 @@ describe('the hash Set', () => {
   })
 })
 
+// --- the base install (port 3420) ---------------------------------------------------------------------------------
+// The three oldest versions carry no placeholder and write the default port out (`localhost:3420`). Under an identity
+// whose port IS 3420 the normalised read turns that into `localhost:{{WEB_PORT}}`, a different text with a different
+// hash, so only the RAW read recognises them there. The identities above (3000, 4100) never see this: their port does
+// not occur in those texts, the normalised text equals the raw one, and a mutant that drops the raw read survives.
+describe('the base install (port 3420): the oldest versions are recognised by the raw read', () => {
+  const ID_BASE: PromptIdentity = { projectRoot: '/srv/install-base/app', botName: 'Marveen', webPort: 3420 }
+  const LITERAL = ['first', 'agent-id-from-claude-md', 'skill-steps']
+  const PLACEHOLDER = ['wrapper', 'port-named']
+
+  it('precondition: under the base identity the normalised text of each literal version DIFFERS from the raw text', () => {
+    for (const l of LITERAL) {
+      expect(ver(l).prompt, l).toContain('localhost:3420')
+      expect(sha(normalizePromptPlaceholders(ver(l).prompt, ID_BASE)), l).not.toBe(sha(ver(l).prompt))
+    }
+    // and under the other identities it does not: that is why they could not see the raw read
+    for (const l of LITERAL) expect(normalizePromptPlaceholders(ver(l).prompt, ID_A), l).toBe(ver(l).prompt)
+  })
+
+  it.each(LITERAL)('%s: recognised, replaced by the current template prompt, idempotent', (label) => {
+    expect(isPreviousTemplatePrompt(ver(label).prompt, ID_BASE)).toBe(true)
+    const existing = pre({ type: 'agent', prompt: resolve(ver(label).prompt, ID_BASE), timeout: ver(label).timeout ?? 60 })
+    const tpl = tplFor(ID_BASE)
+    expect(upgradeLegacyAgentPrompts(existing, tpl, ID_BASE)).toBe(true)
+    expect(existing.PreCompact[0].hooks[0]).toEqual({ type: 'agent', prompt: resolve(currentHook.prompt, ID_BASE), timeout: currentHook.timeout })
+    expect(upgradeLegacyAgentPrompts(existing, tpl, ID_BASE)).toBe(false)
+  })
+
+  it.each(PLACEHOLDER)('%s (resolved by the base install): recognised through the normalised read, replaced', (label) => {
+    const resolved = resolve(ver(label).prompt, ID_BASE)
+    expect(resolved).not.toBe(ver(label).prompt) // the placeholders really were filled with the base values
+    expect(isPreviousTemplatePrompt(resolved, ID_BASE)).toBe(true)
+    const existing = pre({ type: 'agent', prompt: resolved, timeout: ver(label).timeout ?? 60 })
+    expect(upgradeLegacyAgentPrompts(existing, tplFor(ID_BASE), ID_BASE)).toBe(true)
+    expect(promptOf(existing)).toBe(resolve(currentHook.prompt, ID_BASE))
+  })
+
+  it('positive control: the same literal text is recognised under the other identities (raw and normalised reads agree there)', () => {
+    for (const l of LITERAL) for (const id of [ID_A, ID_B]) expect(isPreviousTemplatePrompt(ver(l).prompt, id), `${l} ${id.botName}`).toBe(true)
+  })
+
+  it('a text written out by a 3420 install is replaced under ANOTHER identity as well (the raw text is the text)', () => {
+    for (const l of LITERAL) {
+      for (const id of [ID_A, ID_B]) {
+        const existing = pre({ type: 'agent', prompt: resolve(ver(l).prompt, ID_BASE) })
+        expect(upgradeLegacyAgentPrompts(existing, tplFor(id), id), `${l} ${id.botName}`).toBe(true)
+        expect(promptOf(existing)).toBe(resolve(currentHook.prompt, id))
+      }
+    }
+  })
+
+  it('the current prompt is a no-op and an operator edit stays under the base identity (the raw read does not loosen the match)', () => {
+    const current = pre({ type: 'agent', prompt: resolve(currentHook.prompt, ID_BASE), timeout: currentHook.timeout })
+    expect(upgradeLegacyAgentPrompts(current, tplFor(ID_BASE), ID_BASE)).toBe(false)
+    for (const l of [...LITERAL, ...PLACEHOLDER]) {
+      const edited = `${resolve(ver(l).prompt, ID_BASE)}\nSAJAT_SOR`
+      const existing = pre({ type: 'agent', prompt: edited, timeout: 77 })
+      expect(upgradeLegacyAgentPrompts(existing, tplFor(ID_BASE), ID_BASE), l).toBe(false)
+      expect(promptOf(existing), l).toBe(edited)
+    }
+  })
+})
+
 describe('normalizePromptPlaceholders', () => {
   it('writes the three values back to their placeholders', () => {
     const text = 'A Beta-Bot via /opt/other/b-install/scripts/x at http://localhost:4100/api'
