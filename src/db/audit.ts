@@ -849,17 +849,31 @@ export interface TokenUsagePruneResult {
 // billing/cost-audit history is never lost. The aggregator tables are then pruned
 // to their own retention windows (daily: 1 year, monthly: 3 years).
 //
+// All five statements run in ONE transaction (`immediate`, on the handle): "the rollups are written, THEN the raw rows
+// are deleted" is only guaranteed when they share a connection, and a failure of the delete (or of an aggregator
+// retention delete) rolls the rollups back with it instead of leaving them half done. The settings are read BEFORE
+// the transaction opens: they are not a database operation.
+//
 // `timestamp` is unix SECONDS.
 export async function pruneTokenUsage(): Promise<TokenUsagePruneResult> {
   const rawRetentionDays    = Number(getEffectiveSettingValue('TOKEN_USAGE_RETENTION_DAYS'))
   const dailyRetentionDays  = Number(getEffectiveSettingValue('TOKEN_USAGE_DAILY_RETENTION_DAYS'))
   const monthlyRetentionDays = Number(getEffectiveSettingValue('TOKEN_USAGE_MONTHLY_RETENTION_DAYS'))
 
+  return dbx.tx((tx) => pruneTokenUsageOn(tx, rawRetentionDays, dailyRetentionDays, monthlyRetentionDays), { mode: 'immediate' })
+}
+
+async function pruneTokenUsageOn(
+  ops: SqlOps,
+  rawRetentionDays: number,
+  dailyRetentionDays: number,
+  monthlyRetentionDays: number,
+): Promise<TokenUsagePruneResult> {
   const rawCutoff = Math.floor(Date.now() / 1000) - rawRetentionDays * 86400
 
   // 1. Daily rollup upsert (idempotent: ON CONFLICT overwrites with fresh aggregate).
   //    Runs only over rows that fall outside the raw retention window.
-  const dailyResult = await dbx.run(`
+  const dailyResult = await ops.run(`
     INSERT INTO token_usage_daily
       (day, agent, model, input_tokens, output_tokens, cache_read_tokens,
        cache_creation_tokens, thinking_tokens, row_count, tenant_id)
@@ -887,7 +901,7 @@ export async function pruneTokenUsage(): Promise<TokenUsagePruneResult> {
   `, rawCutoff)
 
   // 2. Monthly rollup upsert (idempotent).
-  const monthlyResult = await dbx.run(`
+  const monthlyResult = await ops.run(`
     INSERT INTO token_usage_monthly
       (month, agent, model, input_tokens, output_tokens, cache_read_tokens,
        cache_creation_tokens, thinking_tokens, session_count, row_count, tenant_id)
@@ -916,13 +930,13 @@ export async function pruneTokenUsage(): Promise<TokenUsagePruneResult> {
       row_count             = excluded.row_count
   `, rawCutoff)
 
-  // 3. Delete raw rows only after both rollups are committed.
-  const deleteResult = await dbx.run('DELETE FROM token_usage WHERE timestamp < ?', rawCutoff)
+  // 3. Delete raw rows only after both rollups are written (same transaction: if this or step 4 fails, the rollups go too).
+  const deleteResult = await ops.run('DELETE FROM token_usage WHERE timestamp < ?', rawCutoff)
 
   // 4. Prune the aggregator tables to their own retention windows.
-  await dbx.run("DELETE FROM token_usage_daily WHERE day < date(?, 'unixepoch', 'localtime')", Math.floor(Date.now() / 1000) - dailyRetentionDays * 86400)
+  await ops.run("DELETE FROM token_usage_daily WHERE day < date(?, 'unixepoch', 'localtime')", Math.floor(Date.now() / 1000) - dailyRetentionDays * 86400)
 
-  await dbx.run("DELETE FROM token_usage_monthly WHERE month < strftime('%Y-%m', ?, 'unixepoch', 'localtime')", Math.floor(Date.now() / 1000) - monthlyRetentionDays * 86400)
+  await ops.run("DELETE FROM token_usage_monthly WHERE month < strftime('%Y-%m', ?, 'unixepoch', 'localtime')", Math.floor(Date.now() / 1000) - monthlyRetentionDays * 86400)
 
   return {
     rawDeleted:      deleteResult.changes,
