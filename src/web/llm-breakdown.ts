@@ -111,8 +111,12 @@ export function validateSubtasks(raw: unknown, validAssignees?: Set<string>): Su
   })
 }
 
-export async function generateBreakdown(title: string, description: string | null): Promise<BreakdownResult> {
-  const validAssignees = getValidAssignees()
+/**
+ * `assigneeCandidates` (optional) is the set of names the caller may be offered: the prompt lists exactly these and the
+ * LLM output is filtered with the same set. Absent = every name of the install (the admin view).
+ */
+export async function generateBreakdown(title: string, description: string | null, assigneeCandidates?: Set<string>): Promise<BreakdownResult> {
+  const validAssignees = assigneeCandidates ?? getValidAssignees()
   const agents = [...validAssignees]
   const userPrompt = buildUserPrompt(title, description, agents)
 

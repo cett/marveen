@@ -251,6 +251,31 @@ describe('generateBreakdown via worker (runAgent)', () => {
     expect(promptArg).toContain('card_title')
     expect(promptArg).toContain('My card')
   })
+
+  // The names the LLM is offered and the names its output is filtered with are ONE set: the candidates the caller passes.
+  it('with a candidate set: the prompt lists exactly those names and the output is filtered with the same set', async () => {
+    const out = [
+      { title: 'Kept', description: 'D', assignee: 'agent-a', priority: 'normal' },
+      { title: 'Foreign', description: 'D', assignee: 'agent-b', priority: 'normal' },
+    ]
+    mockedRunAgent.mockResolvedValue({ text: JSON.stringify(out) })
+
+    const { generateBreakdown } = await import('../web/llm-breakdown.js')
+    const result = await generateBreakdown('T', null, new Set(['Owner Name', 'agent-a']))
+    const promptArg = mockedRunAgent.mock.calls[0][0] as string
+    expect(promptArg).toContain('Available team members: Owner Name, agent-a')
+    expect(promptArg).not.toContain('agent-b')
+    expect(result.subtasks.map((s) => s.assignee)).toEqual(['agent-a', null])
+  })
+
+  it('with an empty candidate set: no name is offered and every suggested assignee is dropped (the set is used, not the install-wide fallback)', async () => {
+    mockedRunAgent.mockResolvedValue({ text: JSON.stringify([{ title: 'T', description: 'D', assignee: 'agent-a', priority: 'normal' }]) })
+
+    const { generateBreakdown } = await import('../web/llm-breakdown.js')
+    const result = await generateBreakdown('T', null, new Set())
+    expect(mockedRunAgent.mock.calls[0][0] as string).toMatch(/Available team members: $/)
+    expect(result.subtasks[0].assignee).toBeNull()
+  })
 })
 
 describe('breakdown route regex patterns', () => {
