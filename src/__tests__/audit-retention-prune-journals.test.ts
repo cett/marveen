@@ -7,7 +7,7 @@
 // very old event survives the sweep.
 //
 // Privacy: neutral fixtures only (agent-a, card-a, approval-a, source-a).
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -178,6 +178,14 @@ describe('the APPROVAL_EVENTS_RETENTION_DAYS setting', () => {
     expect(audit.split('Nem ide tartozik')[0]).not.toContain('jóváhagyási események')
   })
 
+  it('the description keeps the kanban card events out of the audit window and says so after the exclusion marker', () => {
+    const audit = getSettingDefinition('AUDIT_LOG_RETENTION_DAYS')!.description
+    const [included, excluded] = audit.split('Nem ide tartozik')
+    expect(excluded).toBeDefined()
+    expect(included).not.toContain('kanban')
+    expect(excluded).toContain('kanban')
+  })
+
   it('both settings guides and both UI language files name the key', () => {
     const read = (p: string) => readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../..', p), 'utf-8')
     expect(read('docs/user-guide/en/11-settings.md')).toContain('| `APPROVAL_EVENTS_RETENTION_DAYS` |')
@@ -290,5 +298,85 @@ describe('one transaction', () => {
     expect(count('kanban_card_events')).toBe(1)
     expect(count('import_audit_log')).toBe(1)
     expect(count('restore_log')).toBe(1)
+  })
+})
+
+// The boundary, on a fixed clock: every delete is `< cut`, so a row stamped EXACTLY at the cut stays and one second
+// older goes. Only Date is faked (the database layer keeps its real timers). The two windows differ (audit 90 days,
+// approval 365), so a row on one table's boundary never falls on the other table's cut, and swapping the cuts fails.
+describe('the boundary on a fixed clock', () => {
+  const NOW = 1_800_000_000
+  const AUDIT_CUT = NOW - 90 * DAY
+  const APPROVAL_CUT = NOW - 365 * DAY
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(NOW * 1000)
+  })
+  afterEach(() => { vi.useRealTimers() })
+
+  function times(table: string, column: string): number[] {
+    return (getDb().prepare(`SELECT ${column} AS t FROM ${table} ORDER BY ${column}`).all() as { t: number }[]).map((r) => r.t)
+  }
+
+  it('approval_events: the row at its own cut stays, the row one second older goes', async () => {
+    // A row on the audit cut and one just older than it must survive: the approval window is longer.
+    insertApproval(APPROVAL_CUT - 1); insertApproval(APPROVAL_CUT); insertApproval(AUDIT_CUT - 1)
+    const r = await pruneAuditLogs()
+    expect(r.approvalCutoffTs).toBe(APPROVAL_CUT)
+    expect(r.deleted.approval_events).toBe(1)
+    expect(times('approval_events', 'created_at')).toEqual([APPROVAL_CUT, AUDIT_CUT - 1])
+  })
+
+  it('import_audit_log: the run at the audit cut stays, the run one second older goes', async () => {
+    insertSource()
+    insertImportRun(AUDIT_CUT - 1); insertImportRun(AUDIT_CUT)
+    const r = await pruneAuditLogs()
+    expect(r.cutoffTs).toBe(AUDIT_CUT)
+    expect(r.deleted.import_audit_log).toBe(1)
+    expect(times('import_audit_log', 'run_at')).toEqual([AUDIT_CUT])
+  })
+
+  it('restore_log: the row at the audit cut stays, the row one second older goes', async () => {
+    insertRestore(AUDIT_CUT - 1); insertRestore(AUDIT_CUT)
+    const r = await pruneAuditLogs()
+    expect(r.deleted.restore_log).toBe(1)
+    expect(times('restore_log', 'restored_at')).toEqual([AUDIT_CUT])
+  })
+
+  it('the unexported count is exact on the boundary and equals what the delete removed', async () => {
+    // No cursor row: every deleted row is "never exported". The row AT the cut is neither deleted nor counted.
+    insertApproval(APPROVAL_CUT - 2); insertApproval(APPROVAL_CUT - 1); insertApproval(APPROVAL_CUT)
+    const r = await pruneAuditLogs()
+    expect(r.deleted.approval_events).toBe(2)
+    expect(r.unexportedLogsDeleted.approval_events).toBe(2)
+    expect(r.unexportedLogsDeleted.approval_events).toBe(r.deleted.approval_events)
+    expect(times('approval_events', 'created_at')).toEqual([APPROVAL_CUT])
+  })
+
+  it('the unexported count above a cursor is exact on the boundary too', async () => {
+    const first = insertApproval(APPROVAL_CUT - 2); insertApproval(APPROVAL_CUT - 1); insertApproval(APPROVAL_CUT)
+    setCursor('approval_events', first)
+    const r = await pruneAuditLogs()
+    // Two rows are deleted, only the one above the cursor was never exported; the row at the cut is neither.
+    expect(r.deleted.approval_events).toBe(2)
+    expect(r.unexportedLogsDeleted.approval_events).toBe(1)
+  })
+
+  it('deleted_total sums the new tables with the old ones, in the result and in the journal row', async () => {
+    insertSource()
+    insertApproval(APPROVAL_CUT - 1)
+    insertImportRun(AUDIT_CUT - 1); insertImportRun(AUDIT_CUT - 2)
+    insertRestore(AUDIT_CUT - 1)
+    getDb().prepare("INSERT INTO config_change_log (key, old_value, new_value, actor, created_at) VALUES ('k', '1', '2', 'a', ?)").run(AUDIT_CUT - 1)
+    const r = await pruneAuditLogs()
+    // 1 approval + 2 import + 1 restore + 1 config change = 5 rows removed.
+    expect(r.deleted.approval_events).toBe(1)
+    expect(r.deleted.import_audit_log).toBe(2)
+    expect(r.deleted.restore_log).toBe(1)
+    expect(r.deleted.config_change_log).toBe(1)
+    expect(r.deletedTotal).toBe(5)
+    const row = getDb().prepare("SELECT detail FROM agent_audit_log WHERE action = 'retention_prune'").get() as { detail: string }
+    expect(JSON.parse(row.detail).deleted_total).toBe(5)
   })
 })
