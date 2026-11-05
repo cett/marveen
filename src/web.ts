@@ -17,7 +17,7 @@ import { runRbacGate } from './web/rbac-shadow-log.js'
 import { json, isInvalidJsonBodyError } from './web/http-helpers.js'
 import { detectLanIp } from './web/network-info.js'
 import { normalizePath, applyDeprecationHeaders } from './web/routes/versioning.js'
-import { instrumentHttpRequest } from './otel-http.js'
+import { instrumentHttpRequest, assignRequestTrace, type HttpTrust } from './otel-http.js'
 import { AGENTS_BASE_DIR, listAgentNames } from './web/agent-config.js'
 import { backfillQuarantineReaders } from './web/quarantine-backfill.js'
 import { ensureAgentHooks, ensureAgentStalenessHook, ensureEgressGate, ensureBashEgressParser, ensureDestructiveGate, ensureAuthAdminGate, ensureShellRescanGuard, ensureTenantHooks, ensureGovernanceGateCommands, ensureGateOnFailure, ensureHookPolicySection, ensureSkillUsageMatcher, ensureQuarantineReader, ensureContextWatchdogHook, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection, ensureWorkDocSection } from './web/agent-scaffold.js'
@@ -245,7 +245,7 @@ export async function startWebServer(port = 3420): Promise<http.Server> {
 
     // HTTP server telemetry (OTel H6a): the duration of every request with a route TEMPLATE, a span for the slow and
     // the failed ones (src/otel-http.ts). Recorded when the response is done.
-    const httpTrust = { authenticated: false }
+    const httpTrust: HttpTrust = { authenticated: false }
     instrumentHttpRequest(req, res, method, path, httpTrust)
 
     // DNS-rebinding defence: reject requests whose Host header is not in the
@@ -302,6 +302,7 @@ export async function startWebServer(port = 3420): Promise<http.Server> {
     // manifest) or a public probe (auth status/login, avatars).
     const auth: AuthResult = await resolveAuth(req, url, path, method, DASHBOARD_TOKEN, true)
     httpTrust.authenticated = auth.kind !== 'none' // a traceparent is believed only from a caller with credentials
+    const requestTrace = assignRequestTrace(req, httpTrust) // the trace the route's audit rows and the http.server span share
     if (requiresAuth(path, method) && auth.kind === 'none') {
       if (isFederationWireEndpoint(path, method)) {
         // 401s are otherwise silent; federation-endpoint auth failures are the
@@ -371,7 +372,7 @@ export async function startWebServer(port = 3420): Promise<http.Server> {
       }
 
       // From here the route works for the caller: its tenant, or its agent in that tenant.
-      const dispatched = await runAsRequest({ authenticated: auth.kind !== 'none', role, agentId: role === 'fleet_agent' ? tokenAgentId : undefined, tenantId: tenantId ?? null }, () => dispatcher.dispatch(routeCtx))
+      const dispatched = await runAsRequest({ authenticated: auth.kind !== 'none', role, agentId: role === 'fleet_agent' ? tokenAgentId : undefined, tenantId: tenantId ?? null, trace: requestTrace }, () => dispatcher.dispatch(routeCtx))
       if (dispatched) return
 
       res.writeHead(404)

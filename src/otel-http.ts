@@ -13,7 +13,7 @@ import type http from 'node:http'
 import { upsertOtelSpan, closeOtelSpan } from './db.js'
 import { recordHttpServerRequest } from './otel-signals.js'
 
-import { runAs } from './db/context.js'
+import { runAs, type DbTrace } from './db/context.js'
 // First path segment after /api: the resources of the dashboard.
 const RESOURCES: ReadonlySet<string> = new Set([
   'activity', 'admin', 'agent-availability', 'agents', 'agent-inflight-turn', 'agent-state', 'agent-taskstate', 'approvals', 'artifacts', 'audit',
@@ -105,6 +105,11 @@ export interface HttpRequestFacts {
   // Only a traceparent that came with credentials is believed; anyone else's is ignored (and cannot steer a span
   // into a trace of their choosing).
   authenticated?: boolean
+  // The ids the handler already gave the request (assignRequestTrace), so the span closes under the SAME trace the
+  // request's audit rows carry. Both or neither; without them (a request that ended before the auth gate) the span
+  // takes the traceparent / a fresh id as before.
+  traceId?: string
+  spanId?: string
   nowMs?: number
 }
 
@@ -118,8 +123,9 @@ export async function recordHttpRequest(f: HttpRequestFacts): Promise<void> {
     if (status >= 500 || f.seconds >= SLOW_REQUEST_SECONDS) {
       const endMs = f.nowMs ?? Date.now()
       const startMs = Math.max(0, endMs - Math.round(f.seconds * 1000))
-      const traceId = (f.authenticated ? traceIdFromTraceparent(f.traceparent) : null) ?? randomBytes(16).toString('hex')
-      const spanId = randomBytes(8).toString('hex')
+      const given = f.traceId && f.spanId
+      const traceId = given ? f.traceId! : (f.authenticated ? traceIdFromTraceparent(f.traceparent) : null) ?? randomBytes(16).toString('hex')
+      const spanId = given ? f.spanId! : randomBytes(8).toString('hex')
       await upsertOtelSpan({
         trace_id: traceId, span_id: spanId, parent_span_id: null, agent_id: f.agentId || 'dashboard',
         operation: 'http.server', start_ms: startMs, attributes: JSON.stringify({ http_method: method, http_route: route, http_status: status }),
@@ -143,7 +149,22 @@ function isEventStream(req: http.IncomingMessage, res: http.ServerResponse): boo
 // An answer cut short by the client is no measurement, and neither is an event stream (its "duration" is the
 // length of the connection).
 // `trust` is read when the response is done, so the handler can set `authenticated` once it has resolved the caller.
-export interface HttpTrust { authenticated: boolean }
+export interface HttpTrust { authenticated: boolean; traceId?: string; spanId?: string }
+
+/**
+ * Gives the request its trace, once the auth gate has set `trust.authenticated`: the id of a traceparent that came with
+ * credentials (`w3c-<hex>`), otherwise a fresh server id; a stranger's traceparent is ignored, as in recordHttpRequest.
+ * The ids are stored on `trust` (the close handler reads them from there: a 'close' callback does not carry the db
+ * context) and returned for `runAsRequest`, which puts them in the context the route runs in. The span of this id is
+ * written only for a 5xx or a slow request, so an audit row can name a span that was never stored: that is expected.
+ */
+export function assignRequestTrace(req: http.IncomingMessage, trust: HttpTrust): DbTrace {
+  const fromHeader = trust.authenticated ? traceIdFromTraceparent(req.headers['traceparent']) : null
+  trust.traceId = fromHeader ?? randomBytes(16).toString('hex')
+  trust.spanId = randomBytes(8).toString('hex')
+  return { traceId: trust.traceId, spanId: trust.spanId }
+}
+
 export function instrumentHttpRequest(req: http.IncomingMessage, res: http.ServerResponse, method: string, path: string, trust: HttpTrust = { authenticated: false }): void {
   const t0 = process.hrtime.bigint()
   res.once('close', () => {
@@ -155,6 +176,7 @@ export function instrumentHttpRequest(req: http.IncomingMessage, res: http.Serve
       method, path, status: res.statusCode, seconds: Number(process.hrtime.bigint() - t0) / 1e9,
       traceparent: req.headers['traceparent'],
       authenticated: trust.authenticated,
+      traceId: trust.traceId, spanId: trust.spanId,
     }))
   })
 }
