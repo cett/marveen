@@ -13,7 +13,8 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
-import { PROJECT_ROOT, MAIN_AGENT_ID, CHANNEL_PROVIDER, STORE_DIR, SCRIPTS_DIR } from '../config.js'
+import { createHash } from 'node:crypto'
+import { PROJECT_ROOT, MAIN_AGENT_ID, CHANNEL_PROVIDER, STORE_DIR, SCRIPTS_DIR, BOT_NAME, WEB_PORT } from '../config.js'
 import { logger } from '../logger.js'
 import { channelStateDir } from '../channel-provider.js'
 import { atomicWriteFileSync } from './atomic-write.js'
@@ -247,18 +248,99 @@ export function upgradeLegacyHookCommands(
 // wrapper (the agent's own token), but ensureAgentHooks only ever added missing command hooks, so an
 // agent scaffolded before that kept the old recipe: every compaction made a shared-token call, and the
 // path in it (a /Documents/marveen checkout) does not exist on this install, so it also 401'd.
-const LEGACY_PROMPT_MARKERS = ['/store/.dashboard-token', '/Documents/marveen']
+// Exported so a test pins the list: it is NOT extended for later template versions (those go into
+// PREVIOUS_TEMPLATE_PROMPT_HASHES below, an exact match, not a substring that an operator's edit could also contain).
+export const LEGACY_PROMPT_MARKERS = ['/store/.dashboard-token', '/Documents/marveen']
+
+// The identity values a template prompt is resolved with (resolveTemplatePlaceholders): the install's checkout path,
+// the bot name and the dashboard port. Passed in so the comparison below is testable under any identity.
+export interface PromptIdentity {
+  projectRoot: string
+  botName: string
+  webPort: number | string
+}
 
 /**
- * In-place upgrade of agent-type hook prompts: an existing prompt that carries a legacy marker is
- * replaced with the template's prompt for the same event. A prompt without a marker is left alone
- * (an operator's own edit), and an identical one is a no-op, so this is idempotent.
+ * An existing (resolved) prompt written back to the PLACEHOLDER form the template carries: the install's own values
+ * become {{PROJECT_ROOT}}, `localhost:<port>` becomes `localhost:{{WEB_PORT}}` and the bot name becomes {{BOT_NAME}},
+ * the longest value first (so a bot name that is part of the checkout path cannot split it). The placeholder form is
+ * the same on every install, which is what makes a hash of it install-independent.
+ *
+ * It is a heuristic and errs on the safe side: when a value also occurs in the text for another reason (a bot name
+ * that is an ordinary word of the prompt) the result is simply not the template text, its hash is not in the Set and
+ * the prompt is left alone. An empty value is skipped (replacing '' would rewrite the whole text).
+ *
+ * Exported for unit testing.
+ */
+export function normalizePromptPlaceholders(prompt: string, id: PromptIdentity): string {
+  const pairs: Array<[string, string]> = [
+    [id.botName, '{{BOT_NAME}}'],
+    [`localhost:${String(id.webPort)}`, 'localhost:{{WEB_PORT}}'],
+    [id.projectRoot, '{{PROJECT_ROOT}}'],
+  ]
+  pairs.sort((a, b) => b[0].length - a[0].length)
+  let text = prompt
+  for (const [value, placeholder] of pairs) {
+    if (value === '' || value === 'localhost:') continue
+    text = text.replaceAll(value, placeholder)
+  }
+  return text
+}
+
+const sha256Hex = (text: string): string => createHash('sha256').update(text, 'utf8').digest('hex')
+
+// SHA-256 of every EARLIER template version of the PreCompact memory-save prompt that carries no
+// LEGACY_PROMPT_MARKERS entry (the marker versions are covered by the marker branch), hashed in the PLACEHOLDER form
+// the template file holds ({{BOT_NAME}}, {{PROJECT_ROOT}}, {{WEB_PORT}} unresolved). An existing agent prompt whose
+// normalised text hashes into this Set is an unedited copy of an old template and is replaced by the current one; an
+// operator's edit (any one-character difference, a CRLF, a removed line) hashes elsewhere and stays.
+//
+// The CURRENT template prompt is NOT in the Set (it is the target). WHEN A COMMIT CHANGES THE PreCompact PROMPT TEXT
+// OF templates/settings.json.template, ADD THE SHA-256 OF THE PROMPT IT REPLACES here (the placeholder form: parse
+// the template at the parent commit and hash hooks.PreCompact[].hooks[type=agent].prompt), or the agents that carry
+// that version keep it for good. Regenerate by reading the history, not by hashing a resolved prompt:
+//   git log --reverse --format=%h -- templates/settings.json.template, then for each commit
+//   git show <hash>:templates/settings.json.template, take the PreCompact agent prompt, sha256 of the raw text.
+// Version (first template commit) -> hash:
+//   e4dbcba2  the first memory-save prompt (curl to localhost:3420, no placeholders)
+//   a10505fe  agent_id from CLAUDE.md, localhost:3420 written out
+//   372efbf3  skill generation steps added
+//   890fa36c  the scripts/agent-api.sh wrapper, {{PROJECT_ROOT}} and {{BOT_NAME}}
+//   3fb54a54  the port named outright ({{WEB_PORT}}); also the text of ee9f0566
+const PREVIOUS_TEMPLATE_PROMPT_HASHES: ReadonlySet<string> = new Set([
+  '6365d9286ae5da25feff4947e2c3d7ad5501bced9a3c010fa63cebf28c4e23a2',
+  '636a0357be1d1ab08a3d1c19d2638e6625ebbf82ae24f3619cbe339129581652',
+  '8222f43aa749d8cf3086ea425ebf42762c18aa5a1018381a316c7f3622a2647f',
+  '5e8637c2af232c883c2ae49f14f10fa6b713bdd57cd6eeb9957daa04ed3ccd71',
+  '40586a959ee5f4517a4410454d58ad98c39e6e7dffe95102d966c47b1b95fad7',
+])
+
+/**
+ * True when `prompt` is, byte for byte, an earlier template version of the PreCompact prompt as this install resolved
+ * it. Two reads, either is enough: the raw text (the oldest versions carry no placeholder, so their hash is the same
+ * on every install) and the text normalised back to its placeholders (the versions that name the checkout, the bot
+ * and the port). Exported for unit testing.
+ */
+export function isPreviousTemplatePrompt(prompt: string, id: PromptIdentity): boolean {
+  return PREVIOUS_TEMPLATE_PROMPT_HASHES.has(sha256Hex(prompt))
+    || PREVIOUS_TEMPLATE_PROMPT_HASHES.has(sha256Hex(normalizePromptPlaceholders(prompt, id)))
+}
+
+// The identity this process resolves the template with (the same values resolveTemplatePlaceholders injects).
+const installPromptIdentity = (): PromptIdentity => ({ projectRoot: PROJECT_ROOT, botName: BOT_NAME, webPort: WEB_PORT })
+
+/**
+ * In-place upgrade of agent-type hook prompts: an existing prompt that carries a legacy marker, or is an unedited copy
+ * of an earlier template version (PREVIOUS_TEMPLATE_PROMPT_HASHES), is replaced with the template's prompt for the
+ * same event. Any other prompt is left alone (an operator's own edit), and an identical one is a no-op, so this is
+ * idempotent: after the replacement the prompt IS the template's and the second pass changes nothing.
  *
  * Exported for unit testing.
  */
 export function upgradeLegacyAgentPrompts(
   existingHooks: Record<string, unknown>,
   tplHooks: Record<string, unknown>,
+  identity: PromptIdentity = installPromptIdentity(),
 ): boolean {
   let changed = false
   for (const [event, tplEntries] of Object.entries(tplHooks)) {
@@ -272,7 +354,8 @@ export function upgradeLegacyAgentPrompts(
           for (const existHook of existEntry.hooks ?? []) {
             if (existHook.type !== 'agent' || typeof existHook.prompt !== 'string') continue
             if (existHook.prompt === tplHook.prompt) continue
-            if (!LEGACY_PROMPT_MARKERS.some((m) => (existHook.prompt as string).includes(m))) continue
+            const existPrompt = existHook.prompt
+            if (!LEGACY_PROMPT_MARKERS.some((m) => existPrompt.includes(m)) && !isPreviousTemplatePrompt(existPrompt, identity)) continue
             existHook.prompt = tplHook.prompt
             if (tplHook.timeout != null) existHook.timeout = tplHook.timeout
             changed = true
