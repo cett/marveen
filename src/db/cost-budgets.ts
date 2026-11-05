@@ -172,22 +172,25 @@ export async function getMonthlyTokenSpend(filter: TokenSpendFilter, nowSec: num
     return row!.total
   }
 
+  // The agent condition is in the SQL only when an agent is asked for: a bare `@agent IS NULL` parameter has no type on
+  // PostgreSQL. Without an agent the total is over every agent, as before.
   const agent = filter.agent ?? null
+  const agentCond = agent !== null ? 'AND agent = @agent' : ''
   const row = await dbx.get<{ total: number }>(`
     SELECT
       COALESCE((
         SELECT SUM(${TOKEN_SUM_EXPR}) FROM token_usage_monthly
         WHERE month = strftime('%Y-%m', @nowSec, 'unixepoch', 'localtime')
-          AND (@agent IS NULL OR agent = @agent)
+          ${agentCond}
       ), 0)
       +
       COALESCE((
         SELECT SUM(${TOKEN_SUM_EXPR}) FROM token_usage
         WHERE strftime('%Y-%m', timestamp, 'unixepoch', 'localtime')
               = strftime('%Y-%m', @nowSec, 'unixepoch', 'localtime')
-          AND (@agent IS NULL OR agent = @agent)
+          ${agentCond}
       ), 0)
       AS total
-  `, { nowSec, agent })
+  `, agent !== null ? { nowSec, agent } : { nowSec })
   return row!.total
 }

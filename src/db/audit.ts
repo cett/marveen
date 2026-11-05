@@ -220,14 +220,17 @@ export async function logSkillUsage(
   // INSERT with an await between them, two concurrent calls for the same invocation both saw no row and both
   // wrote one (the sync driver made that sequence atomic before the facade).
   const tenantId = await resolveWriteTenant(agentId)
+  // A missing session is matched with IS NULL and a given one with =, chosen when the SQL is built: the SQLite-only
+  // `session_id IS ?` is a syntax error on PostgreSQL.
+  const sessionCond = sessionId == null ? 'session_id IS NULL' : 'session_id = ?'
   const res = await dbx.run(`INSERT INTO skill_usage (agent_id, skill_name, trigger_type, session_id, created_at, source, tenant_id)
      SELECT ?, ?, ?, ?, ?, ?, ?
       WHERE NOT EXISTS (
         SELECT 1 FROM skill_usage
-         WHERE agent_id = ? AND skill_name = ? AND session_id IS ? AND created_at >= ?
+         WHERE agent_id = ? AND skill_name = ? AND ${sessionCond} AND created_at >= ?
            AND COALESCE(source, ${LEGACY_SOURCE_SQL}) = ?)`,
     agentId, skillName, triggerType, sessionId ?? null, now, source ?? null, tenantId,
-    agentId, skillName, sessionId ?? null, now - SKILL_USAGE_DEDUP_SECS, effectiveSource)
+    agentId, skillName, ...(sessionId == null ? [] : [sessionId]), now - SKILL_USAGE_DEDUP_SECS, effectiveSource)
   return res.changes > 0
 }
 

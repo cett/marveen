@@ -52,6 +52,66 @@ class CountTextTest(unittest.TestCase):
         self.assertEqual(mod.count_text("WHERE f MATCH ?")["FTS5 MATCH"], 1)
         self.assertEqual(mod.count_text("str.match(/x/)")["FTS5 MATCH"], 0)
 
+    def test_untyped_parameter_shapes_are_counted(self):
+        text = (
+            "WHERE (? IS NULL OR t = ?) AND (@agent IS NULL OR a = @agent) AND x IS NOT ? AND y IS @v\n"
+            "SET d = CASE WHEN ? THEN NULL ELSE d END, e = CASE WHEN ? THEN 1 ELSE 2 END"
+        )
+        c = mod.count_text(text)
+        self.assertEqual(c["param IS [NOT] NULL"], 2)
+        self.assertEqual(c["IS [NOT] <param>"], 2)
+        self.assertEqual(c["CASE WHEN ? THEN"], 2)
+
+    def test_typed_forms_are_not_counted(self):
+        text = (
+            "WHERE col IS NULL AND col IS NOT NULL AND (a IS NULL OR b = ?) AND c IS NOT DISTINCT FROM ?\n"
+            "SET d = CASE WHEN col = ? THEN 1 ELSE 2 END, e = CASE WHEN x IS NULL THEN 1 END, "
+            "f = COALESCE(?, f), g = CASE WHEN ? = 'ok' THEN 1 END"
+        )
+        c = mod.count_text(text)
+        self.assertEqual(c["param IS [NOT] NULL"], 0)
+        self.assertEqual(c["IS [NOT] <param>"], 0)
+        self.assertEqual(c["CASE WHEN ? THEN"], 0)
+
+    def test_not_null_and_not_param_branches_are_counted(self):
+        c = mod.count_text("WHERE (? IS NOT NULL) AND (@agent IS NOT NULL) AND a IS NOT ? AND b IS NOT @v")
+        self.assertEqual(c["param IS [NOT] NULL"], 2)
+        self.assertEqual(c["IS [NOT] <param>"], 2)
+
+    def test_shapes_split_over_several_lines_are_counted(self):
+        text = (
+            "WHERE (?\n   IS\n  NULL OR t = ?)\n"
+            "AND (@agent\n IS\n NOT\n NULL)\n"
+            "AND x IS\n   ?\n"
+            "AND y IS NOT\n  @v\n"
+            "SET d = CASE\n  WHEN\n  ?\n  THEN NULL ELSE d END"
+        )
+        c = mod.count_text(text)
+        self.assertEqual(c["param IS [NOT] NULL"], 2)
+        self.assertEqual(c["IS [NOT] <param>"], 2)
+        self.assertEqual(c["CASE WHEN ? THEN"], 1)
+
+    def test_lowercase_and_mixed_case_shapes_are_counted(self):
+        c = mod.count_text("where (? is null or t = ?) and (@a Is Not Null) and x is ? and y Is Not @v and d = case when ? then 1 end")
+        self.assertEqual(c["param IS [NOT] NULL"], 2)
+        self.assertEqual(c["IS [NOT] <param>"], 2)
+        self.assertEqual(c["CASE WHEN ? THEN"], 1)
+
+    def test_word_boundaries_keep_look_alikes_out(self):
+        text = (
+            "THIS ? AND THIS @v AND ? IS NULLABLE AND @a IS NULLIF(b, c) "
+            "AND SUBCASE WHEN ? THEN 1 AND CASE WHEN ? THENCE 1"
+        )
+        c = mod.count_text(text)
+        self.assertEqual(c["IS [NOT] <param>"], 0)       # `THIS ?` is not `IS ?`
+        self.assertEqual(c["param IS [NOT] NULL"], 0)    # `IS NULLABLE` / `IS NULLIF(` are not `IS NULL`
+        self.assertEqual(c["CASE WHEN ? THEN"], 0)       # `SUBCASE`, `THENCE`
+
+    def test_is_distinct_from_a_param_is_the_typed_form_and_not_counted(self):
+        c = mod.count_text("WHERE end_ms IS DISTINCT FROM ? OR status IS NOT DISTINCT FROM @s")
+        self.assertEqual(c["IS [NOT] <param>"], 0)
+        self.assertEqual(c["param IS [NOT] NULL"], 0)
+
     def test_replace_into_counts_as_or_replace(self):
         self.assertEqual(mod.count_text("REPLACE INTO t VALUES (1)")["INSERT OR REPLACE"], 1)
 
@@ -171,6 +231,52 @@ class MainTest(unittest.TestCase):
         rc, out = self._run("--report")
         self.assertEqual(rc, 0)
         self.assertIn("a.ts", out)
+
+
+class UntypedCaseParamLockInTest(unittest.TestCase):
+    """The committed baseline holds `CASE WHEN ? THEN` at 0: PostgreSQL cannot type the
+    bare parameter, so the shape must not come back. These tests use the REAL committed
+    baseline (only the scanned source tree is a throwaway), so raising the committed
+    number again, or dropping the token, fails here."""
+
+    TOKEN = "CASE WHEN ? THEN"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.src = os.path.join(self.tmp.name, "src")
+        # the committed baseline, resolved from the script location (not the patched path)
+        self.committed = os.path.join(os.path.dirname(_SCRIPT_PATH), "sqlite-dialect-baseline.json")
+        patcher = patch.multiple(mod, SRC_DIR=self.src, BASELINE_PATH=self.committed)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _run(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = mod.main([])
+        return rc, buf.getvalue()
+
+    def test_committed_baseline_holds_the_token_at_zero(self):
+        counts = mod.load_baseline(self.committed)
+        self.assertIn(self.TOKEN, counts)
+        self.assertEqual(counts[self.TOKEN], 0)
+
+    def test_a_reintroduced_untyped_case_parameter_fails_the_check(self):
+        _write(self.src, "db/q.ts", "db.prepare('UPDATE t SET d = CASE WHEN ? THEN NULL ELSE d END')\n")
+        rc, out = self._run()
+        self.assertEqual(rc, 1, out)
+        self.assertIn("GREW " + self.TOKEN, out)
+
+    def test_a_typed_form_does_not_trip_the_lock_in(self):
+        _write(self.src, "db/q.ts", "db.prepare('UPDATE t SET d = CASE WHEN col = ? THEN NULL ELSE d END')\n")
+        rc, out = self._run()
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("GREW", out)
+
+    def test_the_real_source_tree_has_none(self):
+        totals, per_file = mod.scan(os.path.join(os.path.dirname(os.path.dirname(_SCRIPT_PATH)), "src"))
+        self.assertEqual(totals[self.TOKEN], 0, per_file)
 
 
 if __name__ == "__main__":

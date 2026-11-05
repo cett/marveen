@@ -1,6 +1,7 @@
 {
   "counts": {
     "AUTOINCREMENT": 0,
+    "CASE WHEN ? THEN": 0,
     "COLLATE NOCASE": 6,
     "FTS5 MATCH": 12,
     "GLOB": 2,
@@ -8,11 +9,13 @@
     "IFNULL()": 0,
     "INSERT OR IGNORE": 3,
     "INSERT OR REPLACE": 1,
+    "IS [NOT] <param>": 0,
     "PRAGMA": 10,
     "datetime()": 0,
     "instr()": 1,
     "json_extract/json_each": 0,
     "lastInsertRowid": 1,
+    "param IS [NOT] NULL": 0,
     "randomblob()/hex()": 0,
     "rowid": 24,
     "strftime()": 8,
