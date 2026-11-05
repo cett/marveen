@@ -1,9 +1,9 @@
 // The request/message trace carried in the db context (withTrace / currentTrace) and the ALS traps around it.
 // The trace is what lets a writer deep in a call say which request it belongs to without a parameter.
 
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, afterEach } from 'vitest'
 import { runAs, withTrace, currentTrace, currentDbContext, withDbContext } from '../db/context.js'
-import { runAsRequest } from '../db/background-jobs.js'
+import { runAsRequest, systemJob, runAsAgentJob, setAgentTenantResolver, resetAgentTenantResolver } from '../db/background-jobs.js'
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 const T1 = { traceId: 'a'.repeat(32), spanId: 'b'.repeat(16) }
@@ -138,5 +138,63 @@ describe('runAsRequest with a trace', () => {
       return currentTrace()
     })
     expect(seen).toEqual(T1)
+  })
+})
+
+// A timer created inside a request keeps that request's context, trace included. A background job that such a timer
+// starts is not part of the request, so its openers (systemJob, runAsAgentJob and the tenant lookup it makes) open a
+// context with no trace, while a runAs a route calls itself still keeps the request's trace.
+describe('background-job openers do not inherit the trace of the request that created their timer', () => {
+  const waitFor = async (cond: () => boolean): Promise<void> => {
+    for (let i = 0; i < 200 && !cond(); i++) await sleep(5)
+  }
+  afterEach(() => { resetAgentTenantResolver() })
+
+  it('setInterval and setTimeout created inside a request: the ticks of systemJob and runAsAgentJob carry no trace', async () => {
+    const seen = { raw: [] as unknown[], system: [] as unknown[], agent: [] as unknown[], lookup: [] as unknown[], timeoutSystem: [] as unknown[], timeoutAgent: [] as unknown[] }
+    const ctxs = { system: undefined as unknown, agent: undefined as unknown }
+    setAgentTenantResolver(async () => { seen.lookup.push(currentTrace()); return 'default' })
+    const timers: Array<ReturnType<typeof setInterval>> = []
+    let direct: unknown
+    await runAs.tenant('tenant-a', () => withTrace(T1, async () => {
+      // the premise: a bare callback of a timer created here still sees the request's trace
+      timers.push(setInterval(() => { seen.raw.push(currentTrace()) }, 3))
+      timers.push(setInterval(systemJob('message-router', () => { seen.system.push(currentTrace()); ctxs.system = currentDbContext() }), 3))
+      timers.push(setInterval(() => {
+        void runAsAgentJob('auto-restart', 'agent-a', () => { seen.agent.push(currentTrace()); ctxs.agent = currentDbContext() })
+      }, 3))
+      timers.push(setTimeout(systemJob('message-router', () => { seen.timeoutSystem.push(currentTrace()) }), 3))
+      timers.push(setTimeout(() => { void runAsAgentJob('background-task', 'agent-a', () => { seen.timeoutAgent.push(currentTrace()) }) }, 3))
+      // a runAs the route code calls itself, in the same request, keeps the trace
+      direct = runAs.tenant('tenant-b', () => currentTrace())
+    }))
+    await waitFor(() => seen.system.length >= 3 && seen.agent.length >= 3 && seen.timeoutSystem.length >= 1 && seen.timeoutAgent.length >= 1)
+    timers.forEach((t) => { clearInterval(t); clearTimeout(t) })
+
+    expect(seen.raw.length).toBeGreaterThanOrEqual(3)
+    expect(seen.raw.every((t) => JSON.stringify(t) === JSON.stringify(T1))).toBe(true)
+    expect(seen.system.length).toBeGreaterThanOrEqual(3)
+    expect(seen.system.every((t) => t === undefined)).toBe(true)
+    expect(seen.agent.length).toBeGreaterThanOrEqual(3)
+    expect(seen.agent.every((t) => t === undefined)).toBe(true)
+    expect(seen.timeoutSystem).toEqual([undefined])
+    expect(seen.timeoutAgent).toEqual([undefined])
+    // the tenant lookup of runAsAgentJob is part of the job too
+    expect(seen.lookup.length).toBeGreaterThanOrEqual(1)
+    expect(seen.lookup.every((t) => t === undefined)).toBe(true)
+    // who runs is unchanged, only the trace is missing
+    expect(ctxs.system).toEqual({ role: 'system', name: 'message-router' })
+    expect(ctxs.agent).toEqual({ role: 'agent', agentId: 'agent-a', tenantId: 'default' })
+    expect(direct).toEqual(T1)
+  })
+
+  it('the explicit option is the whole mechanism: runAs with inheritTrace false drops the trace, the default keeps it, for every variant', () => {
+    runAs.system('job-a', () => withTrace(T1, () => {
+      expect(runAs.system('job-b', () => currentTrace(), { inheritTrace: false })).toBeUndefined()
+      expect(runAs.tenant('tenant-a', () => currentTrace(), { inheritTrace: false })).toBeUndefined()
+      expect(runAs.agent('agent-a', 'tenant-a', () => currentTrace(), { inheritTrace: false })).toBeUndefined()
+      expect(runAs.system('job-b', () => currentTrace(), {})).toEqual(T1)
+      expect(runAs.system('job-b', () => currentTrace(), { inheritTrace: true })).toEqual(T1)
+    }))
   })
 })

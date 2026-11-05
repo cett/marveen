@@ -701,10 +701,10 @@ export async function runMessageRouterTick(): Promise<void> {
       const cls = classifyAgentMessage(msg.from_agent, msg.to_agent)
       if (!cls) {
         logger.warn({ id: msg.id, rawFrom: msg.from_agent }, 'Agent message rejected: from_agent empty after sanitize')
-        if (!await markMessageFailed(msg.id, 'Invalid or empty from_agent')) {
+        if (!await withMessageTrace(msg, () => markMessageFailed(msg.id, 'Invalid or empty from_agent'))) {
           logger.warn({ id: msg.id }, 'markMessageFailed affected 0 rows (deleted concurrently?)')
         }
-        await recordMessageFailure(msg, 'invalid_sender')
+        await withMessageTrace(msg, () => recordMessageFailure(msg, 'invalid_sender'))
         routerLoggedMisses.delete(msg.id)
         continue
       }

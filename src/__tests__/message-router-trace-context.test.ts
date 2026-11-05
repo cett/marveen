@@ -9,7 +9,11 @@ const mockGetPendingMessages = vi.fn()
 const mockStampMessageTrace = vi.fn((..._a: unknown[]) => Promise.resolve(true))
 const failedTraces: Array<{ id: number; trace: unknown }> = []
 const noticeTraces: unknown[] = []
+const closedTraces: Array<{ traceId: string; trace: unknown }> = []
 let category: 'trusted-peer' | 'channel-inbound' = 'trusted-peer'
+let classifyThrows = false
+let classifyNull = false
+let markThrowsOnce = false
 
 vi.mock('../logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() },
@@ -26,13 +30,17 @@ vi.mock('../db.js', async () => {
   return {
     getPendingMessages: (toAgent?: string) => (toAgent ? Promise.resolve([]) : Promise.resolve(mockGetPendingMessages())),
     markMessageDelivered: (..._a: unknown[]) => Promise.resolve(true),
-    markMessageFailed: (id: number) => { failedTraces.push({ id, trace: currentTrace() }); return Promise.resolve(true) },
+    markMessageFailed: (id: number) => {
+      failedTraces.push({ id, trace: currentTrace() })
+      if (markThrowsOnce) { markThrowsOnce = false; return Promise.reject(new Error('mark boom')) }
+      return Promise.resolve(true)
+    },
     markMessageDone: (..._a: unknown[]) => Promise.resolve(true),
     markMessageNoSession: (..._a: unknown[]) => Promise.resolve(true),
     createAgentMessage: (..._a: unknown[]) => { noticeTraces.push(currentTrace()); return Promise.resolve({ id: 999 }) },
     stampMessageTrace: (...a: unknown[]) => mockStampMessageTrace(...a),
     upsertOtelSpan: (..._a: unknown[]) => Promise.resolve(),
-    closeOtelSpan: (..._a: unknown[]) => false,
+    closeOtelSpan: (traceId: string) => { closedTraces.push({ traceId, trace: currentTrace() }); return false },
   }
 })
 
@@ -48,7 +56,7 @@ vi.mock('../web/agent-process.js', () => ({
 vi.mock('../web/voice-modality.js', () => ({ setLastInboundModality: vi.fn() }))
 vi.mock('../web/main-agent.js', () => ({ MAIN_CHANNELS_SESSION: 'agent-main-channels' }))
 vi.mock('../web/agent-message-wrap.js', () => ({
-  classifyAgentMessage: () => ({ category, safeFrom: 'agent-a' }),
+  classifyAgentMessage: () => { if (classifyThrows) throw new Error('classify boom'); if (classifyNull) return null; return { category, safeFrom: 'agent-a' } },
   wrapAgentMessageForDelivery: () => ({ prefix: '', wrapped: '' }),
 }))
 vi.mock('../web/delivery-intent.js', () => ({ recordDelivery: vi.fn() }))
@@ -69,6 +77,10 @@ beforeEach(() => {
   vi.clearAllMocks()
   failedTraces.length = 0
   noticeTraces.length = 0
+  closedTraces.length = 0
+  classifyThrows = false
+  classifyNull = false
+  markThrowsOnce = false
   category = 'trusted-peer'
   mockStampMessageTrace.mockResolvedValue(true)
 })
@@ -119,6 +131,70 @@ describe('message router: the failure writes of a message run in its trace', () 
       after = currentTrace()
     })
     expect(after).toBeUndefined()
+  })
+})
+
+// The span of a failed message is closed by recordMessageFailure (closeOtelSpan, called with the ids of the ROW): the close
+// has to run in the trace of that message too, on every path that fails it.
+describe('message router: the span close of a failed message runs in its trace', () => {
+  it('inject_failed: the span is closed in the trace of the row', async () => {
+    mockGetPendingMessages.mockReturnValue([row(710, { trace_id: 'trace-from-row', span_id: 'span-from-row' })])
+    await giveUp()
+    expect(closedTraces).toEqual([{ traceId: 'trace-from-row', trace: { traceId: 'trace-from-row', spanId: 'span-from-row' } }])
+  })
+
+  // The give-up path of an inject failure writes the failure records itself; when the first of them throws, the outer catch
+  // writes them again, and those writes have to run in the trace of the message as well.
+  it('the outer catch after a stamp: the failure mark runs in the trace stamped this tick', async () => {
+    markThrowsOnce = true
+    mockGetPendingMessages.mockReturnValue([row(711, { trace_id: null, span_id: null })])
+    await giveUp()
+    const [, stampedTrace, stampedSpan] = mockStampMessageTrace.mock.calls.at(-1) as [number, string, string]
+    expect(failedTraces).toHaveLength(2) // the one that threw, then the outer catch's
+    expect(failedTraces[1]).toEqual({ id: 711, trace: { traceId: stampedTrace, spanId: stampedSpan } })
+  })
+
+  it('the outer catch: the failure mark runs in the trace of the row', async () => {
+    markThrowsOnce = true
+    mockGetPendingMessages.mockReturnValue([row(715, { trace_id: 'trace-from-row', span_id: 'span-from-row' })])
+    await giveUp()
+    expect(failedTraces).toHaveLength(2)
+    expect(failedTraces[1]).toEqual({ id: 715, trace: { traceId: 'trace-from-row', spanId: 'span-from-row' } })
+  })
+
+  it('the outer catch: the span of the row is closed in the trace of the row', async () => {
+    markThrowsOnce = true
+    mockGetPendingMessages.mockReturnValue([row(712, { trace_id: 'trace-from-row', span_id: 'span-from-row' })])
+    await giveUp()
+    // the inner path threw before its own close, so the only close is the outer catch's
+    expect(closedTraces).toEqual([{ traceId: 'trace-from-row', trace: { traceId: 'trace-from-row', spanId: 'span-from-row' } }])
+  })
+
+  it('a throw BEFORE the stamp: the failure of a row that already carries a trace still runs in that trace', async () => {
+    classifyThrows = true
+    mockGetPendingMessages.mockReturnValue([row(713, { trace_id: 'trace-from-row', span_id: 'span-from-row' })])
+    await tick()
+    const expected = { traceId: 'trace-from-row', spanId: 'span-from-row' }
+    expect(failedTraces).toEqual([{ id: 713, trace: expected }])
+    expect(closedTraces).toEqual([{ traceId: 'trace-from-row', trace: expected }])
+    expect(mockStampMessageTrace).not.toHaveBeenCalled()
+  })
+
+  it('a sender that does not classify (invalid_sender): the failure mark and the span close run in the trace of the row', async () => {
+    classifyNull = true
+    mockGetPendingMessages.mockReturnValue([row(716, { trace_id: 'trace-from-row', span_id: 'span-from-row' })])
+    await tick()
+    const expected = { traceId: 'trace-from-row', spanId: 'span-from-row' }
+    expect(failedTraces).toEqual([{ id: 716, trace: expected }])
+    expect(closedTraces).toEqual([{ traceId: 'trace-from-row', trace: expected }])
+  })
+
+  it('a throw before the stamp on a row without a trace: nothing to run in', async () => {
+    classifyThrows = true
+    mockGetPendingMessages.mockReturnValue([row(714, { trace_id: null, span_id: null })])
+    await tick()
+    expect(failedTraces).toEqual([{ id: 714, trace: undefined }])
+    expect(closedTraces).toEqual([])
   })
 })
 

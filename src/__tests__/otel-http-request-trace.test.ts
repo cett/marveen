@@ -107,6 +107,19 @@ describe('the request trace: one trace for the route and the http.server span', 
     expect(trace.traceId).toMatch(/^[0-9a-f]{32}$/)
   })
 
+  it('the same traceparent on two requests: the same trace_id, but each request its own span_id (the span id is not derived from the trace)', () => {
+    const req = { headers: { traceparent: TRACEPARENT } } as unknown as http.IncomingMessage
+    const first = assignRequestTrace(req, { authenticated: true })
+    const second = assignRequestTrace(req, { authenticated: true })
+    expect(first.traceId).toBe(`w3c-${TID}`)
+    expect(second.traceId).toBe(first.traceId)
+    expect(second.spanId).not.toBe(first.spanId)
+    for (const t of [first, second]) {
+      expect(t.spanId).toMatch(/^[0-9a-f]{16}$/)
+      expect(first.traceId).not.toContain(t.spanId) // and nothing of the trace id is in it
+    }
+  })
+
   it('a request that ended before the auth gate (no ids on the trust) still records its span with ids of its own', async () => {
     await recordHttpRequest({ method: 'GET', path: '/api/overview', status: 500, seconds: 0.01, authenticated: false })
     const spans = httpSpans()
