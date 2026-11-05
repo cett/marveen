@@ -42,6 +42,18 @@ export function redactBoxRow(row: string): string {
   return `[non-wrapper ${flat.length} chars]`
 }
 
+/**
+ * What a log line may carry of the text parked in an input box: how long it is (whitespace-collapsed) and, only when it is
+ * verbatim a piece of the wrapper boilerplate, that piece (see redactBoxRow). The box of a main session can hold a human's
+ * own draft and the box of a sub-agent an inter-agent frame (another agent's or tenant's text), so the text itself never
+ * goes to a log. A whole parked frame is boilerplate PLUS a message, so it is masked: the privacy is the point. Spread the
+ * result into the log fields.
+ */
+export function redactParkedForLog(text: string): { parkedChars: number; parkedShown: string } {
+  const flat = collapse(text)
+  return { parkedChars: flat.length, parkedShown: redactBoxRow(flat) }
+}
+
 // session -> an episode is open (its forensics line was written). Insertion-ordered, so the oldest goes first.
 const openEpisodes = new Set<string>()
 
