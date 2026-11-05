@@ -8,6 +8,7 @@ import { decideSubmitFollowup, detectPaneState, detectsPastePlaceholder, idleCon
 import { makeLazyBinResolver, tmuxBin } from '../platform.js'
 import { agentDir, readAgentChannelProvider, readAgentRemoteHost } from './agent-config.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
+import { redactParkedForLog } from './park-forensics.js'
 import { tryAcquireSessionSendLane, type SendLockMode, withSessionSendLock } from './session-send-lock.js'
 import { buildTmuxInvocation, classifyRunState, classifyRunStateFromExit, ensureControlDir, sessionInList, type AgentRunState } from './ssh-tmux.js'
 import { parseTelegramToken } from './telegram.js'
@@ -740,11 +741,11 @@ export async function clearStaleParkedInput(session: string, host: string | null
         `A parkolt sor eleje: "${preview}"`,
       ).catch(() => { /* notify is best-effort */ })
       escalated = true
-      logger.warn({ session, parked: parked.slice(0, 60), fails }, 'message-router: main-agent parked input -- owner notified with manual fix (box untouched)')
+      logger.warn({ session, ...redactParkedForLog(parked), fails }, 'message-router: main-agent parked input -- owner notified with manual fix (box untouched)')
     } else if (stage === 'heartbeat') {
-      logger.warn({ session, parked: parked.slice(0, 60), fails }, 'message-router: main-agent parked input -- persisting; visible to the heartbeat round (box untouched)')
+      logger.warn({ session, ...redactParkedForLog(parked), fails }, 'message-router: main-agent parked input -- persisting; visible to the heartbeat round (box untouched)')
     } else {
-      logger.debug({ session, parked: parked.slice(0, 60), fails }, 'message-router: main-agent parked input -- left untouched')
+      logger.debug({ session, ...redactParkedForLog(parked), fails }, 'message-router: main-agent parked input -- left untouched')
     }
     unwedgeAttempts.set(key, { last: nowMs, sig: parked, fails, escalated })
     return false
@@ -786,13 +787,13 @@ export async function clearStaleParkedInput(session: string, host: string | null
         `az auto-tisztitas ${fails}x sikertelen -- lehet kezi beavatkozas kell. Reszlet: "${preview}"`,
       ).catch(() => { /* notify is best-effort */ })
       escalated = true
-      logger.warn({ session, parked: parked.slice(0, 60), fails }, 'message-router: sub-agent parked input resisted clearing -- escalated to operator')
+      logger.warn({ session, ...redactParkedForLog(parked), fails }, 'message-router: sub-agent parked input resisted clearing -- escalated to operator')
     }
     unwedgeAttempts.set(key, { last: nowMs, sig: parked, fails, escalated })
-    logger.warn({ session, parked: parked.slice(0, 60), fails }, 'message-router: parked input resisted clearing, backing off')
+    logger.warn({ session, ...redactParkedForLog(parked), fails }, 'message-router: parked input resisted clearing, backing off')
     return false
   }
   unwedgeAttempts.set(key, { last: nowMs, sig: parked, fails: 0, escalated: false })
-  logger.warn({ session, parked: parked.slice(0, 60) }, 'message-router: cleared stale parked input (channel un-wedge)')
+  logger.warn({ session, ...redactParkedForLog(parked) }, 'message-router: cleared stale parked input (channel un-wedge)')
   return true
 }
