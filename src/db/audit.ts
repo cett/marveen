@@ -708,6 +708,9 @@ export interface AuditPruneResult {
   /** The audit tables' window and cut (epoch seconds). */
   cutoffDays: number
   cutoffTs: number
+  /** The approval_events window and cut (epoch seconds): its own knob, APPROVAL_EVENTS_RETENTION_DAYS. */
+  approvalCutoffDays: number
+  approvalCutoffTs: number
   /** The span table's own window and cut (epoch milliseconds). */
   otelCutoffDays: number
   otelCutoffMs: number
@@ -715,6 +718,12 @@ export interface AuditPruneResult {
   unexportedDeleted: number
   /** OTEL_EXPORT_ENABLED at the time of the sweep: with the export off, every deleted span counts as unexported. */
   exportEnabled: boolean
+  /**
+   * Rows the cut removed from a table the OTLP log export reads by cursor (approval_events) that the cursor had not
+   * yet passed, so they were never exported as log records (counted before the delete, same transaction; a source
+   * without a cursor row counts every deleted row). The span table's equivalent is `unexportedDeleted`.
+   */
+  unexportedLogsDeleted: Record<string, number>
 }
 
 /** Who ran a retention prune and how, for the journal row. */
@@ -732,13 +741,26 @@ async function writePruneJournal(actor: PruneActor, detail: Record<string, unkno
   })
 }
 
-// Prune the audit tables to AUDIT_LOG_RETENTION_DAYS and the span table to OTEL_SPAN_RETENTION_DAYS. Called from
-// the daily decay sweep so old entries do not accumulate indefinitely. The deletes, the count of the spans that
-// were never exported and the journal row are ONE transaction: no deletion without its record, no record
-// without the deletion. The row counts come from the statements themselves, not from a second query.
+// approval_events is the security journal of the approval flow and the OTLP log export reads it by cursor
+// (otel_logs_export_state). It had no cleanup at all (only a tenant delete removed rows) and now has its OWN window,
+// APPROVAL_EVENTS_RETENTION_DAYS (365 by default): a security journal outlives the 90-day operational audit tables.
+// import_audit_log and restore_log stay on AUDIT_LOG_RETENTION_DAYS. kanban_card_events is NOT pruned on purpose
+// (owner decision): the card timeline and the card token cost read it, so its data stays. Table names in the SQL
+// below are fixed literals: a table name is never built from a variable.
+
+// Prune the audit tables to AUDIT_LOG_RETENTION_DAYS, approval_events to APPROVAL_EVENTS_RETENTION_DAYS and the span
+// table to OTEL_SPAN_RETENTION_DAYS. Called from the daily decay sweep so old entries do not accumulate indefinitely.
+// The deletes, the count of the rows that were never exported and the journal row are ONE transaction: no deletion
+// without its record, no record without the deletion. The row counts come from the statements themselves, not from
+// a second query.
 export async function pruneAuditLogs(): Promise<AuditPruneResult> {
   const retentionDays = Number(getEffectiveSettingValue('AUDIT_LOG_RETENTION_DAYS'))
-  const cutoff = Math.floor(Date.now() / 1000) - retentionDays * 86400
+  // The clock is read once: the audit cut and the approval cut are both derived from the same instant.
+  const nowSec = Math.floor(Date.now() / 1000)
+  const cutoff = nowSec - retentionDays * 86400
+  // approval_events has its own window; the cut that counts the unexported rows is the SAME value the delete uses.
+  const approvalRetentionDays = Number(getEffectiveSettingValue('APPROVAL_EVENTS_RETENTION_DAYS'))
+  const approvalCutoff = nowSec - approvalRetentionDays * 86400
   // otel_spans has its own retention knob (OTEL_SPAN_RETENTION_DAYS, default
   // 30) rather than reusing AUDIT_LOG_RETENTION_DAYS -- spans are a much
   // higher-volume, shorter-lived trace record than the audit tables above.
@@ -746,9 +768,22 @@ export async function pruneAuditLogs(): Promise<AuditPruneResult> {
   const exportEnabled = getEffectiveSettingValue('OTEL_EXPORT_ENABLED') === '1'
   return dbx.tx(async (tx) => {
     const deleted: Record<string, number> = {}
+    // The OTLP log sources read by cursor: count what the cursor has not passed BEFORE the delete, so the loss of a
+    // stalled log export is visible in the journal row exactly as the loss of unexported spans is.
+    const unexportedLogsDeleted: Record<string, number> = {
+      approval_events: ((await tx.get<{ n: number }>(
+        `SELECT COUNT(*) AS n FROM approval_events WHERE created_at < ?
+           AND id > COALESCE((SELECT last_id FROM otel_logs_export_state WHERE source = 'approval_events'), 0)`, approvalCutoff,
+      ))?.n) ?? 0,
+    }
     for (const table of ['config_change_log', 'idea_status_log', 'store_file_audit', 'agent_audit_log']) {
       deleted[table] = (await tx.run(`DELETE FROM ${table} WHERE created_at < ?`, cutoff)).changes
     }
+    // The security journal of the approval flow: its own, longer window (see above).
+    deleted.approval_events = (await tx.run('DELETE FROM approval_events WHERE created_at < ?', approvalCutoff)).changes
+    // The two tables whose time column is not called created_at.
+    deleted.import_audit_log = (await tx.run('DELETE FROM import_audit_log WHERE run_at < ?', cutoff)).changes
+    deleted.restore_log = (await tx.run('DELETE FROM restore_log WHERE restored_at < ?', cutoff)).changes
     // hook_audit_log had no automatic sweep at all -- pruneHookAuditLog() only
     // ever ran when POST /api/hook-audit/prune was called by hand. At ~1074
     // rows/day (one row per PreToolUse/PostToolUse/PreCompact/Stop verdict)
@@ -765,13 +800,16 @@ export async function pruneAuditLogs(): Promise<AuditPruneResult> {
     const deletedTotal = Object.values(deleted).reduce((a, b) => a + b, 0)
     const result: AuditPruneResult = {
       deleted, deletedTotal, cutoffDays: retentionDays, cutoffTs: cutoff,
-      otelCutoffDays: otelRetentionDays, otelCutoffMs, unexportedDeleted, exportEnabled,
+      approvalCutoffDays: approvalRetentionDays, approvalCutoffTs: approvalCutoff,
+      otelCutoffDays: otelRetentionDays, otelCutoffMs, unexportedDeleted, exportEnabled, unexportedLogsDeleted,
     }
     await writePruneJournal({ agentId: 'system', trigger: 'sweep' }, {
       tables: deleted, deleted_total: deletedTotal,
       cutoff_days: retentionDays, cutoff_ts: cutoff,
+      approval_cutoff_days: approvalRetentionDays, approval_cutoff_ts: approvalCutoff,
       otel_cutoff_days: otelRetentionDays, otel_cutoff_ms: otelCutoffMs,
       unexported_deleted: unexportedDeleted, export_enabled: exportEnabled,
+      unexported_logs_deleted: unexportedLogsDeleted,
     })
     return result
   }, { mode: 'immediate' })
