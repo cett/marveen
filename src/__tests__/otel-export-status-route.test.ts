@@ -9,7 +9,7 @@ import { EventEmitter } from 'node:events'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { initDatabase, getDb, getOtelLogCursor } from '../db.js'
+import { initDatabase, getDb, getOtelLogCursor, upsertOtelSpan, closeOtelSpan, setOtelMetricsExportWatermark } from '../db.js'
 
 vi.mock('../logger.js', () => ({
   logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() },
@@ -41,7 +41,7 @@ vi.mock('../env.js', async (importOriginal) => {
 
 const { logger } = await import('../logger.js')
 const { resetMetricValues } = await import('../otel-metrics.js')
-const { tick, resetOtelExporterStatus } = await import('../web/otel-push-exporter.js')
+const { tick, resetOtelExporterStatus, getOtelExportOverview } = await import('../web/otel-push-exporter.js')
 const { tryHandleOtelExportStatus } = await import('../web/routes/otel-export-status.js')
 const { ENDPOINT_PERMISSION_TABLE, hasPermission, resolveRequiredPermission } = await import('../web/rbac.js')
 import type { Role } from '../web/rbac.js'
@@ -61,7 +61,7 @@ beforeEach(() => {
   for (const k of Object.keys(envFile)) delete envFile[k]
   resetOtelExporterStatus()
   resetMetricValues()
-  getDb().exec('DELETE FROM approval_events; DELETE FROM rbac_shadow_log; DELETE FROM config_change_log; DELETE FROM agent_audit_log; DELETE FROM hook_audit_log; DELETE FROM fleet_blackboard_history; DELETE FROM kanban_card_events; DELETE FROM otel_logs_export_state;')
+  getDb().exec('DELETE FROM approval_events; DELETE FROM rbac_shadow_log; DELETE FROM config_change_log; DELETE FROM agent_audit_log; DELETE FROM hook_audit_log; DELETE FROM fleet_blackboard_history; DELETE FROM kanban_card_events; DELETE FROM otel_logs_export_state; DELETE FROM otel_spans; DELETE FROM token_usage;')
   vi.restoreAllMocks()
 })
 
@@ -84,6 +84,30 @@ function call(method: string, path: string, role = 'admin'): Promise<{ handled: 
 
 async function primeCursors() {
   for (const s of ['approval_events', 'rbac_shadow_log', 'config_change_log', 'agent_audit_log', 'hook_audit_log', 'fleet_blackboard_history', 'kanban_card_events'] as const) await getOtelLogCursor(s)
+}
+async function seedSpan(id: string) {
+  await upsertOtelSpan({ trace_id: `trace-${id}`, span_id: `span-${id}`, parent_span_id: null, agent_id: 'agent-a', operation: 'test.op', start_ms: 1000, attributes: null })
+  await closeOtelSpan(`trace-${id}`, `span-${id}`, 2000, 'ok')
+}
+async function seedTokens() {
+  // The metrics window opens at the watermark: start it at zero so the row is inside it.
+  await setOtelMetricsExportWatermark(0)
+  getDb().prepare(`
+    INSERT INTO token_usage (agent, session_id, timestamp, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, thinking_tokens, model, tenant_id)
+    VALUES ('agent-a', 's1', ?, 50, 10, 0, 0, 0, 'model-a', 'default')
+  `).run(Math.floor(Date.now() / 1000))
+}
+/** Data for all three signals, so each one has something to send. */
+async function seedAllSignals() {
+  await primeCursors()
+  seedConfigChange()
+  await seedSpan('a')
+  await seedTokens()
+}
+/** A collector that refuses exactly one signal (503) and takes the rest. */
+function failOnly(signal: 'traces' | 'metrics' | 'logs') {
+  vi.spyOn(global, 'fetch').mockImplementation((url) =>
+    Promise.resolve(String(url).endsWith(`/v1/${signal}`) ? new Response('no', { status: 503 }) : new Response('{}', { status: 200 })))
 }
 function seedConfigChange() {
   getDb().prepare("INSERT INTO config_change_log (key, old_value, new_value, actor, created_at) VALUES ('SOME_SETTING', 'a', 'b', 'user-a', 1700000000)").run()
@@ -149,7 +173,7 @@ describe('the answer', () => {
     await tick()
     const r = await call('GET', PATH)
     expect(r.body.endpointConfigured).toBe(true)
-    expect(r.body.configProblem).toMatch(/must be http\(s\)/)
+    expect(r.body.configProblem).toBe('OTEL_EXPORTER_OTLP_ENDPOINT must be an http(s) URL')
   })
 
   it('reports skipped headers without naming them; the log line still names them', async () => {
@@ -210,6 +234,181 @@ describe('the answer', () => {
     expect(r.raw).not.toContain('collector.local')
     expect(r.raw).not.toContain('secret-value-a')
     expect(r.raw).not.toContain('x-key-a')
+  })
+})
+
+describe('the configuration problem is a fixed text', () => {
+  it('headers set in .env with no endpoint in .env: the missing-endpoint problem, without a header name or value', async () => {
+    envFile.OTEL_EXPORTER_OTLP_HEADERS = 'x-key-a=secret-value-a'
+    vi.spyOn(global, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }))
+    await tick()
+    const r = await call('GET', PATH)
+    expect(r.body.headersConfigured).toBe(true)
+    expect(r.body.configProblem).toBe('OTEL_EXPORTER_OTLP_HEADERS is set in .env, so OTEL_EXPORTER_OTLP_ENDPOINT must be set in .env too (the credential is bound to the endpoint file); nothing is exported')
+    expect(r.raw).not.toContain('x-key-a')
+    expect(r.raw).not.toContain('secret-value-a')
+  })
+
+  it('a mis-pasted header as the endpoint: the answer does not carry the scheme (it is the first half of the credential), the log line does', async () => {
+    cfg.OTEL_EXPORTER_OTLP_ENDPOINT = 'x-key-a:secret-value-a'
+    vi.spyOn(global, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }))
+    await tick()
+    const r = await call('GET', PATH)
+    expect(r.body.configProblem).toBe('OTEL_EXPORTER_OTLP_ENDPOINT must be an http(s) URL')
+    expect(r.raw).not.toContain('x-key-a')
+    expect(r.raw).not.toContain('secret-value-a')
+    const logged = (logger.warn as ReturnType<typeof vi.fn>).mock.calls.map((c) => JSON.stringify(c[0]))
+    expect(logged.some((l) => l.includes('got x-key-a:'))).toBe(true)
+  })
+
+  it('the other endpoint refusals keep their fixed texts', async () => {
+    vi.spyOn(global, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }))
+    cfg.OTEL_EXPORTER_OTLP_ENDPOINT = 'not a url'
+    await tick()
+    expect((await call('GET', PATH)).body.configProblem).toBe('OTEL_EXPORTER_OTLP_ENDPOINT is not a valid URL')
+    cfg.OTEL_EXPORTER_OTLP_ENDPOINT = 'http://user-a:secret-value-a@collector.local'
+    await tick()
+    const creds = await call('GET', PATH)
+    expect(creds.body.configProblem).toBe('OTEL_EXPORTER_OTLP_ENDPOINT must not carry credentials: use OTEL_EXPORTER_OTLP_HEADERS')
+    expect(creds.raw).not.toContain('user-a')
+    expect(creds.raw).not.toContain('secret-value-a')
+    cfg.OTEL_EXPORTER_OTLP_ENDPOINT = ''
+    envFile.OTEL_EXPORTER_OTLP_ENDPOINT = 'http://collector.example.org'
+    envFile.OTEL_EXPORTER_OTLP_HEADERS = 'x-key-a=secret-value-a'
+    await tick()
+    const plain = await call('GET', PATH)
+    expect(plain.body.configProblem).toBe('OTEL_EXPORTER_OTLP_HEADERS would go over plain http to a non-private host: use https')
+    expect(plain.raw).not.toContain('collector.example.org')
+    expect(plain.raw).not.toContain('x-key-a')
+  })
+})
+
+describe('a problem of a configuration that is no longer in force', () => {
+  it('is not shown once the export is switched off', async () => {
+    cfg.OTEL_EXPORTER_OTLP_ENDPOINT = 'ftp://collector.local'
+    vi.spyOn(global, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }))
+    await tick()
+    expect((await call('GET', PATH)).body.configProblem).not.toBeNull()
+    cfg.OTEL_EXPORT_ENABLED = '0'
+    expect((await call('GET', PATH)).body.configProblem).toBeNull()
+  })
+
+  it('is not shown once the endpoint is emptied and no headers are set', async () => {
+    cfg.OTEL_EXPORTER_OTLP_ENDPOINT = 'ftp://collector.local'
+    vi.spyOn(global, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }))
+    await tick()
+    expect((await call('GET', PATH)).body.configProblem).not.toBeNull()
+    cfg.OTEL_EXPORTER_OTLP_ENDPOINT = ''
+    expect((await call('GET', PATH)).body.configProblem).toBeNull()
+  })
+
+  it('is still shown while the export is on and only the headers are set (the missing endpoint is the problem)', async () => {
+    envFile.OTEL_EXPORTER_OTLP_HEADERS = 'x-key-a=secret-value-a'
+    cfg.OTEL_EXPORTER_OTLP_ENDPOINT = ''
+    vi.spyOn(global, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }))
+    await tick()
+    expect((await call('GET', PATH)).body.configProblem).not.toBeNull()
+  })
+})
+
+describe('the error text', () => {
+  it('replaces EVERY URL in one message, not only the first', async () => {
+    await primeCursors()
+    seedConfigChange()
+    vi.spyOn(global, 'fetch').mockRejectedValue(new Error(`first ${ENDPOINT}/v1/logs then ${ENDPOINT}/v1/other?key=secret-value-a done`))
+    await tick()
+    const r = await call('GET', PATH)
+    expect(r.body.logs.lastError).toBe('first [url] then [url] done')
+    expect(r.raw).not.toContain('secret-value-a')
+  })
+
+  it('replaces a URL whose scheme is in capitals', async () => {
+    await primeCursors()
+    seedConfigChange()
+    vi.spyOn(global, 'fetch').mockRejectedValue(new Error('connect failed HTTPS://COLLECTOR.LOCAL/v1/logs?key=secret-value-a'))
+    await tick()
+    const r = await call('GET', PATH)
+    expect(r.body.logs.lastError).toBe('connect failed [url]')
+    expect(r.raw.toLowerCase()).not.toContain('collector.local')
+    expect(r.raw).not.toContain('secret-value-a')
+  })
+
+  it('replaces the URL BEFORE the cap: one that starts near the end is not left as a fragment', async () => {
+    await primeCursors()
+    seedConfigChange()
+    // The URL starts at character 194; cut at 200 first it would be the fragment "http:/".
+    vi.spyOn(global, 'fetch').mockRejectedValue(new Error(`${'x'.repeat(193)} ${ENDPOINT}/v1/logs?key=secret-value-a`))
+    await tick()
+    const r = await call('GET', PATH)
+    expect(r.body.logs.lastError).toBe(`${'x'.repeat(193)} [url]`)
+    expect(r.raw).not.toContain('http')
+  })
+})
+
+describe('the three signals are independent', () => {
+  it('only traces fail: metrics and logs show a success and no failure', async () => {
+    await seedAllSignals()
+    failOnly('traces')
+    await tick()
+    const r = await call('GET', PATH)
+    expect(r.body.traces.failures).toBeGreaterThanOrEqual(1)
+    expect(r.body.traces.lastError).toBe('collector answered 503')
+    expect(r.body.traces.lastSuccessMs).toBeNull()
+    for (const s of ['metrics', 'logs']) {
+      expect(r.body[s].failures, s).toBe(0)
+      expect(r.body[s].lastError, s).toBeNull()
+      expect(typeof r.body[s].lastSuccessMs, s).toBe('number')
+    }
+  })
+
+  it('only metrics fail: traces and logs show a success and no failure', async () => {
+    await seedAllSignals()
+    failOnly('metrics')
+    await tick()
+    const r = await call('GET', PATH)
+    expect(r.body.metrics.failures).toBeGreaterThanOrEqual(1)
+    expect(r.body.metrics.lastError).toBe('collector answered 503')
+    expect(r.body.metrics.lastSuccessMs).toBeNull()
+    for (const s of ['traces', 'logs']) {
+      expect(r.body[s].failures, s).toBe(0)
+      expect(r.body[s].lastError, s).toBeNull()
+      expect(typeof r.body[s].lastSuccessMs, s).toBe('number')
+    }
+  })
+
+  it('only logs fail: traces and metrics show a success and no failure', async () => {
+    await seedAllSignals()
+    failOnly('logs')
+    await tick()
+    const r = await call('GET', PATH)
+    expect(r.body.logs.failures).toBe(1)
+    for (const s of ['traces', 'metrics']) {
+      expect(r.body[s].failures, s).toBe(0)
+      expect(typeof r.body[s].lastSuccessMs, s).toBe('number')
+    }
+  })
+})
+
+describe('the overview is a copy', () => {
+  it('changing the returned object does not reach the exporter state', async () => {
+    await primeCursors()
+    seedConfigChange()
+    cfg.OTEL_EXPORTER_OTLP_ENDPOINT = ENDPOINT
+    vi.spyOn(global, 'fetch').mockResolvedValue(new Response('no', { status: 503 }))
+    await tick()
+    const before = JSON.parse(JSON.stringify(getOtelExportOverview()))
+    expect(before.logs.lastError).toBe('collector answered 503')
+
+    const mine = getOtelExportOverview() as any
+    mine.logs.lastError = 'changed by the caller'
+    mine.logs.failures = 99
+    delete mine.logs.nextAttemptMs
+    mine.traces.failures = 99
+    mine.configProblem = 'changed by the caller'
+    mine.enabled = false
+
+    expect(JSON.parse(JSON.stringify(getOtelExportOverview()))).toEqual(before)
+    expect((await call('GET', PATH)).body.logs.lastError).toBe('collector answered 503')
   })
 })
 

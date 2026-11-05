@@ -96,7 +96,9 @@ export interface OtelExportOverview extends OtelExporterStatus {
   headersConfigured: boolean
   /**
    * The last configuration problem the exporter logged (a missing endpoint, an unusable URL, skipped headers), or null.
-   * A fixed text: when headers were skipped it says so without naming them (the log line names them, this does not).
+   * A fixed text, never built from the operator's input: when headers were skipped it says so without naming them, a
+   * wrong URL scheme is not repeated (the log line keeps both). Null while the export is switched off or has neither an
+   * endpoint nor headers: the problem was about a configuration that is no longer in force.
    */
   configProblem: string | null
 }
@@ -105,6 +107,21 @@ const LAST_ERROR_MAX_CHARS = 200
 // A transport error message is the runtime's text, not ours: Node's fetch does not put the URL in it, another runtime
 // might. Whatever looks like a URL is replaced before the cap, so the endpoint stays out of the answer either way.
 const URL_IN_TEXT = /[a-z][a-z0-9+.-]*:\/\/\S*/gi
+
+// The endpoint check words most of its refusals as fixed texts, but one of them repeats the URL scheme, and a mis-pasted
+// `x-key-a:secret` is a valid URL whose scheme is the first half of a credential. The public problem is therefore mapped
+// from an allow-list: a known fixed text passes, the scheme text becomes a text without the scheme, and anything else
+// (a reason added to checkEndpoint later) is the generic one, so a new reason cannot leak by default.
+const PUBLIC_ENDPOINT_PROBLEMS = new Set([
+  'OTEL_EXPORTER_OTLP_ENDPOINT is not a valid URL',
+  'OTEL_EXPORTER_OTLP_ENDPOINT must not carry credentials: use OTEL_EXPORTER_OTLP_HEADERS',
+  'OTEL_EXPORTER_OTLP_HEADERS would go over plain http to a non-private host: use https',
+])
+function publicEndpointProblem(reason: string): string {
+  if (PUBLIC_ENDPOINT_PROBLEMS.has(reason)) return reason
+  if (reason.startsWith('OTEL_EXPORTER_OTLP_ENDPOINT must be http(s)')) return 'OTEL_EXPORTER_OTLP_ENDPOINT must be an http(s) URL'
+  return 'OTEL_EXPORTER_OTLP_ENDPOINT cannot be used'
+}
 
 /**
  * The export state for the outside (GET /api/admin/otel-export-status). The exporter's own failure counters
@@ -120,7 +137,11 @@ export function getOtelExportOverview(): OtelExportOverview {
     enabled: cfg.enabled,
     endpointConfigured: cfg.endpoint !== '',
     headersConfigured: cfg.headersRaw !== '',
-    configProblem: lastConfigProblemPublic === '' ? null : lastConfigProblemPublic,
+    // A problem outlives a configuration change until the next tick re-reads it; what the endpoint shows is the problem of
+    // the configuration in force, so nothing while the export is off or has nowhere (and no credential) to look at.
+    configProblem: lastConfigProblemPublic === '' || !cfg.enabled || (cfg.endpoint === '' && cfg.headersRaw === '')
+      ? null
+      : lastConfigProblemPublic,
   }
 }
 
@@ -186,10 +207,10 @@ function resolveConfig(): ExportConfig | null {
       : ''
   if (problem !== lastConfigProblem) {
     lastConfigProblem = problem
-    // The endpoint check's reasons are fixed texts (at most the URL scheme); the skipped-header text names the headers,
-    // so the public one does not.
+    // The public text is a fixed one: the endpoint check's reason may repeat the URL scheme and the skipped-header text
+    // names the headers, so neither goes out as it is. The log line below keeps the raw problem.
     lastConfigProblemPublic = !check.ok
-      ? check.reason
+      ? publicEndpointProblem(check.reason)
       : rejected.length > 0 ? 'OTEL_EXPORTER_OTLP_HEADERS: some entries were skipped as unusable' : ''
     if (problem) logger.warn({ rejected, problem }, 'otel-push-exporter: configuration problem')
   }
