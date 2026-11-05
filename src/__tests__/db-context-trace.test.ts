@@ -153,10 +153,10 @@ describe('background-job openers do not inherit the trace of the request that cr
   it('setInterval and setTimeout created inside a request: the ticks of systemJob and runAsAgentJob carry no trace', async () => {
     const seen = { raw: [] as unknown[], system: [] as unknown[], agent: [] as unknown[], lookup: [] as unknown[], timeoutSystem: [] as unknown[], timeoutAgent: [] as unknown[] }
     const ctxs = { system: undefined as unknown, agent: undefined as unknown }
-    setAgentTenantResolver(async () => { seen.lookup.push(currentTrace()); return 'default' })
+    setAgentTenantResolver(() => { seen.lookup.push(currentTrace()); return Promise.resolve('default') })
     const timers: Array<ReturnType<typeof setInterval>> = []
     let direct: unknown
-    await runAs.tenant('tenant-a', () => withTrace(T1, async () => {
+    runAs.tenant('tenant-a', () => withTrace(T1, () => {
       // the premise: a bare callback of a timer created here still sees the request's trace
       timers.push(setInterval(() => { seen.raw.push(currentTrace()) }, 3))
       timers.push(setInterval(systemJob('message-router', () => { seen.system.push(currentTrace()); ctxs.system = currentDbContext() }), 3))
