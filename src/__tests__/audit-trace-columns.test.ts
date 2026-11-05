@@ -12,6 +12,7 @@ import {
   recordApprovalEvent, insertBlackboardHistory, createKanbanCard, moveKanbanCard, propagateStatus,
 } from '../db.js'
 import { runAs, withTrace } from '../db/context.js'
+import { systemJob, runAsAgentJob } from '../db/background-jobs.js'
 import { useTestDb } from './helpers/with-test-db.js'
 
 useTestDb()
@@ -137,6 +138,27 @@ describe('the central writers fill the trace columns from the context', () => {
     const w = WRITERS.find((x) => x.name === 'writeAgentAuditLog')!
     await runAs.system('job-a', () => withTrace(T1, () => runAs.tenant('tenant-a', w.write)))
     expect(await newest('agent_audit_log')).toEqual({ trace_id: T1.traceId, span_id: T1.spanId })
+  })
+
+  // A job is not part of the request that created its timer (see the job openers in db/background-jobs.ts): the rows it
+  // writes carry NULL, even when the opener is called from a traced request context.
+  it('a writer inside a job opener writes NULL, called from a traced request; a plain nested runAs (the control) writes the trace', async () => {
+    const w = WRITERS.find((x) => x.name === 'writeAgentAuditLog')!
+    await runAs.system('job-a', () => withTrace(T1, () => runAs.system('job-b', w.write, { inheritTrace: false })))
+    expect(await newest('agent_audit_log')).toEqual({ trace_id: null, span_id: null })
+
+    await runAs.system('job-a', () => withTrace(T1, () => runAs.system('job-b', w.write)))
+    expect(await newest('agent_audit_log')).toEqual({ trace_id: T1.traceId, span_id: T1.spanId })
+  })
+
+  it('the real openers (systemJob, runAsAgentJob) write NULL from a traced request context, on every journal table that has a writer', async () => {
+    for (const { table, name, write } of WRITERS) {
+      await runAs.tenant('tenant-a', () => withTrace(T1, async () => { await systemJob('message-router', write)() }))
+      expect(await newest(table), `${name} via systemJob`).toEqual({ trace_id: null, span_id: null })
+
+      await runAs.tenant('tenant-a', () => withTrace(T1, () => runAsAgentJob('auto-restart', 'agent-a', write)))
+      expect(await newest(table), `${name} via runAsAgentJob`).toEqual({ trace_id: null, span_id: null })
+    }
   })
 
   it('a write after an await inside the traced context still carries the trace', async () => {
