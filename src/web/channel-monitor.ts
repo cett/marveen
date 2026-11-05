@@ -485,7 +485,7 @@ export async function recoverStuckInputForSession(
     // once per message id -- the content stays out of the alert, the id and the session are enough.
     if (action === 'hold' && tail?.kind === 'match' && facts.requeueBudgetLeft === false && !budgetAlertedMsgIds.has(tail.ledger.msgId)) {
       rememberBounded(budgetAlertedMsgIds, tail.ledger.msgId)
-      sendAlert(`⚠️ A(z) ${session} bemenetében ismét fejevesztett inter-agent keret ragadt (üzenet #${tail.ledger.msgId}); egyszer már vissza lett téve a sorba, másodszor nem nyülok hozzá. Kézi beavatkozás kell.`)
+      sendAlert(`⚠️ A(z) ${session} bemenetében ismét fejevesztett inter-agent keret ragadt (üzenet #${tail.ledger.msgId}); egyszer már vissza lett téve a sorba, másodszor nem nyúlok hozzá. Kézi beavatkozás kell.`)
     }
     await performStuckInputAction(session, action, pane, block, sig, attempt)
   }
@@ -613,7 +613,8 @@ async function clearAndRequeueHeadLost(session: string, paneBefore: string, prev
   const first = firstText != null ? matchDeliveryTail(session, firstText) : null
   if (first?.kind !== 'match' || requeuedMsgIds.has(first.ledger.msgId)) return
   const { msgId, toAgent, tenantId } = first.ledger
-  const res = await withSessionSendLock(session, null, 'recover', async (): Promise<'requeued' | 'moved' | 'not-empty' | 'no-row'> => {
+  let requeueError: unknown
+  const res = await withSessionSendLock(session, null, 'recover', async (): Promise<'requeued' | 'moved' | 'not-empty' | 'no-row' | 'requeue-failed'> => {
     const fresh = captureParkedInputView(session)
     const freshText = fresh != null ? parkedInputText(fresh) : null
     const again = freshText != null ? matchDeliveryTail(session, freshText) : null
@@ -621,7 +622,16 @@ async function clearAndRequeueHeadLost(session: string, paneBefore: string, prev
     await clearInputBuffer(session)
     const after = captureParkedInputView(session)
     if (after == null || stuckInputSignature(after) != null) return 'not-empty'
-    if (!await requeueDeliveredMessage(msgId, toAgent, tenantId)) return 'no-row'
+    // The box is already empty here: a throw from the flip would leave the row 'delivered' with nothing in the box, the
+    // message silently gone. Catch it INSIDE the lock, hand the outcome out, and let the caller name the id and alert.
+    let flipped: boolean
+    try {
+      flipped = await requeueDeliveredMessage(msgId, toAgent, tenantId)
+    } catch (err) {
+      requeueError = err
+      return 'requeue-failed'
+    }
+    if (!flipped) return 'no-row'
     removeDeliveryByMsgId(session, msgId)
     rememberBounded(requeuedMsgIds, msgId)
     return 'requeued'
@@ -641,6 +651,10 @@ async function clearAndRequeueHeadLost(session: string, paneBefore: string, prev
       break
     case 'not-empty':
       logger.warn({ session, attempt }, 'Stuck input -- head-lost frame still in the box after the clear, not requeued (retry within the attempts budget)')
+      break
+    case 'requeue-failed':
+      logger.warn({ err: requeueError, session, attempt, msgId }, 'Stuck input -- head-lost frame cleared but the requeue failed, the message stays delivered')
+      sendAlert(`⚠️ A(z) ${session} bemenete ki lett ürítve, de a(z) #${msgId} üzenet visszatétele a sorba nem sikerült: az üzenet "delivered" maradt és nem lesz újra kiszállítva. Kézi beavatkozás kell.`)
       break
     case 'no-row':
       logger.warn({ session, attempt, msgId }, 'Stuck input -- head-lost frame cleared, its message is no longer delivered (already handled), not requeued')

@@ -17,6 +17,17 @@ vi.mock('../logger.js', () => ({
   },
 }))
 
+const flip = vi.hoisted(() => ({ fail: false }))
+vi.mock('../db.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../db.js')>()
+  return {
+    ...actual,
+    // The real compare-and-set, unless a test makes the database throw.
+    requeueDeliveredMessage: vi.fn((...a: Parameters<typeof actual.requeueDeliveredMessage>) =>
+      flip.fail ? Promise.reject(new Error('db unavailable')) : actual.requeueDeliveredMessage(...a)),
+  }
+})
+
 const alerts = vi.hoisted(() => ({ sent: [] as string[] }))
 vi.mock('../notify.js', () => ({
   notifyChannel: vi.fn((text: string) => { alerts.sent.push(text); return Promise.resolve() }),
@@ -132,6 +143,7 @@ beforeEach(() => {
   term.sendCalls = 0
   term.queue = []
   term.nullAfterClear = false
+  flip.fail = false
   _resetRequeueBudget()
   for (const s of [SESSION, 'session-b']) clearDeliveries(s)
 })
@@ -335,6 +347,42 @@ describe('the main session', () => {
     expect(term.clearCalls).toBe(0)
     expect(alerts.sent).toHaveLength(0)
     clearDeliveries('session-main')
+  })
+})
+
+describe('the ledger flip throws after the clear', () => {
+  it('is named with the message id, raises one alert, keeps the record and the row, and writes no requeue audit', async () => {
+    const m = await deliver()
+    term.pane = headLost(m.frame)
+    flip.fail = true
+    await tick()
+    expect(term.clearCalls).toBe(1) // the box is already empty: this is the case that used to vanish silently
+    expect(await statusOf(m.id)).toBe('delivered')
+    expect(_registrySize(SESSION)).toBe(1)
+    expect(requeueLogs()).toHaveLength(0)
+    expect(await auditRows(m.id)).toHaveLength(0)
+    const failed = logCalls.warn.filter((c) => String(c[1]).includes('cleared but the requeue failed'))
+    expect(failed).toHaveLength(1)
+    expect((failed[0]![0] as Record<string, unknown>).msgId).toBe(m.id)
+    expect(alerts.sent).toHaveLength(1)
+    expect(alerts.sent[0]).toContain(`#${m.id}`)
+    expect(alerts.sent[0]).toContain(SESSION)
+    expect(alerts.sent[0]).not.toContain('filler')
+    // The generic "action failed" path did not swallow it.
+    expect(logCalls.warn.some((c) => c[1] === 'Stuck-input recovery action failed')).toBe(false)
+  })
+
+  it('does not spend the requeue budget: the next head-lost park of the same message is requeued', async () => {
+    const m = await deliver()
+    const parked = headLost(m.frame)
+    term.pane = parked
+    flip.fail = true
+    await tick()
+    flip.fail = false
+    term.pane = parked
+    await tick()
+    expect(await statusOf(m.id)).toBe('pending')
+    expect(requeueLogs()).toHaveLength(1)
   })
 })
 
