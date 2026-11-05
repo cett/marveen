@@ -17,6 +17,9 @@
 //     context of where it was created. A tick that touches the db has to open its own `runAs` (waves 3 and 4),
 //   - a nested `runAs` replaces the IDENTITY and keeps the trace (traceId/spanId, set by `withTrace`) of the outer
 //     context, because it is still the same request; the outer context is back when it returns,
+//   - EXCEPT a background job (db/background-jobs.ts: systemJob, runAsAgentJob): it opens its context with
+//     `{ inheritTrace: false }`. A timer created inside a request keeps that request's context, trace included, so a tick
+//     that opened a plain nested `runAs` would write its rows under the trace of a request that is long over,
 //   - this store is independent of the transaction scope in tx-lock.ts and of the tenant request context.
 
 import { AsyncLocalStorage } from 'node:async_hooks'
@@ -49,26 +52,36 @@ function requireId(kind: string, value: string): string {
   return value
 }
 
+/** Internal option of a `runAs`. The default is to inherit; only the background-job openers (db/background-jobs.ts) turn it off. */
+export interface RunAsOptions {
+  /**
+   * false: the context carries NO trace, whatever context it is opened in. For a job, which by definition is not part of
+   * the request that happens to have created its timer.
+   */
+  inheritTrace?: boolean
+}
+
 /**
  * The context a `runAs` opens: the NEW identity, plus the trace of the context it is opened in (if there is one). A nested
  * `runAs` inside a request is still that request, so the identity is replaced and the trace is kept: dropping it
  * silently is exactly the gap the trace in the context closes. A `runAs` opened outside any context (a timer, a close
- * handler) has no trace to keep.
+ * handler) has no trace to keep. `inheritTrace: false` opens a context with no trace at all (a background job).
  */
-function inheritTrace(ctx: DbContext): DbContext {
+function withInheritedTrace(ctx: DbContext, opts?: RunAsOptions): DbContext {
+  if (opts?.inheritTrace === false) return ctx
   const outer = store.getStore()
   return outer?.traceId && outer.spanId ? { ...ctx, traceId: outer.traceId, spanId: outer.spanId } : ctx
 }
 
 export const runAs = {
-  system<T>(name: string, fn: () => T): T {
-    return store.run(inheritTrace({ role: 'system', name: requireId('system', name) }), fn)
+  system<T>(name: string, fn: () => T, opts?: RunAsOptions): T {
+    return store.run(withInheritedTrace({ role: 'system', name: requireId('system', name) }, opts), fn)
   },
-  tenant<T>(tenantId: string, fn: () => T): T {
-    return store.run(inheritTrace({ role: 'tenant', tenantId: requireId('tenant', tenantId) }), fn)
+  tenant<T>(tenantId: string, fn: () => T, opts?: RunAsOptions): T {
+    return store.run(withInheritedTrace({ role: 'tenant', tenantId: requireId('tenant', tenantId) }, opts), fn)
   },
-  agent<T>(agentId: string, tenantId: string, fn: () => T): T {
-    return store.run(inheritTrace({ role: 'agent', agentId: requireId('agent', agentId), tenantId: requireId('agent', tenantId) }), fn)
+  agent<T>(agentId: string, tenantId: string, fn: () => T, opts?: RunAsOptions): T {
+    return store.run(withInheritedTrace({ role: 'agent', agentId: requireId('agent', agentId), tenantId: requireId('agent', tenantId) }, opts), fn)
   },
 }
 
@@ -85,7 +98,7 @@ export function withDbContext<T>(ctx: DbContext | undefined, fn: () => T): T {
  * request or message it belongs to without a parameter. Without a running context there is nothing to attach the trace
  * to: `fn` runs as it is (a trace alone would make a call look scoped when it is not).
  *
- * A nested `runAs` replaces the identity but keeps this trace (see `inheritTrace`); a callback created before the run does not get it.
+ * A nested `runAs` replaces the identity but keeps this trace (see `withInheritedTrace`); a callback created before the run does not get it.
  */
 export function withTrace<T>(trace: DbTrace, fn: () => T): T {
   const traceId = requireId('trace', trace.traceId)

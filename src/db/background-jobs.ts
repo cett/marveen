@@ -16,7 +16,7 @@
 // of src (the recipe is in docs/db-facade.md), never reach a facade call. The counter confirms it in operation: such a
 // file showing up in `getDbContextStats().sites` is a classification bug.
 
-import { runAs, withTrace, type DbTrace } from './context.js'
+import { runAs, withTrace, type DbTrace, type RunAsOptions } from './context.js'
 
 export type JobRole = 'system' | 'agent' | 'hybrid' | 'tenant-loop'
 
@@ -88,6 +88,12 @@ export const NOT_DB_TIMER_FILES: Record<string, string> = {
 
 // ---- Helpers --------------------------------------------------------------------------------------------
 
+// A job is not part of the request that happens to have created its timer: a `setInterval` / `setTimeout` created
+// inside a request keeps that request's context, trace included, and would hand the trace to every tick after the
+// request is over. So the job openers below (systemJob, the tenant lookup and runAsAgentJob) open a context WITHOUT
+// a trace. The request opener (`runAsRequest`) and a `runAs` a route calls itself keep the default: the trace is inherited.
+const JOB_CONTEXT: RunAsOptions = { inheritTrace: false }
+
 /**
  * The context of a request, from what the auth gate resolved: an agent token runs as that agent in its tenant, a
  * tenant caller as the tenant, and a caller without a credential as the named system job `http-public`.
@@ -111,7 +117,7 @@ export function runAsRequest<T>(who: { authenticated: boolean; role: string | un
 
 /** The same function, every call running in `runAs.system(name)`. For a timer or an event callback created OUTSIDE a `runAs`. */
 export function systemJob<A extends unknown[], R>(name: BackgroundJobName, fn: (...args: A) => R): (...args: A) => R {
-  return (...args: A): R => runAs.system(name, () => fn(...args))
+  return (...args: A): R => runAs.system(name, () => fn(...args), JOB_CONTEXT)
 }
 
 const TENANT_TTL_MS = 5 * 60_000
@@ -139,7 +145,7 @@ async function tenantOf(job: BackgroundJobName, agentId: string): Promise<string
   const hit = tenantCache.get(agentId)
   if (hit && Date.now() - hit.at < TENANT_TTL_MS) return hit.tenantId
   // The lookup itself is a db call of this job, made before the agent context exists.
-  const tenantId = await runAs.system(job, () => resolveTenant(agentId))
+  const tenantId = await runAs.system(job, () => resolveTenant(agentId), JOB_CONTEXT)
   tenantCache.set(agentId, { tenantId, at: Date.now() })
   return tenantId
 }
@@ -155,5 +161,5 @@ export async function runAsAgentJob<T>(job: AgentJobName, agentId: string, fn: (
   } catch {
     tenantId = 'default'
   }
-  return runAs.agent(agentId, tenantId, async () => fn())
+  return runAs.agent(agentId, tenantId, async () => fn(), JOB_CONTEXT)
 }
