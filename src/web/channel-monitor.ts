@@ -30,7 +30,8 @@ import {
 } from './agent-process.js'
 import { withSessionSendLock } from './session-send-lock.js'
 import { reapChannelOrphans, reapDetachedChannelClaudes, collectPollerEvidence } from './channel-poller-reap.js'
-import { matchDelivery } from './delivery-intent.js'
+import { matchDelivery, matchDeliveryTail, removeDeliveryByMsgId } from './delivery-intent.js'
+import { requeueDeliveredMessage, writeAgentAuditLog } from '../db.js'
 import { logParkForensicsOnce, endParkEpisode } from './park-forensics.js'
 import { probeTelegramConflict } from './channel-conflict-probe.js'
 import { schedulePluginUnlockAfterRespawn, wasPluginConfirmedAbsent, clearPluginAbsent } from './channel-plugin-unlock.js'
@@ -400,6 +401,25 @@ export function applyStuckRestartBusyGuard(
   return decision
 }
 
+// Head-lost requeue budget: ONE requeue per inter-agent message id, in memory (a restart zeroes it, and a restart
+// re-delivers anyway). Bounded: the oldest id is forgotten past REQUEUE_MEMORY_CAP. A message whose requeued copy parks
+// head-lost AGAIN is not requeued a second time: hold, and one operator alert.
+const REQUEUE_MEMORY_CAP = 200
+const requeuedMsgIds = new Set<number>()
+const budgetAlertedMsgIds = new Set<number>()
+function rememberBounded(set: Set<number>, id: number): void {
+  set.add(id)
+  if (set.size > REQUEUE_MEMORY_CAP) {
+    const oldest = set.values().next().value
+    if (oldest !== undefined) set.delete(oldest)
+  }
+}
+/** Exposed for testing only. */
+export function _resetRequeueBudget(): void {
+  requeuedMsgIds.clear()
+  budgetAlertedMsgIds.clear()
+}
+
 // Session-agnostic stuck-input recovery: capture the pane, and if a channel
 // notification is parked at the ❯ prompt, get it SUBMITTED (Enter-first, then
 // clear + verbatim re-inject of the COMPLETE block). The gate fires ONLY for a
@@ -439,6 +459,8 @@ export async function recoverStuckInputForSession(
     // truncation-guard (no verbatim re-inject of an incomplete <channel> block)
     // is preserved via blockTruncated.
     const plainText = parkedInputText(pane)
+    // Head-lost attribution (sub-agents only): is the box a verbatim suffix of one fresh router delivery?
+    const tail = allowPlainReinject && plainText != null ? matchDeliveryTail(session, plainText) : null
     const facts: StuckInputActionFacts = {
       escalate: attempt > MAIN_STUCK_ENTER_ATTEMPTS,
       rowCount: parkedInputRowCount(pane),
@@ -455,8 +477,16 @@ export async function recoverStuckInputForSession(
         ? matchDelivery(session, plainText)
         : undefined,
       machineOrigin: parkedMachineOriginInput(pane),
+      headLostMatch: tail == null ? 'none' : tail.kind === 'match' ? 'unique' : tail.kind,
+      requeueBudgetLeft: tail?.kind === 'match' ? !requeuedMsgIds.has(tail.ledger.msgId) : false,
     }
     const action = decideStuckInputAction(facts)
+    // Matrix row 6: the message was requeued once already and parked head-lost again. Hold (below) and tell the operator
+    // once per message id -- the content stays out of the alert, the id and the session are enough.
+    if (action === 'hold' && tail?.kind === 'match' && facts.requeueBudgetLeft === false && !budgetAlertedMsgIds.has(tail.ledger.msgId)) {
+      rememberBounded(budgetAlertedMsgIds, tail.ledger.msgId)
+      sendAlert(`⚠️ A(z) ${session} bemenetében ismét fejevesztett inter-agent keret ragadt (üzenet #${tail.ledger.msgId}); egyszer már vissza lett téve a sorba, másodszor nem nyúlok hozzá. Kézi beavatkozás kell.`)
+    }
     await performStuckInputAction(session, action, pane, block, sig, attempt)
   }
   return decision.next
@@ -534,6 +564,9 @@ async function performStuckInputAction(
         logger.warn({ session, attempt }, 'Stuck input -- parked scheduled-task tick, clearing buffer (no re-inject; next schedule fire re-delivers)')
         await clearInputBuffer(session)
         break
+      case 'clear-requeue':
+        await clearAndRequeueHeadLost(session, paneBefore, prevSig, attempt)
+        break
       case 'enter':
         // FABLEFALL1: same guard as the reinject-plain fallback above -- a bare
         // Enter must never reach the model consent dialog (its default SWITCHES
@@ -563,6 +596,72 @@ async function performStuckInputAction(
         ? 'Stuck input -- recovery action landed'
         : 'Stuck input -- recovery action did NOT land (escalating next tick within budget)',
     )
+  }
+}
+
+// Clear a head-lost inter-agent frame out of a sub-agent's box and put its message back in the queue.
+//
+// Everything that decides is re-checked UNDER the recover lane lock (a delivery in flight skips the whole move,
+// fail-closed): the pane signature is the one the decision was made on, and the box is still a suffix of exactly one
+// fresh delivery of the same message. Then clear FIRST, verify the box is really empty (a box that still holds text
+// means the frame may yet be submitted: requeueing would deliver it twice, so no requeue and the next tick retries within
+// the attempts budget), and only then flip the ledger row delivered -> pending (compare-and-set on status, agent and
+// tenant). The registry record is dropped ONLY when that flip changed a row; a failed flip keeps it. The requeue is
+// logged and audited with the message id and the session -- never the content.
+async function clearAndRequeueHeadLost(session: string, paneBefore: string, prevSig: string | null, attempt: number): Promise<void> {
+  const firstText = parkedInputText(paneBefore)
+  const first = firstText != null ? matchDeliveryTail(session, firstText) : null
+  if (first?.kind !== 'match' || requeuedMsgIds.has(first.ledger.msgId)) return
+  const { msgId, toAgent, tenantId } = first.ledger
+  let requeueError: unknown
+  const res = await withSessionSendLock(session, null, 'recover', async (): Promise<'requeued' | 'moved' | 'not-empty' | 'no-row' | 'requeue-failed'> => {
+    const fresh = captureParkedInputView(session)
+    const freshText = fresh != null ? parkedInputText(fresh) : null
+    const again = freshText != null ? matchDeliveryTail(session, freshText) : null
+    if (fresh == null || stuckInputSignature(fresh) !== prevSig || again?.kind !== 'match' || again.ledger.msgId !== msgId) return 'moved'
+    await clearInputBuffer(session)
+    const after = captureParkedInputView(session)
+    if (after == null || stuckInputSignature(after) != null) return 'not-empty'
+    // The box is already empty here: a throw from the flip would leave the row 'delivered' with nothing in the box, the
+    // message silently gone. Catch it INSIDE the lock, hand the outcome out, and let the caller name the id and alert.
+    let flipped: boolean
+    try {
+      flipped = await requeueDeliveredMessage(msgId, toAgent, tenantId)
+    } catch (err) {
+      requeueError = err
+      return 'requeue-failed'
+    }
+    if (!flipped) return 'no-row'
+    removeDeliveryByMsgId(session, msgId)
+    rememberBounded(requeuedMsgIds, msgId)
+    return 'requeued'
+  })
+  if (!res.ran) {
+    logger.info({ session, attempt }, 'Stuck-input recovery (clear-requeue) skipped: a delivery is in flight into this pane (fail-closed)')
+    return
+  }
+  switch (res.value) {
+    case 'requeued':
+      logger.warn({ session, attempt, msgId }, 'Stuck input -- head-lost inter-agent frame, cleared and requeued')
+      try {
+        await writeAgentAuditLog({ agent_id: toAgent, entity: 'message', action: 'requeue', entity_id: msgId, detail: { session }, tenant_id: tenantId })
+      } catch (err) {
+        logger.warn({ err, session, msgId }, 'Stuck input -- requeue audit row failed')
+      }
+      break
+    case 'not-empty':
+      logger.warn({ session, attempt }, 'Stuck input -- head-lost frame still in the box after the clear, not requeued (retry within the attempts budget)')
+      break
+    case 'requeue-failed':
+      logger.warn({ err: requeueError, session, attempt, msgId }, 'Stuck input -- head-lost frame cleared but the requeue failed, the message stays delivered')
+      sendAlert(`⚠️ A(z) ${session} bemenete ki lett ürítve, de a(z) #${msgId} üzenet visszatétele a sorba nem sikerült: az üzenet "delivered" maradt és nem lesz újra kiszállítva. Kézi beavatkozás kell.`)
+      break
+    case 'no-row':
+      logger.warn({ session, attempt, msgId }, 'Stuck input -- head-lost frame cleared, its message is no longer delivered (already handled), not requeued')
+      break
+    case 'moved':
+      logger.info({ session, attempt }, 'Stuck-input recovery (clear-requeue) skipped: the box changed since the decision')
+      break
   }
 }
 

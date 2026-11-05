@@ -325,7 +325,7 @@ describe('which rows the log shows', () => {
 describe('wiring', () => {
   it('the router labels its delivery with the message id, so the forensics can name the last deliveries', () => {
     const router = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../web/message-router.ts'), 'utf-8')
-    expect(router).toContain('recordDelivery(session, prefix + wrapped, String(msg.id))')
+    expect(router).toContain('recordDelivery(session, prefix + wrapped, String(msg.id), ')
   })
 
   it('the schedule runner labels its delivery with the literal kind, never with the prompt text (the label is logged)', () => {

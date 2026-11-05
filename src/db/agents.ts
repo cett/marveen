@@ -188,6 +188,17 @@ export async function markMessageDelivered(id: number): Promise<boolean> {
   return (await dbx.run("UPDATE agent_messages SET status = 'delivered', delivered_at = ? WHERE id = ? AND status = 'pending'", now, id)).changes > 0
 }
 
+// Undo a delivery whose frame never reached the agent (a head-lost frame parked in its input box and was cleared):
+// delivered -> pending, so the router wraps the message again from the DB. Compare-and-set in ONE statement: it only
+// matches a row that is still 'delivered' (a done/failed/already-pending row is somebody else's outcome and stays), that
+// belongs to THIS agent and to the tenant the delivery was recorded under -- a monitor job runs outside any tenant, so the
+// tenant condition is the caller's, written next to the id and never on a bare id. A second call for the same id (two
+// ticks racing) changes nothing and returns false. Only status and delivered_at move: trace_id/span_id stay (the span
+// closes once, when the agent finally answers), result and completed_at are not touched.
+export async function requeueDeliveredMessage(id: number, toAgent: string, tenantId: string): Promise<boolean> {
+  return (await dbx.run("UPDATE agent_messages SET status = 'pending', delivered_at = NULL WHERE id = ? AND status = 'delivered' AND to_agent = ? AND tenant_id = ?", id, toAgent, tenantId)).changes > 0
+}
+
 // Per-agent backlog: how many messages are waiting, and how old the oldest one
 // is. The queue only surfaces when somebody opens a pane and notices, which is
 // how an 18-row backlog went unseen on 2026-07-27 and got mistaken for data
