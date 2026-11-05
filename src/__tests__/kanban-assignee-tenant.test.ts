@@ -16,13 +16,16 @@ import { checkPermission, resolveRole, resolveTenantId } from '../web/authz.js'
 import { tryHandleKanban } from '../web/routes/kanban.js'
 import type { RouteContext } from '../web/routes/types.js'
 
-const lookup = vi.hoisted(() => ({ fail: false }))
+// `calls` records the agent name of every served-tenants lookup, so a test can count the lookups of one request.
+const lookup = vi.hoisted(() => ({ fail: false, calls: [] as string[] }))
 vi.mock('../db/agents.js', async (importOriginal) => {
   const real = await importOriginal<typeof import('../db/agents.js')>()
   return {
     ...real,
-    getServedTenantIds: (...a: Parameters<typeof real.getServedTenantIds>) =>
-      lookup.fail ? Promise.reject(new Error('lookup down')) : real.getServedTenantIds(...a),
+    getServedTenantIds: (...a: Parameters<typeof real.getServedTenantIds>) => {
+      lookup.calls.push(String(a[0]))
+      return lookup.fail ? Promise.reject(new Error('lookup down')) : real.getServedTenantIds(...a)
+    },
   }
 })
 // alpha, beta: fleet-internal agents no tenant lists (they serve the default tenant by convention); carmen: enabled for
@@ -118,6 +121,7 @@ const CASES: Array<[Caller, string, boolean]> = [
 
 beforeEach(async () => {
   lookup.fail = false
+  lookup.calls.length = 0
   initDatabase(':memory:')
   await createTenant('acme', 'Acme')
   getDb().prepare("UPDATE tenants SET main_agent_id = 'main-a' WHERE id = 'default'").run()
@@ -321,7 +325,7 @@ describe('PUT /api/kanban/:id: the assignee is a string or null for a tenant-bou
     expect(parent.body.field).toBe('parent_id')
   })
 
-  it('the admin is not judged by the type rule (reported, not changed)', async () => {
+  it('the admin may still name a foreign tenant agent by name (the tenant verdict is not for the admin)', async () => {
     const out = await callAs(await tokenAuth('the-file-token'), 'PUT', '/api/kanban/card-default', { assignee: 'main-b' })
     expect(out.status).toBe(200)
   })
@@ -360,7 +364,7 @@ describe('POST /api/kanban: the assignee is a string or null for a tenant-bound 
     expect(out.body.field).toBe('parent_id')
   })
 
-  it('the admin is not judged by the type rule (reported, not changed)', async () => {
+  it('the admin may still name a foreign tenant agent by name (the tenant verdict is not for the admin)', async () => {
     const out = await callAs(await tokenAuth('the-file-token'), 'POST', '/api/kanban', { title: 'Admin typed', assignee: 'main-b' })
     expect(out.status).toBe(200)
   })
@@ -411,5 +415,195 @@ describe('the admin bypass holds with a ?tenant= narrowing as well', () => {
     const out = await callAs(await tokenAuth('the-file-token'), 'POST', '/api/kanban/card-acme/claim?tenant=acme', undefined, 'main-a')
     expect(out.status).toBe(200)
     expect(cardState('card-acme').assignee).toBe('main-a')
+  })
+})
+
+// ---------------------------------------------------------------------------------------------------------------
+// POST /api/kanban/:id/breakdown/accept: the `assignee` of every subtask is a string or null, and a tenant-bound caller
+// names no foreign tenant agent. One bad element refuses the whole batch; nothing is written.
+// ---------------------------------------------------------------------------------------------------------------
+
+const acceptPath = (parent: string, query = '') => `/api/kanban/${parent}/breakdown/accept${query}`
+const childRows = (parent: string) => getDb().prepare('SELECT assignee, title FROM kanban_cards WHERE parent_id = ? ORDER BY rowid').all(parent) as Array<{ assignee: string | null; title: string }>
+const commentCount = (card: string) => (getDb().prepare('SELECT COUNT(*) AS c FROM kanban_comments WHERE card_id = ?').get(card) as { c: number }).c
+const cardCount = () => (getDb().prepare('SELECT COUNT(*) AS c FROM kanban_cards').get() as { c: number }).c
+const sub = (title: string, extra: Record<string, unknown> = {}) => ({ title, description: '', priority: 'normal', ...extra })
+
+// per caller: the parent card it owns, an agent of ANOTHER tenant, an agent of its own tenant
+const ACCEPT_CALLERS: Array<[Caller, string, string]> = [
+  ['default', 'main-b', 'main-a'],
+  ['acme', 'main-a', 'main-b'],
+]
+const acceptAuth = (c: Caller) => (c === 'default' ? callerAuth(c) : Promise.resolve(session('acme')))
+
+// Nothing about the parent or the board changed: no child, no comment, no audit row, same parent row.
+function snapshotBoard(parent: string) {
+  return { parent: cardState(parent), cards: cardCount(), comments: commentCount(parent), audits: auditCount() }
+}
+
+describe.each(ACCEPT_CALLERS)('breakdown/accept, %s caller: the subtask assignees', (caller, foreign, own) => {
+  const parent = ownCard(caller)
+
+  it('a foreign tenant agent on the 2nd of 3 subtasks is a 404 on subtasks[1].assignee and nothing is written', async () => {
+    const before = snapshotBoard(parent)
+    const out = await callAs(await acceptAuth(caller), 'POST', acceptPath(parent), { subtasks: [sub('one'), sub('two', { assignee: foreign }), sub('three')] })
+    expect(out.status).toBe(404)
+    expect(out.body).toMatchObject({ error: 'not_found', field: 'subtasks[1].assignee' })
+    expect(childRows(parent)).toEqual([])
+    expect(snapshotBoard(parent)).toEqual(before)
+  })
+
+  it('free text, an own tenant agent, null, a blank and an absent assignee all pass and the children are created', async () => {
+    const out = await callAs(await acceptAuth(caller), 'POST', acceptPath(parent), {
+      subtasks: [sub('a', { assignee: 'Some Person' }), sub('b', { assignee: own }), sub('c', { assignee: null }), sub('d', { assignee: '   ' }), sub('e')],
+    })
+    expect(out.status).toBe(200)
+    const rows = childRows(parent)
+    expect(rows.map((r) => r.title)).toEqual(['a', 'b', 'c', 'd', 'e'])
+    expect(rows[0].assignee).toBe('Some Person')
+    expect(rows[1].assignee).toBe(own)
+    expect(rows[2].assignee).toBeNull()
+  })
+
+  it('a comma list with one foreign part refuses the whole batch', async () => {
+    const before = snapshotBoard(parent)
+    const out = await callAs(await acceptAuth(caller), 'POST', acceptPath(parent), { subtasks: [sub('one'), sub('two', { assignee: `${own}, ${foreign}` })] })
+    expect(out.status).toBe(404)
+    expect(out.body.field).toBe('subtasks[1].assignee')
+    expect(snapshotBoard(parent)).toEqual(before)
+  })
+
+  it('the LAST subtask is judged too (not only the first)', async () => {
+    const before = snapshotBoard(parent)
+    const out = await callAs(await acceptAuth(caller), 'POST', acceptPath(parent), { subtasks: [sub('one'), sub('two'), sub('three'), sub('four', { assignee: foreign })] })
+    expect(out.status).toBe(404)
+    expect(out.body.field).toBe('subtasks[3].assignee')
+    expect(snapshotBoard(parent)).toEqual(before)
+  })
+
+  it.each([['null', null], ['a number', 5], ['a string', 'x'], ['an array', []], ['a boolean', true]])('an element that is %s is a 400 on subtasks', async (_l, el) => {
+    const before = snapshotBoard(parent)
+    const out = await callAs(await acceptAuth(caller), 'POST', acceptPath(parent), { subtasks: [sub('one'), el] })
+    expect(out.status).toBe(400)
+    expect(out.body).toMatchObject({ error: 'invalid_value', field: 'subtasks' })
+    expect(snapshotBoard(parent)).toEqual(before)
+  })
+
+  it.each(NON_STRING)('the 3rd subtask with assignee %s is a 400 on subtasks[2].assignee and nothing is written', async (_l, value) => {
+    const before = snapshotBoard(parent)
+    const out = await callAs(await acceptAuth(caller), 'POST', acceptPath(parent), { subtasks: [sub('one'), sub('two'), sub('three', { assignee: value })] })
+    expect(out.status).toBe(400)
+    expect(out.body).toMatchObject({ error: 'invalid_value', field: 'subtasks[2].assignee' })
+    expect(snapshotBoard(parent)).toEqual(before)
+  })
+
+  it('the type comes first: a one-element array naming a foreign agent is a 400, not a 200 and not a 404', async () => {
+    const out = await callAs(await acceptAuth(caller), 'POST', acceptPath(parent), { subtasks: [sub('one', { assignee: [foreign] })] })
+    expect(out.status).toBe(400)
+    expect(out.body.error).toBe('invalid_value')
+    expect(childRows(parent)).toEqual([])
+  })
+
+  it('the elements are judged in order: the first refusal wins', async () => {
+    const a = await callAs(await acceptAuth(caller), 'POST', acceptPath(parent), { subtasks: [sub('one', { assignee: foreign }), sub('two', { assignee: 5 })] })
+    expect(a.status).toBe(404)
+    expect(a.body.field).toBe('subtasks[0].assignee')
+    const b = await callAs(await acceptAuth(caller), 'POST', acceptPath(parent), { subtasks: [sub('one', { assignee: 5 }), sub('two', { assignee: foreign })] })
+    expect(b.status).toBe(400)
+    expect(b.body.field).toBe('subtasks[0].assignee')
+  })
+
+  it('a foreign PARENT is a 404 before any subtask is looked at', async () => {
+    const other = caller === 'default' ? 'card-acme' : 'card-default'
+    const out = await callAs(await acceptAuth(caller), 'POST', acceptPath(other), { subtasks: [sub('one', { assignee: [foreign] })] })
+    expect(out.status).toBe(404)
+    expect(out.body.field).toBeUndefined()
+  })
+
+  it('an empty list is still the required-field 400', async () => {
+    const out = await callAs(await acceptAuth(caller), 'POST', acceptPath(parent), { subtasks: [] })
+    expect(out.status).toBe(400)
+    expect(out.body).toMatchObject({ error: 'required', field: 'subtasks' })
+  })
+
+  it('a failing lookup is a 500 and nothing is written (fail closed)', async () => {
+    const before = snapshotBoard(parent)
+    lookup.fail = true
+    const out = await callAs(await acceptAuth(caller), 'POST', acceptPath(parent), { subtasks: [sub('one'), sub('two', { assignee: own })] })
+    expect(out.status).toBe(500)
+    expect(out.body.error).toBe('internal_error')
+    expect(snapshotBoard(parent)).toEqual(before)
+  })
+})
+
+describe('breakdown/accept: one lookup per distinct agent name of the batch', () => {
+  it('the same name five times is looked up once, and a name repeated inside comma lists too', async () => {
+    const same = Array.from({ length: 5 }, (_v, i) => sub(`s${i}`, { assignee: 'beta' }))
+    // ends in a foreign agent, so the batch is refused after all the names were judged (no create, no create-time lookups)
+    const out = await callAs(await callerAuth('default'), 'POST', acceptPath('card-default'), { subtasks: [...same, sub('lists', { assignee: 'main-a, beta' }), sub('again', { assignee: 'MAIN-A' }), sub('last', { assignee: 'main-b' })] })
+    expect(out.status).toBe(404)
+    expect(out.body.field).toBe('subtasks[7].assignee')
+    expect([...lookup.calls].sort()).toEqual(['beta', 'main-a', 'main-b'])
+  })
+})
+
+describe('breakdown/accept and the body assignee: the admin', () => {
+  const ADMIN = () => tokenAuth('the-file-token')
+
+  it('names a foreign tenant agent on a subtask (no tenant line to hold), with ?tenant= as well', async () => {
+    const plain = await callAs(await ADMIN(), 'POST', acceptPath('card-default'), { subtasks: [sub('one', { assignee: 'main-b' })] })
+    expect(plain.status).toBe(200)
+    const narrowed = await callAs(await ADMIN(), 'POST', acceptPath('card-acme', '?tenant=acme'), { subtasks: [sub('one', { assignee: 'main-a' })] })
+    expect(narrowed.status).toBe(200)
+    expect(childRows('card-acme')[0].assignee).toBe('main-a')
+  })
+
+  it('a null element is a 400 on subtasks, no longer an unhandled TypeError', async () => {
+    const before = snapshotBoard('card-default')
+    const out = await callAs(await ADMIN(), 'POST', acceptPath('card-default'), { subtasks: [sub('one'), null] })
+    expect(out.status).toBe(400)
+    expect(out.body).toMatchObject({ error: 'invalid_value', field: 'subtasks' })
+    expect(snapshotBoard('card-default')).toEqual(before)
+  })
+
+  // the old admin behaviour (a one-element array written as text, a longer one or an object thrown by the database
+  // layer, a number written as "123.0") is gone: a 400 and nothing written, on all three routes
+  it.each(NON_STRING)('PUT with assignee %s is a 400 and nothing is written', async (_l, value) => {
+    const before = cardState('card-default')
+    const audits = auditCount()
+    const out = await callAs(await ADMIN(), 'PUT', '/api/kanban/card-default', { title: 'Renamed', assignee: value })
+    expect(out.status).toBe(400)
+    expect(out.body).toMatchObject({ error: 'invalid_value', field: 'assignee' })
+    expect(cardState('card-default')).toEqual(before)
+    expect(auditCount()).toBe(audits)
+  })
+
+  it.each(NON_STRING)('PUT ?tenant=acme with assignee %s is a 400 as well', async (_l, value) => {
+    const before = cardState('card-acme')
+    const out = await callAs(await ADMIN(), 'PUT', '/api/kanban/card-acme?tenant=acme', { assignee: value })
+    expect(out.status).toBe(400)
+    expect(cardState('card-acme')).toEqual(before)
+  })
+
+  it.each(NON_STRING)('POST with assignee %s is a 400 and no card is created', async (label, value) => {
+    const cards = cardCount()
+    const out = await callAs(await ADMIN(), 'POST', '/api/kanban', { title: `Admin typed ${label}`, assignee: value })
+    expect(out.status).toBe(400)
+    expect(out.body).toMatchObject({ error: 'invalid_value', field: 'assignee' })
+    expect(cardCount()).toBe(cards)
+  })
+
+  it.each(NON_STRING)('breakdown/accept with a subtask assignee %s is a 400 on subtasks[1].assignee and nothing is written', async (_l, value) => {
+    const before = snapshotBoard('card-default')
+    const out = await callAs(await ADMIN(), 'POST', acceptPath('card-default'), { subtasks: [sub('one'), sub('two', { assignee: value })] })
+    expect(out.status).toBe(400)
+    expect(out.body).toMatchObject({ error: 'invalid_value', field: 'subtasks[1].assignee' })
+    expect(snapshotBoard('card-default')).toEqual(before)
+  })
+
+  it('null and a string still go through on PUT and POST', async () => {
+    expect((await callAs(await ADMIN(), 'PUT', '/api/kanban/card-default', { assignee: null })).status).toBe(200)
+    expect((await callAs(await ADMIN(), 'PUT', '/api/kanban/card-default', { assignee: 'main-b' })).status).toBe(200)
+    expect((await callAs(await ADMIN(), 'POST', '/api/kanban', { title: 'Admin null', assignee: null })).status).toBe(200)
   })
 })
