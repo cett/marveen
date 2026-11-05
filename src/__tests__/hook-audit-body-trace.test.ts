@@ -49,6 +49,10 @@ describe('callerTraceId', () => {
     expect(callerTraceId(value)).toBeNull()
   })
 
+  it('keeps a value that starts with w3c but is not the w3c- prefix (no dash): only the dash makes it the reserved form', () => {
+    for (const value of ['w3cabc', 'w3c_x', 'w3c', 'w3c.a', 'w3c:a']) expect(callerTraceId(value), value).toBe(value)
+  })
+
   it('keeps a value that is only near the server id shape', () => {
     expect(callerTraceId('a'.repeat(31))).toBe('a'.repeat(31))
     expect(callerTraceId('a'.repeat(33))).toBe('a'.repeat(33))
@@ -67,7 +71,7 @@ describe('callerTraceId', () => {
     ['a trailing newline', 'sess-a\n'],
     ['a quote', "sess'a"],
     ['a NUL byte', 'sess\u0000a'],
-    ['a non-ASCII letter', 'sess-é'],
+    ['a non-ASCII letter', 'sess-\u00e9'],
   ])('drops %s', (_name, value) => {
     expect(callerTraceId(value)).toBeNull()
   })

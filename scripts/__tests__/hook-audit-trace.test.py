@@ -103,7 +103,7 @@ class CleanSessionIdCase(unittest.TestCase):
             'a trailing newline': 'sess-a\n',
             'a NUL byte': 'sess\x00a',
             'a quote': "sess'a",
-            'a non-ASCII letter': 'sess-é',
+            'a non-ASCII letter': 'sess-\xe9',
             'a slash': 'sess/a',
         }
         for name, value in refused.items():
@@ -112,6 +112,10 @@ class CleanSessionIdCase(unittest.TestCase):
     def test_a_value_that_is_not_text_is_refused(self):
         for value in (None, 42, 4.5, True, b'sess-a', ['sess-a'], {'a': 1}, object()):
             self.assertIsNone(lib.clean_session_id(value), repr(value))
+
+    def test_w3c_without_the_dash_is_only_a_value(self):
+        for value in ('w3cabc', 'w3c_x', 'w3c', 'w3c.a', 'w3c:a'):
+            self.assertEqual(lib.clean_session_id(value), value, value)
 
     def test_a_w3c_prefix_later_in_the_value_is_only_a_value(self):
         self.assertEqual(lib.clean_session_id('sess-w3c-a'), 'sess-w3c-a')
@@ -404,6 +408,7 @@ class FakeDashboard:
 
     def __init__(self):
         self.requests = []
+        self.replay = None  # a JSON answer for the replay GET, so the hook goes on to consume the note
         outer = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -414,11 +419,14 @@ class FakeDashboard:
                     parsed = json.loads(body.decode('utf-8') or 'null')
                 except Exception:
                     parsed = None
-                outer.requests.append({'method': 'POST', 'path': self.path, 'body': parsed, 'traceparent': self.headers.get('traceparent')})
+                outer.requests.append({'method': self.command, 'path': self.path, 'body': parsed, 'traceparent': self.headers.get('traceparent')})
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
-                self.wfile.write(b'{"ok": true, "message": "ok", "turn_id": null}')
+                if outer.replay is not None and '/replay' in self.path:
+                    self.wfile.write(json.dumps(outer.replay).encode('utf-8'))
+                else:
+                    self.wfile.write(b'{"ok": true, "message": "ok", "turn_id": null}')
 
             do_GET = do_POST
 
@@ -602,6 +610,7 @@ class BridgeCase(unittest.TestCase):
 
     def setUp(self):
         self.dash.requests.clear()
+        self.dash.replay = None
 
     def run_hook(self, script, args, event):
         env = dict(os.environ, WEB_PORT=str(self.dash.port), DASHBOARD_BASE_URL='http://127.0.0.1:%d' % self.dash.port)
@@ -624,6 +633,31 @@ class BridgeCase(unittest.TestCase):
         self.assertEqual(len(self.dash.requests), 2, self.dash.requests)
         for r in self.dash.requests:
             self.assertEqual(self.trace_of(r), self.want)
+
+    def replay_requests(self):
+        self.dash.replay = {'additionalContext': 'note-a', 'turn_id': 'turn-a'}
+        self.run_hook('inflight-turn.py', ['replay'], {'session_id': SESSION, 'source': 'startup'})
+        return ([r for r in self.dash.requests if r['path'].split('?')[0].endswith('/replay')],
+                [r for r in self.dash.requests if r['path'].endswith('/consume')])
+
+    def test_inflight_turn_replay_carries_the_session_trace(self):
+        replay, consume = self.replay_requests()
+        self.assertEqual(len(replay), 1, self.dash.requests)
+        self.assertEqual(replay[0]['method'], 'GET')
+        self.assertEqual(self.trace_of(replay[0]), self.want)
+
+    def test_inflight_turn_consume_carries_the_session_trace(self):
+        replay, consume = self.replay_requests()
+        self.assertEqual(len(consume), 1, self.dash.requests)
+        self.assertEqual(consume[0]['body'], {'turn_id': 'turn-a'})
+        self.assertEqual(self.trace_of(consume[0]), self.want)
+
+    def test_inflight_turn_replay_and_consume_without_a_session_send_no_traceparent(self):
+        self.dash.replay = {'additionalContext': 'note-a', 'turn_id': 'turn-a'}
+        self.run_hook('inflight-turn.py', ['replay'], {'source': 'startup'})
+        self.assertEqual(len(self.dash.requests), 2, self.dash.requests)
+        for r in self.dash.requests:
+            self.assertIsNone(r['traceparent'])
 
     def test_inflight_turn_without_a_session_sends_no_traceparent(self):
         self.run_hook('inflight-turn.py', ['end'], {})
