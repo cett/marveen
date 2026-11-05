@@ -159,11 +159,6 @@ describe('PUT /api/kanban/:id: the assignee names no foreign tenant agent', () =
     }
   })
 
-  it('a value that is not a string is not judged by this rule', async () => {
-    const out = await callAs(await callerAuth('default'), 'PUT', '/api/kanban/card-default', { assignee: 123 })
-    expect(out.body.field).not.toBe('assignee')
-  })
-
   it('a foreign CARD still answers 404 before the assignee is looked at', async () => {
     const out = await callAs(await callerAuth('default'), 'PUT', '/api/kanban/card-acme', { assignee: 'main-b' })
     expect(out.status).toBe(404)
@@ -261,5 +256,160 @@ describe('POST /api/kanban/:id/claim: the claimant names no foreign tenant agent
     expect(out.status).toBe(500)
     expect(cardState('card-default')).toEqual(before)
     expect((await getKanbanCard('card-default'))?.assignee ?? null).toBe(before.assignee)
+  })
+})
+
+// A value that is not a string never reaches the tenant verdict: the database layer would write a one-element array as
+// its single element (a foreign agent name on the card), so a tenant-bound caller gets a 400 and nothing is written.
+const NON_STRING: Array<[string, unknown]> = [
+  ['a one-element array naming an agent of the other tenant', ['alpha']],
+  ['a one-element array naming an agent of the caller tenant', ['main-b']],
+  ['a two-element array', ['a', 'b']],
+  ['an empty array', []],
+  ['an empty object', {}],
+  ['an object', { a: 1 }],
+  ['true', true],
+  ['false', false],
+  ['a number', 123],
+  ['zero', 0],
+]
+
+describe('PUT /api/kanban/:id: the assignee is a string or null for a tenant-bound caller', () => {
+  const callers: Caller[] = ['default', 'acme']
+  for (const caller of callers) {
+    it.each(NON_STRING)(`${caller} caller, %s -> 400 invalid_value, nothing written`, async (_label, value) => {
+      const id = ownCard(caller)
+      const before = cardState(id)
+      const audits = auditCount()
+      const out = await callAs(await callerAuth(caller), 'PUT', `/api/kanban/${id}`, { title: 'Renamed', assignee: value })
+      expect(out.status).toBe(400)
+      expect(out.body).toMatchObject({ error: 'invalid_value', field: 'assignee' })
+      expect(cardState(id)).toEqual(before)
+      expect(auditCount()).toBe(audits)
+    })
+  }
+
+  it('the type comes first: a one-element array of a foreign agent is a 400, not a 404 and not a 200', async () => {
+    const out = await callAs(session('acme'), 'PUT', '/api/kanban/card-acme', { assignee: ['alpha'] })
+    expect(out.status).toBe(400)
+    expect(out.body.error).toBe('invalid_value')
+    expect(cardState('card-acme').assignee).toBeNull()
+  })
+
+  it('null and an empty string still unassign, a plain string follows the tenant rule', async () => {
+    await callAs(await callerAuth('default'), 'PUT', '/api/kanban/card-default', { assignee: 'beta' })
+    expect((await callAs(await callerAuth('default'), 'PUT', '/api/kanban/card-default', { assignee: null })).status).toBe(200)
+    expect(cardState('card-default').assignee).toBeNull()
+    await callAs(await callerAuth('default'), 'PUT', '/api/kanban/card-default', { assignee: 'beta' })
+    expect((await callAs(await callerAuth('default'), 'PUT', '/api/kanban/card-default', { assignee: '' })).status).toBe(200)
+    expect((await callAs(await callerAuth('default'), 'PUT', '/api/kanban/card-default', { assignee: 'beta' })).status).toBe(200)
+    expect((await callAs(await callerAuth('default'), 'PUT', '/api/kanban/card-default', { assignee: 'main-b' })).status).toBe(404)
+  })
+
+  it('a body without the key leaves the assignee alone', async () => {
+    await callAs(await callerAuth('default'), 'PUT', '/api/kanban/card-default', { assignee: 'beta' })
+    expect((await callAs(await callerAuth('default'), 'PUT', '/api/kanban/card-default', { title: 'Only a title' })).status).toBe(200)
+    expect(cardState('card-default')).toMatchObject({ assignee: 'beta', title: 'Only a title' })
+  })
+
+  it('a foreign CARD and a foreign parent still answer 404 before the assignee type is looked at', async () => {
+    const card = await callAs(await callerAuth('default'), 'PUT', '/api/kanban/card-acme', { assignee: ['alpha'] })
+    expect(card.status).toBe(404)
+    expect(card.body.field).toBeUndefined()
+    const parent = await callAs(await callerAuth('default'), 'PUT', '/api/kanban/card-default', { parent_id: 'card-acme', assignee: ['alpha'] })
+    expect(parent.status).toBe(404)
+    expect(parent.body.field).toBe('parent_id')
+  })
+
+  it('the admin is not judged by the type rule (reported, not changed)', async () => {
+    const out = await callAs(await tokenAuth('the-file-token'), 'PUT', '/api/kanban/card-default', { assignee: 'main-b' })
+    expect(out.status).toBe(200)
+  })
+})
+
+describe('POST /api/kanban: the assignee is a string or null for a tenant-bound caller', () => {
+  const callers: Caller[] = ['default', 'acme']
+  for (const caller of callers) {
+    it.each(NON_STRING)(`${caller} caller, %s -> 400 invalid_value, no card created`, async (label, value) => {
+      const title = `Typed ${caller} ${label}`
+      const cards = (getDb().prepare('SELECT COUNT(*) AS c FROM kanban_cards').get() as { c: number }).c
+      const out = await callAs(await callerAuth(caller), 'POST', '/api/kanban', { title, assignee: value })
+      expect(out.status).toBe(400)
+      expect(out.body).toMatchObject({ error: 'invalid_value', field: 'assignee' })
+      expect(cardsTitled(title)).toBe(0)
+      expect((getDb().prepare('SELECT COUNT(*) AS c FROM kanban_cards').get() as { c: number }).c).toBe(cards)
+    })
+  }
+
+  it('the type comes first: a one-element array of a foreign agent is a 400, not a 404 and not a 200', async () => {
+    const out = await callAs(session('acme'), 'POST', '/api/kanban', { title: 'Array of a foreign agent', assignee: ['alpha'] })
+    expect(out.status).toBe(400)
+    expect(out.body.error).toBe('invalid_value')
+    expect(cardsTitled('Array of a foreign agent')).toBe(0)
+  })
+
+  it('null still creates an unassigned card', async () => {
+    const out = await callAs(await callerAuth('default'), 'POST', '/api/kanban', { title: 'Null assignee', assignee: null })
+    expect(out.status).toBe(200)
+    expect(cardsTitled('Null assignee')).toBe(1)
+  })
+
+  it('a foreign parent still answers 404 before the assignee type is looked at', async () => {
+    const out = await callAs(await callerAuth('default'), 'POST', '/api/kanban', { title: 'Foreign parent', parent_id: 'card-acme', assignee: ['alpha'] })
+    expect(out.status).toBe(404)
+    expect(out.body.field).toBe('parent_id')
+  })
+
+  it('the admin is not judged by the type rule (reported, not changed)', async () => {
+    const out = await callAs(await tokenAuth('the-file-token'), 'POST', '/api/kanban', { title: 'Admin typed', assignee: 'main-b' })
+    expect(out.status).toBe(200)
+  })
+})
+
+describe('an agent that only the tenant availability list names (no agents/ folder)', () => {
+  // 'ghost' is enabled for the default tenant only and is no known agent folder: the served-tenants list alone makes it
+  // an agent name, so the acme caller must not name it (a rule that required a folder would pass it as free text).
+  beforeEach(async () => { await setTenantAgentAvailability('default', 'ghost', true) })
+
+  it.each([['PUT'], ['POST']])('%s: the acme caller naming it is a 404', async (method) => {
+    const out = method === 'PUT'
+      ? await callAs(session('acme'), 'PUT', '/api/kanban/card-acme', { assignee: 'ghost' })
+      : await callAs(session('acme'), 'POST', '/api/kanban', { title: 'Ghost card', assignee: 'ghost' })
+    expect(out.status).toBe(404)
+    expect(out.body).toMatchObject({ error: 'not_found', field: 'assignee' })
+    expect(cardsTitled('Ghost card')).toBe(0)
+    expect(cardState('card-acme').assignee).toBeNull()
+  })
+
+  it('the claim: the acme caller claiming as it is a 404', async () => {
+    const out = await callAs(session('acme'), 'POST', '/api/kanban/card-acme/claim', undefined, 'ghost')
+    expect(out.status).toBe(404)
+    expect(out.body.field).toBe('agent')
+  })
+
+  it('the default tenant may name it', async () => {
+    const out = await callAs(await callerAuth('default'), 'PUT', '/api/kanban/card-default', { assignee: 'ghost' })
+    expect(out.status).toBe(200)
+  })
+})
+
+describe('the admin bypass holds with a ?tenant= narrowing as well', () => {
+  // main-a serves the default tenant; with ?tenant=acme the admin's effective tenant is acme, and the admin still names it.
+  it('PUT', async () => {
+    const out = await callAs(await tokenAuth('the-file-token'), 'PUT', '/api/kanban/card-acme?tenant=acme', { assignee: 'main-a' })
+    expect(out.status).toBe(200)
+    expect(cardState('card-acme').assignee).toBe('main-a')
+  })
+
+  it('POST', async () => {
+    const out = await callAs(await tokenAuth('the-file-token'), 'POST', '/api/kanban?tenant=acme', { title: 'Admin narrowed', assignee: 'main-a' })
+    expect(out.status).toBe(200)
+    expect(cardsTitled('Admin narrowed')).toBe(1)
+  })
+
+  it('claim', async () => {
+    const out = await callAs(await tokenAuth('the-file-token'), 'POST', '/api/kanban/card-acme/claim?tenant=acme', undefined, 'main-a')
+    expect(out.status).toBe(200)
+    expect(cardState('card-acme').assignee).toBe('main-a')
   })
 })

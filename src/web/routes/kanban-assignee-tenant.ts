@@ -33,6 +33,25 @@ export async function assigneeTenantVerdict(value: string, callerTenantId: strin
 }
 
 /**
+ * The body `assignee` of PUT /:id and POST / for a tenant-bound caller. The tenant verdict below judges a STRING, but
+ * the database layer writes whatever it is handed: a one-element array ("[\"name\"]") resolves to its single element
+ * as a bound parameter and lands as that text, so a non-string would walk past the verdict. The field is a string or
+ * null by contract, so anything else is refused here, before the verdict and before any write. An absent key is
+ * 'unchanged' (the caller does not call this), null and a blank string unassign and are not judged.
+ *
+ * Answers the request and returns true when it is refused; false when the caller may go on.
+ */
+export async function refuseBodyAssignee(res: http.ServerResponse, value: unknown, callerTenantId: string): Promise<boolean> {
+  if (value === null) return false
+  if (typeof value !== 'string') {
+    json(res, { error: 'invalid_value', field: 'assignee', hint: 'assignee must be a string or null' }, 400)
+    return true
+  }
+  if (value.trim() === '') return false
+  return refuseForeignAssignee(res, value, 'assignee', callerTenantId)
+}
+
+/**
  * Answers the request and returns true when the assignee must be refused: a foreign agent as a 404 (like a missing
  * reference), a failed lookup as a 500 (fail closed: never let it through). Returns false when the caller may go on.
  */

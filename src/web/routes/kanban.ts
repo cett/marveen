@@ -20,7 +20,7 @@ import {
   type KanbanAuditActor,
 } from '../../db.js'
 import { isKanbanIdTaken } from '../../db/kanban-id-taken.js'
-import { refuseForeignAssignee } from './kanban-assignee-tenant.js'
+import { refuseBodyAssignee, refuseForeignAssignee } from './kanban-assignee-tenant.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
 import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, PROJECT_ROOT, WEB_HOST, WEB_PORT, KANBAN_LABEL_COLORS } from '../../config.js'
 import { listAgentNames, readAgentDisplayName } from '../agent-config.js'
@@ -447,10 +447,10 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
         return true
       }
     }
-    // The assignee is a name the caller writes: a tenant-bound caller may not name another tenant's agent (before
-    // any write).
-    if (!isAdmin && effectiveTenantId !== null && typeof data.assignee === 'string' && data.assignee.trim() !== '') {
-      if (await refuseForeignAssignee(res, data.assignee, 'assignee', effectiveTenantId)) return true
+    // The assignee is a name the caller writes: a tenant-bound caller may not name another tenant's agent, and the
+    // value must be a string or null (before any write).
+    if (!isAdmin && effectiveTenantId !== null && 'assignee' in data) {
+      if (await refuseBodyAssignee(res, data.assignee, effectiveTenantId)) return true
     }
     // The id is always generated here: an `id` in the body is ignored. A caller-picked id could take a
     // route word (`labels`, `search`, ...) and shadow a static route, and an id that exists in another
@@ -510,10 +510,11 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
         return true
       }
     }
-    // The assignee is a name the caller writes: a tenant-bound caller may not name another tenant's agent. Checked
-    // before updateKanbanCard, so a refusal writes nothing (no other field, no audit row).
-    if (!isAdmin && effectiveTenantId !== null && typeof data.assignee === 'string' && data.assignee.trim() !== '') {
-      if (await refuseForeignAssignee(res, data.assignee, 'assignee', effectiveTenantId)) return true
+    // The assignee is a name the caller writes: a tenant-bound caller may not name another tenant's agent, and the
+    // value must be a string or null. Checked before updateKanbanCard, so a refusal writes nothing (no other field,
+    // no audit row).
+    if (!isAdmin && effectiveTenantId !== null && 'assignee' in data) {
+      if (await refuseBodyAssignee(res, data.assignee, effectiveTenantId)) return true
     }
     // Optional stale-write guard: expected_updated_at is the updated_at the caller read; the write is refused (409)
     // when the card has changed since. It is not a column and is not written. Absent = the plain update.
