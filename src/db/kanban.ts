@@ -9,6 +9,7 @@ import { resolveWriteTenant } from './write-tenant.js'
 import { updateIdeaWithStatusLog } from './misc.js'
 import { logger } from '../logger.js'
 import { dbx, type Dbx, type SqlOps, type Tx } from './facade.js'
+import { currentTraceColumns } from './context.js'
 
 /** The card's running number (#N): the insertion-order id of the row. One definition, shared with the tenant-scoped list. */
 export const KANBAN_SEQ_COLUMN = 'rowid AS seq'
@@ -160,7 +161,7 @@ export async function insertKanbanCardRows(card: NewKanbanCard, ops: Dbx | Tx = 
     // from_status is NULL, which is the honest value -- the card came into being
     // here, it did not move from somewhere.
     if (status !== 'planned') {
-      await tx.run('INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at) VALUES (?, ?, ?, ?, ?)', card.id, null, status, card.assignee ?? null, now)
+      await tx.run('INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at, trace_id, span_id) VALUES (?, ?, ?, ?, ?, ?, ?)', card.id, null, status, card.assignee ?? null, now, ...currentTraceColumns())
     }
   })
   return { agent_id: card.assignee || 'system', entity_id: card.id, detail: { title: card.title, status, priority: card.priority ?? 'normal' } }
@@ -475,14 +476,14 @@ async function propagateStatusForParent(parentId: string): Promise<void> {
   if (allDone && parent.status !== 'done') {
     const prev = parent.status
     await dbx.run("UPDATE kanban_cards SET status='done', dispatched_at=NULL, updated_at=? WHERE id=?", now, parent.id)
-    await dbx.run("INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at) VALUES (?, ?, 'done', 'auto', ?)", parent.id, prev, now)
+    await dbx.run("INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at, trace_id, span_id) VALUES (?, ?, 'done', 'auto', ?, ?, ?)", parent.id, prev, now, ...currentTraceColumns())
     if (parent.parent_id) await propagateStatusForParent(parent.parent_id)
   } else if (!allDone && parent.status === 'done') {
     const prev = parent.status
     // dispatched_at too: a done parent may carry an old stamp (rows from before the clear rule), and the stamp
     // belongs to ONE stay in in_progress, so the revert starts a fresh stay.
     await dbx.run("UPDATE kanban_cards SET status='in_progress', dispatched_at=NULL, updated_at=? WHERE id=?", now, parent.id)
-    await dbx.run("INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at) VALUES (?, ?, 'in_progress', 'auto', ?)", parent.id, prev, now)
+    await dbx.run("INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at, trace_id, span_id) VALUES (?, ?, 'in_progress', 'auto', ?, ?, ?)", parent.id, prev, now, ...currentTraceColumns())
     if (parent.parent_id) await propagateStatusForParent(parent.parent_id)
   }
 }
@@ -536,8 +537,8 @@ export async function moveKanbanCard(
       if (!changed) return
       if (from !== undefined && from !== status) {
         await tx.run(
-          'INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at) VALUES (?, ?, ?, ?, ?)',
-          id, from, status, actor ?? null, now,
+          'INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at, trace_id, span_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
+          id, from, status, actor ?? null, now, ...currentTraceColumns(),
         )
       }
       for (const [i, cardId] of orderedIds.entries()) await tx.run('UPDATE kanban_cards SET sort_order=? WHERE id=?', i, cardId)
@@ -551,7 +552,7 @@ export async function moveKanbanCard(
   if (expected !== undefined) params.push(expected)
   const changed = (await dbx.run(sql, ...params)).changes > 0
   if (changed && from !== undefined && from !== status) {
-    await dbx.run('INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at) VALUES (?, ?, ?, ?, ?)', id, from, status, actor ?? null, now)
+    await dbx.run('INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at, trace_id, span_id) VALUES (?, ?, ?, ?, ?, ?, ?)', id, from, status, actor ?? null, now, ...currentTraceColumns())
   }
   return changed
 }

@@ -44,7 +44,8 @@ describe('the schema after migrations 0080 and 0081', () => {
   it('approval_events exists with a tenant column and no CHECK on the event kind', () => {
     const db = getDb()
     const c = columns(db, 'approval_events')
-    expect(Object.keys(c)).toEqual(['id', 'approval_id', 'tenant_id', 'event', 'reason', 'actor', 'ref', 'created_at'])
+    // trace_id / span_id were appended by a later migration (0088)
+    expect(Object.keys(c)).toEqual(['id', 'approval_id', 'tenant_id', 'event', 'reason', 'actor', 'ref', 'created_at', 'trace_id', 'span_id'])
     expect(c.tenant_id.dflt).toBe("'default'")
     const ddl = (db.prepare("SELECT sql FROM sqlite_master WHERE name = 'approval_events'").get() as { sql: string }).sql
     expect(ddl).not.toMatch(/CHECK/i)

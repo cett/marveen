@@ -11,6 +11,7 @@ import { KanbanCard } from './kanban.js'
 import { Tenant, getTenantForMainAgent, COMPLETION_REPORT_PREFIX } from './observability.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
 import { assertNoReservedMarker } from '../server-markers.js'
+import { currentTraceColumns } from './context.js'
 
 export interface HeartbeatKanbanSummary {
   urgent: KanbanCard[]
@@ -533,8 +534,8 @@ export async function insertBlackboardHistory(entry: {
   blocked_reason?: string | null
   resolved_by?: string | null
 }, ops: SqlOps = dbx): Promise<void> {
-  await ops.run('INSERT INTO fleet_blackboard_history (agent_id, task_ref, status, summary, tenant_id, blocked_by, blocked_reason, resolved_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', entry.agent_id, entry.task_ref, entry.status, entry.summary, await resolveAgentTenant(entry.agent_id, ops),
-    entry.blocked_by ?? null, entry.blocked_reason ?? null, entry.resolved_by ?? null,
+  await ops.run('INSERT INTO fleet_blackboard_history (agent_id, task_ref, status, summary, tenant_id, blocked_by, blocked_reason, resolved_by, trace_id, span_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', entry.agent_id, entry.task_ref, entry.status, entry.summary, await resolveAgentTenant(entry.agent_id, ops),
+    entry.blocked_by ?? null, entry.blocked_reason ?? null, entry.resolved_by ?? null, ...currentTraceColumns(),
   )
 }
 

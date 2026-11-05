@@ -137,7 +137,7 @@ import { pruneMainAgentFromDesired } from './web/agent-desired-state.js'
 import { startImportCrawler, stopImportCrawler } from './web/import-crawler.js'
 import { bootstrapDashboardToken } from './web/token-bootstrap.js'
 
-import { runAs } from './db/context.js'
+import { runAs, withTrace } from './db/context.js'
 import { systemJob, runAsRequest } from './db/background-jobs.js'
 const WEB_DIR = join(PROJECT_ROOT, 'web')
 
@@ -330,7 +330,8 @@ export async function startWebServer(port = 3420): Promise<http.Server> {
     // (in BOTH modes), so the observation window is measurable from the database.
     // Runs only for gated, authenticated requests (kind !== 'none').
     if (requiresAuth(path, method) && auth.kind !== 'none') {
-      if (!await runRbacGate(auth, method, path, res, getRbacMode())) return
+      // The decision row is written here, before runAsRequest opens the route's context: run it in the request's trace.
+      if (!await withTrace(requestTrace, () => runRbacGate(auth, method, path, res, getRbacMode()))) return
     }
 
     const role = auth.kind !== 'none' ? resolveRole(auth) : undefined
