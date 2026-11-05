@@ -427,6 +427,16 @@ def check_bash(cmd: str, cwd: str) -> None:
 # Entry
 # ---------------------------------------------------------------------------------------------------
 
+def _note_session(event):
+    '''Hand the session id of the event to the audit module, which files it as the trace_id of a deny row. Nothing
+    else of the event goes with it. Never raises and never changes the verdict.'''
+    try:
+        from gate_audit_lib import note_event
+        note_event(event)
+    except Exception:  # noqa: BLE001 -- the audit is optional; the verdict never depends on it
+        pass
+
+
 def decide(raw: str) -> None:
     try:
         payload = json.loads(raw)
@@ -434,6 +444,7 @@ def decide(raw: str) -> None:
         deny('the hook input is not JSON')
     if not isinstance(payload, dict) or not isinstance(payload.get('tool_name'), str) or not isinstance(payload.get('tool_input'), dict):
         deny('the hook input has no tool_name or its tool_input is not an object')
+    _note_session(payload)
     tool, ti = payload['tool_name'], payload['tool_input']
     cwd = payload.get('cwd') if isinstance(payload.get('cwd'), str) and payload.get('cwd') else os.getcwd()
     if tool == 'Bash':

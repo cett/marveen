@@ -1662,11 +1662,22 @@ def _depth_limit_is_sole_reason(cmd: str) -> bool:
         return False
 
 
+def _note_session(event):
+    """Hand the session id of the event to the audit module, which files it as the trace_id of a deny row. Nothing
+    else of the event goes with it. Never raises and never changes the verdict."""
+    try:
+        from gate_audit_lib import note_event
+        note_event(event)
+    except Exception:  # noqa: BLE001 -- the audit is optional; the verdict never depends on it
+        pass
+
+
 def main():
     try:
         payload = json.load(sys.stdin)
     except Exception:
         sys.exit(0)  # unparseable payload must not wedge the session
+    _note_session(payload)
 
     tool = str(payload.get("tool_name") or "")
     tool_input = payload.get("tool_input") or {}

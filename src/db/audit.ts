@@ -7,7 +7,7 @@ import { dbx, type SqlOps } from './facade.js'
 import { likeContains } from './like.js'
 import { upsertOtelSpan } from './observability.js'
 import { dashboardUserTenant, resolveWriteTenant } from './write-tenant.js'
-import { currentTraceColumns } from './context.js'
+import { callerTraceId, currentTraceColumns } from './context.js'
 
 // mcp__<server>__<tool> -- split into (server, tool) for the OTel span
 // attributes. Split on the FIRST "__" so a server name that itself contains
@@ -331,8 +331,17 @@ export async function insertHookAuditLog(entry: {
   reason?: string | null
   session_id?: string | null
   trigger_source?: string | null
+  /**
+   * The trace a hook script names for the row: the raw Claude session id, the same string otel_spans.trace_id holds for
+   * that session's work (D1). It comes from outside the server, so it passes callerTraceId: a `w3c-` value or anything
+   * that is not an id is dropped, and the row then carries the server's own trace (the request) instead.
+   */
+  trace_id?: string | null
 }): Promise<void> {
   const now = Math.floor(Date.now() / 1000)
+  // A named session trace has no server span of its own: the request span of this very POST belongs to another trace.
+  const named = callerTraceId(entry.trace_id)
+  const [traceId, spanId] = named ? [named, null] : currentTraceColumns()
   await dbx.run('INSERT INTO hook_audit_log (ts, agent_id, hook_type, verdict, tool_name, content_hash, reason, session_id, trigger_source, tenant_id, trace_id, span_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', now,
     entry.agent_id ?? null,
     entry.hook_type,
@@ -343,7 +352,8 @@ export async function insertHookAuditLog(entry: {
     entry.session_id ?? null,
     entry.trigger_source ?? null,
     await resolveWriteTenant(entry.agent_id),
-    ...currentTraceColumns(),
+    traceId,
+    spanId,
   )
 }
 

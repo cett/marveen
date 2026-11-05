@@ -67,8 +67,9 @@ function attr(key: string, value: string | null): LogAttribute[] {
 
 // The trace fields of a record. The stored id goes through the SAME mapping the span export uses (otel-ids.ts), so a
 // record and the spans of its trace share one OTLP trace id. `passthrough`: a `w3c-<hex>` value is taken over as it
-// is. That is safe here because the audit columns are written from the server's own request context only, never
-// from a request body (migration 0088 and its writers), so nobody can steer a record into a trace of their choosing.
+// is. That is safe here because a `w3c-` value reaches an audit column from the server's own request context only
+// (migration 0088 and its writers); a trace a hook script names for its row is a plain session id, and callerTraceId
+// drops a `w3c-` value and the shape of a server id, so nobody can steer a record into a request trace of their choosing.
 // A span id without a trace id is no valid OTLP correlation and is left out.
 export function traceFields(t: TraceColumns): { traceId?: string; spanId?: string } {
   if (!t.trace_id) return {}

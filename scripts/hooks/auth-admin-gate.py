@@ -139,6 +139,10 @@ def _install_root():
     return os.path.dirname(os.path.dirname(_hooks_dir()))
 
 
+# The session of the event being judged, set by main() once the event is parsed and read by _audit.
+_EVENT = {'session_id': None}
+
+
 def _audit(agent_id, reason_hash):
     try:
         sys.path.insert(0, _hooks_dir())
@@ -154,7 +158,10 @@ def _audit(agent_id, reason_hash):
             urllib.request.Request(
                 base + '/api/hook-audit',
                 data=json.dumps({'agent_id': agent_id, 'hook_type': 'PreToolUse', 'verdict': 'deny',
-                                 'tool_name': 'Bash', 'reason': reason_hash}).encode(),
+                                 'tool_name': 'Bash', 'reason': reason_hash,
+                                 # The raw session id as the trace of the row (the server drops anything else).
+                                 'trace_id': _EVENT['session_id'] if isinstance(_EVENT['session_id'], str) else None,
+                                 }).encode(),
                 headers=auth.headers({'Content-Type': 'application/json'}),
                 method='POST'),
             timeout=2)
@@ -2656,6 +2663,7 @@ def main():
     tool = ev.get('tool_name') or ''
     if tool != 'Bash':
         sys.exit(0)
+    _EVENT['session_id'] = ev.get('session_id')   # only a Bash call can reach block(), so only it needs the session
     inp = ev.get('tool_input') or {}
     cwd = str(ev.get('cwd') or '')
     cmd = inp.get('command') if isinstance(inp, dict) else None

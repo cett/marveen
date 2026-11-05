@@ -34,6 +34,7 @@ export async function tryHandleHookAudit(ctx: RouteContext): Promise<boolean> {
       reason?: string
       session_id?: string
       trigger_source?: string
+      trace_id?: string
     }
     if (!data.hook_type || !VALID_HOOK_TYPES.has(data.hook_type)) {
       json(res, { error: 'invalid_value', field: 'hook_type', hint: 'hook_type must be one of PreToolUse, PostToolUse, PreCompact, Stop' }, 400)
@@ -58,6 +59,8 @@ export async function tryHandleHookAudit(ctx: RouteContext): Promise<boolean> {
       reason: data.reason ?? null,
       session_id: data.session_id ?? null,
       trigger_source: data.trigger_source ?? null,
+      // Normalised by the writer: a `w3c-` value from a body is dropped (the server's own trace is used instead).
+      trace_id: data.trace_id ?? null,
     })
     json(res, { ok: true })
     return true

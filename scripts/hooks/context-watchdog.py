@@ -699,7 +699,9 @@ def record_handoff_audit(conn, agent_id, session_id, tool_name, pct, content_has
     is this row's own emitted HANDOFF's stable-content hash -- see
     should_emit_handoff()/_hash_handoff_text() -- so the NEXT call in this
     session can read it back as its dedup baseline, without any new
-    persistent state. Never raises -- this is instrumentation, not a gate."""
+    persistent state. The raw session id is also filed as trace_id (the string otel_spans.trace_id holds for that
+    session), once it passes gate_audit_lib.clean_session_id; a database that has no trace_id column yet (migration
+    0088 not applied) gets the row without it. Never raises -- this is instrumentation, not a gate."""
     try:
         row = (
             int(datetime.datetime.now(datetime.timezone.utc).timestamp()),
@@ -709,15 +711,37 @@ def record_handoff_audit(conn, agent_id, session_id, tool_name, pct, content_has
             f"ctx={pct:.0%}",
             session_id,
         )
-        _execute_tenant_aware(
-            conn,
-            "INSERT INTO hook_audit_log (ts, agent_id, hook_type, verdict, tool_name, content_hash, reason, session_id, trigger_source, tenant_id) "
-            "VALUES (?, ?, 'PostToolUse', 'handoff', ?, ?, ?, ?, 'watchdog', ?)",
-            (row[0], row[1], row[2], row[3], row[4], row[5], resolve_write_tenant(conn, agent_id)),
-            "INSERT INTO hook_audit_log (ts, agent_id, hook_type, verdict, tool_name, content_hash, reason, session_id, trigger_source) "
-            "VALUES (?, ?, 'PostToolUse', 'handoff', ?, ?, ?, ?, 'watchdog')",
-            row,
-        )
+        trace_id = None
+        try:
+            from gate_audit_lib import clean_session_id
+            trace_id = clean_session_id(session_id)
+        except Exception:
+            trace_id = None  # no usable session id: the row is written without a trace, as before
+        tenant = resolve_write_tenant(conn, agent_id)
+        written = False
+        if trace_id is not None:
+            try:
+                conn.execute(
+                    "INSERT INTO hook_audit_log (ts, agent_id, hook_type, verdict, tool_name, content_hash, reason, session_id, trigger_source, tenant_id, trace_id) "
+                    "VALUES (?, ?, 'PostToolUse', 'handoff', ?, ?, ?, ?, 'watchdog', ?, ?)",
+                    (row[0], row[1], row[2], row[3], row[4], row[5], tenant, trace_id),
+                )
+                written = True
+            except sqlite3.OperationalError as e:
+                # No trace_id / tenant_id column yet (this script was deployed before the dashboard applied the
+                # migration): fall through to the row as it was before the trace existed. Any other error propagates.
+                if "trace_id" not in str(e) and "tenant_id" not in str(e):
+                    raise
+        if not written:
+            _execute_tenant_aware(
+                conn,
+                "INSERT INTO hook_audit_log (ts, agent_id, hook_type, verdict, tool_name, content_hash, reason, session_id, trigger_source, tenant_id) "
+                "VALUES (?, ?, 'PostToolUse', 'handoff', ?, ?, ?, ?, 'watchdog', ?)",
+                (row[0], row[1], row[2], row[3], row[4], row[5], tenant),
+                "INSERT INTO hook_audit_log (ts, agent_id, hook_type, verdict, tool_name, content_hash, reason, session_id, trigger_source) "
+                "VALUES (?, ?, 'PostToolUse', 'handoff', ?, ?, ?, ?, 'watchdog')",
+                row,
+            )
         conn.commit()
     except Exception:
         pass

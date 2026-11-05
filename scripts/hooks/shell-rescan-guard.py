@@ -72,6 +72,16 @@ def deny(lines, reason='denied'):
     sys.exit(2)
 
 
+def _note_session(event):
+    '''Hand the session id of the event to the audit module, which files it as the trace_id of a deny row. Nothing
+    else of the event goes with it. Never raises and never changes the verdict.'''
+    try:
+        from gate_audit_lib import note_event
+        note_event(event)
+    except Exception:  # noqa: BLE001 -- the audit is optional; the verdict never depends on it
+        pass
+
+
 def main():
     try:
         raw = sys.stdin.buffer.read(MAX_STDIN_BYTES + 1)
@@ -85,6 +95,7 @@ def main():
         deny(['A bemenet nem ertelmezheto, ezert a kapu nem engedi at.'])
     if not isinstance(ev, dict):
         deny(['A bemenet nem esemeny-objektum, ezert a kapu nem engedi at.'])
+    _note_session(ev)
     if ev.get('tool_name') != 'Bash':
         sys.exit(0)
     inp = ev.get('tool_input')

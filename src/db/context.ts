@@ -116,11 +116,44 @@ export function currentTrace(): DbTrace | undefined {
 /**
  * The `[trace_id, span_id]` an audit writer stores for the running call: the trace of the context, or `[null, null]`
  * (no context, or a context without a trace). The columns are nullable, and rows written before they existed stay NULL.
- * A value in the column is ALWAYS the server's own: it comes from here, never from a request body.
+ * A `w3c-` value in the column is ALWAYS the server's own: it comes from here, never from a request body. The one other
+ * source is a hook script naming its raw session id (insertHookAuditLog, through callerTraceId), which can be neither
+ * a `w3c-` value nor the shape of a server-made id.
  */
 export function currentTraceColumns(): [string | null, string | null] {
   const t = currentTrace()
   return t ? [t.traceId, t.spanId] : [null, null]
+}
+
+/** The longest trace id a caller-supplied value may have: a session id or a UUID is 36 characters, a hex id 32. */
+const MAX_CALLER_TRACE_ID_LENGTH = 128
+/** The characters of a session id, a UUID or a hex id. Anything else (a space, a quote, a control character) is not an id. */
+const CALLER_TRACE_ID_PATTERN = /^[A-Za-z0-9._:-]+$/
+/** The shape of an id the server makes for a request (32 hex characters). */
+const SERVER_TRACE_ID_SHAPE = /^[0-9a-f]{32}$/i
+
+/**
+ * A trace id that came from OUTSIDE the server (a request body, a hook script) in the form an audit row may store, or
+ * null when it must not be stored as given.
+ *
+ * The rule (D2 of the audit/OTel plan): a `w3c-` value in an audit column means "the trace of a traceparent that came
+ * with credentials", and only the server's own context (currentTraceColumns) may say that. A caller that writes
+ * `w3c-<hex>` itself would place its row into a trace it has no claim to, so the value is dropped, never hashed or
+ * rewritten; the writer then falls back to the server's own trace. A non-string, an empty or oversized string and
+ * anything outside the id alphabet are dropped the same way. The match on the prefix is case-insensitive.
+ *
+ * The same goes for 32 hex characters (any case): that is the shape of a server-made request trace id, and the span
+ * export maps a stored id by hashing it, so a caller that wrote such a string would land its row in that request's
+ * trace. A session id is a UUID, so nothing legitimate is lost. Open limit: a UUID is not checked against the sessions
+ * of the acting agent, so an agent can still name another agent's session id.
+ */
+export function callerTraceId(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  if (value.length === 0 || value.length > MAX_CALLER_TRACE_ID_LENGTH) return null
+  if (!CALLER_TRACE_ID_PATTERN.test(value)) return null
+  if (value.slice(0, 4).toLowerCase() === 'w3c-') return null
+  if (SERVER_TRACE_ID_SHAPE.test(value)) return null
+  return value
 }
 
 /** The context of the running call, or undefined when none was set. */
