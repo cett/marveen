@@ -7,7 +7,7 @@ import { EventEmitter } from 'node:events'
 import { createHash } from 'node:crypto'
 import type http from 'node:http'
 import { dbx } from '../db/facade.js'
-import { initDatabase, getDb, insertApiToken, createKanbanCard, claimKanbanCard, updateKanbanCard, createTenant } from '../db.js'
+import { initDatabase, getDb, insertApiToken, createKanbanCard, claimKanbanCard, updateKanbanCard, createTenant, setTenantAgentAvailability } from '../db.js'
 import { isKanbanIdTaken } from '../db/kanban-id-taken.js'
 import { resolveAuth, type AuthResult } from '../web/auth-gate.js'
 import { checkPermission, resolveRole, resolveTenantId } from '../web/authz.js'
@@ -295,6 +295,8 @@ describe('POST /api/kanban/:id/claim -- tenant boundary', () => {
   })
 
   it('the same caller can claim a card of its OWN tenant (the 404 above is the tenant line, not a general refusal)', async () => {
+    // the claimant must serve the caller's tenant (an agent of another tenant is refused, see kanban-assignee-tenant.test.ts)
+    await setTenantAgentAvailability('tenant-x', 'agent-a', true)
     const out = await callCtx(tenantCaller('tenant-x', { tokenAgentId: 'agent-a', agentId: 'agent-a' }), 'POST', '/api/kanban/card-x/claim')
     expect(out.status).toBe(200)
     expect(row('card-x').assignee).toBe('agent-a')
