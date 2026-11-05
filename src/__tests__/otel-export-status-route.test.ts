@@ -76,7 +76,7 @@ function call(method: string, path: string, role = 'admin'): Promise<{ handled: 
     end(b?: string | Buffer) { if (b) out.raw = Buffer.isBuffer(b) ? b.toString('utf-8') : b },
   }
   const url = new URL(`http://localhost:3420${path}`)
-  const ctx = { req, res, path: url.pathname, method, url, role, tenantId: null } as unknown as RouteContext
+  const ctx = { req, res, path: url.pathname, method, url, role, tenantId: null, auth: { kind: 'token' } } as unknown as RouteContext
   return tryHandleOtelExportStatus(ctx).then((handled) => ({
     handled, status: out.status, raw: out.raw, body: out.raw ? JSON.parse(out.raw) : null,
   }))

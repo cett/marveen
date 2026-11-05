@@ -1,6 +1,7 @@
 import { getDbContextStats } from '../../db/context.js'
 import { BACKGROUND_JOBS } from '../../db/background-jobs.js'
 import { json } from '../http-helpers.js'
+import { requireGlobalAdmin } from './global-admin.js'
 import type { RouteContext } from './types.js'
 
 /** The most call sites the answer lists. */
@@ -14,10 +15,8 @@ export const DB_CONTEXT_TOP_SITES = 20
 export function tryHandleDbContext(ctx: RouteContext): Promise<boolean> {
   if (ctx.path !== '/api/admin/db-context' || ctx.method !== 'GET') return Promise.resolve(false)
   // The RBAC gate already refuses a non-admin; this holds in shadow mode too, because the answer lists call sites (file and line).
-  if (ctx.role !== 'admin') {
-    json(ctx.res, { error: 'forbidden', hint: 'Admin only' }, 403)
-    return Promise.resolve(true)
-  }
+  // Global admin only: a tenant's admin has no business reading the server's internals.
+  if (!requireGlobalAdmin(ctx)) return Promise.resolve(true)
   const stats = getDbContextStats()
   const withContext = stats.total - stats.withoutContext
   json(ctx.res, {
