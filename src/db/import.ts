@@ -3,7 +3,7 @@
 // search. tenantId null = every tenant (admin default view).
 
 import { createHash } from 'node:crypto'
-import { dbx } from './facade.js'
+import { dbx, type SqlOps } from './facade.js'
 import { likeContains } from './like.js'
 import { syncVecMemoryDelete } from './vector.js'
 import { isBlankContent } from '../blank-content.js'
@@ -75,23 +75,26 @@ export async function updateImportSource(id: string, now: number, patch: ImportS
   await dbx.run(`UPDATE import_sources SET ${fields.join(', ')} WHERE id = ?`, ...values)
 }
 
-async function selectShadowIds(sourceId?: string): Promise<number[]> {
+// The three helpers below run inside the transaction bodies of deleteImportSource and wipeImportMemories: `ops` is
+// REQUIRED (the transaction handle), so no call can fall back to the facade, which on a pooled backend is another
+// connection and another transaction.
+async function selectShadowIds(ops: SqlOps, sourceId?: string): Promise<number[]> {
   const rows = sourceId === undefined
-    ? await dbx.all('SELECT memory_shadow_id FROM import_memories WHERE memory_shadow_id IS NOT NULL')
-    : await dbx.all('SELECT memory_shadow_id FROM import_memories WHERE source_id = ? AND memory_shadow_id IS NOT NULL', sourceId)
+    ? await ops.all('SELECT memory_shadow_id FROM import_memories WHERE memory_shadow_id IS NOT NULL')
+    : await ops.all('SELECT memory_shadow_id FROM import_memories WHERE source_id = ? AND memory_shadow_id IS NOT NULL', sourceId)
   return (rows as { memory_shadow_id: number }[]).map(r => r.memory_shadow_id)
 }
 
 // NULL out the FK before the shadow rows go so the constraint is not violated.
-async function detachShadowRows(sourceId?: string): Promise<void> {
-  if (sourceId === undefined) await dbx.run('UPDATE import_memories SET memory_shadow_id = NULL')
-  else await dbx.run('UPDATE import_memories SET memory_shadow_id = NULL WHERE source_id = ?', sourceId)
+async function detachShadowRows(ops: SqlOps, sourceId?: string): Promise<void> {
+  if (sourceId === undefined) await ops.run('UPDATE import_memories SET memory_shadow_id = NULL')
+  else await ops.run('UPDATE import_memories SET memory_shadow_id = NULL WHERE source_id = ?', sourceId)
 }
 
-async function deleteShadowMemories(shadowIds: number[]): Promise<void> {
+async function deleteShadowMemories(ops: SqlOps, shadowIds: number[]): Promise<void> {
   if (!shadowIds.length) return
   const ph = shadowIds.map(() => '?').join(',')
-  await dbx.run(`DELETE FROM memories WHERE id IN (${ph})`, ...shadowIds)
+  await ops.run(`DELETE FROM memories WHERE id IN (${ph})`, ...shadowIds)
 }
 
 // The ANN index (vec0) is written through the raw handle of vector.ts, not through the facade, so it is kept
@@ -104,12 +107,12 @@ async function dropVecEntries(shadowIds: number[]): Promise<void> {
  *  (the shadow rows were already detached by then, as before). One transaction: the select of the shadow
  *  ids, the detach and the deletes were uninterruptible when the module was synchronous. */
 export async function deleteImportSource(id: string): Promise<boolean> {
-  const shadowIds = await dbx.tx(async () => {
-    const ids = await selectShadowIds(id)
-    if (ids.length) await detachShadowRows(id)
-    const changes = (await dbx.run("DELETE FROM import_sources WHERE id = ?", id)).changes
+  const shadowIds = await dbx.tx(async (tx) => {
+    const ids = await selectShadowIds(tx, id)
+    if (ids.length) await detachShadowRows(tx, id)
+    const changes = (await tx.run("DELETE FROM import_sources WHERE id = ?", id)).changes
     if (!changes) return null
-    await deleteShadowMemories(ids)
+    await deleteShadowMemories(tx, ids)
     return ids
   })
   if (!shadowIds) return false
@@ -121,13 +124,13 @@ export async function deleteImportSource(id: string): Promise<boolean> {
  *  sourceId is undefined) together with their shadow rows. Returns the number
  *  of import_memories rows deleted. One transaction, see deleteImportSource. */
 export async function wipeImportMemories(sourceId?: string): Promise<number> {
-  const { shadowIds, changes } = await dbx.tx(async () => {
-    const ids = await selectShadowIds(sourceId)
-    if (ids.length) await detachShadowRows(sourceId)
+  const { shadowIds, changes } = await dbx.tx(async (tx) => {
+    const ids = await selectShadowIds(tx, sourceId)
+    if (ids.length) await detachShadowRows(tx, sourceId)
     const deleted = sourceId === undefined
-      ? (await dbx.run("DELETE FROM import_memories")).changes
-      : (await dbx.run("DELETE FROM import_memories WHERE source_id = ?", sourceId)).changes
-    await deleteShadowMemories(ids)
+      ? (await tx.run("DELETE FROM import_memories")).changes
+      : (await tx.run("DELETE FROM import_memories WHERE source_id = ?", sourceId)).changes
+    await deleteShadowMemories(tx, ids)
     return { shadowIds: ids, changes: deleted }
   })
   await dropVecEntries(shadowIds)
@@ -239,15 +242,15 @@ export async function upsertImportMemory(
   // together; a failure half-way leaves no shadow row without its import row. The ANN entry of a shadow row
   // whose text changed is dropped after the commit (vec0 is not on the facade, see dropVecEntries).
   let staleVecId: number | null = null
-  const result = await dbx.tx(async (): Promise<'added' | 'updated' | 'hash_match'> => {
-    const existing = await dbx.get<{ id: string; content_hash: string; content: string; keywords: string | null; memory_shadow_id: number | null }>("SELECT id, content_hash, content, keywords, memory_shadow_id FROM import_memories WHERE source_id = ? AND file_path = ?", sourceId, filePath)
+  const result = await dbx.tx(async (tx): Promise<'added' | 'updated' | 'hash_match'> => {
+    const existing = await tx.get<{ id: string; content_hash: string; content: string; keywords: string | null; memory_shadow_id: number | null }>("SELECT id, content_hash, content, keywords, memory_shadow_id FROM import_memories WHERE source_id = ? AND file_path = ?", sourceId, filePath)
 
     if (existing) {
       if (existing.content_hash === hash) {
-        await dbx.run("UPDATE import_memories SET last_seen_at = ? WHERE id = ?", now, existing.id)
+        await tx.run("UPDATE import_memories SET last_seen_at = ? WHERE id = ?", now, existing.id)
         return 'hash_match'
       }
-      await dbx.run(`
+      await tx.run(`
         UPDATE import_memories SET content_hash = ?, content = ?, keywords = ?, last_seen_at = ?, updated_at = ?
         WHERE id = ?
       `, hash, content, keywords, now, now, existing.id)
@@ -259,32 +262,32 @@ export async function upsertImportMemory(
         // source differs, the extracted text does not) keeps the embedding.
         const textChanged = existing.content !== content || existing.keywords !== keywords
         if (textChanged) {
-          await dbx.run('UPDATE memories SET content = ?, keywords = ?, updated_at = ?, embedding_blob = NULL WHERE id = ?', content, keywords, now, existing.memory_shadow_id)
+          await tx.run('UPDATE memories SET content = ?, keywords = ?, updated_at = ?, embedding_blob = NULL WHERE id = ?', content, keywords, now, existing.memory_shadow_id)
           staleVecId = existing.memory_shadow_id
         } else {
-          await dbx.run('UPDATE memories SET updated_at = ? WHERE id = ?', now, existing.memory_shadow_id)
+          await tx.run('UPDATE memories SET updated_at = ? WHERE id = ?', now, existing.memory_shadow_id)
         }
       } else {
         // Create missing shadow row (defensive: migration backfill covers existing rows).
         // agent_id='import' is the discriminator; category='warm' satisfies the CHECK
         // constraint; chat_id and sector are sentinel values for NOT NULL columns.
-        const sr = (await dbx.get(`INSERT INTO memories (agent_id, content, category, keywords, chat_id, sector, created_at, accessed_at, updated_at, tenant_id)
+        const sr = (await tx.get(`INSERT INTO memories (agent_id, content, category, keywords, chat_id, sector, created_at, accessed_at, updated_at, tenant_id)
            VALUES ('import', ?, 'warm', ?, 'import', 'semantic', ?, ?, ?, ?) RETURNING id`, content, keywords, now, now, now, tenantId)) as { id: number }
-        await dbx.run('UPDATE import_memories SET memory_shadow_id = ? WHERE id = ?', sr.id, existing.id)
+        await tx.run('UPDATE import_memories SET memory_shadow_id = ? WHERE id = ?', sr.id, existing.id)
       }
       return 'updated'
     }
 
     const id = createHash('sha256').update(`${sourceId}:${filePath}`).digest('hex').slice(0, 16)
-    await dbx.run(`
+    await tx.run(`
       INSERT INTO import_memories (id, source_id, file_path, file_name, content_hash, content, keywords, last_seen_at, created_at, updated_at, tenant_id)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, id, sourceId, filePath, fileName, hash, content, keywords, now, now, now, tenantId)
     // Create shadow row so the main embedding and link pipelines pick this up.
     // agent_id='import' is the discriminator; category='warm' satisfies the CHECK constraint.
-    const sr = (await dbx.get(`INSERT INTO memories (agent_id, content, category, keywords, chat_id, sector, created_at, accessed_at, updated_at, tenant_id)
+    const sr = (await tx.get(`INSERT INTO memories (agent_id, content, category, keywords, chat_id, sector, created_at, accessed_at, updated_at, tenant_id)
        VALUES ('import', ?, 'warm', ?, 'import', 'semantic', ?, ?, ?, ?) RETURNING id`, content, keywords, now, now, now, tenantId)) as { id: number }
-    await dbx.run('UPDATE import_memories SET memory_shadow_id = ? WHERE id = ?', sr.id, id)
+    await tx.run('UPDATE import_memories SET memory_shadow_id = ? WHERE id = ?', sr.id, id)
     return 'added'
   })
   if (staleVecId !== null) await syncVecMemoryDelete(staleVecId)
