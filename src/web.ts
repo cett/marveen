@@ -8,7 +8,7 @@ import { PROJECT_ROOT, WEB_HOST, DASHBOARD_PUBLIC_URL, DASHBOARD_ALLOWED_ORIGINS
 import { loadOrCreateDashboardToken } from './web/dashboard-auth.js'
 import { loadOrCreateClaimSigningKey } from './web/claim-signature.js'
 import { getRbacMode } from './web/rbac-mode.js'
-import { resolveAuth, requiresAuth, isFederationWireEndpoint, resolveAgentIdHeader, type AuthResult } from './web/auth-gate.js'
+import { resolveAuth, requiresAuth, isFederationWireEndpoint, resolveAgentIdHeader, answerInvalidTenantToken, type AuthResult } from './web/auth-gate.js'
 import { sweepExpiredSessions } from './web/auth-sessions.js'
 import { sweepExpiredDeviceKeys } from './web/auth-device-keys.js'
 import { isBlockedCrossOriginWrite, originMatchesServedHost, buildAllowedHosts, isAllowedHost } from './web/csrf-origin.js'
@@ -325,6 +325,10 @@ export async function startWebServer(port = 3420): Promise<http.Server> {
       res.end(JSON.stringify({ error: 'forbidden', hint: 'No fresh tenant context for this shared agent' }))
       return
     }
+    // A token whose stored tenant is empty/whitespace: a bad credential. 403 here, before the RBAC gate and before any
+    // tenant is resolved (resolveTenantId would map it to 'default'), instead of the 500 the route context's non-empty
+    // id check used to throw.
+    if (answerInvalidTenantToken(auth, path, method, res)) return
     // RBAC gate: role + permission enforcement, hard or shadow, controlled by
     // the RBAC_MODE system_config row (getRbacMode(), enforce unless shadow was asked for by name on
     // the Settings page). In shadow mode the gate only records would-deny entries and blocks nothing.

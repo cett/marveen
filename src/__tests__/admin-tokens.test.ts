@@ -10,7 +10,11 @@ vi.mock('../db.js', () => ({
   insertApiToken: vi.fn(),
   revokeApiToken: vi.fn(),
   rotateApiToken: vi.fn(),
+  assertValidTokenTenant: vi.fn(),
   ApiTokenAlreadyRevokedError: class ApiTokenAlreadyRevokedError extends Error {},
+  InvalidTokenTenantError: class InvalidTokenTenantError extends Error {
+    constructor(readonly reason: string) { super(reason) }
+  },
 }))
 
 vi.mock('../logger.js', () => ({
@@ -63,6 +67,8 @@ const SAMPLE_TOKEN_ROW = {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  // Every tenant the tests name exists; the refusals are covered against the real db in token-blank-tenant.test.ts.
+  vi.mocked(db.assertValidTokenTenant).mockImplementation((id: unknown) => Promise.resolve(id as string))
 })
 
 // ── GET /api/v1/admin/tokens ──────────────────────────────────────────────────

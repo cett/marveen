@@ -78,6 +78,11 @@ export function checkPermission(
     return { allowed: false, status: 403, reason: 'shared agent has no fresh tenant context' }
   }
 
+  // A token whose stored tenant is blank has no tenant to act in: refused, never mapped to 'default'.
+  if (auth.kind === 'token' && auth.tenantInvalid) {
+    return { allowed: false, status: 403, reason: 'token has no valid tenant' }
+  }
+
   let role: Role
   try {
     role = resolveRole(auth)
