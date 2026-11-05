@@ -20,6 +20,7 @@ import {
   type KanbanAuditActor,
 } from '../../db.js'
 import { isKanbanIdTaken } from '../../db/kanban-id-taken.js'
+import { refuseBodyAssignee, refuseForeignAssignee } from './kanban-assignee-tenant.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
 import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, PROJECT_ROOT, WEB_HOST, WEB_PORT, KANBAN_LABEL_COLORS } from '../../config.js'
 import { listAgentNames, readAgentDisplayName } from '../agent-config.js'
@@ -446,6 +447,11 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
         return true
       }
     }
+    // The assignee is a name the caller writes: a tenant-bound caller may not name another tenant's agent, and the
+    // value must be a string or null (before any write).
+    if (!isAdmin && effectiveTenantId !== null && 'assignee' in data) {
+      if (await refuseBodyAssignee(res, data.assignee, effectiveTenantId)) return true
+    }
     // The id is always generated here: an `id` in the body is ignored. A caller-picked id could take a
     // route word (`labels`, `search`, ...) and shadow a static route, and an id that exists in another
     // tenant would answer differently from one that does not.
@@ -503,6 +509,12 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
         json(res, { error: 'not_found', field: 'parent_id', hint: 'Szülő kártya nem található' }, 404)
         return true
       }
+    }
+    // The assignee is a name the caller writes: a tenant-bound caller may not name another tenant's agent, and the
+    // value must be a string or null. Checked before updateKanbanCard, so a refusal writes nothing (no other field,
+    // no audit row).
+    if (!isAdmin && effectiveTenantId !== null && 'assignee' in data) {
+      if (await refuseBodyAssignee(res, data.assignee, effectiveTenantId)) return true
     }
     // Optional stale-write guard: expected_updated_at is the updated_at the caller read; the write is refused (409)
     // when the card has changed since. It is not a column and is not written. Absent = the plain update.
@@ -576,6 +588,8 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     }
     if (!actor) { json(res, { error: 'required', field: 'agent', hint: 'Authenticate as an agent or send X-Agent-Id' }, 400); return true }
     const claimant = actor.id
+    // A self-declared X-Agent-Id is any name: a tenant-bound caller may not claim as another tenant's agent.
+    if (!isAdmin && effectiveTenantId !== null && await refuseForeignAssignee(res, claimant, 'agent', effectiveTenantId)) return true
     const outcome = await claimKanbanCard(id, claimant)
     if (outcome.status === 'not_found') { json(res, { error: 'not_found', hint: 'Kártya nem található' }, 404); return true }
     if (outcome.status === 'taken') {
