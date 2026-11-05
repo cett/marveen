@@ -20,7 +20,7 @@ import {
   type KanbanAuditActor,
 } from '../../db.js'
 import { isKanbanIdTaken } from '../../db/kanban-id-taken.js'
-import { refuseBodyAssignee, refuseForeignAssignee, refuseSubtaskAssignees } from './kanban-assignee-tenant.js'
+import { refuseBodyAssignee, refuseForeignAssignee, refuseSubtaskAssignees, tenantBreakdownAssignees } from './kanban-assignee-tenant.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
 import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, PROJECT_ROOT, WEB_HOST, WEB_PORT, KANBAN_LABEL_COLORS } from '../../config.js'
 import { listAgentNames, readAgentDisplayName } from '../agent-config.js'
@@ -45,6 +45,11 @@ function kanbanAuditActor(ctx: RouteContext): KanbanAuditActor | undefined {
 }
 
 const KANBAN_STATUSES = new Set<KanbanCard['status']>(['planned', 'in_progress', 'waiting', 'testing', 'done'])
+
+// The most subtasks one POST /api/kanban/:id/breakdown/accept may create. The LLM suggestion and the UI that sends it
+// back are bounded below this (validateSubtasks allows at most getMaxSubtasks() * 2 = 40), so a larger batch is not
+// a dashboard call.
+export const MAX_BREAKDOWN_ACCEPT_SUBTASKS = 50
 
 // The body keys of POST /api/kanban/:id/move; anything else is a 400.
 const KANBAN_MOVE_KEYS = new Set(['status', 'sort_order', 'actor', 'orderedIds', 'expected_status'])
@@ -489,10 +494,13 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   const kanbanCardMatch = path.match(/^\/api\/kanban\/([^/]+)$/)
   if (kanbanCardMatch && method === 'PUT') {
     const id = decodeURIComponent(kanbanCardMatch[1])
-    // Non-admin callers may only update cards belonging to their own tenant.
+    // Non-admin callers may only update cards belonging to their own tenant. The card read here also tells the
+    // assignee check below what the assignee is now.
+    let ownedCardAssignee: string | null | undefined
     if (!isAdmin && effectiveTenantId !== null) {
       const ownedCard = await scopeToTenant(effectiveTenantId).kanban.get(id)
       if (!ownedCard) { json(res, { error: 'not_found', hint: 'Kártya nem található' }, 404); return true }
+      ownedCardAssignee = typeof ownedCard.assignee === 'string' ? ownedCard.assignee : null
     }
     const body = await readBody(req)
     const data = JSON.parse(body.toString())
@@ -514,7 +522,14 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // The assignee is a name the caller writes: it must be a string or null (every caller, the admin too), and a
     // tenant-bound caller may not name another tenant's agent. Checked before updateKanbanCard, so a refusal writes
     // nothing (no other field, no audit row).
-    if ('assignee' in data && await refuseBodyAssignee(res, data.assignee, assigneeVerdictTenantId)) return true
+    // The tenant verdict judges a CHANGE: the full-card PUT of the UI sends the assignee back as it is, and a card an
+    // admin gave to another tenant's agent must stay editable. An assignee exactly equal to the stored one (plain
+    // string equality, no case or comma normalising) skips the verdict only; the type and length rules still run.
+    const assigneeUnchanged = typeof data.assignee === 'string' && ownedCardAssignee !== undefined && data.assignee === ownedCardAssignee
+    if ('assignee' in data && await refuseBodyAssignee(res, data.assignee, assigneeUnchanged ? null : assigneeVerdictTenantId)) return true
+    // An unchanged assignee is not written back: the UPDATE would otherwise overwrite an assignee an admin set between
+    // the read above and this write with the stale value. Placed after the checks, so the type and length rules run first.
+    if (assigneeUnchanged) delete data.assignee
     // Optional stale-write guard: expected_updated_at is the updated_at the caller read; the write is refused (409)
     // when the card has changed since. It is not a column and is not written. Absent = the plain update.
     let expectedUpdatedAt: number | undefined
@@ -777,8 +792,20 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     if (!card) { json(res, { error: 'not_found', hint: 'Kártya nem található' }, 404); return true }
     const existing = await getChildCards(cardId)
     if (existing.length > 0) { json(res, { error: 'conflict', hint: 'A kártya már rendelkezik subtask-okkal' }, 409); return true }
+    // A tenant-bound caller is offered (and the LLM output is filtered to) only the agents its tenant may name, the
+    // same rule the accept route applies; a failed lookup is a 500, never a fall back to the install-wide set.
+    let assigneeCandidates: Set<string> | undefined
+    if (assigneeVerdictTenantId !== null) {
+      try {
+        assigneeCandidates = await tenantBreakdownAssignees(assigneeVerdictTenantId)
+      } catch (err) {
+        logger.error({ err, cardId }, 'kanban: the breakdown assignee candidates lookup failed, the request is refused')
+        json(res, { error: 'internal_error', hint: 'Failed to check the assignee' }, 500)
+        return true
+      }
+    }
     try {
-      const result = await generateBreakdown(card.title, card.description)
+      const result = await generateBreakdown(card.title, card.description, assigneeCandidates)
       json(res, { subtasks: result.subtasks })
     } catch (err) {
       logger.error({ err, cardId }, 'Breakdown generation failed')
@@ -799,11 +826,22 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     }
     if (parent.depth >= 2) { json(res, { error: 'limit_exceeded', field: 'parent_id', hint: 'Szülő kártya már maximális mélységen van (depth 2)' }, 400); return true }
     const body = await readBody(req)
-    const { subtasks } = JSON.parse(body.toString()) as {
+    const parsedBody: unknown = JSON.parse(body.toString())
+    // null, a number, a string, a boolean or an array has no `subtasks` to read (and null would throw at the destructure).
+    if (parsedBody === null || typeof parsedBody !== 'object' || Array.isArray(parsedBody)) {
+      json(res, { error: 'invalid_value', field: 'body', hint: 'The body must be a JSON object' }, 400)
+      return true
+    }
+    const { subtasks } = parsedBody as {
       subtasks: Array<{ title: string; description: string; assignee: string | null; priority: string }>
     }
     if (!Array.isArray(subtasks) || subtasks.length === 0) {
       json(res, { error: 'required', field: 'subtasks', hint: 'Subtask lista kötelező' }, 400)
+      return true
+    }
+    // The batch size comes before any element is looked at (every caller): the elements are not processed at all.
+    if (subtasks.length > MAX_BREAKDOWN_ACCEPT_SUBTASKS) {
+      json(res, { error: 'limit_exceeded', field: 'subtasks', hint: `At most ${MAX_BREAKDOWN_ACCEPT_SUBTASKS} subtasks per request` }, 400)
       return true
     }
     // Every subtask is an object and its assignee a string or null (every caller); a tenant-bound caller may not name

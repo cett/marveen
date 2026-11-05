@@ -9,10 +9,17 @@
 
 import type http from 'node:http'
 import { getServedTenantIds } from '../../db/agents.js'
-import { isKnownAgent } from '../agent-config.js'
-import { BOT_NAME, MAIN_AGENT_ID } from '../../config.js'
+import { isKnownAgent, listAgentNames } from '../agent-config.js'
+import { BOT_NAME, MAIN_AGENT_ID, OWNER_NAME } from '../../config.js'
 import { logger } from '../../logger.js'
 import { json } from '../http-helpers.js'
+
+/**
+ * The longest `assignee` a caller may write (UTF-16 `.length`, every caller, the admin included). An assignee is a
+ * name or a short comma list; the longest live value is a few characters. The cap keeps a huge string from reaching
+ * the tenant verdict (which splits it and looks every part up) or the database.
+ */
+export const MAX_ASSIGNEE_LENGTH = 500
 
 /**
  * 'foreign' when any comma-separated part of `value` is the name of an agent that does not serve `callerTenantId`;
@@ -47,6 +54,9 @@ export async function assigneeTenantVerdict(value: string, callerTenantId: strin
  * before any write, and before the tenant verdict (a verdict judges a string only, a non-string would walk past it).
  * An absent key is 'unchanged' (the caller does not call this); null and a blank string unassign and are not judged.
  *
+ * The LENGTH rule (at most MAX_ASSIGNEE_LENGTH characters, else a 400) also holds for every caller and runs after the
+ * type rule, before the verdict.
+ *
  * The TENANT verdict (a foreign agent is a 404) is for a tenant-bound caller only: `callerTenantId` is null for the
  * admin (no tenant line to hold), and the verdict is then skipped.
  *
@@ -62,6 +72,11 @@ export async function refuseBodyAssignee(
   if (value === null) return false
   if (typeof value !== 'string') {
     json(res, { error: 'invalid_value', field, hint: 'assignee must be a string or null' }, 400)
+    return true
+  }
+  // The length comes BEFORE the verdict and holds for every caller: a megabyte of text must not be split and looked up.
+  if (value.length > MAX_ASSIGNEE_LENGTH) {
+    json(res, { error: 'invalid_value', field, hint: `assignee must be at most ${MAX_ASSIGNEE_LENGTH} characters` }, 400)
     return true
   }
   if (callerTenantId === null || value.trim() === '') return false
@@ -110,4 +125,21 @@ export async function refuseForeignAssignee(
   if (verdict === 'ok') return false
   json(res, { error: 'not_found', field, hint: 'Agent not found' }, 404)
   return true
+}
+
+/**
+ * The names an LLM may suggest as the assignee of a generated subtask, for a TENANT-BOUND caller: the owner (free text,
+ * so it always passes), the bot name and every agent folder that the caller's tenant may name (the same verdict the
+ * accept route applies, so a suggestion the caller sees can be accepted). A foreign tenant's agent is left out, and so
+ * is the bot name for a caller whose tenant does not serve the main agent.
+ *
+ * Throws when an agent lookup fails: the caller answers 500 and never falls back to the unfiltered set.
+ */
+export async function tenantBreakdownAssignees(callerTenantId: string): Promise<Set<string>> {
+  const servedMemo = new Map<string, string[]>()
+  const allowed = new Set<string>([OWNER_NAME])
+  for (const name of [BOT_NAME, ...listAgentNames()]) {
+    if (await assigneeTenantVerdict(name, callerTenantId, servedMemo) === 'ok') allowed.add(name)
+  }
+  return allowed
 }
