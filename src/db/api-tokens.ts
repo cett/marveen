@@ -174,6 +174,10 @@ export async function rotateApiToken(
  * Reading inside the transaction is what makes two overlapping calls (also from two processes: the write
  * lock is taken at BEGIN) end with exactly one active row: the second one sees the first one's row and
  * revokes it. `rotated` tells whether a row was rotated (true) or the name got a fresh row (false).
+ *
+ * `immediate` applies to the OUTERMOST transaction only: called inside a transaction that is already open
+ * (no caller does today) this joins it as a savepoint, the rows are read under whatever lock that
+ * transaction holds, and a failure of the outer transaction takes the replacement back with it.
  */
 export async function replaceActiveApiToken(input: {
   fileHash: string | null
@@ -203,6 +207,10 @@ export async function replaceActiveApiToken(input: {
  * one is inserted. Reading under the write lock is what keeps a CLI rotation and the dashboard's own
  * bootstrap (two processes) from working on a list that is already out of date and ending with two active
  * `dashboard` rows. `rotated` tells whether a row was rotated (true) or the name got a fresh row (false).
+ *
+ * `immediate` applies to the OUTERMOST transaction only: called inside a transaction that is already open
+ * (no caller does today) this joins it as a savepoint, the rows are read under whatever lock that
+ * transaction holds, and a failure of the outer transaction takes the rotation back with it.
  */
 export async function rotateSharedDashboardToken(tokenHash: string, now: number): Promise<{ row: ApiTokenRow; rotated: boolean }> {
   return dbx.tx(async () => {
