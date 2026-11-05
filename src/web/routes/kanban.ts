@@ -20,7 +20,7 @@ import {
   type KanbanAuditActor,
 } from '../../db.js'
 import { isKanbanIdTaken } from '../../db/kanban-id-taken.js'
-import { refuseBodyAssignee, refuseForeignAssignee } from './kanban-assignee-tenant.js'
+import { refuseBodyAssignee, refuseForeignAssignee, refuseSubtaskAssignees } from './kanban-assignee-tenant.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
 import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, PROJECT_ROOT, WEB_HOST, WEB_PORT, KANBAN_LABEL_COLORS } from '../../config.js'
 import { listAgentNames, readAgentDisplayName } from '../agent-config.js'
@@ -231,6 +231,9 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   const isAdmin = ctx.role === 'admin'
   const tenantParam = isAdmin ? (ctx.url.searchParams.get('tenant') ?? null) : null
   const effectiveTenantId: string | null = tenantParam ?? (isAdmin ? null : (ctx.tenantId ?? 'default'))
+  // The tenant the agent NAMES in a request body are judged against: the caller's own for a tenant-bound caller, null
+  // for the admin (no tenant line to hold, not even with ?tenant=). The string-or-null type rule has no such exception.
+  const assigneeVerdictTenantId: string | null = !isAdmin ? effectiveTenantId : null
 
   // One gate for every route that reaches a card by its id in the path. A non-admin caller touches only a
   // card of its own tenant (archived ones included); a foreign id answers like a missing one (404), so ids
@@ -447,11 +450,9 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
         return true
       }
     }
-    // The assignee is a name the caller writes: a tenant-bound caller may not name another tenant's agent, and the
-    // value must be a string or null (before any write).
-    if (!isAdmin && effectiveTenantId !== null && 'assignee' in data) {
-      if (await refuseBodyAssignee(res, data.assignee, effectiveTenantId)) return true
-    }
+    // The assignee is a name the caller writes: it must be a string or null (every caller, the admin too), and a
+    // tenant-bound caller may not name another tenant's agent (before any write).
+    if ('assignee' in data && await refuseBodyAssignee(res, data.assignee, assigneeVerdictTenantId)) return true
     // The id is always generated here: an `id` in the body is ignored. A caller-picked id could take a
     // route word (`labels`, `search`, ...) and shadow a static route, and an id that exists in another
     // tenant would answer differently from one that does not.
@@ -510,12 +511,10 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
         return true
       }
     }
-    // The assignee is a name the caller writes: a tenant-bound caller may not name another tenant's agent, and the
-    // value must be a string or null. Checked before updateKanbanCard, so a refusal writes nothing (no other field,
-    // no audit row).
-    if (!isAdmin && effectiveTenantId !== null && 'assignee' in data) {
-      if (await refuseBodyAssignee(res, data.assignee, effectiveTenantId)) return true
-    }
+    // The assignee is a name the caller writes: it must be a string or null (every caller, the admin too), and a
+    // tenant-bound caller may not name another tenant's agent. Checked before updateKanbanCard, so a refusal writes
+    // nothing (no other field, no audit row).
+    if ('assignee' in data && await refuseBodyAssignee(res, data.assignee, assigneeVerdictTenantId)) return true
     // Optional stale-write guard: expected_updated_at is the updated_at the caller read; the write is refused (409)
     // when the card has changed since. It is not a column and is not written. Absent = the plain update.
     let expectedUpdatedAt: number | undefined
@@ -807,6 +806,9 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'required', field: 'subtasks', hint: 'Subtask lista kötelező' }, 400)
       return true
     }
+    // Every subtask is an object and its assignee a string or null (every caller); a tenant-bound caller may not name
+    // another tenant's agent. One bad element refuses the whole batch, before anything is written.
+    if (await refuseSubtaskAssignees(res, subtasks, assigneeVerdictTenantId)) return true
     const created = await createKanbanSubtasks(parentId, subtasks, BOT_NAME)
     json(res, { ok: true, created })
     return true
