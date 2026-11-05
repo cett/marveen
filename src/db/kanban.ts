@@ -167,10 +167,19 @@ export async function insertKanbanCardRows(card: NewKanbanCard, ops: Dbx | Tx = 
   return { agent_id: card.assignee || 'system', entity_id: card.id, detail: { title: card.title, status, priority: card.priority ?? 'normal' } }
 }
 
-/** Best effort: an audit failure must not abort card creation. */
+/**
+ * The audit row of a card creation, written on `ops` (the facade or a transaction handle). It THROWS on a failure:
+ * inside a transaction body a swallowed INSERT error would leave the transaction (or its savepoint) in the aborted
+ * state on PostgreSQL, so the caller must be able to roll the savepoint back (auditInSavepoint does).
+ */
+export async function writeKanbanCreateAuditOn(entry: KanbanCreateAudit, tenantId: string | null | undefined, ops: Dbx | Tx): Promise<void> {
+  await writeAgentAuditLog({ agent_id: entry.agent_id, entity: 'kanban', action: 'create', entity_id: entry.entity_id, detail: entry.detail, tenant_id: tenantId }, ops)
+}
+
+/** Best effort: an audit failure must not abort card creation. For a caller OUTSIDE a transaction body. */
 export async function writeKanbanCreateAudit(entry: KanbanCreateAudit, tenantId?: string | null): Promise<void> {
   try {
-    await writeAgentAuditLog({ agent_id: entry.agent_id, entity: 'kanban', action: 'create', entity_id: entry.entity_id, detail: entry.detail, tenant_id: tenantId })
+    await writeKanbanCreateAuditOn(entry, tenantId, dbx)
   } catch { /* audit failure must not abort card creation */ }
 }
 
@@ -210,7 +219,7 @@ export async function createKanbanSubtasks(
       ids.push(id)
     }
     await addKanbanComment(parentId, actor, `Auto-breakdown: ${ids.length} subtask létrehozva (${ids.join(', ')})`, tx)
-    for (const entry of audits) await auditInSavepoint(tx, () => writeKanbanCreateAudit(entry, tenants.get(entry.agent_id) ?? null), 'kanban create', entry.entity_id)
+    for (const entry of audits) await auditInSavepoint(tx, (sp) => writeKanbanCreateAuditOn(entry, tenants.get(entry.agent_id) ?? null, sp), 'kanban create', entry.entity_id)
     return ids
   })
 }
@@ -235,10 +244,9 @@ export async function promoteIdeaToKanban(
     await dbx.tx(async (tx) => {
       const audits: KanbanCreateAudit[] = []
       for (const card of cards) audits.push(await insertKanbanCardRows(card, tx))
-      // TODO(phase2): the idea write joins this transaction through the ambient connection; pass the tx handle.
-      const changed = await updateIdeaWithStatusLog(ideaId, { status: 'kanban', kanban_id: cards[0].id }, { from: idea.from, to: 'kanban', actor: idea.actor, note: idea.note })
+      const changed = await updateIdeaWithStatusLog(ideaId, { status: 'kanban', kanban_id: cards[0].id }, { from: idea.from, to: 'kanban', actor: idea.actor, note: idea.note }, tx)
       if (!changed) throw new IdeaGoneError()
-      for (const entry of audits) await auditInSavepoint(tx, () => writeKanbanCreateAudit(entry, tenants.get(entry.agent_id) ?? null), 'kanban create', entry.entity_id)
+      for (const entry of audits) await auditInSavepoint(tx, (sp) => writeKanbanCreateAuditOn(entry, tenants.get(entry.agent_id) ?? null, sp), 'kanban create', entry.entity_id)
     })
     return true
   } catch (err) {
@@ -267,8 +275,12 @@ async function resolveAuditTenants(agentIds: string[]): Promise<Map<string, stri
   return tenants
 }
 
-/** Runs one audit write in its own savepoint: a failure is logged, rolls back only itself and is never rethrown. */
-async function auditInSavepoint(tx: Tx, write: () => Promise<void>, what: string, entityId: string): Promise<void> {
+/**
+ * Runs one audit write in its own savepoint: a failure is logged, rolls back only itself and is never rethrown. The
+ * write gets the SAVEPOINT handle and must run every statement on it, and must throw (not swallow) its failure, so the
+ * savepoint rolls back instead of leaving the transaction aborted.
+ */
+async function auditInSavepoint(tx: Tx, write: (sp: Tx) => Promise<void>, what: string, entityId: string): Promise<void> {
   try {
     await tx.tx(write)
   } catch (err) {
@@ -728,7 +740,7 @@ export async function deleteKanbanCard(id: string): Promise<boolean> {
     if (removed) {
       await auditInSavepoint(
         tx,
-        () => writeAgentAuditLog({ agent_id: auditAgent, entity: 'kanban', action: 'delete', entity_id: id, detail: { title: card.title }, tenant_id: auditTenant }),
+        (sp) => writeAgentAuditLog({ agent_id: auditAgent, entity: 'kanban', action: 'delete', entity_id: id, detail: { title: card.title }, tenant_id: auditTenant }, sp),
         'kanban delete', id,
       )
     }

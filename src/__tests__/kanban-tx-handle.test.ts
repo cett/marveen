@@ -1,7 +1,7 @@
 // The five kanban transactions (W3-3): every statement of a transaction body must run on the tx handle. A statement
 // on the facade (dbx) would join the open transaction on SQLite by accident (one connection) and run OUTSIDE it on a
-// pooled backend. The one statement allowed on the facade is the audit write (the audit module moves in W3-5; it runs
-// in its own savepoint and is best effort by design).
+// pooled backend. The audit rows are written on the handle of their savepoint too (kanban-tx-handle-audit.test.ts pins
+// that, with the nested facade transaction and the failure paths).
 // Pattern: notes/1017-w2-9-qa-probes. Real in-memory database.
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
 import {
@@ -12,11 +12,7 @@ import {
 beforeEach(() => { initDatabase(':memory:') })
 afterEach(() => { vi.restoreAllMocks() })
 
-// the audit write itself (src/db/audit.ts, W3-5): the one facade statement a transaction body may still run. The
-// tenant it is stamped with is resolved BEFORE the transaction, so its lookups are not part of the body.
-const AUDIT_SINK = /^INSERT INTO agent_audit_log/
-
-/** Records the SQL of every facade statement that runs while a transaction is open; the audit insert is left out. */
+/** Records the SQL of every facade statement that runs while a transaction is open. */
 function spyFacade(): string[] {
   const seen: string[] = []
   let open = 0
@@ -29,7 +25,7 @@ function spyFacade(): string[] {
     const real = dbx[m].bind(dbx) as (...a: unknown[]) => Promise<unknown>
     vi.spyOn(dbx, m).mockImplementation((async (sql: string, ...a: unknown[]) => {
       const s = sql.replace(/\s+/g, ' ').trim()
-      if (open > 0 && !AUDIT_SINK.test(s)) seen.push(s.slice(0, 70))
+      if (open > 0) seen.push(s.slice(0, 70))
       return real(sql, ...a)
     }) as never)
   }
