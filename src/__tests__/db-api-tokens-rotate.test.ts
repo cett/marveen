@@ -21,8 +21,8 @@ useTestDb()
 
 const NOW = 1_800_000_000
 
-const mint = (name: string, hash: string, role = 'fleet_agent', createdAt = NOW - 100, expiresAt: number | null = null) =>
-  insertApiToken({ tokenHash: hash, name, role, tenantId: 'default', createdAt, expiresAt, agentId: name === 'dashboard' ? null : 'agent-a' })
+const mint = (name: string, hash: string, role = 'fleet_agent', createdAt = NOW - 100, expiresAt: number | null = null, tenantId = 'default') =>
+  insertApiToken({ tokenHash: hash, name, role, tenantId, createdAt, expiresAt, agentId: name === 'dashboard' ? null : 'agent-a' })
 
 const count = (): number => (getDb().prepare('SELECT COUNT(*) AS n FROM api_tokens').get() as { n: number }).n
 const activeHashes = async (name: string): Promise<string[]> => (await listActiveApiTokensByName(name, NOW)).map((r) => r.token_hash).sort()
@@ -60,6 +60,31 @@ describe('rotateApiToken', () => {
     const next = await rotateApiToken(old, 'new-hash', NOW, null)
     expect(next).toMatchObject({ token_hash: 'new-hash', rotated_from: old.id, name: 't-ok', agent_id: 'agent-a' })
     expect(await getApiTokenRowById(old.id)).toMatchObject({ token_hash: 'old-hash', revoked_at: NOW })
+  })
+
+  // api_tokens.tenant_id is plain TEXT (no foreign key), so a row of another tenant needs no fixture. Every other
+  // case here uses 'default', which a replacement that hard-codes the tenant would still match.
+  it('the replacement takes name, role, tenant and agent of the row it replaces (a tenant other than default)', async () => {
+    const old = await mint('t-fields', 'old-hash', 'viewer', NOW - 100, null, 'other-tenant')
+    const next = await rotateApiToken(old, 'new-hash', NOW, null)
+    expect(next).toMatchObject({ name: 't-fields', role: 'viewer', tenant_id: 'other-tenant', agent_id: 'agent-a', created_at: NOW, rotated_from: old.id, revoked_at: null })
+  })
+
+  it('the replacement gets the expiry the caller passes (a value, and null for none)', async () => {
+    const first = await rotateApiToken(await mint('t-exp-a', 'old-a'), 'new-a', NOW, NOW + 500)
+    expect(first.expires_at).toBe(NOW + 500)
+    const second = await rotateApiToken(await mint('t-exp-b', 'old-b', 'fleet_agent', NOW - 100, NOW + 900), 'new-b', NOW, null)
+    expect(second.expires_at).toBeNull()
+  })
+
+  it('a failed insert (the new hash is taken) rolls the revoke back: the old row stays active, no row is added', async () => {
+    const old = await mint('t-atomic', 'old-hash')
+    await mint('t-taken', 'taken-hash') // UNIQUE(token_hash) fails the insert AFTER the revoke has succeeded
+    const before = count()
+    await expect(rotateApiToken(old, 'taken-hash', NOW, null)).rejects.toThrow()
+    expect(count()).toBe(before)
+    expect((await getApiTokenRowById(old.id))?.revoked_at).toBeNull()
+    expect(await activeHashes('t-atomic')).toEqual(['old-hash'])
   })
 })
 
@@ -138,6 +163,13 @@ describe('replaceActiveApiToken', () => {
     const { row, rotated } = await replaceActiveApiToken({ fileHash: 'current-hash', tokenHash: 'new-hash', name: 't-replace', role: 'agent', agentId: 'agent-b', now: NOW })
     expect(rotated).toBe(true)
     expect(row).toMatchObject({ role: 'fleet_agent', agent_id: 'agent-a', tenant_id: 'default', created_at: NOW, expires_at: null, rotated_from: current.id })
+  })
+
+  it('a rotated row of another tenant than default keeps that tenant', async () => {
+    const current = await mint('t-replace', 'current-hash', 'fleet_agent', NOW - 100, null, 'other-tenant')
+    const { row, rotated } = await replace('current-hash', 'new-hash')
+    expect(rotated).toBe(true)
+    expect(row).toMatchObject({ tenant_id: 'other-tenant', rotated_from: current.id })
   })
 
   it('a failed insert rolls the revokes back (nothing is lost half-way)', async () => {
@@ -241,6 +273,30 @@ describe('rotation nested in a larger transaction', () => {
     const { row, rotated } = await rotateSharedDashboardToken('fresh-hash', NOW)
     expect(rotated).toBe(false)
     expect(row.rotated_from).toBeNull()
+  })
+
+  it('a row of another tenant than default keeps that tenant when it rotates', async () => {
+    const old = await mint('dashboard', 'old-hash', 'admin', NOW - 100, null, 'other-tenant')
+    const { row, rotated } = await rotateSharedDashboardToken('rot-hash', NOW)
+    expect(rotated).toBe(true)
+    expect(row).toMatchObject({ tenant_id: 'other-tenant', rotated_from: old.id })
+  })
+
+  // `expires_at > now` is the edge: a row that expires AT now is already out, one that expires a second later is in.
+  it('a row that expires exactly now is not active: it is not rotated and a first row is minted', async () => {
+    await mint('dashboard', 'edge-hash', 'admin', NOW - 100, NOW)
+    expect(await activeHashes('dashboard')).toEqual([])
+    const { row, rotated } = await rotateSharedDashboardToken('fresh-hash', NOW)
+    expect(rotated).toBe(false)
+    expect(row.rotated_from).toBeNull()
+  })
+
+  it('a row that expires one second after now is active: it is rotated', async () => {
+    const edge = await mint('dashboard', 'edge-hash', 'admin', NOW - 100, NOW + 1)
+    expect(await activeHashes('dashboard')).toEqual(['edge-hash'])
+    const { row, rotated } = await rotateSharedDashboardToken('fresh-hash', NOW)
+    expect(rotated).toBe(true)
+    expect(row.rotated_from).toBe(edge.id)
   })
 
   it('two overlapping rotations leave exactly one active dashboard row', async () => {
