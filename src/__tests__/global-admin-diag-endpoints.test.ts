@@ -75,6 +75,7 @@ const REFUSED: Array<[string, Caller]> = [
   ['admin of a tenant id with a trailing space', { role: 'admin', tenantId: 'default ' }],
   ['admin of a tenant id that only starts with default', { role: 'admin', tenantId: 'default-x' }],
   ['admin of a tenant id in another case', { role: 'admin', tenantId: 'DEFAULT' }],
+  ['admin of an empty tenant id', { role: 'admin', tenantId: '' }],
 ]
 
 interface Result { handled: boolean; status: number; body: any; ends: number }
