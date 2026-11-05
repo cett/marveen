@@ -527,6 +527,9 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // string equality, no case or comma normalising) skips the verdict only; the type and length rules still run.
     const assigneeUnchanged = typeof data.assignee === 'string' && ownedCardAssignee !== undefined && data.assignee === ownedCardAssignee
     if ('assignee' in data && await refuseBodyAssignee(res, data.assignee, assigneeUnchanged ? null : assigneeVerdictTenantId)) return true
+    // An unchanged assignee is not written back: the UPDATE would otherwise overwrite an assignee an admin set between
+    // the read above and this write with the stale value. Placed after the checks, so the type and length rules run first.
+    if (assigneeUnchanged) delete data.assignee
     // Optional stale-write guard: expected_updated_at is the updated_at the caller read; the write is refused (409)
     // when the card has changed since. It is not a column and is not written. Absent = the plain update.
     let expectedUpdatedAt: number | undefined

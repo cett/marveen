@@ -31,6 +31,20 @@ vi.mock('../db/agents.js', async (importOriginal) => {
     },
   }
 })
+// `update` records the fields handed to updateKanbanCard; `beforeUpdate` runs right before the real write (after the
+// route's tenant read and verdict), to stand in for a write by another caller in between.
+const update = vi.hoisted(() => ({ calls: [] as Array<Record<string, unknown>>, beforeUpdate: null as null | (() => void) }))
+vi.mock('../db.js', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../db.js')>()
+  return {
+    ...real,
+    updateKanbanCard: (...a: Parameters<typeof real.updateKanbanCard>) => {
+      update.calls.push({ ...a[1] })
+      update.beforeUpdate?.()
+      return real.updateKanbanCard(...a)
+    },
+  }
+})
 // alpha, beta: fleet-internal agents no tenant lists (they serve the default tenant by convention); carmen: enabled for
 // both tenants; main-a / main-b: the main agents of the two tenants.
 const KNOWN = ['alpha', 'beta', 'carmen', 'main-a', 'main-b', 'main-agent']
@@ -125,6 +139,8 @@ const CASES: Array<[Caller, string, boolean]> = [
 beforeEach(async () => {
   lookup.fail = false
   lookup.calls.length = 0
+  update.calls.length = 0
+  update.beforeUpdate = null
   initDatabase(':memory:')
   await createTenant('acme', 'Acme')
   getDb().prepare("UPDATE tenants SET main_agent_id = 'main-a' WHERE id = 'default'").run()
@@ -691,6 +707,35 @@ describe('PUT /api/kanban/:id: the tenant verdict judges a change, not the value
     const out = await callAs(await callerAuth('default'), 'PUT', '/api/kanban/card-default', { assignee: ['main-b'] })
     expect(out.status).toBe(400)
     expect(out.body).toMatchObject({ error: 'invalid_value', field: 'assignee' })
+  })
+
+  it('an unchanged assignee is not handed to updateKanbanCard, the other fields are', async () => {
+    setAssignee('card-default', 'main-b')
+    const out = await callAs(await callerAuth('default'), 'PUT', '/api/kanban/card-default', { title: 'Renamed', assignee: 'main-b' })
+    expect(out.status).toBe(200)
+    expect(update.calls).toHaveLength(1)
+    expect(update.calls[0]).not.toHaveProperty('assignee')
+    expect(update.calls[0]).toMatchObject({ title: 'Renamed' })
+  })
+
+  it('an assignee an admin sets between the tenant read and the write survives the unchanged PUT', async () => {
+    setAssignee('card-default', 'main-b')
+    update.beforeUpdate = () => setAssignee('card-default', 'main-a') // the admin write lands after the route read the card
+    const out = await callAs(await callerAuth('default'), 'PUT', '/api/kanban/card-default', { title: 'Renamed', assignee: 'main-b' })
+    expect(out.status).toBe(200)
+    expect(cardState('card-default')).toMatchObject({ assignee: 'main-a', title: 'Renamed' }) // not rolled back to main-b
+  })
+
+  it('a changed assignee is still handed to updateKanbanCard', async () => {
+    setAssignee('card-default', 'main-b')
+    expect((await callAs(await callerAuth('default'), 'PUT', '/api/kanban/card-default', { assignee: 'beta' })).status).toBe(200)
+    expect(update.calls[0]).toMatchObject({ assignee: 'beta' })
+  })
+
+  it('the admin is not affected: the assignee is passed on as sent', async () => {
+    setAssignee('card-default', 'main-b')
+    expect((await callAs(await ADMIN_AUTH(), 'PUT', '/api/kanban/card-default', { assignee: 'main-b' })).status).toBe(200)
+    expect(update.calls[0]).toMatchObject({ assignee: 'main-b' })
   })
 
   it('the admin sends the same unchanged value and a new one: both 200', async () => {
