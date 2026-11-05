@@ -43,6 +43,15 @@ function spyFacade(): string[] {
   return seen
 }
 
+/** Records the text of every db.exec (BEGIN, COMMIT, SAVEPOINT, ROLLBACK TO, RELEASE) from now on. */
+function recordExec(): string[] {
+  const seen: string[] = []
+  const db = getDb()
+  const original = db.exec.bind(db)
+  vi.spyOn(db, 'exec').mockImplementation((sql: string) => { seen.push(sql); return original(sql) })
+  return seen
+}
+
 describe('adminPatchDashboardUser: the last active admin', () => {
   it('refuses to demote the last active admin and leaves the row as it was', async () => {
     const a = await provisionDashboardUser('only-admin', 'h', 'admin', null)
@@ -217,6 +226,71 @@ describe('deleteTenant: one transaction on the tx handle', () => {
     getDb().exec("CREATE TRIGGER tenant_delete_blocked BEFORE DELETE ON tenants BEGIN SELECT RAISE(ABORT, 'blocked'); END")
     await expect(deleteTenant('gone')).rejects.toThrow(/blocked/)
     expect(getDb().prepare('SELECT COUNT(*) AS n FROM vec_memories WHERE memory_id = ?').get(BigInt(id))).toEqual({ n: 1 })
+  })
+
+  // The vec_workspace_docs delete is best effort (its failure is swallowed), so it runs in a savepoint inside the
+  // delete transaction. On SQLite a failed statement leaves the transaction usable anyway; on PostgreSQL the swallowed
+  // failure would abort the whole transaction (25P02) without the savepoint. So the statements are watched.
+  it('the vec_workspace_docs delete runs in a savepoint: a failure there is swallowed, rolled back and released, the tenant delete commits', async (ctx) => {
+    if (!vecExtensionLoaded) ctx.skip()
+    await createTenant('gone', 'Gone')
+    seedTenantRows('gone')
+    const sql = recordExec()
+    const db = getDb()
+    const realPrepare = db.prepare.bind(db)
+    vi.spyOn(db, 'prepare').mockImplementation(((text: string) => {
+      if (/^DELETE FROM vec_workspace_docs WHERE tenant_id/.test(text)) throw new Error('vec0 unavailable')
+      return realPrepare(text)
+    }) as typeof db.prepare)
+    await deleteTenant('gone')
+    vi.restoreAllMocks()
+    // the seeded memory row has its own vec entry delete (a savepoint of its own, released); the failing one is the only
+    // savepoint that is rolled back: opened right before, released right after, under the same name
+    const rollbackAt = sql.findIndex((s) => /^ROLLBACK TO dbx_sp_\d+$/.test(s))
+    expect(rollbackAt).toBeGreaterThan(0)
+    const name = sql[rollbackAt].replace('ROLLBACK TO ', '')
+    expect(sql[rollbackAt - 1]).toBe(`SAVEPOINT ${name}`)
+    expect(sql[rollbackAt + 1]).toBe(`RELEASE ${name}`)
+    // the outer transaction went on and committed: the tenant is gone with its rows
+    expect(sql[sql.length - 1]).toBe('COMMIT')
+    expect(rows('tenants', 'id', 'gone')).toBe(0)
+    expect(rows('dashboard_users', 'tenant_id', 'gone')).toBe(0)
+    expect(rows('memories', 'tenant_id', 'gone')).toBe(0)
+  })
+
+  it('without a failure both vec deletes (the memory row and the workspace docs) are savepoints that are released, never rolled back', async (ctx) => {
+    if (!vecExtensionLoaded) ctx.skip()
+    await createTenant('gone', 'Gone')
+    seedTenantRows('gone')
+    const sql = recordExec()
+    await deleteTenant('gone')
+    expect(sql.filter((s) => /^(SAVEPOINT|RELEASE|ROLLBACK TO) /.test(s)))
+      .toEqual(['SAVEPOINT dbx_sp_1', 'RELEASE dbx_sp_1', 'SAVEPOINT dbx_sp_2', 'RELEASE dbx_sp_2'])
+  })
+
+  // The tenant scoping of the two workspace deletes: a flipped (<>) or widened (OR 1=1) predicate would drop the
+  // sibling's rows, so the sibling needs its own workspace_docs and vec_workspace_docs rows to lose.
+  it('drops the workspace docs and their vec rows of the deleted tenant only: the sibling keeps both', async (ctx) => {
+    if (!vecExtensionLoaded) ctx.skip()
+    await createTenant('gone', 'Gone')
+    await createTenant('sibling', 'Sibling')
+    const blob = Buffer.from(new Float32Array(768).fill(0.1).buffer)
+    for (const tenant of ['gone', 'sibling']) {
+      for (const n of [1, 2]) {
+        const id = `wd-${tenant}-${n}`
+        getDb().prepare("INSERT INTO workspace_docs (id, agent_id, tenant_id, doc_key, title, content, content_type, type, size_bytes, created_at, updated_at, last_accessed_at) VALUES (?, ?, ?, ?, 't', 'c', 'text', 'notes', 1, 0, 0, 0)")
+          .run(id, `agent-${tenant}`, tenant, `notes/${tenant}-${n}`)
+        getDb().prepare('INSERT INTO vec_workspace_docs(doc_id, agent_id, tenant_id, embedding) VALUES (?, ?, ?, ?)')
+          .run(id, `agent-${tenant}`, tenant, blob)
+      }
+    }
+    expect(rows('workspace_docs', 'tenant_id', 'gone')).toBe(2)
+    expect(rows('vec_workspace_docs', 'tenant_id', 'gone')).toBe(2)
+    await deleteTenant('gone')
+    expect(rows('workspace_docs', 'tenant_id', 'gone')).toBe(0)
+    expect(rows('vec_workspace_docs', 'tenant_id', 'gone')).toBe(0)
+    expect(rows('workspace_docs', 'tenant_id', 'sibling')).toBe(2)
+    expect(rows('vec_workspace_docs', 'tenant_id', 'sibling')).toBe(2)
   })
 })
 
