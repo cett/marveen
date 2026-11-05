@@ -5,6 +5,7 @@
 // Spec: opentelemetry-proto/trace/v1/trace.proto (JSON encoding)
 
 import { createHash } from 'node:crypto'
+import { toHexId } from './otel-ids.js'
 import { hostname } from 'node:os'
 import { PROJECT_ROOT } from './config.js'
 import type { OtelSpan, TokenUsageMetricRow, TokenHistogramRow } from './db.js'
@@ -226,21 +227,7 @@ function msToNano(ms: number): string {
   return String(ms * 1_000_000)
 }
 
-// OTLP requires traceId to be exactly 16 bytes (32 hex chars) and spanId
-// exactly 8 bytes (16 hex chars) of raw hex -- not a UUID, not a Claude-native
-// id. Our ids are session_ids, msg_... ids, tool_use ids and transcript UUIDs,
-// none of which are hex or the right length, so a collector validates and
-// rejects (400) every export. Hash deterministically instead of trying to
-// "clean up" the original string: the same input always yields the same
-// output, so trace/span correlation (parent-child links across multiple
-// export calls) is preserved.
-function toHexId(id: string, byteLen: 8 | 16, passthrough = false): string {
-  // A trace id taken over from a W3C traceparent header (src/otel-http.ts) is already the id to send. Only for the
-  // server's own http.server spans: any other span that carries such an id (written through POST /api/spans or by
-  // mistake) is hashed like every other id, so it cannot be steered into someone else's trace.
-  if (passthrough && id.startsWith('w3c-') && new RegExp(`^[0-9a-f]{${byteLen * 2}}$`).test(id.slice(4))) return id.slice(4)
-  return createHash('sha256').update(id).digest('hex').slice(0, byteLen * 2)
-}
+// OTLP trace / span ids: toHexId lives in otel-ids.ts, shared with the log export.
 
 // Tenant label for a span whose tenant could not be resolved (otel_spans.tenant_id NULL, see migration
 // 0077): not 'default', which would pass it off as the default tenant's.

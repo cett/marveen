@@ -16,7 +16,14 @@ export const OTEL_LOG_SOURCES = [
 ] as const
 export type OtelLogSource = (typeof OTEL_LOG_SOURCES)[number]
 
-export interface ApprovalEventLogRow {
+// The trace the row was written in (migration 0088): NULL for a row written before it or outside a traced request.
+// Selected by name like every other column; it is an id, never content.
+export interface TraceColumns {
+  trace_id: string | null
+  span_id: string | null
+}
+
+export interface ApprovalEventLogRow extends TraceColumns {
   id: number
   approval_id: string
   tenant_id: string | null
@@ -26,7 +33,7 @@ export interface ApprovalEventLogRow {
   created_at: number
 }
 
-export interface RbacDecisionLogRow {
+export interface RbacDecisionLogRow extends TraceColumns {
   id: number
   ts: number
   tenant_id: string | null
@@ -39,14 +46,14 @@ export interface RbacDecisionLogRow {
   reason: string
 }
 
-export interface ConfigChangeExportRow {
+export interface ConfigChangeExportRow extends TraceColumns {
   id: number
   key: string
   actor: string
   created_at: number
 }
 
-export interface AgentAuditExportRow {
+export interface AgentAuditExportRow extends TraceColumns {
   id: number
   agent_id: string
   entity: string
@@ -54,7 +61,7 @@ export interface AgentAuditExportRow {
   created_at: number
 }
 
-export interface HookAuditExportRow {
+export interface HookAuditExportRow extends TraceColumns {
   id: number
   ts: number
   agent_id: string | null
@@ -66,7 +73,7 @@ export interface HookAuditExportRow {
 }
 
 // What an agent announced on the blackboard: who and which state. The summary text and the task reference are not read.
-export interface BlackboardExportRow {
+export interface BlackboardExportRow extends TraceColumns {
   id: number
   agent_id: string
   status: string
@@ -75,7 +82,7 @@ export interface BlackboardExportRow {
 
 // A kanban card moving between columns: the card id (only as a keyed hash, to follow one card), the two statuses and
 // the actor. The title, description and comments are not in this table and are not read.
-export interface KanbanEventExportRow {
+export interface KanbanEventExportRow extends TraceColumns {
   id: number
   card_id: string
   from_status: string | null
@@ -149,18 +156,18 @@ export async function getGateDecisionCounts(): Promise<GateDecisionCountRow[]> {
 // (the refusals, which is what an audit reads, are exported).
 export async function getOtelLogBatch(limit: number): Promise<OtelLogRows> {
   return {
-    approval_events: await dbx.all<ApprovalEventLogRow>(`SELECT id, approval_id, tenant_id, event, reason, actor, created_at
+    approval_events: await dbx.all<ApprovalEventLogRow>(`SELECT id, approval_id, tenant_id, event, reason, actor, created_at, trace_id, span_id
        FROM approval_events WHERE id > ? ORDER BY id ASC LIMIT ?`, await getOtelLogCursor('approval_events'), limit),
-    rbac_shadow_log: await dbx.all<RbacDecisionLogRow>(`SELECT id, ts, tenant_id, principal_kind, principal, role, method, permission, decision, reason
+    rbac_shadow_log: await dbx.all<RbacDecisionLogRow>(`SELECT id, ts, tenant_id, principal_kind, principal, role, method, permission, decision, reason, trace_id, span_id
        FROM rbac_shadow_log WHERE id > ? AND decision != 'permitted' ORDER BY id ASC LIMIT ?`, await getOtelLogCursor('rbac_shadow_log'), limit),
-    config_change_log: await dbx.all<ConfigChangeExportRow>(`SELECT id, key, actor, created_at FROM config_change_log WHERE id > ? ORDER BY id ASC LIMIT ?`, await getOtelLogCursor('config_change_log'), limit),
-    agent_audit_log: await dbx.all<AgentAuditExportRow>(`SELECT id, agent_id, entity, action, created_at FROM agent_audit_log WHERE id > ? ORDER BY id ASC LIMIT ?`, await getOtelLogCursor('agent_audit_log'), limit),
+    config_change_log: await dbx.all<ConfigChangeExportRow>(`SELECT id, key, actor, created_at, trace_id, span_id FROM config_change_log WHERE id > ? ORDER BY id ASC LIMIT ?`, await getOtelLogCursor('config_change_log'), limit),
+    agent_audit_log: await dbx.all<AgentAuditExportRow>(`SELECT id, agent_id, entity, action, created_at, trace_id, span_id FROM agent_audit_log WHERE id > ? ORDER BY id ASC LIMIT ?`, await getOtelLogCursor('agent_audit_log'), limit),
     // Only the refusals. tool_name, content_hash and session_id are not read: the row says which gate said no,
     // for which agent, with which reason code. (The allow rows of browser-content-notice and the handoff rows of
     // the context watchdog are not security events.)
-    hook_audit_log: await dbx.all<HookAuditExportRow>(`SELECT id, ts, agent_id, hook_type, verdict, trigger_source, reason, tenant_id
+    hook_audit_log: await dbx.all<HookAuditExportRow>(`SELECT id, ts, agent_id, hook_type, verdict, trigger_source, reason, tenant_id, trace_id, span_id
        FROM hook_audit_log WHERE id > ? AND verdict IN ('deny', 'defer') ORDER BY id ASC LIMIT ?`, await getOtelLogCursor('hook_audit_log'), limit),
-    fleet_blackboard_history: await dbx.all<BlackboardExportRow>(`SELECT id, agent_id, status, created_at FROM fleet_blackboard_history WHERE id > ? ORDER BY id ASC LIMIT ?`, await getOtelLogCursor('fleet_blackboard_history'), limit),
-    kanban_card_events: await dbx.all<KanbanEventExportRow>(`SELECT id, card_id, from_status, to_status, actor, created_at FROM kanban_card_events WHERE id > ? ORDER BY id ASC LIMIT ?`, await getOtelLogCursor('kanban_card_events'), limit),
+    fleet_blackboard_history: await dbx.all<BlackboardExportRow>(`SELECT id, agent_id, status, created_at, trace_id, span_id FROM fleet_blackboard_history WHERE id > ? ORDER BY id ASC LIMIT ?`, await getOtelLogCursor('fleet_blackboard_history'), limit),
+    kanban_card_events: await dbx.all<KanbanEventExportRow>(`SELECT id, card_id, from_status, to_status, actor, created_at, trace_id, span_id FROM kanban_card_events WHERE id > ? ORDER BY id ASC LIMIT ?`, await getOtelLogCursor('kanban_card_events'), limit),
   }
 }

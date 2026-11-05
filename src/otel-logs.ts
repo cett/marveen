@@ -11,10 +11,11 @@
 // with spaces or a path in it cannot ride out as an attribute.
 
 import { createHmac } from 'node:crypto'
+import { toHexId } from './otel-ids.js'
 import type { AppLogRecord } from './otel-app-logs.js'
 import type {
   OtelLogRows, OtelLogSource, ApprovalEventLogRow, RbacDecisionLogRow, ConfigChangeExportRow, AgentAuditExportRow,
-  HookAuditExportRow, BlackboardExportRow, KanbanEventExportRow,
+  HookAuditExportRow, BlackboardExportRow, KanbanEventExportRow, TraceColumns,
 } from './db/otel-logs.js'
 
 const SEVERITY_INFO = 9
@@ -36,6 +37,10 @@ export interface OtelLogRecord {
   severityText: string
   body: { stringValue: string }
   attributes: LogAttribute[]
+  // OTLP LogRecord fields (not attributes): the trace and span the event was written in, so a backend shows the
+  // record next to the spans of the same trace. Absent when the row carries no trace.
+  traceId?: string
+  spanId?: string
 }
 
 // A bounded machine token, or '_other'. Empty input has no token (null).
@@ -60,12 +65,23 @@ function attr(key: string, value: string | null): LogAttribute[] {
   return value === null ? [] : [{ key, value: { stringValue: value } }]
 }
 
+// The trace fields of a record. The stored id goes through the SAME mapping the span export uses (otel-ids.ts), so a
+// record and the spans of its trace share one OTLP trace id. `passthrough`: a `w3c-<hex>` value is taken over as it
+// is. That is safe here because the audit columns are written from the server's own request context only, never
+// from a request body (migration 0088 and its writers), so nobody can steer a record into a trace of their choosing.
+// A span id without a trace id is no valid OTLP correlation and is left out.
+export function traceFields(t: TraceColumns): { traceId?: string; spanId?: string } {
+  if (!t.trace_id) return {}
+  return { traceId: toHexId(t.trace_id, 16, true), ...(t.span_id ? { spanId: toHexId(t.span_id, 8) } : {}) }
+}
+
 function record(
   eventName: string,
   severity: number,
   tsSec: number,
   observedNano: string,
   attributes: LogAttribute[],
+  trace: TraceColumns,
 ): OtelLogRecord {
   return {
     timeUnixNano: secToNano(tsSec),
@@ -74,6 +90,7 @@ function record(
     severityText: severity >= SEVERITY_WARN ? 'WARN' : 'INFO',
     body: { stringValue: eventName },
     attributes: [{ key: 'event.name', value: { stringValue: eventName } }, ...attributes],
+    ...traceFields(trace),
   }
 }
 
@@ -91,7 +108,7 @@ function approvalRecord(r: ApprovalEventLogRow, salt: string, observed: string):
     ...attr('marveen.approval.reason', token(r.reason)),
     ...attr('marveen.actor.hash', actorHash(r.actor, salt)),
     ...tenantAttr(r.tenant_id),
-  ])
+  ], r)
 }
 
 function rbacRecord(r: RbacDecisionLogRow, salt: string, observed: string): OtelLogRecord {
@@ -105,14 +122,14 @@ function rbacRecord(r: RbacDecisionLogRow, salt: string, observed: string): Otel
     ...attr('marveen.principal.kind', token(r.principal_kind)),
     ...attr('marveen.actor.hash', actorHash(r.principal, salt)),
     ...tenantAttr(r.tenant_id),
-  ])
+  ], r)
 }
 
 function configRecord(r: ConfigChangeExportRow, salt: string, observed: string): OtelLogRecord {
   return record('marveen.config.changed', SEVERITY_INFO, r.created_at, observed, [
     ...attr('marveen.config.key', token(r.key)),
     ...attr('marveen.actor.hash', actorHash(r.actor, salt)),
-  ])
+  ], r)
 }
 
 function agentAuditRecord(r: AgentAuditExportRow, salt: string, observed: string): OtelLogRecord {
@@ -123,7 +140,7 @@ function agentAuditRecord(r: AgentAuditExportRow, salt: string, observed: string
     ...attr('marveen.audit.action', action),
     // agent_audit_log.agent_id is an agent id OR the session user / token / device behind a request.
     ...attr('marveen.actor.hash', actorHash(r.agent_id, salt)),
-  ])
+  ], r)
 }
 
 function hookAuditRecord(r: HookAuditExportRow, observed: string): OtelLogRecord {
@@ -137,7 +154,7 @@ function hookAuditRecord(r: HookAuditExportRow, observed: string): OtelLogRecord
     // The agent id of a hook row is an agent name, like marveen.agent.id on the spans; token() bounds it.
     ...attr('marveen.agent.id', token(r.agent_id)),
     ...tenantAttr(r.tenant_id),
-  ])
+  ], r)
 }
 
 // ── Application logs (src/otel-app-logs.ts) ─────────────────────────────────
@@ -171,7 +188,7 @@ function blackboardRecord(r: BlackboardExportRow, observed: string): OtelLogReco
     ...attr('marveen.blackboard.status', status),
     // An agent name, like marveen.agent.id on the spans; token() bounds it. The summary text is not read.
     ...attr('marveen.agent.id', token(r.agent_id)),
-  ])
+  ], r)
 }
 
 function kanbanRecord(r: KanbanEventExportRow, salt: string, observed: string): OtelLogRecord {
@@ -181,7 +198,7 @@ function kanbanRecord(r: KanbanEventExportRow, salt: string, observed: string): 
     // The card id is only ever a keyed hash: enough to follow one card through its columns, nothing to look up.
     ...attr('marveen.kanban.card.hash', actorHash(r.card_id, salt)),
     ...attr('marveen.actor.hash', actorHash(r.actor, salt)),
-  ])
+  ], r)
 }
 
 export interface MappedLogBatch {
