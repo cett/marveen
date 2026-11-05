@@ -765,7 +765,7 @@ export async function runMessageRouterTick(): Promise<void> {
         // Inline preamble so a fresh session (post hard-restart) doesn't miss
         // the context that explains the tag semantics.
         await sendPromptToSession(session, prefix + wrapped, host)
-        recordDelivery(session, prefix + wrapped)
+        recordDelivery(session, prefix + wrapped, String(msg.id))
         if (!await markMessageDelivered(msg.id)) {
           logger.warn({ id: msg.id }, 'markMessageDelivered affected 0 rows (deleted concurrently?)')
         } else {
