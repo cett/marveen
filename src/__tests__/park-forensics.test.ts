@@ -222,9 +222,116 @@ describe('through the stuck-input recovery of a session', () => {
   })
 })
 
+// ---- Boundaries the first version left open (delta-QA of the PR review): every number is a literal, not the constant. ----
+const FLAT_PREAMBLE = UNTRUSTED_PREAMBLE.replace(/\s+/g, ' ').trim()
+/** A piece of the preamble, exactly n chars, with no space at either end (so its trimmed length is n). */
+function pieceOfLength(n: number): string {
+  for (let i = 0; i + n <= FLAT_PREAMBLE.length; i++) {
+    const piece = FLAT_PREAMBLE.slice(i, i + n)
+    if (piece[0] !== ' ' && piece[n - 1] !== ' ') return piece
+  }
+  throw new Error(`no piece of ${n} chars`)
+}
+
+describe('the shortest row that may be shown', () => {
+  it('a boilerplate piece of 19 chars is masked, one of 20 and one of 21 are shown', () => {
+    const p19 = pieceOfLength(19)
+    const p20 = pieceOfLength(20)
+    const p21 = pieceOfLength(21)
+    expect(redactBoxRow(p19)).toBe('[non-wrapper 19 chars]')
+    expect(redactBoxRow(p20)).toBe(p20)
+    expect(redactBoxRow(p21)).toBe(p21)
+  })
+
+  it('the length is measured AFTER the whitespace is collapsed (20 chars with a double space inside is 19 once folded)', () => {
+    const p20 = pieceOfLength(20)
+    const spaced = p20.replace(' ', '   ') // longer raw, same 20 collapsed -> shown
+    expect(redactBoxRow(spaced)).toBe(p20)
+    const p19 = pieceOfLength(19)
+    expect(redactBoxRow(p19.replace(' ', '      '))).toBe('[non-wrapper 19 chars]')
+  })
+})
+
+describe('whitespace is folded before the boilerplate check', () => {
+  it('a piece with tabs, no-break spaces and runs of spaces is shown exactly like the plain one', () => {
+    const piece = FLAT_PREAMBLE.slice(60, 160).trim()
+    const ragged = piece.replace(/ /g, (_m, off: number) => ['\u00a0', '\t', '   ', '\u00a0\u00a0'][off % 4])
+    expect(ragged).not.toBe(piece)
+    expect(redactBoxRow(ragged)).toBe(piece)
+  })
+
+  it('a ragged piece mixed with a draft word is masked, and the mask carries the FOLDED length', () => {
+    const piece = FLAT_PREAMBLE.slice(60, 160).trim()
+    const ragged = `${piece.replace(/ /g, '\u00a0\t ')} DRAFT-MARKER-ONE`
+    const folded = `${piece} DRAFT-MARKER-ONE`
+    expect(redactBoxRow(ragged)).toBe(`[non-wrapper ${folded.length} chars]`)
+    expect(redactBoxRow(ragged)).not.toContain('DRAFT-MARKER')
+  })
+
+  it('through the log line: a box row with a double space inside a boilerplate piece is shown folded', () => {
+    const piece = FLAT_PREAMBLE.slice(60, 160).trim()
+    logParkForensicsOnce('session-a', 1, pane([piece.replace(' ', '   '), DRAFT_A]))
+    expect(fieldsOf(forensicsLines()[0]).tail[0]).toBe(piece)
+  })
+})
+
+describe('how many open episodes are kept', () => {
+  it('exactly 200 stay open; the 201st forgets only the oldest', () => {
+    const p = pane(HEAD_LOST_FRAME)
+    for (let i = 0; i < 200; i++) logParkForensicsOnce(`ep-${i}`, 1, p)
+    for (let i = 0; i < 200; i++) expect(_parkEpisodeOpen(`ep-${i}`), `ep-${i}`).toBe(true)
+    logParkForensicsOnce('ep-200', 1, p)
+    expect(_parkEpisodeOpen('ep-0')).toBe(false)
+    for (let i = 1; i <= 200; i++) expect(_parkEpisodeOpen(`ep-${i}`), `ep-${i}`).toBe(true)
+    for (let i = 0; i <= 200; i++) endParkEpisode(`ep-${i}`)
+  })
+})
+
+describe('which rows the log shows', () => {
+  // Distinct lengths per row, none of them boilerplate, so a wrong slice shows in the numbers.
+  const lengthsOf = (n: number) => Array.from({ length: n }, (_, i) => `${DRAFT_A} y${'y'.repeat(i)}`)
+
+  it('the tail is the LAST six rows, in order, not the first six', () => {
+    const rows = lengthsOf(10)
+    logParkForensicsOnce('session-a', 1, pane(rows))
+    const f = fieldsOf(forensicsLines()[0])
+    expect(f.tail).toEqual(rows.slice(4).map((r) => `[non-wrapper ${r.length} chars]`))
+    expect(f.tail).not.toEqual(rows.slice(0, 6).map((r) => `[non-wrapper ${r.length} chars]`))
+  })
+
+  it('a 60-row box: the count is 60, the lengths stop at 40 rows (the first 40), the tail is the last 6', () => {
+    const rows = lengthsOf(60)
+    logParkForensicsOnce('session-a', 1, pane(rows))
+    const f = fieldsOf(forensicsLines()[0])
+    expect(f.rowCount).toBe(60)
+    expect(f.rowLengths).toEqual(rows.slice(0, 40).map((r) => r.length))
+    expect(f.tail).toEqual(rows.slice(54).map((r) => `[non-wrapper ${r.length} chars]`))
+  })
+
+  it('40 rows are all measured, 41 rows are cut to 40', () => {
+    logParkForensicsOnce('session-a', 1, pane(lengthsOf(40)))
+    expect(fieldsOf(forensicsLines()[0]).rowLengths).toHaveLength(40)
+    endParkEpisode('session-a')
+    logParkForensicsOnce('session-a', 1, pane(lengthsOf(41)))
+    expect(fieldsOf(forensicsLines()[1]).rowLengths).toHaveLength(40)
+  })
+
+  it('the row lengths are all the log says about a draft row (the price of the redaction)', () => {
+    logParkForensicsOnce('session-a', 1, pane([DRAFT_A, DRAFT_B]))
+    expect(fieldsOf(forensicsLines()[0]).rowLengths).toEqual([DRAFT_A.length, DRAFT_B.length])
+  })
+})
+
 describe('wiring', () => {
   it('the router labels its delivery with the message id, so the forensics can name the last deliveries', () => {
     const router = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../web/message-router.ts'), 'utf-8')
     expect(router).toContain('recordDelivery(session, prefix + wrapped, String(msg.id))')
+  })
+
+  it('the schedule runner labels its delivery with the literal kind, never with the prompt text (the label is logged)', () => {
+    const runner = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../web/schedule-runner.ts'), 'utf-8')
+    expect(runner).toContain("recordDelivery(session, fullPrompt, 'scheduled-task')")
+    // The only recordDelivery call in the runner: a second one with another label would escape the assert above.
+    expect(runner.match(/recordDelivery\(/g)).toHaveLength(1 + (runner.match(/import \{ recordDelivery/g)?.length ?? 0) * 0)
   })
 })
