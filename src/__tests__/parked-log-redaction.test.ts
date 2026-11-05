@@ -43,6 +43,7 @@ import { redactParkedForLog } from '../web/park-forensics.js'
 import { clearStaleParkedInput, MAIN_PARKED_HEARTBEAT_AFTER, MAIN_PARKED_OWNER_AFTER } from '../web/agent-process.js'
 import { UNTRUSTED_PREAMBLE, TRUSTED_PEER_PREAMBLE, CHANNEL_INBOUND_PREAMBLE } from '../prompt-safety.js'
 import { MAIN_CHANNELS_SESSION } from '../web/main-agent.js'
+import { notifyChannel } from '../notify.js'
 
 const flatten = (s: string): string => s.replace(/\s+/g, ' ').trim()
 
@@ -132,12 +133,27 @@ beforeEach(() => {
   h.calls.length = 0
   h.logs.length = 0
   h.clearEmpties = false
+  vi.mocked(notifyChannel).mockClear()
 })
+
+// A parked line that is longer than the alert preview (80 characters) and holds the three characters the alert
+// replaces ('<', '>', '&'). The first 28 characters become: marker, space, ' b ', ' ', ' /b ', space; the preview is
+// exactly 80 characters (28 + 52).
+const ALERT_HEAD = 'DRAFT-MARKER-alert <b>&</b> '
+const ALERT_PREVIEW = 'DRAFT-MARKER-alert' + ' ' + ' b ' + ' ' + ' /b ' + ' ' + 'x'.repeat(52)
+const ALERT_PARKED = ALERT_HEAD + 'x'.repeat(100)
+
+/** The text the alert shows after its fixed wording: the quoted preview at the end of the message. */
+function previewOf(message: string): string {
+  const m = /"([^"]*)"$/.exec(message)
+  expect(m, 'the alert ends with the quoted preview').not.toBeNull()
+  return m![1]!
+}
 
 describe('the un-wedge log calls never carry the parked text', () => {
   it('main session: left untouched (debug), persisting (heartbeat warn) and owner notified, all redacted', async () => {
-    const marker = 'DRAFT-MARKER-main'
-    const text = `${marker} human draft for agent-a`
+    const marker = 'DRAFT-MARKER-alert'
+    const text = ALERT_PARKED
     h.pane = h.box(`\u276f ${text}`)
     for (let i = 0; i < MAIN_PARKED_OWNER_AFTER; i++) {
       await clearStaleParkedInput(MAIN_CHANNELS_SESSION)
@@ -152,13 +168,27 @@ describe('the un-wedge log calls never carry the parked text', () => {
     expect(owner).toHaveLength(1)
     for (const l of [...untouched, ...heartbeat, ...owner]) expectRedactedFields(l, text.length)
     expect(fieldsOf(owner[0]!).session).toBe(MAIN_CHANNELS_SESSION)
-    expect(typeof fieldsOf(owner[0]!).fails).toBe('number')
+    // The failure count rides on every line, one more each round: the ladder is readable from the log.
+    expect(untouched.map((l) => fieldsOf(l).fails)).toEqual([1, 2, 3, 4, 5])
+    expect(heartbeat.map((l) => fieldsOf(l).fails)).toEqual([6, 7, 8, 9, 10, 11])
+    expect(owner.map((l) => fieldsOf(l).fails)).toEqual([12])
     expectNoMarkerAnywhere(marker)
+
+    // The owner alert is NOT redacted, on purpose (the owner fixes the box by hand): pinned as it is. The preview is
+    // the first 80 characters of the parked line with '<', '>' and '&' turned into spaces; the wording around it is fixed.
+    expect(notifyChannel).toHaveBeenCalledTimes(1)
+    const alert = vi.mocked(notifyChannel).mock.calls[0]![0]
+    expect(alert.startsWith(`\u{1F6A8} A fo agens (${MAIN_CHANNELS_SESSION}) input-mezojeben ~6 perce all egy parkolt sor, `)).toBe(true)
+    expect(alert).toContain('es emiatt a csatorna nem dolgoz fel bejovo uzenetet. KEZI FELOLDAS (par masodperc): ')
+    expect(alert).toContain(`tmux attach -t ${MAIN_CHANNELS_SESSION}, majd Ctrl-C es utana Ctrl-U (a sor torlese), vegul kilepes: Ctrl-B d. `)
+    expect(alert.endsWith(`A parkolt sor eleje: "${ALERT_PREVIEW}"`)).toBe(true)
+    expect(previewOf(alert)).toHaveLength(80)
+    expect(previewOf(alert)).not.toMatch(/[<>&]/)
   }, 90_000) // 12 sequential real 2s stable-confirm delays
 
   it('sub-agent whose box resists clearing: backing off (warn) and, past the threshold, escalated (warn), both redacted', async () => {
-    const marker = 'DRAFT-MARKER-resist'
-    const text = `${marker} frame text of another agent`
+    const marker = 'DRAFT-MARKER-alert'
+    const text = ALERT_PARKED
     h.pane = h.box(`\u276f ${text}`) // clearing keystrokes change nothing
     for (let i = 0; i < 6; i++) {
       await clearStaleParkedInput('agent-sub-a')
@@ -170,7 +200,19 @@ describe('the un-wedge log calls never carry the parked text', () => {
     expect(escalated).toHaveLength(1)
     for (const l of [...backoff, ...escalated]) expectRedactedFields(l, text.length)
     expect(fieldsOf(escalated[0]!).session).toBe('agent-sub-a')
+    // The failure count rides on every line, one more each round.
+    expect(backoff.map((l) => fieldsOf(l).fails)).toEqual([1, 2, 3, 4, 5, 6])
+    expect(escalated.map((l) => fieldsOf(l).fails)).toEqual([6])
     expectNoMarkerAnywhere(marker)
+
+    // The operator alert is NOT redacted, on purpose (it shows the line so the box can be fixed by hand): pinned as it
+    // is, in the same shape as the main one (80 characters, '<', '>' and '&' turned into spaces).
+    expect(notifyChannel).toHaveBeenCalledTimes(1)
+    const alert = vi.mocked(notifyChannel).mock.calls[0]![0]
+    expect(alert.startsWith('\u26a0\ufe0f Egy sub-agent (agent-sub-a) input-mezojebe beragadt egy parkolt sor, ')).toBe(true)
+    expect(alert).toContain('az auto-tisztitas 6x sikertelen -- lehet kezi beavatkozas kell. Reszlet: ')
+    expect(alert.endsWith(`Reszlet: "${ALERT_PREVIEW}"`)).toBe(true)
+    expect(previewOf(alert)).toHaveLength(80)
   }, 120_000)
 
   it('sub-agent whose box clears: the cleared line is redacted', async () => {
@@ -185,19 +227,4 @@ describe('the un-wedge log calls never carry the parked text', () => {
     expect(fieldsOf(cleared[0]!).session).toBe('agent-sub-b')
     expectNoMarkerAnywhere(marker)
   }, 30_000)
-
-  it('the operator alert is not part of the log: its wording is unchanged by the redaction (it still shows the line)', async () => {
-    // Pinned so the redaction is not mistaken for a change to the owner alert (a separate, deliberate surface).
-    const { notifyChannel } = await import('../notify.js')
-    vi.mocked(notifyChannel).mockClear()
-    h.pane = h.box('\u276f DRAFT-MARKER-alert visible to the owner only')
-    h.clearEmpties = false
-    for (let i = 0; i < 6; i++) {
-      await clearStaleParkedInput('agent-sub-c')
-      clock += COOLDOWN
-    }
-    expect(notifyChannel).toHaveBeenCalledTimes(1)
-    expect(vi.mocked(notifyChannel).mock.calls[0]![0]).toContain('DRAFT-MARKER-alert')
-    for (const l of h.logs) expect(JSON.stringify(l.args)).not.toContain('DRAFT-MARKER-alert')
-  }, 120_000)
 })
