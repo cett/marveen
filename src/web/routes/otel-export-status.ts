@@ -1,5 +1,6 @@
 import { getOtelExportOverview } from '../otel-push-exporter.js'
 import { json } from '../http-helpers.js'
+import { requireGlobalAdmin } from './global-admin.js'
 import type { RouteContext } from './types.js'
 
 // GET /api/admin/otel-export-status - the state of the OTLP push exporter, seen from outside the exporter: whether the
@@ -10,11 +11,8 @@ import type { RouteContext } from './types.js'
 // the unlisted-route fallback.
 export function tryHandleOtelExportStatus(ctx: RouteContext): Promise<boolean> {
   if (ctx.path !== '/api/admin/otel-export-status' || ctx.method !== 'GET') return Promise.resolve(false)
-  // The RBAC gate already refuses a non-admin; this holds in shadow mode too.
-  if (ctx.role !== 'admin') {
-    json(ctx.res, { error: 'forbidden', hint: 'Admin only' }, 403)
-    return Promise.resolve(true)
-  }
+  // The RBAC gate already refuses a non-admin; this holds in shadow mode too. Global admin only.
+  if (!requireGlobalAdmin(ctx)) return Promise.resolve(true)
   json(ctx.res, { now: Date.now(), ...getOtelExportOverview() })
   return Promise.resolve(true)
 }

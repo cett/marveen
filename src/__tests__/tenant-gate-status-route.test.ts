@@ -30,7 +30,7 @@ function call(method: string, path: string): Promise<{ handled: boolean; status:
     },
   }
   const url = new URL(`http://localhost:3420${path}`)
-  const ctx = { req, res, path: url.pathname, method, url, role: 'admin', tenantId: null } as unknown as RouteContext
+  const ctx = { req, res, path: url.pathname, method, url, role: 'admin', tenantId: null, auth: { kind: 'token' } } as unknown as RouteContext
   return tryHandleTenantGateStatus(ctx).then((handled) => ({ handled, status: out.status, body: out.body }))
 }
 

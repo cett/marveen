@@ -17,19 +17,10 @@ import { readBody, json } from '../http-helpers.js'
 import { consumeEnrollCode, issueEnrollCode } from '../browser-enroll-codes.js'
 import { generateToken, sha256hex } from './tokens.js'
 import { denyAgentCredentialIssue } from '../session-only-guard.js'
+import { isGlobalAdmin } from './global-admin.js'
 import type { RouteContext } from './types.js'
 
 const ENROLL_BODY_MAX_BYTES = 2 * 1024
-
-// A code buys a full admin token, so only a global admin (the shared token, an admin token of the
-// default tenant, or a global-admin session) may ask for one. A tenant-scoped admin must not turn
-// a code into a default-tenant admin token. 'device' is deliberately absent: a leaked device key
-// must not be able to mint further credentials.
-function isGlobalAdmin(ctx: RouteContext): boolean {
-  const kindOk = ctx.auth?.kind === 'token' || ctx.auth?.kind === 'session'
-  const tenantOk = ctx.tenantId === undefined || ctx.tenantId === null || ctx.tenantId === 'default'
-  return kindOk && ctx.role === 'admin' && tenantOk
-}
 
 export async function tryHandleBrowserEnroll(ctx: RouteContext): Promise<boolean> {
   const { path, method, req, res } = ctx

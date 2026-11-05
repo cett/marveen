@@ -25,7 +25,7 @@ function call(method: string, path: string): Promise<{ handled: boolean; status:
     },
   }
   const url = new URL(`http://localhost:3420${path}`)
-  const ctx = { req, res, path: url.pathname, method, url, role: 'admin', tenantId: null } as unknown as RouteContext
+  const ctx = { req, res, path: url.pathname, method, url, role: 'admin', tenantId: null, auth: { kind: 'token' } } as unknown as RouteContext
   return tryHandleDbContext(ctx).then((handled) => ({ handled, status: out.status, body: out.body }))
 }
 
@@ -56,7 +56,7 @@ describe('GET /api/admin/db-context', () => {
       end(b?: string | Buffer) { if (b) out.body = JSON.parse(Buffer.isBuffer(b) ? b.toString('utf-8') : b) },
     }
     const url = new URL('http://localhost:3420/api/admin/db-context')
-    const ctx = { req, res, path: url.pathname, method: 'GET', url, role: 'viewer', tenantId: null } as unknown as RouteContext
+    const ctx = { req, res, path: url.pathname, method: 'GET', url, role: 'viewer', tenantId: null, auth: { kind: 'token' } } as unknown as RouteContext
     expect(await tryHandleDbContext(ctx)).toBe(true)
     expect(out.status).toBe(403)
     expect(out.body.sites).toBeUndefined()
