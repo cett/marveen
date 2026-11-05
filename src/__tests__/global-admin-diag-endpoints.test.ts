@@ -68,6 +68,13 @@ const REFUSED: Array<[string, Caller]> = [
   ['no role at all', { role: undefined, tenantId: null }],
   ['admin device key in the default tenant', { role: 'admin', tenantId: 'default', kind: 'device' }],
   ['admin federation peer with a null tenant', { role: 'admin', tenantId: null, kind: 'federation' }],
+  ['admin federation peer in the default tenant', { role: 'admin', tenantId: 'default', kind: 'federation' }],
+  ['admin device key with a null tenant', { role: 'admin', tenantId: null, kind: 'device' }],
+  // The tenant id is compared exactly: no trimming, no prefix match.
+  ['admin of a tenant id with a leading space', { role: 'admin', tenantId: ' default' }],
+  ['admin of a tenant id with a trailing space', { role: 'admin', tenantId: 'default ' }],
+  ['admin of a tenant id that only starts with default', { role: 'admin', tenantId: 'default-x' }],
+  ['admin of a tenant id in another case', { role: 'admin', tenantId: 'DEFAULT' }],
 ]
 
 interface Result { handled: boolean; status: number; body: any; ends: number }
