@@ -143,19 +143,35 @@ describe('reconcileAgentsOnStartup', () => {
     expect(mockAddDesiredAgent).not.toHaveBeenCalled()
   })
 
-  it('writes the desired set only for the reconnected agents that are not in it yet', async () => {
-    // agent-a is desired (no write), agent-b is live only through autoRestart (written once), agent-c is stale (restarted, not written).
-    mockGetDesiredAgents.mockReturnValue(new Set(['agent-a', 'agent-c']))
-    mockReadAllAutoRestartConfigs.mockReturnValue({ 'agent-b': { enabled: true } })
+  it('writes the desired set only for the reconnected agents that are not in it yet (five agents, every combination)', async () => {
+    // a: desired, live: no write. b: live only through autoRestart: one write. c: desired, stale: restarted, no write.
+    // d: autoRestart only, stale: restarted, no write (a write in the stale branch, with or without a condition, shows here).
+    // e: desired AND autoRestart, live: no write (a guard that asks for autoRestart instead of the desired set shows here).
+    mockGetDesiredAgents.mockReturnValue(new Set(['agent-a', 'agent-c', 'agent-e']))
+    mockReadAllAutoRestartConfigs.mockReturnValue({ 'agent-b': { enabled: true }, 'agent-d': { enabled: true }, 'agent-e': { enabled: true } })
     mockSessionExistsOnHost.mockReturnValue(true)
-    mockCapturePane.mockImplementation((session) => (session === 'agent-agent-c' ? 'stale pane' : 'pane content'))
+    const stale = new Set(['agent-agent-c', 'agent-agent-d'])
+    mockCapturePane.mockImplementation((session) => (stale.has(session) ? 'stale pane' : 'pane content'))
     mockDetectPaneState.mockImplementation((pane) => (pane === 'stale pane' ? 'unknown' : 'idle'))
 
     await reconcileAgentsOnStartup()
 
     expect(mockAddDesiredAgent.mock.calls).toEqual([['agent-b']])
-    expect(mockRestartAgentProcess.mock.calls).toEqual([['agent-c']])
+    expect([...mockRestartAgentProcess.mock.calls].sort()).toEqual([['agent-c'], ['agent-d']])
     expect(mockStartAgentProcess).not.toHaveBeenCalled()
+  })
+
+  it('waits for the desired-set write of a reconnected agent before it returns (the database closes right after)', async () => {
+    mockReadAllAutoRestartConfigs.mockReturnValue({ 'agent-a': { enabled: true } })
+    mockSessionExistsOnHost.mockReturnValue(true)
+    mockCapturePane.mockReturnValue('pane content')
+    mockDetectPaneState.mockReturnValue('idle')
+    let written = false
+    mockAddDesiredAgent.mockImplementation(() => new Promise<void>((resolve) => { setTimeout(() => { written = true; resolve() }, 15) }))
+
+    await reconcileAgentsOnStartup()
+
+    expect(written).toBe(true) // a write that is not awaited is still pending here
   })
 
   it('calls addDesiredAgent for a reconnected session not already in desired set', async () => {
