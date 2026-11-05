@@ -593,12 +593,15 @@ export type KanbanClaimOutcome =
  * agent, so two agents that read the card as unassigned at the same moment cannot both take it (exactly one UPDATE
  * changes a row). Claiming a card the agent already holds succeeds again (idempotent). An archived card cannot be
  * claimed. 'taken' and 'not_found' are told apart by a read AFTER the refused write; only the answer depends on it.
+ * A repeated claim by the holder writes the same assignee and leaves updated_at alone (the CASE keeps it): updated_at
+ * is the card's "last change" (the stale-write guard of PUT, the auto-archive of done cards, the search order), and a
+ * claim that changes nothing must not move it. Still ONE conditional UPDATE, so the atomicity stays.
  */
 export async function claimKanbanCard(id: string, agent: string): Promise<KanbanClaimOutcome> {
   const now = Math.floor(Date.now() / 1000)
   const res = await dbx.run(
-    "UPDATE kanban_cards SET assignee=?, updated_at=? WHERE id=? AND archived_at IS NULL AND (assignee IS NULL OR assignee='' OR assignee=?)",
-    agent, now, id, agent,
+    "UPDATE kanban_cards SET assignee=?, updated_at=CASE WHEN assignee=? THEN updated_at ELSE ? END WHERE id=? AND archived_at IS NULL AND (assignee IS NULL OR assignee='' OR assignee=?)",
+    agent, agent, now, id, agent,
   )
   if (res.changes > 0) return { status: 'claimed' }
   const card = await getKanbanCard(id)

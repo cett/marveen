@@ -19,6 +19,7 @@ import {
   type KanbanCard,
   type KanbanAuditActor,
 } from '../../db.js'
+import { isKanbanIdTaken } from '../../db/kanban-id-taken.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
 import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, PROJECT_ROOT, WEB_HOST, WEB_PORT, KANBAN_LABEL_COLORS } from '../../config.js'
 import { listAgentNames, readAgentDisplayName } from '../agent-config.js'
@@ -459,7 +460,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
         idTaken = false
         break
       } catch (err) {
-        if (/UNIQUE constraint failed: kanban_cards\.id/i.test(String((err as Error)?.message))) { idTaken = true; continue }
+        if (isKanbanIdTaken(err)) { idTaken = true; continue }
         logger.error({ err }, 'Failed to create kanban card')
         json(res, { error: 'internal_error', hint: 'Failed to create card' }, 500)
         return true

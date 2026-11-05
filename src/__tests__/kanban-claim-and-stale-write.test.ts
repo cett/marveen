@@ -8,6 +8,7 @@ import { createHash } from 'node:crypto'
 import type http from 'node:http'
 import { dbx } from '../db/facade.js'
 import { initDatabase, getDb, insertApiToken, createKanbanCard, claimKanbanCard, updateKanbanCard, createTenant } from '../db.js'
+import { isKanbanIdTaken } from '../db/kanban-id-taken.js'
 import { resolveAuth, type AuthResult } from '../web/auth-gate.js'
 import { checkPermission, resolveRole, resolveTenantId } from '../web/authz.js'
 import { tryHandleKanban } from '../web/routes/kanban.js'
@@ -410,5 +411,124 @@ describe('POST /api/kanban -- the id redraw', () => {
       expect(inserts).toBe(3)
     } finally { spy.mockRestore() }
     expect((getDb().prepare("SELECT COUNT(*) AS c FROM kanban_cards WHERE title = 'After clashes'").get() as { c: number }).c).toBe(1)
+  })
+})
+
+describe('claimKanbanCard: updated_at moves only when the assignee changes', () => {
+  const OLD = 1_000
+  const CLAIM_AT = 5_000
+  const setCard = (assignee: string | null, archivedAt: number | null = null) =>
+    getDb().prepare('UPDATE kanban_cards SET assignee = ?, updated_at = ?, archived_at = ? WHERE id = ?').run(assignee, OLD, archivedAt, CARD)
+  const claimAt = async (agent: string) => {
+    const spy = vi.spyOn(Date, 'now').mockReturnValue(CLAIM_AT * 1000)
+    try { return await claimKanbanCard(CARD, agent) } finally { spy.mockRestore() }
+  }
+
+  it('the holder claiming again: claimed, assignee stays, updated_at is NOT bumped', async () => {
+    setCard('agent-a')
+    expect(await claimAt('agent-a')).toEqual({ status: 'claimed' })
+    expect(row(CARD)).toMatchObject({ assignee: 'agent-a', updated_at: OLD })
+  })
+
+  it('the first claim (no assignee): updated_at is the claim time', async () => {
+    setCard(null)
+    expect(await claimAt('agent-a')).toEqual({ status: 'claimed' })
+    expect(row(CARD)).toMatchObject({ assignee: 'agent-a', updated_at: CLAIM_AT })
+  })
+
+  it('the first claim (empty assignee): updated_at is the claim time', async () => {
+    setCard('')
+    expect(await claimAt('agent-a')).toEqual({ status: 'claimed' })
+    expect(row(CARD)).toMatchObject({ assignee: 'agent-a', updated_at: CLAIM_AT })
+  })
+
+  it('another agent holds it: taken, nothing is written', async () => {
+    setCard('agent-b')
+    expect(await claimAt('agent-a')).toEqual({ status: 'taken', assignee: 'agent-b' })
+    expect(row(CARD)).toMatchObject({ assignee: 'agent-b', updated_at: OLD })
+  })
+
+  it('archived: not_found, nothing is written', async () => {
+    setCard(null, 1)
+    expect(await claimAt('agent-a')).toEqual({ status: 'not_found' })
+    expect(row(CARD)).toMatchObject({ assignee: null, updated_at: OLD })
+  })
+
+  it('a repeated claim leaves the stale-write guard intact: a PUT that read the card before it is not refused as stale', async () => {
+    setCard('agent-a')
+    await claimAt('agent-a')
+    const out = await callAs(await asAdmin(), 'PUT', `/api/kanban/${CARD}`, { title: 'Renamed', expected_updated_at: OLD })
+    expect(out.status).toBe(200)
+    expect(row(CARD).title).toBe('Renamed')
+  })
+})
+
+describe('isKanbanIdTaken', () => {
+  const sqlite = (message: string, code?: string) => Object.assign(new Error(message), code ? { code } : {})
+  const pg = (extra: Record<string, unknown>) => Object.assign(new Error('duplicate key value violates unique constraint'), extra)
+
+  it.each([
+    ['SQLite primary key, code and message', sqlite('UNIQUE constraint failed: kanban_cards.id', 'SQLITE_CONSTRAINT_PRIMARYKEY'), true],
+    ['SQLite message only', sqlite('UNIQUE constraint failed: kanban_cards.id'), true],
+    ['PostgreSQL 23505 on kanban_cards_pkey', pg({ code: '23505', constraint: 'kanban_cards_pkey' }), true],
+    ['PostgreSQL 23505 by table and column', pg({ code: '23505', table: 'kanban_cards', column: 'id' }), true],
+    ['PostgreSQL 23505 on another constraint', pg({ code: '23505', constraint: 'kanban_comments_pkey' }), false],
+    ['PostgreSQL 23505 with no constraint detail', pg({ code: '23505' }), false],
+    ['PostgreSQL 23505 on another table, same column name', pg({ code: '23505', table: 'kanban_comments', column: 'id' }), false],
+    ['another PostgreSQL code on the right constraint', pg({ code: '23503', constraint: 'kanban_cards_pkey' }), false],
+    ['SQLite unique on another table', sqlite('UNIQUE constraint failed: kanban_comments.id', 'SQLITE_CONSTRAINT_PRIMARYKEY'), false],
+    ['a plain error', new Error('boom'), false],
+    ['not an Error', { code: '23505', constraint: 'kanban_cards_pkey' }, false],
+    ['a string', 'UNIQUE constraint failed: kanban_cards.id', false],
+    ['undefined', undefined, false],
+  ] as Array<[string, unknown, boolean]>)('%s -> %s', (_name, err, expected) => {
+    expect(isKanbanIdTaken(err)).toBe(expected)
+  })
+})
+
+describe('POST /api/kanban: the id redraw on a PostgreSQL unique violation', () => {
+  const insertFailing = (failures: number, error: () => Error) => {
+    const real = getDb().prepare.bind(getDb())
+    const state = { inserts: 0 }
+    vi.spyOn(getDb(), 'prepare').mockImplementation(((text: string) => {
+      if (/^INSERT INTO kanban_cards/.test(text.trim())) {
+        state.inserts++
+        if (state.inserts <= failures) throw error()
+      }
+      return real(text)
+    }) as never)
+    return state
+  }
+  const pkClash = () => Object.assign(new Error('duplicate key value violates unique constraint "kanban_cards_pkey"'), { code: '23505', constraint: 'kanban_cards_pkey' })
+  const otherClash = () => Object.assign(new Error('duplicate key value violates unique constraint "kanban_cards_slug_key"'), { code: '23505', constraint: 'kanban_cards_slug_key' })
+
+  it('one clash and then a free id: the card is created once and answered 200 with a new id', async () => {
+    const state = insertFailing(1, pkClash)
+    try {
+      const out = await callAs(await asAdmin(), 'POST', '/api/kanban', { title: 'After a pg clash' })
+      expect(out.status).toBe(200)
+      expect(typeof out.body.id).toBe('string')
+      expect(state.inserts).toBe(2)
+    } finally { vi.restoreAllMocks() }
+    expect((getDb().prepare("SELECT COUNT(*) AS c FROM kanban_cards WHERE title = 'After a pg clash'").get() as { c: number }).c).toBe(1)
+  })
+
+  it('three clashes in a row: 409 conflict (id_taken), three draws, no card', async () => {
+    const state = insertFailing(99, pkClash)
+    try {
+      const out = await callAs(await asAdmin(), 'POST', '/api/kanban', { title: 'Always a clash' })
+      expect(out.status).toBe(409)
+      expect(out.body).toMatchObject({ error: 'conflict', reason: 'id_taken' })
+      expect(state.inserts).toBe(3)
+    } finally { vi.restoreAllMocks() }
+  })
+
+  it('a 23505 on another constraint is a 500 and is NOT retried (one insert)', async () => {
+    const state = insertFailing(99, otherClash)
+    try {
+      const out = await callAs(await asAdmin(), 'POST', '/api/kanban', { title: 'Other violation' })
+      expect(out.status).toBe(500)
+      expect(state.inserts).toBe(1)
+    } finally { vi.restoreAllMocks() }
   })
 })
