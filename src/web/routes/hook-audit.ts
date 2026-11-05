@@ -1,7 +1,12 @@
-import { insertHookAuditLog, listHookAuditLog, pruneHookAuditLog } from '../../db.js'
+import { insertHookAuditLog, listHookAuditLog, pruneHookAuditLogJournaled } from '../../db.js'
 import { readBody, json } from '../http-helpers.js'
 import { actingAgentId, denyForeignAgent } from '../fleet-agent-identity.js'
+import { scheduleActor } from '../schedule-review-effects.js'
 import type { RouteContext } from './types.js'
+
+// The manual prune: the window defaults to 30 days and is never shorter than one day.
+const DEFAULT_PRUNE_WINDOW_SECS = 30 * 86400
+const MIN_PRUNE_WINDOW_SECS = 86400
 
 const VALID_HOOK_TYPES = new Set(['PreToolUse', 'PostToolUse', 'PreCompact', 'Stop'])
 // 'handoff' (added for the context watchdog's proactive-compaction phase):
@@ -84,12 +89,26 @@ export async function tryHandleHookAudit(ctx: RouteContext): Promise<boolean> {
     return true
   }
 
-  // POST /api/hook-audit/prune -- cleanup old entries
+  // POST /api/hook-audit/prune -- cleanup old entries. The window is a positive whole number of seconds, at least
+  // MIN_PRUNE_WINDOW_SECS: 0 or a negative value used to put the cut at or after now and wipe the whole table. The
+  // call is journaled (who, how many, which cut) in the same transaction as the delete. The route is not in the
+  // RBAC table, so it falls to admin:all (pinned in audit-retention-prune.test.ts, "who may call it").
   if (path === '/api/hook-audit/prune' && method === 'POST') {
     const body = await readBody(req)
-    const data = JSON.parse(body.toString() || '{}') as { older_than_secs?: number }
-    await pruneHookAuditLog(data.older_than_secs ?? 30 * 86400)
-    json(res, { ok: true })
+    const parsed: unknown = JSON.parse(body.toString() || '{}')
+    const data = (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null) as { older_than_secs?: unknown } | null
+    if (!data) {
+      json(res, { error: 'invalid_value', field: 'body', hint: 'the body must be a JSON object' }, 400)
+      return true
+    }
+    const window = data.older_than_secs ?? DEFAULT_PRUNE_WINDOW_SECS
+    if (typeof window !== 'number' || !Number.isInteger(window) || window < MIN_PRUNE_WINDOW_SECS) {
+      json(res, { error: 'invalid_value', field: 'older_than_secs', hint: `older_than_secs must be a whole number of seconds, at least ${MIN_PRUNE_WINDOW_SECS} (1 day)` }, 400)
+      return true
+    }
+    const actor = scheduleActor(ctx)
+    const deleted = await pruneHookAuditLogJournaled(window, { agentId: actor.agentId, actorKind: actor.actorKind })
+    json(res, { ok: true, deleted })
     return true
   }
 
