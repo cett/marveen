@@ -31,6 +31,7 @@ import {
 import { withSessionSendLock } from './session-send-lock.js'
 import { reapChannelOrphans, reapDetachedChannelClaudes, collectPollerEvidence } from './channel-poller-reap.js'
 import { matchDelivery } from './delivery-intent.js'
+import { logParkForensicsOnce, endParkEpisode } from './park-forensics.js'
 import { probeTelegramConflict } from './channel-conflict-probe.js'
 import { schedulePluginUnlockAfterRespawn, wasPluginConfirmedAbsent, clearPluginAbsent } from './channel-plugin-unlock.js'
 import {
@@ -426,6 +427,8 @@ export async function recoverStuckInputForSession(
   // (phantom prompt-injection). See captureParkedInputView / stripGhostSuggestion.
   const pane = captureParkedInputView(session)
   const sig = pane != null ? stuckInputSignature(pane) : null
+  // A capture with nothing parked in it ends the park episode (a failed capture does not: pane is null then).
+  if (pane != null && sig == null) endParkEpisode(session)
   const decision = decideStuckInputRecovery(sig, prev, Date.now(), thresholds)
   if (decision.recover && pane != null) {
     const attempt = decision.next.attempts
@@ -541,6 +544,8 @@ async function performStuckInputAction(
         break
       case 'hold':
         logger.warn({ session, attempt }, 'Stuck input -- multi-row/truncated, holding (no bare-Enter; awaiting keystroke fix)')
+        // What the pane looked like, once per park episode (log only, the hold stays a hold).
+        logParkForensicsOnce(session, attempt, paneBefore)
         break
     }
   } catch (err) {

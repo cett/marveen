@@ -1379,12 +1379,18 @@ export function parkedClearSequence(rowCount: number): string[] {
 // prompt marker; an empty box (`❯ ` only) or no box at all -> 0. Pure: no
 // tmux, only the captured text.
 export function parkedInputRowCount(pane: string): number {
+  return parkedInputRows(pane).length
+}
+
+// The non-empty rows of the live input box, each trimmed and without the leading prompt marker (a row keeps its
+// terminal-wrap boundaries: one entry per visible row). Empty when there is no box or nothing is in it. Pure.
+export function parkedInputRows(pane: string): string[] {
   const box = liveInputBox(pane)
-  if (box == null) return 0
+  if (box == null) return []
   return box
     .split('\n')
-    .map((row) => row.replace(/^\s*❯/, '').trim())
-    .filter((row) => row.length > 0).length
+    .map((row) => row.replace(/^\s*\u276F/, '').trim())
+    .filter((row) => row.length > 0)
 }
 
 // Post-submit verification: did the parked input actually leave the box?

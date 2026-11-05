@@ -1152,7 +1152,7 @@ async function attemptFireTask(
     // tick -- defeating the very purpose of forceSend (inject regardless, let
     // Claude Code queue it). All non-forceSend tasks keep the gate ON.
     await sendPromptToSession(session, fullPrompt, host, { waitForIdle: !task.forceSend })
-    recordDelivery(session, fullPrompt)
+    recordDelivery(session, fullPrompt, 'scheduled-task')
     await recordScheduleLastRun(task.name, now, lateCatchUpMs != null ? 'fired_late' : 'fired')
     // A lateCatchUpMs value means this tick only matched because of the
     // enlarged first-run catch-up window (see startScheduleRunner), i.e. the

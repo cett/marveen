@@ -19,17 +19,28 @@ const EXACT_MATCH_THRESHOLD = 40
 interface DeliveryRecord {
   content: string
   ts: number
+  /** A short label for the delivery (the message id, or the kind of a delivery that has none): diagnostics only. */
+  ref: string
 }
 
 // session -> ring of recent deliveries (newest last)
 const registry = new Map<string, DeliveryRecord[]>()
 
-/** Record a genuine delivery into session. Called at the actual inject point. */
-export function recordDelivery(session: string, content: string): void {
+/**
+ * Record a genuine delivery into session. Called at the actual inject point. `ref` labels it for the park forensics
+ * (the inter-agent message id; a scheduled task passes its kind): it is never matched on and never carries content.
+ */
+export function recordDelivery(session: string, content: string, ref = 'unlabeled'): void {
   const ring = registry.get(session) ?? []
-  ring.push({ content, ts: Date.now() })
+  ring.push({ content, ts: Date.now(), ref })
   if (ring.length > RING_CAP) ring.shift()
   registry.set(session, ring)
+}
+
+/** The labels of the last `n` deliveries into session, oldest first. Empty for an unknown session. */
+export function recentDeliveryRefs(session: string, n = 3): string[] {
+  const ring = registry.get(session)
+  return ring ? ring.slice(-n).map((r) => r.ref) : []
 }
 
 /**
