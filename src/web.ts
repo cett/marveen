@@ -109,6 +109,7 @@ import { tryHandleSkillSync } from './web/routes/skill-sync.js'
 import { tryHandleTenantGateStatus } from './web/routes/tenant-gate-status.js'
 import { tryHandleDbContext } from './web/routes/db-context.js'
 import { tryHandleRerankStats } from './web/routes/rerank-stats.js'
+import { tryHandleOtelExportStatus } from './web/routes/otel-export-status.js'
 import { startDbContextReport } from './web/db-context-report.js'
 import { tryHandleFleetQ } from './web/routes/fleet-q.js'
 import { tryHandleStatic } from './web/routes/static.js'
@@ -208,6 +209,7 @@ const dispatcher = new RouteDispatcher()
   .add(tryHandleTenantGateStatus)
   .add(tryHandleDbContext)
   .add(tryHandleRerankStats)
+  .add(tryHandleOtelExportStatus)
   .add(tryHandleFleetQ)
   .add(tryHandleFleet)
   .add(ctx => tryHandleStatic(ctx, WEB_DIR))

@@ -67,6 +67,9 @@ const state: Record<Signal, SignalState> = {
 }
 // One warning per distinct configuration problem, not one per tick.
 let lastConfigProblem = ''
+// The same problem as the status endpoint may show it: the log line names the unusable headers, the endpoint must not
+// (a header name is part of the credential's shape). Set next to lastConfigProblem, cleared with it.
+let lastConfigProblemPublic = ''
 
 function freshSignalState(): SignalState {
   return { consecutiveFailures: 0, nextAttemptMs: 0, failures: 0, rejected: 0, lastError: null, lastSuccessMs: null }
@@ -83,12 +86,51 @@ export function getOtelExporterStatus(): OtelExporterStatus {
   return { traces: { ...state.traces }, metrics: { ...state.metrics }, logs: { ...state.logs } }
 }
 
+/** What the status endpoint shows: the per-signal state plus whether the export is switched on and has somewhere to go. */
+export interface OtelExportOverview extends OtelExporterStatus {
+  /** OTEL_EXPORT_ENABLED. With it off nothing is exported and the counters below stay at zero. */
+  enabled: boolean
+  /** An endpoint is set. Only the fact, never the URL: the endpoint and the headers can carry a credential. */
+  endpointConfigured: boolean
+  /** Headers are set in .env. Only the fact, never the names or values. */
+  headersConfigured: boolean
+  /**
+   * The last configuration problem the exporter logged (a missing endpoint, an unusable URL, skipped headers), or null.
+   * A fixed text: when headers were skipped it says so without naming them (the log line names them, this does not).
+   */
+  configProblem: string | null
+}
+
+const LAST_ERROR_MAX_CHARS = 200
+// A transport error message is the runtime's text, not ours: Node's fetch does not put the URL in it, another runtime
+// might. Whatever looks like a URL is replaced before the cap, so the endpoint stays out of the answer either way.
+const URL_IN_TEXT = /[a-z][a-z0-9+.-]*:\/\/\S*/gi
+
+/**
+ * The export state for the outside (GET /api/admin/otel-export-status). The exporter's own failure counters
+ * go to the collector, the very channel that fails, so a collector that is down is invisible there; this reads the
+ * same state from the process. A copy, with the error text capped: a transport error message is not ours to bound.
+ */
+export function getOtelExportOverview(): OtelExportOverview {
+  const status = getOtelExporterStatus()
+  const cap = (s: SignalState): SignalState => ({ ...s, lastError: s.lastError === null ? null : s.lastError.replace(URL_IN_TEXT, '[url]').slice(0, LAST_ERROR_MAX_CHARS) })
+  const cfg = readConfig()
+  return {
+    traces: cap(status.traces), metrics: cap(status.metrics), logs: cap(status.logs),
+    enabled: cfg.enabled,
+    endpointConfigured: cfg.endpoint !== '',
+    headersConfigured: cfg.headersRaw !== '',
+    configProblem: lastConfigProblemPublic === '' ? null : lastConfigProblemPublic,
+  }
+}
+
 export function resetOtelExporterStatus(): void {
   state.traces = freshSignalState()
   state.metrics = freshSignalState()
   state.logs = freshSignalState()
   resetPendingDurations()
   lastConfigProblem = ''
+  lastConfigProblemPublic = ''
 }
 
 interface ExportConfig {
@@ -129,6 +171,7 @@ function resolveConfig(): ExportConfig | null {
     const reason = 'OTEL_EXPORTER_OTLP_HEADERS is set in .env, so OTEL_EXPORTER_OTLP_ENDPOINT must be set in .env too (the credential is bound to the endpoint file); nothing is exported'
     if (reason !== lastConfigProblem) {
       lastConfigProblem = reason
+      lastConfigProblemPublic = reason // a fixed text, no header name or value in it
       logger.warn({ reason }, 'otel-push-exporter: configuration problem')
     }
     return null
@@ -143,6 +186,11 @@ function resolveConfig(): ExportConfig | null {
       : ''
   if (problem !== lastConfigProblem) {
     lastConfigProblem = problem
+    // The endpoint check's reasons are fixed texts (at most the URL scheme); the skipped-header text names the headers,
+    // so the public one does not.
+    lastConfigProblemPublic = !check.ok
+      ? check.reason
+      : rejected.length > 0 ? 'OTEL_EXPORTER_OTLP_HEADERS: some entries were skipped as unusable' : ''
     if (problem) logger.warn({ rejected, problem }, 'otel-push-exporter: configuration problem')
   }
   if (!check.ok) return null
