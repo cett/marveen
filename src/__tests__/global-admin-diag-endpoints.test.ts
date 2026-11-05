@@ -27,7 +27,7 @@ vi.mock('../web/agent-config.js', async (importOriginal) => ({
   agentConfigRoot: (name: string) => (name === 'main-agent' ? state.root : join(state.root, 'agents', name)),
 }))
 
-import { initDatabase, insertApiToken } from '../db.js'
+import { initDatabase, createTenant, insertApiToken } from '../db.js'
 import { issueAgentToken, issueOperatorToken } from '../agent-tokens.js'
 import { resolveAuth } from '../web/auth-gate.js'
 import { resolveRole, resolveTenantId } from '../web/authz.js'
@@ -40,10 +40,11 @@ import { tryHandleTenantGateStatus } from '../web/routes/tenant-gate-status.js'
 import { tryHandleBrowserEnroll } from '../web/routes/browser-enroll.js'
 import type { RouteContext, RouteHandler } from '../web/routes/types.js'
 
-beforeEach(() => {
+beforeEach(async () => {
   state.root = mkdtempSync(join(tmpdir(), 'global-admin-diag-'))
   mkdirSync(join(state.root, 'store'), { recursive: true })
   initDatabase(':memory:')
+  await createTenant('tenant-a', 'Tenant A') // a token can only carry the id of an existing tenant
 })
 afterEach(() => { rmSync(state.root, { recursive: true, force: true }) })
 

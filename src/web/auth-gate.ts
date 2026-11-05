@@ -29,6 +29,7 @@ import { resolveSession } from './auth-sessions.js'
 import { resolveDeviceKey } from './auth-device-keys.js'
 import { getValidApiToken, apiTokenHashExists, getDashboardUserAuthRow } from '../db.js'
 import { resolveWriteTenant } from '../db/write-tenant.js'
+import { logger } from '../logger.js'
 import type { Role } from './rbac.js'
 
 export type AuthResult =
@@ -36,7 +37,7 @@ export type AuthResult =
   // that replaces the self-reported X-Agent-Id header. tenantContextMissing: a fleet_agent token of a
   // shared agent with no fresh tenant context. It authenticates, but the gate refuses it (403) and
   // checkPermission denies it too: no tenant can be named, so none is guessed (fail closed).
-  | { kind: 'token'; role?: Role; tenantId?: string; tokenName?: string; agentId?: string; tenantContextMissing?: boolean }
+  | { kind: 'token'; role?: Role; tenantId?: string; tokenName?: string; agentId?: string; tenantContextMissing?: boolean; tenantInvalid?: boolean }
   | { kind: 'device'; device: string; deviceId: number }
   | { kind: 'federation'; peer: string }
   | { kind: 'session'; user: string; role?: Role; tenantId?: string | null }
@@ -79,6 +80,21 @@ async function resolveFleetAgentToken(found: Extract<ApiTokenResult, { found: tr
     return { kind: 'token', role: 'fleet_agent', tokenName: found.name, agentId, tenantContextMissing: true }
   }
   return { kind: 'token', role: 'fleet_agent', tenantId, tokenName: found.name, agentId }
+}
+
+/**
+ * A token whose stored tenant is empty / whitespace (resolveAuth marks it `tenantInvalid` and names no tenant) is
+ * refused here with a 403: the credential is real, its tenant scope is not, so not a 401. Runs before the RBAC gate
+ * (so it holds in shadow mode too) and before any tenant is resolved: resolveTenantId would map a token without a
+ * tenant to 'default', which is a privilege escalation. Nothing is caught and let through, and the non-empty id
+ * check in the request context stays a throw behind this. Returns true when it answered.
+ */
+export function answerInvalidTenantToken(auth: AuthResult, path: string, method: string, res: http.ServerResponse): boolean {
+  if (!requiresAuth(path, method) || auth.kind !== 'token' || !auth.tenantInvalid) return false
+  logger.warn({ path, method, token: auth.tokenName }, 'token refused: its stored tenant_id is empty')
+  res.writeHead(403, { 'Content-Type': 'application/json' })
+  res.end(JSON.stringify({ error: 'forbidden', hint: 'This token has no valid tenant' }))
+  return true
 }
 
 export const SESSION_COOKIE_NAME = 'mv_session'
@@ -164,6 +180,9 @@ export async function resolveAuth(
     const result = await resolveApiToken(bearerValue)
     if (result.found) {
       if (result.role === 'fleet_agent') return resolveFleetAgentToken(result)
+      // A stored row whose tenant is empty/whitespace is a bad credential, not a request to act as any tenant: the
+      // result names NO tenant (never the 'default' fallback) and the gate refuses it with a 403.
+      if (result.tenantId.trim() === '') return { kind: 'token', role: result.role, tokenName: result.name, tenantInvalid: true }
       return {
         kind: 'token',
         role: result.role,

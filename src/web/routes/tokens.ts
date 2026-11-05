@@ -21,7 +21,9 @@ import {
   insertApiToken,
   revokeApiToken,
   rotateApiToken,
+  assertValidTokenTenant,
   ApiTokenAlreadyRevokedError,
+  InvalidTokenTenantError,
   type ApiTokenRow,
 } from '../../db.js'
 import { logger } from '../../logger.js'
@@ -70,6 +72,11 @@ function isFleetAgentId(agentId: string): boolean {
   return agentId === MAIN_AGENT_ID || isKnownAgent(agentId)
 }
 
+function invalidTenantBody(e: InvalidTokenTenantError): { error: string; field: string; hint: string } {
+  const hint = e.reason === 'unknown' ? 'tenant_id is not the id of an existing tenant' : 'tenant_id must be the id of an existing tenant (not empty or whitespace)'
+  return { error: 'invalid_value', field: 'tenant_id', hint }
+}
+
 // ── Route handler ─────────────────────────────────────────────────────────────
 
 export async function tryHandleAdminTokens(ctx: RouteContext): Promise<boolean> {
@@ -95,7 +102,16 @@ export async function tryHandleAdminTokens(ctx: RouteContext): Promise<boolean> 
 
     const name = typeof parsed.name === 'string' ? parsed.name.trim() : ''
     const role = typeof parsed.role === 'string' ? parsed.role.trim() : ''
-    let tenantId = typeof parsed.tenant_id === 'string' ? parsed.tenant_id.trim() : 'default'
+    let tenantId = 'default'
+    // An omitted tenant_id means the neutral default. One that is PRESENT must be a real id: '' / whitespace
+    // (the column's NOT NULL DEFAULT does not catch '') would store a token whose every request fails closed.
+    if (parsed.tenant_id !== undefined && parsed.tenant_id !== null) {
+      if (typeof parsed.tenant_id !== 'string' || parsed.tenant_id.trim() === '') {
+        json(res, { error: 'invalid_value', field: 'tenant_id', hint: 'tenant_id must be the id of an existing tenant' }, 400)
+        return true
+      }
+      tenantId = parsed.tenant_id.trim()
+    }
     const agentId = typeof parsed.agent_id === 'string' ? parsed.agent_id.trim() : ''
 
     if (!name) { json(res, { error: 'required', field: 'name', hint: 'name is required' }, 400); return true }
@@ -131,6 +147,13 @@ export async function tryHandleAdminTokens(ctx: RouteContext): Promise<boolean> 
     // A fleet_agent token carries no tenant of its own: the tenant of a request is derived from the
     // agent's serving context at request time, so the stored value is always the neutral default.
     if (role === 'fleet_agent') tenantId = 'default'
+    else {
+      // The same check insertApiToken runs (the writer does not trust its callers); here it gives the caller the 400.
+      try { await assertValidTokenTenant(tenantId) } catch (e) {
+        if (e instanceof InvalidTokenTenantError) { json(res, invalidTenantBody(e), 400); return true }
+        throw e
+      }
+    }
 
     const now = Math.floor(Date.now() / 1000)
     const expiresInDays = typeof parsed.expires_in_days === 'number' ? parsed.expires_in_days : null
@@ -145,6 +168,7 @@ export async function tryHandleAdminTokens(ctx: RouteContext): Promise<boolean> 
       // Return the raw token value ONCE -- it cannot be recovered after this response.
       json(res, { token: rawToken, ...toPublic(row) }, 201)
     } catch (e) {
+      if (e instanceof InvalidTokenTenantError) { json(res, invalidTenantBody(e), 400); return true }
       logger.error({ err: e }, 'api_token create failed')
       json(res, { error: 'internal_error', hint: 'failed to create token' }, 500)
     }
@@ -188,6 +212,9 @@ export async function tryHandleAdminTokens(ctx: RouteContext): Promise<boolean> 
       // A concurrent rotation or revoke won between the check above and the transaction: same answer as the
       // pre-check, not a server error.
       if (e instanceof ApiTokenAlreadyRevokedError) { json(res, { error: 'conflict', hint: 'token already revoked' }, 409); return true }
+      // The old row carries a tenant no token may have (a hand-written row): the replacement would copy it. The old
+      // token is left as it was; re-issue it with POST /api/admin/tokens instead.
+      if (e instanceof InvalidTokenTenantError) { json(res, invalidTenantBody(e), 400); return true }
       logger.error({ err: e }, 'api_token rotate failed')
       json(res, { error: 'internal_error', hint: 'failed to rotate token' }, 500)
     }

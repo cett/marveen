@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
 import type http from 'node:http'
-import { initDatabase, createDashboardUser, adminPatchDashboardUser, insertApiToken, revokeApiToken, dbx } from '../db.js'
+import { initDatabase, createTenant, createDashboardUser, adminPatchDashboardUser, insertApiToken, revokeApiToken, dbx } from '../db.js'
 import { createHash } from 'node:crypto'
 import { resolveAuth, requiresAuth, parseCookies, SESSION_COOKIE_NAME, resolveAgentIdHeader } from '../web/auth-gate.js'
 import { createSession, _clearSessionCacheForTest } from '../web/auth-sessions.js'
@@ -23,9 +23,10 @@ function mkUrl(path: string, query = ''): URL {
   return new URL(`http://127.0.0.1:3420${path}${query}`)
 }
 
-beforeAll(() => {
+beforeAll(async () => {
   process.env.NODE_ENV = 'test'
   initDatabase(':memory:')
+  await createTenant('tenant-a', 'Tenant A') // a token can only carry the id of an existing tenant
 })
 
 beforeEach(() => {

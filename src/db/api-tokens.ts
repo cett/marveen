@@ -3,7 +3,7 @@
 // feeds the auth gate lives in web/auth-gate.ts.
 
 import Database from 'better-sqlite3'
-import { dbx } from './facade.js'
+import { dbx, type SqlOps } from './facade.js'
 import { db } from './connection.js'
 
 export interface ApiTokenRow {
@@ -103,6 +103,31 @@ export async function getApiTokenRowById(id: number): Promise<ApiTokenRow | unde
   return dbx.get<ApiTokenRow>('SELECT * FROM api_tokens WHERE id = ?', id)
 }
 
+/** Why a token's tenant was refused: not a string, empty / whitespace only, or the id of no tenant. */
+export type InvalidTokenTenantReason = 'not_string' | 'blank' | 'unknown'
+
+/** Thrown by assertValidTokenTenant (and so by every token writer) for a tenant a token must not carry. */
+export class InvalidTokenTenantError extends Error {
+  constructor(readonly reason: InvalidTokenTenantReason) {
+    super(`invalid token tenant_id (${reason})`)
+    this.name = 'InvalidTokenTenantError'
+  }
+}
+
+/**
+ * The one check every token writer runs before it stores a tenant_id: a string, not empty / whitespace (JS
+ * `trim`, which also covers the Unicode spaces the SQL `trim` does not), and the id of a tenant the tenants table
+ * knows. The column's `NOT NULL DEFAULT 'default'` does not catch '', and a stored '' makes every request of the
+ * token fail in the request context's non-empty id check. It never substitutes anything: a refused tenant is
+ * refused, never mapped to 'default' (that would hand the token the default tenant's data).
+ */
+export async function assertValidTokenTenant(tenantId: unknown, ops: SqlOps = dbx): Promise<string> {
+  if (typeof tenantId !== 'string') throw new InvalidTokenTenantError('not_string')
+  if (tenantId.trim() === '') throw new InvalidTokenTenantError('blank')
+  if (!await ops.get('SELECT id FROM tenants WHERE id = ?', tenantId)) throw new InvalidTokenTenantError('unknown')
+  return tenantId
+}
+
 export async function insertApiToken(row: {
   tokenHash: string
   name: string
@@ -112,6 +137,7 @@ export async function insertApiToken(row: {
   expiresAt: number | null
   agentId?: string | null
 }): Promise<ApiTokenRow> {
+  await assertValidTokenTenant(row.tenantId)
   return (await dbx.get(`INSERT INTO api_tokens (token_hash, name, role, tenant_id, created_at, expires_at, agent_id)
        VALUES (?, ?, ?, ?, ?, ?, ?)
        RETURNING *`, row.tokenHash, row.name, row.role, row.tenantId, row.createdAt, row.expiresAt, row.agentId ?? null)) as ApiTokenRow
@@ -156,6 +182,9 @@ export async function rotateApiToken(
   expiresAt: number | null,
 ): Promise<ApiTokenRow> {
   await dbx.tx(async (tx) => {
+    // The replacement copies the tenant of the old row: a row with a bad tenant is not carried forward. Checked
+    // before the revoke, so a refusal leaves the old token as it was.
+    await assertValidTokenTenant(old.tenant_id, tx)
     const revoked = await tx.run('UPDATE api_tokens SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL', now, old.id)
     if (revoked.changes === 0) throw new ApiTokenAlreadyRevokedError(old.id)
     await tx.run(`INSERT INTO api_tokens (token_hash, name, role, tenant_id, created_at, expires_at, rotated_from, agent_id)

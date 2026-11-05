@@ -21,8 +21,11 @@ useTestDb()
 
 const NOW = 1_800_000_000
 
-const mint = (name: string, hash: string, role = 'fleet_agent', createdAt = NOW - 100, expiresAt: number | null = null, tenantId = 'default') =>
-  insertApiToken({ tokenHash: hash, name, role, tenantId, createdAt, expiresAt, agentId: name === 'dashboard' ? null : 'agent-a' })
+// A token can only carry the id of an existing tenant (insertApiToken checks), so a tenant other than 'default' is made first.
+const mint = async (name: string, hash: string, role = 'fleet_agent', createdAt = NOW - 100, expiresAt: number | null = null, tenantId = 'default') => {
+  await dbx.run('INSERT OR IGNORE INTO tenants (id, display_name, created_at) VALUES (?, ?, ?)', tenantId, tenantId, createdAt)
+  return insertApiToken({ tokenHash: hash, name, role, tenantId, createdAt, expiresAt, agentId: name === 'dashboard' ? null : 'agent-a' })
+}
 
 const count = (): number => (getDb().prepare('SELECT COUNT(*) AS n FROM api_tokens').get() as { n: number }).n
 const activeHashes = async (name: string): Promise<string[]> => (await listActiveApiTokensByName(name, NOW)).map((r) => r.token_hash).sort()
@@ -62,8 +65,7 @@ describe('rotateApiToken', () => {
     expect(await getApiTokenRowById(old.id)).toMatchObject({ token_hash: 'old-hash', revoked_at: NOW })
   })
 
-  // api_tokens.tenant_id is plain TEXT (no foreign key), so a row of another tenant needs no fixture. Every other
-  // case here uses 'default', which a replacement that hard-codes the tenant would still match.
+  // Every other case here uses 'default', which a replacement that hard-codes the tenant would still match.
   it('the replacement takes name, role, tenant and agent of the row it replaces (a tenant other than default)', async () => {
     const old = await mint('t-fields', 'old-hash', 'viewer', NOW - 100, null, 'other-tenant')
     const next = await rotateApiToken(old, 'new-hash', NOW, null)
