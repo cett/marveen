@@ -2,10 +2,10 @@
 // 'retention_prune') per sweep with the count per table, the cuts, the number of spans that went without ever
 // being exported, and whether the export was on. The deletes and the row are one transaction. The manual prune of
 // the hook audit log is journaled the same way and no longer accepts a window that wipes the table.
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import { EventEmitter } from 'node:events'
 import { useTestDb } from './helpers/with-test-db.js'
-import { getDb, pruneAuditLogs, pruneHookAuditLog, pruneOtelSpans, setSystemConfig } from '../db.js'
+import { getDb, pruneAuditLogs, pruneHookAuditLog, pruneHookAuditLogJournaled, pruneOtelSpans, setSystemConfig } from '../db.js'
 import { tryHandleHookAudit } from '../web/routes/hook-audit.js'
 import { hasPermission, resolveRequiredPermission, type Role } from '../web/rbac.js'
 import type { RouteContext } from '../web/routes/types.js'
@@ -248,5 +248,128 @@ describe('POST /api/hook-audit/prune: who may call it', () => {
     expect(need).toBe('admin:all')
     for (const r of ['agent', 'read_only', 'viewer', 'fleet_agent'] as Role[]) expect(hasPermission(r, need), r).toBe(false)
     expect(hasPermission('admin', need)).toBe(true)
+  })
+})
+
+// ---- windows, transaction mode, the cut of the unexported counter ------------------------------
+
+const insertHook = (ts: number): void => {
+  getDb().prepare("INSERT INTO hook_audit_log (ts, agent_id, hook_type, verdict) VALUES (?, 'a', 'PreToolUse', 'allow')").run(ts)
+}
+const hookTimes = (): number[] => (getDb().prepare('SELECT ts FROM hook_audit_log ORDER BY ts').all() as { ts: number }[]).map((r) => r.ts)
+
+/** The text of every db.exec from now on (BEGIN, BEGIN IMMEDIATE, SAVEPOINT, COMMIT ...). */
+function recordExec(): string[] {
+  const db = getDb()
+  const original = db.exec.bind(db)
+  const seen: string[] = []
+  vi.spyOn(db, 'exec').mockImplementation((sql: string) => { seen.push(sql); return original(sql) })
+  return seen
+}
+
+describe('the windows', () => {
+  it('the sweep keeps a 10 day old hook row and deletes a 200 day old one (the window is days, not seconds)', async () => {
+    insertHook(nowSec() - 10 * DAY)
+    insertHook(nowSec() - 200 * DAY)
+    const r = await pruneAuditLogs()
+    expect(r.deleted.hook_audit_log).toBe(1)
+    expect(hookTimes()).toHaveLength(1)
+    expect(Math.abs(hookTimes()[0] - (nowSec() - 10 * DAY))).toBeLessThan(5)
+    expect(JSON.parse(pruneRows()[0].detail).tables.hook_audit_log).toBe(1)
+  })
+
+  it('the manual prune without a window keeps a 15 day old row and deletes a 40 day old one (default 30 days)', async () => {
+    insertHook(nowSec() - 15 * DAY)
+    insertHook(nowSec() - 40 * DAY)
+    const { ctx, out } = makeCtx(undefined)
+    await tryHandleHookAudit(ctx)
+    expect(out.body).toEqual({ ok: true, deleted: 1 })
+    expect(hookTimes()).toHaveLength(1)
+    expect(Math.abs(hookTimes()[0] - (nowSec() - 15 * DAY))).toBeLessThan(5)
+  })
+})
+
+describe('the transactions take the write lock up front', () => {
+  afterEach(() => { vi.restoreAllMocks() })
+
+  it('pruneAuditLogs opens one BEGIN IMMEDIATE', async () => {
+    const sql = recordExec()
+    await pruneAuditLogs()
+    expect(sql.filter((q) => /^BEGIN/.test(q))).toEqual(['BEGIN IMMEDIATE'])
+    expect(sql[sql.length - 1]).toBe('COMMIT')
+  })
+
+  it('pruneHookAuditLogJournaled opens one BEGIN IMMEDIATE', async () => {
+    const sql = recordExec()
+    await pruneHookAuditLogJournaled(30 * DAY, { agentId: 'alice' })
+    expect(sql.filter((q) => /^BEGIN/.test(q))).toEqual(['BEGIN IMMEDIATE'])
+    expect(sql[sql.length - 1]).toBe('COMMIT')
+  })
+})
+
+// The clock is fixed to the millisecond so a span can sit exactly on the cut.
+describe('the span cut, with a fixed clock', () => {
+  const NOW_SEC = 1_800_000_000
+  const NOW_MS = NOW_SEC * 1000
+  const OTEL_CUT_MS = NOW_MS - 30 * DAY * 1000
+  afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks() })
+
+  const spanAt = (id: string, startMs: number, exportedAt: number | null = null): void => {
+    getDb().prepare('INSERT INTO otel_spans (trace_id, span_id, agent_id, operation, start_ms, exported_at) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(`t-${id}`, `s-${id}`, 'a', 'op', startMs, exportedAt)
+  }
+  const spanIds = (): string[] => (getDb().prepare('SELECT span_id FROM otel_spans ORDER BY span_id').all() as { span_id: string }[]).map((r) => r.span_id)
+
+  it('a span exactly on the cut is neither deleted nor counted; one millisecond older is both', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(NOW_MS)
+    spanAt('older', OTEL_CUT_MS - 1)
+    spanAt('on-cut', OTEL_CUT_MS)
+    spanAt('newer', OTEL_CUT_MS + 1)
+    const r = await pruneAuditLogs()
+    expect(r.otelCutoffMs).toBe(OTEL_CUT_MS)
+    expect(r.deleted.otel_spans).toBe(1)
+    expect(r.unexportedDeleted).toBe(1)
+    expect(spanIds()).toEqual(['s-newer', 's-on-cut'])
+  })
+
+  it('the count and the delete use the same cut while the clock moves between the reads', async () => {
+    const base = Date.now()
+    const center = base - 30 * DAY * 1000
+    // Unexported spans every 500 ms around where the cut will fall, a minute either side.
+    const starts: number[] = []
+    for (let i = -120; i <= 120; i++) starts.push(center + i * 500)
+    starts.forEach((st, i) => spanAt(String(i).padStart(3, '0'), st))
+    let t = base
+    vi.spyOn(Date, 'now').mockImplementation(() => (t += 1000)) // every read of the clock is a second later
+    const r = await pruneAuditLogs()
+    vi.restoreAllMocks()
+    const expected = starts.filter((st) => st < r.otelCutoffMs).length
+    expect(expected).toBeGreaterThan(0)
+    expect(expected).toBeLessThan(starts.length)
+    expect(r.deleted.otel_spans).toBe(expected)
+    expect(r.unexportedDeleted).toBe(expected)
+    expect(spanIds()).toHaveLength(starts.length - expected)
+    expect(JSON.parse(pruneRows()[0].detail).otel_cutoff_ms).toBe(r.otelCutoffMs)
+    expect(JSON.parse(pruneRows()[0].detail).unexported_deleted).toBe(expected)
+  })
+
+  it('the journal row of a sweep holds the exact cuts and windows', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(NOW_MS)
+    const r = await pruneAuditLogs()
+    const detail = JSON.parse(pruneRows()[0].detail)
+    expect(detail).toMatchObject({
+      trigger: 'sweep', cutoff_days: 90, cutoff_ts: NOW_SEC - 90 * DAY, otel_cutoff_days: 30, otel_cutoff_ms: OTEL_CUT_MS,
+    })
+    expect(r).toMatchObject({ cutoffDays: 90, cutoffTs: NOW_SEC - 90 * DAY, otelCutoffDays: 30, otelCutoffMs: OTEL_CUT_MS })
+  })
+
+  it('the journal row of a manual prune holds the exact window and cut', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(NOW_MS)
+    const { ctx } = makeCtx({ older_than_secs: 100 * DAY })
+    await tryHandleHookAudit(ctx)
+    expect(JSON.parse(pruneRows()[0].detail)).toMatchObject({ trigger: 'manual', cutoff_days: 100, cutoff_ts: NOW_SEC - 100 * DAY })
   })
 })

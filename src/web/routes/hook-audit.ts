@@ -92,7 +92,7 @@ export async function tryHandleHookAudit(ctx: RouteContext): Promise<boolean> {
   // POST /api/hook-audit/prune -- cleanup old entries. The window is a positive whole number of seconds, at least
   // MIN_PRUNE_WINDOW_SECS: 0 or a negative value used to put the cut at or after now and wipe the whole table. The
   // call is journaled (who, how many, which cut) in the same transaction as the delete. The route is not in the
-  // RBAC table, so it falls to admin:all (pinned in hook-audit-prune.test.ts).
+  // RBAC table, so it falls to admin:all (pinned in audit-retention-prune.test.ts, "who may call it").
   if (path === '/api/hook-audit/prune' && method === 'POST') {
     const body = await readBody(req)
     const parsed: unknown = JSON.parse(body.toString() || '{}')
