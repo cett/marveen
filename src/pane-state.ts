@@ -1534,6 +1534,7 @@ export type StuckInputAction =
   | 'reinject-plain'   // clear + re-inject collapsed parked text (sub-agents only)
   | 'clear-preamble'   // clear a truncated/stale safety preamble, never re-inject
   | 'clear-scheduled'  // clear a parked scheduled-task tick, never re-inject (next fire re-delivers)
+  | 'clear-requeue'    // clear a head-lost inter-agent frame, then put its ledger row back to pending (the router re-wraps it from the DB)
   | 'enter'            // a single bare Enter -- ONLY safe at rowCount <= 1
   | 'hold'             // do nothing this tick (multi-row truncated / truncation-guard)
 
@@ -1569,6 +1570,14 @@ export interface StuckInputActionFacts {
    * leave the gate open (e.g. for sessions where delivery-intent is not tracked).
    */
   deliveryMatched?: boolean
+  /**
+   * HEAD-LOST attribution (matchDeliveryTail): the parked box is a verbatim SUFFIX of exactly one fresh router
+   * delivery that has a ledger row ('unique'), of several ('ambiguous'), or of none ('none'). Omit = 'none'.
+   * Only 'unique' can lead to 'clear-requeue'; the other two hold exactly as before.
+   */
+  headLostMatch?: 'unique' | 'ambiguous' | 'none'
+  /** The requeue budget of the matched message is not spent (one requeue per message id). Omit = spent. */
+  requeueBudgetLeft?: boolean
 }
 
 /**
@@ -1616,6 +1625,19 @@ export function decideStuckInputAction(f: StuckInputActionFacts): StuckInputActi
     // delivery (deliveryMatched=false). Undefined = untracked / open gate.
     if (f.deliveryMatched === false) return 'hold'
     return f.escalate || multiRow ? 'reinject-plain' : 'enter'
+  }
+  // Head-lost inter-agent frame (the 2026-11-04 wedge): the TUI dropped the leading rows of an overfull box, no
+  // anchored marker survives, so the branch above cannot call it machine-origin and it used to fall into 'hold'.
+  // The scrape is lossy and must not be re-injected, and a human draft must not be cleared -- but a box that is a
+  // verbatim SUFFIX of a frame the router itself pasted into this session minutes ago is positively attributed,
+  // and the message still lives in the ledger: clear, then requeue it, and the router re-wraps it from the DB.
+  // Sub-agent sessions only (allowPlainReinject): the main session can hold a human draft and never reaches this.
+  // Multi-row only (the existing hold case); a spent budget holds (the caller alerts once).
+  if (
+    f.allowPlainReinject && f.hasPlainText && !f.blockTruncated && f.rowCount > 1
+    && f.headLostMatch === 'unique' && f.requeueBudgetLeft === true
+  ) {
+    return 'clear-requeue'
   }
   // Truncated safety preamble: clear only (never re-inject a stale preamble).
   if (f.truncatedPreamble && f.escalate) return 'clear-preamble'
