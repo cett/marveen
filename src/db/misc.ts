@@ -1,7 +1,7 @@
 // Split from the former monolithic src/db.ts (see db/index.ts for the
 // re-export surface and boot orchestration).
 
-import { dbx, type SqlOps } from './facade.js'
+import { dbx, type Dbx, type SqlOps, type Tx } from './facade.js'
 import { resolveWriteTenant } from './write-tenant.js'
 
 export interface BackgroundTask {
@@ -235,14 +235,16 @@ export async function updateIdea(id: string, patch: IdeaPatch): Promise<boolean>
 /**
  * The idea update and its status-log row in one transaction, so a failure of the log write does not leave a changed
  * status without its audit row (and the reverse). The log row is written only when the idea row was changed.
- * Returns whether the idea row was changed.
+ * Returns whether the idea row was changed. `ops` is the facade (the default) or the transaction handle of a caller
+ * that is already inside a transaction: the unit then opens as a savepoint of that transaction instead of beside it.
  */
 export async function updateIdeaWithStatusLog(
   id: string,
   patch: IdeaPatch,
   log: { from: string | null; to: string; actor: string; note?: string },
+  ops: Dbx | Tx = dbx,
 ): Promise<boolean> {
-  return dbx.tx(async (tx) => {
+  return ops.tx(async (tx) => {
     if (!(await updateIdeaOn(tx, id, patch))) return false
     await logIdeaStatusChangeOn(tx, id, log.from, log.to, log.actor, log.note)
     return true
