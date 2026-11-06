@@ -34,6 +34,7 @@ vi.mock('../db.js', () => ({
   resolveAgentTenant: vi.fn().mockResolvedValue('default'),
   // tick-status reads the stored last_boot (additive lastBoot field); the dead-letter route reads task_runs.
   getSystemConfig: (key: string) => mockGetSystemConfig(key),
+  listDeadLetterTaskRuns: vi.fn().mockResolvedValue([]),
 }))
 
 vi.mock('../web/scheduled-tasks-io.js', () => ({

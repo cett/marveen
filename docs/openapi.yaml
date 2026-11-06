@@ -3844,6 +3844,112 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /schedules/dead-letter:
+    get:
+      tags: [schedules]
+      operationId: getScheduleDeadLetter
+      summary: Scheduled occurrences that did not run
+      description: >-
+        One newest-first list of the scheduled occurrences that did not run to a
+        normal start: `kind: run` rows are the task_runs of the window with status
+        missed, lost, error, skipped, skipped_not_live, skipped_disabled or
+        skipped_tenant_mismatch (never fired or fired_late); `kind: pending` rows
+        are the retries still queued now (reason: giveup, lane-busy,
+        lost-injection, ...), whatever their age. A retry that was resolved (the
+        row deleted after a successful retry) is not listed. Read-only; it returns
+        only fields of those two tables (no prompt, session name or command). A
+        tenant caller sees only rows of its own tenant's schedules; an admin sees
+        all (or those of `?tenant=`, which also drops rows of deleted schedules).
+      parameters:
+        - name: days
+          in: query
+          required: false
+          description: Window for the run rows, in days (1 to 30, default 7).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 30
+            default: 7
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of rows returned (1 to 500, default 100).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 100
+        - name: tenant
+          in: query
+          required: false
+          description: Admin only, ignored for other callers. Narrows to this tenant id.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The merged list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  days:
+                    type: integer
+                  limit:
+                    type: integer
+                  truncated:
+                    type: boolean
+                    description: True when more rows matched than `limit`.
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        kind:
+                          type: string
+                          enum: [run, pending]
+                        task:
+                          type: string
+                        agent:
+                          type: string
+                        ts:
+                          type: integer
+                          description: Run rows only (ms).
+                        status:
+                          type: string
+                          description: Run rows only.
+                        first_attempt:
+                          type: integer
+                          description: Pending rows only (ms).
+                        last_attempt:
+                          type: integer
+                          description: Pending rows only (ms).
+                        attempt_count:
+                          type: integer
+                          description: Pending rows only.
+                        reason:
+                          type: string
+                          nullable: true
+                          description: Pending rows only.
+                        alert_sent_at:
+                          type: integer
+                          nullable: true
+                          description: Pending rows only (ms).
+        "400":
+          description: days or limit is not an integer in range (`invalid_value`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: >-
+            Refused: the account has no tenant, or, in `enforce` mode, the role
+            lacks `schedules:read`
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /schedules/tick-status:
     get:
       tags: [schedules]

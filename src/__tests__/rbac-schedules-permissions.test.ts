@@ -17,6 +17,8 @@ describe('which permission each schedules route needs', () => {
     ['GET', '/api/schedules', 'schedules:read'],
     ['GET', '/api/schedules/agents', 'schedules:read'],
     ['GET', '/api/schedules/pending', 'schedules:read'],
+    // No row of its own: the GET /api/schedules prefix row catches it (an unlisted route would fall back to admin:all).
+    ['GET', '/api/schedules/dead-letter', 'schedules:read'],
     ['GET', '/api/schedules/my-task/runs', 'schedules:read'],
     ['POST', '/api/schedules', 'schedules:write'],
     ['POST', '/api/schedules/my-task/toggle', 'schedules:write'],
@@ -56,6 +58,14 @@ describe('what each role gets in enforce mode', () => {
     expect(enforced(auth, 'POST', '/api/schedules')).toBe(want.write)
     expect(enforced(auth, 'DELETE', '/api/schedules/my-task')).toBe(want.write)
     expect(enforced(auth, 'POST', '/api/schedules/my-task/activate')).toBe(want.activate)
+  })
+
+  it('the dead-letter view is readable by every role (the route narrows it to the caller tenant), and only by GET', () => {
+    for (const role of ALL_ROLES) {
+      expect(enforced(sessionOf(role), 'GET', '/api/schedules/dead-letter')).toBe(true)
+    }
+    expect(resolveRequiredPermission('POST', '/api/schedules/dead-letter')).toBe('schedules:write')
+    expect(resolveRequiredPermission('DELETE', '/api/schedules/dead-letter')).toBe('schedules:write')
   })
 
   it('tick-status stays admin-only for every other role', () => {

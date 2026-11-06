@@ -125,6 +125,33 @@ export async function countTaskRunsBetween(fromTs: number, toTs?: number, tenant
   return row.c
 }
 
+// The task_runs statuses the dead-letter view lists: a scheduled occurrence that did not run to a normal start.
+// 'fired' / 'fired_late' (it ran) are deliberately absent. 'giveup' and 'lane-busy' never write a task_runs row (they
+// only queue a pending_task_retries row), so they reach the view through the pending half, not through here.
+export const DEAD_LETTER_RUN_STATUSES = [
+  'missed', 'lost', 'error', 'skipped', 'skipped_not_live', 'skipped_disabled', 'skipped_tenant_mismatch',
+] as const
+
+export interface DeadLetterRunRow { name: string; agent: string; ts: number; status: string }
+
+// Newest first, at most `limit` rows. tenantId narrows to runs of schedules of that tenant (matched by task name,
+// like countTaskRunsBetween: a shared agent serves several tenants, so the agent says nothing); a run whose schedule
+// was deleted belongs to no tenant and only shows in the unfiltered (tenantId null) fleet view.
+export async function listDeadLetterTaskRuns(fromTs: number, tenantId: string | null, limit: number): Promise<DeadLetterRunRow[]> {
+  const placeholders = DEAD_LETTER_RUN_STATUSES.map(() => '?').join(', ')
+  const params: (string | number)[] = [fromTs, ...DEAD_LETTER_RUN_STATUSES]
+  let tenantClause = ''
+  if (tenantId !== null) {
+    tenantClause = ' AND name IN (SELECT id FROM schedules WHERE tenant_id = ?)'
+    params.push(tenantId)
+  }
+  params.push(limit)
+  return dbx.all<DeadLetterRunRow>(
+    `SELECT name, agent, ts, status FROM task_runs WHERE ts >= ? AND status IN (${placeholders})${tenantClause} ORDER BY ts DESC LIMIT ?`,
+    ...params,
+  )
+}
+
 export async function getAgentMessage(id: number): Promise<AgentMessage | undefined> {
   return dbx.get<AgentMessage>('SELECT * FROM agent_messages WHERE id = ?', id)
 }
