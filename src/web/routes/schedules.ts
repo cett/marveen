@@ -3,12 +3,14 @@ import { join } from 'node:path'
 import {
   listPendingTaskRetries, deletePendingTaskRetryById, listTaskRunHistory,
   getScheduleFromDb, listSchedulesFromDb, deleteSchedule, setScheduleEnabled, countSchedules,
-  activateSchedule, getTenant,
+  activateSchedule, getTenant, listDeadLetterTaskRuns,
 } from '../../db.js'
+import { buildDeadLetterResponse, parseDeadLetterParams } from '../schedule-dead-letter.js'
 import { MAIN_AGENT_ID, currentBotName } from '../../config.js'
 import { runAgent } from '../../agent.js'
 import { logger } from '../../logger.js'
 import { toPendingRetryView } from '../../pending-retries.js'
+import { readLastBoot } from '../boot-marker.js'
 import { isValidCronShape } from '../cron.js'
 import { readBody, json, RequestBodyTooLargeError, SCHEDULE_BODY_MAX_BYTES } from '../http-helpers.js'
 import { sanitizeScheduleName, safeJoin } from '../sanitize.js'
@@ -152,7 +154,29 @@ export async function tryHandleSchedules(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'forbidden', hint: 'Scheduler tick status is admin-only' }, 403)
       return true
     }
-    json(res, computeTickStatus(loadLastTickMs(), Date.now()))
+    // lastBoot is additive: the existing fields are unchanged (null until the first boot has been recorded).
+    json(res, { ...computeTickStatus(loadLastTickMs(), Date.now()), lastBoot: readLastBoot() })
+    return true
+  }
+
+  // Dead-letter view (read-only): scheduled occurrences that did not run (non-start task_runs rows in the window plus
+  // the retries still pending). Registered here, ahead of every generic /api/schedules/:name handler below, so the
+  // segment is never taken for a schedule name. RBAC: the /api/schedules GET prefix rule (schedules:read); the
+  // tenant scope is the one /pending uses, so a tenant caller never sees another tenant's rows.
+  if (path === '/api/schedules/dead-letter' && method === 'GET') {
+    const params = parseDeadLetterParams(ctx.url.searchParams)
+    if (!params.ok) {
+      json(res, { error: 'invalid_value', field: params.field, hint: params.hint }, 400)
+      return true
+    }
+    const scope = effectiveTenant(ctx)
+    const now = Date.now()
+    // One row more than the limit, so truncation is known without a second query.
+    const runs = await listDeadLetterTaskRuns(now - params.days * 86_400_000, scope, params.limit + 1)
+    const pending = await listPendingTaskRetries()
+    // the schedule row is read per retry, so the tenant check settles before the filter (an async predicate would be always truthy)
+    const visible = await Promise.all(pending.map(async r => scope === null || scheduleTenantMatches(scope, await getScheduleFromDb(r.task_name))))
+    json(res, buildDeadLetterResponse(params, runs, pending.filter((_, i) => visible[i])))
     return true
   }
 

@@ -281,3 +281,37 @@ describe('POST /api/settings: the answer follows the awaited write', () => {
     expect(await rowValue('WEB_PORT')).toBe('8083')
   })
 })
+
+// The scheduler state keys are internal: only the scheduler writes them, and no operator write path may reach them.
+// The generic settings route is closed by the registry (an unlisted key is a 404 and nothing is written), so these
+// keys must stay out of SETTINGS_REGISTRY. A key added there would make them writable (and listed) through this route.
+describe('POST /api/settings: the scheduler state keys are not writable', () => {
+  const keys = ['scheduled_inflight', 'last_boot', 'clean_shutdown']
+
+  it.each(keys)('%s: 404 not_found and no row is written', async (key) => {
+    const { ctx, status, body } = makeCtx({ method: 'POST', path: '/api/settings', body: { key, value: '{"boot_id":"forged"}' } })
+    expect(await routesMod.tryHandleSettings(ctx)).toBe(true)
+    expect(status()).toBe(404)
+    expect((body() as { error: string }).error).toBe('not_found')
+    expect(dbMod.getSystemConfig(key)).toBeUndefined()
+  })
+
+  it('a forged value cannot overwrite an existing scheduler row', async () => {
+    await dbMod.setSystemConfig('last_boot', '{"boot_id":"real","started_at":1,"prev_shutdown":"clean"}')
+    const { ctx, status } = makeCtx({ method: 'POST', path: '/api/settings', body: { key: 'last_boot', value: '{"boot_id":"forged"}' } })
+    await routesMod.tryHandleSettings(ctx)
+    expect(status()).toBe(404)
+    expect(dbMod.getSystemConfig('last_boot')?.value).toContain('"real"')
+  })
+
+  it('the keys are not in the settings registry and not in the settings list', async () => {
+    const { SETTINGS_REGISTRY } = await import('../config-registry.js')
+    const registered = SETTINGS_REGISTRY.map((s) => s.key)
+    for (const key of keys) expect(registered).not.toContain(key)
+    await dbMod.setSystemConfig('scheduled_inflight', '{}')
+    const { ctx, body } = makeCtx({ method: 'GET', path: '/api/settings' })
+    await routesMod.tryHandleSettings(ctx)
+    const listed = ((body() as { settings: Array<{ key: string }> }).settings).map((s) => s.key)
+    for (const key of keys) expect(listed).not.toContain(key)
+  })
+})

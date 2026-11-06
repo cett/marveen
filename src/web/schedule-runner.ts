@@ -33,6 +33,16 @@ import {
 } from '../db.js'
 import { toPendingRetryView, type PendingRetryView } from '../pending-retries.js'
 import {
+  SCHEDULED_INFLIGHT_KEY,
+  inflightKey,
+  parseStoredInflight,
+  persistInflightCleanup,
+  persistInflightFlags,
+  persistInflightRemove,
+  persistInflightUpsert,
+} from './schedule-inflight-store.js'
+import { sanitizeAgentName } from './sanitize.js'
+import {
   SCHEDULED_TASK_PREAMBLE,
   wrapScheduledTask,
   wrapScheduledTaskByReference,
@@ -142,6 +152,10 @@ export interface TaskInflightEntry {
   // snapshot before writing: if the agent modified the row in the meantime
   // (e.g. switched to blocked, changed the summary), the runner leaves it alone.
   blackboardSnapshot: { status: string; summary: string; task_ref: string | null } | undefined
+  // Set (in memory only, never persisted) on an entry read back from the durable mirror after a restart. Such an
+  // entry cannot prove that its injection was ever delivered, so the 'lost' decision does NOT re-queue it (that
+  // could run the task a second time); see the lost branch of the sweep.
+  restored?: boolean
 }
 
 // How long a fired task may stay busy before the watchdog calls it stuck.
@@ -173,6 +187,13 @@ export function resolveStuckTimeoutMs(
 
 // Active task/heartbeat injections keyed by `${taskName}@${agentName}`.
 const taskInflightMap = new Map<string, TaskInflightEntry>()
+
+// Register an injection in the watchdog: memory first (primary), then the durable mirror so a dashboard restart does
+// not lose the entry (best effort, never throws). An existing entry on the same key is replaced, in both.
+export async function trackInflight(entry: TaskInflightEntry): Promise<void> {
+  taskInflightMap.set(inflightKey(entry.taskName, entry.agentName), entry)
+  await persistInflightUpsert(entry)
+}
 
 export type TaskTimeoutDecision = 'clear' | 'alert' | 'hold' | 'lost'
 
@@ -1180,7 +1201,7 @@ async function attemptFireTask(
     // previous entry (task re-fired before the prior one completed -- e.g. a
     // manual "run now" overlapping a cron tick; track the latest injection
     // because the agent is processing that one).
-    taskInflightMap.set(`${task.name}@${agentName}`, {
+    const inflightEntry: TaskInflightEntry = {
       taskName: task.name,
       agentName,
       session,
@@ -1192,7 +1213,8 @@ async function attemptFireTask(
       configDir: agentName === MAIN_AGENT_ID ? undefined : (readAgentClaudeConfigDir(agentName) ?? undefined),
       timeoutMs: resolveStuckTimeoutMs(task),
       blackboardSnapshot: _bbSnapshot,
-    })
+    }
+    await trackInflight(inflightEntry)
 
     // Post-send verify: if the agent started a new turn during our chunk
     // stream, the Enter from sendPromptToSession might have landed while
@@ -1438,12 +1460,152 @@ async function sendTaskTimeoutAlert(entry: TaskInflightEntry, elapsedMs: number)
   )
 }
 
+// Post-fire timeout watchdog sweep, one pass. Exported so the decisions (clear / alert / lost, and the restored
+// variant of lost) can be tested against the real map without driving the whole tick.
+export async function sweepInflightTasks(now: number): Promise<void> {
+  // Post-fire timeout watchdog sweep: check every tracked in-flight injection
+  // to see if the target session is still busy. If so past TASK_FIRE_TIMEOUT_MS,
+  // send a one-shot alert. Clear entries when the session goes idle (task done)
+  // or the maximum tracking age is reached.
+  for (const [key, entry] of taskInflightMap) {
+    const pane = capturePane(entry.session, entry.host)
+    const state = pane != null ? detectPaneState(pane) : null
+    // Record evidence that the injection actually started a turn. 'busy' is
+    // the direct observation; the transcript mtime covers the task that ran
+    // and finished entirely between two sweeps, which no pane sample would
+    // ever catch. Deliberately NOT set on 'typing': that state means our
+    // prompt is parked UNSENT in the input box, which the resubmit loop owns
+    // -- counting it as a turn would re-open the silent-loss hole from the
+    // other side.
+    // The flags are mirrored to the durable copy when they change on an entry that stays tracked.
+    let flagsChanged = false
+    if (!entry.sawTurn) {
+      if (state === 'busy') {
+        entry.sawTurn = true
+        flagsChanged = true
+      } else {
+        const mtime = readTranscriptMtimeFromProjectDir(entry.workingDir, entry.configDir)
+        if (mtime != null && mtime > entry.injectedAt) {
+          entry.sawTurn = true
+          flagsChanged = true
+        }
+      }
+    }
+    const decision = decideTaskTimeout(entry, state, now, {
+      graceMs: TASK_FIRE_GRACE_MS,
+      timeoutMs: entry.timeoutMs,
+      maxTrackMs: TASK_FIRE_MAX_TRACK_MS,
+    })
+    if (decision === 'clear') {
+      await applyBlackboardDone(entry)
+      taskInflightMap.delete(key)
+      await persistInflightRemove(key)
+    } else if (decision === 'alert') {
+      await sendTaskTimeoutAlert(entry, now - entry.injectedAt)
+      entry.alerted = true
+      flagsChanged = true
+    } else if (decision === 'lost' && entry.restored) {
+      // An entry read back after a restart: its injection may have been delivered and finished while the
+      // dashboard was down, and the transcript evidence above did not show it. Re-queueing it here could run a
+      // task twice (an email sender, a report), which is worse than reporting the uncertainty. So: no 'lost'
+      // run record, no lastRun reset, no retry row. Drop the entry and leave an audit trail.
+      logger.warn(
+        { task: entry.taskName, agent: entry.agentName, elapsedMs: now - entry.injectedAt },
+        'Restored scheduled injection has no evidence of a turn -- cleared without re-queueing (outcome unverified)',
+      )
+      try {
+        await writeAgentAuditLog({
+          agent_id: 'scheduler',
+          entity: 'schedule',
+          action: 'inflight_restored_unverified',
+          entity_id: entry.taskName,
+          detail: { task: entry.taskName, agent: entry.agentName, injectedAt: entry.injectedAt },
+        })
+      } catch { /* audit failure must not block the tick */ }
+      taskInflightMap.delete(key)
+      await persistInflightRemove(key)
+    } else if (decision === 'lost') {
+      // The prompt was typed into a session that never acted on it. Undo the
+      // success bookkeeping: overwrite the run record and drop the lastRun
+      // stamp so the occurrence is no longer considered served, then queue
+      // the redelivery. The retry queue is the right owner from here -- it
+      // already refuses to inject into a session that is not ready and keeps
+      // the row (with its aged-retry alert) until the session is rescued.
+      logger.warn(
+        { task: entry.taskName, agent: entry.agentName, session: entry.session, elapsedMs: now - entry.injectedAt },
+        'Scheduled injection never started a turn (session accepted the keystrokes but stayed idle) -- recording as lost and re-queueing',
+      )
+      await appendTaskRun(entry.taskName, entry.agentName, 'lost')
+      await clearScheduleLastRunIfMatches(entry.taskName, entry.injectedAt)
+      await insertPendingTaskRetryIfNew(entry.taskName, entry.agentName, now, 'lost-injection')
+      taskInflightMap.delete(key)
+      await persistInflightRemove(key)
+    }
+    // 'hold' and 'alert' keep the entry tracked: mirror a flag change (at most two writes per task).
+    if (flagsChanged && (decision === 'hold' || decision === 'alert')) {
+      await persistInflightFlags(key, { alerted: entry.alerted, sawTurn: entry.sawTurn })
+    }
+  }
+}
+
 // Tick interval for the schedule runner. 15 s gives 4x faster inter-agent
 // message delivery and scheduled-task triggering; each tick is a cheap
 // SQLite SELECT so the load is negligible.
 export const SCHEDULE_TICK_MS = 15_000
 
+// Read the durable in-flight mirror back into the map, once, at runner start and BEFORE the first tick (the system
+// config cache is loaded by initDatabase(), which runs before startWebServer starts the runner). Every entry is
+// validated against what the runner would derive today (see schedule-inflight-store.ts); a value that does not fit
+// is dropped with a warning, never thrown. Restored entries carry `restored: true` so the sweep never re-queues one
+// as 'lost' (that could run the task twice). Returns the number of entries restored.
+export function restoreInflightFromStore(now: number = Date.now()): number {
+  let raw: string | undefined
+  try {
+    raw = getSystemConfig(SCHEDULED_INFLIGHT_KEY)?.value
+  } catch (err) {
+    logger.warn({ err }, 'schedule-runner: could not read the persisted in-flight entries')
+    return 0
+  }
+  if (raw === undefined) return 0
+  const known = new Set<string>([MAIN_AGENT_ID, ...listAgentNames()])
+  const result = parseStoredInflight(raw, {
+    now,
+    maxTrackMs: TASK_FIRE_MAX_TRACK_MS,
+    isKnownAgent: (name) => (name === MAIN_AGENT_ID || sanitizeAgentName(name) === name) && known.has(name),
+    sessionFor: (name) => resolveTaskTarget({ targetSession: undefined }, name).session,
+    hostFor: (name) => resolveTaskTarget({ targetSession: undefined }, name).host,
+  })
+  if (result.corrupt) logger.warn('schedule-runner: persisted in-flight value is not a JSON object -- discarded')
+  for (const d of result.dropped) {
+    logger.warn({ key: d.key, reason: d.reason }, 'schedule-runner: persisted in-flight entry dropped (does not validate)')
+  }
+  let restored = 0
+  for (const [key, e] of result.entries) {
+    if (taskInflightMap.has(key)) continue
+    taskInflightMap.set(key, {
+      ...e,
+      // Re-derived, never stored: a config edit between the restart and now is honoured.
+      workingDir: e.agentName === MAIN_AGENT_ID ? PROJECT_ROOT : agentDir(e.agentName),
+      configDir: e.agentName === MAIN_AGENT_ID ? undefined : (readAgentClaudeConfigDir(e.agentName) ?? undefined),
+      restored: true,
+    })
+    restored++
+  }
+  if (restored > 0) logger.info({ restored }, 'schedule-runner: resumed tracking of in-flight scheduled injections after restart')
+  // Rewrite / delete the stored value when it carried something invalid (fire and forget: it never throws).
+  void persistInflightCleanup(result)
+  return restored
+}
+
+// Read-only view of the tracked entries (tests and diagnostics); mutating the copies changes nothing.
+export function listInflightEntries(): TaskInflightEntry[] {
+  return [...taskInflightMap.values()].map((e) => ({ ...e }))
+}
+
 export function startScheduleRunner(): NodeJS.Timeout {
+  // Resume tracking of injections that were in flight when the previous process stopped. Before the first tick.
+  restoreInflightFromStore()
+
   // Last-run times now live in schedules.last_run_at (migration 0057) and are
   // loaded per-task as part of the normal listScheduledTasks() DB read below,
   // so there is nothing to reload here any more.
@@ -1527,56 +1689,8 @@ export function startScheduleRunner(): NodeJS.Timeout {
     const caughtUpThisTick: Array<{ task: string; ageMs: number }> = []
     const staleThisTick: Array<{ task: string; ageMs: number }> = []
 
-    // Post-fire timeout watchdog sweep: check every tracked in-flight injection
-    // to see if the target session is still busy. If so past TASK_FIRE_TIMEOUT_MS,
-    // send a one-shot alert. Clear entries when the session goes idle (task done)
-    // or the maximum tracking age is reached.
-    for (const [key, entry] of taskInflightMap) {
-      const pane = capturePane(entry.session, entry.host)
-      const state = pane != null ? detectPaneState(pane) : null
-      // Record evidence that the injection actually started a turn. 'busy' is
-      // the direct observation; the transcript mtime covers the task that ran
-      // and finished entirely between two sweeps, which no pane sample would
-      // ever catch. Deliberately NOT set on 'typing': that state means our
-      // prompt is parked UNSENT in the input box, which the resubmit loop owns
-      // -- counting it as a turn would re-open the silent-loss hole from the
-      // other side.
-      if (!entry.sawTurn) {
-        if (state === 'busy') {
-          entry.sawTurn = true
-        } else {
-          const mtime = readTranscriptMtimeFromProjectDir(entry.workingDir, entry.configDir)
-          if (mtime != null && mtime > entry.injectedAt) entry.sawTurn = true
-        }
-      }
-      const decision = decideTaskTimeout(entry, state, now, {
-        graceMs: TASK_FIRE_GRACE_MS,
-        timeoutMs: entry.timeoutMs,
-        maxTrackMs: TASK_FIRE_MAX_TRACK_MS,
-      })
-      if (decision === 'clear') {
-        await applyBlackboardDone(entry)
-        taskInflightMap.delete(key)
-      } else if (decision === 'alert') {
-        await sendTaskTimeoutAlert(entry, now - entry.injectedAt)
-        entry.alerted = true
-      } else if (decision === 'lost') {
-        // The prompt was typed into a session that never acted on it. Undo the
-        // success bookkeeping: overwrite the run record and drop the lastRun
-        // stamp so the occurrence is no longer considered served, then queue
-        // the redelivery. The retry queue is the right owner from here -- it
-        // already refuses to inject into a session that is not ready and keeps
-        // the row (with its aged-retry alert) until the session is rescued.
-        logger.warn(
-          { task: entry.taskName, agent: entry.agentName, session: entry.session, elapsedMs: now - entry.injectedAt },
-          'Scheduled injection never started a turn (session accepted the keystrokes but stayed idle) -- recording as lost and re-queueing',
-        )
-        await appendTaskRun(entry.taskName, entry.agentName, 'lost')
-        await clearScheduleLastRunIfMatches(entry.taskName, entry.injectedAt)
-        await insertPendingTaskRetryIfNew(entry.taskName, entry.agentName, now, 'lost-injection')
-        taskInflightMap.delete(key)
-      }
-    }
+    // Watchdog pass over the tracked in-flight injections (see sweepInflightTasks).
+    await sweepInflightTasks(now)
 
     // Retry tasks that were busy-skipped on earlier ticks (persisted in
     // pending_task_retries so they survive dashboard restart). Each occurrence

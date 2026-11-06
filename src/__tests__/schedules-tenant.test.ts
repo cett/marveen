@@ -32,6 +32,9 @@ vi.mock('../db.js', () => ({
   agentServesTenant: vi.fn().mockReturnValue(true),
   getServingTenant: vi.fn().mockReturnValue(null),
   resolveAgentTenant: vi.fn().mockResolvedValue('default'),
+  // tick-status reads the stored last_boot (additive lastBoot field); the dead-letter route reads task_runs.
+  getSystemConfig: (key: string) => mockGetSystemConfig(key),
+  listDeadLetterTaskRuns: vi.fn().mockResolvedValue([]),
 }))
 
 vi.mock('../web/scheduled-tasks-io.js', () => ({
@@ -48,6 +51,7 @@ vi.mock('../web/scheduled-tasks-io.js', () => ({
 }))
 
 const mockLoadLastTickMs = vi.fn<() => number | null>().mockReturnValue(null)
+const mockGetSystemConfig = vi.fn<(key: string) => { value: string } | undefined>().mockReturnValue(undefined)
 
 vi.mock('../agent.js',        () => ({ runAgent: vi.fn() }))
 // This module's own heavy transitive imports (schedule-mcp-precheck ->
@@ -200,6 +204,35 @@ describe('GET /api/schedules/tick-status', () => {
     expect(body.lastTickMs).toBeNull()
     expect(body.ageSeconds).toBeNull()
     expect(body.stale).toBe(true)
+  })
+
+  it('lastBoot is additive: the stored boot record is reported next to the unchanged liveness fields', async () => {
+    const stamp = Date.now() - 30_000
+    mockLoadLastTickMs.mockReturnValue(stamp)
+    mockGetSystemConfig.mockImplementation((key: string) =>
+      key === 'last_boot' ? { value: JSON.stringify({ boot_id: 'boot-a', started_at: 1_700_000_000_000, prev_shutdown: 'clean' }) } : undefined)
+    const { ctx, out } = makeCtx('GET', '/api/schedules/tick-status', undefined, 'admin', null)
+    await tryHandleSchedules(ctx)
+    expect(out.status).toBe(200)
+    const body = out.body as Record<string, unknown>
+    expect(Object.keys(body).sort()).toEqual(['ageSeconds', 'lastBoot', 'lastTickMs', 'stale'])
+    expect(body['lastTickMs']).toBe(stamp)
+    expect(body['stale']).toBe(false)
+    expect(body['lastBoot']).toEqual({ boot_id: 'boot-a', started_at: 1_700_000_000_000, prev_shutdown: 'clean' })
+    mockGetSystemConfig.mockReturnValue(undefined)
+  })
+
+  it('lastBoot is null before any boot was recorded, and for a malformed stored value', async () => {
+    mockLoadLastTickMs.mockReturnValue(Date.now())
+    mockGetSystemConfig.mockReturnValue(undefined)
+    const first = makeCtx('GET', '/api/schedules/tick-status', undefined, 'admin', null)
+    await tryHandleSchedules(first.ctx)
+    expect((first.out.body as Record<string, unknown>)['lastBoot']).toBeNull()
+    mockGetSystemConfig.mockReturnValue({ value: '{"boot_id":"x","started_at":"soon","prev_shutdown":"clean"}' })
+    const bad = makeCtx('GET', '/api/schedules/tick-status', undefined, 'admin', null)
+    await tryHandleSchedules(bad.ctx)
+    expect((bad.out.body as Record<string, unknown>)['lastBoot']).toBeNull()
+    mockGetSystemConfig.mockReturnValue(undefined)
   })
 })
 
