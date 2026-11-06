@@ -3,6 +3,7 @@
 
 import { vecExtensionLoaded } from './connection.js'
 import { dbx } from './facade.js'
+import { likeContains } from './like.js'
 import { Memory, MemoryVersion } from './memory.js'
 import { DashboardUser, DashboardUserPublic } from './sessions.js'
 import { syncVecMemoryDelete } from './vector.js'
@@ -1132,8 +1133,8 @@ export async function getTokenDetails(
     params.push(opts.minTokens)
   }
   if (opts.q) {
-    const like = `%${opts.q}%`
-    conditions.push('(agent LIKE ? OR tool_name LIKE ? OR content_preview LIKE ? OR task_title LIKE ?)')
+    const like = likeContains(opts.q)
+    conditions.push("(agent LIKE ? ESCAPE '\\' OR tool_name LIKE ? ESCAPE '\\' OR content_preview LIKE ? ESCAPE '\\' OR task_title LIKE ? ESCAPE '\\')")
     params.push(like, like, like, like)
   }
   if (conditions.length) sql += ' WHERE ' + conditions.join(' AND ')
@@ -1156,10 +1157,10 @@ export async function correlateWithKanban(): Promise<void> {
     const cards = await dbx.all<any>(`
       SELECT id, title, project, assignee, updated_at
       FROM kanban_cards
-      WHERE (assignee = ? OR assignee LIKE '%' || ? || '%')
+      WHERE (assignee = ? OR assignee LIKE ? ESCAPE '\\')
         AND updated_at BETWEEN ? AND ?
       ORDER BY updated_at ASC
-    `, row.agent, row.agent, row.minTs, row.maxTs)
+    `, row.agent, likeContains(row.agent), row.minTs, row.maxTs)
 
     for (const card of cards) {
       const nextCard = cards.find((c: any) => c.updated_at > card.updated_at)

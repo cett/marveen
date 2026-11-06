@@ -4,6 +4,7 @@
 import { AgentMessage } from './agents.js'
 import { db } from './connection.js'
 import { dbx } from './facade.js'
+import { likePrefix } from './like.js'
 import { resolveWriteTenant } from './write-tenant.js'
 import { countScheduleRun } from '../otel-signals.js'
 import { stripGeneratedHeader } from '../skill-header.js'
@@ -660,8 +661,8 @@ export async function countSkills(): Promise<number> {
 /** Skills owned locally by one agent (id prefix 'agent/<agentId>/', per materialize-skills.ts's ID scheme). */
 export async function listAgentOwnedSkills(agentId: string): Promise<SkillRow[]> {
   return dbx.all<SkillRow>(`
-    SELECT * FROM skills WHERE id LIKE ? ORDER BY name
-  `, `agent/${agentId}/%`)
+    SELECT * FROM skills WHERE id LIKE ? ESCAPE '\\' ORDER BY name
+  `, likePrefix(`agent/${agentId}/`))
 }
 
 /** Global fleet skills (~/.claude/skills), inherited by every agent. */

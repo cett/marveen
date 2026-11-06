@@ -9,6 +9,7 @@ import { resolveWriteTenant } from './write-tenant.js'
 import { updateIdeaWithStatusLog } from './misc.js'
 import { logger } from '../logger.js'
 import { dbx, type Dbx, type SqlOps, type Tx } from './facade.js'
+import { likeContains, likePrefix } from './like.js'
 import { currentTraceColumns } from './context.js'
 
 /** The card's running number (#N): the insertion-order id of the row. One definition, shared with the tenant-scoped list. */
@@ -634,19 +635,22 @@ export async function searchKanbanCards(opts: {
   tenantId?: string | null
 }): Promise<(KanbanCard & { seq: number; archived: boolean })[]> {
   const { q, limit = 50, tenantId } = opts
-  const like = `%${q}%`
+  // The text is searched literally: a % or _ typed by the caller is not a wildcard (ESCAPE '\' below), in the id-prefix
+  // branch too. The GLOB guard of that branch only checks the FIRST character (`[0-9a-fA-F]*` lets anything follow), so
+  // it does not keep a wildcard out of the pattern: the prefix is escaped like every other pattern here.
+  const like = likeContains(q)
   let sql = `
     SELECT rowid AS seq, *
     FROM kanban_cards
     WHERE (
       (? GLOB '#[0-9]*' AND CAST(rowid AS TEXT) = LTRIM(?, '#'))
-      OR (LENGTH(?) >= 4 AND ? GLOB '[0-9a-fA-F]*' AND id LIKE ? || '%')
-      OR title LIKE ?
-      OR project LIKE ?
-      OR assignee LIKE ?
+      OR (LENGTH(?) >= 4 AND ? GLOB '[0-9a-fA-F]*' AND id LIKE ? ESCAPE '\\')
+      OR title LIKE ? ESCAPE '\\'
+      OR project LIKE ? ESCAPE '\\'
+      OR assignee LIKE ? ESCAPE '\\'
     )
   `
-  const params: unknown[] = [q, q, q, q, q, like, like, like]
+  const params: unknown[] = [q, q, q, q, likePrefix(q), like, like, like]
   if (tenantId != null) {
     sql += ' AND tenant_id = ?'
     params.push(tenantId)
