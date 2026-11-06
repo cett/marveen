@@ -11,6 +11,11 @@
 //    reader validates strictly and DROPS what does not fit. `session` and `host` end up as tmux / ssh targets, so a
 //    restored entry is only accepted when both equal what the runner derives for that agent TODAY; free text never
 //    reaches a command.
+//  - Known limit: a task with a `targetSession` override is NOT restored. The override is free text from the
+//    schedule config, and the derivation used on restore (resolveTaskTarget without it) yields another session, so
+//    such an entry never equals today's value and is dropped with a warning: the old behaviour, no tracking after a
+//    restart. Covering it would mean deriving the target from the schedule row and requiring equality; not done
+//    while no scheduled task uses the override.
 //  - workingDir / configDir are not stored: they are re-derived on restore, so a config edit after the restart is
 //    honoured and the stored evidence cannot point the transcript probe at an arbitrary directory.
 //  - The key is deliberately NOT in SETTINGS_REGISTRY (no generic PUT can write it) and is not part of the fleet

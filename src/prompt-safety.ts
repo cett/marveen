@@ -38,9 +38,77 @@ import { randomBytes } from 'node:crypto'
 // receiver's context as a secondary open tag.
 const SECURITY_TAG_NAMES = ['untrusted', 'trusted-peer', 'scheduled-task'] as const
 
-// The \s* after '<' tolerates "< untrusted>" variants that some LLMs still
-// parse as a tag even though real HTML parsers reject them.
+// The gap between '<', an optional '/' and the tag name tolerates "< untrusted>" variants that some LLMs
+// still parse as a tag even though real HTML parsers reject them. Whitespace is not the only such gap: a
+// format character (Unicode Cf: zero-width space/joiner, soft hyphen, bidi marks, the invisible tag
+// characters, ...) is invisible to the model too, so `<` + U+200B + `channel>` reads as a tag. The text
+// is NOT rewritten to remove those characters (that would break emoji ZWJ sequences and RTL text); only
+// the OPENER pattern lets them through, and what it finds is replaced as before.
 //
+// TAG_GAP_CLASS is the one definition of that gap, shared by every opener pattern (here and the
+// federation poller). It is an EXPLICIT code point list, not `\p{Cf}` + the `u` flag: with `/iu` the
+// Unicode case folding would re-read the names (U+017F matches `s`, the Kelvin sign matches `k`) and
+// change what the old pattern matched. The list is the \p{Cf} set of Node 22 / Unicode 17 (a test
+// compares it with `\p{Cf}`, so a Unicode update that adds a character fails loudly instead of leaving
+// a hole), plus the whole tag-character block U+E0000-E007F.
+//
+// The gap is ONE FLAT character class, not a group of alternatives. A group under `*` makes V8 keep
+// backtrack state for every iteration: a 12 MB run of U+200B after '<' threw a RangeError (stack) out of
+// every scrub, where the old `\s*` takes 100 ms; a flat class loops without that state. Without the `u`
+// flag an astral character is a surrogate pair, so the class holds the high and the low surrogate units
+// of the astral format characters one by one. That is slightly more tolerant than the exact pairs (a lone
+// surrogate unit of that set, or a high one next to a foreign low one, counts as a gap too), which is the
+// safe direction for an opener test: it can only make the scrub catch more, and only between '<' and a
+// tag name.
+const FORMAT_CHARS_BMP: ReadonlyArray<readonly [number, number]> = [
+  [0x00ad, 0x00ad], [0x0600, 0x0605], [0x061c, 0x061c], [0x06dd, 0x06dd], [0x070f, 0x070f],
+  [0x0890, 0x0891], [0x08e2, 0x08e2], [0x180e, 0x180e], [0x200b, 0x200f], [0x202a, 0x202e],
+  [0x2060, 0x2064], [0x2066, 0x206f], [0xfeff, 0xfeff], [0xfff9, 0xfffb],
+]
+const FORMAT_CHARS_ASTRAL: ReadonlyArray<readonly [number, number]> = [
+  [0x110bd, 0x110bd], [0x110cd, 0x110cd], [0x13430, 0x1343f], [0x1bca0, 0x1bca3],
+  [0x1d173, 0x1d17a], [0xe0000, 0xe007f],
+]
+
+function unitEscape(unit: number): string {
+  return '\\u' + unit.toString(16).toUpperCase().padStart(4, '0')
+}
+function unitRange(from: number, to: number): string {
+  return from === to ? unitEscape(from) : `${unitEscape(from)}-${unitEscape(to)}`
+}
+function buildTagGapClass(): string {
+  const bmp = FORMAT_CHARS_BMP.map(([from, to]) => unitRange(from, to)).join('')
+  const highs = new Set<number>()
+  const lows: Array<[number, number]> = []
+  for (const [from, to] of FORMAT_CHARS_ASTRAL) {
+    const high = 0xd800 + ((from - 0x10000) >> 10)
+    if (high !== 0xd800 + ((to - 0x10000) >> 10)) throw new Error('format character range crosses a high surrogate')
+    highs.add(high)
+    lows.push([0xdc00 + ((from - 0x10000) & 0x3ff), 0xdc00 + ((to - 0x10000) & 0x3ff)])
+  }
+  // the low units of all the ranges, sorted and merged where they touch or overlap
+  const merged: Array<[number, number]> = []
+  for (const [from, to] of lows.sort((a, b) => a[0] - b[0])) {
+    const last = merged[merged.length - 1]
+    if (last !== undefined && from <= last[1] + 1) last[1] = Math.max(last[1], to)
+    else merged.push([from, to])
+  }
+  const highUnits = [...highs].sort((a, b) => a - b).map(unitEscape).join('')
+  const lowUnits = merged.map(([from, to]) => unitRange(from, to)).join('')
+  return `[\\s${bmp}${highUnits}${lowUnits}]`
+}
+
+/** Regex source for the gap characters between '<', an optional '/' and a tag name: one flat character class
+ *  of whitespace and the Unicode format characters (an astral one as its surrogate units). Quantify it as
+ *  `${TAG_GAP_CLASS}*`, once per position (see TAG_OPENER_PREFIX). */
+export const TAG_GAP_CLASS = buildTagGapClass()
+
+/** Regex source for the start of a tag opener, up to the tag name: `<`, an optional `/`, the gaps around
+ *  it. Append the name pattern and its end test. The shape `<(?:GAP*\/)?GAP*` keeps the match linear: two
+ *  adjacent optional gaps (`<GAP*\/?GAP*`) make a long run quadratic (64k spaces blocked the event loop
+ *  for ~2 s). */
+export const TAG_OPENER_PREFIX = `<(?:${TAG_GAP_CLASS}*\\/)?${TAG_GAP_CLASS}*`
+
 // Matching is linear in the text length (a `[^>]*>` span with no upper bound made a
 // text full of openers and no '>' quadratic: 550 kB held the event loop for ~85 s;
 // a bounded `[^>]{0,2000}>` is still 50 000 openers x 2000 characters, ~0.9 s).
@@ -54,7 +122,7 @@ const SECURITY_TAG_NAMES = ['untrusted', 'trusted-peer', 'scheduled-task'] as co
 //     own, so no fake tag stays live however long its attributes are.
 const SECURITY_TAG_SPAN_MAX = 2000
 const SECURITY_TAG_OPENER_RX = new RegExp(
-  `<(?:\\s*\\/)?\\s*(?:${SECURITY_TAG_NAMES.join('|')})\\b`,
+  `${TAG_OPENER_PREFIX}(?:${SECURITY_TAG_NAMES.join('|')})\\b`,
   'gi',
 )
 
@@ -75,10 +143,10 @@ const STRIPPED_SENTINEL = `[[SECURITY_TAG_REMOVED_${randomBytes(4).toString('hex
 // unterminated tags. The negative lookahead (a word or hyphen character after
 // the name) leaves words like <channelization> alone while still catching the
 // name followed by anything else (a quote, ':', '=', NUL, a zero-width space).
-// The prefix is `<(?:\s*\/)?\s*`, not `<\s*\/?\s*`: two adjacent optional \s*
+// The prefix is TAG_OPENER_PREFIX (`<(?:GAP*\/)?GAP*`), not `<GAP*\/?GAP*`: two adjacent optional gaps
 // make a long run of spaces after '<' quadratic (64k spaces blocked the event
 // loop for ~2 s); this form is linear.
-const PAYLOAD_CHANNEL_RX = /<(?:\s*\/)?\s*channel(?![\w-])/gi
+const PAYLOAD_CHANNEL_RX = new RegExp(`${TAG_OPENER_PREFIX}channel(?![\\w-])`, 'gi')
 
 /** Neutralize security-framing tags in free text that reaches an agent's
  *  context OUTSIDE a wrap (e.g. peer-supplied catalog text rendered into the
