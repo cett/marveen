@@ -195,6 +195,10 @@ jobs:
             fi
           fi
 
+      - name: Check README fork-diff status is fresh
+        if: github.event_name == 'pull_request'
+        run: python3 scripts/readme-fork-diff-check.py
+
       - name: Check commit subjects/bodies for internal kanban-rowid leaks
         if: github.event_name == 'pull_request'
         env:
