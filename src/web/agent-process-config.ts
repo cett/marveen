@@ -13,7 +13,7 @@ import { CHANNEL_PLUGIN_IDS } from './plugin-ids.js'
 export { CHANNEL_PLUGIN_IDS }
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { dismissModelConsentDialogIfPresent } from './agent-process-identity.js'
 import { agentHasChannel, agentRunState, sendPromptToSession } from './agent-process-session.js'
 import { startAgentProcess } from './agent-process-spawn.js'
@@ -654,6 +654,44 @@ export function ensureSharedClaudeOnboarded(dotClaudePath: string = join(homedir
   }
 }
 
+// The project root Claude Code keys its per-project consents on: the nearest ancestor (the dir itself included) that
+// holds a `.git`, and for a linked worktree (its `.git` is a FILE pointing into the main repo) the root of the MAIN
+// repo. Measured on claude 2.1.316: a worktree resolves to the main repo's root key. Plain file-system steps, no `git`
+// subprocess: the spawn path stays linear and fast. A dir with no git root is its own project root; any read problem
+// ends the walk the same way (the dir itself), never an exception.
+export function resolveClaudeProjectRoot(startDir: string): string {
+  let dir = resolve(startDir)
+  for (let depth = 0; depth < 64; depth++) {
+    const dotGit = join(dir, '.git')
+    let kind: 'dir' | 'file' | null = null
+    try {
+      const st = statSync(dotGit)
+      kind = st.isDirectory() ? 'dir' : st.isFile() ? 'file' : null
+    } catch { /* no .git here */ }
+    if (kind === 'dir') return dir
+    if (kind === 'file') return mainRepoRootOfLinkedWorktree(dir, dotGit) ?? dir
+    const parent = dirname(dir)
+    if (parent === dir) break
+    dir = parent
+  }
+  return resolve(startDir)
+}
+
+// A linked worktree's `.git` file reads `gitdir: <main>/.git/worktrees/<name>`, and that dir holds a `commondir` file
+// pointing back at `<main>/.git`: the main repo root is its parent. A submodule's gitdir has no `commondir` (it IS its
+// own repo): null, the caller keeps the dir that holds the `.git` file.
+function mainRepoRootOfLinkedWorktree(dir: string, dotGitFile: string): string | null {
+  try {
+    const line = /^gitdir:\s*(.+?)\s*$/m.exec(readFileSync(dotGitFile, 'utf-8').slice(0, 4096))
+    if (!line) return null
+    const gitdir = resolve(dir, line[1])
+    const common = resolve(gitdir, readFileSync(join(gitdir, 'commondir'), 'utf-8').slice(0, 4096).trim())
+    return basename(common) === '.git' ? dirname(common) : null
+  } catch {
+    return null
+  }
+}
+
 // Pre-accept the PER-PROJECT first-run consent for an agent's working dir in
 // the config root the session will boot from. Claude Code keys the "Do you
 // trust the files in this folder?" dialog on projects[<cwd>].hasTrustDialogAccepted
@@ -699,10 +737,33 @@ export function stampProjectTrustForDir(dotClaudePath: string, projectDir: strin
       }
       changed = true
     }
+    // The agents' CLAUDE.md imports the persona with `@../../personas/<name>.md`, a file OUTSIDE the project root, so
+    // Claude Code asks "Allow external CLAUDE.md file imports?" at the first start under every config root that has
+    // no consent for the PROJECT ROOT (measured: the dialog reads the flag on the git root key, or on the dir itself
+    // when there is no git root; a flag on the agent dir below a git root is never looked at). The persona folder is
+    // the fleet's own, so the consent is pre-approved the way the folder trust above is.
+    const roots = new Set<string>()
+    for (const start of dirs) {
+      const root = resolveClaudeProjectRoot(start)
+      roots.add(root)
+      try { roots.add(realpathSync(root)) } catch { /* root may not resolve */ }
+    }
+    for (const root of roots) {
+      const base = (projects[root] && typeof projects[root] === 'object')
+        ? projects[root] as Record<string, unknown>
+        : {}
+      if (base.hasClaudeMdExternalIncludesApproved === true) continue
+      projects[root] = {
+        ...base,
+        hasClaudeMdExternalIncludesApproved: true,
+        hasClaudeMdExternalIncludesWarningShown: true,
+      }
+      changed = true
+    }
     if (!changed) return false
     data.projects = projects
     atomicWriteFileSync(dotClaudePath, JSON.stringify(data, null, 2) + '\n', { mode: 0o600 })
-    logger.info({ dotClaudePath, projectDir }, 'project-trust: stamped folder-trust consent for agent dir')
+    logger.info({ dotClaudePath, projectDir }, 'project-trust: stamped folder-trust and external-includes consent for the agent project')
     return true
   } catch (err) {
     // Unparseable/unwritable file: leave it to Claude Code (same policy as
