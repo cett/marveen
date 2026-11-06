@@ -3,6 +3,7 @@
 
 import { createHash } from 'node:crypto'
 import { dbx, type SqlOps } from './facade.js'
+import { likeContains } from './like.js'
 import { currentTraceColumns } from './context.js'
 
 export interface VaultSshKey {
@@ -639,8 +640,8 @@ function approvalsWhere(opts: {
 }): { where: string; params: unknown[] } {
   const conditions: string[] = []
   const params: unknown[] = []
-  if (opts.agent_id) { conditions.push('agent_id LIKE ?'); params.push(`%${opts.agent_id}%`) }
-  if (opts.category) { conditions.push('category LIKE ?'); params.push(`%${opts.category}%`) }
+  if (opts.agent_id) { conditions.push("agent_id LIKE ? ESCAPE '\\'"); params.push(likeContains(opts.agent_id)) }
+  if (opts.category) { conditions.push("category LIKE ? ESCAPE '\\'"); params.push(likeContains(opts.category)) }
   if (opts.status) { conditions.push('status = ?'); params.push(opts.status) }
   // Exact match, unlike agent_id/category: a hash is looked up whole, never searched by substring.
   if (opts.content_hash) { conditions.push('content_hash = ?'); params.push(opts.content_hash) }

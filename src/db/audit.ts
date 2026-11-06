@@ -600,7 +600,7 @@ export async function queryAuditLog(opts: {
     const params: unknown[] = []
     if (from) { whereSql += ' AND created_at >= ?'; params.push(from) }
     if (to)   { whereSql += ' AND created_at <= ?'; params.push(to) }
-    if (q)    { whereSql += ' AND (key LIKE ? OR old_value LIKE ? OR new_value LIKE ? OR actor LIKE ?)'; const p = `%${q}%`; params.push(p, p, p, p) }
+    if (q)    { whereSql += " AND (key LIKE ? ESCAPE '\\' OR old_value LIKE ? ESCAPE '\\' OR new_value LIKE ? ESCAPE '\\' OR actor LIKE ? ESCAPE '\\')"; const p = likeContains(q); params.push(p, p, p, p) }
     if (trace_id) { whereSql += ' AND trace_id = ?'; params.push(trace_id) }
     const rows = await dbx.all<ConfigChangeLogRow>(`SELECT id, key, old_value, new_value, actor, created_at, trace_id, span_id FROM config_change_log ${whereSql} ORDER BY created_at DESC, id DESC LIMIT ?`, ...params, fetchLimit)
     for (const r of rows) parts.push({ ...r, source: 'config' })
@@ -612,7 +612,7 @@ export async function queryAuditLog(opts: {
     const params: unknown[] = []
     if (from) { whereSql += ' AND created_at >= ?'; params.push(from) }
     if (to)   { whereSql += ' AND created_at <= ?'; params.push(to) }
-    if (q)    { whereSql += ' AND (idea_id LIKE ? OR to_status LIKE ? OR note LIKE ? OR actor LIKE ?)'; const p = `%${q}%`; params.push(p, p, p, p) }
+    if (q)    { whereSql += " AND (idea_id LIKE ? ESCAPE '\\' OR to_status LIKE ? ESCAPE '\\' OR note LIKE ? ESCAPE '\\' OR actor LIKE ? ESCAPE '\\')"; const p = likeContains(q); params.push(p, p, p, p) }
     const rows = (await dbx.all(`SELECT id, idea_id, from_status, to_status, actor, note, created_at FROM idea_status_log ${whereSql} ORDER BY created_at DESC, id DESC LIMIT ?`, ...params, fetchLimit)) as Array<{ id: number; idea_id: string; from_status: string | null; to_status: string; actor: string; note: string | null; created_at: number }>
     for (const r of rows) parts.push({ ...r, source: 'idea' })
     total += await countRows('idea_status_log', whereSql, params)
@@ -624,7 +624,7 @@ export async function queryAuditLog(opts: {
     if (from) { whereSql += ' AND created_at >= ?'; params.push(from) }
     if (to)   { whereSql += ' AND created_at <= ?'; params.push(to) }
     if (agent) { whereSql += ' AND agent = ?'; params.push(agent) }
-    if (q)    { whereSql += ' AND (rel_path LIKE ? OR agent LIKE ?)'; const p = `%${q}%`; params.push(p, p) }
+    if (q)    { whereSql += " AND (rel_path LIKE ? ESCAPE '\\' OR agent LIKE ? ESCAPE '\\')"; const p = likeContains(q); params.push(p, p) }
     const rows = await dbx.all<StoreFileAuditRow>(`SELECT id, rel_path, event_type, is_sensitive, file_size, agent, created_at FROM store_file_audit ${whereSql} ORDER BY created_at DESC, id DESC LIMIT ?`, ...params, fetchLimit)
     for (const r of rows) parts.push({ ...r, source: 'store' })
     total += await countRows('store_file_audit', whereSql, params)
@@ -660,7 +660,7 @@ export async function queryAuditLog(opts: {
     if (from)  { whereSql += ' AND created_at >= ?'; params.push(from) }
     if (to)    { whereSql += ' AND created_at <= ?'; params.push(to) }
     if (agent) { whereSql += ' AND agent_id = ?'; params.push(agent) }
-    if (q)     { whereSql += ' AND (agent_id LIKE ? OR entity LIKE ? OR action LIKE ? OR detail LIKE ?)'; const p = `%${q}%`; params.push(p, p, p, p) }
+    if (q)     { whereSql += " AND (agent_id LIKE ? ESCAPE '\\' OR entity LIKE ? ESCAPE '\\' OR action LIKE ? ESCAPE '\\' OR detail LIKE ? ESCAPE '\\')"; const p = likeContains(q); params.push(p, p, p, p) }
     if (trace_id) { whereSql += ' AND trace_id = ?'; params.push(trace_id) }
     const rows = await dbx.all<AgentAuditLogRow>(`SELECT id, agent_id, entity, action, entity_id, detail, created_at, trace_id, span_id FROM agent_audit_log ${whereSql} ORDER BY created_at DESC, id DESC LIMIT ?`, ...params, fetchLimit)
     for (const r of rows) parts.push({
@@ -681,7 +681,7 @@ export async function queryAuditLog(opts: {
     if (from)  { whereSql += ' AND ts >= ?'; params.push(from) }
     if (to)    { whereSql += ' AND ts <= ?'; params.push(to) }
     if (agent) { whereSql += ' AND agent_id = ?'; params.push(agent) }
-    if (q)     { whereSql += ' AND (agent_id LIKE ? OR hook_type LIKE ? OR verdict LIKE ? OR tool_name LIKE ? OR reason LIKE ?)'; const p = `%${q}%`; params.push(p, p, p, p, p) }
+    if (q)     { whereSql += " AND (agent_id LIKE ? ESCAPE '\\' OR hook_type LIKE ? ESCAPE '\\' OR verdict LIKE ? ESCAPE '\\' OR tool_name LIKE ? ESCAPE '\\' OR reason LIKE ? ESCAPE '\\')"; const p = likeContains(q); params.push(p, p, p, p, p) }
     if (trace_id) { whereSql += ' AND trace_id = ?'; params.push(trace_id) }
     const rows = (await dbx.all(`SELECT id, agent_id, hook_type, verdict, tool_name, content_hash, reason, session_id, trace_id, span_id, ts AS created_at FROM hook_audit_log ${whereSql} ORDER BY ts DESC, id DESC LIMIT ?`, ...params, fetchLimit)) as Array<{
       id: number; agent_id: string | null; hook_type: string; verdict: string
