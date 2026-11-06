@@ -9,6 +9,7 @@ import { MAIN_AGENT_ID, currentBotName } from '../../config.js'
 import { runAgent } from '../../agent.js'
 import { logger } from '../../logger.js'
 import { toPendingRetryView } from '../../pending-retries.js'
+import { readLastBoot } from '../boot-marker.js'
 import { isValidCronShape } from '../cron.js'
 import { readBody, json, RequestBodyTooLargeError, SCHEDULE_BODY_MAX_BYTES } from '../http-helpers.js'
 import { sanitizeScheduleName, safeJoin } from '../sanitize.js'
@@ -152,7 +153,8 @@ export async function tryHandleSchedules(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'forbidden', hint: 'Scheduler tick status is admin-only' }, 403)
       return true
     }
-    json(res, computeTickStatus(loadLastTickMs(), Date.now()))
+    // lastBoot is additive: the existing fields are unchanged (null until the first boot has been recorded).
+    json(res, { ...computeTickStatus(loadLastTickMs(), Date.now()), lastBoot: readLastBoot() })
     return true
   }
 

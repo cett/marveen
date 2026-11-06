@@ -14,6 +14,7 @@ import { runLsof } from './lsof.js'
 import type { Server as HttpServer } from 'node:http'
 import { PROJECT_ROOT, STORE_DIR, IS_ISOLATED_MODE, PID_FILENAME, WEB_PORT, ALLOWED_CHAT_ID, MAIN_AGENT_ID, RESPAWN_ENABLED, HEARTBEAT_AGENT_ENABLED } from './config.js'
 import { runSigtermFlushes } from './web/sigterm-flush.js'
+import { startBootMarker } from './web/boot-marker.js'
 import { initDatabase, resolveAgentTenant, backfillEmbeddings, closeDatabase, retireConfigOverridesFile, retireScheduleStateFiles, retireAgentSettingsFiles, retireAgentStateFiles, retireKanbanAuditStateFile, retireVaultBindingsFile, retireFederationConfigFile, retireGroup5StateFiles } from './db.js'
 import { flushLedgerSpool } from './conversation-ledger-spool.js'
 import { backfillWorkspaceDocs } from './db/workspace.js'
@@ -567,6 +568,12 @@ async function main(): Promise<void> {
   // 5/8's other three files (model-fallback.json, agents-desired.json,
   // terminal-input.json) -- previously migrated but never retired.
   retireGroup5StateFiles()
+
+  // Boot marker: record this boot (last_boot, with whether the previous process stopped cleanly) and register the
+  // `shutdown-marker` SIGTERM flush. Registered HERE, before startWebServer (which registers the desired run-state
+  // flush later), so the marker is the first flush to run inside the SIGTERM budget; SIGINT and SIGKILL leave no
+  // marker and read as unclean next boot (the shutdown path is unchanged). Never throws.
+  await startBootMarker()
 
   // An interrupted fleet import leaves staged files and backups behind. Report them (never delete): asynchronous and
   // bounded in depth, count and time, so the boot does not wait for it, and a failure only logs.

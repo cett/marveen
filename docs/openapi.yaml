@@ -3852,7 +3852,9 @@ paths:
       description: >-
         Whether the schedule-runner's tick loop has stamped its liveness
         marker recently. stale is true when lastTickMs is unknown (no stamp
-        yet) or older than the staleness threshold (3 minutes).
+        yet) or older than the staleness threshold (3 minutes). lastBoot is the
+        record of the current process boot (null before the first one was
+        recorded); prev_shutdown tells how the previous process ended.
       responses:
         "200":
           description: Tick liveness status
@@ -3869,6 +3871,18 @@ paths:
                     nullable: true
                   stale:
                     type: boolean
+                  lastBoot:
+                    type: object
+                    nullable: true
+                    properties:
+                      boot_id:
+                        type: string
+                      started_at:
+                        type: integer
+                        description: Boot time (ms).
+                      prev_shutdown:
+                        type: string
+                        enum: [clean, unclean, unknown]
         "403":
           description: Caller is not admin
 

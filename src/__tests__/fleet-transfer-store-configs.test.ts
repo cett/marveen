@@ -115,6 +115,21 @@ describe('exportFleet -- store/*.json config fields', () => {
     expect(fleet.dashboardSettings.costopsConfig.currency).toBe('USD')
   })
 
+  // The scheduler's own state (the in-flight mirror and the boot marker) belongs to THIS process and install: a copy
+  // would make the target believe in injections it never made, or a boot it did not have. The export copies an
+  // explicit list of keys; this pins that none of these is on it, wherever the value would end up in the document.
+  it('does not carry the scheduler state keys (in-flight mirror, boot marker) into the export', async () => {
+    const { exportFleet } = await import('../web/fleet-transfer.js')
+    const { setSystemConfig } = await import('../db.js')
+    await setSystemConfig('scheduled_inflight', JSON.stringify({ 'task-x@agent-x': { taskName: 'task-x', marker: 'inflight-sentinel-1' } }))
+    await setSystemConfig('last_boot', JSON.stringify({ boot_id: 'boot-sentinel-2', started_at: 1, prev_shutdown: 'clean' }))
+    await setSystemConfig('clean_shutdown', JSON.stringify({ boot_id: 'boot-sentinel-2', at: 2 }))
+    const result = await exportFleet()
+    for (const needle of ['scheduled_inflight', 'last_boot', 'clean_shutdown', 'inflight-sentinel-1', 'boot-sentinel-2']) {
+      expect(result.data).not.toContain(needle)
+    }
+  })
+
   it('returns empty objects when the files do not exist', async () => {
     const { exportFleet } = await import('../web/fleet-transfer.js')
     const result = await exportFleet()

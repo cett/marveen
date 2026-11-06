@@ -528,8 +528,8 @@ export interface AgentAuditLogRow {
 
 export async function writeAgentAuditLog(opts: {
   agent_id: string
-  entity: 'memory' | 'kanban' | 'message' | 'agent' | 'blackboard' | 'approval' | 'schedule' | 'system'
-  action: 'create' | 'update' | 'delete' | 'retention_prune' | 'pii_scrub_bypass' | 'pii_scrub_attempt_denied' | 'reserved_marker_denied' | 'skip_not_live' | 'timeout_sweep' | 'mass_skip' | 'skip_tenant_mismatch' | 'review_requested' | 'activate' | 'toggle' | 'retarget' | 'envelope_hash_mismatch' | 'consume' | 'create_refused' | 'requeue' | 'sender_route_checked'
+  entity: 'memory' | 'kanban' | 'message' | 'agent' | 'blackboard' | 'approval' | 'schedule' | 'system' | 'boot'
+  action: 'create' | 'update' | 'delete' | 'retention_prune' | 'pii_scrub_bypass' | 'pii_scrub_attempt_denied' | 'reserved_marker_denied' | 'skip_not_live' | 'timeout_sweep' | 'mass_skip' | 'skip_tenant_mismatch' | 'review_requested' | 'activate' | 'toggle' | 'retarget' | 'envelope_hash_mismatch' | 'consume' | 'create_refused' | 'requeue' | 'sender_route_checked' | 'inflight_restored_unverified' | 'boot'
   entity_id?: string | number | null
   detail?: Record<string, unknown> | null
   /** A tenant the caller already resolved (a writer inside a transaction cannot look it up on the facade there);
