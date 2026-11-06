@@ -11,7 +11,7 @@ import { useTestDb } from './helpers/with-test-db.js'
 import {
   getDb, createKanbanCard, searchKanbanCards, createApproval, listApprovals, countApprovals,
   saveWorkspaceDoc, listWorkspaceDocs, countWorkspaceDocs, getTokenDetails, correlateWithKanban,
-  queryAuditLog, createTenant,
+  queryAuditLog, createTenant, createSkill, listAgentOwnedSkills,
 } from '../db.js'
 import { likeContains, likePrefix } from '../db/like.js'
 
@@ -61,6 +61,19 @@ describe('searchKanbanCards: the query is literal', () => {
     expect((await searchKanbanCards({ q: `#${seq}` })).map((c) => c.id)).toEqual(['abcd1234'])
     expect((await searchKanbanCards({ q: 'abcd' })).map((c) => c.id)).toEqual(['abcd1234'])
     expect((await searchKanbanCards({ q: 'abc' })).map((c) => c.id)).toEqual([])
+  })
+
+  // The GLOB guard of the id-prefix branch only checks the first character, so "ab_d" and "abc%" pass it: the prefix pattern
+  // itself must be literal. Fixture ids are hex-like on purpose (the decoy is a real hex id the wildcard would hit).
+  it('the id-prefix branch is literal: a "_" or "%" after the first character is no wildcard', async () => {
+    await createKanbanCard({ id: 'abcd1234', title: 'plain one' })
+    await createKanbanCard({ id: 'abcdef00', title: 'plain two' })
+    await createKanbanCard({ id: 'ab_d9999', title: 'literal underscore id' })
+    await createKanbanCard({ id: 'ab%d8888', title: 'literal percent id' })
+    expect(await find('ab_d')).toEqual(['ab_d9999'])
+    expect(await find('ab%d')).toEqual(['ab%d8888'])
+    expect(await find('abcd')).toEqual(['abcd1234', 'abcdef00'])
+    expect(await find('abcd12')).toEqual(['abcd1234'])
   })
 
   it('the search stays in the caller tenant', async () => {
@@ -131,6 +144,27 @@ describe('the workspace doc_key prefix is literal', () => {
     await doc('k_2')
     expect((await listWorkspaceDocs({ docKeyPrefix: '' })).length).toBe(2)
     expect(await keys('k_', 'tenant-x')).toEqual(['k_1'])
+  })
+})
+
+describe('listAgentOwnedSkills: the agent id is a literal prefix', () => {
+  async function skill(id: string): Promise<void> {
+    await createSkill({ id, name: id.replace(/\//g, '-'), content: 'c', tenant_id: 'default' })
+  }
+  const ids = async (agentId: string) => (await listAgentOwnedSkills(agentId)).map((s) => s.id).sort()
+
+  it('an agent id with "_" does not list the skills of the agent that differs only where "_" would match', async () => {
+    await skill('agent/a_b/own-skill')
+    await skill('agent/aXb/other-skill')
+    expect(await ids('a_b')).toEqual(['agent/a_b/own-skill'])
+    expect(await ids('aXb')).toEqual(['agent/aXb/other-skill'])
+  })
+
+  it('a plain agent id lists its own skills only, and not those of an id it is a prefix of', async () => {
+    await skill('agent/agent-a/one')
+    await skill('agent/agent-a/two')
+    await skill('agent/agent-ab/three')
+    expect(await ids('agent-a')).toEqual(['agent/agent-a/one', 'agent/agent-a/two'])
   })
 })
 
