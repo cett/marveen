@@ -89,6 +89,7 @@ vi.mock('../web/vault-bindings.js', () => ({
   addBinding: vi.fn().mockResolvedValue(undefined),
   removeBinding: vi.fn().mockResolvedValue(true),
   removeBindingsForSecret: vi.fn().mockResolvedValue(undefined),
+  removeSecretAcl: vi.fn().mockResolvedValue(undefined),
   syncSecret: vi.fn().mockResolvedValue({ updated: 0, errors: [] }),
   syncAllBindings: vi.fn().mockResolvedValue({ updated: 0, errors: [] }),
   scanMcpConfigs: vi.fn().mockReturnValue([]),
@@ -113,7 +114,7 @@ import {
   listSecrets, setSecret, getSecret, deleteSecret, findSecretTenant,
 } from '../web/vault.js'
 import {
-  getBindings, addBinding, removeBinding, syncSecret, syncAllBindings, scanMcpConfigs,
+  getBindings, addBinding, removeBinding, removeSecretAcl, syncSecret, syncAllBindings, scanMcpConfigs,
 } from '../web/vault-bindings.js'
 import { getMcpListCache, refreshMcpListCache, purgeFromMcpListCache } from '../web/mcp-list.js'
 
@@ -686,6 +687,37 @@ describe('GET/DELETE /api/vault/:id', () => {
     await tryHandleConnectors(ctx)
     expect(out.body).toEqual({ ok: true })
     expect(deleteSecret).toHaveBeenCalledWith('my-secret', 'default')
+  })
+
+  it('deleting a secret also drops its grantee list, so a re-created id does not inherit the restriction', async () => {
+    vi.mocked(findSecretTenant).mockReturnValue('default')
+    vi.mocked(removeSecretAcl).mockClear()
+    const { ctx, out } = makeCtx('DELETE', '/api/vault/my-secret', null, { role: 'agent', tenantId: 'default' })
+    await tryHandleConnectors(ctx)
+    expect(out.body).toEqual({ ok: true })
+    expect(removeSecretAcl).toHaveBeenCalledTimes(1)
+    expect(removeSecretAcl).toHaveBeenCalledWith('my-secret')
+  })
+
+  // A secret id is unique per (id, tenant), the grantee list lives under the default tenant: deleting
+  // ANOTHER tenant's secret of the same id must not open the default tenant's restricted secret.
+  it('deleting another tenant\'s secret of the same id leaves the default tenant\'s grantee list alone', async () => {
+    vi.mocked(findSecretTenant).mockReturnValue('tenant-x')
+    vi.mocked(removeSecretAcl).mockClear()
+    const { ctx, out } = makeCtx('DELETE', '/api/vault/shared-id', null, { role: 'admin' })
+    await tryHandleConnectors(ctx)
+    expect(out.body).toEqual({ ok: true })
+    expect(deleteSecret).toHaveBeenCalledWith('shared-id', 'tenant-x')
+    expect(removeSecretAcl).not.toHaveBeenCalled()
+  })
+
+  it('a delete that is refused (cross-tenant id) leaves the grantee list alone', async () => {
+    vi.mocked(findSecretTenant).mockReturnValue('tenant-x')
+    vi.mocked(removeSecretAcl).mockClear()
+    const { ctx, out } = makeCtx('DELETE', '/api/vault/other-tenant-secret', null, { role: 'agent', tenantId: 'default' })
+    await tryHandleConnectors(ctx)
+    expect(out.status).toBe(404)
+    expect(removeSecretAcl).not.toHaveBeenCalled()
   })
 
   it('does not shadow the ssh-servers/ssh-keys/bindings/sync/scan/import sub-routes', async () => {

@@ -42,6 +42,7 @@ const SEEDERS: Record<string, (t: string) => void> = {
   egress_allowlist: (t) => db().prepare("INSERT INTO egress_allowlist (value, type, tenant_id) VALUES ('example.org', 'domain', ?)").run(t),
   idea_box: (t) => db().prepare("INSERT INTO idea_box (id, title, created_at, updated_at, tenant_id) VALUES (?, 'idea', 0, 0, ?)").run(`idea-${t}`, t),
   vault_bindings: (t) => db().prepare("INSERT INTO vault_bindings (vault_secret_id, env_var, tenant_id) VALUES ('s1', 'E', ?)").run(t),
+  vault_secret_acl: (t) => db().prepare("INSERT INTO vault_secret_acl (vault_secret_id, tenant_id, grantee) VALUES ('s1', ?, 'agent:agent-a')").run(t),
   token_usage: (t) => db().prepare("INSERT INTO token_usage (agent, session_id, timestamp, content_preview, tenant_id) VALUES ('a', 's', ?, 'secret text', ?)").run(OTHERS.concat(TARGET).indexOf(t) + 1, t),
   fleet_blackboard_history: (t) => db().prepare("INSERT INTO fleet_blackboard_history (agent_id, status, summary, tenant_id) VALUES ('a', 'done', 'x', ?)").run(t),
   rbac_shadow_log: (t) => db().prepare("INSERT INTO rbac_shadow_log (tenant_id, principal_kind, principal, role, method, route, permission, decision) VALUES (?, 'session', 'user-a', 'viewer', 'GET', '/api/memories', 'memories:read', 'permitted')").run(t),

@@ -18,7 +18,7 @@ import { getExternalProjectPaths, addExternalProjectPath, removeExternalProjectP
 import { listSecrets, setSecret, getSecret, deleteSecret, findSecretTenant } from '../vault.js'
 import { logVaultRead, isSshPrivateKeyId, principalOf } from '../vault-acl.js'
 import {
-  getBindings, addBinding, removeBinding, removeBindingsForSecret,
+  getBindings, addBinding, removeBinding, removeBindingsForSecret, removeSecretAcl,
   syncSecret, syncAllBindings, scanMcpConfigs, unsyncBinding,
 } from '../vault-bindings.js'
 import type { RouteContext } from './types.js'
@@ -767,6 +767,11 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     if (ownerTenantId === null) return true
     deleteSecret(id, ownerTenantId)
     await removeBindingsForSecret(id)
+    // The grantee list goes with the secret: a re-created id must not inherit the old restriction.
+    // The list is kept under the 'default' tenant (like the bindings), and a secret id is unique only
+    // per tenant: deleting another tenant's secret of the same id must NOT drop the default tenant's
+    // restriction (that would turn a restricted secret into an open one).
+    if (ownerTenantId === 'default') await removeSecretAcl(id)
     json(res, { ok: true })
     return true
   }

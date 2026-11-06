@@ -98,6 +98,7 @@ vi.mock('../web/vault-bindings.js', () => ({
   addBinding: vi.fn(),
   removeBinding: vi.fn().mockReturnValue(true),
   removeBindingsForSecret: vi.fn(),
+  removeSecretAcl: vi.fn(),
   syncSecret: vi.fn().mockReturnValue({ updated: 0, errors: [] }),
   syncAllBindings: vi.fn().mockReturnValue({ updated: 0, errors: [] }),
   scanMcpConfigs: vi.fn().mockReturnValue([]),

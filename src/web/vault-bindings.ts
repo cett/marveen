@@ -10,6 +10,7 @@ import {
   listVaultBindings, upsertVaultBinding, deleteVaultBinding, deleteVaultBindingsForSecret,
   type VaultBinding, type VaultBindingTarget,
 } from '../db/vault-bindings.js'
+import { listSecretAcl, replaceSecretAcl, deleteSecretAcl, listAllSecretAcls } from '../db/vault-secret-acl.js'
 import { logger } from '../logger.js'
 
 const VAULT_WRAPPER_PATH = join(PROJECT_ROOT, 'scripts', 'vault-env-wrapper.sh')
@@ -58,6 +59,25 @@ export async function getBindings(): Promise<VaultBinding[]> {
 
 export async function addBinding(binding: VaultBinding): Promise<void> {
   await upsertVaultBinding('default', binding)
+}
+
+// Per-secret grantee list (vault_secret_acl, migration 0090). Same 'default'-tenant
+// scope as the bindings above. An empty list means "open" (any target file), so this
+// layer only stores and reads the set; enforcement is in syncSecret and the routes.
+export async function getSecretAcl(vaultSecretId: string): Promise<string[]> {
+  return listSecretAcl('default', vaultSecretId)
+}
+
+export async function setSecretAcl(vaultSecretId: string, grantees: readonly string[]): Promise<void> {
+  await replaceSecretAcl('default', vaultSecretId, grantees)
+}
+
+export async function removeSecretAcl(vaultSecretId: string): Promise<void> {
+  await deleteSecretAcl('default', vaultSecretId)
+}
+
+export async function getAllSecretAcls(): Promise<Record<string, string[]>> {
+  return listAllSecretAcls('default')
 }
 
 export async function removeBinding(vaultSecretId: string, envVar: string): Promise<boolean> {
