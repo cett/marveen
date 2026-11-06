@@ -8,7 +8,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { EventEmitter } from 'node:events'
 import type http from 'node:http'
-import { initDatabase, getDb, createKanbanCard, createTenant } from '../db.js'
+import { initDatabase, getDb, createKanbanCard, createTenant, updateKanbanCard } from '../db.js'
 import { resolveAuth } from '../web/auth-gate.js'
 import { checkPermission, resolveRole, resolveTenantId } from '../web/authz.js'
 import { tryHandleKanban } from '../web/routes/kanban.js'
@@ -17,6 +17,12 @@ import { isInvalidJsonBodyError, json } from '../web/http-helpers.js'
 import type { RouteContext } from '../web/routes/types.js'
 
 vi.mock('../web/llm-breakdown.js', () => ({ generateBreakdown: vi.fn() }))
+// updateKanbanCard stays the real function; the mock only records what the route hands it, so a test can look at the
+// fields that would be WRITTEN (an equal status is dropped from them, see "the same status ...").
+vi.mock('../db.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../db.js')>()
+  return { ...actual, updateKanbanCard: vi.fn(actual.updateKanbanCard) }
+})
 
 interface Reply { status: number; body: any }
 interface CtxOpts { role?: string; tenantId?: string | null; auth?: unknown }
@@ -76,6 +82,7 @@ const PRIORITY_HINT = 'Allowed: low, normal, high, urgent'
 const MOVE_HINT = 'change a card status with POST /api/kanban/:id/move'
 
 beforeEach(async () => {
+  vi.mocked(updateKanbanCard).mockClear()
   initDatabase(':memory:')
   await createTenant('tenant-x', 'Tenant X')
   await createKanbanCard({ id: 'c1', title: 'Card' })
@@ -127,6 +134,68 @@ describe('PUT /api/kanban/:id -- status must be an allowed value', () => {
     expect(row('c1').description).toBe('changed')
     expect(count('kanban_card_events')).toBe(events)
     expect((await put('tc1', { status: 'planned' }, TENANT)).status).toBe(200)
+  })
+
+  // The end state of the test above would be the same if the route handed the equal status to the UPDATE: it writes the
+  // value that is already there. What the status key must NOT do is reach the write at all, because a move that lands
+  // between the route's read and the UPDATE would then be reverted by the stale value. So the argument of
+  // updateKanbanCard is looked at, and the race itself is replayed.
+  describe('an equal status never reaches the write', () => {
+    const written = (): Array<Record<string, unknown>> => vi.mocked(updateKanbanCard).mock.calls.map((c) => c[1] as Record<string, unknown>)
+
+    it('the fields handed to updateKanbanCard have no status key, the other fields are there (admin and tenant caller, /api and /api/v1)', async () => {
+      for (const [who, id] of [[ADMIN, 'c1'], [TENANT, 'tc1']] as const) {
+        for (const prefix of ['/api', '/api/v1']) {
+          vi.mocked(updateKanbanCard).mockClear()
+          const res = await put(id, { status: 'planned', description: `kept by ${prefix}` }, who, prefix)
+          expect(res.status).toBe(200)
+          expect(written()).toHaveLength(1)
+          expect(Object.keys(written()[0])).not.toContain('status')
+          expect(written()[0]).toEqual({ description: `kept by ${prefix}` })
+        }
+      }
+    })
+
+    it('a body of nothing but the equal status hands over an empty field set, not the status', async () => {
+      const res = await put('c1', { status: 'planned' })
+      expect(res.status).toBe(200)
+      expect(written()).toEqual([{}])
+    })
+
+    it('the full-card PUT of the UI: every stored column but the status is handed over', async () => {
+      const stored = row('c1')
+      await put('c1', { ...stored, assignee: null, title: 'Renamed' })
+      expect(written()).toHaveLength(1)
+      expect(Object.keys(written()[0])).not.toContain('status')
+      expect(written()[0]).toMatchObject({ title: 'Renamed', priority: 'normal', sort_order: stored.sort_order })
+    })
+
+    it('with expected_updated_at: the status is still dropped, the guard goes to the options argument', async () => {
+      const at = row('c1').updated_at as number
+      const res = await put('c1', { status: 'planned', description: 'guarded', expected_updated_at: at })
+      expect(res.status).toBe(200)
+      expect(written()[0]).toEqual({ description: 'guarded' })
+      expect(vi.mocked(updateKanbanCard).mock.calls[0][3]).toEqual({ expectedUpdatedAt: at })
+    })
+
+    it('a different status does not reach the write at all (400 before updateKanbanCard)', async () => {
+      const res = await put('c1', { status: 'done', description: 'must not land' })
+      expect(res.status).toBe(400)
+      expect(updateKanbanCard).not.toHaveBeenCalled()
+    })
+
+    it('a move that lands between the route\'s read and the UPDATE is not reverted by the PUT', async () => {
+      const actual = await vi.importActual<typeof import('../db.js')>('../db.js')
+      vi.mocked(updateKanbanCard).mockImplementationOnce(async (...args) => {
+        // the race: another request moves the card after the route compared the status and before the UPDATE runs
+        getDb().prepare("UPDATE kanban_cards SET status = 'in_progress' WHERE id = 'c1'").run()
+        return actual.updateKanbanCard(...args)
+      })
+      const res = await put('c1', { status: 'planned', description: 'edited while it moved' })
+      expect(res.status).toBe(200)
+      expect(row('c1').description).toBe('edited while it moved')
+      expect(row('c1').status).toBe('in_progress')
+    })
   })
 
   it('the full-card PUT of the UI (every stored column sent back, status and sort_order included) is a 200', async () => {
