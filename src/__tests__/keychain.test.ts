@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest'
 
 const { execFileSyncMock, platformMock } = vi.hoisted(() => ({
   execFileSyncMock: vi.fn(),
@@ -16,9 +16,19 @@ import {
   keychainDelete,
 } from '../web/keychain.js'
 
+// isKeychainAvailable() is off in an isolated instance (MARVEEN_STORE_DIR set), so these tests, which are
+// about the platform gate, must not inherit that variable from the shell they are run from.
+const savedStoreDir = process.env['MARVEEN_STORE_DIR']
+
 beforeEach(() => {
   execFileSyncMock.mockReset()
   platformMock.mockReset().mockReturnValue('darwin')
+  delete process.env['MARVEEN_STORE_DIR']
+})
+
+afterAll(() => {
+  if (savedStoreDir === undefined) delete process.env['MARVEEN_STORE_DIR']
+  else process.env['MARVEEN_STORE_DIR'] = savedStoreDir
 })
 
 describe('isKeychainAvailable', () => {

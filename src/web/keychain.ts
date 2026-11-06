@@ -16,11 +16,26 @@ const SECURITY_TIMEOUT_MS = 5000
 // did not answer -- callers must treat that as unavailable, never as "no key".
 const EXIT_ITEM_NOT_FOUND = 44
 
+// An isolated instance (MARVEEN_STORE_DIR set) keeps every FILE store of its own, but the Keychain item
+// above is one per user and does not depend on the store directory. Left on, an isolated instance would
+// read the REAL master key and, in the migration branch of getMasterKey, overwrite it with the key of the
+// isolated vault: the live vault.json would no longer decrypt. So in isolated mode the Keychain is off
+// and the vault uses its file key under the isolated store.
+//
+// This is the same definition as IS_ISOLATED_MODE in config.ts (Boolean of the same variable). It is read
+// here from the environment instead of imported: config.ts reaches the vault through the secret resolver,
+// so importing it from here would be a cycle. A test pins that the two agree. It is read at each call,
+// not once at load, so the answer cannot go stale.
+function isIsolatedStore(): boolean {
+  return Boolean(process.env['MARVEEN_STORE_DIR'])
+}
+
 export function isKeychainAvailable(): boolean {
-  // Platform gate only. Whether the keychain actually answers is decided by
-  // keychainRetrieveStatus() at each decision point -- a platform check alone
-  // said "available" on a locked keychain and enabled the silent key swap
+  // The one gate for every caller. Isolated store: never (see above). Otherwise a platform gate only:
+  // whether the keychain actually answers is decided by keychainRetrieveStatus() at each decision point
+  // -- a platform check alone said "available" on a locked keychain and enabled the silent key swap
   // (VAULTUJKULCS822).
+  if (isIsolatedStore()) return false
   return platform() === 'darwin'
 }
 
@@ -50,7 +65,18 @@ export function keychainRetrieve(): string | null {
   return keychainRetrieveStatus().value
 }
 
+// Thrown by the two WRITERS below in an isolated instance. The gate above keeps the vault away from the
+// Keychain, but the protection must not rest on every caller remembering to ask it: a future caller that
+// forgets would overwrite or delete the real master key. The message names no value.
+export class KeychainIsolatedError extends Error {
+  constructor(action: 'store' | 'delete') {
+    super(`Keychain ${action} refused: this is an isolated instance (MARVEEN_STORE_DIR is set) and must not touch the real master key`)
+    this.name = 'KeychainIsolatedError'
+  }
+}
+
 export function keychainStore(value: string): void {
+  if (isIsolatedStore()) throw new KeychainIsolatedError('store')
   execFileSync(SECURITY, [
     'add-generic-password',
     '-U',
@@ -62,6 +88,8 @@ export function keychainStore(value: string): void {
 }
 
 export function keychainDelete(): boolean {
+  // Before the try: a refusal must reach the caller, not turn into the "false" of a failed delete.
+  if (isIsolatedStore()) throw new KeychainIsolatedError('delete')
   try {
     execFileSync(SECURITY, [
       'delete-generic-password',
