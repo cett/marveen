@@ -296,6 +296,51 @@ describe('the delivery gate (router tick, reconnect backlog, inbox pull) on stor
     expect((await gateDeliveryBatch([ok, deny])).map((m) => m.id)).toEqual([ok.id])
   })
 
+  // The inbox pull judges what claimPendingForAgent RETURNS, not what createAgentMessage built: the gate here is the
+  // real one, on the real claimed rows (a RETURNING list without tenant_id turned a partner row into an unknown sender).
+  it('a claimed partner row keeps its tenant: the pull path classifies it like the router path (partner_sender, not unknown_sender_class)', async () => {
+    MODE = 'enforce'
+    try {
+      clearAudit()
+      // a target of its own, so the claim below holds no row an earlier test left pending
+      getDb().prepare('INSERT OR REPLACE INTO tenant_agent_availability (tenant_id, agent_id, enabled, updated_at) VALUES (?, ?, 1, ?)').run('tenant-x', 'agent-pull-ok', Math.floor(Date.now() / 1000))
+      const ok = await row('partner-bot', 'agent-pull-ok', 'tenant-x')
+      const deny = await row('partner-bot', 'agent-pull-a', 'tenant-x')
+      const claimed = await dbAgents.claimPendingForAgent('agent-pull-ok', 10)
+      expect(claimed.map((m) => m.id)).toEqual([ok.id])
+      expect(claimed[0]!.tenant_id).toBe('tenant-x')
+      expect(classifyDeliverySender(claimed[0]!)).toMatchObject({ senderClass: 'partner_sender', tenantId: 'tenant-x' })
+      expect(classifyDeliverySender(claimed[0]!)).toEqual(classifyDeliverySender(ok))
+      expect((await gateDeliveryBatch(claimed)).map((m) => m.id)).toEqual([ok.id])
+      expect(auditRows().filter((r) => r.entity_id === String(ok.id))).toEqual([])
+      // a claimed row of the same sender for another target is refused for the right reason, not as an unknown sender
+      const claimedDeny = await dbAgents.claimPendingForAgent('agent-pull-a', 10)
+      expect(claimedDeny.map((m) => m.id)).toEqual([deny.id])
+      expect(await gateDeliveryBatch(claimedDeny)).toEqual([])
+      const refused = await statusOf(deny.id)
+      expect(refused.status).toBe('failed')
+      expect(refused.refused_reason).toBe('sender_route_target_not_in_tenant')
+    } finally {
+      getDb().prepare('DELETE FROM tenant_agent_availability WHERE agent_id = ?').run('agent-pull-ok')
+    }
+  })
+
+  it('a claimed (delivered) row is still refusable, and a row closed in the meantime keeps its outcome', async () => {
+    MODE = 'enforce'
+    const claimedRefused = await row('test-owner', 'agent-pull-b')
+    const closedMeanwhile = await row('test-owner', 'agent-pull-b')
+    const batch = await dbAgents.claimPendingForAgent('agent-pull-b', 10)
+    expect(batch.map((m) => m.id)).toEqual([claimedRefused.id, closedMeanwhile.id])
+    // the executor's own callback closes one of them between the claim and the refusal
+    expect(await dbAgents.closeOpenMessage(closedMeanwhile.id, 'done', 'finished by the executor')).toBe(true)
+    expect(await gateDeliveryBatch(batch)).toEqual([])
+    const refused = await statusOf(claimedRefused.id)
+    expect(refused.status).toBe('failed')
+    expect(refused.refused_reason).toBe('sender_route_target_not_owner_main_agent')
+    const kept = (await getAgentMessage(closedMeanwhile.id)) as { status: string; result: string | null; refused_reason: string | null }
+    expect(kept).toMatchObject({ status: 'done', result: 'finished by the executor', refused_reason: null })
+  })
+
   it('a message that stays pending is audited once, not on every tick', async () => {
     MODE = 'audit'
     clearAudit()

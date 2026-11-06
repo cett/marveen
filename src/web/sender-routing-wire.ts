@@ -26,7 +26,7 @@ import { sanitizeAgentIdent } from '../prompt-safety.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
 import { isTrustedPeer } from '../team-trust.js'
 import { writeAgentAuditLog } from '../db/audit.js'
-import { listEnabledAgentAvailability, markMessageRefused } from '../db/agents.js'
+import { closeOpenMessage, listEnabledAgentAvailability } from '../db/agents.js'
 import { listTenants } from '../db/observability.js'
 import { isKnownAgent } from './agent-config.js'
 import { readAgentTeam } from './agent-team.js'
@@ -241,7 +241,7 @@ const AUDITED_AT_DELIVERY_CAP = 5000
  * coordinator's direct inserts, platform senders, federated rows.
  *
  * `audit` mode: every message is returned, the verdict is only logged. `enforce` mode: a refused message is
- * closed with the existing refusal mechanism (markMessageRefused: status failed + refused_reason
+ * closed with the existing refusal mechanism (closeOpenMessage, compare-and-set: status failed + refused_reason
  * `sender_route_<reason>`) and left out of the returned list, so nothing is injected or shown for it.
  * The tenant tables are read once per call, however many messages there are.
  *
@@ -277,8 +277,10 @@ export async function gateDeliveryBatch<T extends { id: number; from_agent: stri
     if (verdict.deny) {
       const reason = verdict.decision.ok ? 'denied' : verdict.decision.reason
       try {
-        if (!await markMessageRefused(m.id, `sender_route_${reason}`)) {
-          logger.warn({ id: m.id }, 'sender-routing: markMessageRefused affected 0 rows (status changed concurrently?)')
+        // Compare-and-set: a row that was closed in the meantime (done / failed, e.g. by PUT /api/messages/:id)
+        // keeps its outcome; the refusal only lands on a row that is still open (pending, or delivered by the claim).
+        if (!await closeOpenMessage(m.id, 'refused', `sender_route_${reason}`)) {
+          logger.warn({ id: m.id }, 'sender-routing: the refusal did not apply, the message was already closed')
         }
       } catch (err) {
         logger.warn({ err, id: m.id }, 'sender-routing: could not close a refused message')

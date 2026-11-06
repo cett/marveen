@@ -293,7 +293,7 @@ export async function claimPendingForAgent(toAgent: string, limit: number): Prom
          ORDER BY created_at ASC, id ASC
          LIMIT ?
        )
-     RETURNING id, from_agent, to_agent, content, status, result, created_at, delivered_at, completed_at`, now, toAgent, limit)
+     RETURNING id, from_agent, to_agent, content, status, result, created_at, delivered_at, completed_at, tenant_id`, now, toAgent, limit)
   // RETURNING row order is unspecified; restore FIFO (created_at, then id as the
   // tiebreaker for same-second inserts) for delivery.
   return rows.sort((a, b) => (a.created_at - b.created_at) || (a.id - b.id))
