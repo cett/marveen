@@ -17,7 +17,7 @@ import {
 import { withSessionSendLock } from './session-send-lock.js'
 import { readClaudeCodeOauthJson } from './claude-credentials.js'
 import { buildProviderEnv } from './provider-dispatch.js'
-import { detectPaneState } from '../pane-state.js'
+import { detectPaneState, detectsExternalImportsDialog } from '../pane-state.js'
 import { notifyChannel } from '../notify.js'
 
 // =============================================================================
@@ -254,11 +254,15 @@ export function buildWorkerPrompt(callerPrompt: string, outPath: string, donePat
  *  - 'modal': confirm/option-list chrome without an idle footer (e.g. the CC
  *    2.1.202 fullscreen-renderer upsell, or whatever first-run dialog a future
  *    CC ships) -- the self-heal target;
+ *  - 'imports-dialog': the "Allow external CLAUDE.md file imports?" dialog. NOT
+ *    a self-heal target: Escape (or Enter) on it picks the highlighted "No",
+ *    an explicit refusal of the persona imports, and "Yes" is a trust grant
+ *    only the pre-seeded stamp may give. Alert-only;
  *  - 'empty': inconclusive (still booting);
  *  - 'unknown': text without any recognised marker -- also a self-heal target,
  *    because an unrecognised full-screen overlay hides the idle footer.
  */
-export type WorkerPaneClass = 'idle' | 'busy' | 'auth' | 'modal' | 'empty' | 'unknown'
+export type WorkerPaneClass = 'idle' | 'busy' | 'auth' | 'modal' | 'imports-dialog' | 'empty' | 'unknown'
 
 export function classifyWorkerPane(pane: string | null): WorkerPaneClass {
   if (pane == null || pane.trim() === '') return 'empty'
@@ -267,6 +271,9 @@ export function classifyWorkerPane(pane: string | null): WorkerPaneClass {
   const st = detectPaneState(pane)
   if (st === 'busy') return 'busy'
   if (st === 'idle' || st === 'typing') return 'idle'
+  // Before the generic modal match: this dialog carries "Enter to confirm" and
+  // would otherwise read as 'modal' and get the bounded Escape (= the "No").
+  if (detectsExternalImportsDialog(pane)) return 'imports-dialog'
   // Modal chrome: a numbered option list or a confirm footer. Matches the
   // fullscreen-upsell dialog captured live on 2026-07-08 and the Trust-folder /
   // onboarding dialog family.
@@ -564,6 +571,10 @@ const WORKER_STUCK_ALERT_COOLDOWN_MS = 60 * 60 * 1000
  */
 function selfHealWorkerOnce(ctx: WorkerCtx): boolean {
   const cls = classifyWorkerPane(capturePane(ctx.session))
+  if (cls === 'imports-dialog') {
+    alertWorkerImportsDialog(ctx)
+    return false
+  }
   if (!shouldSelfHeal(cls)) return false
   logger.warn({ cls, session: ctx.session }, 'agent-worker: pane parked on unexpected chrome -- bounded Escape self-heal')
   for (let i = 0; i < WORKER_SELF_HEAL_MAX_ESCAPES; i++) {
@@ -578,6 +589,23 @@ function selfHealWorkerOnce(ctx: WorkerCtx): boolean {
   logger.warn({ session: ctx.session }, 'agent-worker: Escape did not clear the parked chrome -- restarting the worker session')
   restartWorkerSession(ctx)
   return true
+}
+
+/**
+ * The worker is parked on the external-imports dialog: leave the pane alone (no
+ * key, no restart -- a restart would only respawn into the same dialog) and
+ * tell the operator, rate-limited with the same cooldown as the stuck alert.
+ * Arming lastStuckAlert also suppresses the generic stuck alert that follows
+ * at the readiness timeout, whose text would wrongly claim an Escape + restart
+ * self-heal ran. The text carries the session name only, never pane contents.
+ */
+function alertWorkerImportsDialog(ctx: WorkerCtx): void {
+  logger.error({ session: ctx.session }, 'agent-worker: worker parked on the external imports dialog -- leaving the pane untouched (no keystrokes, no restart), operator action needed')
+  if (Date.now() - ctx.lastStuckAlert < WORKER_STUCK_ALERT_COOLDOWN_MS) return
+  ctx.lastStuckAlert = Date.now()
+  void notifyChannel(
+    `Figyelmeztetes: a hatter-worker session (${ctx.session}) egy "Allow external CLAUDE.md file imports?" dialogon all. A rendszer NEM valaszolja meg (a Yes bizalmi engedely, csak a stamp adhatja; az Enter/Escape a No-t valasztana), a pane valtozatlan, restart sem tortent. Ellenorizd a session projekt-bizalmi allapotat.`,
+  ).catch(() => { /* notifyChannel logs internally */ })
 }
 
 /** Loud, rate-limited operator signal: the worker never became ready. */
