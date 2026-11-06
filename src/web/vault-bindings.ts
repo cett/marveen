@@ -1,5 +1,5 @@
-import { existsSync, readdirSync, statSync } from 'node:fs'
-import { join, basename } from 'node:path'
+import { existsSync, readdirSync, statSync, realpathSync, lstatSync } from 'node:fs'
+import { join, basename, dirname, resolve, relative, isAbsolute, sep } from 'node:path'
 import { homedir } from 'node:os'
 import { PROJECT_ROOT } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
@@ -11,6 +11,7 @@ import {
   type VaultBinding, type VaultBindingTarget,
 } from '../db/vault-bindings.js'
 import { listSecretAcl, replaceSecretAcl, deleteSecretAcl, listAllSecretAcls } from '../db/vault-secret-acl.js'
+import { AGENT_ID_PATTERN, agentGrantee } from './vault-grantees.js'
 import { logger } from '../logger.js'
 
 const VAULT_WRAPPER_PATH = join(PROJECT_ROOT, 'scripts', 'vault-env-wrapper.sh')
@@ -131,6 +132,164 @@ export function collectAllMcpFilePaths(): Array<{ path: string, label: string }>
   return paths
 }
 
+interface GranteeBases { project: string, home: string, agents: string, externals: string[] }
+
+function lexicalBases(): GranteeBases {
+  return {
+    project: resolve(PROJECT_ROOT), home: resolve(homedir()), agents: resolve(AGENTS_BASE_DIR),
+    externals: getExternalProjectPaths().map(e => resolve(e)),
+  }
+}
+
+// A base directory with its symbolic links followed (macOS keeps /tmp and /var behind a link, an install
+// can sit behind one too). A base that does not exist stays as it is.
+function realpathOr(p: string): string {
+  try { return realpathSync(p) } catch { return p }
+}
+
+function realBases(): GranteeBases {
+  const b = lexicalBases()
+  return { project: realpathOr(b.project), home: realpathOr(b.home), agents: realpathOr(b.agents), externals: b.externals.map(realpathOr) }
+}
+
+// The one place that maps an already-resolved file path onto a grantee, against the given base directories.
+function granteeIn(resolved: string, bases: GranteeBases): string | null {
+  if (resolved === join(bases.project, '.mcp.json')) return 'scope:project'
+  if (resolved === join(bases.home, '.claude.json')) return 'scope:user'
+
+  const rel = relative(bases.agents, resolved)
+  if (rel !== '' && !isAbsolute(rel)) {
+    const segs = rel.split(sep)
+    const name = segs[0]
+    if (name !== '..' && AGENT_ID_PATTERN.test(name)) {
+      if (segs.length === 2 && segs[1] === '.mcp.json') return agentGrantee(name)
+      if (segs.length === 4 && segs[1] === 'projects' && segs[3] === '.mcp.json') return agentGrantee(name)
+    }
+  }
+
+  for (const ext of bases.externals) {
+    if (resolved === join(ext, '.mcp.json')) return 'scope:external'
+  }
+  return null
+}
+
+/**
+ * Which grantee an MCP file belongs to, or null when it belongs to none we know.
+ *
+ * The same four places `collectAllMcpFilePaths` lists, in the same order (the first match wins):
+ *   PROJECT_ROOT/.mcp.json                                    -> scope:project
+ *   ~/.claude.json                                            -> scope:user
+ *   AGENTS_BASE_DIR/<name>/.mcp.json
+ *   AGENTS_BASE_DIR/<name>/projects/<project>/.mcp.json       -> agent:<name>
+ *   <external project path>/.mcp.json                         -> scope:external
+ * Anything else (an unknown directory, a name that is not an agent id, a non-string) is null, and a
+ * non-empty allowlist refuses null (fail-closed).
+ *
+ * The path is `path.resolve`d BEFORE it is judged, so `agents/a/../b/.mcp.json` is b's file, not a's.
+ * The agent segment is compared as a whole path segment, never with startsWith: `agents/a-evil/...`
+ * is `agent:a-evil`, not `agent:a`. This function is PURE (no file-system call) and judges the path as
+ * written; a symbolic link in a directory on the way is not followed here. Where the write really
+ * lands is `verifiedGranteeOfMcpFile`, which the allowlist checks use.
+ */
+export function granteeOfMcpFile(mcpFilePath: unknown): string | null {
+  if (typeof mcpFilePath !== 'string' || mcpFilePath === '' || mcpFilePath.includes('\0')) return null
+  return granteeIn(resolve(mcpFilePath), lexicalBases())
+}
+
+/**
+ * True when the path is a string that `path.resolve` leaves exactly as written: absolute, no `.` or
+ * `..` segment, no doubled or trailing separator. The paths the discovery lists are built with `join`
+ * from absolute bases, so they are canonical; a hand-written target may not be. Pure (no file system).
+ */
+export function isCanonicalMcpPath(mcpFilePath: unknown): boolean {
+  return typeof mcpFilePath === 'string' && mcpFilePath !== '' && !mcpFilePath.includes('\0') && resolve(mcpFilePath) === mcpFilePath
+}
+
+/**
+ * `granteeOfMcpFile` plus the file-system step: where the write REALLY lands.
+ *
+ * The lexical answer is wrong when a directory on the way is a symbolic link: `agents/a/projects/x -> ../b`
+ * is listed (and written) as a file of `a` by the discovery, which follows the link, while the write
+ * lands in b's file. So the parent directory of the file is `realpath`ed (every link on the way followed),
+ * the grantee is computed AGAIN from that real location against the real base directories, and the two
+ * answers must be the same grantee; any difference is `null`, which a non-empty allowlist refuses
+ * (fail-closed). The same holds for `scope:external`. The file itself must be a regular file with a single
+ * name (`lstat`: not a symbolic link, not a hard link with a link count above one, not a pipe, device or
+ * directory): the sync reads through the path before it writes, so an alias of another file would carry
+ * that file's content into this one; it is `null` too, whatever the alias points at.
+ *
+ * The path must be canonical as written (`resolve(p) === p`): the sync reads and writes the given string, the OS
+ * follows a link before it applies a `..`, and `resolve` does not, so a path with a `..` in it is `null`.
+ *
+ * A parent directory or a file that does not exist yet has nothing to resolve (the lexical answer
+ * stands); any other failure to resolve or look at them (no permission, a link loop) is `null`. Called
+ * only when a list is set, so an open secret costs no file-system call.
+ *
+ * Known limit: the check and the write are two steps, so a link put in place between them is not seen
+ * (it takes write access to the agent's own directory and a precise timing; the full fix is separate).
+ */
+export function verifiedGranteeOfMcpFile(mcpFilePath: unknown): string | null {
+  const lexical = granteeOfMcpFile(mcpFilePath)
+  if (lexical === null) return null
+  const resolved = resolve(mcpFilePath as string)
+  // The sync reads and writes the string it was given, and the OS follows a link BEFORE it applies a `..`
+  // (`agents/a/x/../.mcp.json` with x -> elsewhere opens elsewhere/.mcp.json), while `resolve` collapses the
+  // `..` lexically. The two only agree on a path that is already canonical, so anything else is refused.
+  if (!isCanonicalMcpPath(mcpFilePath)) return null
+  let realParent: string // the parent directory with every link followed
+  try {
+    realParent = realpathSync(dirname(resolved))
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code
+    return code === 'ENOENT' || code === 'ENOTDIR' ? lexical : null
+  }
+  const real = granteeIn(join(realParent, basename(resolved)), realBases())
+  if (real !== lexical) return null
+
+  // The file itself must be a regular file with a single name. The sync READS the file through the path
+  // (a symbolic link makes it read the target, a second name of the same file (hard link, link count above
+  // one) is the same content under another grantee's directory, and a pipe or device may even block the
+  // read), and a value from there then lands in this file: information flows across the grantee boundary,
+  // so the directory check above is not enough. `lstat` does not follow a link, so a symbolic link is not a
+  // regular file here. A file that does not exist yet is fine (nothing to alias); any other failure to look
+  // at it is refused (fail-closed).
+  try {
+    const st = lstatSync(resolved)
+    if (!st.isFile() || st.nlink > 1) return null
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') return null
+  }
+  return lexical
+}
+
+export interface RefusedTarget {
+  target: VaultBindingTarget
+  grantee: string | null
+}
+
+/**
+ * Splits targets by a secret's allowlist. An EMPTY list allows everything (today's behaviour, and the
+ * grantee is not even computed); a non-empty list allows exactly the targets whose file belongs to a
+ * listed grantee, and refuses the rest, a file of no known grantee (null) included.
+ */
+export function partitionTargetsByAcl(
+  acl: readonly string[],
+  targets: readonly VaultBindingTarget[],
+): { allowed: VaultBindingTarget[], refused: RefusedTarget[] } {
+  if (acl.length === 0) return { allowed: [...targets], refused: [] }
+  // A body that is not an array of targets cannot be judged entry by entry: refuse it whole (fail-closed)
+  // rather than iterate something that is not iterable.
+  if (!Array.isArray(targets)) return { allowed: [], refused: [{ target: targets as unknown as VaultBindingTarget, grantee: null }] }
+  const allowed: VaultBindingTarget[] = []
+  const refused: RefusedTarget[] = []
+  for (const target of targets) {
+    const grantee = verifiedGranteeOfMcpFile(target?.mcpFilePath)
+    if (grantee !== null && acl.includes(grantee)) allowed.push(target)
+    else refused.push({ target, grantee })
+  }
+  return { allowed, refused }
+}
+
 function maskValue(val: string): string {
   if (val.length <= 6) return '***'
   return val.slice(0, 3) + '...' + val.slice(-3)
@@ -216,11 +375,26 @@ export async function syncSecret(vaultSecretId: string): Promise<SyncResult> {
   const secret = getSecret(vaultSecretId)
   if (secret === null) return { updated: 0, errors: [`Vault secret "${vaultSecretId}" not found`] }
 
+  // The grantee list: empty = every target as before; non-empty = only the listed grantees' files. A
+  // refused target is skipped and reported, never written, and a reference an earlier sync already
+  // wrote there is NOT removed (no destructive file edit here); the error shows up on every sync.
+  const acl = await getSecretAcl(vaultSecretId)
+
   let updated = 0
   const errors: string[] = []
 
   for (const binding of bindings) {
-    for (const target of binding.targets) {
+    const { allowed, refused } = partitionTargetsByAcl(acl, binding.targets)
+    for (const { target, grantee } of refused) {
+      // A refusal with no grantee has more than one cause, and a path that is not canonical is the one
+      // the caller can fix by spelling it differently, so it gets its own words.
+      errors.push(grantee !== null
+        ? `Target not allowed for secret "${vaultSecretId}": ${grantee}`
+        : isCanonicalMcpPath(target?.mcpFilePath)
+          ? `Target not allowed for secret "${vaultSecretId}": ${target.mcpFilePath} (it must be a regular file with a single name in a known place: no link, no second name, no special file)`
+          : `Target not allowed for secret "${vaultSecretId}": ${String(target?.mcpFilePath)} (the path must be canonical: absolute, with no "." or ".." segment and no doubled or trailing separator)`)
+    }
+    for (const target of allowed) {
       try {
         const content = JSON.parse(readFileOr(target.mcpFilePath, '{}'))
         const serverCfg = content.mcpServers?.[target.serverName]

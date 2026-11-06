@@ -54,6 +54,14 @@ describe('api-error-catalog invariants', () => {
     expect(checkErrorResponse('status_conflict', 500)).toMatch(/not allowed with HTTP 500/)
   })
 
+  it('agent_not_allowed is a 403-only token', () => {
+    expect(checkErrorResponse('agent_not_allowed', 403)).toBeNull()
+    // A refused target is an authorization answer: never a malformed request, a missing entity or a state conflict.
+    expect(checkErrorResponse('agent_not_allowed', 400)).toMatch(/not allowed with HTTP 400/)
+    expect(checkErrorResponse('agent_not_allowed', 404)).toMatch(/not allowed with HTTP 404/)
+    expect(checkErrorResponse('agent_not_allowed', 409)).toMatch(/not allowed with HTTP 409/)
+  })
+
   it('returns null for unconstrained status (e.g. 200 with no error field check needed)', () => {
     // Statuses not in ALLOWED_STATUS_TOKENS are unconstrained -- any valid token passes.
     expect(checkErrorResponse('not_found', 200)).toBeNull()

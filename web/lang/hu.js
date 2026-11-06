@@ -2219,6 +2219,7 @@ window._i18n.hu = {
   'errors.managed_settings_missing': 'Hiányzó menedzselt beállítás',
   'errors.upstream_error':           'Külső szolgáltatás nem elérhető',
   'errors.sender_not_in_allowlist':  'A küldő nincs az engedélyezett listán',
+  'errors.agent_not_allowed':        'Ez a titok nem engedélyezett annak az ágensnek -- vedd fel a titok listájára, vagy válassz másik célt',
   'errors.federation_disabled':      'A föderáció ki van kapcsolva',
   'errors.unknown_query_parameter':  'Ismeretlen lekérdezési paraméter',
   'errors.tenant_required':          'A feladathoz tenant kell',

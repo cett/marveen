@@ -24,6 +24,7 @@ export const ERROR_TOKENS = [
   'unknown_query_parameter', // not invalid_value: parameter NAME unknown (remove/rename), vs VALUE wrong (fix value)
   'stale_revision', // not conflict: the schedule exists and is fine, but changed after the caller loaded it (reload and review again)
   'status_conflict', // not conflict: the entity exists but its status is not what the caller expected (re-read it, do not retry blindly); carries current_status
+  'agent_not_allowed', // not forbidden: the caller may bind secrets, but this secret's grantee list does not name the target agent or scope (add the grantee to the list, or pick another target)
 ] as const
 
 export type ErrorToken = typeof ERROR_TOKENS[number]
@@ -40,7 +41,7 @@ export const ALLOWED_STATUS_TOKENS: Record<number, ReadonlyArray<ErrorToken>> = 
     'limit_exceeded',
   ],
   401: ['unauthorized'],
-  403: ['forbidden', 'sender_not_in_allowlist'],
+  403: ['forbidden', 'sender_not_in_allowlist', 'agent_not_allowed'],
   404: ['not_found'],
   // disabled = operation-state conflict (entity exists but is in disabled state);
   // not_live = review-gate conflict (entity exists but is draft/pending_review,

@@ -66,6 +66,8 @@ tags:
     description: B2B tenant management (requires admin:all role)
   - name: admin-partner-senders
     description: B2B partner sender allowlist management (requires admin:all role)
+  - name: vault
+    description: Per-secret grantee list of the vault (requires admin:all role)
 
 # ---------------------------------------------------------------------------
 # Reusable components
@@ -125,6 +127,20 @@ components:
           nullable: true
         session_count:
           type: integer
+
+    VaultSecretAcl:
+      type: object
+      required: [allow]
+      properties:
+        allow:
+          type: array
+          maxItems: 50
+          description: >
+            Who may receive the secret. Empty = open (any target). Each entry is `agent:<id>` or one of
+            `scope:project`, `scope:user`, `scope:external`.
+          items:
+            type: string
+            example: "agent:agent-a"
 
     UserProfilePatch:
       type: object
@@ -276,6 +292,7 @@ components:
             - unknown_query_parameter
             - stale_revision
             - status_conflict
+            - agent_not_allowed
         hint:
           type: string
           description: >-
@@ -6545,6 +6562,96 @@ paths:
                 $ref: '#/components/schemas/Error'
         "401":
           description: Not authenticated or not a session caller
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /vault/{id}/acl:
+    get:
+      tags: [vault]
+      operationId: getVaultSecretAcl
+      summary: Read the grantee list of a vault secret
+      description: |
+        Returns who may receive the secret in an MCP file. An empty list means the secret is open (any
+        file a binding targets); a non-empty list restricts it to exactly those grantees. Admin only (the
+        route is not in the role table, so it needs `admin:all`). Only secrets of the default tenant have a
+        list. The secret value is never part of the answer.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The list (empty = open)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VaultSecretAcl'
+        "400":
+          description: "`invalid_value` (field `id`): an SSH private key id, or a secret of another tenant"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "403":
+          description: "`forbidden`: the caller is not an admin"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "404":
+          description: "`not_found`: no such secret"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    put:
+      tags: [vault]
+      operationId: putVaultSecretAcl
+      summary: Replace the grantee list of a vault secret
+      description: |
+        Replaces the whole list in one transaction. An empty array opens the secret again. A grantee is
+        `agent:<id>` (an existing sub-agent or the main agent) or one of `scope:project`, `scope:user`,
+        `scope:external`; at most 50 entries, repeats collapse. Once the list is not empty, a binding whose
+        target file belongs to a grantee that is not listed (or to no known grantee) is refused with 403
+        `agent_not_allowed`, and a re-sync skips it with an error line; a reference an earlier sync already
+        wrote there is not removed. The main agent's own gate (`PROJECT_ROOT/.mcp.json`) belongs to
+        `scope:project`; `agent:<main-agent-id>` never matches it. Admin only.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VaultSecretAcl'
+      responses:
+        "200":
+          description: The list as stored
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VaultSecretAcl'
+        "400":
+          description: "`parse_error` (body is not a JSON object), or `invalid_value` (field `allow`, or `id` as on GET)"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "403":
+          description: "`forbidden`: the caller is not an admin"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        "404":
+          description: "`not_found`: no such secret"
           content:
             application/json:
               schema:

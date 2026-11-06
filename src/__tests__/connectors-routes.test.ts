@@ -57,6 +57,7 @@ vi.mock('../config.js', () => ({
   PROJECT_ROOT: '/tmp/mock-root',
   STORE_DIR: '/tmp/mock-store',
   OLLAMA_URL: 'http://mock-ollama:11434',
+  MAIN_AGENT_ID: 'main-a',
 }))
 
 vi.mock('../web/agent-config.js', () => ({
@@ -84,12 +85,35 @@ vi.mock('../web/vault.js', () => ({
   findSecretTenant: vi.fn().mockReturnValue(null),
 }))
 
+// Stand-in for the real partition (granteeOfMcpFile + partitionTargetsByAcl are tested for real in
+// vault-bindings.test.ts): the grantee is read from the mocked paths. A function declaration, so the
+// hoisted factory below can reference it lazily.
+function fakeGranteeOf(p: unknown): string | null {
+  if (p === '/tmp/mock-root/.mcp.json') return 'scope:project'
+  const m = typeof p === 'string' ? p.match(/^\/tmp\/mock-agents\/([^/]+)\/\.mcp\.json$/) : null
+  return m ? `agent:${m[1]}` : null
+}
+function fakePartition(acl: string[], targets: Array<{ mcpFilePath: string, serverName: string }>) {
+  if (acl.length === 0) return { allowed: [...targets], refused: [] }
+  const allowed: typeof targets = []
+  const refused: Array<{ target: (typeof targets)[number], grantee: string | null }> = []
+  for (const target of targets) {
+    const grantee = fakeGranteeOf(target.mcpFilePath)
+    if (grantee !== null && acl.includes(grantee)) allowed.push(target)
+    else refused.push({ target, grantee })
+  }
+  return { allowed, refused }
+}
+
 vi.mock('../web/vault-bindings.js', () => ({
   getBindings: vi.fn().mockResolvedValue([]),
   addBinding: vi.fn().mockResolvedValue(undefined),
   removeBinding: vi.fn().mockResolvedValue(true),
   removeBindingsForSecret: vi.fn().mockResolvedValue(undefined),
   removeSecretAcl: vi.fn().mockResolvedValue(undefined),
+  getSecretAcl: vi.fn().mockResolvedValue([]),
+  setSecretAcl: vi.fn().mockResolvedValue(undefined),
+  partitionTargetsByAcl: vi.fn((acl: string[], targets: Array<{ mcpFilePath: string, serverName: string }>) => fakePartition(acl, targets)),
   syncSecret: vi.fn().mockResolvedValue({ updated: 0, errors: [] }),
   syncAllBindings: vi.fn().mockResolvedValue({ updated: 0, errors: [] }),
   scanMcpConfigs: vi.fn().mockReturnValue([]),
@@ -105,6 +129,7 @@ vi.mock('../web/mcp-list.js', () => ({
 import { tryHandleConnectors } from '../web/routes/connectors.js'
 import { execSync } from 'node:child_process'
 import { atomicWriteFileSync } from '../web/atomic-write.js'
+import { logger } from '../logger.js'
 import { listAgentNames } from '../web/agent-config.js'
 import {
   getExternalProjectPaths, addExternalProjectPath, removeExternalProjectPath,
@@ -114,7 +139,7 @@ import {
   listSecrets, setSecret, getSecret, deleteSecret, findSecretTenant,
 } from '../web/vault.js'
 import {
-  getBindings, addBinding, removeBinding, removeSecretAcl, syncSecret, syncAllBindings, scanMcpConfigs,
+  getBindings, addBinding, removeBinding, removeSecretAcl, getSecretAcl, setSecretAcl, syncSecret, syncAllBindings, scanMcpConfigs,
 } from '../web/vault-bindings.js'
 import { getMcpListCache, refreshMcpListCache, purgeFromMcpListCache } from '../web/mcp-list.js'
 
@@ -168,6 +193,7 @@ beforeEach(() => {
   vi.mocked(getSecret).mockReturnValue(null)
   vi.mocked(getBindings).mockResolvedValue([])
   vi.mocked(removeBinding).mockResolvedValue(true)
+  vi.mocked(getSecretAcl).mockResolvedValue([])
   vi.mocked(syncSecret).mockResolvedValue({ updated: 0, errors: [] })
   vi.mocked(syncAllBindings).mockResolvedValue({ updated: 0, errors: [] })
   vi.mocked(scanMcpConfigs).mockReturnValue([])
@@ -766,6 +792,234 @@ describe('Vault bindings', () => {
     const { ctx, out } = makeCtx('DELETE', '/api/vault/bindings/sec/X')
     await tryHandleConnectors(ctx)
     expect(out.body).toEqual({ ok: true })
+  })
+})
+
+// The per-secret grantee list (vault_secret_acl): an empty list keeps the old behaviour byte for byte, a
+// non-empty one lets only the listed agents and scopes receive the secret.
+describe('POST /api/vault/bindings with a secret allowlist', () => {
+  const PROJECT_MCP = '/tmp/mock-root/.mcp.json'
+  const AGENT_A_MCP = '/tmp/mock-agents/agent-a/.mcp.json'
+  const AGENT_B_MCP = '/tmp/mock-agents/agent-b/.mcp.json'
+  const body = (targets: Array<{ mcpFilePath: string, serverName: string }>) =>
+    ({ vaultSecretId: 'sec', envVar: 'X', targets })
+
+  function seedDiscovery(): void {
+    vi.mocked(listAgentNames).mockReturnValue(['agent-a', 'agent-b'])
+    for (const p of [PROJECT_MCP, AGENT_A_MCP, AGENT_B_MCP]) {
+      setMockFile(p, JSON.stringify({ mcpServers: { srv: { command: 'x' } } }))
+    }
+  }
+
+  it('an empty list: explicit targets all go through and the answer has the old shape (no skipped)', async () => {
+    vi.mocked(syncSecret).mockResolvedValue({ updated: 2, errors: [] })
+    const targets = [{ mcpFilePath: PROJECT_MCP, serverName: 'srv' }, { mcpFilePath: AGENT_B_MCP, serverName: 'srv' }]
+    const { ctx, out } = makeCtx('POST', '/api/vault/bindings', body(targets))
+    await tryHandleConnectors(ctx)
+    expect(out.status).toBe(200)
+    expect(out.body).toEqual({ ok: true, synced: 2, errors: [] })
+    expect(addBinding).toHaveBeenCalledWith({ vaultSecretId: 'sec', envVar: 'X', targets })
+  })
+
+  it('a list that names the target: 200 and the binding is written', async () => {
+    vi.mocked(getSecretAcl).mockResolvedValue(['agent:agent-a'])
+    const targets = [{ mcpFilePath: AGENT_A_MCP, serverName: 'srv' }]
+    const { ctx, out } = makeCtx('POST', '/api/vault/bindings', body(targets))
+    await tryHandleConnectors(ctx)
+    expect(out.status).toBe(200)
+    expect(addBinding).toHaveBeenCalledWith({ vaultSecretId: 'sec', envVar: 'X', targets })
+    expect(syncSecret).toHaveBeenCalledWith('sec')
+  })
+
+  it('an explicit target outside the list: 403 agent_not_allowed and NOTHING is written (no row, no sync, no file)', async () => {
+    vi.mocked(getSecretAcl).mockResolvedValue(['agent:agent-a'])
+    const { ctx, out } = makeCtx('POST', '/api/vault/bindings', body([{ mcpFilePath: AGENT_B_MCP, serverName: 'srv' }]))
+    await tryHandleConnectors(ctx)
+    expect(out.status).toBe(403)
+    expect(out.body).toMatchObject({ error: 'agent_not_allowed', field: 'targets' })
+    expect(addBinding).not.toHaveBeenCalled()
+    expect(syncSecret).not.toHaveBeenCalled()
+    expect(atomicWriteFileSync).not.toHaveBeenCalled()
+  })
+
+  it('one denied target among allowed explicit ones refuses the whole request', async () => {
+    vi.mocked(getSecretAcl).mockResolvedValue(['agent:agent-a'])
+    const { ctx, out } = makeCtx('POST', '/api/vault/bindings', body([
+      { mcpFilePath: AGENT_A_MCP, serverName: 'srv' },
+      { mcpFilePath: AGENT_B_MCP, serverName: 'srv' },
+    ]))
+    await tryHandleConnectors(ctx)
+    expect(out.status).toBe(403)
+    expect(addBinding).not.toHaveBeenCalled()
+  })
+
+  it('a target of no known grantee (unknown path) is refused by a non-empty list', async () => {
+    vi.mocked(getSecretAcl).mockResolvedValue(['agent:agent-a'])
+    const { ctx, out } = makeCtx('POST', '/api/vault/bindings', body([{ mcpFilePath: '/somewhere/else/.mcp.json', serverName: 'srv' }]))
+    await tryHandleConnectors(ctx)
+    expect(out.status).toBe(403)
+    expect(addBinding).not.toHaveBeenCalled()
+  })
+
+  it('discovery by serverName: the denied files are filtered out and named in skipped', async () => {
+    seedDiscovery()
+    vi.mocked(getSecretAcl).mockResolvedValue(['agent:agent-a'])
+    vi.mocked(syncSecret).mockResolvedValue({ updated: 1, errors: [] })
+    const { ctx, out } = makeCtx('POST', '/api/vault/bindings', { vaultSecretId: 'sec', envVar: 'X', serverName: 'srv' })
+    await tryHandleConnectors(ctx)
+    expect(out.status).toBe(200)
+    expect(out.body).toEqual({ ok: true, synced: 1, errors: [], skipped: ['scope:project', 'agent:agent-b'] })
+    expect(addBinding).toHaveBeenCalledWith({ vaultSecretId: 'sec', envVar: 'X', targets: [{ mcpFilePath: AGENT_A_MCP, serverName: 'srv' }] })
+  })
+
+  it('discovery by serverName with an empty list binds every file found, no skipped (the old behaviour)', async () => {
+    seedDiscovery()
+    vi.mocked(syncSecret).mockResolvedValue({ updated: 3, errors: [] })
+    const { ctx, out } = makeCtx('POST', '/api/vault/bindings', { vaultSecretId: 'sec', envVar: 'X', serverName: 'srv' })
+    await tryHandleConnectors(ctx)
+    expect(out.body).toEqual({ ok: true, synced: 3, errors: [] })
+    const call = vi.mocked(addBinding).mock.calls[0][0]
+    expect(call.targets.map(t => t.mcpFilePath)).toEqual([PROJECT_MCP, AGENT_A_MCP, AGENT_B_MCP])
+  })
+
+  it('discovery that finds files but all are denied: 403 agent_not_allowed (field serverName), nothing written', async () => {
+    seedDiscovery()
+    vi.mocked(getSecretAcl).mockResolvedValue(['agent:agent-z'])
+    const { ctx, out } = makeCtx('POST', '/api/vault/bindings', { vaultSecretId: 'sec', envVar: 'X', serverName: 'srv' })
+    await tryHandleConnectors(ctx)
+    expect(out.status).toBe(403)
+    expect(out.body).toMatchObject({ error: 'agent_not_allowed', field: 'serverName' })
+    expect(addBinding).not.toHaveBeenCalled()
+    expect(atomicWriteFileSync).not.toHaveBeenCalled()
+  })
+
+  it('discovery that finds nothing stays the old 400 invalid_value, with a list or without', async () => {
+    vi.mocked(getSecretAcl).mockResolvedValue(['agent:agent-a'])
+    const { ctx, out } = makeCtx('POST', '/api/vault/bindings', { vaultSecretId: 'sec', envVar: 'X', serverName: 'no-such-server' })
+    await tryHandleConnectors(ctx)
+    expect(out.status).toBe(400)
+    expect(out.body).toMatchObject({ error: 'invalid_value', field: 'serverName' })
+  })
+
+  it('logs the refusal with the id and the grantee, never a value, and marks it as the acl path', async () => {
+    vi.mocked(getSecretAcl).mockResolvedValue(['agent:agent-a'])
+    const { ctx } = makeCtx('POST', '/api/vault/bindings', body([{ mcpFilePath: AGENT_B_MCP, serverName: 'srv' }]))
+    await tryHandleConnectors(ctx)
+    const warn = vi.mocked(logger.warn).mock.calls.find(c => (c[0] as { event?: string }).event === 'vault-binding-refused')
+    expect(warn).toBeDefined()
+    expect(warn![0]).toMatchObject({ vaultSecretId: 'sec', grantee: 'agent:agent-b', via: 'acl', refusedCount: 1 })
+    expect(JSON.stringify(warn)).not.toMatch(/value|secret-value/i)
+  })
+})
+
+describe('GET/PUT /api/vault/:id/acl', () => {
+  const asAdmin = { role: 'admin' } as const
+
+  beforeEach(() => {
+    vi.mocked(findSecretTenant).mockReturnValue('default')
+    vi.mocked(listAgentNames).mockReturnValue(['agent-a', 'agent-b'])
+  })
+
+  it('GET returns the stored list', async () => {
+    vi.mocked(getSecretAcl).mockResolvedValue(['agent:agent-a'])
+    const { ctx, out } = makeCtx('GET', '/api/vault/sec/acl', null, asAdmin)
+    await tryHandleConnectors(ctx)
+    expect(out.body).toEqual({ allow: ['agent:agent-a'] })
+  })
+
+  it('PUT replaces the list with agents, the main agent and the three scopes', async () => {
+    const allow = ['agent:agent-a', 'agent:main-a', 'scope:project', 'scope:user', 'scope:external']
+    vi.mocked(getSecretAcl).mockResolvedValue(allow)
+    const { ctx, out } = makeCtx('PUT', '/api/vault/sec/acl', { allow }, asAdmin)
+    await tryHandleConnectors(ctx)
+    expect(out.status).toBe(200)
+    expect(setSecretAcl).toHaveBeenCalledWith('sec', allow)
+    expect(out.body).toEqual({ allow })
+  })
+
+  it('PUT with an empty array opens the secret', async () => {
+    const { ctx, out } = makeCtx('PUT', '/api/vault/sec/acl', { allow: [] }, asAdmin)
+    await tryHandleConnectors(ctx)
+    expect(out.status).toBe(200)
+    expect(setSecretAcl).toHaveBeenCalledWith('sec', [])
+  })
+
+  it.each([
+    ['an entry that is not a grantee', ['root']],
+    ['a scope that does not exist', ['scope:everyone']],
+    ['an agent that does not exist', ['agent:ghost']],
+    ['an agent id with a path in it', ['agent:../agent-a']],
+    ['a non-string entry', [42]],
+    ['allow that is not an array', 'agent:agent-a'],
+    ['allow that is missing', undefined],
+  ])('PUT with %s: 400 invalid_value on allow, nothing stored', async (_name, allow) => {
+    const { ctx, out } = makeCtx('PUT', '/api/vault/sec/acl', { allow }, asAdmin)
+    await tryHandleConnectors(ctx)
+    expect(out.status).toBe(400)
+    expect(out.body).toMatchObject({ error: 'invalid_value', field: 'allow' })
+    expect(setSecretAcl).not.toHaveBeenCalled()
+  })
+
+  it('PUT with 51 entries is a 400, with 50 it is accepted (the cap is 50)', async () => {
+    const many = (n: number) => Array.from({ length: n }, () => 'scope:user')
+    const over = makeCtx('PUT', '/api/vault/sec/acl', { allow: many(51) }, asAdmin)
+    await tryHandleConnectors(over.ctx)
+    expect(over.out.status).toBe(400)
+    expect(setSecretAcl).not.toHaveBeenCalled()
+    const edge = makeCtx('PUT', '/api/vault/sec/acl', { allow: many(50) }, asAdmin)
+    await tryHandleConnectors(edge.ctx)
+    expect(edge.out.status).toBe(200)
+  })
+
+  it('PUT with a body that is not a JSON object: 400 parse_error', async () => {
+    const { ctx, out } = makeCtx('PUT', '/api/vault/sec/acl', '["agent:agent-a"]', asAdmin)
+    await tryHandleConnectors(ctx)
+    expect(out.status).toBe(400)
+    expect(out.body.error).toBe('parse_error')
+    expect(setSecretAcl).not.toHaveBeenCalled()
+  })
+
+  it('a caller that is not an admin gets 403 on GET and PUT, even for an id that does not exist (no id oracle)', async () => {
+    vi.mocked(findSecretTenant).mockReturnValue(null)
+    for (const method of ['GET', 'PUT'] as const) {
+      const { ctx, out } = makeCtx(method, '/api/vault/ghost/acl', method === 'PUT' ? { allow: [] } : null, { role: 'agent', tenantId: 'default' })
+      await tryHandleConnectors(ctx)
+      expect(out.status, method).toBe(403)
+      expect(out.body.error).toBe('forbidden')
+    }
+    expect(setSecretAcl).not.toHaveBeenCalled()
+  })
+
+  it('an unknown secret is a 404 for an admin', async () => {
+    vi.mocked(findSecretTenant).mockReturnValue(null)
+    const { ctx, out } = makeCtx('GET', '/api/vault/ghost/acl', null, asAdmin)
+    await tryHandleConnectors(ctx)
+    expect(out.status).toBe(404)
+    expect(out.body.error).toBe('not_found')
+  })
+
+  it('a secret of another tenant is refused: the list is kept under the default tenant only', async () => {
+    vi.mocked(findSecretTenant).mockReturnValue('tenant-x')
+    const { ctx, out } = makeCtx('PUT', '/api/vault/sec/acl', { allow: ['scope:user'] }, asAdmin)
+    await tryHandleConnectors(ctx)
+    expect(out.status).toBe(400)
+    expect(out.body).toMatchObject({ error: 'invalid_value', field: 'id' })
+    expect(setSecretAcl).not.toHaveBeenCalled()
+  })
+
+  it('an SSH private key id has no list', async () => {
+    const { ctx, out } = makeCtx('PUT', '/api/vault/ssh-key-abc/acl', { allow: ['scope:user'] }, asAdmin)
+    await tryHandleConnectors(ctx)
+    expect(out.status).toBe(400)
+    expect(setSecretAcl).not.toHaveBeenCalled()
+  })
+
+  it('the PUT leaves an audit line with the id and the entry count, no secret value', async () => {
+    const { ctx } = makeCtx('PUT', '/api/vault/sec/acl', { allow: ['scope:user', 'agent:agent-a'] }, asAdmin)
+    await tryHandleConnectors(ctx)
+    const info = vi.mocked(logger.info).mock.calls.find(c => (c[0] as { event?: string }).event === 'vault-acl-set')
+    expect(info).toBeDefined()
+    expect(info![0]).toMatchObject({ vaultSecretId: 'sec', entries: 2 })
   })
 })
 
