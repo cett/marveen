@@ -16,7 +16,7 @@
 // next to the bridge's retry traffic, while skipping would leave a stale
 // 'ok' visible for hours exactly when visibility matters most.
 import { logger } from '../../logger.js'
-import { scrubSecurityTags } from '../../prompt-safety.js'
+import { scrubSecurityTags, tagOpenings } from '../../prompt-safety.js'
 import { getFederationConfig, FEDERATION_MIN_TOKEN_LENGTH, type FederationPeer } from './config.js'
 import { isValidIdSegment } from './address.js'
 import { readBoundedBody, PeerResponseTooLargeError } from './http.js'
@@ -76,9 +76,46 @@ function truncate(s: unknown, max: number): string {
 // preserve the envelope), but a peer summary must never smuggle a forged
 // live-user <channel> delivery frame into the routing context, so neutralize
 // it here too. Local, federation-specific -- does not touch the wrappers.
-const CHANNEL_TAG_RX = /<\s*\/?\s*channel\b[^>]*>/gi
+//
+// Only the OPENER is a pattern (`<channel`, `</channel`, spaces and any case, then a non-word character):
+// the old `<\s*\/?\s*channel\b[^>]*>` searched the rest of the text again from every opener that had no
+// '>' after it, quadratic on a manifest field of openers (a peer body may be MANIFEST_MAX_BODY_BYTES, so one
+// field can be ~512 kB: ~15 s of event loop). The '>' is looked up once by tagOpenings and reused. A tag whose
+// '>' is missing or more than TAG_SPAN_MAX characters away is replaced by its opener alone, so no forged
+// `<channel` frame can survive in a manifest string (the old rule left an unterminated opener untouched).
+const CHANNEL_OPENER_RX = /<(?:\s*\/)?\s*channel\b/gi
 
-function cleanPeerText(s: unknown, max: number): string {
+function neutralizeChannelFrames(s: string): string {
+  let out = ''
+  let copied = 0 // s[0, copied) is already in `out`
+  for (const o of tagOpenings(s, CHANNEL_OPENER_RX)) {
+    if (o.start < copied) continue // inside a tag that was already replaced
+    out += s.slice(copied, o.start) + '[channel]'
+    copied = o.tagEnd !== -1 ? o.tagEnd : o.openerEnd
+  }
+  return out + s.slice(copied)
+}
+
+/** Same result as s.replace(/[ \t]*\n[ \t]*\/g, ' '), in one pass. The pattern searched a whole run of spaces and
+ *  tabs again from every position of the run when no newline ended it: a manifest field of 550 kB of spaces took
+ *  minutes. Each space or tab is looked at once here. */
+function collapseNewlines(s: string): string {
+  let out = ''
+  let i = 0 // s[0, i) is already in `out`
+  for (;;) {
+    const nl = s.indexOf('\n', i)
+    if (nl === -1) break
+    let from = nl // the spaces and tabs before the newline belong to the match, but not those a previous match used
+    while (from > i && (s[from - 1] === ' ' || s[from - 1] === '\t')) from--
+    let to = nl + 1
+    while (to < s.length && (s[to] === ' ' || s[to] === '\t')) to++
+    out += s.slice(i, from) + ' '
+    i = to
+  }
+  return out + s.slice(i)
+}
+
+export function cleanPeerText(s: unknown, max: number): string {
   const raw = typeof s === 'string' ? s : ''
   // Scrub BEFORE truncating: the sentinel is longer than the tags it
   // replaces, so the cap must be applied last to stay a real bound (and a
@@ -86,11 +123,9 @@ function cleanPeerText(s: unknown, max: number): string {
   // ALL vertical whitespace (not just \n) -- U+0085/U+2028/U+2029 would
   // otherwise reintroduce heading-shaped instruction lines the routing agent
   // could read as structure.
-  const scrubbed = scrubSecurityTags(raw)
-    .replace(CHANNEL_TAG_RX, '[channel]')
+  const scrubbed = neutralizeChannelFrames(scrubSecurityTags(raw))
     .replace(/[\u0000-\u0008\u000B-\u001F\u007F\u0085\u2028\u2029]/g, ' ')
-    .replace(/[ \t]*\n[ \t]*/g, ' ')
-  return truncate(scrubbed, max)
+  return truncate(collapseNewlines(scrubbed), max)
 }
 
 /** Structural validation + hard caps on a peer-supplied manifest. Never

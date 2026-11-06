@@ -100,6 +100,36 @@ export function scrubSecurityTags(raw: string): string {
   return out + raw.slice(copied)
 }
 
+/** One opener found by tagOpenings. */
+export interface TagOpening {
+  /** Index of the '<' that starts the opener. */
+  start: number
+  /** Index just past the matched opener text (the tag name), where the attribute span begins. */
+  openerEnd: number
+  /** Index just past the tag's closing '>', or -1 when the opener has no usable '>': none left in the text, or
+   *  more than TAG_SPAN_MAX characters away. An opener with tagEnd -1 is not a tag, it is only an opener. */
+  tagEnd: number
+}
+
+/** Most characters allowed between a tag name and its closing '>' for the pair to count as one tag. */
+export const TAG_SPAN_MAX = SECURITY_TAG_SPAN_MAX
+
+/** Every opener `opener` finds in `text` (a global regex that matches ONLY the opening, up to and including the
+ *  tag name, never the attribute span), with where its tag ends. Linear in the text length: the closing '>' is
+ *  not part of any pattern, it is looked up with one forward indexOf and the result is reused by every later
+ *  opener (the algorithm of scrubSecurityTags). A pattern like `<tag[^>]*>` searches the rest of the text again
+ *  from every opener that has no '>' after it: 550 kB of openers held the event loop for ~15 s.
+ *  Openers inside an earlier tag are reported too; a caller that replaces whole tags skips them itself. */
+export function* tagOpenings(text: string, opener: RegExp): Generator<TagOpening> {
+  let gt = -2 // first '>' at or after the last probe; -1 = none left, -2 = not probed yet
+  for (const m of text.matchAll(opener)) {
+    const start = m.index
+    const openerEnd = start + m[0].length
+    if (gt !== -1 && gt < openerEnd) gt = text.indexOf('>', openerEnd)
+    yield { start, openerEnd, tagEnd: gt !== -1 && gt - openerEnd <= TAG_SPAN_MAX ? gt + 1 : -1 }
+  }
+}
+
 /** Payload-level scrub: our security tags AND the '<channel' opener. Used by
  *  the untrusted / trusted-peer / web-fetch wrappers, and by callers that
  *  sanitize free text for an agent's context. Idempotent. */
