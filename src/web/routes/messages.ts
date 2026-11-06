@@ -17,7 +17,10 @@ import { logger } from '../../logger.js'
 import { COORDINATOR_AGENT_ID } from '../../channel-coordinator/ingest.js'
 import { sanitizeAgentIdent, scrubPiiFromContent } from '../../prompt-safety.js'
 import { isKnownAgent } from '../agent-config.js'
-import { OWNER_NAME, SYSTEM_SENDER_IDS, parseSystemSenderIds } from '../../config.js'
+import { OWNER_NAME } from '../../config.js'
+import {
+  BUILTIN_SYSTEM_FROM, SYSTEM_SENDERS, auditRouteVerdict, buildRoutingContext, classifyRouteSender, getSenderRoutingMode, judgeRoute,
+} from '../sender-routing-wire.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
 import { claimsServerSender, findReservedMarker, reservedMarkerRefusal } from '../../server-markers.js'
@@ -52,12 +55,10 @@ export function shouldNotifyDelegator(fromAgent: string, toAgent: string, conten
   return true
 }
 
-// Frozen at module load, like the config constant it derives from.
-const SYSTEM_SENDERS = parseSystemSenderIds(SYSTEM_SENDER_IDS, sanitizeAgentIdent)
-
-// Senders the platform itself writes as. An agent-bound admin token (the main agent's) that posts as one
-// of these is the usual case, not an impersonation signal.
-const BUILTIN_SYSTEM_FROM = new Set(['scheduler', 'system'])
+// SYSTEM_SENDERS (frozen at module load, like the config constant it derives from) and BUILTIN_SYSTEM_FROM
+// (the senders the platform itself writes as; an agent-bound admin token posting as one of these is the usual
+// case, not an impersonation signal) live in sender-routing-wire.ts, the one source the sender routing rule
+// shares with this route.
 
 /**
  * The `from` an agent-bound admin token (`main-agent:<id>`: role admin, a token that names an agent)
@@ -345,6 +346,40 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       logger.warn({ from: from.trim(), to: storedTo }, 'Rejected /api/messages POST to an unregistered recipient')
       json(res, { error: 'invalid_value', field: 'to', hint: `unknown recipient '${storedTo}' -- to must be a registered fleet agent id (or "<system>/<agent>" for federation)` }, 400)
       return true
+    }
+    // Sender routing (SENDER_ROUTING_MODE): which sender class may address which agent. It runs after every
+    // check that decides whether the request is valid at all (an unknown recipient is still the 400 above) and
+    // before anything is written. The class comes from the principal, never from the body. In `audit` mode the
+    // verdict only goes to the audit log and the message takes the path it always took; in `enforce` mode a
+    // refused pair is a 403 whose hint does not say who is allowed (the reason is in the audit row only).
+    // A federated recipient (qualified `to`) is outside this rule: it is an outbound bridge message.
+    if (!storedTo.includes('/')) {
+      const identity = classifyRouteSender({
+        role: ctx.role,
+        authKind: ctx.auth?.kind,
+        tenantId: ctx.tenantId,
+        tokenAgentId: ctx.tokenAgentId,
+        boundAgent,
+        safeFrom: sanitizeAgentIdent(from),
+        isPartnerTenant,
+      })
+      const mode = getSenderRoutingMode()
+      try {
+        const verdict = judgeRoute(identity, storedTo, await buildRoutingContext(), mode)
+        await auditRouteVerdict(verdict, 'route', { principal: authPrincipal(ctx), principalSource: authPrincipalSource(ctx) })
+        if (verdict.deny) {
+          json(res, { error: 'forbidden', code: 'sender_route_denied', hint: 'target not permitted for this sender' }, 403)
+          return true
+        }
+      } catch (err) {
+        // The context could not be read. In audit mode the rule is only an observer, so the message goes on;
+        // in enforce mode a message the rule could not judge is not written.
+        logger.warn({ err, mode }, 'sender-routing: could not judge the route')
+        if (mode === 'enforce') {
+          json(res, { error: 'internal_error', hint: 'sender routing could not be evaluated' }, 500)
+          return true
+        }
+      }
     }
     // Code-side enforcement of the kanban-ref convention: rewrite any
     // `#<hex8>` token that maps to a real kanban_cards row into its

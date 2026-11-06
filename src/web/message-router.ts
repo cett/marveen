@@ -36,6 +36,7 @@ import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { maybeWakeSubAgentsForTelegram } from './telegram-inbox-wake.js'
 import { recordDelivery } from './delivery-intent.js'
 import { oneLine } from './approval-owner-notice.js'
+import { gateDeliveryBatch } from './sender-routing-wire.js'
 
 import { systemJob } from '../db/background-jobs.js'
 import { withTrace } from '../db/context.js'
@@ -490,7 +491,10 @@ export async function runMessageRouterTick(): Promise<void> {
     const localPending: AgentMessage[] = []
     const federatedPending: AgentMessage[] = []
     for (const m of allPending) (isQualifiedId(m.to_agent) ? federatedPending : localPending).push(m)
-    const pending = localPending.slice(0, MAX_MESSAGES_PER_TICK)
+    // Sender routing at delivery time (SENDER_ROUTING_MODE): the verdict comes from the stored row, so it also
+    // covers what never passed POST /api/messages. enforce: a refused message is closed (refused) and not in
+    // `pending`, so nothing is injected for it; audit: logged only. One tenant-table read per tick.
+    const pending = await gateDeliveryBatch(localPending.slice(0, MAX_MESSAGES_PER_TICK))
     const now = Date.now()
     // ---- update absent/present tracking for all receivers in this tick ----
     // Rebuild the stuck-detector's view of which agents are absent RIGHT NOW.
@@ -520,7 +524,9 @@ export async function runMessageRouterTick(): Promise<void> {
     for (const agent of presentNow) {
       if (agentWasAbsent.has(agent) && !agentBatchedThisReconnect.has(agent)) {
         // Check if this agent qualifies for backlog batching.
-        const agentPending = await getPendingMessages(agent)
+        // The backlog is read here, outside the `pending` slice above, so it goes through the same gate: a
+        // refused message must not end up summarised into the agent's inbox either.
+        const agentPending = await gateDeliveryBatch(await getPendingMessages(agent))
         if (agentPending.length > RECONNECT_BATCH_THRESHOLD) {
           const oldestAge = now - agentPending[0].created_at * 1000
           if (oldestAge > RECONNECT_BATCH_AGE_MS) {

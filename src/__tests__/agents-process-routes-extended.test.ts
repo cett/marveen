@@ -68,7 +68,13 @@ vi.mock('../web/agent-config.js', async (importOriginal) => {
   }
 })
 
+vi.mock('../web/sender-routing-wire.js', () => ({
+  gateDeliveryBatch: vi.fn((batch: unknown[]) => Promise.resolve(batch)),
+}))
 import { tryHandleAgentsProcess } from '../web/routes/agents-process.js'
+import { claimPendingForAgent } from '../db.js'
+import { gateDeliveryBatch } from '../web/sender-routing-wire.js'
+import { wrapAgentMessageForDelivery } from '../web/agent-message-wrap.js'
 import { addDesiredAgent } from '../web/agent-desired-state.js'
 import { startAgentProcess, stopAgentProcess, restartAgentProcess } from '../web/agent-process.js'
 import { gateManualRestart } from '../web/manual-restart-gate.js'
@@ -288,6 +294,22 @@ describe('agents-process routes -- extended coverage', () => {
       expect(statusCode()).toBe(400)
       expect((responseBody() as any).error).toBe('not_supported')
       expect((responseBody() as any).hint).toContain('main-agent only')
+    })
+
+    it('the claimed messages go through the sender routing gate, and a message the gate drops is not shown', async () => {
+      const kept = { id: 1, from_agent: 'agent-d', to_agent: 'marveen', content: 'keep', origin_note: null }
+      const dropped = { id: 2, from_agent: 'agent-d', to_agent: 'marveen', content: 'drop', origin_note: null }
+      vi.mocked(claimPendingForAgent).mockResolvedValueOnce([kept, dropped] as never)
+      vi.mocked(gateDeliveryBatch).mockImplementationOnce((batch) => Promise.resolve((batch as typeof kept[]).filter((m) => m.id === 1) as never))
+      vi.mocked(wrapAgentMessageForDelivery).mockClear()
+      vi.mocked(wrapAgentMessageForDelivery).mockReturnValue({ prefix: 'P:', wrapped: 'W' })
+      const { ctx, statusCode, responseBody } = makeCtx({ method: 'POST', path: '/api/agents/marveen/drain-inbox' })
+      expect(await tryHandleAgentsProcess(ctx)).toBe(true)
+      expect(statusCode()).toBe(200)
+      expect(vi.mocked(gateDeliveryBatch)).toHaveBeenCalledWith([kept, dropped])
+      expect((responseBody() as any).count).toBe(1)
+      expect(vi.mocked(wrapAgentMessageForDelivery)).toHaveBeenCalledTimes(1)
+      expect(vi.mocked(wrapAgentMessageForDelivery).mock.calls[0][3]).toBe('keep')
     })
 
     it('returns 200 for main agent with empty inbox', async () => {
