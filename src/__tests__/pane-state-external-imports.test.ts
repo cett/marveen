@@ -90,6 +90,12 @@ describe('detectsExternalImportsDialog', () => {
     expect(detectsExternalImportsDialog(WIDTH_80.trimEnd() + '\n' + BUSY_FOOTER)).toBe(false)
   })
 
+  it('each busy signal alone is enough: the spinner / token counter line, and the footer "esc to interrupt"', () => {
+    const [spinnerLine, escLine] = BUSY_FOOTER.split('\n')
+    expect(detectsExternalImportsDialog(WIDTH_80.trimEnd() + '\n' + spinnerLine)).toBe(false)
+    expect(detectsExternalImportsDialog(WIDTH_80.trimEnd() + '\n' + escLine)).toBe(false)
+  })
+
   it('a visible idle footer means the real prompt is live: a message that quotes the dialog is not the dialog', () => {
     const quoted = [
       '\u23fa The dialog says:',
@@ -111,6 +117,9 @@ describe('detectsExternalImportsDialog', () => {
     expect(detectsExternalImportsDialog('  Allow external CLAUDE.md file imports?\n  Enter to confirm \u00b7 Esc to cancel')).toBe(false)
     expect(detectsExternalImportsDialog('\u276f No, disable external imports\n  Yes, allow external imports\n  Enter to confirm \u00b7 Esc to cancel')).toBe(false)
     expect(detectsExternalImportsDialog(WIDTH_80.replace('Yes, allow external imports', 'Yes, allow something')) ).toBe(false)
+    // Each of the two option lines is required on its own: the frame with the "No" line (or the "Yes" line) removed.
+    expect(detectsExternalImportsDialog(WIDTH_80.replace(/^.*No, disable external imports\n/m, ''))).toBe(false)
+    expect(detectsExternalImportsDialog(WIDTH_80.replace(/^.*Yes, allow external imports\n/m, ''))).toBe(false)
   })
 
   it('does not overlap the other detectors: the model-consent dialog and the first-run gates are not the imports dialog, and the reverse', () => {
