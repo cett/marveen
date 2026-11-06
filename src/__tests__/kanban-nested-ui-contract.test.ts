@@ -118,3 +118,15 @@ describe('kanban 3-level UI: CSS classes', () => {
     expect(STYLE_CSS).toContain('.drop-target-invalid')
   })
 })
+
+// The board sends a card snapshot back on two inline edits; a status in that body would be refused (400) once an agent
+// has moved the card since the load, so both bodies leave the status out (a status change is POST /move).
+describe('kanban.js: the whole-card PUTs of the detail view do not send the status', () => {
+  it('the assignee change drops the status from the body', () => {
+    expect(KANBAN_JS).toContain('JSON.stringify({ ...card, status: undefined, assignee: newVal })')
+  })
+
+  it('the parent change drops the status from the body', () => {
+    expect(KANBAN_JS).toContain('JSON.stringify({ ...card, status: undefined, parent_id: newParentId })')
+  })
+})

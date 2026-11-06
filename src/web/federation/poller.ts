@@ -123,8 +123,11 @@ export function cleanPeerText(s: unknown, max: number): string {
   // ALL vertical whitespace (not just \n) -- U+0085/U+2028/U+2029 would
   // otherwise reintroduce heading-shaped instruction lines the routing agent
   // could read as structure.
-  const scrubbed = neutralizeChannelFrames(scrubSecurityTags(raw))
-    .replace(/[\u0000-\u0008\u000B-\u001F\u007F\u0085\u2028\u2029]/g, ' ')
+  // The control characters go FIRST, before either tag scrub: both scrubs let whitespace sit inside a tag, so a
+  // control character in `<` + U+0001 + `channel>` made the scrubs miss it and the replacement then left `< channel>`
+  // in the text. Replaced first, the tag is whitespace-shaped when the scrubs look at it.
+  const scrubbed = neutralizeChannelFrames(scrubSecurityTags(raw
+    .replace(/[\u0000-\u0008\u000B-\u001F\u007F\u0085\u2028\u2029]/g, ' ')))
   return truncate(collapseNewlines(scrubbed), max)
 }
 
