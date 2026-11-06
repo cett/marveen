@@ -475,6 +475,18 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // The assignee is a name the caller writes: it must be a string or null (every caller, the admin too), and a
     // tenant-bound caller may not name another tenant's agent (before any write).
     if ('assignee' in data && await refuseBodyAssignee(res, data.assignee, assigneeVerdictTenantId)) return true
+    // The title is the one NOT NULL column of a card: without a usable one the insert would fail and answer a 500.
+    // Checked last, after the due_date / parent / assignee answers (their order is unchanged), and before any write.
+    // Absent, null, empty or whitespace-only is `required`; any other non-string is `invalid_value`. The stored value
+    // is the title as sent (no trim on write); PUT /:id keeps its partial update and is not touched.
+    if (data.title === undefined || data.title === null || (typeof data.title === 'string' && !data.title.trim())) {
+      json(res, { error: 'required', field: 'title', hint: 'title is required and must not be blank' }, 400)
+      return true
+    }
+    if (typeof data.title !== 'string') {
+      json(res, { error: 'invalid_value', field: 'title', hint: 'title must be a string' }, 400)
+      return true
+    }
     // The id is always generated here: an `id` in the body is ignored. A caller-picked id could take a
     // route word (`labels`, `search`, ...) and shadow a static route, and an id that exists in another
     // tenant would answer differently from one that does not.
