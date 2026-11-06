@@ -323,19 +323,25 @@ describe('the route: leave and come back wakes the assignee again, once per stay
     expect(sentMessages()).toBe(2)
   })
 
-  it('a PUT never wakes anybody: PUT in_progress sends nothing, PUT out of it clears the stamp', async () => {
-    expect((await put(CARD, { status: 'in_progress' })).status).toBe(200)
-    expect(status(CARD)).toBe('in_progress')
+  it('a PUT never wakes anybody and never changes the status: a different status is a 400 that writes nothing, the same status keeps the stamp', async () => {
+    const refused = await put(CARD, { status: 'in_progress' })
+    expect(refused.status).toBe(400)
+    expect(status(CARD)).toBe('planned')
     expect(sentMessages()).toBe(0)
     expect(stamp(CARD)).toBeNull()
 
     await move(OTHER, { status: 'in_progress', actor: 'agent-a' })
-    expect(stamp(OTHER)).not.toBeNull()
-    expect((await put(OTHER, { status: 'planned' })).status).toBe(200)
-    expect(stamp(OTHER)).toBeNull()
-    // and returning by PUT does not wake either
+    const stamped = stamp(OTHER)
+    expect(stamped).not.toBeNull()
     const sent = sentMessages()
-    await put(OTHER, { status: 'in_progress' })
+    // leaving by PUT is refused too: the stamp that /move wrote stays with the card that is still in progress
+    expect((await put(OTHER, { status: 'planned' })).status).toBe(400)
+    expect(status(OTHER)).toBe('in_progress')
+    expect(stamp(OTHER)).toBe(stamped)
+    // the same status (the UI sends the whole card back) is accepted and changes neither the status nor the stamp
+    expect((await put(OTHER, { status: 'in_progress' })).status).toBe(200)
+    expect(status(OTHER)).toBe('in_progress')
+    expect(stamp(OTHER)).toBe(stamped)
     expect(sentMessages()).toBe(sent)
   })
 })

@@ -69,6 +69,24 @@ function refuseUnusableTitle(res: http.ServerResponse, title: unknown): boolean 
 }
 
 const KANBAN_STATUSES = new Set<KanbanCard['status']>(['planned', 'in_progress', 'waiting', 'testing', 'done'])
+// The same set as the CHECK on kanban_cards.priority (a test reads the CHECK out of the schema, so the two cannot drift).
+const KANBAN_PRIORITIES = new Set<KanbanCard['priority']>(['low', 'normal', 'high', 'urgent'])
+
+// A status / priority a caller writes must be one of the allowed strings: any other value (null, "", a number, a typo)
+// would fail the CHECK on the column and answer a 500. Returns true when it has answered (nothing is written then).
+function refuseValueOutsideSet(res: http.ServerResponse, field: string, value: unknown, allowed: ReadonlySet<string>): boolean {
+  if (typeof value === 'string' && allowed.has(value)) return false
+  json(res, { error: 'invalid_value', field, hint: `Allowed: ${[...allowed].join(', ')}` }, 400)
+  return true
+}
+
+// sort_order is a REAL column with no CHECK: null failed the NOT NULL constraint (a 500) and "" or "abc" was stored as
+// text and then sorted after every number. Only a finite number is a position (JSON has no NaN; 1e999 parses to Infinity).
+function refuseUnusableSortOrder(res: http.ServerResponse, value: unknown): boolean {
+  if (typeof value === 'number' && Number.isFinite(value)) return false
+  json(res, { error: 'invalid_value', field: 'sort_order', hint: 'sort_order must be a finite number' }, 400)
+  return true
+}
 
 // The most subtasks one POST /api/kanban/:id/breakdown/accept may create. The LLM suggestion and the UI that sends it
 // back are bounded below this (validateSubtasks allows at most getMaxSubtasks() * 2 = 40), so a larger batch is not
@@ -494,6 +512,10 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // Without a usable title the insert would fail and answer a 500. Checked last, after the due_date / parent /
     // assignee answers (their order is unchanged), and before any write.
     if (refuseUnusableTitle(res, data.title)) return true
+    // A new card may be BORN in any status (it gets its opening event), but the status and priority must be allowed
+    // values: anything else failed the column CHECK with a 500. A null is the default, as before (planned / normal).
+    if (data.status !== undefined && data.status !== null && refuseValueOutsideSet(res, 'status', data.status, KANBAN_STATUSES)) return true
+    if (data.priority !== undefined && data.priority !== null && refuseValueOutsideSet(res, 'priority', data.priority, KANBAN_PRIORITIES)) return true
     // The id is always generated here: an `id` in the body is ignored. A caller-picked id could take a
     // route word (`labels`, `search`, ...) and shadow a static route, and an id that exists in another
     // tenant would answer differently from one that does not.
@@ -587,6 +609,24 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // NOT NULL column with a 500: refused before any write, after every other field answer (their order is unchanged).
     // No title key is a partial update and leaves the stored title as it is.
     if ('title' in data && refuseUnusableTitle(res, data.title)) return true
+    // status: a status change is a transition (event row, wake-up of the assignee, parent propagation, CAS) and only
+    // POST /:id/move does those; a PUT that changed it would be a back door. So a status that differs from the stored
+    // one is a 400 (invalid_value, reason use_move), one that equals it (the UI sends the whole card back) is accepted and dropped from the
+    // write, so a move that lands between this read and the UPDATE is not reverted. Checked after the title and in this
+    // order (status, priority, sort_order), all before any write, and after the tenant 404 above (no probing).
+    if ('status' in data) {
+      if (refuseValueOutsideSet(res, 'status', data.status, KANBAN_STATUSES)) return true
+      const stored = await getKanbanCard(id)
+      if (stored && stored.status !== data.status) {
+        // An allowed value that is the wrong ROUTE: invalid_value (a 400 token of the catalog) with a machine-readable
+        // reason, as the id-clash 409 carries `reason: 'id_taken'`; no new error token for one route.
+        json(res, { error: 'invalid_value', field: 'status', reason: 'use_move', hint: 'change a card status with POST /api/kanban/:id/move' }, 400)
+        return true
+      }
+      delete data.status
+    }
+    if ('priority' in data && refuseValueOutsideSet(res, 'priority', data.priority, KANBAN_PRIORITIES)) return true
+    if ('sort_order' in data && refuseUnusableSortOrder(res, data.sort_order)) return true
     // updateKanbanCard writes the audit row itself, attributed to the caller.
     const updated = expectedUpdatedAt !== undefined
       ? await updateKanbanCard(id, data, kanbanAuditActor(ctx), { expectedUpdatedAt })

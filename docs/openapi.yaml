@@ -2130,6 +2130,16 @@ paths:
                 priority:
                   type: string
                   enum: [low, normal, high, urgent]
+                status:
+                  type: string
+                  enum: [planned, in_progress, waiting, testing, done]
+                  description: >-
+                    Accepted only when it equals the card's current status (a no-op, so a client may send the whole card
+                    back). A different status is a 400 (`invalid_value` with `reason: use_move`): a status change is a
+                    transition (event row, wake-up of the assignee, parent update) and is made with `POST /kanban/{id}/move`.
+                sort_order:
+                  type: number
+                  description: The position in the column. A finite number; null, a string or a boolean is a 400 (`invalid_value`).
                 assignee:
                   type: string
                 project:
@@ -2151,7 +2161,10 @@ paths:
               schema:
                 $ref: "#/components/schemas/OkResponse"
         "400":
-          description: Validation error (`invalid_value`, e.g. a non-integer `expected_updated_at`)
+          description: >-
+            Validation error (`invalid_value`, e.g. a non-integer `expected_updated_at`, a `status` or `priority` outside
+            the allowed values, a `sort_order` that is not a finite number, or a `status` that differs from the card's
+            current one: `reason: use_move`)
           content:
             application/json:
               schema:

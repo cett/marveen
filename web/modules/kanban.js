@@ -1563,7 +1563,8 @@ export async function showCardDetail(card) {
         const r = await fetch(`/api/kanban/${encodeURIComponent(card.id)}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ...card, assignee: newVal }),
+          // status: undefined drops the status from the body: the card is a snapshot, and a status change is a /move
+          body: JSON.stringify({ ...card, status: undefined, assignee: newVal }),
         })
         if (!r.ok) throw new Error('PUT failed')
         card.assignee = newVal
@@ -1613,7 +1614,8 @@ export async function showCardDetail(card) {
       const label = newParentId ? t('kanban.toast.parent_updated') : t('kanban.toast.parent_unset')
       const r = await fetch(`/api/kanban/${encodeURIComponent(card.id)}`, {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...card, parent_id: newParentId }),
+        // status: undefined drops the status from the body: the card is a snapshot, and a status change is a /move
+        body: JSON.stringify({ ...card, status: undefined, parent_id: newParentId }),
       })
       if (r.ok) { card.parent_id = newParentId; showToast(label); loadKanban(); showCardDetail(card) }
       else showToast(t('kanban.toast.save_error'))
