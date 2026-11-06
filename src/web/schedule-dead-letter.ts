@@ -8,6 +8,8 @@
 // pending_task_retries (a new status would change the run-history UI, the OTel `marveen.schedule.runs` label
 // cardinality and the history view). One consequence, by design: a giveup that was RESOLVED (the retry later
 // succeeded, the row was deleted) is not shown. The view is the open set plus the 30-day run history.
+// Likewise `missing-retrying` is a transition marker, not a dead letter: the live state is the pending row (reason
+// 'missing'), so it is not listed as a run (listing both would show one event twice).
 //
 // Only fields that come out of those two tables are returned: no prompt, no session name, no command.
 
