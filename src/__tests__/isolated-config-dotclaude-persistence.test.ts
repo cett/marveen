@@ -275,6 +275,17 @@ describe('HTTP MCP headers follow the home config at every start', () => {
     expect(servers().up).toEqual(UP_OLD)
   })
 
+  it('a home entry without headers leaves that agent entry alone while another server still gets its new headers', () => {
+    // 'up' comes first and its home counterpart carries no headers: it must stay as it was, and the loop must go on
+    // to 'other', whose home headers changed.
+    const other = { type: 'http', url: 'o', headers: { A: 'old' } }
+    writeAgent({ up: UP_OLD, other })
+    writeHome({ up: { type: 'http', url: 'https://mcp.example/up' }, other: { type: 'http', url: 'o', headers: { A: 'new' } } })
+    provision()
+    expect(servers().up).toEqual(UP_OLD)
+    expect(servers().other.headers).toEqual({ A: 'new' })
+  })
+
   it('a home entry without a headers object leaves the agent headers in place', () => {
     writeAgent({ up: UP_OLD })
     writeHome({ up: { type: 'http', url: 'https://mcp.example/up' } })
