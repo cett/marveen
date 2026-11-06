@@ -113,13 +113,13 @@ describe('a body that is valid JSON but not an object', () => {
 })
 
 describe('the answers an object body gets are the ones develop gave (pinned before the change)', () => {
-  // `{}` is an object: it reaches the route's own checks. Recorded on develop, including the 500 of an empty card create
-  // (the insert fails on the missing title; a separate finding, not changed here).
+  // `{}` is an object: it reaches the route's own checks. Recorded on develop; the empty card create was a 500 there (the
+  // insert failed on the missing title) and is a 400 `required` on `title` since the title check (see the title block below).
   const EMPTY_OBJECT: Array<[string, string, string, number, string | undefined, string | undefined]> = [
     ['label create', 'POST', '/api/kanban/labels', 400, 'required', 'name'],
     ['label update', 'PUT', '/api/kanban/labels/l1', 200, undefined, undefined],
     ['label attach', 'POST', '/api/kanban/c1/labels', 400, 'required', 'labelId'],
-    ['card create', 'POST', '/api/kanban', 500, 'internal_error', undefined],
+    ['card create', 'POST', '/api/kanban', 400, 'required', 'title'],
     ['card update', 'PUT', '/api/kanban/c1', 200, undefined, undefined],
     ['comment', 'POST', '/api/kanban/c1/comments', 400, 'required', undefined],
     ['parent', 'PATCH', '/api/kanban/c1/parent', 200, undefined, undefined],
@@ -232,5 +232,104 @@ describe('POST /api/kanban/:id/claim -- the X-Agent-Id length', () => {
     const res = await callRaw('POST', `/api/kanban/${CARD}/claim`, undefined, { role: 'admin', tenantId: null })
     expect(res.status).toBe(400)
     expect(res.body).toMatchObject({ error: 'required', field: 'agent' })
+  })
+})
+
+describe('POST /api/kanban -- the title is required', () => {
+  const cardCount = () => (getDb().prepare('SELECT COUNT(*) AS n FROM kanban_cards').get() as { n: number }).n
+  const titleOf = (id: string) => (getDb().prepare('SELECT title FROM kanban_cards WHERE id = ?').get(id) as { title: string }).title
+  const ADMIN = { role: 'admin', tenantId: null } as const
+  const TENANT = { role: 'agent', tenantId: 'tenant-x' } as const
+
+  beforeEach(async () => {
+    await createTenant('tenant-x', 'Tenant X')
+  })
+
+  // Absent, null, empty and whitespace-only (everything JS String.trim removes: tab, line feed, NBSP, em space) are `required`.
+  const REQUIRED: Array<[string, Record<string, unknown>]> = [
+    ['no title', {}],
+    ['no title, other fields', { description: 'x', assignee: 'agent-a' }],
+    ['null', { title: null }],
+    ['empty string', { title: '' }],
+    ['spaces', { title: '   ' }],
+    ['tab and line feed', { title: '\t\n' }],
+    ['no-break space', { title: '\u00a0' }],
+    ['em space', { title: '\u2003' }],
+  ]
+  it.each(REQUIRED)('%s -> 400 required on title, nothing written (admin and tenant caller alike)', async (_name, body) => {
+    for (const who of [ADMIN, TENANT]) {
+      const before = snapshot()
+      const res = await callRaw('POST', '/api/kanban', JSON.stringify(body), who)
+      expect(res.status).toBe(400)
+      expect(res.body).toEqual({ error: 'required', field: 'title', hint: 'title is required and must not be blank' })
+      expect(snapshot()).toBe(before)
+    }
+  })
+
+  // Any other non-string is `invalid_value`: a card with a numeric / array / object title must not be written either.
+  const NOT_A_STRING: Array<[string, unknown]> = [['number', 5], ['zero', 0], ['true', true], ['false', false], ['array', []], ['object', {}]]
+  it.each(NOT_A_STRING)('title as %s -> 400 invalid_value on title, nothing written', async (_name, title) => {
+    const before = snapshot()
+    const res = await callRaw('POST', '/api/kanban', JSON.stringify({ title }), ADMIN)
+    expect(res.status).toBe(400)
+    expect(res.body).toEqual({ error: 'invalid_value', field: 'title', hint: 'title must be a string' })
+    expect(snapshot()).toBe(before)
+  })
+
+  it('a refused create writes no card, no comment, no label row and no audit row', async () => {
+    const cards = cardCount()
+    const before = snapshot()
+    await callRaw('POST', '/api/kanban', '{}', { ...ADMIN, auth: { kind: 'session', user: 'alice' } })
+    expect(cardCount()).toBe(cards)
+    expect(snapshot()).toBe(before)
+  })
+
+  it('a usable title is a 200 and is stored exactly as sent (no trim on write)', async () => {
+    const plain = await callRaw('POST', '/api/kanban', JSON.stringify({ title: 'x' }), ADMIN)
+    expect(plain.status).toBe(200)
+    expect(titleOf(plain.body.id)).toBe('x')
+    const padded = await callRaw('POST', '/api/kanban', JSON.stringify({ title: '  padded  ' }), TENANT)
+    expect(padded.status).toBe(200)
+    expect(titleOf(padded.body.id)).toBe('  padded  ')
+  })
+
+  it('observed, not promised: a title of only zero-width characters is not blank to String.trim and creates a card; there is no length cap', async () => {
+    const hidden = await callRaw('POST', '/api/kanban', JSON.stringify({ title: '\u200b' }), ADMIN)
+    expect(hidden.status).toBe(200)
+    const long = await callRaw('POST', '/api/kanban', JSON.stringify({ title: 'y'.repeat(5000) }), ADMIN)
+    expect(long.status).toBe(200)
+    expect(titleOf(long.body.id)).toHaveLength(5000)
+  })
+
+  // The title check runs last: the answers the other fields gave before it are the ones they still give.
+  it('an invalid due_date next to a missing title is still the due_date answer', async () => {
+    const res = await callRaw('POST', '/api/kanban', JSON.stringify({ due_date: 'not-a-date' }), ADMIN)
+    expect(res.status).toBe(400)
+    expect(res.body).toMatchObject({ error: 'invalid_value', field: 'due_date' })
+  })
+
+  it('a foreign parent_id next to a missing title is still the 404 of the parent, for a tenant caller', async () => {
+    await createTenant('tenant-y', 'Tenant Y')
+    await createKanbanCard({ id: 'foreign-parent', title: 'Foreign', tenant_id: 'tenant-y' })
+    const res = await callRaw('POST', '/api/kanban', JSON.stringify({ parent_id: 'foreign-parent' }), TENANT)
+    expect(res.status).toBe(404)
+    expect(res.body).toMatchObject({ error: 'not_found', field: 'parent_id' })
+  })
+
+  it('a non-string assignee next to a missing title is still the assignee answer', async () => {
+    const res = await callRaw('POST', '/api/kanban', JSON.stringify({ assignee: 5 }), ADMIN)
+    expect(res.status).toBe(400)
+    expect(res.body).toMatchObject({ error: 'invalid_value', field: 'assignee' })
+  })
+
+  it('PUT /api/kanban/:id stays a partial update: a body without a title is a 200 and the title is kept', async () => {
+    const res = await callRaw('PUT', '/api/kanban/c1', JSON.stringify({ description: 'changed' }), ADMIN)
+    expect(res.status).toBe(200)
+    expect(titleOf('c1')).toBe('Card')
+  })
+
+  it('the breakdown accept route is another path: its subtask titles are not covered by this check', async () => {
+    const res = await callRaw('POST', '/api/kanban/parent/breakdown/accept', JSON.stringify({ subtasks: [{ title: 'S', description: '', assignee: null, priority: 'normal' }] }), ADMIN)
+    expect(res.status).toBe(200)
   })
 })
