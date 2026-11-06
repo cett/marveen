@@ -71,11 +71,35 @@ export function isAllowedFile(filePath: string): { ok: boolean; reason?: string 
 }
 
 // ── Auto-keywords ─────────────────────────────────────────────────────────────
+
+const FRONT_MATTER_TAGS_OPENER_RX = /tags:\s*\[/gi
+
+/** The text inside `tags: [ ... ]` of the YAML front matter, or null. The front matter is what lies between a
+ *  leading `---` and the next `\n---` line; a `tags: [..]` anywhere else (the document body) is not a tag source.
+ *  Linear in the text length: only `tags:\s*\[` is a pattern, the closing `]` is looked up with indexOf. The pattern this replaces, /^---[\s\S]*?tags:\s*\[([^\]]+)\][\s\S]*?---/i,
+ *  retried both lazy spans from every `tags: [` that had no `]` or no later `---`: 550 kB took ~17 s. It also
+ *  accepted a `tags: [..]` (and a closing `---`) from anywhere after the first `---`, which is not front matter. */
+function frontMatterTags(content: string): string | null {
+  if (!content.startsWith('---')) return null
+  const fenceAt = content.indexOf('\n---', 3)
+  if (fenceAt === -1) return null // no closing fence: not a front matter block
+  const fm = content.slice(3, fenceAt)
+  for (const m of fm.matchAll(FRONT_MATTER_TAGS_OPENER_RX)) {
+    const from = m.index + m[0].length
+    const close = fm.indexOf(']', from)
+    if (close === -1) return null // no ']' left, so no later opener can close either
+    // Only an empty `tags: []` continues the loop, and its ']' is the very next character: no probe walks far, so
+    // the total work stays linear without caching the position.
+    if (close > from) return fm.slice(from, close)
+  }
+  return null
+}
+
 export function extractKeywords(content: string, fileName: string): string {
   // Try YAML front matter tags first (md/mdx files)
-  const fmMatch = content.match(/^---[\s\S]*?tags:\s*\[([^\]]+)\][\s\S]*?---/i)
-  if (fmMatch) {
-    return fmMatch[1].replace(/['"\s]/g, '').replace(/,/g, ', ').trim()
+  const fmTags = frontMatterTags(content)
+  if (fmTags !== null) {
+    return fmTags.replace(/['"\s]/g, '').replace(/,/g, ', ').trim()
   }
   // Fall back: first 20 space-separated tokens from content + the filename stem.
   // Use a Unicode-aware split so accented letters (á, é, ő, ű, ...) stay inside
