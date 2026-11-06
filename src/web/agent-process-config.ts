@@ -13,6 +13,7 @@ import { CHANNEL_PLUGIN_IDS } from './plugin-ids.js'
 export { CHANNEL_PLUGIN_IDS }
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
+import { isDeepStrictEqual } from 'node:util'
 import { basename, dirname, join, resolve } from 'node:path'
 import { dismissModelConsentDialogIfPresent } from './agent-process-identity.js'
 import { agentHasChannel, agentRunState, sendPromptToSession } from './agent-process-session.js'
@@ -217,9 +218,18 @@ export function maybeAlertSharedConfigCollision(name: string): void {
 // .credentials.json into the config dir -- so there is nothing to diverge and no
 // refresh race. .credentials.json is therefore in the skip set below.
 //
+// .claude.json is in the skip set for a different reason: it is Claude Code's OWN
+// per-config-dir state (consent flags, project trust, counters), not shared
+// content. ~/.claude/.claude.json exists (it is the main session's config), so
+// without the skip every provision removed the agent's file, symlinked it to the
+// main config and then replaced the symlink with a COPY of the main config (the
+// step-4 read-modify-write renames over it). The agent's own state, including
+// the external CLAUDE.md imports consent, was thrown away on every start. The
+// file is seeded once (step 4) and owned by Claude Code afterwards.
+//
 // Idempotent and best-effort: returns the dir on success, or null so the caller
 // falls back to the shared ~/.claude (degraded, but never a launch failure).
-const ISOLATED_CONFIG_SKIP = new Set(['settings.json', 'plugins', '.credentials.json'])
+const ISOLATED_CONFIG_SKIP = new Set(['settings.json', 'plugins', '.credentials.json', '.claude.json'])
 
 export function ensureIsolatedChannelConfigDir(
   name: string,
@@ -410,6 +420,69 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v)
 }
 
+// Refresh the `headers` object of every HTTP MCP server the agent ALREADY has
+// from the same-named HTTP server in the shared ~/.claude.json.
+//
+// Why: an HTTP server's credential lives in its headers, and the only resolver
+// (channels.sh vault-inject-http-mcp) works on the shared config, so the agent
+// has always got its headers from the per-start copy of that config. With the
+// copy gone (.claude.json is no longer re-seeded on every start) a rotated
+// header would never reach an existing agent: reconcileMcpServers is additive
+// and never overwrites an entry. This keeps today's behavior for exactly that
+// one field and nothing else.
+//
+// Narrow on purpose:
+//   - only a server that exists on BOTH sides and is `type: "http"` on both,
+//   - only the `headers` object is replaced, never any other field of the entry,
+//   - a shared entry without a headers object leaves the agent's alone,
+//   - a missing server is not added here (reconcileMcpServers does that),
+//   - change-only, and a non-object mcpServers on either side touches nothing.
+// Only server NAMES are logged: header values are credentials.
+// Returns true if the caller should persist `cur`.
+function refreshHttpMcpHeaders(
+  cur: Record<string, unknown>,
+  sharedDot: string,
+  name: string,
+): boolean {
+  if (!isPlainObject(cur.mcpServers) || !existsSync(sharedDot)) return false
+  let shared: Record<string, unknown>
+  try { shared = JSON.parse(readFileSync(sharedDot, 'utf-8')) as Record<string, unknown> }
+  catch { return false }
+  if (!isPlainObject(shared.mcpServers)) return false
+  const refreshed: string[] = []
+  for (const [key, own] of Object.entries(cur.mcpServers)) {
+    const src = shared.mcpServers[key]
+    if (!isPlainObject(own) || !isPlainObject(src)) continue
+    if (own.type !== 'http' || src.type !== 'http') continue
+    if (!isPlainObject(src.headers)) continue
+    if (isDeepStrictEqual(own.headers, src.headers)) continue
+    own.headers = { ...src.headers }
+    refreshed.push(key)
+  }
+  if (refreshed.length === 0) return false
+  logger.info({ name, servers: refreshed }, 'isolated-config: refreshed HTTP MCP headers from the shared config')
+  return true
+}
+
+// A legacy isolated .claude.json may still be a SYMLINK (to the main config).
+// Claude Code writes through a symlink's target, and our own atomic write
+// replaces the link, so a symlink here means the agent's state is the main
+// config's. Turn it into a regular file ONCE: same bytes as the target, written
+// next to it and renamed over the link, so the target itself is never touched
+// and a reader sees either the link or the finished file. Owner-only mode: the
+// target can be 0644 and carries credential-bearing config. A dangling link is
+// left to the seed branch (it replaces the link too).
+function materializeSymlinkedDotClaude(dotClaude: string, name: string): void {
+  try {
+    if (!lstatSync(dotClaude).isSymbolicLink()) return
+    const raw = readFileSync(dotClaude)
+    const tmp = `${dotClaude}.tmp-${process.pid}`
+    writeFileSync(tmp, raw, { mode: 0o600 })
+    renameSync(tmp, dotClaude)
+    logger.info({ name }, 'isolated-config: materialized the symlinked .claude.json into an own file')
+  } catch { /* absent or dangling -> the seed branch handles it */ }
+}
+
 function provisionIsolatedConfigDir(
   cfg: string,
   cwd: string,
@@ -588,6 +661,11 @@ function provisionIsolatedConfigDir(
     try {
       const dotClaude = join(cfg, '.claude.json')
       const sharedDot = join(homedir(), '.claude.json')
+      // The main agent's isolated dir keeps its .claude.json symlink to the main
+      // session config (the channels.sh inject/restore target): not ours to
+      // materialize, and it has no use for a header refresh either.
+      const isMainAgent = name === MAIN_AGENT_ID
+      if (!isMainAgent) materializeSymlinkedDotClaude(dotClaude, name)
       if (!existsSync(dotClaude)) {
         let seed: Record<string, unknown> = { hasCompletedOnboarding: true }
         if (existsSync(sharedDot)) {
@@ -604,6 +682,7 @@ function provisionIsolatedConfigDir(
             dirty = true
           }
           if (reconcileMcpServers(cur, sharedDot, name)) dirty = true
+          if (!isMainAgent && refreshHttpMcpHeaders(cur, sharedDot, name)) dirty = true
           if (dirty) writeJsonAtomic(dotClaude, cur)
         } catch { /* unparseable -> leave for Claude Code to recreate */ }
       }
