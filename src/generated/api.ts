@@ -419,6 +419,26 @@ export interface PartnerSender {
   disabled_at: number;
 }
 
+/** One entry of the write trail of a skill. Hashes only; the text and the file bytes are never returned. */
+export interface SkillRevision {
+  /** Number of the revision within the skill, from 1, without gaps. */
+  seq: number;
+  action: 'baseline' | 'create' | 'modify' | 'seed' | 'delete' | 'file_put' | 'file_delete' | 'file_seed';
+  /** SHA-256 (hex) of the stored SKILL.md text after this revision. */
+  content_sha256?: string;
+  /** SHA-256 of the SKILL.md text in the revision before this one; null for the first. */
+  prev_sha256?: string;
+  /** SHA-256 of the sorted (path, mode, content hash) list of the companion files; null when the skill has none. */
+  files_sha256?: string;
+  /** True when a companion file lives under scripts/ or is executable. */
+  has_scripts: boolean;
+  author_kind: 'human' | 'agent' | 'import' | 'system';
+  author_id?: string;
+  source_ref?: string;
+  reason?: string;
+  created_at: number;
+}
+
 export interface WorkspaceDoc {
   id: string;
   agent_id: string;

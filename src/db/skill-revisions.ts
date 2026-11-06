@@ -176,6 +176,32 @@ export async function ensureSkillBaseline(tx: SqlOps, skillId: string): Promise<
   return true
 }
 
+/** One revision as the read API shows it: who, what changed (as hashes) and when, never the text or the file bytes. */
+export interface SkillRevisionMeta {
+  seq: number
+  action: SkillRevisionAction
+  content_sha256: string | null
+  prev_sha256: string | null
+  files_sha256: string | null
+  has_scripts: boolean
+  author_kind: SkillActorKind
+  author_id: string | null
+  source_ref: string | null
+  reason: string | null
+  created_at: number
+}
+
+/**
+ * The trail of one skill, oldest first. The skill may be gone (a deleted skill's trail is the point) or may never
+ * have existed: both answer the same, an empty list. The text (`content`) is deliberately not selected.
+ */
+export async function listSkillRevisions(skillId: string): Promise<SkillRevisionMeta[]> {
+  const rows = await dbx.all<Omit<SkillRevisionMeta, 'has_scripts'> & { has_scripts: number }>(`
+    SELECT seq, action, content_sha256, prev_sha256, files_sha256, has_scripts, author_kind, author_id, source_ref, reason, created_at
+    FROM skill_revisions WHERE skill_id = ? ORDER BY seq`, skillId)
+  return rows.map((r) => ({ ...r, has_scripts: r.has_scripts === 1 }))
+}
+
 export interface BaselineResult {
   written: number
   errors: number

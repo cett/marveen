@@ -943,6 +943,47 @@ components:
           nullable: true
           description: Unix timestamp when soft-deleted; null when active
 
+    SkillRevision:
+      type: object
+      description: One entry of the write trail of a skill. Hashes only; the text and the file bytes are never returned.
+      required: [seq, action, has_scripts, author_kind, created_at]
+      properties:
+        seq:
+          type: integer
+          description: Number of the revision within the skill, from 1, without gaps.
+        action:
+          type: string
+          enum: [baseline, create, modify, seed, delete, file_put, file_delete, file_seed]
+        content_sha256:
+          type: string
+          nullable: true
+          description: SHA-256 (hex) of the stored SKILL.md text after this revision.
+        prev_sha256:
+          type: string
+          nullable: true
+          description: SHA-256 of the SKILL.md text in the revision before this one; null for the first.
+        files_sha256:
+          type: string
+          nullable: true
+          description: SHA-256 of the sorted (path, mode, content hash) list of the companion files; null when the skill has none.
+        has_scripts:
+          type: boolean
+          description: True when a companion file lives under scripts/ or is executable.
+        author_kind:
+          type: string
+          enum: [human, agent, import, system]
+        author_id:
+          type: string
+          nullable: true
+        source_ref:
+          type: string
+          nullable: true
+        reason:
+          type: string
+          nullable: true
+        created_at:
+          type: integer
+
     WorkspaceDoc:
       type: object
       required: [id, agent_id, tenant_id, title, content_type, type, size_bytes, created_at, updated_at]
@@ -3416,6 +3457,43 @@ paths:
                         type: string
                     mtime:
                       type: integer
+
+  /skills/sql/{id}/revisions:
+    get:
+      tags: [skills]
+      operationId: listSkillRevisions
+      summary: Write trail of a skill (admin only)
+      description: |
+        The revisions of a skill, oldest first: who changed it, when, what the change was, and the hashes of the text
+        and of the companion files. Never the text or the file bytes. The trail outlives the skill, so the trail of a
+        deleted skill can be read by its id; an id that never existed answers an empty list. Percent-encode the id
+        (`global%2Fdemo`). Admin only: every other caller gets `403`, decided before the id is looked up, so the answer
+        says nothing about whether the id exists.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The trail, oldest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [skill_id, revisions]
+                properties:
+                  skill_id:
+                    type: string
+                  revisions:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SkillRevision'
+        "400":
+          description: Malformed percent-encoding in the id
+        "403":
+          description: Not an admin (a fleet agent token and a tenant user included)
 
   /skills/local:
     get:

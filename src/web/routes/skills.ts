@@ -20,6 +20,7 @@ import {
   listSkillsForTenant, listAllSkills,
   grantSkillAccess, revokeSkillAccess, listSkillAccess,
   listSkillFiles, getSkillFile, putSkillFile, deleteSkillFile, countSkillFiles,
+  listSkillRevisions,
 } from '../../db.js'
 
 function parseFrontmatterField(content: string, field: string): string {
@@ -695,6 +696,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
   const sqlSkillIdMatch = path.match(/^\/api(?:\/v1)?\/skills\/sql\/([^/]+)$/)
   const sqlFilesBase = path.match(/^\/api(?:\/v1)?\/skills\/sql\/([^/]+)\/files$/)
   const sqlFilesItem = path.match(/^\/api(?:\/v1)?\/skills\/sql\/([^/]+)\/files\/([^/]+)$/)
+  const sqlRevisionsBase = path.match(/^\/api(?:\/v1)?\/skills\/sql\/([^/]+)\/revisions$/)
   const sqlAccessBase = path.match(/^\/api(?:\/v1)?\/skills\/sql\/([^/]+)\/access$/)
   const sqlAccessItem = path.match(/^\/api(?:\/v1)?\/skills\/sql\/([^/]+)\/access\/([^/]+)$/)
 
@@ -871,6 +873,17 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
       json(res, { ok: true, file: fileView(saved) }, isNew ? 201 : 200)
       return true
     }
+  }
+
+  // The write trail of a skill (skill_revisions): who changed it, when, and the hashes of the text and the files, never
+  // the text. Admin only, decided BEFORE anything is looked up: a fleet agent or a tenant user gets the same 403 for a
+  // skill that exists, one that was deleted and one that never did, so the endpoint tells them nothing about an id.
+  if (sqlRevisionsBase && method === 'GET') {
+    const id = decodeSegment(sqlRevisionsBase[1])
+    if (id === null) return badSegment()
+    if (!isAdmin) { json(res, { error: 'forbidden', hint: 'Admin only' }, 403); return true }
+    json(res, { skill_id: id, revisions: await listSkillRevisions(id) })
+    return true
   }
 
   if (sqlAccessBase && method === 'GET') {

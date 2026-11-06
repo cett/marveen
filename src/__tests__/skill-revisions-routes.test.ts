@@ -6,6 +6,7 @@ import { initDatabase, db, createSkill, getSkill } from '../db.js'
 import { skillActorFromRoute } from '../web/skill-actor.js'
 import { tryHandleSkillSync } from '../web/routes/skill-sync.js'
 import { tryHandleSkills } from '../web/routes/skills.js'
+import { resolveRequiredPermission } from '../web/rbac.js'
 import type { RouteContext } from '../web/routes/types.js'
 
 vi.mock('../web/skill-regen.js', async (importOriginal) => ({
@@ -94,6 +95,82 @@ describe('POST /api/skill-sync', () => {
     expect(res.status).toBe(403)
     expect(revs('agent/agent-b/s')).toEqual([])
     expect(await getSkill('agent/agent-b/s')).toBeUndefined()
+  })
+})
+
+describe('GET /api/v1/skills/sql/:id/revisions', () => {
+  const CANARY = 'canary-skill-text-that-must-not-be-returned'
+  const get = (id: string, extras: Extras, prefix = '/api/v1') => call(tryHandleSkills, 'GET', `${prefix}/skills/sql/${encodeURIComponent(id)}/revisions`, undefined, extras)
+  const USER: Extras = { auth: { kind: 'session', user: 'user-b' }, role: 'viewer', tenantId: 'tenant-x' }
+
+  async function seedTrail() {
+    const c = (method: string, path: string, body?: unknown) => call(tryHandleSkills, method, path, body, SESSION)
+    await c('PUT', '/api/skills/sql/global%2Fdemo', { content: CANARY })
+    await c('PUT', '/api/skills/sql/global%2Fdemo/files/scripts%2Frun.sh', { content: 'echo', mode: 0o755 })
+    await c('PUT', '/api/skills/sql/global%2Fdemo', { content: CANARY + ' two', reason: 'ignored by the route' })
+  }
+
+  it('an admin gets the trail oldest first, metadata only, with the hashes and the scripts flag as a boolean', async () => {
+    await seedTrail()
+    const res = await get('global/demo', SESSION)
+    expect(res.status).toBe(200)
+    expect(res.body.skill_id).toBe('global/demo')
+    expect(res.body.revisions.map((r: any) => [r.seq, r.action, r.has_scripts, r.author_kind, r.author_id])).toEqual([
+      [1, 'create', false, 'human', 'user-a'], [2, 'file_put', true, 'human', 'user-a'], [3, 'modify', true, 'human', 'user-a'],
+    ])
+    const first = res.body.revisions[0]
+    expect(first.content_sha256).toMatch(/^[0-9a-f]{64}$/)
+    expect(res.body.revisions[2].prev_sha256).toBe(res.body.revisions[1].content_sha256)
+    expect(Object.keys(first).sort()).toEqual(['action', 'author_id', 'author_kind', 'content_sha256', 'created_at', 'files_sha256', 'has_scripts', 'prev_sha256', 'reason', 'seq', 'source_ref'])
+  })
+
+  it('never returns the text, in any field of the response', async () => {
+    await seedTrail()
+    const res = await get('global/demo', SESSION)
+    expect(JSON.stringify(res.body)).not.toContain('canary')
+    expect(JSON.stringify(res.body)).not.toContain('echo')
+    for (const r of res.body.revisions) expect(r).not.toHaveProperty('content')
+  })
+
+  it('the trail of a deleted skill is still there by its id, and an unknown id is an empty list', async () => {
+    await seedTrail()
+    await call(tryHandleSkills, 'DELETE', '/api/skills/sql/global%2Fdemo', undefined, SESSION)
+    expect(await getSkill('global/demo')).toBeUndefined()
+    const res = await get('global/demo', SESSION)
+    expect(res.body.revisions.map((r: any) => r.action)).toEqual(['create', 'file_put', 'modify', 'delete'])
+    expect((await get('global/never-existed', SESSION)).body).toEqual({ skill_id: 'global/never-existed', revisions: [] })
+  })
+
+  it('a fleet agent token gets 403, for an existing skill, a deleted one and one that never existed, with the same answer', async () => {
+    await seedTrail()
+    await createSkill({ id: 'agent/agent-a/mine', name: 'mine', content: 'x', tenant_id: 'fleet' }, { kind: 'system', id: null })
+    await call(tryHandleSkills, 'DELETE', '/api/skills/sql/global%2Fdemo', undefined, SESSION)
+    const answers = []
+    for (const id of ['agent/agent-a/mine', 'global/demo', 'global/never-existed']) answers.push(await get(id, AGENT_TOKEN))
+    for (const a of answers) expect(a.status).toBe(403)
+    expect(new Set(answers.map((a) => JSON.stringify(a.body))).size).toBe(1)
+    expect(JSON.stringify(answers[0]!.body)).not.toContain('sha256')
+  })
+
+  it('a tenant user and an unauthenticated context get 403 too', async () => {
+    await seedTrail()
+    expect((await get('global/demo', USER)).status).toBe(403)
+    expect((await get('global/demo', {})).status).toBe(403)
+  })
+
+  it('RBAC holds the route to admin:all (the skills prefix would let every skills:read role in), and the sibling routes keep theirs', () => {
+    expect(resolveRequiredPermission('GET', '/api/skills/sql/global%2Fdemo/revisions')).toBe('admin:all')
+    expect(resolveRequiredPermission('GET', '/api/skills/sql/global%2Fdemo/revisions/')).toBe('admin:all')
+    expect(resolveRequiredPermission('GET', '/api/skills/sql/global%2Fdemo/access')).toBe('admin:all')
+    expect(resolveRequiredPermission('GET', '/api/skills/sql/global%2Fdemo/files')).toBe('skills:read')
+    expect(resolveRequiredPermission('GET', '/api/skills/sql/global%2Fdemo')).toBe('skills:read')
+  })
+
+  it('the legacy /api alias answers the same, and a malformed id is a 400 for an admin', async () => {
+    await seedTrail()
+    expect((await get('global/demo', SESSION, '/api')).body.revisions).toHaveLength(3)
+    const res = await call(tryHandleSkills, 'GET', '/api/v1/skills/sql/%E0%A4%A/revisions', undefined, SESSION)
+    expect(res.status).toBe(400)
   })
 })
 
