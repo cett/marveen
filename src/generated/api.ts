@@ -30,6 +30,12 @@ export interface UserProfile {
   session_count?: number;
 }
 
+export interface VaultSecretAcl {
+  /** Who may receive the secret. Empty = open (any target). Each entry is `agent:<id>` or one of `scope:project`, `scope:user`, `scope:external`.
+ */
+  allow: string[];
+}
+
 export interface UserProfilePatch {
   username?: string;
   display_name?: string;
@@ -99,7 +105,7 @@ export interface TenantStarterPackState {
 
 export interface Error {
   /** Machine-readable snake_case error token. Canonical values are listed in the enum; additional domain-specific tokens may appear in future API versions. */
-  error: 'not_found' | 'required' | 'invalid_value' | 'forbidden' | 'unauthorized' | 'conflict' | 'limit_exceeded' | 'internal_error' | 'parse_error' | 'not_supported' | 'timeout' | 'disabled' | 'not_live' | 'managed_settings_missing' | 'upstream_error' | 'sender_not_in_allowlist' | 'federation_disabled' | 'tenant_required' | 'unknown_query_parameter' | 'stale_revision' | 'status_conflict';
+  error: 'not_found' | 'required' | 'invalid_value' | 'forbidden' | 'unauthorized' | 'conflict' | 'limit_exceeded' | 'internal_error' | 'parse_error' | 'not_supported' | 'timeout' | 'disabled' | 'not_live' | 'managed_settings_missing' | 'upstream_error' | 'sender_not_in_allowlist' | 'federation_disabled' | 'tenant_required' | 'unknown_query_parameter' | 'stale_revision' | 'status_conflict' | 'agent_not_allowed';
   /** Optional human-readable debugging note. Present when the server has extra context that helps the caller fix the request (e.g. which parameter name the filter expects, or why a value was rejected). Clients must not rely on its exact text; treat it as informational. */
   hint?: string;
   /** Name of the request field that caused the validation failure. Present on 4xx validation errors when the problem can be attributed to a single input field. */
@@ -713,3 +719,8 @@ export type ListToolLogResponse = Record<string, unknown>[]
 export type GetMeResponse = UserProfile
 
 export type PatchMeResponse = UserProfilePatch
+
+export type GetVaultSecretAclResponse = VaultSecretAcl
+
+export type PutVaultSecretAclRequest = VaultSecretAcl
+export type PutVaultSecretAclResponse = VaultSecretAcl

@@ -2218,6 +2218,7 @@ window._i18n.en = {
   'errors.managed_settings_missing': 'Managed settings missing',
   'errors.upstream_error':           'Upstream service unavailable',
   'errors.sender_not_in_allowlist':  'Sender is not in the allowlist',
+  'errors.agent_not_allowed':        'This secret is not allowed for that agent -- add it to the secret\'s allowlist or pick another target',
   'errors.federation_disabled':      'Federation is disabled',
   'errors.unknown_query_parameter':  'Unknown query parameter',
   'errors.tenant_required':          'The task needs a tenant',

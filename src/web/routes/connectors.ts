@@ -2,7 +2,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, basename } from 'node:path'
 import { homedir } from 'node:os'
 import { execSync } from 'node:child_process'
-import { PROJECT_ROOT, OLLAMA_URL } from '../../config.js'
+import { PROJECT_ROOT, OLLAMA_URL, MAIN_AGENT_ID } from '../../config.js'
 import { logger } from '../../logger.js'
 import {
   slugify as slugifyMcp,
@@ -12,15 +12,17 @@ import {
 import { atomicWriteFileSync } from '../atomic-write.js'
 import { readFileOr, AGENTS_BASE_DIR, listAgentNames } from '../agent-config.js'
 import { getMcpListCache, refreshMcpListCache, purgeFromMcpListCache } from '../mcp-list.js'
-import { readBody, json } from '../http-helpers.js'
+import { readBody, json, parseJsonObject } from '../http-helpers.js'
 import { shellEscape } from '../sanitize.js'
 import { getExternalProjectPaths, addExternalProjectPath, removeExternalProjectPath, getGitHubRepos, installGitHubRepo, removeGitHubRepo, updateGitHubRepo, detectRequiredEnvVars } from '../dashboard-settings.js'
 import { listSecrets, setSecret, getSecret, deleteSecret, findSecretTenant } from '../vault.js'
 import { logVaultRead, isSshPrivateKeyId, principalOf } from '../vault-acl.js'
 import {
-  getBindings, addBinding, removeBinding, removeBindingsForSecret,
+  getBindings, addBinding, removeBinding, removeBindingsForSecret, removeSecretAcl,
+  getSecretAcl, setSecretAcl, getAllSecretAcls, partitionTargetsByAcl,
   syncSecret, syncAllBindings, scanMcpConfigs, unsyncBinding,
 } from '../vault-bindings.js'
+import { parseAllowList } from '../vault-grantees.js'
 import type { RouteContext } from './types.js'
 
 // The catalog is the union of the committed mcp-catalog.json (the MCPs the
@@ -709,7 +711,11 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     // (/api/vault/ssh-keys) and must not appear as generic secret cards too.
     const all = listSecrets().filter(s => !s.id.startsWith('ssh-key-'))
     const scoped = vaultIsAdmin && vaultTenantParam === null ? all : all.filter(s => s.tenant_id === vaultEffectiveTenantId)
-    json(res, { secrets: scoped })
+    // Each secret also carries its grantee list (`allow`, empty = open). The list is kept under the default
+    // tenant, so a secret of another tenant always reads as open here (it has no list; the same id in the
+    // default tenant must not lend its list to it). The existing fields are untouched.
+    const acls = await getAllSecretAcls()
+    json(res, { secrets: scoped.map(s => ({ ...s, allow: s.tenant_id === 'default' ? (acls[s.id] ?? []) : [] })) })
     return true
   }
 
@@ -767,7 +773,48 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     if (ownerTenantId === null) return true
     deleteSecret(id, ownerTenantId)
     await removeBindingsForSecret(id)
+    // The grantee list goes with the secret: a re-created id must not inherit the old restriction.
+    // The list is kept under the 'default' tenant (like the bindings), and a secret id is unique only
+    // per tenant: deleting another tenant's secret of the same id must NOT drop the default tenant's
+    // restriction (that would turn a restricted secret into an open one).
+    if (ownerTenantId === 'default') await removeSecretAcl(id)
     json(res, { ok: true })
+    return true
+  }
+
+  // === Per-secret grantee list (vault_secret_acl) ===
+  // Who may receive this secret in an MCP file. Admin only, on purpose: the route is NOT in the RBAC table,
+  // so it falls back to admin:all (a fleet_agent token cannot widen its own access), and the role is checked
+  // here as well. The role check comes BEFORE the existence check, so a non-admin learns nothing about ids.
+  const aclMatch = path.match(/^\/api\/vault\/([^/]+)\/acl$/)
+  if (aclMatch && (method === 'GET' || method === 'PUT')) {
+    if (!vaultIsAdmin) { json(res, { error: 'forbidden', hint: 'Admin only' }, 403); return true }
+    const id = decodeURIComponent(aclMatch[1])
+    if (isSshPrivateKeyId(id)) {
+      json(res, { error: 'invalid_value', field: 'id', hint: 'SSH private keys are not bound, so they have no allowlist' }, 400)
+      return true
+    }
+    const ownerTenantId = resolveVaultAccess(id)
+    if (ownerTenantId === null) return true
+    // The list is kept under the default tenant, like the bindings it gates (a secret id is unique only per
+    // tenant, so a list for another tenant's secret would land on the default tenant's secret of that id).
+    if (ownerTenantId !== 'default') {
+      json(res, { error: 'invalid_value', field: 'id', hint: 'The allowlist is only available for secrets of the default tenant' }, 400)
+      return true
+    }
+    if (method === 'GET') {
+      json(res, { allow: await getSecretAcl(id) })
+      return true
+    }
+    const parsedBody = parseJsonObject((await readBody(req)).toString())
+    if (!parsedBody.ok) { json(res, { error: 'parse_error', hint: 'Body must be a JSON object' }, 400); return true }
+    // The main agent is not in listAgentNames(), but its id is a valid grantee name.
+    const checked = parseAllowList(parsedBody.value['allow'], [MAIN_AGENT_ID, ...listAgentNames()])
+    if (!checked.ok) { json(res, { error: 'invalid_value', field: 'allow', hint: checked.hint }, 400); return true }
+    await setSecretAcl(id, checked.allow)
+    const { kind, principal } = principalOf(ctx.auth)
+    logger.info({ event: 'vault-acl-set', vaultSecretId: id, entries: checked.allow.length, principal, kind }, 'vault: secret allowlist replaced')
+    json(res, { allow: await getSecretAcl(id) })
     return true
   }
 
@@ -801,6 +848,8 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     }
 
     let targets = data.targets || []
+    // Explicit targets are the caller's own choice; discovered ones (by serverName) are filtered below.
+    const explicitTargets = targets.length > 0
     if (data.serverName && targets.length === 0) {
       const searchPaths: Array<[string, string]> = [
         [join(PROJECT_ROOT, '.mcp.json'), 'project'],
@@ -835,9 +884,38 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'invalid_value', field: 'serverName', hint: 'No targets found for this server' }, 400)
       return true
     }
+
+    // The secret's grantee list (vault_secret_acl). Empty = the behaviour before the list existed: nothing
+    // here runs past the read, the answer has no `skipped`. Non-empty = only the listed agents and scopes
+    // may receive it. This check is BEFORE addBinding, so a refusal writes nothing (no row, no file).
+    let skipped: string[] = []
+    const acl = await getSecretAcl(data.vaultSecretId)
+    if (acl.length > 0) {
+      const { allowed, refused } = partitionTargetsByAcl(acl, targets)
+      if (refused.length > 0) {
+        const { kind, principal } = principalOf(ctx.auth)
+        logger.warn({
+          event: 'vault-binding-refused', vaultSecretId: data.vaultSecretId, grantee: refused[0].grantee,
+          refusedCount: refused.length, principal, kind, via: 'acl',
+        }, 'vault: binding target outside the secret allowlist refused')
+        // An explicit target outside the list is a refusal of the whole request. A discovery (by serverName)
+        // only drops the files that are not allowed; it is a refusal only when nothing allowed is left.
+        if (explicitTargets || allowed.length === 0) {
+          json(res, {
+            error: 'agent_not_allowed',
+            field: explicitTargets ? 'targets' : 'serverName',
+            hint: 'The secret allowlist does not name the agent or scope of this target',
+          }, 403)
+          return true
+        }
+        skipped = [...new Set(refused.map(r => r.grantee ?? 'unknown'))]
+        targets = allowed
+      }
+    }
+
     await addBinding({ vaultSecretId: data.vaultSecretId, envVar: data.envVar, targets })
     const syncResult = await syncSecret(data.vaultSecretId)
-    json(res, { ok: true, synced: syncResult.updated, errors: syncResult.errors })
+    json(res, { ok: true, synced: syncResult.updated, errors: syncResult.errors, ...(skipped.length > 0 ? { skipped } : {}) })
     return true
   }
 

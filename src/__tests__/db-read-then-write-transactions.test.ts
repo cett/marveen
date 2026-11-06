@@ -10,6 +10,7 @@ import {
   dbx,
   upsertVaultBinding,
   deleteVaultBindingsForSecret,
+  replaceSecretAcl,
   adoptChannelCredential,
   clearChannelAdoption,
   recordChannelDriftCheck,
@@ -38,6 +39,11 @@ const CASES: Case[] = [
     name: 'deleteVaultBindingsForSecret (select the rows, then delete them)',
     seed: () => upsertVaultBinding('default', { vaultSecretId: 'secret-a', envVar: 'API_KEY', targets: [] }),
     run: () => deleteVaultBindingsForSecret('default', 'secret-a'),
+  },
+  {
+    name: 'replaceSecretAcl (delete the grantee list, then insert the new one)',
+    seed: () => replaceSecretAcl('default', 'secret-a', ['agent:agent-a']),
+    run: () => replaceSecretAcl('default', 'secret-a', ['agent:agent-b', 'scope:user']),
   },
   {
     name: 'adoptChannelCredential (replace the chat list and the baseline)',

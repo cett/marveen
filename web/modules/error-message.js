@@ -19,6 +19,7 @@ const ERROR_I18N = {
   managed_settings_missing: 'errors.managed_settings_missing',
   upstream_error:           'errors.upstream_error',
   sender_not_in_allowlist:  'errors.sender_not_in_allowlist',
+  agent_not_allowed:        'errors.agent_not_allowed',
   federation_disabled:      'errors.federation_disabled',
   unknown_query_parameter:  'errors.unknown_query_parameter',
   tenant_required:          'errors.tenant_required',

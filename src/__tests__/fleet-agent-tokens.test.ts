@@ -244,6 +244,9 @@ describe('what a fleet_agent token cannot reach at all', () => {
     ['POST', '/api/schedules/x/activate'], ['GET', '/api/hook-audit'], ['GET', '/api/skills/sql/x/access'],
     ['PUT', '/api/skills/sql/x/access/t1'], ['GET', '/api/messages'], ['GET', '/api/agents/export-all'],
     ['GET', '/api/rbac/shadow-log'], ['POST', '/api/egress-allowlist'], ['GET', '/api/federation/manifest'],
+    // The per-secret grantee list is deliberately not in the RBAC table (admin:all): an agent token must not
+    // read or widen the list that decides which agent files receive a secret.
+    ['GET', '/api/vault/x/acl'], ['PUT', '/api/vault/x/acl'],
   ]
   it.each(denied)('%s %s is a 403', async (method, path) => {
     expect((await request('tok-alpha', method, path, method === 'GET' ? undefined : {})).status).toBe(403)

@@ -472,6 +472,8 @@ export const TENANT_PURGE_SIMPLE_TABLES = [
   'egress_allowlist',
   'idea_box',
   'vault_bindings',
+  // Per-secret grantee list (migration 0090): which agents/scopes may receive a secret. Tenant data.
+  'vault_secret_acl',
   'token_usage',
   'fleet_blackboard_history',
   // Names the tenant's users (principal column): tenant data, not fleet-wide audit evidence.
