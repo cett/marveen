@@ -79,7 +79,7 @@ describe('PUT /api/skills/sql/:id creates a missing file-backed skill', () => {
     expect(out.body.skill).toMatchObject({ id: 'global/new-skill', name: 'new-skill', tenant_id: 'fleet' })
     expect(mockCreateSkill).toHaveBeenCalledWith(expect.objectContaining({
       id: 'global/new-skill', name: 'new-skill', description: 'does x', content: BODY.content, tenant_id: 'fleet', is_global: true,
-    }))
+    }), { kind: 'system', id: null })   // no authenticated principal in this context: the trail says so, it names nobody
     expect(mockRegen).toHaveBeenCalledWith('global/new-skill')
     expect(mockUpdateSkill).not.toHaveBeenCalled()
   })
@@ -88,7 +88,7 @@ describe('PUT /api/skills/sql/:id creates a missing file-backed skill', () => {
     const { ctx, out } = makeCtx('PUT', `/api/skills/sql/${enc('agent/zed/mine')}`, { ...BODY, description: 'explicit' })
     await tryHandleSkills(ctx)
     expect(out.status).toBe(201)
-    expect(mockCreateSkill).toHaveBeenCalledWith(expect.objectContaining({ id: 'agent/zed/mine', description: 'explicit', is_global: false }))
+    expect(mockCreateSkill).toHaveBeenCalledWith(expect.objectContaining({ id: 'agent/zed/mine', description: 'explicit', is_global: false }), { kind: 'system', id: null })
   })
 
   it('agent/<MAIN_AGENT_ID>/<dir> is accepted too', async () => {

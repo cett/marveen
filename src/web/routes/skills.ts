@@ -13,6 +13,7 @@ import { recordFleetSkillWriteDenied } from '../token-shadow.js'
 import { sanitizeSkillName, shellEscape } from '../sanitize.js'
 import { regenSingleSkillFile, removeGeneratedSkillFile, removeGeneratedCompanionFile, importCompanionFilesOfDir } from '../skill-regen.js'
 import { MAX_SKILL_FILE_BYTES, MAX_SKILL_FILES_PER_SKILL, normalizeSkillRelPath } from '../../skill-files.js'
+import { skillActorFromRoute } from '../skill-actor.js'
 import type { RouteContext } from './types.js'
 import {
   createSkill, getSkill, updateSkill, deleteSkill, seedSkillIfAbsent,
@@ -76,6 +77,8 @@ async function getSkillAgents(skillDirName: string): Promise<string[]> {
 
 export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
+  // Who is writing, for the skill_revisions trail: what the credential proves, never a claimed name.
+  const actor = skillActorFromRoute(ctx)
 
   if (path === '/api/skills' && method === 'GET') {
     type SkillEntry = {
@@ -404,7 +407,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
 
     const sqlId = `global/${skillName}`
     try {
-      await createSkill({ id: sqlId, name: skillName, description, content: skillMd, tenant_id: 'fleet', is_global: true })
+      await createSkill({ id: sqlId, name: skillName, description, content: skillMd, tenant_id: 'fleet', is_global: true }, actor)
     } catch {
       json(res, { error: 'conflict', hint: 'Skill already exists' }, 409)
       return true
@@ -502,9 +505,12 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
         const content = readFileOr(skillMdPath, '')
         const desc = parseFrontmatterField(content, 'description')
         try {
-          await seedSkillIfAbsent({ id: `global/${dirName}`, name: dirName, description: desc, content, tenant_id: 'fleet', is_global: true })
+          // An archive import is traced as an import (source: the skill directory name in the archive), by whoever sent it.
+          const importActor = { kind: 'import', id: actor.id } as const
+          const importSource = { sourceRef: `skill-archive:${dirName}` }
+          await seedSkillIfAbsent({ id: `global/${dirName}`, name: dirName, description: desc, content, tenant_id: 'fleet', is_global: true }, importActor, importSource)
           // scripts/, references/ ... of the archive belong in the DB too (skill_files).
-          await importCompanionFilesOfDir(`global/${dirName}`, join(skillsDir, dirName))
+          await importCompanionFilesOfDir(`global/${dirName}`, join(skillsDir, dirName), importActor, false, importSource)
         } catch (sqlErr) {
           logger.warn({ dirName, err: sqlErr }, 'Failed to upsert imported skill into SQL')
         }
@@ -558,8 +564,8 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
       const globalRow = await getSkill(`global/${skillName}`)
       if (globalRow) {
         const localId = `agent/${agentName}/${skillName}`
-        if (await getSkill(localId)) await updateSkill(localId, { content: globalRow.content, description: globalRow.description })
-        else await createSkill({ id: localId, name: skillName, description: globalRow.description, content: globalRow.content, tenant_id: 'fleet', is_global: false })
+        if (await getSkill(localId)) await updateSkill(localId, { content: globalRow.content, description: globalRow.description }, actor)
+        else await createSkill({ id: localId, name: skillName, description: globalRow.description, content: globalRow.content, tenant_id: 'fleet', is_global: false }, actor)
         await regenSingleSkillFile(localId, true)
       }
     }
@@ -569,7 +575,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
       const agentSkillDir = join(AGENTS_BASE_DIR, agentName, '.claude', 'skills', skillName)
       if (existsSync(agentSkillDir)) {
         rmSync(agentSkillDir, { recursive: true, force: true })
-        await deleteSkill(`agent/${agentName}/${skillName}`)
+        await deleteSkill(`agent/${agentName}/${skillName}`, actor)
       }
     }
 
@@ -608,9 +614,9 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
       const agentSqlId = `agent/${agentPutParam}/${skillName}`
       const agentDesc = parseFrontmatterField(content, 'description')
       if (await getSkill(agentSqlId)) {
-        await updateSkill(agentSqlId, { content, description: agentDesc })
+        await updateSkill(agentSqlId, { content, description: agentDesc }, actor)
       } else {
-        await createSkill({ id: agentSqlId, name: skillName, description: agentDesc, content, tenant_id: 'fleet', is_global: false })
+        await createSkill({ id: agentSqlId, name: skillName, description: agentDesc, content, tenant_id: 'fleet', is_global: false }, actor)
       }
       // DB-first: the row above is the source of truth, the file is generated
       // from it. forceEnabled: this is an explicit user edit of an existing
@@ -640,9 +646,9 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     const globalSqlId = `global/${skillName}`
     const globalDesc = parseFrontmatterField(content, 'description')
     if (await getSkill(globalSqlId)) {
-      await updateSkill(globalSqlId, { content, description: globalDesc })
+      await updateSkill(globalSqlId, { content, description: globalDesc }, actor)
     } else {
-      await createSkill({ id: globalSqlId, name: skillName, description: globalDesc, content, tenant_id: 'fleet', is_global: true })
+      await createSkill({ id: globalSqlId, name: skillName, description: globalDesc, content, tenant_id: 'fleet', is_global: true }, actor)
     }
     // DB-first (see the agent-local branch above): generate the file from the row.
     const globalRegen = await regenSingleSkillFile(globalSqlId, true)
@@ -716,7 +722,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 64)
     const id = `${tenantId}-${slug}`
     if (await getSkill(id)) { json(res, { error: 'conflict', hint: 'A skill with this name already exists for this tenant' }, 409); return true }
-    const row = await createSkill({ id, name: name.trim(), description: description ?? '', content, tenant_id: tenantId, is_global: is_global ?? false, created_by: ctx.auth?.kind === 'session' ? (ctx.auth.user ?? null) : null })
+    const row = await createSkill({ id, name: name.trim(), description: description ?? '', content, tenant_id: tenantId, is_global: is_global ?? false, created_by: ctx.auth?.kind === 'session' ? (ctx.auth.user ?? null) : null }, actor)
     // Phase 1 of the file->SQL-only migration: push this
     // write to disk immediately rather than waiting for the next startup
     // regen. No-op (skipped) for non-fleet skills and while SKILL_SQL_REGEN
@@ -763,7 +769,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
         id, name: createSpec.name, description: parsed.description ?? parseSkillDescription(parsed.content),
         content: parsed.content, tenant_id: 'fleet', is_global: createSpec.isGlobal,
         created_by: ctx.auth?.kind === 'session' ? (ctx.auth.user ?? null) : null,
-      })
+      }, actor)
       await regenSingleSkillFile(id)
       json(res, { ok: true, skill: row }, 201)
       return true
@@ -774,7 +780,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
       const fmDescription = parseSkillDescription(parsed.content)
       if (fmDescription) parsed = { ...parsed, description: fmDescription }
     }
-    const updated = await updateSkill(id, parsed)
+    const updated = await updateSkill(id, parsed, actor)
     await regenSingleSkillFile(id)
     json(res, { ok: true, skill: updated })
     return true
@@ -788,7 +794,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     if (!existing) { json(res, { error: 'not_found' }, 404); return true }
     if (!isAdmin && !fleetAgent && callerTenantId !== existing.tenant_id) { json(res, { error: 'not_found' }, 404); return true }
     const companionFiles = await listSkillFiles(id)   // read before the delete removes them
-    await deleteSkill(id)
+    await deleteSkill(id, actor)
     // The file is only a generated cache of the row: drop it too, or the loader
     // keeps serving a skill the DB no longer has (a hand-edited file is kept).
     await removeGeneratedSkillFile(id, existing.content, existing.tenant_id, companionFiles)
@@ -836,7 +842,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
       if (method === 'DELETE') {
         const f = await getSkillFile(id, rel)
         if (!f) { json(res, { error: 'not_found' }, 404); return true }
-        await deleteSkillFile(id, rel)
+        await deleteSkillFile(id, rel, actor)
         // Drop the generated copy too (only while it still equals the deleted row).
         await removeGeneratedCompanionFile(id, rel, f.content, skill.tenant_id)
         json(res, { ok: true })
@@ -859,7 +865,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
       if (parsed.mode !== undefined && (typeof parsed.mode !== 'number' || !Number.isInteger(parsed.mode))) { json(res, { error: 'invalid_value', field: 'mode', hint: 'mode must be an integer (permission bits)' }, 400); return true }
       const isNew = !await getSkillFile(id, rel)
       if (isNew && await countSkillFiles(id) >= MAX_SKILL_FILES_PER_SKILL) { json(res, { error: 'limit_exceeded', hint: `At most ${MAX_SKILL_FILES_PER_SKILL} companion files per skill` }, 400); return true }
-      const saved = await putSkillFile(id, rel, bytes, parsed.mode as number | undefined)
+      const saved = await putSkillFile(id, rel, bytes, parsed.mode as number | undefined, actor)
       const regen = await regenSingleSkillFile(id, true)   // an explicit write always reaches disk, like PUT /api/skills/:name
       if (regen.reason === 'write_error') { json(res, { error: 'internal_error', hint: 'Saved to the DB, but the on-disk copy could not be written' }, 500); return true }
       json(res, { ok: true, file: fileView(saved) }, isNew ? 201 : 200)

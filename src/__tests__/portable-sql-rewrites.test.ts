@@ -98,10 +98,10 @@ describe('file-fed seeds still skip a row the table would reject', () => {
 
   it('a skill without a name or content is skipped', async () => {
     const ok = { id: 'rw-skill', name: 'n', description: 'd', content: 'c', tenant_id: 'default', is_global: false }
-    expect(await seedSkillIfAbsent({ ...ok, id: 'rw-skill-1', name: undefined as never })).toBe(false)
-    expect(await seedSkillIfAbsent({ ...ok, id: 'rw-skill-2', content: undefined as never })).toBe(false)
-    expect(await seedSkillIfAbsent(ok)).toBe(true)
-    expect(await seedSkillIfAbsent(ok)).toBe(false)
+    expect(await seedSkillIfAbsent({ ...ok, id: 'rw-skill-1', name: undefined as never }, { kind: 'system', id: null })).toBe(false)
+    expect(await seedSkillIfAbsent({ ...ok, id: 'rw-skill-2', content: undefined as never }, { kind: 'system', id: null })).toBe(false)
+    expect(await seedSkillIfAbsent(ok, { kind: 'system', id: null })).toBe(true)
+    expect(await seedSkillIfAbsent(ok, { kind: 'system', id: null })).toBe(false)
   })
 })
 

@@ -31,7 +31,7 @@ import { logger } from '../logger.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { AGENTS_BASE_DIR, listAgentNames } from './agent-config.js'
 import { PROJECT_ROOT, MAIN_AGENT_ID, SKILL_SQL_REGEN, TENANT_SKILL_FILES } from '../config.js'
-import { listAllSkills, getSkill, listSkillAccess, getEnabledAgentsForTenant, getTenantsForAgent, listSkillFiles, seedSkillFileIfAbsent, type SkillRow, type SkillFileRow } from '../db.js'
+import { listAllSkills, getSkill, listSkillAccess, getEnabledAgentsForTenant, getTenantsForAgent, listSkillFiles, seedSkillFileIfAbsent, type SkillRow, type SkillFileRow, type SkillActor, type SkillWriteMeta } from '../db.js'
 import { MAX_SKILL_FILE_BYTES, MAX_SKILL_FILES_PER_SKILL, normalizeSkillRelPath, sanitizeSkillFileMode } from '../skill-files.js'
 import { addGeneratedHeader, stripGeneratedHeader, readGeneratedHeader } from '../skill-header.js'
 import { createKeyedSerializer } from './keyed-serializer.js'
@@ -444,7 +444,9 @@ export interface CompanionImportResult { seeded: number; skipped: number; errors
  * in `skillDir`. Insert-if-absent: a file the DB already has is never
  * overwritten. Symlinks, tool caches and over-limit files are not imported.
  */
-export async function importCompanionFilesOfDir(skillId: string, skillDir: string, dryRun = false): Promise<CompanionImportResult> {
+export async function importCompanionFilesOfDir(
+  skillId: string, skillDir: string, actor: SkillActor, dryRun = false, meta: SkillWriteMeta = {},
+): Promise<CompanionImportResult> {
   const out: CompanionImportResult = { seeded: 0, skipped: 0, errors: 0 }
   const found = walkCompanionFiles(skillDir)
   if (found.length > MAX_SKILL_FILES_PER_SKILL) {
@@ -463,7 +465,7 @@ export async function importCompanionFilesOfDir(skillId: string, skillDir: strin
         continue
       }
       if (dryRun) { out.seeded++; continue }
-      if (await seedSkillFileIfAbsent(skillId, rel, readFileSync(f.abs), st.mode)) out.seeded++
+      if (await seedSkillFileIfAbsent(skillId, rel, readFileSync(f.abs), st.mode, actor, meta)) out.seeded++
       else out.skipped++
     } catch (err) {
       logger.error({ err, id: skillId, rel }, 'skill-regen: companion file import failed')
@@ -489,7 +491,7 @@ export async function importSkillCompanionFilesFromDisk(dryRun = false): Promise
   for (const row of rows) {
     const skillMd = resolveSkillPath(row.id)
     if (!skillMd || !existsSync(skillMd)) continue
-    const r = await importCompanionFilesOfDir(row.id, dirOfSkillMd(skillMd), dryRun)
+    const r = await importCompanionFilesOfDir(row.id, dirOfSkillMd(skillMd), { kind: 'system', id: null }, dryRun, { sourceRef: 'boot-companion-import' })
     total.seeded += r.seeded
     total.skipped += r.skipped
     total.errors += r.errors

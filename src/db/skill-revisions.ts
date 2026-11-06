@@ -8,6 +8,7 @@
 // write behaves exactly as before and the trail is the addition.
 import { createHash } from 'node:crypto'
 import { dbx, type SqlOps } from './facade.js'
+import { writeAgentAuditLog } from './audit.js'
 import { logger } from '../logger.js'
 
 export type SkillRevisionAction = 'baseline' | 'create' | 'modify' | 'seed' | 'delete' | 'file_put' | 'file_delete' | 'file_seed'
@@ -29,13 +30,22 @@ export interface SkillRevisionSubject {
   content: string
 }
 
-export interface WriteSkillRevisionOpts {
+/** What a writer may add to the trail beyond who: where the change came from and why. Both optional. */
+export interface SkillWriteMeta {
+  /** A file name, an import id, 'skill-sync': never a secret, never an absolute path under a home. */
+  sourceRef?: string | null
+  reason?: string | null
+}
+
+export interface WriteSkillRevisionOpts extends SkillWriteMeta {
   skill: SkillRevisionSubject
   action: SkillRevisionAction
   actor: SkillActor
-  /** Where the change came from (a file name, an import id, 'skill-sync'): never a secret, never an absolute path under a home. */
-  sourceRef?: string | null
-  reason?: string | null
+  /**
+   * Write the row even when the text and the file set equal the latest revision's. For a change the hashes cannot show
+   * (the is_global flag): the caller names it in `reason`. Without it, an unchanged write is not recorded.
+   */
+  force?: boolean
 }
 
 export interface SkillRevisionRow {
@@ -113,7 +123,7 @@ export async function writeSkillRevision(tx: SqlOps, opts: WriteSkillRevisionOpt
   const latest = await tx.get<{ action: SkillRevisionAction; content_sha256: string | null; files_sha256: string | null }>(
     'SELECT action, content_sha256, files_sha256 FROM skill_revisions WHERE skill_id = ? ORDER BY seq DESC LIMIT 1', skill.id)
 
-  if (IDEMPOTENT_ACTIONS.has(action) && latest && latest.action !== 'delete'
+  if (!opts.force && IDEMPOTENT_ACTIONS.has(action) && latest && latest.action !== 'delete'
       && latest.content_sha256 === contentSha && latest.files_sha256 === filesSha) {
     return null
   }
@@ -127,7 +137,43 @@ export async function writeSkillRevision(tx: SqlOps, opts: WriteSkillRevisionOpt
     hasRunnableFiles(files) ? 1 : 0, CONTENT_ACTIONS.has(action) ? skill.content : null,
     actor.kind, actor.id, opts.sourceRef ?? null, opts.reason ?? null)
   // The row just written is the skill's highest seq in this transaction (no other writer can interleave on it).
-  return await tx.get<SkillRevisionRow>('SELECT * FROM skill_revisions WHERE skill_id = ? ORDER BY seq DESC LIMIT 1', skill.id) ?? null
+  const row = await tx.get<SkillRevisionRow>('SELECT * FROM skill_revisions WHERE skill_id = ? ORDER BY seq DESC LIMIT 1', skill.id) ?? null
+  if (row && row.action !== 'baseline') await auditSkillRevision(tx, row, row.action)
+  return row
+}
+
+const AUDIT_ACTION: Record<Exclude<SkillRevisionAction, 'baseline'>, 'create' | 'update' | 'delete'> = {
+  create: 'create', seed: 'create', modify: 'update', file_put: 'update', file_seed: 'update', file_delete: 'update', delete: 'delete',
+}
+
+/**
+ * The audit-log row of a revision, written in the same transaction. The detail names the revision and the first 12
+ * hex digits of the text hash: never the text itself (a skill can hold anything, the audit log is read more widely).
+ * The baseline is not audited: it records the state a skill already had, not a change.
+ */
+async function auditSkillRevision(tx: SqlOps, row: SkillRevisionRow, action: Exclude<SkillRevisionAction, 'baseline'>): Promise<void> {
+  await writeAgentAuditLog({
+    agent_id: row.author_id ?? row.author_kind,
+    entity: 'skill',
+    action: AUDIT_ACTION[action],
+    entity_id: row.skill_id,
+    detail: { seq: row.seq, action: row.action, author_kind: row.author_kind, content_sha256: row.content_sha256?.slice(0, 12) ?? null },
+    tenant_id: row.tenant_id,
+  }, tx)
+}
+
+/**
+ * Makes sure a skill that predates the trail has its baseline before the write that is about to change it, so the
+ * state before that write is on record whatever the boot backfill has or has not reached yet. Call it inside the
+ * transaction, BEFORE the write. A skill that is already traced, or does not exist, is left alone. Returns true when
+ * it wrote the baseline.
+ */
+export async function ensureSkillBaseline(tx: SqlOps, skillId: string): Promise<boolean> {
+  if (await tx.get('SELECT 1 FROM skill_revisions WHERE skill_id = ?', skillId)) return false
+  const skill = await tx.get<SkillRevisionSubject>('SELECT id, tenant_id, content FROM skills WHERE id = ?', skillId)
+  if (!skill) return false
+  await writeSkillRevision(tx, { skill, action: 'baseline', actor: { kind: 'system', id: 'baseline' } })
+  return true
 }
 
 export interface BaselineResult {
@@ -147,15 +193,8 @@ export async function backfillSkillBaselines(): Promise<BaselineResult> {
     'SELECT s.id, s.tenant_id FROM skills s WHERE NOT EXISTS (SELECT 1 FROM skill_revisions r WHERE r.skill_id = s.id) ORDER BY s.id')
   for (const { id } of missing) {
     try {
-      const wrote = await dbx.tx(async (tx) => {
-        // Re-read inside the transaction: the skill may have been written (and so already traced) since the listing.
-        const skill = await tx.get<SkillRevisionSubject>('SELECT id, tenant_id, content FROM skills WHERE id = ?', id)
-        if (!skill) return false
-        const has = await tx.get('SELECT 1 FROM skill_revisions WHERE skill_id = ?', id)
-        if (has) return false
-        await writeSkillRevision(tx, { skill, action: 'baseline', actor: { kind: 'system', id: 'baseline' } })
-        return true
-      })
+      // Re-checked inside the transaction: the skill may have been written (and so already traced) since the listing.
+      const wrote = await dbx.tx((tx) => ensureSkillBaseline(tx, id))
       if (wrote) out.written++
     } catch (err) {
       out.errors++

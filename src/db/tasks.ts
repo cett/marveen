@@ -5,6 +5,7 @@ import { AgentMessage } from './agents.js'
 import { db } from './connection.js'
 import { dbx } from './facade.js'
 import { likePrefix } from './like.js'
+import { ensureSkillBaseline, writeSkillRevision, type SkillActor, type SkillWriteMeta } from './skill-revisions.js'
 import { resolveWriteTenant } from './write-tenant.js'
 import { countScheduleRun } from '../otel-signals.js'
 import { stripGeneratedHeader } from '../skill-header.js'
@@ -507,16 +508,24 @@ export interface CreateSkillOpts {
   created_by?: string | null
 }
 
-export async function createSkill(opts: CreateSkillOpts): Promise<SkillRow> {
+// Every skill writer below takes the actor (who is writing) as a required parameter and records the write in
+// skill_revisions inside the same transaction as the write: the two commit or roll back together (see
+// db/skill-revisions.ts). A caller that forgets to say who writes does not compile.
+
+export async function createSkill(opts: CreateSkillOpts, actor: SkillActor, meta: SkillWriteMeta = {}): Promise<SkillRow> {
   opts = { ...opts, content: stripGeneratedHeader(opts.content) }
   const now = Math.floor(Date.now() / 1000)
-  await dbx.run(`
-    INSERT INTO skills (id, name, description, content, tenant_id, is_global, created_by, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `, opts.id, opts.name, opts.description ?? '', opts.content,
-    opts.tenant_id, opts.is_global ? 1 : 0, opts.created_by ?? null, now, now,
-  )
-  return await getSkill(opts.id) as SkillRow
+  return dbx.tx(async (tx) => {
+    await tx.run(`
+      INSERT INTO skills (id, name, description, content, tenant_id, is_global, created_by, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, opts.id, opts.name, opts.description ?? '', opts.content,
+      opts.tenant_id, opts.is_global ? 1 : 0, opts.created_by ?? null, now, now,
+    )
+    const row = await tx.get<SkillRow>('SELECT * FROM skills WHERE id = ?', opts.id) as SkillRow
+    await writeSkillRevision(tx, { skill: row, action: 'create', actor, ...meta })
+    return row
+  })
 }
 
 export async function getSkill(id: string): Promise<SkillRow | undefined> {
@@ -531,19 +540,33 @@ export async function agentHasEnabledAvailability(agentId: string, tenantIds: re
 }
 
 /** Write-back of an edited SKILL.md: sets the content of an existing skill row (the caller strips the generated header). */
-export async function setSkillContent(skillId: string, content: string, now: number): Promise<void> {
-  await dbx.run('UPDATE skills SET content = ?, updated_at = ? WHERE id = ?', content, now, skillId)
+export async function setSkillContent(skillId: string, content: string, now: number, actor: SkillActor, meta: SkillWriteMeta = {}): Promise<void> {
+  await dbx.tx(async (tx) => {
+    await ensureSkillBaseline(tx, skillId)
+    const changes = (await tx.run('UPDATE skills SET content = ?, updated_at = ? WHERE id = ?', content, now, skillId)).changes
+    if (changes === 0) return
+    const row = await tx.get<SkillRow>('SELECT * FROM skills WHERE id = ?', skillId) as SkillRow
+    await writeSkillRevision(tx, { skill: row, action: 'modify', actor, ...meta })
+  })
 }
 
 /** Write-back of a SKILL.md that has no row yet: creates it as a fleet skill (global/... ids are global). */
-export async function insertFleetSkillFromFile(skillId: string, name: string, content: string, isGlobal: boolean, now: number): Promise<void> {
-  await dbx.run(`
-    INSERT INTO skills (id, name, description, content, tenant_id, is_global, created_by, created_at, updated_at)
-    VALUES (?, ?, '', ?, 'fleet', ?, NULL, ?, ?)
-  `, skillId, name, content, isGlobal ? 1 : 0, now, now)
+export async function insertFleetSkillFromFile(
+  skillId: string, name: string, content: string, isGlobal: boolean, now: number, actor: SkillActor, meta: SkillWriteMeta = {},
+): Promise<void> {
+  await dbx.tx(async (tx) => {
+    await tx.run(`
+      INSERT INTO skills (id, name, description, content, tenant_id, is_global, created_by, created_at, updated_at)
+      VALUES (?, ?, '', ?, 'fleet', ?, NULL, ?, ?)
+    `, skillId, name, content, isGlobal ? 1 : 0, now, now)
+    const row = await tx.get<SkillRow>('SELECT * FROM skills WHERE id = ?', skillId) as SkillRow
+    await writeSkillRevision(tx, { skill: row, action: 'create', actor, ...meta })
+  })
 }
 
-export async function updateSkill(id: string, patch: { name?: string; description?: string; content?: string; is_global?: boolean }): Promise<SkillRow | undefined> {
+export async function updateSkill(
+  id: string, patch: { name?: string; description?: string; content?: string; is_global?: boolean }, actor: SkillActor, meta: SkillWriteMeta = {},
+): Promise<SkillRow | undefined> {
   const now = Math.floor(Date.now() / 1000)
   const sets: string[] = ['updated_at = ?']
   const vals: unknown[] = [now]
@@ -552,13 +575,35 @@ export async function updateSkill(id: string, patch: { name?: string; descriptio
   if (patch.content !== undefined)     { sets.push('content = ?');     vals.push(stripGeneratedHeader(patch.content)) }
   if (patch.is_global !== undefined)   { sets.push('is_global = ?');   vals.push(patch.is_global ? 1 : 0) }
   vals.push(id)
-  const changes = (await dbx.run(`UPDATE skills SET ${sets.join(', ')} WHERE id = ?`, ...vals)).changes
-  return changes > 0 ? await getSkill(id) : undefined
+  return dbx.tx(async (tx) => {
+    await ensureSkillBaseline(tx, id)
+    const before = await tx.get<{ is_global: number }>('SELECT is_global FROM skills WHERE id = ?', id)
+    const changes = (await tx.run(`UPDATE skills SET ${sets.join(', ')} WHERE id = ?`, ...vals)).changes
+    if (changes === 0) return undefined
+    const row = await tx.get<SkillRow>('SELECT * FROM skills WHERE id = ?', id) as SkillRow
+    // A patch that leaves the text and the companion files as they were (a rename, a description) writes no row, with
+    // one exception: the is_global flag decides who receives the skill, so a real flip is recorded even when the
+    // hashes did not move (forced), with the direction in the reason. Setting it to the value it already has is not a flip.
+    const flipped = before !== undefined && patch.is_global !== undefined && before.is_global !== row.is_global
+    const flipReason = flipped ? `is_global:${before.is_global}->${row.is_global}` : null
+    await writeSkillRevision(tx, {
+      skill: row, action: 'modify', actor, ...meta,
+      reason: flipReason && meta.reason ? `${meta.reason}; ${flipReason}` : (flipReason ?? meta.reason),
+      force: flipped,
+    })
+    return row
+  })
 }
 
-export async function deleteSkill(id: string): Promise<boolean> {
-  await dbx.run('DELETE FROM skill_files WHERE skill_id = ?', id)
-  return (await dbx.run('DELETE FROM skills WHERE id = ?', id)).changes > 0
+export async function deleteSkill(id: string, actor: SkillActor, meta: SkillWriteMeta = {}): Promise<boolean> {
+  return dbx.tx(async (tx) => {
+    // The delete row keeps the last text and the file-set hash, so it is written while both still exist.
+    await ensureSkillBaseline(tx, id)
+    const skill = await tx.get<SkillRow>('SELECT * FROM skills WHERE id = ?', id)
+    if (skill) await writeSkillRevision(tx, { skill, action: 'delete', actor, ...meta })
+    await tx.run('DELETE FROM skill_files WHERE skill_id = ?', id)
+    return (await tx.run('DELETE FROM skills WHERE id = ?', id)).changes > 0
+  })
 }
 
 // --- skill companion files (migration 0063, rules in src/skill-files.ts) ---
@@ -581,28 +626,53 @@ export async function getSkillFile(skillId: string, relPath: string): Promise<Sk
 }
 
 /** Upsert one companion file. The caller has normalized rel_path and checked the size. */
-export async function putSkillFile(skillId: string, relPath: string, content: Buffer, mode?: number): Promise<SkillFileRow> {
+export async function putSkillFile(
+  skillId: string, relPath: string, content: Buffer, mode: number | undefined, actor: SkillActor, meta: SkillWriteMeta = {},
+): Promise<SkillFileRow> {
   const now = Math.floor(Date.now() / 1000)
-  await dbx.run(`
-    INSERT INTO skill_files (skill_id, rel_path, content, mode, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?)
-    ON CONFLICT(skill_id, rel_path) DO UPDATE SET content = excluded.content, mode = excluded.mode, updated_at = excluded.updated_at
-  `, skillId, relPath, content, sanitizeSkillFileMode(mode), now, now)
-  return await getSkillFile(skillId, relPath) as SkillFileRow
+  return dbx.tx(async (tx) => {
+    await ensureSkillBaseline(tx, skillId)
+    await tx.run(`
+      INSERT INTO skill_files (skill_id, rel_path, content, mode, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(skill_id, rel_path) DO UPDATE SET content = excluded.content, mode = excluded.mode, updated_at = excluded.updated_at
+    `, skillId, relPath, content, sanitizeSkillFileMode(mode), now, now)
+    const skill = await tx.get<SkillRow>('SELECT * FROM skills WHERE id = ?', skillId)
+    if (skill) await writeSkillRevision(tx, { skill, action: 'file_put', actor, ...meta })
+    return await tx.get<SkillFileRow>('SELECT * FROM skill_files WHERE skill_id = ? AND rel_path = ?', skillId, relPath) as SkillFileRow
+  })
 }
 
 /** Insert only when the (skill, path) pair is absent: never overwrites the DB. Returns true when inserted. */
-export async function seedSkillFileIfAbsent(skillId: string, relPath: string, content: Buffer, mode?: number): Promise<boolean> {
+export async function seedSkillFileIfAbsent(
+  skillId: string, relPath: string, content: Buffer, mode: number | undefined, actor: SkillActor, meta: SkillWriteMeta = {},
+): Promise<boolean> {
   const now = Math.floor(Date.now() / 1000)
-  return (await dbx.run(`
-    INSERT INTO skill_files (skill_id, rel_path, content, mode, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?)
-    ON CONFLICT DO NOTHING
-  `, skillId, relPath, content, sanitizeSkillFileMode(mode), now, now)).changes > 0
+  return dbx.tx(async (tx) => {
+    await ensureSkillBaseline(tx, skillId)
+    const inserted = (await tx.run(`
+      INSERT INTO skill_files (skill_id, rel_path, content, mode, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT DO NOTHING
+    `, skillId, relPath, content, sanitizeSkillFileMode(mode), now, now)).changes > 0
+    if (inserted) {
+      const skill = await tx.get<SkillRow>('SELECT * FROM skills WHERE id = ?', skillId)
+      if (skill) await writeSkillRevision(tx, { skill, action: 'file_seed', actor, ...meta })
+    }
+    return inserted
+  })
 }
 
-export async function deleteSkillFile(skillId: string, relPath: string): Promise<boolean> {
-  return (await dbx.run('DELETE FROM skill_files WHERE skill_id = ? AND rel_path = ?', skillId, relPath)).changes > 0
+export async function deleteSkillFile(skillId: string, relPath: string, actor: SkillActor, meta: SkillWriteMeta = {}): Promise<boolean> {
+  return dbx.tx(async (tx) => {
+    await ensureSkillBaseline(tx, skillId)
+    const deleted = (await tx.run('DELETE FROM skill_files WHERE skill_id = ? AND rel_path = ?', skillId, relPath)).changes > 0
+    if (deleted) {
+      const skill = await tx.get<SkillRow>('SELECT * FROM skills WHERE id = ?', skillId)
+      if (skill) await writeSkillRevision(tx, { skill, action: 'file_delete', actor, ...meta })
+    }
+    return deleted
+  })
 }
 
 export async function countSkillFiles(skillId: string): Promise<number> {
@@ -668,17 +738,23 @@ export async function seedSkillIfAbsent(opts: {
   tenant_id: string
   is_global: boolean
   created_at?: number
-}): Promise<boolean> {
+}, actor: SkillActor, meta: SkillWriteMeta = {}): Promise<boolean> {
   // File-derived input: a row the table would reject (NOT NULL name/content/tenant_id)
   // is skipped, since ON CONFLICT DO NOTHING only absorbs key conflicts.
   if (opts.name == null || opts.content == null || opts.tenant_id == null) return false
   const now = opts.created_at ?? Math.floor(Date.now() / 1000)
-  const result = await dbx.run(`
-    INSERT INTO skills (id, name, description, content, tenant_id, is_global, created_by, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)
-    ON CONFLICT DO NOTHING
-  `, opts.id, opts.name, opts.description, stripGeneratedHeader(opts.content), opts.tenant_id, opts.is_global ? 1 : 0, now, now)
-  return result.changes > 0
+  return dbx.tx(async (tx) => {
+    const result = await tx.run(`
+      INSERT INTO skills (id, name, description, content, tenant_id, is_global, created_by, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)
+      ON CONFLICT DO NOTHING
+    `, opts.id, opts.name, opts.description, stripGeneratedHeader(opts.content), opts.tenant_id, opts.is_global ? 1 : 0, now, now)
+    // Only a row that was really inserted is a change; an existing skill is left alone and writes no trail.
+    if (result.changes === 0) return false
+    const row = await tx.get<SkillRow>('SELECT * FROM skills WHERE id = ?', opts.id) as SkillRow
+    await writeSkillRevision(tx, { skill: row, action: 'seed', actor, ...meta })
+    return true
+  })
 }
 
 export async function countSkills(): Promise<number> {

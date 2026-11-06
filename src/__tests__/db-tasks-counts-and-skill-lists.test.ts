@@ -75,18 +75,18 @@ describe('countSkills', () => {
   })
 
   it('counts every row regardless of tenant or global flag', async () => {
-    await createSkill({ id: 's1', name: 'One', content: 'x', tenant_id: 'tenant-a' })
-    await createSkill({ id: 's2', name: 'Two', content: 'x', tenant_id: 'fleet', is_global: true })
+    await createSkill({ id: 's1', name: 'One', content: 'x', tenant_id: 'tenant-a' }, { kind: 'system', id: null })
+    await createSkill({ id: 's2', name: 'Two', content: 'x', tenant_id: 'fleet', is_global: true }, { kind: 'system', id: null })
     expect(await countSkills()).toBe(2)
   })
 })
 
 describe('listAgentOwnedSkills', () => {
   it('returns only skills whose id is prefixed agent/<agentId>/, ordered by name', async () => {
-    await createSkill({ id: 'agent/agent-a/zeta', name: 'Zeta', content: 'x', tenant_id: 'tenant-a' })
-    await createSkill({ id: 'agent/agent-a/alpha', name: 'Alpha', content: 'x', tenant_id: 'tenant-a' })
-    await createSkill({ id: 'agent/agent-b/other', name: 'Other', content: 'x', tenant_id: 'tenant-b' })
-    await createSkill({ id: 'global-skill', name: 'Global', content: 'x', tenant_id: 'fleet', is_global: true })
+    await createSkill({ id: 'agent/agent-a/zeta', name: 'Zeta', content: 'x', tenant_id: 'tenant-a' }, { kind: 'system', id: null })
+    await createSkill({ id: 'agent/agent-a/alpha', name: 'Alpha', content: 'x', tenant_id: 'tenant-a' }, { kind: 'system', id: null })
+    await createSkill({ id: 'agent/agent-b/other', name: 'Other', content: 'x', tenant_id: 'tenant-b' }, { kind: 'system', id: null })
+    await createSkill({ id: 'global-skill', name: 'Global', content: 'x', tenant_id: 'fleet', is_global: true }, { kind: 'system', id: null })
 
     const rows = await listAgentOwnedSkills('agent-a')
     expect(rows.map((r) => r.id)).toEqual(['agent/agent-a/alpha', 'agent/agent-a/zeta'])
@@ -94,7 +94,7 @@ describe('listAgentOwnedSkills', () => {
 
   it('a prefix must match a FULL path segment, not just a string prefix', async () => {
     // agent-a's prefix must not accidentally match agent-ab's skills.
-    await createSkill({ id: 'agent/agent-ab/x', name: 'X', content: 'x', tenant_id: 'tenant-a' })
+    await createSkill({ id: 'agent/agent-ab/x', name: 'X', content: 'x', tenant_id: 'tenant-a' }, { kind: 'system', id: null })
     const rows = await listAgentOwnedSkills('agent-a')
     expect(rows).toHaveLength(0)
   })
@@ -106,18 +106,18 @@ describe('listAgentOwnedSkills', () => {
 
 describe('listGlobalFleetSkills', () => {
   it('returns only is_global=1 skills scoped to the fleet tenant', async () => {
-    await createSkill({ id: 'g1', name: 'Fleet A', content: 'x', tenant_id: 'fleet', is_global: true })
-    await createSkill({ id: 'g2', name: 'Fleet B', content: 'x', tenant_id: 'fleet', is_global: true })
-    await createSkill({ id: 'tenant-only', name: 'Tenant', content: 'x', tenant_id: 'tenant-a', is_global: false })
+    await createSkill({ id: 'g1', name: 'Fleet A', content: 'x', tenant_id: 'fleet', is_global: true }, { kind: 'system', id: null })
+    await createSkill({ id: 'g2', name: 'Fleet B', content: 'x', tenant_id: 'fleet', is_global: true }, { kind: 'system', id: null })
+    await createSkill({ id: 'tenant-only', name: 'Tenant', content: 'x', tenant_id: 'tenant-a', is_global: false }, { kind: 'system', id: null })
     // is_global=1 but NOT tenant_id='fleet': must not qualify.
-    await createSkill({ id: 'stray-global', name: 'Stray', content: 'x', tenant_id: 'tenant-b', is_global: true })
+    await createSkill({ id: 'stray-global', name: 'Stray', content: 'x', tenant_id: 'tenant-b', is_global: true }, { kind: 'system', id: null })
 
     const rows = await listGlobalFleetSkills()
     expect(rows.map((r) => r.id).sort()).toEqual(['g1', 'g2'])
   })
 
   it('returns an empty array when no fleet-global skills exist', async () => {
-    await createSkill({ id: 'tenant-only', name: 'Tenant', content: 'x', tenant_id: 'tenant-a' })
+    await createSkill({ id: 'tenant-only', name: 'Tenant', content: 'x', tenant_id: 'tenant-a' }, { kind: 'system', id: null })
     expect(await listGlobalFleetSkills()).toEqual([])
   })
 })

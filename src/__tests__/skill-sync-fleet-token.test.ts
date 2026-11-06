@@ -67,9 +67,9 @@ beforeEach(async () => {
     await insertApiToken({ tokenHash: sha(`tok-${agent}`), name: `fleet:${agent}`, role: 'fleet_agent', tenantId: 'default', createdAt: NOW() - 10, expiresAt: null, agentId: agent })
   }
   await insertApiToken({ tokenHash: sha('tok-admin'), name: 'operator', role: 'admin', tenantId: 'default', createdAt: NOW() - 10, expiresAt: null, agentId: null })
-  await createSkill({ id: 'agent/alpha/mine', name: 'mine', content: 'old', tenant_id: 'fleet' })
-  await createSkill({ id: 'agent/beta/theirs', name: 'theirs', content: 'old', tenant_id: 'fleet' })
-  await createSkill({ id: 'global/shared', name: 'shared', content: 'old', tenant_id: 'fleet', is_global: true })
+  await createSkill({ id: 'agent/alpha/mine', name: 'mine', content: 'old', tenant_id: 'fleet' }, { kind: 'system', id: null })
+  await createSkill({ id: 'agent/beta/theirs', name: 'theirs', content: 'old', tenant_id: 'fleet' }, { kind: 'system', id: null })
+  await createSkill({ id: 'global/shared', name: 'shared', content: 'old', tenant_id: 'fleet', is_global: true }, { kind: 'system', id: null })
 })
 
 describe('the endpoint table', () => {
@@ -148,7 +148,7 @@ describe('and nothing else: another agent\'s skill, a global one, a tenant one s
 
   it('a generated tenant copy: the tenant row stays as it was, even for an agent that qualifies for the tenant', async () => {
     await createTenant('co-x', 'Co X')
-    await createSkill({ id: 'co-x-helper', name: 'helper', content: 'old', tenant_id: 'co-x' })
+    await createSkill({ id: 'co-x-helper', name: 'helper', content: 'old', tenant_id: 'co-x' }, { kind: 'system', id: null })
     await setTenantAgentAvailability('co-x', 'alpha', true)
     const r = await callAs(await tokenAuth('tok-alpha'), { kind: 'tenant', header_id: 'co-x-helper', agent_id: 'alpha', dir_name: 'co-x-helper', content: 'evil' })
     expect(r.status).toBe(403)

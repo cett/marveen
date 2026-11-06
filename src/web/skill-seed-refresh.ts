@@ -22,6 +22,10 @@ import { resolveSkillPath } from './skill-regen.js'
 
 export const SEED_REFRESH_MARKER = '.seed-refreshed-skills'
 
+// The boot-time refresh writes as the system, not as a person or an agent.
+const SEED_REFRESH_ACTOR = { kind: 'system', id: null } as const
+const SEED_REFRESH_SOURCE = { sourceRef: 'seed-refresh' } as const
+
 const SAFE_NAME = /^[A-Za-z0-9._-]+$/
 
 export interface SeedRefreshResult {
@@ -59,12 +63,12 @@ export async function applySeedSkillRefreshMarker(markerPath = join(STORE_DIR, S
       const description = frontmatterField(content, 'description')
       const row = await getSkill(id)
       if (!row) {
-        await seedSkillIfAbsent({ id, name, description, content, tenant_id: 'fleet', is_global: true })
+        await seedSkillIfAbsent({ id, name, description, content, tenant_id: 'fleet', is_global: true }, SEED_REFRESH_ACTOR, SEED_REFRESH_SOURCE)
         out.applied++
       } else if (row.content === content && row.description === description) {
         out.unchanged++
       } else {
-        await updateSkill(id, { description, content })
+        await updateSkill(id, { description, content }, SEED_REFRESH_ACTOR, SEED_REFRESH_SOURCE)
         out.applied++
       }
     } catch (err) {

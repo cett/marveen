@@ -1794,7 +1794,7 @@ async function runImportFleet(
 
       // The SQL side of the skill files staged above. A failure is the import's failure (it used to be logged and
       // swallowed, which let a file and its row drift apart).
-      for (const seed of skillSeeds) await seedSkillIfAbsent(seed)
+      for (const seed of skillSeeds) await seedSkillIfAbsent(seed, { kind: 'import', id: null }, { sourceRef: 'fleet-transfer' })
 
       // The row-level policy (required fields, enums, forced values) lives here; the SQL itself is in
       // db/fleet-transfer.ts.
