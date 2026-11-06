@@ -19,7 +19,7 @@ import { listSecrets, setSecret, getSecret, deleteSecret, findSecretTenant } fro
 import { logVaultRead, isSshPrivateKeyId, principalOf } from '../vault-acl.js'
 import {
   getBindings, addBinding, removeBinding, removeBindingsForSecret, removeSecretAcl,
-  getSecretAcl, setSecretAcl, partitionTargetsByAcl,
+  getSecretAcl, setSecretAcl, getAllSecretAcls, partitionTargetsByAcl,
   syncSecret, syncAllBindings, scanMcpConfigs, unsyncBinding,
 } from '../vault-bindings.js'
 import { parseAllowList } from '../vault-grantees.js'
@@ -711,7 +711,11 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     // (/api/vault/ssh-keys) and must not appear as generic secret cards too.
     const all = listSecrets().filter(s => !s.id.startsWith('ssh-key-'))
     const scoped = vaultIsAdmin && vaultTenantParam === null ? all : all.filter(s => s.tenant_id === vaultEffectiveTenantId)
-    json(res, { secrets: scoped })
+    // Each secret also carries its grantee list (`allow`, empty = open). The list is kept under the default
+    // tenant, so a secret of another tenant always reads as open here (it has no list; the same id in the
+    // default tenant must not lend its list to it). The existing fields are untouched.
+    const acls = await getAllSecretAcls()
+    json(res, { secrets: scoped.map(s => ({ ...s, allow: s.tenant_id === 'default' ? (acls[s.id] ?? []) : [] })) })
     return true
   }
 

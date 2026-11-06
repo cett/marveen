@@ -113,6 +113,7 @@ vi.mock('../web/vault-bindings.js', () => ({
   removeSecretAcl: vi.fn().mockResolvedValue(undefined),
   getSecretAcl: vi.fn().mockResolvedValue([]),
   setSecretAcl: vi.fn().mockResolvedValue(undefined),
+  getAllSecretAcls: vi.fn().mockResolvedValue({}),
   partitionTargetsByAcl: vi.fn((acl: string[], targets: Array<{ mcpFilePath: string, serverName: string }>) => fakePartition(acl, targets)),
   syncSecret: vi.fn().mockResolvedValue({ updated: 0, errors: [] }),
   syncAllBindings: vi.fn().mockResolvedValue({ updated: 0, errors: [] }),
@@ -139,7 +140,7 @@ import {
   listSecrets, setSecret, getSecret, deleteSecret, findSecretTenant,
 } from '../web/vault.js'
 import {
-  getBindings, addBinding, removeBinding, removeSecretAcl, getSecretAcl, setSecretAcl, syncSecret, syncAllBindings, scanMcpConfigs,
+  getBindings, addBinding, removeBinding, removeSecretAcl, getSecretAcl, setSecretAcl, getAllSecretAcls, syncSecret, syncAllBindings, scanMcpConfigs,
 } from '../web/vault-bindings.js'
 import { getMcpListCache, refreshMcpListCache, purgeFromMcpListCache } from '../web/mcp-list.js'
 
@@ -194,6 +195,7 @@ beforeEach(() => {
   vi.mocked(getBindings).mockResolvedValue([])
   vi.mocked(removeBinding).mockResolvedValue(true)
   vi.mocked(getSecretAcl).mockResolvedValue([])
+  vi.mocked(getAllSecretAcls).mockResolvedValue({})
   vi.mocked(syncSecret).mockResolvedValue({ updated: 0, errors: [] })
   vi.mocked(syncAllBindings).mockResolvedValue({ updated: 0, errors: [] })
   vi.mocked(scanMcpConfigs).mockReturnValue([])
@@ -657,6 +659,50 @@ describe('GET /api/vault', () => {
     const { ctx, out } = makeCtx('GET', '/api/vault', null, { role: 'admin' })
     await tryHandleConnectors(ctx)
     expect((out.body.secrets as Array<{ id: string }>).map(s => s.id)).toEqual(['a', 'b'])
+  })
+
+  // Each secret carries its grantee list as `allow` (empty = open); the fields it had stay exactly as they were.
+  it('adds `allow` to every secret: the listed grantees for a restricted one, [] for an open one, the other fields unchanged', async () => {
+    const restricted = { id: 'restricted', label: 'R', tenant_id: 'default', createdAt: '2026-01-01', updatedAt: '2026-01-02' }
+    const open = { id: 'open', label: 'O', tenant_id: 'default', createdAt: '2026-01-03', updatedAt: '2026-01-04' }
+    vi.mocked(listSecrets).mockReturnValue([restricted, open])
+    vi.mocked(getAllSecretAcls).mockResolvedValue({ restricted: ['agent:agent-a', 'scope:user'] })
+    const { ctx, out } = makeCtx('GET', '/api/vault', null, { role: 'admin' })
+    await tryHandleConnectors(ctx)
+    expect(out.status).toBe(200)
+    expect(out.body).toEqual({
+      secrets: [
+        { ...restricted, allow: ['agent:agent-a', 'scope:user'] },
+        { ...open, allow: [] },
+      ],
+    })
+  })
+
+  it('a secret of another tenant reads as open even when the default tenant has a list for the same id', async () => {
+    vi.mocked(listSecrets).mockReturnValue([
+      { id: 'shared-id', label: 'x', tenant_id: 'default', createdAt: '', updatedAt: '' },
+      { id: 'shared-id', label: 'y', tenant_id: 'tenant-x', createdAt: '', updatedAt: '' },
+    ])
+    vi.mocked(getAllSecretAcls).mockResolvedValue({ 'shared-id': ['agent:agent-a'] })
+    const { ctx, out } = makeCtx('GET', '/api/vault', null, { role: 'admin' })
+    await tryHandleConnectors(ctx)
+    const rows = out.body.secrets as Array<{ tenant_id: string, allow: string[] }>
+    expect(rows.map(r => [r.tenant_id, r.allow])).toEqual([['default', ['agent:agent-a']], ['tenant-x', []]])
+  })
+
+  it('an ssh-key entry stays hidden and never asks for or shows a list', async () => {
+    vi.mocked(listSecrets).mockReturnValue([{ id: 'ssh-key-foo', label: 'x', tenant_id: 'default', createdAt: '', updatedAt: '' }])
+    vi.mocked(getAllSecretAcls).mockResolvedValue({ 'ssh-key-foo': ['scope:user'] })
+    const { ctx, out } = makeCtx('GET', '/api/vault', null, { role: 'admin' })
+    await tryHandleConnectors(ctx)
+    expect(out.body).toEqual({ secrets: [] })
+  })
+
+  it('an empty vault is an empty list (the list read does not break it)', async () => {
+    vi.mocked(listSecrets).mockReturnValue([])
+    const { ctx, out } = makeCtx('GET', '/api/vault', null, { role: 'admin' })
+    await tryHandleConnectors(ctx)
+    expect(out.body).toEqual({ secrets: [] })
   })
 })
 
