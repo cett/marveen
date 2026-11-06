@@ -4,14 +4,16 @@
 Every case builds a throwaway git repository in a temp dir, with commit dates
 pinned through GIT_AUTHOR_DATE / GIT_COMMITTER_DATE (including HEAD's), so the
 age arithmetic is deterministic and never depends on the wall clock. The dates
-are in 2020 on purpose: a gate that read the wall clock instead of HEAD's
-commit date would see an enormous age and fail the "fresh" cases.
+are in 2020 on purpose: a gate that read the runner's clock instead of HEAD's
+commit date would see an enormous age and fail the "fresh" cases. (In CI,
+HEAD is the pull request merge ref, whose commit date is its creation time.)
 
 The script under test can be swapped with README_FORK_DIFF_CHECK_SCRIPT, which
 is how the mutation sweep points this suite at a mutated copy.
 """
 import datetime
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -56,18 +58,20 @@ class Fixture:
         self.readme = os.path.join(self.dir.name, "README.md")
         self.git("init", "-q", "-b", "main")
 
-    def git(self, *args, date=None, cwd=None):
+    def git(self, *args, date=None, cwd=None, author_date=None):
         env = dict(GIT_ENV)
         if date is not None:
             env["GIT_AUTHOR_DATE"] = env["GIT_COMMITTER_DATE"] = iso(date)
+        if author_date is not None:
+            env["GIT_AUTHOR_DATE"] = iso(author_date)
         proc = subprocess.run(
             ["git"] + list(args), cwd=cwd or self.repo, env=env,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True,
         )
         return proc.stdout.decode().strip()
 
-    def commit(self, date, message="c"):
-        self.git("commit", "-q", "--allow-empty", "-m", message, date=date)
+    def commit(self, date, message="c", author_date=None):
+        self.git("commit", "-q", "--allow-empty", "-m", message, date=date, author_date=author_date)
         return self.git("rev-parse", "HEAD")
 
     def write_readme(self, data):
@@ -76,9 +80,9 @@ class Fixture:
         with open(self.readme, "wb") as handle:
             handle.write(data)
 
-    def run(self, extra=None, repo=None, readme=None):
+    def run(self, extra=None, repo=None, readme=None, env=None):
         cmd = [sys.executable, SCRIPT, "--readme", readme or self.readme, "--repo", repo or self.repo]
-        proc = subprocess.run(cmd + (extra or []), env=GIT_ENV, stdout=subprocess.PIPE,
+        proc = subprocess.run(cmd + (extra or []), env=env or GIT_ENV, stdout=subprocess.PIPE,
                               stderr=subprocess.PIPE, timeout=60)
         return proc.returncode, proc.stdout.decode(), proc.stderr.decode()
 
@@ -174,6 +178,83 @@ class TestAge(Base):
         fx = self.fixture(-1)  # HEAD one day before the fork commit's date
         self.passing(fx)
         self.assertPass(fx.run())
+
+
+class TestWarningWording(Base):
+    def warning_text(self, age):
+        fx = self.fixture(age)
+        self.passing(fx)
+        out = self.assertPass(fx.run(), warning=True)
+        return "\n".join(l for l in out.split("\n") if l.startswith("::warning"))
+
+    def test_day_twenty_one_says_refresh_today(self):
+        text = self.warning_text(FAIL_DAYS)
+        self.assertIn("refresh it today, it fails after 21 days", text)
+        self.assertNotIn("within 0 days", text)
+        self.assertNotIn("within", text)
+
+    def test_day_twenty_says_within_one_day(self):
+        text = self.warning_text(FAIL_DAYS - 1)
+        self.assertIn("refresh it within 1 day, it fails after 21 days", text)
+        self.assertNotIn("within 1 days", text)
+
+    def test_day_nineteen_says_within_two_days(self):
+        self.assertIn("refresh it within 2 days, it fails after 21 days", self.warning_text(FAIL_DAYS - 2))
+
+    def test_day_eleven_says_within_ten_days(self):
+        self.assertIn("refresh it within 10 days, it fails after 21 days", self.warning_text(WARN_DAYS + 1))
+
+
+class TestOutputShape(Base):
+    def test_emit_order_is_info_then_warning_then_error(self):
+        fx = Fixture(self)
+        fx.commit(FORK_DATE - datetime.timedelta(days=2), "base")
+        fork = fx.commit(FORK_DATE, "fork")
+        fx.git("checkout", "-q", "-b", "feat")
+        fx.commit(FORK_DATE, "feat work")
+        fx.git("checkout", "-q", "main")
+        fx.commit(FORK_DATE, "main work")
+        fx.git("merge", "-q", "--no-ff", "-m", "Merge pull request #1 from a/feat", "feat",
+               date=FORK_DATE + datetime.timedelta(days=14))
+        # status date = fork date + 2 days: G3 error; age = 14 - 2 = 12 days: G4 warning; info line present
+        self.passing(fx, text=readme_text(fork[:8], (FORK_DATE + datetime.timedelta(days=2)).isoformat()))
+        rc, out, _ = fx.run()
+        self.assertEqual(rc, 1)
+        info, warning, error = (out.find(s) for s in ("pull request merges since", "::warning", "::error"))
+        self.assertTrue(0 <= info < warning < error, out)
+
+    def test_the_age_error_is_still_shown_next_to_another_error(self):
+        fx = self.fixture(FAIL_DAYS + 9)  # HEAD 30 days after the fork commit
+        self.passing(fx, text=readme_text(fx.short, (FORK_DATE + datetime.timedelta(days=2)).isoformat()))
+        rc, out, _ = fx.run()  # status date +2 days: G3 error; age 28 days: G4 error too
+        self.assertEqual(rc, 1)
+        self.assertIn("G3: ", out)
+        self.assertIn("G4: ", out)
+
+    def test_malformed_line_list_is_capped_at_ten_numbers(self):
+        fx = self.fixture()
+        count = 100000
+        fx.write_readme("\n".join("Állapot:" for _ in range(count)) + "\n")  # ~1 MB, under the size cap
+        rc, out, _ = fx.run()
+        self.assertEqual(rc, 1)
+        self.assertLess(len(out), 2048)
+        self.assertIn("README line(s) 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 and %d more start with" % (count - 10), out)
+        self.assertNotIn("11,", out)
+
+    def test_malformed_line_list_of_exactly_ten_has_no_more_suffix(self):
+        fx = self.fixture()
+        fx.write_readme("\n".join("Állapot: x" for _ in range(10)) + "\n")
+        rc, out, _ = fx.run()
+        self.assertEqual(rc, 1)
+        self.assertIn("README line(s) 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 start with", out)
+        self.assertNotIn("more", out)
+
+    def test_malformed_line_list_of_eleven_says_one_more(self):
+        fx = self.fixture()
+        fx.write_readme("\n".join("Állapot: x" for _ in range(11)) + "\n")
+        rc, out, _ = fx.run()
+        self.assertEqual(rc, 1)
+        self.assertIn("1, 2, 3, 4, 5, 6, 7, 8, 9, 10 and 1 more start with", out)
 
 
 class TestStatusLines(Base):
@@ -321,6 +402,91 @@ class TestStatusLines(Base):
         rc, out, _ = fx.run()  # the subprocess timeout (60 s) is the linearity bound
         self.assertEqual(rc, 1)
         self.assertIn("G1", out)
+
+
+class TestStrictness(Base):
+    """The strict-shape promise: nothing after the date, 6-digit upstream SHA, README size cap."""
+
+    def test_text_after_the_date_is_a_format_error(self):
+        fx = self.fixture()
+        d = FORK_DATE.isoformat()
+        text = "\n".join([status_line(fx.short, d, quoted=True) + " x", status_line(fx.short, d) + " x"]) + "\n"
+        self.passing(fx, text=text)
+        self.assertFail(fx.run(), "G1", "do not match the required shape")
+
+    def test_text_after_only_one_of_the_lines_is_a_format_error(self):
+        fx = self.fixture()
+        d = FORK_DATE.isoformat()
+        text = "\n".join([status_line(fx.short, d, quoted=True), status_line(fx.short, d) + " trailing"]) + "\n"
+        self.passing(fx, text=text)
+        self.assertFail(fx.run(), "G1", "do not match the required shape")
+
+    def test_six_digit_upstream_sha_is_a_format_error(self):
+        fx = self.fixture()
+        self.passing(fx, text=readme_text(fx.short, FORK_DATE.isoformat(), upstream="cb1901"))
+        self.assertFail(fx.run(), "G1", "do not match the required shape")
+
+    def test_readme_of_exactly_the_size_cap_is_accepted(self):
+        fx = self.fixture()
+        base = readme_text(fx.short, FORK_DATE.isoformat()).encode("utf-8")
+        pad = 1048576 - len(base) - 1
+        fx.write_readme(base + b"\n" + b"a" * pad)
+        self.assertEqual(os.path.getsize(fx.readme), 1048576)
+        self.assertPass(fx.run())
+
+    def test_readme_one_byte_over_the_size_cap_is_refused(self):
+        fx = self.fixture()
+        base = readme_text(fx.short, FORK_DATE.isoformat()).encode("utf-8")
+        pad = 1048577 - len(base) - 1
+        fx.write_readme(base + b"\n" + b"a" * pad)
+        self.assertEqual(os.path.getsize(fx.readme), 1048577)
+        self.assertFail(fx.run(), "G1", "larger than")
+
+
+class TestDateSource(Base):
+    def test_committer_date_decides_not_author_date(self):
+        # A rebased / cherry-picked fork commit: the author date is far older than the committer date.
+        fx = Fixture(self)
+        fx.commit(FORK_DATE - datetime.timedelta(days=30), "base")
+        fork = fx.commit(FORK_DATE, "fork", author_date=FORK_DATE - datetime.timedelta(days=20))
+        fx.commit(FORK_DATE, "head")
+        self.assertEqual(fx.git("show", "-s", "--format=%as", fork), (FORK_DATE - datetime.timedelta(days=20)).isoformat())
+        self.passing(fx, text=readme_text(fork[:8], FORK_DATE.isoformat()))
+        self.assertPass(fx.run())
+
+    def test_author_date_as_the_status_date_is_rejected(self):
+        fx = Fixture(self)
+        fx.commit(FORK_DATE - datetime.timedelta(days=30), "base")
+        fork = fx.commit(FORK_DATE, "fork", author_date=FORK_DATE - datetime.timedelta(days=20))
+        fx.commit(FORK_DATE, "head")
+        self.passing(fx, text=readme_text(fork[:8], (FORK_DATE - datetime.timedelta(days=20)).isoformat()))
+        self.assertFail(fx.run(), "G3", "not the commit date of fork SHA")
+
+
+class TestInfoNeverFails(Base):
+    def test_a_failing_merge_counter_does_not_change_the_result(self):
+        fx = self.fixture()
+        self.passing(fx)
+        real_git = shutil.which("git")
+        shim_dir = os.path.join(fx.dir.name, "shim")
+        os.mkdir(shim_dir)
+        shim = os.path.join(shim_dir, "git")
+        with open(shim, "w", encoding="utf-8") as handle:
+            handle.write(
+                "#!/bin/sh\n"
+                'for a in "$@"; do [ "$a" = "rev-list" ] && exit 128; done\n'
+                'exec "%s" "$@"\n' % real_git
+            )
+        os.chmod(shim, 0o755)
+        env = dict(GIT_ENV, PATH=shim_dir + os.pathsep + GIT_ENV["PATH"])
+        out = self.assertPass(fx.run(env=env))
+        self.assertNotIn("pull request merges", out)
+
+    def test_the_shim_really_intercepts_rev_list(self):
+        # guards the test above: without the shim the info line IS printed
+        fx = self.fixture()
+        self.passing(fx)
+        self.assertIn("pull request merges since fork SHA", self.assertPass(fx.run()))
 
 
 class TestForkSha(Base):

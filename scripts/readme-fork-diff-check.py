@@ -17,8 +17,12 @@ never whether the README content is TRUE (that is a human sample):
       upstream SHA is only format-checked (no `upstream` remote in CI)
   G3  the date is the commit date of the fork SHA, +-1 day (time zones)
   G4  age = (commit date of HEAD) - (status date): more than WARN_DAYS is a
-      `::warning`, more than FAIL_DAYS fails the run. HEAD's commit date is
-      used, never the wall clock, so the check is deterministic.
+      `::warning`, more than FAIL_DAYS fails the run. The age is taken from
+      HEAD's commit date, not read from the runner's clock, so the check is
+      deterministic. In CI, HEAD is the pull request merge ref, whose date is
+      its creation time: a green pull request can therefore turn red once the
+      age passes FAIL_DAYS without any code change. That is intended, it is
+      how the gate forces the refresh.
 
 Always prints an info line: how many pull request merges happened since the
 fork SHA. Standard library only; the README is read with a size cap, matched
@@ -42,6 +46,8 @@ FAIL_DAYS = 21
 # Allowed distance between the status date and the fork SHA's commit date.
 TOLERANCE_DAYS = 1
 README_MAX_BYTES = 1024 * 1024
+# How many malformed-line numbers a G1 message lists before "and N more".
+MAX_LISTED_LINES = 10
 GIT_TIMEOUT_SECONDS = 30
 
 # A line that LOOKS like a status line (loose), and the strict shape.
@@ -128,12 +134,14 @@ def check_status_lines(text, report):
         else:
             bad_lines.append(number)
     if bad_lines:
+        shown = ", ".join(str(n) for n in bad_lines[:MAX_LISTED_LINES])
+        if len(bad_lines) > MAX_LISTED_LINES:
+            shown += " and %d more" % (len(bad_lines) - MAX_LISTED_LINES)
         report.error(
             "G1",
             "README line(s) %s start with 'Állapot:' but do not match the required shape "
             "'Állapot: upstream `<sha>` vs fork `<sha>`, YYYY-MM-DD' (7-40 lowercase hex digits, "
-            "single backticks); fix them, see the ONGOING comment in the README"
-            % ", ".join(str(n) for n in bad_lines),
+            "single backticks); fix them, see the ONGOING comment in the README" % shown,
         )
         return None
     if len(found) != 2:
@@ -229,9 +237,16 @@ def check_age(repo, status_date, report):
             "both 'Állapot:' lines, see the ONGOING comment in the README" % (age, FAIL_DAYS),
         )
     elif age > WARN_DAYS:
+        left = FAIL_DAYS - age
+        if left <= 0:
+            when = "today"
+        elif left == 1:
+            when = "within 1 day"
+        else:
+            when = "within %d days" % left
         report.warning(
-            "the README fork-diff status is %d days old (refresh it within %d days, it fails after %d); "
-            "see the ONGOING comment in the README" % (age, FAIL_DAYS - age, FAIL_DAYS)
+            "the README fork-diff status is %d days old (refresh it %s, it fails after %d days); "
+            "see the ONGOING comment in the README" % (age, when, FAIL_DAYS)
         )
 
 
