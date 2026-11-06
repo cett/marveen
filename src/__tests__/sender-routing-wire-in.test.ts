@@ -351,6 +351,20 @@ describe('the delivery gate (router tick, reconnect backlog, inbox pull) on stor
     expect(auditRows().filter((r) => r.entity_id === String(m.id))).toHaveLength(1)
   })
 
+  it('a switch audit -> enforce without a restart writes the enforcing verdict too (denied: true), once per mode', async () => {
+    clearAudit()
+    const m = await row('test-owner', 'agent-d')
+    MODE = 'audit'
+    await gateDeliveryBatch([m])
+    await gateDeliveryBatch([m])
+    MODE = 'enforce'
+    await gateDeliveryBatch([m])
+    await gateDeliveryBatch([m])
+    const rows = auditRows().filter((r) => r.entity_id === String(m.id))
+    expect(rows.map((r) => [r.d.mode, r.d.denied])).toEqual([['audit', false], ['enforce', true]])
+    expect((await statusOf(m.id)).refused_reason).toBe('sender_route_target_not_owner_main_agent')
+  })
+
   it('classification from the row: slash is federated, empty is unknown, an unregistered non-tenant sender is unknown', () => {
     expect(classifyDeliverySender({ from_agent: 'peer/a' }).senderClass).toBe('federated')
     expect(classifyDeliverySender({ from_agent: '!!!' }).senderClass).toBe('unknown_sender_class')

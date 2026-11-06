@@ -68,12 +68,14 @@ vi.mock('../web/agent-config.js', async (importOriginal) => {
   }
 })
 
-vi.mock('../web/sender-routing-wire.js', () => ({
-  gateDeliveryBatch: vi.fn((batch: unknown[]) => Promise.resolve(batch)),
-}))
+const gateMocks = vi.hoisted(() => ({ judge: vi.fn(), openDeliveryGate: vi.fn() }))
+vi.mock('../web/sender-routing-wire.js', () => {
+  gateMocks.judge.mockImplementation((batch: unknown[]) => Promise.resolve(batch))
+  gateMocks.openDeliveryGate.mockImplementation(() => Promise.resolve({ open: true, judge: gateMocks.judge }))
+  return { openDeliveryGate: gateMocks.openDeliveryGate }
+})
 import { tryHandleAgentsProcess } from '../web/routes/agents-process.js'
 import { claimPendingForAgent } from '../db.js'
-import { gateDeliveryBatch } from '../web/sender-routing-wire.js'
 import { wrapAgentMessageForDelivery } from '../web/agent-message-wrap.js'
 import { addDesiredAgent } from '../web/agent-desired-state.js'
 import { startAgentProcess, stopAgentProcess, restartAgentProcess } from '../web/agent-process.js'
@@ -300,16 +302,26 @@ describe('agents-process routes -- extended coverage', () => {
       const kept = { id: 1, from_agent: 'agent-d', to_agent: 'marveen', content: 'keep', origin_note: null }
       const dropped = { id: 2, from_agent: 'agent-d', to_agent: 'marveen', content: 'drop', origin_note: null }
       vi.mocked(claimPendingForAgent).mockResolvedValueOnce([kept, dropped] as never)
-      vi.mocked(gateDeliveryBatch).mockImplementationOnce((batch) => Promise.resolve((batch as typeof kept[]).filter((m) => m.id === 1) as never))
+      gateMocks.judge.mockImplementationOnce((batch: typeof kept[]) => Promise.resolve(batch.filter((m) => m.id === 1)))
       vi.mocked(wrapAgentMessageForDelivery).mockClear()
       vi.mocked(wrapAgentMessageForDelivery).mockReturnValue({ prefix: 'P:', wrapped: 'W' })
       const { ctx, statusCode, responseBody } = makeCtx({ method: 'POST', path: '/api/agents/marveen/drain-inbox' })
       expect(await tryHandleAgentsProcess(ctx)).toBe(true)
       expect(statusCode()).toBe(200)
-      expect(vi.mocked(gateDeliveryBatch)).toHaveBeenCalledWith([kept, dropped])
+      expect(gateMocks.judge).toHaveBeenCalledWith([kept, dropped])
       expect((responseBody() as any).count).toBe(1)
       expect(vi.mocked(wrapAgentMessageForDelivery)).toHaveBeenCalledTimes(1)
       expect(vi.mocked(wrapAgentMessageForDelivery).mock.calls[0][3]).toBe('keep')
+    })
+
+    it('a gate that cannot be opened claims nothing: the rows stay pending, the answer is an empty drain', async () => {
+      vi.mocked(claimPendingForAgent).mockClear()
+      gateMocks.openDeliveryGate.mockImplementationOnce(() => Promise.resolve({ open: false }))
+      const { ctx, statusCode, responseBody } = makeCtx({ method: 'POST', path: '/api/agents/marveen/drain-inbox' })
+      expect(await tryHandleAgentsProcess(ctx)).toBe(true)
+      expect(statusCode()).toBe(200)
+      expect(responseBody()).toEqual({ count: 0, text: '' })
+      expect(vi.mocked(claimPendingForAgent)).not.toHaveBeenCalled()
     })
 
     it('returns 200 for main agent with empty inbox', async () => {

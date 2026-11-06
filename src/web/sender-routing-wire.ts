@@ -229,14 +229,49 @@ export async function auditRouteVerdict(
   }
 }
 
-// The delivery-time audit is written once per message id, not once per router tick: a message that stays
-// pending (its session is down) is judged again on every tick, and a row each time would flood the log.
-const auditedAtDelivery = new Set<number>()
+// The delivery-time audit is written once per message id AND mode, not once per router tick: a message that stays
+// pending (its session is down) is judged again on every tick, and a row each time would flood the log. The mode is
+// part of the key so that a switch audit -> enforce (no restart) writes the enforcing verdict (denied: true) too,
+// instead of leaving the audit-mode row as the only trace of that message.
+const auditedAtDelivery = new Set<string>()
 const AUDITED_AT_DELIVERY_CAP = 5000
 
+type DeliveryRow = { id: number; from_agent: string; to_agent: string; tenant_id?: string | null }
+
+/** A delivery gate that could be opened: `judge` applies the rule to a batch. */
+export interface OpenDeliveryGate {
+  open: true
+  judge<T extends DeliveryRow>(batch: readonly T[]): Promise<T[]>
+}
+/** The gate could not be opened: enforce mode and the routing context cannot be read, so nothing can be judged. */
+export interface ClosedDeliveryGate { open: false }
+
 /**
- * The delivery side of the rule: the router tick, the reconnect-backlog batch and the main-agent inbox pull
- * all pass the messages they are about to deliver through here. The verdict is worked out from the stored row
+ * Open the delivery gate: read the routing context (the tenant tables, once) and return the judge for batches.
+ *
+ * This is separate from judging so that a PULL path (the main-agent inbox drain), which changes the state of a row
+ * when it claims it, can learn BEFORE the claim whether a verdict is possible at all. `open: false` means "enforce
+ * mode and the context cannot be read": the caller must not claim anything, the rows stay pending and are asked
+ * for again on the next call. In audit mode a context that cannot be read opens a pass-through gate (every message
+ * is returned, as before): audit never withholds a message.
+ */
+export async function openDeliveryGate(): Promise<OpenDeliveryGate | ClosedDeliveryGate> {
+  const mode = getSenderRoutingMode()
+  let ctx: RoutingContext
+  try {
+    ctx = await buildRoutingContext()
+  } catch (err) {
+    logger.warn({ err, mode }, 'sender-routing: could not build the routing context for delivery')
+    if (mode === 'enforce') return { open: false }
+    return { open: true, judge: (batch) => Promise.resolve([...batch]) }
+  }
+  return { open: true, judge: (batch) => judgeDeliveryBatch(batch, mode, ctx) }
+}
+
+/**
+ * The delivery side of the rule: the router tick and the reconnect-backlog batch pass the messages they are about
+ * to deliver through here (the main-agent inbox pull opens the gate before its claim: openDeliveryGate, and then
+ * judges what it claimed). The verdict is worked out from the stored row
  * (from_agent, to_agent, tenant_id), so it also covers what never passed POST /api/messages: the channel
  * coordinator's direct inserts, platform senders, federated rows.
  *
@@ -252,26 +287,22 @@ const AUDITED_AT_DELIVERY_CAP = 5000
  * If the context cannot be read: audit mode returns the batch untouched; enforce mode returns nothing, so the
  * messages stay pending and are judged again on the next tick.
  */
-export async function gateDeliveryBatch<T extends { id: number; from_agent: string; to_agent: string; tenant_id?: string | null }>(
-  batch: readonly T[],
-): Promise<T[]> {
+export async function gateDeliveryBatch<T extends DeliveryRow>(batch: readonly T[]): Promise<T[]> {
   if (batch.length === 0) return []
-  const mode = getSenderRoutingMode()
-  let ctx: RoutingContext
-  try {
-    ctx = await buildRoutingContext()
-  } catch (err) {
-    logger.warn({ err, mode }, 'sender-routing: could not build the routing context for delivery')
-    return mode === 'enforce' ? [] : [...batch]
-  }
+  const gate = await openDeliveryGate()
+  return gate.open ? gate.judge(batch) : []
+}
+
+async function judgeDeliveryBatch<T extends DeliveryRow>(batch: readonly T[], mode: SenderRoutingMode, ctx: RoutingContext): Promise<T[]> {
   const kept: T[] = []
   for (const m of batch) {
     const identity = classifyDeliverySender(m)
     const verdict = judgeRoute(identity, m.to_agent, ctx, mode)
     const auditWorthy = !verdict.decision.ok || identity.lane === 'system' || identity.senderClass === 'federated'
-    if (auditWorthy && !auditedAtDelivery.has(m.id)) {
+    const auditKey = `${m.id}:${mode}`
+    if (auditWorthy && !auditedAtDelivery.has(auditKey)) {
       if (auditedAtDelivery.size >= AUDITED_AT_DELIVERY_CAP) auditedAtDelivery.clear()
-      auditedAtDelivery.add(m.id)
+      auditedAtDelivery.add(auditKey)
       await auditRouteVerdict(verdict, 'delivery', { entityId: m.id })
     }
     if (verdict.deny) {
