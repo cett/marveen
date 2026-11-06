@@ -4,7 +4,7 @@
 // ellipsis written as \u escapes. A tall pane pads the dialog with empty rows: every fixture carries them.
 
 import { describe, it, expect } from 'vitest'
-import { detectsExternalImportsDialog, detectsModelConsentDialog, detectsFirstRunGate, detectPaneState } from '../pane-state.js'
+import { detectsExternalImportsDialog, detectsModelConsentDialog, detectsFirstRunGate, detectPaneState, detectsBlockingMenu, decideMenuRecoveryAction } from '../pane-state.js'
 
 const RULE = (n: number) => '\u2500'.repeat(n)
 const PAD = '\n'.repeat(8)
@@ -135,5 +135,53 @@ describe('detectsExternalImportsDialog', () => {
     expect(detectPaneState(WIDTH_80)).not.toBe('idle')
     expect(detectPaneState(WIDTH_120)).not.toBe('idle')
     expect(detectPaneState(WIDTH_60)).not.toBe('idle')
+  })
+})
+
+// The monitor's menu-recovery decision. Escape (like Enter) on this dialog picks the highlighted "No" and records an
+// explicit refusal of the imports, so the decision for the dialog is alert-only -- for EVERY fill of the pane. The
+// raw-tail menu detector disagrees with itself across fills (it does not trim trailing blank rows): measured on the
+// verbatim 80-column frame it reads the unpadded dialog as a blocking menu ('escape') and the padded one as no menu
+// at all ('none'). Both must land on 'alert-imports'.
+describe('decideMenuRecoveryAction on the imports dialog', () => {
+  const unpadded = (frame: string) => frame.replace(/\s+$/, '')
+  const FRAMES: Array<[string, string]> = [['80', WIDTH_80], ['120', WIDTH_120], ['60', WIDTH_60]]
+
+  it.each(FRAMES)('the %s-column frame with its trailing empty rows is alert-only', (_w, frame) => {
+    expect(decideMenuRecoveryAction(frame)).toBe('alert-imports')
+  })
+
+  it.each(FRAMES)('the %s-column frame WITHOUT trailing empty rows is alert-only too', (_w, frame) => {
+    expect(decideMenuRecoveryAction(unpadded(frame))).toBe('alert-imports')
+  })
+
+  it('a very tall pane (30 empty rows) is alert-only', () => {
+    expect(decideMenuRecoveryAction(unpadded(WIDTH_80) + '\n'.repeat(30))).toBe('alert-imports')
+  })
+
+  it('pins the precondition: the generic menu detector alone gets this wrong in both fills', () => {
+    // If this ever flips, the ordering comment in decideMenuRecoveryAction needs a second look.
+    expect(detectsBlockingMenu(unpadded(WIDTH_80))).toBe(true)
+    expect(detectsBlockingMenu(WIDTH_80)).toBe(false)
+  })
+
+  it('the cursor on "Yes" is still alert-only (never Escape, never Enter)', () => {
+    const moved = unpadded(WIDTH_80).replace('\u276f No, disable external imports', '  No, disable external imports').replace('    Yes, allow external imports', '\u276f Yes, allow external imports')
+    expect(decideMenuRecoveryAction(moved)).toBe('alert-imports')
+  })
+
+  it('a busy pane or a live idle prompt quoting the dialog is not the dialog: no alert, no key', () => {
+    expect(decideMenuRecoveryAction(WIDTH_80 + '\n' + BUSY_FOOTER)).not.toBe('alert-imports')
+    expect(decideMenuRecoveryAction(WIDTH_80 + '\n' + IDLE_FOOTER)).not.toBe('alert-imports')
+  })
+
+  it('does not widen the other branches: a plain /mcp menu is still Escape, a tool approval and the model consent keep their answers', () => {
+    const MCP = ['   Manage MCP servers', '   5 servers', '', '   \u276f claude.ai Canva \u00b7 connected \u00b7 39 tools', '', '   Enter to confirm \u00b7 Esc to cancel'].join('\n')
+    const APPROVAL = [' Bash command', '', '   ls', '', ' Do you want to proceed?', ' \u276f 1. Yes', '   2. No, and tell Claude what to do differently (esc)', '', ' Esc to cancel'].join('\n')
+    const CONSENT = ['  Fable 5 now uses usage credits', '', '    1. Continue with Fable 5', '  \u276f 2. Switch to Sonnet 5 and continue', '', '  Enter to confirm \u00b7 Esc to cancel'].join('\n')
+    expect(decideMenuRecoveryAction(MCP)).toBe('escape')
+    expect(decideMenuRecoveryAction(APPROVAL)).toBe('alert-approval')
+    expect(decideMenuRecoveryAction(CONSENT)).toBe('answer-model-consent')
+    expect(decideMenuRecoveryAction(null)).toBe('none')
   })
 })

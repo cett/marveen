@@ -14,6 +14,7 @@ import {
   captureParkedInputView,
   clearInputBuffer,
   dismissResumeSummaryModalIfPresent,
+  alertExternalImportsDialogOnce,
   dismissModelConsentDialogIfPresent,
   stampFableOverageConsentSharedRoots,
   isAgentRunning,
@@ -36,7 +37,7 @@ import { logParkForensicsOnce, endParkEpisode } from './park-forensics.js'
 import { probeTelegramConflict } from './channel-conflict-probe.js'
 import { schedulePluginUnlockAfterRespawn, wasPluginConfirmedAbsent, clearPluginAbsent } from './channel-plugin-unlock.js'
 import {
-  detectPaneState, idleConsideringDimGhost, decidePaneErrorAlert, detectsBlockingMenu, decideMenuRecoveryAction, detectsFirstRunGate, type PaneErrorAlertState, type PaneState,
+  detectPaneState, idleConsideringDimGhost, decidePaneErrorAlert, detectsBlockingMenu, detectsExternalImportsDialog, decideMenuRecoveryAction, detectsFirstRunGate, type PaneErrorAlertState, type PaneState,
   stuckInputSignature, decideStuckInputRecovery, parkedChannelInput,
   parkedInputText, shouldClearTruncatedPreamble,
   parkedInputRowCount, submitLanded, decideStuckInputAction,
@@ -1858,7 +1859,11 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
       // panes get the channels.sh-style dialog answers instead; only the
       // login picker is alert-only (nobody can log in on the operator's behalf).
       const firstRunGate = pane != null ? detectsFirstRunGate(pane) : null
-      const inMenu = firstRunGate != null || (pane != null && detectsBlockingMenu(pane))
+      // The external-imports dialog counts as parked-in-a-menu on its own detector:
+      // detectsBlockingMenu reads the raw pane tail, so a tall pane that pads the
+      // dialog with blank rows would never reach the recovery branch (and never
+      // raise the debounced alert).
+      const inMenu = firstRunGate != null || (pane != null && (detectsBlockingMenu(pane) || detectsExternalImportsDialog(pane)))
       const prev = paneMenuState.get(t.session) ?? { firstSeenAt: null, lastAlertAt: null, lastErrorAt: null }
       const decision = decidePaneErrorAlert(inMenu, prev, Date.now(), {
         confirmMs: MENU_RECOVER_CONFIRM_MS,
@@ -1899,7 +1904,12 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
           // rejects the pending tool call (2026-10-09: three Bash approvals
           // refused by the blind Escape on two sessions).
           const action = decideMenuRecoveryAction(capturePane(t.session))
-          if (action === 'alert-approval') {
+          if (action === 'alert-imports') {
+            // Alert-only: Escape on this dialog is the explicit "No" and Enter
+            // would confirm the marked "No" as well; "Yes" is the stamp's job.
+            logger.warn({ session: t.session, agent: label }, 'Session is parked on the external CLAUDE.md imports dialog -- alerting only (no keystrokes sent)')
+            alertExternalImportsDialogOnce(t.session)
+          } else if (action === 'alert-approval') {
             logger.warn({ session: t.session, agent: label }, 'Session is waiting on a tool-approval prompt -- alerting only (no keystrokes sent)')
             sendAlert(`🛂 A(z) ${label} session egy jóváhagyó promptra vár (pl. "Do you want to proceed?"), és nem dolgozott fel üzeneteket. Nem nyúltam hozzá (az Escape elutasítaná a tool-hívást). Válaszolj: tmux attach -t ${t.session}`)
           } else if (action === 'answer-model-consent') {

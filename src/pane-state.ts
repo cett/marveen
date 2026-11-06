@@ -499,7 +499,7 @@ export function detectsApprovalPrompt(pane: string): boolean {
   return true
 }
 
-export type MenuRecoveryAction = 'none' | 'alert-approval' | 'answer-model-consent' | 'escape'
+export type MenuRecoveryAction = 'none' | 'alert-imports' | 'alert-approval' | 'answer-model-consent' | 'escape'
 
 /**
  * What the monitor may do to a pane it has just seen parked in a "menu" for the
@@ -508,8 +508,17 @@ export type MenuRecoveryAction = 'none' | 'alert-approval' | 'answer-model-conse
  * key. Only a genuine menu earns the blind Escape: an approval prompt is
  * alert-only, the model-consent dialog is answered, and anything that is no
  * longer a blocking menu (busy, idle) is left alone.
+ *
+ * The external CLAUDE.md imports dialog is decided FIRST and is alert-only:
+ * Escape (like Enter) on it picks the highlighted "No", recorded as an
+ * explicit refusal, and "Yes" is a trust grant only the pre-seeded stamp may
+ * give. It is tested before detectsBlockingMenu on purpose: that detector
+ * reads the raw pane tail without trimming trailing blank rows, so a tall pane
+ * that pads the dialog with empty lines would read as 'none' there, and one
+ * that fills the region exactly would read as a plain menu ('escape').
  */
 export function decideMenuRecoveryAction(pane: string | null): MenuRecoveryAction {
+  if (pane != null && detectsExternalImportsDialog(pane)) return 'alert-imports'
   if (pane == null || !detectsBlockingMenu(pane)) return 'none'
   if (detectsApprovalPrompt(pane)) return 'alert-approval'
   if (detectsModelConsentDialog(pane)) return 'answer-model-consent'
