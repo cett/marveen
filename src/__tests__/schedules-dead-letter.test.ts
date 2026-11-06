@@ -183,6 +183,87 @@ describe('window and limit', () => {
   })
 })
 
+// A repeated parameter used to take the FIRST value and drop the rest unvalidated (URLSearchParams.get), so
+// `limit=10&limit=abc` answered 200. Any repeat is a 400 now, the same value twice included: one rule, no "an
+// error only when the values differ".
+describe('a repeated days or limit', () => {
+  it.each([
+    ['days=1&days=2', 'days'], ['days=1&days=1', 'days'], ['days=2&days=abc', 'days'],
+    ['limit=10&limit=abc', 'limit'], ['limit=10&limit=10', 'limit'], ['limit=abc&limit=10', 'limit'],
+    ['days=1&limit=5&limit=6', 'limit'], ['limit=5&days=1&limit=6', 'limit'], ['days=1&days=2&limit=5', 'days'],
+  ])('%s is a 400 invalid_value on %s, with a "given once" hint', async (qs, field) => {
+    const o = await get(`/api/schedules/dead-letter?${qs}`)
+    expect(o.status).toBe(400)
+    expect(o.body).toMatchObject({ error: 'invalid_value', field, hint: `${field} must be given once` })
+  })
+
+  it('days is judged before limit when both are wrong', async () => {
+    const o = await get('/api/schedules/dead-letter?limit=1&limit=2&days=1&days=2')
+    expect(o.body).toMatchObject({ field: 'days' })
+    const both = await get('/api/schedules/dead-letter?days=abc&limit=1&limit=2')
+    expect(both.body).toMatchObject({ field: 'days', hint: 'days must be an integer from 1 to 30' })
+  })
+
+  it('each parameter once, in any order, is the answer it always was', async () => {
+    addSchedule('task-a', 'default')
+    addRun('task-a', 'missed', 2 * DAY)
+    for (const qs of ['days=2&limit=5', 'limit=5&days=2']) {
+      const o = await get(`/api/schedules/dead-letter?${qs}`)
+      expect(o.status).toBe(200)
+      expect(body(o)).toMatchObject({ days: 2, limit: 5, truncated: false })
+    }
+  })
+
+  it('both absent give the defaults, 7 days and 100 rows', async () => {
+    const o = body(await get('/api/schedules/dead-letter'))
+    expect(o).toMatchObject({ days: 7, limit: 100, truncated: false, items: [] })
+  })
+
+  it('an unrelated repeated parameter is not this rule (only days and limit are counted)', async () => {
+    expect((await get('/api/schedules/dead-letter?foo=1&foo=2&days=1&limit=1')).status).toBe(200)
+  })
+
+  it('the /api/v1 path is the same route: it normalizes to the path the handler serves', async () => {
+    const { normalizePath } = await import('../web/routes/versioning.js')
+    const v1 = normalizePath('/api/v1/schedules/dead-letter')
+    expect(v1.path).toBe('/api/schedules/dead-letter')
+    const o = await get(`${v1.path}?days=1&days=2`)
+    expect(o.status).toBe(400)
+    expect(o.body).toMatchObject({ error: 'invalid_value', field: 'days' })
+  })
+})
+
+describe('parseDeadLetterParams (pure)', () => {
+  const parse = async (qs: string) => {
+    const { parseDeadLetterParams } = await import('../web/schedule-dead-letter.js')
+    return parseDeadLetterParams(new URLSearchParams(qs))
+  }
+
+  it('absent -> the defaults; one value each -> that value', async () => {
+    expect(await parse('')).toEqual({ ok: true, days: 7, limit: 100 })
+    expect(await parse('days=3&limit=40')).toEqual({ ok: true, days: 3, limit: 40 })
+  })
+
+  it('a repeat names the parameter, days first', async () => {
+    expect(await parse('days=1&days=1')).toEqual({ ok: false, field: 'days', hint: 'days must be given once' })
+    expect(await parse('limit=1&limit=1')).toEqual({ ok: false, field: 'limit', hint: 'limit must be given once' })
+    expect(await parse('limit=1&limit=2&days=1&days=2')).toMatchObject({ ok: false, field: 'days' })
+    // three occurrences are a repeat too (the rule is "more than one", not "exactly two")
+    expect(await parse('days=1&days=1&days=1')).toMatchObject({ ok: false, field: 'days' })
+  })
+
+  it('the single-value rules are unchanged: empty, signed, decimal, text and out-of-range are all invalid', async () => {
+    for (const qs of ['days=', 'days=+5', 'days=1.5', 'days=abc', 'days=0', 'days=31', 'days=-1', 'days=1234567']) {
+      expect(await parse(qs), qs).toMatchObject({ ok: false, field: 'days' })
+    }
+    for (const qs of ['limit=', 'limit=+5', 'limit=1.5', 'limit=abc', 'limit=0', 'limit=501', 'limit=-1']) {
+      expect(await parse(qs), qs).toMatchObject({ ok: false, field: 'limit' })
+    }
+    expect(await parse('days=1&limit=1')).toEqual({ ok: true, days: 1, limit: 1 })
+    expect(await parse('days=30&limit=500')).toEqual({ ok: true, days: 30, limit: 500 })
+  })
+})
+
 describe('tenant isolation', () => {
   beforeEach(() => {
     addSchedule('task-a', 'tenant-a')

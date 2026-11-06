@@ -50,18 +50,27 @@ export interface DeadLetterResponse {
 
 export type DeadLetterParams = { ok: true; days: number; limit: number } | { ok: false; field: 'days' | 'limit'; hint: string }
 
-function parseBoundedInt(raw: string | null, def: number, min: number, max: number): number | null {
-  if (raw === null) return def
+/** `values` is every value the query string gave for one parameter (URLSearchParams.getAll). */
+function parseBoundedInt(values: string[], def: number, min: number, max: number): number | null {
+  if (values.length === 0) return def
+  const raw = values[0]
   if (!/^\d{1,6}$/.test(raw)) return null
   const n = Number(raw)
   return n >= min && n <= max ? n : null
 }
 
-/** Query-string parsing: absent -> default, present but not an integer in range -> a 400 (never a silent clamp). */
+/** Query-string parsing: absent -> default, present but not an integer in range -> a 400 (never a silent clamp).
+ *  A parameter given more than once is a 400 as well, the same value twice included: `get` would take the first
+ *  value and drop the rest unvalidated, and "a repeat is an error only when it differs" is a rule nobody can
+ *  predict. The error names the parameter; days is judged before limit. */
 export function parseDeadLetterParams(searchParams: URLSearchParams): DeadLetterParams {
-  const days = parseBoundedInt(searchParams.get('days'), DEAD_LETTER_DEFAULT_DAYS, 1, DEAD_LETTER_MAX_DAYS)
+  const daysValues = searchParams.getAll('days')
+  if (daysValues.length > 1) return { ok: false, field: 'days', hint: 'days must be given once' }
+  const days = parseBoundedInt(daysValues, DEAD_LETTER_DEFAULT_DAYS, 1, DEAD_LETTER_MAX_DAYS)
   if (days === null) return { ok: false, field: 'days', hint: `days must be an integer from 1 to ${DEAD_LETTER_MAX_DAYS}` }
-  const limit = parseBoundedInt(searchParams.get('limit'), DEAD_LETTER_DEFAULT_LIMIT, 1, DEAD_LETTER_MAX_LIMIT)
+  const limitValues = searchParams.getAll('limit')
+  if (limitValues.length > 1) return { ok: false, field: 'limit', hint: 'limit must be given once' }
+  const limit = parseBoundedInt(limitValues, DEAD_LETTER_DEFAULT_LIMIT, 1, DEAD_LETTER_MAX_LIMIT)
   if (limit === null) return { ok: false, field: 'limit', hint: `limit must be an integer from 1 to ${DEAD_LETTER_MAX_LIMIT}` }
   return { ok: true, days, limit }
 }

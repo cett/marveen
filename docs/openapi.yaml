@@ -3877,7 +3877,9 @@ paths:
         - name: days
           in: query
           required: false
-          description: Window for the run rows, in days (1 to 30, default 7).
+          description: >-
+            Window for the run rows, in days (1 to 30, default 7). May be given
+            once; a repeated parameter is a 400 invalid_value.
           schema:
             type: integer
             minimum: 1
@@ -3886,7 +3888,9 @@ paths:
         - name: limit
           in: query
           required: false
-          description: Maximum number of rows returned (1 to 500, default 100).
+          description: >-
+            Maximum number of rows returned (1 to 500, default 100). May be given
+            once; a repeated parameter is a 400 invalid_value.
           schema:
             type: integer
             minimum: 1
