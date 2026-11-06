@@ -334,6 +334,42 @@ describe('POST /api/kanban -- the title is required', () => {
   })
 })
 
+// The body-reading kanban routes, including claim and move (they call JSON.parse directly), against bodies that are not JSON.
+// Measured on a real HTTP instance as well (report): every row below is a 400 parse_error there too. Claim takes no body, so
+// an empty / whitespace body is its valid case (the claimant is then missing: 400 required on agent), not a parse error.
+describe('non-JSON bodies on every kanban body route: the clean 400 parse_error, nothing written', () => {
+  const BOM = String.fromCharCode(0xfeff)
+  const ALL: Array<[string, string, string]> = [
+    ...ROUTES,
+    ['claim', 'POST', '/api/kanban/c1/claim'],
+    ['move', 'POST', '/api/kanban/c1/move'],
+  ]
+  const BODIES: Array<[string, string]> = [['raw text', 'hello'], ['truncated', '{"title":'], ['BOM then JSON', `${BOM}{"title":"x"}`], ['large non-JSON', 'x'.repeat(300 * 1024)]]
+  const CASES = ALL.flatMap(([n, m, p]) => BODIES.map(([bn, b]) => [n, m, p, bn, b] as const))
+  it.each(CASES)('%s %s %s: %s', async (_n, method, path, _bn, raw) => {
+    const before = snapshot()
+    const res = await callRaw(method, path, raw)
+    expect(res.status).toBe(400)
+    expect(res.body).toEqual({ error: 'parse_error', hint: 'Invalid JSON body' })
+    expect(snapshot()).toBe(before)
+  })
+
+  it.each(ROUTES)('%s: an empty and a whitespace-only body are a parse_error too', async (_n, method, path) => {
+    for (const raw of ['', '  \n ']) {
+      const res = await callRaw(method, path, raw)
+      expect(res.status).toBe(400)
+      expect(res.body).toEqual({ error: 'parse_error', hint: 'Invalid JSON body' })
+    }
+  })
+
+  it('move: an empty body is a parse_error as well; claim takes no body, so an empty one is valid and only lacks a claimant', async () => {
+    expect((await callRaw('POST', '/api/kanban/c1/move', '')).body).toEqual({ error: 'parse_error', hint: 'Invalid JSON body' })
+    const claim = await callRaw('POST', '/api/kanban/c1/claim', '')
+    expect(claim.status).toBe(400)
+    expect(claim.body).toMatchObject({ error: 'required', field: 'agent' })
+  })
+})
+
 // PUT /api/kanban/:id: a `title` KEY must carry a usable title. The key's absence is a partial update (title kept).
 // Before the check: '' and whitespace were stored (a card without a title), null was a 500 on the NOT NULL column.
 describe('PUT /api/kanban/:id -- a title key must carry a usable title', () => {
