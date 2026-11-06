@@ -129,7 +129,7 @@ import { tryHandleBrowserEnroll } from './web/routes/browser-enroll.js'
 import { issueEnrollCode, enrollUrl } from './web/browser-enroll-codes.js'
 import { tryHandleAdminB2b } from './web/routes/admin-b2b.js'
 import { tryHandleMe } from './web/routes/me.js'
-import { getDb } from './db.js'
+import { getDb, backfillSkillBaselines } from './db.js'
 import type { RouteContext } from './web/routes/types.js'
 import { RouteDispatcher } from './web/routes/dispatcher.js'
 import { reconcileAgentsOnStartup, flushRunningStateToDesired } from './web/startup-reconciliation.js'
@@ -831,6 +831,13 @@ export async function startWebServer(port = 3420): Promise<http.Server> {
       if (companions.seeded > 0) logger.info({ seeded: companions.seeded }, 'Skill companion files imported into the DB')
     } catch (err) {
       logger.warn({ err }, 'Skill companion file import skipped')
+    }
+    try {
+      // After the seed refresh and the companion import, so the first revision of a skill sees its settled state.
+      const baselines = await backfillSkillBaselines()
+      if (baselines.written > 0 || baselines.errors > 0) logger.info(baselines, 'Skill baseline revisions written')
+    } catch (err) {
+      logger.warn({ err }, 'Skill baseline backfill skipped')
     }
     // Tenant skill files belong to running agents only: the startup regen writes them for those and prunes the rest.
     setTenantSkillAgentProbe(isAgentSessionRunning)

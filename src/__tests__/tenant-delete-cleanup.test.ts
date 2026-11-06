@@ -59,6 +59,7 @@ const SEEDERS: Record<string, (t: string) => void> = {
     db().prepare("INSERT INTO cost_line_items (source_id, charge_period_start, charge_period_end, charge_category, billed_cost, confidence, data_freshness, created_at, tenant_id) VALUES ('cs', 0, 1, 'c', 1, 'high', 0, 0, ?)").run(t)
   },
   labels: (t) => db().prepare("INSERT INTO labels (id, name, color, created_at, tenant_id) VALUES (?, 'label', '#fff', 0, ?)").run(`lb-${t}`, t),
+  skill_revisions: (t) => db().prepare("INSERT INTO skill_revisions (skill_id, tenant_id, seq, action, author_kind) VALUES (?, ?, 1, 'baseline', 'system')").run(`sk-${t}`, t),
   import_sources: (t) => db().prepare("INSERT INTO import_sources (id, type, path, created_at, updated_at, tenant_id) VALUES (?, 'local', '/x', 0, 0, ?)").run(`src-${t}`, t),
   import_audit_log: (t) => db().prepare('INSERT INTO import_audit_log (source_id, run_at, tenant_id) VALUES (?, 0, ?)').run(`src-${t}`, t),
 }
