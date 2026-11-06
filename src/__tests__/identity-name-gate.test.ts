@@ -47,7 +47,7 @@ vi.mock('../web/agent-process-session.js', () => ({
   delay: (...a: unknown[]) => mockDelay(...(a as [number])),
   // The REAL readiness rule is idle-by-detectPaneState (+ a dim-ghost carve-out that does not matter for these frames);
   // mirror just that so the gate is exercised against real pane classification.
-  isSessionReadyForPrompt: async () => detectPaneState(currentFrame()) === 'idle',
+  isSessionReadyForPrompt: () => Promise.resolve(detectPaneState(currentFrame()) === 'idle'),
   sendPromptToSession: vi.fn(),
 }))
 
@@ -104,9 +104,10 @@ beforeEach(() => {
   vi.clearAllMocks()
   mockRunTmux.mockReset()
   mockDelay.mockReset()
-  mockDelay.mockImplementation(async (ms: number) => {
+  mockDelay.mockImplementation((ms: number) => {
     // Only the gate's retry wait moves the pane on; other delays (post-send settle) do not.
     if (ms === NAME_GATE_RETRY_DELAY_MS) frameIdx++
+    return Promise.resolve()
   })
   mockNotifyChannel.mockReset()
   mockNotifyChannel.mockResolvedValue(undefined)
@@ -234,8 +235,9 @@ describe('sendIdentityCommandGuarded: the /name gate', () => {
 
   it('(e2) the lane frees up mid-budget: the next probe sends', async () => {
     const release = tryAcquireSessionSendLane(SESSION, null)!
-    mockDelay.mockImplementation(async (ms: number) => {
+    mockDelay.mockImplementation((ms: number) => {
       if (ms === NAME_GATE_RETRY_DELAY_MS) release()
+      return Promise.resolve()
     })
     expect(await sendIdentityCommandGuarded(SESSION, NAME_CMD, null)).toBe('sent')
     expect(mockRunTmux).toHaveBeenCalledTimes(1)
@@ -264,13 +266,14 @@ describe('sendIdentityCommandGuarded: the /name gate', () => {
   it('(e4) the lane is held only while probing, never across the retry wait', async () => {
     useFrames(UNKNOWN_MODAL, IDLE_PANE)
     let laneFreeDuringWait: boolean | null = null
-    mockDelay.mockImplementation(async (ms: number) => {
+    mockDelay.mockImplementation((ms: number) => {
       if (ms === NAME_GATE_RETRY_DELAY_MS) {
         const r = tryAcquireSessionSendLane(SESSION, null)
         laneFreeDuringWait = r != null
         r?.()
         frameIdx++
       }
+      return Promise.resolve()
     })
     await sendIdentityCommandGuarded(SESSION, NAME_CMD, null)
     expect(laneFreeDuringWait).toBe(true)
