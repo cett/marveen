@@ -30,6 +30,7 @@ import {
   capturePane,
 } from './agent-process.js'
 import { detectPaneState, type PaneState } from '../pane-state.js'
+import { tagOpenings } from '../prompt-safety.js'
 import { setLastInboundModality } from './voice-modality.js'
 import { classifyAgentMessage, wrapAgentMessageForDelivery } from './agent-message-wrap.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
@@ -748,8 +749,9 @@ export async function runMessageRouterTick(): Promise<void> {
             // Attempt STT; on failure fall through to raw voice block.
             const transcript = await callVoiceSTT(voiceFileId, msg.to_agent)
             if (transcript) {
-              deliveryContent = injectTranscript(msg.content, transcript)
-              logger.info({ id: msg.id, agent: msg.to_agent }, 'message-router: voice STT applied')
+              deliveryContent = injectTranscript(msg.content, transcript, { id: msg.id, agent: msg.to_agent })
+              // An unchanged content means no usable frame (injectTranscript logged why): the raw voice block goes out.
+              if (deliveryContent !== msg.content) logger.info({ id: msg.id, agent: msg.to_agent }, 'message-router: voice STT applied')
               // TTS directive is injected by the UserPromptSubmit hook (voice-reply-directive.py)
               // which fires on every delivery path, not just coordinator-relay.
             } else {
@@ -839,20 +841,53 @@ function extractChatId(content: string): string | null {
   return m ? m[1] : null
 }
 
+const CHANNEL_OPENER_RX = /<channel/g
+const CHANNEL_CLOSER = '</channel>'
+
+/** Cut the first `head ... tail` attribute out of `s` together with the whitespace in front of it. Same result as
+ *  s.replace(/\s*HEAD[^"]*TAIL/, '') (tail null: s.replace(/\s*HEAD/, '')), without the pattern: `\s*` ahead of a
+ *  literal searched a whole run of whitespace again from every position of the run (a content of spaces was
+ *  quadratic). No tail after the head means no match, as for the pattern. */
+function removeFirstAttribute(s: string, head: string, tail: string | null): string {
+  const at = s.indexOf(head)
+  if (at === -1) return s
+  let end = at + head.length
+  if (tail !== null) {
+    const close = s.indexOf(tail, end)
+    if (close === -1) return s
+    end = close + tail.length
+  }
+  let start = at
+  while (start > 0 && /\s/.test(s[start - 1])) start--
+  return s.slice(0, start) + s.slice(end)
+}
+
 // Replace the voice attachment block with a transcript prefix.
 // Removes attachment_kind and attachment_file_id attributes; prepends [Hang átirat]:.
-function injectTranscript(content: string, transcript: string): string {
+//
+// The frame is the FIRST `<channel` opener, its `>` and the first `</channel>` after that. Only the opener is a
+// pattern: the old /(<channel[^>]*>)[\s\S]*?(<\/channel>)/ searched the rest of the text again from every
+// opener without a '>' or a closer, quadratic on a content of openers (550 kB: ~15 s). The '>' and the closer
+// are looked up once (tagOpenings / indexOf). Reachable input here is one coordinator-built Telegram frame
+// (message text <= 4096 characters plus a few short attributes), so this is hardening, not a live hole.
+//
+// No usable frame (the first opener has no '>' within TAG_SPAN_MAX characters, or no closer follows): the
+// content is returned UNCHANGED, attachment attributes included, and a warning is logged without the content.
+// The caller then delivers the raw voice block, exactly as when the transcription fails, so the voice
+// message is never silently dropped or stripped of its file reference.
+export function injectTranscript(content: string, transcript: string, ctx?: { id?: number | string; agent?: string }): string {
   // Strip the attachment attributes from the opening tag
-  let result = content
-    .replace(/\s*attachment_kind="voice"/, '')
-    .replace(/\s*attachment_file_id="[^"]*"/, '')
+  const stripped = removeFirstAttribute(removeFirstAttribute(content, 'attachment_kind="voice"', null), 'attachment_file_id="', '"')
   // Replace the body with the transcript unconditionally (handles empty, "(empty message)", and caption).
-  // Replacer function avoids $1/$& special-pattern interpretation in the transcript string.
-  result = result.replace(
-    /(<channel[^>]*>)[\s\S]*?(<\/channel>)/,
-    (_m, open: string, close: string) => `${open}\n[Hang átirat]: ${transcript}\n${close}`,
-  )
-  return result
+  // The transcript is spliced in as a literal: no $1/$& special-pattern interpretation.
+  const first = tagOpenings(stripped, CHANNEL_OPENER_RX).next()
+  const opening = first.done ? null : first.value
+  const closerAt = opening && opening.tagEnd !== -1 ? stripped.indexOf(CHANNEL_CLOSER, opening.tagEnd) : -1
+  if (!opening || opening.tagEnd === -1 || closerAt === -1) {
+    logger.warn({ id: ctx?.id, agent: ctx?.agent }, 'message-router: voice transcript not injected: no usable <channel> frame (no opener, no ">" within the span limit, or no closer); delivering the raw voice block')
+    return content
+  }
+  return `${stripped.slice(0, opening.tagEnd)}\n[Hang átirat]: ${transcript}\n${stripped.slice(closerAt)}`
 }
 
 // Transcribe an inbound voice message. Calls transcribeVoiceFile() DIRECTLY

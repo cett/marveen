@@ -42,11 +42,6 @@ COMMENT_PREFIXES = ("#", "//", "*", "/*")
 
 # (path, a distinctive substring of the flagged line, reason)
 ALLOWED = [
-    ("src/web/message-router.ts", "(<channel[^>]*>)[\\s\\S]*?(<\\/channel>)",
-     "pending the next window: facade-modified file, fixed there in its facade form (open item)"),
-    ("src/web/federation/poller.ts", "const CHANNEL_TAG_RX",
-     "pending the next window: facade-modified file, fixed there in its facade form (open item). "
-     "The input is a federated peer's summary text, so this one is NOT bounded by us"),
     ("src/pane-state.ts", "flat.match(/<channel\\s+source=\"plugin:",
      "bounded: the text is the live input box of a `tmux capture-pane -p` snapshot, the visible screen "
      "only (rows x columns), about 1 ms for a full screen of openers"),
