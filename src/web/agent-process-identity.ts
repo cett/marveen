@@ -1,10 +1,12 @@
 // Split from the former monolithic src/web/agent-process.ts (775).
 
 import { logger } from '../logger.js'
-import { detectPaneState, detectsFirstRunGate, detectsModelConsentDialog, type FirstRunGateKind } from '../pane-state.js'
+import { notifyChannel } from '../notify.js'
+import { detectPaneState, detectsExternalImportsDialog, detectsFirstRunGate, detectsModelConsentDialog, type FirstRunGateKind } from '../pane-state.js'
 import { stampFableOverageConsent } from './agent-process-config.js'
 import { capturePane, captureTmux, delay, isSessionReadyForPrompt, runTmux, sendPromptToSession } from './agent-process-session.js'
 import { startAgentProcess } from './agent-process-spawn.js'
+import { tryAcquireSessionSendLane } from './session-send-lock.js'
 
 const SURVEY_MODAL_RX = /How is Claude doing this session/
 // The rating modal is drawn at the bottom of the live screen. Only the last
@@ -148,12 +150,114 @@ export function identitySlashCommands(displayName: string): string[] {
 const MODAL_DISMISS_DELAY_MS = 8000
 const IDENTITY_SEND_DELAY_MS = 5000
 
+// /name gate budget. The /name keystrokes only go out into a pane that reads as
+// a ready prompt; a pane that does not (a modal nobody has dismissed, a slow
+// first render) is re-probed up to NAME_GATE_RETRIES more times,
+// NAME_GATE_RETRY_DELAY_MS apart, and then the /name is SKIPPED. Worst case the
+// gate adds 3 x 2s (+ the 250ms readiness confirm per probe) to the ~T+13s the
+// /name lands at today, so it still finishes well before channel-plugin-unlock's
+// T+35s probe (UNLOCK_PROBE_DELAY_MS), which is timed off the /name.
+export const NAME_GATE_RETRIES = 3
+export const NAME_GATE_RETRY_DELAY_MS = 2000
+
+// One operator alert per session per episode for the external-imports dialog. A
+// respawn loop would otherwise page the operator on every spawn; the entry is
+// cleared as soon as a /name lands on that session again (the dialog is gone),
+// so a later recurrence alerts again. Process-local, like the shared-config
+// collision alert.
+const importsDialogAlerted = new Set<string>()
+
+export function resetImportsDialogAlerts(): void {
+  importsDialogAlerted.clear()
+}
+
+// "Allow external CLAUDE.md file imports?" is answered by NOBODY at runtime:
+// "Yes" is a trust grant for the fleet persona folder and may only come from
+// the pre-seeded stamp (stampProjectTrustForDir), and Escape/Enter on the
+// dialog picks the highlighted "No", which is recorded as an explicit refusal of the imports. So the system
+// leaves the pane alone and tells the operator, once. The text carries the
+// session name only, never pane contents.
+export function alertExternalImportsDialogOnce(session: string): void {
+  if (importsDialogAlerted.has(session)) return
+  importsDialogAlerted.add(session)
+  logger.error({ session }, 'external imports dialog unanswered: leaving the pane untouched (no keystrokes), operator action needed')
+  void notifyChannel(
+    `Figyelmeztetes: a(z) ${session} session egy "Allow external CLAUDE.md file imports?" dialogon all, es a rendszer NEM valaszolja meg (a Yes bizalmi engedely, csak a stamp adhatja; az Enter/Escape a No-t valasztana). A /name kimaradt, a pane valtozatlan. Ellenorizd a session projekt-bizalmi allapotat.`,
+  ).catch(() => { /* notifyChannel logs internally */ })
+}
+
+export type IdentityCommandOutcome = 'sent' | 'skipped-not-ready' | 'skipped-imports-dialog'
+
+type IdentityProbe =
+  | { kind: 'sent' }
+  | { kind: 'imports-dialog' }
+  | { kind: 'not-ready'; state: string }
+
+// One probe-and-maybe-send attempt for an identity slash command, as a single
+// critical section under the pane send lane (fail-closed, like the modal
+// dismissals: PANEWRITERS805). The lane is held only for capture + send, NOT
+// across the retry wait, so a delivery is never starved by the gate.
+//   - lane busy              -> not-ready ('send-lane-busy'): a delivery owns
+//                               the pane right now; retry later.
+//   - imports dialog visible -> never send (any key on it answers it).
+//   - isSessionReadyForPrompt-> the SAME dim-ghost tolerant idle rule the
+//                               delivery path uses (a fresh CC >=2.1.202 pane
+//                               paints a dim placeholder that a plain
+//                               detectPaneState reads as 'typing'); only then
+//                               are the keystrokes sent.
+// A tmux error from the send itself propagates to the caller's catch.
+async function probeAndSendIdentityCommand(session: string, cmd: string, host: string | null): Promise<IdentityProbe> {
+  const release = tryAcquireSessionSendLane(session, host)
+  if (!release) return { kind: 'not-ready', state: 'send-lane-busy' }
+  try {
+    const pane = capturePane(session, host)
+    if (pane != null && detectsExternalImportsDialog(pane)) return { kind: 'imports-dialog' }
+    if (!(await isSessionReadyForPrompt(session, host))) {
+      return { kind: 'not-ready', state: pane == null ? 'capture-failed' : detectPaneState(pane) }
+    }
+    runTmux(host, ['send-keys', '-t', session, cmd, 'Enter'], { timeout: 5000 })
+    return { kind: 'sent' }
+  } finally {
+    release()
+  }
+}
+
+// Gate for the post-spawn identity command: never a blind `send-keys cmd Enter`
+// into a pane nobody looked at (a not-yet-recognised modal swallows the Enter
+// and confirms its highlighted option). A skipped /name is cosmetic; a swallowed
+// consent is not.
+export async function sendIdentityCommandGuarded(
+  session: string,
+  cmd: string,
+  host: string | null = null,
+): Promise<IdentityCommandOutcome> {
+  let last: IdentityProbe = { kind: 'not-ready', state: 'unprobed' }
+  for (let attempt = 0; attempt <= NAME_GATE_RETRIES; attempt++) {
+    if (attempt > 0) await delay(NAME_GATE_RETRY_DELAY_MS)
+    last = await probeAndSendIdentityCommand(session, cmd, host)
+    if (last.kind === 'sent') {
+      importsDialogAlerted.delete(session)
+      return 'sent'
+    }
+    if (last.kind === 'imports-dialog') {
+      alertExternalImportsDialogOnce(session)
+      return 'skipped-imports-dialog'
+    }
+  }
+  logger.warn(
+    { session, paneState: last.kind === 'not-ready' ? last.state : 'unknown', attempts: NAME_GATE_RETRIES + 1 },
+    'Identity setup: pane never reached a ready prompt within the /name gate budget; /name skipped (no keystrokes sent)',
+  )
+  return 'skipped-not-ready'
+}
+
 // Schedule the identity setup for a freshly (re)spawned session: once it has
-// had time to render, dismiss any first-run/resume modals, then send `/name`.
-// Shared by startAgentProcess and the channel-monitor recovery respawns
-// (resumeMarveenSession / respawnMarveenSessionFresh), which previously left the
-// main session without its identity after auto-recovery. Fire-and-forget; all
-// errors are swallowed/logged so a missed setup never tears down the caller.
+// had time to render, dismiss any first-run/resume modals, then send `/name`
+// (through the pane-state gate above). Shared by startAgentProcess and the
+// channel-monitor recovery respawns (resumeMarveenSession /
+// respawnMarveenSessionFresh), which previously left the main session without
+// its identity after auto-recovery. Fire-and-forget; all errors are
+// swallowed/logged so a missed setup never tears down the caller.
 export function scheduleIdentitySetup(session: string, displayName: string, host: string | null = null): void {
   setTimeout(() => {
     void (async () => {
@@ -168,7 +272,9 @@ export function scheduleIdentitySetup(session: string, displayName: string, host
         void (async () => {
           try {
             for (const cmd of identitySlashCommands(displayName)) {
-              runTmux(host, ['send-keys', '-t', session, cmd, 'Enter'], { timeout: 5000 })
+              const outcome = await sendIdentityCommandGuarded(session, cmd, host)
+              // Skipped: already logged (warn / operator alert). Do not claim success.
+              if (outcome !== 'sent') return
               await delay(1000)
             }
             logger.info({ session, displayName }, 'Set session /name')

@@ -4,7 +4,7 @@ import { channelStateDir, readChannelToken } from '../channel-provider.js'
 import { CHANNEL_PROVIDER } from '../config.js'
 import { logger } from '../logger.js'
 import { notifyChannel } from '../notify.js'
-import { decideSubmitFollowup, detectPaneState, detectsPastePlaceholder, idleConsideringDimGhost, paneLooksIdle, paneShowsContextSaturation, parkedClearSequence, parkedInputRowCount, parkedInputText, shouldClearTruncatedPreamble, stripGhostSuggestion } from '../pane-state.js'
+import { decideSubmitFollowup, detectPaneState, detectsExternalImportsDialog, detectsPastePlaceholder, idleConsideringDimGhost, paneLooksIdle, paneShowsContextSaturation, parkedClearSequence, parkedInputRowCount, parkedInputText, shouldClearTruncatedPreamble, stripGhostSuggestion } from '../pane-state.js'
 import { makeLazyBinResolver, tmuxBin } from '../platform.js'
 import { agentDir, readAgentChannelProvider, readAgentRemoteHost } from './agent-config.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
@@ -15,7 +15,7 @@ import { parseTelegramToken } from './telegram.js'
 import { execFileSync, execSync } from 'node:child_process'
 import { join } from 'node:path'
 import { resolveAgentProvider } from './agent-process-config.js'
-import { dismissModelConsentDialogIfPresent, dismissResumeSummaryModalIfPresent, dismissSurveyModalIfPresent } from './agent-process-identity.js'
+import { alertExternalImportsDialogOnce, dismissModelConsentDialogIfPresent, dismissResumeSummaryModalIfPresent, dismissSurveyModalIfPresent } from './agent-process-identity.js'
 
 export { tmuxBin }
 export const claudeBin = makeLazyBinResolver('claude')
@@ -266,6 +266,23 @@ async function discardPlaceholderBuffer(session: string, host: string | null = n
   return finalPane != null && !detectsPastePlaceholder(finalPane)
 }
 
+// True (and nothing is sent, one operator alert per session) when the pane shows
+// the "Allow external CLAUDE.md file imports?" dialog. The system never answers
+// that dialog: "Yes" is a trust grant only the pre-seeded stamp may give, and the
+// Enter that ends every send would pick the highlighted "No". Callers that ignore
+// the 'aborted-busy' result do not get a delivery either way (the menu, not the
+// prompt, would have received the text); what changes is that no Enter reaches
+// the dialog, and the operator is told. The post-send
+// retry-Enter needs no such guard: shouldRetrySubmit only fires on an idle footer
+// or a paste placeholder, neither of which the dialog frame has.
+function refuseOnExternalImportsDialog(session: string, host: string | null): boolean {
+  const pane = capturePane(session, host)
+  if (pane == null || !detectsExternalImportsDialog(pane)) return false
+  alertExternalImportsDialogOnce(session)
+  logger.warn({ session }, 'sendPromptToSession: external imports dialog on the pane; nothing sent (the dialog is never answered)')
+  return true
+}
+
 // Send text to a tmux session as if typed at the prompt.
 // Uses execFileSync so callers can pass raw text -- tmux send-keys -l treats
 // the argument as literal characters, bypassing shell quoting entirely.
@@ -346,13 +363,20 @@ export async function sendPromptToSession(
   // opts.idleTimeoutMs lets such callers use a short budget instead of the
   // default 12s (they already confirmed idleness moments ago).
   const waitForIdle = opts.waitForIdle !== false
+  // A send that goes out WITHOUT proof of an idle pane (the forceSend opt-out, or
+  // the best-effort fall-through below) must at least not walk into the external
+  // CLAUDE.md imports dialog: the typed text is swallowed by the menu and the
+  // submitting Enter confirms its highlighted "No". See refuseOnExternalImportsDialog.
+  let sendWithoutIdleProof = !waitForIdle
   if (waitForIdle && !(await waitForPaneIdle(session, host, opts.idleTimeoutMs))) {
     if (opts.onBusyTimeout === 'abort') {
       logger.info({ session }, 'sendPromptToSession: pane busy past idle budget; aborting per caller policy (no keystrokes sent)')
       return 'aborted-busy'
     }
     logger.warn({ session }, 'sendPromptToSession: pane still busy after wait-until-idle budget; sending best-effort')
+    sendWithoutIdleProof = true
   }
+  if (sendWithoutIdleProof && refuseOnExternalImportsDialog(session, host)) return 'aborted-busy'
 
   // DELIVLOCK805: everything from here to `return 'sent'` EMITS keystrokes into
   // the pane (preamble-clear, chunk stream, submit-retry loop). Two writers

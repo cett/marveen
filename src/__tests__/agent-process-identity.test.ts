@@ -17,6 +17,7 @@ const mockDetectsFirstRunGate = vi.fn()
 const mockDetectsModelConsentDialog = vi.fn()
 vi.mock('../pane-state.js', () => ({
   detectPaneState: vi.fn(),
+  detectsExternalImportsDialog: vi.fn(() => false),
   detectsFirstRunGate: (...a: unknown[]) => mockDetectsFirstRunGate(...(a as [string])),
   detectsModelConsentDialog: (...a: unknown[]) => mockDetectsModelConsentDialog(...(a as [string])),
 }))
@@ -29,12 +30,14 @@ const mockCapturePane = vi.fn<(session: string, host: string | null) => string |
 const mockCaptureTmux = vi.fn<(host: string | null, args: string[]) => string>()
 const mockRunTmux = vi.fn<(host: string | null, args: string[], opts?: unknown) => void>()
 const mockDelay = vi.fn<(ms: number) => Promise<void>>()
+const mockIsSessionReady = vi.fn<(session: string, host: string | null) => Promise<boolean>>()
+vi.mock('../notify.js', () => ({ notifyChannel: vi.fn(() => Promise.resolve()) }))
 vi.mock('../web/agent-process-session.js', () => ({
   capturePane: (...a: unknown[]) => mockCapturePane(...(a as [string, string | null])),
   captureTmux: (...a: unknown[]) => mockCaptureTmux(...(a as [string | null, string[]])),
   runTmux: (...a: unknown[]) => mockRunTmux(...(a as [string | null, string[], unknown])),
   delay: (...a: unknown[]) => mockDelay(...(a as [number])),
-  isSessionReadyForPrompt: vi.fn(),
+  isSessionReadyForPrompt: (...a: unknown[]) => mockIsSessionReady(...(a as [string, string | null])),
   sendPromptToSession: vi.fn(),
 }))
 
@@ -236,6 +239,13 @@ describe('scheduleIdentitySetup', () => {
   })
   afterEach(() => {
     vi.useRealTimers()
+  })
+
+  // The /name now goes through the pane-state gate (see identity-name-gate.test.ts for the gate itself): here the
+  // pane reads as a ready prompt, so these two cases keep exercising the scheduler's own ordering and error paths.
+  beforeEach(() => {
+    mockCapturePane.mockReturnValue('normal pane, no modal')
+    mockIsSessionReady.mockResolvedValue(true)
   })
 
   it('dismisses modals first, then sends /name after the identity delay', async () => {

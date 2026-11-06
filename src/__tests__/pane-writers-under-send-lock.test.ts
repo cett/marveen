@@ -107,6 +107,14 @@ describe('every unguarded pane writer routes through the send lane', () => {
     expect(src).toMatch(/failedOpen/)
   })
 
+  it('the post-spawn /name probes and sends under a fail-closed lane acquire, released in finally', () => {
+    const src = read('../web/agent-process-identity.ts')
+    expect(src).toMatch(/const release = tryAcquireSessionSendLane\(session, host\)\s*\n\s*if \(!release\) return \{ kind: 'not-ready', state: 'send-lane-busy' \}/)
+    const fn = src.slice(src.indexOf('async function probeAndSendIdentityCommand'))
+    expect(fn.indexOf('tryAcquireSessionSendLane')).toBeLessThan(fn.indexOf("'send-keys'"))
+    expect(fn).toMatch(/\} finally \{\s*release\(\)/)
+  })
+
   it('the modal dismissals acquire the lane fail-closed, except when the caller already holds it', () => {
     const src = ['agent-process-spawn.ts', 'agent-process-session.ts', 'agent-process-config.ts', 'agent-process-identity.ts']
       .map(f => read('../web/' + f)).join('\n')

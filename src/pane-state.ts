@@ -499,7 +499,7 @@ export function detectsApprovalPrompt(pane: string): boolean {
   return true
 }
 
-export type MenuRecoveryAction = 'none' | 'alert-approval' | 'answer-model-consent' | 'escape'
+export type MenuRecoveryAction = 'none' | 'alert-imports' | 'alert-approval' | 'answer-model-consent' | 'escape'
 
 /**
  * What the monitor may do to a pane it has just seen parked in a "menu" for the
@@ -508,8 +508,17 @@ export type MenuRecoveryAction = 'none' | 'alert-approval' | 'answer-model-conse
  * key. Only a genuine menu earns the blind Escape: an approval prompt is
  * alert-only, the model-consent dialog is answered, and anything that is no
  * longer a blocking menu (busy, idle) is left alone.
+ *
+ * The external CLAUDE.md imports dialog is decided FIRST and is alert-only:
+ * Escape (like Enter) on it picks the highlighted "No", recorded as an
+ * explicit refusal, and "Yes" is a trust grant only the pre-seeded stamp may
+ * give. It is tested before detectsBlockingMenu on purpose: that detector
+ * reads the raw pane tail without trimming trailing blank rows, so a tall pane
+ * that pads the dialog with empty lines would read as 'none' there, and one
+ * that fills the region exactly would read as a plain menu ('escape').
  */
 export function decideMenuRecoveryAction(pane: string | null): MenuRecoveryAction {
+  if (pane != null && detectsExternalImportsDialog(pane)) return 'alert-imports'
   if (pane == null || !detectsBlockingMenu(pane)) return 'none'
   if (detectsApprovalPrompt(pane)) return 'alert-approval'
   if (detectsModelConsentDialog(pane)) return 'answer-model-consent'
@@ -618,6 +627,45 @@ export function detectsModelConsentDialog(pane: string): boolean {
   return MODEL_CONSENT_TITLE_RX.test(pane)
     && MODEL_CONSENT_CONTINUE_RX.test(pane)
     && MODEL_CONSENT_CONFIRM_RX.test(footerRegion)
+}
+
+// The "Allow external CLAUDE.md file imports?" dialog (Claude Code 2.1.316). An agent's CLAUDE.md imports its persona
+// with `@../../personas/<name>.md`, a file outside the project root; without the approval stamp the TUI parks on
+//   Allow external CLAUDE.md file imports?
+//   ...
+//   External imports:
+//     /path/to/persona.md
+//   ...
+//   > No, disable external imports (the cursor marker is U+276F)
+//     Yes, allow external imports
+//   Enter to confirm (middle dot) Esc to cancel
+// with the cursor on "No". A blind Enter confirms the MARKED option, so the dialog must never be typed into: "Yes"
+// is a trust grant the stamp alone may give, and "No" is recorded as an explicit refusal. This detector only says
+// "that dialog is on the screen"; nothing in the system answers it. The wrapped text between the title and the options
+// depends on the pane width and the path line is middle-truncated, so only the width-independent anchors are matched:
+// the title, BOTH option lines (whichever carries the cursor) and the confirm hint in the live footer region.
+// Guards follow detectsModelConsentDialog: a busy pane is never the dialog, a visible idle footer means the real
+// prompt is live (a message that merely QUOTES the dialog cannot match), and the confirm hint must sit in the footer
+// region of the pane with its trailing blank rows ignored (a tall pane pads the dialog with empty lines).
+const IMPORTS_DIALOG_TITLE_RX = /Allow external CLAUDE\.md file imports\?/
+const IMPORTS_DIALOG_NO_RX = /^\s*(?:\u276f\s*)?No, disable external imports\s*$/m
+const IMPORTS_DIALOG_YES_RX = /^\s*(?:\u276f\s*)?Yes, allow external imports\s*$/m
+const IMPORTS_DIALOG_CONFIRM_RX = /Enter to confirm/
+
+export function detectsExternalImportsDialog(pane: string): boolean {
+  if (!pane || !pane.trim()) return false
+  const lines = pane.replace(/\s+$/, '').split('\n')
+  const busyRegion = lines.slice(-BUSY_LIVE_REGION_LINES).join('\n')
+  for (const rx of BUSY_INDICATORS) {
+    if (rx.test(busyRegion)) return false
+  }
+  const footerRegion = lines.slice(-LIVE_FOOTER_REGION_LINES).join('\n')
+  if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return false
+  if (IDLE_FOOTER_RX.test(pane)) return false
+  return IMPORTS_DIALOG_TITLE_RX.test(pane)
+    && IMPORTS_DIALOG_NO_RX.test(pane)
+    && IMPORTS_DIALOG_YES_RX.test(pane)
+    && IMPORTS_DIALOG_CONFIRM_RX.test(footerRegion)
 }
 
 export interface DetectPaneStateOptions {
