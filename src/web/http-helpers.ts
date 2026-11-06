@@ -127,6 +127,17 @@ export async function readJsonBody<T>(req: http.IncomingMessage): Promise<T> {
   return JSON.parse(body.toString()) as T
 }
 
+// Parses a request body text that must be a JSON OBJECT. `null`, a number, a string, a boolean and an array are valid
+// JSON but have no fields to read: a route that destructures or probes them (`'due_date' in data`) throws a TypeError
+// that the top-level handler answers with a 500, or silently treats them as an empty object. They come back as
+// `{ ok: false }` for the route to refuse with a 400. A text that is not JSON at all still throws the SyntaxError,
+// unchanged, for the top-level handler to answer as a 400 parse_error (isInvalidJsonBodyError).
+export function parseJsonObject(text: string): { ok: true; value: Record<string, unknown> } | { ok: false } {
+  const value: unknown = JSON.parse(text)
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return { ok: false }
+  return { ok: true, value: value as Record<string, unknown> }
+}
+
 // True when `err` is the SyntaxError a route got from JSON.parse-ing a request body that really is not valid
 // JSON (a truncated or malformed client payload). The top-level handler answers that with a 400, because it is
 // the caller's mistake, not a server fault: a 500 would also be recorded as an error span. Both conditions are

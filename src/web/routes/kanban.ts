@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
+import type http from 'node:http'
 import {
   listKanbanCards, countKanbanCards, createKanbanCard, updateKanbanCard, parseKanbanDueDate,
   deleteKanbanCard, moveKanbanCard, archiveKanbanCard, unarchiveKanbanCard,
@@ -20,7 +21,7 @@ import {
   type KanbanAuditActor,
 } from '../../db.js'
 import { isKanbanIdTaken } from '../../db/kanban-id-taken.js'
-import { refuseBodyAssignee, refuseForeignAssignee, refuseSubtaskAssignees, tenantBreakdownAssignees } from './kanban-assignee-tenant.js'
+import { MAX_ASSIGNEE_LENGTH, refuseBodyAssignee, refuseForeignAssignee, refuseSubtaskAssignees, tenantBreakdownAssignees } from './kanban-assignee-tenant.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
 import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, PROJECT_ROOT, WEB_HOST, WEB_PORT, KANBAN_LABEL_COLORS } from '../../config.js'
 import { listAgentNames, readAgentDisplayName } from '../agent-config.js'
@@ -29,7 +30,7 @@ import { resolveKanbanDispatchTarget } from '../../kanban-dispatch.js'
 import { generateBreakdown } from '../llm-breakdown.js'
 import { getCardTokenUsage } from '../card-token-usage.js'
 import { logger } from '../../logger.js'
-import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
+import { readBody, json, jsonMaybeGzip, parseJsonObject } from '../http-helpers.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
 import { scopeToTenant } from '../tenant-scope.js'
 import { parsePagination } from '../utils/pagination.js'
@@ -42,6 +43,13 @@ function kanbanAuditActor(ctx: RouteContext): KanbanAuditActor | undefined {
   if (ctx.auth?.kind === 'session' && ctx.auth.user) return { id: ctx.auth.user, source: 'session' }
   if (ctx.agentId) return { id: ctx.agentId, source: 'self_declared' }
   return undefined
+}
+
+// The answer of every kanban route that reads a JSON object body, when the body is valid JSON but not an object
+// (null, a number, a string, a boolean, an array). Always returns true: the route has answered.
+function refuseNonObjectBody(res: http.ServerResponse): true {
+  json(res, { error: 'invalid_value', field: 'body', hint: 'The body must be a JSON object' }, 400)
+  return true
 }
 
 const KANBAN_STATUSES = new Set<KanbanCard['status']>(['planned', 'in_progress', 'waiting', 'testing', 'done'])
@@ -341,7 +349,9 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/kanban/labels' && method === 'POST') {
     const body = await readBody(req)
-    const { name, color } = JSON.parse(body.toString()) as { name?: string; color?: string }
+    const parsed = parseJsonObject(body.toString())
+    if (!parsed.ok) return refuseNonObjectBody(res)
+    const { name, color } = parsed.value as { name?: string; color?: string }
     if (!name || !name.trim()) { json(res, { error: 'required', field: 'name', hint: 'Címke neve kötelező' }, 400); return true }
     // Colour is validated against the configured palette (KANBAN_LABEL_COLORS)
     // rather than accepted as free-text, so every label's colour traces back
@@ -357,7 +367,9 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   if (labelMatch && method === 'PUT') {
     const id = decodeURIComponent(labelMatch[1])
     const body = await readBody(req)
-    const { name, color } = JSON.parse(body.toString()) as { name?: string; color?: string }
+    const parsed = parseJsonObject(body.toString())
+    if (!parsed.ok) return refuseNonObjectBody(res)
+    const { name, color } = parsed.value as { name?: string; color?: string }
     const fields: { name?: string; color?: string } = {}
     if (name !== undefined) {
       if (!name.trim()) { json(res, { error: 'required', field: 'name', hint: 'Címke neve kötelező' }, 400); return true }
@@ -389,7 +401,9 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const body = await readBody(req)
     // Accept `id` as an alias for `labelId` -- API callers reasonably send either,
     // since GET /api/kanban/labels returns objects keyed by `id`, not `labelId`.
-    const parsed = JSON.parse(body.toString()) as { labelId?: string; id?: string }
+    const parsedBody = parseJsonObject(body.toString())
+    if (!parsedBody.ok) return refuseNonObjectBody(res)
+    const parsed = parsedBody.value as { labelId?: string; id?: string }
     const labelId = parsed.labelId ?? parsed.id
     if (!labelId) { json(res, { error: 'required', field: 'labelId', hint: 'labelId mező kötelező' }, 400); return true }
     const label = await ownLabel(labelId)
@@ -441,7 +455,10 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/kanban' && method === 'POST') {
     const body = await readBody(req)
-    const data = JSON.parse(body.toString())
+    const parsedBody = parseJsonObject(body.toString())
+    if (!parsedBody.ok) return refuseNonObjectBody(res)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- as before the guard: the fields are read and checked one by one below
+    const data: any = parsedBody.value
     if ('due_date' in data) {
       const due = parseKanbanDueDate(data.due_date)
       if (due === undefined) { json(res, { error: 'invalid_value', field: 'due_date', hint: 'due_date must be an integer epoch in seconds, a YYYY-MM-DD date or null' }, 400); return true }
@@ -503,7 +520,10 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       ownedCardAssignee = typeof ownedCard.assignee === 'string' ? ownedCard.assignee : null
     }
     const body = await readBody(req)
-    const data = JSON.parse(body.toString())
+    const parsedBody = parseJsonObject(body.toString())
+    if (!parsedBody.ok) return refuseNonObjectBody(res)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- as before the guard: the fields are read and checked one by one below
+    const data: any = parsedBody.value
     if ('due_date' in data) {
       const due = parseKanbanDueDate(data.due_date)
       if (due === undefined) { json(res, { error: 'invalid_value', field: 'due_date', hint: 'due_date must be an integer epoch in seconds, a YYYY-MM-DD date or null' }, 400); return true }
@@ -601,6 +621,13 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       return true
     }
     if (!actor) { json(res, { error: 'required', field: 'agent', hint: 'Authenticate as an agent or send X-Agent-Id' }, 400); return true }
+    // The header is the one source of the claimant a caller writes itself (self_declared); the agent of a token and the
+    // signed-in user are who the caller IS and are not capped here. The length comes before the tenant verdict and
+    // before any write, as for an assignee in a body: a megabyte of header must not be looked up.
+    if (actor.source === 'self_declared' && actor.id.length > MAX_ASSIGNEE_LENGTH) {
+      json(res, { error: 'invalid_value', field: 'agent', hint: `X-Agent-Id must be at most ${MAX_ASSIGNEE_LENGTH} characters` }, 400)
+      return true
+    }
     const claimant = actor.id
     // A self-declared X-Agent-Id is any name: a tenant-bound caller may not claim as another tenant's agent.
     if (!isAdmin && effectiveTenantId !== null && await refuseForeignAssignee(res, claimant, 'agent', effectiveTenantId)) return true
@@ -755,7 +782,9 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   if (kanbanCommentsMatch && method === 'POST') {
     const cardId = decodeURIComponent(kanbanCommentsMatch[1])
     const body = await readBody(req)
-    const { author, content } = JSON.parse(body.toString())
+    const parsedBody = parseJsonObject(body.toString())
+    if (!parsedBody.ok) return refuseNonObjectBody(res)
+    const { author, content } = parsedBody.value as { author: string; content: string }
     if (!author || !content) { json(res, { error: 'required', hint: 'Szerző és tartalom kötelező' }, 400); return true }
     // Code-side kanban-ref enforcement: rewrite `#<hex8>` references that map
     // to a real card into the human-facing `#<seq>` form before persistence
@@ -826,13 +855,10 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     }
     if (parent.depth >= 2) { json(res, { error: 'limit_exceeded', field: 'parent_id', hint: 'Szülő kártya már maximális mélységen van (depth 2)' }, 400); return true }
     const body = await readBody(req)
-    const parsedBody: unknown = JSON.parse(body.toString())
+    const parsedBody = parseJsonObject(body.toString())
     // null, a number, a string, a boolean or an array has no `subtasks` to read (and null would throw at the destructure).
-    if (parsedBody === null || typeof parsedBody !== 'object' || Array.isArray(parsedBody)) {
-      json(res, { error: 'invalid_value', field: 'body', hint: 'The body must be a JSON object' }, 400)
-      return true
-    }
-    const { subtasks } = parsedBody as {
+    if (!parsedBody.ok) return refuseNonObjectBody(res)
+    const { subtasks } = parsedBody.value as {
       subtasks: Array<{ title: string; description: string; assignee: string | null; priority: string }>
     }
     if (!Array.isArray(subtasks) || subtasks.length === 0) {
@@ -877,7 +903,9 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   if (parentPatchMatch && method === 'PATCH') {
     const id = decodeURIComponent(parentPatchMatch[1])
     const body = await readBody(req)
-    const { parent_id } = JSON.parse(body.toString()) as { parent_id: string | null }
+    const parsedBody = parseJsonObject(body.toString())
+    if (!parsedBody.ok) return refuseNonObjectBody(res)
+    const { parent_id } = parsedBody.value as { parent_id: string | null }
     // A non-admin caller may only move a card of its own tenant, and only under a parent of its own tenant;
     // either foreign id answers like a missing one (404), so ids cannot be probed across tenants.
     if (!isAdmin && effectiveTenantId !== null) {
