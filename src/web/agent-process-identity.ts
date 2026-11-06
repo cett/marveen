@@ -174,7 +174,7 @@ export function resetImportsDialogAlerts(): void {
 // "Allow external CLAUDE.md file imports?" is answered by NOBODY at runtime:
 // "Yes" is a trust grant for the fleet persona folder and may only come from
 // the pre-seeded stamp (stampProjectTrustForDir), and Escape/Enter on the
-// dialog selects the highlighted "No" (the false,true artifact). So the system
+// dialog picks the highlighted "No", which is recorded as an explicit refusal of the imports. So the system
 // leaves the pane alone and tells the operator, once. The text carries the
 // session name only, never pane contents.
 export function alertExternalImportsDialogOnce(session: string): void {
