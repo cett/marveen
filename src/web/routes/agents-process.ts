@@ -21,6 +21,7 @@ import { DEFAULT_AUTO_RESTART } from '../../auto-restart.js'
 import { DEFAULT_CONTEXT_GUARD } from '../../context-guard.js'
 import { claimPendingForAgent, markMessageFailed, agentBelongsToTenant, resolveAgentOwningTenantId } from '../../db.js'
 import { classifyAgentMessage, wrapAgentMessageForDelivery } from '../agent-message-wrap.js'
+import { openDeliveryGate } from '../sender-routing-wire.js'
 import { readBody, json } from '../http-helpers.js'
 import { remoteRunStateCache, remotePaneCache, assertAgentExists } from './agents-helpers.js'
 import type { RouteContext } from './types.js'
@@ -183,7 +184,18 @@ export async function tryHandleAgentsProcess(ctx: RouteContext): Promise<boolean
       json(res, { error: 'not_supported', hint: 'drain-inbox is main-agent only (sub-agents use the router push path)' }, 400)
       return true
     }
-    const claimed = await claimPendingForAgent(name, INBOX_DRAIN_CAP)
+    // Sender routing (SENDER_ROUTING_MODE) on the pull path too: this is the main agent's only delivery path, and
+    // the rows it claims include the channel coordinator's direct inserts. enforce: a refused row is closed
+    // (refused) and not shown; audit: logged only.
+    // The gate is opened BEFORE the claim: the claim flips the rows to 'delivered', and a row that is claimed but never
+    // shown would stay 'delivered' for good (the next drain only claims pending rows). If the verdict is impossible
+    // (enforce mode, routing context unreadable) nothing is claimed: the rows stay pending and the next drain asks again.
+    const gate = await openDeliveryGate()
+    if (!gate.open) {
+      json(res, { count: 0, text: '' })
+      return true
+    }
+    const claimed = await gate.judge(await claimPendingForAgent(name, INBOX_DRAIN_CAP))
     const blocks: string[] = []
     for (const msg of claimed) {
       const cls = classifyAgentMessage(msg.from_agent, msg.to_agent)

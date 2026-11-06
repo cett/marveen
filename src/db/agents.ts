@@ -293,7 +293,7 @@ export async function claimPendingForAgent(toAgent: string, limit: number): Prom
          ORDER BY created_at ASC, id ASC
          LIMIT ?
        )
-     RETURNING id, from_agent, to_agent, content, status, result, created_at, delivered_at, completed_at`, now, toAgent, limit)
+     RETURNING id, from_agent, to_agent, content, status, result, created_at, delivered_at, completed_at, tenant_id`, now, toAgent, limit)
   // RETURNING row order is unspecified; restore FIFO (created_at, then id as the
   // tiebreaker for same-second inserts) for delivery.
   return rows.sort((a, b) => (a.created_at - b.created_at) || (a.id - b.id))
@@ -800,6 +800,12 @@ export async function isTenantAgentEnabled(tenantId: string, agentId: string): P
 export async function getEnabledAgentsForTenant(tenantId: string): Promise<string[]> {
   const rows = (await dbx.all('SELECT agent_id FROM tenant_agent_availability WHERE tenant_id = ? AND enabled = 1', tenantId)) as { agent_id: string }[]
   return rows.map(r => r.agent_id)
+}
+
+/** Every enabled (tenant_id, agent_id) pair in ONE read: the sender-routing context is built from this and
+ *  the tenants table once per request / router tick, so the decision itself touches no database. */
+export async function listEnabledAgentAvailability(): Promise<{ tenant_id: string; agent_id: string }[]> {
+  return dbx.all<{ tenant_id: string; agent_id: string }>('SELECT tenant_id, agent_id FROM tenant_agent_availability WHERE enabled = 1')
 }
 
 /** List tenant_ids this agent is enabled=1 for -- the inverse of

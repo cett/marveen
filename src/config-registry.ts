@@ -784,6 +784,16 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: false,
   },
+  {
+    key: 'SENDER_ROUTING_MODE',
+    type: 'string',
+    default: 'audit',
+    valueSet: ['audit', 'enforce'],
+    description: 'A küldő-szerep szerinti címzett-szabály módja (ki kinek írhat). audit = a szabály csak naplózza a döntést (sender_route_checked), minden üzenet a mostani úton megy (alapértelmezés). enforce = a tiltott küldő-címzett pár a POST /api/messages-en 403, a kézbesítéskor pedig refused. Ismeretlen érték audit. Újraindítás nélkül érvényes (minden kérésnél / router tickben újraolvasva). Az enforce bekapcsolása külön döntés a 7 napos audit-adat alapján.',
+    module: 'system',
+    secret: false,
+    requiresRestart: false,
+  },
   // --- Observability module (OTel push exporter, #800/#802) ---
   {
     key: 'OTEL_EXPORT_ENABLED',

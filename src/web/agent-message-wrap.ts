@@ -26,6 +26,11 @@ import { parseQualifiedId, formatQualifiedId, federationSource } from './federat
 // never the attacker-influenceable from_agent string.
 const CHANNEL_COORDINATOR_AGENTS = new Set<string>([COORDINATOR_AGENT_ID])
 
+/** True for a sender id (already sanitized) that is the in-process channel coordinator: a code constant. */
+export function isChannelCoordinatorSender(safeFrom: string): boolean {
+  return CHANNEL_COORDINATOR_AGENTS.has(safeFrom)
+}
+
 export type AgentMessageCategory = 'channel-inbound' | 'trusted-peer' | 'untrusted' | 'federated'
 
 // Classify an inter-agent message's delivery category, in priority order on the
