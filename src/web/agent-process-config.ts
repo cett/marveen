@@ -13,7 +13,8 @@ import { CHANNEL_PLUGIN_IDS } from './plugin-ids.js'
 export { CHANNEL_PLUGIN_IDS }
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { isDeepStrictEqual } from 'node:util'
+import { basename, dirname, join, resolve } from 'node:path'
 import { dismissModelConsentDialogIfPresent } from './agent-process-identity.js'
 import { agentHasChannel, agentRunState, sendPromptToSession } from './agent-process-session.js'
 import { startAgentProcess } from './agent-process-spawn.js'
@@ -217,9 +218,18 @@ export function maybeAlertSharedConfigCollision(name: string): void {
 // .credentials.json into the config dir -- so there is nothing to diverge and no
 // refresh race. .credentials.json is therefore in the skip set below.
 //
+// .claude.json is in the skip set for a different reason: it is Claude Code's OWN
+// per-config-dir state (consent flags, project trust, counters), not shared
+// content. ~/.claude/.claude.json exists (it is the main session's config), so
+// without the skip every provision removed the agent's file, symlinked it to the
+// main config and then replaced the symlink with a COPY of the main config (the
+// step-4 read-modify-write renames over it). The agent's own state, including
+// the external CLAUDE.md imports consent, was thrown away on every start. The
+// file is seeded once (step 4) and owned by Claude Code afterwards.
+//
 // Idempotent and best-effort: returns the dir on success, or null so the caller
 // falls back to the shared ~/.claude (degraded, but never a launch failure).
-const ISOLATED_CONFIG_SKIP = new Set(['settings.json', 'plugins', '.credentials.json'])
+const ISOLATED_CONFIG_SKIP = new Set(['settings.json', 'plugins', '.credentials.json', '.claude.json'])
 
 export function ensureIsolatedChannelConfigDir(
   name: string,
@@ -410,6 +420,69 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v)
 }
 
+// Refresh the `headers` object of every HTTP MCP server the agent ALREADY has
+// from the same-named HTTP server in the shared ~/.claude.json.
+//
+// Why: an HTTP server's credential lives in its headers, and the only resolver
+// (channels.sh vault-inject-http-mcp) works on the shared config, so the agent
+// has always got its headers from the per-start copy of that config. With the
+// copy gone (.claude.json is no longer re-seeded on every start) a rotated
+// header would never reach an existing agent: reconcileMcpServers is additive
+// and never overwrites an entry. This keeps today's behavior for exactly that
+// one field and nothing else.
+//
+// Narrow on purpose:
+//   - only a server that exists on BOTH sides and is `type: "http"` on both,
+//   - only the `headers` object is replaced, never any other field of the entry,
+//   - a shared entry without a headers object leaves the agent's alone,
+//   - a missing server is not added here (reconcileMcpServers does that),
+//   - change-only, and a non-object mcpServers on either side touches nothing.
+// Only server NAMES are logged: header values are credentials.
+// Returns true if the caller should persist `cur`.
+function refreshHttpMcpHeaders(
+  cur: Record<string, unknown>,
+  sharedDot: string,
+  name: string,
+): boolean {
+  if (!isPlainObject(cur.mcpServers) || !existsSync(sharedDot)) return false
+  let shared: Record<string, unknown>
+  try { shared = JSON.parse(readFileSync(sharedDot, 'utf-8')) as Record<string, unknown> }
+  catch { return false }
+  if (!isPlainObject(shared.mcpServers)) return false
+  const refreshed: string[] = []
+  for (const [key, own] of Object.entries(cur.mcpServers)) {
+    const src = shared.mcpServers[key]
+    if (!isPlainObject(own) || !isPlainObject(src)) continue
+    if (own.type !== 'http' || src.type !== 'http') continue
+    if (!isPlainObject(src.headers)) continue
+    if (isDeepStrictEqual(own.headers, src.headers)) continue
+    own.headers = { ...src.headers }
+    refreshed.push(key)
+  }
+  if (refreshed.length === 0) return false
+  logger.info({ name, servers: refreshed }, 'isolated-config: refreshed HTTP MCP headers from the shared config')
+  return true
+}
+
+// A legacy isolated .claude.json may still be a SYMLINK (to the main config).
+// Claude Code writes through a symlink's target, and our own atomic write
+// replaces the link, so a symlink here means the agent's state is the main
+// config's. Turn it into a regular file ONCE: same bytes as the target, written
+// next to it and renamed over the link, so the target itself is never touched
+// and a reader sees either the link or the finished file. Owner-only mode: the
+// target can be 0644 and carries credential-bearing config. A dangling link is
+// left to the seed branch (it replaces the link too).
+function materializeSymlinkedDotClaude(dotClaude: string, name: string): void {
+  try {
+    if (!lstatSync(dotClaude).isSymbolicLink()) return
+    const raw = readFileSync(dotClaude)
+    const tmp = `${dotClaude}.tmp-${process.pid}`
+    writeFileSync(tmp, raw, { mode: 0o600 })
+    renameSync(tmp, dotClaude)
+    logger.info({ name }, 'isolated-config: materialized the symlinked .claude.json into an own file')
+  } catch { /* absent or dangling -> the seed branch handles it */ }
+}
+
 function provisionIsolatedConfigDir(
   cfg: string,
   cwd: string,
@@ -588,6 +661,11 @@ function provisionIsolatedConfigDir(
     try {
       const dotClaude = join(cfg, '.claude.json')
       const sharedDot = join(homedir(), '.claude.json')
+      // The main agent's isolated dir keeps its .claude.json symlink to the main
+      // session config (the channels.sh inject/restore target): not ours to
+      // materialize, and it has no use for a header refresh either.
+      const isMainAgent = name === MAIN_AGENT_ID
+      if (!isMainAgent) materializeSymlinkedDotClaude(dotClaude, name)
       if (!existsSync(dotClaude)) {
         let seed: Record<string, unknown> = { hasCompletedOnboarding: true }
         if (existsSync(sharedDot)) {
@@ -604,6 +682,7 @@ function provisionIsolatedConfigDir(
             dirty = true
           }
           if (reconcileMcpServers(cur, sharedDot, name)) dirty = true
+          if (!isMainAgent && refreshHttpMcpHeaders(cur, sharedDot, name)) dirty = true
           if (dirty) writeJsonAtomic(dotClaude, cur)
         } catch { /* unparseable -> leave for Claude Code to recreate */ }
       }
@@ -654,6 +733,44 @@ export function ensureSharedClaudeOnboarded(dotClaudePath: string = join(homedir
   }
 }
 
+// The project root Claude Code keys its per-project consents on: the nearest ancestor (the dir itself included) that
+// holds a `.git`, and for a linked worktree (its `.git` is a FILE pointing into the main repo) the root of the MAIN
+// repo. Measured on claude 2.1.316: a worktree resolves to the main repo's root key. Plain file-system steps, no `git`
+// subprocess: the spawn path stays linear and fast. A dir with no git root is its own project root; any read problem
+// ends the walk the same way (the dir itself), never an exception.
+export function resolveClaudeProjectRoot(startDir: string): string {
+  let dir = resolve(startDir)
+  for (let depth = 0; depth < 64; depth++) {
+    const dotGit = join(dir, '.git')
+    let kind: 'dir' | 'file' | null = null
+    try {
+      const st = statSync(dotGit)
+      kind = st.isDirectory() ? 'dir' : st.isFile() ? 'file' : null
+    } catch { /* no .git here */ }
+    if (kind === 'dir') return dir
+    if (kind === 'file') return mainRepoRootOfLinkedWorktree(dir, dotGit) ?? dir
+    const parent = dirname(dir)
+    if (parent === dir) break
+    dir = parent
+  }
+  return resolve(startDir)
+}
+
+// A linked worktree's `.git` file reads `gitdir: <main>/.git/worktrees/<name>`, and that dir holds a `commondir` file
+// pointing back at `<main>/.git`: the main repo root is its parent. A submodule's gitdir has no `commondir` (it IS its
+// own repo): null, the caller keeps the dir that holds the `.git` file.
+function mainRepoRootOfLinkedWorktree(dir: string, dotGitFile: string): string | null {
+  try {
+    const line = /^gitdir:\s*(.+?)\s*$/m.exec(readFileSync(dotGitFile, 'utf-8').slice(0, 4096))
+    if (!line) return null
+    const gitdir = resolve(dir, line[1])
+    const common = resolve(gitdir, readFileSync(join(gitdir, 'commondir'), 'utf-8').slice(0, 4096).trim())
+    return basename(common) === '.git' ? dirname(common) : null
+  } catch {
+    return null
+  }
+}
+
 // Pre-accept the PER-PROJECT first-run consent for an agent's working dir in
 // the config root the session will boot from. Claude Code keys the "Do you
 // trust the files in this folder?" dialog on projects[<cwd>].hasTrustDialogAccepted
@@ -699,10 +816,33 @@ export function stampProjectTrustForDir(dotClaudePath: string, projectDir: strin
       }
       changed = true
     }
+    // The agents' CLAUDE.md imports the persona with `@../../personas/<name>.md`, a file OUTSIDE the project root, so
+    // Claude Code asks "Allow external CLAUDE.md file imports?" at the first start under every config root that has
+    // no consent for the PROJECT ROOT (measured: the dialog reads the flag on the git root key, or on the dir itself
+    // when there is no git root; a flag on the agent dir below a git root is never looked at). The persona folder is
+    // the fleet's own, so the consent is pre-approved the way the folder trust above is.
+    // ONE key: the REAL path of the project root, found by walking up from the real path of the dir (Claude Code
+    // ignores a symlink-shaped key for this flag; a path that does not resolve stays as it is).
+    const realOf = (p: string): string => { try { return realpathSync(p) } catch { return p } }
+    const root = realOf(resolveClaudeProjectRoot(realOf(projectDir)))
+    const rootEntry = (projects[root] && typeof projects[root] === 'object')
+      ? projects[root] as Record<string, unknown>
+      : {}
+    if (rootEntry.hasClaudeMdExternalIncludesApproved === true) {
+      // already approved: nothing to write
+    } else if (rootEntry.hasClaudeMdExternalIncludesApproved === false && rootEntry.hasClaudeMdExternalIncludesWarningShown === true) {
+      // An explicit No (the dialog was shown and answered): the operator's choice stays. The persona import of this
+      // agent is then disabled until someone sets the flag back by hand.
+      logger.warn({ dotClaudePath, projectDir, projectRoot: root }, 'project-trust: external CLAUDE.md imports were declined for this project root, the persona import stays disabled (not overwritten)')
+    } else {
+      // never asked (no flag, or a false that the dialog did not write): approve, and keep it to the one flag
+      projects[root] = { ...rootEntry, hasClaudeMdExternalIncludesApproved: true }
+      changed = true
+    }
     if (!changed) return false
     data.projects = projects
     atomicWriteFileSync(dotClaudePath, JSON.stringify(data, null, 2) + '\n', { mode: 0o600 })
-    logger.info({ dotClaudePath, projectDir }, 'project-trust: stamped folder-trust consent for agent dir')
+    logger.info({ dotClaudePath, projectDir }, 'project-trust: stamped folder-trust and external-includes consent for the agent project')
     return true
   } catch (err) {
     // Unparseable/unwritable file: leave it to Claude Code (same policy as
