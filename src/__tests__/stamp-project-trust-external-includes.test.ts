@@ -1,12 +1,15 @@
 // stampProjectTrustForDir also pre-approves the "Allow external CLAUDE.md file imports?" dialog. The agents' CLAUDE.md
-// imports `@../../personas/<name>.md`, outside the project root, and Claude Code keys that consent on the PROJECT ROOT
-// (the git root; for a linked worktree the root of the MAIN repo; with no git root the dir itself), measured on
-// claude 2.1.316: a flag on the agent dir below a git root is never looked at. Real temporary file system, no fs mock.
+// imports `@../../personas/<name>.md`, outside the project root, and Claude Code keys that consent on the REAL path of
+// the PROJECT ROOT (the git root; for a linked worktree the root of the MAIN repo; with no git root the dir itself),
+// measured on claude 2.1.316: a flag on the agent dir below a git root is never looked at, and neither is a
+// symlink-shaped key. An explicit No (approved:false with warned:true) is the operator's answer and is never
+// overwritten. Real temporary file system, no fs mock.
 
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, realpathSync, rmSync, symlinkSync, statSync, utimesSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { logger } from '../logger.js'
 import { resolveClaudeProjectRoot, stampProjectTrustForDir } from '../web/agent-process-config.js'
 
 const made: string[] = []
@@ -15,10 +18,11 @@ function tmp(): string {
   made.push(dir)
   return dir
 }
-afterEach(() => { for (const d of made.splice(0)) rmSync(d, { recursive: true, force: true }) })
+afterEach(() => { vi.restoreAllMocks(); for (const d of made.splice(0)) rmSync(d, { recursive: true, force: true }) })
 
 const APPROVED = 'hasClaudeMdExternalIncludesApproved'
 const WARNED = 'hasClaudeMdExternalIncludesWarningShown'
+const TRUSTED = { hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true, projectOnboardingSeenCount: 1 }
 
 // <root>/.git (dir), <root>/agents/x as the agent dir
 function repoWithAgentDir(): { root: string; agent: string } {
@@ -31,44 +35,70 @@ function repoWithAgentDir(): { root: string; agent: string } {
 const read = (file: string) => JSON.parse(readFileSync(file, 'utf-8')) as { projects: Record<string, Record<string, unknown>> } & Record<string, unknown>
 const cfg = (dir: string) => join(dir, '.claude.json')
 
-describe('the external-includes consent lands on the project root', () => {
-  it('a fresh config: the git root gets both flags, the agent dir keeps only the folder-trust stamp', () => {
+describe('the external-includes consent lands on the real project root', () => {
+  it('a fresh config: the git root gets the approval (only that flag), the agent dir keeps only the folder-trust stamp', () => {
     const { root, agent } = repoWithAgentDir()
     const home = tmp()
     expect(stampProjectTrustForDir(cfg(home), agent)).toBe(true)
     const projects = read(cfg(home)).projects
-    expect(projects[root]).toMatchObject({ [APPROVED]: true, [WARNED]: true })
+    expect(projects[root][APPROVED]).toBe(true)
+    expect(projects[root][WARNED]).toBeUndefined()
     expect(projects[agent]).toMatchObject({ hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true })
     expect(projects[agent][APPROVED]).toBeUndefined()
   })
 
-  it('an existing false becomes true on the root and the other fields of that key stay', () => {
+  it('the shape the dialog itself leaves with a Yes (trust + approved on the root only) is already done: the root key is not rewritten', () => {
     const { root, agent } = repoWithAgentDir()
     const home = tmp()
-    writeFileSync(cfg(home), JSON.stringify({ projects: { [root]: { [APPROVED]: false, [WARNED]: true, hasTrustDialogAccepted: true, allowedTools: ['Read'] } } }))
-    expect(stampProjectTrustForDir(cfg(home), agent)).toBe(true)
-    expect(read(cfg(home)).projects[root]).toMatchObject({ [APPROVED]: true, [WARNED]: true, hasTrustDialogAccepted: true, allowedTools: ['Read'] })
-  })
-
-  it('a root that is already approved and an agent dir that is already trusted: no write, false, the file is untouched', () => {
-    const { root, agent } = repoWithAgentDir()
-    const home = tmp()
-    const done = {
-      hasCompletedOnboarding: true,
-      projects: {
-        [root]: { [APPROVED]: true },
-        [agent]: { hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true, projectOnboardingSeenCount: 1 },
-      },
-    }
-    writeFileSync(cfg(home), JSON.stringify(done))
+    writeFileSync(cfg(home), JSON.stringify({ hasCompletedOnboarding: true, projects: { [root]: { hasTrustDialogAccepted: true, [APPROVED]: true }, [agent]: TRUSTED } }))
     const old = new Date('2020-01-01T00:00:00Z')
     utimesSync(cfg(home), old, old)
     expect(stampProjectTrustForDir(cfg(home), agent)).toBe(false)
     expect(statSync(cfg(home)).mtimeMs).toBe(old.getTime())
-    expect(JSON.parse(readFileSync(cfg(home), 'utf-8'))).toEqual(done)
+    expect(read(cfg(home)).projects[root]).toEqual({ hasTrustDialogAccepted: true, [APPROVED]: true })
   })
 
-  it('the second call changes nothing (idempotent)', () => {
+  it('a flag only on the agent dir (the shape that does NOT satisfy the dialog) still gets the root approved', () => {
+    const { root, agent } = repoWithAgentDir()
+    const home = tmp()
+    writeFileSync(cfg(home), JSON.stringify({ hasCompletedOnboarding: true, projects: { [agent]: { ...TRUSTED, [APPROVED]: true } } }))
+    expect(stampProjectTrustForDir(cfg(home), agent)).toBe(true)
+    expect(read(cfg(home)).projects[root][APPROVED]).toBe(true)
+  })
+
+  it('the four states of the root key: approved true / missing / false without the warning / false WITH the warning (a No)', () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined)
+    const states: Array<[string, Record<string, unknown>, boolean, boolean]> = [
+      // name, the root entry, written?, warned?
+      ['approved true: no write', { [APPROVED]: true }, false, false],
+      ['approved missing: approved', { hasTrustDialogAccepted: true }, true, false],
+      ['approved false, no warning shown: approved', { [APPROVED]: false }, true, false],
+      ['approved false with the warning shown (a No): left alone, warned once', { [APPROVED]: false, [WARNED]: true }, false, true],
+    ]
+    for (const [name, entry, written, warned] of states) {
+      const { root, agent } = repoWithAgentDir()
+      const home = tmp()
+      writeFileSync(cfg(home), JSON.stringify({ hasCompletedOnboarding: true, projects: { [root]: entry, [agent]: TRUSTED } }))
+      const old = new Date('2020-01-01T00:00:00Z')
+      utimesSync(cfg(home), old, old)
+      warn.mockClear()
+      expect(stampProjectTrustForDir(cfg(home), agent), name).toBe(written)
+      expect(statSync(cfg(home)).mtimeMs === old.getTime(), name).toBe(!written)
+      expect(read(cfg(home)).projects[root][APPROVED], name).toBe(written ? true : entry[APPROVED])
+      expect(read(cfg(home)).projects[root][WARNED], name).toBe(entry[WARNED])
+      expect(warn, name).toHaveBeenCalledTimes(warned ? 1 : 0)
+    }
+  })
+
+  it('the other fields of the root key stay when the approval is added', () => {
+    const { root, agent } = repoWithAgentDir()
+    const home = tmp()
+    writeFileSync(cfg(home), JSON.stringify({ projects: { [root]: { [APPROVED]: false, hasTrustDialogAccepted: true, allowedTools: ['Read'] } } }))
+    expect(stampProjectTrustForDir(cfg(home), agent)).toBe(true)
+    expect(read(cfg(home)).projects[root]).toMatchObject({ [APPROVED]: true, hasTrustDialogAccepted: true, allowedTools: ['Read'] })
+  })
+
+  it('an agent dir that is already trusted and a root that is approved: no write, false, the file is untouched; the second call is a no-op too', () => {
     const { agent } = repoWithAgentDir()
     const home = tmp()
     expect(stampProjectTrustForDir(cfg(home), agent)).toBe(true)
@@ -103,7 +133,7 @@ describe('the external-includes consent lands on the project root', () => {
     const home = tmp()
     expect(stampProjectTrustForDir(cfg(home), agent)).toBe(true)
     const projects = read(cfg(home)).projects
-    expect(projects[main]).toMatchObject({ [APPROVED]: true, [WARNED]: true })
+    expect(projects[main][APPROVED]).toBe(true)
     expect(projects[wt]).toBeUndefined()
     expect(projects[agent][APPROVED]).toBeUndefined()
   })
@@ -128,7 +158,7 @@ describe('the external-includes consent lands on the project root', () => {
     expect(resolveClaudeProjectRoot(sub)).toBe(sub)
   })
 
-  it('a worktree whose gitdir pointer goes through a symlink to the main repo stamps both the pointed path and the real one', () => {
+  it('a worktree whose gitdir pointer goes through a symlink to the main repo: the key is the REAL main root, no symlink-shaped key', () => {
     const base = tmp()
     const main = join(base, 'main')
     mkdirSync(join(main, '.git', 'worktrees', 'wt'), { recursive: true })
@@ -141,8 +171,8 @@ describe('the external-includes consent lands on the project root', () => {
     const home = tmp()
     expect(stampProjectTrustForDir(cfg(home), join(wt, 'agents', 'x'))).toBe(true)
     const projects = read(cfg(home)).projects
-    expect(projects[alias][APPROVED]).toBe(true)
     expect(projects[main][APPROVED]).toBe(true)
+    expect(projects[alias]).toBeUndefined()
   })
 
   it('a worktree of a bare repository (the common dir is not named .git) keeps the dir that holds the .git file', () => {
@@ -168,11 +198,11 @@ describe('the external-includes consent lands on the project root', () => {
     const home = tmp()
     expect(resolveClaudeProjectRoot(agent)).toBe(agent)
     expect(stampProjectTrustForDir(cfg(home), agent)).toBe(true)
-    expect(read(cfg(home)).projects[agent]).toMatchObject({ [APPROVED]: true, [WARNED]: true, hasTrustDialogAccepted: true })
+    expect(read(cfg(home)).projects[agent]).toMatchObject({ [APPROVED]: true, hasTrustDialogAccepted: true })
     expect(read(cfg(home)).projects[dir]).toBeUndefined()
   })
 
-  it('a symlinked agent dir stamps the real root key too', () => {
+  it('a symlinked agent dir inside a git repo: the approval is on the real root, the link-shaped key gets none', () => {
     const { root, agent } = repoWithAgentDir()
     const holder = tmp()
     const link = join(holder, 'link')
@@ -180,11 +210,13 @@ describe('the external-includes consent lands on the project root', () => {
     const home = tmp()
     expect(stampProjectTrustForDir(cfg(home), link)).toBe(true)
     const projects = read(cfg(home)).projects
-    expect(projects[root]).toMatchObject({ [APPROVED]: true })
+    expect(projects[root][APPROVED]).toBe(true)
     expect(projects[agent]).toMatchObject({ hasTrustDialogAccepted: true })
+    expect(projects[link][APPROVED]).toBeUndefined()
+    expect(projects[holder]).toBeUndefined()
   })
 
-  it('a symlinked agent dir in a non-git place stamps both the link and the real path', () => {
+  it('a symlinked agent dir with no git root: the approval is on the real path only', () => {
     const real = tmp()
     const holder = tmp()
     const link = join(holder, 'link')
@@ -193,7 +225,14 @@ describe('the external-includes consent lands on the project root', () => {
     expect(stampProjectTrustForDir(cfg(home), link)).toBe(true)
     const projects = read(cfg(home)).projects
     expect(projects[real][APPROVED]).toBe(true)
-    expect(projects[link][APPROVED]).toBe(true)
+    expect(projects[link][APPROVED]).toBeUndefined()
+  })
+
+  it('an agent dir that does not exist yet still resolves its root (a realpath failure keeps the original path)', () => {
+    const { root } = repoWithAgentDir()
+    const home = tmp()
+    expect(stampProjectTrustForDir(cfg(home), join(root, 'agents', 'not-created-yet'))).toBe(true)
+    expect(read(cfg(home)).projects[root][APPROVED]).toBe(true)
   })
 
   it('a broken or unreadable config answers false without throwing and is not truncated', () => {
@@ -209,7 +248,7 @@ describe('the external-includes consent lands on the project root', () => {
     expect(existsSync(dirAsFile)).toBe(true)
   })
 
-  it('a projects value that is an array or not an object is replaced by a fresh map, the flags still land', () => {
+  it('a projects value that is an array is replaced by a fresh map, the flag still lands', () => {
     const { root, agent } = repoWithAgentDir()
     const home = tmp()
     writeFileSync(cfg(home), JSON.stringify({ projects: [1, 2] }))

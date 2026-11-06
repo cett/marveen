@@ -742,22 +742,22 @@ export function stampProjectTrustForDir(dotClaudePath: string, projectDir: strin
     // no consent for the PROJECT ROOT (measured: the dialog reads the flag on the git root key, or on the dir itself
     // when there is no git root; a flag on the agent dir below a git root is never looked at). The persona folder is
     // the fleet's own, so the consent is pre-approved the way the folder trust above is.
-    const roots = new Set<string>()
-    for (const start of dirs) {
-      const root = resolveClaudeProjectRoot(start)
-      roots.add(root)
-      try { roots.add(realpathSync(root)) } catch { /* root may not resolve */ }
-    }
-    for (const root of roots) {
-      const base = (projects[root] && typeof projects[root] === 'object')
-        ? projects[root] as Record<string, unknown>
-        : {}
-      if (base.hasClaudeMdExternalIncludesApproved === true) continue
-      projects[root] = {
-        ...base,
-        hasClaudeMdExternalIncludesApproved: true,
-        hasClaudeMdExternalIncludesWarningShown: true,
-      }
+    // ONE key: the REAL path of the project root, found by walking up from the real path of the dir (Claude Code
+    // ignores a symlink-shaped key for this flag; a path that does not resolve stays as it is).
+    const realOf = (p: string): string => { try { return realpathSync(p) } catch { return p } }
+    const root = realOf(resolveClaudeProjectRoot(realOf(projectDir)))
+    const rootEntry = (projects[root] && typeof projects[root] === 'object')
+      ? projects[root] as Record<string, unknown>
+      : {}
+    if (rootEntry.hasClaudeMdExternalIncludesApproved === true) {
+      // already approved: nothing to write
+    } else if (rootEntry.hasClaudeMdExternalIncludesApproved === false && rootEntry.hasClaudeMdExternalIncludesWarningShown === true) {
+      // An explicit No (the dialog was shown and answered): the operator's choice stays. The persona import of this
+      // agent is then disabled until someone sets the flag back by hand.
+      logger.warn({ dotClaudePath, projectDir, projectRoot: root }, 'project-trust: external CLAUDE.md imports were declined for this project root, the persona import stays disabled (not overwritten)')
+    } else {
+      // never asked (no flag, or a false that the dialog did not write): approve, and keep it to the one flag
+      projects[root] = { ...rootEntry, hasClaudeMdExternalIncludesApproved: true }
       changed = true
     }
     if (!changed) return false
