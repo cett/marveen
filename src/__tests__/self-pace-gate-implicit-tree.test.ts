@@ -316,6 +316,11 @@ describe('R-IMPL: isGitDir mirrors git (HEAD content, objects AND refs)', () => 
     mkc('commonmulti', `${relTo('commonmulti')}\njunk\n`)
     mkc('commonnul', `${relTo('commonnul')}\0\n`)
     mkc('commontrail', `${relTo('commontrail')} \t\r\n\n`)
+    // trailing characters JS \s would cut but git's isspace (blank, tab, CR, LF) does not: the path then names nothing
+    mkc('commonnbsp', `${relTo('commonnbsp')} \n`)
+    mkc('commonvt', `${relTo('commonvt')}\u000b\n`)
+    mkc('commonff', `${relTo('commonff')}\u000c\n`)
+    mkc('commonls', `${relTo('commonls')} \n`)
   })
   it('a .git git would step over (empty or garbage HEAD, no HEAD, objects or refs missing) leaves the install in charge', () => {
     for (const n of ['emptyhead', 'garbage', 'noheadfile', 'norefs', 'noobjects', 'badref', 'shorthex']) {
@@ -346,7 +351,7 @@ describe('R-IMPL: isGitDir mirrors git (HEAD content, objects AND refs)', () => 
     for (const n of ['commonrel', 'commonabs']) expect(denied('git checkout other', dirs[n]), n).toBe(false)
   })
   it('the commondir is read as git reads it: a leading blank or tab, a second line or a NUL names nothing; trailing whitespace is cut', () => {
-    for (const n of ['commonlead', 'commontab', 'commonmulti']) {
+    for (const n of ['commonlead', 'commontab', 'commonmulti', 'commonnbsp', 'commonvt', 'commonff', 'commonls']) {
       expect(denied('git checkout other', dirs[n]), n).toBe(true)
       expect(denied(`cd ${dirs[n]} && git reset --hard`, root), n).toBe(true)
       const r = spawnSync('git', ['-C', dirs[n], 'rev-parse', '--show-toplevel'], { encoding: 'utf-8' })

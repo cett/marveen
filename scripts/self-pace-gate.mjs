@@ -1068,7 +1068,8 @@ const isGitDir = (p, viaCommon = false) => {
   let common
   // exactly as git: the WHOLE content, only TRAILING whitespace cut (strbuf_rtrim), nothing at the front and no line
   // split: a leading blank or a second line stays in the path, which then names nothing and git steps over it
-  try { common = readFileSync(join(p, 'commondir'), 'utf8').replace(/\s+$/, '') } catch { return false }
+  // (git's isspace is the four ASCII characters blank, tab, CR and LF: JS \s would also cut NBSP, \v, \f, U+2028 ...)
+  try { common = readFileSync(join(p, 'commondir'), 'utf8').replace(/[ \t\r\n]+$/, '') } catch { return false }
   return common !== '' && isGitDir(realOrSelf(resolve(p, common)), true)
 }
 // 'install' | true | false for the `.git` entry at `p`: a directory with HEAD and objects, a gitfile whose
