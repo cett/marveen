@@ -1063,7 +1063,9 @@ const isGitDir = (p, viaCommon = false) => {
   if (kind('objects') === 'dir' && kind('refs') === 'dir') return true
   if (viaCommon || kind('commondir') !== 'file') return false
   let common
-  try { common = readFileSync(join(p, 'commondir'), 'utf8').split(/\r?\n/)[0].trim() } catch { return false }
+  // exactly as git: the WHOLE content, only TRAILING whitespace cut (strbuf_rtrim), nothing at the front and no line
+  // split: a leading blank or a second line stays in the path, which then names nothing and git steps over it
+  try { common = readFileSync(join(p, 'commondir'), 'utf8').replace(/\s+$/, '') } catch { return false }
   return common !== '' && isGitDir(realOrSelf(resolve(p, common)), true)
 }
 // 'install' | true | false for the `.git` entry at `p`: a directory with HEAD and objects, a gitfile whose

@@ -308,6 +308,14 @@ describe('R-IMPL: isGitDir mirrors git (HEAD content, objects AND refs)', () => 
     // valid: the commondir (relative to the gitdir, or absolute) names a real repository's git directory
     mkc('commonrel', `${relative(join(root, 'src', 'deep', 'gd-commonrel', '.git'), join(real, '.git'))}\n`)
     mkc('commonabs', `${join(real, '.git')}\n`)
+    // parsed as git does: only TRAILING whitespace is cut, so these name nothing (git steps over them), while the
+    // same valid path with trailing blanks, tabs and CRLF still names the real repository
+    const relTo = (name: string) => relative(join(root, 'src', 'deep', 'gd-' + name, '.git'), join(real, '.git'))
+    mkc('commonlead', ` ${relTo('commonlead')}\n`)
+    mkc('commontab', `\t${relTo('commontab')}\n`)
+    mkc('commonmulti', `${relTo('commonmulti')}\njunk\n`)
+    mkc('commonnul', `${relTo('commonnul')}\0\n`)
+    mkc('commontrail', `${relTo('commontrail')} \t\r\n\n`)
   })
   it('a .git git would step over (empty or garbage HEAD, no HEAD, objects or refs missing) leaves the install in charge', () => {
     for (const n of ['emptyhead', 'garbage', 'noheadfile', 'norefs', 'noobjects', 'badref', 'shorthex']) {
@@ -336,6 +344,17 @@ describe('R-IMPL: isGitDir mirrors git (HEAD content, objects AND refs)', () => 
   })
   it('a commondir that names a real repository git directory (relative to the gitdir or absolute) is a git directory', () => {
     for (const n of ['commonrel', 'commonabs']) expect(denied('git checkout other', dirs[n]), n).toBe(false)
+  })
+  it('the commondir is read as git reads it: a leading blank or tab, a second line or a NUL names nothing; trailing whitespace is cut', () => {
+    for (const n of ['commonlead', 'commontab', 'commonmulti']) {
+      expect(denied('git checkout other', dirs[n]), n).toBe(true)
+      expect(denied(`cd ${dirs[n]} && git reset --hard`, root), n).toBe(true)
+      const r = spawnSync('git', ['-C', dirs[n], 'rev-parse', '--show-toplevel'], { encoding: 'utf-8' })
+      expect(r.status === 0 ? r.stdout.trim() : root, n).toBe(root)
+    }
+    // a NUL ends the path for git (a C string), so git ACCEPTS it; the gate refuses it: the safe side of the difference
+    expect(denied('git checkout other', dirs.commonnul), 'commonnul').toBe(true)
+    expect(denied('git checkout other', dirs.commontrail), 'commontrail').toBe(false)
   })
   it('a linked worktree inside the install (gitdir with commondir, no objects/refs of its own) is still its own toplevel', () => {
     expect(denied('git checkout other', nested)).toBe(false)
