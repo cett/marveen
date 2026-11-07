@@ -184,11 +184,23 @@ export interface RouteVerdict {
   deny: boolean
 }
 
-/** Judge one message. The system lane never reaches the table and is always allowed. */
+/**
+ * Judge one message. The system lane never reaches the table and is always allowed.
+ *
+ * A fleet agent writing to ITSELF (the sanitized sender id equals the sanitized recipient) is allowed before the
+ * table is asked: it grants no new reach, the agent only talks to its own session. The exception is for the
+ * fleet_agent class alone; an owner, a partner sender, a federated sender, a tenant user or an unclassified sender
+ * addressing the same name gets no such pass and meets the table as before. The table (sender-routing.ts) and the
+ * peer relation (team-trust.ts, where from === to is false on purpose) are untouched: this is the one place the
+ * self-message rule lives, and both the route and the delivery gate come through here.
+ */
 export function judgeRoute(identity: SenderIdentity, toAgent: string, ctx: RoutingContext, mode: SenderRoutingMode): RouteVerdict {
   const to = sanitizeAgentIdent(toAgent)
   if (identity.lane === 'system') {
     return { mode, lane: 'system', senderClass: identity.senderClass, senderId: identity.senderId, to, decision: { ok: true }, deny: false }
+  }
+  if (identity.lane === 'routed' && identity.senderClass === 'fleet_agent' && to !== '' && sanitizeAgentIdent(identity.senderId) === to) {
+    return { mode, lane: 'routed', senderClass: identity.senderClass, senderId: identity.senderId, to, decision: { ok: true }, deny: false }
   }
   const decision = isRouteAllowed({ senderClass: identity.senderClass, senderId: identity.senderId, tenantId: identity.tenantId, toAgent: to }, ctx)
   return { mode, lane: 'routed', senderClass: identity.senderClass, senderId: identity.senderId, to, decision, deny: mode === 'enforce' && !decision.ok }
