@@ -246,7 +246,7 @@ describe('R-IMPL: a git directory of the install, reached from a worktree', () =
 describe('R-IMPL: only a VALID .git entry makes a toplevel', () => {
   let fakeDir: string; let fakeLink: string; let fakeFile: string
   beforeAll(() => {
-    fakeDir = join(root, 'agents', 'agent-fake'); fakeLink = join(root, 'agents', 'agent-link'); fakeFile = join(root, 'agents', 'agent-file')
+    fakeDir = join(root, 'src', 'deep', 'fake'); fakeLink = join(root, 'src', 'deep', 'link'); fakeFile = join(root, 'src', 'deep', 'file')
     mkdirSync(join(fakeDir, '.git'), { recursive: true }) // empty: git steps over it
     mkdirSync(fakeLink, { recursive: true }); symlinkSync(join(root, '.git'), join(fakeLink, '.git'))
     mkdirSync(fakeFile, { recursive: true }); writeFileSync(join(fakeFile, '.git'), `gitdir: ${root}/.git\n`)
