@@ -282,6 +282,44 @@ def _mask_subshell_markers(cmd: str) -> str:
     return "".join(out)
 
 
+# Stands in for the `&` of a redirect while the lexer runs (restored in _segments_tokens): a word character,
+# so shlex keeps it inside the word instead of cutting a segment there.
+_REDIRECT_AMP = "\x1f"
+
+
+def _word_boundaries(cmd: str) -> str:
+    """Two tokenizer facts of the shell that shlex(punctuation_chars) gets wrong, applied OUTSIDE quotes only.
+    Mirrors segmentsTokens in email-send-gate.mjs; the send-invocation cases bind the two.
+
+    * `<<<` (a here-string) is a word of its own: `bash<<<'X'` is `bash` and a here-string, not the one word
+      `bash<<<X` (_head_is_send reads the word after it as a script).
+    * The `&` of a redirect (`2>&1`, `>&2`, `<&3`, `&>out`) is part of a word, not the end of the command:
+      cutting there made `bash 2>&1 <<< 'X'` read as `bash 2>` and a stray `1 <<< X` (no shell in it)."""
+    if "<<<" not in cmd and "&" not in cmd:
+        return cmd
+    out = []
+    q = None  # None | "'" | '"'
+    i, n = 0, len(cmd)
+    while i < n:
+        ch = cmd[i]
+        if q:
+            if ch == "\\" and q == '"' and i + 1 < n:
+                out.append(cmd[i:i + 2]); i += 2; continue
+            if ch == q:
+                q = None
+            out.append(ch); i += 1; continue
+        if ch in "'\"":
+            q = ch; out.append(ch); i += 1; continue
+        if ch == "\\" and i + 1 < n:
+            out.append(cmd[i:i + 2]); i += 2; continue
+        if ch == "<" and cmd.startswith("<<<", i):
+            out.append(" <<< "); i += 3; continue
+        if ch == "&" and ((i > 0 and cmd[i - 1] in "<>") or (i + 1 < n and cmd[i + 1] == ">")):
+            out.append(_REDIRECT_AMP); i += 1; continue
+        out.append(ch); i += 1
+    return "".join(out)
+
+
 # --- bounded heredoc scan -------------------------------------
 # Hard limits, measured on 365k real Bash calls of the fleet (max command 32 KB, max 7
 # heredoc openers, longest opener line 1.7 KB): each limit is 4x or more above anything
@@ -398,7 +436,7 @@ def _strip_heredoc_bodies(cmd: str) -> str:
 def _segments_tokens(cmd: str):
     """[[token, ...], ...] szegmensenkent -- quote-tudatosan, poziciot orizve."""
     import shlex
-    lex = shlex.shlex(_mask_subshell_markers(_strip_heredoc_bodies(cmd)),
+    lex = shlex.shlex(_word_boundaries(_mask_subshell_markers(_strip_heredoc_bodies(cmd))),
                       posix=True, punctuation_chars="();|&")
     lex.whitespace_split = True
     segments, cur = [], []
@@ -416,7 +454,7 @@ def _segments_tokens(cmd: str):
                 segments.append(cur)
             cur = []
         else:
-            cur.append(tok)
+            cur.append(tok.replace(_REDIRECT_AMP, "&"))
     if cur:
         segments.append(cur)
     return segments
@@ -679,6 +717,19 @@ def _python_head_sends(rest) -> bool:
     return False
 
 
+# A script a shell is handed as TEXT (a here-string), judged as a command of its own. Same bound as the JS twin
+# (MAX_SCRIPT_NEST in email-send-gate.mjs): past it the gate DENIES (InspectionLimit), it does not wave the
+# call through. Each level re-reads a text that is at most as long as the one before (it sits inside quotes),
+# and the whole command is capped by MAX_CMD_CHARS, so the work stays linear.
+MAX_SCRIPT_NEST = 8
+
+
+def _script_sends(script: str, depth: int) -> bool:
+    if depth >= MAX_SCRIPT_NEST:
+        raise InspectionLimit(f"scripts handed to a here-string nested deeper than {MAX_SCRIPT_NEST}")
+    return is_send_invocation(script, _depth=depth + 1)
+
+
 def _head_is_send(toks, depth: int) -> bool:
     if toks is None:  # the depth bound was hit on a wrapper: audit it
         return True
@@ -694,6 +745,14 @@ def _head_is_send(toks, depth: int) -> bool:
             if t == "-c" and i + 1 < len(rest):
                 if is_send_invocation(rest[i + 1], _depth=depth + 1):
                     return True
+    # A here-string is a script when the segment holds a shell, `source` or `.` word ANYWHERE (fail closed,
+    # the command position is not worked out): `bash <<< 'X'`, `bash<<<'X'`, `<<< 'X' bash`,
+    # `source /dev/stdin <<< 'X'`. A segment without such a word (`cat <<< 'X'`) keeps its text as data.
+    # Mirrors headIsSend in email-send-gate.mjs.
+    if "<<<" in toks and any(_WRAPPER_SHELL.match(_basename(t)) or _basename(t) in ("source", ".") for t in toks):
+        for i in range(len(toks) - 1):
+            if toks[i] == "<<<" and _script_sends(toks[i + 1], depth):
+                return True
     # interpreter kod-string: python -c / node -e / --eval, ami kuldest hiv
     if _PYTHON.match(prog) or _NODEISH.match(prog):
         for i, t in enumerate(rest):
