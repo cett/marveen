@@ -9,7 +9,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync, existsSync } from 'node:fs'
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -94,6 +94,17 @@ export function runHeaderHelper() {
     const r = run(['--secret', 'fixture-secret-a', '--header', 'Authorization'])
     expect(r.status).toBe(0)
     expect(JSON.parse(r.stdout).Authorization).toBe(`Bearer ${VALUE}`)
+  })
+
+  it('a log that already exists with a wider mode is narrowed to 0600 and keeps its earlier lines', () => {
+    stubCore(OK_CORE)
+    writeFileSync(logPath(), '{"outcome":"ok","secretId":"earlier"}\n', { mode: 0o644 })
+    chmodSync(logPath(), 0o644) // the umask may have narrowed the create above
+    expect(statSync(logPath()).mode & 0o777).toBe(0o644)
+    run(['--secret', 'fixture-secret-a', '--header', 'Authorization'])
+    expect(statSync(logPath()).mode & 0o777).toBe(0o600)
+    expect(logLines()).toHaveLength(2)
+    expect(logLines()[0]).toMatchObject({ secretId: 'earlier' })
   })
 
   it('a log over 512 KB is rotated once, the new one starts small', () => {
