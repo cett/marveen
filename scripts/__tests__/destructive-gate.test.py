@@ -650,6 +650,7 @@ class TestLinearTime(unittest.TestCase):
     minute at this size, and the per-span range lookup took twelve seconds on repeated `bash -c`."""
 
     SIZE = 250000
+    CPU_WALL_GUARD_SEC = 120.0  # wall cut-off of the CPU-timed inputs: a catastrophe guard, see _timed
 
     def _timed(self, cmd, cpu=False):
         """cpu=True measures CPU time (timing_budget.best_of): these inputs run into the gate's own budgets (the body
@@ -661,9 +662,11 @@ class TestLinearTime(unittest.TestCase):
                     hook.check_bash(cmd)
                 except SystemExit:
                     pass
-        # 10 times wider: with 20 busy loops on top of an already loaded machine (load 30-40) a call of ~1 s CPU needed
-        # more than 9 s of wall time. A quadratic gate is minutes, so 30 s still ends it as a readable FAIL.
-        cutoff = CUTOFF_SEC * 10 if cpu else CUTOFF_SEC
+        # A catastrophe guard, not the measure: with 60 busy loops on a machine at load 79-84 a call of ~1 s CPU needed
+        # more than 30 s of wall time (the former limit, 10 x CUTOFF_SEC) in 5 of 10 test runs. A quadratic gate is
+        # minutes of CPU, so 120 s still ends it as a readable FAIL; the 4 s CPU ceiling below is what decides.
+        # Per call and only here: the shared best_of default stays as it is for the other tests.
+        cutoff = self.CPU_WALL_GUARD_SEC if cpu else CUTOFF_SEC
         t = best_of(run, cutoff=cutoff, cpu=cpu)
         self.assertLess(t, LINEAR_CEILING_SEC * 2, describe(t, cutoff))
 
