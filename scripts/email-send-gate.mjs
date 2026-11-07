@@ -106,7 +106,9 @@ const ENV_ASSIGN = /^[A-Za-z_][A-Za-z_0-9]*=/
 // Stripped only at the head of a segment, never used as separators -- see the
 // full rationale at _CMD_POSITION_KEYWORDS in outgoing-copy-gate.py (the python
 // twin); the shared send-invocation-cases.json binds the two copies.
-const CMD_POSITION_KEYWORDS = new Set(['if', 'then', 'else', 'elif', 'do', 'while', 'until', '{', '!'])
+const CMD_POSITION_KEYWORDS = new Set(['if', 'then', 'else', 'elif', 'do', 'while', 'until', '{', '!',
+  // precommand modifiers: the next word is still the command (`builtin eval 'X'`, zsh `noglob eval 'X'`)
+  'builtin', 'noglob', 'nocorrect'])
 const SENDER_PROG = /^(sendmail|msmtp|swaks)$/i
 const SENDPY = /^send\.py$/i
 // SUBAGENTMAILGATE1016: a version-suffixed interpreter (python3.12, python3.13, and
@@ -241,6 +243,51 @@ export function maskSubshellMarkers(cmd) {
   return out
 }
 
+// A backslash-newline is removed by the shell before it reads a word: `send\<newline>mail x` runs
+// `sendmail x`, and `$(\<newline>sendmail x)` runs it too. The tokenizer below kept the newline as a
+// character of the word (`send\nmail`), so the sender name never matched. Removed here, outside single
+// quotes (inside double quotes and unquoted alike), in ONE pass. Two places keep it literal:
+//   - a comment (`#` at the start of a word, after whitespace or one of ; | & ( ) < >) ends at the NEWLINE,
+//     so a backslash in front of that newline is a character of the comment and the next line is a command
+//     of its own: its trailing backslashes are dropped so the newline stays a segment break (the tokenizer
+//     used to read the pair as an escape and fold the next line, a real command, into the comment's segment);
+//   - an escaped backslash (`\\`) consumes its pair, so `\\<newline>` is a literal backslash and a break.
+// Applied AFTER the heredoc bodies are cut (see segmentsTokens): a body line ending in a backslash would
+// otherwise swallow its own terminator line.
+export function joinContinuations(text) {
+  if (!text.includes('\\\n')) return text
+  let out = ''
+  let q = 0 // 0 unquoted, 1 single quote, 2 double quote
+  const n = text.length
+  for (let i = 0; i < n;) {
+    const ch = text[i]
+    if (q === 1) {
+      out += ch
+      if (ch === "'") q = 0
+      i++
+      continue
+    }
+    if (ch === '\\' && i + 1 < n) {
+      if (text[i + 1] === '\n') { i += 2; continue }
+      out += ch + text[i + 1]
+      i += 2
+      continue
+    }
+    if (q === 0 && ch === '#' && (i === 0 || ' \t\n;|&()<>'.includes(text[i - 1]))) {
+      let j = text.indexOf('\n', i)
+      if (j < 0) j = n
+      out += text.slice(i, j).replace(/\\+$/, '')
+      i = j
+      continue
+    }
+    if (ch === "'" && q === 0) q = 1
+    else if (ch === '"') q = q === 0 ? 2 : 0
+    out += ch
+    i++
+  }
+  return out
+}
+
 // --- bounded heredoc scan -------------------------------------
 // Hard limits, measured on 365k real Bash calls of the fleet (max command 32 KB, max
 // 7 heredoc openers, longest opener line 1.7 KB): each limit is 4x or more above
@@ -360,7 +407,7 @@ function stripHeredocBodies(cmd) {
 // Quote-aware tokenizer -> [[token, ...], ...] per segment. Throws on an
 // unbalanced quote (the caller falls back to the legacy content patterns).
 export function segmentsTokens(cmd) {
-  const s = maskSubshellMarkers(stripHeredocBodies(cmd))
+  const s = maskSubshellMarkers(joinContinuations(stripHeredocBodies(cmd)))
   const segments = []
   let cur = []
   let tok = ''
@@ -379,6 +426,12 @@ export function segmentsTokens(cmd) {
     if (ch === "'" || ch === '"') { q = ch; hasTok = true; continue }
     if (ch === '\\' && i + 1 < s.length) { tok += s[++i]; hasTok = true; continue }
     if (ch === ' ' || ch === '\t') { pushTok(); continue }
+    // An unquoted here-string operator is a word of its own: `bash<<<'X'` is `bash` and a here-string,
+    // not one word `bash<<<X` (headIsSend reads the word after it as a script).
+    if (ch === '<' && s[i + 1] === '<' && s[i + 2] === '<') { pushTok(); cur.push('<<<'); i += 2; continue }
+    // The `&` of a redirect (`2>&1`, `>&2`, `<&3`, `&>out`) is part of a word, not the end of the command:
+    // cutting there made `bash 2>&1 <<< 'X'` read as `bash 2>` and a stray `1 <<< X` (no shell in it).
+    if (ch === '&' && (s[i - 1] === '>' || s[i - 1] === '<' || s[i + 1] === '>')) { tok += ch; hasTok = true; continue }
     if ('|&;()'.includes(ch)) { pushSeg(); continue }
     tok += ch
     hasTok = true
@@ -602,6 +655,62 @@ function pythonHeadSends(rest) {
   return false
 }
 
+// A script that a shell is handed as TEXT (eval's arguments, a here-string, the text of `source <(echo ...)`),
+// judged as a command of its own. Same bound as the other nested readings: past MAX_SCRIPT_NEST levels or
+// INSPECT_MS the gate DENIES (InspectionLimitError), it does not wave the call through.
+export const MAX_SCRIPT_NEST = 8
+function scriptSends(script, depth) {
+  if (depth >= MAX_SCRIPT_NEST) {
+    throw new InspectionLimitError(`scripts handed to eval / a here-string nested deeper than ${MAX_SCRIPT_NEST}`)
+  }
+  if (Date.now() > substBudget.deadline) {
+    throw new InspectionLimitError(`the inspection took longer than ${INSPECT_MS} ms`)
+  }
+  return isSendInvocation(script, depth + 1)
+}
+
+// What `echo` / `printf` would print, when `body` is exactly such a command (the script a
+// `source <(echo 'X')` reads). null for any other body. FAIL CLOSED where the printed text is not the
+// text written: a backslash (escapes under `echo -e`, zsh's echo, printf's \x72), a `%` in a printf format,
+// `echo -e` / `-E` or a printf option return ECHO_UNREADABLE and the caller denies. Mirrors
+// _literal_echo_script in hooks/destructive-gate.py.
+const ECHO_UNREADABLE = Symbol('echo-unreadable')
+function literalEchoScript(body) {
+  let segs
+  try { segs = segmentsTokens(body.trim()) } catch { return null }
+  if (segs.length !== 1) return null
+  const toks = segs[0]
+  let i = 0
+  while (i < toks.length && ENV_ASSIGN.test(toks[i])) i++
+  const prog = i < toks.length ? basename(toks[i]) : ''
+  if (prog !== 'echo' && prog !== 'printf') return null
+  if (body.includes('\\') || (prog === 'printf' && body.includes('%'))) return ECHO_UNREADABLE
+  const args = toks.slice(i + 1)
+  let k = 0
+  let words
+  if (prog === 'echo') {
+    // Only the LEADING option words are options: `echo rm -rf x` prints "rm -rf x", dash words and all.
+    while (k < args.length && /^-[neE]+$/.test(args[k])) {
+      if (/[eE]/.test(args[k])) return ECHO_UNREADABLE
+      k++
+    }
+    words = args.slice(k)
+  } else {
+    if (args[0] === '--') k = 1
+    if (k < args.length && args[k].startsWith('-')) return ECHO_UNREADABLE
+    words = args.slice(k, k + 1) // no `%` in the format: the format alone is printed
+  }
+  return words.length ? words.join(' ') : null
+}
+// A shell word anywhere next to a `<(`: `source <(..)`, `. <(..)`, `source -- <(..)`, `bash <(..)`,
+// `source /dev/stdin < <(..)`. Over-reading is the safe side: only a body that is a literal echo / printf is
+// followed, any other producer (`source <(cat f)`) is text built at run time (the known limit).
+// An optional path prefix and quote / backslash characters in front of the name are part of the word
+// (`/bin/bash <(..)`, `"bash" <(..)`, `\bash <(..)`, `ba''sh`-style splits are not followed: a quote INSIDE the
+// name needs the tokenizer, and the here-string reading above already uses it).
+const SHELL_WORD = /(?:^|[\s;&|(){}])["'\\]*(?:[^\s;&|(){}]*\/)?["'\\]*(?:source|\.|sh|bash|zsh|dash)["']*(?=[\s;&|(){}<]|$)/
+const srcProcFor = (cmd) => cmd.includes('<(') && SHELL_WORD.test(cmd)
+
 function segmentIsSend(toksIn, depth) {
   return commandHeads(toksIn).some((h) => headIsSend(h, depth))
 }
@@ -612,9 +721,32 @@ function headIsSend(toks, depth) {
   const prog = basename(toks[0])
   const rest = toks.slice(1)
   if (SENDER_PROG.test(prog)) return true
-  if (WRAPPER_SHELL.test(prog) && depth < 3) {
+  if (WRAPPER_SHELL.test(prog)) {
     for (let i = 0; i < rest.length; i++) {
-      if (rest[i] === '-c' && rest[i + 1] && isSendInvocation(rest[i + 1], depth + 1)) return true
+      if (rest[i] === '-c' && rest[i + 1]) {
+        // Past the bound the script is NOT waved through: a deny (fail closed), the same bound as the other
+        // nested readings. eval / a here-string / source <(echo) feed the same depth counter, so a send three
+        // scripts deep must not be reachable by routing it through a `-c` at the end.
+        if (depth >= 3) throw new InspectionLimitError('a shell -c script nested deeper than 3 levels')
+        if (isSendInvocation(rest[i + 1], depth + 1)) return true
+      }
+    }
+  }
+  // eval joins ALL its arguments with spaces and runs the result as a script: judged as a command of its own
+  // (the tokenizer already removed the outer shell's quotes and backslashes, so `eval true\; 'X'` arrives as
+  // `true;` and `X`). KNOWN LIMIT, kept on purpose: a script built from a variable (`eval "$A$B"`) is only
+  // text here and is not followed; the gate governs cooperating agents, it is not a sandbox.
+  if (prog === 'eval') {
+    const words = rest[0] === '--' ? rest.slice(1) : rest
+    const script = words.join(' ')
+    if (script.trim() && scriptSends(script, depth)) return true
+  }
+  // A here-string is a script when the segment holds a shell, `source` or `.` word ANYWHERE (fail closed,
+  // the command position is not worked out): `bash <<< 'X'`, `bash<<<'X'`, `<<< 'X' bash`,
+  // `source /dev/stdin <<< 'X'`. A segment without such a word (`cat <<< 'X'`) keeps its text as data.
+  if (toks.includes('<<<') && toks.some((t) => WRAPPER_SHELL.test(basename(t)) || /^(source|\.)$/.test(basename(t)))) {
+    for (let i = 0; i < toks.length - 1; i++) {
+      if (toks[i] === '<<<' && scriptSends(toks[i + 1], depth)) return true
     }
   }
   if (PYTHON.test(prog) || NODEISH.test(prog)) {
@@ -790,6 +922,7 @@ export const INSPECT_MS = 4000
 let substBudget = { bodies: 0, chars: 0, deadline: 0 }
 
 function substitutionSends(cmd, depth, sd) {
+  const srcProc = srcProcFor(cmd)
   for (const body of topBodies(cmd, false, MAX_SUBST_BODIES + 1)) {
     // Every body counts, a blank one too: the reader stops after MAX + 1 bodies, so a gate that skipped
     // blank ones before counting could be filled with them and never see the real one.
@@ -806,6 +939,14 @@ function substitutionSends(cmd, depth, sd) {
     }
     if (sd >= MAX_SUBST_NEST) {
       throw new InspectionLimitError(`command substitutions nested deeper than ${MAX_SUBST_NEST}`)
+    }
+    // `source <(echo 'X')` / `. <(printf 'X')`: the process substitution only PRINTS the script, the sourcing
+    // shell runs it. The body (`echo ...`) is harmless to the judgement below, so its printed text is judged
+    // as a script too; text that echo / printf may print differently from what is written is refused.
+    if (srcProc) {
+      const printed = literalEchoScript(body)
+      if (printed === ECHO_UNREADABLE) return true
+      if (printed && isSendInvocation(printed, depth, sd + 1)) return true
     }
     if (isSendInvocation(body, depth, sd + 1)) return true
   }
