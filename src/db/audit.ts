@@ -562,6 +562,11 @@ export interface SenderRouteCheckRow {
  * `maxRows` of them. `truncated` is true when the window held more: the rows returned are then the NEWEST `maxRows`
  * and the oldest ones are missing. One bounded SELECT with plain columns; reading the detail (JSON) and counting is
  * the caller's work in code, so the query needs no JSON function of the database and ports as it is.
+ *
+ * Cost note: the index that serves it is (entity, created_at); the action filter comes after it. While
+ * `sender_route_checked` rows are a small share of the `message` rows, the read walks the `message` rows of the whole
+ * window (up to 90 days), which can be many. It is an admin diagnostic, so that is accepted; the row limit bounds the
+ * result, not the scan.
  */
 export async function listSenderRouteChecks(sinceSecs: number, maxRows: number): Promise<{ rows: SenderRouteCheckRow[]; truncated: boolean }> {
   const fetched = await dbx.all<SenderRouteCheckRow>(
