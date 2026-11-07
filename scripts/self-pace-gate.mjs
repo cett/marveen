@@ -287,9 +287,10 @@ const SAFE_GIT = new Set([
 // always be one command behind; this one names what is allowed. Each entry below is checked further in
 // gitInstallOk (fetch / ls-remote: no program-running option or ext:: URL; worktree: add | list; stash: list
 // | show; branch / tag: listing flags only; remote: -v | get-url).
-const INSTALL_GIT_EXTRA = new Set(['fetch', 'ls-remote', 'merge-base', 'for-each-ref', 'name-rev', 'show-branch', 'version', 'worktree', 'stash', 'branch', 'tag', 'remote'])
+const INSTALL_GIT_EXTRA = new Set(['fetch', 'ls-remote', 'merge-base', 'for-each-ref', 'name-rev', 'show-branch', 'version', 'worktree', 'stash', 'branch', 'tag', 'remote', 'clone'])
 const FETCH_FLAGS = new Set(['--all', '--prune', '--prune-tags', '--tags', '--no-tags', '--force', '--verbose', '--quiet', '--dry-run', '--jobs', '--depth', '--deepen', '--shallow-since', '--shallow-exclude', '--unshallow', '--no-recurse-submodules', '--recurse-submodules', '--progress', '--no-progress', '--atomic', '--append', '--filter', '--set-upstream', '--porcelain', '--ipv4', '--ipv6', '--no-write-fetch-head', '--write-fetch-head', '--refetch', '--no-auto-gc', '--no-auto-maintenance', '--multiple', '--no-show-forced-updates', '--show-forced-updates', '--negotiation-tip'])
-const LS_REMOTE_FLAGS = new Set(['--heads', '--branches', '--tags', '--refs', '--get-url', '--symref', '--quiet', '--exit-code', '--sort'])
+const CLONE_FLAGS = new Set(['--bare', '--mirror', '--depth', '--quiet', '--verbose', '--no-checkout', '--branch', '-b', '--single-branch', '--no-single-branch', '--local', '--no-local', '--no-hardlinks', '--shared', '--progress', '--no-tags'])
+const LS_REMOTE_FLAGS =new Set(['--heads', '--branches', '--tags', '--refs', '--get-url', '--symref', '--quiet', '--exit-code', '--sort'])
 const WORKTREE_ADD_FLAGS = new Set(['-b', '--detach', '--no-checkout', '--checkout', '-q', '--quiet', '--track', '--no-track', '--guess-remote', '--no-guess-remote', '--lock', '--reason', '--orphan', '--relative-paths', '--no-relative-paths'])
 const BRANCH_LIST_FLAGS = new Set(['--list', '-l', '--show-current', '-a', '--all', '-r', '--remotes', '-v', '-vv', '--verbose', '--merged', '--no-merged', '--contains', '--no-contains', '--sort', '--format', '--points-at', '--column', '--no-column', '--color', '--no-color', '--abbrev', '--no-abbrev', '-i', '--ignore-case', '-n'])
 const WRAPPER_WORDS = new Set(['env', 'time', 'nohup', 'command', 'builtin', 'exec', 'nice', 'sudo', 'doas', 'stdbuf', 'setsid'])
@@ -1117,6 +1118,9 @@ function gitInstallOk(args) {
     const flags = sub === 'fetch' ? FETCH_FLAGS : LS_REMOTE_FLAGS
     return rest.every((a) => (a.startsWith('--') ? flags.has(a.split('=')[0]) : a.startsWith('-') && a.length > 1 ? (sub === 'fetch' ? /^-(?:[pPtfvqak46n]+|j\d*)$/ : /^-[htqb]+$/).test(a) : !a.includes('::')))
   }
+  // clone writes only its destination (a path that names a protected one is refused by name); no template,
+  // config, upload-pack or helper URL
+  if (sub === 'clone') return rest.every((a) => (a.startsWith('-') ? CLONE_FLAGS.has(a.split('=')[0]) || /^-[qvsln]+$/.test(a) : !a.includes('::')))
   if (sub === 'worktree') {
     if (rest[0] === 'list') return true
     // add only, and not --force / -B (a branch checked out elsewhere could be reset)
@@ -2025,7 +2029,7 @@ const GIT_TREE_MSG =
   'beallitasok) egy git checkout / switch / merge / pull / reset / apply / stash pop / cherry-pick / rebase / clean / am / ' +
   'revert, vagy egy patch egy masik ag tartalmara cserelne, a parancs kimondott utja nelkul is. Az install gyokereben es az ' +
   'agens-konyvtarban csak olvaso git szabad (status, diff, log, show, blame, grep, ls-files, add, commit, fetch, worktree add / list ...). ' +
-  'A fejleszteshez kulon worktree kell: git worktree add ~/worktrees/<tema> -b <ag> origin/develop, es abban dolgozz (cd ~/worktrees/<tema> && git ...).' +
+  'A fejleszteshez kulon worktree kell: git worktree add ~/worktrees/<tema> -b <ag> origin/develop, es abban dolgozz (cd ~/worktrees/<tema> && git ...). ' +
   'Valtozo-bol osszeallitott cd celnal a kapu a celt nem latja: irj literalis utat.'
 const SETTINGS_GATE_MSG =
   'Agent-settings fajlok vedve (governance hard-gate). Sub-agentkent NEM irhatod a Claude Code settings.json / ' +

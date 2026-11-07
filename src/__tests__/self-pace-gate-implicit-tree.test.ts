@@ -264,6 +264,19 @@ describe('R-IMPL: only a VALID .git entry makes a toplevel', () => {
   })
 })
 
+describe('R-IMPL: clone out of the install, and the message reads whole', () => {
+  it('git clone of the install to somewhere else is a read; template, config and helper URLs are not', () => {
+    for (const c of [`git clone . ${base}/copy`, `git clone --bare . ${base}/copy.git`, `git clone -q --depth 1 . ${base}/copy`]) expect(denied(c, root), c).toBe(false)
+    for (const c of [`git clone --template=/tmp/t . ${base}/copy`, `git clone -c core.hooksPath=/tmp/h . ${base}/copy`, `git clone --upload-pack=/tmp/x . ${base}/copy`, `git clone ext::sh ${base}/copy`, 'git clone . scripts/hooks/copy'])
+      expect(denied(c, root), c).toBe(true)
+  })
+  it('the sentences of the way-out message are separated', () => {
+    const hook = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'scripts', 'self-pace-gate.mjs')
+    const out = spawnSync('node', [hook], { input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'git checkout other' }, cwd: dirname(dirname(hook)) }), encoding: 'utf-8' })
+    expect(JSON.parse(out.stdout).hookSpecificOutput.permissionDecisionReason).toContain('git ...). Valtozo-bol')
+  })
+})
+
 describe('R-IMPL: the hook answers with the way out', () => {
   it('denies through the hook entry point and names git worktree add', () => {
     const hook = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'scripts', 'self-pace-gate.mjs')
