@@ -539,8 +539,15 @@ interface RefusedVaultRef {
   server: string
   key: string
   secretId: string
-  reason: 'not-listed' | 'acl-unreadable'
+  reason: 'not-listed' | 'acl-unreadable' | 'not-canonical'
 }
+
+// The strict shape of a vault secret id the import will restore a reference to. It is the same character
+// set the HTTP header injector uses to find a reference in a value. The grantee list is looked up by the
+// exact id, while the runtime resolvers normalise (the env wrapper's resolver trims the end of its input and
+// reads a newline as a second entry), so an id with a space or a newline in it could miss its list here and
+// still resolve to the restricted secret later. Such an id is not restored (fail-closed), whatever its list.
+const VAULT_ID_PATTERN = /^[A-Za-z0-9._-]{1,128}$/
 
 // What the import needs to decide, per reference, whether the target file may receive it.
 interface VaultRefPolicy {
@@ -573,19 +580,47 @@ function deplaceholderMcp(
       const dict = c[field] as Record<string, string> | undefined
       if (!dict) continue
       for (const [k, v] of Object.entries(dict)) {
-        if (typeof v === 'string' && v.startsWith('{{VAULT:') && v.endsWith('}}')) {
-          const secretId = v.slice(8, -2)
-          const verdict = vaultRefVerdict(secretId, serverName, ctx.targetFile, ctx.policy.acl)
-          if (verdict === 'allowed') {
-            dict[k] = `vault:${secretId}`
-          } else {
-            ctx.policy.refused.push({ file: ctx.fileLabel, grantee: verdict.grantee, server: serverName, key: k, secretId, reason: verdict.reason })
-          }
-        }
+        if (typeof v === 'string') dict[k] = restoreVaultRefs(v, field, serverName, k, ctx)
       }
     }
   }
   return result
+}
+
+// The one place that finds the vault references in a value and decides each of them. Three shapes:
+//  - a whole-value `{{VAULT:<id>}}` placeholder (what an export writes): restored to `vault:<id>` when allowed,
+//    left as it is (inert) when not;
+//  - an env value that STARTS with `vault:` (the env wrapper reads the rest of the value as the id): a bundle
+//    can carry one literally, which the export never writes, so it gets the same decision; when refused it is
+//    written back as the placeholder;
+//  - a headers value with `vault:<id>` anywhere in it (the header injector finds it with the same character
+//    set): every occurrence is decided on its own; a refused one becomes the placeholder.
+// The placeholder is uppercase and braced, so neither resolver reads it.
+function restoreVaultRefs(
+  value: string,
+  field: 'env' | 'headers',
+  serverName: string,
+  key: string,
+  ctx: { targetFile: string, fileLabel: string, policy: VaultRefPolicy },
+): string {
+  const allowedHere = (secretId: string): boolean => {
+    const verdict = vaultRefVerdict(secretId, serverName, ctx.targetFile, ctx.policy.acl)
+    if (verdict === 'allowed') return true
+    ctx.policy.refused.push({ file: ctx.fileLabel, grantee: verdict.grantee, server: serverName, key, secretId, reason: verdict.reason })
+    return false
+  }
+  if (value.startsWith('{{VAULT:') && value.endsWith('}}')) {
+    const secretId = value.slice(8, -2)
+    return allowedHere(secretId) ? `vault:${secretId}` : value
+  }
+  if (field === 'env' && value.startsWith('vault:')) {
+    const secretId = value.slice('vault:'.length)
+    return allowedHere(secretId) ? value : `{{VAULT:${secretId}}}`
+  }
+  if (field === 'headers' && value.includes('vault:')) {
+    return value.replace(/vault:([A-Za-z0-9._-]+)/g, (whole: string, secretId: string) => allowedHere(secretId) ? whole : `{{VAULT:${secretId}}}`)
+  }
+  return value
 }
 
 function vaultRefVerdict(
@@ -594,6 +629,7 @@ function vaultRefVerdict(
   targetFile: string,
   acl: Record<string, string[]> | null,
 ): 'allowed' | { grantee: string | null, reason: RefusedVaultRef['reason'] } {
+  if (!VAULT_ID_PATTERN.test(secretId)) return { grantee: null, reason: 'not-canonical' }
   if (acl === null) return { grantee: null, reason: 'acl-unreadable' }
   // Own property only: an id such as `constructor` must read as "no list", not as Object.prototype's member.
   const list = Object.hasOwn(acl, secretId) ? acl[secretId] : []
@@ -612,13 +648,16 @@ function reportField(value: string): string {
 
 function vaultRefWarnings(refused: readonly RefusedVaultRef[], aclError: string | null): string[] {
   const lines: string[] = []
-  if (aclError !== null) {
+  // The cause line only when a reference was really held back for it (a bundle can mention `vault:` in plain text).
+  if (aclError !== null && refused.some(r => r.reason === 'acl-unreadable')) {
     lines.push(`vault hivatkozások: a titkok engedélyezési listája nem olvasható (${reportField(aclError)}), ezért egyik hivatkozás sincs visszaállítva -- a {{VAULT:...}} helyőrzők maradtak.`)
   }
   for (const r of refused) {
     const why = r.reason === 'acl-unreadable'
       ? 'az engedélyezési lista nem olvasható'
-      : 'a célfájl nincs a titok engedélyezési listáján'
+      : r.reason === 'not-canonical'
+        ? 'a titok azonosítója nem felel meg a szigorú mintának: invalid_id'
+        : 'a célfájl nincs a titok engedélyezési listáján'
     lines.push(
       `vault hivatkozás nem állítva vissza (${why}; a helyőrző maradt): fájl=${reportField(r.file)}, grantee=${reportField(r.grantee ?? 'ismeretlen')}, ` +
       `szerver=${reportField(r.server)}, kulcs=${reportField(r.key)}, titok=${reportField(r.secretId)}`,
@@ -1783,7 +1822,7 @@ async function runImportFleet(
   const vaultRefs: VaultRefPolicy = { acl: {}, refused: [] }
   let vaultRefAclError: string | null = null
   const carriesVaultRefs = [fleet.mainAgent?.mcp, ...(fleet.agents ?? []).map(a => a.mcp)]
-    .some(m => m !== undefined && m !== null && JSON.stringify(m).includes('{{VAULT:'))
+    .some(m => m !== undefined && m !== null && /\{\{VAULT:|vault:/.test(JSON.stringify(m)))
   if (carriesVaultRefs) {
     try {
       vaultRefs.acl = await getAllSecretAcls()

@@ -295,3 +295,91 @@ describe('import: a restricted secret is restored only into a file of a listed g
     expect(lines[0]).toContain('kulcs=KEY??X')
   })
 })
+
+describe('import: a reference written literally as vault:<id> gets the same decision as a placeholder', () => {
+  it('T12 an env value that starts with vault: is refused for an unlisted file (written back as the placeholder), kept for a listed one', async () => {
+    const literal: Servers = { srv: { command: 'node', env: { API_TOKEN: 'vault:restricted-id', OPEN: 'vault:open-id' } } }
+    const result = await run(bundle({ agents: { 'agent-b': literal, 'agent-c': literal } }))
+
+    expect(agentMcp('agent-b').mcpServers.srv.env).toEqual({ API_TOKEN: 'vault:restricted-id', OPEN: 'vault:open-id' })
+    expect(agentMcp('agent-c').mcpServers.srv.env).toEqual({ API_TOKEN: '{{VAULT:restricted-id}}', OPEN: 'vault:open-id' })
+    const lines = refusedLines(result)
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toContain('fájl=agents/agent-c/.mcp.json')
+    expect(lines[0]).toContain('kulcs=API_TOKEN')
+  })
+
+  it('T13 a headers value with vault:<id> anywhere in it: every occurrence is decided on its own', async () => {
+    const headerServer: Servers = {
+      srv: { url: 'https://example.invalid/mcp', headers: { Authorization: 'Bearer vault:restricted-id', Multi: 'a=vault:open-id;b=vault:restricted-id' } },
+    }
+    const result = await run(bundle({ agents: { 'agent-b': headerServer, 'agent-c': headerServer } }))
+
+    expect(agentMcp('agent-b').mcpServers.srv.headers).toEqual({ Authorization: 'Bearer vault:restricted-id', Multi: 'a=vault:open-id;b=vault:restricted-id' })
+    expect(agentMcp('agent-c').mcpServers.srv.headers).toEqual({
+      Authorization: 'Bearer {{VAULT:restricted-id}}',
+      Multi: 'a=vault:open-id;b={{VAULT:restricted-id}}',
+    })
+    expect(refusedLines(result)).toHaveLength(2)
+  })
+
+  it('T13b a vault: mention that is not a reference (no id after the colon) is left alone and reported as nothing', async () => {
+    const plain: Servers = { srv: { url: 'https://example.invalid/mcp', headers: { Note: 'see vault: docs' }, env: { NOTE: 'the vault: docs' } } }
+    const result = await run(bundle({ agents: { 'agent-c': plain } }))
+
+    expect(agentMcp('agent-c').mcpServers.srv.headers!.Note).toBe('see vault: docs')
+    expect(agentMcp('agent-c').mcpServers.srv.env!.NOTE).toBe('the vault: docs')
+    expect(refusedLines(result)).toEqual([])
+  })
+})
+
+describe('import: an id outside the strict pattern is never restored (invalid_id)', () => {
+  const awkward: Array<[string, string]> = [
+    ['placeholder, trailing space', '{{VAULT:restricted-id }}'],
+    ['placeholder, trailing newline', '{{VAULT:restricted-id\n}}'],
+    ['placeholder, space inside', '{{VAULT:restricted id}}'],
+    ['placeholder, empty id', '{{VAULT:}}'],
+    ['placeholder, 129 characters', `{{VAULT:${'a'.repeat(129)}}}`],
+    ['literal env, trailing space', 'vault:restricted-id '],
+    ['literal env, trailing newline', 'vault:restricted-id\n'],
+    ['literal env, an extra entry after a newline', 'vault:open-id\nX=restricted-id'],
+  ]
+
+  it.each(awkward)('T14 %s: refused whatever the list says (an open or a restricted secret alike), no vault: reference is written', async (_name, value) => {
+    // open-id has no list at all: the pattern, not the list, is what refuses these.
+    const result = await run(bundle({ agents: { 'agent-b': { srv: { command: 'node', env: { KEY: value } } } } }))
+
+    const written = JSON.stringify(agentMcp('agent-b'))
+    const env = agentMcp('agent-b').mcpServers.srv.env!
+    expect(env.KEY.startsWith('vault:')).toBe(false)
+    expect(written).not.toMatch(/"vault:/)
+    const lines = refusedLines(result)
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toContain('invalid_id')
+  })
+
+  it('T14b the boundary: 128 characters of the allowed set are restored, 129 are not', async () => {
+    const id128 = 'a'.repeat(128)
+    const result = await run(bundle({ agents: { 'agent-b': { srv: { command: 'node', env: { OK: ref(id128), TOO_LONG: ref(`${id128}a`) } } } } }))
+
+    const env = agentMcp('agent-b').mcpServers.srv.env!
+    expect(env.OK).toBe(`vault:${id128}`)
+    expect(env.TOO_LONG).toBe(`{{VAULT:${id128}a}}`)
+    expect(refusedLines(result)).toHaveLength(1)
+  })
+
+  it('T14c every character of the allowed set is accepted in an id', async () => {
+    const result = await run(bundle({ agents: { 'agent-b': { srv: { command: 'node', env: { KEY: ref('Aa09._-') } } } } }))
+
+    expect(agentMcp('agent-b').mcpServers.srv.env!.KEY).toBe('vault:Aa09._-')
+    expect(refusedLines(result)).toEqual([])
+  })
+
+  it('T15 the lists cannot be read, and the bundle only mentions vault: in plain text: no cause line, nothing held back', async () => {
+    probe.aclReadError = 'database is locked'
+    const result = await run(bundle({ agents: { 'agent-b': { srv: { command: 'node', env: { NOTE: 'the vault: docs' } } } } }))
+
+    expect(result.ok).toBe(true)
+    expect((result.warnings ?? []).filter(w => w.startsWith('vault'))).toEqual([])
+  })
+})
