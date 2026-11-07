@@ -254,6 +254,9 @@ def _heredoc_body_ranges(cmd):
     the next lines. Missing a real opener is the safe error (its body is scanned as commands: a possible
     false alarm); reading a phantom one is not (a command is blanked as data). `$(cat <<'EOF'` inside double
     quotes IS an opener (a command substitution runs), so a commit-message heredoc keeps working.
+    KNOWN LIMIT (older than this scan): a `<<` the shell does not read as a heredoc but this scan does still
+    opens one: `(( a = 1<<b ))`, `$[1<<b]`, `${x//<<EOF/y}`, `[[ a == b<<EOF ]]`, an ANSI-C quote `$'a\\'b <<EOF'`;
+    a destructive command on the NEXT line is then read as heredoc data. `$(( ))` is handled.
     The body starts after the newline that ends the opener's command line, and ends at the first line that,
     stripped, equals the delimiter; without such a line it runs to the end of the command."""
     n = len(cmd)
