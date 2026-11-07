@@ -971,7 +971,8 @@ components:
           description: True when a companion file lives under scripts/ or is executable.
         author_kind:
           type: string
-          enum: [human, agent, import, system]
+          enum: [human, agent, import, system, operator]
+          description: 'operator: the write was made with the operator''s own named admin token. Rows written before it existed keep their kind.'
         author_id:
           type: string
           nullable: true

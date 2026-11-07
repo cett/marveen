@@ -70,6 +70,29 @@ describe('skillActorFromRoute', () => {
     const ctx = { auth: { kind: 'token' as const }, agentId: 'claimed-agent' } as Pick<RouteContext, 'auth' | 'tokenAgentId'>
     expect(skillActorFromRoute(ctx)).toEqual({ kind: 'agent', id: null })
   })
+
+  it('the operator\'s own named admin token is the operator (the label is the reserved api_tokens row name)', () => {
+    expect(skillActorFromRoute({ auth: { kind: 'token', tokenName: 'operator' } })).toEqual({ kind: 'operator', id: 'operator' })
+  })
+
+  it('only the exact reserved name is the operator: look-alike or other labels stay agent callers', () => {
+    for (const name of ['Operator', 'operator ', ' operator', 'operator2', 'op', 'main-agent:operator', 'dashboard', '']) {
+      expect(skillActorFromRoute({ auth: { kind: 'token', tokenName: name } }), JSON.stringify(name)).toEqual({ kind: 'agent', id: name })
+    }
+    expect(skillActorFromRoute({ auth: { kind: 'token' } })).toEqual({ kind: 'agent', id: null }) // the legacy file token: no label, unchanged
+  })
+
+  it('a token that names an agent is that agent first, even with the operator label; a session stays a person', () => {
+    expect(skillActorFromRoute({ auth: { kind: 'token', tokenName: 'operator' }, tokenAgentId: 'agent-a' })).toEqual({ kind: 'agent', id: 'agent-a' })
+    expect(skillActorFromRoute({ auth: { kind: 'session', user: 'operator' } })).toEqual({ kind: 'human', id: 'operator' })
+  })
+
+  it('a claimed agent id does not turn the operator into an agent, and the operator label in a body or header proves nothing', () => {
+    const ctx = { auth: { kind: 'token' as const, tokenName: 'operator' }, agentId: 'claimed-agent' } as Pick<RouteContext, 'auth' | 'tokenAgentId'>
+    expect(skillActorFromRoute(ctx)).toEqual({ kind: 'operator', id: 'operator' })
+    const notOperator = { auth: { kind: 'token' as const, tokenName: 'token-b' }, agentId: 'operator' } as Pick<RouteContext, 'auth' | 'tokenAgentId'>
+    expect(skillActorFromRoute(notOperator)).toEqual({ kind: 'agent', id: 'token-b' })
+  })
 })
 
 describe('POST /api/skill-sync', () => {
@@ -197,6 +220,19 @@ describe('/api/skills/sql', () => {
     await call(tryHandleSkills, 'PUT', '/api/skills/sql/global%2Ftok', { content: 'one' }, token)
     await call(tryHandleSkills, 'PUT', '/api/skills/sql/global%2Ftok', { content: 'two' }, token)
     expect(revs('global/tok').map((r) => [r.action, r.author_kind, r.author_id])).toEqual([['create', 'agent', 'token-b'], ['modify', 'agent', 'token-b']])
+  })
+
+  it('the operator token writes a trail row of kind operator, a fake X-Agent-Id does not change it, an agent token stays an agent', async () => {
+    const operator: Extras = { auth: { kind: 'token', tokenName: 'operator' }, role: 'admin', agentId: 'claimed-agent' }
+    await call(tryHandleSkills, 'PUT', '/api/skills/sql/global%2Fop', { content: 'one' }, operator)
+    await call(tryHandleSkills, 'PUT', '/api/skills/sql/global%2Fop', { content: 'two' }, operator)
+    expect(revs('global/op').map((r) => [r.action, r.author_kind, r.author_id])).toEqual([['create', 'operator', 'operator'], ['modify', 'operator', 'operator']])
+    // an agent token whose request CLAIMS to be the operator (the claimed id is the only thing the request controls)
+    const agent: Extras = { auth: { kind: 'token', tokenName: 'token-a' }, role: 'admin', tokenAgentId: 'agent-a', agentId: 'operator' }
+    await call(tryHandleSkills, 'PUT', '/api/skills/sql/global%2Fclaim', { content: 'x' }, agent)
+    expect(revs('global/claim').map((r) => [r.author_kind, r.author_id])).toEqual([['agent', 'agent-a']])
+    await call(tryHandleSkills, 'PUT', '/api/skills/sql/global%2Fsess', { content: 'x' }, SESSION)
+    expect(revs('global/sess').map((r) => [r.author_kind, r.author_id])).toEqual([['human', 'user-a']])
   })
 
   it('a refused write (an agent token on a global skill) leaves skill and trail untouched', async () => {
