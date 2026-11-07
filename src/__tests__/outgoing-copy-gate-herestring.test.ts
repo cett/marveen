@@ -116,14 +116,26 @@ describe('python copy gate: comments are cut the way the shell cuts them (before
     expect(copyGateVerdicts([`# whole line comment\n${X}`, `x=1 # c\n${X}`]).map((v) => v.result)).toEqual([true, true])
   })
 
-  it('the text of a comment is not a command (the shell does not run it); a # inside a word is no comment', () => {
+  it('a # inside a word is no comment; text after a comment sign at command position stays DATA', () => {
     const v = copyGateVerdicts([
-      `echo a # b; ${X}`, // the sender sits INSIDE the comment: bash never runs it
-      `ls # ${X}`,
+      `ls # ${X}`, // the sender's name sits in a comment, nothing runs it: data
       `echo a#b; ${X}`, // not a comment: the sender runs
       `echo $#; ${X}`,
     ]).map((r) => r.result)
-    expect(v).toEqual([false, false, true, true])
+    expect(v).toEqual([false, true, true])
+  })
+
+  it('BOTH readings count (comments cut, comments kept): a mistake of the comment cutter cannot hide a send', () => {
+    // Shapes where a comment cutter that models the shell imperfectly would cut too much (found by the automatic
+    // review): a backslash-newline before the #, an ANSI-C quote holding an escaped quote, a substitution inside
+    // double quotes. The comment-kept reading (the JS twin's) still sees the sender in each.
+    const cmds = [
+      `echo a\\\n#b; ${X}`,
+      `echo $'\\' #'; ${X}`,
+      `echo "$(echo \\")" #"; ${X}`,
+      `echo a # b; ${X}`, // the sender sits inside a comment: the shell would not run it, the gate still reads it (stricter, as the JS gate)
+    ]
+    expect(copyGateVerdicts(cmds).map((v) => v.result)).toEqual([true, true, true, true])
   })
 })
 

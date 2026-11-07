@@ -465,10 +465,15 @@ def _strip_heredoc_bodies(cmd: str) -> str:
     return "".join(out)
 
 
-def _segments_tokens(cmd: str):
-    """[[token, ...], ...] szegmensenkent -- quote-tudatosan, poziciot orizve."""
+def _segments_tokens(cmd: str, cut_comments: bool = True):
+    """[[token, ...], ...] szegmensenkent -- quote-tudatosan, poziciot orizve.
+
+    cut_comments=False reads a `#` as a character (the JS twin's reading); is_send_invocation runs BOTH readings."""
     import shlex
-    lex = shlex.shlex(_word_boundaries(_mask_subshell_markers(_strip_comments(_strip_heredoc_bodies(cmd)))),
+    body = _strip_heredoc_bodies(cmd)
+    if cut_comments:
+        body = _strip_comments(body)
+    lex = shlex.shlex(_word_boundaries(_mask_subshell_markers(body)),
                       posix=True, punctuation_chars="();|&")
     lex.whitespace_split = True
     # Comment-BLIND, like the JS twin (segmentsTokens in email-send-gate.mjs reads a `#` as a character). shlex
@@ -999,25 +1004,38 @@ def _heredoc_program_sends(cmd: str, depth: int = 0) -> bool:
 def is_send_invocation(cmd: str, _depth: int = 0) -> bool:
     if _heredoc_program_sends(cmd, _depth):
         return True
-    try:
-        segments = _segments_tokens(cmd)
-    except ValueError:
-        # Parse-hiba (pl. lezaratlan idezojel): nem tudunk poziciot mondani.
-        # Konzervativ visszaeses: csak akkor auditalunk, ha eros kuldes-literal
-        # all a szovegben -- igy egy fura, de valodi kuldes nem csuszik at
-        # neman, a tipikus belso parancsok viszont nem kapnak hamis pozitivot.
-        return bool(_FALLBACK_LITERALS.search(cmd))
-    if any(_segment_is_send(toks, _depth) for toks in segments):
-        return True
+    # TWO readings of the comments, a send in EITHER counts (fail toward auditing). (1) Comments cut the way the
+    # shell cuts them (_strip_comments): a quote in a comment cannot leave a quote open. (2) Comments NOT cut, a `#`
+    # is a character, exactly the JS twin's reading: it needs no model of quoting, continuations, `$'..'` or a
+    # substitution inside double quotes, so a mistake of the comment cutter can never HIDE a send. The cutter only
+    # matters where reading (2) fails on an unbalanced quote that sits in a comment.
+    readings = (True, False) if "#" in cmd else (True,)
+    for cut in readings:
+        try:
+            segments = _segments_tokens(cmd, cut)
+        except ValueError:
+            # Parse-hiba (pl. lezaratlan idezojel): nem tudunk poziciot mondani.
+            # Konzervativ visszaeses: csak akkor auditalunk, ha eros kuldes-literal
+            # all a szovegben -- igy egy fura, de valodi kuldes nem csuszik at
+            # neman, a tipikus belso parancsok viszont nem kapnak hamis pozitivot.
+            if _FALLBACK_LITERALS.search(cmd):
+                return True
+            continue
+        if any(_segment_is_send(toks, _depth) for toks in segments):
+            return True
     # the same command with every substitution as one undecidable word
     # (flatten_substitutions): the outer command keeps the word it would run
     flat = flatten_substitutions(cmd)
     if flat == cmd:
         return False
-    try:
-        return any(_segment_is_send(toks, _depth) for toks in _segments_tokens(flat))
-    except ValueError:
-        return bool(_FALLBACK_LITERALS.search(cmd))
+    for cut in readings:
+        try:
+            if any(_segment_is_send(toks, _depth) for toks in _segments_tokens(flat, cut)):
+                return True
+        except ValueError:
+            if _FALLBACK_LITERALS.search(cmd):
+                return True
+    return False
 
 # --- Hungarian detection (accent-insensitive markers) -----------------------
 # These fire on both the correct and the stripped spelling, so a transliterated
