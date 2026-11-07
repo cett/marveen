@@ -482,6 +482,8 @@ export const TENANT_PURGE_SIMPLE_TABLES = [
   // could not be told apart ('_multi_') or were never resolved (NULL) belong to no single tenant
   // and stay. labels also drops its card links first (see deleteTenant).
   'otel_spans', 'daily_logs', 'task_runs', 'background_tasks', 'skill_usage', 'store_file_audit',
+  // The skill write trail (migration 0091): it survives a skill delete, but not the delete of the tenant that owned the skill.
+  'skill_revisions',
   'token_usage_daily', 'token_usage_monthly', 'cost_line_items', 'labels',
 ] as const
 

@@ -411,6 +411,9 @@ const ENDPOINT_PERMISSION_REGEX_TABLE: readonly RegexPermissionEntry[] = [
   // Which tenants may see a skill is the admin's decision: the access sub-resource stays admin-only
   // even though the skill itself (the skills:read/write rows above) is reachable by a fleet agent.
   { method: '*', regex: /^\/api\/skills\/sql\/[^/]+\/access(\/|$)/, permission: 'admin:all' },
+  // The write trail of a skill (who changed it and when) is admin-only too, under the same skills/sql prefix row. The
+  // route checks the role itself as well, before it looks the id up, so a refusal says nothing about the id.
+  { method: '*', regex: /^\/api\/skills\/sql\/[^/]+\/revisions(\/|$)/, permission: 'admin:all' },
 ]
 
 /**

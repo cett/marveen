@@ -182,7 +182,7 @@ describe('tryHandleSkills SQL endpoints', () => {
       expect(await tryHandleSkills(ctx)).toBe(true)
       expect(out.status).toBe(201)
       expect(out.body.skill).toMatchObject({ id: 'acme-skill', name: 'TenantSkill', tenant_id: 'acme' })
-      expect(createSkill).toHaveBeenCalledWith(expect.objectContaining({ tenant_id: 'acme' }))
+      expect(createSkill).toHaveBeenCalledWith(expect.objectContaining({ tenant_id: 'acme' }), { kind: 'system', id: null })
     })
 
     it('POST /api/skills/sql rejects missing name', async () => {

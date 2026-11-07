@@ -129,7 +129,7 @@ for (const s of skills) {
       content:     s.content,
       tenant_id:   s.tenant_id,
       is_global:   s.is_global,
-    })
+    }, { kind: 'import', id: null }, { sourceRef: 'materialize-skills' })
     if (seeded) {
       console.log(`  NEW  ${s.id}`)
       inserted++

@@ -52,7 +52,7 @@ describe('kind: skill', () => {
   })
 
   it('updates only content and updated_at of an existing row, and strips the generated header', async () => {
-    await createSkill({ id: 'global/s', name: 's', description: 'keep me', content: 'old', tenant_id: 'fleet', is_global: true })
+    await createSkill({ id: 'global/s', name: 's', description: 'keep me', content: 'old', tenant_id: 'fleet', is_global: true }, { kind: 'system', id: null })
     db.prepare('UPDATE skills SET updated_at = 1 WHERE id = ?').run('global/s')
     await post({ kind: 'skill', skill_id: 'global/s', content: '---\nname: s\n---\n<!-- GENERATED from the skills DB (skill global/s) -->\nnew' })
     const row = (await getSkill('global/s'))!
@@ -71,7 +71,7 @@ describe('kind: skill', () => {
 describe('kind: tenant', () => {
   beforeEach(async () => {
     await createTenant('co-x', 'Co X')
-    await createSkill({ id: 'co-x-helper', name: 'helper', content: 'old', tenant_id: 'co-x' })
+    await createSkill({ id: 'co-x-helper', name: 'helper', content: 'old', tenant_id: 'co-x' }, { kind: 'system', id: null })
   })
 
   it('updates the tenant row for an agent available to that tenant', async () => {
@@ -97,7 +97,7 @@ describe('kind: tenant', () => {
     await setTenantAgentAvailability('co-x', 'agent-a', true)
     const wrongDir = await post({ kind: 'tenant', header_id: 'co-x-helper', agent_id: 'agent-a', dir_name: 'something-else', content: 'evil' })
     expect(wrongDir.body.ignored).toBe(true)
-    await createSkill({ id: 'global/f', name: 'f', content: 'old', tenant_id: 'fleet', is_global: true })
+    await createSkill({ id: 'global/f', name: 'f', content: 'old', tenant_id: 'fleet', is_global: true }, { kind: 'system', id: null })
     expect((await post({ kind: 'tenant', header_id: 'global/f', agent_id: 'agent-a', dir_name: 'global-f', content: 'evil' })).body.ignored).toBe(true)
     expect((await post({ kind: 'tenant', header_id: 'nope', agent_id: 'agent-a', dir_name: 'nope', content: 'evil' })).body.ignored).toBe(true)
     expect((await getSkill('co-x-helper'))!.content).toBe('old')
@@ -107,7 +107,7 @@ describe('kind: tenant', () => {
 
 describe('kind: companion', () => {
   beforeEach(async () => {
-    await createSkill({ id: 'global/s', name: 's', content: 'c', tenant_id: 'fleet', is_global: true })
+    await createSkill({ id: 'global/s', name: 's', content: 'c', tenant_id: 'fleet', is_global: true }, { kind: 'system', id: null })
   })
 
   it('stores a file for an existing skill, normalising the mode, and overwrites on the second edit', async () => {
@@ -145,7 +145,7 @@ describe('kind: companion', () => {
 
   it('applies the tenant qualification check to a generated tenant copy', async () => {
     await createTenant('co-x', 'Co X')
-    await createSkill({ id: 'co-x-helper', name: 'helper', content: 'c', tenant_id: 'co-x' })
+    await createSkill({ id: 'co-x-helper', name: 'helper', content: 'c', tenant_id: 'co-x' }, { kind: 'system', id: null })
     const denied = await post({ kind: 'companion', skill_id: 'co-x-helper', rel_path: 'a.txt', content_base64: b64('x'), tenant_agent: 'agent-a' })
     expect(denied.body.ignored).toBe(true)
     await setTenantAgentAvailability('co-x', 'agent-a', true)

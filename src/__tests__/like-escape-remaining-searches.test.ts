@@ -149,7 +149,7 @@ describe('the workspace doc_key prefix is literal', () => {
 
 describe('listAgentOwnedSkills: the agent id is a literal prefix', () => {
   async function skill(id: string): Promise<void> {
-    await createSkill({ id, name: id.replace(/\//g, '-'), content: 'c', tenant_id: 'default' })
+    await createSkill({ id, name: id.replace(/\//g, '-'), content: 'c', tenant_id: 'default' }, { kind: 'system', id: null })
   }
   const ids = async (agentId: string) => (await listAgentOwnedSkills(agentId)).map((s) => s.id).sort()
 

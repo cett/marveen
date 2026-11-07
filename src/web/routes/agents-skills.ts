@@ -11,6 +11,7 @@ import { parseMultipart } from '../multipart.js'
 import { readBody, json } from '../http-helpers.js'
 import { sanitizeAgentName, sanitizeSkillName, safeJoin } from '../sanitize.js'
 import { regenSingleSkillFile, importCompanionFilesOfDir } from '../skill-regen.js'
+import { skillActorFromRoute } from '../skill-actor.js'
 import type { RouteContext } from './types.js'
 import { createSkill, deleteSkill, seedSkillIfAbsent, listAgentOwnedSkills, listGlobalFleetSkills, type SkillRow } from '../../db.js'
 
@@ -67,6 +68,8 @@ function skillRowToAgentSkill(row: SkillRow, source: 'agent' | 'global', deletab
 
 export async function tryHandleAgentsSkills(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
+  // Who is writing, for the skill_revisions trail: what the credential proves, never a claimed name.
+  const actor = skillActorFromRoute(ctx)
 
   const skillImportMatch = path.match(/^\/api\/agents\/([^/]+)\/skills\/import$/)
   if (skillImportMatch && method === 'POST') {
@@ -145,9 +148,12 @@ export async function tryHandleAgentsSkills(ctx: RouteContext): Promise<boolean>
         const desc = readSkillDescription(join(skillsDir, dirName))
         const importSqlId = importIsGlobal ? `global/${dirName}` : `agent/${name}/${dirName}`
         try {
-          await seedSkillIfAbsent({ id: importSqlId, name: dirName, description: desc, content, tenant_id: 'fleet', is_global: importIsGlobal })
+          // An archive import is traced as an import (source: the skill directory name in the archive), by whoever sent it.
+          const importActor = { kind: 'import', id: actor.id } as const
+          const importSource = { sourceRef: `skill-archive:${dirName}` }
+          await seedSkillIfAbsent({ id: importSqlId, name: dirName, description: desc, content, tenant_id: 'fleet', is_global: importIsGlobal }, importActor, importSource)
           // scripts/, references/ ... of the archive belong in the DB too (skill_files).
-          await importCompanionFilesOfDir(importSqlId, join(skillsDir, dirName))
+          await importCompanionFilesOfDir(importSqlId, join(skillsDir, dirName), importActor, false, importSource)
         } catch (sqlErr) {
           logger.warn({ dirName, err: sqlErr }, 'Failed to upsert imported skill into SQL')
         }
@@ -185,7 +191,7 @@ export async function tryHandleAgentsSkills(ctx: RouteContext): Promise<boolean>
     }
     if (!existsSync(skillDir)) { json(res, { error: 'not_found', hint: 'Skill not found' }, 404); return true }
     const deleteSqlId = name === MAIN_AGENT_ID ? `global/${skillName}` : `agent/${name}/${skillName}`
-    await deleteSkill(deleteSqlId)
+    await deleteSkill(deleteSqlId, actor)
     rmSync(skillDir, { recursive: true, force: true })
     json(res, { ok: true })
     return true
@@ -239,7 +245,7 @@ export async function tryHandleAgentsSkills(ctx: RouteContext): Promise<boolean>
     const agentSqlId = agentName === MAIN_AGENT_ID ? `global/${skillName}` : `agent/${agentName}/${skillName}`
     const agentIsGlobal = agentName === MAIN_AGENT_ID
     try {
-      await createSkill({ id: agentSqlId, name: skillName, description, content: skillMd, tenant_id: 'fleet', is_global: agentIsGlobal })
+      await createSkill({ id: agentSqlId, name: skillName, description, content: skillMd, tenant_id: 'fleet', is_global: agentIsGlobal }, actor)
     } catch {
       json(res, { error: 'conflict', hint: 'Skill already exists' }, 409)
       return true

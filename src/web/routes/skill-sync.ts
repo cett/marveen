@@ -1,6 +1,7 @@
 import { MAX_SKILL_FILE_BYTES } from '../../skill-files.js'
 import { syncCompanionFile, syncSkillContent, syncTenantSkill, type SkillSyncResult } from '../../skill-sync.js'
 import { RequestBodyTooLargeError, readBody, json } from '../http-helpers.js'
+import { skillActorFromRoute } from '../skill-actor.js'
 import { recordFleetSkillWriteDenied } from '../token-shadow.js'
 import type { RouteContext } from './types.js'
 
@@ -72,7 +73,7 @@ export async function tryHandleSkillSync(ctx: RouteContext): Promise<boolean> {
     if (!text(body['skill_id'])) return need('skill_id')
     if (typeof body['content'] !== 'string') return need('content')
     if (fleetAgent && !isOwnAgentSkillId(body['skill_id'], ctx.tokenAgentId)) return refuseFleet(body['skill_id'])
-    return reply(await syncSkillContent(body['skill_id'], body['content']))
+    return reply(await syncSkillContent(body['skill_id'], body['content'], skillActorFromRoute(ctx)))
   }
 
   if (body['kind'] === 'tenant') {
@@ -81,7 +82,7 @@ export async function tryHandleSkillSync(ctx: RouteContext): Promise<boolean> {
     if (!text(body['dir_name'])) return need('dir_name')
     if (typeof body['content'] !== 'string') return need('content')
     if (fleetAgent) return refuseFleet(body['header_id'])
-    return reply(await syncTenantSkill(body['header_id'], body['agent_id'], body['dir_name'], body['content']))
+    return reply(await syncTenantSkill(body['header_id'], body['agent_id'], body['dir_name'], body['content'], skillActorFromRoute(ctx)))
   }
 
   if (body['kind'] === 'companion') {
@@ -102,7 +103,7 @@ export async function tryHandleSkillSync(ctx: RouteContext): Promise<boolean> {
     if (fleetAgent && (!isOwnAgentSkillId(body['skill_id'], ctx.tokenAgentId) || (agent !== undefined && agent !== null))) {
       return refuseFleet(claimed(body['skill_id']))
     }
-    return reply(await syncCompanionFile(body['skill_id'], body['rel_path'], Buffer.from(b64, 'base64'), mode as number | undefined, (agent as string | null | undefined) ?? null))
+    return reply(await syncCompanionFile(body['skill_id'], body['rel_path'], Buffer.from(b64, 'base64'), mode as number | undefined, (agent as string | null | undefined) ?? null, skillActorFromRoute(ctx)))
   }
 
   json(res, { error: 'invalid_value', field: 'kind', hint: "kind must be 'skill', 'tenant' or 'companion'" }, 400)
