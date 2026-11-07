@@ -282,6 +282,76 @@ def _mask_subshell_markers(cmd: str) -> str:
     return "".join(out)
 
 
+# Stands in for the `&` of a redirect while the lexer runs (restored in _segments_tokens): a word character,
+# so shlex keeps it inside the word instead of cutting a segment there.
+_REDIRECT_AMP = "\x1f"
+
+
+def _word_boundaries(cmd: str) -> str:
+    """Two tokenizer facts of the shell that shlex(punctuation_chars) gets wrong, applied OUTSIDE quotes only.
+    Mirrors segmentsTokens in email-send-gate.mjs; the send-invocation cases bind the two.
+
+    * `<<<` (a here-string) is a word of its own: `bash<<<'X'` is `bash` and a here-string, not the one word
+      `bash<<<X` (_head_is_send reads the word after it as a script).
+    * The `&` of a redirect (`2>&1`, `>&2`, `<&3`, `&>out`) is part of a word, not the end of the command:
+      cutting there made `bash 2>&1 <<< 'X'` read as `bash 2>` and a stray `1 <<< X` (no shell in it)."""
+    if "<<<" not in cmd and "&" not in cmd:
+        return cmd
+    out = []
+    q = None  # None | "'" | '"'
+    i, n = 0, len(cmd)
+    while i < n:
+        ch = cmd[i]
+        if q:
+            if ch == "\\" and q == '"' and i + 1 < n:
+                out.append(cmd[i:i + 2]); i += 2; continue
+            if ch == q:
+                q = None
+            out.append(ch); i += 1; continue
+        if ch in "'\"":
+            q = ch; out.append(ch); i += 1; continue
+        if ch == "\\" and i + 1 < n:
+            out.append(cmd[i:i + 2]); i += 2; continue
+        if ch == "<" and cmd.startswith("<<<", i):
+            out.append(" <<< "); i += 3; continue
+        if ch == "&" and ((i > 0 and cmd[i - 1] in "<>") or (i + 1 < n and cmd[i + 1] == ">")):
+            out.append(_REDIRECT_AMP); i += 1; continue
+        out.append(ch); i += 1
+    return "".join(out)
+
+
+def _strip_comments(cmd: str) -> str:
+    """cmd without its shell comments: an unquoted `#` at the START of a word (after whitespace or one of
+    ; | & ( ) < >) up to, not including, the newline. `echo a#b`, `echo $#` and `${#x}` hold no comment. The
+    newline stays, so the next line is a command of its own. Doing this BEFORE the lexer matters twice: an
+    apostrophe or a quote in a comment (`ls # don't`) no longer leaves a quote open, which sent the whole command
+    to the strong-literal fallback and let `python3 -m send --to x # don't` through, and shlex's own comment
+    handling (cut at any #, newline swallowed) is not used at all (lex.commenters is empty)."""
+    if "#" not in cmd:
+        return cmd
+    out = []
+    q = None  # None | "'" | '"'
+    i, n = 0, len(cmd)
+    while i < n:
+        ch = cmd[i]
+        if q:
+            if ch == "\\" and q == '"' and i + 1 < n:
+                out.append(cmd[i:i + 2]); i += 2; continue
+            if ch == q:
+                q = None
+            out.append(ch); i += 1; continue
+        if ch in "'\"":
+            q = ch; out.append(ch); i += 1; continue
+        if ch == "\\" and i + 1 < n:
+            out.append(cmd[i:i + 2]); i += 2; continue
+        if ch == "#" and (i == 0 or cmd[i - 1] in " \t\n;|&()<>"):
+            nl = cmd.find("\n", i)
+            i = n if nl == -1 else nl
+            continue
+        out.append(ch); i += 1
+    return "".join(out)
+
+
 # --- bounded heredoc scan -------------------------------------
 # Hard limits, measured on 365k real Bash calls of the fleet (max command 32 KB, max 7
 # heredoc openers, longest opener line 1.7 KB): each limit is 4x or more above anything
@@ -395,12 +465,24 @@ def _strip_heredoc_bodies(cmd: str) -> str:
     return "".join(out)
 
 
-def _segments_tokens(cmd: str):
-    """[[token, ...], ...] szegmensenkent -- quote-tudatosan, poziciot orizve."""
+def _segments_tokens(cmd: str, cut_comments: bool = True):
+    """[[token, ...], ...] szegmensenkent -- quote-tudatosan, poziciot orizve.
+
+    cut_comments=False reads a `#` as a character (the JS twin's reading); is_send_invocation runs BOTH readings."""
     import shlex
-    lex = shlex.shlex(_mask_subshell_markers(_strip_heredoc_bodies(cmd)),
+    body = _strip_heredoc_bodies(cmd)
+    if cut_comments:
+        body = _strip_comments(body)
+    lex = shlex.shlex(_word_boundaries(_mask_subshell_markers(body)),
                       posix=True, punctuation_chars="();|&")
     lex.whitespace_split = True
+    # Comment-BLIND, like the JS twin (segmentsTokens in email-send-gate.mjs reads a `#` as a character). shlex
+    # defaults to commenters='#': it cut a comment at ANY `#` (also mid-word: `echo a#b`, `echo $#`, which the shell
+    # does not) and, worse, swallowed the NEWLINE at its end, so the next line's tokens joined the comment's
+    # segment: `ls # c<newline>bash <<< 'X'` read as one segment headed by `ls`, and the here-string was not seen.
+    # Reading comment text as words only errs toward auditing (a mail program named in a comment is a hit
+    # only at command position; `ls # sendmail a@b.c` stays data).
+    lex.commenters = ""
     segments, cur = [], []
     for tok in lex:
         # SEGSPLIT923: shlex(punctuation_chars) returns a RUN of operator
@@ -416,7 +498,7 @@ def _segments_tokens(cmd: str):
                 segments.append(cur)
             cur = []
         else:
-            cur.append(tok)
+            cur.append(tok.replace(_REDIRECT_AMP, "&"))
     if cur:
         segments.append(cur)
     return segments
@@ -679,6 +761,19 @@ def _python_head_sends(rest) -> bool:
     return False
 
 
+# A script a shell is handed as TEXT (a here-string), judged as a command of its own. Same bound as the JS twin
+# (MAX_SCRIPT_NEST in email-send-gate.mjs): past it the gate DENIES (InspectionLimit), it does not wave the
+# call through. Each level re-reads a text that is at most as long as the one before (it sits inside quotes),
+# and the whole command is capped by MAX_CMD_CHARS, so the work stays linear.
+MAX_SCRIPT_NEST = 8
+
+
+def _script_sends(script: str, depth: int) -> bool:
+    if depth >= MAX_SCRIPT_NEST:
+        raise InspectionLimit(f"scripts handed to a here-string nested deeper than {MAX_SCRIPT_NEST}")
+    return is_send_invocation(script, _depth=depth + 1)
+
+
 def _head_is_send(toks, depth: int) -> bool:
     if toks is None:  # the depth bound was hit on a wrapper: audit it
         return True
@@ -694,6 +789,14 @@ def _head_is_send(toks, depth: int) -> bool:
             if t == "-c" and i + 1 < len(rest):
                 if is_send_invocation(rest[i + 1], _depth=depth + 1):
                     return True
+    # A here-string is a script when the segment holds a shell, `source` or `.` word ANYWHERE (fail closed,
+    # the command position is not worked out): `bash <<< 'X'`, `bash<<<'X'`, `<<< 'X' bash`,
+    # `source /dev/stdin <<< 'X'`. A segment without such a word (`cat <<< 'X'`) keeps its text as data.
+    # Mirrors headIsSend in email-send-gate.mjs.
+    if "<<<" in toks and any(_WRAPPER_SHELL.match(_basename(t)) or _basename(t) in ("source", ".") for t in toks):
+        for i in range(len(toks) - 1):
+            if toks[i] == "<<<" and _script_sends(toks[i + 1], depth):
+                return True
     # interpreter kod-string: python -c / node -e / --eval, ami kuldest hiv
     if _PYTHON.match(prog) or _NODEISH.match(prog):
         for i, t in enumerate(rest):
@@ -892,28 +995,66 @@ def _heredoc_program_sends(cmd: str, depth: int = 0) -> bool:
     return _written_then_run(cmd, written, depth)
 
 
+# COVERAGE ON THE MAIN AGENT'S PATH IS TWO LAYERS (email-approval-gate.call_is_send): this position-based reader
+# (bound to the JS twin by send-invocation-cases.json) OR the word-based reader scripts/lib/email_extract.py
+# (command_sends_mail: a mail program named in a word of a command that is not just looking at files). eval,
+# source / . <(echo ..), bash <(echo ..), builtin and a backslash-newline in the name rest on the word-based layer
+# alone and are NOT read here; a here-string is the shape that layer cannot see (the script is a redirect
+# operand), so it is read here. outgoing-copy-gate-herestring.test.ts pins the whole decision.
+_SEND_MEMO: dict = {}
+
+
 def is_send_invocation(cmd: str, _depth: int = 0) -> bool:
+    """Memoised per top-level call on (text, depth): every nested script (eval-like text, a here-string, a -c
+    string) is read once per level, however many ways it is reached. Without it the two comment readings and the
+    flatten reading multiply per level (4x each: 8 levels of a script holding a # cost 7 s of CPU)."""
+    if _depth == 0:
+        _SEND_MEMO.clear()
+    key = (cmd, _depth)
+    hit = _SEND_MEMO.get(key)
+    if hit is not None:
+        return hit
+    result = _is_send_invocation_uncached(cmd, _depth)  # an InspectionLimit passes through, uncached
+    _SEND_MEMO[key] = result
+    return result
+
+
+def _is_send_invocation_uncached(cmd: str, _depth: int = 0) -> bool:
     if _heredoc_program_sends(cmd, _depth):
         return True
-    try:
-        segments = _segments_tokens(cmd)
-    except ValueError:
-        # Parse-hiba (pl. lezaratlan idezojel): nem tudunk poziciot mondani.
-        # Konzervativ visszaeses: csak akkor auditalunk, ha eros kuldes-literal
-        # all a szovegben -- igy egy fura, de valodi kuldes nem csuszik at
-        # neman, a tipikus belso parancsok viszont nem kapnak hamis pozitivot.
-        return bool(_FALLBACK_LITERALS.search(cmd))
-    if any(_segment_is_send(toks, _depth) for toks in segments):
-        return True
+    # TWO readings of the comments, a send in EITHER counts (fail toward auditing). (1) Comments cut the way the
+    # shell cuts them (_strip_comments): a quote in a comment cannot leave a quote open. (2) Comments NOT cut, a `#`
+    # is a character, exactly the JS twin's reading: it needs no model of quoting, continuations, `$'..'` or a
+    # substitution inside double quotes, so a mistake of the comment cutter can never HIDE a send. The cutter only
+    # matters where reading (2) fails on an unbalanced quote that sits in a comment.
+    # (the second reading only when cutting comments changes the text at all)
+    readings = (True, False) if "#" in cmd and _strip_comments(cmd) != cmd else (True,)
+    for cut in readings:
+        try:
+            segments = _segments_tokens(cmd, cut)
+        except ValueError:
+            # Parse-hiba (pl. lezaratlan idezojel): nem tudunk poziciot mondani.
+            # Konzervativ visszaeses: csak akkor auditalunk, ha eros kuldes-literal
+            # all a szovegben -- igy egy fura, de valodi kuldes nem csuszik at
+            # neman, a tipikus belso parancsok viszont nem kapnak hamis pozitivot.
+            if _FALLBACK_LITERALS.search(cmd):
+                return True
+            continue
+        if any(_segment_is_send(toks, _depth) for toks in segments):
+            return True
     # the same command with every substitution as one undecidable word
     # (flatten_substitutions): the outer command keeps the word it would run
     flat = flatten_substitutions(cmd)
     if flat == cmd:
         return False
-    try:
-        return any(_segment_is_send(toks, _depth) for toks in _segments_tokens(flat))
-    except ValueError:
-        return bool(_FALLBACK_LITERALS.search(cmd))
+    for cut in readings:
+        try:
+            if any(_segment_is_send(toks, _depth) for toks in _segments_tokens(flat, cut)):
+                return True
+        except ValueError:
+            if _FALLBACK_LITERALS.search(cmd):
+                return True
+    return False
 
 # --- Hungarian detection (accent-insensitive markers) -----------------------
 # These fire on both the correct and the stripped spelling, so a transliterated

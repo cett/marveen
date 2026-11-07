@@ -1315,6 +1315,221 @@
       "name": "runpy control: a module that only starts with runpy",
       "cmd": "python3 -m runpyx --to a@example.com",
       "expected": false
+    },
+    {
+      "name": "here-string: bash <<< sender",
+      "cmd": "bash <<< 'sendmail a@example.com'",
+      "expected": true
+    },
+    {
+      "name": "here-string: glued bash<<<sender",
+      "cmd": "bash<<<'sendmail a@example.com'",
+      "expected": true
+    },
+    {
+      "name": "here-string: the operator before the shell word",
+      "cmd": "<<< 'sendmail a@example.com' bash",
+      "expected": true
+    },
+    {
+      "name": "here-string: a redirect-& before it (2>&1)",
+      "cmd": "bash 2>&1 <<< 'sendmail a@example.com'",
+      "expected": true
+    },
+    {
+      "name": "here-string: behind sudo",
+      "cmd": "sudo bash <<< 'sendmail a@example.com'",
+      "expected": true
+    },
+    {
+      "name": "here-string: source /dev/stdin",
+      "cmd": "source /dev/stdin <<< 'sendmail a@example.com'",
+      "expected": true
+    },
+    {
+      "name": "here-string: dot /dev/stdin",
+      "cmd": ". /dev/stdin <<< 'sendmail a@example.com'",
+      "expected": true
+    },
+    {
+      "name": "here-string: absolute shell path",
+      "cmd": "/bin/bash <<< 'sendmail a@example.com'",
+      "expected": true
+    },
+    {
+      "name": "here-string: sh -s",
+      "cmd": "sh -s <<< 'sendmail a@example.com'",
+      "expected": true
+    },
+    {
+      "name": "here-string: zsh",
+      "cmd": "zsh <<< 'sendmail a@example.com'",
+      "expected": true
+    },
+    {
+      "name": "here-string: the sender name split by adjacent quotes",
+      "cmd": "bash <<< 'send''mail a@example.com'",
+      "expected": true
+    },
+    {
+      "name": "here-string: double-quoted script",
+      "cmd": "bash <<< \"sendmail a@example.com\"",
+      "expected": true
+    },
+    {
+      "name": "here-string: a shell option before it",
+      "cmd": "bash -x <<< 'sendmail a@example.com'",
+      "expected": true
+    },
+    {
+      "name": "here-string: inside braces",
+      "cmd": "{ bash <<< 'sendmail a@example.com'; }",
+      "expected": true
+    },
+    {
+      "name": "here-string: after &&",
+      "cmd": "true && bash <<< 'sendmail a@example.com'",
+      "expected": true
+    },
+    {
+      "name": "here-string: the sender is the SECOND here-string",
+      "cmd": "bash <<< 'echo hi' <<< 'sendmail a@example.com'",
+      "expected": true
+    },
+    {
+      "name": "here-string: a here-string inside a here-string",
+      "cmd": "bash <<< \"bash <<< 'sendmail a@example.com'\"",
+      "expected": true
+    },
+    {
+      "name": "here-string: inside a shell -c",
+      "cmd": "bash -c \"bash <<< 'sendmail a@example.com'\"",
+      "expected": true
+    },
+    {
+      "name": "here-string control: cat reads it as data",
+      "cmd": "cat <<< 'sendmail a@example.com'",
+      "expected": false
+    },
+    {
+      "name": "here-string control: grep -c reads it as data",
+      "cmd": "grep -c x <<< 'sendmail a@example.com'",
+      "expected": false
+    },
+    {
+      "name": "here-string control: read -r takes it as data",
+      "cmd": "read -r v <<< 'sendmail a@example.com'",
+      "expected": false
+    },
+    {
+      "name": "here-string control: a shell handed a harmless script",
+      "cmd": "bash <<< 'echo hi'",
+      "expected": false
+    },
+    {
+      "name": "here-string control: a shell handed a harmless script (glued)",
+      "cmd": "bash<<<'echo hi'",
+      "expected": false
+    },
+    {
+      "name": "here-string control: source of a harmless script",
+      "cmd": "source /dev/stdin <<< 'export A=1'",
+      "expected": false
+    },
+    {
+      "name": "redirect-& control: 2>&1 is not a segment break",
+      "cmd": "ls 2>&1 | head",
+      "expected": false
+    },
+    {
+      "name": "redirect-& control: >&2",
+      "cmd": "echo hi >&2",
+      "expected": false
+    },
+    {
+      "name": "redirect-& control: &> file",
+      "cmd": "cmd &> out",
+      "expected": false
+    },
+    {
+      "name": "redirect-& : a real && still splits (sender after a redirect-&)",
+      "cmd": "ls >&2 && sendmail a@example.com",
+      "expected": true
+    },
+    {
+      "name": "redirect-& : a real & still splits (sender after &> and a background &)",
+      "cmd": "cmd &>/dev/null & sendmail a@example.com",
+      "expected": true
+    },
+    {
+      "name": "here-string: a backslash-escaped space keeps the script one word",
+      "cmd": "bash <<< sendmail\\ a@example.com",
+      "expected": true
+    },
+    {
+      "name": "here-string known limit: a script built from a variable is text here, not followed",
+      "cmd": "bash <<< \"$SCRIPT\"",
+      "expected": false
+    },
+    {
+      "name": "here-string known limit: a script built by a substitution is not followed",
+      "cmd": "bash <<< \"$(echo sendmail a@example.com)\"",
+      "expected": false
+    },
+    {
+      "name": "here-string known limit: an ANSI-C quoted script is not decoded",
+      "cmd": "bash <<< $'sendmail a@example.com'",
+      "expected": false
+    },
+    {
+      "name": "comment before a here-string: the newline ends the comment",
+      "cmd": "ls # c\nbash <<< 'sendmail a@example.com'",
+      "expected": true
+    },
+    {
+      "name": "comment before a glued here-string",
+      "cmd": "ls # c\nbash<<<'sendmail a@example.com'",
+      "expected": true
+    },
+    {
+      "name": "a # in the MIDDLE of a word is not a comment (echo a#b)",
+      "cmd": "echo a#b; bash <<< 'sendmail a@example.com'",
+      "expected": true
+    },
+    {
+      "name": "$# is not a comment",
+      "cmd": "echo $#; bash <<< 'sendmail a@example.com'",
+      "expected": true
+    },
+    {
+      "name": "comment before source /dev/stdin <<<",
+      "cmd": "echo hi # note\nsource /dev/stdin <<< 'sendmail a@example.com'",
+      "expected": true
+    },
+    {
+      "name": "an apostrophe in a comment does not hide the next line",
+      "cmd": "ls # don't\nbash<<<'sendmail a@example.com'",
+      "expected": true
+    },
+    {
+      "name": "comment before a plain sender",
+      "cmd": "ls # c\nsendmail a@example.com",
+      "expected": true
+    },
+    {
+      "name": "comment control: cat reads the here-string as data after a comment",
+      "cmd": "ls # c\ncat <<< 'sendmail a@example.com'",
+      "expected": false
+    },
+    {
+      "name": "comment control: a mid-word # then cat <<<",
+      "cmd": "echo a#b; cat <<< 'sendmail a@example.com'",
+      "expected": false
+    },
+    {
+      "name": "comment control: $# alone",
+      "cmd": "echo $#",
+      "expected": false
     }
   ]
 }
