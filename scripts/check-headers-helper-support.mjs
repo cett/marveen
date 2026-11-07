@@ -37,6 +37,8 @@ const script = (name, body) => { const p = join(work, name); writeFileSync(p, `#
 const good = script('good.sh', `printf '{"Authorization":"Bearer fixture-helper-value"}\\n'`)
 const failing = script('failing.sh', 'exit 1')
 const junk = script('junk.sh', 'echo not-json')
+// Longer than the 10 s limit Claude Code gives a helper: it must be given up on, and nothing may be sent.
+const slow = script('slow.sh', `sleep 13\nprintf '{"Authorization":"Bearer fixture-late-value"}\\n'`)
 
 // Async on purpose: the probe server lives in THIS process, a blocking spawn would starve it.
 async function attempt(server_) {
@@ -58,6 +60,7 @@ const results = [
   ['H1 helper header reaches the server', await attempt({ headersHelper: good }), a => a.length > 0 && a.every(x => x === 'Bearer fixture-helper-value')],
   ['H3 failing helper sends no Authorization', await attempt({ headersHelper: failing }), a => a.length > 0 && a.every(x => x === null)],
   ['H3 helper printing non-JSON sends no Authorization', await attempt({ headersHelper: junk }), a => a.length > 0 && a.every(x => x === null)],
+  ['H3 helper over the 10 s limit sends no Authorization (not even the late one)', await attempt({ headersHelper: slow }), a => a.length > 0 && a.every(x => x === null)],
   ['H4 failing helper + static header falls back to the static one', await attempt({ headersHelper: failing, headers: { Authorization: 'Bearer fixture-static-value' } }), a => a.length > 0 && a.every(x => x === 'Bearer fixture-static-value')],
 ]
 
