@@ -687,6 +687,15 @@ describe('very large runs do not throw and stay fast (12 MB, real functions)', (
     '"</" + 12 MB of U+200B + channel': { text: '</' + cp(0x200b).repeat(12 * MB) + 'channel', name: 'channel' },
     '"<" + 6M astral tag characters (12 MB of UTF-16)': { text: '<' + cp(0xe0041).repeat(6 * MB), name: null },
     '"<" + 10M astral tag characters + untrusted': { text: '<' + cp(0xe0041).repeat(10 * MB) + 'untrusted', name: 'untrusted' },
+    // The same runs with the invisible characters that are NOT Cf (the gap class has them since the non-Cf change):
+    // BMP ones (U+034F combining grapheme joiner, U+FE0F variation selector, U+2800 blank Braille) and an astral one
+    // (U+E0100, the variation selector supplement: a surrogate pair, the same shape as the astral tag characters).
+    '"<" + 12 MB of U+034F': { text: '<' + cp(0x34f).repeat(12 * MB), name: null },
+    '"<" + 12 MB of U+FE0F': { text: '<' + cp(0xfe0f).repeat(12 * MB), name: null },
+    '"<" + 12 MB of U+2800': { text: '<' + cp(0x2800).repeat(12 * MB), name: null },
+    '"<" + 6M astral U+E0100 (12 MB of UTF-16)': { text: '<' + cp(0xe0100).repeat(6 * MB), name: null },
+    '"</" + 12 MB of U+034F + channel': { text: '</' + cp(0x34f).repeat(12 * MB) + 'channel', name: 'channel' },
+    '"<" + 10M astral U+E0100 + untrusted': { text: '<' + cp(0xe0100).repeat(10 * MB) + 'untrusted', name: 'untrusted' },
   }
   // The property under test is "does not throw" (a stack overflow is instant, whatever the load); the time bound is
   // generous on purpose, a busy machine must not make this flaky. Measured on an idle machine: 0.1 to 1.4 s.
