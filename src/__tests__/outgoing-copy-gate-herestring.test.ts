@@ -194,11 +194,11 @@ describe('python copy gate: here-string depth bound and hostile input', () => {
     // Each level: a shell, a here-string holding the level below, a `;`, an echo, a substitution and a comment.
     // Without the per-call memo the two comment readings and the flatten reading multiply by 4 per level
     // (measured 7 s of CPU at 8 levels, the hook timeout is 10 s).
-    let cmd = X
+    let cmd = 'echo hi' // no sender anywhere: the whole tree is read, nothing short-circuits
     for (let i = 0; i < 8; i++) cmd = `bash <<< ${q(cmd)}; echo $(true) # c`
     const [v] = copyGateVerdicts([cmd])
     expect(v.raised).toBeNull()
-    expect(v.result).toBe(true)
+    expect(v.result).toBe(false)
     expect(v.cpu).toBeLessThan(1)
   })
 
