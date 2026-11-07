@@ -40,13 +40,17 @@ const SECURITY_TAG_NAMES = ['untrusted', 'trusted-peer', 'scheduled-task'] as co
 
 // The gap between '<', an optional '/' and the tag name tolerates "< untrusted>" variants that some LLMs
 // still parse as a tag even though real HTML parsers reject them. Whitespace is not the only such gap: an
-// invisible character is invisible to the model too, so `<` + U+200B + `channel>` reads as a tag. Two groups:
+// invisible character is invisible to the model too, so `<` + U+200B + `channel>` reads as a tag. Three groups:
 //   - the Unicode format characters (Cf: zero-width space/joiner, soft hyphen, bidi marks, the invisible tag
 //     characters, ...), and
 //   - the invisible characters that are NOT Cf: the combining grapheme joiner U+034F, the variation selectors
 //     U+FE00-FE0F and U+E0100-E01EF, the Mongolian ones U+180B-180D and U+180F, the Hangul fillers U+115F,
 //     U+1160, U+3164 and U+FFA0, the Khmer inherent vowels U+17B4-17B5 (all Default_Ignorable_Code_Point: they
-//     draw nothing), and the blank Braille cell U+2800 (it draws an empty cell, which reads as a blank).
+//     draw nothing), and the blank Braille cell U+2800 (it draws an empty cell, which reads as a blank), and
+//   - the C0 and C1 control characters that `\s` does not already cover (Cc minus \t \n \v \f \r): U+0000-0008,
+//     U+000E-001F and U+007F-009F. None of them draws anything, a consumer that drops them leaves a live opener,
+//     and a scrub called on its own (not through cleanPeerText, which replaces the C0 ones and U+0085 first) let
+//     every one of them through between '<' and the name.
 // The text is NOT rewritten to remove those characters (that would break emoji ZWJ sequences and RTL text);
 // only the OPENER pattern lets them through, and what it finds is replaced as before. A gap character that is
 // not next to an opener does nothing, so a variation selector after an emoji or a ZWJ in a family emoji comes
@@ -78,6 +82,8 @@ const FORMAT_CHARS_BMP: ReadonlyArray<readonly [number, number]> = [
   // blank Braille, variation selectors
   [0x034f, 0x034f], [0x115f, 0x1160], [0x17b4, 0x17b5], [0x180b, 0x180d], [0x180f, 0x180f],
   [0x2800, 0x2800], [0x3164, 0x3164], [0xfe00, 0xfe0f], [0xffa0, 0xffa0],
+  // the control characters `\s` misses (Cc minus the five whitespace ones, \t \n \v \f \r = U+0009-000D)
+  [0x0000, 0x0008], [0x000e, 0x001f], [0x007f, 0x009f],
 ]
 const FORMAT_CHARS_ASTRAL: ReadonlyArray<readonly [number, number]> = [
   [0x110bd, 0x110bd], [0x110cd, 0x110cd], [0x13430, 0x1343f], [0x1bca0, 0x1bca3],
