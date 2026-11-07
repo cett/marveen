@@ -13,7 +13,7 @@
 #   - otherwise: `vitest related <files> --run --passWithNoTests` (no test reaching the files is no failure)
 #
 # Usage: scripts/ci-vitest-related.sh <base-sha>
-# The runner is scripts/vitest-guard.py by default: vitest under a time limit (600 s for `related`, 1200 s for the
+# The runner is scripts/vitest-guard.py by default: vitest under a time limit (600 s for `related`, 1800 s for the
 # whole suite), the whole process group killed when it is over, so a hung run cannot hold the job and leave workers
 # behind. VITEST_CMD overrides the runner; the tests use it to record the call.
 

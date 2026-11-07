@@ -292,8 +292,9 @@ class PureHelpersTest(unittest.TestCase):
     def test_default_limit_by_arguments(self):
         full = guard.DEFAULT_FULL_SECS
         short = guard.DEFAULT_RELATED_SECS
-        self.assertEqual(full, 1200)
+        self.assertEqual(full, 1800)
         self.assertEqual(short, 600)
+        on_disk = {"src/__tests__", "tests"}  # directories that "exist" for the injected exists()
         cases = [
             (["run"], full),
             (["run", "--reporter", "verbose"], full),  # an option value is not a file
@@ -303,10 +304,41 @@ class PureHelpersTest(unittest.TestCase):
             (["run", "x.test.ts", "y.test.ts"], short),
             (["x.test.ts"], short),
             (["run", "prompt-safety"], full),  # a bare name filter: the longer, safe limit
+            # The value of an option is never a file, whatever it looks like (these four were wrongly "short")
+            (["run", "--config", "vitest.config.ts"], full),
+            (["run", "--project", "unit.node"], full),
+            (["run", "--root", "./x"], full),
+            (["run", "--outputFile", "out/r.json"], full),
+            (["--config", "vitest.config.ts", "run"], full),  # the option comes first
+            (["run", "--config=vitest.config.ts"], full),  # the = form is one argument
+            # ... but a file after an option is still seen when the option is known to take no value
+            (["run", "--coverage", "src/a.test.ts"], short),
+            (["run", "--silent", "src/a.test.ts"], short),
+            # an unknown flag swallows the next argument: the longer limit, the safe direction
+            (["run", "--someFlag", "src/a.test.ts"], full),
+            # a name with a dot or a slash that is neither a source file nor on disk is not a file
+            (["run", "foo.bar"], full),
+            (["run", "no/such/dir"], full),
+            # a directory that exists, with and without a trailing slash
+            (["run", "src/__tests__"], short),
+            (["run", "tests"], short),
+            # every source extension counts
+            (["run", "a.mts"], short),
+            (["run", "a.jsx"], short),
+            (["run", "a.cjs"], short),
+            # `related` wins however the options are placed
+            (["--reporter", "dot", "related", "a.ts"], short),
         ]
         for args, want in cases:
             with self.subTest(args=args):
-                self.assertEqual(guard.default_limit(args), want)
+                self.assertEqual(guard.default_limit(args, exists=lambda p: p in on_disk), want)
+
+    def test_default_limit_uses_the_real_file_system_by_default(self):
+        with tempfile.TemporaryDirectory() as d:
+            existing = os.path.join(d, "plain-name")
+            os.makedirs(existing)
+            self.assertEqual(guard.default_limit(["run", existing]), guard.DEFAULT_RELATED_SECS)
+            self.assertEqual(guard.default_limit(["run", os.path.join(d, "missing-name")]), guard.DEFAULT_FULL_SECS)
 
     def test_parse_secs_edges(self):
         self.assertEqual(guard.parse_secs("1", "x"), 1)

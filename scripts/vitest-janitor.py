@@ -18,7 +18,13 @@ Rules, first match wins:
   R3 running for at least 2 hours: a run that got away. Kill its process group, but ONLY when every member of
      that group is itself a vitest candidate and the group is not this janitor's own; otherwise kill the
      candidate pids alone (a group shared with a shell or a script would take that down too).
-A young process, or one whose parent is alive (another agent's run in progress), is never touched.
+What is protected, exactly: R1 leaves a young process (under 2 minutes) and one with a live parent alone, which
+is what keeps another agent's run in progress safe. R2 and R3 do NOT look at the parent: R2 does not look at
+the age either (a vitest whose install directory is gone is stopped at once, young or not, parent alive or
+not), and R3 stops a vitest that has run for 2 hours whatever its parent. Two consequences to know:
+  - a detached run (nohup, disown, a daemonized shell) has parent pid 1 from the start, so it is an orphan
+    for R1 and is stopped 2 minutes after it started;
+  - a watch-mode session (`vitest` left open) is stopped after 2 hours.
 
 Before a kill the pid is read again (same command line and parent, not younger), so a pid that was reused
 since the first listing is left alone. TERM, 3 s, KILL; by pid, or by group for R3.

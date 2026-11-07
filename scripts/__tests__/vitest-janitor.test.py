@@ -138,6 +138,23 @@ class RuleTest(unittest.TestCase):
         self.assertEqual(plan_of([proc(12, ppid=777, age=7199, command=MAIN)]), [])
         self.assertEqual(rules(plan_of([proc(13, ppid=777, age=7200, command=MAIN)])), {13: "R3"})
 
+    def test_a_detached_run_is_an_orphan_from_the_start_and_goes_after_two_minutes(self):
+        # nohup / disown: parent pid 1 from the beginning, a perfectly healthy run. The docs say so.
+        detached = proc(10, ppid=1, age=119, command=MAIN)
+        self.assertEqual(plan_of([detached]), [])
+        self.assertEqual(rules(plan_of([proc(10, ppid=1, age=121, command=MAIN)])), {10: "R1"})
+
+    def test_a_watch_mode_session_goes_after_two_hours_not_before(self):
+        watch = "node %s/node_modules/vitest/vitest.mjs" % ROOT  # no run / related: the interactive mode
+        self.assertTrue(jan.is_candidate(watch))
+        self.assertEqual(plan_of([proc(10, ppid=777, age=7199, command=watch)]), [])
+        self.assertEqual(rules(plan_of([proc(10, ppid=777, age=7200, command=watch)])), {10: "R3"})
+
+    def test_r2_and_r3_do_not_look_at_the_parent_r2_not_at_the_age(self):
+        gone = lambda path: False  # noqa: E731
+        self.assertEqual(rules(plan_of([proc(10, ppid=777, age=1)], exists=gone)), {10: "R2"})
+        self.assertEqual(rules(plan_of([proc(11, ppid=777, age=9000, command=MAIN)])), {11: "R3"})
+
     def test_rule_order_r1_wins_over_r3(self):
         self.assertEqual(rules(plan_of([proc(10, ppid=1, age=99999)])), {10: "R1"})
 

@@ -22,9 +22,13 @@ Exit code: the vitest's own code (128 + n when a signal ended it); 124 on a time
 convention) with one line on stderr; 128 + n when the wrapper itself got signal n; 2 on a usage error; 127
 when vitest cannot be found.
 
-Default limit: 1200 s for a whole suite, 600 s for `related` or when a file path is among the arguments.
-The path test is a heuristic (an argument with a "/" or a "." that is not an option); a bare name filter
-counts as a whole suite, the longer limit, which is the safe direction. Override with --limit SEC or
+Default limit: 1800 s for a whole suite (the last green full run on the CI runner took about 11 minutes,
+with coverage), 600 s for `related` or when a file or directory is among the arguments. The test is a
+heuristic: an argument counts as a file when it has a source or test extension (.ts .tsx .mts .cts .js
+.jsx .mjs .cjs) or exists on disk, and the value of an option (`--config vitest.config.ts`,
+`--project unit.node`, `--root ./x`, `--outputFile out/r.json`) is not an argument. A bare name filter, and
+any doubt (an option the wrapper does not know, followed by a file), counts as a whole suite: the longer
+limit is the safe direction. Override with --limit SEC or
 VITEST_GUARD_SECS; 0, a negative, a non-number or more than 86400 is an error, never "no limit". The limit
 is wide on purpose: on a loaded machine (parallel QA runs) a suite is slow and that is not the test's fault;
 the limit is a protection against a hang, and the wrapper says so when it fires.
@@ -47,7 +51,7 @@ import subprocess
 import sys
 import time
 
-DEFAULT_FULL_SECS = 1200
+DEFAULT_FULL_SECS = 1800
 DEFAULT_RELATED_SECS = 600
 MAX_SECS = 86400
 TERM_GRACE_SECS = 5.0
@@ -88,16 +92,39 @@ def parse_grace(raw):
     return value
 
 
-def _file_like(arg):
-    return "/" in arg or "." in arg
+SOURCE_EXTENSIONS = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs")
+VITEST_COMMANDS = ("run", "related", "watch", "dev", "bench", "list", "typecheck")
+# Options that take no value. Any other `--name value` swallows the next argument as its value, which can only
+# make the limit LONGER (a file after an unknown flag is not counted), never shorter.
+BOOLEAN_FLAGS = ("--run", "--watch", "--coverage", "--passWithNoTests", "--silent", "--update", "-u",
+                 "--no-color", "--globals", "--typecheck", "--ui", "--no-isolate", "--allowOnly")
 
 
-def default_limit(vitest_args):
-    """600 s for `related` or a run with a file path among the arguments, else 1200 s."""
-    positionals = [a for a in vitest_args if not a.startswith("-")]
+def _positionals(vitest_args):
+    """The arguments that are not options and not the value of an option."""
+    skip_value = False
+    for arg in vitest_args:
+        if skip_value:
+            skip_value = False
+            continue
+        if arg.startswith("-"):
+            if "=" not in arg and arg not in BOOLEAN_FLAGS:
+                skip_value = True
+            continue
+        yield arg
+
+
+def _file_like(arg, exists):
+    return arg.endswith(SOURCE_EXTENSIONS) or exists(arg)
+
+
+def default_limit(vitest_args, exists=os.path.exists):
+    """600 s for `related` or a run with a file or directory among the arguments, else 1800 s."""
+    positionals = list(_positionals(vitest_args))
     if positionals and positionals[0] == "related":
         return DEFAULT_RELATED_SECS
-    if any(_file_like(a) for a in positionals):
+    rest = positionals[1:] if positionals and positionals[0] in VITEST_COMMANDS else positionals
+    if any(_file_like(a, exists) for a in rest):
         return DEFAULT_RELATED_SECS
     return DEFAULT_FULL_SECS
 
