@@ -251,7 +251,7 @@ describe('Bash: fail-closed on anything that could write a protected path', () =
     'echo `cp /tmp/x scripts/hooks/egress-gate.mjs`',
     'cat a >(tee scripts/hooks/egress-gate.mjs)',
     // an apostrophe in a heredoc body must not hide the next command
-    "cat <<EOF\ndon't\nEOF\ncp /tmp/x scripts/hooks/egress-gate.mjs 'a'",
+    "cat <<EOF\ndon't\nEOF\ncp /tmp/x 'scripts/hooks/egress-gate.mjs'",
     // an unterminated quote with a protected word
     "cat 'unterminated scripts/self-pace-gate.mjs",
     // ambiguous mention (quotes next to the name) plus any redirect operator

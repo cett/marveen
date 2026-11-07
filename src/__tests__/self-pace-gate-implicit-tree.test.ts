@@ -76,7 +76,7 @@ describe('R-IMPL: the install tree is protected from a command that does not nam
     expect(denied('git checkout other', agentRepo)).toBe(true)
   })
   it('the denial carries its own reason, so the message can name the way out', () => {
-    expect(decide('git checkout other', root)).toEqual({ deny: true, reason: 'git-install-tree' })
+    expect(decide('git checkout other', root)).toEqual({ deny: true, reason: 'install-tree' })
   })
 })
 
@@ -164,6 +164,6 @@ describe('R-IMPL: the hook answers with the way out', () => {
     expect(body.hookSpecificOutput.permissionDecisionReason).toContain('git worktree add')
   })
   it('gateDecision passes the reason through', () => {
-    expect(gateDecision('Bash', { command: 'git checkout other' }, opts(root, root))).toEqual({ deny: true, reason: 'git-install-tree' })
+    expect(gateDecision('Bash', { command: 'git checkout other' }, opts(root, root))).toEqual({ deny: true, reason: 'install-tree' })
   })
 })

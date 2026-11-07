@@ -270,7 +270,7 @@ const READERS = new Set([
   'file', 'shasum', 'sha256sum', 'md5', 'md5sum', 'diff', 'cmp', 'echo', 'printf',
   'nl', 'sort', 'uniq', 'cut', 'tr', 'tac', 'od', 'xxd', 'hexdump', 'strings',
   'realpath', 'readlink', 'dirname', 'basename', 'du', 'test', '[', 'cd', 'pushd', 'popd', 'true', 'false',
-  'sed', 'find', // both are checked in readerOk below
+  'sed', 'find', 'shellcheck', // sed, find: checked in readerOk below; shellcheck only prints
 ])
 // READERS is a list of NAMES, and a name is not a promise: sort -o, uniq IN OUT, xxd IN OUT, sed's w
 // command and file -C write files, rg --pre execs a program, find -fprint writes. readerOk() states
@@ -975,7 +975,9 @@ function readerOk(cmd, args, ctx) {
       }
       return true
     }
-    case 'find': return !args.some((a) => /^-(?:delete|exec|execdir|ok|okdir|fprint\w*|fls)$/.test(a))
+    case 'find':
+      if (args.some((a) => /^-(?:exec|execdir)$/.test(a))) return findExecReadersOk(args)
+      return !args.some((a) => /^-(?:delete|ok|okdir|fprint\w*|fls)$/.test(a))
     case 'sort':
       // -o FILE / --output writes, --compress-program execs, -T DIR creates temp files
       return !args.some((a) => (/^-[^-]/.test(a) && /[oT]/.test(a)) || /^--[oct]/.test(a))
@@ -1112,16 +1114,21 @@ function commandTargetsInstall(cmd, args, envWords, base, ctx) {
     const m = /^GIT_(WORK_TREE|DIR)=(.*)$/.exec(w)
     if (m) { if (m[1] === 'DIR') gitDir = abs(m[2]); else tree = abs(m[2]) }
   }
-  const upto = cmd === 'git' ? (gitSubIndex(args) === -1 ? args.length : gitSubIndex(args)) : args.length
-  for (let k = 0; k < upto; k++) {
-    const a = args[k]
-    if (cmd === 'git') {
+  if (cmd !== 'git') {
+    // patch -d, tar -C, unzip -d: the directory the command works in
+    const w = workDirOf(cmd, args)
+    if (w === UNKNOWN) dir = null
+    else if (w !== undefined) { const v = abs(w); dir = v === UNKNOWN ? null : v }
+  } else {
+    const upto = gitSubIndex(args) === -1 ? args.length : gitSubIndex(args)
+    for (let k = 0; k < upto; k++) {
+      const a = args[k]
       if (a === '-C') { const v = abs(args[++k]); dir = v === UNKNOWN ? null : v; continue }
       if (a === '--work-tree') { tree = abs(args[++k]); continue }
       if (a.startsWith('--work-tree=')) { tree = abs(a.slice(12)); continue }
       if (a === '--git-dir') { gitDir = abs(args[++k]); continue }
       if (a.startsWith('--git-dir=')) { gitDir = abs(a.slice(10)); continue }
-    } else if (a === '-d' || a === '--directory') { const v = abs(args[++k]); dir = v === UNKNOWN ? null : v; continue } else if (a.startsWith('--directory=')) { const v = abs(a.slice(12)); dir = v === UNKNOWN ? null : v; continue }
+    }
   }
   if (tree === UNKNOWN || gitDir === UNKNOWN) return true
   const real = (p) => realOrSelf(resolve(p))
@@ -1143,10 +1150,36 @@ function implicitTreeDecision(cmd, words, ci, bases, ctx) {
     // the file list comes from stdin and cannot be read: what xargs RUNS decides, and the tree is the cwd's
     if (!xargsRunsDestructive(args)) return null
     args = []
+  } else if (cmd === 'tar') {
+    // an unreadable tar line is treated as an extraction; one that NAMES its directory (-C) is judged by that
+    // path like any other word (a member path is relative to it, so it cannot reach a protected path from elsewhere)
+    const t = tarParse(args)
+    if (t && (t.mode !== 'x' || t.dirVals.length)) return null
+  } else if (cmd === 'unzip') {
+    if (!unzipExtracts(args) || workDirOf('unzip', args) !== undefined) return null
   } else if (cmd === 'git' ? gitInstallOk(args) : args.some((a) => a === '--dry-run' || a === '-C' || a === '--check')) return null
   const env = words.slice(0, ci)
-  for (const b of bases) if (commandTargetsInstall(cmd, args, env, b, ctx)) return { deny: true, reason: 'git-install-tree' }
+  for (const b of bases) if (commandTargetsInstall(cmd, args, env, b, ctx)) return { deny: true, reason: 'install-tree' }
   return null
+}
+// The directory a non-git command works in: patch -d DIR, tar -C DIR, unzip -d DIR. undefined: the cwd.
+function workDirOf(cmd, args) {
+  if (cmd === 'tar') {
+    const t = tarParse(args)
+    if (!t) return UNKNOWN
+    return t.dirVals.length ? t.dirVals[t.dirVals.length - 1] : undefined
+  }
+  for (let k = 0; k < args.length; k++) {
+    const a = args[k]
+    if (a === '-d' || (cmd === 'patch' && a === '--directory')) return args[k + 1] ?? UNKNOWN
+    if (a.startsWith('--directory=')) return a.slice(12)
+    if (/^-d./.test(a) && !a.startsWith('--') && (cmd === 'unzip' || cmd === 'patch')) return a.slice(2)
+  }
+  return undefined
+}
+// unzip extracts unless it only lists, tests or pipes (-l -t -p -v -Z).
+function unzipExtracts(args) {
+  return !args.some((a) => /^-[A-Za-z]*[ltpvZ]/.test(a) && !a.startsWith('--'))
 }
 // `xargs [options] CMD ARGS`: does CMD remove, move or rewrite what it is handed?
 const XARGS_VALUE_OPTS = new Set(['-I', '-n', '-P', '-d', '-L', '-s', '-E', '-a', '-J', '--max-args', '--max-procs', '--delimiter', '--max-lines', '--max-chars', '--eof', '--arg-file', '--replace'])
@@ -1160,6 +1193,192 @@ function xargsRunsDestructive(args) {
     return destructiveCmd(inner[ik].split('/').pop(), inner.slice(ik + 1))
   }
   return false
+}
+// --- R-SINK: the ROLE of an operand --------------------------------------------------------------------
+// cp, install, rsync, tar, unzip and dd name two kinds of path: the ones they READ (sources, the archive
+// they unpack) and the ones they WRITE (the destination, the archive they create, -C / -d). A protected
+// path that is only read is not a write; copying the gate files out, archiving the tree, listing an
+// archive are fine. The destination, an unreadable operand and everything not understood stay as before.
+// mv and ln are deliberately NOT here: the source of a mv disappears, and a hard link or symlink to a
+// protected file lets a later write through the other name reach it.
+//
+// Each function returns the Set of indices into `args` that are PURE sources, or null: no relief.
+const CP_VALUE_SHORT = { cp: 'tS', install: 'tSmog' }
+function cpSources(cmd, args) {
+  let targetDir = false; const operands = []; let opts = true
+  for (let k = 0; k < args.length; k++) {
+    const a = args[k]
+    if (opts && a === '--') { opts = false; continue }
+    if (opts && a.startsWith('--')) {
+      if (/^--(link|symbolic-link|remove-destination|parents)(=|$)/.test(a)) return null // links alias the source
+      if (a === '--target-directory') { targetDir = true; k++ } else if (a.startsWith('--target-directory=')) targetDir = true
+      else if (a === '--suffix' || a === '--mode' || a === '--owner' || a === '--group' || a === '--context') k++
+      continue
+    }
+    if (opts && a.startsWith('-') && a.length > 1) {
+      for (let q = 1; q < a.length; q++) {
+        const c = a[q]
+        if (c === 'l' || c === 's' || (cmd === 'install' && c === 'd')) return null // link / make-directory forms
+        if (CP_VALUE_SHORT[cmd].includes(c)) { if (c === 't') targetDir = true; if (q + 1 >= a.length) k++; break }
+      }
+      continue
+    }
+    operands.push(k)
+  }
+  if (targetDir) return new Set(operands)
+  return operands.length >= 2 ? new Set(operands.slice(0, -1)) : null
+}
+// rsync SRC... DEST: the last operand is written. Anything that removes or rewrites the SOURCE
+// (--remove-source-files) is no relief. The options that take a separate value are listed so that a value
+// (or a trailing `--exclude x`) is never mistaken for the destination.
+const RSYNC_VALUE_LONG = new Set(['--exclude', '--include', '--exclude-from', '--include-from', '--files-from', '--filter', '--rsh', '--rsync-path', '--port', '--sockopts', '--max-size', '--min-size', '--timeout', '--contimeout', '--bwlimit', '--chmod', '--chown', '--usermap', '--groupmap', '--suffix', '--backup-dir', '--partial-dir', '--temp-dir', '--compare-dest', '--copy-dest', '--link-dest', '--log-file', '--log-file-format', '--out-format', '--skip-compress', '--checksum-seed', '--block-size', '--modify-window', '--max-delete', '--compress-level', '--protocol', '--address', '--password-file', '--write-batch', '--read-batch', '--only-write-batch', '--iconv', '--info', '--debug', '--stop-after', '--stop-at', '--outbuf', '--early-input', '--copy-as', '--remote-option', '--checksum-choice', '--compress-choice', '--bwlimit'])
+const RSYNC_FLAG_LONG = new Set(['archive', 'recursive', 'verbose', 'quiet', 'dry-run', 'compress', 'times', 'perms', 'links', 'owner', 'group', 'devices', 'specials', 'human-readable', 'progress', 'stats', 'delete', 'delete-before', 'delete-during', 'delete-after', 'delete-delay', 'delete-excluded', 'update', 'checksum', 'copy-links', 'copy-dirlinks', 'keep-dirlinks', 'safe-links', 'ignore-existing', 'existing', 'whole-file', 'itemize-changes', 'relative', 'one-file-system', 'numeric-ids', 'partial', 'inplace', 'backup', 'list-only', 'prune-empty-dirs', 'hard-links', 'xattrs', 'acls', 'executability', 'dirs', 'mkpath', 'fuzzy', 'size-only', 'ignore-times', 'append', 'append-verify', 'sparse', 'cvs-exclude', 'from0', 'protect-args', 'super', 'force', 'ignore-errors', 'no-motd', 'omit-dir-times', 'atimes', 'ipv4', 'ipv6', 'info', 'debug', 'bwlimit'])
+function rsyncSources(args) {
+  const operands = []; let opts = true
+  for (let k = 0; k < args.length; k++) {
+    const a = args[k]
+    if (opts && a === '--') { opts = false; continue }
+    if (opts && a.startsWith('--')) {
+      if (/^--remove-(source|sent)-files/.test(a)) return null
+      if (a.includes('=')) continue // an attached value cannot be mistaken for an operand
+      if (RSYNC_VALUE_LONG.has(a)) { k++; continue }
+      // a flag, or a value-taking option this list does not know (its value would pass for an operand)
+      if (!RSYNC_FLAG_LONG.has(a.slice(2).replace(/^no-/, ''))) return null
+      continue
+    }
+    if (opts && a.startsWith('-') && a.length > 1) {
+      for (let q = 1; q < a.length; q++) {
+        const c = a[q]
+        if ('efTBMFf'.includes(c)) { if (q + 1 >= a.length) k++; break } // -e CMD, -f RULE, -T DIR, -B N, -M OPT take a value
+        if (!'avzrtplgoDHXASxnhPuicqLkKWmUNyEdbV'.includes(c)) return null
+      }
+      continue
+    }
+    operands.push(k)
+  }
+  return operands.length >= 2 ? new Set(operands.slice(0, operands.length - 1)) : null
+}
+// tar: c (create): the operands are read, the -f archive is written; t / d (list, compare): everything is
+// read; x (extract): the archive is read, the tree it unpacks into (-C, or the cwd) is written. Anything
+// that runs a program or removes sources (--remove-files, --to-command, -I ...), or is not understood, is no relief.
+const TAR_MODES = { c: 'c', x: 'x', t: 't', d: 'd', create: 'c', extract: 'x', get: 'x', list: 't', diff: 'd', compare: 'd' }
+const TAR_PLAIN_SHORT = 'vzjJaZpPhkmOwUSslonRrq'.replace(/[rq]/g, '') + 'M'
+const TAR_VALUE_SHORT = 'fCTXbLN'
+const TAR_VALUE_LONG = new Set(['--file', '--directory', '--files-from', '--exclude-from', '--exclude', '--transform', '--xform', '--strip-components', '--owner', '--group', '--mode', '--blocking-factor', '--newer', '--newer-mtime', '--label', '--suffix', '--index-file', '--tape-length', '--ignore-command-error'])
+function tarParse(args) {
+  let mode = ''; let archive = -1; const operands = []; const dirIdx = new Set(); const valueIdx = new Set(); const dirVals = []
+  for (let k = 0; k < args.length; k++) {
+    const a = args[k]
+    const oldStyle = k === 0 && /^[A-Za-z]+$/.test(a)
+    if (a.startsWith('--') && a.length > 2) {
+      const name = a.split('=')[0]
+      if (TAR_MODES[name.slice(2)]) { mode ||= TAR_MODES[name.slice(2)]; continue }
+      if (/^--(remove-files|to-command|use-compress-program|checkpoint-action|rmt-command|rsh-command|info-script|new-volume-script|append|update|catenate|concatenate|delete|overwrite-dir|one-top-level)/.test(name)) return null
+      if (TAR_VALUE_LONG.has(name)) {
+        const attached = a.includes('=')
+        const vi = attached ? k : ++k
+        if (name === '--file') archive = vi
+        else if (name === '--directory') { dirIdx.add(vi); dirVals.push(attached ? a.slice(a.indexOf('=') + 1) : args[vi] ?? UNKNOWN) }
+        else valueIdx.add(vi)
+      }
+      continue
+    }
+    if (oldStyle || (a.startsWith('-') && a.length > 1)) {
+      const letters = oldStyle ? a : a.slice(1)
+      const pending = []
+      for (let q = 0; q < letters.length; q++) {
+        const c = letters[q]
+        if (TAR_MODES[c] && c.length === 1) { mode ||= TAR_MODES[c]; continue }
+        if (TAR_VALUE_SHORT.includes(c)) {
+          // `-CDIR` / `-fFILE`: the rest of a dashed bundle is the value; in the old style word the values follow as arguments
+          if (!oldStyle && q + 1 < letters.length) {
+            if (c === 'f') archive = k
+            else if (c === 'C') { dirIdx.add(k); dirVals.push(letters.slice(q + 1)) } else valueIdx.add(k)
+            break
+          }
+          pending.push(c); continue
+        }
+        if (TAR_PLAIN_SHORT.includes(c)) continue
+        return null
+      }
+      for (const c of pending) {
+        const vi = ++k
+        if (c === 'f') archive = vi
+        else if (c === 'C') { dirIdx.add(vi); dirVals.push(args[vi] ?? UNKNOWN) } else valueIdx.add(vi)
+      }
+      continue
+    }
+    operands.push(k)
+  }
+  return { mode, archive, operands, dirIdx, valueIdx, dirVals }
+}
+function tarSources(args) {
+  const t = tarParse(args)
+  if (!t || !t.mode) return null
+  const all = new Set(args.map((_, k) => k))
+  if (t.mode === 't' || t.mode === 'd') return all
+  if (t.mode === 'x') return t.archive === -1 ? null : new Set([t.archive])
+  // create: the archive file is the only thing written
+  const src = new Set(all); if (t.archive !== -1) src.delete(t.archive)
+  return t.archive === -1 && args.some((a) => /^-[A-Za-z]*f/.test(a)) ? null : src
+}
+// unzip [-d DIR] ARCHIVE [MEMBERS] [-x LIST]: the archive is read; -d DIR is written; -l -t -p -v -Z only read.
+function unzipSources(args) {
+  const src = new Set(); let archiveSeen = false; let readOnly = false
+  for (let k = 0; k < args.length; k++) {
+    const a = args[k]
+    if (a.startsWith('-') && a.length > 1) {
+      for (let q = 1; q < a.length; q++) {
+        const c = a[q]
+        if ('ltpvZ'.includes(c)) readOnly = true
+        if ('dxPOI'.includes(c)) { if (q + 1 >= a.length) k++; break }
+      }
+      continue
+    }
+    if (!archiveSeen) { src.add(k); archiveSeen = true }
+  }
+  if (readOnly) return new Set(args.map((_, k) => k))
+  return archiveSeen ? src : null
+}
+// dd if=SRC of=DEST: only the if= word is read.
+function ddSources(args) {
+  const src = new Set()
+  args.forEach((a, k) => { if (a.startsWith('if=')) src.add(k) })
+  return src
+}
+function roleSources(cmd, args) {
+  switch (cmd) {
+    case 'cp': case 'install': return cpSources(cmd, args)
+    case 'rsync': return rsyncSources(args)
+    case 'tar': return tarSources(args)
+    case 'unzip': return unzipSources(args)
+    case 'dd': return ddSources(args)
+    default: return null
+  }
+}
+// True when every protected word of the segment sits at a position the command only READS.
+function onlyReadsProtected(cmd, words, ci, kinds, rKinds) {
+  const src = roleSources(cmd, words.slice(ci + 1))
+  if (!src || rKinds.some(Boolean)) return false
+  for (let j = 0; j < words.length; j++) if (kinds[j] && (j <= ci || !src.has(j - ci - 1))) return false
+  return true
+}
+// `find ... -exec CMD ARGS ;` runs CMD on each match: a find whose actions are all -exec / -execdir of a plain
+// reader is a read; a writer (rm, sh -c ...) or any other action that writes keeps find out of the readers.
+function findExecReadersOk(args) {
+  let sawExec = false
+  for (let k = 0; k < args.length; k++) {
+    const a = args[k]
+    if (/^-(?:delete|ok|okdir|fprint\w*|fls)$/.test(a)) return false
+    if (a !== '-exec' && a !== '-execdir') continue
+    sawExec = true
+    const inner = []
+    for (k++; k < args.length && args[k] !== ';' && args[k] !== '\\;' && args[k] !== '+'; k++) inner.push(args[k])
+    if (k >= args.length) return false // unterminated
+    const name = (inner[0] ?? '').split('/').pop()
+    if (!READERS.has(name) || name === 'find' || name === 'sed' || name === 'cd' || !readerOk(name, inner.slice(1))) return false
+  }
+  return sawExec
 }
 // `cp SRC... DIR/` (or `cp -t DIR SRC...`) creates DIR/<basename of SRC>: a file named like a protected
 // one lands there although no word of the command names it. Returns the kind of the protected path a
@@ -1278,7 +1497,7 @@ export function bashProtectedDecision(command, opts = {}) {
     const ancestorHit = !hit && ancKinds.length > 0
     // R-IMPL: a git / patch / xargs command is judged by the tree it writes, whether or not it names a path.
     // A segment that also names a protected path keeps the reason of that path (the more specific message).
-    if (cmd === 'git' || cmd === 'patch' || cmd === 'xargs') {
+    if (cmd === 'git' || cmd === 'patch' || cmd === 'xargs' || cmd === 'tar' || cmd === 'unzip') {
       const bases = narrow ?? [...ctx.cwds, ...(ctx.unknownCwd ? [null] : [])]
       const d = implicitTreeDecision(cmd, words, ci, bases, ctx)
       if (d) return { deny: true, reason: hit ?? (ancestorHit ? ancKinds[0].split(':')[1] : d.reason) }
@@ -1306,8 +1525,13 @@ export function bashProtectedDecision(command, opts = {}) {
     // 4. a directory that CONTAINS protected paths: a plain read, a listing and a cd are fine. The
     //    strict one (scripts/) denies everything else; the loose ones (store/, the repo root) deny
     //    only what moves, removes, links, extracts or rewrites.
+    // R-SINK: a protected path that the command only READS (the source of a copy, the archive it lists or
+    // unpacks, `if=` of dd) is not a write; the destination and everything not understood keep the rules below.
+    if (!envUnsafe && onlyReadsProtected(cmd, words, ci, kinds, rKinds)) continue
     if (ancestorHit) {
       if (READERS.has(cmd) && readerOk(cmd, args, ctx) && !feedsNonReader(si) && !envUnsafe) continue
+      // a safe git subcommand with a protected pathspec (`git log -- scripts`) reads
+      if (cmd === 'git' && gitSafe(args) && !envUnsafe) continue
       if (!ancKinds.some((k) => k.startsWith('anc-strict')) && !destructiveCmd(cmd, args)) continue
       // agents/ and agents/<name> alone: only an operation that can put a settings file in (or take the
       // directory away) is refused
@@ -1689,6 +1913,6 @@ if (isInvokedDirectly()) {
     allow() // malformed/empty input must never break the agent's tool calls
   }
   const { deny: shouldDeny, reason } = gateDecision(payload?.tool_name, payload?.tool_input, { cwd: payload?.cwd })
-  if (shouldDeny) deny(reason === 'too-large' ? TOO_LARGE_MSG : reason === 'egress-allowlist' ? ALLOWLIST_GATE_MSG : reason === 'gate-scripts' ? SCRIPTS_GATE_MSG : reason === 'agent-settings' ? SETTINGS_GATE_MSG : reason === 'git-install-tree' ? GIT_TREE_MSG : GATE_MSG)
+  if (shouldDeny) deny(reason === 'too-large' ? TOO_LARGE_MSG : reason === 'egress-allowlist' ? ALLOWLIST_GATE_MSG : reason === 'gate-scripts' ? SCRIPTS_GATE_MSG : reason === 'agent-settings' ? SETTINGS_GATE_MSG : reason === 'install-tree' ? GIT_TREE_MSG : GATE_MSG)
   allow()
 }
