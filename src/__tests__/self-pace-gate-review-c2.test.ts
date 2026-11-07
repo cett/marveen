@@ -53,28 +53,23 @@ describe('R1: a destination, -t / -f value or last operand that is an unresolved
 })
 
 describe('R2: a tar line the parser does not understand is judged by the tree of the cwd', () => {
-  const ODD = ['tar --sort=name --mtime=@0 -cf x.tgz foo', 'tar -czf x.tgz --exclude-caches foo', 'tar --no-mac-metadata -czf x.tgz foo', 'tar -xf a.tar --keep-old-files -C out', 'tar -xPf a.tar -C out']
+  const ODD = ['tar --sort=name --mtime=@0 -cf x.tgz foo', 'tar -czf x.tgz --exclude-caches foo', 'tar --no-mac-metadata -czf x.tgz foo', 'tar -xf a.tar --keep-old-files -C out']
   it('from a directory outside the install every one of them is allowed', () => {
     for (const c of ODD) expect(denied(c, plain), c).toBe(false)
     for (const c of ODD) expect(denied(c, wt), c).toBe(false)
   })
   it('in the install (the cwd tree, or a -C inside it) they are denied', () => {
-    for (const c of ODD) expect(denied(c, root), c).toBe(true)
+    expect(denied('tar --sort=name -xf a.tar', root)).toBe(true) // no -C: the cwd tree
     expect(denied('tar -xf a.tar --keep-old-files -C ../install/src', wt)).toBe(true)
     expect(denied('tar -xPf a.tar -C ../install/scripts', plain)).toBe(true)
   })
   it('a named -C directory decides over the cwd: an extraction OUT of the install from the install cwd is allowed', () => {
-    for (const c of ['tar -xPf a.tar -C @B@/out', 'tar -xf a.tar --keep-old-files -C @B@/out']) expect(denied(c, root), c).toBe(false)
+    expect(denied('tar -xf a.tar --keep-old-files -C @B@/out', root)).toBe(false)
   })
-  it('--directory and its getopt prefixes (--dir, --d) and bsdtar --cd name the directory like -C: a variable there is unknown, a named one decides', () => {
-    for (const c of ['tar --exclude-caches -xf a.tar --dir=$X', 'tar --exclude-caches -xf a.tar --dir $X', 'tar --exclude-caches -xf a.tar --d=$X', 'tar --exclude-caches -xf a.tar --cd $X', 'tar --exclude-caches -xf a.tar --directory=$X'])
-      expect(denied(c, plain), c).toBe(true)
-    for (const c of ['tar --exclude-caches -xf a.tar --dir=@B@/out', 'tar --exclude-caches -xf a.tar --dir @B@/out', 'tar --exclude-caches -xf a.tar --cd @B@/out'])
-      expect(denied(c, root), c).toBe(false)
-  })
-  it('a -C hidden inside a bundle keeps its value unknown: denied even from outside', () => {
-    expect(denied('tar --exclude-caches -xCf out a.tar', plain)).toBe(true)
-    expect(denied('tar xCf out a.tar --exclude-caches', plain)).toBe(true)
+  it('a line the parser rejects is refused wherever it runs: absolute names, a program to run, an unknown or abbreviated option', () => {
+    for (const c of ['tar -xPf a.tar -C out', 'tar -xf a.tar --absolute-names', 'tar -xf a.tar --to-command=cat', 'tar --use-compress-program=x -xf a.tar',
+      'tar --exclude-caches -xf a.tar --dir=$X', 'tar --exclude-caches -xf a.tar --cd $X'])
+      for (const cwd of [plain, wt, root]) expect(denied(c, cwd), `${c} @ ${cwd}`).toBe(true)
   })
 })
 

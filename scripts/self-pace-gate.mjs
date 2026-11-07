@@ -1307,19 +1307,12 @@ function workDirOf(cmd, args) {
   if (cmd === 'tar') {
     const t = tarParse(args)
     if (t) return t.dirVals.length ? t.dirVals[t.dirVals.length - 1] : undefined
-    // A line the parser does not understand (--sort, --exclude-caches, -xPf ...) unpacks into the cwd unless it names
-    // a directory: the cwd tree decides. A -C inside a bundle (`-xCf DIR`, `xCf DIR`) hides its value: that stays unknown.
-    let dir
-    for (let k = 0; k < args.length; k++) {
-      const a = args[k]
-      // --directory and every prefix of it (getopt), and bsdtar's --cd, with the value attached or in the next word
-      const long = /^--(?:d(?:i(?:r(?:e(?:c(?:t(?:o(?:r(?:y)?)?)?)?)?)?)?)?|cd)(?:=|$)/.test(a)
-      if (a === '-C' || (long && !a.includes('='))) dir = args[++k] ?? UNKNOWN
-      else if (long) dir = a.slice(a.indexOf('=') + 1)
-      else if (/^-C./.test(a)) dir = a.slice(2)
-      else if (/^-[A-Za-z]*C/.test(a) || (k === 0 && /^[A-Za-z]*C[A-Za-z]*$/.test(a))) return UNKNOWN
-    }
-    return dir
+    // A line the parser rejects is refused wherever it runs: it carries an option that writes outside the cwd (-P /
+    // --absolute-names: members keep their absolute path), runs a program (--to-command, --use-compress-program,
+    // --checkpoint-action ...), or one the list does not know, which may be an abbreviation of --directory. The harmless
+    // options a real command line uses (--sort, --mtime, --exclude-caches, --no-mac-metadata, --keep-old-files ...)
+    // are in the lists above, so they parse.
+    return UNKNOWN
   }
   if (cmd === 'unzip') return unzipDir(args)?.dir
   for (let k = 0; k < args.length; k++) {
@@ -1455,9 +1448,9 @@ function rsyncSources(args) {
 const TAR_MODES = { c: 'c', x: 'x', t: 't', d: 'd', create: 'c', extract: 'x', get: 'x', list: 't', diff: 'd', compare: 'd' }
 // no P (--absolute-names: members keep their absolute path) and no M (multi-volume)
 const TAR_PLAIN_SHORT = 'vzjJaZphkmOwUSslon'
-const TAR_FLAG_LONG = new Set(['verbose', 'gzip', 'gunzip', 'ungzip', 'bzip2', 'xz', 'lzma', 'zstd', 'auto-compress', 'preserve-permissions', 'same-permissions', 'keep-newer-files', 'touch', 'one-file-system', 'dereference', 'hard-dereference', 'sparse', 'numeric-owner', 'no-same-owner', 'same-owner', 'totals', 'exclude-vcs', 'ignore-failed-read', 'no-recursion', 'recursion', 'null', 'no-anchored', 'anchored', 'wildcards', 'no-wildcards', 'ignore-case', 'no-ignore-case', 'show-transformed-names', 'warning', 'quiet', 'sort', 'format'])
+const TAR_FLAG_LONG = new Set(['verbose', 'gzip', 'gunzip', 'ungzip', 'bzip2', 'xz', 'lzma', 'zstd', 'auto-compress', 'preserve-permissions', 'same-permissions', 'keep-newer-files', 'touch', 'one-file-system', 'dereference', 'hard-dereference', 'sparse', 'numeric-owner', 'no-same-owner', 'same-owner', 'totals', 'exclude-vcs', 'ignore-failed-read', 'no-recursion', 'recursion', 'null', 'no-anchored', 'anchored', 'wildcards', 'no-wildcards', 'ignore-case', 'no-ignore-case', 'show-transformed-names', 'warning', 'quiet', 'sort', 'format', 'exclude-caches', 'exclude-caches-all', 'exclude-caches-under', 'no-mac-metadata', 'keep-old-files', 'skip-old-files', 'xattrs', 'no-xattrs', 'acls', 'no-acls'])
 const TAR_VALUE_SHORT = 'fCTXbLN'
-const TAR_VALUE_LONG = new Set(['--file', '--directory', '--files-from', '--exclude-from', '--exclude', '--transform', '--xform', '--strip-components', '--owner', '--group', '--mode', '--blocking-factor', '--newer', '--newer-mtime', '--label', '--suffix', '--index-file', '--tape-length', '--ignore-command-error'])
+const TAR_VALUE_LONG = new Set(['--file', '--directory', '--files-from', '--exclude-from', '--exclude', '--transform', '--xform', '--strip-components', '--owner', '--group', '--mode', '--blocking-factor', '--newer', '--newer-mtime', '--label', '--suffix', '--index-file', '--tape-length', '--ignore-command-error', '--mtime'])
 function tarParse(args) {
   let mode = ''; let archive = -1; const operands = []; const dirIdx = new Set(); const valueIdx = new Set(); const dirVals = []
   for (let k = 0; k < args.length; k++) {
