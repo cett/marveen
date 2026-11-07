@@ -205,6 +205,13 @@ describe('R-IMPL review round 1: directory tracking, wrappers, text commands, op
     for (const c of ['patch -o --dry-run -p1 < x.diff', 'patch -r -C -p1 < x.diff', 'patch -i x.diff', 'patch -p1 -z .orig < x.diff', 'patch -B --check < x.diff']) expect(denied(c, root), c).toBe(true)
     for (const c of ['patch -C -p1 < x.diff', 'patch --check -p1 < x.diff', 'patch -p1 --dry-run < x.diff', 'patch --dry-run -i x.diff']) expect(denied(c, root), c).toBe(false)
   })
+  it('patch: a long option that is not spelled in full (getopt abbreviation) or not known is never a dry run', () => {
+    // --ou is --output, so --dry-run after it is the FILE NAME it writes to, not the flag
+    for (const c of ['patch --ou --dry-run -p1 < x.diff', 'patch --out --dry-run < x.diff', 'patch --dry -p1 < x.diff', 'patch --dr x.diff', 'patch --che < x.diff', 'patch --made-up-option --dry-run < x.diff', 'patch --dry-run --made-up-option < x.diff'])
+      expect(denied(c, root), c).toBe(true)
+    for (const c of ['patch --dry-run --forward --quiet -p1 < x.diff', 'patch --check --reverse -p1 < x.diff', 'patch --dry-run --reject-file r.rej -i x.diff', 'patch --dry-run --debug=1 < x.diff'])
+      expect(denied(c, root), c).toBe(false)
+  })
   it('worktree add takes no --force and no -B (a branch checked out in the install could be reset)', () => {
     for (const c of ['git worktree add -f ../wtx other', 'git worktree add --force ../wtx other', 'git worktree add -B main ../wtx other', 'git worktree add -b topic -f ../wtx other', 'git worktree add --unknown ../wtx'])
       expect(denied(c, root), c).toBe(true)

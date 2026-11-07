@@ -1301,7 +1301,10 @@ function xargsInner(args) {
   return null
 }
 // patch only reads under --dry-run or -C / --check, as an OPTION: the value of -o / -r / -i / -d ... may look like one.
-const PATCH_VALUE_LONG = new Set(['--suffix', '--prefix', '--basename-prefix', '--version-control', '--reject-file', '--output', '--input', '--directory', '--ifdef', '--fuzz', '--strip', '--get', '--quoting-style'])
+const PATCH_VALUE_LONG = new Set(['--suffix', '--prefix', '--basename-prefix', '--version-control', '--reject-file', '--global-reject-file', '--read-only', '--debug', '--output', '--input', '--directory', '--ifdef', '--fuzz', '--strip', '--get', '--quoting-style'])
+// getopt_long accepts an unambiguous ABBREVIATION (--ou is --output and takes the next word as its value), so a long
+// option that is not spelled in full cannot be told from a value-taking one: it makes the command not-a-dry-run.
+const PATCH_FLAG_LONG = new Set(['--dry-run', '--check', '--backup', '--backup-if-mismatch', '--no-backup-if-mismatch', '--batch', '--binary', '--context', '--ed', '--force', '--forward', '--ignore-whitespace', '--merge', '--normal', '--posix', '--quiet', '--silent', '--remove-empty-files', '--reverse', '--unified', '--verbose', '--version', '--help', '--set-time', '--set-utc', '--follow-symlinks'])
 function patchIsDry(args) {
   let dry = false
   for (let k = 0; k < args.length; k++) {
@@ -1309,6 +1312,7 @@ function patchIsDry(args) {
     if (a === '--') break
     if (a.startsWith('--')) {
       const n = a.split('=')[0]
+      if (!PATCH_FLAG_LONG.has(n) && !PATCH_VALUE_LONG.has(n)) return false
       if (n === '--dry-run' || n === '--check') dry = true
       else if (PATCH_VALUE_LONG.has(n) && !a.includes('=')) k++
       continue
