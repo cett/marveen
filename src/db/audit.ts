@@ -549,6 +549,30 @@ export async function writeAgentAuditLog(opts: {
   )
 }
 
+/** One stored sender-routing verdict, as the audit log has it: the id and the stored detail text, not parsed. */
+export interface SenderRouteCheckRow {
+  id: number
+  entity_id: string | null
+  detail: string | null
+  created_at: number
+}
+
+/**
+ * The sender-routing verdicts (`sender_route_checked`) written at or after `sinceSecs`, newest first, at most
+ * `maxRows` of them. `truncated` is true when the window held more: the rows returned are then the NEWEST `maxRows`
+ * and the oldest ones are missing. One bounded SELECT with plain columns; reading the detail (JSON) and counting is
+ * the caller's work in code, so the query needs no JSON function of the database and ports as it is.
+ */
+export async function listSenderRouteChecks(sinceSecs: number, maxRows: number): Promise<{ rows: SenderRouteCheckRow[]; truncated: boolean }> {
+  const fetched = await dbx.all<SenderRouteCheckRow>(
+    `SELECT id, entity_id, detail, created_at FROM agent_audit_log
+      WHERE entity = 'message' AND action = 'sender_route_checked' AND created_at >= ?
+      ORDER BY id DESC LIMIT ?`,
+    sinceSecs, maxRows + 1,
+  )
+  return fetched.length > maxRows ? { rows: fetched.slice(0, maxRows), truncated: true } : { rows: fetched, truncated: false }
+}
+
 export interface AuditLogQueryResult {
   entries: AuditLogEntry[]
   /** Total rows matching the filter across all active sources, independent
