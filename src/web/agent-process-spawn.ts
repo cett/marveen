@@ -27,6 +27,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { FLEET_OAUTH_TOKEN_PATH, buildTelegramMcpServerConfig, ensureIsolatedChannelConfigDir, ensureMainAgentIsolatedConfigDir, ensureSharedClaudeOnboarded, hasFleetOauthToken, maybeAlertSharedConfigCollision, ownChannelProviderForScope, resetSharedConfigCollisionAlert, resolveAgentProvider, scopeChannelPlugins, stampFableOverageConsent, stampProjectTrustForDir } from './agent-process-config.js'
 import { scheduleIdentitySetup } from './agent-process-identity.js'
+import { buildHttpHeaderLaunch } from './http-mcp-header-env.js'
 import { agentRunState, agentSessionName, claudeBin, isAgentRunning, isSessionReadyForPrompt, runTmux, sendPromptToSession, shSingleQuote, tmuxBin } from './agent-process-session.js'
 
 function startRemoteAgentProcess(
@@ -492,7 +493,18 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     // values like `claude-opus-4-8[1m]` (1M-context suffix) from being glob-expanded AND makes a `'`
     // in the value inert rather than a quote-break -> command injection. Same escape at the three
     // ANTHROPIC_MODEL env sites above.
-    const cmd = `export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${promptSuggestionEnv}${surveyEnv}${autoUpdateEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${providerEnv}cd "${dir}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}`.trimEnd()
+    // HTTP MCP servers whose headers hold a `${NAME}` placeholder get NAME from the vault at launch: the
+    // reference is exported and the real `claude` is started through the env wrapper, which swaps it for the
+    // value inside the process. The config file never carries the value. A reference that cannot be fed is
+    // skipped and logged by name + secret id (never a value); the server then sees the literal placeholder.
+    const httpHeaderLaunch = buildHttpHeaderLaunch([
+      claudeConfigDir ? join(claudeConfigDir, '.claude.json') : join(homedir(), '.claude.json'),
+      join(dir, '.mcp.json'),
+    ])
+    for (const skip of httpHeaderLaunch.skipped) {
+      logger.warn({ name, var: skip.name, secretId: skip.id, reason: skip.reason }, 'http-mcp-header-env: header variable not fed from the vault')
+    }
+    const cmd = `export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${promptSuggestionEnv}${surveyEnv}${autoUpdateEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${providerEnv}${httpHeaderLaunch.envPrefix}cd "${dir}" && ${httpHeaderLaunch.execPrefix}${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}`.trimEnd()
     runTmux(null, ['new-session', '-d', '-s', session, cmd], { timeout: 10000 })
 
     logger.info({ name, session, channelDir: agentChannelDir }, 'Agent tmux session started')
