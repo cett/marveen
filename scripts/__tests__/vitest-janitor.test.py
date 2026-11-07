@@ -138,11 +138,26 @@ class RuleTest(unittest.TestCase):
         self.assertEqual(plan_of([proc(12, ppid=777, age=7199, command=MAIN)]), [])
         self.assertEqual(rules(plan_of([proc(13, ppid=777, age=7200, command=MAIN)])), {13: "R3"})
 
-    def test_a_detached_run_is_an_orphan_from_the_start_and_goes_after_two_minutes(self):
-        # nohup / disown: parent pid 1 from the beginning, a perfectly healthy run. The docs say so.
-        detached = proc(10, ppid=1, age=119, command=MAIN)
-        self.assertEqual(plan_of([detached]), [])
-        self.assertEqual(rules(plan_of([proc(10, ppid=1, age=121, command=MAIN)])), {10: "R1"})
+    def test_detached_main_with_live_workers_is_left_alone(self):
+        # nohup / disown: the main has parent pid 1 on purpose, its workers are children of the main.
+        main = proc(10, ppid=1, pgid=10, age=900, command=MAIN)
+        workers = [proc(11, ppid=10, pgid=10, age=899), proc(12, ppid=10, pgid=10, age=899)]
+        self.assertEqual(plan_of([main] + workers), [])
+
+    def test_orphan_worker_of_a_dead_main_is_killed(self):
+        self.assertEqual(rules(plan_of([proc(11, ppid=1, age=121)])), {11: "R1"})
+        self.assertEqual(plan_of([proc(11, ppid=1, age=119)]), [])
+
+    def test_a_parent_one_main_or_wrapper_alone_is_not_r1(self):
+        for cmd in (MAIN, NPM_EXEC, "node %s/node_modules/vitest/vitest.mjs related a.ts --run" % ROOT):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(plan_of([proc(10, ppid=1, age=9999 - 4000, command=cmd)]), [])
+
+    def test_worker_entry_shapes(self):
+        for entry in ("forks.js", "threads.js", "vmForks.js", "x.mjs"):
+            self.assertTrue(jan.is_worker("node --require %s/node_modules/vitest/suppress-warnings.cjs %s/node_modules/vitest/dist/workers/%s" % (ROOT, ROOT, entry)), entry)
+        for cmd in (MAIN, NPM_EXEC, "node %s/node_modules/vitest/dist/cli.js" % ROOT, "node /srv/app/workers/forks.js", "python3 %s/node_modules/vitest/dist/workers/forks.js" % ROOT):
+            self.assertFalse(jan.is_worker(cmd), cmd)
 
     def test_a_watch_mode_session_goes_after_two_hours_not_before(self):
         watch = "node %s/node_modules/vitest/vitest.mjs" % ROOT  # no run / related: the interactive mode

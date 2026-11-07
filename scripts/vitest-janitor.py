@@ -13,7 +13,9 @@ else is ever looked at: not "every process with parent pid 1" (a machine has hun
 match with pkill.
 
 Rules, first match wins:
-  R1 parent pid 1 and running for at least 2 minutes: an orphan. Kill the pid.
+  R1 a WORKER (`.../node_modules/vitest/dist/workers/<entry>.js`) with parent pid 1 that has run for at least 2
+     minutes: the orphan of a main process that is gone. Kill the pid. The main process (`vitest.mjs run|related`)
+     and the `npm exec` wrapper are never R1: a detached run (nohup, disown) has parent pid 1 on purpose.
   R2 the install the command line points into (`<root>/node_modules/vitest/`) no longer exists: kill the pid.
   R3 running for at least 2 hours: a run that got away. Kill its process group, but ONLY when every member of
      that group is itself a vitest candidate and the group is not this janitor's own; otherwise kill the
@@ -22,8 +24,9 @@ What is protected, exactly: R1 leaves a young process (under 2 minutes) and one 
 is what keeps another agent's run in progress safe. R2 and R3 do NOT look at the parent: R2 does not look at
 the age either (a vitest whose install directory is gone is stopped at once, young or not, parent alive or
 not), and R3 stops a vitest that has run for 2 hours whatever its parent. Two consequences to know:
-  - a detached run (nohup, disown, a daemonized shell) has parent pid 1 from the start, so it is an orphan
-    for R1 and is stopped 2 minutes after it started;
+  - the main process of a detached run (nohup, disown, a daemonized shell) is NOT an orphan: only the workers
+    of a dead main are. A detached run is left alone until R3 (2 hours) or R2; if its main dies, its workers go
+    after 2 minutes;
   - a watch-mode session (`vitest` left open) is stopped after 2 hours.
 
 Before a kill the pid is read again (same command line and parent, not younger), so a pid that was reused
@@ -54,6 +57,7 @@ COMMAND_LOG_CHARS = 200
 _PS_FIELDS = "pid=,ppid=,pgid=,etime=,command="
 _VITEST_DIR = re.compile(r"/node_modules/vitest/")
 _VITEST_MAIN = re.compile(r"(?:^|[\s/])vitest(?:\.mjs)?\s+(?:run|related)(?:\s|$)")
+_WORKER_ENTRY = re.compile(r"/node_modules/vitest/dist/workers/[^\s/]+\.[cm]?js(?:\s|$)")
 _ROOT = re.compile(r"(?P<root>/\S*?)/node_modules/vitest/")
 
 
@@ -94,6 +98,12 @@ def is_candidate(command):
     return bool(_VITEST_MAIN.search(command))
 
 
+def is_worker(command):
+    """A vitest worker entry point (`<root>/node_modules/vitest/dist/workers/forks.js`), not the main process
+    (`vitest.mjs run|related`) and not the `npm exec` wrapper."""
+    return is_candidate(command) and bool(_WORKER_ENTRY.search(command))
+
+
 def install_root(command):
     """The directory whose node_modules/vitest the command line points into, or None (relative path)."""
     m = _ROOT.search(command)
@@ -111,7 +121,9 @@ def plan(procs, exists, own_pid, own_pgid):
     for p in candidates:
         rule = None
         root = install_root(p["command"])
-        if p["ppid"] == 1 and p["age"] >= ORPHAN_MIN_SECS:
+        # R1 is for WORKERS only: the main process of a detached run (nohup, disown) has parent pid 1 on purpose and
+        # is not an orphan; only the workers of a main that is gone are.
+        if p["ppid"] == 1 and p["age"] >= ORPHAN_MIN_SECS and is_worker(p["command"]):
             rule = "R1"
         elif root is not None and not exists(root):
             rule = "R2"
