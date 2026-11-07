@@ -705,7 +705,10 @@ function literalEchoScript(body) {
 // A shell word anywhere next to a `<(`: `source <(..)`, `. <(..)`, `source -- <(..)`, `bash <(..)`,
 // `source /dev/stdin < <(..)`. Over-reading is the safe side: only a body that is a literal echo / printf is
 // followed, any other producer (`source <(cat f)`) is text built at run time (the known limit).
-const SHELL_WORD = /(?:^|[\s;&|(){}])(?:source|\.|sh|bash|zsh|dash)(?=[\s;&|(){}<]|$)/
+// An optional path prefix and quote / backslash characters in front of the name are part of the word
+// (`/bin/bash <(..)`, `"bash" <(..)`, `\bash <(..)`, `ba''sh`-style splits are not followed: a quote INSIDE the
+// name needs the tokenizer, and the here-string reading above already uses it).
+const SHELL_WORD = /(?:^|[\s;&|(){}])["'\\]*(?:[^\s;&|(){}]*\/)?["'\\]*(?:source|\.|sh|bash|zsh|dash)["']*(?=[\s;&|(){}<]|$)/
 const srcProcFor = (cmd) => cmd.includes('<(') && SHELL_WORD.test(cmd)
 
 function segmentIsSend(toksIn, depth) {

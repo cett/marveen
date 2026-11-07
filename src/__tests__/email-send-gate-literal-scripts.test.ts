@@ -94,6 +94,12 @@ const RUNS: Array<[string, string]> = [
   ['source /dev/stdin < <(..)', `source /dev/stdin < <(echo '${X}')`],
   ['bash reading a process substitution on stdin', `bash < <(echo '${X}')`],
   ['bash <(printf %s) is refused as unreadable', `bash <(printf '%s' '${X}')`],
+  // review: the shell word with a path prefix, quotes or a backslash
+  ['absolute path to bash', `/bin/bash <(echo '${X}')`],
+  ['relative path to sh', `./sh <(echo '${X}')`],
+  ['quoted bash', `"bash" <(echo '${X}')`],
+  ['backslash bash', `\\bash <(echo '${X}')`],
+  ['path to source-like dot', `/usr/bin/env bash <(echo '${X}')`],
 ]
 
 const TEXT: Array<[string, string]> = [

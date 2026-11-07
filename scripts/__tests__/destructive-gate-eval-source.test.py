@@ -104,6 +104,24 @@ class TestDepthBoundHolds(unittest.TestCase):
         # Either the banned command is found inside the bound, or the depth limit blocks: never an allow.
         self.assertEqual(verdict(cmd), 'deny')
 
+    def test_depth_bound_refuses_a_harmless_script_too_deep(self):
+        # The bound itself, not the banned command at the bottom: a harmless script nested past the bound is
+        # refused (fail closed), for eval and for a here-string chain; within the bound it is allowed.
+        def nest_eval(n, inner):
+            for _ in range(n):
+                inner = "eval '%s'" % inner.replace("'", "'\\''")
+            return inner
+
+        def nest_here(n, inner):
+            for _ in range(n):
+                inner = "bash <<< '%s'" % inner.replace("'", "'\\''")
+            return inner
+
+        self.assertEqual(verdict(nest_eval(3, 'echo a')), 'allow')
+        self.assertEqual(verdict(nest_here(3, 'echo a')), 'allow')
+        self.assertEqual(verdict(nest_eval(hook._MAX_NEST + 4, 'echo a')), 'deny')
+        self.assertEqual(verdict(nest_here(hook._MAX_NEST + 4, 'echo a')), 'deny')
+
     def test_literal_echo_script_helper(self):
         self.assertEqual(hook._literal_echo_script("echo 'a b'"), 'a b')
         self.assertEqual(hook._literal_echo_script("printf 'a b'"), 'a b')
@@ -307,6 +325,12 @@ class TestReviewRoundThree(unittest.TestCase):
         for cmd in ("builtin echo hello", "noglob ls *.txt"):
             with self.subTest(cmd=cmd):
                 self.assertEqual(verdict(cmd), 'allow', cmd)
+
+    def test_semicolon_after_a_comment_hash_is_read_as_code_pinned(self):
+        # Review note: in the shell `echo x #; then rm -rf X` is a comment, the gate reads the `rm` and denies.
+        # A conservative direction (a deny the shell would not run), pinned so that a change is a decision.
+        self.assertEqual(verdict("echo x #; then %s" % X), 'deny')
+        self.assertEqual(verdict("echo x # then %s" % X), 'allow')
 
     def test_known_limit_case_pattern_paren_in_a_substitution_is_pinned(self):
         # The `)` of a `case` pattern inside a substitution ends the scan for eval's arguments early: the
