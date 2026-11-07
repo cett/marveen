@@ -15,6 +15,7 @@ import { isBlockedCrossOriginWrite, originMatchesServedHost, buildAllowedHosts, 
 import { resolveRole, resolveTenantId } from './web/authz.js'
 import { runRbacGate } from './web/rbac-shadow-log.js'
 import { json, isInvalidJsonBodyError } from './web/http-helpers.js'
+import { answerVaultKeyError } from './web/vault-error-response.js'
 import { detectLanIp } from './web/network-info.js'
 import { normalizePath, applyDeprecationHeaders } from './web/routes/versioning.js'
 import { instrumentHttpRequest, assignRequestTrace, type HttpTrust } from './otel-http.js'
@@ -389,6 +390,9 @@ export async function startWebServer(port = 3420): Promise<http.Server> {
         json(res, { error: 'parse_error', hint: 'Invalid JSON body' }, 400)
         return
       }
+      // A vault whose master key cannot be established safely is an operator problem with its own
+      // token (503 vault_key_unavailable), not a generic 500 that hides the cause from the client.
+      if (answerVaultKeyError(err, res)) return
       logger.error({ err }, 'Web szerver hiba')
       json(res, { error: 'internal_error', hint: 'Szerver hiba' }, 500)
     }

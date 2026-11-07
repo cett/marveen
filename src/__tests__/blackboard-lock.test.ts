@@ -75,6 +75,11 @@ describe('the call sites take the lock', () => {
     const text = src('web/schedule-runner.ts')
     expect(count(text)).toBe(2)
     expect(text).toMatch(/withBlackboardLock\(agentName, \(\) => upsertBlackboard\(agentName, \{\s*status: 'active'/)
-    expect(text).toMatch(/withBlackboardLock\(entry\.agentName, async \(\) => \{\s*const cur = await findBlackboardRowByAgent/)
+    // The compare-and-write lives in ONE function (the done write and the release of a refused prompt share it),
+    // and it takes the lock around the read AND the write.
+    expect(text).toMatch(/async function writeBlackboardIfUnchanged\([^)]*\): Promise<void> \{\s*await withBlackboardLock\(agentName, async \(\) => \{\s*const cur = await findBlackboardRowByAgent/)
+    // The done write goes through it; it does not read-then-write on its own outside the lock.
+    expect(text).toMatch(/await writeBlackboardIfUnchanged\(entry\.agentName, entry\.blackboardSnapshot, \{ status: 'done'/)
+    expect(text).toMatch(/await writeBlackboardIfUnchanged\(agentName, _bbSnapshot, \{ status: 'blocked'/)
   })
 })

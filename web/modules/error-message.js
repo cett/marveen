@@ -20,6 +20,7 @@ const ERROR_I18N = {
   upstream_error:           'errors.upstream_error',
   sender_not_in_allowlist:  'errors.sender_not_in_allowlist',
   agent_not_allowed:        'errors.agent_not_allowed',
+  vault_key_unavailable:    'errors.vault_key_unavailable',
   federation_disabled:      'errors.federation_disabled',
   unknown_query_parameter:  'errors.unknown_query_parameter',
   tenant_required:          'errors.tenant_required',

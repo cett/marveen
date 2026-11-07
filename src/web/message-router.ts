@@ -37,6 +37,7 @@ import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { maybeWakeSubAgentsForTelegram } from './telegram-inbox-wake.js'
 import { recordDelivery } from './delivery-intent.js'
 import { oneLine } from './approval-owner-notice.js'
+import { wasPromptRefused } from './send-result.js'
 import { gateDeliveryBatch } from './sender-routing-wire.js'
 
 import { systemJob } from '../db/background-jobs.js'
@@ -772,7 +773,12 @@ export async function runMessageRouterTick(): Promise<void> {
         const { prefix, wrapped } = wrapAgentMessageForDelivery(category, safeFromAgent, msg.from_agent, content, msg.id, msg.origin_note)
         // Inline preamble so a fresh session (post hard-restart) doesn't miss
         // the context that explains the tag semantics.
-        await sendPromptToSession(session, prefix + wrapped, host)
+        const sendResult = await sendPromptToSession(session, prefix + wrapped, host)
+        // A refused send ('aborted-busy': the pane sits on the external imports dialog, which swallows the text;
+        // 'skipped-locked') put nothing into the pane. Recording it delivered would lose the message silently,
+        // so it takes the same path as an inject throw: retried next tick, then failed and reported after
+        // MAX_INJECT_FAILURES.
+        if (wasPromptRefused(sendResult)) throw new Error(`prompt not delivered to the pane (${sendResult})`)
         // The ledger row rides along so a head-lost park of this frame can be requeued (delivery-intent matchDeliveryTail).
         recordDelivery(session, prefix + wrapped, String(msg.id), msg.tenant_id ? { msgId: msg.id, toAgent: msg.to_agent, tenantId: msg.tenant_id } : undefined)
         if (!await markMessageDelivered(msg.id)) {
