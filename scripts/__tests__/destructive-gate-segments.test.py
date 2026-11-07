@@ -67,6 +67,9 @@ DENY_SHAPES = [
     ("background ampersand", "true & %s"),
     ("function, posix form", "f() { %s; }; f"),
     ("function, keyword form", "function f { %s; }; f"),
+    ("function, keyword form with parens", "function f() { %s; }; f"),
+    ("function, keyword form with parens, no spaces", "function f(){ %s; }; f"),
+    ("a long chain of keywords before the command", "if " * 40 + "%s"),
     ("function, no spaces", "f(){ %s; }; f"),
     ("function, space before parens", "f () { %s; }; f"),
     ("subshell", "(%s)"),
@@ -170,6 +173,12 @@ class TestJoinOrder(unittest.TestCase):
     def test_comment_ending_in_backslash_does_not_swallow_the_next_line(self):
         # In the shell a comment ends at the newline, a backslash there does not continue it: X runs.
         self.assertEqual(verdict('echo hi # note \\\n%s' % X), 'deny')
+
+    def test_comment_after_every_shell_metacharacter_is_a_comment(self):
+        # `#` starts a comment after any word boundary, not only after a space: `(true)# c \` + newline.
+        for head in ('(true)', 'true;', 'true|', 'true&', 'true>', 'true<', '(true)'):
+            with self.subTest(head=head):
+                self.assertEqual(verdict('%s# c \\\n%s' % (head, X)), 'deny', head)
 
     def test_data_heredoc_line_ending_in_backslash_does_not_hide_a_later_command(self):
         # Quoted delimiter: the body is literal, `EOF` on its own line ends it, X after it runs.

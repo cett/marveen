@@ -353,6 +353,27 @@ def _script_arg_ranges(text):
             while j < len(text) and state[j]:
                 j += 1
             out.append((k, j))
+    # More running code, same reading: the quoted LITERAL handed to a shell that runs it again.
+    #   eval 'X'                    eval's arguments are the script
+    #   bash <<< 'X'                a shell's here-string is its script
+    for m in re.finditer(r'(?<![\w-])(?:eval|(?:bash|sh|zsh|dash|ksh)\s+<<<)\s*(?=["\'])', text):
+        k = m.end() + 1
+        j = k
+        while j < len(text) and state[j]:
+            j += 1
+        out.append((k, j))
+    #   source <(echo 'X')  /  . <(printf 'X')    the quoted text inside the process substitution
+    for m in re.finditer(r'(?<![\w-])(?:source|\.)\s+<\(', text):
+        j = m.end()
+        while j < len(text) and (state[j] or text[j] != ')'):
+            if state[j] and (j == 0 or not state[j - 1]):
+                k = j
+                while k < len(text) and state[k]:
+                    k += 1
+                out.append((j, k))
+                j = k
+                continue
+            j += 1
     return out
 
 
@@ -397,7 +418,7 @@ def _join_continuations(text):
             out.append(text[i + 1])
             i += 2
             continue
-        if q == 0 and ch == '#' and (i == 0 or text[i - 1] in ' \t\n;|&('):
+        if q == 0 and ch == '#' and (i == 0 or text[i - 1] in ' \t\n;|&()<>'):
             # An unquoted `#` at the start of a word opens a comment that ends at the newline; a backslash
             # in front of that newline is just a character of the comment, NOT a continuation. Joining it
             # would swallow the next line (a command that really runs) into the comment's line.
@@ -550,12 +571,16 @@ def _skip_shell_syntax(toks, i):
     """Index past the shell syntax that can stand in front of a segment's command name:
     compound-command keywords (`then rm`, `do rm`, `else rm`), `{` / `}`, `!`, a `case` header
     (`case x in`) or a case pattern (`a) rm`, `a|b)` is cut at the `|` first), and a function
-    definition (`f() { rm x; }` reads `f) {`, `function f {`). Bounded, never loops."""
-    for _ in range(16):
-        if i >= len(toks):
-            return i
+    definition (`f() { rm x; }` reads `f) {`, `function f {`, `function f() {`). No iteration cap: every
+    branch moves `i` forward by at least one word, so the walk is linear in the words and ends. A cap would
+    stop in front of a keyword and read IT as the command name, which fails open."""
+    while i < len(toks):
         w = _plain(toks[i][0])
         if w in _SHELL_KEYWORDS:
+            i += 1
+            continue
+        if w in (')', '){'):
+            # What is left of `function f() {` / `function f(){` after the name was skipped.
             i += 1
             continue
         if w == 'case':
@@ -615,13 +640,43 @@ def command_index(toks):
 
 
 def _sub_scripts(toks, idx):
-    """The segment's shell command's -c script(s)."""
-    if idx is None or os.path.basename(_plain(toks[idx][0])) not in _SHELLS:
+    """The scripts a segment's command hands to a shell to RUN again:
+      * a shell's -c script                 bash -c 'X'
+      * a shell's here-string               bash <<< 'X'   (the script is on its stdin)
+      * eval's arguments, joined as eval does   eval 'X'  /  eval X
+    KNOWN LIMIT (stated in the CHANGELOG): only text that is LITERAL in the command is read. A script
+    built from a variable (`eval "$A$B"`, `source "$f"`) is not followed; the gate governs cooperating
+    agents and does not claim to be a sandbox (see the wrapper note above).
+    """
+    if idx is None:
+        return []
+    base = os.path.basename(_plain(toks[idx][0]))
+    if base == 'eval':
+        script = ' '.join(t for t, _sp in toks[idx + 1:])
+        return [script] if script.strip() else []
+    if base not in _SHELLS:
         return []
     for k in range(idx + 1, len(toks)):
         if toks[k][0] in ('-c', '--command') and k + 1 < len(toks):
             return [toks[k + 1][0]]
+    for k in range(idx + 1, len(toks)):
+        t = toks[k][0]
+        if t == '<<<' and k + 1 < len(toks):
+            return [toks[k + 1][0]]
+        if t.startswith('<<<') and len(t) > 3:
+            return [t[3:]]
     return []
+
+
+def _literal_echo_script(body):
+    """The text `echo` / `printf` would print, when `body` is exactly such a command: the script a
+    `source <(echo 'X')` reads. None for any other body (its own bodies are judged on their own)."""
+    toks = _tokens(body.strip())
+    idx = command_index(toks)
+    if idx is None or os.path.basename(_plain(toks[idx][0])) not in ('echo', 'printf'):
+        return None
+    words = [t for t, _sp in toks[idx + 1:] if not t.startswith('-')]
+    return ' '.join(words) if words else None
 
 
 def _is_coordinator_push_allowed():
@@ -723,6 +778,14 @@ def check_bash(cmd, agent_id=None, _depth=0):
         for extra in _sub_scripts(raw_toks, command_index(raw_toks)):
             if extra not in subs:
                 subs.append(extra)
+        # `source <(echo 'X')` / `. <(printf 'X')`: the process substitution only PRINTS the script, the
+        # sourcing shell runs it. The body itself (`echo ...`) is harmless to the loop below, so read the
+        # printed text as a script here. A body that is anything else is judged as a command of its own.
+        if idx is not None and os.path.basename(_plain(toks[idx][0])) in ('source', '.'):
+            for body in shell_subst.top_bodies(seg, False, 8):
+                printed = _literal_echo_script(body)
+                if printed and printed not in subs:
+                    subs.append(printed)
         for sub in subs:
             if not sub or sub == cmd:
                 continue
