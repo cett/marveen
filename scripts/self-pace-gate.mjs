@@ -1232,13 +1232,21 @@ function implicitTreeDecision(cmd, words, ci, bases, ctx) {
     const t = tarParse(args)
     if (t && (t.mode !== 'x' || t.dirVals.length)) return null
   } else if (cmd === 'unzip') {
-    if (!unzipExtracts(args) || workDirOf('unzip', args) !== undefined) return null
+    // a -d DIR that is its own word is judged by that path like any other word; one ATTACHED to the flags
+    // (-qdDIR) is no word of its own (the word reader only strips one letter), so the directory it names is read here:
+    // a protected path is denied, any other named directory is the command's own business
+    if (!unzipExtracts(args)) return null
+    const ud = unzipDir(args)
+    if (ud && !ud.attached) return null
+    if (ud) { const k = wordKind(ud.dir, ctx); return k ? { deny: true, reason: isAnc(k) ? k.split(':')[1] : k } : null }
   } else if (cmd === 'git' ? gitInstallOk(args) : patchIsDry(args)) return null
   const env = words.slice(0, ci)
   for (const b of bases) if (commandTargetsInstall(cmd, args, env, b, ctx)) return { deny: true, reason: 'install-tree' }
   return null
 }
 const IMPLICIT_CMDS = new Set(['git', 'patch', 'xargs', 'tar', 'unzip'])
+// Most inner evaluations (a text command judged in one directory) one command may cost; see the nested-text loop.
+const INNER_EVAL_BUDGET = 100
 // The command behind wrappers: `nice -n 5 git checkout x` has the command word 5 for commandWordIndex. Returns
 // { gi, cmd, chdir } for the first IMPLICIT_CMDS word that follows a wrapper word, or null.
 function effectiveCommand(words, ci) {
@@ -1278,18 +1286,43 @@ function innerCommandTexts(cmd, words, ci, seg) {
   for (const m of String(seg).matchAll(/\$\(([^()]*)\)|`([^`]*)`/g)) out.push(m[1] ?? m[2])
   return out
 }
+// unzip -d DIR, also bundled (-qd DIR, -od DIR, -jd DIR, -qdDIR); the value of -x / -P / -O / -I is skipped, so
+// `unzip -P -d out/ok.zip` (password "-d") is an extraction into the cwd. { dir, attached } or null (no -d).
+function unzipDir(args) {
+  for (let k = 0; k < args.length; k++) {
+    const a = args[k]
+    if (!a.startsWith('-') || a.length < 2 || a.startsWith('--')) continue
+    for (let q = 1; q < a.length; q++) {
+      const c = a[q]
+      if (c === 'd') return q + 1 < a.length ? { dir: a.slice(q + 1), attached: true } : { dir: args[k + 1] ?? UNKNOWN, attached: false }
+      if ('xPOI'.includes(c)) { if (q + 1 >= a.length) k++; break }
+    }
+  }
+  return null
+}
 // The directory a non-git command works in: patch -d DIR, tar -C DIR, unzip -d DIR. undefined: the cwd.
 function workDirOf(cmd, args) {
   if (cmd === 'tar') {
     const t = tarParse(args)
-    if (!t) return UNKNOWN
-    return t.dirVals.length ? t.dirVals[t.dirVals.length - 1] : undefined
+    if (t) return t.dirVals.length ? t.dirVals[t.dirVals.length - 1] : undefined
+    // A line the parser does not understand (--sort, --exclude-caches, -xPf ...) unpacks into the cwd unless it names
+    // a directory: the cwd tree decides. A -C inside a bundle (`-xCf DIR`, `xCf DIR`) hides its value: that stays unknown.
+    let dir
+    for (let k = 0; k < args.length; k++) {
+      const a = args[k]
+      if (a === '-C' || a === '--directory') dir = args[++k] ?? UNKNOWN
+      else if (a.startsWith('--directory=')) dir = a.slice(12)
+      else if (/^-C./.test(a)) dir = a.slice(2)
+      else if (/^-[A-Za-z]*C/.test(a) || (k === 0 && /^[A-Za-z]*C[A-Za-z]*$/.test(a))) return UNKNOWN
+    }
+    return dir
   }
+  if (cmd === 'unzip') return unzipDir(args)?.dir
   for (let k = 0; k < args.length; k++) {
     const a = args[k]
     if (a === '-d' || (cmd === 'patch' && a === '--directory')) return args[k + 1] ?? UNKNOWN
     if (a.startsWith('--directory=')) return a.slice(12)
-    if (/^-d./.test(a) && !a.startsWith('--') && (cmd === 'unzip' || cmd === 'patch')) return a.slice(2)
+    if (/^-d./.test(a) && !a.startsWith('--') && cmd === 'patch') return a.slice(2)
   }
   return undefined
 }
@@ -1517,6 +1550,10 @@ function roleSources(cmd, args) {
 function onlyReadsProtected(cmd, words, ci, kinds, rKinds) {
   const src = roleSources(cmd, words.slice(ci + 1))
   if (!src || rKinds.some(Boolean)) return false
+  // A word that is not a source (the destination, a -t / -f value, the last operand) and holds an unresolved
+  // variable may expand to NOTHING: then the word before it becomes the destination (`cp out/f scripts/hooks/x $E`,
+  // `cp -t $E scripts/hooks out/f`, `tar -cf $E scripts/hooks/x.tar src`) and the protected path is written, not read.
+  for (let j = ci + 1; j < words.length; j++) if (!src.has(j - ci - 1) && /[$`]/.test(words[j])) return false
   for (let j = 0; j < words.length; j++) if (kinds[j] && (j <= ci || !src.has(j - ci - 1))) return false
   return true
 }
@@ -1679,8 +1716,17 @@ export function bashProtectedDecision(command, opts = {}) {
     for (const text of innerCommandTexts(cmd, words, ci, seg)) {
       const depth = opts._depth ?? 0
       if (depth >= 3) { if (/\b(?:git|patch|tar|unzip)\b/.test(text)) return { deny: true, reason: 'install-tree' }; continue }
+      // Every level multiplies the work by the number of directories the text visited, so the bases are de-duplicated
+      // by real path and ONE counter bounds the inner evaluations of a command: past it the command is refused with
+      // a plain reason (fail closed), well inside the hook's time limit.
+      const budget = opts._budget ?? { n: 0 }
+      const seenBase = new Set()
       for (const b of bases) {
-        const d = bashProtectedDecision(text, { ...opts, prot, cwd: b ?? ctx.current, _depth: depth + 1 })
+        const key = b === null ? '\0' : lcPath(realOrSelf(b))
+        if (seenBase.has(key)) continue
+        seenBase.add(key)
+        if (++budget.n > INNER_EVAL_BUDGET) return { deny: true, reason: 'eval-budget' }
+        const d = bashProtectedDecision(text, { ...opts, prot, cwd: b ?? ctx.current, _depth: depth + 1, _budget: budget })
         if (d.deny) return d
       }
     }
@@ -2054,6 +2100,10 @@ const GIT_TREE_MSG =
   'agens-konyvtarban csak olvaso git szabad (status, diff, log, show, blame, grep, ls-files, add, commit, fetch, worktree add / list ...). ' +
   'A fejleszteshez kulon worktree kell: git worktree add ~/worktrees/<tema> -b <ag> origin/develop, es abban dolgozz (cd ~/worktrees/<tema> && git ...). ' +
   'Valtozo-bol osszeallitott cd celnal a kapu a celt nem latja: irj literalis utat.'
+const EVAL_BUDGET_MSG =
+  'A parancs tul sok egymasba agyazott szoveg-parancsot (eval, sh -c, $(...)) es cd-t tartalmaz ahhoz, hogy a kapu ' +
+  'idoben atvizsgalja (governance hard-gate), es egy atvizsgalhatatlan parancs nem mehet at. Bontsd szet kisebb ' +
+  'lepesekre, vagy irj scriptet a Write tool-lal es futtasd azt.'
 const SETTINGS_GATE_MSG =
   'Agent-settings fajlok vedve (governance hard-gate). Sub-agentkent NEM irhatod a Claude Code settings.json / ' +
   'settings.local.json fajlokat (agents/*/.claude, agents/*/.claude-config, a telepites .claude mappaja): ' +
@@ -2095,6 +2145,6 @@ if (isInvokedDirectly()) {
     allow() // malformed/empty input must never break the agent's tool calls
   }
   const { deny: shouldDeny, reason } = gateDecision(payload?.tool_name, payload?.tool_input, { cwd: payload?.cwd })
-  if (shouldDeny) deny(reason === 'too-large' ? TOO_LARGE_MSG : reason === 'egress-allowlist' ? ALLOWLIST_GATE_MSG : reason === 'gate-scripts' ? SCRIPTS_GATE_MSG : reason === 'agent-settings' ? SETTINGS_GATE_MSG : reason === 'install-tree' ? GIT_TREE_MSG : GATE_MSG)
+  if (shouldDeny) deny(reason === 'too-large' ? TOO_LARGE_MSG : reason === 'egress-allowlist' ? ALLOWLIST_GATE_MSG : reason === 'gate-scripts' ? SCRIPTS_GATE_MSG : reason === 'agent-settings' ? SETTINGS_GATE_MSG : reason === 'install-tree' ? GIT_TREE_MSG : reason === 'eval-budget' ? EVAL_BUDGET_MSG : GATE_MSG)
   allow()
 }
