@@ -439,6 +439,13 @@ def _segments_tokens(cmd: str):
     lex = shlex.shlex(_word_boundaries(_mask_subshell_markers(_strip_heredoc_bodies(cmd))),
                       posix=True, punctuation_chars="();|&")
     lex.whitespace_split = True
+    # Comment-BLIND, like the JS twin (segmentsTokens in email-send-gate.mjs reads a `#` as a character). shlex
+    # defaults to commenters='#': it cut a comment at ANY `#` (also mid-word: `echo a#b`, `echo $#`, which the shell
+    # does not) and, worse, swallowed the NEWLINE at its end, so the next line's tokens joined the comment's
+    # segment: `ls # c<newline>bash <<< 'X'` read as one segment headed by `ls`, and the here-string was not seen.
+    # Reading comment text as words only errs toward auditing (a mail program named in a comment is a hit
+    # only at command position; `ls # sendmail a@b.c` stays data).
+    lex.commenters = ""
     segments, cur = [], []
     for tok in lex:
         # SEGSPLIT923: shlex(punctuation_chars) returns a RUN of operator

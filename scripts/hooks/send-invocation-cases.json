@@ -1480,6 +1480,56 @@
       "name": "here-string known limit: an ANSI-C quoted script is not decoded",
       "cmd": "bash <<< $'sendmail a@example.com'",
       "expected": false
+    },
+    {
+      "name": "comment before a here-string: the newline ends the comment",
+      "cmd": "ls # c\nbash <<< 'sendmail a@example.com'",
+      "expected": true
+    },
+    {
+      "name": "comment before a glued here-string",
+      "cmd": "ls # c\nbash<<<'sendmail a@example.com'",
+      "expected": true
+    },
+    {
+      "name": "a # in the MIDDLE of a word is not a comment (echo a#b)",
+      "cmd": "echo a#b; bash <<< 'sendmail a@example.com'",
+      "expected": true
+    },
+    {
+      "name": "$# is not a comment",
+      "cmd": "echo $#; bash <<< 'sendmail a@example.com'",
+      "expected": true
+    },
+    {
+      "name": "comment before source /dev/stdin <<<",
+      "cmd": "echo hi # note\nsource /dev/stdin <<< 'sendmail a@example.com'",
+      "expected": true
+    },
+    {
+      "name": "an apostrophe in a comment does not hide the next line",
+      "cmd": "ls # don't\nbash<<<'sendmail a@example.com'",
+      "expected": true
+    },
+    {
+      "name": "comment before a plain sender",
+      "cmd": "ls # c\nsendmail a@example.com",
+      "expected": true
+    },
+    {
+      "name": "comment control: cat reads the here-string as data after a comment",
+      "cmd": "ls # c\ncat <<< 'sendmail a@example.com'",
+      "expected": false
+    },
+    {
+      "name": "comment control: a mid-word # then cat <<<",
+      "cmd": "echo a#b; cat <<< 'sendmail a@example.com'",
+      "expected": false
+    },
+    {
+      "name": "comment control: $# alone",
+      "cmd": "echo $#",
+      "expected": false
     }
   ]
 }

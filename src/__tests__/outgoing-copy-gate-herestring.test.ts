@@ -206,6 +206,13 @@ describe('main-agent send path (copy gate OR mail reader): every shape of the C4
     `sh -s <<< '${X}'`,
     `zsh <<< '${X}'`,
     `bash <<< 'send''mail a@example.com'`,
+    // a comment before it: the comment ends at its newline, `#` inside a word is not a comment
+    `ls # c\nbash <<< '${X}'`,
+    `ls # c\nbash<<<'${X}'`,
+    `echo a#b; bash <<< '${X}'`,
+    'echo $#; bash <<< \'' + X + "'",
+    `echo hi # note\nsource /dev/stdin <<< '${X}'`,
+    `ls # don't\nbash<<<'${X}'`,
   ]
   const ALLOW = [
     `cat <<< '${X}'`,
