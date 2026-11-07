@@ -321,11 +321,31 @@ describe('HTTP MCP headers follow the home config at every start', () => {
       expect(readFileSync(agentDot(), 'utf-8')).not.toContain('shared-static')
     })
 
-    it('a helper whose value is malformed still blocks the refresh (the key counts, not its shape)', () => {
+    it('a helper whose value is an empty string still blocks the refresh (the key counts, not its content)', () => {
       writeAgent({ up: { type: 'http', url: 'u', headersHelper: '' } })
       writeHome(SHARED_STATIC)
       provision()
       expect(servers().up.headers).toBeUndefined()
+    })
+
+    // The guard is "the key is present", not "the value is a usable command". A value of another type (written by
+    // a hand edit or a faulty tool) must not let the shared static token back in either: a check on the value's
+    // type would reopen exactly that path for these shapes.
+    it.each([
+      ['an object', { command: 'x' }],
+      ['a number', 7],
+      ['true', true],
+      ['false', false],
+      ['an array', ['x']],
+      ['null', null],
+    ])('a helper whose value is %s still blocks the refresh', (_label, value) => {
+      writeAgent({ up: { type: 'http', url: 'u', headersHelper: value } })
+      writeHome(SHARED_STATIC)
+      provision()
+      provision()
+      expect(servers().up.headers).toBeUndefined()
+      expect(servers().up.headersHelper).toEqual(value)
+      expect(readFileSync(agentDot(), 'utf-8')).not.toContain('shared-static')
     })
 
     it('control: an entry WITHOUT a helper is still refreshed (the old behavior stays)', () => {
