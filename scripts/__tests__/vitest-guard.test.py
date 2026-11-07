@@ -294,7 +294,9 @@ class PureHelpersTest(unittest.TestCase):
         short = guard.DEFAULT_RELATED_SECS
         self.assertEqual(full, 1800)
         self.assertEqual(short, 600)
-        on_disk = {"src/__tests__", "tests"}  # directories that "exist" for the injected exists()
+        # An existing file without a source extension, for the injected is_file(). Directories are not in the
+        # set: is_file() is False for them, which is what the real os.path.isfile answers.
+        files_on_disk = {"plain-file"}
         cases = [
             (["run"], full),
             (["run", "--reporter", "verbose"], full),  # an option value is not a file
@@ -319,9 +321,13 @@ class PureHelpersTest(unittest.TestCase):
             # a name with a dot or a slash that is neither a source file nor on disk is not a file
             (["run", "foo.bar"], full),
             (["run", "no/such/dir"], full),
-            # a directory that exists, with and without a trailing slash
-            (["run", "src/__tests__"], short),
-            (["run", "tests"], short),
+            # a directory can hold nearly the whole suite: the whole-suite limit, with and without a slash
+            (["run", "src"], full),
+            (["run", "src/__tests__"], full),
+            (["run", "src/__tests__/"], full),
+            (["run", "tests"], full),
+            # an existing file without a source extension is a file
+            (["run", "plain-file"], short),
             # every source extension counts
             (["run", "a.mts"], short),
             (["run", "a.jsx"], short),
@@ -331,13 +337,17 @@ class PureHelpersTest(unittest.TestCase):
         ]
         for args, want in cases:
             with self.subTest(args=args):
-                self.assertEqual(guard.default_limit(args, exists=lambda p: p in on_disk), want)
+                self.assertEqual(guard.default_limit(args, is_file=lambda p: p in files_on_disk), want)
 
     def test_default_limit_uses_the_real_file_system_by_default(self):
         with tempfile.TemporaryDirectory() as d:
-            existing = os.path.join(d, "plain-name")
-            os.makedirs(existing)
-            self.assertEqual(guard.default_limit(["run", existing]), guard.DEFAULT_RELATED_SECS)
+            a_dir = os.path.join(d, "plain-dir")
+            os.makedirs(a_dir)
+            a_file = os.path.join(d, "plain-file")
+            open(a_file, "w").close()
+            self.assertEqual(guard.default_limit(["run", a_file]), guard.DEFAULT_RELATED_SECS)
+            self.assertEqual(guard.default_limit(["run", a_dir]), guard.DEFAULT_FULL_SECS)
+            self.assertEqual(guard.default_limit(["run", a_dir + "/"]), guard.DEFAULT_FULL_SECS)
             self.assertEqual(guard.default_limit(["run", os.path.join(d, "missing-name")]), guard.DEFAULT_FULL_SECS)
 
     def test_parse_secs_edges(self):

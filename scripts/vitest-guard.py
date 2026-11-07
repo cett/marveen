@@ -23,9 +23,10 @@ convention) with one line on stderr; 128 + n when the wrapper itself got signal 
 when vitest cannot be found.
 
 Default limit: 1800 s for a whole suite (the last green full run on the CI runner took about 11 minutes,
-with coverage), 600 s for `related` or when a file or directory is among the arguments. The test is a
-heuristic: an argument counts as a file when it has a source or test extension (.ts .tsx .mts .cts .js
-.jsx .mjs .cjs) or exists on disk, and the value of an option (`--config vitest.config.ts`,
+with coverage), 600 s for `related` or when a file is among the arguments. The test is a heuristic: an
+argument counts as a file when it has a source or test extension (.ts .tsx .mts .cts .js .jsx .mjs .cjs) or
+is an existing FILE on disk. A directory (`run src`, `run src/__tests__/`) is not a file: it can hold nearly
+the whole suite, so it gets the whole-suite limit. The value of an option (`--config vitest.config.ts`,
 `--project unit.node`, `--root ./x`, `--outputFile out/r.json`) is not an argument. A bare name filter, and
 any doubt (an option the wrapper does not know, followed by a file), counts as a whole suite: the longer
 limit is the safe direction. Override with --limit SEC or
@@ -114,17 +115,17 @@ def _positionals(vitest_args):
         yield arg
 
 
-def _file_like(arg, exists):
-    return arg.endswith(SOURCE_EXTENSIONS) or exists(arg)
+def _file_like(arg, is_file):
+    return arg.endswith(SOURCE_EXTENSIONS) or is_file(arg)
 
 
-def default_limit(vitest_args, exists=os.path.exists):
-    """600 s for `related` or a run with a file or directory among the arguments, else 1800 s."""
+def default_limit(vitest_args, is_file=os.path.isfile):
+    """600 s for `related` or a run with a file among the arguments, else 1800 s (a directory is a whole suite)."""
     positionals = list(_positionals(vitest_args))
     if positionals and positionals[0] == "related":
         return DEFAULT_RELATED_SECS
     rest = positionals[1:] if positionals and positionals[0] in VITEST_COMMANDS else positionals
-    if any(_file_like(a, exists) for a in rest):
+    if any(_file_like(a, is_file) for a in rest):
         return DEFAULT_RELATED_SECS
     return DEFAULT_FULL_SECS
 
