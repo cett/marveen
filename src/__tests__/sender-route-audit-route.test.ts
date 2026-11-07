@@ -12,6 +12,7 @@ import { auditRouteVerdict, type RouteVerdict } from '../web/sender-routing-wire
 import { tryHandleSenderRouteAudit } from '../web/routes/sender-route-audit.js'
 import { ENDPOINT_PERMISSION_TABLE, hasPermission, resolveRequiredPermission } from '../web/rbac.js'
 import { SENDER_ROUTE_AUDIT_MAX_ROWS } from '../web/sender-route-audit.js'
+import { normalizePath } from '../web/routes/versioning.js'
 import type { Role } from '../web/rbac.js'
 import type { RouteContext } from '../web/routes/types.js'
 
@@ -65,12 +66,25 @@ describe('who may ask', () => {
       expect(r.handled, role).toBe(true)
       expect(r.status, role).toBe(403)
       expect(r.body.error, role).toBe('forbidden')
-      expect(r.body.total, role).toBeUndefined()
+      expect(r.body.by_stage, role).toBeUndefined()
       expect(r.body.pairs, role).toBeUndefined()
     }
     const tenantAdmin = await call('GET', PATH, { role: 'admin', tenantId: 'tenant-x' })
     expect(tenantAdmin.status).toBe(403)
-    expect(tenantAdmin.body.total).toBeUndefined()
+    expect(tenantAdmin.body.by_stage).toBeUndefined()
+  })
+
+  it('both prefixes reach the same handler through the real path normalisation, and a non-admin gets 403 on each', async () => {
+    for (const raw of [PATH, '/api/v1/admin/sender-route-audit']) {
+      const { path } = normalizePath(raw)
+      expect(path, raw).toBe(PATH)
+      for (const role of ['agent', 'read_only', 'viewer', 'fleet_agent']) {
+        const r = await call('GET', path, { role })
+        expect(r.status, `${raw} ${role}`).toBe(403)
+        expect(r.body.by_stage, `${raw} ${role}`).toBeUndefined()
+      }
+      expect((await call('GET', path)).status, raw).toBe(200)
+    }
   })
 
   it('answers a global admin, by token and by session', async () => {
@@ -128,7 +142,7 @@ describe('the days parameter', () => {
       expect(r.status, d).toBe(400)
       expect(r.body.error, d).toBe('invalid_value')
       expect(r.body.field, d).toBe('days')
-      expect(r.body.total, d).toBeUndefined()
+      expect(r.body.by_stage, d).toBeUndefined()
     }
   })
 
@@ -144,16 +158,16 @@ describe('the window', () => {
     await write({}, 7 * 86400)       // exactly at since
     await write({}, 7 * 86400 + 1)   // one second before
     const r = await call('GET', PATH)
-    expect(r.body.total).toBe(1)
+    expect(r.body.by_stage.route.total).toBe(1)
   })
 
   it('the days parameter moves the start', async () => {
     await write({}, 3600)             // 1 hour old
     await write({}, 2 * 86400)        // 2 days old
     await write({}, 5 * 86400)        // 5 days old
-    expect((await call('GET', `${PATH}?days=1`)).body.total).toBe(1)
-    expect((await call('GET', `${PATH}?days=3`)).body.total).toBe(2)
-    expect((await call('GET', `${PATH}?days=7`)).body.total).toBe(3)
+    expect((await call('GET', `${PATH}?days=1`)).body.by_stage.route.total).toBe(1)
+    expect((await call('GET', `${PATH}?days=3`)).body.by_stage.route.total).toBe(2)
+    expect((await call('GET', `${PATH}?days=7`)).body.by_stage.route.total).toBe(3)
   })
 
   it('rows of other actions and other entities are not counted, even with a verdict-shaped detail', async () => {
@@ -163,52 +177,75 @@ describe('the window', () => {
     db.prepare("INSERT INTO agent_audit_log (agent_id, entity, action, detail, created_at) VALUES ('agent-a', 'message', 'create', ?, ?)").run(detail, NOW - 10)
     db.prepare("INSERT INTO agent_audit_log (agent_id, entity, action, detail, created_at) VALUES ('agent-a', 'memory', 'sender_route_checked', ?, ?)").run(detail, NOW - 10)
     const r = await call('GET', PATH)
-    expect(r.body.total).toBe(1)
+    expect(r.body.by_stage.route.total).toBe(1)
   })
 })
 
 describe('what is counted', () => {
-  it('audit mode: a not-ok verdict is a would_deny and denied stays 0', async () => {
+  it('there is no top-level total, would_deny, denied, by_reason or by_mode: the two stages are two blocks', async () => {
+    await write({ mode: 'audit' })
+    await write({ stage: 'delivery', entityId: 601 })
+    const r = await call('GET', PATH)
+    for (const k of ['total', 'would_deny', 'denied', 'by_reason', 'by_mode']) expect(r.body, k).not.toHaveProperty(k)
+    expect(Object.keys(r.body.by_stage).sort()).toEqual(['delivery', 'route'])
+  })
+
+  it('audit mode: a not-ok route verdict is a would_deny and denied stays 0', async () => {
     await write({ mode: 'audit' })
     const r = await call('GET', PATH)
-    expect(r.body).toMatchObject({ total: 1, would_deny: 1, denied: 0, truncated: false })
-    expect(r.body.by_mode.audit).toEqual({ total: 1, would_deny: 1, denied: 0 })
-    expect(r.body.by_reason).toEqual({ not_trusted_peer: 1 })
+    expect(r.body.truncated).toBe(false)
+    expect(r.body.by_stage.route).toEqual({
+      total: 1, would_deny: 1, denied: 0,
+      by_reason: { not_trusted_peer: 1 },
+      by_mode: { audit: { total: 1, would_deny: 1, denied: 0 } },
+    })
+    expect(r.body.by_stage.delivery).toMatchObject({ total: 0, would_deny: 0, denied: 0, by_reason: {}, by_mode: {} })
   })
 
   it('enforce mode: a refusal is a would_deny and a denied', async () => {
     await write({ mode: 'enforce', deny: true })
     const r = await call('GET', PATH)
-    expect(r.body).toMatchObject({ total: 1, would_deny: 1, denied: 1 })
-    expect(r.body.by_mode.enforce).toEqual({ total: 1, would_deny: 1, denied: 1 })
+    expect(r.body.by_stage.route).toMatchObject({ total: 1, would_deny: 1, denied: 1 })
+    expect(r.body.by_stage.route.by_mode.enforce).toEqual({ total: 1, would_deny: 1, denied: 1 })
   })
 
   it('an allowed verdict is counted in total only', async () => {
     await write({ decision: { ok: true } })
-    expect((await call('GET', PATH)).body).toMatchObject({ total: 1, would_deny: 0, denied: 0, by_reason: {} })
+    expect((await call('GET', PATH)).body.by_stage.route).toMatchObject({ total: 1, would_deny: 0, denied: 0, by_reason: {} })
   })
 
-  it('delivery rows of one message id are one message, in one mode or across a mode switch', async () => {
+  it('audit mode: a not-ok route row and the delivery row of the same message are one unit in each block and are added nowhere', async () => {
+    const m = await createAgentMessage('agent-a', 'agent-b', 'same message', null, null, 'default')
+    await write({ stage: 'route', mode: 'audit' })
+    await write({ stage: 'delivery', mode: 'audit', entityId: m.id })
+    const r = await call('GET', PATH)
+    expect(r.body.by_stage.route).toMatchObject({ total: 1, would_deny: 1 })
+    expect(r.body.by_stage.delivery).toMatchObject({ total: 1, would_deny: 1 })
+    expect(r.body).not.toHaveProperty('total')
+    expect(r.body.pairs.map((p: { stage: string; count: number }) => `${p.stage}:${p.count}`).sort()).toEqual(['delivery:1', 'route:1'])
+  })
+
+  it('delivery block: the rows of one message id and mode are one unit; the same id in two modes is two units, by mode', async () => {
     for (let i = 0; i < 3; i++) await write({ stage: 'delivery', entityId: 501 })
     await write({ stage: 'delivery', entityId: 501, mode: 'enforce', deny: true }, 10)
     await write({ stage: 'delivery', entityId: 502 })
-    const r = await call('GET', PATH)
-    expect(r.body.total).toBe(2)
-    expect(r.body.by_mode.audit.total).toBe(2)
-    expect(r.body.by_mode.enforce.total).toBe(1)
-    expect(r.body.by_stage.delivery.total).toBe(2)
+    const d = (await call('GET', PATH)).body.by_stage.delivery
+    expect(d.total).toBe(3)
+    expect(d.by_mode.audit.total).toBe(2)
+    expect(d.by_mode.enforce).toEqual({ total: 1, would_deny: 1, denied: 1 })
   })
 
-  it('route rows carry no message id: each is a message of its own, and the pair is counted', async () => {
+  it('route block: route rows carry no message id, each is a unit of its own; the self-message count reads from its pairs', async () => {
     await write({ stage: 'route' })
     await write({ stage: 'route' })
     await write({ stage: 'route', senderId: 'agent-b', to: 'agent-b', decision: { ok: true } })
+    await write({ stage: 'delivery', senderId: 'agent-b', to: 'agent-b', decision: { ok: false, reason: 'not_trusted_peer' }, entityId: 700 })
     const r = await call('GET', PATH)
-    expect(r.body.total).toBe(3)
-    const self = r.body.pairs.filter((p: { from: string; to: string }) => p.from === p.to)
-    expect(self).toHaveLength(1)
-    expect(self[0]).toMatchObject({ stage: 'route', ok: true, count: 1 })
-    expect(r.body.pairs.find((p: { from: string }) => p.from === 'agent-a').count).toBe(2)
+    expect(r.body.by_stage.route.total).toBe(3)
+    const selfRoute = r.body.pairs.filter((p: { from: string; to: string; stage: string }) => p.from === p.to && p.stage === 'route')
+    expect(selfRoute).toHaveLength(1)
+    expect(selfRoute[0]).toMatchObject({ ok: true, count: 1 })
+    expect(r.body.pairs.find((p: { from: string; stage: string }) => p.from === 'agent-a' && p.stage === 'route').count).toBe(2)
   })
 })
 
@@ -222,7 +259,8 @@ describe('what is not in the answer', () => {
     expect(r.raw).not.toContain('principal-a')
     expect(r.raw).not.toContain('entity_id')
     expect(r.raw).not.toContain('"id"')
-    expect(Object.keys(r.body).sort()).toEqual(['by_mode', 'by_reason', 'by_stage', 'days', 'denied', 'pairs', 'pairs_truncated', 'since', 'total', 'truncated', 'unreadable', 'would_deny'])
+    expect(Object.keys(r.body).sort()).toEqual(['by_stage', 'days', 'pairs', 'pairs_truncated', 'since', 'truncated', 'unreadable'])
+    expect(Object.keys(r.body.by_stage.route).sort()).toEqual(['by_mode', 'by_reason', 'denied', 'total', 'would_deny'])
   })
 })
 
@@ -238,13 +276,13 @@ describe('the row limit', () => {
     })()
     const exact = await call('GET', PATH)
     expect(exact.body.truncated).toBe(false)
-    expect(exact.body.total).toBe(SENDER_ROUTE_AUDIT_MAX_ROWS)
-    expect(exact.body.would_deny).toBe(1)
+    expect(exact.body.by_stage.route.total).toBe(SENDER_ROUTE_AUDIT_MAX_ROWS)
+    expect(exact.body.by_stage.route.would_deny).toBe(1)
 
     ins.run(detail, NOW - 40)
     const over = await call('GET', PATH)
     expect(over.body.truncated).toBe(true)
-    expect(over.body.total).toBe(SENDER_ROUTE_AUDIT_MAX_ROWS)
-    expect(over.body.would_deny).toBe(0) // the oldest row (the only not-ok one) was cut
+    expect(over.body.by_stage.route.total).toBe(SENDER_ROUTE_AUDIT_MAX_ROWS)
+    expect(over.body.by_stage.route.would_deny).toBe(0) // the oldest row (the only not-ok one) was cut
   }, 30_000)
 })

@@ -15,13 +15,20 @@ function boundedDays(raw: string | null): number {
 }
 
 // GET /api/admin/sender-route-audit?days=7 - what the sender routing rule decided in the last `days` days (1 to 90,
-// default 7), counted from the audit rows, so anyone with admin rights can see in one call how many messages enforce
-// mode would refuse and for which sender / recipient pairs, before the mode is switched. Read-only. The answer holds
-// counts and the pair shapes only: no message content, no message id, no principal. `since` is the start of the
-// window (unix seconds); `truncated` says the window held more than the row limit and the oldest rows are not
-// counted. `would_deny` counts every verdict that is not ok (audit mode too), `denied` what enforce actually refused.
-// How a message is counted is written in src/web/sender-route-audit.ts. Global admin only: named in the RBAC table
-// (src/web/rbac.ts) on both prefixes, and checked here as well.
+// default 7), counted from the audit rows, so anyone with admin rights can see in one call which sender / recipient
+// pairs enforce mode would refuse, before the mode is switched. Read-only. The answer holds counts and the pair
+// shapes only: no message content, no message id, no principal. `since` is the start of the window (unix seconds);
+// `truncated` says the window held more than the row limit and the oldest rows are not counted. `would_deny` counts
+// every verdict that is not ok (audit mode too), `denied` what enforce actually refused.
+//
+// The numbers are in TWO blocks, `by_stage.route` and `by_stage.delivery`, and there is no total over both: the two
+// stages overlap (in audit mode the same not-ok message is logged by the route and again by the delivery gate), and
+// the route row is written before the message is stored, so it has no message id (entity_id is null) and cannot be
+// joined to the delivery row of the same message. Do not add the blocks. An exact message-level count is a later
+// change (the route audit written after the message is stored, for ok verdicts). The count of messages an agent sent
+// to itself is read from the route block alone. How a unit is counted in each block is written in
+// src/web/sender-route-audit.ts. Global admin only: named in the RBAC table (src/web/rbac.ts) on both prefixes, and
+// checked here as well.
 export async function tryHandleSenderRouteAudit(ctx: RouteContext): Promise<boolean> {
   if (ctx.path !== '/api/admin/sender-route-audit' || ctx.method !== 'GET') return false
   // The RBAC gate already refuses a non-admin; this holds in shadow mode too.
