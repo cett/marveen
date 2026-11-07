@@ -2,7 +2,11 @@
 // Move an http MCP server's header from a live token to the vault-fed headers helper (or back).
 //
 //   migrate-http-mcp-header.mjs --server <name> --header <Header> --secret <vault id> [--apply] [--revert]
-//                               [--node <absolute node path>] <config.json> [...]
+//                               [--node <absolute node path>] [--prefix <text>] <config.json> [...]
+//
+// --prefix is the text in front of the value in the header (default "Bearer "). A first migration reads it from
+// the file; give it for a header of another form ("Basic ", or "" for a bare token) to --revert it, and to
+// re-run --apply on a file that was already migrated. A prefix the helper would refuse is rejected (exit 2).
 //
 // DRY RUN unless --apply. A file is rewritten only when its header holds exactly the vault secret's value; the
 // static header is removed (a leftover one is the fail-open path when the helper fails). --revert is the exact
@@ -18,7 +22,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
-const USAGE = 'usage: migrate-http-mcp-header.mjs --server <name> --header <Header> --secret <vault id> [--apply] [--revert] [--node <abs path>] <config.json> [...]'
+const USAGE = 'usage: migrate-http-mcp-header.mjs --server <name> --header <Header> --secret <vault id> [--apply] [--revert] [--node <abs path>] [--prefix <text>] <config.json> [...]'
 const BAD = new Set(['unreadable', 'token-mismatch', 'bad-prefix', 'dangling-link', 'other-helper', 'write-failed'])
 
 function parse(argv) {
@@ -27,7 +31,7 @@ function parse(argv) {
     const a = argv[i]
     if (a === '--apply') o.apply = true
     else if (a === '--revert') o.revert = true
-    else if (a === '--server' || a === '--header' || a === '--secret' || a === '--node') {
+    else if (a === '--server' || a === '--header' || a === '--secret' || a === '--node' || a === '--prefix') {
       const v = argv[++i]
       if (v === undefined || v.startsWith('--')) return null
       o[a.slice(2)] = v
@@ -50,6 +54,7 @@ const nodePath = o.node ?? (existsSync('/opt/homebrew/bin/node') ? '/opt/homebre
 const opts = {
   server: o.server, header: o.header, secretId: o.secret, apply: o.apply,
   nodePath, home: homedir(), secretValue: (id) => getSecret(id),
+  ...(o.prefix !== undefined ? { prefix: o.prefix } : {}),
 }
 const fn = o.revert ? revertHttpHeaderFile : migrateHttpHeaderFile
 

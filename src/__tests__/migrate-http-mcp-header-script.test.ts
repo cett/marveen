@@ -21,6 +21,7 @@ export class MigrateOptionsError extends Error {}
 const run = (kind) => (file, o) => {
   if (file.endsWith('refuse.json')) throw new MigrateOptionsError('the vault has no secret with that id')
   if (file.endsWith('boom.json')) throw new RangeError('boom ${VALUE}')
+  if (file.endsWith('show-prefix.json')) return { file, status: 'prefix=' + JSON.stringify(o.prefix) + (o.apply ? ' apply' : ' dry') }
   const status = file.endsWith('bad.json') ? 'token-mismatch' : file.endsWith('badprefix.json') ? 'bad-prefix' : file.endsWith('dangling.json') ? 'dangling-link' : (o.apply ? kind + '-applied' : kind + '-dry')
   return { file, status }
 }
@@ -58,6 +59,33 @@ describe('arguments', () => {
     expect(r.status).toBe(2)
     expect(r.stdout).toBe('')
     expect(r.stderr).toContain('usage:')
+  })
+})
+
+describe('--prefix', () => {
+  it('is handed to the migration unchanged, a trailing space and an empty value included', () => {
+    expect(cli([...base, '--apply', '--revert', '--prefix', 'Basic ', 'show-prefix.json']).stdout).toBe('prefix="Basic " apply\tshow-prefix.json\n')
+    expect(cli([...base, '--apply', '--revert', '--prefix', '', 'show-prefix.json']).stdout).toBe('prefix="" apply\tshow-prefix.json\n')
+  })
+
+  it('works in either position and for a migration as well', () => {
+    expect(cli([...base, '--prefix', 'Basic ', '--apply', 'show-prefix.json']).stdout).toBe('prefix="Basic " apply\tshow-prefix.json\n')
+    expect(cli(['--prefix', 'Basic ', ...base, 'show-prefix.json']).stdout.startsWith('prefix="Basic " dry\t')).toBe(true)
+  })
+
+  it('left out, the option is not set at all (the library default applies)', () => {
+    expect(cli([...base, '--apply', '--revert', 'show-prefix.json']).stdout).toBe('prefix=undefined apply\tshow-prefix.json\n')
+  })
+
+  it.each([
+    ['no value at the end', [...base, 'a.json', '--prefix']],
+    ['a flag in place of the value', [...base, '--prefix', '--apply', 'a.json']],
+  ])('%s: usage on stderr, exit 2', (_label, args) => {
+    const r = cli(args)
+    expect(r.status).toBe(2)
+    expect(r.stdout).toBe('')
+    expect(r.stderr).toContain('usage:')
+    expect(r.stderr).toContain('--prefix')
   })
 })
 

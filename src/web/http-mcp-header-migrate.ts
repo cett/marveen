@@ -44,7 +44,11 @@ export interface MigrateOptions {
   home: string
   /** The vault value of `secretId`, or null when it is not there. Never logged. */
   secretValue: (id: string) => string | null
-  /** What goes before the value in the header; revert only (a migration derives it from the file). */
+  /**
+   * What goes before the value in the header. A revert needs it for a header that is not the usual "Bearer "
+   * form; a first migration derives it from the file and ignores this. It is validated like the helper's own
+   * prefix argument, so a value the helper would refuse is rejected here, before any file is read.
+   */
   prefix?: string
 }
 
@@ -81,6 +85,7 @@ function checkOptions(opts: MigrateOptions): string {
   if (!HEADER_NAME.test(opts.header)) throw new MigrateOptionsError('header is not a valid header name')
   if (!SECRET_ID.test(opts.secretId) || opts.secretId.startsWith('ssh-key-')) throw new MigrateOptionsError('secretId is not an injectable vault id')
   if (!opts.nodePath.startsWith('/') || !opts.home.startsWith('/')) throw new MigrateOptionsError('nodePath and home must be absolute')
+  if (opts.prefix !== undefined && !isValidHelperPrefix(opts.prefix)) throw new MigrateOptionsError('prefix is not one the helper accepts')
   const secret = opts.secretValue(opts.secretId)
   if (secret === null) throw new MigrateOptionsError('the vault has no secret with that id')
   if (secret.length < MIN_SECRET_LENGTH) throw new MigrateOptionsError('the vault secret is too short to be matched safely')
