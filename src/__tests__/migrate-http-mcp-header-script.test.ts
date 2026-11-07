@@ -6,7 +6,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -21,7 +21,7 @@ export class MigrateOptionsError extends Error {}
 const run = (kind) => (file, o) => {
   if (file.endsWith('refuse.json')) throw new MigrateOptionsError('the vault has no secret with that id')
   if (file.endsWith('boom.json')) throw new RangeError('boom ${VALUE}')
-  const status = file.endsWith('bad.json') ? 'token-mismatch' : file.endsWith('badprefix.json') ? 'bad-prefix' : (o.apply ? kind + '-applied' : kind + '-dry')
+  const status = file.endsWith('bad.json') ? 'token-mismatch' : file.endsWith('badprefix.json') ? 'bad-prefix' : file.endsWith('dangling.json') ? 'dangling-link' : (o.apply ? kind + '-applied' : kind + '-dry')
   return { file, status }
 }
 export const migrateHttpHeaderFile = run('migrate')
@@ -90,6 +90,41 @@ describe('output and exit codes', () => {
       expect(r.status).toBe(1)
       expect(r.stdout.startsWith('bad-prefix\tbadprefix.json\n')).toBe(true)
     }
+  })
+
+  it('a dangling link makes the exit code 1', () => {
+    const r = cli([...base, '--apply', 'dangling.json'])
+    expect(r.status).toBe(1)
+    expect(r.stdout).toBe('dangling-link\tdangling.json\n')
+  })
+
+  it('two paths to the same real file are handled once, the second is reported as a duplicate (link, ./ and .. spellings)', () => {
+    const realFile = join(tree, 'real.json')
+    writeFileSync(realFile, '{}')
+    symlinkSync(realFile, join(tree, 'link.json'))
+    mkdirSync(join(tree, 'sub'))
+    const spelled = join(tree, 'sub', '..', 'real.json')
+    const r = cli([...base, '--apply', realFile, join(tree, 'link.json'), spelled, join(tree, 'other.json')])
+    expect(r.status).toBe(0)
+    expect(r.stdout.split('\n').filter(Boolean)).toEqual([
+      `migrate-applied\t${realFile}`,
+      `duplicate\t${join(tree, 'link.json')}`,
+      `duplicate\t${spelled}`,
+      `migrate-applied\t${join(tree, 'other.json')}`,
+    ])
+  })
+
+  it('the first spelling wins when the LINK comes first, and the dry-run note still shows', () => {
+    const realFile = join(tree, 'real.json')
+    writeFileSync(realFile, '{}')
+    symlinkSync(realFile, join(tree, 'link.json'))
+    const r = cli([...base, join(tree, 'link.json'), realFile])
+    expect(r.stdout).toBe(`migrate-dry\t${join(tree, 'link.json')}\nduplicate\t${realFile}\ndry run: nothing was written (add --apply)\n`)
+  })
+
+  it('the same missing path given twice is also done once; two different missing paths are both reported', () => {
+    const r = cli([...base, '--apply', 'a.json', 'a.json', 'b.json'])
+    expect(r.stdout).toBe('migrate-applied\ta.json\nduplicate\ta.json\nmigrate-applied\tb.json\n')
   })
 
   it('refused options stop the run with exit 2 and a message that has no value', () => {

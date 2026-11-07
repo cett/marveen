@@ -7,17 +7,19 @@
 // DRY RUN unless --apply. A file is rewritten only when its header holds exactly the vault secret's value; the
 // static header is removed (a leftover one is the fail-open path when the helper fails). --revert is the exact
 // inverse. Output is one line per file with the outcome only: no token, no part of one, is ever printed.
+// A path that is a symlink is migrated THROUGH the link (the real file is rewritten, the link stays a link);
+// two paths that lead to the same real file are done once, the second is reported as `duplicate`.
 // Run it with the owning agent STOPPED (a running Claude Code may write the old header back).
 // The secret must already be in the vault (Vault UI / API); rotating a token that was ever on disk is a separate
 // decision of the owner and is not done here.
-import { existsSync } from 'node:fs'
+import { existsSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const USAGE = 'usage: migrate-http-mcp-header.mjs --server <name> --header <Header> --secret <vault id> [--apply] [--revert] [--node <abs path>] <config.json> [...]'
-const BAD = new Set(['unreadable', 'token-mismatch', 'bad-prefix', 'other-helper', 'write-failed'])
+const BAD = new Set(['unreadable', 'token-mismatch', 'bad-prefix', 'dangling-link', 'other-helper', 'write-failed'])
 
 function parse(argv) {
   const o = { apply: false, revert: false, files: [] }
@@ -51,8 +53,19 @@ const opts = {
 }
 const fn = o.revert ? revertHttpHeaderFile : migrateHttpHeaderFile
 
+// The real path of an argument, or its absolute form when it cannot be resolved (missing, dangling): the key
+// that tells two arguments are the same file.
+const realKey = (file) => { try { return realpathSync(file) } catch { return resolve(file) } }
+const seen = new Set()
+
 let bad = false
 for (const file of o.files) {
+  const key = realKey(file)
+  if (seen.has(key)) {
+    process.stdout.write(`duplicate\t${file}\n`)
+    continue
+  }
+  seen.add(key)
   try {
     const r = fn(file, opts)
     process.stdout.write(`${r.status}\t${r.file}\n`)
