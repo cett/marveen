@@ -2220,6 +2220,7 @@ window._i18n.hu = {
   'errors.upstream_error':           'Külső szolgáltatás nem elérhető',
   'errors.sender_not_in_allowlist':  'A küldő nincs az engedélyezett listán',
   'errors.agent_not_allowed':        'Ez a titok nem engedélyezett annak az ágensnek -- vedd fel a titok listájára, vagy válassz másik célt',
+  'errors.vault_key_unavailable':    'A széf nem nyitható meg: a mesterkulcsa nem érhető el. Egy adminisztrátornak vissza kell állítania (lásd a szerver naplót); az újrapróbálás nem segít',
   'errors.federation_disabled':      'A föderáció ki van kapcsolva',
   'errors.unknown_query_parameter':  'Ismeretlen lekérdezési paraméter',
   'errors.tenant_required':          'A feladathoz tenant kell',

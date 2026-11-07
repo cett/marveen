@@ -2219,6 +2219,7 @@ window._i18n.en = {
   'errors.upstream_error':           'Upstream service unavailable',
   'errors.sender_not_in_allowlist':  'Sender is not in the allowlist',
   'errors.agent_not_allowed':        'This secret is not allowed for that agent -- add it to the secret\'s allowlist or pick another target',
+  'errors.vault_key_unavailable':    'The vault cannot be opened: its master key is unavailable. An administrator has to restore it (see the server log); retrying will not help',
   'errors.federation_disabled':      'Federation is disabled',
   'errors.unknown_query_parameter':  'Unknown query parameter',
   'errors.tenant_required':          'The task needs a tenant',
