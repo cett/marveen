@@ -450,6 +450,21 @@ class TestCommandSubstitution(unittest.TestCase):
 
     X = "rm -rf /private/tmp/claude-501/probe-nonexistent-dir"
 
+    def setUp(self):
+        # check_bash() runs in this process, so its coordinator-push exemption reads THIS process's environment and
+        # tmux session. Run from the coordinator's own session (env grant exported, or tmux session name matching) the
+        # `git push` shape below would be exempt and the case would fail for a reason that has nothing to do with the
+        # substitution scanner. Start every test with no grant and no tmux; the grant tests set what they need.
+        env = patch.dict(os.environ)
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop("MARVEEN_COORDINATOR_PUSH_ALLOWED", None)
+        tmux = patch.object(hook, "subprocess")
+        self.mock_subprocess = tmux.start()
+        self.addCleanup(tmux.stop)
+        self.mock_subprocess.run.return_value.returncode = 1
+        self.mock_subprocess.run.return_value.stdout = ""
+
     def _verdict(self, cmd):
         with patch.object(hook, "_notify_block"):
             try:
@@ -457,6 +472,20 @@ class TestCommandSubstitution(unittest.TestCase):
             except SystemExit as e:
                 return e.code
         return 0
+
+    def test_a_git_push_in_a_substitution_is_blocked_without_the_grant(self):
+        self.assertNotIn("MARVEEN_COORDINATOR_PUSH_ALLOWED", os.environ)
+        self.assertEqual(self._verdict('echo "$(git push origin main)"'), 2)
+        self.assertEqual(self._verdict("git push origin main"), 2)
+
+    def test_the_tests_own_grant_lets_the_same_push_through(self):
+        # The other direction: the isolation above is what makes the block meaningful, and the grant is the only
+        # thing that changes the verdict (the exemption is the coordinator's, so it applies inside a substitution too).
+        os.environ["MARVEEN_COORDINATOR_PUSH_ALLOWED"] = "1"
+        self.assertEqual(self._verdict("git push origin main"), 0)
+        self.assertEqual(self._verdict('echo "$(git push origin main)"'), 0)
+        # A grant does not exempt anything else in the same command.
+        self.assertEqual(self._verdict('echo "$(git push origin main; %s)"' % self.X), 2)
 
     def test_runs_shapes_block(self):
         x = self.X

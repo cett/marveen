@@ -10,6 +10,7 @@ Privacy: only fake agent IDs (agent-a, agent-b) and synthetic paths are used.
 """
 import http.server
 import importlib.util
+import io
 import json
 import os
 import shutil
@@ -18,7 +19,9 @@ import sys
 import tempfile
 import threading
 import time
+import types
 import unittest
+from unittest.mock import patch
 
 _HOOK_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -732,7 +735,10 @@ class TestHookEndToEnd(unittest.TestCase):
         self.assertGreater(time.monotonic() - started, 3.5)
 
     def test_a_slow_but_answering_dashboard_still_gets_every_post_inside_the_budget(self):
-        _Stub.delay = 0.1
+        # Real sockets and a real clock: this only proves the wiring (the 5 hits reach the stub over HTTP), so the delay
+        # is a small fraction of the budget (a twelfth of the five-post total) and a loaded machine cannot eat the
+        # margin. The budget arithmetic itself is pinned deterministically in TestPostBudgetVirtualClock.
+        _Stub.delay = hook._POST_BUDGET_SECS / 60
         self._run({"tool_name": "Bash", "tool_input": {"command": self.FIVE_SKILLS}, "session_id": "s", "cwd": self.agent_dir})
         self.assertEqual(len(_Stub.posts), 5)
 
@@ -744,6 +750,71 @@ class TestHookEndToEnd(unittest.TestCase):
         )
         self.assertEqual(r.returncode, 0)
         self.assertEqual(_Stub.posts, [])
+
+
+class TestPostBudgetVirtualClock(unittest.TestCase):
+    """The one time budget of the POSTs, on a clock the test drives: no sleep, no socket, no scheduler in the verdict.
+
+    Each fake POST costs `cost` seconds of virtual time, or the whole `timeout` it was given when it would take longer
+    (what a real urlopen does when the peer is slower than the timeout). So how many posts fit is arithmetic on the
+    budget, and a budget made too narrow fails here every time, not once in a while."""
+
+    FIVE = " && ".join("cat .claude/skills/s%d/SKILL.md" % i for i in range(5))
+
+    def _run_with_cost(self, cost):
+        now = [1000.0]
+        timeouts, sent = [], []
+
+        def fake_urlopen(req, timeout=None):
+            timeouts.append(timeout)
+            if cost > timeout:
+                now[0] += timeout
+                raise OSError("timed out")
+            now[0] += cost
+            sent.append(json.loads(req.data)["skill_name"])
+
+        class _Auth:
+            token = "tok-123"
+
+            @staticmethod
+            def headers(h):
+                return h
+
+        payload = {"tool_name": "Bash", "tool_input": {"command": self.FIVE}, "session_id": "s", "cwd": "/x/agents/agent-a"}
+        with patch.object(hook.sys, "stdin", io.StringIO(json.dumps(payload))), \
+                patch.object(hook, "time", types.SimpleNamespace(monotonic=lambda: now[0])), \
+                patch.object(hook.urllib.request, "urlopen", fake_urlopen), \
+                patch.object(hook.agent_token, "resolve", return_value=_Auth), \
+                patch.object(hook, "_install_dir", return_value="/x"), \
+                patch.object(hook, "_web_port", return_value=1):
+            with self.assertRaises(SystemExit) as cm:
+                hook.main()
+        self.assertEqual(cm.exception.code, 0)
+        return sent, timeouts
+
+    def test_five_posts_that_fit_the_budget_are_all_sent(self):
+        # 5 x 0.15 s = 0.75 s of the 1.2 s budget (62 %): all five go, each with the time that is left as its timeout.
+        sent, timeouts = self._run_with_cost(0.15)
+        self.assertEqual(sent, ["s0", "s1", "s2", "s3", "s4"])
+        self.assertAlmostEqual(timeouts[0], hook._POST_BUDGET_SECS, places=6)
+        self.assertEqual(timeouts, sorted(timeouts, reverse=True))
+
+    def test_the_budget_is_shared_not_per_post(self):
+        # 0.5 s each: two fit (1.0 s), the third gets the 0.2 s that is left, times out, and the fourth finds nothing left.
+        sent, timeouts = self._run_with_cost(0.5)
+        self.assertEqual(sent, ["s0", "s1"])
+        self.assertEqual(len(timeouts), 3)
+        self.assertAlmostEqual(timeouts[2], hook._POST_BUDGET_SECS - 1.0, places=6)
+
+    def test_a_dashboard_slower_than_the_budget_costs_the_budget_once(self):
+        sent, timeouts = self._run_with_cost(30.0)
+        self.assertEqual(sent, [])
+        self.assertEqual(len(timeouts), 1)
+
+    def test_the_budget_has_room_for_five_ordinary_posts(self):
+        # The lower bound the other test cannot give: a budget cut to a few tenths of a second would still pass the
+        # upper-bound check above. 5 posts of 0.15 s need 0.75 s; the budget must clear that with margin.
+        self.assertGreaterEqual(hook._POST_BUDGET_SECS, 1.0)
 
 
 if __name__ == "__main__":

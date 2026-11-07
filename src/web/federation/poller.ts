@@ -16,7 +16,7 @@
 // next to the bridge's retry traffic, while skipping would leave a stale
 // 'ok' visible for hours exactly when visibility matters most.
 import { logger } from '../../logger.js'
-import { scrubSecurityTags, tagOpenings, TAG_OPENER_PREFIX } from '../../prompt-safety.js'
+import { scrubSecurityTags, tagNamePattern, tagOpenings, TAG_OPENER_PREFIX } from '../../prompt-safety.js'
 import { getFederationConfig, FEDERATION_MIN_TOKEN_LENGTH, type FederationPeer } from './config.js'
 import { isValidIdSegment } from './address.js'
 import { readBoundedBody, PeerResponseTooLargeError } from './http.js'
@@ -83,9 +83,10 @@ function truncate(s: unknown, max: number): string {
 // field can be ~512 kB: ~15 s of event loop). The '>' is looked up once by tagOpenings and reused. A tag whose
 // '>' is missing or more than TAG_SPAN_MAX characters away is replaced by its opener alone, so no forged
 // `<channel` frame can survive in a manifest string (the old rule left an unterminated opener untouched).
-// The gap between '<', '/' and the name is the shared TAG_OPENER_PREFIX: whitespace or a format character
-// (zero-width, bidi, soft hyphen, tag characters), never a second copy of that class.
-const CHANNEL_OPENER_RX = new RegExp(`${TAG_OPENER_PREFIX}channel\\b`, 'gi')
+// The gap between '<', '/' and the name is the shared TAG_OPENER_PREFIX: whitespace or an invisible character
+// (format characters, variation selectors, fillers ...), and the name is tagNamePattern('channel'), which
+// tolerates the invisible ones between its letters; never a second copy of those classes.
+const CHANNEL_OPENER_RX = new RegExp(`${TAG_OPENER_PREFIX}${tagNamePattern('channel')}\\b`, 'gi')
 
 function neutralizeChannelFrames(s: string): string {
   let out = ''
