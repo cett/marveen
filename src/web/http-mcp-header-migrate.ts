@@ -19,7 +19,7 @@
 //
 // Run it with the agent that owns the file STOPPED: a running Claude Code keeps its config in memory and may
 // write the old header back over the migrated file.
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, lstatSync, readFileSync, realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { SECRET_ID, HEADER_NAME, isValidHelperPrefix } from './http-mcp-header-rules.js'
@@ -32,7 +32,7 @@ const HELPER_PATH_VAR = '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'
 export type MigrateStatus =
   | 'would-migrate' | 'migrated' | 'already-migrated'
   | 'would-revert' | 'reverted' | 'not-migrated'
-  | 'no-file' | 'unreadable' | 'no-server' | 'no-header' | 'token-mismatch' | 'bad-prefix' | 'other-helper' | 'write-failed'
+  | 'no-file' | 'dangling-link' | 'unreadable' | 'no-server' | 'no-header' | 'token-mismatch' | 'bad-prefix' | 'other-helper' | 'write-failed'
 
 export interface MigrateOptions {
   server: string
@@ -92,6 +92,26 @@ interface Loaded {
   server: Record<string, unknown>
 }
 
+// A config path can be a SYMLINK (the main agent's isolated config is one, to the main session's config). The
+// atomic write renames a temp file over its target; over a symlink that would replace the LINK with a plain file
+// and leave the real file, with its live token, untouched. So the real path is resolved first, read from and
+// written to; the link stays a link. A link whose target is gone has nothing to migrate and is reported, not
+// skipped as if the path did not exist.
+function resolveTarget(file: string): string | MigrateResult {
+  let isLink = false
+  try {
+    isLink = lstatSync(file).isSymbolicLink()
+  } catch {
+    return { file, status: 'no-file' }
+  }
+  if (isLink && !existsSync(file)) return { file, status: 'dangling-link' }
+  try {
+    return realpathSync(file)
+  } catch {
+    return { file, status: 'unreadable' }
+  }
+}
+
 function load(file: string, name: string): Loaded | MigrateResult {
   if (!existsSync(file)) return { file, status: 'no-file' }
   let parsed: unknown
@@ -117,8 +137,10 @@ function write(file: string, parsed: unknown): boolean {
 
 export function migrateHttpHeaderFile(file: string, opts: MigrateOptions): MigrateResult {
   const secret = checkOptions(opts)
-  const loaded = load(file, opts.server)
-  if ('status' in loaded) return loaded
+  const real = resolveTarget(file)
+  if (typeof real !== 'string') return real
+  const loaded = load(real, opts.server)
+  if ('status' in loaded) return { file, status: loaded.status }
   const { parsed, server } = loaded
   const headers = isPlainObject(server.headers) ? server.headers : {}
   // HTTP header names are case-insensitive: a static lower-case name is the same fail-open path.
@@ -135,7 +157,7 @@ export function migrateHttpHeaderFile(file: string, opts: MigrateOptions): Migra
     if (staticKey === undefined) return { file, status: 'already-migrated' }
     if (!opts.apply) return { file, status: 'would-migrate' }
     dropHeader(server, headers, opts.header)
-    return write(file, parsed) ? { file, status: 'migrated' } : { file, status: 'write-failed' }
+    return write(real, parsed) ? { file, status: 'migrated' } : { file, status: 'write-failed' }
   }
 
   if (!hasStatic) return { file, status: 'no-header' }
@@ -149,14 +171,16 @@ export function migrateHttpHeaderFile(file: string, opts: MigrateOptions): Migra
 
   server.headersHelper = buildHelperCommand({ nodePath: opts.nodePath, home: opts.home, secretId: opts.secretId, header: opts.header, prefix })
   dropHeader(server, headers, opts.header)
-  return write(file, parsed) ? { file, status: 'migrated' } : { file, status: 'write-failed' }
+  return write(real, parsed) ? { file, status: 'migrated' } : { file, status: 'write-failed' }
 }
 
 /** The exact inverse: the static header comes back from the vault, the helper goes. */
 export function revertHttpHeaderFile(file: string, opts: MigrateOptions): MigrateResult {
   const secret = checkOptions(opts)
-  const loaded = load(file, opts.server)
-  if ('status' in loaded) return loaded
+  const real = resolveTarget(file)
+  if (typeof real !== 'string') return real
+  const loaded = load(real, opts.server)
+  if ('status' in loaded) return { file, status: loaded.status }
   const { parsed, server } = loaded
   const prefix = opts.prefix ?? 'Bearer '
   const expected = buildHelperCommand({ nodePath: opts.nodePath, home: opts.home, secretId: opts.secretId, header: opts.header, prefix })
@@ -168,7 +192,7 @@ export function revertHttpHeaderFile(file: string, opts: MigrateOptions): Migrat
   headers[opts.header] = `${prefix}${secret}`
   server.headers = headers
   delete server.headersHelper
-  return write(file, parsed) ? { file, status: 'reverted' } : { file, status: 'write-failed' }
+  return write(real, parsed) ? { file, status: 'reverted' } : { file, status: 'write-failed' }
 }
 
 // The prefix in front of the value: taken from the static header when it still ends with the secret, else the
