@@ -21,7 +21,7 @@ import { updateEnvFile } from '../env.js'
 import { AGENTS_BASE_DIR, listAgentNames } from './agent-config.js'
 import { safeJoin } from './sanitize.js'
 import { SCHEDULED_TASKS_DIR } from './scheduled-tasks-io.js'
-import { getBindings } from './vault-bindings.js'
+import { getBindings, getAllSecretAcls, partitionTargetsByAcl } from './vault-bindings.js'
 import { backfillEmbeddings, listAllSkills, seedSkillIfAbsent, listAutonomyCategories, upsertAutonomyCategory, type AutonomyCategoryRow, listModelProfileMap, upsertModelProfileMapEntry, type ModelProfileMapRow, listEgressAllowlistRows, mergeEgressAllowlistEntries, type EgressAllowlistRow, listAgentSettingsByKey, setAgentSetting } from '../db.js'
 import { getDesiredAgents, setDesiredAgents } from './agent-desired-state.js'
 import { readModelFallbackFieldsRaw, writeModelFallbackFieldsRaw } from './model-fallback-store.js'
@@ -530,12 +530,43 @@ function placeholderMcp(
   return result
 }
 
-// Reverse: {{VAULT:<id>}} -> vault:<id> (vault-env-wrapper.sh resolves at runtime)
-function deplaceholderMcp(mcpObj: Record<string, unknown>): Record<string, unknown> {
+// A vault reference the import did NOT restore. It holds ids and names only, never a secret value.
+interface RefusedVaultRef {
+  /** The file the reference belongs to, relative to the project / agents root (no absolute path in a report). */
+  file: string
+  /** The grantee of that file, or null when it could not be told. */
+  grantee: string | null
+  server: string
+  key: string
+  secretId: string
+  reason: 'not-listed' | 'acl-unreadable'
+}
+
+// What the import needs to decide, per reference, whether the target file may receive it.
+interface VaultRefPolicy {
+  /** The grantee lists by secret id (default tenant); null = they could not be read, so nothing is restored. */
+  acl: Record<string, string[]> | null
+  /** Filled by deplaceholderMcp; the import reports it. */
+  refused: RefusedVaultRef[]
+}
+
+// Reverse: {{VAULT:<id>}} -> vault:<id> (vault-env-wrapper.sh resolves at runtime).
+//
+// A secret with a grantee list (vault_secret_acl) is restored only into a file that belongs to a listed
+// grantee, judged on the file the import writes (verifiedGranteeOfMcpFile via partitionTargetsByAcl, the same
+// check the binding routes and the sync use). An empty or missing list is open (the behaviour before the
+// list existed). A refused reference keeps its `{{VAULT:<id>}}` placeholder (inert text: the wrapper resolves
+// only the `vault:` prefix) and is recorded in `policy.refused`. Fail-closed: a file whose grantee cannot be
+// told is refused by a non-empty list, and when the lists could not be read at all (`acl` null) no reference
+// is restored.
+function deplaceholderMcp(
+  mcpObj: Record<string, unknown>,
+  ctx: { targetFile: string, fileLabel: string, policy: VaultRefPolicy },
+): Record<string, unknown> {
   const result = JSON.parse(JSON.stringify(mcpObj)) as Record<string, unknown>
   const servers = result.mcpServers as Record<string, Record<string, unknown>> | undefined
   if (!servers) return result
-  for (const [, cfg] of Object.entries(servers)) {
+  for (const [serverName, cfg] of Object.entries(servers)) {
     if (!cfg || typeof cfg !== 'object') continue
     const c = cfg as Record<string, unknown>
     for (const field of ['env', 'headers'] as const) {
@@ -543,12 +574,57 @@ function deplaceholderMcp(mcpObj: Record<string, unknown>): Record<string, unkno
       if (!dict) continue
       for (const [k, v] of Object.entries(dict)) {
         if (typeof v === 'string' && v.startsWith('{{VAULT:') && v.endsWith('}}')) {
-          dict[k] = `vault:${v.slice(8, -2)}`
+          const secretId = v.slice(8, -2)
+          const verdict = vaultRefVerdict(secretId, serverName, ctx.targetFile, ctx.policy.acl)
+          if (verdict === 'allowed') {
+            dict[k] = `vault:${secretId}`
+          } else {
+            ctx.policy.refused.push({ file: ctx.fileLabel, grantee: verdict.grantee, server: serverName, key: k, secretId, reason: verdict.reason })
+          }
         }
       }
     }
   }
   return result
+}
+
+function vaultRefVerdict(
+  secretId: string,
+  serverName: string,
+  targetFile: string,
+  acl: Record<string, string[]> | null,
+): 'allowed' | { grantee: string | null, reason: RefusedVaultRef['reason'] } {
+  if (acl === null) return { grantee: null, reason: 'acl-unreadable' }
+  // Own property only: an id such as `constructor` must read as "no list", not as Object.prototype's member.
+  const list = Object.hasOwn(acl, secretId) ? acl[secretId] : []
+  if (!Array.isArray(list)) return { grantee: null, reason: 'not-listed' }
+  if (list.length === 0) return 'allowed'
+  const { allowed, refused } = partitionTargetsByAcl(list, [{ mcpFilePath: targetFile, serverName }])
+  if (allowed.length === 1) return 'allowed'
+  return { grantee: refused[0]?.grantee ?? null, reason: 'not-listed' }
+}
+
+// One line of the import report per refused reference, in the language of the report's other warnings. The
+// fields come from the (untrusted) bundle, so control characters are replaced and the length is capped.
+function reportField(value: string): string {
+  return value.replace(/[\x00-\x1f\x7f\x85\u2028\u2029]/g, '?').slice(0, 200)
+}
+
+function vaultRefWarnings(refused: readonly RefusedVaultRef[], aclError: string | null): string[] {
+  const lines: string[] = []
+  if (aclError !== null) {
+    lines.push(`vault hivatkozások: a titkok engedélyezési listája nem olvasható (${reportField(aclError)}), ezért egyik hivatkozás sincs visszaállítva -- a {{VAULT:...}} helyőrzők maradtak.`)
+  }
+  for (const r of refused) {
+    const why = r.reason === 'acl-unreadable'
+      ? 'az engedélyezési lista nem olvasható'
+      : 'a célfájl nincs a titok engedélyezési listáján'
+    lines.push(
+      `vault hivatkozás nem állítva vissza (${why}; a helyőrző maradt): fájl=${reportField(r.file)}, grantee=${reportField(r.grantee ?? 'ismeretlen')}, ` +
+      `szerver=${reportField(r.server)}, kulcs=${reportField(r.key)}, titok=${reportField(r.secretId)}`,
+    )
+  }
+  return lines
 }
 
 // ---------------------------------------------------------------------------
@@ -1326,7 +1402,7 @@ function reloadImportCachesQuietly(): void {
   }
 }
 
-function writeMainAgentFiles(ma: MainAgentExport, tracker: WriteTracker): void {
+function writeMainAgentFiles(ma: MainAgentExport, tracker: WriteTracker, vaultRefs: VaultRefPolicy): void {
   const claudeDir = join(PROJECT_ROOT, '.claude')
   trackedMkdir(claudeDir, tracker)
 
@@ -1334,7 +1410,8 @@ function writeMainAgentFiles(ma: MainAgentExport, tracker: WriteTracker): void {
   if (ma.soulMd) stagedWrite(join(PROJECT_ROOT, 'SOUL.md'), ma.soulMd, tracker)
   if (ma.config && Object.keys(ma.config).length)
     stagedWrite(join(PROJECT_ROOT, 'agent-config.json'), JSON.stringify(ma.config, null, 2), tracker)
-  stagedWrite(join(PROJECT_ROOT, '.mcp.json'), JSON.stringify(deplaceholderMcp(ma.mcp), null, 2), tracker)
+  const mcpFile = join(PROJECT_ROOT, '.mcp.json')
+  stagedWrite(mcpFile, JSON.stringify(deplaceholderMcp(ma.mcp, { targetFile: mcpFile, fileLabel: '.mcp.json', policy: vaultRefs }), null, 2), tracker)
   stagedWrite(join(claudeDir, 'settings.json'), JSON.stringify(ma.settings, null, 2), tracker)
 
   // Main agent channel access: ~/.claude/channels/<provider>/access.json
@@ -1347,7 +1424,7 @@ function writeMainAgentFiles(ma: MainAgentExport, tracker: WriteTracker): void {
   }
 }
 
-function writeAgentFiles(agent: AgentExport, tracker: WriteTracker): void {
+function writeAgentFiles(agent: AgentExport, tracker: WriteTracker, vaultRefs: VaultRefPolicy): void {
   // B1: names already validated by validateNames() before this is called
   const dir = safeJoin(AGENTS_BASE_DIR, agent.name)
   const claudeDir = safeJoin(dir, '.claude')
@@ -1358,7 +1435,8 @@ function writeAgentFiles(agent: AgentExport, tracker: WriteTracker): void {
   if (agent.soulMd) stagedWrite(join(dir, 'SOUL.md'), agent.soulMd, tracker)
 
   // .mcp.json: de-placeholder vault refs (path denormalization happens at fleet level)
-  stagedWrite(join(dir, '.mcp.json'), JSON.stringify(deplaceholderMcp(agent.mcp), null, 2), tracker)
+  const mcpFile = join(dir, '.mcp.json')
+  stagedWrite(mcpFile, JSON.stringify(deplaceholderMcp(agent.mcp, { targetFile: mcpFile, fileLabel: `agents/${agent.name}/.mcp.json`, policy: vaultRefs }), null, 2), tracker)
 
   stagedWrite(join(claudeDir, 'settings.json'), JSON.stringify(agent.settings, null, 2), tracker)
 
@@ -1699,6 +1777,23 @@ async function runImportFleet(
 
   const skillSeeds = skillSqlSeeds(fleet)
 
+  // The grantee lists of the secrets, read here (async) because the reference restore in the staging phase is
+  // sync. Read only when the bundle carries a reference at all. A failed read is NOT a fail-open: the lists stay
+  // null, no reference is restored, and the report says why (the import itself goes on).
+  const vaultRefs: VaultRefPolicy = { acl: {}, refused: [] }
+  let vaultRefAclError: string | null = null
+  const carriesVaultRefs = [fleet.mainAgent?.mcp, ...(fleet.agents ?? []).map(a => a.mcp)]
+    .some(m => m !== undefined && m !== null && JSON.stringify(m).includes('{{VAULT:'))
+  if (carriesVaultRefs) {
+    try {
+      vaultRefs.acl = await getAllSecretAcls()
+    } catch (err) {
+      vaultRefs.acl = null
+      vaultRefAclError = err instanceof Error ? err.message : String(err)
+      logger.error({ err: vaultRefAclError }, 'Fleet import: the secret allowlists could not be read; vault references stay placeholders')
+    }
+  }
+
   const tracker: WriteTracker = { files: [], dirs: [] }
   const globalSkillsDir = globalSkillsRoot()
   let vaultFiles: WriteEntry[] = []
@@ -1707,12 +1802,16 @@ async function runImportFleet(
     // Phase 1: stage the files. No final path changes here.
     // 0. Main agent files (PROJECT_ROOT level -- main agent persona, settings, channel pairing)
     if (fleet.mainAgent) {
-      writeMainAgentFiles(fleet.mainAgent, tracker)
+      writeMainAgentFiles(fleet.mainAgent, tracker, vaultRefs)
     }
 
     // 1. Sub-agent files
     for (const agent of fleet.agents ?? []) {
-      writeAgentFiles(agent, tracker)
+      writeAgentFiles(agent, tracker, vaultRefs)
+    }
+    applyWarnings.push(...vaultRefWarnings(vaultRefs.refused, vaultRefAclError))
+    if (vaultRefs.refused.length > 0) {
+      logger.warn({ refused: vaultRefs.refused.length, aclUnreadable: vaultRefAclError !== null }, 'Fleet import: vault references left as placeholders (target file not on the secret allowlist)')
     }
 
     // 2. Global skills (their SQL rows are in the transaction below)
