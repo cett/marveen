@@ -678,7 +678,7 @@ class TestLinearTime(unittest.TestCase):
         self._timed('"a" ' * (self.SIZE // 4), cpu=True)
 
     def test_many_heredocs(self):
-        self._timed("cat <<A\n" * (self.SIZE // 8))
+        self._timed("cat <<A\n" * (self.SIZE // 8), cpu=True)
 
     def test_unterminated_substitutions_are_cut_off_by_the_budgets(self):
         for cmd in ("$(" * (self.SIZE // 2), '"$(' * (self.SIZE // 3), "`a" * (self.SIZE // 2)):
@@ -691,7 +691,7 @@ class TestLinearTime(unittest.TestCase):
                         hook.check_bash(cmd)
 
     def test_many_bodies(self):
-        self._timed('echo "$(a)" ' * (self.SIZE // 12))
+        self._timed('echo "$(a)" ' * (self.SIZE // 12), cpu=True)
 
 
 if __name__ == "__main__":
