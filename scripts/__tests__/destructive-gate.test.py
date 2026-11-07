@@ -654,14 +654,16 @@ class TestLinearTime(unittest.TestCase):
     def _timed(self, cmd, cpu=False):
         """cpu=True measures CPU time (timing_budget.best_of): these inputs run into the gate's own budgets (the body
         and character caps, the INSPECT_SECONDS deadline), so on a busy machine the wall time of one call reaches the
-        wall cut-off although the work is the same. The wall cut-off is then 3 times wider, as a catastrophe guard."""
+        wall cut-off although the work is the same. The wall cut-off is then much wider, as a catastrophe guard."""
         def run():
             with patch.object(hook, "_notify_block"):
                 try:
                     hook.check_bash(cmd)
                 except SystemExit:
                     pass
-        cutoff = CUTOFF_SEC * 3 if cpu else CUTOFF_SEC
+        # 10 times wider: with 20 busy loops on top of an already loaded machine (load 30-40) a call of ~1 s CPU needed
+        # more than 9 s of wall time. A quadratic gate is minutes, so 30 s still ends it as a readable FAIL.
+        cutoff = CUTOFF_SEC * 10 if cpu else CUTOFF_SEC
         t = best_of(run, cutoff=cutoff, cpu=cpu)
         self.assertLess(t, LINEAR_CEILING_SEC * 2, describe(t, cutoff))
 
