@@ -71,6 +71,18 @@ describe('R2: a tar line the parser does not understand is judged by the tree of
       'tar --exclude-caches -xf a.tar --dir=$X', 'tar --exclude-caches -xf a.tar --cd $X'])
       for (const cwd of [plain, wt, root]) expect(denied(c, cwd), `${c} @ ${cwd}`).toBe(true)
   })
+  it('a one-letter long option (--d, --c, --x, --t) is an abbreviation, not a mode: refused wherever it runs', () => {
+    // --d is the abbreviation of --directory (among others): it used to hit the one-letter mode key d, so the line parsed and
+    // its directory was dropped, and the extraction was judged by the cwd
+    for (const c of ['tar -xf a.tar --d=out', 'tar -xf a.tar --d=$X', 'tar --exclude-caches -xf a.tar --d=$X', 'tar -xf a.tar --d out', 'tar -xf a.tar --c=out', 'tar -xf a.tar --x', 'tar -f a.tar --t'])
+      for (const cwd of [plain, wt, root]) expect(denied(c, cwd), `${c} @ ${cwd}`).toBe(true)
+  })
+  it('the full long mode names still parse: from outside the install they are allowed, in the install they are denied', () => {
+    for (const c of ['tar --extract --file a.tar', 'tar --create --file x.tgz foo', 'tar --list --file a.tar', 'tar --get --file a.tar', 'tar --diff --file a.tar']) {
+      expect(denied(c, plain), c).toBe(false)
+    }
+    expect(denied('tar --extract --file a.tar', root)).toBe(true)
+  })
 })
 
 describe('R3 / R4: the unzip target is read the way unzip reads it', () => {
@@ -118,7 +130,8 @@ describe('R5: nested text commands have a cost budget', () => {
     const d = decide(nest(3, 20), wt)
     expect(d).toEqual({ deny: true, reason: 'eval-budget' })
     // the reason above is what a missing counter breaks (it then takes minutes); the time bound only guards the cost on a loaded runner
-    expect(Date.now() - t0).toBeLessThan(4000)
+    // (a missing counter takes minutes, so a generous bound still tells them apart; 4 s flaked in the full parallel suite)
+    expect(Date.now() - t0).toBeLessThan(20000)
   }, 60000)
   it('a small nesting is judged in full and allowed, and a real write inside it is still denied', () => {
     expect(denied(nest(3, 2), wt)).toBe(false)

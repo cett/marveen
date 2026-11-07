@@ -1458,7 +1458,9 @@ function tarParse(args) {
     const oldStyle = k === 0 && /^[A-Za-z]+$/.test(a)
     if (a.startsWith('--') && a.length > 2) {
       const name = a.split('=')[0]
-      if (TAR_MODES[name.slice(2)]) { mode ||= TAR_MODES[name.slice(2)]; continue }
+      // only the long mode names (--extract, --create ...): the one-letter keys of TAR_MODES are short options, and
+      // `--d` / `--c` / `--x` are abbreviations of other long options (--directory ...), not modes
+      if (name.length > 3 && TAR_MODES[name.slice(2)]) { mode ||= TAR_MODES[name.slice(2)]; continue }
       if (/^--(remove-files|to-command|use-compress-program|checkpoint-action|rmt-command|rsh-command|info-script|new-volume-script|append|update|catenate|concatenate|delete|overwrite-dir|one-top-level)/.test(name)) return null
       if (TAR_VALUE_LONG.has(name)) {
         const attached = a.includes('=')
