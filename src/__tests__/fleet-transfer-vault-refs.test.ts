@@ -294,6 +294,22 @@ describe('import: a restricted secret is restored only into a file of a listed g
     expect(lines[0]).toContain('szerver=srv?name')
     expect(lines[0]).toContain('kulcs=KEY??X')
   })
+
+  it('T11b every field of a report line is capped at 200 characters (a hostile bundle cannot inflate the report)', async () => {
+    const longServer = 's'.repeat(500)
+    const longKey = 'k'.repeat(500)
+    const longId = 'i'.repeat(500)
+    const result = await run(bundle({ agents: { 'agent-c': { [longServer]: { command: 'node', env: { [longKey]: ref(longId) } } } } }))
+
+    const lines = refusedLines(result)
+    expect(lines).toHaveLength(1)
+    const field = (name: string) => new RegExp(`${name}=([^,]*)`).exec(lines[0])![1]
+    expect(field('szerver')).toBe('s'.repeat(200))
+    expect(field('kulcs')).toBe('k'.repeat(200))
+    // the id is the last field of the line: everything after "titok=" is the (capped) id
+    expect(lines[0].slice(lines[0].indexOf('titok=') + 'titok='.length)).toBe('i'.repeat(200))
+    expect(lines[0]).not.toContain('s'.repeat(201))
+  })
 })
 
 describe('import: a reference written literally as vault:<id> gets the same decision as a placeholder', () => {
@@ -321,6 +337,24 @@ describe('import: a reference written literally as vault:<id> gets the same deci
       Multi: 'a=vault:open-id;b={{VAULT:restricted-id}}',
     })
     expect(refusedLines(result)).toHaveLength(2)
+  })
+
+  it('T13c an id with a dot, a hyphen, an underscore, a digit and upper case is found whole in a headers value (the whole character set counts)', async () => {
+    // A finder that stops early (on the dot, say) would read "a" or "a.b", which has no list, and let the
+    // restricted id through; each id below is restricted to agent-b only.
+    for (const id of ['a.b-c', 'Tok_EN.1']) await setSecretAcl(id, ['agent:agent-b'])
+    const headerServer: Servers = {
+      srv: { url: 'https://example.invalid/mcp', headers: { H1: 'Bearer vault:a.b-c', H2: 'k=vault:Tok_EN.1;', H3: 'vault:a.b-c/vault:Tok_EN.1' } },
+    }
+    const result = await run(bundle({ agents: { 'agent-b': headerServer, 'agent-c': headerServer } }))
+
+    expect(agentMcp('agent-b').mcpServers.srv.headers).toEqual({ H1: 'Bearer vault:a.b-c', H2: 'k=vault:Tok_EN.1;', H3: 'vault:a.b-c/vault:Tok_EN.1' })
+    expect(agentMcp('agent-c').mcpServers.srv.headers).toEqual({
+      H1: 'Bearer {{VAULT:a.b-c}}',
+      H2: 'k={{VAULT:Tok_EN.1}};',
+      H3: '{{VAULT:a.b-c}}/{{VAULT:Tok_EN.1}}',
+    })
+    expect(refusedLines(result)).toHaveLength(4)
   })
 
   it('T13b a vault: mention that is not a reference (no id after the colon) is left alone and reported as nothing', async () => {
