@@ -106,9 +106,125 @@ class TestDepthBoundHolds(unittest.TestCase):
 
     def test_literal_echo_script_helper(self):
         self.assertEqual(hook._literal_echo_script("echo 'a b'"), 'a b')
-        self.assertEqual(hook._literal_echo_script("printf '%s' x"), '%s x')
+        self.assertEqual(hook._literal_echo_script("printf 'a b'"), 'a b')
         self.assertIsNone(hook._literal_echo_script('ls -la'))
         self.assertIsNone(hook._literal_echo_script('echo'))
+        # Dash words after the first non-option word are PRINTED, not options.
+        self.assertEqual(hook._literal_echo_script('echo rm -rf x'), 'rm -rf x')
+        self.assertEqual(hook._literal_echo_script("echo -n 'a b'"), 'a b')
+        # printf without a conversion prints the format alone.
+        self.assertEqual(hook._literal_echo_script("printf 'a' 'b'"), 'a')
+
+
+class TestEchoPrintfFailClosed(unittest.TestCase):
+    """Review round 2, finding 1: what echo / printf PRINT can differ from the text the gate reads
+    (`printf %b`, `\\x72m`, `echo -e`, zsh's echo). Unreadable output is denied, never guessed."""
+
+    def test_deny_when_the_printed_text_is_not_the_written_text(self):
+        shapes = [
+            ('printf %b with an escape', "source <(printf '%b' 'r\\x6d -rf /nonexistent-path-a')"),
+            ('printf hex escape in the format', "source <(printf 'r\\x6d -rf /nonexistent-path-a')"),
+            ('printf %s format', "source <(printf '%s' 'rm -rf /nonexistent-path-a')"),
+            ('printf octal escape', "source <(printf '\\162m -rf /nonexistent-path-a')"),
+            ('echo -e escape', "source <(echo -e 'r\\x6d -rf /nonexistent-path-a')"),
+            ('echo -e plain text', "source <(echo -e 'echo hello')"),
+            ('echo -ne', "source <(echo -ne 'echo hello')"),
+            ('echo with a backslash (zsh prints escapes)', "source <(echo 'r\\x6d -rf /nonexistent-path-a')"),
+            ('dot with echo -e', ". <(echo -e 'echo hello')"),
+            ('printf with an option', "source <(printf -v v 'echo hello')"),
+        ]
+        for label, cmd in shapes:
+            with self.subTest(shape=label):
+                self.assertEqual(verdict(cmd), 'deny', cmd)
+
+    def test_dash_words_of_the_printed_text_are_not_dropped(self):
+        # The old reader dropped every word starting with '-': `echo rm -rf x` was read as "rm x".
+        for cmd in ("source <(echo rm -rf /nonexistent-path-a)", ". <(echo rm -rf /nonexistent-path-a)",
+                    "source <(echo -n rm -rf /nonexistent-path-a)"):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), 'deny', cmd)
+
+    def test_allow_plain_readable_output(self):
+        for cmd in ("source <(echo 'export A=1')", "source <(echo -n 'export A=1')",
+                    "source <(printf 'export A=1')", ". <(echo hello)"):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), 'allow', cmd)
+
+
+class TestHereStringAnywhere(unittest.TestCase):
+    """Review round 2, finding 2: `bash<<<'X'` (no space) and a `<<<` after other words of the shell's segment."""
+
+    def test_deny(self):
+        shapes = [
+            ('no space before, quoted', "bash<<<'%s'" % X),
+            ('no space either side', 'bash<<<"%s"' % X),
+            ('sh no space', "sh<<<'%s'" % X),
+            ('after an option', "bash -x <<< '%s'" % X),
+            ('after a long option', "bash --norc <<<'%s'" % X),
+            ('after a redirect', "bash 2>&1 <<< '%s'" % X),
+            ('source stdin', "source /dev/stdin <<< '%s'" % X),
+            ('dot stdin', ". /dev/stdin<<<'%s'" % X),
+            ('behind a wrapper', "env A=1 bash<<<'%s'" % X),
+            ('behind a pipe', "true | bash<<<'%s'" % X),
+            ('after && ', "true && bash<<<'%s'" % X),
+            ('inside a command substitution', "echo $(bash<<<'%s')" % X),
+            ('second here-string in the segment', "bash -s <<< 'echo a' <<<'%s'" % X),
+            ('unquoted word', "bash<<<%s" % X.replace(' ', '\\ ')),
+        ]
+        for label, cmd in shapes:
+            with self.subTest(shape=label):
+                self.assertEqual(verdict(cmd), 'deny', cmd)
+
+    def test_allow_data_here_strings(self):
+        for cmd in ("cat<<<'%s'" % X, "grep a<<<'%s'" % X, "read -r v <<< '%s'" % X,
+                    "bash -c 'cat' <<< '%s'" % X.replace('rm', 'ls'), "bash<<<'echo hello'",
+                    "true | cat<<<'%s'" % X, "echo '<<<' && cat <<< '%s'" % X,
+                    "echo \"bash<<<'%s'\"" % X):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), 'allow', cmd)
+
+
+class TestEvalManyArguments(unittest.TestCase):
+    """Review round 2, finding 3: eval joins ALL its arguments with spaces."""
+
+    def test_deny(self):
+        shapes = [
+            ('separator argument then script', "eval true ';' '%s'" % X),
+            ('escaped separator joined to a word', "eval true\\; '%s'" % X),
+            ('double dash then script', "eval -- '%s'" % X),
+            ('double dash, unquoted', "eval -- %s" % X),
+            ('two quoted arguments', "eval 'true;' '%s'" % X),
+            ('unquoted word then quoted script', "eval x ';' \"%s\"" % X),
+            ('three arguments', "eval 'true' ';' 'true' ';' '%s'" % X),
+            ('second eval in the same segment', "eval 'echo a' ';' eval '%s'" % X),
+            ('mv as the later argument', "eval true ';' 'mv /nonexistent-path-a /nonexistent-path-b'"),
+        ]
+        for label, cmd in shapes:
+            with self.subTest(shape=label):
+                self.assertEqual(verdict(cmd), 'deny', cmd)
+
+    def test_allow(self):
+        for cmd in ("eval 'echo a' 'echo b'", "eval -- 'echo hello'", "eval a 'b c'",
+                    "eval 'echo hello'; echo '%s'" % X, "eval 'echo hello' && echo \"%s\"" % X):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), 'allow', cmd)
+
+    def test_scan_stays_linear(self):
+        # Many evals / here-strings in one segment must not cost a quadratic scan. Compared by CPU time
+        # against a 4x longer input: quadratic growth would be 16x, linear about 4x (limit 9x).
+        import time
+
+        def cost(n):
+            text = ("eval " * n) + "'echo a'"
+            t0 = time.process_time()
+            hook.scannable(text)
+            u = ("bash<<<'a' " * n)
+            hook.scannable(u)
+            return time.process_time() - t0
+
+        cost(200)  # warm up
+        small, large = cost(4000), cost(16000)
+        self.assertLess(large, max(small, 0.01) * 9, (small, large))
 
 
 if __name__ == '__main__':

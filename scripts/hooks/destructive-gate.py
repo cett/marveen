@@ -336,6 +336,76 @@ def _prose_quote_ranges(text, keep_ranges, code_ranges=()):
     return out
 
 
+def _eval_arg_ranges(text, state):
+    """Ranges of every quoted argument of each `eval`, up to the end of its segment. Linear: an `eval`
+    inside a span an earlier one already scanned is skipped."""
+    out, n, scanned_to = [], len(text), 0
+    for m in re.finditer(r'(?<![\w-])eval(?![\w-])', text):
+        if m.start() < scanned_to:
+            continue
+        j = m.end()
+        while j < n:
+            if state[j]:
+                k = j
+                while k < n and state[k]:
+                    k += 1
+                out.append((j, k))
+                j = k
+                continue
+            ch = text[j]
+            if ch == '\\':
+                j += 2
+                continue
+            if ch in ';|&\n)`':
+                break
+            j += 1
+        scanned_to = j
+    return out
+
+
+def _herestring_ranges(text, state):
+    """Ranges of the quoted word after an unquoted `<<<` whose segment runs a shell, `source` or `.`.
+    `cat <<< 'X'` is data and stays prose. The segment's command is read once per segment, from the text in
+    front of its first `<<<` (linear in the command length, however many `<<<` it holds)."""
+    if '<<<' not in text:
+        return []
+    out, n = [], len(text)
+    seg_start, verdicts = 0, {}
+    i = 0
+    while i < n:
+        if state[i]:
+            i += 1
+            continue
+        ch = text[i]
+        if ch == '\\':
+            i += 2
+            continue
+        if text.startswith('<<<', i):
+            if seg_start not in verdicts:
+                toks = _bare_tokens(text[seg_start:i])
+                idx = command_index(toks)
+                base = os.path.basename(_plain(toks[idx][0])) if idx is not None else ''
+                verdicts[seg_start] = base in _SHELLS or base in ('source', '.')
+            j = i + 3
+            while j < n and text[j] in ' \t':
+                j += 1
+            if verdicts[seg_start] and j < n and text[j] in ('"', "'"):
+                k = j + 1
+                e = k
+                while e < n and state[e]:
+                    e += 1
+                out.append((k, e))
+                i = e
+                continue
+            i += 3
+            continue
+        if ch in ';|\n(`' or (ch == '&' and not (i + 1 < n and text[i + 1] == '>')
+                              and not (i > 0 and text[i - 1] in '<>')):
+            seg_start = i + 1
+        i += 1
+    return out
+
+
 def _script_arg_ranges(text):
     """Ranges of a quoted script passed to an interpreter via -c/-e: this is
     RUNNING CODE."""
@@ -354,14 +424,13 @@ def _script_arg_ranges(text):
                 j += 1
             out.append((k, j))
     # More running code, same reading: the quoted LITERAL handed to a shell that runs it again.
-    #   eval 'X'                    eval's arguments are the script
-    #   bash <<< 'X'                a shell's here-string is its script
-    for m in re.finditer(r'(?<![\w-])(?:eval|(?:bash|sh|zsh|dash|ksh)\s+<<<)\s*(?=["\'])', text):
-        k = m.end() + 1
-        j = k
-        while j < len(text) and state[j]:
-            j += 1
-        out.append((k, j))
+    #   eval 'X'                    eval joins ALL its arguments with spaces and runs the result, so every
+    #                               quoted argument up to the end of the segment is script text
+    #                               (`eval true ';' 'rm -rf x'`, `eval -- 'X'`, `eval a "rm -rf x"`)
+    out.extend(_eval_arg_ranges(text, state))
+    #   bash <<< 'X'  /  bash<<<'X'  /  bash -x <<< 'X'    a shell's here-string is its script, wherever the
+    #                               `<<<` sits in the segment of a shell (or of source / `.`)
+    out.extend(_herestring_ranges(text, state))
     #   source <(echo 'X')  /  . <(printf 'X')    the quoted text inside the process substitution
     for m in re.finditer(r'(?<![\w-])(?:source|\.)\s+<\(', text):
         j = m.end()
@@ -452,6 +521,9 @@ def segments(text):
         if state[i]:
             i += 1
             continue
+        if text[i] == '\\' and i + 1 < len(text) and text[i + 1] != '\n':
+            i += 2  #`\;` `\|` `\&`: the shell passes the character on as text, it does not end the command
+            continue
         hit = next((d for d in DELIMS if text.startswith(d, i)), None)
         if hit:
             parts.append(text[start:i])
@@ -469,13 +541,26 @@ def segments(text):
     return [p.strip() for p in parts if p.strip()]
 
 
-def _tokens(seg):
+def _tokens(seg, unescape=False):
     """Quote-aware word splitting. Items: (text without quotes, had a
-    whitespace inside a quote)."""
+    whitespace inside a quote).
+
+    unescape=True also removes the shell's own backslashes (unquoted `\\;` -> `;`; in double quotes only
+    before `$` `` ` `` `"` `\\`; none in single quotes): the words the command RECEIVES. eval needs them,
+    it parses its joined arguments as a script again."""
     state = _quote_map(seg)
     toks, cur, had_space, i = [], [], False, 0
     while i < len(seg):
         ch = seg[i]
+        if unescape and ch == '\\' and i + 1 < len(seg) and state[i] != 1:
+            nxt = seg[i + 1]
+            if state[i] == 0 or nxt in '$`"\\':
+                cur.append(nxt)
+            else:
+                cur.append(ch)
+                cur.append(nxt)
+            i += 2
+            continue
         if not state[i] and ch in ' \t':
             if cur:
                 toks.append((''.join(cur), had_space))
@@ -536,7 +621,24 @@ _budget = {'bodies': 0, 'chars': 0, 'deadline': None}
 
 
 def _bare_tokens(seg):
-    return [(t, sp) for t, sp in _tokens(seg.replace('(', ' ')) if t]
+    return [(t, sp) for t, sp in _tokens(_space_herestrings(seg).replace('(', ' ')) if t]
+
+
+def _space_herestrings(seg):
+    """`bash<<<'X'` is one word to the tokenizer; the shell reads `bash` and a here-string. Put spaces
+    around every UNQUOTED `<<<`."""
+    if '<<<' not in seg:
+        return seg
+    state = _quote_map(seg)
+    out, last = [], 0
+    for m in re.finditer('<<<', seg):
+        if state[m.start()]:
+            continue
+        out.append(seg[last:m.start()])
+        out.append(' <<< ')
+        last = m.end()
+    out.append(seg[last:])
+    return ''.join(out)
 
 
 def _after_wrapper(toks, i):
@@ -652,30 +754,63 @@ def _sub_scripts(toks, idx):
         return []
     base = os.path.basename(_plain(toks[idx][0]))
     if base == 'eval':
-        script = ' '.join(t for t, _sp in toks[idx + 1:])
+        words = [t for t, _sp in toks[idx + 1:]]
+        if words and words[0] == '--':
+            words = words[1:]
+        script = ' '.join(words)
         return [script] if script.strip() else []
-    if base not in _SHELLS:
+    if base not in _SHELLS and base not in ('source', '.'):
         return []
-    for k in range(idx + 1, len(toks)):
-        if toks[k][0] in ('-c', '--command') and k + 1 < len(toks):
-            return [toks[k + 1][0]]
+    if base in _SHELLS:
+        for k in range(idx + 1, len(toks)):
+            if toks[k][0] in ('-c', '--command') and k + 1 < len(toks):
+                return [toks[k + 1][0]]
+    # `source /dev/stdin <<< 'X'` reads its script from the here-string like a shell does. Every
+    # here-string of the segment is read (the last one is the shell's stdin, the others cost nothing).
+    found = []
     for k in range(idx + 1, len(toks)):
         t = toks[k][0]
         if t == '<<<' and k + 1 < len(toks):
-            return [toks[k + 1][0]]
-        if t.startswith('<<<') and len(t) > 3:
-            return [t[3:]]
-    return []
+            found.append(toks[k + 1][0])
+        elif t.startswith('<<<') and len(t) > 3:
+            found.append(t[3:])
+    return found
+
+
+_ECHO_UNREADABLE = object()
 
 
 def _literal_echo_script(body):
     """The text `echo` / `printf` would print, when `body` is exactly such a command: the script a
-    `source <(echo 'X')` reads. None for any other body (its own bodies are judged on their own)."""
+    `source <(echo 'X')` reads. None for any other body (its own bodies are judged on their own).
+
+    FAIL CLOSED where the printed text is not the text written: a backslash (escapes under `echo -e`, zsh's
+    echo, `xpg_echo`, printf's `\\x72m`), a `%` in a printf format (`%b`), `echo -e` / `-E`, or a printf
+    option. Those return _ECHO_UNREADABLE and the caller denies; modelling them would be a second shell.
+    """
     toks = _tokens(body.strip())
     idx = command_index(toks)
-    if idx is None or os.path.basename(_plain(toks[idx][0])) not in ('echo', 'printf'):
+    base = os.path.basename(_plain(toks[idx][0])) if idx is not None else ''
+    if base not in ('echo', 'printf'):
         return None
-    words = [t for t, _sp in toks[idx + 1:] if not t.startswith('-')]
+    if '\\' in body or (base == 'printf' and '%' in body):
+        return _ECHO_UNREADABLE
+    args = [t for t, _sp in toks[idx + 1:]]
+    k = 0
+    if base == 'echo':
+        # Only the LEADING option words are options: `echo rm -rf x` prints "rm -rf x", dash words and all.
+        while k < len(args) and re.fullmatch(r'-[neE]+', args[k]):
+            if re.search('[eE]', args[k]):
+                return _ECHO_UNREADABLE
+            k += 1
+        words = args[k:]
+    else:
+        if args and args[0] == '--':
+            k = 1
+        if k < len(args) and args[k].startswith('-'):
+            return _ECHO_UNREADABLE  # printf -v prints nothing, and other options are not modelled
+        # No `%` in the format: the format alone is printed, extra arguments are ignored.
+        words = args[k:k + 1]
     return ' '.join(words) if words else None
 
 
@@ -773,17 +908,30 @@ def check_bash(cmd, agent_id=None, _depth=0):
         # The -c script is read from the UNMODIFIED tokens too: _bare_tokens() turns every `(`
         # into a space (so `(rm x)` finds its command), which also cut the `$(` out of a script
         # like `bash -c 'echo "$(rm x)"'` before its body could be read.
-        raw_toks = _tokens(seg)
+        raw_toks = _tokens(_space_herestrings(seg))
         subs = _sub_scripts(toks, idx)
         for extra in _sub_scripts(raw_toks, command_index(raw_toks)):
             if extra not in subs:
                 subs.append(extra)
+        # eval re-parses its arguments AFTER the outer shell's unescaping: `eval true\; 'X'` receives
+        # `true;`, so the script it runs has a real `;` in it.
+        if 'eval' in seg:
+            ev_toks = _tokens(_space_herestrings(seg), unescape=True)
+            ev_idx = command_index(ev_toks)
+            if ev_idx is not None and os.path.basename(_plain(ev_toks[ev_idx][0])) == 'eval':
+                for extra in _sub_scripts(ev_toks, ev_idx):
+                    if extra not in subs:
+                        subs.append(extra)
         # `source <(echo 'X')` / `. <(printf 'X')`: the process substitution only PRINTS the script, the
         # sourcing shell runs it. The body itself (`echo ...`) is harmless to the loop below, so read the
         # printed text as a script here. A body that is anything else is judged as a command of its own.
         if idx is not None and os.path.basename(_plain(toks[idx][0])) in ('source', '.'):
             for body in shell_subst.top_bodies(seg, False, 8):
                 printed = _literal_echo_script(body)
+                if printed is _ECHO_UNREADABLE:
+                    block('source/. <(echo|printf ...): a kiirt szoveg backslash-escape, printf formatum vagy '
+                          'echo -e miatt mas lehet, mint amit a kapu olvas, ezert nem engedi at.',
+                          agent_id, 'Bash')
                 if printed and printed not in subs:
                     subs.append(printed)
         for sub in subs:
