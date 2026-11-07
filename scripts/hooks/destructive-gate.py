@@ -716,7 +716,7 @@ def _tokens(seg, unescape=False):
 # fits the gate's purpose (governing cooperating agents), but nobody should
 # assume it's complete. Also still open: `ssh host rm ...` -- that runs on a
 # remote machine and would need its own rule, not wrapper detection.
-_TRANSPARENT = ('exec', 'command', 'time', 'nohup', 'env')
+_TRANSPARENT = ('exec', 'command', 'time', 'nohup', 'env', 'builtin', 'noglob', 'nocorrect')
 _PREFIX_WRAPPERS = ('xargs', 'timeout', 'nice', 'ionice', 'stdbuf', 'watch', 'parallel',
                     'flock', 'chroot', 'setsid', 'unbuffer')
 _FIND_EXEC = ('-exec', '-execdir', '-ok', '-okdir')

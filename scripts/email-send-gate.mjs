@@ -106,7 +106,9 @@ const ENV_ASSIGN = /^[A-Za-z_][A-Za-z_0-9]*=/
 // Stripped only at the head of a segment, never used as separators -- see the
 // full rationale at _CMD_POSITION_KEYWORDS in outgoing-copy-gate.py (the python
 // twin); the shared send-invocation-cases.json binds the two copies.
-const CMD_POSITION_KEYWORDS = new Set(['if', 'then', 'else', 'elif', 'do', 'while', 'until', '{', '!'])
+const CMD_POSITION_KEYWORDS = new Set(['if', 'then', 'else', 'elif', 'do', 'while', 'until', '{', '!',
+  // precommand modifiers: the next word is still the command (`builtin eval 'X'`, zsh `noglob eval 'X'`)
+  'builtin', 'noglob', 'nocorrect'])
 const SENDER_PROG = /^(sendmail|msmtp|swaks)$/i
 const SENDPY = /^send\.py$/i
 // SUBAGENTMAILGATE1016: a version-suffixed interpreter (python3.12, python3.13, and
@@ -700,7 +702,11 @@ function literalEchoScript(body) {
   }
   return words.length ? words.join(' ') : null
 }
-const SOURCE_PROC = /(?:^|[\s;&|(){}])(?:source|\.)[ \t]+<\(/
+// A shell word anywhere next to a `<(`: `source <(..)`, `. <(..)`, `source -- <(..)`, `bash <(..)`,
+// `source /dev/stdin < <(..)`. Over-reading is the safe side: only a body that is a literal echo / printf is
+// followed, any other producer (`source <(cat f)`) is text built at run time (the known limit).
+const SHELL_WORD = /(?:^|[\s;&|(){}])(?:source|\.|sh|bash|zsh|dash)(?=[\s;&|(){}<]|$)/
+const srcProcFor = (cmd) => cmd.includes('<(') && SHELL_WORD.test(cmd)
 
 function segmentIsSend(toksIn, depth) {
   return commandHeads(toksIn).some((h) => headIsSend(h, depth))
@@ -712,9 +718,15 @@ function headIsSend(toks, depth) {
   const prog = basename(toks[0])
   const rest = toks.slice(1)
   if (SENDER_PROG.test(prog)) return true
-  if (WRAPPER_SHELL.test(prog) && depth < 3) {
+  if (WRAPPER_SHELL.test(prog)) {
     for (let i = 0; i < rest.length; i++) {
-      if (rest[i] === '-c' && rest[i + 1] && isSendInvocation(rest[i + 1], depth + 1)) return true
+      if (rest[i] === '-c' && rest[i + 1]) {
+        // Past the bound the script is NOT waved through: a deny (fail closed), the same bound as the other
+        // nested readings. eval / a here-string / source <(echo) feed the same depth counter, so a send three
+        // scripts deep must not be reachable by routing it through a `-c` at the end.
+        if (depth >= 3) throw new InspectionLimitError('a shell -c script nested deeper than 3 levels')
+        if (isSendInvocation(rest[i + 1], depth + 1)) return true
+      }
     }
   }
   // eval joins ALL its arguments with spaces and runs the result as a script: judged as a command of its own
@@ -907,7 +919,7 @@ export const INSPECT_MS = 4000
 let substBudget = { bodies: 0, chars: 0, deadline: 0 }
 
 function substitutionSends(cmd, depth, sd) {
-  const srcProc = SOURCE_PROC.test(cmd)
+  const srcProc = srcProcFor(cmd)
   for (const body of topBodies(cmd, false, MAX_SUBST_BODIES + 1)) {
     // Every body counts, a blank one too: the reader stops after MAX + 1 bodies, so a gate that skipped
     // blank ones before counting could be filled with them and never see the real one.

@@ -298,6 +298,16 @@ class TestReviewRoundThree(unittest.TestCase):
         # An ESCAPED backslash is a literal backslash and the semicolon really ends the command.
         self.assertEqual(verdict("echo a\\\\; cat <<< '%s'" % X), 'allow')
 
+    def test_precommand_modifiers_are_transparent(self):
+        # `builtin eval 'X'` / zsh `noglob eval 'X'`: the next word is still the command.
+        for cmd in ("builtin eval '%s'" % X, "noglob eval '%s'" % X, "nocorrect eval '%s'" % X,
+                    "builtin noglob eval '%s'" % X, "builtin bash<<<'%s'" % X, "noglob %s" % X):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), 'deny', cmd)
+        for cmd in ("builtin echo hello", "noglob ls *.txt"):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), 'allow', cmd)
+
     def test_known_limit_case_pattern_paren_in_a_substitution_is_pinned(self):
         # The `)` of a `case` pattern inside a substitution ends the scan for eval's arguments early: the
         # same accepted limit as shell_subst ("a determined construction, not an accident"). Pinned so that
