@@ -209,17 +209,77 @@ class TestEvalManyArguments(unittest.TestCase):
             with self.subTest(cmd=cmd):
                 self.assertEqual(verdict(cmd), 'allow', cmd)
 
+    def test_allow_eval_as_text_or_with_harmless_substitution(self):
+        for cmd in ("echo eval '%s'" % X, "man eval; echo '%s'" % X, "eval 'echo a' $(date) 'echo b'",
+                    "eval 'echo a' \"$(date)\" 'echo b'", "grep eval notes.txt 'rm'"):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), 'allow', cmd)
+
+
+class TestReviewRoundThree(unittest.TestCase):
+    """Findings of the automated review of 2840c7f0 (C2b): three more parser differentials."""
+
+    def test_escaped_delimiter_still_cuts_a_segment(self):
+        # An escaped `;` used to be a literal, so `watch ...\; rm x` (watch joins its arguments and
+        # re-parses them in a shell) ran a banned command the gate never saw. Over-splitting is the fail-closed
+        # direction: the text after the cut is a command of its own.
+        for cmd in ("watch echo a\\; %s" % X, "parallel echo a\\; %s" % X, "echo a \\| %s" % X,
+                    "watch -n1 'echo a'\\; %s" % X):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), 'deny', cmd)
+        # eval, whose script has the real `;`:
+        self.assertEqual(verdict("eval true\\; '%s'" % X), 'deny')
+
+    def test_eval_arguments_after_a_substitution_are_read(self):
+        # The scan for eval's arguments stopped at the `)` of a substitution: `eval true ';' $(b) 'X'` runs
+        # X when $(b) prints nothing.
+        shapes = [
+            ('command substitution', "eval true ';' $(b) '%s'" % X),
+            ('substitution with a separator inside', "eval true ';' $(b; c) '%s'" % X),
+            ('quoted substitution', "eval true ';' \"$(b)\" '%s'" % X),
+            ('backticks', "eval true ';' `b` '%s'" % X),
+            ('backticks with a separator inside', "eval true ';' `b; c` '%s'" % X),
+            ('nested substitution', "eval true ';' $(b $(c)) '%s'" % X),
+            ('subshell parentheses', "eval true ';' (b) '%s'" % X),
+        ]
+        for label, cmd in shapes:
+            with self.subTest(shape=label):
+                self.assertEqual(verdict(cmd), 'deny', cmd)
+
+    def test_here_string_in_a_segment_with_a_shell_word_anywhere(self):
+        shapes = [
+            ('behind a wrapper command', "nohup bash<<<'%s'" % X),
+            ('behind a wrapper the gate does not know', "doas bash <<< '%s'" % X),
+            ('redirect first', "<<<'%s' bash" % X),
+            ('redirect first, spaced', "<<< '%s' sh" % X),
+            ('inside a brace group', "{ bash <<< '%s'; }" % X),
+            ('inside a subshell', "(bash <<< '%s')" % X),
+            ('behind env -i', "env -i bash<<<'%s'" % X),
+            ('shell as a later argument', "ssh host bash <<< '%s'" % X),
+            ('source with a redirect first', "<<<'%s' source /dev/stdin" % X),
+        ]
+        for label, cmd in shapes:
+            with self.subTest(shape=label):
+                self.assertEqual(verdict(cmd), 'deny', cmd)
+
+    def test_here_string_without_a_shell_word_stays_data(self):
+        for cmd in ("cat <<<'%s'" % X, "nohup cat <<< '%s'" % X, "tee out.txt <<< '%s'" % X,
+                    "wc -c <<< '%s'" % X, "{ cat <<< '%s'; }" % X):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), 'allow', cmd)
+
     def test_scan_stays_linear(self):
         # Many evals / here-strings in one segment must not cost a quadratic scan. Compared by CPU time
         # against a 4x longer input: quadratic growth would be 16x, linear about 4x (limit 9x).
         import time
 
         def cost(n):
-            text = ("eval " * n) + "'echo a'"
             t0 = time.process_time()
-            hook.scannable(text)
-            u = ("bash<<<'a' " * n)
-            hook.scannable(u)
+            hook.scannable(("eval " * n) + "'echo a'")
+            hook.scannable("echo " + "eval " * n + "'echo a'")  # eval as TEXT: never a command
+            hook.scannable("bash<<<'a' " * n)
+            hook.scannable("cat <<<'a' " * n)
+            hook._eval_scripts("eval 'a' $(b) " * n)
             return time.process_time() - t0
 
         cost(200)  # warm up
