@@ -29,29 +29,36 @@ MAX_CUTOFFS = 2
 _slow_confirmed = False
 
 
-def _child(fn, conn):
+def _child(fn, conn, clock):
     try:
-        t = time.perf_counter()
+        t = clock()
         fn()
-        conn.send(("ok", time.perf_counter() - t))
+        conn.send(("ok", clock() - t))
     except BaseException as exc:  # reported to the parent, which raises it
         conn.send(("error", "%s: %s" % (type(exc).__name__, exc)))
     finally:
         conn.close()
 
 
-def best_of(fn, runs=3, cutoff=CUTOFF_SEC):
-    """The smallest wall-clock time of `runs` calls of fn(), in seconds; math.inf when the calls do not finish.
+def best_of(fn, runs=3, cutoff=CUTOFF_SEC, cpu=False):
+    """The smallest time of `runs` calls of fn(), in seconds; math.inf when the calls do not finish.
+
+    The time is wall-clock by default. With cpu=True it is the CPU time the child process used (time.process_time):
+    on a busy machine the wall clock mostly counts the time the child was waiting for a core (a call of 0.9 s CPU took
+    2-3 s of wall time at load 16 and far more at load 60), so a wall-clock ceiling is flaky exactly when the machine
+    is busy; a quadratic regression is minutes of CPU time at any load. The cut-off stays wall-clock either way (it is
+    the catastrophe guard), so pass a larger `cutoff` with cpu=True: a linear call on a busy machine must not reach it.
 
     Each call runs in its own forked child and is killed once `cutoff` seconds have passed; after MAX_CUTOFFS cut-off
     calls (one, once a slow input is confirmed) the answer is math.inf at once (the remaining calls are not made). Format the result with describe()."""
     global _slow_confirmed
     limit = 1 if _slow_confirmed else MAX_CUTOFFS
+    clock = time.process_time if cpu else time.perf_counter
     ctx = multiprocessing.get_context("fork")  # the closure and the big input are inherited, nothing is pickled
     best, cut = math.inf, 0
     for _ in range(runs):
         recv, send = ctx.Pipe(duplex=False)
-        proc = ctx.Process(target=_child, args=(fn, send), daemon=True)
+        proc = ctx.Process(target=_child, args=(fn, send, clock), daemon=True)
         proc.start()
         send.close()
         got = None
