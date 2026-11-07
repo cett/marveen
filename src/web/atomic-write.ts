@@ -1,4 +1,4 @@
-import { writeFileSync, chmodSync, renameSync } from 'node:fs'
+import { writeFileSync, chmodSync, renameSync, unlinkSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
 
 // Atomic write: write to a sibling tmp file and rename over the target, so a
@@ -8,7 +8,12 @@ import { randomBytes } from 'node:crypto'
 export function atomicWriteFileSync(
   path: string,
   data: string | Buffer,
-  opts: { mode?: number } = {},
+  opts: {
+    mode?: number
+    /** Runs with the tmp path right before the rename. Throwing cancels the write: the tmp file is removed
+     *  (best effort) and the error goes up, the target is untouched. Without it nothing changes. */
+    beforeRename?: (tmpPath: string) => void
+  } = {},
 ): void {
   const tmp = `${path}.${process.pid}.${Date.now()}.${randomBytes(4).toString('hex')}.tmp`
   // Create the tmp file at the requested mode from the FIRST byte. Writing it
@@ -21,6 +26,14 @@ export function atomicWriteFileSync(
   writeFileSync(tmp, data, opts.mode !== undefined ? { mode: opts.mode } : undefined)
   if (opts.mode !== undefined) {
     try { chmodSync(tmp, opts.mode) } catch { /* best-effort */ }
+  }
+  if (opts.beforeRename !== undefined) {
+    try {
+      opts.beforeRename(tmp)
+    } catch (err) {
+      try { unlinkSync(tmp) } catch { /* best-effort: the tmp may be gone already */ }
+      throw err
+    }
   }
   renameSync(tmp, path)
 }

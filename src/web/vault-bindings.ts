@@ -262,6 +262,26 @@ export function verifiedGranteeOfMcpFile(mcpFilePath: unknown): string | null {
   return lexical
 }
 
+/**
+ * The parent directory of an MCP file with every link followed, or null when it cannot be resolved. It is
+ * only the realpath step of verifiedGranteeOfMcpFile (no second grantee lookup): syncSecret notes it when it
+ * judges a target and compares it again right before the rename.
+ */
+export function realParentOfMcpFile(mcpFilePath: string): string | null {
+  try {
+    return realpathSync(dirname(resolve(mcpFilePath)))
+  } catch {
+    return null
+  }
+}
+
+/** Test seam: runs first in the pre-rename re-check of syncSecret, so a test can change the file system
+ *  between the check and the rename. Null in production. */
+let syncBeforeRenameTestHook: ((tmpPath: string) => void) | null = null
+export function setSyncBeforeRenameTestHook(hook: ((tmpPath: string) => void) | null): void {
+  syncBeforeRenameTestHook = hook
+}
+
 export interface RefusedTarget {
   target: VaultBindingTarget
   grantee: string | null
@@ -396,6 +416,10 @@ export async function syncSecret(vaultSecretId: string): Promise<SyncResult> {
     }
     for (const target of allowed) {
       try {
+        // Only a non-empty list made an access decision, so only then is it judged again right before the
+        // rename (an open secret costs no file-system call). The parent directory as it was when the target
+        // was judged is noted here; the re-check compares it with the real one at the last moment.
+        const checkedParent = acl.length > 0 ? realParentOfMcpFile(target.mcpFilePath) : null
         const content = JSON.parse(readFileOr(target.mcpFilePath, '{}'))
         const serverCfg = content.mcpServers?.[target.serverName]
         if (!serverCfg) {
@@ -405,7 +429,18 @@ export async function syncSecret(vaultSecretId: string): Promise<SyncResult> {
         if (!serverCfg.env) serverCfg.env = {}
         serverCfg.env[binding.envVar] = `vault:${vaultSecretId}`
         if (serverCfg.command && !serverCfg.url) wrapCommand(serverCfg)
-        atomicWriteFileSync(target.mcpFilePath, JSON.stringify(content, null, 2), { mode: 0o600 })
+        const beforeRename = acl.length > 0
+          ? (tmpPath: string): void => {
+              syncBeforeRenameTestHook?.(tmpPath)
+              const grantee = verifiedGranteeOfMcpFile(target.mcpFilePath)
+              const sameParent = checkedParent !== null && realParentOfMcpFile(tmpPath) === checkedParent
+              if (grantee === null || !acl.includes(grantee) || !sameParent) {
+                logger.warn({ vaultSecretId, mcpFilePath: target.mcpFilePath }, 'vault-sync-target-changed')
+                throw new Error('target changed during sync')
+              }
+            }
+          : undefined
+        atomicWriteFileSync(target.mcpFilePath, JSON.stringify(content, null, 2), { mode: 0o600, beforeRename })
         updated++
       } catch (err: any) {
         errors.push(`Failed to update ${target.mcpFilePath}: ${err.message}`)
