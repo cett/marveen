@@ -609,17 +609,21 @@ function restoreVaultRefs(
     ctx.policy.refused.push({ file: ctx.fileLabel, grantee: verdict.grantee, server: serverName, key, secretId, reason: verdict.reason })
     return false
   }
+  // The header injector finds `vault:<id>` ANYWHERE in a value, so this pass also runs over a refused
+  // placeholder: its (refused, e.g. non-canonical) id text can itself hold a `vault:<id>`, and returning
+  // the value as it is would hand that occurrence to the injector undecided.
+  const decideHeaderOccurrences = (text: string): string =>
+    text.replace(/vault:([A-Za-z0-9._-]+)/g, (whole: string, secretId: string) => allowedHere(secretId) ? whole : `{{VAULT:${secretId}}}`)
   if (value.startsWith('{{VAULT:') && value.endsWith('}}')) {
     const secretId = value.slice(8, -2)
-    return allowedHere(secretId) ? `vault:${secretId}` : value
+    if (allowedHere(secretId)) return `vault:${secretId}`
+    return field === 'headers' ? decideHeaderOccurrences(value) : value
   }
   if (field === 'env' && value.startsWith('vault:')) {
     const secretId = value.slice('vault:'.length)
     return allowedHere(secretId) ? value : `{{VAULT:${secretId}}}`
   }
-  if (field === 'headers' && value.includes('vault:')) {
-    return value.replace(/vault:([A-Za-z0-9._-]+)/g, (whole: string, secretId: string) => allowedHere(secretId) ? whole : `{{VAULT:${secretId}}}`)
-  }
+  if (field === 'headers' && value.includes('vault:')) return decideHeaderOccurrences(value)
   return value
 }
 

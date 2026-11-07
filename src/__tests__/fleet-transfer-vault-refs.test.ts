@@ -333,6 +333,39 @@ describe('import: a reference written literally as vault:<id> gets the same deci
   })
 })
 
+describe('import: a refused placeholder cannot carry a vault: reference to the header injector', () => {
+  const embedded = (id: string): Servers => ({ srv: { url: 'https://example.invalid/mcp', headers: { Authorization: `{{VAULT:abc.vault:${id}}}`, Spaced: `{{VAULT:x vault:${id}}}` } } })
+
+  it('T16 a placeholder with a non-canonical id that holds vault:<id> is neutralised for an unlisted file, and the embedded occurrence follows the list', async () => {
+    const result = await run(bundle({ agents: { 'agent-b': embedded('restricted-id'), 'agent-c': embedded('restricted-id') } }))
+
+    // agent-c is not on the list: no lowercase vault: reference is left anywhere in the file.
+    expect(JSON.stringify(agentMcp('agent-c'))).not.toContain('vault:')
+    expect(agentMcp('agent-c').mcpServers.srv.headers!.Authorization).toBe('{{VAULT:abc.{{VAULT:restricted-id}}}}')
+    // agent-b is on the list: the placeholder itself is refused (invalid_id), the occurrence in it is allowed by the list.
+    expect(agentMcp('agent-b').mcpServers.srv.headers!.Authorization).toBe('{{VAULT:abc.vault:restricted-id}}')
+    const lines = refusedLines(result)
+    expect(lines.filter(l => l.includes('invalid_id'))).toHaveLength(4) // both placeholders in both files
+    expect(lines.filter(l => l.includes('a célfájl nincs'))).toHaveLength(2) // the two occurrences in agent-c
+  })
+
+  it('T16b an open id inside a refused placeholder is left to the open default (no list)', async () => {
+    await run(bundle({ agents: { 'agent-c': embedded('open-id') } }))
+
+    expect(agentMcp('agent-c').mcpServers.srv.headers!.Authorization).toBe('{{VAULT:abc.vault:open-id}}')
+  })
+
+  it('T16c the same text in an ENV value stays inert (the wrapper reads only a value that starts with vault:)', async () => {
+    const envServer2: Servers = { srv: { command: 'node', env: { KEY: '{{VAULT:abc.vault:restricted-id}}' } } }
+    const result = await run(bundle({ agents: { 'agent-c': envServer2 } }))
+
+    const value = agentMcp('agent-c').mcpServers.srv.env!.KEY
+    expect(value.startsWith('vault:')).toBe(false)
+    expect(value).toBe('{{VAULT:abc.vault:restricted-id}}')
+    expect(refusedLines(result)).toHaveLength(1)
+  })
+})
+
 describe('import: an id outside the strict pattern is never restored (invalid_id)', () => {
   const awkward: Array<[string, string]> = [
     ['placeholder, trailing space', '{{VAULT:restricted-id }}'],
