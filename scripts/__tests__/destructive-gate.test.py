@@ -440,7 +440,7 @@ class TestCoordinatorPushAllowedUnit(unittest.TestCase):
 
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from timing_budget import LINEAR_CEILING_SEC, best_of, describe  # noqa: E402
+from timing_budget import CUTOFF_SEC, LINEAR_CEILING_SEC, best_of, describe  # noqa: E402
 
 
 class TestCommandSubstitution(unittest.TestCase):
@@ -651,15 +651,19 @@ class TestLinearTime(unittest.TestCase):
 
     SIZE = 250000
 
-    def _timed(self, cmd):
+    def _timed(self, cmd, cpu=False):
+        """cpu=True measures CPU time (timing_budget.best_of): these inputs run into the gate's own budgets (the body
+        and character caps, the INSPECT_SECONDS deadline), so on a busy machine the wall time of one call reaches the
+        wall cut-off although the work is the same. The wall cut-off is then 3 times wider, as a catastrophe guard."""
         def run():
             with patch.object(hook, "_notify_block"):
                 try:
                     hook.check_bash(cmd)
                 except SystemExit:
                     pass
-        t = best_of(run)
-        self.assertLess(t, LINEAR_CEILING_SEC * 2, describe(t))
+        cutoff = CUTOFF_SEC * 3 if cpu else CUTOFF_SEC
+        t = best_of(run, cutoff=cutoff, cpu=cpu)
+        self.assertLess(t, LINEAR_CEILING_SEC * 2, describe(t, cutoff))
 
     def test_env_scan(self):
         self._timed("a=" * (self.SIZE // 2))
@@ -675,9 +679,14 @@ class TestLinearTime(unittest.TestCase):
         self._timed("cat <<A\n" * (self.SIZE // 8))
 
     def test_unterminated_substitutions_are_cut_off_by_the_budgets(self):
-        self._timed("$(" * (self.SIZE // 2))
-        self._timed('"$(' * (self.SIZE // 3))
-        self._timed("`a" * (self.SIZE // 2))
+        for cmd in ("$(" * (self.SIZE // 2), '"$(' * (self.SIZE // 3), "`a" * (self.SIZE // 2)):
+            self._timed(cmd, cpu=True)
+            # The property is that a budget CUT the scan (the gate refuses what it cannot follow), not how fast
+            # that happened: a gate that returned without blocking would be a fail-open.
+            with self.subTest(cmd=cmd[:8]):
+                with patch.object(hook, "_notify_block"):
+                    with self.assertRaises(SystemExit):
+                        hook.check_bash(cmd)
 
     def test_many_bodies(self):
         self._timed('echo "$(a)" ' * (self.SIZE // 12))
