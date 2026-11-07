@@ -198,9 +198,9 @@ describe('options that are refused before any file is read', () => {
     ['a header name with a space', { header: 'Bad Name' }],
     ['an empty header name', { header: '' }],
     ['a secret id with a quote', { secretId: "x';y" }],
-    ['an SSH key id, even though the vault would hand a value out', { secretId: 'ssh-key-fixture', secretValue: () => TOKEN }],
+    ['an SSH key id, even though the vault would hand a value out', { secretId: 'ssh-key-fixture', secretValue: (): string => TOKEN }],
     ['a secret id that is not in the vault', { secretId: 'fixture-secret-missing' }],
-    ['a vault secret that is too short to match safely', { secretValue: () => 'short' }],
+    ['a vault secret that is too short to match safely', { secretValue: (): string => 'short' }],
     ['a relative node path', { nodePath: 'node' }],
     ['a relative home', { home: 'home' }],
   ])('%s', (_label, over) => {
