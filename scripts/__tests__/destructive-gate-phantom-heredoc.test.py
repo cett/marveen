@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Phantom heredoc openers in scripts/hooks/destructive-gate.py (C4 of the d61c7786 brief, Rick's finding).
+"""Phantom heredoc openers in scripts/hooks/destructive-gate.py.
 
 The heredoc scan used `re.search('<<-?\\s*NAME')` on every line. The 2nd and 3rd `<` of a here-string
 (`cat <<< x`), a `<<word` inside a comment or inside quotes all read as an opener, and with no delimiter line

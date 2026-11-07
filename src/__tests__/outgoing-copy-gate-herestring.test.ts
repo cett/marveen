@@ -112,6 +112,13 @@ describe('python copy gate: comments are cut the way the shell cuts them (before
     expect(copyGateVerdicts(cmds).map((v) => v.result)).toEqual([true, true, true, true])
   })
 
+  it('a comment sign after ; | ( ) & starts a comment: its apostrophe must not hide the next line', () => {
+    // Pins the set of characters that may precede a comment sign. Narrowed to whitespace only, `ls;# it's` would
+    // keep its apostrophe open, the line would fall to the weaker fallback and the sender on the next line is lost.
+    const cmds = ["ls;# it's", "ls |# it's", "(ls)# it's", "ls &# it's"].map((c) => `${c}\n${SEND}`)
+    expect(copyGateVerdicts(cmds).map((v) => v.result)).toEqual([true, true, true, true])
+  })
+
   it('a whole-line comment no longer swallows the next line', () => {
     expect(copyGateVerdicts([`# whole line comment\n${X}`, `x=1 # c\n${X}`]).map((v) => v.result)).toEqual([true, true])
   })
@@ -195,7 +202,7 @@ describe('python copy gate: here-string depth bound and hostile input', () => {
 // list). eval, source / . <(echo), bash <(echo), builtin and a continuation rest on the FIRST layer alone; the
 // here-string is the shape the first layer cannot see (the script is a redirect operand, not a word). The tests
 // below pin the whole decision, so a change of either layer cannot reopen a shape unnoticed.
-describe('main-agent send path (copy gate OR mail reader): every shape of the C4 list', () => {
+describe('main-agent send path (copy gate OR mail reader): every shape of the list', () => {
   const DENY = [
     `eval '${X}'`,
     `eval true ';' '${X}'`,
