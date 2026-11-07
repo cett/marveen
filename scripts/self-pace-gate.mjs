@@ -325,7 +325,10 @@ export function protectedSet(opts = {}) {
     ? [realOrSelf(opts.storeDir)]
     : [...new Set([join(scriptsDir, '..', 'store'), ...(process.env.MARVEEN_STORE_DIR ? [process.env.MARVEEN_STORE_DIR] : [])].map(realOrSelf))]
   const entries = []
-  const add = (path, dir, kind) => entries.push({ real: realOrSelf(path), dir, kind })
+  // `lex` is the path as the fixed name spells it (installation root joined with the name), `real` its resolved
+  // form: the integrity check must name files the way git does (by name), so a symlink put in place of a gate
+  // file or directory is a change there and not a quiet jump to the target
+  const add = (path, dir, kind) => entries.push({ real: realOrSelf(path), lex: path, dir, kind })
   for (const s of storeDirs) {
     add(join(s, ALLOWLIST_BASENAME), false, 'egress-allowlist')
     add(join(s, 'egress-allowlist.history'), true, 'egress-allowlist')

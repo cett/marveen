@@ -1,4 +1,5 @@
-// PIN tests for the KNOWN LIMITS of the implicit-tree rule (automatic commit review, round 3, items 1-4 and 6).
+// PIN tests for the KNOWN LIMITS of the implicit-tree rule: the text command behind an unknown cd, the wrapper chdir,
+// the text command behind a wrapper, nested substitutions and the words in front of an xargs command.
 // A pin names the boundary: what the gate DOES stop and what it still lets through. The cells that are let
 // through are documented in the changelog and the PR as known limits; they are asserted here so that a later
 // change (a fix, or a regression) flips a named test and has to be decided on purpose, not by accident.
