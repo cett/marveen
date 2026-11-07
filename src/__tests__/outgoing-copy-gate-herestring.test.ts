@@ -190,6 +190,18 @@ describe('python copy gate: here-string depth bound and hostile input', () => {
     expect(verdicts.map((v) => v.result)).toEqual([false, false, false])
   })
 
+  it('nested scripts holding a # and a substitution at every level stay cheap (each text is read once per level)', () => {
+    // Each level: a shell, a here-string holding the level below, a `;`, an echo, a substitution and a comment.
+    // Without the per-call memo the two comment readings and the flatten reading multiply by 4 per level
+    // (measured 7 s of CPU at 8 levels, the hook timeout is 10 s).
+    let cmd = X
+    for (let i = 0; i < 8; i++) cmd = `bash <<< ${q(cmd)}; echo $(true) # c`
+    const [v] = copyGateVerdicts([cmd])
+    expect(v.raised).toBeNull()
+    expect(v.result).toBe(true)
+    expect(v.cpu).toBeLessThan(1)
+  })
+
   it('more than the heredoc-opener limit of `<<< \'x\'` is refused up front (the scan counts them)', () => {
     const [v] = copyGateVerdicts(['bash' + " <<< 'echo hi'".repeat(40)])
     expect(v.raised).toBe('InspectionLimit')

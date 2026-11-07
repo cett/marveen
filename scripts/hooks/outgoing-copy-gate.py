@@ -1001,7 +1001,25 @@ def _heredoc_program_sends(cmd: str, depth: int = 0) -> bool:
 # source / . <(echo ..), bash <(echo ..), builtin and a backslash-newline in the name rest on the word-based layer
 # alone and are NOT read here; a here-string is the shape that layer cannot see (the script is a redirect
 # operand), so it is read here. outgoing-copy-gate-herestring.test.ts pins the whole decision.
+_SEND_MEMO: dict = {}
+
+
 def is_send_invocation(cmd: str, _depth: int = 0) -> bool:
+    """Memoised per top-level call on (text, depth): every nested script (eval-like text, a here-string, a -c
+    string) is read once per level, however many ways it is reached. Without it the two comment readings and the
+    flatten reading multiply per level (4x each: 8 levels of a script holding a # cost 7 s of CPU)."""
+    if _depth == 0:
+        _SEND_MEMO.clear()
+    key = (cmd, _depth)
+    hit = _SEND_MEMO.get(key)
+    if hit is not None:
+        return hit
+    result = _is_send_invocation_uncached(cmd, _depth)  # an InspectionLimit passes through, uncached
+    _SEND_MEMO[key] = result
+    return result
+
+
+def _is_send_invocation_uncached(cmd: str, _depth: int = 0) -> bool:
     if _heredoc_program_sends(cmd, _depth):
         return True
     # TWO readings of the comments, a send in EITHER counts (fail toward auditing). (1) Comments cut the way the
@@ -1009,7 +1027,8 @@ def is_send_invocation(cmd: str, _depth: int = 0) -> bool:
     # is a character, exactly the JS twin's reading: it needs no model of quoting, continuations, `$'..'` or a
     # substitution inside double quotes, so a mistake of the comment cutter can never HIDE a send. The cutter only
     # matters where reading (2) fails on an unbalanced quote that sits in a comment.
-    readings = (True, False) if "#" in cmd else (True,)
+    # (the second reading only when cutting comments changes the text at all)
+    readings = (True, False) if "#" in cmd and _strip_comments(cmd) != cmd else (True,)
     for cut in readings:
         try:
             segments = _segments_tokens(cmd, cut)
