@@ -668,14 +668,14 @@ class TestLinearTime(unittest.TestCase):
         self.assertLess(t, LINEAR_CEILING_SEC * 2, describe(t, cutoff))
 
     def test_env_scan(self):
-        self._timed("a=" * (self.SIZE // 2))
-        self._timed("a=/" * (self.SIZE // 3))
-        self._timed(" .en" * (self.SIZE // 4))
+        self._timed("a=" * (self.SIZE // 2), cpu=True)
+        self._timed("a=/" * (self.SIZE // 3), cpu=True)
+        self._timed(" .en" * (self.SIZE // 4), cpu=True)
 
     def test_many_quoted_spans_and_script_args(self):
-        self._timed('bash -c "a" ' * (self.SIZE // 12))
-        self._timed('python3 -c "x" ' * (self.SIZE // 15))
-        self._timed('"a" ' * (self.SIZE // 4))
+        self._timed('bash -c "a" ' * (self.SIZE // 12), cpu=True)
+        self._timed('python3 -c "x" ' * (self.SIZE // 15), cpu=True)
+        self._timed('"a" ' * (self.SIZE // 4), cpu=True)
 
     def test_many_heredocs(self):
         self._timed("cat <<A\n" * (self.SIZE // 8))
