@@ -326,6 +326,29 @@ class TestReviewRoundThree(unittest.TestCase):
             with self.subTest(cmd=cmd):
                 self.assertEqual(verdict(cmd), 'allow', cmd)
 
+    def test_depth_bound_with_word_chains(self):
+        # Chains of WORDS do not grow when quoted (the quoted nesting above is 4x per level and meets the call
+        # size cap first), so they test the bound itself: eval eval ... and bash -c 'bash -c ...'.
+        n = hook._MAX_NEST + 4
+        self.assertEqual(verdict('eval ' * 3 + 'echo a'), 'allow')
+        self.assertEqual(verdict('eval ' * n + 'echo a'), 'deny')
+        # The -c loop has its own bound check: reached through the evals (nested -c quoting is not unwound).
+        self.assertEqual(verdict('eval ' * 3 + "bash -c 'echo a'"), 'allow')
+        self.assertEqual(verdict('eval ' * hook._MAX_NEST + "bash -c 'echo a'"), 'deny')
+
+    def test_escaped_substitution_among_eval_arguments_runs_after_unescaping(self):
+        # eval receives `$(rm ..)` (the outer shell removed the backslashes) and runs the substitution.
+        for cmd in ("eval \\$\\(rm -rf /nonexistent-path-a\\)", "eval \\`rm -rf /nonexistent-path-a\\`",
+                    "eval \"\\$(rm -rf /nonexistent-path-a)\""):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(verdict(cmd), 'deny', cmd)
+
+    def test_time_budget_stops_the_eval_and_here_string_reading(self):
+        import itertools
+        with patch.object(hook.time, 'monotonic', side_effect=itertools.count(0, 10.0)):
+            self.assertEqual(verdict("eval 'echo a'"), 'deny')
+            self.assertEqual(verdict("bash <<< 'echo a'"), 'deny')
+
     def test_semicolon_after_a_comment_hash_is_read_as_code_pinned(self):
         # Review note: in the shell `echo x #; then rm -rf X` is a comment, the gate reads the `rm` and denies.
         # A conservative direction (a deny the shell would not run), pinned so that a change is a decision.
