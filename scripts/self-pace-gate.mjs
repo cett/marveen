@@ -1239,7 +1239,8 @@ function implicitTreeDecision(cmd, words, ci, bases, ctx) {
     if (!unzipExtracts(args)) return null
     const ud = unzipDir(args)
     if (ud && !ud.attached) return null
-    if (ud) { const k = wordKind(ud.dir, ctx); return k ? { deny: true, reason: isAnc(k) ? k.split(':')[1] : k } : null }
+    if (ud && /[$`*?[]/.test(ud.dir)) { /* unreadable target: fall through to the tree of the base */ }
+    else if (ud) { const k = wordKind(ud.dir, ctx); return k ? { deny: true, reason: isAnc(k) ? k.split(':')[1] : k } : null }
   } else if (cmd === 'git' ? gitInstallOk(args) : patchIsDry(args)) return null
   const env = words.slice(0, ci)
   for (const b of bases) if (commandTargetsInstall(cmd, args, env, b, ctx)) return { deny: true, reason: 'install-tree' }
@@ -1311,8 +1312,10 @@ function workDirOf(cmd, args) {
     let dir
     for (let k = 0; k < args.length; k++) {
       const a = args[k]
-      if (a === '-C' || a === '--directory') dir = args[++k] ?? UNKNOWN
-      else if (a.startsWith('--directory=')) dir = a.slice(12)
+      // --directory and every prefix of it (getopt), and bsdtar's --cd, with the value attached or in the next word
+      const long = /^--(?:d(?:i(?:r(?:e(?:c(?:t(?:o(?:r(?:y)?)?)?)?)?)?)?)?|cd)(?:=|$)/.test(a)
+      if (a === '-C' || (long && !a.includes('='))) dir = args[++k] ?? UNKNOWN
+      else if (long) dir = a.slice(a.indexOf('=') + 1)
       else if (/^-C./.test(a)) dir = a.slice(2)
       else if (/^-[A-Za-z]*C/.test(a) || (k === 0 && /^[A-Za-z]*C[A-Za-z]*$/.test(a))) return UNKNOWN
     }

@@ -66,6 +66,12 @@ describe('R2: a tar line the parser does not understand is judged by the tree of
   it('a named -C directory decides over the cwd: an extraction OUT of the install from the install cwd is allowed', () => {
     for (const c of ['tar -xPf a.tar -C @B@/out', 'tar -xf a.tar --keep-old-files -C @B@/out']) expect(denied(c, root), c).toBe(false)
   })
+  it('--directory and its getopt prefixes (--dir, --d) and bsdtar --cd name the directory like -C: a variable there is unknown, a named one decides', () => {
+    for (const c of ['tar --exclude-caches -xf a.tar --dir=$X', 'tar --exclude-caches -xf a.tar --dir $X', 'tar --exclude-caches -xf a.tar --d=$X', 'tar --exclude-caches -xf a.tar --cd $X', 'tar --exclude-caches -xf a.tar --directory=$X'])
+      expect(denied(c, plain), c).toBe(true)
+    for (const c of ['tar --exclude-caches -xf a.tar --dir=@B@/out', 'tar --exclude-caches -xf a.tar --dir @B@/out', 'tar --exclude-caches -xf a.tar --cd @B@/out'])
+      expect(denied(c, root), c).toBe(false)
+  })
   it('a -C hidden inside a bundle keeps its value unknown: denied even from outside', () => {
     expect(denied('tar --exclude-caches -xCf out a.tar', plain)).toBe(true)
     expect(denied('tar xCf out a.tar --exclude-caches', plain)).toBe(true)
@@ -82,6 +88,12 @@ describe('R3 / R4: the unzip target is read the way unzip reads it', () => {
   })
   it('an attached -d value that names no protected path is the command own business (a plain directory in the install)', () => {
     for (const c of ['unzip -qdp a.zip', 'unzip -dp a.zip', 'unzip -qdbuild a.zip']) expect(denied(c, root), c).toBe(false)
+  })
+  it('an attached -d value that cannot be read (variable, substitution, glob) is an unknown directory: judged by the tree', () => {
+    for (const c of ['unzip -qd$X a.zip', 'unzip -qd`pwd` a.zip', 'unzip -qd* a.zip']) {
+      expect(denied(c, root), c).toBe(true)
+      expect(denied(c, plain), c).toBe(true) // an unknown directory is refused wherever the command runs, like any unreadable target
+    }
   })
   it('the value of -P / -O / -I / -x is never taken for -d: the archive then extracts into the cwd', () => {
     for (const c of ['unzip -P -d out/ok.zip', 'unzip -O -d out/ok.zip', 'unzip -I -d out/ok.zip']) {
