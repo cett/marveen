@@ -20,12 +20,25 @@ if [ -z "$NODE" ]; then
   exit 1
 fi
 
-# Collect vault: references from env
+# Collect vault: references from env.
+# The names come from the exported variable names (compgen -e), never from the lines of a value: a value with a
+# newline in it must not be able to put a second "NAME=id" line into REFS. Only a value that starts with "vault:"
+# and whose rest is a canonical secret id (same character set and length as the fleet import) is resolved; any
+# other value is left as it is, with a warning that carries the variable NAME only, never the value.
+# bash 3.2 compatible (macOS /bin/bash): no mapfile, no associative arrays.
+NAME_RE='^[A-Za-z_][A-Za-z0-9_]*$'
+ID_RE='^[A-Za-z0-9._-]{1,128}$'
 REFS=""
-for var in $(env | grep '=vault:' | cut -d= -f1); do
-  val="${!var}"
+for var in $(compgen -e); do
+  [[ "$var" =~ $NAME_RE ]] || continue
+  val="${!var-}"
+  case "$val" in vault:*) ;; *) continue ;; esac
   secret_id="${val#vault:}"
-  REFS="${REFS}${var}=${secret_id}"$'\n'
+  if [[ "$secret_id" =~ $ID_RE ]]; then
+    REFS="${REFS}${var}=${secret_id}"$'\n'
+  else
+    echo "vault-env-wrapper: $var skipped, its vault: reference is not a canonical secret id (left unresolved)" >&2
+  fi
 done
 
 if [ -n "$REFS" ]; then
