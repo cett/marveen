@@ -432,7 +432,8 @@ export interface SkillRevision {
   files_sha256?: string;
   /** True when a companion file lives under scripts/ or is executable. */
   has_scripts: boolean;
-  author_kind: 'human' | 'agent' | 'import' | 'system';
+  /** operator: the write was made with the operator's own named admin token. Rows written before it existed keep their kind. */
+  author_kind: 'human' | 'agent' | 'import' | 'system' | 'operator';
   author_id?: string;
   source_ref?: string;
   reason?: string;

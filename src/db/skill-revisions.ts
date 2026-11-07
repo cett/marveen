@@ -12,7 +12,7 @@ import { writeAgentAuditLog } from './audit.js'
 import { logger } from '../logger.js'
 
 export type SkillRevisionAction = 'baseline' | 'create' | 'modify' | 'seed' | 'delete' | 'file_put' | 'file_delete' | 'file_seed'
-export type SkillActorKind = 'human' | 'agent' | 'import' | 'system'
+export type SkillActorKind = 'human' | 'agent' | 'import' | 'system' | 'operator'
 
 /**
  * Who is making a skill write. Required by every writer function, so the compiler refuses a caller that forgot to say.
