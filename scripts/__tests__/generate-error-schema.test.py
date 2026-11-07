@@ -108,5 +108,72 @@ class TestGenerateErrorSchema(unittest.TestCase):
         self.assertEqual(first, second, 'a second run must not add another blank line')
 
 
+COMMENTED_CATALOG_TS = textwrap.dedent("""\
+    export const ERROR_TOKENS = [
+      'not_found',
+      'agent_not_allowed', // not forbidden: this secret's grantee list does not name the target
+      'vault_key_unavailable', // the key is missing, an operator's job
+      /* block comment with a stray ' quote */
+      'internal_error',
+    ] as const
+""")
+
+
+class TestGenerateErrorSchemaComments(unittest.TestCase):
+    """An apostrophe inside a comment must never pair with the quote of the next token."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        os.makedirs(os.path.join(self.tmp, 'src'))
+        os.makedirs(os.path.join(self.tmp, 'docs'))
+        with open(os.path.join(self.tmp, 'docs', 'openapi.yaml'), 'w') as f:
+            f.write(SPEC_YAML)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _write_catalog(self, text: str):
+        with open(os.path.join(self.tmp, 'src', 'api-error-catalog.ts'), 'w') as f:
+            f.write(text)
+
+    def _enum_lines(self, out: str):
+        return [line.strip()[2:] for line in out.splitlines() if line.strip().startswith('- ')]
+
+    def test_apostrophe_in_a_comment_does_not_create_or_swallow_a_token(self):
+        self._write_catalog(COMMENTED_CATALOG_TS)
+        out = run_generator_in(self.tmp)
+        # Exactly the four real tokens, in order: the token after the commented one is NOT lost,
+        # and nothing like "s grantee list ..." appears.
+        self.assertEqual(self._enum_lines(out), ['not_found', 'agent_not_allowed', 'vault_key_unavailable', 'internal_error'])
+        self.assertNotIn("grantee", out)
+
+    def test_a_token_after_every_commented_token_survives(self):
+        """The bug hid while the commented token was the LAST element; put a plain token after each."""
+        self._write_catalog(textwrap.dedent("""\
+            export const ERROR_TOKENS = [
+              'a_one', // it's here
+              'b_two', // and here's another
+              'c_three',
+            ] as const
+        """))
+        out = run_generator_in(self.tmp)
+        self.assertEqual(self._enum_lines(out), ['a_one', 'b_two', 'c_three'])
+
+    def test_a_value_that_is_not_snake_case_stops_the_run(self):
+        """Fail closed: a bogus value must not be written into the public enum."""
+        self._write_catalog("export const ERROR_TOKENS = [\n  'not_found',\n  'Not A Token',\n] as const\n")
+        result = subprocess.run(['node', GENERATOR], cwd=self.tmp, capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('not a snake_case token', result.stderr)
+        with open(os.path.join(self.tmp, 'docs', 'openapi.yaml')) as f:
+            self.assertEqual(f.read(), SPEC_YAML, 'the spec must be left untouched on failure')
+
+    def test_a_duplicate_token_stops_the_run(self):
+        self._write_catalog("export const ERROR_TOKENS = [\n  'not_found',\n  'not_found',\n] as const\n")
+        result = subprocess.run(['node', GENERATOR], cwd=self.tmp, capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('duplicate', result.stderr)
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

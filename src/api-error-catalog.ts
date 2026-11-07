@@ -25,6 +25,7 @@ export const ERROR_TOKENS = [
   'stale_revision', // not conflict: the schedule exists and is fine, but changed after the caller loaded it (reload and review again)
   'status_conflict', // not conflict: the entity exists but its status is not what the caller expected (re-read it, do not retry blindly); carries current_status
   'agent_not_allowed', // not forbidden: the caller may bind secrets, but this secret's grantee list does not name the target agent or scope (add the grantee to the list, or pick another target)
+  'vault_key_unavailable', // not internal_error: the vault master key is missing, unreadable or does not open the vault -- an operator restores the key (see the server log), a plain retry does not help
 ] as const
 
 export type ErrorToken = typeof ERROR_TOKENS[number]
@@ -56,8 +57,9 @@ export const ALLOWED_STATUS_TOKENS: Record<number, ReadonlyArray<ErrorToken>> = 
   500: ['internal_error'],
   502: ['upstream_error'],
   408: ['timeout'],
-  // 503 is a transient state; internal cause is valid (e.g. role resolution failure)
-  503: ['timeout', 'upstream_error', 'internal_error'],
+  // 503 is a transient state; internal cause is valid (e.g. role resolution failure).
+  // vault_key_unavailable = the vault cannot be opened until an operator restores the master key.
+  503: ['timeout', 'upstream_error', 'internal_error', 'vault_key_unavailable'],
 }
 
 // Returns null if valid, or a violation string if not.

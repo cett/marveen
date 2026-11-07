@@ -293,6 +293,8 @@ components:
             - stale_revision
             - status_conflict
             - agent_not_allowed
+            - vault_key_unavailable
+  
         hint:
           type: string
           description: >-
