@@ -117,6 +117,10 @@ class TestRealHeredocsKeepTheirVerdicts(unittest.TestCase):
     def test_exact_ranges(self):
         self.assertEqual(hook._heredoc_body_ranges("cat <<EOF > f\nab\nEOF\nrm x"), ([(14, 17)], []))
         self.assertEqual(hook._heredoc_body_ranges("cat <<-EOF > f\n\tab\n\tEOF\nrm x"), ([(15, 19)], []))
+        # the opener inside a double-quoted command substitution (a commit message) IS one: its body is cut
+        cmd = "git commit -m \"$(cat <<'EOF'\nmsg\nEOF\n)\""
+        self.assertEqual(hook._heredoc_body_ranges(cmd), ([(29, 33)], []))
+        self.assertEqual(cmd[29:33], "msg\n")
         # no delimiter line: the body runs to the end of the command
         self.assertEqual(hook._heredoc_body_ranges("cat <<EOF > f\nab\ncd"), ([(14, 19)], []))
         # two openers: their bodies follow one after the other
