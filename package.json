@@ -16,6 +16,7 @@
     "install-seed-tenant": "tsx scripts/install-seed-tenant.ts",
     "budget-alert-check": "tsx scripts/budget-alert-check.ts",
     "test": "vitest run",
+    "test:guarded": "python3 scripts/vitest-guard.py -- run",
     "coverage": "vitest run --coverage",
     "typecheck": "tsc --noEmit",
     "generate:error-schema": "node scripts/generate-error-schema.mjs",
