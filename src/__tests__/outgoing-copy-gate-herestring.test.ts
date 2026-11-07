@@ -153,6 +153,12 @@ describe('python copy gate: here-string depth bound and hostile input', () => {
   })
 })
 
+// On the main agent's path the coverage has TWO layers: the word-based mail reader (scripts/lib/email_extract.py,
+// command_sends_mail: a mail program named in a word of any command that is not just looking at files, and an
+// exec wrapper handed a run-time word) and is_send_invocation (position-based, bound to the JS twin by the shared
+// list). eval, source / . <(echo), bash <(echo), builtin and a continuation rest on the FIRST layer alone; the
+// here-string is the shape the first layer cannot see (the script is a redirect operand, not a word). The tests
+// below pin the whole decision, so a change of either layer cannot reopen a shape unnoticed.
 describe('main-agent send path (copy gate OR mail reader): every shape of the C4 list', () => {
   const DENY = [
     `eval '${X}'`,
@@ -168,6 +174,10 @@ describe('main-agent send path (copy gate OR mail reader): every shape of the C4
     `true && eval '${X}'`,
     `eval "eval '${X}'"`,
     `bash -c "eval '${X}'"`,
+    // a script built at run time: the word-based reader refuses an eval handed a variable (fail closed)
+    'eval "$Y"',
+    'eval "$A$B"',
+    'builtin eval "$Y"',
     `source <(echo '${X}')`,
     `. <(echo '${X}')`,
     `bash <(echo '${X}')`,
@@ -178,6 +188,9 @@ describe('main-agent send path (copy gate OR mail reader): every shape of the C4
     `{ source <(echo '${X}'); }`,
     `source <(printf '${X}')`,
     `source <(echo -e '${X}')`,
+    // the name split by quotes or a backslash inside a process substitution (the text fallback strips both)
+    "source <(echo 'send''mail a@example.com')",
+    'bash <(echo send\\mail a@example.com)',
     'send\\\nmail a@example.com',
     '$(\\\nsendmail a@example.com)',
     '# c \\\nsendmail a@example.com',

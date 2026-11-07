@@ -951,6 +951,12 @@ def _heredoc_program_sends(cmd: str, depth: int = 0) -> bool:
     return _written_then_run(cmd, written, depth)
 
 
+# COVERAGE ON THE MAIN AGENT'S PATH IS TWO LAYERS (email-approval-gate.call_is_send): this position-based reader
+# (bound to the JS twin by send-invocation-cases.json) OR the word-based reader scripts/lib/email_extract.py
+# (command_sends_mail: a mail program named in a word of a command that is not just looking at files). eval,
+# source / . <(echo ..), bash <(echo ..), builtin and a backslash-newline in the name rest on the word-based layer
+# alone and are NOT read here; a here-string is the shape that layer cannot see (the script is a redirect
+# operand), so it is read here. outgoing-copy-gate-herestring.test.ts pins the whole decision.
 def is_send_invocation(cmd: str, _depth: int = 0) -> bool:
     if _heredoc_program_sends(cmd, _depth):
         return True
