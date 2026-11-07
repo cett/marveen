@@ -70,6 +70,11 @@ describe('collectHttpHeaderEnv: what is exported', () => {
     expect(collectHttpHeaderEnv([f], exists)).toEqual({ exports: [], skipped: [] })
   })
 
+  it('a server with both a url and a command is ambiguous and left alone (fail closed)', () => {
+    const f = cfg('a.json', { mcpServers: { s: http({ A: '${FIXTURE_TOKEN}' }, { FIXTURE_TOKEN: 'vault:fixture-secret-a' }, { command: 'node' }) } })
+    expect(collectHttpHeaderEnv([f], exists)).toEqual({ exports: [], skipped: [] })
+  })
+
   it('non-string header values are ignored', () => {
     const f = cfg('a.json', { mcpServers: { s: http({ A: 5, B: null, C: ['${FIXTURE_TOKEN}'] }, { FIXTURE_TOKEN: 'vault:fixture-secret-a' }) } })
     expect(collectHttpHeaderEnv([f], exists)).toEqual({ exports: [], skipped: [] })
