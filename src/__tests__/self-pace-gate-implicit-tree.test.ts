@@ -271,6 +271,48 @@ describe('R-IMPL: only a VALID .git entry makes a toplevel', () => {
   })
 })
 
+describe('R-IMPL: isGitDir mirrors git (HEAD content, objects AND refs)', () => {
+  const dirs: Record<string, string> = {}
+  const mk = (name: string, head: string | null, sub: string[]) => {
+    const d = join(root, 'src', 'deep', 'gd-' + name); mkdirSync(d, { recursive: true })
+    const g = join(d, '.git'); mkdirSync(g, { recursive: true })
+    for (const s of sub) mkdirSync(join(g, s), { recursive: true })
+    if (head !== null) writeFileSync(join(g, 'HEAD'), head)
+    dirs[name] = d
+  }
+  beforeAll(() => {
+    mk('emptyhead', '', ['objects', 'refs'])
+    mk('garbage', 'not a head\n', ['objects', 'refs'])
+    mk('noheadfile', null, ['objects', 'refs'])
+    mk('norefs', 'ref: refs/heads/main\n', ['objects'])
+    mk('noobjects', 'ref: refs/heads/main\n', ['refs'])
+    mk('badref', 'ref: /etc/passwd\n', ['objects', 'refs'])
+    mk('shorthex', 'abc123\n', ['objects', 'refs'])
+    mk('symref', 'ref: refs/heads/main\n', ['objects', 'refs'])
+    mk('hex40', 'a'.repeat(40) + '\n', ['objects', 'refs'])
+    mk('hex64', 'b'.repeat(64) + '\n', ['objects', 'refs'])
+    const real = join(root, 'src', 'deep', 'gd-real'); mkdirSync(real, { recursive: true }); git(real, 'init', '-q', '-b', 'main'); dirs.real = real
+  })
+  it('a .git git would step over (empty or garbage HEAD, no HEAD, objects or refs missing) leaves the install in charge', () => {
+    for (const n of ['emptyhead', 'garbage', 'noheadfile', 'norefs', 'noobjects', 'badref', 'shorthex']) {
+      expect(denied('git checkout other', dirs[n]), n).toBe(true)
+      expect(denied(`cd ${dirs[n]} && git reset --hard`, root), n).toBe(true)
+      // the same answer as git's own: it walks up past the fake and finds the install
+      expect(execFileSync('git', ['-C', dirs[n], 'rev-parse', '--show-toplevel'], { encoding: 'utf-8' }).trim(), n).toBe(root)
+    }
+  })
+  it('a .git git accepts is its own toplevel: a symref or a full object id in HEAD, objects and refs present', () => {
+    for (const n of ['symref', 'hex40', 'hex64', 'real']) {
+      expect(denied('git checkout other', dirs[n]), n).toBe(false)
+      expect(denied(`cd ${dirs[n]} && git reset --hard`, root), n).toBe(false)
+    }
+    expect(execFileSync('git', ['-C', dirs.real, 'rev-parse', '--show-toplevel'], { encoding: 'utf-8' }).trim()).toBe(dirs.real)
+  })
+  it('a linked worktree inside the install (gitdir with commondir, no objects/refs of its own) is still its own toplevel', () => {
+    expect(denied('git checkout other', nested)).toBe(false)
+  })
+})
+
 describe('R-IMPL: clone out of the install, and the message reads whole', () => {
   it('git clone of the install to somewhere else is a read; template, config and helper URLs are not', () => {
     for (const c of [`git clone . ${base}/copy`, `git clone --bare . ${base}/copy.git`, `git clone -q --depth 1 . ${base}/copy`]) expect(denied(c, root), c).toBe(false)

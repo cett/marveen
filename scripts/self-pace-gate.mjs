@@ -1047,10 +1047,18 @@ function gitOptionsSafe(args, sub) {
 // GIT_WORK_TREE, GIT_DIR). When that tree is this install, only the positive list may run.
 const lcPath = (p) => String(p).toLowerCase()
 const isUnder = (p, root) => lcPath(p) === lcPath(root) || lcPath(p).startsWith(lcPath(root) + sep)
-// Is `p` a git directory git would accept (HEAD plus objects/, or HEAD plus commondir for a worktree's own)?
+// Is `p` a git directory git would accept? Git's own test (setup.c is_git_directory): HEAD is a symref
+// ('ref: refs/...') or a full object id (40 / 64 hex), and objects/ AND refs/ are directories; a linked
+// worktree's own gitdir has no objects/ or refs/ of its own but a `commondir` file naming the shared one.
+// Anything else is stepped over by git, so the gate steps over it too (an `objects/` plus a garbage HEAD
+// made by hand must not turn an install subdirectory into a toplevel of its own).
 const isGitDir = (p) => {
-  const has = (n, dir) => { try { const s = statSync(join(p, n)); return dir ? s.isDirectory() : s.isFile() } catch { return false } }
-  return has('HEAD', false) && (has('objects', true) || has('commondir', false))
+  const kind = (n) => { try { const s = statSync(join(p, n)); return s.isDirectory() ? 'dir' : s.isFile() ? 'file' : null } catch { return null } }
+  if (kind('HEAD') !== 'file') return false
+  let head
+  try { head = readFileSync(join(p, 'HEAD'), 'utf8').slice(0, 512) } catch { return false }
+  if (!/^ref:\s*refs\//.test(head) && !/^([0-9a-f]{40}|[0-9a-f]{64})\s*$/.test(head)) return false
+  return (kind('objects') === 'dir' && kind('refs') === 'dir') || kind('commondir') === 'file'
 }
 // 'install' | true | false for the `.git` entry at `p`: a directory with HEAD and objects, a gitfile whose
 // gitdir: line names a git directory, a symlink to either (resolved). 'install' when it leads to the install's
