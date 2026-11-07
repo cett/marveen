@@ -6,7 +6,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 // @ts-expect-error -- plain .mjs hook script, no types
 import { bashProtectedDecision, gateDecision } from '../../scripts/self-pace-gate.mjs'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync, symlinkSync } from 'node:fs'
-import { join, dirname } from 'node:path'
+import { join, dirname, relative } from 'node:path'
 import { tmpdir } from 'node:os'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
@@ -292,6 +292,22 @@ describe('R-IMPL: isGitDir mirrors git (HEAD content, objects AND refs)', () => 
     mk('hex40', 'a'.repeat(40) + '\n', ['objects', 'refs'])
     mk('hex64', 'b'.repeat(64) + '\n', ['objects', 'refs'])
     const real = join(root, 'src', 'deep', 'gd-real'); mkdirSync(real, { recursive: true }); git(real, 'init', '-q', '-b', 'main'); dirs.real = real
+    // a commondir file: HEAD is valid, there is no objects/ or refs/ of its own, the commondir names the shared directory
+    const mkc = (name: string, common: string | null) => {
+      mk(name, 'ref: refs/heads/main\n', [])
+      if (common !== null) writeFileSync(join(dirs[name], '.git', 'commondir'), common)
+    }
+    mkc('commonjunk', 'junk\n') // names a directory that does not exist
+    mkc('commonempty', '')
+    mkc('commonblank', '\n')
+    mkc('commonnofile', null) // no commondir at all: nothing to follow
+    mkc('commonhollow', '../hollow\n') // names a directory with HEAD but no objects/refs
+    mkdirSync(join(root, 'src', 'deep', 'gd-commonhollow', 'hollow'), { recursive: true }); writeFileSync(join(root, 'src', 'deep', 'gd-commonhollow', 'hollow', 'HEAD'), 'ref: refs/heads/main\n')
+    mkc('commonchain', '../middle\n') // names a directory that itself only has a commondir: no chain
+    const mid = join(root, 'src', 'deep', 'gd-commonchain', 'middle'); mkdirSync(mid, { recursive: true }); writeFileSync(join(mid, 'HEAD'), 'ref: refs/heads/main\n'); writeFileSync(join(mid, 'commondir'), `${join(real, '.git')}\n`)
+    // valid: the commondir (relative to the gitdir, or absolute) names a real repository's git directory
+    mkc('commonrel', `${relative(join(root, 'src', 'deep', 'gd-commonrel', '.git'), join(real, '.git'))}\n`)
+    mkc('commonabs', `${join(real, '.git')}\n`)
   })
   it('a .git git would step over (empty or garbage HEAD, no HEAD, objects or refs missing) leaves the install in charge', () => {
     for (const n of ['emptyhead', 'garbage', 'noheadfile', 'norefs', 'noobjects', 'badref', 'shorthex']) {
@@ -308,8 +324,22 @@ describe('R-IMPL: isGitDir mirrors git (HEAD content, objects AND refs)', () => 
     }
     expect(execFileSync('git', ['-C', dirs.real, 'rev-parse', '--show-toplevel'], { encoding: 'utf-8' }).trim()).toBe(dirs.real)
   })
+  it('a commondir that does not lead to a git directory (junk, empty, blank, missing target, hollow target, a chain) leaves the install in charge', () => {
+    for (const n of ['commonjunk', 'commonempty', 'commonblank', 'commonnofile', 'commonhollow', 'commonchain']) {
+      expect(denied('git checkout other', dirs[n]), n).toBe(true)
+      expect(denied(`cd ${dirs[n]} && git reset --hard`, root), n).toBe(true)
+      // git never takes the fake as its toplevel: it steps over it (the install is found) or, for an empty
+      // commondir, dies on it and writes nothing, so the gate's DENY is the safe answer either way
+      const r = spawnSync('git', ['-C', dirs[n], 'rev-parse', '--show-toplevel'], { encoding: 'utf-8' })
+      expect(r.status === 0 ? r.stdout.trim() : root, n).toBe(root)
+    }
+  })
+  it('a commondir that names a real repository git directory (relative to the gitdir or absolute) is a git directory', () => {
+    for (const n of ['commonrel', 'commonabs']) expect(denied('git checkout other', dirs[n]), n).toBe(false)
+  })
   it('a linked worktree inside the install (gitdir with commondir, no objects/refs of its own) is still its own toplevel', () => {
     expect(denied('git checkout other', nested)).toBe(false)
+    expect(denied('git checkout other', wt)).toBe(false)
   })
 })
 

@@ -1052,13 +1052,19 @@ const isUnder = (p, root) => lcPath(p) === lcPath(root) || lcPath(p).startsWith(
 // worktree's own gitdir has no objects/ or refs/ of its own but a `commondir` file naming the shared one.
 // Anything else is stepped over by git, so the gate steps over it too (an `objects/` plus a garbage HEAD
 // made by hand must not turn an install subdirectory into a toplevel of its own).
-const isGitDir = (p) => {
+// The `commondir` file is read the way git reads it: its content, relative to the gitdir, names the shared
+// directory, and THAT must itself be a git directory with objects/ and refs/ (one level: no commondir chain).
+const isGitDir = (p, viaCommon = false) => {
   const kind = (n) => { try { const s = statSync(join(p, n)); return s.isDirectory() ? 'dir' : s.isFile() ? 'file' : null } catch { return null } }
   if (kind('HEAD') !== 'file') return false
   let head
   try { head = readFileSync(join(p, 'HEAD'), 'utf8').slice(0, 512) } catch { return false }
   if (!/^ref:\s*refs\//.test(head) && !/^([0-9a-f]{40}|[0-9a-f]{64})\s*$/.test(head)) return false
-  return (kind('objects') === 'dir' && kind('refs') === 'dir') || kind('commondir') === 'file'
+  if (kind('objects') === 'dir' && kind('refs') === 'dir') return true
+  if (viaCommon || kind('commondir') !== 'file') return false
+  let common
+  try { common = readFileSync(join(p, 'commondir'), 'utf8').split(/\r?\n/)[0].trim() } catch { return false }
+  return common !== '' && isGitDir(realOrSelf(resolve(p, common)), true)
 }
 // 'install' | true | false for the `.git` entry at `p`: a directory with HEAD and objects, a gitfile whose
 // gitdir: line names a git directory, a symlink to either (resolved). 'install' when it leads to the install's
