@@ -268,6 +268,43 @@ class TestReviewRoundThree(unittest.TestCase):
             with self.subTest(cmd=cmd):
                 self.assertEqual(verdict(cmd), 'allow', cmd)
 
+    def test_obfuscated_eval_name_is_still_eval(self):
+        # Review of the next commit: eval was found by its LITERAL letters in the raw text.
+        shapes = [
+            ('empty quotes inside the name', "ev''al '%s'" % X),
+            ('double-quoted half', "\"ev\"al '%s'" % X),
+            ('backslash in the name', "\\eval '%s'" % X),
+            ('backslash mid-name', "ev\\al '%s'" % X),
+            ('quoted whole name', "'eval' '%s'" % X),
+            ('obfuscated and escaped separator', "ev''al true\\; '%s'" % X),
+            ('behind a wrapper command', "nohup ev''al '%s'" % X),
+            ('after a pipe', "echo a | ev''al '%s'" % X),
+        ]
+        for label, cmd in shapes:
+            with self.subTest(shape=label):
+                self.assertEqual(verdict(cmd), 'deny', cmd)
+
+    def test_here_string_next_to_its_shell_across_an_escaped_delimiter(self):
+        # The shell word and the here-string sat in two over-split pieces of ONE bash command.
+        shapes = [
+            ('escaped semicolon between', "bash -s a\\; <<< '%s'" % X),
+            ('escaped pipe between', "sh -s -- x\\| <<< '%s'" % X),
+            ('escaped ampersand between', "bash a\\& <<<'%s'" % X),
+            ('after an escaped separator, redirect first', "<<<'%s' bash a\\;" % X),
+        ]
+        for label, cmd in shapes:
+            with self.subTest(shape=label):
+                self.assertEqual(verdict(cmd), 'deny', cmd)
+        # An ESCAPED backslash is a literal backslash and the semicolon really ends the command.
+        self.assertEqual(verdict("echo a\\\\; cat <<< '%s'" % X), 'allow')
+
+    def test_known_limit_case_pattern_paren_in_a_substitution_is_pinned(self):
+        # The `)` of a `case` pattern inside a substitution ends the scan for eval's arguments early: the
+        # same accepted limit as shell_subst ("a determined construction, not an accident"). Pinned so that
+        # closing it is a decision; the CHANGELOG [Security] line says it too.
+        cmd = "eval true ';' $(case x in a) b ;; esac) '%s'" % X
+        self.assertEqual(verdict(cmd), 'allow', cmd)
+
     def test_scan_stays_linear(self):
         # Many evals / here-strings in one segment must not cost a quadratic scan. Compared by CPU time
         # against a 4x longer input: quadratic growth would be 16x, linear about 4x (limit 9x).
