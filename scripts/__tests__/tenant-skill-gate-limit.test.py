@@ -64,6 +64,18 @@ def run_gate(tool, tool_input):
     return p.returncode, (p.stdout + p.stderr).decode(errors="replace"), time.perf_counter() - t
 
 
+def run_gate_cpu(tool, tool_input):
+    """Like run_gate, but the third value is the CPU time (user + system, seconds) of the gate process, not the wall
+    time: on a busy machine the wall time of the same call was several times its CPU time (3.63 s against ~0.6 s),
+    so a wall bound failed whenever the machine was busy. The subprocess timeout stays wall-clock (catastrophe guard)."""
+    payload = {"tool_name": tool, "tool_input": tool_input, "cwd": "/tmp"}
+    before = resource.getrusage(resource.RUSAGE_CHILDREN)
+    p = subprocess.run([sys.executable, GATE], input=json.dumps(payload).encode(), capture_output=True, timeout=120)
+    after = resource.getrusage(resource.RUSAGE_CHILDREN)
+    cpu = (after.ru_utime - before.ru_utime) + (after.ru_stime - before.ru_stime)
+    return p.returncode, (p.stdout + p.stderr).decode(errors="replace"), cpu
+
+
 class LimitTest(unittest.TestCase):
     def test_the_limit_is_128_kib_like_the_outgoing_copy_gate_command_limit(self):
         # shlex is quadratic in one long word, so a higher limit gets close to the 10 s host timeout; 128 KiB
@@ -105,9 +117,9 @@ class LimitTest(unittest.TestCase):
         for name, cmd in shapes.items():
             with self.subTest(shape=name):
                 self.assertLessEqual(len(cmd), limit)
-                rc, out, secs = run_gate("Bash", {"command": cmd})
+                rc, out, cpu = run_gate_cpu("Bash", {"command": cmd})
                 self.assertEqual(rc, 0, out[:200])
-                self.assertLess(secs, 3)
+                self.assertLess(cpu, 3, "gate used %.2f s of CPU" % cpu)
 
     def test_the_path_word_limit_is_4096(self):
         # PATH_MAX is 1024 on macOS and 4096 on Linux: a longer word is no real path.
