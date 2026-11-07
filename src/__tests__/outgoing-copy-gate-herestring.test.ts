@@ -103,6 +103,30 @@ describe('python copy gate: tokenizer facts, identical to the JS twin', () => {
   })
 })
 
+describe('python copy gate: comments are cut the way the shell cuts them (before the lexer reads the line)', () => {
+  const SEND = 'python3 -m send --to a@example.com'
+  it('a quote in a trailing comment no longer sends the line to the weaker literal fallback', () => {
+    // Before the comment cut: the apostrophe left a quote open, the lexer failed, and only the strong literals
+    // (send.py, sendmail ...) were searched: `-m send` slipped through. Measured on the way to this fix.
+    const cmds = [`${SEND} # don't`, `bash -c '${SEND}' # it's`, `ls # don't\n${SEND}`, `ls # "\n${SEND}`]
+    expect(copyGateVerdicts(cmds).map((v) => v.result)).toEqual([true, true, true, true])
+  })
+
+  it('a whole-line comment no longer swallows the next line', () => {
+    expect(copyGateVerdicts([`# whole line comment\n${X}`, `x=1 # c\n${X}`]).map((v) => v.result)).toEqual([true, true])
+  })
+
+  it('the text of a comment is not a command (the shell does not run it); a # inside a word is no comment', () => {
+    const v = copyGateVerdicts([
+      `echo a # b; ${X}`, // the sender sits INSIDE the comment: bash never runs it
+      `ls # ${X}`,
+      `echo a#b; ${X}`, // not a comment: the sender runs
+      `echo $#; ${X}`,
+    ]).map((r) => r.result)
+    expect(v).toEqual([false, false, true, true])
+  })
+})
+
 describe('python copy gate: here-string depth bound and hostile input', () => {
   it('a sender eight here-strings deep is still found', () => {
     expect(copyGateVerdicts([nest(8)])[0].result).toBe(true)

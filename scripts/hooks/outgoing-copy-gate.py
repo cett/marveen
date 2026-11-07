@@ -320,6 +320,38 @@ def _word_boundaries(cmd: str) -> str:
     return "".join(out)
 
 
+def _strip_comments(cmd: str) -> str:
+    """cmd without its shell comments: an unquoted `#` at the START of a word (after whitespace or one of
+    ; | & ( ) < >) up to, not including, the newline. `echo a#b`, `echo $#` and `${#x}` hold no comment. The
+    newline stays, so the next line is a command of its own. Doing this BEFORE the lexer matters twice: an
+    apostrophe or a quote in a comment (`ls # don't`) no longer leaves a quote open, which sent the whole command
+    to the strong-literal fallback and let `python3 -m send --to x # don't` through, and shlex's own comment
+    handling (cut at any #, newline swallowed) is not used at all (lex.commenters is empty)."""
+    if "#" not in cmd:
+        return cmd
+    out = []
+    q = None  # None | "'" | '"'
+    i, n = 0, len(cmd)
+    while i < n:
+        ch = cmd[i]
+        if q:
+            if ch == "\\" and q == '"' and i + 1 < n:
+                out.append(cmd[i:i + 2]); i += 2; continue
+            if ch == q:
+                q = None
+            out.append(ch); i += 1; continue
+        if ch in "'\"":
+            q = ch; out.append(ch); i += 1; continue
+        if ch == "\\" and i + 1 < n:
+            out.append(cmd[i:i + 2]); i += 2; continue
+        if ch == "#" and (i == 0 or cmd[i - 1] in " \t\n;|&()<>"):
+            nl = cmd.find("\n", i)
+            i = n if nl == -1 else nl
+            continue
+        out.append(ch); i += 1
+    return "".join(out)
+
+
 # --- bounded heredoc scan -------------------------------------
 # Hard limits, measured on 365k real Bash calls of the fleet (max command 32 KB, max 7
 # heredoc openers, longest opener line 1.7 KB): each limit is 4x or more above anything
@@ -436,7 +468,7 @@ def _strip_heredoc_bodies(cmd: str) -> str:
 def _segments_tokens(cmd: str):
     """[[token, ...], ...] szegmensenkent -- quote-tudatosan, poziciot orizve."""
     import shlex
-    lex = shlex.shlex(_word_boundaries(_mask_subshell_markers(_strip_heredoc_bodies(cmd))),
+    lex = shlex.shlex(_word_boundaries(_mask_subshell_markers(_strip_comments(_strip_heredoc_bodies(cmd)))),
                       posix=True, punctuation_chars="();|&")
     lex.whitespace_split = True
     # Comment-BLIND, like the JS twin (segmentsTokens in email-send-gate.mjs reads a `#` as a character). shlex
