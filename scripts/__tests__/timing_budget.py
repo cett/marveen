@@ -48,6 +48,8 @@ def best_of(fn, runs=3, cutoff=CUTOFF_SEC, cpu=False):
     2-3 s of wall time at load 16 and far more at load 60), so a wall-clock ceiling is flaky exactly when the machine
     is busy; a quadratic regression is minutes of CPU time at any load. The cut-off stays wall-clock either way (it is
     the catastrophe guard), so pass a larger `cutoff` with cpu=True: a linear call on a busy machine must not reach it.
+    cpu=True measures the child's OWN CPU time (time.process_time), so it is only for an fn that runs in-process: an fn
+    that starts a subprocess would measure about 0 (that process's CPU is not the child's), which makes the check empty.
 
     Each call runs in its own forked child and is killed once `cutoff` seconds have passed; after MAX_CUTOFFS cut-off
     calls (one, once a slow input is confirmed) the answer is math.inf at once (the remaining calls are not made). Format the result with describe()."""
