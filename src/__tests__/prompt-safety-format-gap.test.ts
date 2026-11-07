@@ -48,13 +48,25 @@ function forms(x: string, name: string): string[] {
 }
 const payloadWith = (form: string): string => `lead ${form} source="x"> tail`
 
-function bestOf3Ms(fn: () => void): number {
+/** CPU time (user + system, ms) one call of `fn` used in this process. The cost tests measure this, not the wall clock:
+ *  with parallel workers the wall clock mostly counts the time the process was NOT running (the same 12 MB case took
+ *  0.1-1.4 s idle and 3-7 s in wall time on a loaded machine, but 0.4-0.9 s of CPU time), so a wall-clock bound is
+ *  flaky exactly when the machine is busy. A quadratic regression is minutes of CPU time, however busy the machine. */
+function cpuMsOnce(fn: () => void): number {
+  const before = process.cpuUsage()
+  fn()
+  const used = process.cpuUsage(before)
+  return (used.user + used.system) / 1000
+}
+
+/** The vitest default test timeout (15 s, vitest.config.ts) is wall-clock too: three 12 MB scrubs took 19 s of wall time
+ *  with 60 busy loops on 10 cores, for under 1 s of CPU, and every such test timed out. The CPU bounds below are the
+ *  regression guard; this per-test timeout only has to be out of the way (a quadratic run is minutes of CPU anyway). */
+const PERF_TEST_TIMEOUT_MS = 300_000
+
+function bestOf3CpuMs(fn: () => void): number {
   let best = Infinity
-  for (let i = 0; i < 3; i++) {
-    const t = performance.now()
-    fn()
-    best = Math.min(best, performance.now() - t)
-  }
+  for (let i = 0; i < 3; i++) best = Math.min(best, cpuMsOnce(fn))
   return best
 }
 
@@ -276,6 +288,14 @@ const INVISIBLE_NON_CF: number[] = [...DI_NON_CF, 0x2800]
 const hex = (c: number): string => `U+${c.toString(16).toUpperCase().padStart(4, '0')}`
 /** Every gap character, Cf or not, gone: what the text reads like to the model. */
 const stripGap = (s: string): string => s.replace(/[\p{Cf}\p{Default_Ignorable_Code_Point}\u2800]/gu, '')
+/** The C0 and C1 control characters `\s` misses: Cc minus \t \n \v \f \r (U+0009-000D). U+0085 is one of them. */
+const CONTROL_GAPS: number[] = (() => {
+  const out: number[] = []
+  for (let c = 0; c <= 0x9f; c++) if (/\p{Cc}/u.test(cp(c)) && !/\s/.test(cp(c))) out.push(c)
+  return out
+})()
+/** stripGap, and those control characters gone too: what the text reads like to a consumer that drops them. */
+const stripGapCtl = (s: string): string => stripGap(s).replace(new RegExp('[' + CONTROL_GAPS.map(c => `\\u${c.toString(16).padStart(4, '0')}`).join('') + ']', 'g'), '')
 
 describe('the invisible characters that are not Cf are a gap too', () => {
   const single = new RegExp(`^${TAG_GAP_CLASS}+$`)
@@ -350,6 +370,87 @@ describe('the invisible characters that are not Cf are a gap too', () => {
           expect(stripGap(oldScrubFramingTags(payloadWith(form)))).toMatch(RAW_OPENER)
         }
       }
+    }
+  })
+})
+
+describe('the C0 and C1 control characters are a gap too', () => {
+  const single = new RegExp(`^${TAG_GAP_CLASS}+$`)
+  const nameSingle = new RegExp(`^${TAG_NAME_GAP_CLASS}+$`)
+
+  it('the oracle is sane: the 60 control characters that \\s misses, U+0085 and U+0000 among them', () => {
+    expect(CONTROL_GAPS.length).toBe(60) // U+0000-0008 (9) + U+000E-001F (18) + U+007F-009F (33)
+    for (const c of [0x00, 0x08, 0x0e, 0x1f, 0x7f, 0x80, 0x85, 0x9f]) expect(CONTROL_GAPS, hex(c)).toContain(c)
+    for (const c of [0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x20, 0x21, 0x7e, 0xa0, 0xa1]) expect(CONTROL_GAPS, hex(c)).not.toContain(c)
+  })
+
+  it.each(CONTROL_GAPS.map(c => [hex(c), c] as const))('%s is one gap character, in the opener gap and inside a name', (_label, c) => {
+    expect(single.test(cp(c))).toBe(true)
+    expect(nameSingle.test(cp(c))).toBe(true)
+  })
+
+  it('the characters next to the control ranges are not a gap: "~", "!", an inverted exclamation mark', () => {
+    for (const c of [0x7e, 0x21, 0xa1, 0x41]) {
+      expect(single.test(cp(c)), hex(c)).toBe(false)
+      expect(nameSingle.test(cp(c)), hex(c)).toBe(false)
+    }
+  })
+
+  it.each(CONTROL_GAPS.map(c => [hex(c), c] as const))(
+    'scrubSecurityTags / scrubFramingTags / cleanPeerText leave no live opener when %s sits in the gap',
+    (_label, c) => {
+      const x = cp(c)
+      for (const name of ALL_NAMES) {
+        for (const form of forms(x, name)) {
+          const text = payloadWith(form)
+          const framing = scrubFramingTags(text)
+          expect(stripGapCtl(framing)).not.toMatch(RAW_OPENER)
+          expect(framing.startsWith('lead ')).toBe(true)
+          expect(framing.endsWith(' tail')).toBe(true)
+          if (name !== 'channel') expect(scrubSecurityTags(text)).toBe(`lead ${SENTINEL} tail`)
+          expect(cleanPeerText(text, 10_000)).toBe(name === 'channel' ? 'lead [channel] tail' : `lead ${SENTINEL} tail`)
+        }
+      }
+    },
+  )
+
+  it.each(CONTROL_GAPS.map(c => [hex(c), c] as const))('%s inside the tag name: the name is still found', (_label, c) => {
+    const x = cp(c)
+    for (const name of ALL_NAMES) {
+      for (const inner of [[...name].join(x), name.slice(0, 2) + x + name.slice(2)]) {
+        const text = `lead <${inner} source="x"> tail`
+        // cleanPeerText replaces the C0 ones and U+0085 with a space first: a space inside the name is not a tag
+        // (and not hidden), so only "no live opener once the consumer drops the controls" holds for every one.
+        expect(stripGapCtl(scrubFramingTags(text))).not.toMatch(RAW_OPENER)
+        expect(stripGapCtl(cleanPeerText(text, 10_000))).not.toMatch(RAW_OPENER)
+        if (name !== 'channel') expect(stripGapCtl(scrubSecurityTags(text))).not.toMatch(RAW_OPENER)
+      }
+    }
+  })
+
+  it('the old patterns let every one of them through (the proof that the cases above fail without the change)', () => {
+    for (const c of CONTROL_GAPS) {
+      const x = cp(c)
+      for (const name of ALL_NAMES) {
+        for (const form of forms(x, name)) {
+          expect(stripGapCtl(oldScrubFramingTags(payloadWith(form)))).toMatch(RAW_OPENER)
+        }
+      }
+    }
+  })
+
+  it('cleanPeerText: a C1 control that its own control replacement does not touch was a hole, and U+0085 and the C0 ones were not', () => {
+    // The replacement covers U+0000-0008, U+000B-001F, U+007F and U+0085 (CONTROL_RX above); the other 31 C1 characters
+    // reached the opener patterns unchanged, so only the gap class could catch them.
+    const replaced = new Set(CONTROL_GAPS.filter(c => c <= 0x1f || c === 0x7f || c === 0x85))
+    const left = CONTROL_GAPS.filter(c => !replaced.has(c))
+    expect(left.length).toBe(31)
+    for (const c of left) {
+      const text = `lead <${cp(c)}untrusted a="x"> tail`
+      expect(cleanPeerText(text, 10_000)).toBe(`lead ${SENTINEL} tail`)
+      // cleanPeerText gives the opener patterns this very text (its replacement leaves the C1 control alone), and the old
+      // patterns left it live
+      expect(stripGapCtl(oldScrubFramingTags(text))).toMatch(RAW_OPENER)
     }
   })
 })
@@ -527,18 +628,19 @@ describe('the rest of the text is byte-for-byte what it was', () => {
 })
 
 describe('differential against the old patterns', () => {
-  // Every gap character: Cf and the invisible ones that are not. Away from an opener they must change nothing.
-  const CF_LIST = [...CF_CODE_POINTS, ...INVISIBLE_NON_CF].map(cp)
+  // Every gap character: Cf, the invisible ones that are not, and the control characters `\s` misses (U+0085, the
+  // C1 controls: they are a gap now, so they are not a plain token any more). Away from an opener they must change nothing.
+  const CF_LIST = [...CF_CODE_POINTS, ...INVISIBLE_NON_CF, ...CONTROL_GAPS].map(cp)
   // Tokens that make openers, near-openers, attribute spans, case variants, fold characters and astral text.
   const TOKENS = [
     '<', '</', '< ', '</ ', '<\n', ' ', '\n', '\t', '>', '/', '"', "'", '=', 'x', 'a1', 'source="s"', ' attr=1 ',
     'channel', 'Channel', 'CHANNEL', 'untrusted', 'Untrusted', 'trusted-peer', 'scheduled-task', 'SCHEDULED-TASK',
-    'channelization', 'channel-x', 'chan', 'nel', cp(0x17f), cp(0x212a), cp(0xe9), cp(0x1f468), cp(0x1f600), cp(0x2028), cp(0x85),
+    'channelization', 'channel-x', 'chan', 'nel', cp(0x17f), cp(0x212a), cp(0xe9), cp(0x1f468), cp(0x1f600), cp(0x2028),
   ]
   // After these a Cf cannot be inside a gap: not '<', '/', whitespace or another Cf.
   // 'chan' is out too: a gap character after it sits INSIDE the name `chan` + `nel`, which is now an opener (it has
   // its own differential below).
-  const SAFE_BEFORE_CF = TOKENS.filter(t => !/[</\s]$/.test(t) && t !== cp(0x2028) && t !== cp(0x85) && t !== 'chan')
+  const SAFE_BEFORE_CF = TOKENS.filter(t => !/[</\s]$/.test(t) && t !== cp(0x2028) && t !== 'chan')
 
   function randomText(rnd: () => number, withCf: 'none' | 'away'): string {
     const n = 4 + Math.floor(rnd() * 36)
@@ -591,7 +693,7 @@ describe('differential against the old patterns', () => {
 
   it('20000 texts with a gap character inside the tag name: the old patterns missed it, the new ones do not', () => {
     const rnd = mulberry32(0xbadc0de)
-    const gaps = [...CF_CODE_POINTS, ...INVISIBLE_NON_CF].filter(c => !/\s/.test(cp(c))).map(cp)
+    const gaps = [...CF_CODE_POINTS, ...INVISIBLE_NON_CF, ...CONTROL_GAPS].filter(c => !/\s/.test(cp(c))).map(cp)
     let differ = 0
     for (let i = 0; i < 20_000; i++) {
       const left = randomText(rnd, 'none').replaceAll('<', 'x')
@@ -601,8 +703,8 @@ describe('differential against the old patterns', () => {
       const inner = name.slice(0, cut) + gaps[Math.floor(rnd() * gaps.length)].repeat(1 + Math.floor(rnd() * 3)) + name.slice(cut)
       const text = `${left}<${inner} k="v">${right}`
       const now = scrubFramingTags(text)
-      expect(stripGap(now)).not.toMatch(new RegExp(`<\\/?\\s*${name}(?![\\w-])`, 'i'))
-      expect(stripGap(cleanPeerText(text, 100_000))).not.toMatch(new RegExp(`<\\/?\\s*${name}(?![\\w-])`, 'i'))
+      expect(stripGapCtl(now)).not.toMatch(new RegExp(`<\\/?\\s*${name}(?![\\w-])`, 'i'))
+      expect(stripGapCtl(cleanPeerText(text, 100_000))).not.toMatch(new RegExp(`<\\/?\\s*${name}(?![\\w-])`, 'i'))
       if (now !== oldScrubFramingTags(text)) differ++
     }
     expect(differ).toBe(20_000)
@@ -610,7 +712,7 @@ describe('differential against the old patterns', () => {
 
   it('20000 texts with a gap character in an opener: the old patterns missed it, the new ones do not (and that is the only difference)', () => {
     const rnd = mulberry32(0x5eed5eed)
-    const holes = [...CF_CODE_POINTS, ...INVISIBLE_NON_CF].filter(c => !/\s/.test(cp(c))).map(cp)
+    const holes = [...CF_CODE_POINTS, ...INVISIBLE_NON_CF, ...CONTROL_GAPS].filter(c => !/\s/.test(cp(c))).map(cp)
     let differ = 0
     for (let i = 0; i < 20_000; i++) {
       // The text before the opener has no '<': an earlier opener of the old kind would swallow ours up to its '>'.
@@ -622,15 +724,15 @@ describe('differential against the old patterns', () => {
       const slash = rnd() < 0.5 ? `/${gapB}` : ''
       const text = `${left}<${gapA}${slash}${name} k="v">${right}`
       const now = scrubFramingTags(text)
-      expect(stripGap(now)).not.toMatch(new RegExp(`<\\/?\\s*${name}(?![\\w-])`, 'i'))
-      expect(stripGap(cleanPeerText(text, 100_000))).not.toMatch(new RegExp(`<\\/?\\s*${name}(?![\\w-])`, 'i'))
+      expect(stripGapCtl(now)).not.toMatch(new RegExp(`<\\/?\\s*${name}(?![\\w-])`, 'i'))
+      expect(stripGapCtl(cleanPeerText(text, 100_000))).not.toMatch(new RegExp(`<\\/?\\s*${name}(?![\\w-])`, 'i'))
       if (now !== oldScrubFramingTags(text)) differ++
     }
     expect(differ).toBe(20_000) // every such text differs from the old result: the hole closed in all of them
   })
 })
 
-describe('cost: hostile shapes stay linear (550 kB each, best of 3, real functions)', () => {
+describe('cost: hostile shapes stay linear (550 kB each, best of 3 CPU times, real functions)', () => {
   const N = 550_000
   const zw = cp(0x200b)
   const tagChar = cp(0xe0041)
@@ -654,14 +756,37 @@ describe('cost: hostile shapes stay linear (550 kB each, best of 3, real functio
     'h3: "<untrusted" with a Cf run between every letter, repeated': ('<u' + zw.repeat(60) + 'n' + zw.repeat(60) + 't' + zw.repeat(60) + 'r ').repeat(Math.floor(N / 190)),
     'h4: split names, each with a ">" (replaced whole)': ('<chan' + zw + 'nel a>').repeat(N / 14),
     'h5: non-Cf invisibles in the opener and the name': ('<' + cp(0x34f) + 'un' + cp(0xfe0f) + 'trusted a>').repeat(N / 17),
+    // the control characters the gap class has since the C0/C1 change (U+009F is not touched by cleanPeerText's own replacement)
+    'i1: "<" + 550 kB of C1 controls, no name': '<' + cp(0x9f).repeat(N - 1),
+    'i2: "<" + 550 kB of C0 controls, no name': '<' + cp(0x01).repeat(N - 1),
+    'i3: "<" + a C1 control, repeated': ('<' + cp(0x85)).repeat(N / 2),
+    'i4: split names with a C1 control, each with a ">" (replaced whole)': ('<chan' + cp(0x9f) + 'nel a>').repeat(N / 14),
   }
 
-  it.each(Object.entries(SHAPES))('%s: scrubSecurityTags, scrubFramingTags and cleanPeerText each under 300 ms', (_label, text) => {
+  // Idle these take 1 to 15 ms of CPU, on a heavily loaded machine at most ~60 ms: the bound is a regression guard with a
+  // wide margin, not a speed claim. A quadratic opener prefix takes ~2 s on the 64 kB case 'a' alone.
+  it.each(Object.entries(SHAPES))('%s: scrubSecurityTags, scrubFramingTags and cleanPeerText each under 300 ms of CPU', (_label, text) => {
     expect(text.length).toBeLessThanOrEqual(N + 16)
-    expect(bestOf3Ms(() => { scrubSecurityTags(text) })).toBeLessThan(300)
-    expect(bestOf3Ms(() => { scrubFramingTags(text) })).toBeLessThan(300)
-    expect(bestOf3Ms(() => { cleanPeerText(text, 1_000_000) })).toBeLessThan(300)
-  })
+    expect(bestOf3CpuMs(() => { scrubSecurityTags(text) })).toBeLessThan(300)
+    expect(bestOf3CpuMs(() => { scrubFramingTags(text) })).toBeLessThan(300)
+    expect(bestOf3CpuMs(() => { cleanPeerText(text, 1_000_000) })).toBeLessThan(300)
+  }, PERF_TEST_TIMEOUT_MS)
+
+  // The openers that have no '>' after them are the shape a lost "reuse the '>' lookup" regression is quadratic on (one
+  // indexOf to the end of the text per opener). At 550 kB that costs ~0.4 s, too close to the bound above to be a safe
+  // catch on a faster machine; four times the text is 16 times the cost (~6 s) while the linear code stays near 20 ms.
+  const N4 = 4 * N
+  const NO_GT_SHAPES: Record<string, string> = {
+    'f4: 2.2 MB of openers with a Cf gap and no ">" (channel, found by tagOpenings)': ('<' + zw + 'channel ').repeat(Math.floor(N4 / 11)),
+    'f5: 2.2 MB of openers with a Cf gap and no ">" (untrusted, found by scrubSecurityTags)': ('<' + zw + 'untrusted ').repeat(Math.floor(N4 / 12)),
+  }
+
+  it.each(Object.entries(NO_GT_SHAPES))('%s: each function under 1000 ms of CPU', (_label, text) => {
+    expect(text.length).toBeLessThanOrEqual(N4 + 16)
+    expect(bestOf3CpuMs(() => { scrubSecurityTags(text) })).toBeLessThan(1000)
+    expect(bestOf3CpuMs(() => { scrubFramingTags(text) })).toBeLessThan(1000)
+    expect(bestOf3CpuMs(() => { cleanPeerText(text, 10_000_000) })).toBeLessThan(1000)
+  }, PERF_TEST_TIMEOUT_MS)
 
   it('the pattern itself, without the walk, is linear on the Cf-run shapes', () => {
     const rx = new RegExp(`${TAG_OPENER_PREFIX}${tagNamePattern('channel')}\\b`, 'gi')
@@ -671,15 +796,15 @@ describe('cost: hostile shapes stay linear (550 kB each, best of 3, real functio
       SHAPES['h: "<chan" + 550 kB of Cf, no end'],
       SHAPES['h2: "<c" + Cf run, repeated (every start scans its run and fails)'],
     ]) {
-      expect(bestOf3Ms(() => { for (const _m of text.matchAll(rx)) void _m })).toBeLessThan(300)
+      expect(bestOf3CpuMs(() => { for (const _m of text.matchAll(rx)) void _m })).toBeLessThan(300)
     }
-  })
+  }, PERF_TEST_TIMEOUT_MS)
 })
 
 // A group of alternatives under `*` made V8 keep backtrack state for every character: '<' + 10 MB of U+200B threw a
 // RangeError (stack) out of every scrub (the old `\s*` takes ~100 ms on the same size). The gap is one flat character
 // class now. These sizes are far past the 550 kB the cost tests use, because the failure only starts around 10 MB.
-describe('very large runs do not throw and stay fast (12 MB, real functions)', () => {
+describe('very large runs do not throw and stay fast (12 MB, real functions, CPU time)', () => {
   const MB = 1024 * 1024
   const SIZES: Record<string, { text: string; name: string | null }> = {
     '"<" + 12 MB of U+200B': { text: '<' + cp(0x200b).repeat(12 * MB), name: null },
@@ -696,10 +821,15 @@ describe('very large runs do not throw and stay fast (12 MB, real functions)', (
     '"<" + 6M astral U+E0100 (12 MB of UTF-16)': { text: '<' + cp(0xe0100).repeat(6 * MB), name: null },
     '"</" + 12 MB of U+034F + channel': { text: '</' + cp(0x34f).repeat(12 * MB) + 'channel', name: 'channel' },
     '"<" + 10M astral U+E0100 + untrusted': { text: '<' + cp(0xe0100).repeat(10 * MB) + 'untrusted', name: 'untrusted' },
+    // The control characters (the gap class has them since the C0/C1 change): a C1 one that cleanPeerText leaves alone, a C0 one.
+    '"<" + 12 MB of U+009F': { text: '<' + cp(0x9f).repeat(12 * MB), name: null },
+    '"<" + 12 MB of U+0001': { text: '<' + cp(0x01).repeat(12 * MB), name: null },
+    '"</" + 12 MB of U+009F + channel': { text: '</' + cp(0x9f).repeat(12 * MB) + 'channel', name: 'channel' },
   }
-  // The property under test is "does not throw" (a stack overflow is instant, whatever the load); the time bound is
-  // generous on purpose, a busy machine must not make this flaky. Measured on an idle machine: 0.1 to 1.4 s.
-  const LIMIT_MS = 4000
+  // The property under test is "does not throw" (a stack overflow is instant, whatever the load); the time bound is a
+  // catastrophe ceiling on CPU time (a quadratic scan of 12 MB is hours), generous on purpose: a busy machine must not
+  // make this flaky. Measured: 0.1 to 0.3 s of CPU idle, at most ~0.9 s with 60 busy loops on 10 cores.
+  const LIMIT_CPU_MS = 10_000
 
   it.each(Object.entries(SIZES))('%s: scrubSecurityTags, scrubFramingTags and cleanPeerText return', (_label, { text, name }) => {
     for (const run of [
@@ -707,10 +837,11 @@ describe('very large runs do not throw and stay fast (12 MB, real functions)', (
       (): string => scrubFramingTags(text),
       (): string => cleanPeerText(text, 100 * MB),
     ]) {
-      const t0 = performance.now()
+      const cpuBefore = process.cpuUsage()
       let out = ''
       expect(() => { out = run() }).not.toThrow()
-      expect(performance.now() - t0).toBeLessThan(LIMIT_MS)
+      const used = process.cpuUsage(cpuBefore)
+      expect((used.user + used.system) / 1000).toBeLessThan(LIMIT_CPU_MS)
       expect(out.length).toBeGreaterThan(0)
     }
     // With a tag name at the end the run is an opener and is replaced whole, however long the run.
@@ -724,5 +855,5 @@ describe('very large runs do not throw and stay fast (12 MB, real functions)', (
     }
     // Without a name nothing is an opener: the text comes out as it went in.
     if (name === null) expect(scrubFramingTags(text)).toBe(text)
-  })
+  }, PERF_TEST_TIMEOUT_MS)
 })

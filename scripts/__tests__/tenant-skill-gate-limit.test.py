@@ -25,6 +25,7 @@ Run: python3 <thisfile>   Exit 0 = all pass.
 import importlib.util
 import json
 import os
+import resource
 import subprocess
 import sys
 import tempfile
@@ -61,6 +62,18 @@ def run_gate(tool, tool_input):
     t = time.perf_counter()
     p = subprocess.run([sys.executable, GATE], input=json.dumps(payload).encode(), capture_output=True, timeout=120)
     return p.returncode, (p.stdout + p.stderr).decode(errors="replace"), time.perf_counter() - t
+
+
+def run_gate_cpu(tool, tool_input):
+    """Like run_gate, but the third value is the CPU time (user + system, seconds) of the gate process, not the wall
+    time: on a busy machine the wall time of the same call was several times its CPU time (3.63 s against ~0.6 s),
+    so a wall bound failed whenever the machine was busy. The subprocess timeout stays wall-clock (catastrophe guard)."""
+    payload = {"tool_name": tool, "tool_input": tool_input, "cwd": "/tmp"}
+    before = resource.getrusage(resource.RUSAGE_CHILDREN)
+    p = subprocess.run([sys.executable, GATE], input=json.dumps(payload).encode(), capture_output=True, timeout=120)
+    after = resource.getrusage(resource.RUSAGE_CHILDREN)
+    cpu = (after.ru_utime - before.ru_utime) + (after.ru_stime - before.ru_stime)
+    return p.returncode, (p.stdout + p.stderr).decode(errors="replace"), cpu
 
 
 class LimitTest(unittest.TestCase):
@@ -104,9 +117,9 @@ class LimitTest(unittest.TestCase):
         for name, cmd in shapes.items():
             with self.subTest(shape=name):
                 self.assertLessEqual(len(cmd), limit)
-                rc, out, secs = run_gate("Bash", {"command": cmd})
+                rc, out, cpu = run_gate_cpu("Bash", {"command": cmd})
                 self.assertEqual(rc, 0, out[:200])
-                self.assertLess(secs, 3)
+                self.assertLess(cpu, 3, "gate used %.2f s of CPU" % cpu)
 
     def test_the_path_word_limit_is_4096(self):
         # PATH_MAX is 1024 on macOS and 4096 on Linux: a longer word is no real path.
@@ -239,6 +252,18 @@ class LimitTest(unittest.TestCase):
         # Run under every interpreter available (the system Python 3.9 and the current one).
         limit = load().MAX_BASH_COMMAND_CHARS
         deep = ("/" + "a/" * limit)[:limit]
+        # The property, independent of load: a word over the limit never reaches realpath. Without the length skip
+        # the CPU bound below is only ~2 % away (3.05 s against 3 s on Python 3.9), so it cannot be the guard.
+        m = load()
+        seen = []
+        real = os.path.realpath
+        m.os.path.realpath = lambda p: seen.append(len(p)) or real(p)
+        try:
+            for cmd in (deep, "ls /tmp %s y" % deep[:60000]):
+                m.bash_skill_dirs(cmd, "/tmp")
+        finally:
+            m.os.path.realpath = real
+        self.assertEqual([n for n in seen if n > m.MAX_PATH_WORD_CHARS], [])
         interpreters = [sys.executable] + [p for p in ("/usr/bin/python3",) if os.path.exists(p) and not os.path.samefile(p, sys.executable)]
         for py in interpreters:
             for tool, inp in (("Bash", {"command": deep}), ("Bash", {"command": "ls /tmp %s y" % deep[:60000]}),
@@ -247,10 +272,15 @@ class LimitTest(unittest.TestCase):
                               ("Glob", {"pattern": deep}), ("Grep", {"pattern": deep}), ("Grep", {"pattern": "x", "glob": deep})):
                 with self.subTest(python=py, tool=tool):
                     payload = {"tool_name": tool, "tool_input": inp, "cwd": "/tmp"}
-                    t = time.perf_counter()
+                    # CPU time of the gate process, not wall time: on a busy machine the wall time of the same
+                    # call was 3.0-3.3 s against 0.1-1.0 s of CPU, so a wall bound failed whenever the machine was
+                    # busy. The timeout stays wall-clock, as the catastrophe guard.
+                    before = resource.getrusage(resource.RUSAGE_CHILDREN)
                     p = subprocess.run([py, GATE], input=json.dumps(payload).encode(), capture_output=True, timeout=120)
+                    after = resource.getrusage(resource.RUSAGE_CHILDREN)
+                    cpu = (after.ru_utime - before.ru_utime) + (after.ru_stime - before.ru_stime)
                     self.assertEqual(p.returncode, 0, p.stderr.decode(errors="replace")[:200])
-                    self.assertLess(time.perf_counter() - t, 3)
+                    self.assertLess(cpu, 3, "gate used %.2f s of CPU" % cpu)
 
     def test_the_path_field_refusal_carries_the_reason_code_of_the_audit_lib(self):
         with open(GATE, encoding="utf-8") as fh:
