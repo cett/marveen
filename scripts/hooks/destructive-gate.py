@@ -363,14 +363,67 @@ def scannable(cmd):
     text = _blank_ranges(text, _comment_ranges(text))
     keep = _script_arg_ranges(text)
     text = _blank_ranges(text, _prose_quote_ranges(text, keep, code))
-    return text
+    # LAST, on purpose: every range above is an offset into the ORIGINAL text, and a continuation joined
+    # earlier would shift them. It also has to come after the heredoc and comment blanking: a data heredoc
+    # whose line ends in a backslash would otherwise swallow its own terminator line (and everything after
+    # it would read as heredoc data), and a comment ending in a backslash would swallow the next line.
+    return _join_continuations(text)
+
+
+def _join_continuations(text):
+    """Remove every backslash-newline that the shell removes: outside single quotes (in double quotes
+    and unquoted alike). `r\\<newline>m -rf x` runs `rm -rf x`; the gate has to read it as one word.
+
+    Walks the text once (linear). An escaped backslash (`\\\\`) consumes its pair, so `\\\\<newline>` is
+    a literal backslash and a real line break, not a continuation.
+    """
+    if '\\\n' not in text:
+        return text
+    out, i, q = [], 0, 0  # q: 0 unquoted, 1 single quote, 2 double quote
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if q == 1:
+            out.append(ch)
+            if ch == "'":
+                q = 0
+            i += 1
+            continue
+        if ch == '\\' and i + 1 < n:
+            if text[i + 1] == '\n':
+                i += 2
+                continue
+            out.append(ch)
+            out.append(text[i + 1])
+            i += 2
+            continue
+        if q == 0 and ch == '#' and (i == 0 or text[i - 1] in ' \t\n;|&('):
+            # An unquoted `#` at the start of a word opens a comment that ends at the newline; a backslash
+            # in front of that newline is just a character of the comment, NOT a continuation. Joining it
+            # would swallow the next line (a command that really runs) into the comment's line.
+            j = text.find('\n', i)
+            j = n if j < 0 else j
+            out.append(text[i:j])
+            i = j
+            continue
+        if ch == "'" and q == 0:
+            q = 1
+        elif ch == '"':
+            q = 2 if q == 0 else 0
+        out.append(ch)
+        i += 1
+    return ''.join(out)
 
 
 def segments(text):
-    """Logical segments (&&, ||, ;, |, newline, $(, backtick) -- quote-aware.
+    """Logical segments (&&, ||, ;, |, &, newline, $(, backtick) -- quote-aware.
 
     A naive split lets a '|' inside a quoted grep pattern open a fake new
     segment, making the pattern's next word look like a command name.
+
+    A single `&` (run in the background) ends a segment too: `true & rm x` runs both. It is NOT a
+    delimiter inside `&&`, `&>` / `&>>` (redirect both streams) or `>&` / `<&` / `2>&1` (file
+    descriptor duplication): cutting those apart would make the word after them a fake command.
     """
     state = _quote_map(text)
     parts, start, i = [], 0, 0
@@ -382,6 +435,12 @@ def segments(text):
         if hit:
             parts.append(text[start:i])
             i += len(hit)
+            start = i
+            continue
+        if text[i] == '&' and not (i + 1 < len(text) and text[i + 1] == '>') \
+                and not (i > 0 and text[i - 1] in '<>'):
+            parts.append(text[start:i])
+            i += 1
             start = i
             continue
         i += 1
@@ -475,6 +534,59 @@ def _after_wrapper(toks, i):
     return None
 
 
+def _plain(word):
+    """A command word the way the shell reads it: unquoted backslashes dropped (`\\rm` and `r\\m` run
+    `rm`). Quotes are already gone (_tokens). The word is only ever used to be COMPARED."""
+    return word.replace('\\', '')
+
+
+# Words that open or continue a compound command: the real command name is the NEXT word. Only ever
+# looked at in FIRST position of a segment -- `git commit -m "... then rm ..."` and `man rm` start with
+# another word, so a word of this list inside an argument is never read as one.
+_SHELL_KEYWORDS = frozenset(('if', 'then', 'else', 'elif', 'while', 'until', 'do', '!', '{', '}'))
+
+
+def _skip_shell_syntax(toks, i):
+    """Index past the shell syntax that can stand in front of a segment's command name:
+    compound-command keywords (`then rm`, `do rm`, `else rm`), `{` / `}`, `!`, a `case` header
+    (`case x in`) or a case pattern (`a) rm`, `a|b)` is cut at the `|` first), and a function
+    definition (`f() { rm x; }` reads `f) {`, `function f {`). Bounded, never loops."""
+    for _ in range(16):
+        if i >= len(toks):
+            return i
+        w = _plain(toks[i][0])
+        if w in _SHELL_KEYWORDS:
+            i += 1
+            continue
+        if w == 'case':
+            # `case WORD in`: skip through the `in`.
+            j = i + 1
+            while j < len(toks) and _plain(toks[j][0]) != 'in' and j < i + 4:
+                j += 1
+            i = j + 1 if j < len(toks) and _plain(toks[j][0]) == 'in' else i + 1
+            continue
+        if w == 'function':
+            i += 2
+            continue
+        # `f() {` / `f () {` / `f(){`: _bare_tokens blanked the `(`, leaving `f` then `)` (then `{`), or
+        # `f` then `){`. A lone `(rm)` has no `{` after its `)`, so a subshell is not mistaken for this.
+        if i + 1 < len(toks) and not toks[i][1]:
+            nxt = toks[i + 1][0]
+            if nxt == '){':
+                i += 2
+                continue
+            if nxt == ')' and i + 2 < len(toks) and toks[i + 2][0] == '{':
+                i += 3
+                continue
+        # A case pattern ending in `)` (the `(` was blanked by _bare_tokens): `a) rm`, or `b) rm` after `a|`.
+        # Only when more words follow: a lone `rm)` is `(rm)`, a subshell, and its name must stay readable.
+        if len(w) > 1 and w.endswith(')') and '(' not in w and not toks[i][1] and i + 1 < len(toks):
+            i += 1
+            continue
+        return i
+    return i
+
+
 def command_index(toks):
     """Index of the segment's ACTUAL command name, seeing through wrappers.
 
@@ -482,13 +594,13 @@ def command_index(toks):
     and wrappers (xargs, timeout, ...) are skipped. None if there is no
     command name.
     """
-    i = 0
+    i = _skip_shell_syntax(toks, 0)
     for _ in range(12):  # bounded chain length -- never loop forever
         while i < len(toks) and re.match(r'^[A-Za-z_][A-Za-z0-9_]*=', toks[i][0]):
             i += 1
         if i >= len(toks):
             return None
-        base = os.path.basename(toks[i][0])
+        base = os.path.basename(_plain(toks[i][0]))
         if base in _TRANSPARENT:
             i += 1
             continue
@@ -504,7 +616,7 @@ def command_index(toks):
 
 def _sub_scripts(toks, idx):
     """The segment's shell command's -c script(s)."""
-    if idx is None or os.path.basename(toks[idx][0]) not in _SHELLS:
+    if idx is None or os.path.basename(_plain(toks[idx][0])) not in _SHELLS:
         return []
     for k in range(idx + 1, len(toks)):
         if toks[k][0] in ('-c', '--command') and k + 1 < len(toks):
@@ -593,11 +705,13 @@ def check_bash(cmd, agent_id=None, _depth=0):
                 names.append((toks[j + 1][0], None))
 
         for name, second in names:
-            base = os.path.basename(name)
+            # A trailing `)` is the end of a subshell the `(` of which _bare_tokens blanked: `(rm)`.
+            base = os.path.basename(_plain(name)).rstrip(')')
             if base in BANNED_CMDS:
                 block('A tiltott parancs: "%s" (a teljes szegmens: %s)' % (base, seg[:160]),
                       agent_id, 'Bash')
-            if base == 'git' and second == 'push' and not _is_coordinator_push_allowed():
+            if base == 'git' and second is not None and _plain(second) == 'push' \
+                    and not _is_coordinator_push_allowed():
                 block('git push: a kozos repoba valo iras kifele mutato, visszafordithatatlan '
                       'muvelet. Commitolni szabad, pusholni nem.', agent_id, 'Bash')
 
