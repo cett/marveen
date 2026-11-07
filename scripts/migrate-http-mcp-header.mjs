@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const USAGE = 'usage: migrate-http-mcp-header.mjs --server <name> --header <Header> --secret <vault id> [--apply] [--revert] [--node <abs path>] <config.json> [...]'
-const BAD = new Set(['unreadable', 'token-mismatch', 'other-helper', 'write-failed'])
+const BAD = new Set(['unreadable', 'token-mismatch', 'bad-prefix', 'other-helper', 'write-failed'])
 
 function parse(argv) {
   const o = { apply: false, revert: false, files: [] }

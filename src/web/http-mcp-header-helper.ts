@@ -11,10 +11,7 @@
 // client then does not authenticate). The failure is described in `event`, by outcome and secret id, NEVER by
 // value; the caller logs it, because Claude Code shows the helper's stderr nowhere.
 import { getSecret } from './vault.js'
-
-const SECRET_ID = /^[A-Za-z0-9._-]{1,128}$/
-const HEADER_NAME = /^[A-Za-z0-9][A-Za-z0-9-]{0,63}$/
-const MAX_PREFIX = 32
+import { SECRET_ID, HEADER_NAME, isValidHelperPrefix } from './http-mcp-header-rules.js'
 
 export type HelperOutcome = 'ok' | 'bad-args' | 'ssh-key' | 'unresolved' | 'bad-value' | 'vault-error'
 
@@ -50,8 +47,8 @@ export function parseHelperArgs(argv: readonly string[]): HelperArgs | null {
   const prefix = seen.get('--prefix') ?? ''
   if (secretId === undefined || header === undefined) return null
   if (!SECRET_ID.test(secretId) || !HEADER_NAME.test(header)) return null
-  // Printable ASCII only: a control character in the prefix would be a header-injection vector.
-  if (prefix.length > MAX_PREFIX || !/^[\x20-\x7e]*$/.test(prefix)) return null
+  // The prefix rule is shared with the migration, which must not write a command this parse would refuse.
+  if (!isValidHelperPrefix(prefix)) return null
   return { secretId, header, prefix }
 }
 

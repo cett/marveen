@@ -21,7 +21,7 @@ export class MigrateOptionsError extends Error {}
 const run = (kind) => (file, o) => {
   if (file.endsWith('refuse.json')) throw new MigrateOptionsError('the vault has no secret with that id')
   if (file.endsWith('boom.json')) throw new RangeError('boom ${VALUE}')
-  const status = file.endsWith('bad.json') ? 'token-mismatch' : (o.apply ? kind + '-applied' : kind + '-dry')
+  const status = file.endsWith('bad.json') ? 'token-mismatch' : file.endsWith('badprefix.json') ? 'bad-prefix' : (o.apply ? kind + '-applied' : kind + '-dry')
   return { file, status }
 }
 export const migrateHttpHeaderFile = run('migrate')
@@ -82,6 +82,14 @@ describe('output and exit codes', () => {
     const r = cli([...base, '--apply', 'bad.json', 'a.json'])
     expect(r.status).toBe(1)
     expect(r.stdout).toBe('token-mismatch\tbad.json\nmigrate-applied\ta.json\n')
+  })
+
+  it('a prefix the helper would refuse makes the exit code 1 too, in a dry run as well', () => {
+    for (const extra of [['--apply'], []]) {
+      const r = cli([...base, ...extra, 'badprefix.json'])
+      expect(r.status).toBe(1)
+      expect(r.stdout.startsWith('bad-prefix\tbadprefix.json\n')).toBe(true)
+    }
   })
 
   it('refused options stop the run with exit 2 and a message that has no value', () => {

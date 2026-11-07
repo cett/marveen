@@ -22,9 +22,8 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { atomicWriteFileSync } from './atomic-write.js'
+import { SECRET_ID, HEADER_NAME, isValidHelperPrefix } from './http-mcp-header-rules.js'
 
-const SECRET_ID = /^[A-Za-z0-9._-]{1,128}$/
-const HEADER_NAME = /^[A-Za-z0-9][A-Za-z0-9-]{0,63}$/
 // A shorter secret could match the tail of an unrelated header value by accident.
 const MIN_SECRET_LENGTH = 16
 const HELPER_PATH = fileURLToPath(new URL('../../scripts/vault-http-header-helper.mjs', import.meta.url))
@@ -33,7 +32,7 @@ const HELPER_PATH_VAR = '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'
 export type MigrateStatus =
   | 'would-migrate' | 'migrated' | 'already-migrated'
   | 'would-revert' | 'reverted' | 'not-migrated'
-  | 'no-file' | 'unreadable' | 'no-server' | 'no-header' | 'token-mismatch' | 'other-helper' | 'write-failed'
+  | 'no-file' | 'unreadable' | 'no-server' | 'no-header' | 'token-mismatch' | 'bad-prefix' | 'other-helper' | 'write-failed'
 
 export interface MigrateOptions {
   server: string
@@ -141,9 +140,13 @@ export function migrateHttpHeaderFile(file: string, opts: MigrateOptions): Migra
 
   if (!hasStatic) return { file, status: 'no-header' }
   if (!current.endsWith(secret)) return { file, status: 'token-mismatch' }
+  const prefix = current.slice(0, current.length - secret.length)
+  // The prefix becomes a helper argument. One the helper refuses (over 32 characters, a tab, non-ASCII) would
+  // turn into a silent loss of authentication once the static header is dropped, and a revert could not
+  // restore it either. Judged before the dry-run answer, so a dry run reports it too.
+  if (!isValidHelperPrefix(prefix)) return { file, status: 'bad-prefix' }
   if (!opts.apply) return { file, status: 'would-migrate' }
 
-  const prefix = current.slice(0, current.length - secret.length)
   server.headersHelper = buildHelperCommand({ nodePath: opts.nodePath, home: opts.home, secretId: opts.secretId, header: opts.header, prefix })
   dropHeader(server, headers, opts.header)
   return write(file, parsed) ? { file, status: 'migrated' } : { file, status: 'write-failed' }
