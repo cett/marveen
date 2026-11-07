@@ -7,7 +7,7 @@
 // directory (no node:fs mock), which on macOS also sits behind the /var -> /private/var link, so the real
 // base directories are exercised by every test here.
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest'
-import { linkSync, lstatSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
 
@@ -39,8 +39,10 @@ vi.mock('../db/vault-secret-acl.js', () => ({
   replaceSecretAcl: vi.fn(), deleteSecretAcl: vi.fn(), listAllSecretAcls: vi.fn(() => ({})),
 }))
 
-import { granteeOfMcpFile, verifiedGranteeOfMcpFile, partitionTargetsByAcl, syncSecret, collectAllMcpFilePaths, isCanonicalMcpPath } from '../web/vault-bindings.js'
+import { granteeOfMcpFile, verifiedGranteeOfMcpFile, partitionTargetsByAcl, syncSecret, unsyncBinding, removeBindingsForSecret, collectAllMcpFilePaths, isCanonicalMcpPath, setSyncBeforeRenameTestHook } from '../web/vault-bindings.js'
 import { listAgentNames } from '../web/agent-config.js'
+import { deleteVaultBindingsForSecret } from '../db/vault-bindings.js'
+import { logger } from '../logger.js'
 
 const A = join(dirs.agents, 'a')
 const B = join(dirs.agents, 'b')
@@ -65,6 +67,8 @@ beforeEach(() => {
   vi.mocked(listAgentNames).mockReturnValue([])
   store.bindings = []
   store.acl = {}
+  setSyncBeforeRenameTestHook(null)
+  vi.mocked(logger.warn).mockClear()
 })
 
 afterAll(() => { rmSync(dirs.root, { recursive: true, force: true }) })
@@ -343,5 +347,134 @@ describe('the list refuses a link target, end to end', () => {
     const result = await syncSecret('s1')
     expect(result).toEqual({ updated: 1, errors: [] })
     expect(JSON.parse(readFileSync(victim, 'utf-8')).mcpServers.srv.env.K).toBe('vault:s1')
+  })
+})
+
+// The target is judged again right before the rename (a non-empty list only). The test hook runs first in that
+// re-check, so a test can change the file system between the check and the rename, which is exactly the window.
+describe('syncSecret judges a listed target again right before the rename', () => {
+  const tmpFilesIn = (dir: string) => readdirSync(dir).filter(n => n.endsWith('.tmp'))
+  function bind(path: string, acl: string[] | null = ['agent:a']): void {
+    if (acl) store.acl['s1'] = acl
+    store.bindings = [{ vaultSecretId: 's1', envVar: 'K', targets: [{ mcpFilePath: path, serverName: 'srv' }] }]
+  }
+  const loggedWarnings = () => JSON.stringify(vi.mocked(logger.warn).mock.calls)
+
+  it('T1 nothing changes in between: the hook runs once with the tmp file of the target directory, the write goes through', async () => {
+    const own = put(A)
+    const seen: string[] = []
+    setSyncBeforeRenameTestHook(tmp => { seen.push(tmp); expect(readFileSync(own, 'utf-8')).toBe(body) }) // target still old at that moment
+    bind(own)
+    expect(await syncSecret('s1')).toEqual({ updated: 1, errors: [] })
+    expect(seen).toHaveLength(1)
+    expect(seen[0].startsWith(own + '.')).toBe(true)
+    expect(seen[0].endsWith('.tmp')).toBe(true)
+    expect(JSON.parse(readFileSync(own, 'utf-8')).mcpServers.srv.env.K).toBe('vault:s1')
+    expect(tmpFilesIn(A)).toEqual([])
+    expect(vi.mocked(logger.warn)).not.toHaveBeenCalled()
+  })
+
+  it('T2 the parent directory becomes a link to another place of the same agent (same grantee, other real directory): no rename, nothing written, error reported', async () => {
+    const own = put(join(A, 'projects', 'p'))
+    const other = put(join(A, 'projects', 'q'))
+    const moved = join(A, 'projects', 'p-moved')
+    setSyncBeforeRenameTestHook(() => {
+      renameSync(join(A, 'projects', 'p'), moved)
+      symlinkSync('q', join(A, 'projects', 'p'))
+    })
+    bind(own)
+    // the grantee does not change here (agent:a both before and after): only the real parent tells the two apart
+    const result = await syncSecret('s1')
+    expect(result.updated).toBe(0)
+    expect(result.errors).toEqual([`Failed to update ${own}: target changed during sync`])
+    expect(verifiedGranteeOfMcpFile(own)).toBe('agent:a')
+    expect(readFileSync(other, 'utf-8')).toBe(body) // where the link points: untouched, no tmp file there
+    expect(tmpFilesIn(join(A, 'projects', 'q'))).toEqual([])
+    expect(readFileSync(join(moved, MCP), 'utf-8')).toBe(body) // the original file: untouched
+    expect(vi.mocked(logger.warn)).toHaveBeenCalledWith({ vaultSecretId: 's1', mcpFilePath: own }, 'vault-sync-target-changed')
+  })
+
+  it('T2b known limit: the tmp file of a parent swapped to a link is not found by the clean-up (it is looked up at the new place) and stays in the old directory as an orphan, never in the target', async () => {
+    const own = put(join(A, 'projects', 'p'))
+    put(join(A, 'projects', 'q'))
+    const moved = join(A, 'projects', 'p-moved')
+    setSyncBeforeRenameTestHook(() => {
+      renameSync(join(A, 'projects', 'p'), moved)
+      symlinkSync('q', join(A, 'projects', 'p'))
+    })
+    bind(own)
+    await syncSecret('s1')
+    expect(tmpFilesIn(moved)).toHaveLength(1) // orphan: a leftover file, not a write into the target
+    expect(readFileSync(join(moved, MCP), 'utf-8')).toBe(body)
+    expect(tmpFilesIn(join(A, 'projects', 'q'))).toEqual([])
+  })
+
+  it('T3 the parent directory becomes a link into agent b (other grantee): no rename, b untouched, error reported', async () => {
+    const own = put(join(A, 'projects', 'p'))
+    const victim = put(B)
+    setSyncBeforeRenameTestHook(() => {
+      renameSync(join(A, 'projects', 'p'), join(A, 'projects', 'p-moved'))
+      symlinkSync(join('..', '..', 'b'), join(A, 'projects', 'p'))
+    })
+    bind(own)
+    const result = await syncSecret('s1')
+    expect(result.updated).toBe(0)
+    expect(result.errors).toEqual([`Failed to update ${own}: target changed during sync`])
+    expect(verifiedGranteeOfMcpFile(own)).toBeNull()
+    expect(readFileSync(victim, 'utf-8')).toBe(body)
+    expect(tmpFilesIn(B)).toEqual([])
+  })
+
+  it('T3b the file itself becomes a link (same real parent, so only the grantee check can see it): no rename, error reported', async () => {
+    const own = put(A)
+    const victim = put(B)
+    setSyncBeforeRenameTestHook(() => {
+      rmSync(own)
+      symlinkSync(join('..', 'b', MCP), own)
+    })
+    bind(own)
+    const result = await syncSecret('s1')
+    expect(result.updated).toBe(0)
+    expect(result.errors).toEqual([`Failed to update ${own}: target changed during sync`])
+    expect(lstatSync(own).isSymbolicLink()).toBe(true) // nothing replaced the link
+    expect(readFileSync(victim, 'utf-8')).toBe(body)
+    expect(tmpFilesIn(A)).toEqual([]) // the tmp file is in the real directory and was removed
+  })
+
+  it('the refusal and the log carry the id and the path, never the secret value', async () => {
+    const own = put(A)
+    put(B)
+    setSyncBeforeRenameTestHook(() => { rmSync(own); symlinkSync(join('..', 'b', MCP), own) })
+    bind(own)
+    const result = await syncSecret('s1')
+    const seen = JSON.stringify(result) + loggedWarnings()
+    expect(seen).not.toContain('the-secret-value')
+  })
+
+  it('T5 an open secret (no list) is not re-judged: the hook never runs and a changed parent does not matter', async () => {
+    const own = put(A)
+    const hook = vi.fn()
+    setSyncBeforeRenameTestHook(hook)
+    bind(own, null)
+    expect(await syncSecret('s1')).toEqual({ updated: 1, errors: [] })
+    expect(hook).not.toHaveBeenCalled()
+    expect(JSON.parse(readFileSync(own, 'utf-8')).mcpServers.srv.env.K).toBe('vault:s1')
+  })
+
+  it('T6 unsyncBinding and removeBindingsForSecret are not ACL-gated and do not use the re-check', async () => {
+    const own = put(A)
+    const hook = vi.fn()
+    setSyncBeforeRenameTestHook(hook)
+    bind(own)
+    await syncSecret('s1') // writes K = vault:s1 (the hook has run once here, reset below)
+    hook.mockClear()
+    await unsyncBinding('s1', 'K')
+    expect(JSON.parse(readFileSync(own, 'utf-8')).mcpServers.srv.env).toEqual({})
+    // put the reference back by hand, then drop the whole secret
+    writeFileSync(own, JSON.stringify({ mcpServers: { srv: { command: 'orig', env: { K: 'vault:s1' } } } }))
+    vi.mocked(deleteVaultBindingsForSecret).mockResolvedValueOnce([{ vaultSecretId: 's1', envVar: 'K', targets: [{ mcpFilePath: own, serverName: 'srv' }] }] as never)
+    await removeBindingsForSecret('s1')
+    expect(JSON.parse(readFileSync(own, 'utf-8')).mcpServers.srv.env).toEqual({})
+    expect(hook).not.toHaveBeenCalled()
   })
 })
