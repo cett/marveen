@@ -1046,6 +1046,27 @@ function gitOptionsSafe(args, sub) {
 // GIT_WORK_TREE, GIT_DIR). When that tree is this install, only the positive list may run.
 const lcPath = (p) => String(p).toLowerCase()
 const isUnder = (p, root) => lcPath(p) === lcPath(root) || lcPath(p).startsWith(lcPath(root) + sep)
+// Is `p` a git directory git would accept (HEAD plus objects/, or HEAD plus commondir for a worktree's own)?
+const isGitDir = (p) => {
+  const has = (n, dir) => { try { const s = statSync(join(p, n)); return dir ? s.isDirectory() : s.isFile() } catch { return false } }
+  return has('HEAD', false) && (has('objects', true) || has('commondir', false))
+}
+// 'install' | true | false for the `.git` entry at `p`: a directory with HEAD and objects, a gitfile whose
+// gitdir: line names a git directory, a symlink to either (resolved). 'install' when it leads to the install's
+// own .git (not to .git/worktrees/NAME, which is a linked worktree's own).
+function validGitEntry(p, ctx) {
+  let st
+  try { st = lstatSync(p) } catch { return false }
+  let real = p
+  if (st.isSymbolicLink()) { real = realOrSelf(p); try { st = statSync(real) } catch { return false } }
+  let gd = real
+  if (st.isFile()) {
+    try { const m = /^gitdir:\s*(.+)$/m.exec(readFileSync(real, 'utf8')); if (!m) return false; gd = realOrSelf(resolve(dirname(real), m[1].trim())) } catch { return false }
+  } else if (!st.isDirectory()) return false
+  if (!isGitDir(gd)) return false
+  const instGit = ctx.installRoot ? join(ctx.installRoot, '.git') : null
+  return instGit && isUnder(gd, instGit) && !isUnder(gd, join(instGit, 'worktrees')) ? 'install' : true
+}
 // The nearest ancestor directory holding a `.git` ENTRY, file or directory: the main checkout's .git is a
 // directory, a linked worktree's is a file, so a worktree is its own toplevel and is never the install.
 function gitToplevel(dir, ctx) {
@@ -1053,7 +1074,11 @@ function gitToplevel(dir, ctx) {
   if (cache.has(dir)) return cache.get(dir)
   let found = null
   for (let d = dir; ;) {
-    try { lstatSync(join(d, '.git')); found = d; break } catch { /* no .git here */ }
+    // only a VALID .git counts: git steps over an empty .git directory or a file that is not a gitfile, so the
+    // gate must too, else `mkdir agents/x/.git` turns an install subdirectory into a toplevel of its own
+    const g = validGitEntry(join(d, '.git'), ctx)
+    if (g === 'install') { found = ctx.installRoot; break } // a symlink / gitfile that leads to the install's own git directory
+    if (g) { found = d; break }
     const up = dirname(d)
     if (up === d) break
     d = up
@@ -1122,6 +1147,8 @@ function commandTargetsInstall(cmd, args, envWords, base, ctx) {
     if (isAbsolute(w)) return w
     return dir === null ? UNKNOWN : join(dir, w)
   }
+  // GIT_DIR / GIT_WORK_TREE set earlier in the same command (`export GIT_DIR=...; git ...`) apply as well
+  for (const n of ['GIT_DIR', 'GIT_WORK_TREE']) if (ctx.vars?.[n]) { if (n === 'GIT_DIR') gitDir = abs(ctx.vars[n]); else tree = abs(ctx.vars[n]) }
   for (const w of envWords) {
     const m = /^GIT_(WORK_TREE|DIR)=(.*)$/.exec(w)
     if (m) { if (m[1] === 'DIR') gitDir = abs(m[2]); else tree = abs(m[2]) }
@@ -1139,13 +1166,22 @@ function commandTargetsInstall(cmd, args, envWords, base, ctx) {
       if (a === '--work-tree') { tree = abs(args[++k]); continue }
       if (a.startsWith('--work-tree=')) { tree = abs(a.slice(12)); continue }
       if (a === '--git-dir') { gitDir = abs(args[++k]); continue }
+      // -c core.worktree=DIR names the work tree like --work-tree does
+      if (a === '-c' && /^core\.worktree=/i.test(args[k + 1] ?? '')) { tree = abs(args[++k].slice(14)); continue }
       if (a.startsWith('--git-dir=')) { gitDir = abs(a.slice(10)); continue }
     }
   }
   if (tree === UNKNOWN || gitDir === UNKNOWN) return true
   const real = (p) => realOrSelf(resolve(p))
   // a git directory inside the install's own .git moves its HEAD and index even from a worktree
-  if (gitDir !== null && ctx.installRoot && isUnder(real(gitDir), join(ctx.installRoot, '.git'))) return true
+  // (resolved through symlinks and through a `.git` FILE that points at the real git directory); the own git
+  // directory of a linked worktree, .git/worktrees/NAME, is that worktree's and stays fine
+  if (gitDir !== null && ctx.installRoot) {
+    let gd = real(gitDir)
+    try { if (statSync(gd).isFile()) { const m = /^gitdir:\s*(.+)$/m.exec(readFileSync(gd, 'utf8')); if (m) gd = real(resolve(dirname(gd), m[1].trim())) } } catch { /* not there: judged as spelled */ }
+    const instGit = join(ctx.installRoot, '.git')
+    if (isUnder(gd, instGit) && !isUnder(gd, join(instGit, 'worktrees'))) return true
+  }
   // an explicit work tree inside (or above) the install is written directly
   if (tree !== null && treeIsInstall(real(tree), true, ctx)) return true
   if (dir === null) return true

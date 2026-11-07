@@ -5,7 +5,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 // @ts-expect-error -- plain .mjs hook script, no types
 import { bashProtectedDecision, gateDecision } from '../../scripts/self-pace-gate.mjs'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync, symlinkSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { tmpdir } from 'node:os'
 import { execFileSync, spawnSync } from 'node:child_process'
@@ -209,6 +209,58 @@ describe('R-IMPL review round 1: directory tracking, wrappers, text commands, op
     for (const c of ['git worktree add -f ../wtx other', 'git worktree add --force ../wtx other', 'git worktree add -B main ../wtx other', 'git worktree add -b topic -f ../wtx other', 'git worktree add --unknown ../wtx'])
       expect(denied(c, root), c).toBe(true)
     for (const c of ['git worktree add -b topic ../wtx origin/develop', 'git worktree add --detach ../wtx', 'git worktree add --no-checkout -q ../wtx other']) expect(denied(c, root), c).toBe(false)
+  })
+})
+
+describe('R-IMPL: a git directory of the install, reached from a worktree', () => {
+  const link = () => join(base, 'gitlink')
+  beforeAll(() => { symlinkSync(join(root, '.git'), link()) })
+  it('GIT_DIR / --git-dir into the install .git: a writer is refused from a worktree cwd, in every spelling', () => {
+    for (const w of ['checkout other', 'reset --hard', 'merge other', 'stash pop']) {
+      expect(denied(`GIT_DIR=${root}/.git git ${w}`, wt), w).toBe(true)
+      expect(denied(`git --git-dir=${root}/.git ${w}`, wt), w).toBe(true)
+      expect(denied(`git --git-dir ${root}/.git ${w}`, wt), w).toBe(true)
+      expect(denied(`export GIT_DIR=${root}/.git; git ${w}`, wt), w).toBe(true)
+      expect(denied(`GIT_DIR=${link()} git ${w}`, wt), `symlink ${w}`).toBe(true)
+      expect(denied(`GIT_DIR=../install/.git git ${w}`, wt), `relative ${w}`).toBe(true)
+    }
+  })
+  it('the same git directory with a positive-list reader stays allowed', () => {
+    for (const c of ['log --oneline -3', 'diff', 'status', 'show HEAD', 'ls-files']) {
+      expect(denied(`GIT_DIR=${root}/.git git ${c}`, wt), c).toBe(false)
+      expect(denied(`git --git-dir=${link()} ${c}`, wt), c).toBe(false)
+    }
+  })
+  it('the own git directory of a linked worktree is that worktree: the legitimate use', () => {
+    expect(denied(`GIT_DIR=${root}/.git/worktrees/wt git checkout other`, wt)).toBe(false)
+    expect(denied(`git --git-dir=${root}/.git/worktrees/wt checkout other`, wt)).toBe(false)
+    expect(denied(`GIT_DIR=${wt}/.git git checkout other`, wt)).toBe(false) // the .git FILE points at it
+  })
+  it('-c core.worktree goes through the same work tree resolution', () => {
+    expect(denied(`git -c core.worktree=${root} checkout other`, wt)).toBe(true)
+    expect(denied(`git -c core.worktree=${root}/vendor reset --hard`, wt)).toBe(true)
+    expect(denied(`git -c core.worktree=${base}/elsewhere checkout other`, wt)).toBe(false)
+  })
+})
+
+describe('R-IMPL: only a VALID .git entry makes a toplevel', () => {
+  let fakeDir: string; let fakeLink: string; let fakeFile: string
+  beforeAll(() => {
+    fakeDir = join(root, 'agents', 'agent-fake'); fakeLink = join(root, 'agents', 'agent-link'); fakeFile = join(root, 'agents', 'agent-file')
+    mkdirSync(join(fakeDir, '.git'), { recursive: true }) // empty: git steps over it
+    mkdirSync(fakeLink, { recursive: true }); symlinkSync(join(root, '.git'), join(fakeLink, '.git'))
+    mkdirSync(fakeFile, { recursive: true }); writeFileSync(join(fakeFile, '.git'), `gitdir: ${root}/.git\n`)
+  })
+  it('an empty .git directory, a symlink to the install .git and a gitfile that points at it are still the install', () => {
+    for (const cwd of [fakeDir, fakeLink, fakeFile]) {
+      for (const c of ['git checkout other', 'git reset --hard', `cd ${cwd} && git checkout other`]) expect(denied(c, cwd), `${c} @ ${cwd}`).toBe(true)
+      expect(denied('git status', cwd)).toBe(false)
+    }
+  })
+  it('a real repository and a linked worktree inside the install are still their own toplevel', () => {
+    expect(denied('git checkout main', vendor)).toBe(false)
+    expect(denied('git checkout other', nested)).toBe(false)
+    expect(denied('git checkout other', wt)).toBe(false)
   })
 })
 
