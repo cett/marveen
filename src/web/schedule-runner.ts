@@ -86,6 +86,7 @@ import { paneShowsContextSaturation, detectsFirstRunGate, detectPaneState, type 
 import { recordDelivery } from './delivery-intent.js'
 import { withSessionSendLock } from './session-send-lock.js'
 import { withBlackboardLock } from './blackboard-lock.js'
+import { wasPromptRefused } from './send-result.js'
 
 import { systemJob } from '../db/background-jobs.js'
 // How many bare-Enter attempts the post-send resubmit tries before escalating
@@ -283,17 +284,26 @@ export function agentsWithRunnerRow(entries: Iterable<TaskInflightEntry>): Set<s
 // in isolation against a mocked db layer.
 export async function applyBlackboardDone(entry: TaskInflightEntry): Promise<void> {
   if (!entry.sawTurn || !entry.blackboardSnapshot) return
-  // Compare and write under the agent's blackboard lock: a post the agent makes between the read and the done
-  // write (through the route, which takes the same lock) is never overwritten.
-  await withBlackboardLock(entry.agentName, async () => {
-    const cur = await findBlackboardRowByAgent(entry.agentName)
-    const snap = entry.blackboardSnapshot!
+  await writeBlackboardIfUnchanged(entry.agentName, entry.blackboardSnapshot, { status: 'done', summary: entry.taskName })
+}
+
+// Compare-and-write of the runner's own blackboard row: `next` is written only if the row still reads exactly what
+// the runner wrote (`snap`). Under the agent's blackboard lock: a post the agent makes between the read and this
+// write (through the route, which takes the same lock) is never overwritten. Shared by the done write above and the
+// release of a row whose prompt was refused (attemptFireTask).
+async function writeBlackboardIfUnchanged(
+  agentName: string,
+  snap: { status: string; summary: string; task_ref: string | null },
+  next: { status: 'done' | 'blocked'; summary: string },
+): Promise<void> {
+  await withBlackboardLock(agentName, async () => {
+    const cur = await findBlackboardRowByAgent(agentName)
     const unchanged = cur !== undefined &&
       (cur.status === snap.status || (snap.status === 'active' && cur.status === 'stale')) &&
       cur.summary === snap.summary &&
       (cur.task_ref ?? null) === snap.task_ref
     if (unchanged) {
-      await upsertBlackboard(entry.agentName, { status: 'done', summary: entry.taskName, task_ref: snap.task_ref })
+      await upsertBlackboard(agentName, { status: next.status, summary: next.summary, task_ref: snap.task_ref })
     }
   })
 }
@@ -987,7 +997,7 @@ async function attemptFireTask(
   now: number,
   preCheckPrefix?: string,
   lateCatchUpMs?: number,
-): Promise<'fired' | 'busy' | 'missing' | 'starting' | 'error' | 'mcp-missing' | 'first-run'> {
+): Promise<'fired' | 'busy' | 'missing' | 'starting' | 'error' | 'mcp-missing' | 'first-run' | 'refused'> {
   const { session, host } = resolveTaskTarget(task, agentName)
 
   if (!sessionExistsOnHost(host, session)) {
@@ -1172,7 +1182,17 @@ async function attemptFireTask(
     // task aimed at a long-busy session would block on the 12s idle wait every
     // tick -- defeating the very purpose of forceSend (inject regardless, let
     // Claude Code queue it). All non-forceSend tasks keep the gate ON.
-    await sendPromptToSession(session, fullPrompt, host, { waitForIdle: !task.forceSend })
+    const sendResult = await sendPromptToSession(session, fullPrompt, host, { waitForIdle: !task.forceSend })
+    if (wasPromptRefused(sendResult)) {
+      // The prompt did not reach the pane (it sits on the external imports dialog, which swallows the text, or the
+      // send stepped aside). Recording 'fired' and stamping last_run_at would be a run-log row for a task that never
+      // ran, and the cron path would not look at it again until the next occurrence. Nothing of the delivery is
+      // recorded: no ledger row, no last_run, no 'fired', no in-flight entry. The caller queues the retry, and the
+      // runner's blackboard row (written 'active' above) is handed back as 'blocked' so no phantom active task stays.
+      logger.warn({ task: task.name, agent: agentName, session, sendResult }, 'Scheduled task not delivered: the pane refused the prompt; queued for retry')
+      await writeBlackboardIfUnchanged(agentName, _bbSnapshot, { status: 'blocked', summary: `${task.name} (not delivered, retrying)` })
+      return 'refused'
+    }
     recordDelivery(session, fullPrompt, 'scheduled-task')
     await recordScheduleLastRun(task.name, now, lateCatchUpMs != null ? 'fired_late' : 'fired')
     // A lateCatchUpMs value means this tick only matched because of the
@@ -1372,7 +1392,7 @@ export async function runScheduledTaskNow(
     // busy session both get a queued retry that lands once the session is
     // ready. We deliberately do NOT consult skipIfBusy here -- that flag trims
     // redundant cron ticks, but an explicit run-now must not be dropped.
-    if (result === 'starting' || result === 'busy' || result === 'mcp-missing' || result === 'first-run') {
+    if (result === 'starting' || result === 'busy' || result === 'mcp-missing' || result === 'first-run' || result === 'refused') {
       const reason = result === 'mcp-missing' ? mcpMissingReason(task.name, agentName) : result
       await insertPendingTaskRetryIfNew(task.name, agentName, now, reason)
     }
@@ -1988,6 +2008,11 @@ export function startScheduleRunner(): NodeJS.Timeout {
           // pre-check exists to eliminate. The retry row keeps the task alive
           // until the server returns, and the alert names the dead server.
           await insertPendingTaskRetryIfNew(task.name, agentName, now, mcpMissingReason(task.name, agentName))
+        } else if (result === 'refused') {
+          // Exempt from skipIfBusy like 'first-run': the pane refused the text (external imports dialog), it does
+          // not free up by itself between ticks, so dropping the tick would be a silent loss. The retry row keeps
+          // the task alive and the aged alert names the state.
+          await insertPendingTaskRetryIfNew(task.name, agentName, now, 'refused')
         } else if (result === 'first-run') {
           // Also exempt from skipIfBusy: a session parked on a first-run
           // dialog (fresh install) never frees up between ticks the way a
