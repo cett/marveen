@@ -772,12 +772,15 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     const ownerTenantId = resolveVaultAccess(id)
     if (ownerTenantId === null) return true
     deleteSecret(id, ownerTenantId)
-    await removeBindingsForSecret(id)
-    // The grantee list goes with the secret: a re-created id must not inherit the old restriction.
-    // The list is kept under the 'default' tenant (like the bindings), and a secret id is unique only
-    // per tenant: deleting another tenant's secret of the same id must NOT drop the default tenant's
-    // restriction (that would turn a restricted secret into an open one).
-    if (ownerTenantId === 'default') await removeSecretAcl(id)
+    // The bindings and the grantee list are both kept under the 'default' tenant, and a secret id is
+    // unique only per tenant: deleting another tenant's secret of the same id must touch neither the
+    // default tenant's bindings (and the env references written into MCP files) nor its restriction
+    // (dropping the list would turn a restricted secret into an open one).
+    // The list goes with the secret so a re-created id does not inherit the old restriction.
+    if (ownerTenantId === 'default') {
+      await removeBindingsForSecret(id)
+      await removeSecretAcl(id)
+    }
     json(res, { ok: true })
     return true
   }

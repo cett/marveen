@@ -110,6 +110,7 @@ import { tryHandleConnectors } from '../web/routes/connectors.js'
 import { tryHandleVaultSshKeys } from '../web/routes/vault-ssh-keys.js'
 import { tryHandleVaultSsh } from '../web/routes/vault-ssh.js'
 import { getSecret } from '../web/vault.js'
+import { removeBindingsForSecret, removeSecretAcl } from '../web/vault-bindings.js'
 
 const VAULT_JSON = join(STORE_DIR, 'vault.json')
 const VAULT_KEY = join(STORE_DIR, '.vault-key')
@@ -271,6 +272,48 @@ describe('POST /api/vault -- compound-key write isolation', () => {
     await tryHandleConnectors(ctx)
     expect(getSecret('sneaky', 'eszter')).toBe('v')
     expect(getSecret('sneaky', 'default')).toBeNull()
+  })
+})
+
+// ── Delete: bindings and grantee list are default-tenant scope ─────────────────
+describe('DELETE /api/vault/:id -- bindings and grantee list follow the default tenant only', () => {
+  it('admin deleting a non-default tenant\'s secret touches neither the bindings nor the grantee list, and the secret goes', async () => {
+    const { ctx: writeCtx } = makeCtx('POST', '/api/vault', { id: 'shared-id', label: 'k', value: 'b-value' }, undefined, { role: 'user', tenantId: 'tenant-b' })
+    await tryHandleConnectors(writeCtx)
+
+    const { ctx, out } = makeCtx('DELETE', '/api/vault/shared-id', undefined, undefined, { role: 'admin', tenantId: null })
+    await tryHandleConnectors(ctx)
+
+    expect(out.status).toBe(200)
+    expect(getSecret('shared-id', 'tenant-b')).toBeNull()
+    expect(removeBindingsForSecret).not.toHaveBeenCalled()
+    expect(removeSecretAcl).not.toHaveBeenCalled()
+  })
+
+  it('the owning non-default tenant deleting its own secret does not touch them either', async () => {
+    const { ctx: writeCtx } = makeCtx('POST', '/api/vault', { id: 'shared-id', label: 'k', value: 'b-value' }, undefined, { role: 'user', tenantId: 'tenant-b' })
+    await tryHandleConnectors(writeCtx)
+
+    const { ctx, out } = makeCtx('DELETE', '/api/vault/shared-id', undefined, undefined, { role: 'user', tenantId: 'tenant-b' })
+    await tryHandleConnectors(ctx)
+
+    expect(out.status).toBe(200)
+    expect(removeBindingsForSecret).not.toHaveBeenCalled()
+    expect(removeSecretAcl).not.toHaveBeenCalled()
+  })
+
+  it('deleting a default-tenant secret still cleans its bindings and its grantee list', async () => {
+    await seedDefaultSecret('shared-id', 'default-value')
+
+    const { ctx, out } = makeCtx('DELETE', '/api/vault/shared-id', undefined, undefined, { role: 'admin', tenantId: null })
+    await tryHandleConnectors(ctx)
+
+    expect(out.status).toBe(200)
+    expect(getSecret('shared-id')).toBeNull()
+    expect(removeBindingsForSecret).toHaveBeenCalledTimes(1)
+    expect(removeBindingsForSecret).toHaveBeenCalledWith('shared-id')
+    expect(removeSecretAcl).toHaveBeenCalledTimes(1)
+    expect(removeSecretAcl).toHaveBeenCalledWith('shared-id')
   })
 })
 
