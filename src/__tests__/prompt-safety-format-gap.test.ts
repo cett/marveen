@@ -48,13 +48,25 @@ function forms(x: string, name: string): string[] {
 }
 const payloadWith = (form: string): string => `lead ${form} source="x"> tail`
 
-function bestOf3Ms(fn: () => void): number {
+/** CPU time (user + system, ms) one call of `fn` used in this process. The cost tests measure this, not the wall clock:
+ *  with parallel workers the wall clock mostly counts the time the process was NOT running (the same 12 MB case took
+ *  0.1-1.4 s idle and 3-7 s in wall time on a loaded machine, but 0.4-0.9 s of CPU time), so a wall-clock bound is
+ *  flaky exactly when the machine is busy. A quadratic regression is minutes of CPU time, however busy the machine. */
+function cpuMsOnce(fn: () => void): number {
+  const before = process.cpuUsage()
+  fn()
+  const used = process.cpuUsage(before)
+  return (used.user + used.system) / 1000
+}
+
+/** The vitest default test timeout (15 s, vitest.config.ts) is wall-clock too: three 12 MB scrubs took 19 s of wall time
+ *  with 60 busy loops on 10 cores, for under 1 s of CPU, and every such test timed out. The CPU bounds below are the
+ *  regression guard; this per-test timeout only has to be out of the way (a quadratic run is minutes of CPU anyway). */
+const PERF_TEST_TIMEOUT_MS = 300_000
+
+function bestOf3CpuMs(fn: () => void): number {
   let best = Infinity
-  for (let i = 0; i < 3; i++) {
-    const t = performance.now()
-    fn()
-    best = Math.min(best, performance.now() - t)
-  }
+  for (let i = 0; i < 3; i++) best = Math.min(best, cpuMsOnce(fn))
   return best
 }
 
@@ -630,7 +642,7 @@ describe('differential against the old patterns', () => {
   })
 })
 
-describe('cost: hostile shapes stay linear (550 kB each, best of 3, real functions)', () => {
+describe('cost: hostile shapes stay linear (550 kB each, best of 3 CPU times, real functions)', () => {
   const N = 550_000
   const zw = cp(0x200b)
   const tagChar = cp(0xe0041)
@@ -656,12 +668,30 @@ describe('cost: hostile shapes stay linear (550 kB each, best of 3, real functio
     'h5: non-Cf invisibles in the opener and the name': ('<' + cp(0x34f) + 'un' + cp(0xfe0f) + 'trusted a>').repeat(N / 17),
   }
 
-  it.each(Object.entries(SHAPES))('%s: scrubSecurityTags, scrubFramingTags and cleanPeerText each under 300 ms', (_label, text) => {
+  // Idle these take 1 to 15 ms of CPU, on a heavily loaded machine at most ~60 ms: the bound is a regression guard with a
+  // wide margin, not a speed claim. A quadratic opener prefix takes ~2 s on the 64 kB case 'a' alone.
+  it.each(Object.entries(SHAPES))('%s: scrubSecurityTags, scrubFramingTags and cleanPeerText each under 300 ms of CPU', (_label, text) => {
     expect(text.length).toBeLessThanOrEqual(N + 16)
-    expect(bestOf3Ms(() => { scrubSecurityTags(text) })).toBeLessThan(300)
-    expect(bestOf3Ms(() => { scrubFramingTags(text) })).toBeLessThan(300)
-    expect(bestOf3Ms(() => { cleanPeerText(text, 1_000_000) })).toBeLessThan(300)
-  })
+    expect(bestOf3CpuMs(() => { scrubSecurityTags(text) })).toBeLessThan(300)
+    expect(bestOf3CpuMs(() => { scrubFramingTags(text) })).toBeLessThan(300)
+    expect(bestOf3CpuMs(() => { cleanPeerText(text, 1_000_000) })).toBeLessThan(300)
+  }, PERF_TEST_TIMEOUT_MS)
+
+  // The openers that have no '>' after them are the shape a lost "reuse the '>' lookup" regression is quadratic on (one
+  // indexOf to the end of the text per opener). At 550 kB that costs ~0.4 s, too close to the bound above to be a safe
+  // catch on a faster machine; four times the text is 16 times the cost (~6 s) while the linear code stays near 20 ms.
+  const N4 = 4 * N
+  const NO_GT_SHAPES: Record<string, string> = {
+    'f4: 2.2 MB of openers with a Cf gap and no ">" (channel, found by tagOpenings)': ('<' + zw + 'channel ').repeat(Math.floor(N4 / 11)),
+    'f5: 2.2 MB of openers with a Cf gap and no ">" (untrusted, found by scrubSecurityTags)': ('<' + zw + 'untrusted ').repeat(Math.floor(N4 / 12)),
+  }
+
+  it.each(Object.entries(NO_GT_SHAPES))('%s: each function under 1000 ms of CPU', (_label, text) => {
+    expect(text.length).toBeLessThanOrEqual(N4 + 16)
+    expect(bestOf3CpuMs(() => { scrubSecurityTags(text) })).toBeLessThan(1000)
+    expect(bestOf3CpuMs(() => { scrubFramingTags(text) })).toBeLessThan(1000)
+    expect(bestOf3CpuMs(() => { cleanPeerText(text, 10_000_000) })).toBeLessThan(1000)
+  }, PERF_TEST_TIMEOUT_MS)
 
   it('the pattern itself, without the walk, is linear on the Cf-run shapes', () => {
     const rx = new RegExp(`${TAG_OPENER_PREFIX}${tagNamePattern('channel')}\\b`, 'gi')
@@ -671,15 +701,15 @@ describe('cost: hostile shapes stay linear (550 kB each, best of 3, real functio
       SHAPES['h: "<chan" + 550 kB of Cf, no end'],
       SHAPES['h2: "<c" + Cf run, repeated (every start scans its run and fails)'],
     ]) {
-      expect(bestOf3Ms(() => { for (const _m of text.matchAll(rx)) void _m })).toBeLessThan(300)
+      expect(bestOf3CpuMs(() => { for (const _m of text.matchAll(rx)) void _m })).toBeLessThan(300)
     }
-  })
+  }, PERF_TEST_TIMEOUT_MS)
 })
 
 // A group of alternatives under `*` made V8 keep backtrack state for every character: '<' + 10 MB of U+200B threw a
 // RangeError (stack) out of every scrub (the old `\s*` takes ~100 ms on the same size). The gap is one flat character
 // class now. These sizes are far past the 550 kB the cost tests use, because the failure only starts around 10 MB.
-describe('very large runs do not throw and stay fast (12 MB, real functions)', () => {
+describe('very large runs do not throw and stay fast (12 MB, real functions, CPU time)', () => {
   const MB = 1024 * 1024
   const SIZES: Record<string, { text: string; name: string | null }> = {
     '"<" + 12 MB of U+200B': { text: '<' + cp(0x200b).repeat(12 * MB), name: null },
@@ -697,9 +727,10 @@ describe('very large runs do not throw and stay fast (12 MB, real functions)', (
     '"</" + 12 MB of U+034F + channel': { text: '</' + cp(0x34f).repeat(12 * MB) + 'channel', name: 'channel' },
     '"<" + 10M astral U+E0100 + untrusted': { text: '<' + cp(0xe0100).repeat(10 * MB) + 'untrusted', name: 'untrusted' },
   }
-  // The property under test is "does not throw" (a stack overflow is instant, whatever the load); the time bound is
-  // generous on purpose, a busy machine must not make this flaky. Measured on an idle machine: 0.1 to 1.4 s.
-  const LIMIT_MS = 4000
+  // The property under test is "does not throw" (a stack overflow is instant, whatever the load); the time bound is a
+  // catastrophe ceiling on CPU time (a quadratic scan of 12 MB is hours), generous on purpose: a busy machine must not
+  // make this flaky. Measured: 0.1 to 0.3 s of CPU idle, at most ~0.9 s with 60 busy loops on 10 cores.
+  const LIMIT_CPU_MS = 10_000
 
   it.each(Object.entries(SIZES))('%s: scrubSecurityTags, scrubFramingTags and cleanPeerText return', (_label, { text, name }) => {
     for (const run of [
@@ -707,10 +738,11 @@ describe('very large runs do not throw and stay fast (12 MB, real functions)', (
       (): string => scrubFramingTags(text),
       (): string => cleanPeerText(text, 100 * MB),
     ]) {
-      const t0 = performance.now()
+      const cpuBefore = process.cpuUsage()
       let out = ''
       expect(() => { out = run() }).not.toThrow()
-      expect(performance.now() - t0).toBeLessThan(LIMIT_MS)
+      const used = process.cpuUsage(cpuBefore)
+      expect((used.user + used.system) / 1000).toBeLessThan(LIMIT_CPU_MS)
       expect(out.length).toBeGreaterThan(0)
     }
     // With a tag name at the end the run is an opener and is replaced whole, however long the run.
@@ -724,5 +756,5 @@ describe('very large runs do not throw and stay fast (12 MB, real functions)', (
     }
     // Without a name nothing is an opener: the text comes out as it went in.
     if (name === null) expect(scrubFramingTags(text)).toBe(text)
-  })
+  }, PERF_TEST_TIMEOUT_MS)
 })
