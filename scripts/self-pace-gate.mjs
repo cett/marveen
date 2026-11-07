@@ -280,6 +280,15 @@ const SAFE_GIT = new Set([
   'status', 'diff', 'log', 'show', 'blame', 'ls-files', 'add', 'grep', 'rev-parse', 'cat-file', 'check-ignore',
   'diff-tree', 'show-ref', 'ls-tree', 'shortlog', 'commit', 'diff-index', 'diff-files', 'rev-list', 'describe',
 ])
+// R-IMPL (positive list): a git command whose working tree IS this install may run only what is on this
+// list, SAFE_GIT plus the read / prepare forms below. Everything else (checkout, switch, merge, pull, reset,
+// apply, stash pop, cherry-pick, rebase, clean, am, read-tree, checkout-index, revert, restore ... and every
+// git subcommand that does not exist yet) rewrites the tree and is refused. A list of the WRITERS would
+// always be one command behind; this one names what is allowed. Each entry below is checked further in
+// gitInstallOk (fetch / ls-remote: no program-running option or ext:: URL; worktree: add | list; stash: list
+// | show; branch / tag: listing flags only; remote: -v | get-url).
+const INSTALL_GIT_EXTRA = new Set(['fetch', 'ls-remote', 'merge-base', 'for-each-ref', 'name-rev', 'show-branch', 'version', 'worktree', 'stash', 'branch', 'tag', 'remote'])
+const BRANCH_LIST_FLAGS = new Set(['--list', '-l', '--show-current', '-a', '--all', '-r', '--remotes', '-v', '-vv', '--verbose', '--merged', '--no-merged', '--contains', '--no-contains', '--sort', '--format', '--points-at', '--column', '--no-column', '--color', '--no-color', '--abbrev', '--no-abbrev', '-i', '--ignore-case', '-n'])
 const WRAPPER_WORDS = new Set(['env', 'time', 'nohup', 'command', 'builtin', 'exec', 'nice', 'sudo', 'doas', 'stdbuf', 'setsid'])
 const INTERPRETERS = /^(?:python(?:\d+(?:\.\d+)?)?|node(?:js)?|bash|sh|zsh|dash|ksh|perl|ruby|php|deno|bun|tsx|ts-node|source|\.)$/
 const INLINE_FLAGS = new Set(['-c', '-e', '-E', '-p', '-r', '-m', '-', '--eval', '--print', '--require', '--import', '--loader', '-pe', '-ne', '-le'])
@@ -691,7 +700,7 @@ function listDir(dir, ctx, depth = 0, out = []) {
 // The context of one Bash command: every cwd a word may be relative to, the assigned variables, and
 // whether a `cd` went somewhere unknowable.
 function makeContext(command, cwd, prot) {
-  return { cwds: new Set([resolve(cwd)]), current: resolve(cwd), vars: collectVars(command), unknownCwd: false, prot, listing: null, cache: new Map() }
+  return { cwds: new Set([resolve(cwd)]), current: resolve(cwd), vars: collectVars(command), unknownCwd: false, prot, listing: null, cache: new Map(), installRoot: prot?.scriptsDir ? realOrSelf(dirname(prot.scriptsDir)) : null, topCache: new Map() }
 }
 function protectedBasenames(ctx) {
   if (ctx.listing) return ctx.listing
@@ -988,14 +997,19 @@ function destructiveCmd(cmd, args) {
   if (INTERPRETERS.test(cmd)) return args.some((a) => INLINE_FLAGS.has(a))
   return false
 }
-function gitSubcommand(args) {
+// Index of the git subcommand in args (options and their separate values skipped), -1 when there is none.
+function gitSubIndex(args) {
   for (let k = 0; k < args.length; k++) {
     const a = args[k]
     if (a === '-C' || a === '-c' || a === '--git-dir' || a === '--work-tree' || a === '--namespace') { k++; continue }
     if (a.startsWith('-')) continue
-    return a
+    return k
   }
-  return null
+  return -1
+}
+function gitSubcommand(args) {
+  const k = gitSubIndex(args)
+  return k === -1 ? null : args[k]
 }
 // A safe git subcommand is safe only without an option that writes a file or runs a program:
 // --output=FILE (and any abbreviation of it: git accepts --outp=), -c key=value / --config-env (core.pager,
@@ -1003,7 +1017,10 @@ function gitSubcommand(args) {
 function gitSafe(args) {
   const sub = gitSubcommand(args)
   if (!SAFE_GIT.has(sub ?? '')) return false
-  const subAt = args.indexOf(sub)
+  return gitOptionsSafe(args, sub)
+}
+function gitOptionsSafe(args, sub) {
+  const subAt = gitSubIndex(args)
   for (let k = 0; k < args.length; k++) {
     const a = args[k]
     if (k < subAt) {
@@ -1016,6 +1033,133 @@ function gitSafe(args) {
     if (sub === 'grep' && (/^-O/.test(a) || /^--open/.test(a))) return false
   }
   return true
+}
+// --- R-IMPL: the IMPLICIT target of a command (its working tree) ----------------------------------------
+// The gate above reads which protected path a segment SAYS. `git checkout other` says none, yet in the
+// install it replaces the gate files with the other branch's. So for git (and patch) the question is
+// WHERE the command writes: the tree of the repository found from the cwd (or from -C, --work-tree,
+// GIT_WORK_TREE, GIT_DIR). When that tree is this install, only the positive list may run.
+const lcPath = (p) => String(p).toLowerCase()
+const isUnder = (p, root) => lcPath(p) === lcPath(root) || lcPath(p).startsWith(lcPath(root) + sep)
+// The nearest ancestor directory holding a `.git` ENTRY, file or directory: the main checkout's .git is a
+// directory, a linked worktree's is a file, so a worktree is its own toplevel and is never the install.
+function gitToplevel(dir, ctx) {
+  const cache = (ctx.topCache ??= new Map())
+  if (cache.has(dir)) return cache.get(dir)
+  let found = null
+  for (let d = dir; ;) {
+    try { lstatSync(join(d, '.git')); found = d; break } catch { /* no .git here */ }
+    const up = dirname(d)
+    if (up === d) break
+    d = up
+  }
+  cache.set(dir, found)
+  return found
+}
+// Is the tree a git command would write, starting at real directory `dir`, the install? `explicit`: the
+// tree was NAMED (--work-tree, GIT_WORK_TREE) or follows the cwd (GIT_DIR alone): it is then not looked
+// up, and anything inside the install (or above it) counts, because files land there directly.
+function treeIsInstall(dir, explicit, ctx) {
+  const root = ctx.installRoot
+  if (!root) return false
+  if (explicit) return isUnder(dir, root) || isUnder(root, dir)
+  const top = gitToplevel(dir, ctx)
+  // no repository found: a git command there fails, except that one above the install would not be seen;
+  // inside the install that is not worth the risk
+  if (top === null) return isUnder(dir, root)
+  // the install's own checkout, or a repository ABOVE it whose tree contains it
+  if (lcPath(top) === lcPath(root) || isUnder(root, top)) return true
+  // agents/ or agents/<name> with a repository of its own: its tree holds the agents' settings files
+  return agentDirKind(top, ctx.prot) !== null
+}
+const UNKNOWN = Symbol('unknown path')
+// `git ... SUB ...` positive list, see INSTALL_GIT_EXTRA. True: the command cannot rewrite the tree.
+function gitInstallOk(args) {
+  const at = gitSubIndex(args)
+  if (at === -1) return true // `git`, `git --version`
+  const sub = args[at]
+  if (SAFE_GIT.has(sub)) return gitOptionsSafe(args, sub)
+  if (!INSTALL_GIT_EXTRA.has(sub) || !gitOptionsSafe(args, sub)) return false
+  const rest = args.slice(at + 1)
+  if (sub === 'fetch' || sub === 'ls-remote') return !rest.some((a) => /^--(upload-pack|receive-pack|exec)/.test(a) || a.includes('::'))
+  if (sub === 'worktree') return rest[0] === 'add' || rest[0] === 'list'
+  if (sub === 'stash') return rest[0] === 'list' || rest[0] === 'show'
+  if (sub === 'remote') return rest.length === 0 || (rest.length === 1 && rest[0] === '-v') || rest[0] === 'get-url'
+  if (sub === 'branch' || sub === 'tag') {
+    // listing only: every option is a listing / formatting one; a bare name (which would create a ref)
+    // is only a pattern next to --list
+    const listing = rest.some((a) => a === '--list' || a === '-l' || a === '--show-current')
+    for (const a of rest) {
+      if (a.startsWith('-')) { if (!BRANCH_LIST_FLAGS.has(a.split('=')[0])) return false } else if (!listing) return false
+    }
+    return true
+  }
+  return true
+}
+// Does `git` (or `patch`) with these args and env words, run from `base` (null = a cwd we could not resolve),
+// write the tree of this install? UNKNOWN anywhere is yes: the target cannot be shown to be elsewhere.
+function commandTargetsInstall(cmd, args, envWords, base, ctx) {
+  let dir = base
+  let tree = null; let gitDir = null
+  const abs = (v) => {
+    if (v === undefined) return UNKNOWN
+    const w = expandWord(v, ctx.vars, dir ?? '/')
+    if (/[$`*?[]/.test(w)) return UNKNOWN
+    if (isAbsolute(w)) return w
+    return dir === null ? UNKNOWN : join(dir, w)
+  }
+  for (const w of envWords) {
+    const m = /^GIT_(WORK_TREE|DIR)=(.*)$/.exec(w)
+    if (m) { if (m[1] === 'DIR') gitDir = abs(m[2]); else tree = abs(m[2]) }
+  }
+  const upto = cmd === 'git' ? (gitSubIndex(args) === -1 ? args.length : gitSubIndex(args)) : args.length
+  for (let k = 0; k < upto; k++) {
+    const a = args[k]
+    if (cmd === 'git') {
+      if (a === '-C') { const v = abs(args[++k]); dir = v === UNKNOWN ? null : v; continue }
+      if (a === '--work-tree') { tree = abs(args[++k]); continue }
+      if (a.startsWith('--work-tree=')) { tree = abs(a.slice(12)); continue }
+      if (a === '--git-dir') { gitDir = abs(args[++k]); continue }
+      if (a.startsWith('--git-dir=')) { gitDir = abs(a.slice(10)); continue }
+    } else if (a === '-d' || a === '--directory') { const v = abs(args[++k]); dir = v === UNKNOWN ? null : v; continue } else if (a.startsWith('--directory=')) { const v = abs(a.slice(12)); dir = v === UNKNOWN ? null : v; continue }
+  }
+  if (tree === UNKNOWN || gitDir === UNKNOWN) return true
+  const real = (p) => realOrSelf(resolve(p))
+  // a git directory inside the install's own .git moves its HEAD and index even from a worktree
+  if (gitDir !== null && ctx.installRoot && isUnder(real(gitDir), join(ctx.installRoot, '.git'))) return true
+  // an explicit work tree inside (or above) the install is written directly
+  if (tree !== null && treeIsInstall(real(tree), true, ctx)) return true
+  if (dir === null) return true
+  // the git directory is the one found from the cwd unless GIT_DIR / --git-dir names it; with the install's
+  // own, the command moves its HEAD and index even when the files it writes are elsewhere
+  if (gitDir === null) return treeIsInstall(real(dir), false, ctx)
+  return tree === null && treeIsInstall(real(dir), true, ctx)
+}
+// The decision for one segment: a git command that is off the positive list, or a patch that is not a dry
+// run, whose tree is the install. `bases`: the directories the segment may run in. null = no objection.
+function implicitTreeDecision(cmd, words, ci, bases, ctx) {
+  let args = words.slice(ci + 1)
+  if (cmd === 'xargs') {
+    // the file list comes from stdin and cannot be read: what xargs RUNS decides, and the tree is the cwd's
+    if (!xargsRunsDestructive(args)) return null
+    args = []
+  } else if (cmd === 'git' ? gitInstallOk(args) : args.some((a) => a === '--dry-run' || a === '-C' || a === '--check')) return null
+  const env = words.slice(0, ci)
+  for (const b of bases) if (commandTargetsInstall(cmd, args, env, b, ctx)) return { deny: true, reason: 'git-install-tree' }
+  return null
+}
+// `xargs [options] CMD ARGS`: does CMD remove, move or rewrite what it is handed?
+const XARGS_VALUE_OPTS = new Set(['-I', '-n', '-P', '-d', '-L', '-s', '-E', '-a', '-J', '--max-args', '--max-procs', '--delimiter', '--max-lines', '--max-chars', '--eof', '--arg-file', '--replace'])
+function xargsRunsDestructive(args) {
+  for (let k = 0; k < args.length; k++) {
+    const a = args[k]
+    if (a.startsWith('-') && a.length > 1) { if (XARGS_VALUE_OPTS.has(a)) k++; continue }
+    const inner = spliceEnvSplit(args.slice(k))
+    const ik = commandWordIndex(inner)
+    if (ik === -1) return false
+    return destructiveCmd(inner[ik].split('/').pop(), inner.slice(ik + 1))
+  }
+  return false
 }
 // `cp SRC... DIR/` (or `cp -t DIR SRC...`) creates DIR/<basename of SRC>: a file named like a protected
 // one lands there although no word of the command names it. Returns the kind of the protected path a
@@ -1104,8 +1248,13 @@ export function bashProtectedDecision(command, opts = {}) {
     const name = nc === -1 ? '' : nw[nc].split('/').pop()
     return !(READERS.has(name) || name === 'tee')
   }
+  // After `cd X &&` the next command of the chain runs in X only (a failed cd stops the chain); after any
+  // other separator the old directory may still be the current one (a failed `cd X;`, a subshell), so the
+  // directories visited so far all count. `narrow` holds X while the chain of && lasts.
+  let narrow = null
   for (let si = 0; si < segs.length; si++) {
     const seg = segs[si]
+    if (si > 0 && seps[si - 1] !== '&&') narrow = null
     const tokenized = tokenizeShell(seg)
     const { redirects, hasRedirect } = tokenized
     const words = spliceEnvSplit(tokenized.words)
@@ -1117,8 +1266,8 @@ export function bashProtectedDecision(command, opts = {}) {
     if (cmd === 'cd' || cmd === 'pushd') {
       const arg = words.slice(ci + 1).find((a) => !a.startsWith('-'))
       const target = arg === undefined ? homedir() : expandWord(arg, ctx.vars, ctx.current)
-      if (arg === '-' || target.includes('$') || /[*?[`]/.test(target)) ctx.unknownCwd = true
-      else { ctx.current = resolve(ctx.current, target); ctx.cwds.add(ctx.current); ctx.cwds.add(realOrSelf(ctx.current)) }
+      if (arg === '-' || target.includes('$') || /[*?[`]/.test(target)) { ctx.unknownCwd = true; narrow = null }
+      else { ctx.current = resolve(ctx.current, target); ctx.cwds.add(ctx.current); ctx.cwds.add(realOrSelf(ctx.current)); narrow = new Set([ctx.current, realOrSelf(ctx.current)]) }
     }
     if (cmd === 'cp') {
       const ck = copyIntoDirKind(words.slice(ci + 1), ctx)
@@ -1127,6 +1276,13 @@ export function bashProtectedDecision(command, opts = {}) {
     const hit = kinds.find((k) => k && !isAnc(k)) ?? rKinds.find((k) => k && !isAnc(k)) ?? null
     const ancKinds = [...kinds, ...rKinds].filter(isAnc)
     const ancestorHit = !hit && ancKinds.length > 0
+    // R-IMPL: a git / patch / xargs command is judged by the tree it writes, whether or not it names a path.
+    // A segment that also names a protected path keeps the reason of that path (the more specific message).
+    if (cmd === 'git' || cmd === 'patch' || cmd === 'xargs') {
+      const bases = narrow ?? [...ctx.cwds, ...(ctx.unknownCwd ? [null] : [])]
+      const d = implicitTreeDecision(cmd, words, ci, bases, ctx)
+      if (d) return { deny: true, reason: hit ?? (ancestorHit ? ancKinds[0].split(':')[1] : d.reason) }
+    }
     if (!hit && !ancestorHit) {
       // a redirect target with an unresolvable shape is only a problem next to a protected word (below)
       continue
@@ -1485,6 +1641,13 @@ const SCRIPTS_GATE_MSG =
   'Olvasni (cat / grep / diff) es futtatni (node scripts/hooks/x.mjs, python3 scripts/hooks/x.py) szabad; ' +
   'a sajat worktree masolat szerkesztheto.'
 
+const GIT_TREE_MSG =
+  'Git-muvelet az install munkafajan (governance hard-gate). Ennek a telepitesnek a fajlait (kapuk, hookok, scriptek, ' +
+  'beallitasok) egy git checkout / switch / merge / pull / reset / apply / stash pop / cherry-pick / rebase / clean / am / ' +
+  'revert, vagy egy patch egy masik ag tartalmara cserelne, a parancs kimondott utja nelkul is. Az install gyokereben es az ' +
+  'agens-konyvtarban csak olvaso git szabad (status, diff, log, show, blame, grep, ls-files, add, commit, fetch, worktree add / list ...). ' +
+  'A fejleszteshez kulon worktree kell: git worktree add ~/worktrees/<tema> -b <ag> origin/develop, es abban dolgozz (cd ~/worktrees/<tema> && git ...).' +
+  'Valtozo-bol osszeallitott cd celnal a kapu a celt nem latja: irj literalis utat.'
 const SETTINGS_GATE_MSG =
   'Agent-settings fajlok vedve (governance hard-gate). Sub-agentkent NEM irhatod a Claude Code settings.json / ' +
   'settings.local.json fajlokat (agents/*/.claude, agents/*/.claude-config, a telepites .claude mappaja): ' +
@@ -1526,6 +1689,6 @@ if (isInvokedDirectly()) {
     allow() // malformed/empty input must never break the agent's tool calls
   }
   const { deny: shouldDeny, reason } = gateDecision(payload?.tool_name, payload?.tool_input, { cwd: payload?.cwd })
-  if (shouldDeny) deny(reason === 'too-large' ? TOO_LARGE_MSG : reason === 'egress-allowlist' ? ALLOWLIST_GATE_MSG : reason === 'gate-scripts' ? SCRIPTS_GATE_MSG : reason === 'agent-settings' ? SETTINGS_GATE_MSG : GATE_MSG)
+  if (shouldDeny) deny(reason === 'too-large' ? TOO_LARGE_MSG : reason === 'egress-allowlist' ? ALLOWLIST_GATE_MSG : reason === 'gate-scripts' ? SCRIPTS_GATE_MSG : reason === 'agent-settings' ? SETTINGS_GATE_MSG : reason === 'git-install-tree' ? GIT_TREE_MSG : GATE_MSG)
   allow()
 }
