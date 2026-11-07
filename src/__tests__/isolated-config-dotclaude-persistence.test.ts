@@ -301,6 +301,69 @@ describe('HTTP MCP headers follow the home config at every start', () => {
     expect(servers().extra.headers).toEqual({ A: 'b' })
   })
 
+  describe('an entry fed by a headers helper never gets the shared static headers back', () => {
+    const HELPER = { type: 'http', url: 'https://mcp.example/up', headersHelper: "env -i HOME=/h PATH=/p node /s/helper.mjs --secret sec-1 --header Authorization --prefix 'Bearer '" }
+    const SHARED_STATIC = { up: { type: 'http', url: 'https://mcp.example/up', headers: { Authorization: 'Bearer shared-static' } } }
+
+    it('shared static headers + agent helper: the agent entry is unchanged after two starts', () => {
+      writeAgent({ up: HELPER })
+      writeHome(SHARED_STATIC)
+      provision()
+      provision()
+      expect(servers().up).toEqual(HELPER)
+      expect(servers().up.headers).toBeUndefined()
+    })
+
+    it('the raw agent file never contains the shared token, not even transiently on disk', () => {
+      writeAgent({ up: HELPER })
+      writeHome(SHARED_STATIC)
+      provision()
+      expect(readFileSync(agentDot(), 'utf-8')).not.toContain('shared-static')
+    })
+
+    it('a helper whose value is an empty string still blocks the refresh (the key counts, not its content)', () => {
+      writeAgent({ up: { type: 'http', url: 'u', headersHelper: '' } })
+      writeHome(SHARED_STATIC)
+      provision()
+      expect(servers().up.headers).toBeUndefined()
+    })
+
+    // The guard is "the key is present", not "the value is a usable command". A value of another type (written by
+    // a hand edit or a faulty tool) must not let the shared static token back in either: a check on the value's
+    // type would reopen exactly that path for these shapes.
+    it.each([
+      ['an object', { command: 'x' }],
+      ['a number', 7],
+      ['true', true],
+      ['false', false],
+      ['an array', ['x']],
+      ['null', null],
+    ])('a helper whose value is %s still blocks the refresh', (_label, value) => {
+      writeAgent({ up: { type: 'http', url: 'u', headersHelper: value } })
+      writeHome(SHARED_STATIC)
+      provision()
+      provision()
+      expect(servers().up.headers).toBeUndefined()
+      expect(servers().up.headersHelper).toEqual(value)
+      expect(readFileSync(agentDot(), 'utf-8')).not.toContain('shared-static')
+    })
+
+    it('control: an entry WITHOUT a helper is still refreshed (the old behavior stays)', () => {
+      writeAgent({ up: UP_OLD })
+      writeHome(SHARED_STATIC)
+      provision()
+      expect(servers().up.headers).toEqual({ Authorization: 'Bearer shared-static' })
+    })
+
+    it('per entry: a helper entry stays clean while a sibling without a helper is refreshed in the same start', () => {
+      writeAgent({ up: HELPER, other: { type: 'http', url: 'o', headers: { A: 'old' } } })
+      writeHome({ ...SHARED_STATIC, other: { type: 'http', url: 'o', headers: { A: 'new' } } })
+      provision()
+      expect(servers().up).toEqual(HELPER)
+      expect(servers().other.headers).toEqual({ A: 'new' })
+    })
+  })
+
   it('a server only the agent has keeps its headers (no deletion, no touch)', () => {
     writeAgent({ up: UP_OLD, mine: { type: 'http', url: 'm', headers: { A: 'mine' } } })
     writeHome({ up: { type: 'http', url: 'u', headers: { Authorization: 'Bearer new' } } })

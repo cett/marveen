@@ -435,6 +435,7 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
 //   - only a server that exists on BOTH sides and is `type: "http"` on both,
 //   - only the `headers` object is replaced, never any other field of the entry,
 //   - a shared entry without a headers object leaves the agent's alone,
+//   - an agent entry that has a headersHelper is never refreshed (see below),
 //   - a missing server is not added here (reconcileMcpServers does that),
 //   - change-only, and a non-object mcpServers on either side touches nothing.
 // Only server NAMES are logged: header values are credentials.
@@ -454,6 +455,12 @@ function refreshHttpMcpHeaders(
     const src = shared.mcpServers[key]
     if (!isPlainObject(own) || !isPlainObject(src)) continue
     if (own.type !== 'http' || src.type !== 'http') continue
+    // A migrated entry gets its credential from the headers helper. Copying the
+    // shared static `headers` back in would restore the very token the migration
+    // removed (and open the static fallback path), so such an entry is skipped
+    // whatever the shared config still carries. A key that is present at all
+    // counts, so even a malformed helper value cannot let the token back in.
+    if (own.headersHelper !== undefined) continue
     if (!isPlainObject(src.headers)) continue
     if (isDeepStrictEqual(own.headers, src.headers)) continue
     own.headers = { ...src.headers }
