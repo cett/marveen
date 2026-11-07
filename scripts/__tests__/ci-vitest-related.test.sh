@@ -91,6 +91,27 @@ export STUB_EXIT=1; run_in "$R"; unset STUB_EXIT
 OUT="$(cd "$TMPDIR_BASE" && bash "$SCRIPT" 2>&1)"; RC=$?
 [ "$RC" -eq 2 ] && pass "no base sha: usage error, exit 2" || fail "no base sha: rc=$RC"
 
+# The default runner is the time-limited wrapper, not a bare npx: VITEST_CMD unset, the wrapper's own test hook
+# (VITEST_GUARD_CMD) points at the recording stub, so the stub only gets the call when it went through the wrapper.
+default_run_in() {
+  local r="$1"
+  local base; base="$(cd "$r" && git rev-list --max-parents=0 HEAD)"
+  export STUB_LOG="$r/call.log"; rm -f "$STUB_LOG"
+  OUT="$(cd "$r" && env -u VITEST_CMD VITEST_GUARD_CMD="$STUB" bash "$SCRIPT" "$base" 2>&1)"; RC=$?
+  CALL=""; [ -f "$STUB_LOG" ] && CALL="$(cat "$STUB_LOG")"
+}
+R="$(new_repo defrelated)"; commit_change "$R" 'echo "export const b = 2" >> src/a.ts'
+default_run_in "$R"
+[ "$RC" -eq 0 ] && [ "$CALL" = "related src/a.ts --run --passWithNoTests" ] && pass "default runner: vitest-guard.py, the related call reaches vitest unchanged" || fail "default related: rc=$RC call='$CALL' out='$OUT'"
+
+R="$(new_repo defwhole)"; commit_change "$R" 'echo "{\"a\":1}" > package.json'
+default_run_in "$R"
+[ "$RC" -eq 0 ] && [ "$CALL" = "run" ] && pass "default runner: the whole-suite fallback goes through vitest-guard.py too" || fail "default whole: rc=$RC call='$CALL' out='$OUT'"
+
+R="$(new_repo deffail)"; commit_change "$R" 'echo "export const b = 2" >> src/a.ts'
+export STUB_EXIT=3; default_run_in "$R"; unset STUB_EXIT
+[ "$RC" -eq 3 ] && pass "default runner: the vitest exit code passes through the wrapper" || fail "default failing: rc=$RC"
+
 echo ""
 echo "ci-vitest-related: ${PASS} passed, ${FAIL} failed"
 [ "$FAIL" -eq 0 ]
