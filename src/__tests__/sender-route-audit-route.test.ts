@@ -151,6 +151,22 @@ describe('the days parameter', () => {
     expect(r.status).toBe(200)
     expect(r.body.days).toBe(7)
   })
+
+  it('the documented edge cases: a missing or empty value is 7, and when it is given more than once the first one counts', async () => {
+    for (const q of ['', '?days=', '?days=7&days=abc']) {
+      const r = await call('GET', `${PATH}${q}`)
+      expect(r.status, q).toBe(200)
+      expect(r.body.days, q).toBe(7)
+      expect(r.body.since, q).toBe(NOW - 7 * 86400)
+    }
+    const first = await call('GET', `${PATH}?days=3&days=90`)
+    expect(first.status).toBe(200)
+    expect(first.body.days).toBe(3)
+    // the first one counts also when it is the bad one
+    const bad = await call('GET', `${PATH}?days=abc&days=7`)
+    expect(bad.status).toBe(400)
+    expect(bad.body).toMatchObject({ error: 'invalid_value', field: 'days' })
+  })
 })
 
 describe('the window', () => {

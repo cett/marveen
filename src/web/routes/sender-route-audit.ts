@@ -14,8 +14,9 @@ function boundedDays(raw: string | null): number {
   return n >= 1 && n <= SENDER_ROUTE_AUDIT_MAX_DAYS ? n : NaN
 }
 
-// GET /api/admin/sender-route-audit?days=7 - what the sender routing rule decided in the last `days` days (1 to 90,
-// default 7), counted from the audit rows, so anyone with admin rights can see in one call which sender / recipient
+// GET /api/admin/sender-route-audit?days=7 - what the sender routing rule decided in the last `days` days, counted
+// from the audit rows. `days` missing or empty means 7; given more than once, the first one counts; a given value
+// must be a whole number from 1 to 90 and every other value is a 400 invalid_value (field days). So anyone with admin rights can see in one call which sender / recipient
 // pairs enforce mode would refuse, before the mode is switched. Read-only. The answer holds counts and the pair
 // shapes only: no message content, no message id, no principal. `since` is the start of the window (unix seconds);
 // `truncated` says the window held more than the row limit and the oldest rows are not counted. `would_deny` counts
