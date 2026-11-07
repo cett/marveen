@@ -237,35 +237,126 @@ def _blank_ranges(text, ranges):
     return ''.join(out)
 
 
+_HEREDOC_OPEN = re.compile(r'<<-?[ \t]*([\'"]?)([A-Za-z_][A-Za-z0-9_]*)\1')
+
+
 def _heredoc_body_ranges(cmd):
     """(data-body ranges, interpreter-body ranges).
 
     The difference is whether the opening line's command EXECUTES the body:
       cat > file <<EOF   -> data      (goes to a file, nothing runs it)
       python3 - <<PY     -> code      (python runs it)
-    """
-    lines = cmd.split('\n')
-    offs, pos = [], 0
-    for ln in lines:
-        offs.append(pos)
-        pos += len(ln) + 1
+
+    A heredoc opener is a `<<` the SHELL reads as one: outside quotes and comments, not part of a `<<<`
+    here-string, not inside `$(( ))` arithmetic. The scan walks the whole command once with the quote state
+    carried across lines, so text that only LOOKS like an opener (`cat <<< x`, `echo "a <<EOF b"`,
+    `ls # see <<EOF`) cannot open a phantom heredoc whose body would swallow the destructive command on
+    the next lines. Missing a real opener is the safe error (its body is scanned as commands: a possible
+    false alarm); reading a phantom one is not (a command is blanked as data). `$(cat <<'EOF'` inside double
+    quotes IS an opener (a command substitution runs), so a commit-message heredoc keeps working.
+    The body starts after the newline that ends the opener's command line, and ends at the first line that,
+    stripped, equals the delimiter; without such a line it runs to the end of the command."""
+    n = len(cmd)
     data, code = [], []
+    # contexts: [kind, depth]; 'c' command (the top level, or a `$(` body), 'd' double quote,
+    # 's' single quote, 'a' arithmetic `$(( ))`. depth counts plain parentheses in 'c' / 'a'.
+    stack = [['c', 0]]
+    pending = []  # (delimiter, offset of the `<<`) of the openers on the command line being read
     i = 0
-    while i < len(lines):
-        m = re.search(r'<<-?\s*([\'"]?)([A-Za-z_][A-Za-z0-9_]*)\1', lines[i])
-        if m:
-            delim = m.group(2)
-            words = [w for w in re.split(r'[\s|;&]+', lines[i]) if w]
+    while i < n:
+        ch = cmd[i]
+        kind = stack[-1][0]
+        if kind == 's':
+            if ch == "'":
+                stack.pop()
+            i += 1
+            continue
+        if kind == 'd':
+            if ch == '\\':
+                i += 2
+            elif ch == '"':
+                stack.pop()
+                i += 1
+            elif ch == '$' and cmd.startswith('$((', i):
+                stack.append(['a', 0])
+                i += 3
+            elif ch == '$' and cmd.startswith('$(', i):
+                stack.append(['c', 0])
+                i += 2
+            else:
+                i += 1
+            continue
+        if kind == 'a':
+            if ch == '(':
+                stack[-1][1] += 1
+            elif ch == ')':
+                if stack[-1][1] > 0:
+                    stack[-1][1] -= 1
+                else:
+                    stack.pop()
+                    if cmd.startswith('))', i):
+                        i += 1
+            i += 1
+            continue
+        # kind == 'c'
+        if ch == '\\':
+            i += 2
+        elif ch == "'":
+            stack.append(['s', 0])
+            i += 1
+        elif ch == '"':
+            stack.append(['d', 0])
+            i += 1
+        elif ch == '#' and (i == 0 or cmd[i - 1] in ' \t\n;|&()'):
+            nl = cmd.find('\n', i)
+            i = n if nl == -1 else nl  # the newline itself is still read below
+        elif ch == '$' and cmd.startswith('$((', i):
+            stack.append(['a', 0])
+            i += 3
+        elif ch == '$' and cmd.startswith('$(', i):
+            stack.append(['c', 0])
+            i += 2
+        elif ch == '(':
+            stack[-1][1] += 1
+            i += 1
+        elif ch == ')':
+            if stack[-1][1] > 0:
+                stack[-1][1] -= 1
+            elif len(stack) > 1:
+                stack.pop()
+            i += 1
+        elif ch == '<' and cmd.startswith('<<<', i):
+            i += 3
+        elif ch == '<' and cmd.startswith('<<', i):
+            m = _HEREDOC_OPEN.match(cmd, i)
+            if m:
+                pending.append((m.group(2), i))
+                i = m.end()
+            else:
+                i += 2
+        elif ch == '\n' and pending:
+            # the command line is over: the bodies of its openers follow, one after the other
+            line_start = cmd.rfind('\n', 0, pending[0][1]) + 1
+            words = [w for w in re.split(r'[\s|;&]+', cmd[line_start:i]) if w]
             is_code = any(os.path.basename(w.strip('"\'')) in INTERPRETERS for w in words)
-            j = i + 1
-            while j < len(lines) and lines[j].strip() != delim:
-                j += 1
-            if j > i:
-                a = offs[i] + len(lines[i]) + 1
-                b = offs[j] if j < len(lines) else len(cmd)
-                (code if is_code else data).append((a, b))
-            i = j
-        i += 1
+            pos = i + 1
+            for delim, _at in pending:
+                body_end, resume = n, n
+                scan = pos
+                while scan < n:
+                    e = cmd.find('\n', scan)
+                    if e == -1:
+                        e = n
+                    if cmd[scan:e].strip() == delim:
+                        body_end, resume = scan, e
+                        break
+                    scan = e + 1
+                (code if is_code else data).append((pos, body_end))
+                pos = resume + 1
+            pending = []
+            i = max(i + 1, min(n, pos))
+        else:
+            i += 1
     return data, code
 
 
