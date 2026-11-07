@@ -67,6 +67,27 @@ describe('success', () => {
     expect(statSync(logPath()).mode & 0o777).toBe(0o600)
   })
 
+  it('a value replaced between two runs is what the next run prints, with the config untouched (no cache, no restart)', () => {
+    const valueFile = join(tree, 'value.txt')
+    stubCore(`import { readFileSync } from 'node:fs'
+export function runHeaderHelper() {
+  const v = readFileSync(${JSON.stringify(valueFile)}, 'utf-8').trim()
+  return { code: 0, stdout: JSON.stringify({ Authorization: 'Bearer ' + v }) + '\\n', event: { outcome: 'ok', secretId: 'fixture-secret-a' } }
+}`)
+    const args = ['--secret', 'fixture-secret-a', '--header', 'Authorization']
+    const OLD = 'fixture-old-value-0123456789'
+    const NEW = 'fixture-new-value-9876543210'
+    writeFileSync(valueFile, OLD)
+    expect(JSON.parse(run(args).stdout).Authorization).toBe(`Bearer ${OLD}`)
+    writeFileSync(valueFile, NEW)
+    expect(JSON.parse(run(args).stdout).Authorization).toBe(`Bearer ${NEW}`)
+    // the audit trail has one line per run and holds neither value
+    const log = readFileSync(logPath(), 'utf-8')
+    expect(logLines()).toHaveLength(2)
+    expect(log).not.toContain(OLD)
+    expect(log).not.toContain(NEW)
+  })
+
   it('a log that cannot be written does not change the result', () => {
     stubCore(OK_CORE)
     rmSync(join(tree, 'store'), { recursive: true, force: true })

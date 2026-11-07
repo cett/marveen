@@ -59,6 +59,16 @@ describe('runHeaderHelper: success', () => {
     expect(JSON.stringify(runHeaderHelper(ARGS, found).event)).not.toContain(VALUE)
   })
 
+  it('a vault value replaced between two calls is what the next call prints (rotation needs no restart)', () => {
+    const OLD = 'fixture-old-value-0123456789'
+    const NEW = 'fixture-new-value-9876543210'
+    let current = OLD
+    const lookup = () => current
+    expect(JSON.parse(runHeaderHelper(ARGS, lookup).stdout).Authorization).toBe(`Bearer ${OLD}`)
+    current = NEW
+    expect(JSON.parse(runHeaderHelper(ARGS, lookup).stdout).Authorization).toBe(`Bearer ${NEW}`)
+  })
+
   it('a value with quotes and backslashes survives the JSON round trip', () => {
     const tricky = 'a"b\\c\'d-0123456789'
     const r = runHeaderHelper(ARGS, () => tricky)
