@@ -42,15 +42,25 @@ function randomText(rnd: () => number): string {
   return s
 }
 
-function bestOf3Ms(fn: () => void): number {
+/** Best of three CPU times (user + system, ms) of `fn` in this process. The cost bounds are CPU time, not wall clock:
+ *  with parallel workers the wall clock mostly counts the time the process was NOT running, so a wall-clock bound is
+ *  flaky exactly when the machine is busy. A quadratic regression is seconds to minutes of CPU time, however busy the
+ *  machine. */
+function bestOf3CpuMs(fn: () => void): number {
   let best = Infinity
   for (let i = 0; i < 3; i++) {
-    const t = performance.now()
+    const before = process.cpuUsage()
     fn()
-    best = Math.min(best, performance.now() - t)
+    const used = process.cpuUsage(before)
+    best = Math.min(best, (used.user + used.system) / 1000)
   }
   return best
 }
+
+/** The vitest default test timeout (15 s) is wall clock too: the old rule on 80 kB takes about 0.3 s of CPU, but 7-8 s
+ *  of wall time per run with 60 busy loops on 10 cores, three runs in one test. The CPU bounds are the regression
+ *  guard; this per-test timeout only has to be out of the way. */
+const PERF_TEST_TIMEOUT_MS = 120_000
 
 const FRAME = (body: string) =>
   `<channel source="telegram" chat_id="100" message_id="7" user="u" attachment_kind="voice" attachment_file_id="file-1">\n${body}\n</channel>`
@@ -160,7 +170,9 @@ describe('injectTranscript: the old rule as the oracle', () => {
 
 describe('injectTranscript: linear on hostile input', () => {
   const BIG = 550_000
-  const BUDGET_MS = 300
+  // CPU time of the worst input here: under 1 ms, idle or with 60 busy loops on 10 cores.
+  // 100 ms is 3-6x the real cost at worst, and the quadratic rule needs seconds to minutes on the same input.
+  const CPU_BUDGET_MS = 100
 
   it.each([
     ['openers with no ">"', '<channel '.repeat(Math.ceil(BIG / 9))],
@@ -173,16 +185,17 @@ describe('injectTranscript: linear on hostile input', () => {
     ['a run of whitespace then a frame', ' \t\n'.repeat(Math.ceil(BIG / 3)) + '<channel a="1">b</channel>'],
     ['many attachment_kind heads, no match', 'attachment_kind="voice'.repeat(Math.ceil(BIG / 22))],
     ['many attachment_file_id heads, no closing quote', 'attachment_file_id="'.repeat(Math.ceil(BIG / 20))],
-  ])('%s: 550 kB in under 300 ms (best of 3)', (_name, text) => {
+  ])('%s: 550 kB in under 100 ms of CPU (best of 3)', (_name, text) => {
     expect(text.length).toBeGreaterThanOrEqual(BIG)
-    const t = bestOf3Ms(() => { injectTranscript(text, 'T') })
-    expect(t).toBeLessThan(BUDGET_MS)
-  })
+    const t = bestOf3CpuMs(() => { injectTranscript(text, 'T') })
+    expect(t, `${Math.round(t * 10) / 10} ms of CPU`).toBeLessThan(CPU_BUDGET_MS)
+  }, PERF_TEST_TIMEOUT_MS)
 
   it('the old rule on the same input is the regression evidence: at 80 kB it is more than 20x slower than the new one', () => {
     const text = '<channel '.repeat(Math.ceil(80_000 / 9))
-    const tOld = bestOf3Ms(() => { oldInjectTranscript(text, 'T') })
-    const tNew = bestOf3Ms(() => { injectTranscript(text, 'T') })
-    expect(tOld).toBeGreaterThan(tNew * 20)
-  })
+    const tOld = bestOf3CpuMs(() => { oldInjectTranscript(text, 'T') })
+    const tNew = bestOf3CpuMs(() => { injectTranscript(text, 'T') })
+    // CPU time, with a 1 ms floor under the new one: a sub-millisecond reading is mostly timer and GC noise.
+    expect(tOld, `old ${Math.round(tOld)} ms, new ${Math.round(tNew * 10) / 10} ms of CPU`).toBeGreaterThan(Math.max(tNew, 1) * 20)
+  }, PERF_TEST_TIMEOUT_MS)
 })

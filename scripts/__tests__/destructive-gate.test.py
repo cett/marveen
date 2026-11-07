@@ -650,6 +650,7 @@ class TestLinearTime(unittest.TestCase):
     minute at this size, and the per-span range lookup took twelve seconds on repeated `bash -c`."""
 
     SIZE = 250000
+    CPU_WALL_GUARD_SEC = 120.0  # wall cut-off of the CPU-timed inputs: a catastrophe guard, see _timed
 
     def _timed(self, cmd, cpu=False):
         """cpu=True measures CPU time (timing_budget.best_of): these inputs run into the gate's own budgets (the body
@@ -661,24 +662,26 @@ class TestLinearTime(unittest.TestCase):
                     hook.check_bash(cmd)
                 except SystemExit:
                     pass
-        # 10 times wider: with 20 busy loops on top of an already loaded machine (load 30-40) a call of ~1 s CPU needed
-        # more than 9 s of wall time. A quadratic gate is minutes, so 30 s still ends it as a readable FAIL.
-        cutoff = CUTOFF_SEC * 10 if cpu else CUTOFF_SEC
+        # A catastrophe guard, not the measure: with 60 busy loops on a machine at load 79-84 a call of ~1 s CPU needed
+        # more than 30 s of wall time (the former limit, 10 x CUTOFF_SEC) in 5 of 10 test runs. A quadratic gate is
+        # minutes of CPU, so 120 s still ends it as a readable FAIL; the 4 s CPU ceiling below is what decides.
+        # Per call and only here: the shared best_of default stays as it is for the other tests.
+        cutoff = self.CPU_WALL_GUARD_SEC if cpu else CUTOFF_SEC
         t = best_of(run, cutoff=cutoff, cpu=cpu)
         self.assertLess(t, LINEAR_CEILING_SEC * 2, describe(t, cutoff))
 
     def test_env_scan(self):
-        self._timed("a=" * (self.SIZE // 2))
-        self._timed("a=/" * (self.SIZE // 3))
-        self._timed(" .en" * (self.SIZE // 4))
+        self._timed("a=" * (self.SIZE // 2), cpu=True)
+        self._timed("a=/" * (self.SIZE // 3), cpu=True)
+        self._timed(" .en" * (self.SIZE // 4), cpu=True)
 
     def test_many_quoted_spans_and_script_args(self):
-        self._timed('bash -c "a" ' * (self.SIZE // 12))
-        self._timed('python3 -c "x" ' * (self.SIZE // 15))
-        self._timed('"a" ' * (self.SIZE // 4))
+        self._timed('bash -c "a" ' * (self.SIZE // 12), cpu=True)
+        self._timed('python3 -c "x" ' * (self.SIZE // 15), cpu=True)
+        self._timed('"a" ' * (self.SIZE // 4), cpu=True)
 
     def test_many_heredocs(self):
-        self._timed("cat <<A\n" * (self.SIZE // 8))
+        self._timed("cat <<A\n" * (self.SIZE // 8), cpu=True)
 
     def test_unterminated_substitutions_are_cut_off_by_the_budgets(self):
         for cmd in ("$(" * (self.SIZE // 2), '"$(' * (self.SIZE // 3), "`a" * (self.SIZE // 2)):
@@ -691,7 +694,7 @@ class TestLinearTime(unittest.TestCase):
                         hook.check_bash(cmd)
 
     def test_many_bodies(self):
-        self._timed('echo "$(a)" ' * (self.SIZE // 12))
+        self._timed('echo "$(a)" ' * (self.SIZE // 12), cpu=True)
 
 
 if __name__ == "__main__":
