@@ -154,6 +154,64 @@ describe('R-IMPL: where the command runs is resolved, not assumed', () => {
   })
 })
 
+describe('R-IMPL review round 1: directory tracking, wrappers, text commands, option parsing', () => {
+  it('popd, cd -, cd ~- and a plain relative cd name do not narrow the chain to a directory they may not reach', () => {
+    expect(denied(`pushd ${wt} && popd && git checkout other`, root)).toBe(true)
+    expect(denied(`cd ${wt} && cd - && git checkout other`, root)).toBe(true)
+    expect(denied('cd ~- && git checkout other', wt)).toBe(true)
+    expect(denied('cd ~+ && git checkout other', wt)).toBe(true)
+    // CDPATH may redirect a plain name; ./ and ../ and absolute paths cannot be redirected
+    expect(denied('cd vendor/lib && git checkout main', root)).toBe(true)
+    expect(denied('cd ./vendor/lib && git checkout main', root)).toBe(false)
+    expect(denied('cd ../wt && git checkout other', root)).toBe(false)
+  })
+  it('a wrapper with a value option does not hide the command', () => {
+    for (const c of ['nice -n 5 git checkout other', 'timeout 5 git checkout other', 'sudo -u someone git reset --hard', 'stdbuf -oL git clean -fd',
+      `env -C ${wt} git checkout other`, 'nohup nice -n 1 git switch other', 'timeout 5 patch -p1 < x.diff', 'nice -n 5 tar xzf a.tgz'])
+      expect(denied(c, root), c).toBe(true)
+    // env -C / sudo -D change the directory first: from a worktree that is not a reason to trust the cwd
+    expect(denied(`env -C ${root} git checkout other`, wt)).toBe(true)
+    expect(denied('sudo -D ../install git checkout other', wt)).toBe(true)
+    expect(denied('sudo -D $TARGET git checkout other', wt)).toBe(true)
+    expect(denied('find vendor -name x -exec git checkout other {} \\;', root)).toBe(true)
+    expect(denied('nice -n 5 git checkout other', wt)).toBe(false)
+    expect(denied('nice -n 5 git status', root)).toBe(false)
+    expect(denied(`env GIT_WORK_TREE=${root} nice -n 1 git checkout other`, wt)).toBe(true)
+  })
+  it('a command handed over as text is judged as a command of its own', () => {
+    for (const c of ["bash -c 'git checkout other'", 'sh -c "git reset --hard"', "zsh -lc 'git clean -fd'", 'eval git checkout other', 'echo $(git checkout other)',
+      'x=`git reset --hard`', "find . -name x -exec git checkout other {} \\;", "bash -c 'bash -c \"bash -c \\\"bash -c git\\ checkout\\ other\\\"\"'",
+      `bash -c 'cd ${root} && git checkout other'`])
+      expect(denied(c, root), c).toBe(true)
+    expect(denied(`sh -c "cd ${wt} && git checkout other"`, root)).toBe(false)
+    expect(denied("bash -c 'git status'", root)).toBe(false)
+    expect(denied('echo $(git rev-parse HEAD)', root)).toBe(false)
+    expect(denied('bash -c "git checkout other"', wt)).toBe(false)
+  })
+  it('xargs git is judged like the same git typed directly', () => {
+    for (const c of ['xargs git checkout', 'git ls-files -d | xargs git rm', 'xargs -I{} git restore {}', 'xargs -n1 git apply']) expect(denied(c, root), c).toBe(true)
+    expect(denied('xargs git status', root)).toBe(false)
+    expect(denied(`xargs -I{} git -C ${wt} checkout {}`, root)).toBe(false)
+    expect(denied('xargs git checkout', wt)).toBe(false)
+  })
+  it('fetch and ls-remote take an allowlist of options, so an abbreviated long option is refused', () => {
+    for (const c of ['git fetch --upload-p=/tmp/x origin', 'git fetch --upl=/tmp/x origin', 'git fetch --exe=/tmp/x', 'git fetch -u origin main:main', 'git fetch --update-head-ok origin',
+      'git fetch --server-option=x origin', 'git ls-remote --upload-pack=/tmp/x origin', 'git ls-remote --up=/tmp/x origin', 'git fetch ext::sh'])
+      expect(denied(c, root), c).toBe(true)
+    for (const c of ['git fetch --prune origin', 'git fetch -p origin', 'git fetch --all --tags', 'git fetch --depth=1 origin main', 'git ls-remote --heads origin', 'git ls-remote --tags origin'])
+      expect(denied(c, root), c).toBe(false)
+  })
+  it('patch reads only under --dry-run / --check / -C as an option, not as the value of another option', () => {
+    for (const c of ['patch -o --dry-run -p1 < x.diff', 'patch -r -C -p1 < x.diff', 'patch -i x.diff', 'patch -p1 -z .orig < x.diff', 'patch -B --check < x.diff']) expect(denied(c, root), c).toBe(true)
+    for (const c of ['patch -C -p1 < x.diff', 'patch --check -p1 < x.diff', 'patch -p1 --dry-run < x.diff', 'patch --dry-run -i x.diff']) expect(denied(c, root), c).toBe(false)
+  })
+  it('worktree add takes no --force and no -B (a branch checked out in the install could be reset)', () => {
+    for (const c of ['git worktree add -f ../wtx other', 'git worktree add --force ../wtx other', 'git worktree add -B main ../wtx other', 'git worktree add -b topic -f ../wtx other', 'git worktree add --unknown ../wtx'])
+      expect(denied(c, root), c).toBe(true)
+    for (const c of ['git worktree add -b topic ../wtx origin/develop', 'git worktree add --detach ../wtx', 'git worktree add --no-checkout -q ../wtx other']) expect(denied(c, root), c).toBe(false)
+  })
+})
+
 describe('R-IMPL: the hook answers with the way out', () => {
   it('denies through the hook entry point and names git worktree add', () => {
     const hook = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'scripts', 'self-pace-gate.mjs')

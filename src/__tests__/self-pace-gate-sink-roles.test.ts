@@ -61,7 +61,12 @@ const WRITES = [
   () => `mv scripts/doctor.sh ${out}/d.sh`, () => `mv ${out}/x scripts/doctor.sh`, () => `mv src ${out}/s`, () => `ln -sf ${out}/x scripts/doctor.sh`, () => `ln scripts/doctor.sh ${out}/h`,
   () => `unzip ${out}/a.zip -d scripts`, () => `unzip -o ${out}/a.zip -dscripts/hooks`,
   () => `dd of=scripts/doctor.sh if=${out}/x`, () => `dd if=scripts/doctor.sh of=scripts/hooks/x`,
-  () => `X=scripts/doctor.sh cp ${out}/a ${out}/b`, () => 'find scripts -exec rm {} \\;', () => "find scripts -exec sh -c 'x' {} \\;", () => 'find scripts -delete', () => 'find scripts -exec cat {} \\; -delete', () => 'find scripts -exec cat {}',
+  () => `X=scripts/doctor.sh cp ${out}/a ${out}/b`,
+  // review round: option values and abbreviations that the parser must not mistake for operands or ignore
+  () => `tar tf ${out}/o.tar --index-file=scripts/doctor.sh`, () => `tar czf ${out}/o.tgz src --index-file=scripts/doctor.sh`,
+  () => `tar -xPf ${root}/scripts/hooks/a.tgz`, () => `tar xzf ${root}/scripts/hooks/a.tgz --absolute-names`, () => `tar czf ${out}/o.tgz scripts --remove-f`, () => `tar czf ${out}/o.tgz scripts --to-c=cat`,
+  () => `cp --lin scripts/doctor.sh ${out}/d.sh`, () => `cp --symbolic scripts/doctor.sh ${out}/d.sh`, () => `cp --parent scripts/doctor.sh ${out}/d`, () => `cp --target-dir=${out} scripts/doctor.sh`,
+  () => 'find vendor -exec xxd + scripts/doctor.sh \\;', () => 'find scripts -exec rm {} \\;', () => "find scripts -exec sh -c 'x' {} \\;", () => 'find scripts -delete', () => 'find scripts -exec cat {} \\; -delete', () => 'find scripts -exec cat {}',
 ]
 
 describe('R-SINK: a protected path that is only read is not a write', () => {
@@ -99,6 +104,16 @@ describe('R-SINK: the extraction directory is the cwd unless -C or -d says other
     expect(denied(`unzip ${out}/a.zip -d ${root}/vendor`, wt)).toBe(false)
     expect(denied(`tar xzf ${out}/a.tgz -C ${root}/scripts/hooks`, wt)).toBe(true)
     expect(denied(`unzip ${out}/a.zip -d ${root}`, wt)).toBe(true)
+  })
+  it('absolute member names (-P) can land anywhere, so no cwd makes the extraction safe', () => {
+    expect(denied(`tar -xPf ${root}/scripts/hooks/a.tgz`, out)).toBe(true)
+    expect(denied(`tar xzf ${root}/scripts/hooks/a.tgz --absolute-names`, out)).toBe(true)
+    expect(denied(`tar -xzf ${root}/scripts/hooks/a.tgz`, out)).toBe(false)
+  })
+  it('a value letter ends the flags of an unzip bundle: -xp is an exclude pattern, not "pipe"', () => {
+    expect(denied(`unzip -xp ${out}/a.zip`, root)).toBe(true)
+    expect(denied(`unzip -dp ${out}/a.zip`, root)).toBe(false) // a NAMED directory (p), judged by the path
+    expect(denied(`unzip -p ${out}/a.zip`, root)).toBe(false)
   })
   it('listing and creating do not extract, so the cwd does not matter', () => {
     expect(denied(`tar tzf ${out}/a.tgz`, root)).toBe(false)

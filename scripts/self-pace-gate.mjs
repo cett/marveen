@@ -288,6 +288,9 @@ const SAFE_GIT = new Set([
 // gitInstallOk (fetch / ls-remote: no program-running option or ext:: URL; worktree: add | list; stash: list
 // | show; branch / tag: listing flags only; remote: -v | get-url).
 const INSTALL_GIT_EXTRA = new Set(['fetch', 'ls-remote', 'merge-base', 'for-each-ref', 'name-rev', 'show-branch', 'version', 'worktree', 'stash', 'branch', 'tag', 'remote'])
+const FETCH_FLAGS = new Set(['--all', '--prune', '--prune-tags', '--tags', '--no-tags', '--force', '--verbose', '--quiet', '--dry-run', '--jobs', '--depth', '--deepen', '--shallow-since', '--shallow-exclude', '--unshallow', '--no-recurse-submodules', '--recurse-submodules', '--progress', '--no-progress', '--atomic', '--append', '--filter', '--set-upstream', '--porcelain', '--ipv4', '--ipv6', '--no-write-fetch-head', '--write-fetch-head', '--refetch', '--no-auto-gc', '--no-auto-maintenance', '--multiple', '--no-show-forced-updates', '--show-forced-updates', '--negotiation-tip'])
+const LS_REMOTE_FLAGS = new Set(['--heads', '--branches', '--tags', '--refs', '--get-url', '--symref', '--quiet', '--exit-code', '--sort'])
+const WORKTREE_ADD_FLAGS = new Set(['-b', '--detach', '--no-checkout', '--checkout', '-q', '--quiet', '--track', '--no-track', '--guess-remote', '--no-guess-remote', '--lock', '--reason', '--orphan', '--relative-paths', '--no-relative-paths'])
 const BRANCH_LIST_FLAGS = new Set(['--list', '-l', '--show-current', '-a', '--all', '-r', '--remotes', '-v', '-vv', '--verbose', '--merged', '--no-merged', '--contains', '--no-contains', '--sort', '--format', '--points-at', '--column', '--no-column', '--color', '--no-color', '--abbrev', '--no-abbrev', '-i', '--ignore-case', '-n'])
 const WRAPPER_WORDS = new Set(['env', 'time', 'nohup', 'command', 'builtin', 'exec', 'nice', 'sudo', 'doas', 'stdbuf', 'setsid'])
 const INTERPRETERS = /^(?:python(?:\d+(?:\.\d+)?)?|node(?:js)?|bash|sh|zsh|dash|ksh|perl|ruby|php|deno|bun|tsx|ts-node|source|\.)$/
@@ -1083,8 +1086,17 @@ function gitInstallOk(args) {
   if (SAFE_GIT.has(sub)) return gitOptionsSafe(args, sub)
   if (!INSTALL_GIT_EXTRA.has(sub) || !gitOptionsSafe(args, sub)) return false
   const rest = args.slice(at + 1)
-  if (sub === 'fetch' || sub === 'ls-remote') return !rest.some((a) => /^--(upload-pack|receive-pack|exec)/.test(a) || a.includes('::'))
-  if (sub === 'worktree') return rest[0] === 'add' || rest[0] === 'list'
+  // fetch / ls-remote: an ALLOWLIST of options, matched exactly (git accepts any unambiguous prefix of a long
+  // option, so a deny-pattern for --upload-pack would miss --upload-p=); a remote URL with a helper (ext::) runs a program
+  if (sub === 'fetch' || sub === 'ls-remote') {
+    const flags = sub === 'fetch' ? FETCH_FLAGS : LS_REMOTE_FLAGS
+    return rest.every((a) => (a.startsWith('--') ? flags.has(a.split('=')[0]) : a.startsWith('-') && a.length > 1 ? (sub === 'fetch' ? /^-(?:[pPtfvqak46n]+|j\d*)$/ : /^-[htqb]+$/).test(a) : !a.includes('::')))
+  }
+  if (sub === 'worktree') {
+    if (rest[0] === 'list') return true
+    // add only, and not --force / -B (a branch checked out elsewhere could be reset)
+    return rest[0] === 'add' && rest.slice(1).every((a) => !a.startsWith('-') || WORKTREE_ADD_FLAGS.has(a.split('=')[0]))
+  }
   if (sub === 'stash') return rest[0] === 'list' || rest[0] === 'show'
   if (sub === 'remote') return rest.length === 0 || (rest.length === 1 && rest[0] === '-v') || rest[0] === 'get-url'
   if (sub === 'branch' || sub === 'tag') {
@@ -1147,8 +1159,13 @@ function commandTargetsInstall(cmd, args, envWords, base, ctx) {
 function implicitTreeDecision(cmd, words, ci, bases, ctx) {
   let args = words.slice(ci + 1)
   if (cmd === 'xargs') {
-    // the file list comes from stdin and cannot be read: what xargs RUNS decides, and the tree is the cwd's
-    if (!xargsRunsDestructive(args)) return null
+    // the file list comes from stdin and cannot be read: what xargs RUNS decides, and the tree is the cwd's.
+    // A command with an implicit target is judged exactly as if it were typed (`xargs git checkout`, -C included).
+    const inner = xargsInner(args)
+    if (!inner) return null
+    const name = inner[0].split('/').pop()
+    if (IMPLICIT_CMDS.has(name) && name !== 'xargs') return implicitTreeDecision(name, inner, 0, bases, ctx)
+    if (!destructiveCmd(name, inner.slice(1))) return null
     args = []
   } else if (cmd === 'tar') {
     // an unreadable tar line is treated as an extraction; one that NAMES its directory (-C) is judged by that
@@ -1157,10 +1174,50 @@ function implicitTreeDecision(cmd, words, ci, bases, ctx) {
     if (t && (t.mode !== 'x' || t.dirVals.length)) return null
   } else if (cmd === 'unzip') {
     if (!unzipExtracts(args) || workDirOf('unzip', args) !== undefined) return null
-  } else if (cmd === 'git' ? gitInstallOk(args) : args.some((a) => a === '--dry-run' || a === '-C' || a === '--check')) return null
+  } else if (cmd === 'git' ? gitInstallOk(args) : patchIsDry(args)) return null
   const env = words.slice(0, ci)
   for (const b of bases) if (commandTargetsInstall(cmd, args, env, b, ctx)) return { deny: true, reason: 'install-tree' }
   return null
+}
+const IMPLICIT_CMDS = new Set(['git', 'patch', 'xargs', 'tar', 'unzip'])
+// The command behind wrappers: `nice -n 5 git checkout x` has the command word 5 for commandWordIndex. Returns
+// { gi, cmd, chdir } for the first IMPLICIT_CMDS word that follows a wrapper word, or null.
+function effectiveCommand(words, ci) {
+  const name = (i) => String(words[i] ?? '').split('/').pop()
+  let w = -1
+  for (let i = 0; i < words.length; i++) {
+    if (/^[A-Za-z_]\w*=/.test(words[i])) continue
+    if (WRAPPER_WORDS.has(name(i)) || name(i) === 'timeout') w = i
+    break
+  }
+  if (w === -1) return null
+  for (let gi = w + 1; gi < words.length; gi++) {
+    if (!IMPLICIT_CMDS.has(name(gi))) continue
+    if (gi === ci) return null // commandWordIndex already saw it
+    const chdir = words.slice(w + 1, gi).some((x) => x === '-C' || x === '-D' || x === '--chdir' || x.startsWith('--chdir='))
+    return { gi, cmd: name(gi), chdir }
+  }
+  return null
+}
+// The commands a segment hands over as text: sh -c STRING, eval STRING, find -exec CMD ARGS ;, $(CMD), `CMD`.
+function innerCommandTexts(cmd, words, ci, seg) {
+  const out = []
+  const args = ci === -1 ? [] : words.slice(ci + 1)
+  if (/^(?:bash|sh|zsh|dash|ksh)$/.test(cmd)) {
+    const k = args.findIndex((a) => /^-[A-Za-z]*c[A-Za-z]*$/.test(a))
+    const s = k === -1 ? undefined : args.slice(k + 1).find((a) => !a.startsWith('-'))
+    if (s !== undefined) out.push(s)
+  } else if (cmd === 'eval') out.push(args.join(' '))
+  else if (cmd === 'find') {
+    for (let k = 0; k < args.length; k++) {
+      if (args[k] !== '-exec' && args[k] !== '-execdir') continue
+      const inner = []
+      for (k++; k < args.length && !isExecEnd(args, k); k++) inner.push(args[k])
+      if (inner.length) out.push(inner.join(' '))
+    }
+  }
+  for (const m of String(seg).matchAll(/\$\(([^()]*)\)|`([^`]*)`/g)) out.push(m[1] ?? m[2])
+  return out
 }
 // The directory a non-git command works in: patch -d DIR, tar -C DIR, unzip -d DIR. undefined: the cwd.
 function workDirOf(cmd, args) {
@@ -1179,20 +1236,51 @@ function workDirOf(cmd, args) {
 }
 // unzip extracts unless it only lists, tests or pipes (-l -t -p -v -Z).
 function unzipExtracts(args) {
-  return !args.some((a) => /^-[A-Za-z]*[ltpvZ]/.test(a) && !a.startsWith('--'))
+  for (let k = 0; k < args.length; k++) {
+    const a = args[k]
+    if (!a.startsWith('-') || a.length < 2 || a.startsWith('--')) continue
+    for (let q = 1; q < a.length; q++) {
+      // a value letter (-d DIR, -x LIST ...) ends the flags of the bundle: what follows is its value, not l / t / p
+      if ('dxPOI'.includes(a[q])) { if (q + 1 >= a.length) k++; break }
+      if ('ltpvZ'.includes(a[q])) return false
+    }
+  }
+  return true
 }
 // `xargs [options] CMD ARGS`: does CMD remove, move or rewrite what it is handed?
 const XARGS_VALUE_OPTS = new Set(['-I', '-n', '-P', '-d', '-L', '-s', '-E', '-a', '-J', '--max-args', '--max-procs', '--delimiter', '--max-lines', '--max-chars', '--eof', '--arg-file', '--replace'])
-function xargsRunsDestructive(args) {
+// The words of the command xargs runs, starting at its command word (null: none).
+function xargsInner(args) {
   for (let k = 0; k < args.length; k++) {
     const a = args[k]
     if (a.startsWith('-') && a.length > 1) { if (XARGS_VALUE_OPTS.has(a)) k++; continue }
     const inner = spliceEnvSplit(args.slice(k))
     const ik = commandWordIndex(inner)
-    if (ik === -1) return false
-    return destructiveCmd(inner[ik].split('/').pop(), inner.slice(ik + 1))
+    return ik === -1 ? null : inner.slice(ik)
   }
-  return false
+  return null
+}
+// patch only reads under --dry-run or -C / --check, as an OPTION: the value of -o / -r / -i / -d ... may look like one.
+const PATCH_VALUE_LONG = new Set(['--suffix', '--prefix', '--basename-prefix', '--version-control', '--reject-file', '--output', '--input', '--directory', '--ifdef', '--fuzz', '--strip', '--get', '--quoting-style'])
+function patchIsDry(args) {
+  let dry = false
+  for (let k = 0; k < args.length; k++) {
+    const a = args[k]
+    if (a === '--') break
+    if (a.startsWith('--')) {
+      const n = a.split('=')[0]
+      if (n === '--dry-run' || n === '--check') dry = true
+      else if (PATCH_VALUE_LONG.has(n) && !a.includes('=')) k++
+      continue
+    }
+    if (a.startsWith('-') && a.length > 1) {
+      for (let q = 1; q < a.length; q++) {
+        if (a[q] === 'C') dry = true
+        if ('zBYVroidDFpg'.includes(a[q])) { if (q + 1 >= a.length) k++; break }
+      }
+    }
+  }
+  return dry
 }
 // --- R-SINK: the ROLE of an operand --------------------------------------------------------------------
 // cp, install, rsync, tar, unzip and dd name two kinds of path: the ones they READ (sources, the archive
@@ -1204,15 +1292,18 @@ function xargsRunsDestructive(args) {
 //
 // Each function returns the Set of indices into `args` that are PURE sources, or null: no relief.
 const CP_VALUE_SHORT = { cp: 'tS', install: 'tSmog' }
+const CP_VALUE_LONG = new Set(['--suffix', '--mode', '--owner', '--group', '--context'])
+const CP_FLAG_LONG = new Set(['--recursive', '--archive', '--force', '--verbose', '--preserve', '--no-preserve', '--no-clobber', '--update', '--dereference', '--no-dereference', '--no-target-directory', '--interactive', '--backup', '--attributes-only', '--reflink', '--sparse', '--one-file-system', '--strip-trailing-slashes', '--debug', '--copy-contents', '--preserve-timestamps', '--compare'])
 function cpSources(cmd, args) {
   let targetDir = false; const operands = []; let opts = true
   for (let k = 0; k < args.length; k++) {
     const a = args[k]
     if (opts && a === '--') { opts = false; continue }
     if (opts && a.startsWith('--')) {
-      if (/^--(link|symbolic-link|remove-destination|parents)(=|$)/.test(a)) return null // links alias the source
-      if (a === '--target-directory') { targetDir = true; k++ } else if (a.startsWith('--target-directory=')) targetDir = true
-      else if (a === '--suffix' || a === '--mode' || a === '--owner' || a === '--group' || a === '--context') k++
+      // an ALLOWLIST of long options, matched exactly (getopt takes any unambiguous prefix, so a deny-pattern for
+      // --link would miss --lin): links alias the source, anything else unknown is not understood
+      const n = a.split('=')[0]; const attached = a.includes('=')
+      if (n === '--target-directory') { targetDir = true; if (!attached) k++ } else if (CP_VALUE_LONG.has(n)) { if (!attached) k++ } else if (!CP_FLAG_LONG.has(n)) return null
       continue
     }
     if (opts && a.startsWith('-') && a.length > 1) {
@@ -1262,7 +1353,9 @@ function rsyncSources(args) {
 // read; x (extract): the archive is read, the tree it unpacks into (-C, or the cwd) is written. Anything
 // that runs a program or removes sources (--remove-files, --to-command, -I ...), or is not understood, is no relief.
 const TAR_MODES = { c: 'c', x: 'x', t: 't', d: 'd', create: 'c', extract: 'x', get: 'x', list: 't', diff: 'd', compare: 'd' }
-const TAR_PLAIN_SHORT = 'vzjJaZpPhkmOwUSslonRrq'.replace(/[rq]/g, '') + 'M'
+// no P (--absolute-names: members keep their absolute path) and no M (multi-volume)
+const TAR_PLAIN_SHORT = 'vzjJaZphkmOwUSslon'
+const TAR_FLAG_LONG = new Set(['verbose', 'gzip', 'gunzip', 'ungzip', 'bzip2', 'xz', 'lzma', 'zstd', 'auto-compress', 'preserve-permissions', 'same-permissions', 'keep-newer-files', 'touch', 'one-file-system', 'dereference', 'hard-dereference', 'sparse', 'numeric-owner', 'no-same-owner', 'same-owner', 'totals', 'exclude-vcs', 'ignore-failed-read', 'no-recursion', 'recursion', 'null', 'no-anchored', 'anchored', 'wildcards', 'no-wildcards', 'ignore-case', 'no-ignore-case', 'show-transformed-names', 'warning', 'quiet', 'sort', 'format'])
 const TAR_VALUE_SHORT = 'fCTXbLN'
 const TAR_VALUE_LONG = new Set(['--file', '--directory', '--files-from', '--exclude-from', '--exclude', '--transform', '--xform', '--strip-components', '--owner', '--group', '--mode', '--blocking-factor', '--newer', '--newer-mtime', '--label', '--suffix', '--index-file', '--tape-length', '--ignore-command-error'])
 function tarParse(args) {
@@ -1280,7 +1373,7 @@ function tarParse(args) {
         if (name === '--file') archive = vi
         else if (name === '--directory') { dirIdx.add(vi); dirVals.push(attached ? a.slice(a.indexOf('=') + 1) : args[vi] ?? UNKNOWN) }
         else valueIdx.add(vi)
-      }
+      } else if (!TAR_FLAG_LONG.has(name.slice(2))) return null // an unknown or abbreviated long option is not understood
       continue
     }
     if (oldStyle || (a.startsWith('-') && a.length > 1)) {
@@ -1315,12 +1408,13 @@ function tarParse(args) {
 function tarSources(args) {
   const t = tarParse(args)
   if (!t || !t.mode) return null
-  const all = new Set(args.map((_, k) => k))
-  if (t.mode === 't' || t.mode === 'd') return all
+  // the operands and the -C directory are read; the value of any other option (--index-file writes, -T / -X read a
+  // list) is not counted as a source
+  const reads = new Set([...t.operands, ...t.dirIdx])
+  if (t.mode === 't' || t.mode === 'd') { if (t.archive !== -1) reads.add(t.archive); return reads }
   if (t.mode === 'x') return t.archive === -1 ? null : new Set([t.archive])
   // create: the archive file is the only thing written
-  const src = new Set(all); if (t.archive !== -1) src.delete(t.archive)
-  return t.archive === -1 && args.some((a) => /^-[A-Za-z]*f/.test(a)) ? null : src
+  return t.archive === -1 && args.some((a) => /^-[A-Za-z]*f/.test(a)) ? null : reads
 }
 // unzip [-d DIR] ARCHIVE [MEMBERS] [-x LIST]: the archive is read; -d DIR is written; -l -t -p -v -Z only read.
 function unzipSources(args) {
@@ -1365,6 +1459,8 @@ function onlyReadsProtected(cmd, words, ci, kinds, rKinds) {
 }
 // `find ... -exec CMD ARGS ;` runs CMD on each match: a find whose actions are all -exec / -execdir of a plain
 // reader is a read; a writer (rm, sh -c ...) or any other action that writes keeps find out of the readers.
+// `;` ends a find -exec; `+` only does so right after `{}` (anywhere else it is an argument of the command)
+const isExecEnd = (args, k) => args[k] === ';' || args[k] === '\\;' || (args[k] === '+' && args[k - 1] === '{}')
 function findExecReadersOk(args) {
   let sawExec = false
   for (let k = 0; k < args.length; k++) {
@@ -1373,7 +1469,7 @@ function findExecReadersOk(args) {
     if (a !== '-exec' && a !== '-execdir') continue
     sawExec = true
     const inner = []
-    for (k++; k < args.length && args[k] !== ';' && args[k] !== '\\;' && args[k] !== '+'; k++) inner.push(args[k])
+    for (k++; k < args.length && !isExecEnd(args, k); k++) inner.push(args[k])
     if (k >= args.length) return false // unterminated
     const name = (inner[0] ?? '').split('/').pop()
     if (!READERS.has(name) || name === 'find' || name === 'sed' || name === 'cd' || !readerOk(name, inner.slice(1))) return false
@@ -1483,11 +1579,20 @@ export function bashProtectedDecision(command, opts = {}) {
     const ci = commandWordIndex(words)
     const cmd = ci === -1 ? '' : words[ci].split('/').pop()
     if (cmd === 'cd' || cmd === 'pushd') {
-      const arg = words.slice(ci + 1).find((a) => !a.startsWith('-'))
+      // (a lone `-` is the previous directory, not an option)
+      const arg = words.slice(ci + 1).find((a) => !(a.startsWith('-') && a.length > 1))
       const target = arg === undefined ? homedir() : expandWord(arg, ctx.vars, ctx.current)
-      if (arg === '-' || target.includes('$') || /[*?[`]/.test(target)) { ctx.unknownCwd = true; narrow = null }
-      else { ctx.current = resolve(ctx.current, target); ctx.cwds.add(ctx.current); ctx.cwds.add(realOrSelf(ctx.current)); narrow = new Set([ctx.current, realOrSelf(ctx.current)]) }
+      // `cd -`, `cd ~-` and `cd ~+` go to a directory this reading does not know
+      if (arg === '-' || /^~[-+]/.test(arg ?? '') || target.includes('$') || /[*?[`]/.test(target)) { ctx.unknownCwd = true; narrow = null }
+      else {
+        ctx.current = resolve(ctx.current, target); ctx.cwds.add(ctx.current); ctx.cwds.add(realOrSelf(ctx.current))
+        // the chain narrows to the new directory only when the target cannot be redirected: an absolute path or
+        // ./ ../ (a plain relative name is looked up in CDPATH first)
+        narrow = arg === undefined || isAbsolute(target) || /^\.\.?(\/|$)/.test(target) ? new Set([ctx.current, realOrSelf(ctx.current)]) : null
+      }
     }
+    // popd returns to a directory of the stack that is not tracked: the visited ones all count again
+    if (cmd === 'popd') narrow = null
     if (cmd === 'cp') {
       const ck = copyIntoDirKind(words.slice(ci + 1), ctx)
       if (ck) return { deny: true, reason: ck }
@@ -1497,10 +1602,24 @@ export function bashProtectedDecision(command, opts = {}) {
     const ancestorHit = !hit && ancKinds.length > 0
     // R-IMPL: a git / patch / xargs command is judged by the tree it writes, whether or not it names a path.
     // A segment that also names a protected path keeps the reason of that path (the more specific message).
-    if (cmd === 'git' || cmd === 'patch' || cmd === 'xargs' || cmd === 'tar' || cmd === 'unzip') {
-      const bases = narrow ?? [...ctx.cwds, ...(ctx.unknownCwd ? [null] : [])]
-      const d = implicitTreeDecision(cmd, words, ci, bases, ctx)
+    // A wrapper with a value option (nice -n 5, timeout 5, env -C DIR, sudo -u U) hides the real command word
+    // from commandWordIndex, so the command is looked for behind the wrapper.
+    const eff = effectiveCommand(words, ci)
+    const icmd = eff ? eff.cmd : cmd; const ici = eff ? eff.gi : ci
+    const bases = narrow ? [...narrow] : [...ctx.cwds, ...(ctx.unknownCwd ? [null] : [])]
+    if (IMPLICIT_CMDS.has(icmd)) {
+      const d = implicitTreeDecision(icmd, words, ici, eff?.chdir ? [...bases, null] : bases, ctx)
       if (d) return { deny: true, reason: hit ?? (ancestorHit ? ancKinds[0].split(':')[1] : d.reason) }
+    }
+    // Commands handed over as text (sh -c STR, eval STR, find -exec CMD, $(CMD), `CMD`) are judged as commands of
+    // their own, in every directory the segment may run in.
+    for (const text of innerCommandTexts(cmd, words, ci, seg)) {
+      const depth = opts._depth ?? 0
+      if (depth >= 3) { if (/\b(?:git|patch|tar|unzip)\b/.test(text)) return { deny: true, reason: 'install-tree' }; continue }
+      for (const b of bases) {
+        const d = bashProtectedDecision(text, { ...opts, prot, cwd: b ?? ctx.current, _depth: depth + 1 })
+        if (d.deny) return d
+      }
     }
     if (!hit && !ancestorHit) {
       // a redirect target with an unresolvable shape is only a problem next to a protected word (below)
