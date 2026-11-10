@@ -2,6 +2,9 @@ import { describe, it, expect } from 'vitest'
 import { classifyAgentMessage, wrapAgentMessageForDelivery } from '../web/agent-message-wrap.js'
 import { MAIN_AGENT_ID } from '../config.js'
 
+// The tenant rule is not what these tests are about: no pair is a tenant peer.
+const noTenantPeer = () => false
+
 // The 'federated' branch in classifyAgentMessage is LOAD-BEARING and must run
 // FIRST: isKnownAgent('local-agent/projects') is true whenever that nested
 // directory exists, and a main-agent recipient would then take isTrustedPeer's
@@ -9,7 +12,7 @@ import { MAIN_AGENT_ID } from '../config.js'
 // the ordering and the wrap format.
 describe('classifyAgentMessage -- federated senders', () => {
   it('classifies a valid qualified from as federated (never trusted)', () => {
-    const cls = classifyAgentMessage('teodor/teodor', MAIN_AGENT_ID)
+    const cls = classifyAgentMessage('teodor/teodor', MAIN_AGENT_ID, noTenantPeer)
     expect(cls).toEqual({ category: 'federated', safeFrom: 'teodor/teodor' })
   })
 
@@ -17,26 +20,33 @@ describe('classifyAgentMessage -- federated senders', () => {
     // Even a from shaped like "<something>/<subdir>" -- the isKnownAgent
     // nested-directory trap -- must come out federated or rejected, never
     // trusted-peer.
-    const cls = classifyAgentMessage('anyagent/projects', MAIN_AGENT_ID)
+    const cls = classifyAgentMessage('anyagent/projects', MAIN_AGENT_ID, noTenantPeer)
     expect(cls?.category).toBe('federated')
   })
 
   it('rejects malformed qualified senders outright (null, not a collapsed local id)', () => {
-    expect(classifyAgentMessage('a/b/c', MAIN_AGENT_ID)).toBeNull()
-    expect(classifyAgentMessage('/telegram-coordinator', MAIN_AGENT_ID)).toBeNull()
-    expect(classifyAgentMessage('../x', MAIN_AGENT_ID)).toBeNull()
-    expect(classifyAgentMessage('teоdor/x'.normalize(), MAIN_AGENT_ID)).toBeNull() // Cyrillic о
+    expect(classifyAgentMessage('a/b/c', MAIN_AGENT_ID, noTenantPeer)).toBeNull()
+    expect(classifyAgentMessage('/telegram-coordinator', MAIN_AGENT_ID, noTenantPeer)).toBeNull()
+    expect(classifyAgentMessage('../x', MAIN_AGENT_ID, noTenantPeer)).toBeNull()
+    expect(classifyAgentMessage('teоdor/x'.normalize(), MAIN_AGENT_ID, noTenantPeer)).toBeNull() // Cyrillic о
   })
 
   it('a slash-bearing from can never reach the channel-inbound classification', () => {
     // 'x/telegram-coordinator' would sanitize to 'xtelegram-coordinator'
     // (no match) but the slash short-circuit makes the outcome structural.
-    const cls = classifyAgentMessage('x/telegram-coordinator', MAIN_AGENT_ID)
+    const cls = classifyAgentMessage('x/telegram-coordinator', MAIN_AGENT_ID, noTenantPeer)
     expect(cls?.category).toBe('federated')
   })
 
+  it('a tenant rule that says yes to every pair changes neither a federated sender nor an unknown local one', () => {
+    const yes = () => true
+    expect(classifyAgentMessage('teodor/teodor', MAIN_AGENT_ID, yes)?.category).toBe('federated')
+    expect(classifyAgentMessage('anyagent/projects', MAIN_AGENT_ID, yes)?.category).toBe('federated')
+    expect(classifyAgentMessage('some-unknown-agent', MAIN_AGENT_ID, yes)?.category).toBe('untrusted')
+  })
+
   it('local senders keep their existing classification', () => {
-    const cls = classifyAgentMessage('some-unknown-agent', MAIN_AGENT_ID)
+    const cls = classifyAgentMessage('some-unknown-agent', MAIN_AGENT_ID, noTenantPeer)
     expect(cls?.category).toBe('untrusted')
     expect(cls?.safeFrom).toBe('some-unknown-agent')
   })

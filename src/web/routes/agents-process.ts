@@ -198,7 +198,8 @@ export async function tryHandleAgentsProcess(ctx: RouteContext): Promise<boolean
     const claimed = await gate.judge(await claimPendingForAgent(name, INBOX_DRAIN_CAP))
     const blocks: string[] = []
     for (const msg of claimed) {
-      const cls = classifyAgentMessage(msg.from_agent, msg.to_agent)
+      // The framing takes the tenant rule from the SAME gate (the same snapshot) that judged the row above.
+      const cls = classifyAgentMessage(msg.from_agent, msg.to_agent, gate.tenantPeer)
       if (!cls) {
         // The claim already flipped the row to 'delivered'; a silent skip
         // here is invisible message loss (delivered in the DB, never shown

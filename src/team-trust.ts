@@ -7,8 +7,9 @@
 //   not      →  <untrusted>    + UNTRUSTED_PREAMBLE      (external / unknown)
 //
 // The rules are symmetric -- if either end of the pair acknowledges the
-// relation (reportsTo, delegatesTo, explicit trustFrom override), both
-// sides treat each other as trusted. Asymmetric cases (a reviewer who
+// relation (reportsTo, delegatesTo, explicit trustFrom override, or the
+// tenant rule: a tenant's main agent and the agents enabled for that
+// tenant), both sides treat each other as trusted. Asymmetric cases (a reviewer who
 // should receive but not issue instructions) are covered by the
 // TRUSTED_PEER_PREAMBLE's "judge on merits, escalate if destructive"
 // wording rather than a trust-gate; pushing asymmetry into the graph
@@ -30,6 +31,15 @@ export interface TrustContext {
   mainAgentId: string
   isKnownAgent(name: string): boolean
   readAgentTeam(name: string): TeamConfigForTrust
+  /**
+   * Tenant rule: is `a` the main agent of a NON-default tenant T and `b` enabled for T (or the other way
+   * round)? SYNCHRONOUS and REQUIRED on purpose. The tenant tables are read through an async facade, but the
+   * message framing decides synchronously, so the caller answers from a snapshot it has already read (once per
+   * router tick / inbox pull, the same read the routing decision uses). A required member means a caller that
+   * forgets to supply it does not compile; an optional one would silently fall back to the old behaviour and
+   * the routing and the framing would drift apart again.
+   */
+  tenantPeer(a: string, b: string): boolean
 }
 
 /**
@@ -43,13 +53,18 @@ export interface TrustContext {
  *      (MUST run before the MAIN shortcut, otherwise a spoofed unknown
  *      `from` targeting MAIN would pass.)
  *   4. Either end is the main agent → true (main is implicit peer of all).
- *   5. Any of these holds between the team configs:
+ *   5. Any of these holds (a UNION: one true rule is enough):
  *        - fromTeam.reportsTo === to  (to is from's leader)
  *        - toTeam.reportsTo === from  (from is to's leader)
  *        - to ∈ fromTeam.delegatesTo  (from explicitly delegates to to)
  *        - from ∈ toTeam.delegatesTo  (to explicitly delegates to from)
  *        - to ∈ fromTeam.trustFrom    (explicit override)
  *        - from ∈ toTeam.trustFrom    (explicit override)
+ *        - tenant rule (ctx.tenantPeer, either direction): one end is the main agent of a non-default
+ *          tenant T and the other end is enabled for T. General rule, not configuration. It does NOT make
+ *          two plain agents of one tenant peers, nor a tenant's main agent and an agent that is enabled
+ *          only for another tenant, and the default tenant adds nothing (its main agent is rule 4).
+ *          Rules 1-3 run first, so the tenant rule never reaches a self-loop, an empty or an unknown name.
  *   6. Otherwise → false.
  */
 export function isTrustedPeer(from: string, to: string, ctx: TrustContext): boolean {
@@ -61,6 +76,9 @@ export function isTrustedPeer(from: string, to: string, ctx: TrustContext): bool
   if (!ctx.isKnownAgent(from) || !ctx.isKnownAgent(to)) return false
 
   if (from === ctx.mainAgentId || to === ctx.mainAgentId) return true
+
+  // Checked in both directions so the result is symmetric whatever the snapshot's own orientation.
+  if (ctx.tenantPeer(from, to) || ctx.tenantPeer(to, from)) return true
 
   const fromTeam = ctx.readAgentTeam(from)
   const toTeam = ctx.readAgentTeam(to)
