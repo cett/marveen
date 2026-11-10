@@ -3511,6 +3511,14 @@ paths:
         of the same skill answers `409` with `error: disabled`. A skill that is waiting for review or expired answers
         `409` with `error: not_live`. Percent-encode the id (`global%2Fdemo`). Admin only: every other caller gets `403`,
         decided before the id is looked up, so the answer says nothing about whether the id exists.
+
+        Revoking `global/<name>` cascades, in the same transaction (all or nothing), to every live
+        `agent/<agent>/<name>` skill of the same name (the copies the assign route makes, and an agent-local skill written
+        by hand under that name): each is disabled with its own `revoke` revision (same actor, reason
+        `cascade from global/<name>: <reason>`, cut to 1000 characters), and the ids are listed in `cascaded`. The match is
+        exact on the whole id (three segments, the name equal), never a prefix or a pattern. A copy that is not live is
+        left alone. The cascade never runs upward (revoking an agent-local skill does not touch the global one) and a
+        tenant skill has none. A second revoke of a disabled global skill answers `409` and does not cascade again.
       parameters:
         - name: id
           in: path
@@ -3537,7 +3545,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [ok, id, status, files]
+                required: [ok, id, status, cascaded, files]
                 properties:
                   ok:
                     type: boolean
@@ -3546,18 +3554,26 @@ paths:
                   status:
                     type: string
                     enum: [disabled]
+                  cascaded:
+                    type: array
+                    description: |
+                      The ids of the agent-local copies (`agent/<agent>/<name>`) that were disabled together with a global
+                      skill; empty when there were none, and always empty for a skill that is not `global/<name>`.
+                    items:
+                      type: string
                   files:
                     type: string
                     description: |
-                      What happened to the generated files. `removed`: taken away. `none`: there was no generated file.
-                      `quarantined`: a SKILL.md that differed from the row (hand-edited) was moved aside to
-                      `SKILL.md.revoked-<time>`, a name the loader does not read; the new paths are in `quarantined`.
-                      `error`: the files could not be regenerated; the skill is disabled all the same. The files are
-                      taken away even when file regeneration is switched off.
+                      What happened to the generated files of the skill and of every cascaded copy, summed up: the worst
+                      outcome wins. `error`: the files of at least one of them could not be regenerated (the skills are
+                      disabled all the same). Else `quarantined`: at least one SKILL.md that differed from the row
+                      (hand-edited) was moved aside to `SKILL.md.revoked-<time>`, a name the loader does not read; the new
+                      paths are in `quarantined`. Else `removed`: at least one generated file was taken away. Else `none`:
+                      there was no generated file. The files are taken away even when file regeneration is switched off.
                     enum: [removed, none, quarantined, error]
                   quarantined:
                     type: array
-                    description: Present only when `files` is `quarantined`; the paths the edited SKILL.md files were moved to.
+                    description: Present only when a file was moved aside (whatever `files` says); the paths the edited SKILL.md files were moved to, for the skill and its copies.
                     items:
                       type: string
         "400":

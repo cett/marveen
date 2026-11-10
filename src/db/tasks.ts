@@ -3,7 +3,7 @@
 
 import { AgentMessage } from './agents.js'
 import { db } from './connection.js'
-import { dbx } from './facade.js'
+import { dbx, type SqlOps } from './facade.js'
 import { likePrefix } from './like.js'
 import { ensureSkillBaseline, writeSkillRevision, type SkillActor, type SkillWriteMeta } from './skill-revisions.js'
 import { resolveWriteTenant } from './write-tenant.js'
@@ -602,14 +602,47 @@ export async function updateSkill(
   })
 }
 
+/** The longest reason a revoke carries in the trail (the route refuses a longer one; the cascade copies are cut to it). */
+export const MAX_REVOKE_REASON_CHARS = 1000
+
 export type RevokeSkillResult =
-  | { outcome: 'revoked'; skill: SkillRow }
+  /** `cascaded`: the ids of the agent-local copies of a global skill that were revoked with it (empty for any other skill). */
+  | { outcome: 'revoked'; skill: SkillRow; cascaded: string[] }
   | { outcome: 'not_found' }
   /**
    * The skill exists but is not live (already disabled, or waiting for a review): its status is unchanged and no revoke
-   * row is written. (A skill that predates the trail still gets its baseline row, the transaction commits.)
+   * row is written, and nothing cascades. (A skill that predates the trail still gets its baseline row, the transaction commits.)
    */
   | { outcome: 'not_live'; status: SkillStatus }
+
+/** The reason of a cascaded revoke: `cascade from global/<name>: <reason>`, cut to the limit (never in the middle of a surrogate pair). */
+export function cascadeRevokeReason(globalId: string, reason: string): string {
+  let out = `cascade from ${globalId}: ${reason}`
+  if (out.length > MAX_REVOKE_REASON_CHARS) {
+    out = out.slice(0, MAX_REVOKE_REASON_CHARS)
+    const last = out.charCodeAt(out.length - 1)
+    if (last >= 0xD800 && last <= 0xDBFF) out = out.slice(0, -1)
+  }
+  return out
+}
+
+/**
+ * The live agent-local copies of a global skill: ids of the exact shape `agent/<agent>/<name>` (three segments, the
+ * name equal to the global's, the agent segment not empty), tenant 'fleet', status 'live'. The match is made in code on
+ * the split id, not with LIKE, so a name with `%` or `_` in it matches itself only and `a_b` never reaches `aXb`.
+ * (The SQL only narrows to the agent-local prefix with a plain comparison.) Null when the id is not `global/<name>`.
+ */
+async function liveAgentCopiesOf(tx: SqlOps, globalId: string): Promise<string[] | null> {
+  const globalParts = globalId.split('/')
+  if (globalParts.length !== 2 || globalParts[0] !== 'global' || globalParts[1] === '') return null
+  const name = globalParts[1]
+  const candidates = await tx.all<{ id: string }>(
+    "SELECT id FROM skills WHERE tenant_id = 'fleet' AND status = 'live' AND substr(id, 1, 6) = 'agent/' ORDER BY id")
+  return candidates.map(r => r.id).filter(id => {
+    const parts = id.split('/')
+    return parts.length === 3 && parts[0] === 'agent' && parts[1] !== '' && parts[2] === name
+  })
+}
 
 /**
  * Revokes a live skill: live -> disabled, with the 'revoke' row in the trail, in ONE transaction. The status change is a
@@ -617,10 +650,21 @@ export type RevokeSkillResult =
  * the trail row, the other finds nothing to change and reports the status it found. Only the status changes: the text,
  * the companion files and the earlier trail stay as they are (this is not a rollback). The caller regenerates the files
  * afterwards. Bringing a disabled skill back is not here on purpose.
+ *
+ * A revoke of `global/<name>` cascades to the live `agent/<agent>/<name>` rows (the copies the assign route makes, and
+ * any agent-local skill written by hand under the same name): each gets its own compare-and-set and its own 'revoke'
+ * row, same actor, the reason `cascade from global/<name>: <reason>` (cut to the limit). A copy that is not live is left
+ * alone. The global and every copy go in the same transaction, all or nothing: if one write fails nothing changes. The
+ * cascade never runs upward (revoking an agent-local skill leaves the global one), and a tenant skill has none.
+ * Every copy gets its baseline before the global one does.
  */
 export async function revokeSkill(id: string, actor: SkillActor, reason: string): Promise<RevokeSkillResult> {
   const now = Math.floor(Date.now() / 1000)
   return dbx.tx(async (tx) => {
+    // Only a live global skill cascades: decided (and the copies' baselines written) before the global one is touched.
+    const before = await tx.get<{ status: SkillStatus }>('SELECT status FROM skills WHERE id = ?', id)
+    const copyIds = before?.status === 'live' ? (await liveAgentCopiesOf(tx, id)) ?? [] : []
+    for (const copyId of copyIds) await ensureSkillBaseline(tx, copyId)
     // A skill that predates the trail gets its baseline first, so the state it had when it was revoked is on record.
     await ensureSkillBaseline(tx, id)
     const changed = (await tx.run("UPDATE skills SET status = 'disabled', updated_at = ? WHERE id = ? AND status = 'live'", now, id)).changes
@@ -628,7 +672,17 @@ export async function revokeSkill(id: string, actor: SkillActor, reason: string)
     if (!row) return { outcome: 'not_found' as const }
     if (changed === 0) return { outcome: 'not_live' as const, status: row.status }
     await writeSkillRevision(tx, { skill: row, action: 'revoke', actor, reason })
-    return { outcome: 'revoked' as const, skill: row }
+
+    const cascaded: string[] = []
+    const copyReason = cascadeRevokeReason(id, reason)
+    for (const copyId of copyIds) {
+      const copyChanged = (await tx.run("UPDATE skills SET status = 'disabled', updated_at = ? WHERE id = ? AND status = 'live'", now, copyId)).changes
+      if (copyChanged === 0) continue
+      const copyRow = await tx.get<SkillRow>('SELECT * FROM skills WHERE id = ?', copyId) as SkillRow
+      await writeSkillRevision(tx, { skill: copyRow, action: 'revoke', actor, reason: copyReason })
+      cascaded.push(copyId)
+    }
+    return { outcome: 'revoked' as const, skill: row, cascaded }
   })
 }
 

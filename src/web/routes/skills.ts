@@ -20,7 +20,7 @@ import {
   listSkillsForTenant, listAllSkills, listLiveSkills,
   grantSkillAccess, revokeSkillAccess, listSkillAccess,
   listSkillFiles, getSkillFile, putSkillFile, deleteSkillFile, countSkillFiles,
-  listSkillRevisions, revokeSkill,
+  listSkillRevisions, revokeSkill, MAX_REVOKE_REASON_CHARS,
 } from '../../db.js'
 
 function parseFrontmatterField(content: string, field: string): string {
@@ -62,8 +62,20 @@ function parseSkillKeywords(content: string): string[] {
   return raw.split(',').map(k => k.trim()).filter(Boolean)
 }
 
-/** The longest reason a revoke takes: it is a sentence for the trail, not a document. */
-const MAX_REVOKE_REASON_CHARS = 1000
+/** What happened to the generated files of one skill of a revoke (see summarizeRevokeFiles). */
+type RevokeFilesOutcome = 'removed' | 'none' | 'quarantined' | 'error'
+
+/**
+ * The one `files` answer of a revoke that touched several skills (the global one and its cascaded copies). The worst
+ * outcome wins: `error` if any regeneration failed, else `quarantined` if any file was moved aside, else `removed` if at
+ * least one file was taken away, else `none`. A failure is not hidden behind a quarantine: the caller must look at it.
+ */
+export function summarizeRevokeFiles(outcomes: readonly RevokeFilesOutcome[]): RevokeFilesOutcome {
+  if (outcomes.includes('error')) return 'error'
+  if (outcomes.includes('quarantined')) return 'quarantined'
+  if (outcomes.includes('removed')) return 'removed'
+  return 'none'
+}
 
 // Skills are stored in SQL and mirrored to disk for the Claude Code loader --
 // derive per-agent coverage for a skill name from the `agent/<agentId>/<name>`
@@ -919,23 +931,28 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
       else json(res, { error: 'not_live', current_status: result.status, hint: 'Only a live skill can be revoked' }, 409)
       return true
     }
-    // The row is already disabled for good: a failure to regenerate must not turn the answer into an error, the caller
-    // gets what happened to the files instead.
-    let files: 'removed' | 'none' | 'quarantined' | 'error' = 'error'
-    let quarantined: string[] = []
-    try {
-      // forceEnabled: an explicit revoke takes the files away even when the file regeneration switch is off (on a
-      // skill that is not live the call only removes, it never writes), so the switch cannot keep a withdrawn skill loadable.
-      const regen = await regenSingleSkillFile(id, true)
-      quarantined = regen.quarantined ?? []
-      files = regen.reason === 'quarantined' ? 'quarantined'
-        : regen.reason === 'write_error' ? 'error'
-        : regen.reason === null && !regen.skipped ? 'removed'
-        : 'none'
-    } catch (err) {
-      logger.error({ err, skillId: id }, 'skill revoke: regenerating the files failed (the skill is disabled)')
+    // The rows are already disabled for good: a failure to regenerate must not turn the answer into an error, the caller
+    // gets what happened to the files instead. The global skill and every cascaded copy are regenerated one by one (a
+    // failure on one does not stop the others) and the answer is the sum.
+    const cascaded = result.cascaded
+    const outcomes: RevokeFilesOutcome[] = []
+    const quarantined: string[] = []
+    for (const regenId of [id, ...cascaded]) {
+      try {
+        // forceEnabled: an explicit revoke takes the files away even when the file regeneration switch is off (on a
+        // skill that is not live the call only removes, it never writes), so the switch cannot keep a withdrawn skill loadable.
+        const regen = await regenSingleSkillFile(regenId, true)
+        quarantined.push(...(regen.quarantined ?? []))
+        outcomes.push(regen.reason === 'quarantined' ? 'quarantined'
+          : regen.reason === 'write_error' ? 'error'
+          : regen.reason === null && !regen.skipped ? 'removed'
+          : 'none')
+      } catch (err) {
+        outcomes.push('error')
+        logger.error({ err, skillId: regenId }, 'skill revoke: regenerating the files failed (the skill is disabled)')
+      }
     }
-    json(res, { ok: true, id, status: 'disabled', files, ...(quarantined.length ? { quarantined } : {}) })
+    json(res, { ok: true, id, status: 'disabled', cascaded, files: summarizeRevokeFiles(outcomes), ...(quarantined.length ? { quarantined } : {}) })
     return true
   }
 
