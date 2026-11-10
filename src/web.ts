@@ -104,7 +104,6 @@ import { tryHandleTokenShadow } from './web/routes/token-shadow.js'
 import { answerIdentityRefusal, observeRefusedSharedToken, observeTokenUsage, recordTenantContextRefusal } from './web/token-shadow.js'
 import { tryHandleHookAudit } from './web/routes/hook-audit.js'
 import { tryHandleAgentState } from './web/routes/agent-state.js'
-import { tryHandleIntel } from './web/routes/intel.js'
 import { tryHandleConversationLedger } from './web/routes/conversation-ledger.js'
 import { tryHandleSkillSync } from './web/routes/skill-sync.js'
 import { tryHandleTenantGateStatus } from './web/routes/tenant-gate-status.js'
@@ -206,7 +205,6 @@ const dispatcher = new RouteDispatcher()
   .add(tryHandleTokenShadow)
   .add(tryHandleHookAudit)
   .add(tryHandleAgentState)
-  .add(tryHandleIntel)
   .add(tryHandleConversationLedger)
   .add(tryHandleSkillSync)
   .add(tryHandleTenantGateStatus)

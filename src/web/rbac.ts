@@ -107,7 +107,7 @@ const ROLE_PERMISSIONS: Record<Role, ReadonlySet<Permission>> = {
   // A fleet agent's own token. The grant follows the T0 matrix: what an agent needs to run itself.
   // "Own" scoping (the agent id comes from the token, a foreign one is a 403) is enforced per
   // endpoint in the routes (fleet-agent-identity.ts); this set only decides which endpoints are
-  // reachable at all. Deliberately absent: admin:all (agent lifecycle, vault, tokens, rbac, intel),
+  // reachable at all. Deliberately absent: admin:all (agent lifecycle, vault, tokens, rbac),
   // agents:write, federation:*. approvals:write reaches POST /api/approvals (a request); the route
   // itself refuses a fleet_agent the resolving PATCH.
   fleet_agent: new Set<Permission>([
