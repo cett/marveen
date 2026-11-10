@@ -13,7 +13,7 @@ const { skillStore } = vi.hoisted(() => ({ skillStore: new Map<string, any>() })
 vi.mock('../db.js', () => ({
   getSkill: vi.fn().mockImplementation((id: string) => Promise.resolve(skillStore.get(id))),
   createSkill: vi.fn().mockImplementation((opts: any) => {
-    const row = { ...opts, is_global: opts.is_global ? 1 : 0, created_by: null, created_at: 0, updated_at: 0 }
+    const row = { ...opts, is_global: opts.is_global ? 1 : 0, created_by: null, created_at: 0, updated_at: 0, status: 'live' }
     skillStore.set(opts.id, row)
     return Promise.resolve(row)
   }),

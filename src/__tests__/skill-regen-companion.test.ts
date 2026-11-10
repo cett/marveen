@@ -52,7 +52,7 @@ const put = (rel: string, content: string | Buffer, mode = 0o644) =>
 beforeEach(() => {
   rmSync(FAKE_HOME, { recursive: true, force: true })
   store.clear(); files.clear()
-  store.set(SID, { id: SID, name: 'comp', description: '', content: 'body', tenant_id: 'fleet', is_global: 1 })
+  store.set(SID, { id: SID, name: 'comp', description: '', content: 'body', tenant_id: 'fleet', is_global: 1, status: 'live' })
 })
 
 describe('generation', () => {
@@ -154,8 +154,8 @@ describe('importSkillCompanionFilesFromDisk (disk -> DB, insert-if-absent)', () 
   })
 
   it('leaves non-fleet (tenant) skills and skills without a file alone', async () => {
-    store.set('acme-x', { id: 'acme-x', name: 'x', description: '', content: 'c', tenant_id: 'acme', is_global: 0 })
-    store.set('global/nofile', { id: 'global/nofile', name: 'nofile', description: '', content: 'c', tenant_id: 'fleet', is_global: 1 })
+    store.set('acme-x', { id: 'acme-x', name: 'x', description: '', content: 'c', tenant_id: 'acme', is_global: 0, status: 'live' })
+    store.set('global/nofile', { id: 'global/nofile', name: 'nofile', description: '', content: 'c', tenant_id: 'fleet', is_global: 1, status: 'live' })
     expect(await importSkillCompanionFilesFromDisk()).toEqual({ seeded: 0, skipped: 0, errors: 0 })
   })
 })

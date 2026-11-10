@@ -66,7 +66,7 @@ import {
 import { addGeneratedHeader } from '../skill-header.js'
 
 function fleetSkillRow(id: string, content: string) {
-  return { id, name: id, description: '', content, tenant_id: 'fleet', is_global: 1, created_by: null, created_at: 0, updated_at: 0 }
+  return { id, name: id, description: '', content, tenant_id: 'fleet', is_global: 1, created_by: null, created_at: 0, updated_at: 0, status: 'live' }
 }
 
 afterAll(() => { rmSync(FAKE_HOME, { recursive: true, force: true }) })
@@ -111,7 +111,7 @@ describe('regenSingleSkillFile', () => {
   })
 
   it('is a no-op (not_file_backed) for a tenant-scoped B2B skill whose tenant has no agent, without touching disk', async () => {
-    getSkillMock.mockResolvedValue({ id: 'acme-corp-my-skill', name: 'my-skill', description: '', content: 'x', tenant_id: 'acme-corp', is_global: 0, created_by: null, created_at: 0, updated_at: 0 })
+    getSkillMock.mockResolvedValue({ id: 'acme-corp-my-skill', name: 'my-skill', description: '', content: 'x', tenant_id: 'acme-corp', is_global: 0, created_by: null, created_at: 0, updated_at: 0, status: 'live' })
     const result = await regenSingleSkillFile('acme-corp-my-skill', true)
     expect(result).toEqual({ written: false, skipped: true, reason: 'not_file_backed' })
   })
@@ -233,7 +233,7 @@ describe('regenSkillFilesFromSQL', () => {
   it('writes fleet rows to their canonical paths and creates no file for a tenant row whose tenant has no agent', async () => {
     listAllSkillsMock.mockResolvedValue([
       fleetSkillRow('global/fleet-only', '# fleet'),
-      { id: 'acme-corp-skill', name: 'skill', description: '', content: 'x', tenant_id: 'acme-corp', is_global: 0, created_by: null, created_at: 0, updated_at: 0 },
+      { id: 'acme-corp-skill', name: 'skill', description: '', content: 'x', tenant_id: 'acme-corp', is_global: 0, created_by: null, created_at: 0, updated_at: 0, status: 'live' },
     ])
     const result = await regenSkillFilesFromSQL(false, true)
     expect(result).toEqual({ enabled: true, written: 1, skipped: 0, errors: 0 })
@@ -278,7 +278,7 @@ describe('findMissingSkillFiles', () => {
   it('lists fleet skill ids that have no file on disk yet', async () => {
     listAllSkillsMock.mockResolvedValue([
       fleetSkillRow('global/not-yet-written', '# missing'),
-      { id: 'acme-corp-skill', name: 'skill', description: '', content: 'x', tenant_id: 'acme-corp', is_global: 0, created_by: null, created_at: 0, updated_at: 0 },
+      { id: 'acme-corp-skill', name: 'skill', description: '', content: 'x', tenant_id: 'acme-corp', is_global: 0, created_by: null, created_at: 0, updated_at: 0, status: 'live' },
     ])
     expect(await findMissingSkillFiles()).toEqual(['global/not-yet-written'])
   })

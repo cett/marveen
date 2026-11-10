@@ -100,12 +100,13 @@ vi.mock('../logger.js', () => ({
 
 vi.mock('../db.js', () => ({
   getSkill: vi.fn().mockResolvedValue(undefined),
-  createSkill: vi.fn().mockImplementation((opts: any) => Promise.resolve({ ...opts, is_global: opts.is_global ? 1 : 0, created_by: null, created_at: 0, updated_at: 0 })),
+  createSkill: vi.fn().mockImplementation((opts: any) => Promise.resolve({ ...opts, is_global: opts.is_global ? 1 : 0, created_by: null, created_at: 0, updated_at: 0, status: 'live' })),
   updateSkill: vi.fn().mockResolvedValue(undefined),
   deleteSkill: vi.fn().mockResolvedValue(true),
   seedSkillIfAbsent: vi.fn().mockResolvedValue(true),
   listSkillsForTenant: vi.fn().mockResolvedValue([]),
   listAllSkills: vi.fn().mockResolvedValue([]),
+  listLiveSkills: vi.fn().mockResolvedValue([]),
   grantSkillAccess: vi.fn(),
   revokeSkillAccess: vi.fn().mockResolvedValue(true),
   listSkillAccess: vi.fn().mockResolvedValue([]),

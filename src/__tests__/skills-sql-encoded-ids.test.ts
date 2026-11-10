@@ -69,7 +69,7 @@ const IDS: Array<[string, string]> = [
   ['agent/<id>/<dir> id', 'agent/zed/my-skill'],
 ]
 
-const row = (id: string) => ({ id, name: 'n', description: '', content: 'c', tenant_id: 'fleet', is_global: 0, created_by: null, created_at: 0, updated_at: 0 })
+const row = (id: string) => ({ id, name: 'n', description: '', content: 'c', tenant_id: 'fleet', is_global: 0, created_by: null, created_at: 0, updated_at: 0, status: 'live' })
 
 describe('/api/skills/sql/:id with percent-encoded ids', () => {
   beforeEach(() => {
@@ -103,7 +103,8 @@ describe('/api/skills/sql/:id with percent-encoded ids', () => {
       const { ctx, out } = makeCtx('PUT', `/api/skills/sql/${enc}`, { content: 'new body' })
       expect(await tryHandleSkills(ctx)).toBe(true)
       expect(out.status).toBe(200)
-      expect(mockUpdateSkill).toHaveBeenCalledWith(id, { content: 'new body' }, { kind: 'system', id: null })
+      // The caller is an admin: no live guard on the write.
+      expect(mockUpdateSkill).toHaveBeenCalledWith(id, { content: 'new body' }, { kind: 'system', id: null }, {}, { requireLive: false })
       expect(mockRegen).toHaveBeenCalledWith(id)
     })
 
@@ -111,7 +112,7 @@ describe('/api/skills/sql/:id with percent-encoded ids', () => {
       const { ctx, out } = makeCtx('DELETE', `/api/skills/sql/${enc}`)
       expect(await tryHandleSkills(ctx)).toBe(true)
       expect(out.status).toBe(200)
-      expect(mockDeleteSkill).toHaveBeenCalledWith(id, { kind: 'system', id: null })
+      expect(mockDeleteSkill).toHaveBeenCalledWith(id, { kind: 'system', id: null }, {}, { requireLive: false })
     })
 
     it(`GET/POST access + DELETE access item, ${label}`, async () => {

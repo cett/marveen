@@ -24,7 +24,7 @@
  * the owning tenant and of the tenants they are granted to (see the "tenant
  * skills" section below); a tenant with no agent keeps its skills DB-only.
  */
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmdirSync, statSync, unlinkSync } from 'node:fs'
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync, statSync, unlinkSync } from 'node:fs'
 import { dirname, join, normalize, sep } from 'node:path'
 import { homedir } from 'node:os'
 import { logger } from '../logger.js'
@@ -98,6 +98,14 @@ export function resolveSkillPath(id: string): string | null {
 }
 
 /**
+ * The skills that may have generated files: the live ones. Anything else (a revoked skill) is never written and has
+ * its generated files taken away; the paths that do that read listAllSkills() directly.
+ */
+async function liveSkills(): Promise<SkillRow[]> {
+  return (await listAllSkills()).filter(r => r.status === 'live')
+}
+
+/**
  * Regenerate fleet skill files from SQL.
  *
  * Safe to call unconditionally at startup: returns immediately with
@@ -126,8 +134,22 @@ async function regenSkillFilesFromSQLLocked(dryRun = false, forceEnabled = false
     logger.error({ err }, 'skill-regen: failed to query skills table')
     return { enabled: true, written: 0, skipped: 0, errors: 1 }
   }
-  const rows = allRows.filter(r => r.tenant_id === 'fleet')
+  // Only a live fleet skill is written. A fleet skill that is not live (revoked) has its generated files taken away
+  // instead, and a tenant skill goes through reconcileTenantSkill whatever its status: that one writes a live skill
+  // to its recipients and removes the copies of a skill that is not live.
+  const rows = allRows.filter(r => r.tenant_id === 'fleet' && r.status === 'live')
+  const retiredRows = allRows.filter(r => r.tenant_id === 'fleet' && r.status !== 'live')
   const tenantRows = allRows.filter(r => r.tenant_id !== 'fleet')
+
+  for (const row of retiredRows) {
+    if (dryRun) {
+      logger.info({ id: row.id, status: row.status }, 'skill-regen [dry-run]: would remove the generated files of a skill that is not live')
+      continue
+    }
+    // quarantine: a SKILL.md that differs from the row (hand-edited, or edited to look so) is put aside, not left loadable.
+    const r = removeGeneratedFilesOfSkill(row.id, row.content, row.tenant_id, await safeListSkillFiles(row.id), true)
+    if (r.reason === 'unlink_error') errors++
+  }
 
   for (const row of rows) {
     const targetPath = resolveSkillPath(row.id)
@@ -212,7 +234,13 @@ function writeSkillFileToDisk(id: string, targetPath: string, content: string, d
 export interface SingleRegenResult {
   written: boolean
   skipped: boolean
-  reason: 'disabled' | 'not_found' | 'not_file_backed' | 'unrecognized_id' | 'content_equal' | 'write_error' | null
+  /**
+   * 'not_live': the skill is not live and no generated file was there to remove. 'quarantined': it is not live and a
+   * SKILL.md that differed from the row (edited by hand) was moved aside to a name the loader does not read; the new
+   * paths are in `quarantined`.
+   */
+  reason: 'disabled' | 'not_found' | 'not_file_backed' | 'unrecognized_id' | 'content_equal' | 'write_error' | 'not_live' | 'quarantined' | null
+  quarantined?: string[]
 }
 
 /**
@@ -234,6 +262,20 @@ async function regenSingleSkillFileLocked(id: string, forceEnabled = false): Pro
 
   const row = await getSkill(id)
   if (!row) return { written: false, skipped: false, reason: 'not_found' }
+  if (row.status !== 'live') {
+    // A skill that is not live is never written: its generated files are taken away instead (a revoke ends here).
+    if (row.tenant_id !== 'fleet') {
+      const t = await reconcileTenantSkill(row, false)
+      if (t.errors > 0) return { written: false, skipped: false, reason: 'write_error' }
+      if (t.quarantined.length > 0) return { written: false, skipped: false, reason: 'quarantined', quarantined: t.quarantined }
+      return t.removed > 0 ? { written: false, skipped: false, reason: null } : { written: false, skipped: true, reason: 'not_live' }
+    }
+    const r = removeGeneratedFilesOfSkill(row.id, row.content, row.tenant_id, await safeListSkillFiles(row.id), true)
+    if (r.reason === 'unlink_error') return { written: false, skipped: false, reason: 'write_error' }
+    if (r.quarantined?.length) return { written: false, skipped: false, reason: 'quarantined', quarantined: r.quarantined }
+    if (r.removed) return { written: false, skipped: false, reason: null }
+    return { written: false, skipped: true, reason: 'not_live' }
+  }
   if (row.tenant_id !== 'fleet') {
     const t = await reconcileTenantSkill(row, false)
     if (t.errors > 0) return { written: false, skipped: false, reason: 'write_error' }
@@ -258,6 +300,25 @@ async function regenSingleSkillFileLocked(id: string, forceEnabled = false): Pro
 export interface RemoveGeneratedResult {
   removed: boolean
   reason: 'disabled' | 'not_file_backed' | 'unrecognized_id' | 'absent' | 'modified_on_disk' | 'unlink_error' | null
+  /** Set when a SKILL.md that differed from the row was moved aside (see quarantineSkillFile); only for a skill that is not live. */
+  quarantined?: string[]
+}
+
+/**
+ * Moves a SKILL.md aside under a name the Claude Code loader does not read (it loads `SKILL.md` only), in the same
+ * directory, so the text a person wrote is not lost and the skill is not loadable. Null when the move failed.
+ * The log line names the paths, never the text.
+ */
+function quarantineSkillFile(path: string, id: string): string | null {
+  const target = `${path}.revoked-${Date.now()}`
+  try {
+    renameSync(path, target)
+    logger.warn({ id, from: path, to: target }, 'skill-regen: moved a SKILL.md that differs from the row of a skill that is not live aside')
+    return target
+  } catch (err) {
+    logger.error({ err, id, path }, 'skill-regen: failed to move a SKILL.md of a skill that is not live aside')
+    return null
+  }
 }
 
 /**
@@ -277,6 +338,18 @@ export interface RemoveGeneratedResult {
  */
 function removeGeneratedSkillFileLocked(id: string, content: string, tenantId: string, files: SkillFileRow[] = []): RemoveGeneratedResult {
   if (!SKILL_SQL_REGEN) return { removed: false, reason: 'disabled' }
+  return removeGeneratedFilesOfSkill(id, content, tenantId, files)
+}
+
+/**
+ * The removal itself, without the kill-switch (the callers hold it): a skill deleted from SQL and a skill that is no
+ * longer live both lose their generated files the same way. A file edited by hand is where they differ: a deleted skill
+ * leaves it in place (it may hold work the database does not have); a skill that is not live (`quarantineModified`)
+ * has it moved aside, because "differs from the row" is a test anyone who can write the directory passes with one
+ * character, and a revoked skill must not stay loadable that way. The tenant branch is only for the deleted skill: a
+ * tenant skill that is not live goes through reconcileTenantSkill.
+ */
+function removeGeneratedFilesOfSkill(id: string, content: string, tenantId: string, files: SkillFileRow[], quarantineModified = false): RemoveGeneratedResult {
   if (tenantId !== 'fleet') return removeTenantSkillFiles(id, content, files)
   const targetPath = resolveSkillPath(id)
   if (!targetPath) return { removed: false, reason: 'unrecognized_id' }
@@ -285,6 +358,12 @@ function removeGeneratedSkillFileLocked(id: string, content: string, tenantId: s
   let onDisk = ''
   try { onDisk = readFileSync(targetPath, 'utf-8') } catch { return { removed: false, reason: 'unlink_error' } }
   if (stripGeneratedHeader(onDisk) !== content) {
+    if (quarantineModified) {
+      const moved = quarantineSkillFile(targetPath, id)
+      if (!moved) return { removed: false, reason: 'unlink_error' }
+      removeCompanionFiles(dirOfSkillMd(targetPath), files)
+      return { removed: true, reason: null, quarantined: [moved] }
+    }
     logger.warn({ id, path: targetPath }, 'skill-regen: deleted skill has a hand-edited file on disk, leaving it')
     return { removed: false, reason: 'modified_on_disk' }
   }
@@ -484,7 +563,7 @@ export async function importCompanionFilesOfDir(
 export async function importSkillCompanionFilesFromDisk(dryRun = false): Promise<CompanionImportResult> {
   const total: CompanionImportResult = { seeded: 0, skipped: 0, errors: 0 }
   let rows: SkillRow[]
-  try { rows = (await listAllSkills()).filter(r => r.tenant_id === 'fleet') } catch (err) {
+  try { rows = (await liveSkills()).filter(r => r.tenant_id === 'fleet') } catch (err) {
     logger.error({ err }, 'skill-regen: failed to query skills table for companion import')
     return { ...total, errors: 1 }
   }
@@ -511,7 +590,8 @@ export async function importSkillCompanionFilesFromDisk(dryRun = false): Promise
 
 const SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
 
-interface TenantReconcile { written: number; skipped: number; errors: number; removed: number; recipients: number }
+/** quarantined: SKILL.md copies of a skill that is not live that differed from the row and were moved aside (new paths). */
+interface TenantReconcile { written: number; skipped: number; errors: number; removed: number; recipients: number; quarantined: string[] }
 
 /** Directory name for a tenant skill id: [A-Za-z0-9._-] only, no leading dot/dash. */
 export function tenantSkillDirName(id: string): string | null {
@@ -614,8 +694,9 @@ function writeTenantCopy(row: SkillRow, agentId: string, files: SkillFileRow[], 
 }
 
 async function reconcileTenantSkill(row: SkillRow, dryRun: boolean): Promise<TenantReconcile> {
-  const out: TenantReconcile = { written: 0, skipped: 0, errors: 0, removed: 0, recipients: 0 }
-  const expected = new Set(await tenantSkillRecipients(row))
+  const out: TenantReconcile = { written: 0, skipped: 0, errors: 0, removed: 0, recipients: 0, quarantined: [] }
+  // A skill that is not live has no recipient: the loop below then takes its generated copies away from every agent.
+  const expected = new Set(row.status === 'live' ? await tenantSkillRecipients(row) : [])
   out.recipients = expected.size
   const files = await safeListSkillFiles(row.id)
 
@@ -637,6 +718,12 @@ async function reconcileTenantSkill(row: SkillRow, dryRun: boolean): Promise<Ten
     // hand-edited SKILL.md is kept, but its scripts must not stay on an agent
     // that no longer qualifies.
     removeCompanionFiles(dirOfSkillMd(path), files)
+    if (handEdited && row.status !== 'live') {
+      // A skill that is not live: the copy is moved aside, not left loadable (see removeGeneratedFilesOfSkill).
+      const moved = quarantineSkillFile(path, row.id)
+      if (moved) { out.quarantined.push(moved); out.removed++ } else out.errors++
+      continue
+    }
     if (handEdited) {
       logger.warn({ id: row.id, agentId, path }, 'skill-regen: stale tenant copy was edited by hand, leaving SKILL.md (generated companion files removed)')
       continue
@@ -704,9 +791,9 @@ function removeTenantSkillFiles(id: string, content: string, files: SkillFileRow
 async function generateTenantSkillFilesForAgentLocked(agentId: string, forceEnabled = false): Promise<{ written: number; skipped: number; errors: number }> {
   const total = { written: 0, skipped: 0, errors: 0 }
   if (!SKILL_SQL_REGEN && !forceEnabled) return total
-  for (const row of await listAllSkills()) {
+  for (const row of await liveSkills()) {
     if (row.tenant_id === 'fleet' || !(await tenantSkillQualifiers(row)).includes(agentId)) continue
-    const out: TenantReconcile = { written: 0, skipped: 0, errors: 0, removed: 0, recipients: 0 }
+    const out: TenantReconcile = { written: 0, skipped: 0, errors: 0, removed: 0, recipients: 0, quarantined: [] }
     writeTenantCopy(row, agentId, await safeListSkillFiles(row.id), false, out)
     total.written += out.written; total.skipped += out.skipped; total.errors += out.errors
   }
@@ -789,7 +876,7 @@ export async function findMissingSkillFiles(): Promise<string[]> {
   const missing: string[] = []
   let rows
   try {
-    rows = (await listAllSkills()).filter(r => r.tenant_id === 'fleet')
+    rows = (await liveSkills()).filter(r => r.tenant_id === 'fleet')
   } catch {
     return []
   }
@@ -818,7 +905,7 @@ export interface SkillFileGaps {
 export async function findSkillFileGaps(): Promise<SkillFileGaps> {
   const gaps: SkillFileGaps = { skillFiles: [], companionFiles: [], tenantCopies: [] }
   let rows: SkillRow[]
-  try { rows = await listAllSkills() } catch { return gaps }
+  try { rows = await liveSkills() } catch { return gaps }
   const missingCompanions = async (id: string, skillDir: string) => {
     for (const f of await safeListSkillFiles(id)) {
       const t = companionTarget(skillDir, f.rel_path)

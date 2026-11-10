@@ -47,7 +47,7 @@ import { findSkillFileGaps, regenSkillFilesFromSQL } from '../web/skill-regen.js
 
 afterAll(() => { rmSync(FAKE_HOME, { recursive: true, force: true }) })
 
-const row = (id: string, tenant = 'fleet') => store.set(id, { id, name: id, description: '', content: '---\nname: x\n---\nbody\n', tenant_id: tenant, is_global: 0 })
+const row = (id: string, tenant = 'fleet') => store.set(id, { id, name: id, description: '', content: '---\nname: x\n---\nbody\n', tenant_id: tenant, is_global: 0, status: 'live' })
 const globalDir = (n: string) => join(FAKE_HOME, '.claude', 'skills', n)
 
 beforeEach(() => {

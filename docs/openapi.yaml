@@ -955,7 +955,7 @@ components:
           description: Number of the revision within the skill, from 1, without gaps.
         action:
           type: string
-          enum: [baseline, create, modify, seed, delete, file_put, file_delete, file_seed]
+          enum: [baseline, create, modify, seed, delete, file_put, file_delete, file_seed, revoke]
         content_sha256:
           type: string
           nullable: true
@@ -3497,6 +3497,93 @@ paths:
           description: Malformed percent-encoding in the id
         "403":
           description: Not an admin (a fleet agent token and a tenant user included)
+
+  /skills/sql/{id}/revoke:
+    post:
+      tags: [skills]
+      operationId: revokeSkill
+      summary: Withdraw a live skill (admin only)
+      description: |
+        Moves a live skill to `disabled` in one step: the status changes, a `revoke` revision with the actor and the
+        reason is written to the trail (same transaction), and the generated files of the skill are taken away at once, so
+        no agent loads it from the next start. Only the status changes: the text, the companion files and the earlier trail
+        stay, and a disabled skill is not brought back by any route (that is a manual database fix for now). A second revoke
+        of the same skill answers `409` with `error: disabled`. A skill that is waiting for review or expired answers
+        `409` with `error: not_live`. Percent-encode the id (`global%2Fdemo`). Admin only: every other caller gets `403`,
+        decided before the id is looked up, so the answer says nothing about whether the id exists.
+
+        Revoking `global/<name>` cascades, in the same transaction (all or nothing), to every live
+        `agent/<agent>/<name>` skill of the same name (the copies the assign route makes, and an agent-local skill written
+        by hand under that name): each is disabled with its own `revoke` revision (same actor, reason
+        `cascade from global/<name>: <reason>`, cut to 1000 characters), and the ids are listed in `cascaded`. The match is
+        exact on the whole id (three segments, the name equal), never a prefix or a pattern. A copy that is not live is
+        left alone. The cascade never runs upward (revoking an agent-local skill does not touch the global one) and a
+        tenant skill has none. A second revoke of a disabled global skill answers `409` and does not cascade again.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason:
+                  type: string
+                  minLength: 1
+                  maxLength: 1000
+                  description: Why the skill is withdrawn (kept in the trail). Trimmed; must not be blank.
+      responses:
+        "200":
+          description: The skill is disabled
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, id, status, cascaded, files]
+                properties:
+                  ok:
+                    type: boolean
+                  id:
+                    type: string
+                  status:
+                    type: string
+                    enum: [disabled]
+                  cascaded:
+                    type: array
+                    description: |
+                      The ids of the agent-local copies (`agent/<agent>/<name>`) that were disabled together with a global
+                      skill; empty when there were none, and always empty for a skill that is not `global/<name>`.
+                    items:
+                      type: string
+                  files:
+                    type: string
+                    description: |
+                      What happened to the generated files of the skill and of every cascaded copy, summed up: the worst
+                      outcome wins. `error`: the files of at least one of them could not be regenerated (the skills are
+                      disabled all the same). Else `quarantined`: at least one SKILL.md that differed from the row
+                      (hand-edited) was moved aside to `SKILL.md.revoked-<time>`, a name the loader does not read; the new
+                      paths are in `quarantined`. Else `removed`: at least one generated file was taken away. Else `none`:
+                      there was no generated file. The files are taken away even when file regeneration is switched off.
+                    enum: [removed, none, quarantined, error]
+                  quarantined:
+                    type: array
+                    description: Present only when a file was moved aside (whatever `files` says); the paths the edited SKILL.md files were moved to, for the skill and its copies.
+                    items:
+                      type: string
+        "400":
+          description: "`required` (reason missing or blank), `invalid_value` (reason longer than 1000 characters or malformed percent-encoding in the id) or `parse_error` (body is not JSON)"
+        "403":
+          description: Not an admin (a fleet agent token and a tenant user included)
+        "404":
+          description: No skill with this id
+        "409":
+          description: "`disabled` (already disabled) or `not_live` (waiting for review or expired); `current_status` names the status found"
 
   /skills/local:
     get:

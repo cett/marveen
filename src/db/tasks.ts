@@ -3,7 +3,7 @@
 
 import { AgentMessage } from './agents.js'
 import { db } from './connection.js'
-import { dbx } from './facade.js'
+import { dbx, type SqlOps } from './facade.js'
 import { likePrefix } from './like.js'
 import { ensureSkillBaseline, writeSkillRevision, type SkillActor, type SkillWriteMeta } from './skill-revisions.js'
 import { resolveWriteTenant } from './write-tenant.js'
@@ -486,6 +486,12 @@ export async function seedScheduleIfAbsent(id: string, opts: UpsertScheduleOpts)
 }
 
 
+/**
+ * Lifecycle state of a skill (migration 0093). Only 'live' skills reach the agents. 'pending_review' and 'expired'
+ * belong to the quarantine path of a later step and nothing sets them yet; 'disabled' is what a revoke leaves.
+ */
+export type SkillStatus = 'live' | 'pending_review' | 'disabled' | 'expired'
+
 export interface SkillRow {
   id: string
   name: string
@@ -496,6 +502,7 @@ export interface SkillRow {
   created_by: string | null
   created_at: number
   updated_at: number
+  status: SkillStatus
 }
 
 export interface CreateSkillOpts {
@@ -564,8 +571,17 @@ export async function insertFleetSkillFromFile(
   })
 }
 
+/**
+ * `requireLive` is the compare-and-set a caller who is not an admin passes: the write happens only while the row is
+ * `live`, decided inside the same transaction as the write (a route's earlier read can be stale by the time the write
+ * runs, e.g. a revoke that committed in between). A refused write changes nothing, not even a baseline row, and
+ * answers undefined (update) or false (delete), the same as an id that is not there.
+ */
+export interface SkillWriteGuard { requireLive?: boolean }
+
 export async function updateSkill(
   id: string, patch: { name?: string; description?: string; content?: string; is_global?: boolean }, actor: SkillActor, meta: SkillWriteMeta = {},
+  guard: SkillWriteGuard = {},
 ): Promise<SkillRow | undefined> {
   const now = Math.floor(Date.now() / 1000)
   const sets: string[] = ['updated_at = ?']
@@ -576,9 +592,12 @@ export async function updateSkill(
   if (patch.is_global !== undefined)   { sets.push('is_global = ?');   vals.push(patch.is_global ? 1 : 0) }
   vals.push(id)
   return dbx.tx(async (tx) => {
+    // Decided first: a refused write must not leave a baseline row behind either.
+    if (guard.requireLive && !(await tx.get<{ one: number }>("SELECT 1 AS one FROM skills WHERE id = ? AND status = 'live'", id))) return undefined
     await ensureSkillBaseline(tx, id)
     const before = await tx.get<{ is_global: number }>('SELECT is_global FROM skills WHERE id = ?', id)
-    const changes = (await tx.run(`UPDATE skills SET ${sets.join(', ')} WHERE id = ?`, ...vals)).changes
+    // The status condition is in the write itself as well, so it holds on a database that does not serialize the transaction.
+    const changes = (await tx.run(`UPDATE skills SET ${sets.join(', ')} WHERE id = ?${guard.requireLive ? " AND status = 'live'" : ''}`, ...vals)).changes
     if (changes === 0) return undefined
     const row = await tx.get<SkillRow>('SELECT * FROM skills WHERE id = ?', id) as SkillRow
     // A patch that leaves the text and the companion files as they were (a rename, a description) writes no row, with
@@ -595,15 +614,112 @@ export async function updateSkill(
   })
 }
 
-export async function deleteSkill(id: string, actor: SkillActor, meta: SkillWriteMeta = {}): Promise<boolean> {
-  return dbx.tx(async (tx) => {
-    // The delete row keeps the last text and the file-set hash, so it is written while both still exist.
-    await ensureSkillBaseline(tx, id)
-    const skill = await tx.get<SkillRow>('SELECT * FROM skills WHERE id = ?', id)
-    if (skill) await writeSkillRevision(tx, { skill, action: 'delete', actor, ...meta })
-    await tx.run('DELETE FROM skill_files WHERE skill_id = ?', id)
-    return (await tx.run('DELETE FROM skills WHERE id = ?', id)).changes > 0
+/** The longest reason a revoke carries in the trail (the route refuses a longer one; the cascade copies are cut to it). */
+export const MAX_REVOKE_REASON_CHARS = 1000
+
+export type RevokeSkillResult =
+  /** `cascaded`: the ids of the agent-local copies of a global skill that were revoked with it (empty for any other skill). */
+  | { outcome: 'revoked'; skill: SkillRow; cascaded: string[] }
+  | { outcome: 'not_found' }
+  /**
+   * The skill exists but is not live (already disabled, or waiting for a review): its status is unchanged and no revoke
+   * row is written, and nothing cascades. (A skill that predates the trail still gets its baseline row, the transaction commits.)
+   */
+  | { outcome: 'not_live'; status: SkillStatus }
+
+/** The reason of a cascaded revoke: `cascade from global/<name>: <reason>`, cut to the limit (never in the middle of a surrogate pair). */
+export function cascadeRevokeReason(globalId: string, reason: string): string {
+  let out = `cascade from ${globalId}: ${reason}`
+  if (out.length > MAX_REVOKE_REASON_CHARS) {
+    out = out.slice(0, MAX_REVOKE_REASON_CHARS)
+    const last = out.charCodeAt(out.length - 1)
+    if (last >= 0xD800 && last <= 0xDBFF) out = out.slice(0, -1)
+  }
+  return out
+}
+
+/**
+ * The live agent-local copies of a global skill: ids of the exact shape `agent/<agent>/<name>` (three segments, the
+ * name equal to the global's, the agent segment not empty), tenant 'fleet', status 'live'. The match is made in code on
+ * the split id, not with LIKE, so a name with `%` or `_` in it matches itself only and `a_b` never reaches `aXb`.
+ * (The SQL only narrows to the agent-local prefix with a plain comparison.) Null when the id is not `global/<name>`.
+ */
+async function liveAgentCopiesOf(tx: SqlOps, globalId: string): Promise<string[] | null> {
+  const globalParts = globalId.split('/')
+  if (globalParts.length !== 2 || globalParts[0] !== 'global' || globalParts[1] === '') return null
+  const name = globalParts[1]
+  const candidates = await tx.all<{ id: string }>(
+    "SELECT id FROM skills WHERE tenant_id = 'fleet' AND status = 'live' AND substr(id, 1, 6) = 'agent/' ORDER BY id")
+  return candidates.map(r => r.id).filter(id => {
+    const parts = id.split('/')
+    return parts.length === 3 && parts[0] === 'agent' && parts[1] !== '' && parts[2] === name
   })
+}
+
+/**
+ * Revokes a live skill: live -> disabled, with the 'revoke' row in the trail, in ONE transaction. The status change is a
+ * compare-and-set (`AND status = 'live'`): of two revokes racing on the same skill exactly one changes the row and writes
+ * the trail row, the other finds nothing to change and reports the status it found. Only the status changes: the text,
+ * the companion files and the earlier trail stay as they are (this is not a rollback). The caller regenerates the files
+ * afterwards. Bringing a disabled skill back is not here on purpose.
+ *
+ * A revoke of `global/<name>` cascades to the live `agent/<agent>/<name>` rows (the copies the assign route makes, and
+ * any agent-local skill written by hand under the same name): each gets its own compare-and-set and its own 'revoke'
+ * row, same actor, the reason `cascade from global/<name>: <reason>` (cut to the limit). A copy that is not live is left
+ * alone. The global and every copy go in the same transaction, all or nothing: if one write fails nothing changes. The
+ * cascade never runs upward (revoking an agent-local skill leaves the global one), and a tenant skill has none.
+ * Every copy gets its baseline before the global one does.
+ */
+export async function revokeSkill(id: string, actor: SkillActor, reason: string): Promise<RevokeSkillResult> {
+  const now = Math.floor(Date.now() / 1000)
+  return dbx.tx(async (tx) => {
+    // Only a live global skill cascades: decided (and the copies' baselines written) before the global one is touched.
+    const before = await tx.get<{ status: SkillStatus }>('SELECT status FROM skills WHERE id = ?', id)
+    const copyIds = before?.status === 'live' ? (await liveAgentCopiesOf(tx, id)) ?? [] : []
+    for (const copyId of copyIds) await ensureSkillBaseline(tx, copyId)
+    // A skill that predates the trail gets its baseline first, so the state it had when it was revoked is on record.
+    await ensureSkillBaseline(tx, id)
+    const changed = (await tx.run("UPDATE skills SET status = 'disabled', updated_at = ? WHERE id = ? AND status = 'live'", now, id)).changes
+    const row = await tx.get<SkillRow>('SELECT * FROM skills WHERE id = ?', id)
+    if (!row) return { outcome: 'not_found' as const }
+    if (changed === 0) return { outcome: 'not_live' as const, status: row.status }
+    await writeSkillRevision(tx, { skill: row, action: 'revoke', actor, reason })
+
+    const cascaded: string[] = []
+    const copyReason = cascadeRevokeReason(id, reason)
+    for (const copyId of copyIds) {
+      const copyChanged = (await tx.run("UPDATE skills SET status = 'disabled', updated_at = ? WHERE id = ? AND status = 'live'", now, copyId)).changes
+      if (copyChanged === 0) continue
+      const copyRow = await tx.get<SkillRow>('SELECT * FROM skills WHERE id = ?', copyId) as SkillRow
+      await writeSkillRevision(tx, { skill: copyRow, action: 'revoke', actor, reason: copyReason })
+      cascaded.push(copyId)
+    }
+    return { outcome: 'revoked' as const, skill: row, cascaded }
+  })
+}
+
+/** Thrown inside the delete transaction when the live condition did not hold at the write: rolls everything back. */
+class SkillNotLiveAtWrite extends Error {}
+
+export async function deleteSkill(id: string, actor: SkillActor, meta: SkillWriteMeta = {}, guard: SkillWriteGuard = {}): Promise<boolean> {
+  try {
+    return await dbx.tx(async (tx) => {
+      // `guard.requireLive`: see SkillWriteGuard. Decided first, so a refused delete leaves no baseline row either.
+      if (guard.requireLive && !(await tx.get<{ one: number }>("SELECT 1 AS one FROM skills WHERE id = ? AND status = 'live'", id))) return false
+      // The delete row keeps the last text and the file-set hash, so it is written while both still exist.
+      await ensureSkillBaseline(tx, id)
+      const skill = await tx.get<SkillRow>('SELECT * FROM skills WHERE id = ?', id)
+      if (skill) await writeSkillRevision(tx, { skill, action: 'delete', actor, ...meta })
+      await tx.run('DELETE FROM skill_files WHERE skill_id = ?', id)
+      const changes = (await tx.run(`DELETE FROM skills WHERE id = ?${guard.requireLive ? " AND status = 'live'" : ''}`, id)).changes
+      // The status condition is in the write too: if it did not hold here, the throw undoes the revision row and the file delete.
+      if (guard.requireLive && changes === 0) throw new SkillNotLiveAtWrite()
+      return changes > 0
+    })
+  } catch (err) {
+    if (err instanceof SkillNotLiveAtWrite) return false
+    throw err
+  }
 }
 
 // --- skill companion files (migration 0063, rules in src/skill-files.ts) ---
@@ -688,20 +804,29 @@ export async function countSkillFiles(skillId: string): Promise<number> {
  * granted. Pass callerTenantId = 'fleet' (admin) to see fleet skills.
  */
 export async function listSkillsForTenant(callerTenantId: string): Promise<SkillRow[]> {
+  // Only live skills: this is the list a tenant caller or an agent sees. The admin list is listAllSkills().
   return dbx.all<SkillRow>(`
     SELECT s.* FROM skills s
-    WHERE s.tenant_id = ?
+    WHERE s.tenant_id = ? AND s.status = 'live'
     UNION
     SELECT s.* FROM skills s
     JOIN skill_tenant_access sta ON sta.skill_id = s.id
-    WHERE sta.tenant_id = ?
+    WHERE sta.tenant_id = ? AND s.status = 'live'
     ORDER BY name
   `, callerTenantId, callerTenantId)
 }
 
-/** Admin: list all skills regardless of tenant. */
+/**
+ * Admin: list all skills regardless of tenant AND of status (a disabled skill is listed, with its status). What reaches
+ * an agent, an export or a generated file must come from listLiveSkills() instead.
+ */
 export async function listAllSkills(): Promise<SkillRow[]> {
   return dbx.all<SkillRow>('SELECT * FROM skills ORDER BY tenant_id, name')
+}
+
+/** Every live skill regardless of tenant: the list the generated files, the agent-facing lists and the export are built from. */
+export async function listLiveSkills(): Promise<SkillRow[]> {
+  return dbx.all<SkillRow>("SELECT * FROM skills WHERE status = 'live' ORDER BY tenant_id, name")
 }
 
 export interface SkillTenantAccessRow {
@@ -761,16 +886,16 @@ export async function countSkills(): Promise<number> {
   return ((await dbx.get('SELECT COUNT(*) AS n FROM skills')) as { n: number }).n
 }
 
-/** Skills owned locally by one agent (id prefix 'agent/<agentId>/', per materialize-skills.ts's ID scheme). */
+/** Live skills owned locally by one agent (id prefix 'agent/<agentId>/', per materialize-skills.ts's ID scheme). */
 export async function listAgentOwnedSkills(agentId: string): Promise<SkillRow[]> {
   return dbx.all<SkillRow>(`
-    SELECT * FROM skills WHERE id LIKE ? ESCAPE '\\' ORDER BY name
+    SELECT * FROM skills WHERE id LIKE ? ESCAPE '\\' AND status = 'live' ORDER BY name
   `, likePrefix(`agent/${agentId}/`))
 }
 
 /** Global fleet skills (~/.claude/skills), inherited by every agent. */
 export async function listGlobalFleetSkills(): Promise<SkillRow[]> {
   return dbx.all<SkillRow>(`
-    SELECT * FROM skills WHERE is_global = 1 AND tenant_id = 'fleet' ORDER BY name
+    SELECT * FROM skills WHERE is_global = 1 AND tenant_id = 'fleet' AND status = 'live' ORDER BY name
   `)
 }

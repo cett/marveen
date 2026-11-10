@@ -22,7 +22,7 @@ import { AGENTS_BASE_DIR, listAgentNames } from './agent-config.js'
 import { safeJoin } from './sanitize.js'
 import { SCHEDULED_TASKS_DIR } from './scheduled-tasks-io.js'
 import { getBindings, getAllSecretAcls, partitionTargetsByAcl } from './vault-bindings.js'
-import { backfillEmbeddings, listAllSkills, seedSkillIfAbsent, listAutonomyCategories, upsertAutonomyCategory, type AutonomyCategoryRow, listModelProfileMap, upsertModelProfileMapEntry, type ModelProfileMapRow, listEgressAllowlistRows, mergeEgressAllowlistEntries, type EgressAllowlistRow, listAgentSettingsByKey, setAgentSetting } from '../db.js'
+import { backfillEmbeddings, listLiveSkills, seedSkillIfAbsent, listAutonomyCategories, upsertAutonomyCategory, type AutonomyCategoryRow, listModelProfileMap, upsertModelProfileMapEntry, type ModelProfileMapRow, listEgressAllowlistRows, mergeEgressAllowlistEntries, type EgressAllowlistRow, listAgentSettingsByKey, setAgentSetting } from '../db.js'
 import { getDesiredAgents, setDesiredAgents } from './agent-desired-state.js'
 import { readModelFallbackFieldsRaw, writeModelFallbackFieldsRaw } from './model-fallback-store.js'
 import type { ModelFallbackConfig } from '../model-fallback.js'
@@ -709,17 +709,18 @@ function extractSkillDescription(content: string): string {
 
 // Skills are stored in SQL and mirrored to disk as the generated cache the
 // Claude Code loader reads. Export from SQL so a snapshot reflects the latest
-// content even if the on-disk mirror hasn't been regenerated yet.
+// content even if the on-disk mirror hasn't been regenerated yet. Only live skills
+// go into a snapshot: a revoked skill must not travel to another install.
 async function listGlobalSkillsFromSQL(): Promise<SkillExport[]> {
   const prefix = 'global/'
-  return (await listAllSkills())
+  return (await listLiveSkills())
     .filter(r => r.tenant_id === 'fleet' && r.id.startsWith(prefix))
     .map(r => ({ name: r.id.slice(prefix.length), skillMd: r.content }))
 }
 
 async function listAgentSkillsFromSQL(agentId: string): Promise<SkillExport[]> {
   const prefix = `agent/${agentId}/`
-  return (await listAllSkills())
+  return (await listLiveSkills())
     .filter(r => r.tenant_id === 'fleet' && r.id.startsWith(prefix))
     .map(r => ({ name: r.id.slice(prefix.length), skillMd: r.content }))
 }

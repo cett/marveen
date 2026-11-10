@@ -84,7 +84,7 @@ const SID = 'global/with-files'
 const base = `/api/skills/sql/${enc(SID)}/files`
 const gdir = () => join(FAKE_HOME, '.claude', 'skills', 'with-files')
 const row = (id: string, tenant = 'fleet', content = '---\nname: x\n---\nbody') =>
-  ({ id, name: id.split('/').pop(), description: '', content, tenant_id: tenant, is_global: 1, created_by: null, created_at: 0, updated_at: 0 })
+  ({ id, name: id.split('/').pop(), description: '', content, tenant_id: tenant, is_global: 1, created_by: null, created_at: 0, updated_at: 0, status: 'live' })
 const b64 = (s: string) => Buffer.from(s).toString('base64')
 
 beforeEach(() => {

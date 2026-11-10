@@ -17,10 +17,10 @@ import { skillActorFromRoute } from '../skill-actor.js'
 import type { RouteContext } from './types.js'
 import {
   createSkill, getSkill, updateSkill, deleteSkill, seedSkillIfAbsent,
-  listSkillsForTenant, listAllSkills,
+  listSkillsForTenant, listAllSkills, listLiveSkills,
   grantSkillAccess, revokeSkillAccess, listSkillAccess,
   listSkillFiles, getSkillFile, putSkillFile, deleteSkillFile, countSkillFiles,
-  listSkillRevisions,
+  listSkillRevisions, revokeSkill, MAX_REVOKE_REASON_CHARS,
 } from '../../db.js'
 
 function parseFrontmatterField(content: string, field: string): string {
@@ -62,12 +62,27 @@ function parseSkillKeywords(content: string): string[] {
   return raw.split(',').map(k => k.trim()).filter(Boolean)
 }
 
+/** What happened to the generated files of one skill of a revoke (see summarizeRevokeFiles). */
+type RevokeFilesOutcome = 'removed' | 'none' | 'quarantined' | 'error'
+
+/**
+ * The one `files` answer of a revoke that touched several skills (the global one and its cascaded copies). The worst
+ * outcome wins: `error` if any regeneration failed, else `quarantined` if any file was moved aside, else `removed` if at
+ * least one file was taken away, else `none`. A failure is not hidden behind a quarantine: the caller must look at it.
+ */
+export function summarizeRevokeFiles(outcomes: readonly RevokeFilesOutcome[]): RevokeFilesOutcome {
+  if (outcomes.includes('error')) return 'error'
+  if (outcomes.includes('quarantined')) return 'quarantined'
+  if (outcomes.includes('removed')) return 'removed'
+  return 'none'
+}
+
 // Skills are stored in SQL and mirrored to disk for the Claude Code loader --
 // derive per-agent coverage for a skill name from the `agent/<agentId>/<name>`
 // id scheme instead of statting each agent's on-disk skills directory.
 async function getSkillAgents(skillDirName: string): Promise<string[]> {
   const agents: string[] = []
-  for (const row of await listAllSkills()) {
+  for (const row of await listLiveSkills()) {
     const parts = row.id.split('/')
     if (parts.length === 3 && parts[0] === 'agent' && parts[2] === skillDirName) {
       agents.push(parts[1])
@@ -546,6 +561,10 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     }
 
     if (!existsSync(globalSkillDir)) { json(res, { error: 'not_found', hint: 'Skill not found' }, 404); return true }
+    // A global skill that is not live (revoked) is not a source: copying it would give an agent the withdrawn text again,
+    // as a new live skill under another id. Same answer as for a skill that is not there.
+    const sourceRow = await getSkill(`global/${skillName}`)
+    if (sourceRow && sourceRow.status !== 'live') { json(res, { error: 'not_found', hint: 'Skill not found' }, 404); return true }
 
     const body = await readBody(req)
     const { agents: targetAgents } = JSON.parse(body.toString()) as { agents: string[] }
@@ -697,6 +716,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
   const sqlFilesBase = path.match(/^\/api(?:\/v1)?\/skills\/sql\/([^/]+)\/files$/)
   const sqlFilesItem = path.match(/^\/api(?:\/v1)?\/skills\/sql\/([^/]+)\/files\/([^/]+)$/)
   const sqlRevisionsBase = path.match(/^\/api(?:\/v1)?\/skills\/sql\/([^/]+)\/revisions$/)
+  const sqlRevokeBase = path.match(/^\/api(?:\/v1)?\/skills\/sql\/([^/]+)\/revoke$/)
   const sqlAccessBase = path.match(/^\/api(?:\/v1)?\/skills\/sql\/([^/]+)\/access$/)
   const sqlAccessItem = path.match(/^\/api(?:\/v1)?\/skills\/sql\/([^/]+)\/access\/([^/]+)$/)
 
@@ -704,7 +724,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     let rows = isAdmin ? await listAllSkills() : (callerTenantId ? await listSkillsForTenant(callerTenantId) : [])
     if (fleetAgent) {
       const have = new Set(rows.map(r => r.id))
-      rows = [...rows, ...(await listAllSkills()).filter(r => fleetReadable(r.id, r.tenant_id) && !have.has(r.id))]
+      rows = [...rows, ...(await listLiveSkills()).filter(r => fleetReadable(r.id, r.tenant_id) && !have.has(r.id))]
     }
     json(res, { skills: rows })
     return true
@@ -739,6 +759,8 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     if (id === null) return badSegment()
     const row = await getSkill(id)
     if (!row) { json(res, { error: 'not_found' }, 404); return true }
+    // A skill that is not live is for the admin to see: everybody else gets the answer for a skill that is not there.
+    if (!isAdmin && row.status !== 'live') { json(res, { error: 'not_found' }, 404); return true }
     if (!isAdmin && !fleetReadable(id, row.tenant_id)) {
       if (!callerTenantId) { json(res, { error: 'not_found' }, 404); return true }
       if (row.tenant_id !== callerTenantId) {
@@ -761,6 +783,9 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     if (fleetAgent && !isOwnAgentSkill(id)) { await countFleetSkillDenial(id); json(res, { error: 'forbidden', hint: 'A fleet agent token changes its own agent skills only' }, 403); return true }
     if (!existing && !(createSpec && (isAdmin || isOwnAgentSkill(id)))) { json(res, { error: 'not_found' }, 404); return true }
     if (existing && !isAdmin && !fleetAgent && callerTenantId !== existing.tenant_id) { json(res, { error: 'not_found' }, 404); return true }
+    // Same rule as GET: a skill that is not live (revoked, waiting for review, expired) is the admin's. Everybody else gets
+    // the answer for a skill that is not there, so a revoke freezes the text and the write does not tell the id exists.
+    if (existing && !isAdmin && existing.status !== 'live') { json(res, { error: 'not_found' }, 404); return true }
     const body = await readBody(req)
     let parsed: { name?: string; description?: string; content?: string; is_global?: boolean } = {}
     try { parsed = JSON.parse(body.toString()) } catch { json(res, { error: 'parse_error', hint: 'Invalid JSON' }, 400); return true }
@@ -782,7 +807,10 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
       const fmDescription = parseSkillDescription(parsed.content)
       if (fmDescription) parsed = { ...parsed, description: fmDescription }
     }
-    const updated = await updateSkill(id, parsed, actor)
+    // The status is checked again inside the write for everybody but the admin: a revoke that committed after the read
+    // above (the body can be slow) must not be written over. undefined = the row is not live (or gone): the not-there answer.
+    const updated = await updateSkill(id, parsed, actor, {}, { requireLive: !isAdmin })
+    if (!isAdmin && !updated) { json(res, { error: 'not_found' }, 404); return true }
     await regenSingleSkillFile(id)
     json(res, { ok: true, skill: updated })
     return true
@@ -795,8 +823,13 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     const existing = await getSkill(id)
     if (!existing) { json(res, { error: 'not_found' }, 404); return true }
     if (!isAdmin && !fleetAgent && callerTenantId !== existing.tenant_id) { json(res, { error: 'not_found' }, 404); return true }
+    // Same rule as GET and PUT: a skill that is not live is the admin's, everybody else gets the not-there answer.
+    if (!isAdmin && existing.status !== 'live') { json(res, { error: 'not_found' }, 404); return true }
     const companionFiles = await listSkillFiles(id)   // read before the delete removes them
-    await deleteSkill(id, actor)
+    // Same compare-and-set as the PUT: the delete happens only while the row is live (a revoke can commit between the
+    // read above and here); refused = the answer for an id that is not there, and no file is touched.
+    const deleted = await deleteSkill(id, actor, {}, { requireLive: !isAdmin })
+    if (!isAdmin && !deleted) { json(res, { error: 'not_found' }, 404); return true }
     // The file is only a generated cache of the row: drop it too, or the loader
     // keeps serving a skill the DB no longer has (a hand-edited file is kept).
     await removeGeneratedSkillFile(id, existing.content, existing.tenant_id, companionFiles)
@@ -815,6 +848,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     if (id === null) return badSegment()
     const skill = await getSkill(id)
     if (!skill) { json(res, { error: 'not_found' }, 404); return true }
+    if (!isAdmin && skill.status !== 'live') { json(res, { error: 'not_found' }, 404); return true } // same rule as GET of the skill itself
     const canWrite = isAdmin || (fleetAgent ? isOwnAgentSkill(id) : callerTenantId === skill.tenant_id)
     const canRead = canWrite || fleetReadable(id, skill.tenant_id) || (!!callerTenantId && (await listSkillAccess(id)).some(g => g.tenant_id === callerTenantId))
     if (!canRead) { json(res, { error: 'not_found' }, 404); return true }
@@ -883,6 +917,53 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     if (id === null) return badSegment()
     if (!isAdmin) { json(res, { error: 'forbidden', hint: 'Admin only' }, 403); return true }
     json(res, { skill_id: id, revisions: await listSkillRevisions(id) })
+    return true
+  }
+
+  // Revoke a live skill in one step: live -> disabled, the 'revoke' row in the trail, and the generated files taken away
+  // at once. Admin only, held twice (the RBAC row refuses a fleet agent token and a tenant role before this code runs, and
+  // the check here is the second lock), and it says so before it looks the id up, so a refusal tells nothing about the
+  // id. Bringing a skill back is not part of this route.
+  if (sqlRevokeBase && method === 'POST') {
+    const id = decodeSegment(sqlRevokeBase[1])
+    if (id === null) return badSegment()
+    if (!isAdmin) { json(res, { error: 'forbidden', hint: 'Admin only' }, 403); return true }
+    let parsed: { reason?: unknown } = {}
+    try { parsed = JSON.parse((await readBody(req)).toString()) } catch { json(res, { error: 'parse_error', hint: 'Invalid JSON' }, 400); return true }
+    const reason = typeof parsed?.reason === 'string' ? parsed.reason.trim() : ''
+    if (!reason) { json(res, { error: 'required', field: 'reason', hint: 'reason is required: say why the skill is withdrawn' }, 400); return true }
+    if (reason.length > MAX_REVOKE_REASON_CHARS) { json(res, { error: 'invalid_value', field: 'reason', hint: `reason is at most ${MAX_REVOKE_REASON_CHARS} characters` }, 400); return true }
+
+    const result = await revokeSkill(id, actor, reason)
+    if (result.outcome === 'not_found') { json(res, { error: 'not_found' }, 404); return true }
+    if (result.outcome === 'not_live') {
+      // Already disabled is the answer a second revoke gets; a skill waiting for review (or expired) is not live either.
+      if (result.status === 'disabled') json(res, { error: 'disabled', current_status: result.status, hint: 'The skill is already disabled' }, 409)
+      else json(res, { error: 'not_live', current_status: result.status, hint: 'Only a live skill can be revoked' }, 409)
+      return true
+    }
+    // The rows are already disabled for good: a failure to regenerate must not turn the answer into an error, the caller
+    // gets what happened to the files instead. The global skill and every cascaded copy are regenerated one by one (a
+    // failure on one does not stop the others) and the answer is the sum.
+    const cascaded = result.cascaded
+    const outcomes: RevokeFilesOutcome[] = []
+    const quarantined: string[] = []
+    for (const regenId of [id, ...cascaded]) {
+      try {
+        // forceEnabled: an explicit revoke takes the files away even when the file regeneration switch is off (on a
+        // skill that is not live the call only removes, it never writes), so the switch cannot keep a withdrawn skill loadable.
+        const regen = await regenSingleSkillFile(regenId, true)
+        quarantined.push(...(regen.quarantined ?? []))
+        outcomes.push(regen.reason === 'quarantined' ? 'quarantined'
+          : regen.reason === 'write_error' ? 'error'
+          : regen.reason === null && !regen.skipped ? 'removed'
+          : 'none')
+      } catch (err) {
+        outcomes.push('error')
+        logger.error({ err, skillId: regenId }, 'skill revoke: regenerating the files failed (the skill is disabled)')
+      }
+    }
+    json(res, { ok: true, id, status: 'disabled', cascaded, files: summarizeRevokeFiles(outcomes), ...(quarantined.length ? { quarantined } : {}) })
     return true
   }
 

@@ -75,7 +75,7 @@ beforeEach(() => {
   flag.mode = 'single'
   setTenantSkillAgentProbe(() => true)
   for (const a of ['ann', 'bob', 'cy']) mkAgent(a)
-  store.set(ID, { id: ID, name: ID, description: '', content: '---\nname: demo\n---\nbody\n', tenant_id: 'acme', is_global: 0 })
+  store.set(ID, { id: ID, name: ID, description: '', content: '---\nname: demo\n---\nbody\n', tenant_id: 'acme', is_global: 0, status: 'live' })
   files.set(ID, [{ rel_path: 'scripts/run.sh', content: Buffer.from('#!/bin/sh\n'), mode: 0o755 }])
   // ann: acme only. bob: acme AND beta (shared). cy: beta only.
   avail.set('acme', ['ann', 'bob']); avail.set('beta', ['bob', 'cy'])

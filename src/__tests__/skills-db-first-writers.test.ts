@@ -41,7 +41,7 @@ vi.mock('../web/multipart.js', () => ({ parseMultipart: vi.fn().mockReturnValue(
 vi.mock('../logger.js', () => ({ logger: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() } }))
 vi.mock('../db.js', () => ({
   getSkill: vi.fn((id: string) => Promise.resolve(store.get(id))),
-  createSkill: vi.fn((o: any) => { const r = { created_by: null, created_at: 0, updated_at: 0, ...o, is_global: o.is_global ? 1 : 0 }; store.set(o.id, r); return Promise.resolve(r) }),
+  createSkill: vi.fn((o: any) => { const r = { created_by: null, created_at: 0, updated_at: 0, status: 'live', ...o, is_global: o.is_global ? 1 : 0 }; store.set(o.id, r); return Promise.resolve(r) }),
   updateSkill: vi.fn((id: string, p: any) => { const r = { ...store.get(id), ...p }; store.set(id, r); return Promise.resolve(r) }),
   deleteSkill: vi.fn((id: string) => Promise.resolve(store.delete(id))),
   seedSkillIfAbsent: vi.fn(),
@@ -75,7 +75,7 @@ function call(method: string, path: string, body?: object, role = 'admin') {
 
 const globalDir = (n: string) => join(FAKE_HOME, '.claude', 'skills', n)
 const agentSkillDir = (a: string, n: string) => join(FAKE_PROJECT, 'agents', a, '.claude', 'skills', n)
-const row = (id: string, content: string) => ({ id, name: id.split('/').pop(), description: '', content, tenant_id: 'fleet', is_global: 1, created_by: null, created_at: 0, updated_at: 0 })
+const row = (id: string, content: string) => ({ id, name: id.split('/').pop(), description: '', content, tenant_id: 'fleet', is_global: 1, created_by: null, created_at: 0, updated_at: 0, status: 'live' })
 function seedGlobal(n: string, content: string) {
   mkdirSync(globalDir(n), { recursive: true })
   writeFileSync(join(globalDir(n), 'SKILL.md'), content)
