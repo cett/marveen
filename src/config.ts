@@ -221,10 +221,13 @@ export const BRAND_NAME = env['BRAND_NAME'] ?? BOT_NAME
 //   SYSTEM_SENDER_IDS=cortex,billing
 // Read at module load -- adding a sender needs a dashboard restart.
 //
-// This does NOT weaken sender authentication in any meaningful way: the shared
-// dashboard token already lets its holder claim ANY registered fleet agent id
-// (see the from-auth comment in routes/messages.ts). One more claimable id does
-// not change that; the token remains the actual boundary.
+// Known limit: a listed id is a platform sender. Any admin-role caller (the
+// shared dashboard token, the operator token, a dashboard session) can post as
+// it, whoever the caller is. The message takes the system lane of the sender
+// routing, so the routing table never judges it, and TOKEN_IDENTITY_MODE does
+// not catch it. The recipient frames it as untrusted (the id is not a known
+// agent), which limits the effect. Hence empty by default, and a start-up WARN
+// when it is not (warnAboutSystemSenders in web/sender-routing-wire.ts).
 export const SYSTEM_SENDER_IDS = env['SYSTEM_SENDER_IDS'] ?? ''
 
 // Pure parse rule for SYSTEM_SENDER_IDS, so the default (unset => empty set) is

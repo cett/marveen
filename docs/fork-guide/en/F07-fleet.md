@@ -241,6 +241,8 @@ If a non-agent external system also needs to send messages via `POST /api/messag
 SYSTEM_SENDER_IDS=cortex
 ```
 
+**Known limit.** The list is empty by default and should stay empty unless a neighbouring system really needs it. A listed ID is a platform sender: any caller with the `admin` role (a holder of the shared admin token, the operator token, a dashboard session) can post as that ID, whoever the caller is. Such a message takes the system lane, so it never meets the sender routing table, and `TOKEN_IDENTITY_MODE=enforce` does not catch it either (the platform senders are exempt from the identity check). The recipient frames it as `<untrusted>`, because the ID is not a known agent, which limits the effect; the sender name is still self-declared. A fleet-agent token is not affected (its `from` is pinned to its own agent). `system` itself cannot be listed: the route answers `403 reserved_sender`. Do not list a fleet agent's ID. Start-up logs a WARN with the listed IDs when the list is not empty.
+
 ---
 
 ## Scheduled tasks

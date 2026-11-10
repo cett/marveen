@@ -139,6 +139,7 @@ import { registerSigtermFlush } from './web/sigterm-flush.js'
 import { pruneMainAgentFromDesired } from './web/agent-desired-state.js'
 import { startImportCrawler, stopImportCrawler } from './web/import-crawler.js'
 import { bootstrapDashboardToken } from './web/token-bootstrap.js'
+import { warnAboutSystemSenders } from './web/sender-routing-wire.js'
 
 import { runAs, withTrace } from './db/context.js'
 import { systemJob, runAsRequest } from './db/background-jobs.js'
@@ -226,6 +227,8 @@ export async function startWebServer(port = 3420): Promise<http.Server> {
   // browser origins mirror that -- anything else is rejected to prevent CSRF
   // from malicious websites the user may visit while the dashboard is running.
   ensureDirs()
+  // The neighbouring-system sender opt-in is empty by default; say so in the log when it is on.
+  warnAboutSystemSenders()
 
   const DASHBOARD_TOKEN = loadOrCreateDashboardToken()
   bootstrapDashboardToken(DASHBOARD_TOKEN)
