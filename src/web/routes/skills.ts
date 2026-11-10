@@ -20,7 +20,7 @@ import {
   listSkillsForTenant, listAllSkills, listLiveSkills,
   grantSkillAccess, revokeSkillAccess, listSkillAccess,
   listSkillFiles, getSkillFile, putSkillFile, deleteSkillFile, countSkillFiles,
-  listSkillRevisions,
+  listSkillRevisions, revokeSkill,
 } from '../../db.js'
 
 function parseFrontmatterField(content: string, field: string): string {
@@ -61,6 +61,9 @@ function parseSkillKeywords(content: string): string[] {
   if (!raw) return []
   return raw.split(',').map(k => k.trim()).filter(Boolean)
 }
+
+/** The longest reason a revoke takes: it is a sentence for the trail, not a document. */
+const MAX_REVOKE_REASON_CHARS = 1000
 
 // Skills are stored in SQL and mirrored to disk for the Claude Code loader --
 // derive per-agent coverage for a skill name from the `agent/<agentId>/<name>`
@@ -697,6 +700,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
   const sqlFilesBase = path.match(/^\/api(?:\/v1)?\/skills\/sql\/([^/]+)\/files$/)
   const sqlFilesItem = path.match(/^\/api(?:\/v1)?\/skills\/sql\/([^/]+)\/files\/([^/]+)$/)
   const sqlRevisionsBase = path.match(/^\/api(?:\/v1)?\/skills\/sql\/([^/]+)\/revisions$/)
+  const sqlRevokeBase = path.match(/^\/api(?:\/v1)?\/skills\/sql\/([^/]+)\/revoke$/)
   const sqlAccessBase = path.match(/^\/api(?:\/v1)?\/skills\/sql\/([^/]+)\/access$/)
   const sqlAccessItem = path.match(/^\/api(?:\/v1)?\/skills\/sql\/([^/]+)\/access\/([^/]+)$/)
 
@@ -886,6 +890,45 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     if (id === null) return badSegment()
     if (!isAdmin) { json(res, { error: 'forbidden', hint: 'Admin only' }, 403); return true }
     json(res, { skill_id: id, revisions: await listSkillRevisions(id) })
+    return true
+  }
+
+  // Revoke a live skill in one step: live -> disabled, the 'revoke' row in the trail, and the generated files taken away
+  // at once. Admin only, held twice (the RBAC row refuses a fleet agent token and a tenant role before this code runs, and
+  // the check here is the second lock), and it says so before it looks the id up, so a refusal tells nothing about the
+  // id. Bringing a skill back is not part of this route.
+  if (sqlRevokeBase && method === 'POST') {
+    const id = decodeSegment(sqlRevokeBase[1])
+    if (id === null) return badSegment()
+    if (!isAdmin) { json(res, { error: 'forbidden', hint: 'Admin only' }, 403); return true }
+    let parsed: { reason?: unknown } = {}
+    try { parsed = JSON.parse((await readBody(req)).toString()) } catch { json(res, { error: 'parse_error', hint: 'Invalid JSON' }, 400); return true }
+    const reason = typeof parsed?.reason === 'string' ? parsed.reason.trim() : ''
+    if (!reason) { json(res, { error: 'required', field: 'reason', hint: 'reason is required: say why the skill is withdrawn' }, 400); return true }
+    if (reason.length > MAX_REVOKE_REASON_CHARS) { json(res, { error: 'invalid_value', field: 'reason', hint: `reason is at most ${MAX_REVOKE_REASON_CHARS} characters` }, 400); return true }
+
+    const result = await revokeSkill(id, actor, reason)
+    if (result.outcome === 'not_found') { json(res, { error: 'not_found' }, 404); return true }
+    if (result.outcome === 'not_live') {
+      // Already disabled is the answer a second revoke gets; a skill waiting for review (or expired) is not live either.
+      if (result.status === 'disabled') json(res, { error: 'disabled', current_status: result.status, hint: 'The skill is already disabled' }, 409)
+      else json(res, { error: 'not_live', current_status: result.status, hint: 'Only a live skill can be revoked' }, 409)
+      return true
+    }
+    // The row is already disabled for good: a failure to regenerate must not turn the answer into an error, the caller
+    // gets what happened to the files instead.
+    let files: 'removed' | 'none' | 'kept_modified_on_disk' | 'regen_off' | 'error' = 'error'
+    try {
+      const regen = await regenSingleSkillFile(id)
+      files = regen.reason === 'modified_on_disk' ? 'kept_modified_on_disk'
+        : regen.reason === 'disabled' ? 'regen_off'
+        : regen.reason === 'write_error' ? 'error'
+        : regen.reason === null && !regen.skipped ? 'removed'
+        : 'none'
+    } catch (err) {
+      logger.error({ err, skillId: id }, 'skill revoke: regenerating the files failed (the skill is disabled)')
+    }
+    json(res, { ok: true, id, status: 'disabled', files })
     return true
   }
 

@@ -602,6 +602,33 @@ export async function updateSkill(
   })
 }
 
+export type RevokeSkillResult =
+  | { outcome: 'revoked'; skill: SkillRow }
+  | { outcome: 'not_found' }
+  /** The skill exists but is not live (already disabled, or waiting for a review): nothing was changed or recorded. */
+  | { outcome: 'not_live'; status: SkillStatus }
+
+/**
+ * Revokes a live skill: live -> disabled, with the 'revoke' row in the trail, in ONE transaction. The status change is a
+ * compare-and-set (`AND status = 'live'`): of two revokes racing on the same skill exactly one changes the row and writes
+ * the trail row, the other finds nothing to change and reports the status it found. Only the status changes: the text,
+ * the companion files and the earlier trail stay as they are (this is not a rollback). The caller regenerates the files
+ * afterwards. Bringing a disabled skill back is not here on purpose.
+ */
+export async function revokeSkill(id: string, actor: SkillActor, reason: string): Promise<RevokeSkillResult> {
+  const now = Math.floor(Date.now() / 1000)
+  return dbx.tx(async (tx) => {
+    // A skill that predates the trail gets its baseline first, so the state it had when it was revoked is on record.
+    await ensureSkillBaseline(tx, id)
+    const changed = (await tx.run("UPDATE skills SET status = 'disabled', updated_at = ? WHERE id = ? AND status = 'live'", now, id)).changes
+    const row = await tx.get<SkillRow>('SELECT * FROM skills WHERE id = ?', id)
+    if (!row) return { outcome: 'not_found' as const }
+    if (changed === 0) return { outcome: 'not_live' as const, status: row.status }
+    await writeSkillRevision(tx, { skill: row, action: 'revoke', actor, reason })
+    return { outcome: 'revoked' as const, skill: row }
+  })
+}
+
 export async function deleteSkill(id: string, actor: SkillActor, meta: SkillWriteMeta = {}): Promise<boolean> {
   return dbx.tx(async (tx) => {
     // The delete row keeps the last text and the file-set hash, so it is written while both still exist.

@@ -955,7 +955,7 @@ components:
           description: Number of the revision within the skill, from 1, without gaps.
         action:
           type: string
-          enum: [baseline, create, modify, seed, delete, file_put, file_delete, file_seed]
+          enum: [baseline, create, modify, seed, delete, file_put, file_delete, file_seed, revoke]
         content_sha256:
           type: string
           nullable: true
@@ -3497,6 +3497,71 @@ paths:
           description: Malformed percent-encoding in the id
         "403":
           description: Not an admin (a fleet agent token and a tenant user included)
+
+  /skills/sql/{id}/revoke:
+    post:
+      tags: [skills]
+      operationId: revokeSkill
+      summary: Withdraw a live skill (admin only)
+      description: |
+        Moves a live skill to `disabled` in one step: the status changes, a `revoke` revision with the actor and the
+        reason is written to the trail (same transaction), and the generated files of the skill are taken away at once, so
+        no agent loads it from the next start. Only the status changes: the text, the companion files and the earlier trail
+        stay, and a disabled skill is not brought back by any route (that is a manual database fix for now). A second revoke
+        of the same skill answers `409` with `error: disabled`. A skill that is waiting for review or expired answers
+        `409` with `error: not_live`. Percent-encode the id (`global%2Fdemo`). Admin only: every other caller gets `403`,
+        decided before the id is looked up, so the answer says nothing about whether the id exists.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason:
+                  type: string
+                  minLength: 1
+                  maxLength: 1000
+                  description: Why the skill is withdrawn (kept in the trail). Trimmed; must not be blank.
+      responses:
+        "200":
+          description: The skill is disabled
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, id, status, files]
+                properties:
+                  ok:
+                    type: boolean
+                  id:
+                    type: string
+                  status:
+                    type: string
+                    enum: [disabled]
+                  files:
+                    type: string
+                    description: |
+                      What happened to the generated files. `removed`: taken away. `none`: there was no generated file.
+                      `kept_modified_on_disk`: a file a person edited by hand is still on disk and was left in place, so an
+                      agent may still load it (remove it by hand). `regen_off`: file regeneration is switched off.
+                      `error`: the files could not be regenerated; the skill is disabled all the same.
+                    enum: [removed, none, kept_modified_on_disk, regen_off, error]
+        "400":
+          description: "`required` (reason missing or blank), `invalid_value` (reason longer than 1000 characters or malformed percent-encoding in the id) or `parse_error` (body is not JSON)"
+        "403":
+          description: Not an admin (a fleet agent token and a tenant user included)
+        "404":
+          description: No skill with this id
+        "409":
+          description: "`disabled` (already disabled) or `not_live` (waiting for review or expired); `current_status` names the status found"
 
   /skills/local:
     get:

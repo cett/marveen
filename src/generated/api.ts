@@ -423,7 +423,7 @@ export interface PartnerSender {
 export interface SkillRevision {
   /** Number of the revision within the skill, from 1, without gaps. */
   seq: number;
-  action: 'baseline' | 'create' | 'modify' | 'seed' | 'delete' | 'file_put' | 'file_delete' | 'file_seed';
+  action: 'baseline' | 'create' | 'modify' | 'seed' | 'delete' | 'file_put' | 'file_delete' | 'file_seed' | 'revoke';
   /** SHA-256 (hex) of the stored SKILL.md text after this revision. */
   content_sha256?: string;
   /** SHA-256 of the SKILL.md text in the revision before this one; null for the first. */

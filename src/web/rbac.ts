@@ -417,6 +417,10 @@ const ENDPOINT_PERMISSION_REGEX_TABLE: readonly RegexPermissionEntry[] = [
   // The write trail of a skill (who changed it and when) is admin-only too, under the same skills/sql prefix row. The
   // route checks the role itself as well, before it looks the id up, so a refusal says nothing about the id.
   { method: '*', regex: /^\/api\/skills\/sql\/[^/]+\/revisions(\/|$)/, permission: 'admin:all' },
+  // Withdrawing a live skill (live -> disabled) is admin-only, listed here on purpose: without its own row the route would
+  // fall under the skills/sql prefix row (skills:write), which a fleet agent and a tenant role hold. The route checks the
+  // admin role itself as well.
+  { method: '*', regex: /^\/api\/skills\/sql\/[^/]+\/revoke(\/|$)/, permission: 'admin:all' },
 ]
 
 /**
