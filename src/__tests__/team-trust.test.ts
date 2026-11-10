@@ -7,6 +7,7 @@ import { isTrustedPeer, type TrustContext, type TeamConfigForTrust } from '../te
 function makeCtx(
   teams: Record<string, TeamConfigForTrust>,
   mainAgentId = 'main',
+  tenantPeer: (a: string, b: string) => boolean = () => false,
 ): TrustContext {
   const known = new Set<string>([mainAgentId, ...Object.keys(teams)])
   return {
@@ -14,6 +15,7 @@ function makeCtx(
     isKnownAgent: (name: string) => !!name && known.has(name),
     readAgentTeam: (name: string) =>
       teams[name] ?? { reportsTo: null, delegatesTo: [], trustFrom: [] },
+    tenantPeer,
   }
 }
 
@@ -207,5 +209,92 @@ describe('isTrustedPeer — custom mainAgentId', () => {
     // "main" is not in the teams map and not the configured main id; it's
     // an unknown agent, so the known-agent guard returns false.
     expect(isTrustedPeer('main', 'sub', ctx)).toBe(false)
+  })
+})
+
+describe('isTrustedPeer — tenant rule (ctx.tenantPeer)', () => {
+  // The snapshot is the caller's; here it is a plain pair list. tenant-x: main `tx-main`, agents `ag-1`, `ag-2`.
+  // tenant-y: main `ty-main`, agent `ag-3`. `shared` is enabled for both tenants. `solo` is in no tenant.
+  const teams: Record<string, TeamConfigForTrust> = {}
+  for (const n of ['tx-main', 'ty-main', 'ag-1', 'ag-2', 'ag-3', 'shared', 'solo']) {
+    teams[n] = { reportsTo: null, delegatesTo: [], trustFrom: [] }
+  }
+  const pairs: Array<[string, string]> = [
+    ['tx-main', 'ag-1'], ['tx-main', 'ag-2'], ['tx-main', 'shared'],
+    ['ty-main', 'ag-3'], ['ty-main', 'shared'],
+  ]
+  // Oriented on purpose (main first): the decision must not depend on which end is asked about first.
+  const oriented = (a: string, b: string) => pairs.some(([m, x]) => m === a && x === b)
+  const ctx = makeCtx(teams, 'main', oriented)
+
+  it('trusts a tenant main agent and an agent enabled for that tenant, in both directions', () => {
+    expect(isTrustedPeer('tx-main', 'ag-1', ctx)).toBe(true)
+    expect(isTrustedPeer('ag-1', 'tx-main', ctx)).toBe(true)
+    expect(isTrustedPeer('ty-main', 'ag-3', ctx)).toBe(true)
+    expect(isTrustedPeer('ag-3', 'ty-main', ctx)).toBe(true)
+  })
+
+  it('a shared agent is a peer of the main agent of every tenant it is enabled for', () => {
+    expect(isTrustedPeer('shared', 'tx-main', ctx)).toBe(true)
+    expect(isTrustedPeer('tx-main', 'shared', ctx)).toBe(true)
+    expect(isTrustedPeer('shared', 'ty-main', ctx)).toBe(true)
+    expect(isTrustedPeer('ty-main', 'shared', ctx)).toBe(true)
+  })
+
+  it('does not make two plain agents of the same tenant peers', () => {
+    expect(isTrustedPeer('ag-1', 'ag-2', ctx)).toBe(false)
+    expect(isTrustedPeer('ag-2', 'ag-1', ctx)).toBe(false)
+  })
+
+  it('does not make a tenant main agent a peer of an agent that is enabled only for another tenant', () => {
+    expect(isTrustedPeer('tx-main', 'ag-3', ctx)).toBe(false)
+    expect(isTrustedPeer('ag-3', 'tx-main', ctx)).toBe(false)
+    expect(isTrustedPeer('ty-main', 'ag-1', ctx)).toBe(false)
+    expect(isTrustedPeer('ag-1', 'ty-main', ctx)).toBe(false)
+  })
+
+  it('does not make the main agents of two tenants peers, nor two agents through a shared one (no transitivity)', () => {
+    expect(isTrustedPeer('tx-main', 'ty-main', ctx)).toBe(false)
+    expect(isTrustedPeer('ag-1', 'ag-3', ctx)).toBe(false)
+    expect(isTrustedPeer('ag-1', 'shared', ctx)).toBe(false)
+  })
+
+  it('does not trust an agent that is in no tenant', () => {
+    expect(isTrustedPeer('tx-main', 'solo', ctx)).toBe(false)
+    expect(isTrustedPeer('solo', 'tx-main', ctx)).toBe(false)
+  })
+
+  it('is a union with the older rules: a team edge still trusts a pair the tenant rule does not cover', () => {
+    const withEdge = makeCtx({
+      ...teams,
+      'ag-1': { reportsTo: null, delegatesTo: ['ag-2'], trustFrom: [] },
+    }, 'main', oriented)
+    expect(isTrustedPeer('ag-1', 'ag-2', withEdge)).toBe(true)
+    expect(isTrustedPeer('ag-2', 'ag-1', withEdge)).toBe(true)
+    // and the tenant pair keeps working next to it
+    expect(isTrustedPeer('tx-main', 'ag-1', withEdge)).toBe(true)
+  })
+
+  it('keeps the main-agent shortcut as it is', () => {
+    expect(isTrustedPeer('main', 'ag-1', ctx)).toBe(true)
+    expect(isTrustedPeer('ag-3', 'main', ctx)).toBe(true)
+  })
+
+  describe('the guards run before the tenant rule (a tenant rule that says yes to everything changes none of them)', () => {
+    const yes = makeCtx(teams, 'main', () => true)
+
+    it('self-loop stays false', () => {
+      expect(isTrustedPeer('tx-main', 'tx-main', yes)).toBe(false)
+    })
+
+    it('an empty name stays false', () => {
+      expect(isTrustedPeer('', 'ag-1', yes)).toBe(false)
+      expect(isTrustedPeer('ag-1', '', yes)).toBe(false)
+    })
+
+    it('an unknown agent stays false at either end', () => {
+      expect(isTrustedPeer('ghost', 'tx-main', yes)).toBe(false)
+      expect(isTrustedPeer('tx-main', 'ghost', yes)).toBe(false)
+    })
   })
 })

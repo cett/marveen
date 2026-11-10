@@ -57,7 +57,7 @@ export function classifyAgentMessage(
   const safeFrom = sanitizeAgentIdent(fromAgent)
   if (!safeFrom) return null
   if (CHANNEL_COORDINATOR_AGENTS.has(safeFrom)) return { category: 'channel-inbound', safeFrom }
-  if (isTrustedPeer(fromAgent, toAgent, { mainAgentId: MAIN_AGENT_ID, isKnownAgent, readAgentTeam })) {
+  if (isTrustedPeer(fromAgent, toAgent, { mainAgentId: MAIN_AGENT_ID, isKnownAgent, readAgentTeam, tenantPeer: () => false })) {
     return { category: 'trusted-peer', safeFrom }
   }
   return { category: 'untrusted', safeFrom }

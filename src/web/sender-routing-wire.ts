@@ -89,7 +89,7 @@ export async function buildRoutingContext(): Promise<RoutingContext> {
     ownerMainAgentId: mainByTenant.get('default') || MAIN_AGENT_ID,
     tenantMainAgentId: (tenantId) => mainByTenant.get(tenantId),
     tenantAgentIds: (tenantId) => agentsByTenant.get(tenantId) ?? new Set<string>(),
-    isTrustedPeer: (from, to) => isTrustedPeer(from, to, { mainAgentId: MAIN_AGENT_ID, isKnownAgent, readAgentTeam }),
+    isTrustedPeer: (from, to) => isTrustedPeer(from, to, { mainAgentId: MAIN_AGENT_ID, isKnownAgent, readAgentTeam, tenantPeer: () => false }),
     advertisedAgentIds: () => advertised,
     excludedAgentIds: MANIFEST_EXCLUDED_AGENTS,
     isNonDefaultTenantAgent: (agentId) => otherTenantAgents.has(agentId),
