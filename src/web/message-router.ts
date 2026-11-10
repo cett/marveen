@@ -38,7 +38,7 @@ import { maybeWakeSubAgentsForTelegram } from './telegram-inbox-wake.js'
 import { recordDelivery } from './delivery-intent.js'
 import { oneLine } from './approval-owner-notice.js'
 import { wasPromptRefused } from './send-result.js'
-import { gateDeliveryBatch } from './sender-routing-wire.js'
+import { openDeliveryGate } from './sender-routing-wire.js'
 
 import { systemJob } from '../db/background-jobs.js'
 import { withTrace } from '../db/context.js'
@@ -495,8 +495,20 @@ export async function runMessageRouterTick(): Promise<void> {
     for (const m of allPending) (isQualifiedId(m.to_agent) ? federatedPending : localPending).push(m)
     // Sender routing at delivery time (SENDER_ROUTING_MODE): the verdict comes from the stored row, so it also
     // covers what never passed POST /api/messages. enforce: a refused message is closed (refused) and not in
-    // `pending`, so nothing is injected for it; audit: logged only. One tenant-table read per tick.
-    const pending = await gateDeliveryBatch(localPending.slice(0, MAX_MESSAGES_PER_TICK))
+    // `pending`, so nothing is injected for it; audit: logged only.
+    //
+    // The gate is opened ONCE per tick, and only when there is something to judge (an idle tick reads no table).
+    // The tenant tables are read at that moment, and everything below that depends on them comes from that one read:
+    // the verdicts (`judge`, for the slice and for the reconnect backlog) and the framing of each delivered message
+    // (`framingTenantPeer`, the tenant rule of the trust graph). Routing and framing therefore cannot disagree about
+    // a pair within a tick. A closed gate (enforce mode, tables unreadable) judges nothing: `pending` is empty, the
+    // rows stay pending and are judged again on the next tick.
+    const batch = localPending.slice(0, MAX_MESSAGES_PER_TICK)
+    const gate = batch.length > 0 ? await openDeliveryGate() : null
+    const judge = async <T extends { id: number; from_agent: string; to_agent: string; tenant_id?: string | null }>(rows: readonly T[]): Promise<T[]> =>
+      rows.length > 0 && gate?.open ? gate.judge(rows) : []
+    const framingTenantPeer = gate?.open ? gate.tenantPeer : () => false
+    const pending = await judge(batch)
     const now = Date.now()
     // ---- update absent/present tracking for all receivers in this tick ----
     // Rebuild the stuck-detector's view of which agents are absent RIGHT NOW.
@@ -528,7 +540,7 @@ export async function runMessageRouterTick(): Promise<void> {
         // Check if this agent qualifies for backlog batching.
         // The backlog is read here, outside the `pending` slice above, so it goes through the same gate: a
         // refused message must not end up summarised into the agent's inbox either.
-        const agentPending = await gateDeliveryBatch(await getPendingMessages(agent))
+        const agentPending = await judge(await getPendingMessages(agent))
         if (agentPending.length > RECONNECT_BATCH_THRESHOLD) {
           const oldestAge = now - agentPending[0].created_at * 1000
           if (oldestAge > RECONNECT_BATCH_AGE_MS) {
@@ -706,7 +718,7 @@ export async function runMessageRouterTick(): Promise<void> {
       // main-agent pull endpoint frame messages identically (no security drift).
       // Trace context (card def5a189): stamp if not yet set. channel-inbound
       // messages (user → agent) are excluded -- only inter-agent spans.
-      const cls = classifyAgentMessage(msg.from_agent, msg.to_agent)
+      const cls = classifyAgentMessage(msg.from_agent, msg.to_agent, framingTenantPeer)
       if (!cls) {
         logger.warn({ id: msg.id, rawFrom: msg.from_agent }, 'Agent message rejected: from_agent empty after sanitize')
         if (!await withMessageTrace(msg, () => markMessageFailed(msg.id, 'Invalid or empty from_agent'))) {

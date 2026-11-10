@@ -212,7 +212,7 @@ describe('isTrustedPeer — custom mainAgentId', () => {
   })
 })
 
-describe('isTrustedPeer — tenant rule (ctx.tenantPeer)', () => {
+describe('isTrustedPeer - tenant rule (ctx.tenantPeer)', () => {
   // The snapshot is the caller's; here it is a plain pair list. tenant-x: main `tx-main`, agents `ag-1`, `ag-2`.
   // tenant-y: main `ty-main`, agent `ag-3`. `shared` is enabled for both tenants. `solo` is in no tenant.
   const teams: Record<string, TeamConfigForTrust> = {}

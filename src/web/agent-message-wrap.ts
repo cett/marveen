@@ -37,9 +37,16 @@ export type AgentMessageCategory = 'channel-inbound' | 'trusted-peer' | 'untrust
 // Classify an inter-agent message's delivery category, in priority order on the
 // SANITIZED from-id. Returns null when the from_agent collapses to empty after
 // sanitize (the caller must reject/fail such a message, never wrap it).
+//
+// `tenantPeer` answers the tenant rule of the trust graph from a snapshot of the tenant tables that the CALLER
+// has already read: it is the `tenantPeer` of the delivery gate (openDeliveryGate), opened once per router tick /
+// inbox pull. It is a required argument on purpose: this function is synchronous and must not read a table, and an
+// optional one would silently frame a tenant main agent's messages by the old rules while the routing (which is
+// judged from the same gate) lets them through.
 export function classifyAgentMessage(
   fromAgent: string,
   toAgent: string,
+  tenantPeer: (a: string, b: string) => boolean,
 ): { category: AgentMessageCategory; safeFrom: string } | null {
   // Federation FIRST -- this ordering is LOAD-BEARING, not defence-in-depth.
   // A slash-qualified from like "local-agent/projects" satisfies
@@ -57,7 +64,7 @@ export function classifyAgentMessage(
   const safeFrom = sanitizeAgentIdent(fromAgent)
   if (!safeFrom) return null
   if (CHANNEL_COORDINATOR_AGENTS.has(safeFrom)) return { category: 'channel-inbound', safeFrom }
-  if (isTrustedPeer(fromAgent, toAgent, { mainAgentId: MAIN_AGENT_ID, isKnownAgent, readAgentTeam, tenantPeer: () => false })) {
+  if (isTrustedPeer(fromAgent, toAgent, { mainAgentId: MAIN_AGENT_ID, isKnownAgent, readAgentTeam, tenantPeer })) {
     return { category: 'trusted-peer', safeFrom }
   }
   return { category: 'untrusted', safeFrom }
