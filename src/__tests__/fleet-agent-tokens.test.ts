@@ -401,9 +401,11 @@ describe('telemetry, artifacts and skills hold a fleet_agent to its own agent', 
     expect((await request('tok-alpha', 'POST', '/api/skills/sql', { name: 'tenant skill', content: 'c' })).status).toBe(403)
     expect((await request('tok-alpha', 'DELETE', `/api/skills/sql/${encodeURIComponent('agent/beta/their-skill')}`)).status).toBe(403)
     expect((await request('tok-alpha', 'GET', `/api/skills/sql/${encodeURIComponent('agent/alpha/my-skill')}`)).status).toBe(200)
-    expect((await request('tok-alpha', 'PUT', `/api/skills/sql/${encodeURIComponent('agent/alpha/my-skill')}/files/${encodeURIComponent('scripts/a.sh')}`, { content: 'echo' })).status).toBe(201)
+    // references/a.md, not a runnable scripts/ path: this test is about agent-ownership boundaries, not the privilege
+    // gate (a new runnable file goes pending, 202, regardless of ownership) -- a separate test covers that gate.
+    expect((await request('tok-alpha', 'PUT', `/api/skills/sql/${encodeURIComponent('agent/alpha/my-skill')}/files/${encodeURIComponent('references/a.md')}`, { content: 'notes' })).status).toBe(201)
     await put('the-file-token', 'agent/beta/their-skill')
-    expect((await request('tok-alpha', 'PUT', `/api/skills/sql/${encodeURIComponent('agent/beta/their-skill')}/files/${encodeURIComponent('scripts/a.sh')}`, { content: 'echo' })).status).toBe(404)
+    expect((await request('tok-alpha', 'PUT', `/api/skills/sql/${encodeURIComponent('agent/beta/their-skill')}/files/${encodeURIComponent('references/a.md')}`, { content: 'notes' })).status).toBe(404)
     expect((await request('tok-alpha', 'DELETE', `/api/skills/sql/${encodeURIComponent('agent/alpha/my-skill')}`)).status).toBe(200)
   })
 })

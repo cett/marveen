@@ -688,9 +688,12 @@ async function openSkillDetail(skillName, displayLabel, agentId = null) {
           body: JSON.stringify({ content: newContent }),
         })
         if (!res.ok) throw new Error('PUT failed: ' + res.status)
-        contentEl.innerHTML = renderMarkdown(newContent)
+        const result = await res.json().catch(() => null)
+        const pending = res.status === 202 || result?.status === 'pending_review'
+        // Pending: the edit is queued for review, the live skill (and so the rendered content) is unchanged.
+        if (!pending) contentEl.innerHTML = renderMarkdown(newContent)
         _skillDetailExitEdit()
-        showToast(t('skills.toast.saved'))
+        showToast(t(pending ? 'skills.toast.saved_pending' : 'skills.toast.saved'))
         // Refresh list to pick up new description/keywords
         loadGlobalSkills()
       } catch (err) {

@@ -570,7 +570,12 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
       const agentSqlId = `agent/${agentPutParam}/${skillName}`
       const agentDesc = parseFrontmatterField(content, 'description')
       if (await getSkill(agentSqlId)) {
-        await updateSkill(agentSqlId, { content, description: agentDesc }, actor)
+        const result = await updateSkill(agentSqlId, { content, description: agentDesc }, actor, {}, { gatePrivilege: true })
+        if (result.outcome === 'pending') {
+          json(res, { ok: true, status: 'pending_review', revision: result.revision.seq, touches_privilege: result.revision.touches_privilege === 1 }, 202)
+          return true
+        }
+        if (result.outcome === 'not_found') { json(res, { error: 'not_found', hint: 'Skill not found' }, 404); return true }
       } else {
         await createSkill({ id: agentSqlId, name: skillName, description: agentDesc, content, tenant_id: 'fleet', is_global: false }, actor)
       }
@@ -602,7 +607,12 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     const globalSqlId = `global/${skillName}`
     const globalDesc = parseFrontmatterField(content, 'description')
     if (await getSkill(globalSqlId)) {
-      await updateSkill(globalSqlId, { content, description: globalDesc }, actor)
+      const result = await updateSkill(globalSqlId, { content, description: globalDesc }, actor, {}, { gatePrivilege: true })
+      if (result.outcome === 'pending') {
+        json(res, { ok: true, status: 'pending_review', revision: result.revision.seq, touches_privilege: result.revision.touches_privilege === 1 }, 202)
+        return true
+      }
+      if (result.outcome === 'not_found') { json(res, { error: 'not_found', hint: 'Skill not found' }, 404); return true }
     } else {
       await createSkill({ id: globalSqlId, name: skillName, description: globalDesc, content, tenant_id: 'fleet', is_global: true }, actor)
     }
@@ -744,11 +754,20 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
       if (fmDescription) parsed = { ...parsed, description: fmDescription }
     }
     // The status is checked again inside the write for everybody but the admin: a revoke that committed after the read
-    // above (the body can be slow) must not be written over. undefined = the row is not live (or gone): the not-there answer.
-    const updated = await updateSkill(id, parsed, actor, {}, { requireLive: !isAdmin })
-    if (!isAdmin && !updated) { json(res, { error: 'not_found' }, 404); return true }
+    // above (the body can be slow) must not be written over. 'not_found' = the row is not live (or gone): the not-there answer.
+    const result = await updateSkill(id, parsed, actor, {}, { requireLive: !isAdmin, gatePrivilege: true })
+    if (result.outcome === 'rejected_combo') {
+      json(res, { error: 'invalid_value', field: parsed.name !== undefined ? 'name' : 'is_global', hint: 'A name or is_global change cannot be combined with a privilege-gated content or description change; send them as two separate requests' }, 400)
+      return true
+    }
+    if (result.outcome === 'pending') {
+      json(res, { ok: true, status: 'pending_review', revision: result.revision.seq, touches_privilege: result.revision.touches_privilege === 1 }, 202)
+      return true
+    }
+    // Reached by admin too only on a concurrent delete between the read above and the write: same answer either way.
+    if (result.outcome === 'not_found') { json(res, { error: 'not_found' }, 404); return true }
     await regenSingleSkillFile(id)
-    json(res, { ok: true, skill: updated })
+    json(res, { ok: true, skill: result.skill })
     return true
   }
 
@@ -837,10 +856,14 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
       if (parsed.mode !== undefined && (typeof parsed.mode !== 'number' || !Number.isInteger(parsed.mode))) { json(res, { error: 'invalid_value', field: 'mode', hint: 'mode must be an integer (permission bits)' }, 400); return true }
       const isNew = !await getSkillFile(id, rel)
       if (isNew && await countSkillFiles(id) >= MAX_SKILL_FILES_PER_SKILL) { json(res, { error: 'limit_exceeded', hint: `At most ${MAX_SKILL_FILES_PER_SKILL} companion files per skill` }, 400); return true }
-      const saved = await putSkillFile(id, rel, bytes, parsed.mode as number | undefined, actor)
+      const result = await putSkillFile(id, rel, bytes, parsed.mode as number | undefined, actor, {}, { gatePrivilege: true })
+      if (result.outcome === 'pending') {
+        json(res, { ok: true, status: 'pending_review', revision: result.revision.seq, touches_privilege: result.revision.touches_privilege === 1 }, 202)
+        return true
+      }
       const regen = await regenSingleSkillFile(id, true)   // an explicit write always reaches disk, like PUT /api/skills/:name
       if (regen.reason === 'write_error') { json(res, { error: 'internal_error', hint: 'Saved to the DB, but the on-disk copy could not be written' }, 500); return true }
-      json(res, { ok: true, file: fileView(saved) }, isNew ? 201 : 200)
+      json(res, { ok: true, file: fileView(result.file) }, isNew ? 201 : 200)
       return true
     }
   }

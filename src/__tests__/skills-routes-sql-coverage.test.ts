@@ -69,7 +69,7 @@ vi.mock('../logger.js', () => ({
 vi.mock('../db.js', () => ({
   getSkill: vi.fn().mockResolvedValue(undefined),
   createSkill: vi.fn().mockImplementation((opts: any) => Promise.resolve({ ...opts, is_global: opts.is_global ? 1 : 0, created_by: null, created_at: 0, updated_at: 0, status: 'live' })),
-  updateSkill: vi.fn().mockResolvedValue(undefined),
+  updateSkill: vi.fn().mockResolvedValue({ outcome: 'not_found' }),
   deleteSkill: vi.fn().mockResolvedValue(true),
   seedSkillIfAbsent: vi.fn().mockResolvedValue(true),
   listSkillsForTenant: vi.fn().mockResolvedValue([]),
@@ -264,7 +264,7 @@ describe('tryHandleSkills SQL endpoints', () => {
     it('admin updates skill', async () => {
       const { getSkill, updateSkill } = await import('../db.js')
       ;(getSkill as any).mockResolvedValueOnce({ id: 'fleet-skill', tenant_id: 'fleet' })
-      ;(updateSkill as any).mockResolvedValueOnce({ id: 'fleet-skill', name: 'Updated' })
+      ;(updateSkill as any).mockResolvedValueOnce({ outcome: 'updated', skill: { id: 'fleet-skill', name: 'Updated' } })
       const { ctx, out } = makeCtx('PUT', '/api/skills/sql/fleet-skill', { name: 'Updated', content: '# Updated' }, { role: 'admin' })
       expect(await tryHandleSkills(ctx)).toBe(true)
       expect(out.status).toBe(200)
@@ -275,7 +275,7 @@ describe('tryHandleSkills SQL endpoints', () => {
     it('tenant user updates own skill', async () => {
       const { getSkill, updateSkill } = await import('../db.js')
       ;(getSkill as any).mockResolvedValueOnce({ id: 'acme-skill', tenant_id: 'acme', status: 'live' })
-      ;(updateSkill as any).mockResolvedValueOnce({ id: 'acme-skill' })
+      ;(updateSkill as any).mockResolvedValueOnce({ outcome: 'updated', skill: { id: 'acme-skill' } })
       const { ctx, out } = makeCtx('PUT', '/api/skills/sql/acme-skill', { content: '# Updated' }, { role: 'user', tenantId: 'acme' })
       expect(await tryHandleSkills(ctx)).toBe(true)
       expect(out.status).toBe(200)

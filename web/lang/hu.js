@@ -838,6 +838,7 @@ window._i18n.hu = {
   'skills.btn.cancel_edit':      'Mégse',
   'skills.btn.export':           'Exportálás',
   'skills.toast.saved':          'Skill elmentve',
+  'skills.toast.saved_pending':  'Jóváhagyásra vár, még nem aktív',
   'skills.toast.save_error':     'Mentés sikertelen',
   'skills.search.placeholder':   'Keresés...',
   'skills.filter.all':           'Összes',

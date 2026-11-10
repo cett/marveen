@@ -230,6 +230,8 @@ export interface SubmitPendingRevisionOpts extends SkillWriteMeta {
   files: readonly ProposedFile[]
   actor: SkillActor
   touchesPrivilege: boolean
+  /** The description column the proposal carries; omitted/null: it is derived from the proposed SKILL.md when it is activated. */
+  description?: string | null
 }
 
 export interface SubmitPendingRevisionResult {
@@ -267,11 +269,11 @@ export async function submitPendingRevision(tx: SqlOps, opts: SubmitPendingRevis
   await tx.run(`
     INSERT INTO skill_revisions
       (skill_id, tenant_id, seq, action, content_sha256, prev_sha256, files_sha256, has_scripts, content,
-       author_kind, author_id, source_ref, reason, status, touches_privilege, submitted_by)
-    VALUES (?, ?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM skill_revisions WHERE skill_id = ?), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+       author_kind, author_id, source_ref, reason, status, touches_privilege, submitted_by, proposed_description)
+    VALUES (?, ?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM skill_revisions WHERE skill_id = ?), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
   `, skill.id, skill.tenant_id, skill.id, opts.action, contentSha, latest?.content_sha256 ?? null, filesSha,
     hasRunnableFiles(opts.files) ? 1 : 0, opts.content, actor.kind, actor.id, opts.sourceRef ?? null, opts.reason ?? null,
-    opts.touchesPrivilege ? 1 : 0, actor.id)
+    opts.touchesPrivilege ? 1 : 0, actor.id, opts.description ?? null)
   const row = await tx.get<SkillRevisionRow>('SELECT * FROM skill_revisions WHERE skill_id = ? ORDER BY seq DESC LIMIT 1', skill.id) as SkillRevisionRow
   for (const f of opts.files) {
     await tx.run('INSERT INTO skill_revision_files (revision_id, rel_path, mode, content) VALUES (?, ?, ?, ?)', row.id, f.rel_path, f.mode, f.content)

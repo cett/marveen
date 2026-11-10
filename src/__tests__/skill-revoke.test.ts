@@ -102,8 +102,8 @@ const trail = (id: string) => db.prepare('SELECT seq, action, author_kind, autho
 const revokeRows = (id: string) => trail(id).filter(r => r.action === 'revoke')
 
 /** A live fleet skill with its generated file on disk, the way the running system has it. */
-async function liveSkill(id = 'global/demo-a') {
-  await createSkill({ id, name: id, content: BODY, tenant_id: 'fleet', is_global: true }, SYSTEM)
+async function liveSkill(id = 'global/demo-a', description = '') {
+  await createSkill({ id, name: id, description, content: BODY, tenant_id: 'fleet', is_global: true }, SYSTEM)
   await regenSingleSkillFile(id)
   return id
 }
@@ -357,9 +357,9 @@ describe('who may revoke', () => {
 })
 
 /** A live agent-local skill (the row the assign route makes, or one an agent wrote itself) with its generated file on disk. */
-async function localCopy(agent: string, name: string, content = BODY) {
+async function localCopy(agent: string, name: string, content = BODY, description = '') {
   const id = `agent/${agent}/${name}`
-  await createSkill({ id, name, content, tenant_id: 'fleet', is_global: false }, SYSTEM)
+  await createSkill({ id, name, description, content, tenant_id: 'fleet', is_global: false }, SYSTEM)
   await regenSingleSkillFile(id, true)
   return id
 }
@@ -729,17 +729,21 @@ describe('a caller who is not an admin cannot edit or delete a skill that is not
   const NOT_LIVE = ['disabled', 'pending_review', 'expired'] as const
   const AGENT_SKILL = 'agent/agent-a/demo-a'
   const TENANT_SKILL = 'tenant-a-demo'
-  const NEW_BODY = '---\nname: demo\ndescription: changed\n---\n# changed body\n'
+  // description unchanged from BODY's: a body-text-only edit, so the privilege gate (a changed description is a
+  // privilege key, see skill-privilege.ts) never fires here -- this describe block is about the requireLive CAS, not the gate.
+  const NEW_BODY = '---\nname: demo\ndescription: d\n---\n# changed body\n'
   const put = (id: string, content: string, extras: Extras, prefix = '/api') =>
     call('PUT', `${prefix}/skills/sql/${encodeURIComponent(id)}`, JSON.stringify({ content }), extras)
   const del = (id: string, extras: Extras, prefix = '/api') =>
     call('DELETE', `${prefix}/skills/sql/${encodeURIComponent(id)}`, undefined, extras)
   const setStatus = (id: string, s: string) => { db.prepare('UPDATE skills SET status = ? WHERE id = ?').run(s, id) }
   const contentOf = (id: string) => (db.prepare('SELECT content FROM skills WHERE id = ?').get(id) as { content: string } | undefined)?.content
-  const tenantSkill = async (): Promise<string> => { await createSkill({ id: TENANT_SKILL, name: 'demo', content: BODY, tenant_id: 'tenant-a' }, SYSTEM); return TENANT_SKILL }
+  // description 'd' matches BODY's own frontmatter: a same-description edit never touches the privilege gate (a changed
+  // description is a privilege key, see skill-privilege.ts), so these fixtures stay about the requireLive CAS only.
+  const tenantSkill = async (): Promise<string> => { await createSkill({ id: TENANT_SKILL, name: 'demo', description: 'd', content: BODY, tenant_id: 'tenant-a' }, SYSTEM); return TENANT_SKILL }
 
   describe.each([
-    ['a fleet agent token on its own agent skill', AGENT_TOKEN, async (): Promise<string> => { await localCopy('agent-a', 'demo-a'); return AGENT_SKILL }, 'agent/agent-a/never-existed-a'],
+    ['a fleet agent token on its own agent skill', AGENT_TOKEN, async (): Promise<string> => { await localCopy('agent-a', 'demo-a', BODY, 'd'); return AGENT_SKILL }, 'agent/agent-a/never-existed-a'],
     ['a tenant user on the skill of its own tenant', TENANT_VIEWER, tenantSkill, 'tenant-a-never-existed-a'],
   ] as const)('%s', (_label, extras, make, missingId) => {
     it.each(NOT_LIVE)('PUT on a %s skill: 404, the text, the status and the trail stay', async (st) => {
@@ -869,7 +873,7 @@ describe('a caller who is not an admin cannot edit or delete a skill that is not
 
   describe('the admin is not affected', () => {
     it.each(NOT_LIVE)('PUT on a %s skill still works: the text changes and the status is not changed by it', async (st) => {
-      const id = await liveSkill()
+      const id = await liveSkill('global/demo-a', 'd')
       setStatus(id, st)
       const r = await put(id, NEW_BODY, ADMIN)
       expect(r.status).toBe(200)
@@ -898,13 +902,14 @@ describe('a caller who is not an admin cannot edit or delete a skill that is not
 describe('a revoke that commits between the route read and the write is not written over', () => {
   const AGENT_SKILL = 'agent/agent-a/demo-a'
   const TENANT_SKILL = 'tenant-a-demo'
-  const NEW_BODY = '---\nname: demo\ndescription: changed\n---\n# changed body\n'
+  // description unchanged from BODY's, same reason as the sibling describe block above.
+  const NEW_BODY = '---\nname: demo\ndescription: d\n---\n# changed body\n'
   const contentOf = (id: string) => (db.prepare('SELECT content FROM skills WHERE id = ?').get(id) as { content: string } | undefined)?.content
   const trailActions = (id: string) => trail(id).map(r => r.action)
   const tick = () => new Promise<void>(r => setTimeout(r, 25))
   const urlOf = (id: string, prefix = '/api') => `${prefix}/skills/sql/${encodeURIComponent(id)}`
-  const makeAgentSkill = async () => { await localCopy('agent-a', 'demo-a'); return AGENT_SKILL }
-  const makeTenantSkill = async () => { await createSkill({ id: TENANT_SKILL, name: 'demo', content: BODY, tenant_id: 'tenant-a' }, SYSTEM); return TENANT_SKILL }
+  const makeAgentSkill = async () => { await localCopy('agent-a', 'demo-a', BODY, 'd'); return AGENT_SKILL }
+  const makeTenantSkill = async () => { await createSkill({ id: TENANT_SKILL, name: 'demo', description: 'd', content: BODY, tenant_id: 'tenant-a' }, SYSTEM); return TENANT_SKILL }
 
   /** A non-admin PUT whose body is still on the wire: it has passed the status read and waits in readBody. */
   async function slowPut(id: string, extras: Extras, prefix = '/api') {
@@ -997,7 +1002,7 @@ describe('a revoke that commits between the route read and the write is not writ
 
   describe('the admin is not affected by the race guard', () => {
     it('an admin PUT that is in flight when the revoke commits still writes (the admin edits a disabled skill), the status stays disabled', async () => {
-      const id = await liveSkill()
+      const id = await liveSkill('global/demo-a', 'd')
       let release!: () => void
       const gate = new Promise<void>(r => { release = r })
       const pending = call('PUT', urlOf(id), JSON.stringify({ content: NEW_BODY }), ADMIN, gate)
@@ -1023,13 +1028,13 @@ describe('a revoke that commits between the route read and the write is not writ
   describe('the db layer: requireLive is decided inside the write', () => {
     const baselineCount = (id: string) => (db.prepare('SELECT COUNT(*) AS n FROM skill_revisions WHERE skill_id = ?').get(id) as { n: number }).n
 
-    it('updateSkill with requireLive on a not-live row: undefined, nothing changes (text, status, trail)', async () => {
+    it('updateSkill with requireLive on a not-live row: not_found, nothing changes (text, status, trail)', async () => {
       for (const st of ['disabled', 'pending_review', 'expired'] as const) {
         const id = `demo-${st}`
         await createSkill({ id, name: 'demo', content: BODY, tenant_id: 'tenant-a' }, SYSTEM)
         db.prepare('UPDATE skills SET status = ? WHERE id = ?').run(st, id)
         const before = { n: baselineCount(id), updated: (db.prepare('SELECT updated_at FROM skills WHERE id = ?').get(id) as { updated_at: number }).updated_at }
-        expect(await updateSkill(id, { content: NEW_BODY }, SYSTEM, {}, { requireLive: true })).toBeUndefined()
+        expect((await updateSkill(id, { content: NEW_BODY }, SYSTEM, {}, { requireLive: true })).outcome).toBe('not_found')
         expect(contentOf(id)).toBe(BODY)
         expect(status(id)).toBe(st)
         expect(baselineCount(id)).toBe(before.n)
@@ -1037,17 +1042,19 @@ describe('a revoke that commits between the route read and the write is not writ
       }
     })
 
-    it('updateSkill: a missing row with requireLive is undefined; without it a not-live row is written (the admin path)', async () => {
-      expect(await updateSkill('never-existed', { content: NEW_BODY }, SYSTEM, {}, { requireLive: true })).toBeUndefined()
+    it('updateSkill: a missing row with requireLive is not_found; without it a not-live row is written (the admin path)', async () => {
+      expect((await updateSkill('never-existed', { content: NEW_BODY }, SYSTEM, {}, { requireLive: true })).outcome).toBe('not_found')
       await createSkill({ id: 'demo-x', name: 'demo', content: BODY, tenant_id: 'tenant-a' }, SYSTEM)
       db.prepare("UPDATE skills SET status = 'disabled' WHERE id = 'demo-x'").run()
-      expect((await updateSkill('demo-x', { content: NEW_BODY }, SYSTEM))?.status).toBe('disabled')
+      const result = await updateSkill('demo-x', { content: NEW_BODY }, SYSTEM)
+      expect(result.outcome === 'updated' && result.skill.status).toBe('disabled')
       expect(contentOf('demo-x')).toBe(NEW_BODY)
     })
 
     it('updateSkill with requireLive on a live row writes as before', async () => {
       await createSkill({ id: 'demo-y', name: 'demo', content: BODY, tenant_id: 'tenant-a' }, SYSTEM)
-      expect((await updateSkill('demo-y', { content: NEW_BODY }, SYSTEM, {}, { requireLive: true }))?.status).toBe('live')
+      const result = await updateSkill('demo-y', { content: NEW_BODY }, SYSTEM, {}, { requireLive: true })
+      expect(result.outcome === 'updated' && result.skill.status).toBe('live')
       expect(contentOf('demo-y')).toBe(NEW_BODY)
     })
 

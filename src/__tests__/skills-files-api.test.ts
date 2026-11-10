@@ -52,7 +52,7 @@ vi.mock('../db.js', () => ({
   getSkillFile: vi.fn((id: string, rel: string) => Promise.resolve(files.get(fk(id, rel)))),
   putSkillFile: vi.fn((id: string, rel: string, content: Buffer, mode?: number) => {
     const r = { skill_id: id, rel_path: rel, content, mode: (mode ?? 0) & 0o111 ? 0o755 : 0o644, created_at: 0, updated_at: 1 }
-    files.set(fk(id, rel), r); return Promise.resolve(r)
+    files.set(fk(id, rel), r); return Promise.resolve({ outcome: 'written', file: r })
   }),
   deleteSkillFile: vi.fn((id: string, rel: string) => Promise.resolve(files.delete(fk(id, rel)))),
   countSkillFiles: vi.fn((id: string) => Promise.resolve([...files.values()].filter(f => f.skill_id === id).length)),

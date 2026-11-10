@@ -587,6 +587,7 @@ window._i18n.en = {
   'skills.btn.cancel_edit':      'Cancel',
   'skills.btn.export':           'Export',
   'skills.toast.saved':          'Skill saved',
+  'skills.toast.saved_pending':  'Waiting for review, not active yet',
   'skills.toast.save_error':     'Save failed',
   'skills.search.placeholder':   'Search...',
   'skills.filter.all':           'All',

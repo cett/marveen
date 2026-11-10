@@ -138,9 +138,12 @@ describe('GET /api/v1/skills/sql/:id/revisions', () => {
     const res = await get('global/demo', SESSION)
     expect(res.status).toBe(200)
     expect(res.body.skill_id).toBe('global/demo')
+    // seq 2 (the script companion file) is gated (a runnable file touches privilege): it sits pending, not activated as
+    // a file_put, and the live skill's own file set (seq 3 reads it) is still empty -- has_scripts false there.
     expect(res.body.revisions.map((r: any) => [r.seq, r.action, r.has_scripts, r.author_kind, r.author_id])).toEqual([
-      [1, 'create', false, 'human', 'user-a'], [2, 'file_put', true, 'human', 'user-a'], [3, 'modify', true, 'human', 'user-a'],
+      [1, 'create', false, 'human', 'user-a'], [2, 'modify', true, 'human', 'user-a'], [3, 'modify', false, 'human', 'user-a'],
     ])
+    expect([res.body.revisions[1].status, res.body.revisions[1].touches_privilege]).toEqual(['pending', true])
     const first = res.body.revisions[0]
     expect(first.content_sha256).toMatch(/^[0-9a-f]{64}$/)
     expect(res.body.revisions[2].prev_sha256).toBe(res.body.revisions[1].content_sha256)
@@ -161,7 +164,7 @@ describe('GET /api/v1/skills/sql/:id/revisions', () => {
     await call(tryHandleSkills, 'DELETE', '/api/skills/sql/global%2Fdemo', undefined, SESSION)
     expect(await getSkill('global/demo')).toBeUndefined()
     const res = await get('global/demo', SESSION)
-    expect(res.body.revisions.map((r: any) => r.action)).toEqual(['create', 'file_put', 'modify', 'delete'])
+    expect(res.body.revisions.map((r: any) => r.action)).toEqual(['create', 'modify', 'modify', 'delete'])
     expect((await get('global/never-existed', SESSION)).body).toEqual({ skill_id: 'global/never-existed', revisions: [] })
   })
 
@@ -201,10 +204,12 @@ describe('GET /api/v1/skills/sql/:id/revisions', () => {
 describe('/api/skills/sql', () => {
   it('create, update, a companion file and delete by a dashboard user are all traced to that user', async () => {
     const c = (method: string, path: string, body?: unknown) => call(tryHandleSkills, method, path, body, SESSION)
+    // The description stays 'demo' throughout: a change to it, or to a runnable companion file, is gated (step 3 of the
+    // quarantine work) and would sit pending instead of landing in this trail -- a separate test covers that path.
     expect((await c('PUT', '/api/skills/sql/global%2Fdemo', { content: '---\ndescription: demo\n---\nbody' })).status).toBe(201)
-    expect((await c('PUT', '/api/skills/sql/global%2Fdemo', { content: 'body two' })).body.ok).toBe(true)
-    expect((await c('PUT', '/api/skills/sql/global%2Fdemo/files/scripts%2Frun.sh', { content: 'echo' })).body.ok).toBe(true)
-    expect((await c('DELETE', '/api/skills/sql/global%2Fdemo/files/scripts%2Frun.sh')).body.ok).toBe(true)
+    expect((await c('PUT', '/api/skills/sql/global%2Fdemo', { content: '---\ndescription: demo\n---\nbody two' })).body.ok).toBe(true)
+    expect((await c('PUT', '/api/skills/sql/global%2Fdemo/files/references%2Fnotes.md', { content: 'notes' })).body.ok).toBe(true)
+    expect((await c('DELETE', '/api/skills/sql/global%2Fdemo/files/references%2Fnotes.md')).body.ok).toBe(true)
     expect((await c('DELETE', '/api/skills/sql/global%2Fdemo')).body.ok).toBe(true)
     expect(revs('global/demo')).toEqual([
       { seq: 1, action: 'create', author_kind: 'human', author_id: 'user-a', source_ref: null },

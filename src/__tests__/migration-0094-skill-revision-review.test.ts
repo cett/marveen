@@ -44,7 +44,7 @@ describe('0094 skill revision review', () => {
     const before = db.prepare('SELECT id, skill_id, seq, action, content_sha256, content, created_at FROM skill_revisions ORDER BY id').all()
     expect(cols('skill_revisions')).not.toContain('status')
     applyMigrations(db, dir)
-    expect(cols('skill_revisions')).toEqual(expect.arrayContaining(['status', 'touches_privilege', 'submitted_by', 'decided_by', 'decided_at', 'decision_ref']))
+    expect(cols('skill_revisions')).toEqual(expect.arrayContaining(['status', 'touches_privilege', 'submitted_by', 'decided_by', 'decided_at', 'decision_ref', 'proposed_description']))
     expect(db.prepare('SELECT id, skill_id, seq, action, content_sha256, content, created_at FROM skill_revisions ORDER BY id').all()).toEqual(before)
     expect(db.prepare('SELECT status, touches_privilege, submitted_by, decided_by, decided_at, decision_ref FROM skill_revisions').all()).toEqual(
       Array(3).fill({ status: 'activated', touches_privilege: 0, submitted_by: null, decided_by: null, decided_at: null, decision_ref: null }))

@@ -10,6 +10,7 @@ import { resolveWriteTenant } from './write-tenant.js'
 import { countScheduleRun } from '../otel-signals.js'
 import { stripGeneratedHeader } from '../skill-header.js'
 import { sanitizeSkillFileMode } from '../skill-files.js'
+import { skillTouchesPrivilege, type SkillFileFacts } from '../skill-privilege.js'
 
 export interface ScheduledTask {
   id: string
@@ -577,12 +578,31 @@ export async function insertFleetSkillFromFile(
  * runs, e.g. a revoke that committed in between). A refused write changes nothing, not even a baseline row, and
  * answers undefined (update) or false (delete), the same as an id that is not there.
  */
-export interface SkillWriteGuard { requireLive?: boolean }
+export interface SkillWriteGuard {
+  requireLive?: boolean
+  /**
+   * When true, a patch that touches privilege (skillTouchesPrivilege: a new/changed runnable file, or a change to a
+   * frontmatter privilege block -- allowed-tools, tools, hooks, description) is queued as a pending revision instead
+   * of written to the live row. Off by default: an internal writer that mirrors already-approved content (skill-sync,
+   * the seed refresh, the global-to-agent assign copy) passes no guard and keeps writing straight through.
+   */
+  gatePrivilege?: boolean
+}
+
+export type UpdateSkillResult =
+  | { outcome: 'not_found' }
+  /**
+   * The patch combines an identity field (name/is_global) with a privilege-gated change: a pending revision carries
+   * only content and files, so the two cannot be queued as one proposal. Send them as two separate requests.
+   */
+  | { outcome: 'rejected_combo' }
+  | { outcome: 'pending'; revision: SkillRevisionRow }
+  | { outcome: 'updated'; skill: SkillRow }
 
 export async function updateSkill(
   id: string, patch: { name?: string; description?: string; content?: string; is_global?: boolean }, actor: SkillActor, meta: SkillWriteMeta = {},
   guard: SkillWriteGuard = {},
-): Promise<SkillRow | undefined> {
+): Promise<UpdateSkillResult> {
   const now = Math.floor(Date.now() / 1000)
   const sets: string[] = ['updated_at = ?']
   const vals: unknown[] = [now]
@@ -593,24 +613,49 @@ export async function updateSkill(
   vals.push(id)
   return dbx.tx(async (tx) => {
     // Decided first: a refused write must not leave a baseline row behind either.
-    if (guard.requireLive && !(await tx.get<{ one: number }>("SELECT 1 AS one FROM skills WHERE id = ? AND status = 'live'", id))) return undefined
+    const before = await tx.get<SkillRow>('SELECT * FROM skills WHERE id = ?', id)
+    if (!before || (guard.requireLive && before.status !== 'live')) return { outcome: 'not_found' }
     await ensureSkillBaseline(tx, id)
-    const before = await tx.get<{ is_global: number }>('SELECT is_global FROM skills WHERE id = ?', id)
+
+    if (guard.gatePrivilege) {
+      const files = await tx.all<SkillFileFacts>('SELECT rel_path, mode, content FROM skill_files WHERE skill_id = ?', id)
+      const afterContent = patch.content !== undefined ? stripGeneratedHeader(patch.content) : before.content
+      const verdict = skillTouchesPrivilege({ content: before.content, files }, { content: afterContent, files })
+      // The description COLUMN can be set apart from the text (the SQL-backed API allows a one-field patch): an explicit
+      // change of it is a privilege change on its own (description is a privilege key, see skill-privilege.ts), whether
+      // or not it also matches what the new content's own frontmatter would have carried.
+      const descriptionChanged = patch.description !== undefined && patch.description !== before.description
+      if (verdict.touches || descriptionChanged) {
+        if (patch.name !== undefined || patch.is_global !== undefined) return { outcome: 'rejected_combo' }
+        const { revision } = await submitPendingRevision(tx, {
+          skill: { id: before.id, tenant_id: before.tenant_id },
+          action: 'modify',
+          content: afterContent,
+          files: files.map((f): ProposedFile => ({ rel_path: f.rel_path, mode: f.mode, content: f.content })),
+          actor,
+          touchesPrivilege: true,
+          description: patch.description,
+          ...meta,
+        })
+        return { outcome: 'pending', revision }
+      }
+    }
+
     // The status condition is in the write itself as well, so it holds on a database that does not serialize the transaction.
     const changes = (await tx.run(`UPDATE skills SET ${sets.join(', ')} WHERE id = ?${guard.requireLive ? " AND status = 'live'" : ''}`, ...vals)).changes
-    if (changes === 0) return undefined
+    if (changes === 0) return { outcome: 'not_found' }
     const row = await tx.get<SkillRow>('SELECT * FROM skills WHERE id = ?', id) as SkillRow
     // A patch that leaves the text and the companion files as they were (a rename, a description) writes no row, with
     // one exception: the is_global flag decides who receives the skill, so a real flip is recorded even when the
     // hashes did not move (forced), with the direction in the reason. Setting it to the value it already has is not a flip.
-    const flipped = before !== undefined && patch.is_global !== undefined && before.is_global !== row.is_global
+    const flipped = patch.is_global !== undefined && before.is_global !== row.is_global
     const flipReason = flipped ? `is_global:${before.is_global}->${row.is_global}` : null
     await writeSkillRevision(tx, {
       skill: row, action: 'modify', actor, ...meta,
       reason: flipReason && meta.reason ? `${meta.reason}; ${flipReason}` : (flipReason ?? meta.reason),
       force: flipped,
     })
-    return row
+    return { outcome: 'updated', skill: row }
   })
 }
 
@@ -779,21 +824,54 @@ export async function getSkillFile(skillId: string, relPath: string): Promise<Sk
   return dbx.get<SkillFileRow>('SELECT * FROM skill_files WHERE skill_id = ? AND rel_path = ?', skillId, relPath)
 }
 
-/** Upsert one companion file. The caller has normalized rel_path and checked the size. */
+export type PutSkillFileResult =
+  | { outcome: 'pending'; revision: SkillRevisionRow }
+  | { outcome: 'written'; file: SkillFileRow }
+
+/**
+ * Upsert one companion file. The caller has normalized rel_path and checked the size.
+ *
+ * `guard.gatePrivilege`: when the new file is new or different AND runnable (under scripts/, or an execute bit) --
+ * the one way a companion file can touch what the skill may DO (skillTouchesPrivilege) -- it is queued as a pending
+ * revision of the whole skill (the live SKILL.md text unchanged, the complete proposed file set including this one)
+ * instead of written to skill_files. A non-runnable file (references/*, a plain doc) is never gated.
+ */
 export async function putSkillFile(
   skillId: string, relPath: string, content: Buffer, mode: number | undefined, actor: SkillActor, meta: SkillWriteMeta = {},
-): Promise<SkillFileRow> {
+  guard: SkillWriteGuard = {},
+): Promise<PutSkillFileResult> {
   const now = Math.floor(Date.now() / 1000)
+  const sanitizedMode = sanitizeSkillFileMode(mode)
   return dbx.tx(async (tx) => {
     await ensureSkillBaseline(tx, skillId)
+    const skill = await tx.get<SkillRow>('SELECT * FROM skills WHERE id = ?', skillId)
+
+    if (guard.gatePrivilege && skill) {
+      const before = await tx.all<SkillFileFacts>('SELECT rel_path, mode, content FROM skill_files WHERE skill_id = ?', skillId)
+      const after = [...before.filter((f) => f.rel_path !== relPath), { rel_path: relPath, mode: sanitizedMode, content }]
+      const verdict = skillTouchesPrivilege({ content: skill.content, files: before }, { content: skill.content, files: after })
+      if (verdict.touches) {
+        const { revision } = await submitPendingRevision(tx, {
+          skill: { id: skill.id, tenant_id: skill.tenant_id },
+          action: 'modify',
+          content: skill.content,
+          files: after.map((f): ProposedFile => ({ rel_path: f.rel_path, mode: f.mode, content: f.content })),
+          actor,
+          touchesPrivilege: true,
+          ...meta,
+        })
+        return { outcome: 'pending', revision }
+      }
+    }
+
     await tx.run(`
       INSERT INTO skill_files (skill_id, rel_path, content, mode, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?)
       ON CONFLICT(skill_id, rel_path) DO UPDATE SET content = excluded.content, mode = excluded.mode, updated_at = excluded.updated_at
-    `, skillId, relPath, content, sanitizeSkillFileMode(mode), now, now)
-    const skill = await tx.get<SkillRow>('SELECT * FROM skills WHERE id = ?', skillId)
+    `, skillId, relPath, content, sanitizedMode, now, now)
     if (skill) await writeSkillRevision(tx, { skill, action: 'file_put', actor, ...meta })
-    return await tx.get<SkillFileRow>('SELECT * FROM skill_files WHERE skill_id = ? AND rel_path = ?', skillId, relPath) as SkillFileRow
+    const file = await tx.get<SkillFileRow>('SELECT * FROM skill_files WHERE skill_id = ? AND rel_path = ?', skillId, relPath) as SkillFileRow
+    return { outcome: 'written', file }
   })
 }
 

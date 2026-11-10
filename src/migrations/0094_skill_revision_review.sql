@@ -11,6 +11,7 @@
 --                 file, allowed-tools, hooks, the description that makes a model pick the skill).
 -- submitted_by    who proposed it (an actor id, never a secret), decided_by who decided (a dashboard user),
 -- decided_at      unix seconds of the decision, decision_ref the approval the decision stands on.
+-- proposed_description  the description column the proposal carries (NULL: derive it from the proposed SKILL.md).
 --
 -- ADD COLUMN only: skill_revisions was rebuilt once (0092) and a rename re-parses every trigger of a live install,
 -- whose vec0 triggers need a module that is not loaded while migrations run (see 0076). The CHECK on status and the
@@ -26,6 +27,7 @@ ALTER TABLE skill_revisions ADD COLUMN submitted_by TEXT;
 ALTER TABLE skill_revisions ADD COLUMN decided_by TEXT;
 ALTER TABLE skill_revisions ADD COLUMN decided_at INTEGER;
 ALTER TABLE skill_revisions ADD COLUMN decision_ref TEXT;
+ALTER TABLE skill_revisions ADD COLUMN proposed_description TEXT;
 
 CREATE TABLE IF NOT EXISTS skill_revision_files (
   revision_id INTEGER NOT NULL,

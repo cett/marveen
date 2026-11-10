@@ -86,8 +86,9 @@ describe('setSkillContent / updateSkill', () => {
 
   it('a patch that leaves the text alone (description only) still applies and writes no row', async () => {
     await mk()
-    const row = await dbMod.updateSkill('global/a', { description: 'new description' }, HUMAN)
-    expect(row?.description).toBe('new description')
+    const result = await dbMod.updateSkill('global/a', { description: 'new description' }, HUMAN)
+    expect(result.outcome).toBe('updated')
+    expect(result.outcome === 'updated' && result.skill.description).toBe('new description')
     expect(await actions('global/a')).toEqual(['create'])
   })
 
@@ -131,8 +132,8 @@ describe('setSkillContent / updateSkill', () => {
     expect(rows.map((r) => [r.action, r.reason])).toEqual([['baseline', null], ['modify', 'is_global:1->0']])
   })
 
-  it('updating a skill that does not exist returns undefined and writes nothing', async () => {
-    expect(await dbMod.updateSkill('global/none', { content: 'x' }, HUMAN)).toBeUndefined()
+  it('updating a skill that does not exist returns not_found and writes nothing', async () => {
+    expect((await dbMod.updateSkill('global/none', { content: 'x' }, HUMAN)).outcome).toBe('not_found')
     await dbMod.setSkillContent('global/none', 'x', 1, HUMAN)
     expect(await revs('global/none')).toEqual([])
   })

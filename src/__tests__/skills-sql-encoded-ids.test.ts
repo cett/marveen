@@ -75,7 +75,7 @@ describe('/api/skills/sql/:id with percent-encoded ids', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockGetSkill.mockImplementation(((id: string) => Promise.resolve(row(id))) as any)
-    mockUpdateSkill.mockImplementation(((id: string, patch: any) => Promise.resolve({ ...row(id), ...patch })) as any)
+    mockUpdateSkill.mockImplementation(((id: string, patch: any) => Promise.resolve({ outcome: 'updated', skill: { ...row(id), ...patch } })) as any)
     mockDeleteSkill.mockResolvedValue(true)
     mockListAccess.mockResolvedValue([])
     mockRevoke.mockResolvedValue(true)
@@ -104,7 +104,7 @@ describe('/api/skills/sql/:id with percent-encoded ids', () => {
       expect(await tryHandleSkills(ctx)).toBe(true)
       expect(out.status).toBe(200)
       // The caller is an admin: no live guard on the write.
-      expect(mockUpdateSkill).toHaveBeenCalledWith(id, { content: 'new body' }, { kind: 'system', id: null }, {}, { requireLive: false })
+      expect(mockUpdateSkill).toHaveBeenCalledWith(id, { content: 'new body' }, { kind: 'system', id: null }, {}, { requireLive: false, gatePrivilege: true })
       expect(mockRegen).toHaveBeenCalledWith(id)
     })
 
