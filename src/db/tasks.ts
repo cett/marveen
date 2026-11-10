@@ -526,11 +526,12 @@ export type CreateSkillResult =
 
 /**
  * `guard.gatePrivilege`: a brand-new skill is the introduction point for a privilege (a frontmatter allowed-tools/
- * hooks/description, see skill-privilege.ts) just as much as an edit of an existing one -- there is no "before" to
- * compare against, so skillTouchesPrivilege is called with a null before, which counts every privilege block in the
- * new text as touching privilege. A gated create writes the row as 'pending_review' (unreachable by an agent, the
- * list or the generator, same as an import quarantined by quarantineSkillImport) with a pending revision instead of
- * a live row and a 'create' trail entry.
+ * tools/hooks block, or a runnable companion file, see skill-privilege.ts) just as much as an edit of an existing
+ * one -- there is no "before" to compare against, so skillTouchesPrivilege is called with a null before, which
+ * counts every such capability grant in the new text as touching privilege (a bare `description`, which every real
+ * skill has, does not count on its own with a null before -- see skill-privilege.ts). A gated create writes the row
+ * as 'pending_review' (unreachable by an agent, the list or the generator, same as an import quarantined by
+ * quarantineSkillImport) with a pending revision instead of a live row and a 'create' trail entry.
  */
 export async function createSkill(opts: CreateSkillOpts, actor: SkillActor, meta: SkillWriteMeta = {}, guard: SkillWriteGuard = {}): Promise<CreateSkillResult> {
   opts = { ...opts, content: stripGeneratedHeader(opts.content) }

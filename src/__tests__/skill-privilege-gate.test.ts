@@ -88,7 +88,7 @@ describe('updateSkill with guard.gatePrivilege', () => {
 
   it('requireLive is still decided first: a not-live row is not_found before the privilege check ever runs', async () => {
     await mk()
-    facade.dbx.run("UPDATE skills SET status = 'disabled' WHERE id = 'global/a'")
+    await facade.dbx.run("UPDATE skills SET status = 'disabled' WHERE id = 'global/a'")
     const result = await dbMod.updateSkill('global/a', { description: 'changed' }, HUMAN, {}, { requireLive: true, gatePrivilege: true })
     expect(result.outcome).toBe('not_found')
     expect(await revs('global/a')).toHaveLength(1)
@@ -135,5 +135,56 @@ describe('putSkillFile with guard.gatePrivilege', () => {
     const result = await dbMod.putSkillFile('global/a', 'scripts/run.sh', Buffer.from('echo hi'), 0o755, HUMAN)
     expect(result.outcome).toBe('written')
     expect((await dbMod.listSkillFiles('global/a')).map((f) => f.rel_path)).toEqual(['scripts/run.sh'])
+  })
+})
+
+describe('createSkill with guard.gatePrivilege', () => {
+  it('a brand-new skill with a privilege frontmatter block is queued pending_review, not live', async () => {
+    const result = await dbMod.createSkill(
+      { id: 'global/b', name: 'global/b', description: 'd', content: PRIVILEGED, tenant_id: 'fleet', is_global: true },
+      HUMAN, {}, { gatePrivilege: true },
+    )
+    expect(result.outcome).toBe('pending')
+    const row = await dbMod.getSkill('global/b')
+    expect(row?.status).toBe('pending_review')
+    expect(row?.content).toBe(PRIVILEGED)
+    const rows = await revs('global/b')
+    expect(rows.map((r) => [r.action, r.status, r.touches_privilege])).toEqual([['create', 'pending', 1]])
+  })
+
+  it('a brand-new skill with no privilege block writes straight through as live', async () => {
+    const result = await dbMod.createSkill(
+      { id: 'global/c', name: 'global/c', description: 'd', content: 'body, no frontmatter', tenant_id: 'fleet', is_global: true },
+      HUMAN, {}, { gatePrivilege: true },
+    )
+    expect(result.outcome).toBe('created')
+    const row = await dbMod.getSkill('global/c')
+    expect(row?.status).toBe('live')
+    expect(row?.content).toBe('body, no frontmatter')
+  })
+})
+
+describe('setSkillContent with guard.gatePrivilege', () => {
+  it('a write-back that introduces a privilege block on an existing live skill is queued pending, the live content untouched', async () => {
+    await dbMod.createSkill({ id: 'global/d', name: 'global/d', description: 'd', content: 'plain body', tenant_id: 'fleet', is_global: true }, HUMAN)
+    const result = await dbMod.setSkillContent('global/d', PRIVILEGED, Math.floor(Date.now() / 1000), HUMAN, {}, { gatePrivilege: true })
+    expect(result.outcome).toBe('pending')
+    const row = await dbMod.getSkill('global/d')
+    expect(row?.status).toBe('live')
+    expect(row?.content).toBe('plain body')
+  })
+})
+
+describe('insertFleetSkillFromFile with guard.gatePrivilege', () => {
+  it('a file-backed skill with no DB row yet, carrying a privilege block, is created pending_review instead of live', async () => {
+    const result = await dbMod.insertFleetSkillFromFile(
+      'global/e', 'global/e', PRIVILEGED, true, Math.floor(Date.now() / 1000), HUMAN, {}, { gatePrivilege: true },
+    )
+    expect(result.outcome).toBe('pending')
+    const row = await dbMod.getSkill('global/e')
+    expect(row?.status).toBe('pending_review')
+    expect(row?.content).toBe(PRIVILEGED)
+    const rows = await revs('global/e')
+    expect(rows.map((r) => [r.action, r.status, r.touches_privilege])).toEqual([['create', 'pending', 1]])
   })
 })

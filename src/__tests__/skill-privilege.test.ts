@@ -82,8 +82,20 @@ describe('skillTouchesPrivilege: runnable files', () => {
 })
 
 describe('skillTouchesPrivilege: no live state yet', () => {
-  it('a new skill with a description counts as new; an empty skill does not', () => {
-    expect(skillTouchesPrivilege(null, { content: BASE, files: [] }).touches).toBe(true)
+  it('a new skill with only a name/description does NOT touch privilege: there is no approved value to diverge from', () => {
+    expect(skillTouchesPrivilege(null, { content: BASE, files: [] }).touches).toBe(false)
     expect(skillTouchesPrivilege(null, { content: '# nothing\n', files: [] }).touches).toBe(false)
+  })
+  it.each([
+    ['allowed-tools', 'name: demo\ndescription: does a thing\nallowed-tools: Bash'],
+    ['tools', 'name: demo\ndescription: does a thing\ntools: Bash'],
+    ['hooks', 'name: demo\ndescription: does a thing\nhooks:\n  PreToolUse: x'],
+  ])('a new skill with a %s block touches privilege, description alone does not grant it that', (_k, front) => {
+    const r = skillTouchesPrivilege(null, { content: md(front), files: [] })
+    expect(r).toEqual({ touches: true, reasons: ['frontmatter'] })
+  })
+  it('a new skill with a runnable file touches privilege regardless of its frontmatter', () => {
+    const r = skillTouchesPrivilege(null, { content: BASE, files: [file('scripts/run.sh', 'echo hi', 0o755)] })
+    expect(r).toEqual({ touches: true, reasons: ['script'] })
   })
 })

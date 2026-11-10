@@ -9,7 +9,10 @@
 //      narrows what the skill can run.
 //   2. a frontmatter block that decides what the skill may do or when a model picks it differs from before:
 //      `allowed-tools` (also written `allowed_tools`), `tools`, `hooks`, `description`. The whole block counts, so a
-//      continuation line (a YAML list, a folded description) is part of it.
+//      continuation line (a YAML list, a folded description) is part of it. `description` only counts as a CHANGE
+//      from an already-approved value, so a brand-new skill (no "before" at all) has nothing for it to diverge from:
+//      a create gates only on an actual capability grant (`allowed-tools`/`tools`/`hooks`, or a new runnable file),
+//      never on `description` alone.
 //
 // Everything else in SKILL.md (the body text, other frontmatter keys) is a plain edit. The comparison is on the text as
 // stored (header stripped), line endings normalized, surrounding blanks trimmed per line.
@@ -71,7 +74,10 @@ export interface PrivilegeVerdict {
 
 /**
  * Compares the state a skill has with the state that is proposed. `before` is null for a skill that has no live state
- * (a new one): then every runnable file and every privilege block counts as new.
+ * (a new one): then every runnable file counts as new, but `description` does not -- it only gates as a CHANGE from
+ * an already-approved value (the update path, where it is a privilege key because it decides when a model picks the
+ * skill), and a brand-new skill has no approved value to diverge from. Only an actual new capability grant
+ * (`allowed-tools`/`allowed_tools`/`tools`/`hooks`, or a new runnable file) gates a create.
  */
 export function skillTouchesPrivilege(
   before: { content: string; files: readonly SkillFileFacts[] } | null,
@@ -86,6 +92,7 @@ export function skillTouchesPrivilege(
   const now = privilegeBlocks(after.content)
   const keys = new Set([...was.keys(), ...now.keys()])
   for (const k of keys) {
+    if (before === null && k === 'description') continue
     if ((was.get(k) ?? '') !== (now.get(k) ?? '')) { reasons.push('frontmatter'); break }
   }
   return { touches: reasons.length > 0, reasons }
