@@ -60,22 +60,59 @@ export function isPlatformSender(safeFrom: string): boolean {
 }
 
 /**
- * The RoutingContext, read from the two small tenant tables ONCE (one request, or one router tick); every
- * lookup the decision makes afterwards is synchronous and touches no database.
+ * The two small tenant tables, read ONCE (one request, or one router tick). Everything that depends on them, the
+ * routing decision (routingContextFrom) and the message framing (tenantPeerFrom), is derived from one such value,
+ * so the two cannot disagree about a pair: they are never working from two reads.
  */
-export async function buildRoutingContext(): Promise<RoutingContext> {
+export interface TenantSnapshot {
+  /** tenants.main_agent_id by tenant id (tenants without a main agent are absent). */
+  mainByTenant: ReadonlyMap<string, string>
+  /** The agents enabled (tenant_agent_availability.enabled = 1) by tenant id. */
+  agentsByTenant: ReadonlyMap<string, ReadonlySet<string>>
+}
+
+export async function readTenantSnapshot(): Promise<TenantSnapshot> {
   const tenants = await listTenants()
   const availability = await listEnabledAgentAvailability()
   const mainByTenant = new Map<string, string>()
   for (const t of tenants) if (t.main_agent_id) mainByTenant.set(t.id, t.main_agent_id)
   const agentsByTenant = new Map<string, Set<string>>()
-  const enabledInDefault = new Set<string>()
   for (const row of availability) {
     let set = agentsByTenant.get(row.tenant_id)
     if (!set) { set = new Set(); agentsByTenant.set(row.tenant_id, set) }
     set.add(row.agent_id)
-    if (row.tenant_id === 'default') enabledInDefault.add(row.agent_id)
   }
+  return { mainByTenant, agentsByTenant }
+}
+
+/**
+ * The tenant rule of the trust graph, as a synchronous predicate over a snapshot: for a NON-default tenant T with
+ * main agent M, M and every agent enabled for T are peers (either order). Per pair, per tenant, no transitivity:
+ * two plain agents of T are not peers, M and an agent enabled only for another tenant are not peers, a shared agent
+ * is a peer of the main agent of each tenant it is enabled for. The default tenant adds nothing: its main agent is
+ * already the implicit peer of everyone (team-trust.ts). Exact id match only, so a variant spelling can only fail to
+ * match, never match more.
+ */
+export function tenantPeerFrom(snapshot: TenantSnapshot): (a: string, b: string) => boolean {
+  const peersOfMain = new Map<string, Set<string>>()
+  for (const [tenantId, main] of snapshot.mainByTenant) {
+    if (tenantId === 'default') continue
+    let peers = peersOfMain.get(main)
+    if (!peers) { peers = new Set(); peersOfMain.set(main, peers) }
+    for (const agent of snapshot.agentsByTenant.get(tenantId) ?? []) peers.add(agent)
+  }
+  return (a, b) => a !== b && (peersOfMain.get(a)?.has(b) === true || peersOfMain.get(b)?.has(a) === true)
+}
+
+/** The trust decision for a pair, with the tenant rule answered from `tenantPeer` (one source for routing and framing). */
+export function isTrustedPeerWith(tenantPeer: (a: string, b: string) => boolean): (from: string, to: string) => boolean {
+  return (from, to) => isTrustedPeer(from, to, { mainAgentId: MAIN_AGENT_ID, isKnownAgent, readAgentTeam, tenantPeer })
+}
+
+/** The RoutingContext derived from a snapshot; every lookup it makes is synchronous and touches no database. */
+export function routingContextFrom(snapshot: TenantSnapshot): RoutingContext {
+  const { mainByTenant, agentsByTenant } = snapshot
+  const enabledInDefault = agentsByTenant.get('default') ?? new Set<string>()
   // An agent belongs to another tenant when it is that tenant's main agent, or when it is enabled for a
   // non-default tenant and not also enabled for the default one (a shared agent stays reachable).
   const otherTenantAgents = new Set<string>()
@@ -89,11 +126,16 @@ export async function buildRoutingContext(): Promise<RoutingContext> {
     ownerMainAgentId: mainByTenant.get('default') || MAIN_AGENT_ID,
     tenantMainAgentId: (tenantId) => mainByTenant.get(tenantId),
     tenantAgentIds: (tenantId) => agentsByTenant.get(tenantId) ?? new Set<string>(),
-    isTrustedPeer: (from, to) => isTrustedPeer(from, to, { mainAgentId: MAIN_AGENT_ID, isKnownAgent, readAgentTeam, tenantPeer: () => false }),
+    isTrustedPeer: isTrustedPeerWith(tenantPeerFrom(snapshot)),
     advertisedAgentIds: () => advertised,
     excludedAgentIds: MANIFEST_EXCLUDED_AGENTS,
     isNonDefaultTenantAgent: (agentId) => otherTenantAgents.has(agentId),
   }
+}
+
+/** The RoutingContext, read from the tenant tables ONCE (one request, or one router tick). */
+export async function buildRoutingContext(): Promise<RoutingContext> {
+  return routingContextFrom(await readTenantSnapshot())
 }
 
 export type SenderLane = 'routed' | 'system'
@@ -255,6 +297,13 @@ type DeliveryRow = { id: number; from_agent: string; to_agent: string; tenant_id
 export interface OpenDeliveryGate {
   open: true
   judge<T extends DeliveryRow>(batch: readonly T[]): Promise<T[]>
+  /**
+   * The tenant rule of the trust graph, from the SAME snapshot `judge` decides from: the framing of a delivered
+   * message (classifyAgentMessage) takes it, so routing and framing answer the same for a pair. A pass-through gate
+   * (audit mode, snapshot unreadable) answers `false` for every pair: the framing then rests on the older rules
+   * alone, which is stricter, never looser.
+   */
+  tenantPeer(a: string, b: string): boolean
 }
 /** The gate could not be opened: enforce mode and the routing context cannot be read, so nothing can be judged. */
 export interface ClosedDeliveryGate { open: false }
@@ -270,15 +319,17 @@ export interface ClosedDeliveryGate { open: false }
  */
 export async function openDeliveryGate(): Promise<OpenDeliveryGate | ClosedDeliveryGate> {
   const mode = getSenderRoutingMode()
+  let snapshot: TenantSnapshot
   let ctx: RoutingContext
   try {
-    ctx = await buildRoutingContext()
+    snapshot = await readTenantSnapshot()
+    ctx = routingContextFrom(snapshot)
   } catch (err) {
     logger.warn({ err, mode }, 'sender-routing: could not build the routing context for delivery')
     if (mode === 'enforce') return { open: false }
-    return { open: true, judge: (batch) => Promise.resolve([...batch]) }
+    return { open: true, judge: (batch) => Promise.resolve([...batch]), tenantPeer: () => false }
   }
-  return { open: true, judge: (batch) => judgeDeliveryBatch(batch, mode, ctx) }
+  return { open: true, judge: (batch) => judgeDeliveryBatch(batch, mode, ctx), tenantPeer: tenantPeerFrom(snapshot) }
 }
 
 /**
