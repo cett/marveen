@@ -274,7 +274,7 @@ describe('tryHandleSkills SQL endpoints', () => {
 
     it('tenant user updates own skill', async () => {
       const { getSkill, updateSkill } = await import('../db.js')
-      ;(getSkill as any).mockResolvedValueOnce({ id: 'acme-skill', tenant_id: 'acme' })
+      ;(getSkill as any).mockResolvedValueOnce({ id: 'acme-skill', tenant_id: 'acme', status: 'live' })
       ;(updateSkill as any).mockResolvedValueOnce({ id: 'acme-skill' })
       const { ctx, out } = makeCtx('PUT', '/api/skills/sql/acme-skill', { content: '# Updated' }, { role: 'user', tenantId: 'acme' })
       expect(await tryHandleSkills(ctx)).toBe(true)
@@ -291,7 +291,7 @@ describe('tryHandleSkills SQL endpoints', () => {
 
     it('non-admin cannot set is_global', async () => {
       const { getSkill } = await import('../db.js')
-      ;(getSkill as any).mockResolvedValueOnce({ id: 'acme-skill', tenant_id: 'acme' })
+      ;(getSkill as any).mockResolvedValueOnce({ id: 'acme-skill', tenant_id: 'acme', status: 'live' })
       const { ctx, out } = makeCtx('PUT', '/api/skills/sql/acme-skill', { is_global: true }, { role: 'user', tenantId: 'acme' })
       expect(await tryHandleSkills(ctx)).toBe(true)
       expect(out.status).toBe(403)
@@ -320,7 +320,7 @@ describe('tryHandleSkills SQL endpoints', () => {
 
     it('tenant user deletes own skill', async () => {
       const { getSkill, deleteSkill } = await import('../db.js')
-      ;(getSkill as any).mockResolvedValueOnce({ id: 'acme-skill', tenant_id: 'acme' })
+      ;(getSkill as any).mockResolvedValueOnce({ id: 'acme-skill', tenant_id: 'acme', status: 'live' })
       ;(deleteSkill as any).mockResolvedValueOnce(true)
       const { ctx, out } = makeCtx('DELETE', '/api/skills/sql/acme-skill', undefined, { role: 'user', tenantId: 'acme' })
       expect(await tryHandleSkills(ctx)).toBe(true)

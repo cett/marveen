@@ -783,6 +783,9 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     if (fleetAgent && !isOwnAgentSkill(id)) { await countFleetSkillDenial(id); json(res, { error: 'forbidden', hint: 'A fleet agent token changes its own agent skills only' }, 403); return true }
     if (!existing && !(createSpec && (isAdmin || isOwnAgentSkill(id)))) { json(res, { error: 'not_found' }, 404); return true }
     if (existing && !isAdmin && !fleetAgent && callerTenantId !== existing.tenant_id) { json(res, { error: 'not_found' }, 404); return true }
+    // Same rule as GET: a skill that is not live (revoked, waiting for review, expired) is the admin's. Everybody else gets
+    // the answer for a skill that is not there, so a revoke freezes the text and the write does not tell the id exists.
+    if (existing && !isAdmin && existing.status !== 'live') { json(res, { error: 'not_found' }, 404); return true }
     const body = await readBody(req)
     let parsed: { name?: string; description?: string; content?: string; is_global?: boolean } = {}
     try { parsed = JSON.parse(body.toString()) } catch { json(res, { error: 'parse_error', hint: 'Invalid JSON' }, 400); return true }
@@ -817,6 +820,8 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     const existing = await getSkill(id)
     if (!existing) { json(res, { error: 'not_found' }, 404); return true }
     if (!isAdmin && !fleetAgent && callerTenantId !== existing.tenant_id) { json(res, { error: 'not_found' }, 404); return true }
+    // Same rule as GET and PUT: a skill that is not live is the admin's, everybody else gets the not-there answer.
+    if (!isAdmin && existing.status !== 'live') { json(res, { error: 'not_found' }, 404); return true }
     const companionFiles = await listSkillFiles(id)   // read before the delete removes them
     await deleteSkill(id, actor)
     // The file is only a generated cache of the row: drop it too, or the loader

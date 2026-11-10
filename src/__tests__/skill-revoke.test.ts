@@ -699,3 +699,173 @@ describe('the revoke is one transaction', () => {
     expect(existsSync(globalMd('demo-a'))).toBe(true)
   })
 })
+
+// A revoke has to freeze the text: a caller who is not an admin gets the answer for a skill that is not there on PUT and
+// DELETE of a skill that is not live, the same as GET and the companion-file routes already gave.
+describe('a caller who is not an admin cannot edit or delete a skill that is not live', () => {
+  const NOT_LIVE = ['disabled', 'pending_review', 'expired'] as const
+  const AGENT_SKILL = 'agent/agent-a/demo-a'
+  const TENANT_SKILL = 'tenant-a-demo'
+  const NEW_BODY = '---\nname: demo\ndescription: changed\n---\n# changed body\n'
+  const put = (id: string, content: string, extras: Extras, prefix = '/api') =>
+    call('PUT', `${prefix}/skills/sql/${encodeURIComponent(id)}`, JSON.stringify({ content }), extras)
+  const del = (id: string, extras: Extras, prefix = '/api') =>
+    call('DELETE', `${prefix}/skills/sql/${encodeURIComponent(id)}`, undefined, extras)
+  const setStatus = (id: string, s: string) => { db.prepare('UPDATE skills SET status = ? WHERE id = ?').run(s, id) }
+  const contentOf = (id: string) => (db.prepare('SELECT content FROM skills WHERE id = ?').get(id) as { content: string } | undefined)?.content
+  const tenantSkill = async (): Promise<string> => { await createSkill({ id: TENANT_SKILL, name: 'demo', content: BODY, tenant_id: 'tenant-a' }, SYSTEM); return TENANT_SKILL }
+
+  describe.each([
+    ['a fleet agent token on its own agent skill', AGENT_TOKEN, async (): Promise<string> => { await localCopy('agent-a', 'demo-a'); return AGENT_SKILL }, 'agent/agent-a/never-existed-a'],
+    ['a tenant user on the skill of its own tenant', TENANT_VIEWER, tenantSkill, 'tenant-a-never-existed-a'],
+  ] as const)('%s', (_label, extras, make, missingId) => {
+    it.each(NOT_LIVE)('PUT on a %s skill: 404, the text, the status and the trail stay', async (st) => {
+      const id = await make()
+      setStatus(id, st)
+      const before = { content: contentOf(id), status: status(id), trail: trail(id), audits: db.prepare("SELECT COUNT(*) AS n FROM agent_audit_log WHERE entity = 'skill' AND entity_id = ?").get(id) }
+      const r = await put(id, NEW_BODY, extras)
+      expect(r.status).toBe(404)
+      expect(r.body).toEqual({ error: 'not_found' })
+      expect(contentOf(id)).toBe(before.content)
+      expect(status(id)).toBe(st)
+      expect(trail(id)).toEqual(before.trail)
+      expect(db.prepare("SELECT COUNT(*) AS n FROM agent_audit_log WHERE entity = 'skill' AND entity_id = ?").get(id)).toEqual(before.audits)
+    })
+
+    it.each(NOT_LIVE)('DELETE of a %s skill: 404, the row, its companion files and the trail stay', async (st) => {
+      const id = await make()
+      await putSkillFile(id, 'ref/a.md', Buffer.from('notes'), 0o644, SYSTEM)
+      setStatus(id, st)
+      const trailBefore = trail(id)
+      const r = await del(id, extras)
+      expect(r.status).toBe(404)
+      expect(r.body).toEqual({ error: 'not_found' })
+      expect(status(id)).toBe(st)
+      expect(db.prepare('SELECT rel_path FROM skill_files WHERE skill_id = ?').all(id)).toEqual([{ rel_path: 'ref/a.md' }])
+      expect(trail(id)).toEqual(trailBefore)
+    })
+
+    it('the 404 is byte for byte the answer for an id that does not exist (the write is not an oracle), on /api and /api/v1', async () => {
+      const id = await make()
+      setStatus(id, 'disabled')
+      for (const prefix of ['/api', '/api/v1']) {
+        const goneDel = await del(missingId, extras, prefix)
+        expect(goneDel.status).toBe(404)
+        expect(await del(id, extras, prefix)).toEqual(goneDel)
+        if (extras === TENANT_VIEWER) {
+          // A fleet agent PUT to a missing file-backed id of its own is the create branch (201, by design), so only the
+          // tenant caller has a missing-id PUT to compare with.
+          const gonePut = await put(missingId, NEW_BODY, extras, prefix)
+          expect(gonePut.status).toBe(404)
+          expect(await put(id, NEW_BODY, extras, prefix)).toEqual(gonePut)
+        } else {
+          expect(await put(id, NEW_BODY, extras, prefix)).toEqual(goneDel)
+        }
+      }
+    })
+
+    it('a revoked skill (the real route) is frozen as well: PUT and DELETE both 404, the text is the one at the revoke', async () => {
+      const id = await make()
+      // Only the admin can revoke: the caller under test then tries to write.
+      expect((await revoke(id, { reason: 'because' }, ADMIN)).status).toBe(200)
+      expect((await put(id, NEW_BODY, extras)).status).toBe(404)
+      expect((await del(id, extras)).status).toBe(404)
+      expect(contentOf(id)).toBe(BODY)
+      expect(status(id)).toBe('disabled')
+      expect(revokeRows(id)).toHaveLength(1)
+    })
+
+    it('positive control: the same caller still edits and deletes its own LIVE skill', async () => {
+      const id = await make()
+      const r = await put(id, NEW_BODY, extras)
+      expect(r.status).toBe(200)
+      expect(contentOf(id)).toBe(NEW_BODY)
+      expect(status(id)).toBe('live')
+      expect((await del(id, extras)).status).toBe(200)
+      expect(status(id)).toBeUndefined()
+    })
+  })
+
+  it('the order of refusals holds: a fleet agent gets 403 for a skill that is not its own, live or not, before any 404 for status', async () => {
+    await localCopy('agent-b', 'demo-a')
+    setStatus('agent/agent-b/demo-a', 'disabled')
+    expect((await put('agent/agent-b/demo-a', NEW_BODY, AGENT_TOKEN)).status).toBe(403)
+    expect((await del('agent/agent-b/demo-a', AGENT_TOKEN)).status).toBe(403)
+    expect(status('agent/agent-b/demo-a')).toBe('disabled')
+  })
+
+  it('a fleet agent PUT to a file-backed id that has no row is still a create (201): the create branch is untouched', async () => {
+    const r = await put('agent/agent-a/fresh-a', BODY, AGENT_TOKEN)
+    expect(r.status).toBe(201)
+    expect(status('agent/agent-a/fresh-a')).toBe('live')
+  })
+
+  it('the delete-then-create chain stops at the first step: a copy the cascade disabled cannot be deleted and re-created live by its agent', async () => {
+    const global = await liveSkill()
+    const copy = await localCopy('agent-a', 'demo-a')
+    expect((await revoke(global, { reason: 'because' }, ADMIN)).status).toBe(200)
+    expect(status(copy)).toBe('disabled')
+    expect(existsSync(localMd('agent-a', 'demo-a'))).toBe(false)
+    const trailBefore = trail(copy)
+
+    // Step 1: the delete is refused, the disabled row stays.
+    const d = await del(copy, AGENT_TOKEN)
+    expect(d.status).toBe(404)
+    expect(status(copy)).toBe('disabled')
+    // Step 2 cannot start from a deleted row either: the PUT on the still existing disabled row is refused too, so no
+    // new live row and no generated file appear.
+    const p = await put(copy, NEW_BODY, AGENT_TOKEN)
+    expect(p.status).toBe(404)
+    expect(status(copy)).toBe('disabled')
+    expect(contentOf(copy)).toBe(BODY)
+    expect(db.prepare('SELECT COUNT(*) AS n FROM skills WHERE id = ?').get(copy)).toEqual({ n: 1 })
+    expect(trail(copy)).toEqual(trailBefore)
+    expect(existsSync(localMd('agent-a', 'demo-a'))).toBe(false)
+  })
+
+  it.each([
+    ['a global skill', 'global/demo-a', 'fleet', AGENT_TOKEN, 403],
+    ['a tenant skill', TENANT_SKILL, 'tenant-a', TENANT_VIEWER, 404],
+    ['an agent-local skill', AGENT_SKILL, 'fleet', AGENT_TOKEN, 404],
+  ] as const)('%s: the not-live guard is not limited to one skill type (non-admin PUT and DELETE of the disabled row are refused, the row stays)', async (_label, id, tenant, extras, expected) => {
+    await createSkill({ id, name: 'demo', content: BODY, tenant_id: tenant, is_global: id.startsWith('global/') }, SYSTEM)
+    setStatus(id, 'disabled')
+    // A global skill is not writable for these callers at all (403 comes first); the two others reach the status check.
+    expect((await put(id, NEW_BODY, extras)).status).toBe(expected)
+    expect((await del(id, extras)).status).toBe(expected)
+    expect(status(id)).toBe('disabled')
+    expect(contentOf(id)).toBe(BODY)
+  })
+
+  it('a tenant user cannot reach a not-live skill of another tenant either (404 as before)', async () => {
+    await createSkill({ id: 'tenant-b-demo', name: 'demo', content: BODY, tenant_id: 'tenant-b' }, SYSTEM)
+    expect((await put('tenant-b-demo', NEW_BODY, TENANT_VIEWER)).status).toBe(404)
+    expect((await del('tenant-b-demo', TENANT_VIEWER)).status).toBe(404)
+    expect(status('tenant-b-demo')).toBe('live')
+  })
+
+  describe('the admin is not affected', () => {
+    it.each(NOT_LIVE)('PUT on a %s skill still works: the text changes and the status is not changed by it', async (st) => {
+      const id = await liveSkill()
+      setStatus(id, st)
+      const r = await put(id, NEW_BODY, ADMIN)
+      expect(r.status).toBe(200)
+      expect(contentOf(id)).toBe(NEW_BODY)
+      expect(status(id)).toBe(st)
+    })
+
+    it.each(NOT_LIVE)('DELETE of a %s skill still works', async (st) => {
+      const id = await liveSkill()
+      setStatus(id, st)
+      expect((await del(id, ADMIN)).status).toBe(200)
+      expect(status(id)).toBeUndefined()
+    })
+
+    it('an admin edit of a tenant skill that is disabled works too', async () => {
+      const id = await tenantSkill()
+      setStatus(id, 'disabled')
+      expect((await put(id, NEW_BODY, ADMIN)).status).toBe(200)
+      expect(contentOf(id)).toBe(NEW_BODY)
+    })
+  })
+})
