@@ -54,6 +54,25 @@ export function getSenderRoutingMode(): SenderRoutingMode {
 export const BUILTIN_SYSTEM_FROM: ReadonlySet<string> = new Set(['scheduler', 'system'])
 export const SYSTEM_SENDERS: ReadonlySet<string> = parseSystemSenderIds(SYSTEM_SENDER_IDS, sanitizeAgentIdent)
 
+/**
+ * A start-up WARN when SYSTEM_SENDER_IDS names anything. The list is empty by default; a listed id is a platform
+ * sender that any admin-role caller can post as (the shared dashboard token, the operator token, a dashboard
+ * session), outside the sender routing table and past TOKEN_IDENTITY_MODE. The ids are not secret and are the only
+ * thing logged (not the raw setting). Behaviour is unchanged: this only says that the opt-in is on. Returns the
+ * number of listed ids; an empty list logs nothing.
+ */
+export function warnAboutSystemSenders(
+  senders: ReadonlySet<string> = SYSTEM_SENDERS,
+  log: Pick<typeof logger, 'warn'> = logger,
+): number {
+  if (senders.size === 0) return 0
+  log.warn(
+    { ids: [...senders].sort() },
+    'SYSTEM_SENDER_IDS is not empty: any admin-role caller can post as these ids, outside the sender routing table; recipients frame them as untrusted. The default is empty.',
+  )
+  return senders.size
+}
+
 /** A platform sender, judged on the SANITIZED id and on code constants only. */
 export function isPlatformSender(safeFrom: string): boolean {
   return BUILTIN_SYSTEM_FROM.has(safeFrom) || SYSTEM_SENDERS.has(safeFrom) || isChannelCoordinatorSender(safeFrom)

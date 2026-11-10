@@ -241,6 +241,8 @@ Ha egy nem-ágensként regisztrált külső rendszernek is kell üzeneteket kül
 SYSTEM_SENDER_IDS=cortex
 ```
 
+**Ismert határ.** A lista alapból üres, és maradjon is az, hacsak egy szomszédos rendszernek nincs valóban szüksége rá. A listázott ID platform-feladó: minden `admin` szerepkörű hívó (a megosztott admin token birtokosa, az operator token, a dashboard-session) posztolhat ezen az ID-n, bárki is a hívó. Az ilyen üzenet a system lane-en megy, ezért a sender-routing táblát nem látja, és a `TOKEN_IDENTITY_MODE=enforce` sem fogja meg (a platform-feladók mentesek az identitás-ellenőrzés alól). A címzett oldalán `<untrusted>` keretet kap, mert az ID nem ismert ágens, ez korlátozza a hatást; a feladó neve ettől még önbevallott. A flotta-ágens tokenjét ez nem érinti (a `from` mezője a saját ágensére van rögzítve). Maga a `system` nem listázható: az útvonal `403 reserved_sender` választ ad. Flotta-ágens azonosítóját ne írd a listába. Induláskor a napló WARN sort ír a listázott ID-kkal, ha a lista nem üres.
+
 ---
 
 ## Ütemezett feladatok
