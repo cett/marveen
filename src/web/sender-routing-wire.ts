@@ -26,8 +26,9 @@ import { sanitizeAgentIdent } from '../prompt-safety.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
 import { isTrustedPeer } from '../team-trust.js'
 import { writeAgentAuditLog } from '../db/audit.js'
-import { closeOpenMessage, listEnabledAgentAvailability } from '../db/agents.js'
-import { listTenants } from '../db/observability.js'
+import { closeOpenMessage, createAgentMessage, listEnabledAgentAvailability } from '../db/agents.js'
+import { getAgentMessage } from '../db/tasks.js'
+import { COMPLETION_REPORT_PREFIX, listTenants } from '../db/observability.js'
 import { isKnownAgent } from './agent-config.js'
 import { readAgentTeam } from './agent-team.js'
 import { isChannelCoordinatorSender } from './agent-message-wrap.js'
@@ -305,6 +306,74 @@ export async function gateDeliveryBatch<T extends DeliveryRow>(batch: readonly T
   return gate.open ? gate.judge(batch) : []
 }
 
+// ---- The notice to the sender of a message the delivery gate refused -----------------------------------------------
+//
+// On the route the sender gets a 403 at once. A DELIVERY refusal (router tick, backlog, inbox pull: a message that never
+// passed the route, or one judged after the rule changed) used to be silent: the row went to failed with a
+// refused_reason and the sender never heard. After a refusal that landed, the sender gets ONE short notice.
+//  - It is posted by `system`, not by the recipient: the notice the PUT handler sends on a close goes recipient -> sender,
+//    which is the refused pair reversed, so under enforce it would be refused itself and the sender would hear nothing.
+//    `system` is the platform lane, which the table never sees.
+//  - Only a local, known agent is told (the logic of shouldNotifyDelegator): not a self-message, not the owner, a
+//    partner, a federated or a platform sender, not the channel coordinator, and not a message that is itself a
+//    completion report (`[Eredmény]`), so a notice can never produce a notice.
+//  - The text is fixed and general: the message id and "delivery refused (sender rule)". The reason (who is allowed) is
+//    NOT in it, the same as the 403 of the route.
+//  - Noise guard: at most REFUSAL_NOTICES_PER_MINUTE notices per sender in a minute, then ONE summary notice, then none
+//    until the minute is over. The counter lives in this process (a restart resets it, which can only add a notice).
+//  - The notice stays in the tenant of the refused message.
+// A failure to write the notice is logged and swallowed: it must neither undo the refusal nor stop the batch.
+
+const REFUSAL_NOTICE_FROM = 'system'
+export const REFUSAL_NOTICES_PER_MINUTE = 5
+const REFUSAL_NOTICE_WINDOW_MS = 60_000
+const REFUSAL_NOTICE_TEXT = 'kézbesítés tiltva (küldő-szabály)'
+const REFUSAL_NOTICE_SUMMARY_TEXT = 'további kézbesítések tiltva (küldő-szabály), ebben a percben több értesítés nem megy'
+const REFUSAL_NOTICE_TRACKED_CAP = 1000
+const refusalNoticeWindows = new Map<string, { start: number; count: number }>()
+
+/** Should the sender of a refused message be told? Pure apart from the agent lookup. */
+export function shouldNotifyRefusedSender(identity: SenderIdentity, toAgent: string, content: string): boolean {
+  if (identity.lane !== 'routed' || identity.senderClass !== 'fleet_agent') return false
+  if (sanitizeAgentIdent(identity.senderId) === sanitizeAgentIdent(toAgent)) return false
+  if (content.startsWith(COMPLETION_REPORT_PREFIX)) return false
+  return isKnownAgent(identity.senderId)
+}
+
+function takeRefusalNoticeSlot(sender: string, nowMs: number): 'notice' | 'summary' | 'none' {
+  if (refusalNoticeWindows.size >= REFUSAL_NOTICE_TRACKED_CAP) {
+    for (const [k, w] of refusalNoticeWindows) if (nowMs - w.start >= REFUSAL_NOTICE_WINDOW_MS) refusalNoticeWindows.delete(k)
+    if (refusalNoticeWindows.size >= REFUSAL_NOTICE_TRACKED_CAP) refusalNoticeWindows.clear()
+  }
+  let w = refusalNoticeWindows.get(sender)
+  if (!w || nowMs - w.start >= REFUSAL_NOTICE_WINDOW_MS) {
+    w = { start: nowMs, count: 0 }
+    refusalNoticeWindows.set(sender, w)
+  }
+  w.count += 1
+  if (w.count <= REFUSAL_NOTICES_PER_MINUTE) return 'notice'
+  return w.count === REFUSAL_NOTICES_PER_MINUTE + 1 ? 'summary' : 'none'
+}
+
+/** Forget the noise-guard counters (tests). */
+export function resetRefusalNoticeWindows(): void { refusalNoticeWindows.clear() }
+
+async function notifyRefusedSender(m: DeliveryRow, identity: SenderIdentity): Promise<void> {
+  try {
+    const row = await getAgentMessage(m.id)
+    if (!row || !shouldNotifyRefusedSender(identity, m.to_agent, row.content)) return
+    const slot = takeRefusalNoticeSlot(sanitizeAgentIdent(identity.senderId), Date.now())
+    if (slot === 'none') return
+    const body = slot === 'notice'
+      ? `${COMPLETION_REPORT_PREFIX} msg_id:${m.id} status:failed\n\n${REFUSAL_NOTICE_TEXT}`
+      : `${COMPLETION_REPORT_PREFIX} status:failed\n\n${REFUSAL_NOTICE_SUMMARY_TEXT}`
+    // pinTenant: the notice belongs to the refused message, so it keeps that message's tenant.
+    await createAgentMessage(REFUSAL_NOTICE_FROM, identity.senderId, body, null, null, row.tenant_id ?? 'default', null, true)
+  } catch (err) {
+    logger.warn({ err, id: m.id }, 'sender-routing: could not post the refusal notice')
+  }
+}
+
 async function judgeDeliveryBatch<T extends DeliveryRow>(batch: readonly T[], mode: SenderRoutingMode, ctx: RoutingContext): Promise<T[]> {
   const kept: T[] = []
   for (const m of batch) {
@@ -324,6 +393,10 @@ async function judgeDeliveryBatch<T extends DeliveryRow>(batch: readonly T[], mo
         // keeps its outcome; the refusal only lands on a row that is still open (pending, or delivered by the claim).
         if (!await closeOpenMessage(m.id, 'refused', `sender_route_${reason}`)) {
           logger.warn({ id: m.id }, 'sender-routing: the refusal did not apply, the message was already closed')
+        } else {
+          // Only a refusal that LANDED is told to the sender: a row closed in the meantime, or judged again on a
+          // later tick, has already had its outcome and gets no second notice.
+          await notifyRefusedSender(m, identity)
         }
       } catch (err) {
         logger.warn({ err, id: m.id }, 'sender-routing: could not close a refused message')
