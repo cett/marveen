@@ -807,7 +807,10 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
       const fmDescription = parseSkillDescription(parsed.content)
       if (fmDescription) parsed = { ...parsed, description: fmDescription }
     }
-    const updated = await updateSkill(id, parsed, actor)
+    // The status is checked again inside the write for everybody but the admin: a revoke that committed after the read
+    // above (the body can be slow) must not be written over. undefined = the row is not live (or gone): the not-there answer.
+    const updated = await updateSkill(id, parsed, actor, {}, { requireLive: !isAdmin })
+    if (!isAdmin && !updated) { json(res, { error: 'not_found' }, 404); return true }
     await regenSingleSkillFile(id)
     json(res, { ok: true, skill: updated })
     return true
@@ -823,7 +826,10 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     // Same rule as GET and PUT: a skill that is not live is the admin's, everybody else gets the not-there answer.
     if (!isAdmin && existing.status !== 'live') { json(res, { error: 'not_found' }, 404); return true }
     const companionFiles = await listSkillFiles(id)   // read before the delete removes them
-    await deleteSkill(id, actor)
+    // Same compare-and-set as the PUT: the delete happens only while the row is live (a revoke can commit between the
+    // read above and here); refused = the answer for an id that is not there, and no file is touched.
+    const deleted = await deleteSkill(id, actor, {}, { requireLive: !isAdmin })
+    if (!isAdmin && !deleted) { json(res, { error: 'not_found' }, 404); return true }
     // The file is only a generated cache of the row: drop it too, or the loader
     // keeps serving a skill the DB no longer has (a hand-edited file is kept).
     await removeGeneratedSkillFile(id, existing.content, existing.tenant_id, companionFiles)

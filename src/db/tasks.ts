@@ -571,8 +571,17 @@ export async function insertFleetSkillFromFile(
   })
 }
 
+/**
+ * `requireLive` is the compare-and-set a caller who is not an admin passes: the write happens only while the row is
+ * `live`, decided inside the same transaction as the write (a route's earlier read can be stale by the time the write
+ * runs, e.g. a revoke that committed in between). A refused write changes nothing, not even a baseline row, and
+ * answers undefined (update) or false (delete), the same as an id that is not there.
+ */
+export interface SkillWriteGuard { requireLive?: boolean }
+
 export async function updateSkill(
   id: string, patch: { name?: string; description?: string; content?: string; is_global?: boolean }, actor: SkillActor, meta: SkillWriteMeta = {},
+  guard: SkillWriteGuard = {},
 ): Promise<SkillRow | undefined> {
   const now = Math.floor(Date.now() / 1000)
   const sets: string[] = ['updated_at = ?']
@@ -583,9 +592,12 @@ export async function updateSkill(
   if (patch.is_global !== undefined)   { sets.push('is_global = ?');   vals.push(patch.is_global ? 1 : 0) }
   vals.push(id)
   return dbx.tx(async (tx) => {
+    // Decided first: a refused write must not leave a baseline row behind either.
+    if (guard.requireLive && !(await tx.get<{ one: number }>("SELECT 1 AS one FROM skills WHERE id = ? AND status = 'live'", id))) return undefined
     await ensureSkillBaseline(tx, id)
     const before = await tx.get<{ is_global: number }>('SELECT is_global FROM skills WHERE id = ?', id)
-    const changes = (await tx.run(`UPDATE skills SET ${sets.join(', ')} WHERE id = ?`, ...vals)).changes
+    // The status condition is in the write itself as well, so it holds on a database that does not serialize the transaction.
+    const changes = (await tx.run(`UPDATE skills SET ${sets.join(', ')} WHERE id = ?${guard.requireLive ? " AND status = 'live'" : ''}`, ...vals)).changes
     if (changes === 0) return undefined
     const row = await tx.get<SkillRow>('SELECT * FROM skills WHERE id = ?', id) as SkillRow
     // A patch that leaves the text and the companion files as they were (a rename, a description) writes no row, with
@@ -686,15 +698,28 @@ export async function revokeSkill(id: string, actor: SkillActor, reason: string)
   })
 }
 
-export async function deleteSkill(id: string, actor: SkillActor, meta: SkillWriteMeta = {}): Promise<boolean> {
-  return dbx.tx(async (tx) => {
-    // The delete row keeps the last text and the file-set hash, so it is written while both still exist.
-    await ensureSkillBaseline(tx, id)
-    const skill = await tx.get<SkillRow>('SELECT * FROM skills WHERE id = ?', id)
-    if (skill) await writeSkillRevision(tx, { skill, action: 'delete', actor, ...meta })
-    await tx.run('DELETE FROM skill_files WHERE skill_id = ?', id)
-    return (await tx.run('DELETE FROM skills WHERE id = ?', id)).changes > 0
-  })
+/** Thrown inside the delete transaction when the live condition did not hold at the write: rolls everything back. */
+class SkillNotLiveAtWrite extends Error {}
+
+export async function deleteSkill(id: string, actor: SkillActor, meta: SkillWriteMeta = {}, guard: SkillWriteGuard = {}): Promise<boolean> {
+  try {
+    return await dbx.tx(async (tx) => {
+      // `guard.requireLive`: see SkillWriteGuard. Decided first, so a refused delete leaves no baseline row either.
+      if (guard.requireLive && !(await tx.get<{ one: number }>("SELECT 1 AS one FROM skills WHERE id = ? AND status = 'live'", id))) return false
+      // The delete row keeps the last text and the file-set hash, so it is written while both still exist.
+      await ensureSkillBaseline(tx, id)
+      const skill = await tx.get<SkillRow>('SELECT * FROM skills WHERE id = ?', id)
+      if (skill) await writeSkillRevision(tx, { skill, action: 'delete', actor, ...meta })
+      await tx.run('DELETE FROM skill_files WHERE skill_id = ?', id)
+      const changes = (await tx.run(`DELETE FROM skills WHERE id = ?${guard.requireLive ? " AND status = 'live'" : ''}`, id)).changes
+      // The status condition is in the write too: if it did not hold here, the throw undoes the revision row and the file delete.
+      if (guard.requireLive && changes === 0) throw new SkillNotLiveAtWrite()
+      return changes > 0
+    })
+  } catch (err) {
+    if (err instanceof SkillNotLiveAtWrite) return false
+    throw err
+  }
 }
 
 // --- skill companion files (migration 0063, rules in src/skill-files.ts) ---

@@ -103,7 +103,8 @@ describe('/api/skills/sql/:id with percent-encoded ids', () => {
       const { ctx, out } = makeCtx('PUT', `/api/skills/sql/${enc}`, { content: 'new body' })
       expect(await tryHandleSkills(ctx)).toBe(true)
       expect(out.status).toBe(200)
-      expect(mockUpdateSkill).toHaveBeenCalledWith(id, { content: 'new body' }, { kind: 'system', id: null })
+      // The caller is an admin: no live guard on the write.
+      expect(mockUpdateSkill).toHaveBeenCalledWith(id, { content: 'new body' }, { kind: 'system', id: null }, {}, { requireLive: false })
       expect(mockRegen).toHaveBeenCalledWith(id)
     })
 
@@ -111,7 +112,7 @@ describe('/api/skills/sql/:id with percent-encoded ids', () => {
       const { ctx, out } = makeCtx('DELETE', `/api/skills/sql/${enc}`)
       expect(await tryHandleSkills(ctx)).toBe(true)
       expect(out.status).toBe(200)
-      expect(mockDeleteSkill).toHaveBeenCalledWith(id, { kind: 'system', id: null })
+      expect(mockDeleteSkill).toHaveBeenCalledWith(id, { kind: 'system', id: null }, {}, { requireLive: false })
     })
 
     it(`GET/POST access + DELETE access item, ${label}`, async () => {

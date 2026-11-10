@@ -27,6 +27,25 @@ vi.mock('../config.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../config.js')>()
   return { ...actual, PROJECT_ROOT: FAKE_PROJECT, MAIN_AGENT_ID: 'main-a', get SKILL_SQL_REGEN() { return regenSwitch.on }, TENANT_SKILL_FILES: 'single' }
 })
+// A pass-through view of the db module (a Proxy, so the live `db` binding stays live) whose only difference is a hook
+// that runs just before listSkillFiles: the DELETE route awaits it between its status read and its write, which is the
+// place the interleave tests below commit a revoke at, deterministically.
+const raceHook = vi.hoisted(() => ({ beforeListSkillFiles: null as null | (() => Promise<void>) }))
+vi.mock('../db.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../db.js')>()
+  return new Proxy(actual, {
+    get(target, key, receiver) {
+      if (key === 'listSkillFiles') {
+        return async (...args: Parameters<typeof actual.listSkillFiles>) => {
+          const hook = raceHook.beforeListSkillFiles
+          if (hook) await hook()
+          return actual.listSkillFiles(...args)
+        }
+      }
+      return Reflect.get(target, key, receiver)
+    },
+  })
+})
 vi.mock('../web/agent-config.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../web/agent-config.js')>()),
   AGENTS_BASE_DIR: join(FAKE_PROJECT, 'agents'),
@@ -34,7 +53,7 @@ vi.mock('../web/agent-config.js', async (importOriginal) => ({
 }))
 
 import {
-  initDatabase, db, createSkill, getSkill, putSkillFile, listSkillRevisions, listGlobalFleetSkills, listAllSkills,
+  initDatabase, db, createSkill, getSkill, putSkillFile, updateSkill, deleteSkill, listSkillRevisions, listGlobalFleetSkills, listAllSkills,
   cascadeRevokeReason, MAX_REVOKE_REASON_CHARS,
   type SkillActor,
 } from '../db.js'
@@ -54,11 +73,15 @@ const ADMIN: Extras = { auth: { kind: 'session', user: 'user-a' }, role: 'admin'
 const AGENT_TOKEN: Extras = { auth: { kind: 'token', tokenName: 'token-a' }, role: 'fleet_agent', tokenAgentId: 'agent-a', agentId: 'agent-a' }
 const TENANT_VIEWER: Extras = { auth: { kind: 'session', user: 'user-b' }, role: 'viewer', tenantId: 'tenant-a' }
 
-async function call(method: string, path: string, rawBody: string | undefined, extras: Extras) {
+// `bodyGate`: the request body arrives only when this promise resolves (a client that sends its body late), so a test can
+// commit a revoke while the handler is parked in readBody, after its status read and before its write.
+async function call(method: string, path: string, rawBody: string | undefined, extras: Extras, bodyGate?: Promise<void>) {
   const req = new EventEmitter() as unknown as NodeJS.EventEmitter & { method: string; headers: Record<string, string> }
   req.method = method
   req.headers = {}
-  setImmediate(() => { if (rawBody !== undefined) (req as NodeJS.EventEmitter).emit('data', Buffer.from(rawBody)); (req as NodeJS.EventEmitter).emit('end') })
+  const sendBody = () => { if (rawBody !== undefined) (req as NodeJS.EventEmitter).emit('data', Buffer.from(rawBody)); (req as NodeJS.EventEmitter).emit('end') }
+  if (bodyGate) void bodyGate.then(sendBody)
+  else setImmediate(sendBody)
   const out = { status: 200, body: null as any }
   const res = {
     writeHead(s: number) { out.status = s },
@@ -866,6 +889,190 @@ describe('a caller who is not an admin cannot edit or delete a skill that is not
       setStatus(id, 'disabled')
       expect((await put(id, NEW_BODY, ADMIN)).status).toBe(200)
       expect(contentOf(id)).toBe(NEW_BODY)
+    })
+  })
+})
+
+// The status is not only read at the top of the route: a revoke that commits between that read and the write (the body of a
+// PUT can arrive late, a DELETE awaits its companion-file read) must be honoured by the write itself.
+describe('a revoke that commits between the route read and the write is not written over', () => {
+  const AGENT_SKILL = 'agent/agent-a/demo-a'
+  const TENANT_SKILL = 'tenant-a-demo'
+  const NEW_BODY = '---\nname: demo\ndescription: changed\n---\n# changed body\n'
+  const contentOf = (id: string) => (db.prepare('SELECT content FROM skills WHERE id = ?').get(id) as { content: string } | undefined)?.content
+  const trailActions = (id: string) => trail(id).map(r => r.action)
+  const tick = () => new Promise<void>(r => setTimeout(r, 25))
+  const urlOf = (id: string, prefix = '/api') => `${prefix}/skills/sql/${encodeURIComponent(id)}`
+  const makeAgentSkill = async () => { await localCopy('agent-a', 'demo-a'); return AGENT_SKILL }
+  const makeTenantSkill = async () => { await createSkill({ id: TENANT_SKILL, name: 'demo', content: BODY, tenant_id: 'tenant-a' }, SYSTEM); return TENANT_SKILL }
+
+  /** A non-admin PUT whose body is still on the wire: it has passed the status read and waits in readBody. */
+  async function slowPut(id: string, extras: Extras, prefix = '/api') {
+    let release!: () => void
+    const gate = new Promise<void>(r => { release = r })
+    const pending = call('PUT', urlOf(id, prefix), JSON.stringify({ content: NEW_BODY }), extras, gate)
+    await tick()
+    return { release, pending }
+  }
+
+  beforeEach(() => { raceHook.beforeListSkillFiles = null })
+  afterAll(() => { raceHook.beforeListSkillFiles = null })
+
+  describe.each([
+    ['a fleet agent token on its own agent skill', AGENT_TOKEN, makeAgentSkill],
+    ['a tenant user on the skill of its own tenant', TENANT_VIEWER, makeTenantSkill],
+  ] as const)('%s', (_label, extras, make) => {
+    it('PUT: the revoke commits while the body is on the wire: 404, the text, the status and the trail stay as the revoke left them', async () => {
+      const id = await make()
+      const { release, pending } = await slowPut(id, extras)
+      expect((await revoke(id, { reason: 'because' }, ADMIN)).status).toBe(200)
+      expect(status(id)).toBe('disabled')
+      release()
+      const r = await pending
+      expect(r.status).toBe(404)
+      expect(r.body).toEqual({ error: 'not_found' })
+      expect(contentOf(id)).toBe(BODY)
+      expect(status(id)).toBe('disabled')
+      expect(trailActions(id)).toEqual(['create', 'revoke'])
+      expect(existsSync(localMd('agent-a', 'demo-a'))).toBe(false)
+    })
+
+    it('PUT: the same on /api/v1', async () => {
+      const id = await make()
+      const { release, pending } = await slowPut(id, extras, '/api/v1')
+      expect((await revoke(id, { reason: 'because' }, ADMIN, '/api/v1')).status).toBe(200)
+      release()
+      expect((await pending).status).toBe(404)
+      expect(contentOf(id)).toBe(BODY)
+    })
+
+    it('DELETE: the revoke commits between the status read and the write: 404, the row, its companion files and the trail stay', async () => {
+      const id = await make()
+      await putSkillFile(id, 'ref/a.md', Buffer.from('notes'), 0o644, SYSTEM)
+      raceHook.beforeListSkillFiles = async () => {
+        raceHook.beforeListSkillFiles = null
+        expect((await revoke(id, { reason: 'because' }, ADMIN)).status).toBe(200)
+      }
+      const r = await call('DELETE', urlOf(id), undefined, extras)
+      expect(r.status).toBe(404)
+      expect(r.body).toEqual({ error: 'not_found' })
+      expect(status(id)).toBe('disabled')
+      expect(db.prepare('SELECT rel_path FROM skill_files WHERE skill_id = ?').all(id)).toEqual([{ rel_path: 'ref/a.md' }])
+      // No delete row: the trail is what the setup and the revoke wrote.
+      expect(trailActions(id)).toEqual(['create', 'file_put', 'revoke'])
+    })
+
+    it('positive control: the same interleave without a revoke still lets the caller edit and delete its own live skill', async () => {
+      const id = await make()
+      const { release, pending } = await slowPut(id, extras)
+      release()
+      expect((await pending).status).toBe(200)
+      expect(contentOf(id)).toBe(NEW_BODY)
+      let hookRan = false
+      raceHook.beforeListSkillFiles = async () => { hookRan = true }
+      expect((await call('DELETE', urlOf(id), undefined, extras)).status).toBe(200)
+      expect(hookRan).toBe(true)
+      expect(status(id)).toBeUndefined()
+    })
+  })
+
+  it('the delete-then-create chain does not come alive through the race: a cascaded copy cannot be deleted in flight and re-created live', async () => {
+    const global = await liveSkill()
+    const copy = await localCopy('agent-a', 'demo-a')
+    raceHook.beforeListSkillFiles = async () => {
+      raceHook.beforeListSkillFiles = null
+      expect((await revoke(global, { reason: 'because' }, ADMIN)).status).toBe(200)
+    }
+    // The agent's DELETE passed the status read while its copy was live; the cascade commits before the write.
+    const d = await call('DELETE', urlOf(copy), undefined, AGENT_TOKEN)
+    expect(d.status).toBe(404)
+    expect(status(copy)).toBe('disabled')
+    // The second step of the chain: with the row still there and disabled, the PUT is refused as well.
+    const p = await call('PUT', urlOf(copy), JSON.stringify({ content: NEW_BODY }), AGENT_TOKEN)
+    expect(p.status).toBe(404)
+    expect(status(copy)).toBe('disabled')
+    expect(contentOf(copy)).toBe(BODY)
+    expect(existsSync(localMd('agent-a', 'demo-a'))).toBe(false)
+  })
+
+  describe('the admin is not affected by the race guard', () => {
+    it('an admin PUT that is in flight when the revoke commits still writes (the admin edits a disabled skill), the status stays disabled', async () => {
+      const id = await liveSkill()
+      let release!: () => void
+      const gate = new Promise<void>(r => { release = r })
+      const pending = call('PUT', urlOf(id), JSON.stringify({ content: NEW_BODY }), ADMIN, gate)
+      await tick()
+      expect((await revoke(id, { reason: 'because' }, ADMIN)).status).toBe(200)
+      release()
+      expect((await pending).status).toBe(200)
+      expect(contentOf(id)).toBe(NEW_BODY)
+      expect(status(id)).toBe('disabled')
+    })
+
+    it('an admin DELETE in flight when the revoke commits still deletes', async () => {
+      const id = await liveSkill()
+      raceHook.beforeListSkillFiles = async () => {
+        raceHook.beforeListSkillFiles = null
+        expect((await revoke(id, { reason: 'because' }, ADMIN)).status).toBe(200)
+      }
+      expect((await call('DELETE', urlOf(id), undefined, ADMIN)).status).toBe(200)
+      expect(status(id)).toBeUndefined()
+    })
+  })
+
+  describe('the db layer: requireLive is decided inside the write', () => {
+    const baselineCount = (id: string) => (db.prepare('SELECT COUNT(*) AS n FROM skill_revisions WHERE skill_id = ?').get(id) as { n: number }).n
+
+    it('updateSkill with requireLive on a not-live row: undefined, nothing changes (text, status, trail)', async () => {
+      for (const st of ['disabled', 'pending_review', 'expired'] as const) {
+        const id = `demo-${st}`
+        await createSkill({ id, name: 'demo', content: BODY, tenant_id: 'tenant-a' }, SYSTEM)
+        db.prepare('UPDATE skills SET status = ? WHERE id = ?').run(st, id)
+        const before = { n: baselineCount(id), updated: (db.prepare('SELECT updated_at FROM skills WHERE id = ?').get(id) as { updated_at: number }).updated_at }
+        expect(await updateSkill(id, { content: NEW_BODY }, SYSTEM, {}, { requireLive: true })).toBeUndefined()
+        expect(contentOf(id)).toBe(BODY)
+        expect(status(id)).toBe(st)
+        expect(baselineCount(id)).toBe(before.n)
+        expect((db.prepare('SELECT updated_at FROM skills WHERE id = ?').get(id) as { updated_at: number }).updated_at).toBe(before.updated)
+      }
+    })
+
+    it('updateSkill: a missing row with requireLive is undefined; without it a not-live row is written (the admin path)', async () => {
+      expect(await updateSkill('never-existed', { content: NEW_BODY }, SYSTEM, {}, { requireLive: true })).toBeUndefined()
+      await createSkill({ id: 'demo-x', name: 'demo', content: BODY, tenant_id: 'tenant-a' }, SYSTEM)
+      db.prepare("UPDATE skills SET status = 'disabled' WHERE id = 'demo-x'").run()
+      expect((await updateSkill('demo-x', { content: NEW_BODY }, SYSTEM))?.status).toBe('disabled')
+      expect(contentOf('demo-x')).toBe(NEW_BODY)
+    })
+
+    it('updateSkill with requireLive on a live row writes as before', async () => {
+      await createSkill({ id: 'demo-y', name: 'demo', content: BODY, tenant_id: 'tenant-a' }, SYSTEM)
+      expect((await updateSkill('demo-y', { content: NEW_BODY }, SYSTEM, {}, { requireLive: true }))?.status).toBe('live')
+      expect(contentOf('demo-y')).toBe(NEW_BODY)
+    })
+
+    it('deleteSkill with requireLive on a not-live row: false, the row, its files and the trail stay', async () => {
+      for (const st of ['disabled', 'pending_review', 'expired'] as const) {
+        const id = `demo-${st}`
+        await createSkill({ id, name: 'demo', content: BODY, tenant_id: 'tenant-a' }, SYSTEM)
+        await putSkillFile(id, 'ref/a.md', Buffer.from('notes'), 0o644, SYSTEM)
+        db.prepare('UPDATE skills SET status = ? WHERE id = ?').run(st, id)
+        const before = baselineCount(id)
+        expect(await deleteSkill(id, SYSTEM, {}, { requireLive: true })).toBe(false)
+        expect(status(id)).toBe(st)
+        expect(db.prepare('SELECT rel_path FROM skill_files WHERE skill_id = ?').all(id)).toEqual([{ rel_path: 'ref/a.md' }])
+        expect(baselineCount(id)).toBe(before)
+      }
+    })
+
+    it('deleteSkill: requireLive on a live row deletes it; without it a not-live row is deleted (the admin path)', async () => {
+      await createSkill({ id: 'demo-live', name: 'demo', content: BODY, tenant_id: 'tenant-a' }, SYSTEM)
+      expect(await deleteSkill('demo-live', SYSTEM, {}, { requireLive: true })).toBe(true)
+      expect(status('demo-live')).toBeUndefined()
+      await createSkill({ id: 'demo-off', name: 'demo', content: BODY, tenant_id: 'tenant-a' }, SYSTEM)
+      db.prepare("UPDATE skills SET status = 'disabled' WHERE id = 'demo-off'").run()
+      expect(await deleteSkill('demo-off', SYSTEM)).toBe(true)
+      expect(status('demo-off')).toBeUndefined()
     })
   })
 })
