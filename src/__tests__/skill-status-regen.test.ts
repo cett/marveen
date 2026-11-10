@@ -53,7 +53,7 @@ vi.mock('../db.js', () => ({
 
 import {
   regenSingleSkillFile, regenSkillFilesFromSQL, regenTenantSkillFiles, generateTenantSkillFilesForAgent,
-  findMissingSkillFiles, findSkillFileGaps, removeGeneratedTenantSkillFilesForAgent,
+  findMissingSkillFiles, findSkillFileGaps, removeGeneratedTenantSkillFilesForAgent, removeGeneratedSkillFile,
 } from '../web/skill-regen.js'
 
 afterAll(() => { rmSync(FAKE_HOME, { recursive: true, force: true }) })
@@ -132,13 +132,46 @@ describe('fleet skills: only a live skill is written', () => {
     expect(existsSync(globalMd('rev'))).toBe(true)
   })
 
-  it('a file a person edited by hand is left in place and the single regen says so', async () => {
+  it('a file that differs from the row does not survive the revoke: SKILL.md is moved aside, under a name the loader does not read', async () => {
     row('global/edited', 'fleet')
     await regenSingleSkillFile('global/edited')
     writeFileSync(globalMd('edited'), `${FM}# my own change\n`)
     setStatus('global/edited', 'disabled')
-    expect(await regenSingleSkillFile('global/edited')).toEqual({ written: false, skipped: false, reason: 'modified_on_disk' })
-    expect(readFileSync(globalMd('edited'), 'utf-8')).toContain('my own change')
+    const r = await regenSingleSkillFile('global/edited')
+    expect(r).toMatchObject({ written: false, skipped: false, reason: 'quarantined' })
+    expect(existsSync(globalMd('edited'))).toBe(false)
+    expect(r.quarantined).toHaveLength(1)
+    expect(r.quarantined![0]).toMatch(/SKILL\.md\.revoked-\d+$/)
+    expect(readFileSync(r.quarantined![0], 'utf-8')).toContain('my own change') // the text is kept, not destroyed
+  })
+
+  it('one changed character is enough to differ, and it does not keep the skill loadable (the evasion that was open)', async () => {
+    row('global/evade', 'fleet')
+    await regenSingleSkillFile('global/evade')
+    writeFileSync(globalMd('evade'), readFileSync(globalMd('evade'), 'utf-8') + ' ')
+    setStatus('global/evade', 'disabled')
+    expect(await regenSingleSkillFile('global/evade')).toMatchObject({ reason: 'quarantined' })
+    expect(existsSync(globalMd('evade'))).toBe(false)
+  })
+
+  it('the bulk regen quarantines too, and a second pass writes nothing and does not fail', async () => {
+    row('global/edited', 'fleet')
+    await regenSkillFilesFromSQL()
+    writeFileSync(globalMd('edited'), `${FM}# my own change\n`)
+    setStatus('global/edited', 'disabled')
+    expect(await regenSkillFilesFromSQL()).toMatchObject({ written: 0, errors: 0 })
+    expect(existsSync(globalMd('edited'))).toBe(false)
+    expect(await regenSkillFilesFromSQL()).toMatchObject({ written: 0, errors: 0 })
+    expect(await regenSingleSkillFile('global/edited')).toEqual({ written: false, skipped: true, reason: 'not_live' })
+  })
+
+  it('the DELETE branch is unchanged: a hand-edited file of a deleted skill stays in place', async () => {
+    row('global/gone', 'fleet')
+    await regenSingleSkillFile('global/gone')
+    writeFileSync(globalMd('gone'), `${FM}# my own change\n`)
+    const deleted = store.get('global/gone')
+    expect(await removeGeneratedSkillFile('global/gone', deleted.content, 'fleet', [])).toEqual({ removed: false, reason: 'modified_on_disk' })
+    expect(readFileSync(globalMd('gone'), 'utf-8')).toContain('my own change')
   })
 
   it('a skill that is not live and has no file on disk is a quiet no-op (not an error)', async () => {
@@ -168,13 +201,28 @@ describe('tenant skills: only a live skill is written to the agents', () => {
     expect(await regenSingleSkillFile(ID)).toEqual({ written: false, skipped: true, reason: 'not_live' })
   })
 
-  it('a hand-edited copy is kept and reported', async () => {
+  it('a hand-edited copy of a revoked skill is moved aside, not left loadable', async () => {
     row(ID, 'acme'); avail.set('acme', ['agent-a'])
     await regenSingleSkillFile(ID)
     // Edited by hand: still carries the generated header, but the body no longer equals the DB row.
     writeFileSync(agentMd('agent-a', ID), addGeneratedHeader(`${FM}# hand made change\n`, ID, { tenant: true }))
     setStatus(ID, 'disabled')
-    expect(await regenSingleSkillFile(ID)).toEqual({ written: false, skipped: false, reason: 'modified_on_disk' })
+    const r = await regenSingleSkillFile(ID)
+    expect(r).toMatchObject({ written: false, skipped: false, reason: 'quarantined' })
+    expect(existsSync(agentMd('agent-a', ID))).toBe(false)
+    expect(r.quarantined).toHaveLength(1)
+    expect(readFileSync(r.quarantined![0], 'utf-8')).toContain('hand made change')
+    // A second regen is quiet.
+    expect(await regenSingleSkillFile(ID)).toEqual({ written: false, skipped: true, reason: 'not_live' })
+    expect(await regenTenantSkillFiles('acme')).toMatchObject({ written: 0, errors: 0 })
+  })
+
+  it('a stale hand-edited copy of a LIVE skill (the agent no longer qualifies) is still left in place: only the not-live branch quarantines', async () => {
+    row(ID, 'acme'); avail.set('acme', ['agent-a'])
+    await regenSingleSkillFile(ID)
+    writeFileSync(agentMd('agent-a', ID), addGeneratedHeader(`${FM}# hand made change\n`, ID, { tenant: true }))
+    avail.set('acme', [])
+    await regenTenantSkillFiles('acme')
     expect(readFileSync(agentMd('agent-a', ID), 'utf-8')).toContain('hand made change')
   })
 

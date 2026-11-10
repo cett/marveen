@@ -3550,10 +3550,15 @@ paths:
                     type: string
                     description: |
                       What happened to the generated files. `removed`: taken away. `none`: there was no generated file.
-                      `kept_modified_on_disk`: a file a person edited by hand is still on disk and was left in place, so an
-                      agent may still load it (remove it by hand). `regen_off`: file regeneration is switched off.
+                      `quarantined`: a SKILL.md that differed from the row (hand-edited) was moved aside to
+                      `SKILL.md.revoked-<time>`, a name the loader does not read; the new paths are in `quarantined`. `regen_off`: file regeneration is switched off.
                       `error`: the files could not be regenerated; the skill is disabled all the same.
-                    enum: [removed, none, kept_modified_on_disk, regen_off, error]
+                    enum: [removed, none, quarantined, regen_off, error]
+                  quarantined:
+                    type: array
+                    description: Present only when `files` is `quarantined`; the paths the edited SKILL.md files were moved to.
+                    items:
+                      type: string
         "400":
           description: "`required` (reason missing or blank), `invalid_value` (reason longer than 1000 characters or malformed percent-encoding in the id) or `parse_error` (body is not JSON)"
         "403":

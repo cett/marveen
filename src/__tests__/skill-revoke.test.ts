@@ -152,14 +152,35 @@ describe('a revoke by the admin', () => {
     expect(existsSync(globalMd('demo-b'))).toBe(true)
   })
 
-  it('a file a person edited by hand stays on disk and the answer says so', async () => {
+  it('a file a person edited by hand is moved aside, and the answer names where', async () => {
     const id = await liveSkill()
     writeFileSync(globalMd('demo-a'), `${BODY}# my own change\n`)
     const r = await revoke(id, { reason: 'because' })
     expect(r.status).toBe(200)
-    expect(r.body.files).toBe('kept_modified_on_disk')
+    expect(r.body.files).toBe('quarantined')
+    expect(r.body.quarantined).toHaveLength(1)
     expect(status(id)).toBe('disabled')
-    expect(readFileSync(globalMd('demo-a'), 'utf-8')).toContain('my own change')
+    expect(existsSync(globalMd('demo-a'))).toBe(false)
+    expect(readFileSync(r.body.quarantined[0], 'utf-8')).toContain('my own change')
+  })
+
+  it('a withdrawn global skill is not a source for the assign route: 404, and no agent gets a copy or a new live skill', async () => {
+    const id = await liveSkill()
+    await revoke(id, { reason: 'because' })
+    // A leftover directory (a companion file) must not make it copyable either.
+    mkdirSync(join(FAKE_HOME, '.claude', 'skills', 'demo-a', 'ref'), { recursive: true })
+    writeFileSync(join(FAKE_HOME, '.claude', 'skills', 'demo-a', 'ref', 'a.md'), 'x')
+    const r = await call('POST', '/api/skills/demo-a/assign', JSON.stringify({ agents: ['agent-a'] }), ADMIN)
+    expect(r.status).toBe(404)
+    expect(existsSync(join(FAKE_PROJECT, 'agents', 'agent-a', '.claude', 'skills', 'demo-a'))).toBe(false)
+    expect(await getSkill('agent/agent-a/demo-a')).toBeUndefined()
+  })
+
+  it('a live global skill is still assignable (the positive control for the 404 above)', async () => {
+    await liveSkill()
+    const r = await call('POST', '/api/skills/demo-a/assign', JSON.stringify({ agents: ['agent-a'] }), ADMIN)
+    expect(r.status).toBe(200)
+    expect((await getSkill('agent/agent-a/demo-a'))?.status).toBe('live')
   })
 
   it('a tenant skill: the generated copy goes from the agent that held it', async () => {

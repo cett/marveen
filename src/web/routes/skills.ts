@@ -549,6 +549,10 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     }
 
     if (!existsSync(globalSkillDir)) { json(res, { error: 'not_found', hint: 'Skill not found' }, 404); return true }
+    // A global skill that is not live (revoked) is not a source: copying it would give an agent the withdrawn text again,
+    // as a new live skill under another id. Same answer as for a skill that is not there.
+    const sourceRow = await getSkill(`global/${skillName}`)
+    if (sourceRow && sourceRow.status !== 'live') { json(res, { error: 'not_found', hint: 'Skill not found' }, 404); return true }
 
     const body = await readBody(req)
     const { agents: targetAgents } = JSON.parse(body.toString()) as { agents: string[] }
@@ -917,10 +921,12 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     }
     // The row is already disabled for good: a failure to regenerate must not turn the answer into an error, the caller
     // gets what happened to the files instead.
-    let files: 'removed' | 'none' | 'kept_modified_on_disk' | 'regen_off' | 'error' = 'error'
+    let files: 'removed' | 'none' | 'quarantined' | 'regen_off' | 'error' = 'error'
+    let quarantined: string[] = []
     try {
       const regen = await regenSingleSkillFile(id)
-      files = regen.reason === 'modified_on_disk' ? 'kept_modified_on_disk'
+      quarantined = regen.quarantined ?? []
+      files = regen.reason === 'quarantined' ? 'quarantined'
         : regen.reason === 'disabled' ? 'regen_off'
         : regen.reason === 'write_error' ? 'error'
         : regen.reason === null && !regen.skipped ? 'removed'
@@ -928,7 +934,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     } catch (err) {
       logger.error({ err, skillId: id }, 'skill revoke: regenerating the files failed (the skill is disabled)')
     }
-    json(res, { ok: true, id, status: 'disabled', files })
+    json(res, { ok: true, id, status: 'disabled', files, ...(quarantined.length ? { quarantined } : {}) })
     return true
   }
 
