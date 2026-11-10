@@ -68,7 +68,7 @@ vi.mock('../logger.js', () => ({
 
 vi.mock('../db.js', () => ({
   getSkill: vi.fn().mockResolvedValue(undefined),
-  createSkill: vi.fn().mockImplementation((opts: any) => Promise.resolve({ ...opts, is_global: opts.is_global ? 1 : 0, created_by: null, created_at: 0, updated_at: 0, status: 'live' })),
+  createSkill: vi.fn().mockImplementation((opts: any) => Promise.resolve({ outcome: 'created', skill: { ...opts, is_global: opts.is_global ? 1 : 0, created_by: null, created_at: 0, updated_at: 0, status: 'live' } })),
   updateSkill: vi.fn().mockResolvedValue({ outcome: 'not_found' }),
   deleteSkill: vi.fn().mockResolvedValue(true),
   seedSkillIfAbsent: vi.fn().mockResolvedValue(true),
@@ -165,7 +165,7 @@ describe('tryHandleSkills SQL endpoints', () => {
 
     it('admin creates skill', async () => {
       const { createSkill } = await import('../db.js')
-      ;(createSkill as any).mockResolvedValueOnce({ id: 'fleet-new', name: 'New', description: '', content: '', tenant_id: 'fleet', is_global: 0 })
+      ;(createSkill as any).mockResolvedValueOnce({ outcome: 'created', skill: { id: 'fleet-new', name: 'New', description: '', content: '', tenant_id: 'fleet', is_global: 0 } })
       const { ctx, out } = makeCtx('POST', '/api/skills/sql', { name: 'New', content: '# New Skill', description: 'A skill' }, { role: 'admin' })
       expect(await tryHandleSkills(ctx)).toBe(true)
       expect(out.status).toBe(201)
@@ -177,12 +177,12 @@ describe('tryHandleSkills SQL endpoints', () => {
 
     it('tenant user creates tenant-scoped skill', async () => {
       const { createSkill } = await import('../db.js')
-      ;(createSkill as any).mockResolvedValueOnce({ id: 'acme-skill', name: 'TenantSkill', description: '', content: '', tenant_id: 'acme', is_global: 0 })
+      ;(createSkill as any).mockResolvedValueOnce({ outcome: 'created', skill: { id: 'acme-skill', name: 'TenantSkill', description: '', content: '', tenant_id: 'acme', is_global: 0 } })
       const { ctx, out } = makeCtx('POST', '/api/skills/sql', { name: 'TenantSkill', content: '# X', description: 'Desc' }, { role: 'user', tenantId: 'acme' })
       expect(await tryHandleSkills(ctx)).toBe(true)
       expect(out.status).toBe(201)
       expect(out.body.skill).toMatchObject({ id: 'acme-skill', name: 'TenantSkill', tenant_id: 'acme' })
-      expect(createSkill).toHaveBeenCalledWith(expect.objectContaining({ tenant_id: 'acme' }), { kind: 'system', id: null })
+      expect(createSkill).toHaveBeenCalledWith(expect.objectContaining({ tenant_id: 'acme' }), { kind: 'system', id: null }, {}, { gatePrivilege: true })
     })
 
     it('POST /api/skills/sql rejects missing name', async () => {
@@ -448,7 +448,7 @@ describe('tryHandleSkills SQL endpoints', () => {
 
     it('POST /api/v1/skills/sql works (legacy alias)', async () => {
       const { createSkill } = await import('../db.js')
-      ;(createSkill as any).mockResolvedValueOnce({ id: 'test', name: 'Test', description: '', content: '', tenant_id: 'fleet', is_global: 0 })
+      ;(createSkill as any).mockResolvedValueOnce({ outcome: 'created', skill: { id: 'test', name: 'Test', description: '', content: '', tenant_id: 'fleet', is_global: 0 } })
       const { ctx, out } = makeCtx('POST', '/api/v1/skills/sql', { name: 'Test', content: '# Test' }, { role: 'admin' })
       expect(await tryHandleSkills(ctx)).toBe(true)
       expect(out.status).toBe(201)

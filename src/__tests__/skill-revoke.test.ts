@@ -822,7 +822,9 @@ describe('a caller who is not an admin cannot edit or delete a skill that is not
   })
 
   it('a fleet agent PUT to a file-backed id that has no row is still a create (201): the create branch is untouched', async () => {
-    const r = await put('agent/agent-a/fresh-a', BODY, AGENT_TOKEN)
+    // No frontmatter privilege block: this is about the create branch itself, not the privilege gate (a brand-new
+    // skill whose content carries one, description included, is gated on create too).
+    const r = await put('agent/agent-a/fresh-a', 'plain body, no frontmatter', AGENT_TOKEN)
     expect(r.status).toBe(201)
     expect(status('agent/agent-a/fresh-a')).toBe('live')
   })

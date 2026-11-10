@@ -520,10 +520,33 @@ export interface CreateSkillOpts {
 // skill_revisions inside the same transaction as the write: the two commit or roll back together (see
 // db/skill-revisions.ts). A caller that forgets to say who writes does not compile.
 
-export async function createSkill(opts: CreateSkillOpts, actor: SkillActor, meta: SkillWriteMeta = {}): Promise<SkillRow> {
+export type CreateSkillResult =
+  | { outcome: 'pending'; revision: SkillRevisionRow }
+  | { outcome: 'created'; skill: SkillRow }
+
+/**
+ * `guard.gatePrivilege`: a brand-new skill is the introduction point for a privilege (a frontmatter allowed-tools/
+ * hooks/description, see skill-privilege.ts) just as much as an edit of an existing one -- there is no "before" to
+ * compare against, so skillTouchesPrivilege is called with a null before, which counts every privilege block in the
+ * new text as touching privilege. A gated create writes the row as 'pending_review' (unreachable by an agent, the
+ * list or the generator, same as an import quarantined by quarantineSkillImport) with a pending revision instead of
+ * a live row and a 'create' trail entry.
+ */
+export async function createSkill(opts: CreateSkillOpts, actor: SkillActor, meta: SkillWriteMeta = {}, guard: SkillWriteGuard = {}): Promise<CreateSkillResult> {
   opts = { ...opts, content: stripGeneratedHeader(opts.content) }
   const now = Math.floor(Date.now() / 1000)
   return dbx.tx(async (tx) => {
+    if (guard.gatePrivilege && skillTouchesPrivilege(null, { content: opts.content, files: [] }).touches) {
+      await tx.run(`
+        INSERT INTO skills (id, name, description, content, tenant_id, is_global, created_by, created_at, updated_at, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_review')
+      `, opts.id, opts.name, opts.description ?? '', opts.content, opts.tenant_id, opts.is_global ? 1 : 0, opts.created_by ?? null, now, now)
+      const { revision } = await submitPendingRevision(tx, {
+        skill: { id: opts.id, tenant_id: opts.tenant_id }, action: 'create', content: opts.content, files: [],
+        actor, touchesPrivilege: true, description: opts.description, ...meta,
+      })
+      return { outcome: 'pending', revision }
+    }
     await tx.run(`
       INSERT INTO skills (id, name, description, content, tenant_id, is_global, created_by, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -532,7 +555,7 @@ export async function createSkill(opts: CreateSkillOpts, actor: SkillActor, meta
     )
     const row = await tx.get<SkillRow>('SELECT * FROM skills WHERE id = ?', opts.id) as SkillRow
     await writeSkillRevision(tx, { skill: row, action: 'create', actor, ...meta })
-    return row
+    return { outcome: 'created', skill: row }
   })
 }
 
@@ -548,27 +571,63 @@ export async function agentHasEnabledAvailability(agentId: string, tenantIds: re
 }
 
 /** Write-back of an edited SKILL.md: sets the content of an existing skill row (the caller strips the generated header). */
-export async function setSkillContent(skillId: string, content: string, now: number, actor: SkillActor, meta: SkillWriteMeta = {}): Promise<void> {
-  await dbx.tx(async (tx) => {
+export type SetSkillContentResult =
+  | { outcome: 'pending'; revision: SkillRevisionRow }
+  | { outcome: 'not_found' }
+  | { outcome: 'updated' }
+
+export async function setSkillContent(
+  skillId: string, content: string, now: number, actor: SkillActor, meta: SkillWriteMeta = {}, guard: SkillWriteGuard = {},
+): Promise<SetSkillContentResult> {
+  return dbx.tx(async (tx) => {
+    const before = await tx.get<SkillRow>('SELECT * FROM skills WHERE id = ?', skillId)
+    if (!before) return { outcome: 'not_found' }
     await ensureSkillBaseline(tx, skillId)
+    if (guard.gatePrivilege) {
+      const files = await tx.all<SkillFileFacts>('SELECT rel_path, mode, content FROM skill_files WHERE skill_id = ?', skillId)
+      if (skillTouchesPrivilege({ content: before.content, files }, { content, files }).touches) {
+        const { revision } = await submitPendingRevision(tx, {
+          skill: { id: before.id, tenant_id: before.tenant_id }, action: 'modify', content,
+          files: files.map((f): ProposedFile => ({ rel_path: f.rel_path, mode: f.mode, content: f.content })),
+          actor, touchesPrivilege: true, ...meta,
+        })
+        return { outcome: 'pending', revision }
+      }
+    }
     const changes = (await tx.run('UPDATE skills SET content = ?, updated_at = ? WHERE id = ?', content, now, skillId)).changes
-    if (changes === 0) return
+    if (changes === 0) return { outcome: 'not_found' }
     const row = await tx.get<SkillRow>('SELECT * FROM skills WHERE id = ?', skillId) as SkillRow
     await writeSkillRevision(tx, { skill: row, action: 'modify', actor, ...meta })
+    return { outcome: 'updated' }
   })
 }
 
+export type InsertFleetSkillFromFileResult =
+  | { outcome: 'pending'; revision: SkillRevisionRow }
+  | { outcome: 'created' }
+
 /** Write-back of a SKILL.md that has no row yet: creates it as a fleet skill (global/... ids are global). */
 export async function insertFleetSkillFromFile(
-  skillId: string, name: string, content: string, isGlobal: boolean, now: number, actor: SkillActor, meta: SkillWriteMeta = {},
-): Promise<void> {
-  await dbx.tx(async (tx) => {
+  skillId: string, name: string, content: string, isGlobal: boolean, now: number, actor: SkillActor, meta: SkillWriteMeta = {}, guard: SkillWriteGuard = {},
+): Promise<InsertFleetSkillFromFileResult> {
+  return dbx.tx(async (tx) => {
+    if (guard.gatePrivilege && skillTouchesPrivilege(null, { content, files: [] }).touches) {
+      await tx.run(`
+        INSERT INTO skills (id, name, description, content, tenant_id, is_global, created_by, created_at, updated_at, status)
+        VALUES (?, ?, '', ?, 'fleet', ?, NULL, ?, ?, 'pending_review')
+      `, skillId, name, content, isGlobal ? 1 : 0, now, now)
+      const { revision } = await submitPendingRevision(tx, {
+        skill: { id: skillId, tenant_id: 'fleet' }, action: 'create', content, files: [], actor, touchesPrivilege: true, ...meta,
+      })
+      return { outcome: 'pending', revision }
+    }
     await tx.run(`
       INSERT INTO skills (id, name, description, content, tenant_id, is_global, created_by, created_at, updated_at)
       VALUES (?, ?, '', ?, 'fleet', ?, NULL, ?, ?)
     `, skillId, name, content, isGlobal ? 1 : 0, now, now)
     const row = await tx.get<SkillRow>('SELECT * FROM skills WHERE id = ?', skillId) as SkillRow
     await writeSkillRevision(tx, { skill: row, action: 'create', actor, ...meta })
+    return { outcome: 'created' }
   })
 }
 

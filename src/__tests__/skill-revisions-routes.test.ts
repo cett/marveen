@@ -100,7 +100,9 @@ describe('POST /api/skill-sync', () => {
     const res = await call(tryHandleSkillSync, 'POST', '/api/skill-sync', { kind: 'skill', skill_id: 'agent/agent-a/s', content: 'one' }, AGENT_TOKEN)
     expect(res.body.ok).toBe(true)
     await call(tryHandleSkillSync, 'POST', '/api/skill-sync', { kind: 'skill', skill_id: 'agent/agent-a/s', content: 'two' }, AGENT_TOKEN)
-    await call(tryHandleSkillSync, 'POST', '/api/skill-sync', { kind: 'companion', skill_id: 'agent/agent-a/s', rel_path: 'scripts/run.sh', content_base64: Buffer.from('echo').toString('base64'), mode: 0o755 }, AGENT_TOKEN)
+    // references/, not scripts/: this test is about attribution tracing, not the privilege gate (a runnable
+    // companion file written back through skill-sync is now gated -- see the skill-privilege-gate tests).
+    await call(tryHandleSkillSync, 'POST', '/api/skill-sync', { kind: 'companion', skill_id: 'agent/agent-a/s', rel_path: 'references/notes.md', content_base64: Buffer.from('notes').toString('base64'), mode: 0o644 }, AGENT_TOKEN)
     expect(revs('agent/agent-a/s')).toEqual([
       { seq: 1, action: 'create', author_kind: 'agent', author_id: 'agent-a', source_ref: 'skill-sync' },
       { seq: 2, action: 'modify', author_kind: 'agent', author_id: 'agent-a', source_ref: 'skill-sync' },
@@ -204,10 +206,10 @@ describe('GET /api/v1/skills/sql/:id/revisions', () => {
 describe('/api/skills/sql', () => {
   it('create, update, a companion file and delete by a dashboard user are all traced to that user', async () => {
     const c = (method: string, path: string, body?: unknown) => call(tryHandleSkills, method, path, body, SESSION)
-    // The description stays 'demo' throughout: a change to it, or to a runnable companion file, is gated (step 3 of the
-    // quarantine work) and would sit pending instead of landing in this trail -- a separate test covers that path.
-    expect((await c('PUT', '/api/skills/sql/global%2Fdemo', { content: '---\ndescription: demo\n---\nbody' })).status).toBe(201)
-    expect((await c('PUT', '/api/skills/sql/global%2Fdemo', { content: '---\ndescription: demo\n---\nbody two' })).body.ok).toBe(true)
+    // No frontmatter privilege block anywhere (a description present on create, a changed one, or a runnable
+    // companion file, is gated -- step 3 of the quarantine work; a separate test covers that path).
+    expect((await c('PUT', '/api/skills/sql/global%2Fdemo', { content: 'body' })).status).toBe(201)
+    expect((await c('PUT', '/api/skills/sql/global%2Fdemo', { content: 'body two' })).body.ok).toBe(true)
     expect((await c('PUT', '/api/skills/sql/global%2Fdemo/files/references%2Fnotes.md', { content: 'notes' })).body.ok).toBe(true)
     expect((await c('DELETE', '/api/skills/sql/global%2Fdemo/files/references%2Fnotes.md')).body.ok).toBe(true)
     expect((await c('DELETE', '/api/skills/sql/global%2Fdemo')).body.ok).toBe(true)

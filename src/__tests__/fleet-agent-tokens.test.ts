@@ -393,7 +393,9 @@ describe('telemetry, artifacts and skills hold a fleet_agent to its own agent', 
   })
 
   it('skills: only the own agent skills are writable; global, other agents and tenant skills are not', async () => {
-    const put = (token: string, id: string) => request(token, 'PUT', `/api/skills/sql/${encodeURIComponent(id)}`, { content: '---\nname: s\ndescription: d\n---\nbody' })
+    // No frontmatter: this test is about agent-ownership boundaries, not the privilege gate (a brand-new skill whose
+    // content carries a frontmatter privilege block, including description, is gated on create too).
+    const put = (token: string, id: string) => request(token, 'PUT', `/api/skills/sql/${encodeURIComponent(id)}`, { content: 'body' })
     expect((await put('tok-alpha', 'agent/alpha/my-skill')).status).toBe(201)
     expect((await put('tok-alpha', 'agent/alpha/my-skill')).status).toBe(200)
     expect((await put('tok-alpha', 'agent/beta/their-skill')).status).toBe(403)

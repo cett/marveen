@@ -21,7 +21,7 @@ import {
   listSkillsForTenant, listAllSkills, listLiveSkills,
   grantSkillAccess, revokeSkillAccess, listSkillAccess,
   listSkillFiles, getSkillFile, putSkillFile, deleteSkillFile, countSkillFiles,
-  listSkillRevisions, revokeSkill, MAX_REVOKE_REASON_CHARS,
+  listSkillRevisions, revokeSkill, MAX_REVOKE_REASON_CHARS, type CreateSkillResult,
 } from '../../db.js'
 
 function parseFrontmatterField(content: string, field: string): string {
@@ -423,10 +423,15 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     }
 
     const sqlId = `global/${skillName}`
+    let createResult: CreateSkillResult
     try {
-      await createSkill({ id: sqlId, name: skillName, description, content: skillMd, tenant_id: 'fleet', is_global: true }, actor)
+      createResult = await createSkill({ id: sqlId, name: skillName, description, content: skillMd, tenant_id: 'fleet', is_global: true }, actor, {}, { gatePrivilege: true })
     } catch {
       json(res, { error: 'conflict', hint: 'Skill already exists' }, 409)
+      return true
+    }
+    if (createResult.outcome === 'pending') {
+      json(res, { ok: true, status: 'pending_review', revision: createResult.revision.seq, touches_privilege: createResult.revision.touches_privilege === 1 }, 202)
       return true
     }
 
@@ -577,7 +582,11 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
         }
         if (result.outcome === 'not_found') { json(res, { error: 'not_found', hint: 'Skill not found' }, 404); return true }
       } else {
-        await createSkill({ id: agentSqlId, name: skillName, description: agentDesc, content, tenant_id: 'fleet', is_global: false }, actor)
+        const created = await createSkill({ id: agentSqlId, name: skillName, description: agentDesc, content, tenant_id: 'fleet', is_global: false }, actor, {}, { gatePrivilege: true })
+        if (created.outcome === 'pending') {
+          json(res, { ok: true, status: 'pending_review', revision: created.revision.seq, touches_privilege: created.revision.touches_privilege === 1 }, 202)
+          return true
+        }
       }
       // DB-first: the row above is the source of truth, the file is generated
       // from it. forceEnabled: this is an explicit user edit of an existing
@@ -614,7 +623,11 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
       }
       if (result.outcome === 'not_found') { json(res, { error: 'not_found', hint: 'Skill not found' }, 404); return true }
     } else {
-      await createSkill({ id: globalSqlId, name: skillName, description: globalDesc, content, tenant_id: 'fleet', is_global: true }, actor)
+      const created = await createSkill({ id: globalSqlId, name: skillName, description: globalDesc, content, tenant_id: 'fleet', is_global: true }, actor, {}, { gatePrivilege: true })
+      if (created.outcome === 'pending') {
+        json(res, { ok: true, status: 'pending_review', revision: created.revision.seq, touches_privilege: created.revision.touches_privilege === 1 }, 202)
+        return true
+      }
     }
     // DB-first (see the agent-local branch above): generate the file from the row.
     const globalRegen = await regenSingleSkillFile(globalSqlId, true)
@@ -690,13 +703,17 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 64)
     const id = `${tenantId}-${slug}`
     if (await getSkill(id)) { json(res, { error: 'conflict', hint: 'A skill with this name already exists for this tenant' }, 409); return true }
-    const row = await createSkill({ id, name: name.trim(), description: description ?? '', content, tenant_id: tenantId, is_global: is_global ?? false, created_by: ctx.auth?.kind === 'session' ? (ctx.auth.user ?? null) : null }, actor)
+    const result = await createSkill({ id, name: name.trim(), description: description ?? '', content, tenant_id: tenantId, is_global: is_global ?? false, created_by: ctx.auth?.kind === 'session' ? (ctx.auth.user ?? null) : null }, actor, {}, { gatePrivilege: true })
+    if (result.outcome === 'pending') {
+      json(res, { ok: true, status: 'pending_review', revision: result.revision.seq, touches_privilege: result.revision.touches_privilege === 1 }, 202)
+      return true
+    }
     // Phase 1 of the file->SQL-only migration: push this
     // write to disk immediately rather than waiting for the next startup
     // regen. No-op (skipped) for non-fleet skills and while SKILL_SQL_REGEN
     // is off.
     await regenSingleSkillFile(id)
-    json(res, { ok: true, skill: row }, 201)
+    json(res, { ok: true, skill: result.skill }, 201)
     return true
   }
 
@@ -738,13 +755,17 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     if (parsed.is_global !== undefined && !isAdmin) { json(res, { error: 'forbidden', hint: 'Only admin can set is_global' }, 403); return true }
     if (createSpec) {
       if (typeof parsed.content !== 'string' || !parsed.content.trim()) { json(res, { error: 'required', field: 'content', hint: 'content is required to create a skill' }, 400); return true }
-      const row = await createSkill({
+      const result = await createSkill({
         id, name: createSpec.name, description: parsed.description ?? parseSkillDescription(parsed.content),
         content: parsed.content, tenant_id: 'fleet', is_global: createSpec.isGlobal,
         created_by: ctx.auth?.kind === 'session' ? (ctx.auth.user ?? null) : null,
-      }, actor)
+      }, actor, {}, { gatePrivilege: true })
+      if (result.outcome === 'pending') {
+        json(res, { ok: true, status: 'pending_review', revision: result.revision.seq, touches_privilege: result.revision.touches_privilege === 1 }, 202)
+        return true
+      }
       await regenSingleSkillFile(id)
-      json(res, { ok: true, skill: row }, 201)
+      json(res, { ok: true, skill: result.skill }, 201)
       return true
     }
     // The description column mirrors the frontmatter (that is what the loader and the list show):

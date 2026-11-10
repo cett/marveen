@@ -23,11 +23,15 @@ const SKILL_ID = /^(?:global\/[A-Za-z0-9][A-Za-z0-9._-]*|agent\/[A-Za-z0-9][A-Za
 export interface SkillSyncResult {
   ok: boolean
   ignored?: boolean
+  /** True when the write-back was queued for review instead of landing live (a distinct outcome from `ignored`: the
+   *  hook surfaces this one to the agent as additionalContext, the way it already does for a failed write-back). */
+  pending?: boolean
   message: string
 }
 
 const done = (message: string): SkillSyncResult => ({ ok: true, message })
 const ignored = (message: string): SkillSyncResult => ({ ok: true, ignored: true, message })
+const pending = (message: string): SkillSyncResult => ({ ok: true, pending: true, message })
 
 /** True when the agent has an enabled availability row for the skill's owning
  *  tenant or for a tenant it is granted to (the recipients regen writes to). */
@@ -39,19 +43,24 @@ async function agentQualifies(skillId: string, ownerTenant: string, agentId: str
 /** Every write-back is traced as the calling agent, from the hook endpoint. */
 const SYNC_SOURCE = { sourceRef: 'skill-sync' } as const
 
-async function touchContent(skillId: string, content: string, actor: SkillActor): Promise<void> {
-  await setSkillContent(skillId, stripGeneratedHeader(content), Math.floor(Date.now() / 1000), actor, SYNC_SOURCE)
+/** Returns a pending-review SkillSyncResult when the write-back was gated, null when it landed live (or the row was gone). */
+async function touchContent(skillId: string, content: string, actor: SkillActor): Promise<SkillSyncResult | null> {
+  const result = await setSkillContent(skillId, stripGeneratedHeader(content), Math.floor(Date.now() / 1000), actor, SYNC_SOURCE, { gatePrivilege: true })
+  if (result.outcome === 'pending') return pending(`SKILL.md change for ${skillId} queued for review (touches privilege), not yet live in the DB`)
+  return null
 }
 
 /** A plain SKILL.md (global/<dir> or agent/<id>/<dir>): update the row, or create it as a fleet skill. */
 export async function syncSkillContent(skillId: string, content: string, actor: SkillActor): Promise<SkillSyncResult> {
   if (!SKILL_ID.test(skillId)) return { ok: false, message: 'skill_id is not a file-backed skill id' }
   if (await getSkill(skillId)) {
-    await touchContent(skillId, content, actor)
+    const gated = await touchContent(skillId, content, actor)
+    if (gated) return gated
   } else {
     const now = Math.floor(Date.now() / 1000)
     const name = skillId.slice(skillId.lastIndexOf('/') + 1)
-    await insertFleetSkillFromFile(skillId, name, stripGeneratedHeader(content), skillId.startsWith('global/'), now, actor, SYNC_SOURCE)
+    const created = await insertFleetSkillFromFile(skillId, name, stripGeneratedHeader(content), skillId.startsWith('global/'), now, actor, SYNC_SOURCE, { gatePrivilege: true })
+    if (created.outcome === 'pending') return pending(`new skill ${skillId} queued for review (touches privilege), not yet live in the DB`)
   }
   return done(`upserted ${skillId}`)
 }
@@ -66,7 +75,8 @@ export async function syncTenantSkill(headerId: string, agentId: string, dirName
   const row = await getSkill(headerId)
   if (!row || row.tenant_id === 'fleet') return ignored(`no tenant skill ${headerId} in the DB, ignored`)
   if (!await agentQualifies(headerId, row.tenant_id, agentId)) return ignored(`agent ${agentId} does not qualify for tenant skill ${headerId}, ignored`)
-  await touchContent(headerId, content, actor)
+  const gated = await touchContent(headerId, content, actor)
+  if (gated) return gated
   return done(`updated tenant skill ${headerId}`)
 }
 
@@ -91,6 +101,7 @@ export async function syncCompanionFile(
     const n = await countSkillFiles(skillId)
     if (n >= MAX_SKILL_FILES_PER_SKILL) return ignored(`skill ${skillId} already has ${n} companion files, ignored`)
   }
-  await putSkillFile(skillId, rel, content, mode, actor, SYNC_SOURCE)
+  const result = await putSkillFile(skillId, rel, content, mode, actor, SYNC_SOURCE, { gatePrivilege: true })
+  if (result.outcome === 'pending') return pending(`companion ${rel} of ${skillId} queued for review (touches privilege), not yet live in the DB`)
   return done(`stored companion ${rel} of ${skillId}`)
 }

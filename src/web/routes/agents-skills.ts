@@ -14,7 +14,7 @@ import { regenSingleSkillFile } from '../skill-regen.js'
 import { extractSkillArchive, quarantineStagedSkills, removeStage, type ExtractResult } from '../skill-import-quarantine.js'
 import { skillActorFromRoute } from '../skill-actor.js'
 import type { RouteContext } from './types.js'
-import { createSkill, deleteSkill, seedSkillIfAbsent, listAgentOwnedSkills, listGlobalFleetSkills, type SkillRow } from '../../db.js'
+import { createSkill, deleteSkill, seedSkillIfAbsent, listAgentOwnedSkills, listGlobalFleetSkills, type SkillRow, type CreateSkillResult } from '../../db.js'
 
 // Marveen's skills live at the global ~/.claude/skills/ path (shared with
 // the operator's Claude Code install); sub-agents under their own
@@ -193,10 +193,15 @@ export async function tryHandleAgentsSkills(ctx: RouteContext): Promise<boolean>
 
     const agentSqlId = agentName === MAIN_AGENT_ID ? `global/${skillName}` : `agent/${agentName}/${skillName}`
     const agentIsGlobal = agentName === MAIN_AGENT_ID
+    let createResult: CreateSkillResult
     try {
-      await createSkill({ id: agentSqlId, name: skillName, description, content: skillMd, tenant_id: 'fleet', is_global: agentIsGlobal }, actor)
+      createResult = await createSkill({ id: agentSqlId, name: skillName, description, content: skillMd, tenant_id: 'fleet', is_global: agentIsGlobal }, actor, {}, { gatePrivilege: true })
     } catch {
       json(res, { error: 'conflict', hint: 'Skill already exists' }, 409)
+      return true
+    }
+    if (createResult.outcome === 'pending') {
+      json(res, { ok: true, status: 'pending_review', revision: createResult.revision.seq, touches_privilege: createResult.revision.touches_privilege === 1 }, 202)
       return true
     }
 
