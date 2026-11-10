@@ -969,7 +969,7 @@ describe('a revoke that commits between the route read and the write is not writ
       expect((await pending).status).toBe(200)
       expect(contentOf(id)).toBe(NEW_BODY)
       let hookRan = false
-      raceHook.beforeListSkillFiles = async () => { hookRan = true }
+      raceHook.beforeListSkillFiles = () => { hookRan = true; return Promise.resolve() }
       expect((await call('DELETE', urlOf(id), undefined, extras)).status).toBe(200)
       expect(hookRan).toBe(true)
       expect(status(id)).toBeUndefined()
