@@ -71,12 +71,13 @@ vi.mock('../config.js', async (importOriginal) => {
 
 vi.mock('../db.js', () => ({
   getSkill: vi.fn().mockResolvedValue(undefined),
-  createSkill: vi.fn().mockImplementation((opts: any) => Promise.resolve({ ...opts, is_global: opts.is_global ? 1 : 0, created_by: null, created_at: 0, updated_at: 0 })),
+  createSkill: vi.fn().mockImplementation((opts: any) => Promise.resolve({ ...opts, is_global: opts.is_global ? 1 : 0, created_by: null, created_at: 0, updated_at: 0, status: 'live' })),
   updateSkill: vi.fn().mockResolvedValue(undefined),
   deleteSkill: vi.fn().mockResolvedValue(true),
   seedSkillIfAbsent: vi.fn().mockResolvedValue(true),
   listSkillsForTenant: vi.fn().mockResolvedValue([]),
   listAllSkills: vi.fn().mockResolvedValue([]),
+  listLiveSkills: vi.fn().mockResolvedValue([]),
   grantSkillAccess: vi.fn(),
   revokeSkillAccess: vi.fn().mockResolvedValue(true),
   listSkillAccess: vi.fn().mockResolvedValue([]),
@@ -133,11 +134,11 @@ describe('tryHandleSkills', () => {
   })
 
   it('GET /api/skills/:name derives agents coverage from SQL agent/* rows, not the filesystem', async () => {
-    const { listAllSkills } = await import('../db.js')
-    ;(listAllSkills as any).mockResolvedValueOnce([
-      { id: 'agent/known-agent/my-skill', name: 'my-skill', description: '', content: '', tenant_id: 'fleet', is_global: 0, created_by: null, created_at: 0, updated_at: 0 },
-      { id: 'agent/other-agent/other-skill', name: 'other-skill', description: '', content: '', tenant_id: 'fleet', is_global: 0, created_by: null, created_at: 0, updated_at: 0 },
-      { id: 'global/my-skill', name: 'my-skill', description: '', content: '', tenant_id: 'fleet', is_global: 1, created_by: null, created_at: 0, updated_at: 0 },
+    const { listLiveSkills } = await import('../db.js')
+    ;(listLiveSkills as any).mockResolvedValueOnce([
+      { id: 'agent/known-agent/my-skill', name: 'my-skill', description: '', content: '', tenant_id: 'fleet', is_global: 0, created_by: null, created_at: 0, updated_at: 0, status: 'live' },
+      { id: 'agent/other-agent/other-skill', name: 'other-skill', description: '', content: '', tenant_id: 'fleet', is_global: 0, created_by: null, created_at: 0, updated_at: 0, status: 'live' },
+      { id: 'global/my-skill', name: 'my-skill', description: '', content: '', tenant_id: 'fleet', is_global: 1, created_by: null, created_at: 0, updated_at: 0, status: 'live' },
     ])
     const { ctx, out } = makeCtx('GET', '/api/skills/my-skill')
     expect(await tryHandleSkills(ctx)).toBe(true)

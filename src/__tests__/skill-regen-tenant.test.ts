@@ -54,7 +54,7 @@ const agentSkill = (agent: string, dir: string) => join(FAKE_PROJECT, 'agents', 
 const ID = 'acme-demo'
 
 function row(id: string, tenant: string, content = `${FM}# body\n`) {
-  const r = { id, name: id, description: '', content, tenant_id: tenant, is_global: 0 }
+  const r = { id, name: id, description: '', content, tenant_id: tenant, is_global: 0, status: 'live' }
   store.set(id, r)
   return r
 }

@@ -51,6 +51,7 @@ vi.mock('../db.js', () => ({
   backfillEmbeddings: () => Promise.resolve(),
   initDatabase: () => {},
   listAllSkills: vi.fn().mockResolvedValue([]),
+  listLiveSkills: vi.fn().mockResolvedValue([]),
   seedSkillIfAbsent: vi.fn().mockResolvedValue(true),
   listAutonomyCategories: vi.fn().mockResolvedValue([]),
   upsertAutonomyCategory: vi.fn(),
@@ -444,12 +445,12 @@ describe('importFleet: avatarExt traversal rejected', () => {
 // ---------------------------------------------------------------------------
 
 describe('exportFleet: skills come from SQL, not the filesystem', () => {
-  it('global skills field is built from listAllSkills() global/* rows', async () => {
-    const { listAllSkills } = await import('../db.js')
-    ;(listAllSkills as any).mockResolvedValue([
-      { id: 'global/my-skill', name: 'my-skill', description: 'desc', content: '# My Skill', tenant_id: 'fleet', is_global: 1, created_by: null, created_at: 0, updated_at: 0 },
-      { id: 'agent/other/ignored', name: 'ignored', description: '', content: 'x', tenant_id: 'fleet', is_global: 0, created_by: null, created_at: 0, updated_at: 0 },
-      { id: 'global/b2b-skill', name: 'b2b-skill', description: '', content: 'y', tenant_id: 'acme', is_global: 1, created_by: null, created_at: 0, updated_at: 0 },
+  it('global skills field is built from listLiveSkills() global/* rows', async () => {
+    const { listLiveSkills } = await import('../db.js')
+    ;(listLiveSkills as any).mockResolvedValue([
+      { id: 'global/my-skill', name: 'my-skill', description: 'desc', content: '# My Skill', tenant_id: 'fleet', is_global: 1, created_by: null, created_at: 0, updated_at: 0, status: 'live' },
+      { id: 'agent/other/ignored', name: 'ignored', description: '', content: 'x', tenant_id: 'fleet', is_global: 0, created_by: null, created_at: 0, updated_at: 0, status: 'live' },
+      { id: 'global/b2b-skill', name: 'b2b-skill', description: '', content: 'y', tenant_id: 'acme', is_global: 1, created_by: null, created_at: 0, updated_at: 0, status: 'live' },
     ])
 
     const { exportFleet } = await import('../web/fleet-transfer.js')
@@ -459,6 +460,21 @@ describe('exportFleet: skills come from SQL, not the filesystem', () => {
     // Only the fleet-tenant global/* row is included -- the agent/* row and the
     // non-fleet tenant row are excluded.
     expect(fleet.skills).toEqual([{ name: 'my-skill', skillMd: '# My Skill' }])
+  })
+
+  it('a skill that is not live is not exported: the snapshot is built from the live list, not from the admin list', async () => {
+    const { listLiveSkills, listAllSkills } = await import('../db.js')
+    const live = { id: 'global/live-skill', name: 'live-skill', description: '', content: '# Live', tenant_id: 'fleet', is_global: 1, created_by: null, created_at: 0, updated_at: 0, status: 'live' }
+    const revoked = { ...live, id: 'global/revoked-skill', name: 'revoked-skill', content: '# Revoked', status: 'disabled' }
+    ;(listLiveSkills as any).mockResolvedValue([live])
+    ;(listAllSkills as any).mockResolvedValue([live, revoked])
+
+    const { exportFleet } = await import('../web/fleet-transfer.js')
+    const fleet = JSON.parse((await exportFleet()).data)
+
+    expect(fleet.skills).toEqual([{ name: 'live-skill', skillMd: '# Live' }])
+    expect(JSON.stringify(fleet)).not.toContain('Revoked')
+    ;(listAllSkills as any).mockResolvedValue([])
   })
 })
 

@@ -51,7 +51,7 @@ import { addGeneratedHeader } from '../skill-header.js'
 
 const ID = 'global/queued-skill'
 const skillMd = join(FAKE_HOME, '.claude', 'skills', 'queued-skill', 'SKILL.md')
-const row = (content: string) => ({ id: ID, name: 'queued-skill', description: '', content, tenant_id: 'fleet', is_global: 1, created_by: null, created_at: 0, updated_at: 0 })
+const row = (content: string) => ({ id: ID, name: 'queued-skill', description: '', content, tenant_id: 'fleet', is_global: 1, created_by: null, created_at: 0, updated_at: 0, status: 'live' })
 const onDisk = () => readFileSync(skillMd, 'utf-8')
 
 /** A promise a test settles by hand. */

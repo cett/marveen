@@ -17,7 +17,7 @@ import { skillActorFromRoute } from '../skill-actor.js'
 import type { RouteContext } from './types.js'
 import {
   createSkill, getSkill, updateSkill, deleteSkill, seedSkillIfAbsent,
-  listSkillsForTenant, listAllSkills,
+  listSkillsForTenant, listAllSkills, listLiveSkills,
   grantSkillAccess, revokeSkillAccess, listSkillAccess,
   listSkillFiles, getSkillFile, putSkillFile, deleteSkillFile, countSkillFiles,
   listSkillRevisions,
@@ -67,7 +67,7 @@ function parseSkillKeywords(content: string): string[] {
 // id scheme instead of statting each agent's on-disk skills directory.
 async function getSkillAgents(skillDirName: string): Promise<string[]> {
   const agents: string[] = []
-  for (const row of await listAllSkills()) {
+  for (const row of await listLiveSkills()) {
     const parts = row.id.split('/')
     if (parts.length === 3 && parts[0] === 'agent' && parts[2] === skillDirName) {
       agents.push(parts[1])
@@ -704,7 +704,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     let rows = isAdmin ? await listAllSkills() : (callerTenantId ? await listSkillsForTenant(callerTenantId) : [])
     if (fleetAgent) {
       const have = new Set(rows.map(r => r.id))
-      rows = [...rows, ...(await listAllSkills()).filter(r => fleetReadable(r.id, r.tenant_id) && !have.has(r.id))]
+      rows = [...rows, ...(await listLiveSkills()).filter(r => fleetReadable(r.id, r.tenant_id) && !have.has(r.id))]
     }
     json(res, { skills: rows })
     return true
@@ -739,6 +739,8 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     if (id === null) return badSegment()
     const row = await getSkill(id)
     if (!row) { json(res, { error: 'not_found' }, 404); return true }
+    // A skill that is not live is for the admin to see: everybody else gets the answer for a skill that is not there.
+    if (!isAdmin && row.status !== 'live') { json(res, { error: 'not_found' }, 404); return true }
     if (!isAdmin && !fleetReadable(id, row.tenant_id)) {
       if (!callerTenantId) { json(res, { error: 'not_found' }, 404); return true }
       if (row.tenant_id !== callerTenantId) {
@@ -815,6 +817,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     if (id === null) return badSegment()
     const skill = await getSkill(id)
     if (!skill) { json(res, { error: 'not_found' }, 404); return true }
+    if (!isAdmin && skill.status !== 'live') { json(res, { error: 'not_found' }, 404); return true } // same rule as GET of the skill itself
     const canWrite = isAdmin || (fleetAgent ? isOwnAgentSkill(id) : callerTenantId === skill.tenant_id)
     const canRead = canWrite || fleetReadable(id, skill.tenant_id) || (!!callerTenantId && (await listSkillAccess(id)).some(g => g.tenant_id === callerTenantId))
     if (!canRead) { json(res, { error: 'not_found' }, 404); return true }

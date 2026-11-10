@@ -69,7 +69,7 @@ const IDS: Array<[string, string]> = [
   ['agent/<id>/<dir> id', 'agent/zed/my-skill'],
 ]
 
-const row = (id: string) => ({ id, name: 'n', description: '', content: 'c', tenant_id: 'fleet', is_global: 0, created_by: null, created_at: 0, updated_at: 0 })
+const row = (id: string) => ({ id, name: 'n', description: '', content: 'c', tenant_id: 'fleet', is_global: 0, created_by: null, created_at: 0, updated_at: 0, status: 'live' })
 
 describe('/api/skills/sql/:id with percent-encoded ids', () => {
   beforeEach(() => {

@@ -695,20 +695,29 @@ export async function countSkillFiles(skillId: string): Promise<number> {
  * granted. Pass callerTenantId = 'fleet' (admin) to see fleet skills.
  */
 export async function listSkillsForTenant(callerTenantId: string): Promise<SkillRow[]> {
+  // Only live skills: this is the list a tenant caller or an agent sees. The admin list is listAllSkills().
   return dbx.all<SkillRow>(`
     SELECT s.* FROM skills s
-    WHERE s.tenant_id = ?
+    WHERE s.tenant_id = ? AND s.status = 'live'
     UNION
     SELECT s.* FROM skills s
     JOIN skill_tenant_access sta ON sta.skill_id = s.id
-    WHERE sta.tenant_id = ?
+    WHERE sta.tenant_id = ? AND s.status = 'live'
     ORDER BY name
   `, callerTenantId, callerTenantId)
 }
 
-/** Admin: list all skills regardless of tenant. */
+/**
+ * Admin: list all skills regardless of tenant AND of status (a disabled skill is listed, with its status). What reaches
+ * an agent, an export or a generated file must come from listLiveSkills() instead.
+ */
 export async function listAllSkills(): Promise<SkillRow[]> {
   return dbx.all<SkillRow>('SELECT * FROM skills ORDER BY tenant_id, name')
+}
+
+/** Every live skill regardless of tenant: the list the generated files, the agent-facing lists and the export are built from. */
+export async function listLiveSkills(): Promise<SkillRow[]> {
+  return dbx.all<SkillRow>("SELECT * FROM skills WHERE status = 'live' ORDER BY tenant_id, name")
 }
 
 export interface SkillTenantAccessRow {
@@ -768,16 +777,16 @@ export async function countSkills(): Promise<number> {
   return ((await dbx.get('SELECT COUNT(*) AS n FROM skills')) as { n: number }).n
 }
 
-/** Skills owned locally by one agent (id prefix 'agent/<agentId>/', per materialize-skills.ts's ID scheme). */
+/** Live skills owned locally by one agent (id prefix 'agent/<agentId>/', per materialize-skills.ts's ID scheme). */
 export async function listAgentOwnedSkills(agentId: string): Promise<SkillRow[]> {
   return dbx.all<SkillRow>(`
-    SELECT * FROM skills WHERE id LIKE ? ESCAPE '\\' ORDER BY name
+    SELECT * FROM skills WHERE id LIKE ? ESCAPE '\\' AND status = 'live' ORDER BY name
   `, likePrefix(`agent/${agentId}/`))
 }
 
 /** Global fleet skills (~/.claude/skills), inherited by every agent. */
 export async function listGlobalFleetSkills(): Promise<SkillRow[]> {
   return dbx.all<SkillRow>(`
-    SELECT * FROM skills WHERE is_global = 1 AND tenant_id = 'fleet' ORDER BY name
+    SELECT * FROM skills WHERE is_global = 1 AND tenant_id = 'fleet' AND status = 'live' ORDER BY name
   `)
 }

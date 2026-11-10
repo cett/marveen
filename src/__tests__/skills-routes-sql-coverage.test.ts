@@ -68,7 +68,7 @@ vi.mock('../logger.js', () => ({
 
 vi.mock('../db.js', () => ({
   getSkill: vi.fn().mockResolvedValue(undefined),
-  createSkill: vi.fn().mockImplementation((opts: any) => Promise.resolve({ ...opts, is_global: opts.is_global ? 1 : 0, created_by: null, created_at: 0, updated_at: 0 })),
+  createSkill: vi.fn().mockImplementation((opts: any) => Promise.resolve({ ...opts, is_global: opts.is_global ? 1 : 0, created_by: null, created_at: 0, updated_at: 0, status: 'live' })),
   updateSkill: vi.fn().mockResolvedValue(undefined),
   deleteSkill: vi.fn().mockResolvedValue(true),
   seedSkillIfAbsent: vi.fn().mockResolvedValue(true),
@@ -126,7 +126,7 @@ describe('tryHandleSkills SQL endpoints', () => {
     it('admin sees all skills', async () => {
       const { getSkill, listAllSkills } = await import('../db.js')
       ;(listAllSkills as any).mockResolvedValueOnce([
-        { id: 'fleet-test', name: 'Test', description: '', content: '', tenant_id: 'fleet', is_global: 0 },
+        { id: 'fleet-test', name: 'Test', description: '', content: '', tenant_id: 'fleet', is_global: 0, status: 'live' },
       ])
       const { ctx, out } = makeCtx('GET', '/api/skills/sql', undefined, { role: 'admin' })
       expect(await tryHandleSkills(ctx)).toBe(true)
@@ -145,7 +145,7 @@ describe('tryHandleSkills SQL endpoints', () => {
     it('tenant user sees tenant-scoped skills', async () => {
       const { listSkillsForTenant } = await import('../db.js')
       ;(listSkillsForTenant as any).mockResolvedValueOnce([
-        { id: 'tenant-skill', name: 'Tenant', description: '', content: '', tenant_id: 'acme', is_global: 0 },
+        { id: 'tenant-skill', name: 'Tenant', description: '', content: '', tenant_id: 'acme', is_global: 0, status: 'live' },
       ])
       const { ctx, out } = makeCtx('GET', '/api/skills/sql', undefined, { role: 'user', tenantId: 'acme' })
       expect(await tryHandleSkills(ctx)).toBe(true)
@@ -230,7 +230,7 @@ describe('tryHandleSkills SQL endpoints', () => {
 
     it('non-admin gets only tenant-scoped skill', async () => {
       const { getSkill } = await import('../db.js')
-      ;(getSkill as any).mockResolvedValueOnce({ id: 'acme-skill', name: 'Skill', tenant_id: 'acme' })
+      ;(getSkill as any).mockResolvedValueOnce({ id: 'acme-skill', name: 'Skill', tenant_id: 'acme', status: 'live' })
       const { ctx, out } = makeCtx('GET', '/api/skills/sql/acme-skill', undefined, { role: 'user', tenantId: 'acme' })
       expect(await tryHandleSkills(ctx)).toBe(true)
       expect(out.status).toBe(200)
