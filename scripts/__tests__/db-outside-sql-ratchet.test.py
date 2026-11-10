@@ -62,7 +62,7 @@ class IsScannedTest(unittest.TestCase):
             self.assertFalse(mod.is_scanned(rel), rel)
 
     def test_production_code_outside_the_layer_is_scanned(self):
-        for rel in ("src/intel-store.ts", "src/web/routes/x.ts", "scripts/dashboard-user.ts", "src/db-migrations.ts"):
+        for rel in ("src/config.ts", "src/web/routes/x.ts", "scripts/dashboard-user.ts", "src/db-migrations.ts"):
             self.assertTrue(mod.is_scanned(rel), rel)
 
     def test_a_directory_that_only_starts_like_the_layer_is_scanned(self):

@@ -4,7 +4,7 @@
 The TypeScript ratchet (sqlite-dialect-ratchet.py) only sees src/. Python hooks and
 libraries, shell scripts, installers, scheduled-task / skill instructions and
 templates also reach the database directly (the sqlite3 module, the sqlite3 CLI,
-the claudeclaw.db / intel.db paths, better-sqlite3). Every one of those has to be
+the claudeclaw.db path, better-sqlite3). Every one of those has to be
 ported, redirected to the dashboard API, or retired before the PostgreSQL cutover.
 
 This ratchet keeps that surface from growing while it is being drained:
@@ -79,7 +79,6 @@ DIRECT = {
     # the CLI, followed by a path / quote / variable / template placeholder (not prose like "sqlite3 CLI")
     "sqlite3 CLI": (r"(?<![\w./-])sqlite3[ \t]+(?:-[A-Za-z]+[ \t]+)*(?:[\"'$]|\{\{|[./~]|store/|\w+\.db\b)", 0),
     "claudeclaw.db": (r"\bclaudeclaw\.db\b", 0),
-    "intel.db": (r"\bintel\.db\b", 0),
     "better-sqlite3": (r"better-sqlite3", 0),
 }
 

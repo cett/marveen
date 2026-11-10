@@ -109,8 +109,8 @@ class CountTextTest(unittest.TestCase):
         self.assertNotIn("sqlite3 CLI", direct)
 
     def test_db_paths_and_binding(self):
-        direct, _ = mod.count_text("A=store/claudeclaw.db B=store/intel.db npm rebuild better-sqlite3\n", "update.sh")
-        self.assertEqual(direct, {"claudeclaw.db": 1, "intel.db": 1, "better-sqlite3": 1})
+        direct, _ = mod.count_text("A=store/claudeclaw.db npm rebuild better-sqlite3\n", "update.sh")
+        self.assertEqual(direct, {"claudeclaw.db": 1, "better-sqlite3": 1})
 
     def test_no_direct_access_means_no_dialect_counts(self):
         direct, dialect = mod.count_text("print(time.strftime('%Y'))  # unixepoch()\nx = 'INSERT OR IGNORE'\n", "scripts/a.py")
