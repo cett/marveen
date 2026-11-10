@@ -830,6 +830,7 @@ window._i18n.hu = {
   'skills.confirm.delete':       'Skill törlése: {name}?',
   'skills.toast.deleted':        'Skill törölve',
   'skills.toast.imported':       'Skill importálva: {list}',
+  'skills.toast.imported_pending': 'Jóváhagyásra vár, még nem aktív: {list}',
   'skills.badge.global':         'globális',
   'skills.btn.delete':           'Törlés',
   'skills.btn.edit':             'Szerkesztés',

@@ -144,7 +144,8 @@ describe('GET /api/v1/skills/sql/:id/revisions', () => {
     const first = res.body.revisions[0]
     expect(first.content_sha256).toMatch(/^[0-9a-f]{64}$/)
     expect(res.body.revisions[2].prev_sha256).toBe(res.body.revisions[1].content_sha256)
-    expect(Object.keys(first).sort()).toEqual(['action', 'author_id', 'author_kind', 'content_sha256', 'created_at', 'files_sha256', 'has_scripts', 'prev_sha256', 'reason', 'seq', 'source_ref'])
+    expect([first.status, first.touches_privilege]).toEqual(['activated', false])
+    expect(Object.keys(first).sort()).toEqual(['action', 'author_id', 'author_kind', 'content_sha256', 'created_at', 'files_sha256', 'has_scripts', 'prev_sha256', 'reason', 'seq', 'source_ref', 'status', 'touches_privilege'])
   })
 
   it('never returns the text, in any field of the response', async () => {

@@ -579,6 +579,7 @@ window._i18n.en = {
   'skills.confirm.delete':       'Delete skill: {name}?',
   'skills.toast.deleted':        'Skill deleted',
   'skills.toast.imported':       'Skill imported: {list}',
+  'skills.toast.imported_pending': 'Waiting for review, not active yet: {list}',
   'skills.badge.global':         'global',
   'skills.btn.delete':           'Delete',
   'skills.btn.edit':             'Edit',

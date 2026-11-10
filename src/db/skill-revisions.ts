@@ -64,7 +64,16 @@ export interface SkillRevisionRow {
   source_ref: string | null
   reason: string | null
   created_at: number
+  /** 'activated' for a state that is or was live; 'pending' waits for a decision (migration 0094). */
+  status: SkillRevisionStatus
+  touches_privilege: number
+  submitted_by: string | null
+  decided_by: string | null
+  decided_at: number | null
+  decision_ref: string | null
 }
+
+export type SkillRevisionStatus = 'activated' | 'pending' | 'rejected' | 'expired'
 
 /** Actions that carry no state change of their own on repeat: an identical result writes no row (see writeSkillRevision). */
 const IDEMPOTENT_ACTIONS: ReadonlySet<SkillRevisionAction> = new Set(['modify', 'file_put', 'file_seed', 'file_delete'])
@@ -121,7 +130,7 @@ export async function writeSkillRevision(tx: SqlOps, opts: WriteSkillRevisionOpt
   const filesSha = hashFileSet(files)
 
   const latest = await tx.get<{ action: SkillRevisionAction; content_sha256: string | null; files_sha256: string | null }>(
-    'SELECT action, content_sha256, files_sha256 FROM skill_revisions WHERE skill_id = ? ORDER BY seq DESC LIMIT 1', skill.id)
+    "SELECT action, content_sha256, files_sha256 FROM skill_revisions WHERE skill_id = ? AND status = 'activated' ORDER BY seq DESC LIMIT 1", skill.id)
 
   if (!opts.force && IDEMPOTENT_ACTIONS.has(action) && latest && latest.action !== 'delete'
       && latest.content_sha256 === contentSha && latest.files_sha256 === filesSha) {
@@ -189,6 +198,8 @@ export interface SkillRevisionMeta {
   source_ref: string | null
   reason: string | null
   created_at: number
+  status: SkillRevisionStatus
+  touches_privilege: boolean
 }
 
 /**
@@ -196,10 +207,111 @@ export interface SkillRevisionMeta {
  * have existed: both answer the same, an empty list. The text (`content`) is deliberately not selected.
  */
 export async function listSkillRevisions(skillId: string): Promise<SkillRevisionMeta[]> {
-  const rows = await dbx.all<Omit<SkillRevisionMeta, 'has_scripts'> & { has_scripts: number }>(`
-    SELECT seq, action, content_sha256, prev_sha256, files_sha256, has_scripts, author_kind, author_id, source_ref, reason, created_at
+  const rows = await dbx.all<Omit<SkillRevisionMeta, 'has_scripts' | 'touches_privilege'> & { has_scripts: number; touches_privilege: number }>(`
+    SELECT seq, action, content_sha256, prev_sha256, files_sha256, has_scripts, author_kind, author_id, source_ref, reason, created_at,
+           status, touches_privilege
     FROM skill_revisions WHERE skill_id = ? ORDER BY seq`, skillId)
-  return rows.map((r) => ({ ...r, has_scripts: r.has_scripts === 1 }))
+  return rows.map((r) => ({ ...r, has_scripts: r.has_scripts === 1, touches_privilege: r.touches_privilege === 1 }))
+}
+
+/** One companion file a pending revision proposes. */
+export interface ProposedFile {
+  rel_path: string
+  mode: number
+  content: Buffer
+}
+
+export interface SubmitPendingRevisionOpts extends SkillWriteMeta {
+  skill: { id: string; tenant_id: string }
+  /** 'create': the skill has no live state yet (an import); 'modify': a change proposed to a live skill. */
+  action: 'create' | 'modify'
+  /** The proposed SKILL.md (header already stripped) and the COMPLETE proposed companion file set. */
+  content: string
+  files: readonly ProposedFile[]
+  actor: SkillActor
+  touchesPrivilege: boolean
+}
+
+export interface SubmitPendingRevisionResult {
+  revision: SkillRevisionRow
+  /** False when an identical proposal was already waiting: nothing is written then, the existing one is returned. */
+  created: boolean
+}
+
+/**
+ * Records a change that must be reviewed before it goes live, as a revision of its own with status 'pending'. The
+ * live skill row and its files are NOT touched: the proposed text sits on the revision and the proposed companion files
+ * in skill_revision_files, until a decision (a later step) activates or rejects it. Call it with the transaction handle.
+ *
+ * The same proposal (same text hash and file-set hash) for the same skill is recorded once: while it waits, a repeat
+ * returns the waiting revision instead of filling the trail. prev_sha256 is the hash of the latest ACTIVATED state, so
+ * a reviewer sees what the proposal replaces. A skill that predates the trail gets its baseline first, so the state
+ * before the proposal is on record.
+ */
+export async function submitPendingRevision(tx: SqlOps, opts: SubmitPendingRevisionOpts): Promise<SubmitPendingRevisionResult> {
+  const { skill, actor } = opts
+  // A proposal for a skill that already has a live state records that state first; a new skill has none to record
+  // (a baseline of the proposed text would read as a live state, which it is not).
+  if (opts.action === 'modify') await ensureSkillBaseline(tx, skill.id)
+  const contentSha = sha256Hex(opts.content)
+  const filesSha = hashFileSet(opts.files)
+  // A NULL file-set hash (no companion files) is compared with IS NULL, not "= NULL": the portable form of a null-safe match.
+  const waiting = await tx.get<SkillRevisionRow>(
+    `SELECT * FROM skill_revisions WHERE skill_id = ? AND status = 'pending' AND content_sha256 = ?
+       AND ${filesSha === null ? 'files_sha256 IS NULL' : 'files_sha256 = ?'} ORDER BY seq DESC LIMIT 1`,
+    skill.id, contentSha, ...(filesSha === null ? [] : [filesSha]))
+  if (waiting) return { revision: waiting, created: false }
+
+  const latest = await tx.get<{ content_sha256: string | null }>(
+    "SELECT content_sha256 FROM skill_revisions WHERE skill_id = ? AND status = 'activated' ORDER BY seq DESC LIMIT 1", skill.id)
+  await tx.run(`
+    INSERT INTO skill_revisions
+      (skill_id, tenant_id, seq, action, content_sha256, prev_sha256, files_sha256, has_scripts, content,
+       author_kind, author_id, source_ref, reason, status, touches_privilege, submitted_by)
+    VALUES (?, ?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM skill_revisions WHERE skill_id = ?), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+  `, skill.id, skill.tenant_id, skill.id, opts.action, contentSha, latest?.content_sha256 ?? null, filesSha,
+    hasRunnableFiles(opts.files) ? 1 : 0, opts.content, actor.kind, actor.id, opts.sourceRef ?? null, opts.reason ?? null,
+    opts.touchesPrivilege ? 1 : 0, actor.id)
+  const row = await tx.get<SkillRevisionRow>('SELECT * FROM skill_revisions WHERE skill_id = ? ORDER BY seq DESC LIMIT 1', skill.id) as SkillRevisionRow
+  for (const f of opts.files) {
+    await tx.run('INSERT INTO skill_revision_files (revision_id, rel_path, mode, content) VALUES (?, ?, ?, ?)', row.id, f.rel_path, f.mode, f.content)
+  }
+  // Like every other revision, audited by hash, never by text; the detail says it is a proposal, not a live change.
+  await writeAgentAuditLog({
+    agent_id: row.author_id ?? row.author_kind,
+    entity: 'skill',
+    action: 'update',
+    entity_id: row.skill_id,
+    detail: { seq: row.seq, action: row.action, status: 'pending', author_kind: row.author_kind, content_sha256: row.content_sha256?.slice(0, 12) ?? null },
+    tenant_id: row.tenant_id,
+  }, tx)
+  return { revision: row, created: true }
+}
+
+/** The revisions waiting for a decision, oldest first: hashes and who proposed, never the text. Optionally one skill. */
+export interface PendingRevisionMeta {
+  skill_id: string
+  tenant_id: string
+  seq: number
+  action: SkillRevisionAction
+  content_sha256: string | null
+  prev_sha256: string | null
+  files_sha256: string | null
+  has_scripts: boolean
+  touches_privilege: boolean
+  author_kind: SkillActorKind
+  submitted_by: string | null
+  source_ref: string | null
+  created_at: number
+}
+
+export async function listPendingRevisions(skillId?: string): Promise<PendingRevisionMeta[]> {
+  const rows = await dbx.all<Omit<PendingRevisionMeta, 'has_scripts' | 'touches_privilege'> & { has_scripts: number; touches_privilege: number }>(`
+    SELECT skill_id, tenant_id, seq, action, content_sha256, prev_sha256, files_sha256, has_scripts, touches_privilege,
+           author_kind, submitted_by, source_ref, created_at
+    FROM skill_revisions WHERE status = 'pending'${skillId === undefined ? '' : ' AND skill_id = ?'} ORDER BY created_at, skill_id, seq`,
+    ...(skillId === undefined ? [] : [skillId]))
+  return rows.map((r) => ({ ...r, has_scripts: r.has_scripts === 1, touches_privilege: r.touches_privilege === 1 }))
 }
 
 export interface BaselineResult {

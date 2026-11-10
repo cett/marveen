@@ -661,6 +661,9 @@ export async function deleteTenant(tenantId: string): Promise<TenantDeleteResult
     // A label of this tenant can still be linked from a card of another tenant (links made before
     // labels carried a tenant): drop those links before the label rows go.
     await tx.run('DELETE FROM kanban_card_labels WHERE label_id IN (SELECT id FROM labels WHERE tenant_id = ?)', tenantId)
+    // The companion files a pending skill revision proposes have no tenant column of their own: they go with the
+    // revisions of this tenant, before the revisions themselves (skill_revisions is one of the simple tables below).
+    await tx.run('DELETE FROM skill_revision_files WHERE revision_id IN (SELECT id FROM skill_revisions WHERE tenant_id = ?)', tenantId)
     for (const table of TENANT_PURGE_SIMPLE_TABLES) {
       purged[table] = (await tx.run(`DELETE FROM ${table} WHERE tenant_id = ?`, tenantId)).changes
     }

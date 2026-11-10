@@ -187,7 +187,8 @@ document.getElementById('importSkillBtn').addEventListener('click', async () => 
     const result = await res.json()
     _closeModal?.(skillModalOverlay)
     const importedList = Array.isArray(result.imported) ? result.imported : []
-    showToast(t('skills.toast.imported', { list: importedList.join(', ') }))
+    // 202 = recorded for review, NOT a usable skill yet: say so instead of "imported".
+    showToast(t(res.status === 202 || result.status === 'pending_review' ? 'skills.toast.imported_pending' : 'skills.toast.imported', { list: importedList.join(', ') }))
     skillFile = null
     document.getElementById('skillFileName').textContent = ''
     if (isGlobal) {

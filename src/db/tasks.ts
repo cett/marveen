@@ -5,7 +5,7 @@ import { AgentMessage } from './agents.js'
 import { db } from './connection.js'
 import { dbx, type SqlOps } from './facade.js'
 import { likePrefix } from './like.js'
-import { ensureSkillBaseline, writeSkillRevision, type SkillActor, type SkillWriteMeta } from './skill-revisions.js'
+import { ensureSkillBaseline, writeSkillRevision, submitPendingRevision, type ProposedFile, type SkillActor, type SkillRevisionRow, type SkillWriteMeta } from './skill-revisions.js'
 import { resolveWriteTenant } from './write-tenant.js'
 import { countScheduleRun } from '../otel-signals.js'
 import { stripGeneratedHeader } from '../skill-header.js'
@@ -695,6 +695,44 @@ export async function revokeSkill(id: string, actor: SkillActor, reason: string)
       cascaded.push(copyId)
     }
     return { outcome: 'revoked' as const, skill: row, cascaded }
+  })
+}
+
+export interface QuarantinedSkillInput {
+  id: string
+  name: string
+  description: string
+  content: string
+  tenant_id: string
+  is_global: boolean
+  /** The complete companion file set of the archive. */
+  files: readonly ProposedFile[]
+}
+
+export type QuarantineSkillResult =
+  | { outcome: 'quarantined'; revision: SkillRevisionRow }
+  | { outcome: 'exists' }
+
+/**
+ * An imported skill that has no row yet: the row is created as 'pending_review' (it reaches no agent, no list, no
+ * generated file: only a live skill does) and the text and companion files are recorded as a pending revision, in one
+ * transaction. The skill_files table is NOT written: the proposed files live on the revision until a decision. An
+ * existing skill is left alone ('exists'), as seedSkillIfAbsent leaves it.
+ */
+export async function quarantineSkillImport(opts: QuarantinedSkillInput, actor: SkillActor, meta: SkillWriteMeta = {}): Promise<QuarantineSkillResult> {
+  const content = stripGeneratedHeader(opts.content)
+  const now = Math.floor(Date.now() / 1000)
+  return dbx.tx(async (tx) => {
+    const result = await tx.run(`
+      INSERT INTO skills (id, name, description, content, tenant_id, is_global, created_by, created_at, updated_at, status)
+      VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, 'pending_review')
+      ON CONFLICT DO NOTHING
+    `, opts.id, opts.name, opts.description, content, opts.tenant_id, opts.is_global ? 1 : 0, now, now)
+    if (result.changes === 0) return { outcome: 'exists' as const }
+    const { revision } = await submitPendingRevision(tx, {
+      skill: { id: opts.id, tenant_id: opts.tenant_id }, action: 'create', content, files: opts.files, actor, touchesPrivilege: true, ...meta,
+    })
+    return { outcome: 'quarantined' as const, revision }
   })
 }
 
