@@ -486,6 +486,12 @@ export async function seedScheduleIfAbsent(id: string, opts: UpsertScheduleOpts)
 }
 
 
+/**
+ * Lifecycle state of a skill (migration 0093). Only 'live' skills reach the agents. 'pending_review' and 'expired'
+ * belong to the quarantine path of a later step and nothing sets them yet; 'disabled' is what a revoke leaves.
+ */
+export type SkillStatus = 'live' | 'pending_review' | 'disabled' | 'expired'
+
 export interface SkillRow {
   id: string
   name: string
@@ -496,6 +502,7 @@ export interface SkillRow {
   created_by: string | null
   created_at: number
   updated_at: number
+  status: SkillStatus
 }
 
 export interface CreateSkillOpts {

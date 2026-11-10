@@ -11,7 +11,7 @@ import { dbx, type SqlOps } from './facade.js'
 import { writeAgentAuditLog } from './audit.js'
 import { logger } from '../logger.js'
 
-export type SkillRevisionAction = 'baseline' | 'create' | 'modify' | 'seed' | 'delete' | 'file_put' | 'file_delete' | 'file_seed'
+export type SkillRevisionAction = 'baseline' | 'create' | 'modify' | 'seed' | 'delete' | 'file_put' | 'file_delete' | 'file_seed' | 'revoke'
 export type SkillActorKind = 'human' | 'agent' | 'import' | 'system' | 'operator'
 
 /**
@@ -143,7 +143,7 @@ export async function writeSkillRevision(tx: SqlOps, opts: WriteSkillRevisionOpt
 }
 
 const AUDIT_ACTION: Record<Exclude<SkillRevisionAction, 'baseline'>, 'create' | 'update' | 'delete'> = {
-  create: 'create', seed: 'create', modify: 'update', file_put: 'update', file_seed: 'update', file_delete: 'update', delete: 'delete',
+  create: 'create', seed: 'create', modify: 'update', file_put: 'update', file_seed: 'update', file_delete: 'update', delete: 'delete', revoke: 'update',
 }
 
 /**
