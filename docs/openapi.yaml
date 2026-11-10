@@ -3551,9 +3551,10 @@ paths:
                     description: |
                       What happened to the generated files. `removed`: taken away. `none`: there was no generated file.
                       `quarantined`: a SKILL.md that differed from the row (hand-edited) was moved aside to
-                      `SKILL.md.revoked-<time>`, a name the loader does not read; the new paths are in `quarantined`. `regen_off`: file regeneration is switched off.
-                      `error`: the files could not be regenerated; the skill is disabled all the same.
-                    enum: [removed, none, quarantined, regen_off, error]
+                      `SKILL.md.revoked-<time>`, a name the loader does not read; the new paths are in `quarantined`.
+                      `error`: the files could not be regenerated; the skill is disabled all the same. The files are
+                      taken away even when file regeneration is switched off.
+                    enum: [removed, none, quarantined, error]
                   quarantined:
                     type: array
                     description: Present only when `files` is `quarantined`; the paths the edited SKILL.md files were moved to.

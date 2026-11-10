@@ -7,6 +7,7 @@ import { EventEmitter } from 'node:events'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
+const regenSwitch = vi.hoisted(() => ({ on: true }))
 const { FAKE_HOME, FAKE_PROJECT } = vi.hoisted(() => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const fs = require('node:fs') as typeof import('node:fs')
@@ -24,7 +25,7 @@ vi.mock('node:os', async (importOriginal) => {
 })
 vi.mock('../config.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../config.js')>()
-  return { ...actual, PROJECT_ROOT: FAKE_PROJECT, MAIN_AGENT_ID: 'main-a', SKILL_SQL_REGEN: true, TENANT_SKILL_FILES: 'single' }
+  return { ...actual, PROJECT_ROOT: FAKE_PROJECT, MAIN_AGENT_ID: 'main-a', get SKILL_SQL_REGEN() { return regenSwitch.on }, TENANT_SKILL_FILES: 'single' }
 })
 vi.mock('../web/agent-config.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../web/agent-config.js')>()),
@@ -162,6 +163,26 @@ describe('a revoke by the admin', () => {
     expect(status(id)).toBe('disabled')
     expect(existsSync(globalMd('demo-a'))).toBe(false)
     expect(readFileSync(r.body.quarantined[0], 'utf-8')).toContain('my own change')
+  })
+
+  it('the generated file goes even when the file regeneration switch is off (the switch cannot keep a revoked skill loadable)', async () => {
+    const id = await liveSkill()
+    regenSwitch.on = false
+    try {
+      const r = await revoke(id, { reason: 'because' })
+      expect(r.status).toBe(200)
+      expect(r.body.files).toBe('removed')
+      expect(existsSync(globalMd('demo-a'))).toBe(false)
+    } finally {
+      regenSwitch.on = true
+    }
+  })
+
+  it('a second revoke on a skill that predates the trail answers 409 and the trail holds the baseline and one revoke only', async () => {
+    db.prepare("INSERT INTO skills (id, name, description, content, tenant_id, is_global) VALUES ('global/old-b', 'old-b', '', ?, 'fleet', 1)").run(BODY)
+    expect((await revoke('global/old-b', { reason: 'one' })).status).toBe(200)
+    expect((await revoke('global/old-b', { reason: 'two' })).status).toBe(409)
+    expect(trail('global/old-b').map(x => x.action)).toEqual(['baseline', 'revoke'])
   })
 
   it('a withdrawn global skill is not a source for the assign route: 404, and no agent gets a copy or a new live skill', async () => {

@@ -921,13 +921,14 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     }
     // The row is already disabled for good: a failure to regenerate must not turn the answer into an error, the caller
     // gets what happened to the files instead.
-    let files: 'removed' | 'none' | 'quarantined' | 'regen_off' | 'error' = 'error'
+    let files: 'removed' | 'none' | 'quarantined' | 'error' = 'error'
     let quarantined: string[] = []
     try {
-      const regen = await regenSingleSkillFile(id)
+      // forceEnabled: an explicit revoke takes the files away even when the file regeneration switch is off (on a
+      // skill that is not live the call only removes, it never writes), so the switch cannot keep a withdrawn skill loadable.
+      const regen = await regenSingleSkillFile(id, true)
       quarantined = regen.quarantined ?? []
       files = regen.reason === 'quarantined' ? 'quarantined'
-        : regen.reason === 'disabled' ? 'regen_off'
         : regen.reason === 'write_error' ? 'error'
         : regen.reason === null && !regen.skipped ? 'removed'
         : 'none'

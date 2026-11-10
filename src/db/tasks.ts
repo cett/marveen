@@ -605,7 +605,10 @@ export async function updateSkill(
 export type RevokeSkillResult =
   | { outcome: 'revoked'; skill: SkillRow }
   | { outcome: 'not_found' }
-  /** The skill exists but is not live (already disabled, or waiting for a review): nothing was changed or recorded. */
+  /**
+   * The skill exists but is not live (already disabled, or waiting for a review): its status is unchanged and no revoke
+   * row is written. (A skill that predates the trail still gets its baseline row, the transaction commits.)
+   */
   | { outcome: 'not_live'; status: SkillStatus }
 
 /**
