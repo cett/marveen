@@ -41,8 +41,10 @@ const CAPABILITY_NAME = /allowed[-_]tools|tools|hooks/i
 
 /** A root key line: a bare key (letters, digits, hyphen, underscore) at column 0, a colon, then a space and a value or the end of the line. */
 const BARE_KEY_LINE = /^[A-Za-z0-9_-]+:(?: .*)?$/
-/** A backslash (a YAML escape), a tab, or a control character other than the newline that separates the lines. */
-const UNSAFE_CHARS = /[\\\u0000-\u0009\u000b-\u001f\u007f]/
+/** Other line terminators than the \n we split on: NEL, LINE SEPARATOR, PARAGRAPH SEPARATOR. A YAML 1.1 reader (and the closed loader, for all we can prove) may break a line there. */
+const OTHER_LINE_BREAKS = /[\u0085\u2028\u2029]/
+/** A backslash (a YAML escape), a tab, a control character other than the newline that separates the lines, or another line terminator. */
+const UNSAFE_CHARS = /[\\\u0000-\u0009\u000b-\u001f\u007f\u0085\u2028\u2029]/
 
 /**
  * Is an UNPARSABLE head of a benign shape, so that a create may go live without a person looking at it? An allow-list,
@@ -137,8 +139,9 @@ function canonical(value: unknown, budget: { nodes: number }, depth = 0): string
 function yamlBlocks(head: string[]): Map<string, string> | 'unparsable' {
   const text = head.join('\n')
   // js-yaml 5 refuses an input with no content at all ("expected a document"): an empty head or one of comments only is
-  // a document with no keys, not an unreadable one.
-  if (head.every((l) => l.trim() === '' || l.trim().startsWith('#'))) return new Map<string, string>()
+  // a document with no keys, not an unreadable one. Not when the head holds another line terminator (NEL, LS, PS): a
+  // "comment" that continues after one of them is a key to a reader that breaks the line there, so it stays unreadable.
+  if (!OTHER_LINE_BREAKS.test(text) && head.every((l) => l.trim() === '' || l.trim().startsWith('#'))) return new Map<string, string>()
   if (Buffer.byteLength(text, 'utf-8') > MAX_HEAD_BYTES) return 'unparsable'
   let loaded: unknown
   try { loaded = yamlLoad(text) } catch { return 'unparsable' }

@@ -149,6 +149,20 @@ describe('a head that cannot be read safely: gated on any update, on a create un
     expect(touches(doc('# one'), doc('# two'))).toBe(false)
   })
 
+  it('a "comment" that continues after NEL, LINE SEPARATOR or PARAGRAPH SEPARATOR is not a comment-only head: unreadable, held on a create, gated on an update', () => {
+    for (const lb of ['\u0085', '\u2028', '\u2029']) {
+      for (const key of ['allowed-tools: Bash', 'tools: [Bash]', 'hooks: pre']) {
+        const head = `# a note${lb}${key}`
+        expect(privilegeView(doc(head)).has('!unparsable'), JSON.stringify(head)).toBe(true)
+        expect(privilegeView(doc(head)).has('!unparsable-hold'), JSON.stringify(head)).toBe(true)
+        expect(created(doc(head)), JSON.stringify(head)).toBe(true)
+        expect(touches(doc('# a note'), doc(head)), JSON.stringify(head)).toBe(true)
+      }
+      // and one of them inside an otherwise benign unparsable head holds it too
+      expect(created(doc(`${COLON}${lb}`)), JSON.stringify(lb)).toBe(true)
+    }
+  })
+
   it('what real skills look like when they are not valid YAML goes live: comments, blank lines, continuation lines, other words, non-ASCII text', () => {
     expect(created(doc(`name: x\n# a comment\n\n${COLON.split('\n')[1]}\n  and a continuation line\n\nnote: y`))).toBe(false)
     expect(created(doc('name: x\ndescription: Ez egy leírás: kettősponttal, ékezetekkel'))).toBe(false)
