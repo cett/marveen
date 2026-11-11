@@ -192,12 +192,95 @@ def block(msg, agent_id=None, tool_name=''):
     sys.exit(2)
 
 
+def _dq_subst_end(text, i):
+    """`text[i]` opens a command substitution inside a double quote: `$(` (kind '(') or a backtick (kind '`').
+    Returns the index just past its end. Inside it the shell reads QUOTES AFRESH, so a nested pair of double
+    quotes is a pair of its own and does not close the outer string: `echo "$(grep "a b" f)"`. A flat
+    quote state machine pairs them the other way round (the nested pattern ends up outside every quote, the
+    path after it inside one). The body is judged on its own through shell_subst.top_bodies (see check_bash),
+    so the outer reading only has to treat the whole region as one quoted piece.
+
+    One pass with an explicit stack (each character is visited once), the same reading as shell_subst's:
+    `\\` skips a character, single quotes and $'..' run to their closing quote, `(` / `)` count inside
+    a `$( )` frame, a comment runs to its newline. An unterminated substitution takes the rest of the text.
+    """
+    n = len(text)
+    if text[i] == '`':
+        j = i + 1
+        while j < n and text[j] != '`':
+            j += 2 if text[j] == '\\' else 1
+        return min(j + 1, n)
+    frames = [['sub', 1]]  # ['sub', open parens] | ['dq'] | ['bt']
+    j = i + 2
+    while j < n and frames:
+        c = text[j]
+        kind = frames[-1][0]
+        if kind == 'bt':
+            if c == '\\':
+                j += 2
+                continue
+            if c == '`':
+                frames.pop()
+            j += 1
+        elif kind == 'dq':
+            if c == '\\':
+                j += 2
+            elif c == '"':
+                frames.pop()
+                j += 1
+            elif c == '$' and text.startswith('(', j + 1):
+                frames.append(['sub', 1])
+                j += 2
+            elif c == '`':
+                frames.append(['bt'])
+                j += 1
+            else:
+                j += 1
+        else:
+            if c == '\\':
+                j += 2
+            elif c == "'":
+                e = text.find("'", j + 1)
+                j = n if e < 0 else e + 1
+            elif c == '"':
+                frames.append(['dq'])
+                j += 1
+            elif c == '$' and text.startswith("'", j + 1):
+                j += 2
+                while j < n and text[j] != "'":
+                    j += 2 if text[j] == '\\' else 1
+                j += 1
+            elif c == '$' and text.startswith('(', j + 1):
+                frames.append(['sub', 1])
+                j += 2
+            elif c == '`':
+                frames.append(['bt'])
+                j += 1
+            elif c == '#' and (text[j - 1] in ' \t\n;&|(' if j > 0 else True):
+                e = text.find('\n', j)
+                j = n if e < 0 else e
+            elif c == '(':
+                frames[-1][1] += 1
+                j += 1
+            elif c == ')':
+                frames[-1][1] -= 1
+                j += 1
+                if frames[-1][1] == 0:
+                    frames.pop()
+            else:
+                j += 1
+    return min(j, n)
+
+
 @functools.lru_cache(maxsize=4)
 def _quote_map(text):
     """For each character: inside a quote or not (0=no, 1=single, 2=double).
 
     Tolerant of an unbalanced quote -- never raises, just flips state. Cached (the last few texts): every
     reading of one command asks for the same map, and the result is only ever READ.
+
+    A command substitution inside a double quote is one quoted region, nested quotes and all (see
+    _dq_subst_end): its body is judged separately, by the caller, as a command of its own.
     """
     state = [0] * len(text)
     q = 0
@@ -208,6 +291,12 @@ def _quote_map(text):
             state[i] = q
             state[i + 1] = q
             i += 2
+            continue
+        if q == 2 and (ch == '`' or (ch == '$' and text.startswith('(', i + 1))):
+            end = _dq_subst_end(text, i)
+            for k in range(i, end):
+                state[k] = 2
+            i = end
             continue
         if q == 0 and ch in ("'", '"'):
             q = 1 if ch == "'" else 2
@@ -836,8 +925,23 @@ INSPECT_SECONDS = 4.0
 _budget = {'bodies': 0, 'chars': 0, 'deadline': None}
 
 
+def _blank_parens(seg):
+    """`(` -> space, so `(rm x)` finds its command. A `(` inside a double-quoted command substitution stays:
+    blanking the `$(` there would break the region _quote_map reads as one quoted piece, and the nested
+    quotes would pair the wrong way round again (`x="$(grep "a" f)"`). The text of such a region is judged
+    through its body (shell_subst), not as words of this segment."""
+    if '(' not in seg:
+        return seg
+    state = _quote_map(seg)
+    out = list(seg)
+    for i, ch in enumerate(seg):
+        if ch == '(' and not (state[i] == 2 and i > 0 and seg[i - 1] == '$'):
+            out[i] = ' '
+    return ''.join(out)
+
+
 def _bare_tokens(seg):
-    return [(t, sp) for t, sp in _tokens(_space_herestrings(seg).replace('(', ' ')) if t]
+    return [(t, sp) for t, sp in _tokens(_blank_parens(_space_herestrings(seg))) if t]
 
 
 def _space_herestrings(seg):
