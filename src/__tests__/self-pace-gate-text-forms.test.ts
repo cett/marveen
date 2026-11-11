@@ -88,3 +88,21 @@ describe('F2. a script text that is a variable, in a command that names git', ()
     for (const c of ['git status; eval "$X"', 'git log; sh -c "$CMD"']) expect(guarded(c)).toEqual(REFUSED(c))
   })
 })
+
+describe('named costs and limits of the git rule (pinned, so that a later change flips a named test and is decided on purpose)', () => {
+  const EVERYWHERE = (c: string) => ({ c, agent: true, root: true, copy: true })
+  it('F4. a script text built by a command substitution is judged as the worst case even with no git word in the command: refused in the install', () => {
+    for (const c of ['eval "$(ssh-agent -s)"', 'sh -c "$(cat run.sh)"', 'bash -c "`echo hi`"']) expect(guarded(c)).toEqual(REFUSED(c))
+  })
+  it('W1. a git -c override is refused unless the key is user.*, color.* or advice.*, also in the copy', () => {
+    for (const c of ['git -c core.editor=true rebase --continue', 'git -c core.hooksPath=x pull']) expect(guarded(c)).toEqual(EVERYWHERE(c))
+    for (const c of ['git -c user.name=x merge other', 'git -c color.ui=never pull']) expect(guarded(c)).toEqual(REFUSED(c))
+  })
+  it('W2. a rewriting git after source, ., eval or set -a is refused in the copy as well (the environment it loads is not read)', () => {
+    for (const c of ['source env.sh; git pull', '. env.sh && git pull', 'set -a; git pull', 'eval "x=1"; git pull']) expect(guarded(c)).toEqual(EVERYWHERE(c))
+  })
+  it('W3. a command word built by a substitution with no git word anywhere in the command is not seen (a git name that is never spelled)', () => {
+    for (const c of ["$(printf 'g%s' it) checkout other", '$(echo g)it checkout other']) expect(guarded(c)).toEqual(FREE(c))
+    expect(guarded("$(printf 'g%s' it) checkout other; echo git")).toEqual(REFUSED("$(printf 'g%s' it) checkout other; echo git"))
+  })
+})
