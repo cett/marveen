@@ -75,7 +75,7 @@ describe('the two readers disagree where the head ends: any edit of the head cou
 // On the real corpus about a quarter of the SKILL.md files are not valid YAML, all for one harmless reason (an unquoted
 // description with a colon and a space), and the loader reads them fine. So an unparsable head gates an UPDATE on any
 // change of the head (!unparsable), but gates a CREATE only when it also names a capability key (!unparsable-cap).
-describe('a head that cannot be read safely: gated on any update, on a create only when it names a capability key', () => {
+describe('a head that cannot be read safely: gated on any update, on a create unless it has the benign shape', () => {
   const COLON = 'name: x\ndescription: Does a thing: with a colon in it'
 
   it('invalid YAML: any edit of the head counts on an update', () => {
@@ -92,6 +92,18 @@ describe('a head that cannot be read safely: gated on any update, on a create on
     expect(created(doc('name: [unclosed'))).toBe(false)
   })
 
+  it('the four probe heads that slipped through the keyword check: escaped capability key names are held, and so is the bare hooks', () => {
+    for (const head of [
+      `${COLON}\n"h\\x6fooks": pre`,
+      `${COLON}\n"t\\x6f\\x6fls": Bash`,
+      `${COLON}\n"allowed-t\\x6fols": Bash`,
+      `${COLON}\nhooks: pre`,
+    ]) {
+      expect(privilegeView(doc(head)).has('!unparsable-hold'), head).toBe(true)
+      expect(created(doc(head)), head).toBe(true)
+    }
+  })
+
   it('the same unparsable head with a capability key name is held, quoted, bare, in a flow mapping, any case', () => {
     for (const head of [
       `${COLON}\n"allowed-tools": Bash`,
@@ -101,9 +113,46 @@ describe('a head that cannot be read safely: gated on any update, on a create on
       '{name: x, tools: [Bash]',
       'name: [unclosed\nALLOWED-TOOLS: Bash',
     ]) {
-      expect(privilegeView(doc(head)).has('!unparsable-cap'), head).toBe(true)
       expect(created(doc(head)), head).toBe(true)
     }
+  })
+
+  it('anything but a plain list of root keys is held on a create: anchor, tag, explicit key, flow, list, indented first line, tab, backslash', () => {
+    for (const extra of [
+      '&a note: x',
+      '!!str note: x',
+      '? note\n: x',
+      '{note: x}',
+      '- note',
+      '[note]',
+      '"note": x',
+      "'note': x",
+      'note : x',
+      'note:x',
+      '\tnote: x',
+      'note: a\\b',
+      'note: a\x01b',
+      'a key with spaces: x',
+    ]) {
+      expect(created(doc(`${COLON}\n${extra}`)), JSON.stringify(extra)).toBe(true)
+    }
+    expect(created(doc(` indented first\n${COLON}`))).toBe(true)
+    expect(created(doc(`# only a comment\n${COLON.split('\n')[1]}`))).toBe(false) // a comment first is fine: the first KEY line decides
+    expect(created(doc('# nothing but comments: here'))).toBe(false) // no root key at all and no parse failure: parsable, nothing to hold
+  })
+
+  it('an empty head or one of comments only has no keys: not unreadable, so a create goes live and an update is not held for it', () => {
+    for (const head of ['', '   ', '# just a comment', '# a: b\n\n# c']) {
+      expect(privilegeView(doc(head)).has('!unparsable'), JSON.stringify(head)).toBe(false)
+      expect(created(doc(head)), JSON.stringify(head)).toBe(false)
+    }
+    expect(touches(doc('# one'), doc('# two'))).toBe(false)
+  })
+
+  it('what real skills look like when they are not valid YAML goes live: comments, blank lines, continuation lines, other words, non-ASCII text', () => {
+    expect(created(doc(`name: x\n# a comment\n\n${COLON.split('\n')[1]}\n  and a continuation line\n\nnote: y`))).toBe(false)
+    expect(created(doc('name: x\ndescription: Ez egy leírás: kettősponttal, ékezetekkel'))).toBe(false)
+    expect(created(doc('name: x\ndescription: Does a thing: and a "quoted" word and a back-tick `code`'))).toBe(false)
   })
 
   it('description alone never holds a create, unparsable or not', () => {
@@ -146,7 +195,7 @@ describe('differential: whatever a YAML load of the column-0-closed head sees, t
   // deterministic PRNG (mulberry32): the same 2400 documents on every run
   const rng = (seed: number) => () => { seed |= 0; seed = (seed + 0x6d2b79f5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296 }
   const FRAGMENTS = [
-    'name: x', 'description: plain text', 'description: >\n  folded\n  text', 'description: |\n  block\n  ---\n  more\n  text',
+    'name: x', 'description: plain text', 'description: Does a thing: with a colon in it', 'note: another one: with a colon', 'description: >\n  folded\n  text', 'description: |\n  block\n  ---\n  more\n  text',
     'allowed-tools: Bash', 'allowed_tools: [Read, Bash]', '"allowed-tools": Bash', "'tools': [Bash]", 'tools:\n  - Bash\n  - Write',
     'Allowed-Tools: Read', 'hooks:\n  pre: run', '"hooks": x', 'x: &a [Bash]\ntools: *a', 'model: fast', 'a: |\n  keep\n  ---\nhooks: z',
     '\tbad: tab', 'key with spaces: v', "? tools\n: Bash", 'allowed-tools : Bash', '#comment: x', 'description: "quoted"',
@@ -175,14 +224,21 @@ describe('differential: whatever a YAML load of the column-0-closed head sees, t
       const end = lines.findIndex((l, i) => i > 0 && /^---[ \t]*$/.test(l))
       const head = lines.slice(1, end).join('\n')
       const view = privilegeView(text)
+      // js-yaml refuses an input with no content ("expected a document"); an empty or comment-only head is a document with no keys
+      if (head.split('\n').every((l) => l.trim() === '' || l.trim().startsWith('#'))) { expect(view.has('!unparsable')).toBe(false); continue }
       let loaded: unknown
       try { loaded = yamlLoad(head) } catch {
         unreadable++
         expect(view.has('!unparsable'), JSON.stringify(text)).toBe(true)
         // the update path: an unreadable head is never let through (nothing that was refused before is allowed now)
         expect(touches(BASE, text), `update ${JSON.stringify(text)}`).toBe(true)
-        // the create path: held when the head names a capability key or the readers split it, otherwise it goes live
-        const holds = /allowed[-_]tools|tools|hooks/i.test(head) || view.has('!region')
+        // the create path: held unless the head has the benign shape (Rick's four rules, written out here independently of
+        // the source: first non-comment line a bare root key; every column-0 line a bare key, a comment or empty; no
+        // backslash, tab or control character; no capability name), or when the readers split the head
+        const colZero = head.split('\n').filter((l) => l.trim() !== '' && !l.startsWith(' ') && !l.startsWith('#'))
+        const firstOk = (() => { for (const l of head.split('\n')) { if (l.trim() === '' || l.startsWith('#')) continue; return !l.startsWith(' ') } return false })()
+        const benign = firstOk && colZero.every((l) => /^[A-Za-z0-9_-]+:( .*)?$/.test(l)) && !/[\\\t\u0000-\u0009\u000b-\u001f\u007f]/.test(head) && !/allowed[-_]tools|tools|hooks/i.test(head)
+        const holds = !benign || view.has('!region')
         expect(created(text), `create ${JSON.stringify(text)}`).toBe(holds)
         if (!holds) createAllowed++
         continue

@@ -39,6 +39,34 @@ const PRIVILEGE_KEYS: ReadonlySet<string> = new Set(['allowed-tools', 'allowed_t
 /** A capability key name anywhere in a head text: `allowed-tools`, `allowed_tools`, `tools`, `hooks` (not `description`). */
 const CAPABILITY_NAME = /allowed[-_]tools|tools|hooks/i
 
+/** A root key line: a bare key (letters, digits, hyphen, underscore) at column 0, a colon, then a space and a value or the end of the line. */
+const BARE_KEY_LINE = /^[A-Za-z0-9_-]+:(?: .*)?$/
+/** A backslash (a YAML escape), a tab, or a control character other than the newline that separates the lines. */
+const UNSAFE_CHARS = /[\\\u0000-\u0009\u000b-\u001f\u007f]/
+
+/**
+ * Is an UNPARSABLE head of a benign shape, so that a create may go live without a person looking at it? An allow-list,
+ * not a deny-list: the head is benign only when (1) its first non-empty, non-comment line is a bare key at column 0,
+ * (2) every column-0 line is a bare-key line, a comment or empty (an indented line continues the key above), (3) it
+ * holds no backslash, tab or control character, and (4) it names no capability key anywhere in its text. When every
+ * column-0 line is a bare key, the line scanner sees every root key exactly: an escaped, quoted, flow, anchored, tagged
+ * or explicit key is not a bare-key line and falls out of the allow-list. The one shape that passes is what real skills
+ * look like when they are not valid YAML: an unquoted description with a colon and a space. A predicate that answers
+ * hold or release and errs towards hold; it parses nothing.
+ */
+function isBenignUnparsableHead(headText: string): boolean {
+  if (UNSAFE_CHARS.test(headText) || CAPABILITY_NAME.test(headText)) return false
+  let sawKey = false
+  for (const line of headText.split('\n')) {
+    if (line.trim() === '') continue
+    if (line.startsWith(' ')) { if (!sawKey) return false; continue } // a continuation needs a key above it
+    if (line.startsWith('#')) continue
+    if (!BARE_KEY_LINE.test(line)) return false
+    sawKey = true
+  }
+  return sawKey
+}
+
 /** A frontmatter head larger than this is not parsed at all (the request body cap is 20 MB): it is gated as unparsable. */
 const MAX_HEAD_BYTES = 64 * 1024
 /** The canonicalizer visits at most this many YAML nodes (an alias chain is cheap to load and exponential to walk). */
@@ -108,6 +136,9 @@ function canonical(value: unknown, budget: { nodes: number }, depth = 0): string
  */
 function yamlBlocks(head: string[]): Map<string, string> | 'unparsable' {
   const text = head.join('\n')
+  // js-yaml 5 refuses an input with no content at all ("expected a document"): an empty head or one of comments only is
+  // a document with no keys, not an unreadable one.
+  if (head.every((l) => l.trim() === '' || l.trim().startsWith('#'))) return new Map<string, string>()
   if (Buffer.byteLength(text, 'utf-8') > MAX_HEAD_BYTES) return 'unparsable'
   let loaded: unknown
   try { loaded = yamlLoad(text) } catch { return 'unparsable' }
@@ -171,9 +202,8 @@ export function privilegeView(content: string): Map<string, string> {
   if (yaml === 'unparsable') {
     const headText = lines.slice(1, yamlEnd).join('\n')
     out.set('!unparsable', sha256Hex(headText))
-    // a head nobody could parse that also NAMES a capability key (bare, quoted or in a flow mapping, any case, anywhere in
-    // its text): this one gates a create too. A harmless colon in a description does not.
-    if (CAPABILITY_NAME.test(headText)) out.set('!unparsable-cap', sha256Hex(headText))
+    // On a create an unparsable head is held UNLESS it has the benign shape (see isBenignUnparsableHead).
+    if (!isBenignUnparsableHead(headText)) out.set('!unparsable-hold', sha256Hex(headText))
   }
   if (scanEnd !== yamlEnd) {
     // The two readers close the head at different lines: an indented `---` sits inside a block, or one of them never closes.
@@ -205,11 +235,11 @@ export interface PrivilegeVerdict {
  * skill), and a brand-new skill has no approved value to diverge from. Only an actual new capability grant
  * (`allowed-tools`/`allowed_tools`/`tools`/`hooks`, or a new runnable file) gates a create. A head that the two readers
  * split differently (`!region`) gates a create too: nothing can be promised about what it grants. A head that cannot be
- * parsed (`!unparsable`) does NOT gate a create by itself: on the real corpus about a quarter of the SKILL.md files are
- * unparsable, all for one harmless reason (an unquoted description with a colon), and the loader reads them fine, so
- * gating them would park every fourth new skill for nothing. It gates a create only when the unparsable head also holds
- * a capability key name (`!unparsable-cap`). On an update every one of the three counts, as any change of a head the
- * gate cannot read.
+ * parsed (`!unparsable`) gates a create too, except a head of the benign shape (`isBenignUnparsableHead`): on the real
+ * corpus about a quarter of the SKILL.md files are unparsable, all for one harmless reason (an unquoted description with
+ * a colon), and the loader reads them fine, so gating them would park every fourth new skill for nothing. The create is
+ * held by `!unparsable-hold`, which is emitted for every unparsable head that is not benign. On an update every one of
+ * the entries counts, as any change of a head the gate cannot read.
  */
 export function skillTouchesPrivilege(
   before: { content: string; files: readonly SkillFileFacts[] } | null,
