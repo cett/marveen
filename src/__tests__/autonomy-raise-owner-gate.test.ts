@@ -12,13 +12,14 @@ let rows: Map<string, Row>
 let auditFails = false
 const auditWrites: Array<Record<string, any>> = []
 let loggedInOwner: { user: string } | null = null
+const otherWrites: unknown[][] = []
 
 vi.mock('../db.js', () => ({
   listAutonomyCategories: () => Array.from(rows.values()),
   getAutonomyCategory: (key: string) => { const r = rows.get(key); return r ? { ...r } : undefined },
   setAutonomyCategoryLevel: (key: string, level: number, by: string) => { const r = rows.get(key); if (r) { r.level = level; r.updated_by = by; r.updated_at = 1 } },
-  setAutonomyCategoryTimeout: () => {},
-  setAutonomyCategoryHumanOnly: () => {},
+  setAutonomyCategoryTimeout: (...args: unknown[]) => { otherWrites.push(['timeout', ...args]) },
+  setAutonomyCategoryHumanOnly: (...args: unknown[]) => { otherWrites.push(['human_only', ...args]) },
   writeAgentAuditLog: (entry: Record<string, any>) => { if (auditFails) throw new Error('audit down'); auditWrites.push(entry) },
 }))
 vi.mock('../web/approval-human-only.js', async (importOriginal) => ({
@@ -48,6 +49,7 @@ beforeEach(() => {
   loggedInOwner = null
   auditFails = false
   auditWrites.length = 0
+  otherWrites.length = 0
   const mk = (key: string, level: number, extra: Partial<Row> = {}): [string, Row] => [key, { key, label: key, level, locked: 0, max_level: 3, timeout_minutes: null, human_only: 0, updated_at: 0, updated_by: 'system', ...extra }]
   rows = new Map([mk('skill_patch', 2), mk('capped', 2, { max_level: 2 }), mk('payment', 1, { locked: 1, max_level: 1 })])
 })
@@ -68,6 +70,14 @@ describe('raising a level', () => {
     expect(rows.get('skill_patch')!.level).toBe(3)
     expect(auditWrites).toHaveLength(1)
     expect(auditWrites[0]).toMatchObject({ agent_id: 'owner', entity: 'approval', action: 'update', entity_id: 'skill_patch', detail: { autonomy_category: 'skill_patch', level_from: 2, level_to: 3 } })
+  })
+
+  it('a refused token raise writes nothing else from the same body: not the timeout, not the human-only mark', async () => {
+    const out = await post({ key: 'skill_patch', level: 3, timeout_minutes: 30, human_only: true }, TOKEN)
+    expect(out.status).toBe(403)
+    expect(rows.get('skill_patch')!.level).toBe(2)
+    expect(otherWrites).toEqual([])
+    expect(auditWrites).toEqual([])
   })
 
   it('a session cookie of no admin (humanSessionOf says nobody) with a session-shaped auth is refused too', async () => {

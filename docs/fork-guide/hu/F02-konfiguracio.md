@@ -171,7 +171,7 @@ Akkor érdemes újranyitni, ha az ágensek tenantonkénti hitelesítő adatot ka
 
 ## Autonómia-konfiguráció
 
-Az autonómia-kategóriák szabályozzák, hogy az ágensek milyen mértékben cselekedhetnek emberi jóváhagyás nélkül. Az adatok az `autonomy_categories` DB táblában élnek (nem egy szerkeszthető JSON fájlban) -- a szintet a **dashboard Beállítások > Autonómia** oldalán állítod, vagy a `POST /api/autonomy` végponton.
+Az autonómia-kategóriák szabályozzák, hogy az ágensek milyen mértékben cselekedhetnek emberi jóváhagyás nélkül. Az adatok az `autonomy_categories` DB táblában élnek (nem egy szerkeszthető JSON fájlban) -- a szintet a **dashboard Beállítások > Autonómia** oldalán állítod, vagy a `POST /api/autonomy` végponton. A szint emeléséhez (több szabadság az ágenseknek) a dashboardra bejelentkezett ember kell: egy admin token `403`-at kap `code: human_session_required` kóddal. A szint csökkentése és az azonos szint beállítása tokennel is megy. Minden szintváltozás audit bejegyzést ír (ki, a régi és az új szint). Ugyanez a szabály a flotta-importra is (`POST /api/fleet/import?apply=true`): az az import, amely szintet vagy maximumot emel, kategóriát old fel, vagy 1-nél magasabb szinttel új kategóriát vesz fel, dashboard-sessiont kér, és az import minden autonómia-sorát előbb ellenőrzi.
 
 ### Szintek
 

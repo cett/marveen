@@ -40,6 +40,7 @@ import { reloadAgentSettingsCache } from '../db/agent-settings-cache.js'
 import { getFederationConfigRaw, setFederationConfigRaw } from '../db/federation.js'
 import { invalidateFederationConfigCache, validateFederationConfig } from './federation/config.js'
 import { logger } from '../logger.js'
+import { auditAutonomyLevelChange } from './autonomy-audit.js'
 import { isBlankContent } from '../blank-content.js'
 
 // ---------------------------------------------------------------------------
@@ -81,6 +82,57 @@ export class ImportInProgressError extends ImportConflictError {
     super(message)
     this.name = 'ImportInProgressError'
   }
+}
+
+/**
+ * The autonomy rows of an import were refused before anything was written: 'invalid_value' (a row that is not a valid
+ * category row, 400, naming the key and the field) or 'human_session_required' (the import would widen what the agents
+ * may do and the request carries no dashboard session, 403, naming the keys).
+ */
+export class AutonomyImportRefusedError extends Error {
+  constructor(readonly kind: 'invalid_value' | 'human_session_required', message: string, readonly field?: string) {
+    super(message)
+    this.name = 'AutonomyImportRefusedError'
+  }
+}
+
+export interface AutonomyRowCheck {
+  /** The first row that is not a valid category row, or null. */
+  invalid: { key: string; field: string; hint: string } | null
+  /** Keys of the rows that WIDEN the agents' freedom compared with what is stored (see checkAutonomyRows). */
+  widenings: string[]
+}
+
+/**
+ * Validates the autonomy rows of an import and finds the ones that widen. A row is valid when key is a non-empty string,
+ * level and max_level are integers 1..3, locked is 0 or 1, level <= max_level, and a locked row is at level 1 (the
+ * invariants the dashboard route holds). A row WIDENS when its level or its max_level is above the stored one, when a
+ * stored locked row is unlocked, or when its key is new on the target and above level 1. Lowering and equal rows do not
+ * widen: tightening and no-ops stay cheap, as on the dashboard route.
+ */
+export function checkAutonomyRows(rows: readonly unknown[], stored: readonly AutonomyCategoryRow[]): AutonomyRowCheck {
+  const byKey = new Map(stored.map((r) => [r.key, r]))
+  const widenings: string[] = []
+  for (const raw of rows) {
+    const row = (raw !== null && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
+    const key = typeof row['key'] === 'string' ? row['key'] : ''
+    const bad = (field: string, hint: string): AutonomyRowCheck => ({ invalid: { key, field, hint }, widenings: [] })
+    if (!key) return bad('key', 'key must be a non-empty string')
+    const level = row['level']
+    const maxLevel = row['max_level']
+    const locked = row['locked']
+    if (typeof level !== 'number' || !Number.isInteger(level) || level < 1 || level > 3) return bad('level', 'level must be an integer from 1 to 3')
+    if (typeof maxLevel !== 'number' || !Number.isInteger(maxLevel) || maxLevel < 1 || maxLevel > 3) return bad('max_level', 'max_level must be an integer from 1 to 3')
+    if (locked !== 0 && locked !== 1) return bad('locked', 'locked must be 0 or 1')
+    if (level > maxLevel) return bad('level', 'level must not be above max_level')
+    if (locked === 1 && level !== 1) return bad('locked', 'a locked category must be at level 1')
+    const was = byKey.get(key)
+    const widens = was === undefined
+      ? level > 1
+      : level > was.level || maxLevel > was.max_level || (was.locked === 1 && locked === 0)
+    if (widens) widenings.push(key)
+  }
+  return { invalid: null, widenings }
 }
 
 // ---------------------------------------------------------------------------
@@ -1641,9 +1693,18 @@ export function isImportApplyInProgress(): boolean {
   return applyInProgress
 }
 
+export interface ImportFleetOptions {
+  vaultPassword?: string
+  apply: boolean
+  /** True when the request carries a dashboard session of an admin user: only then may an apply widen the autonomy rows. */
+  humanSession?: boolean
+  /** Who asked (session user or token name), for the audit rows of the autonomy level changes. */
+  actor?: string
+}
+
 export async function importFleet(
   rawBody: string,
-  options: { vaultPassword?: string; apply: boolean },
+  options: ImportFleetOptions,
 ): Promise<DiffReport | ImportResult> {
   if (!options.apply) return runImportFleet(rawBody, options)
   if (applyInProgress) {
@@ -1659,7 +1720,7 @@ export async function importFleet(
 
 async function runImportFleet(
   rawBody: string,
-  options: { vaultPassword?: string; apply: boolean },
+  options: ImportFleetOptions,
 ): Promise<DiffReport | ImportResult> {
   // Auto-detect encrypted export: {"enc":1,"blob":"..."}
   // H2/M2: decrypt FIRST, before any file writes or DB commits (fail-fast on wrong password)
@@ -1701,8 +1762,29 @@ async function runImportFleet(
     return { ...EMPTY_DIFF, errors: nameErrors }
   }
 
+  // The autonomy rows decide how much the agents may do without asking. They are validated, and the ones that WIDEN that
+  // freedom (a higher level or max_level, an unlocked category, a new category above level 1) are only applied for a
+  // request that carries a dashboard session, like the dashboard route. This runs before the dry run, before anything is
+  // staged and before the transaction: a refusal writes nothing. A dry run lists the widenings as a warning instead.
+  let autonomyBefore: AutonomyCategoryRow[] = []
+  let autonomyWidenings: string[] = []
+  if (Array.isArray(fleet.dashboardSettings?.autonomy)) {
+    autonomyBefore = await listAutonomyCategories()
+    const check = checkAutonomyRows(fleet.dashboardSettings!.autonomy, autonomyBefore)
+    if (check.invalid) {
+      throw new AutonomyImportRefusedError('invalid_value', `autonomy row "${check.invalid.key}": ${check.invalid.hint}`, check.invalid.field)
+    }
+    autonomyWidenings = check.widenings
+    if (options.apply && autonomyWidenings.length > 0 && !options.humanSession) {
+      throw new AutonomyImportRefusedError('human_session_required', `This import widens autonomy categories (${autonomyWidenings.join(', ')}); raising a level, a maximum or unlocking a category needs a person logged in to the dashboard`)
+    }
+  }
+
   if (!options.apply) {
     const report = await buildDiffReport(fleet)
+    if (autonomyWidenings.length > 0) {
+      report.warnings.push(`autonómia: ${autonomyWidenings.length} kategória bővülne (${autonomyWidenings.join(', ')}) -- az apply ehhez bejelentkezett dashboard-sessiont kér.`)
+    }
     // M1: vault present in export but no password at import -> warning (apply would skip vault)
     if (fleet.vault && !options.vaultPassword) {
       report.warnings.push('vault szekció jelen van, de nem adtál meg jelszót -- a vault-titkok kihagyásra kerülnek.')
@@ -1904,7 +1986,11 @@ async function runImportFleet(
       // untouched, consistent with the identity-takeover model not being destructive beyond what the source
       // snapshot actually describes.
       if (Array.isArray(s.autonomy)) {
-        for (const row of s.autonomy) await upsertAutonomyCategory(row)
+        const levelBefore = new Map(autonomyBefore.map((r) => [r.key, r.level]))
+        for (const row of s.autonomy) {
+          await upsertAutonomyCategory(row)
+          if (levelBefore.get(row.key) !== row.level) await auditAutonomyLevelChange(options.actor ?? 'system', row.key, levelBefore.get(row.key) ?? null, row.level)
+        }
       }
       // Same upsert-not-replace rationale as autonomy above. upsertModelProfileMapEntry is write-through
       // (db/model-profile-map-cache.ts), so the cache is re-read after a rollback (reloadImportCaches()).

@@ -1,6 +1,7 @@
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
-import { exportFleet, importFleet, ImportConflictError, MIN_VAULT_PASSWORD_LEN, UserFacingError, type ExportedFleet } from '../fleet-transfer.js'
+import { exportFleet, importFleet, ImportConflictError, AutonomyImportRefusedError, MIN_VAULT_PASSWORD_LEN, UserFacingError, type ExportedFleet } from '../fleet-transfer.js'
+import { humanSessionOf } from '../approval-human-only.js'
 import { scanImportLeftovers } from '../fleet-import-leftovers.js'
 import type { RouteContext } from './types.js'
 
@@ -76,14 +77,21 @@ export async function tryHandleFleet(ctx: RouteContext): Promise<boolean> {
 
     // importFleet handles JSON parse (and encrypted blob detection) internally
     try {
-      const result = await importFleet(rawBody, { vaultPassword: vaultPassword || undefined, apply })
+      // An apply may only widen the agents' autonomy rows (a higher level or maximum, an unlocked category) for a person
+      // logged in to the dashboard; an admin token can still import equal and lowered rows.
+      const humanSession = apply ? Boolean(await humanSessionOf(req)) : false
+      const actor = ctx.auth?.user ?? ctx.auth?.tokenName ?? 'system'
+      const result = await importFleet(rawBody, { vaultPassword: vaultPassword || undefined, apply, humanSession, actor })
       if ('dryRun' in result && result.errors.length > 0) {
         json(res, result, 400)
       } else {
         json(res, result, 200)
       }
     } catch (err: any) {
-      if (err instanceof ImportConflictError) {
+      if (err instanceof AutonomyImportRefusedError) {
+        if (err.kind === 'human_session_required') json(res, { error: 'forbidden', code: 'human_session_required', hint: err.message }, 403)
+        else json(res, { error: 'invalid_value', field: err.field, hint: err.message }, 400)
+      } else if (err instanceof ImportConflictError) {
         json(res, { error: 'conflict', hint: err.message }, 409)
       } else {
         logger.error({ err }, 'Fleet import failed')

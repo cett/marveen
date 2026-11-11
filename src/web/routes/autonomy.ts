@@ -8,6 +8,7 @@ import {
 import { APPROVAL_HUMAN_ONLY_ENFORCE } from '../../config.js'
 import { MAX_CATEGORY_TIMEOUT_MINUTES } from '../approval-timeout.js'
 import { humanSessionOf, isHumanOnlyFloorKey } from '../approval-human-only.js'
+import { auditAutonomyLevelChange } from '../autonomy-audit.js'
 import type { RouteContext } from './types.js'
 
 // Wire shape kept identical to the retired JSON side-car so the dashboard
@@ -124,15 +125,7 @@ export async function tryHandleAutonomy(ctx: RouteContext): Promise<boolean> {
 
       if (hasLevel) await setAutonomyCategoryLevel(key, level as number, 'dashboard')
       if (hasLevel && level !== cat.level) {
-        try {
-          await writeAgentAuditLog({
-            agent_id: ctx.auth?.user ?? ctx.auth?.tokenName ?? 'system',
-            entity: 'approval',
-            action: 'update',
-            entity_id: key,
-            detail: { autonomy_category: key, level_from: cat.level, level_to: level },
-          })
-        } catch { /* audit failure must not abort the write */ }
+        await auditAutonomyLevelChange(ctx.auth?.user ?? ctx.auth?.tokenName ?? 'system', key, cat.level, level)
       }
       if (hasHumanOnly) {
         await setAutonomyCategoryHumanOnly(key, human_only as boolean, 'dashboard')

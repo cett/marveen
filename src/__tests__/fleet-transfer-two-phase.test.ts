@@ -358,7 +358,8 @@ beforeEach(async () => {
   await seedTarget()
 })
 
-const apply = (fleet: FleetJson) => importFleet(JSON.stringify(fleet), { apply: true })
+// humanSession: the bundle carries autonomy rows that raise levels, which only a request with a dashboard session may apply
+const apply = (fleet: FleetJson) => importFleet(JSON.stringify(fleet), { apply: true, humanSession: true })
 
 // ---------------------------------------------------------------------------
 

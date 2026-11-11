@@ -8,14 +8,18 @@ import type { RouteContext } from '../web/routes/types.js'
 const mocks = vi.hoisted(() => {
   class MockUserFacingError extends Error {}
   class MockImportConflictError extends Error {}
+  class MockAutonomyImportRefusedError extends Error {}
   return {
     exportFleet: vi.fn(),
     importFleet: vi.fn(),
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     MockUserFacingError,
     MockImportConflictError,
+    MockAutonomyImportRefusedError,
+    humanSessionOf: vi.fn(),
   }
 })
+vi.mock('../web/approval-human-only.js', () => ({ humanSessionOf: (req: unknown) => mocks.humanSessionOf(req) }))
 
 
 vi.mock('../logger.js', () => ({ logger: mocks.logger }))
@@ -25,6 +29,7 @@ vi.mock('../web/fleet-transfer.js', () => ({
   MIN_VAULT_PASSWORD_LEN: 8,
   UserFacingError: mocks.MockUserFacingError,
   ImportConflictError: mocks.MockImportConflictError,
+  AutonomyImportRefusedError: mocks.MockAutonomyImportRefusedError,
 }))
 
 import { tryHandleFleet } from '../web/routes/fleet.js'
@@ -119,7 +124,52 @@ describe('tryHandleFleet -- POST /api/fleet/import', () => {
     const { ctx, status } = makeCtx({ method: 'POST', path: '/api/fleet/import?apply=true', body: '{"agents":[]}' })
     await tryHandleFleet(ctx)
     expect(status()).toBe(200)
-    expect(mocks.importFleet).toHaveBeenCalledWith('{"agents":[]}', { vaultPassword: undefined, apply: true })
+    // no session cookie, no auth in this fixture: the apply goes in without a human session and under the system actor
+    expect(mocks.importFleet).toHaveBeenCalledWith('{"agents":[]}', { vaultPassword: undefined, apply: true, humanSession: false, actor: 'system' })
+  })
+
+  describe('the autonomy rows of an apply', () => {
+    it('a request with a dashboard session is passed on as humanSession, with the session user as the actor', async () => {
+      mocks.humanSessionOf.mockResolvedValueOnce({ user: 'owner' })
+      mocks.importFleet.mockReturnValueOnce({ ok: true })
+      const { ctx } = makeCtx({ method: 'POST', path: '/api/fleet/import?apply=true', body: '{"agents":[]}' })
+      ctx.auth = { kind: 'session', user: 'owner' } as RouteContext['auth']
+      await tryHandleFleet(ctx)
+      expect(mocks.importFleet).toHaveBeenCalledWith('{"agents":[]}', { vaultPassword: undefined, apply: true, humanSession: true, actor: 'owner' })
+    })
+
+    it('a token request is passed on as no human session, with the token name as the actor', async () => {
+      mocks.humanSessionOf.mockResolvedValueOnce(null)
+      mocks.importFleet.mockReturnValueOnce({ ok: true })
+      const { ctx } = makeCtx({ method: 'POST', path: '/api/fleet/import?apply=true', body: '{"agents":[]}' })
+      ctx.auth = { kind: 'token', tokenName: 'main-token' } as RouteContext['auth']
+      await tryHandleFleet(ctx)
+      expect(mocks.importFleet).toHaveBeenCalledWith('{"agents":[]}', { vaultPassword: undefined, apply: true, humanSession: false, actor: 'main-token' })
+    })
+
+    it('a dry run does not look for a session at all', async () => {
+      mocks.importFleet.mockReturnValueOnce({ dryRun: true, errors: [] })
+      const { ctx } = makeCtx({ method: 'POST', path: '/api/fleet/import', body: '{"agents":[]}' })
+      await tryHandleFleet(ctx)
+      expect(mocks.humanSessionOf).not.toHaveBeenCalled()
+      expect(mocks.importFleet).toHaveBeenCalledWith('{"agents":[]}', expect.objectContaining({ apply: false, humanSession: false }))
+    })
+
+    it('a refusal for the missing session is a 403 forbidden with the human_session_required code', async () => {
+      mocks.importFleet.mockImplementationOnce(() => { throw Object.assign(new mocks.MockAutonomyImportRefusedError('widens skill_patch'), { kind: 'human_session_required' }) })
+      const { ctx, status, rawBody } = makeCtx({ method: 'POST', path: '/api/fleet/import?apply=true', body: '{"agents":[]}' })
+      await tryHandleFleet(ctx)
+      expect(status()).toBe(403)
+      expect(JSON.parse(rawBody()!.toString())).toMatchObject({ error: 'forbidden', code: 'human_session_required', hint: 'widens skill_patch' })
+    })
+
+    it('an invalid autonomy row is a 400 invalid_value naming the field', async () => {
+      mocks.importFleet.mockImplementationOnce(() => { throw Object.assign(new mocks.MockAutonomyImportRefusedError('autonomy row "x": level must be an integer from 1 to 3'), { kind: 'invalid_value', field: 'level' }) })
+      const { ctx, status, rawBody } = makeCtx({ method: 'POST', path: '/api/fleet/import?apply=true', body: '{"agents":[]}' })
+      await tryHandleFleet(ctx)
+      expect(status()).toBe(400)
+      expect(JSON.parse(rawBody()!.toString())).toMatchObject({ error: 'invalid_value', field: 'level' })
+    })
   })
 
   it('returns 400 for a dry run that reports errors', async () => {

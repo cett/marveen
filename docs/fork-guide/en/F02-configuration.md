@@ -171,7 +171,7 @@ Revisit this when agents get per-tenant credentials, which would make the skill 
 
 ## Autonomy configuration
 
-Autonomy categories control how much agents can act without human approval. The data lives in the `autonomy_categories` DB table (not an editable JSON file) — you set a category's level on the **dashboard Settings > Autonomy** page, or via `POST /api/autonomy`.
+Autonomy categories control how much agents can act without human approval. The data lives in the `autonomy_categories` DB table (not an editable JSON file) -- you set a category's level on the **dashboard Settings > Autonomy** page, or via `POST /api/autonomy`. Raising a level (more freedom for the agents) needs a person logged in to the dashboard: an admin token gets `403` with `code: human_session_required`. Lowering a level and setting the same level work with a token. Every level change writes an audit entry (who, the old and the new level). The same rule holds for a fleet import (`POST /api/fleet/import?apply=true`): an import that raises a level or a maximum, unlocks a category or adds a category above level 1 needs a dashboard session, and every autonomy row of an import is validated first.
 
 ### Levels
 
