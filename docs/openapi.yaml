@@ -3498,6 +3498,146 @@ paths:
         "403":
           description: Not an admin (a fleet agent token and a tenant user included)
 
+  /skills/sql/revisions/pending:
+    get:
+      tags: [skills]
+      operationId: listPendingSkillRevisions
+      summary: Queue of skill revisions waiting for a decision (admin dashboard session only)
+      description: |
+        Every revision whose privilege gate queued it instead of landing live, oldest first: hashes and who
+        proposed, never the proposed text or file bytes (see GET /skills/sql/revisions/{id} for those). Admin
+        DASHBOARD SESSION only -- an agent token or a tenant session never reaches this, even an admin-role token
+        that is not a session: deciding what a skill may do is a human act on a proposal that already exists, the
+        same rule as the is_global flip and the requireLive bypass.
+      responses:
+        "200":
+          description: The queue, oldest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [revisions]
+                properties:
+                  revisions:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SkillRevision'
+        "403":
+          description: Not an admin dashboard session
+
+  /skills/sql/revisions/{id}:
+    get:
+      tags: [skills]
+      operationId: getSkillRevision
+      summary: One revision's full proposal for review (admin dashboard session only)
+      description: |
+        The revision's proposed SKILL.md text and companion files (base64), plus the skill's current live content to
+        diff against (`current_content`, null for a brand-new skill that has none yet). Any status, not only
+        `pending`: a decided revision stays reviewable. Admin dashboard session only.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: The revision and the skill's current content
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [revision]
+                properties:
+                  revision:
+                    allOf:
+                      - $ref: '#/components/schemas/SkillRevision'
+                      - type: object
+                        properties:
+                          content:
+                            type: string
+                            nullable: true
+                          files:
+                            type: array
+                            items:
+                              type: object
+                              properties:
+                                rel_path: { type: string }
+                                mode: { type: integer }
+                                content_base64: { type: string }
+                  current_content:
+                    type: string
+                    nullable: true
+        "400":
+          description: id is not a positive integer
+        "403":
+          description: Not an admin dashboard session
+        "404":
+          description: No revision with that id
+
+  /skills/sql/revisions/{id}/decide:
+    post:
+      tags: [skills]
+      operationId: decideSkillRevision
+      summary: Activate or reject a pending skill revision (admin dashboard session only)
+      description: |
+        `activate` makes the revision's proposed content and companion files the skill's live state (a brand-new
+        skill's `pending_review` row is promoted to `live`); `reject` leaves the live skill untouched, except that
+        rejecting a brand-new skill's `create` proposal (one that was never live) removes the skill row and its
+        (always empty) file set outright, so a rejected create does not leave pending_review debris behind. The
+        decision is a compare-and-set on the revision's own `pending` status: of two concurrent decisions on the
+        same id, only one wins. Admin dashboard session only.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [decision]
+              properties:
+                decision:
+                  type: string
+                  enum: [activate, reject]
+                reason:
+                  type: string
+                  description: Recorded as decision_ref on the revision row. Optional.
+      responses:
+        "200":
+          description: Decided
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, outcome]
+                properties:
+                  ok:
+                    type: boolean
+                  outcome:
+                    type: string
+                    enum: [activated, rejected]
+        "400":
+          description: id is not a positive integer, or decision is neither activate nor reject
+        "403":
+          description: Not an admin dashboard session, or (activate only) the proposal was authored by an agent whose id equals this session user (separation of duties; not applied to import, human or operator submitters, so the importing admin can activate their own import)
+        "404":
+          description: No revision with that id
+        "409":
+          description: |
+            `error: status_conflict` with a stable `reason` (`not_pending` | `skill_not_decidable` | `stale_proposal`)
+            so a client can branch without parsing the `hint` prose. The three reasons: the revision was already decided (or is no longer
+            pending) by the time this request ran; activate only, the skill moved out of the state the proposal
+            assumed (revoked, deleted, or already activated by a concurrent decide) since it was submitted; activate
+            of a non-create revision only, the skill's live content changed since the proposal was submitted
+            (re-read the diff before deciding again).
+        "500":
+          description: 'error: internal_error -- activate only, the proposal''s stored text or companion files no longer match the hash recorded with it (data integrity, not a normal conflict)'
+
   /skills/sql/{id}/revoke:
     post:
       tags: [skills]

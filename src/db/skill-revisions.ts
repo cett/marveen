@@ -71,6 +71,7 @@ export interface SkillRevisionRow {
   decided_by: string | null
   decided_at: number | null
   decision_ref: string | null
+  proposed_description: string | null
 }
 
 export type SkillRevisionStatus = 'activated' | 'pending' | 'rejected' | 'expired'
@@ -314,6 +315,227 @@ export async function listPendingRevisions(skillId?: string): Promise<PendingRev
     FROM skill_revisions WHERE status = 'pending'${skillId === undefined ? '' : ' AND skill_id = ?'} ORDER BY created_at, skill_id, seq`,
     ...(skillId === undefined ? [] : [skillId]))
   return rows.map((r) => ({ ...r, has_scripts: r.has_scripts === 1, touches_privilege: r.touches_privilege === 1 }))
+}
+
+/** The description a SKILL.md frontmatter names, or '' when there is none. Single-line only (no folded blocks): the
+ * same shape skill-seed-refresh.ts reads, duplicated here rather than imported across the web/db layer boundary. */
+function frontmatterDescription(content: string): string {
+  const fm = content.match(/^---[ \t]*\r?\n([\s\S]*?)\r?\n---/)
+  if (!fm) return ''
+  const line = fm[1].match(/^description:[ \t]*(.+)$/im)
+  if (!line) return ''
+  const val = line[1].trim()
+  const quoted = val.match(/^(["'])(.*)\1$/)
+  return quoted ? quoted[2] : val
+}
+
+// Thrown INSIDE decideSkillRevision's transaction to abort and roll back everything written so far (the revision's
+// own status flip included), converted to a result outcome by the catch below -- the same shape SkillNotLiveAtWrite
+// (tasks.ts, deleteSkill) uses for its own in-tx CAS.
+class SkillNotDecidableAtActivate extends Error {}
+class SkillRevisionStaleAtActivate extends Error {}
+class SkillRevisionCorruptAtActivate extends Error {}
+
+export type DecideSkillRevisionOutcome =
+  | 'not_found' | 'not_pending' | 'self_approval_forbidden' | 'skill_not_decidable' | 'stale_proposal' | 'corrupt_proposal'
+  | 'activated' | 'rejected'
+export interface DecideSkillRevisionResult {
+  outcome: DecideSkillRevisionOutcome
+  /** Set only on 'activated': the caller regenerates this skill's disk file AFTER the transaction, the same way
+   * every other skill write path regenerates from the route layer, never from inside db/. */
+  skillId?: string
+}
+
+/**
+ * Author kinds whose own submitter MAY activate what they submitted: 'import' / 'human' / 'operator' are the people at
+ * the dashboard (the import route's actor is the uploading session user), the only approvers by design. Everything
+ * else ('agent', 'system', 'auto') is not exempt.
+ */
+const SELF_APPROVAL_EXEMPT_AUTHOR_KINDS: ReadonlySet<string> = new Set(['import', 'human', 'operator'])
+
+/**
+ * Decides a pending revision: 'activate' makes its proposed content/files the skill's live state, 'reject' leaves
+ * the live skill untouched. The decision itself is a CAS on the revision row (`WHERE id = ? AND status = 'pending'`,
+ * same pattern as `requireLive` in updateSkill/deleteSkill): of two concurrent decisions on the same id, only the one
+ * whose UPDATE actually changes a row proceeds, the other gets 'not_pending'. A revision id that never existed
+ * answers 'not_found'; one that exists but was never 'pending' (already decided, or expired) answers 'not_pending' --
+ * the CAS alone cannot tell "never existed" from "already decided", so the row is read once, outside the CAS, to
+ * distinguish the two for the caller.
+ *
+ * Separation of duties: 'activate' on a revision whose `submitted_by` is this same `decider.id` answers
+ * 'self_approval_forbidden' without touching the row (it stays pending for a DIFFERENT approver), BUT only when the
+ * revision's author kind is not import / human / operator (SELF_APPROVAL_EXEMPT_AUTHOR_KINDS). The rule is about the
+ * AUTHOR of a skill (an agent, or a delegated approver approving their own text), not about the operator who carries
+ * an external archive in: external-import approval is the dashboard admin's alone, so banning the importer from
+ * approving their own import would make an import impossible to activate on a single-admin install. For an
+ * agent-authored proposal the ban stays (and guards the day a delegated, non-admin approver exists). 'reject' has no
+ * such check -- withdrawing your own proposal is not an approval.
+ *
+ * activate:
+ *  - the skill must still be in the exact state the proposal assumed: 'pending_review' for action 'create' (nobody
+ *    else activated or deleted it since), 'live' for anything else (nobody revoked or deleted it since). This is a
+ *    second CAS, on the skill row itself (`WHERE id = ? AND status = <expected>`); 0 rows changed aborts the whole
+ *    decision ('skill_not_decidable', the revision stays pending) -- without it, activating an old pending proposal
+ *    could silently resurrect a skill an admin had deliberately revoked in the meantime.
+ *  - a 'modify' proposal also carries `prev_sha256`, the latest ACTIVATED text hash at the time it was submitted; if
+ *    the skill's latest activated text has since moved past that (another activation landed first), applying this
+ *    older proposal now would silently discard the newer one, so the decision aborts ('stale_proposal') instead.
+ *  - the companion files (skill_revision_files, no FK) are re-hashed and compared with the revision's own
+ *    `files_sha256` before use ('corrupt_proposal' on a mismatch): nothing else protects that table between the
+ *    propose and the decide, unlike `content`, which only this module ever writes to the revision row.
+ *  - action 'create': the skill row is still the gate's `pending_review` placeholder -> it is promoted to 'live'
+ *    with the proposed content/description. Anything else: the skill is already live -> only content/description
+ *    are overwritten.
+ *  - the companion files become EXACTLY the proposed set: a DELETE of the skill's current files followed by an
+ *    INSERT of the proposed ones, the same "whole set" shape putSkillFile's gated branch uses.
+ *  - the result carries `skillId` so the CALLER regenerates the disk file after the transaction commits, the same
+ *    way every other skill write path regenerates from the route layer (db/ never imports skill-regen.js).
+ *
+ * reject:
+ *  - the revision row is marked 'rejected'; the live skill and its files are untouched.
+ *  - EXCEPT when action is 'create' and the skill is still 'pending_review' (nothing else activated it meanwhile):
+ *    that skill row never had a live state to begin with, so it and its (always empty, by construction) file set
+ *    are deleted outright -- otherwise a rejected create leaves silent pending_review debris behind forever.
+ */
+export async function decideSkillRevision(
+  revisionId: number,
+  decision: 'activate' | 'reject',
+  decider: SkillActor,
+  decisionRef?: string | null,
+): Promise<DecideSkillRevisionResult> {
+  const now = Math.floor(Date.now() / 1000)
+  try {
+    return await dbx.tx(async (tx) => {
+      const revision = await tx.get<SkillRevisionRow>('SELECT * FROM skill_revisions WHERE id = ?', revisionId)
+      if (!revision) return { outcome: 'not_found' as const }
+
+      // Separation of duties: the AUTHOR of a change (an agent) may withdraw it (reject), but may not be the one who
+      // puts it live. Not applied to import / human / operator submitters (SELF_APPROVAL_EXEMPT_AUTHOR_KINDS): that is
+      // the dashboard admin, who is the only approver by design. Checked before the CAS below, so a refused
+      // self-activate leaves the revision untouched (still pending for a DIFFERENT approver), not consumed.
+      if (decision === 'activate' && revision.submitted_by !== null && revision.submitted_by === decider.id
+          && !SELF_APPROVAL_EXEMPT_AUTHOR_KINDS.has(revision.author_kind)) {
+        return { outcome: 'self_approval_forbidden' as const }
+      }
+
+      const claimed = (await tx.run(
+        `UPDATE skill_revisions SET status = ?, decided_by = ?, decided_at = ?, decision_ref = ? WHERE id = ? AND status = 'pending'`,
+        decision === 'activate' ? 'activated' : 'rejected', decider.id, now, decisionRef ?? null, revisionId,
+      )).changes
+      if (claimed === 0) return { outcome: 'not_pending' as const }
+
+      if (decision === 'reject') {
+        if (revision.action === 'create') {
+          const skill = await tx.get<{ status: string }>('SELECT status FROM skills WHERE id = ?', revision.skill_id)
+          if (skill && skill.status === 'pending_review') {
+            await tx.run('DELETE FROM skill_files WHERE skill_id = ?', revision.skill_id)
+            await tx.run('DELETE FROM skills WHERE id = ?', revision.skill_id)
+          }
+        }
+        await writeAgentAuditLog({
+          agent_id: decider.id ?? decider.kind,
+          entity: 'skill',
+          action: 'update',
+          entity_id: revision.skill_id,
+          detail: { seq: revision.seq, decision: 'reject' },
+          tenant_id: revision.tenant_id,
+        }, tx)
+        return { outcome: 'rejected' as const }
+      }
+
+      // activate
+      // Integrity: skill_revision_files has no FK and nothing else protects it between the propose and the decide
+      // (unlike skill_revisions.content, which only this module ever writes). Refuse rather than install bytes that
+      // no longer match the hash the proposal was recorded with.
+      const files = await tx.all<{ rel_path: string; mode: number; content: Buffer }>(
+        'SELECT rel_path, mode, content FROM skill_revision_files WHERE revision_id = ?', revisionId)
+      if (hashFileSet(files) !== revision.files_sha256) throw new SkillRevisionCorruptAtActivate()
+      // Same check for the proposed text itself: its hash was recorded at propose time, and the row sits in the same
+      // table family as the files. A row without a recorded hash (legacy) has nothing to compare against.
+      if (revision.content_sha256 !== null && sha256Hex(revision.content ?? '') !== revision.content_sha256) {
+        throw new SkillRevisionCorruptAtActivate()
+      }
+
+      // ORDER IS DELIBERATE (do not move the staleness check back above this write). The conditional skills UPDATE is
+      // the first statement that touches the skill row, so it takes that row's write lock; the staleness read below
+      // then runs AFTER the lock. Two concurrent activations of the same skill serialize on this row: the second one
+      // waits for the first to commit and then sees its activation in the staleness read (stale_proposal) instead of
+      // reading the old state and overwriting the first. On serial SQLite the two orders behave the same, so no test
+      // can tell them apart (a mutant that swaps them stays green); the ordering matters under Postgres READ
+      // COMMITTED (planned migration) and is on that migration's checklist. The throw below rolls the write back.
+      const content = revision.content ?? ''
+      const description = revision.proposed_description ?? frontmatterDescription(content)
+      // The skill must still be in the state this proposal assumed: 'pending_review' for a create (nobody else
+      // activated or deleted it since), 'live' for anything else (nobody revoked or deleted it since). The CAS is
+      // the write itself, like requireLive in updateSkill/deleteSkill -- 0 rows changed aborts the whole decision,
+      // the revision stays pending (the throw rolls back the status flip above too).
+      const expectedSkillStatus = revision.action === 'create' ? 'pending_review' : 'live'
+      const skillChanges = (await tx.run(
+        "UPDATE skills SET content = ?, description = ?, status = 'live', updated_at = ? WHERE id = ? AND status = ?",
+        content, description, now, revision.skill_id, expectedSkillStatus,
+      )).changes
+      if (skillChanges === 0) throw new SkillNotDecidableAtActivate()
+
+      // Staleness: a 'modify' proposal was built against prev_sha256, the latest ACTIVATED text at the time it was
+      // submitted. If the live skill moved on since (another activation landed in between), applying this older
+      // proposal now would silently discard that newer text. A 'create' has no prior activated state (prev_sha256
+      // is null) -- nothing to compare.
+      if (revision.action !== 'create') {
+        // Excludes THIS row: the CAS above already flipped it to 'activated', so without the exclusion it would be
+        // its own "latest activated" -- its content_sha256 is the proposed (new) text, which can never equal its
+        // own prev_sha256 (the old text it was proposed against), so every activation would wrongly read as stale.
+        const latestActivated = await tx.get<{ content_sha256: string | null }>(
+          "SELECT content_sha256 FROM skill_revisions WHERE skill_id = ? AND status = 'activated' AND id != ? ORDER BY seq DESC LIMIT 1",
+          revision.skill_id, revisionId)
+        if ((latestActivated?.content_sha256 ?? null) !== revision.prev_sha256) throw new SkillRevisionStaleAtActivate()
+      }
+
+      await tx.run('DELETE FROM skill_files WHERE skill_id = ?', revision.skill_id)
+      for (const f of files) {
+        await tx.run(
+          'INSERT INTO skill_files (skill_id, rel_path, content, mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+          revision.skill_id, f.rel_path, f.content, f.mode, now, now,
+        )
+      }
+      await writeAgentAuditLog({
+        agent_id: decider.id ?? decider.kind,
+        entity: 'skill',
+        action: 'update',
+        entity_id: revision.skill_id,
+        detail: { seq: revision.seq, decision: 'activate', content_sha256: revision.content_sha256?.slice(0, 12) ?? null },
+        tenant_id: revision.tenant_id,
+      }, tx)
+      return { outcome: 'activated' as const, skillId: revision.skill_id }
+    })
+  } catch (err) {
+    if (err instanceof SkillNotDecidableAtActivate) return { outcome: 'skill_not_decidable' }
+    if (err instanceof SkillRevisionStaleAtActivate) return { outcome: 'stale_proposal' }
+    if (err instanceof SkillRevisionCorruptAtActivate) return { outcome: 'corrupt_proposal' }
+    throw err
+  }
+}
+
+export interface SkillRevisionFileView {
+  rel_path: string
+  mode: number
+  content_base64: string
+}
+
+export interface SkillRevisionDetail extends SkillRevisionRow {
+  files: SkillRevisionFileView[]
+}
+
+/**
+ * One revision's full data for admin review: the row (including its proposed `content`, unlike
+ * listPendingRevisions/listSkillRevisions which both omit it on purpose) plus its proposed companion files. Any
+ * status, not only 'pending': a decided revision stays reviewable. Null when the id does not exist.
+ */
+export async function getRevisionDetail(id: number): Promise<SkillRevisionDetail | null> {
+  const revision = await dbx.get<SkillRevisionRow>('SELECT * FROM skill_revisions WHERE id = ?', id)
+  if (!revision) return null
+  const files = await dbx.all<{ rel_path: string; mode: number; content: Buffer }>(
+    'SELECT rel_path, mode, content FROM skill_revision_files WHERE revision_id = ? ORDER BY rel_path', id)
+  return { ...revision, files: files.map((f) => ({ rel_path: f.rel_path, mode: f.mode, content_base64: f.content.toString('base64') })) }
 }
 
 export interface BaselineResult {
