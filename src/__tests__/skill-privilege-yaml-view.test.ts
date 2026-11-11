@@ -72,19 +72,56 @@ describe('the two readers disagree where the head ends: any edit of the head cou
   })
 })
 
-describe('a head that cannot be read safely is gated (!unparsable), on a create too', () => {
-  it('invalid YAML: any edit counts, and so does a create', () => {
+// On the real corpus about a quarter of the SKILL.md files are not valid YAML, all for one harmless reason (an unquoted
+// description with a colon and a space), and the loader reads them fine. So an unparsable head gates an UPDATE on any
+// change of the head (!unparsable), but gates a CREATE only when it also names a capability key (!unparsable-cap).
+describe('a head that cannot be read safely: gated on any update, on a create only when it names a capability key', () => {
+  const COLON = 'name: x\ndescription: Does a thing: with a colon in it'
+
+  it('invalid YAML: any edit of the head counts on an update', () => {
     expect(privilegeView(doc('name: [unclosed')).has('!unparsable')).toBe(true)
     expect(touches(doc('name: [unclosed'), doc('name: [unclosed again'))).toBe(true)
-    expect(created(doc('name: [unclosed'))).toBe(true)
+    expect(touches(doc(COLON), doc(`${COLON} and more`))).toBe(true)
   })
 
-  it('a head above 64 KB is not parsed: unparsable, and fast', () => {
-    const big = doc(`name: x\n${Array.from({ length: 3000 }, (_, i) => `k${i}: ${'v'.repeat(30)}`).join('\n')}`)
+  it('the shape of the real corpus (a description with a colon) is unparsable and a create goes live', () => {
+    const view = privilegeView(doc(COLON))
+    expect(view.has('!unparsable')).toBe(true)
+    expect(view.has('!unparsable-cap')).toBe(false)
+    expect(created(doc(COLON))).toBe(false)
+    expect(created(doc('name: [unclosed'))).toBe(false)
+  })
+
+  it('the same unparsable head with a capability key name is held, quoted, bare, in a flow mapping, any case', () => {
+    for (const head of [
+      `${COLON}\n"allowed-tools": Bash`,
+      `${COLON}\nallowed_tools: Bash`,
+      `${COLON}\nTools: [Bash]`,
+      `${COLON}\n'hooks': pre`,
+      '{name: x, tools: [Bash]',
+      'name: [unclosed\nALLOWED-TOOLS: Bash',
+    ]) {
+      expect(privilegeView(doc(head)).has('!unparsable-cap'), head).toBe(true)
+      expect(created(doc(head)), head).toBe(true)
+    }
+  })
+
+  it('description alone never holds a create, unparsable or not', () => {
+    expect(created(doc('name: x\ndescription: a: b: c'))).toBe(false)
+  })
+
+  it('a head the readers split differently is held on a create (!region is not narrowed)', () => {
+    expect(created(doc('name: x\nnote: |\n  a\n  ---\n  b\nmore: x'))).toBe(true)
+  })
+
+  it('a head above 64 KB is not parsed: unparsable and fast; it is held on a create only when it names a capability key', () => {
+    const lines = Array.from({ length: 3000 }, (_, i) => `k${i}: ${'v'.repeat(30)}`)
+    const big = doc(`name: x\n${lines.join('\n')}`)
     expect(big.length).toBeGreaterThan(100_000)
     const t0 = Date.now()
     expect(privilegeView(big).has('!unparsable')).toBe(true)
-    expect(created(big)).toBe(true)
+    expect(created(big)).toBe(false)
+    expect(created(doc(`name: x\n${lines.join('\n')}\n"tools": Bash`))).toBe(true)
     expect(Date.now() - t0).toBeLessThan(1000)
   })
 
@@ -131,6 +168,7 @@ describe('differential: whatever a YAML load of the column-0-closed head sees, t
     const r = rng(20261111)
     let withKeys = 0
     let unreadable = 0
+    let createAllowed = 0
     for (let n = 0; n < 2400; n++) {
       const text = make(r)
       const lines = text.replace(/^﻿/, '').replace(/\r\n?/g, '\n').split('\n')
@@ -138,7 +176,17 @@ describe('differential: whatever a YAML load of the column-0-closed head sees, t
       const head = lines.slice(1, end).join('\n')
       const view = privilegeView(text)
       let loaded: unknown
-      try { loaded = yamlLoad(head) } catch { unreadable++; expect(view.has('!unparsable'), JSON.stringify(text)).toBe(true); continue }
+      try { loaded = yamlLoad(head) } catch {
+        unreadable++
+        expect(view.has('!unparsable'), JSON.stringify(text)).toBe(true)
+        // the update path: an unreadable head is never let through (nothing that was refused before is allowed now)
+        expect(touches(BASE, text), `update ${JSON.stringify(text)}`).toBe(true)
+        // the create path: held when the head names a capability key or the readers split it, otherwise it goes live
+        const holds = /allowed[-_]tools|tools|hooks/i.test(head) || view.has('!region')
+        expect(created(text), `create ${JSON.stringify(text)}`).toBe(holds)
+        if (!holds) createAllowed++
+        continue
+      }
       if (loaded === null || typeof loaded !== 'object' || Array.isArray(loaded)) continue
       for (const rawKey of Object.keys(loaded as Record<string, unknown>)) {
         const key = rawKey.trim().toLowerCase()
@@ -150,5 +198,7 @@ describe('differential: whatever a YAML load of the column-0-closed head sees, t
     // the generator is not vacuous: it produced documents with capability keys and documents that are not valid YAML
     expect(withKeys).toBeGreaterThan(300)
     expect(unreadable).toBeGreaterThan(50)
+    // the create-path class that goes live now (an unreadable head with no capability key name and no split): not empty
+    expect(createAllowed).toBeGreaterThan(5)
   })
 })

@@ -36,6 +36,9 @@ export interface SkillFileFacts {
 /** The frontmatter keys whose block counts as a privilege. Lower case; compared exactly. */
 const PRIVILEGE_KEYS: ReadonlySet<string> = new Set(['allowed-tools', 'allowed_tools', 'tools', 'hooks', 'description'])
 
+/** A capability key name anywhere in a head text: `allowed-tools`, `allowed_tools`, `tools`, `hooks` (not `description`). */
+const CAPABILITY_NAME = /allowed[-_]tools|tools|hooks/i
+
 /** A frontmatter head larger than this is not parsed at all (the request body cap is 20 MB): it is gated as unparsable. */
 const MAX_HEAD_BYTES = 64 * 1024
 /** The canonicalizer visits at most this many YAML nodes (an alias chain is cheap to load and exponential to walk). */
@@ -166,7 +169,11 @@ export function privilegeView(content: string): Map<string, string> {
   const yaml = yamlEnd === -1 ? new Map<string, string>() : yamlBlocks(lines.slice(1, yamlEnd))
 
   if (yaml === 'unparsable') {
-    out.set('!unparsable', sha256Hex(lines.slice(1, yamlEnd).join('\n')))
+    const headText = lines.slice(1, yamlEnd).join('\n')
+    out.set('!unparsable', sha256Hex(headText))
+    // a head nobody could parse that also NAMES a capability key (bare, quoted or in a flow mapping, any case, anywhere in
+    // its text): this one gates a create too. A harmless colon in a description does not.
+    if (CAPABILITY_NAME.test(headText)) out.set('!unparsable-cap', sha256Hex(headText))
   }
   if (scanEnd !== yamlEnd) {
     // The two readers close the head at different lines: an indented `---` sits inside a block, or one of them never closes.
@@ -196,9 +203,13 @@ export interface PrivilegeVerdict {
  * (a new one): then every runnable file counts as new, but `description` does not -- it only gates as a CHANGE from
  * an already-approved value (the update path, where it is a privilege key because it decides when a model picks the
  * skill), and a brand-new skill has no approved value to diverge from. Only an actual new capability grant
- * (`allowed-tools`/`allowed_tools`/`tools`/`hooks`, or a new runnable file) gates a create. A head that cannot be read
- * safely (`!unparsable`) or that the two readers split differently (`!region`) gates a create too: nothing can be
- * promised about what it grants.
+ * (`allowed-tools`/`allowed_tools`/`tools`/`hooks`, or a new runnable file) gates a create. A head that the two readers
+ * split differently (`!region`) gates a create too: nothing can be promised about what it grants. A head that cannot be
+ * parsed (`!unparsable`) does NOT gate a create by itself: on the real corpus about a quarter of the SKILL.md files are
+ * unparsable, all for one harmless reason (an unquoted description with a colon), and the loader reads them fine, so
+ * gating them would park every fourth new skill for nothing. It gates a create only when the unparsable head also holds
+ * a capability key name (`!unparsable-cap`). On an update every one of the three counts, as any change of a head the
+ * gate cannot read.
  */
 export function skillTouchesPrivilege(
   before: { content: string; files: readonly SkillFileFacts[] } | null,
@@ -213,7 +224,7 @@ export function skillTouchesPrivilege(
   const now = privilegeView(after.content)
   const keys = new Set([...was.keys(), ...now.keys()])
   for (const k of keys) {
-    if (before === null && k === 'description') continue
+    if (before === null && (k === 'description' || k === '!unparsable')) continue
     if ((was.get(k) ?? '') !== (now.get(k) ?? '')) { reasons.push('frontmatter'); break }
   }
   return { touches: reasons.length > 0, reasons }
