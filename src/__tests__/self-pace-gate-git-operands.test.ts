@@ -139,6 +139,21 @@ describe('C. a word that is not an operand of the writing subcommand keeps its v
       expect([c, denied(c, wt)]).toEqual([c, true])
     }
   })
+  it('-m with no value (read-tree -m, a flag) exempts nothing: the word after it that starts with a dash is an operand again', () => {
+    for (const c of ['git read-tree -m --prefix=@R/ HEAD', 'git read-tree -m --prefix=@R/scripts/ HEAD', 'git read-tree -m -u --prefix=@R/ HEAD', 'git read-tree -m --prefix @R/ HEAD', 'git read-tree -m--prefix=@R/ HEAD']) {
+      expect([c, denied(c, wt)]).toEqual([c, true])
+    }
+    // the twins: the same flag with a prefix that names another copy, and the same without -m, behave as before
+    expect(denied('git read-tree -m --prefix=@W2/ HEAD', wt)).toBe(false)
+    expect(denied('git read-tree --prefix=@R/ HEAD', wt)).toBe(true)
+    // a message after -m (a word without a leading dash) stays text, also next to such a flag
+    expect(denied('git merge -m "see @R" feat', wt)).toBe(false)
+    // a message that starts with a dash is text with a space in it, not a path: free. (Only a dash word that IS a loose ancestor after
+    // -m is refused now, which no message is; --message TEXT and --message=TEXT stay exempt.)
+    expect(denied('git tag -a v1 -m "-wip @R"', wt)).toBe(false)
+    expect(denied('git tag -a v1 --message "-wip @R"', wt)).toBe(false)
+    expect(denied('git tag -a v1 --message=-wip@R', wt)).toBe(false)
+  })
   it('a substitution next to an exempt word is still refused', () => {
     expect(denied('git tag -a v1 -m "@R $(date)"', wt)).toBe(true)
     expect(denied('git -C @R fetch $(echo x)', wt)).toBe(true)

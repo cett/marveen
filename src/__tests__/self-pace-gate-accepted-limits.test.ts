@@ -1,7 +1,9 @@
 // Accepted (passing) behaviours of the self-pace gate that the tree rule does not judge, pinned BY NAME.
 // They were measured against the real gate and they are NOT regressions of the tree-rewriting git rule: the same commands
-// pass on the base too. Each test states the accepted behaviour and has a refused twin, so that a later fix flips a named
-// test on purpose (and the CHANGELOG limit it belongs to is then removed in the same change), not by accident.
+// pass on the base too. Each test states the accepted behaviour, so that a later fix flips a named test on purpose (and the CHANGELOG
+// limit it belongs to is then removed in the same change), not by accident. Most have a refused twin (the same shape aimed at a protected
+// name). Not exact for every one: L4 and L6 have no separate refused twin (their expectation is three columns, agent and install refused,
+// copy free, which shows the git rule is alive), and the "twin" of L5 is the same git without the cd, not a refused pair.
 //   L1. CLOSED by the git operand rule (a git that is not read-only counts as a writer for the loose-ancestor tier): the tests are in
 //       self-pace-gate-git-operands.test.ts. The line stays so that the numbers below keep meaning what the CHANGELOG says.
 //   L2. `git checkout HEAD -- <path>` alone (step two of the core.worktree pair) passes in a worktree copy: it is not visible, which is why
@@ -93,6 +95,15 @@ describe('accepted behaviours of the tree rule, pinned by name (a later fix flip
     // the twin: the same key spelled as a plain git word is refused in the copy too (the key rule)
     const t = 'git config core.hooksPath /x'
     expect(where(t)).toEqual(REFUSED_EVERYWHERE(t))
+  })
+
+  it('L10. KNOWN LIMIT: -c core.pager, --ext-diff, --textconv and a pipe into xargs rm next to a read-only git name are judged only when the segment also holds a protected word (as every SAFE_GIT name behaved before the tree rule)', () => {
+    for (const x of ['git -c core.pager=x log -1', 'git log --ext-diff -1', 'git log --textconv -1', 'git log --format=%H | xargs rm', 'git -c core.pager=x merge-base HEAD HEAD', 'git for-each-ref --ext-diff']) {
+      expect(where(x)).toEqual(PASSES(x))
+    }
+    // the twins: the same options and the same pipe next to a protected word are refused wherever they run
+    for (const t of [`git -c core.pager=x log -1 -- ${root}/scripts/doctor.sh`, `git log --ext-diff -1 -- ${root}/scripts/doctor.sh`, `git log --textconv -1 -- ${root}/scripts/doctor.sh`,
+      `git log --format=%H -- ${root}/scripts/doctor.sh | xargs rm`]) expect(where(t)).toEqual(REFUSED_EVERYWHERE(t))
   })
 
   it('L5. KNOWN LIMIT: cd -P through a symlink is counted lexically, the shell goes physically', () => {

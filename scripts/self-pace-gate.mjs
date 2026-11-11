@@ -1566,8 +1566,11 @@ function gitExemptWords(words, ci) {
   for (let k = g.subIdx + 1; k < args.length; k++) {
     const a = args[k]
     if (a === '--') break
-    if (a === '-m' || a === '--message') { out.add(off + k + 1); k++; continue }
-    if (a.startsWith('--message=') || /^-m./.test(a)) out.add(off + k)
+    // (`-m` is a flag without a value in some subcommands, `read-tree -m --prefix=<dir>`: the word after it is text only when it does not
+    // start with a dash; a message that starts with a dash is rare and `--message=TEXT` still covers it. `--message` always takes a value.)
+    if (a === '--message') { out.add(off + k + 1); k++; continue }
+    if (a === '-m') { if (args[k + 1] !== undefined && !args[k + 1].startsWith('-')) { out.add(off + k + 1); k++ } continue }
+    if (a.startsWith('--message=') || /^-m[^-]/.test(a)) out.add(off + k)
   }
   return out
 }
@@ -1844,7 +1847,6 @@ export function bashProtectedDecision(command, opts = {}) {
     // and a git word that is only an option value (`env -u git git checkout x`, `xargs -I git ...`) cannot hide it.
     let gitIdxs = []
     const launcherAt = gci === -1 ? -1 : words.findIndex((w) => GIT_LAUNCHERS.has(w.split('/').pop()))
-    if (gci !== -1 && (launcherAt === -1 || launcherAt >= gci) && words[gci].split('/').pop() === 'git') gitIdxs = [gci]
     if (gci !== -1 && (launcherAt === -1 || launcherAt >= gci) && words[gci].split('/').pop() === 'git') gitIdxs = [gci]
     else if (gci !== -1) {
       for (let i = launcherAt + 1; launcherAt !== -1 && i < words.length && gitIdxs.length <= GIT_CANDIDATES_MAX; i++) if (words[i].split('/').pop() === 'git') gitIdxs.push(i)
