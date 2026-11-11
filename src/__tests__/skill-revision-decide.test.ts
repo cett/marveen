@@ -99,9 +99,9 @@ describe('decideSkillRevision', () => {
     // (the hash of the skill's content at propose time, and of the proposed file set, respectively).
     const proposedFiles = [{ rel_path: 'scripts/run.sh', mode: 0o755, content: Buffer.from('#!/bin/sh\n') }]
     const revisionId = db.prepare(`
-      INSERT INTO skill_revisions (skill_id, tenant_id, seq, action, content, prev_sha256, files_sha256, author_kind, status)
-      VALUES (?, ?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM skill_revisions WHERE skill_id = ?), 'modify', ?, ?, ?, 'human', 'pending')
-    `).run('agent/a/with-files', 'fleet', 'agent/a/with-files', PRIVILEGED, sha256Hex(PLAIN), hashFileSet(proposedFiles)).lastInsertRowid as number
+      INSERT INTO skill_revisions (skill_id, tenant_id, seq, action, content, content_sha256, prev_sha256, files_sha256, author_kind, status)
+      VALUES (?, ?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM skill_revisions WHERE skill_id = ?), 'modify', ?, ?, ?, ?, 'human', 'pending')
+    `).run('agent/a/with-files', 'fleet', 'agent/a/with-files', PRIVILEGED, sha256Hex(PRIVILEGED), sha256Hex(PLAIN), hashFileSet(proposedFiles)).lastInsertRowid as number
     db.prepare('INSERT INTO skill_revision_files (revision_id, rel_path, mode, content) VALUES (?, ?, ?, ?)')
       .run(revisionId, 'scripts/run.sh', 0o755, Buffer.from('#!/bin/sh\n'))
     await decideSkillRevision(revisionId, 'activate', { kind: 'human', id: 'reviewer' })
@@ -164,11 +164,12 @@ describe('decideSkillRevision', () => {
     // the FIRST one is now stale: its prev_sha256 was PLAIN's hash, but the live text has moved past that
     const result = await decideSkillRevision(first.revision.id, 'activate', { kind: 'human', id: 'reviewer' })
     expect(result).toEqual({ outcome: 'stale_proposal' })
-    // The skills write now happens BEFORE the staleness check (row lock first, see the comment in decideSkillRevision),
-    // so a stale refusal must roll that write back: the newer live text survives and the stale revision stays pending.
-    // NOTE: on serial SQLite this cannot tell "write before the check" from "check before the write" apart (the order
-    // only matters under Postgres READ COMMITTED, migration checklist), so a mutant that swaps them is not killed here.
-    // What this pins is the rollback, which the new order depends on.
+    // The row lock (a no-op UPDATE) comes first, the live-state read and the staleness check after it, the real write
+    // last (see the comment in decideSkillRevision). A stale refusal still rolls back the status flip of the decision:
+    // the newer live text survives and the stale revision stays pending.
+    // NOTE: on serial SQLite the lock itself cannot be told from its absence (the order only matters under Postgres READ
+    // COMMITTED, migration checklist), so a mutant that drops the lock is not killed here. The read-after-write mistake
+    // IS killed (skill-revision-state-staleness.test.ts: the unchanged live state must activate).
     expect((await getSkill('agent/a/stale'))?.content).toBe(PRIVILEGED.replace('body', 'body v2'))
     expect(await listPendingRevisions('agent/a/stale')).toHaveLength(1)
   })
@@ -390,9 +391,9 @@ async function pendingModifyWithFiles(id: string, live: Record<string, string>, 
   }
   const files = Object.entries(proposed).map(([rel_path, text]) => ({ rel_path, mode: 0o755, content: Buffer.from(text) }))
   const revisionId = db.prepare(`
-    INSERT INTO skill_revisions (skill_id, tenant_id, seq, action, content, prev_sha256, files_sha256, author_kind, status)
-    VALUES (?, ?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM skill_revisions WHERE skill_id = ?), 'modify', ?, ?, ?, 'human', 'pending')
-  `).run(id, tenant, id, PRIVILEGED, sha256Hex(PLAIN), hashFileSet(files)).lastInsertRowid as number
+    INSERT INTO skill_revisions (skill_id, tenant_id, seq, action, content, content_sha256, prev_sha256, files_sha256, author_kind, status)
+    VALUES (?, ?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM skill_revisions WHERE skill_id = ?), 'modify', ?, ?, ?, ?, 'human', 'pending')
+  `).run(id, tenant, id, PRIVILEGED, sha256Hex(PRIVILEGED), sha256Hex(PLAIN), hashFileSet(files)).lastInsertRowid as number
   for (const f of files) {
     db.prepare('INSERT INTO skill_revision_files (revision_id, rel_path, mode, content) VALUES (?, ?, ?, ?)')
       .run(revisionId, f.rel_path, f.mode, f.content)
@@ -467,6 +468,8 @@ describe('POST decide: the disk copies of the dropped files are removed after th
     expect(calls[0][1]).toBe('scripts/old.sh')
     expect(calls[0][2]).toEqual(Buffer.from('OLD-BYTES'))
     expect(calls[0][3]).toBe('fleet')
+    // the activation asks for a hand-edited copy to be moved aside (the single-file DELETE route does too, see skill-dropped-file-quarantine.test.ts)
+    expect(calls[0][4]).toBe(true)
   })
 
   it('several dropped files: one call each', async () => {

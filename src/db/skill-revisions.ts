@@ -72,6 +72,8 @@ export interface SkillRevisionRow {
   decided_at: number | null
   decision_ref: string | null
   proposed_description: string | null
+  /** Hash of the whole live state (text, description, file set) a proposal was built against; NULL: see hashSkillState. */
+  prev_state_sha256: string | null
 }
 
 export type SkillRevisionStatus = 'activated' | 'pending' | 'rejected' | 'expired'
@@ -103,6 +105,16 @@ export function hashFileSet(files: readonly FileFacts[]): string | null {
     .map((f) => `${f.rel_path}\0${f.mode}\0${sha256Hex(f.content)}\n`)
     .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
   return sha256Hex(lines.join(''))
+}
+
+/**
+ * Hash of the whole live state of a skill: SHA-256 over "<sha256 of the SKILL.md text>\0<description>\0<file-set hash>",
+ * the file-set hash being empty when the skill has no companion files. A proposal records it when it is built and the
+ * activation recomputes it from the live tables, so a change to the description or to the companion files counts as
+ * much as a change to the text. One function for both sides: the two cannot drift.
+ */
+export function hashSkillState(content: string, description: string, files: readonly FileFacts[]): string {
+  return sha256Hex(`${sha256Hex(content)}\0${description}\0${hashFileSet(files) ?? ''}`)
 }
 
 /** True when any companion file lives under scripts/ or is executable (the part of a skill that can run). */
@@ -267,14 +279,20 @@ export async function submitPendingRevision(tx: SqlOps, opts: SubmitPendingRevis
 
   const latest = await tx.get<{ content_sha256: string | null }>(
     "SELECT content_sha256 FROM skill_revisions WHERE skill_id = ? AND status = 'activated' ORDER BY seq DESC LIMIT 1", skill.id)
+  // The LIVE state the proposal is built against, read from the tables (not from the revision trail: a description-only
+  // edit and some file writes leave no revision). Always present for a real caller (the live row, or the placeholder
+  // of a create); a row that is missing leaves it NULL, which activation reads as "compare the text only".
+  const liveSkill = await tx.get<{ content: string; description: string }>('SELECT content, description FROM skills WHERE id = ?', skill.id)
+  const liveFiles = await tx.all<FileFacts>('SELECT rel_path, mode, content FROM skill_files WHERE skill_id = ?', skill.id)
+  const prevState = liveSkill ? hashSkillState(liveSkill.content, liveSkill.description, liveFiles) : null
   await tx.run(`
     INSERT INTO skill_revisions
       (skill_id, tenant_id, seq, action, content_sha256, prev_sha256, files_sha256, has_scripts, content,
-       author_kind, author_id, source_ref, reason, status, touches_privilege, submitted_by, proposed_description)
-    VALUES (?, ?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM skill_revisions WHERE skill_id = ?), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+       author_kind, author_id, source_ref, reason, status, touches_privilege, submitted_by, proposed_description, prev_state_sha256)
+    VALUES (?, ?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM skill_revisions WHERE skill_id = ?), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)
   `, skill.id, skill.tenant_id, skill.id, opts.action, contentSha, latest?.content_sha256 ?? null, filesSha,
     hasRunnableFiles(opts.files) ? 1 : 0, opts.content, actor.kind, actor.id, opts.sourceRef ?? null, opts.reason ?? null,
-    opts.touchesPrivilege ? 1 : 0, actor.id, opts.description ?? null)
+    opts.touchesPrivilege ? 1 : 0, actor.id, opts.description ?? null, prevState)
   const row = await tx.get<SkillRevisionRow>('SELECT * FROM skill_revisions WHERE skill_id = ? ORDER BY seq DESC LIMIT 1', skill.id) as SkillRevisionRow
   for (const f of opts.files) {
     await tx.run('INSERT INTO skill_revision_files (revision_id, rel_path, mode, content) VALUES (?, ?, ?, ?)', row.id, f.rel_path, f.mode, f.content)
@@ -385,9 +403,12 @@ const SELF_APPROVAL_EXEMPT_AUTHOR_KINDS: ReadonlySet<string> = new Set(['import'
  *    second CAS, on the skill row itself (`WHERE id = ? AND status = <expected>`); 0 rows changed aborts the whole
  *    decision ('skill_not_decidable', the revision stays pending) -- without it, activating an old pending proposal
  *    could silently resurrect a skill an admin had deliberately revoked in the meantime.
- *  - a 'modify' proposal also carries `prev_sha256`, the latest ACTIVATED text hash at the time it was submitted; if
- *    the skill's latest activated text has since moved past that (another activation landed first), applying this
- *    older proposal now would silently discard the newer one, so the decision aborts ('stale_proposal') instead.
+ *  - a 'modify' proposal also carries `prev_state_sha256`, the hash of the whole live state (text, description, companion
+ *    file set) at the time it was submitted; if the live skill has since moved past that (another activation landed
+ *    first, a direct write changed the description, a file was put or deleted), applying this older proposal now would
+ *    silently discard that change, so the decision aborts ('stale_proposal') instead. The live state is read from the
+ *    tables under the row lock, not from the revision trail. A proposal without that hash (written before migration
+ *    0095) falls back to comparing the text hash `prev_sha256` with the latest activated revision.
  *  - the companion files (skill_revision_files, no FK) are re-hashed and compared with the revision's own
  *    `files_sha256` before use ('corrupt_proposal' on a mismatch): nothing else protects that table between the
  *    propose and the decide, unlike `content`, which only this module ever writes to the revision row.
@@ -461,52 +482,77 @@ export async function decideSkillRevision(
         'SELECT rel_path, mode, content FROM skill_revision_files WHERE revision_id = ?', revisionId)
       if (hashFileSet(files) !== revision.files_sha256) throw new SkillRevisionCorruptAtActivate()
       // Same check for the proposed text itself: its hash was recorded at propose time, and the row sits in the same
-      // table family as the files. A row without a recorded hash (legacy) has nothing to compare against.
-      if (revision.content_sha256 !== null && sha256Hex(revision.content ?? '') !== revision.content_sha256) {
-        throw new SkillRevisionCorruptAtActivate()
-      }
+      // table family as the files. Every writer of this table records content_sha256 (writeSkillRevision and
+      // submitPendingRevision compute it before the insert, and the 0092 rebuild copies it), so a pending row without
+      // one is not a legacy shape but damage: it fails the comparison and answers corrupt_proposal.
+      if (sha256Hex(revision.content ?? '') !== revision.content_sha256) throw new SkillRevisionCorruptAtActivate()
 
-      // ORDER IS DELIBERATE (do not move the staleness check back above this write). The conditional skills UPDATE is
-      // the first statement that touches the skill row, so it takes that row's write lock; the staleness read below
-      // then runs AFTER the lock. Two concurrent activations of the same skill serialize on this row: the second one
-      // waits for the first to commit and then sees its activation in the staleness read (stale_proposal) instead of
-      // reading the old state and overwriting the first. On serial SQLite the two orders behave the same, so no test
-      // can tell them apart (a mutant that swaps them stays green); the ordering matters under Postgres READ
-      // COMMITTED (planned migration) and is on that migration's checklist. The throw below rolls the write back.
+      // ORDER IS DELIBERATE (do not move the staleness read above the lock, and do not move the lock below the real
+      // write). The first statement that touches the skill row is the lock-taking no-op below: it takes that row's
+      // write lock before anything is read from it. The live-state read for the staleness check runs AFTER the lock and
+      // BEFORE the real write (a read after the real write would read this proposal's own values). Two concurrent
+      // activations of the same skill serialize on the row: the second one waits for the first to commit and then sees
+      // its activation in the staleness read (stale_proposal) instead of reading the old state and overwriting the
+      // first. On serial SQLite the orders behave the same, so no test can tell them apart (a mutant that swaps them
+      // stays green); the ordering matters under Postgres READ COMMITTED (planned migration) and is on that migration's
+      // checklist. Every throw below rolls the writes back.
       const content = revision.content ?? ''
       const description = revision.proposed_description ?? frontmatterDescription(content)
       // The skill must still be in the state this proposal assumed: 'pending_review' for a create (nobody else
-      // activated or deleted it since), 'live' for anything else (nobody revoked or deleted it since). The CAS is
-      // the write itself, like requireLive in updateSkill/deleteSkill -- 0 rows changed aborts the whole decision,
-      // the revision stays pending (the throw rolls back the status flip above too).
+      // activated or deleted it since), 'live' for anything else (nobody revoked or deleted it since). The no-op
+      // UPDATE is the CAS and the lock in one, like requireLive in updateSkill/deleteSkill -- 0 rows changed aborts the
+      // whole decision, the revision stays pending (the throw rolls back the status flip above too).
       const expectedSkillStatus = revision.action === 'create' ? 'pending_review' : 'live'
+      const locked = (await tx.run(
+        'UPDATE skills SET updated_at = updated_at WHERE id = ? AND status = ?', revision.skill_id, expectedSkillStatus,
+      )).changes
+      if (locked === 0) throw new SkillNotDecidableAtActivate()
+
+      // The live state NOW, read under the lock and before the real write: the skill row and the companion files. The
+      // files are also what the whole-set replace below drops (the ones whose rel_path is not in the proposed set are
+      // handed back so the caller can remove their disk copies, see removedFiles on the result).
+      const live = await tx.get<{ content: string; description: string; tenant_id: string }>(
+        'SELECT content, description, tenant_id FROM skills WHERE id = ?', revision.skill_id)
+      const before = await tx.all<{ rel_path: string; mode: number; content: Buffer }>(
+        'SELECT rel_path, mode, content FROM skill_files WHERE skill_id = ?', revision.skill_id)
+
+      // Staleness: a 'modify' proposal was built against the live state at the time it was submitted. If the live skill
+      // moved on since, applying this older proposal now would silently discard that change. Two ways the state moves
+      // that the text hash cannot see: a write that changes only the description (no revision is written for it) and a
+      // companion file put or delete (the whole-set replace below would discard it). So a proposal records the hash of
+      // the whole live state (prev_state_sha256, see hashSkillState) and it is compared with the same hash computed
+      // from the live tables here, not from the revision trail. A 'create' has no prior state -- nothing to compare.
+      if (revision.action !== 'create') {
+        if (revision.prev_state_sha256 !== null) {
+          if (live === undefined || hashSkillState(live.content, live.description, before) !== revision.prev_state_sha256) {
+            throw new SkillRevisionStaleAtActivate()
+          }
+        } else {
+          // The one NULL path. A proposal recorded before migration 0095 (any pending revision that was waiting when it
+          // ran: a gated write by an agent or the file sync, an import) carries no state hash. It keeps the old
+          // comparison, the SKILL.md text alone against the latest activated revision: not stale on purpose (that would
+          // strand the pending proposal for no safety gain). No new row has a NULL here.
+          // Excludes THIS row: the CAS above already flipped it to 'activated', so without the exclusion it would be
+          // its own "latest activated" -- its content_sha256 is the proposed (new) text, which can never equal its
+          // own prev_sha256 (the old text it was proposed against), so every activation would wrongly read as stale.
+          // A NULL prev_sha256 is not a value to match: a proposal for a live skill is always recorded after the skill's
+          // baseline (submitPendingRevision), so it carries one, and without one nothing can be compared: stale.
+          const latestActivated = await tx.get<{ content_sha256: string | null }>(
+            "SELECT content_sha256 FROM skill_revisions WHERE skill_id = ? AND status = 'activated' AND id != ? ORDER BY seq DESC LIMIT 1",
+            revision.skill_id, revisionId)
+          if (revision.prev_sha256 === null || latestActivated?.content_sha256 !== revision.prev_sha256) throw new SkillRevisionStaleAtActivate()
+        }
+      }
+
       const skillChanges = (await tx.run(
         "UPDATE skills SET content = ?, description = ?, status = 'live', updated_at = ? WHERE id = ? AND status = ?",
         content, description, now, revision.skill_id, expectedSkillStatus,
       )).changes
       if (skillChanges === 0) throw new SkillNotDecidableAtActivate()
 
-      // Staleness: a 'modify' proposal was built against prev_sha256, the latest ACTIVATED text at the time it was
-      // submitted. If the live skill moved on since (another activation landed in between), applying this older
-      // proposal now would silently discard that newer text. A 'create' has no prior activated state (prev_sha256
-      // is null) -- nothing to compare.
-      if (revision.action !== 'create') {
-        // Excludes THIS row: the CAS above already flipped it to 'activated', so without the exclusion it would be
-        // its own "latest activated" -- its content_sha256 is the proposed (new) text, which can never equal its
-        // own prev_sha256 (the old text it was proposed against), so every activation would wrongly read as stale.
-        const latestActivated = await tx.get<{ content_sha256: string | null }>(
-          "SELECT content_sha256 FROM skill_revisions WHERE skill_id = ? AND status = 'activated' AND id != ? ORDER BY seq DESC LIMIT 1",
-          revision.skill_id, revisionId)
-        if ((latestActivated?.content_sha256 ?? null) !== revision.prev_sha256) throw new SkillRevisionStaleAtActivate()
-      }
-
-      // The files the skill has NOW, read before the whole-set replace: the ones whose rel_path is not in the proposed
-      // set are handed back so the caller can remove their disk copies (see removedFiles on the result).
       const proposedPaths = new Set(files.map((f) => f.rel_path))
-      const before = await tx.all<{ rel_path: string; content: Buffer }>(
-        'SELECT rel_path, content FROM skill_files WHERE skill_id = ?', revision.skill_id)
       const removedFiles = before.filter((f) => !proposedPaths.has(f.rel_path)).map((f) => ({ rel_path: f.rel_path, content: f.content }))
-      const skillRow = await tx.get<{ tenant_id: string }>('SELECT tenant_id FROM skills WHERE id = ?', revision.skill_id)
+      const skillRow = live
       await tx.run('DELETE FROM skill_files WHERE skill_id = ?', revision.skill_id)
       for (const f of files) {
         await tx.run(

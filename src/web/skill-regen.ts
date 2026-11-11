@@ -443,21 +443,51 @@ function writeCompanionFiles(skillDir: string, files: SkillFileRow[], dryRun: bo
   return out
 }
 
-/** Remove one generated companion file (only while byte-equal to `expected`) and prune the empty dirs above it, up to the skill dir. */
-function removeCompanionFile(skillDir: string, relPath: string, expected: Buffer): 'removed' | 'absent' | 'modified' | 'error' {
+/**
+ * A copy of a file that was moved aside (quarantineSkillFile, quarantineCompanionFile) carries this suffix. The loader
+ * does not read it and the boot-time companion import must not either: it would seed the moved-aside copy of a file the
+ * skill dropped back into the live skill under its new name, without a review.
+ */
+const QUARANTINE_SUFFIX = /\.revoked-\d+$/
+
+/** Remove the empty dirs above a removed or moved companion file, up to the skill dir. */
+function pruneEmptyDirs(skillDir: string, target: string): void {
+  for (let d = dirname(target); normalize(d) !== normalize(skillDir) && normalize(d).startsWith(normalize(skillDir) + sep); d = dirname(d)) {
+    try { rmdirSync(d) } catch { break }   // not empty
+  }
+}
+
+/**
+ * Remove one generated companion file (only while byte-equal to `expected`) and prune the empty dirs above it, up to the
+ * skill dir. A copy that is NOT byte-equal was edited by hand: it is left in place ('modified'), or, when the caller asks
+ * for it (`quarantineModified`, an activation that dropped the file), moved aside under the same quarantine name the
+ * SKILL.md reconcile uses ('quarantined'): the edit is kept and, being no longer where the skill looks, it cannot be
+ * seeded back into the live skill by the boot import.
+ */
+function removeCompanionFile(skillDir: string, relPath: string, expected: Buffer, quarantineModified = false): 'removed' | 'quarantined' | 'absent' | 'modified' | 'error' {
   const target = companionTarget(skillDir, relPath)
   if (!target || !existsSync(target)) return 'absent'
   let onDisk: Buffer
   try { onDisk = readFileSync(target) } catch { return 'error' }
   if (!onDisk.equals(expected)) {
-    logger.warn({ skillDir, rel: relPath }, 'skill-regen: companion file was edited by hand, leaving it')
-    return 'modified'
+    if (!quarantineModified) {
+      logger.warn({ skillDir, rel: relPath }, 'skill-regen: companion file was edited by hand, leaving it')
+      return 'modified'
+    }
+    const moved = `${target}.revoked-${Date.now()}`
+    try {
+      renameSync(target, moved)
+      logger.warn({ skillDir, rel: relPath, to: moved }, 'skill-regen: companion file dropped by an activation was edited by hand, moved it aside')
+      pruneEmptyDirs(skillDir, target)
+      return 'quarantined'
+    } catch (err) {
+      logger.error({ err, skillDir, rel: relPath }, 'skill-regen: failed to move a hand-edited companion file aside')
+      return 'error'
+    }
   }
   try {
     unlinkSync(target)
-    for (let d = dirname(target); normalize(d) !== normalize(skillDir) && normalize(d).startsWith(normalize(skillDir) + sep); d = dirname(d)) {
-      try { rmdirSync(d) } catch { break }   // not empty
-    }
+    pruneEmptyDirs(skillDir, target)
     return 'removed'
   } catch (err) {
     logger.error({ err, skillDir, rel: relPath }, 'skill-regen: failed to remove companion file')
@@ -472,14 +502,17 @@ function removeCompanionFiles(skillDir: string, files: SkillFileRow[]): void {
 /**
  * Remove the generated copy of ONE deleted companion file from the skill's
  * on-disk locations (the fleet dir, or every tenant copy). Only byte-equal
- * files go; returns how many were removed.
+ * files go; a hand-edited copy stays where it is, unless `quarantineModified`
+ * (an activation that dropped the file) moves it aside instead. Returns how many
+ * copies were taken out of the skill (removed or moved aside).
  */
-function removeGeneratedCompanionFileLocked(id: string, relPath: string, content: Buffer, tenantId: string): number {
+function removeGeneratedCompanionFileLocked(id: string, relPath: string, content: Buffer, tenantId: string, quarantineModified: boolean): number {
   if (!SKILL_SQL_REGEN) return 0
   let removed = 0
+  const taken = (r: ReturnType<typeof removeCompanionFile>): boolean => r === 'removed' || r === 'quarantined'
   if (tenantId === 'fleet') {
     const skillMd = resolveSkillPath(id)
-    if (skillMd && removeCompanionFile(dirOfSkillMd(skillMd), relPath, content) === 'removed') removed++
+    if (skillMd && taken(removeCompanionFile(dirOfSkillMd(skillMd), relPath, content, quarantineModified))) removed++
     return removed
   }
   for (const agentId of agentDirsOnDisk()) {
@@ -488,7 +521,7 @@ function removeGeneratedCompanionFileLocked(id: string, relPath: string, content
     const text = readTextOrNull(path)
     const hdr = text === null ? null : readGeneratedHeader(text)
     if (!hdr || !hdr.tenant || hdr.id !== id) continue
-    if (removeCompanionFile(dirOfSkillMd(path), relPath, content) === 'removed') removed++
+    if (taken(removeCompanionFile(dirOfSkillMd(path), relPath, content, quarantineModified))) removed++
   }
   return removed
 }
@@ -508,7 +541,7 @@ function walkCompanionFiles(root: string): { rel: string; abs: string }[] {
       try { st = lstatSync(abs) } catch { continue }
       if (st.isSymbolicLink()) continue
       if (st.isDirectory()) { if (!SKIP_DIRS.has(name)) walk(abs, rel); continue }
-      if (!st.isFile() || SKIP_FILES.has(name) || rel === 'SKILL.md') continue
+      if (!st.isFile() || SKIP_FILES.has(name) || rel === 'SKILL.md' || QUARANTINE_SUFFIX.test(name)) continue
       out.push({ rel, abs })
     }
   }
@@ -947,4 +980,4 @@ export const regenTenantSkillFiles = serialized(regenTenantSkillFilesLocked)
 // The two removers are in the queue as well: a single regen that already read the row would otherwise write the
 // file back after the delete route removed it, and the file of a deleted skill would stay on disk.
 export const removeGeneratedSkillFile = serialized((id: string, content: string, tenantId: string, files: SkillFileRow[] = []) => Promise.resolve().then(() => removeGeneratedSkillFileLocked(id, content, tenantId, files)))
-export const removeGeneratedCompanionFile = serialized((id: string, relPath: string, content: Buffer, tenantId: string) => Promise.resolve().then(() => removeGeneratedCompanionFileLocked(id, relPath, content, tenantId)))
+export const removeGeneratedCompanionFile = serialized((id: string, relPath: string, content: Buffer, tenantId: string, quarantineModified: boolean) => Promise.resolve().then(() => removeGeneratedCompanionFileLocked(id, relPath, content, tenantId, quarantineModified)))

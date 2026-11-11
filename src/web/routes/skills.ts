@@ -8,7 +8,7 @@ import { AGENTS_BASE_DIR, listAgentNames, readFileOr, agentDir } from '../agent-
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../../config.js'
 import { generateSkillMd } from '../agent-scaffold.js'
 import { parseMultipart } from '../multipart.js'
-import { readBody, json, RequestBodyTooLargeError } from '../http-helpers.js'
+import { readBody, json, parseObjectBody, RequestBodyTooLargeError } from '../http-helpers.js'
 import { recordFleetSkillWriteDenied } from '../token-shadow.js'
 import { sanitizeSkillName, shellEscape } from '../sanitize.js'
 import { regenSingleSkillFile, removeGeneratedSkillFile, removeGeneratedCompanionFile } from '../skill-regen.js'
@@ -402,7 +402,9 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/skills' && method === 'POST') {
     const body = await readBody(req)
-    const { name: rawSkillName, description } = JSON.parse(body.toString()) as { name: string; description: string }
+    const createBody = parseObjectBody<{ name: string; description: string }>(res, body)
+    if (createBody === null) return true
+    const { name: rawSkillName, description } = createBody
     const skillName = sanitizeSkillName(rawSkillName || '')
     if (!skillName) { json(res, { error: 'required', field: 'name', hint: 'Skill name is required' }, 400); return true }
     if (!description) { json(res, { error: 'required', field: 'description', hint: 'Skill description is required' }, 400); return true }
@@ -509,7 +511,11 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     if (sourceRow && sourceRow.status !== 'live') { json(res, { error: 'not_found', hint: 'Skill not found' }, 404); return true }
 
     const body = await readBody(req)
-    const { agents: targetAgents } = JSON.parse(body.toString()) as { agents: string[] }
+    const assignBody = parseObjectBody<{ agents: string[] }>(res, body)
+    if (assignBody === null) return true
+    const { agents: targetAgents } = assignBody
+    // The loop below iterates it: a missing or non-array `agents` threw into a 500.
+    if (!Array.isArray(targetAgents)) { json(res, { error: 'required', field: 'agents', hint: 'agents must be an array of agent ids' }, 400); return true }
 
     const allAgentNames = listAgentNames()
 
@@ -571,7 +577,9 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
       }
       if (!existsSync(skillDir)) { json(res, { error: 'not_found', hint: 'Skill not found' }, 404); return true }
       const body = await readBody(req)
-      const { content } = JSON.parse(body.toString()) as { content: string }
+      const agentPutBody = parseObjectBody<{ content: string }>(res, body)
+      if (agentPutBody === null) return true
+      const { content } = agentPutBody
       if (typeof content !== 'string') { json(res, { error: 'required', field: 'content', hint: 'content is required' }, 400); return true }
       const agentSqlId = `agent/${agentPutParam}/${skillName}`
       const agentDesc = parseFrontmatterField(content, 'description')
@@ -612,7 +620,9 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     }
     if (!existsSync(skillDir)) { json(res, { error: 'not_found', hint: 'Skill not found' }, 404); return true }
     const body = await readBody(req)
-    const { content } = JSON.parse(body.toString()) as { content: string }
+    const globalPutBody = parseObjectBody<{ content: string }>(res, body)
+    if (globalPutBody === null) return true
+    const { content } = globalPutBody
     if (typeof content !== 'string') { json(res, { error: 'required', field: 'content', hint: 'content is required' }, 400); return true }
     const globalSqlId = `global/${skillName}`
     const globalDesc = parseFrontmatterField(content, 'description')
@@ -699,8 +709,8 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     if (fleetAgent) { await countFleetSkillDenial(''); json(res, { error: 'forbidden', hint: 'A fleet agent token changes its own agent skills only (PUT agent/<name>/<skill>)' }, 403); return true }
     if (!isAdmin && !callerTenantId) { json(res, { error: 'forbidden', hint: 'No tenant scope' }, 403); return true }
     const body = await readBody(req)
-    let parsed: { name?: string; description?: string; content?: string; is_global?: boolean } = {}
-    try { parsed = JSON.parse(body.toString()) } catch { json(res, { error: 'parse_error', hint: 'Invalid JSON' }, 400); return true }
+    const parsed = parseObjectBody<{ name?: string; description?: string; content?: string; is_global?: boolean }>(res, body)
+    if (parsed === null) return true
     const { name, description, content, is_global } = parsed
     if (typeof name !== 'string' || !name.trim()) { json(res, { error: 'required', field: 'name', hint: 'name is required' }, 400); return true }
     if (typeof content !== 'string' || !content.trim()) { json(res, { error: 'required', field: 'content', hint: 'content is required' }, 400); return true }
@@ -756,8 +766,8 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     // the answer for a skill that is not there, so a revoke freezes the text and the write does not tell the id exists.
     if (existing && !isAdmin && existing.status !== 'live') { json(res, { error: 'not_found' }, 404); return true }
     const body = await readBody(req)
-    let parsed: { name?: string; description?: string; content?: string; is_global?: boolean } = {}
-    try { parsed = JSON.parse(body.toString()) } catch { json(res, { error: 'parse_error', hint: 'Invalid JSON' }, 400); return true }
+    let parsed = parseObjectBody<{ name?: string; description?: string; content?: string; is_global?: boolean }>(res, body)
+    if (parsed === null) return true
     if (parsed.is_global !== undefined && !isAdmin) { json(res, { error: 'forbidden', hint: 'Only admin can set is_global' }, 403); return true }
     if (createSpec) {
       if (typeof parsed.content !== 'string' || !parsed.content.trim()) { json(res, { error: 'required', field: 'content', hint: 'content is required to create a skill' }, 400); return true }
@@ -861,8 +871,9 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
         const f = await getSkillFile(id, rel)
         if (!f) { json(res, { error: 'not_found' }, 404); return true }
         await deleteSkillFile(id, rel, actor)
-        // Drop the generated copy too (only while it still equals the deleted row).
-        await removeGeneratedCompanionFile(id, rel, f.content, skill.tenant_id)
+        // Drop the generated copy too: removed while it still equals the deleted row; a copy somebody edited by hand is
+        // moved aside, not left in place where the boot-time companion import would seed it back without a review.
+        await removeGeneratedCompanionFile(id, rel, f.content, skill.tenant_id, true)
         json(res, { ok: true })
         return true
       }
@@ -872,8 +883,8 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
         if (err instanceof RequestBodyTooLargeError) { json(res, { error: 'limit_exceeded', hint: `File too large (max ${MAX_SKILL_FILE_BYTES} bytes)` }, 413); return true }
         throw err
       }
-      let parsed: { content?: unknown; content_base64?: unknown; mode?: unknown } = {}
-      try { parsed = JSON.parse(raw.toString()) } catch { json(res, { error: 'parse_error', hint: 'Invalid JSON' }, 400); return true }
+      const parsed = parseObjectBody<{ content?: unknown; content_base64?: unknown; mode?: unknown }>(res, raw)
+      if (parsed === null) return true
       const hasText = typeof parsed.content === 'string'
       const hasB64 = typeof parsed.content_base64 === 'string'
       if (hasText === hasB64) { json(res, { error: 'required', field: 'content', hint: 'Send exactly one of content (utf-8 text) or content_base64' }, 400); return true }
@@ -916,8 +927,8 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'invalid_value', field: 'id', hint: 'Revision id must be a positive integer' }, 400); return true
     }
     const body = await readBody(req)
-    let parsed: { decision?: unknown; reason?: unknown }
-    try { parsed = JSON.parse(body.toString()) as { decision?: unknown; reason?: unknown } } catch { json(res, { error: 'parse_error', hint: 'Invalid JSON' }, 400); return true }
+    const parsed = parseObjectBody<{ decision?: unknown; reason?: unknown }>(res, body)
+    if (parsed === null) return true
     if (parsed.decision !== 'activate' && parsed.decision !== 'reject') {
       json(res, { error: 'invalid_value', field: 'decision', hint: 'decision must be "activate" or "reject"' }, 400); return true
     }
@@ -942,7 +953,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
       return true
     }
     if (result.outcome === 'stale_proposal') {
-      json(res, { error: 'status_conflict', reason: 'stale_proposal', hint: 'The skill\'s live content changed since this proposal was submitted; re-read the diff before deciding again' }, 409)
+      json(res, { error: 'status_conflict', reason: 'stale_proposal', hint: 'The skill\'s live state (text, description or companion files) changed since this proposal was submitted; re-read the diff before deciding again' }, 409)
       return true
     }
     if (result.outcome === 'corrupt_proposal') {
@@ -950,11 +961,13 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
       return true
     }
     if (result.skillId) {
-      // The files the activation dropped: their generated copies leave the disk too (byte-equal only, the same call
-      // the single-file DELETE route makes). The regen below only writes, so without this an old script stays on disk
-      // and the boot-time companion import copies it back into the live skill without a review. Before the regen.
+      // The files the activation dropped: their generated copies leave the disk too (byte-equal ones are removed). The
+      // regen below only writes, so without this an old script stays on disk and the boot-time companion import copies
+      // it back into the live skill without a review. A copy somebody edited by hand is not deleted (it may hold work
+      // the database does not have) and is not left in place either, where the import would seed it back: it is moved
+      // aside (quarantineModified). Before the regen.
       for (const f of result.removedFiles ?? []) {
-        await removeGeneratedCompanionFile(result.skillId, f.rel_path, f.content, result.tenantId ?? 'fleet')
+        await removeGeneratedCompanionFile(result.skillId, f.rel_path, f.content, result.tenantId ?? 'fleet', true)
       }
       // Disk regen after the transaction, same rule as every other skill write path (db/ never calls skill-regen.js).
       const regen = await regenSingleSkillFile(result.skillId, true)
@@ -1054,8 +1067,8 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     const existing = await getSkill(id)
     if (!existing) { json(res, { error: 'not_found' }, 404); return true }
     const body = await readBody(req)
-    let parsed: { tenant_id?: string } = {}
-    try { parsed = JSON.parse(body.toString()) } catch { json(res, { error: 'parse_error', hint: 'Invalid JSON' }, 400); return true }
+    const parsed = parseObjectBody<{ tenant_id?: string }>(res, body)
+    if (parsed === null) return true
     if (typeof parsed.tenant_id !== 'string' || !parsed.tenant_id) { json(res, { error: 'required', field: 'tenant_id', hint: 'tenant_id is required' }, 400); return true }
     await grantSkillAccess(id, parsed.tenant_id, ctx.auth?.kind === 'session' ? ctx.auth.user : undefined)
     // A granted tenant skill also lands under the grantee tenant's agents.
