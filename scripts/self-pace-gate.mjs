@@ -1243,7 +1243,11 @@ const DESTRUCTIVE = new Set(['mv', 'rm', 'rmdir', 'ln', 'rename', 'unlink', 'rsy
 function destructiveCmd(cmd, args) {
   if (DESTRUCTIVE.has(cmd)) return true
   if (cmd === 'cp') return args.some((a) => /^-[A-Za-z]*[rRa]/.test(a) || /^--(recursive|archive)/.test(a))
-  if (cmd === 'git') return ['rm', 'mv', 'clean', 'checkout', 'restore', 'reset', 'stash', 'apply', 'am', 'worktree'].includes(gitSubcommand(args) ?? '')
+  // a git that is not read-only can write through an operand or an option value (`checkout-index --prefix=DIR`, `format-patch -o DIR`,
+  // `archive -o FILE`, `clone ... DIR`): it is judged by the SAME classification the working-tree rule uses (gitRewritesInstallTree),
+  // never by a list of the writing subcommands (that list missed checkout-index)
+  if (cmd === 'git') return !gitNeverWrites(args)
+
   if (cmd === 'find') return !readerOk('find', args)
   if (INTERPRETERS.test(cmd)) return args.some((a) => INLINE_FLAGS.has(a))
   return false
@@ -1438,6 +1442,55 @@ function gitFetchPlain(args, g) {
     if (/^[A-Za-z][A-Za-z0-9+.-]*::/.test(a)) return false // remote helper (ext::<command>)
   }
   return true
+}
+// Can this git never write through a path it was handed? Only a read-only subcommand (SAFE_GIT, and gitSafe agrees: no --output,
+// no -c, no pager option), the harmless list without `worktree` (its add / move / remove take a target path), or a plain fetch.
+// Everything else, and a git whose subcommand cannot be read, counts as writing: the same split gitRewritesInstallTree makes.
+function gitNeverWrites(args) {
+  const g = scanGitGlobals(args)
+  if (g.sub === null || g.sub === 'worktree') return false
+  if (SAFE_GIT.has(g.sub)) return gitSafe(args)
+  return GIT_HARMLESS_SUBS.has(g.sub) || (g.sub === 'fetch' && gitFetchPlain(args, g))
+}
+// The words of a git command that are NOT operands of the writing subcommand, as indexes into `words` (`ci` = the git word):
+// the value of -C / --git-dir / --work-tree / --namespace (they select the tree, and the tree rule judges that), and the value of
+// -m / --message (text: `-m TEXT`, `-mTEXT`, `--message TEXT`, `--message=TEXT`). No other option is exempt. A word in this set is
+// never a reason for the loose-ancestor tier on its own (a protected FILE or the strict ancestor in it still counts, see the caller).
+function gitExemptWords(words, ci) {
+  const args = words.slice(ci + 1); const off = ci + 1; const out = new Set()
+  const g = scanGitGlobals(args)
+  for (let k = 0; k < g.subIdx; k++) {
+    const a = args[k]
+    if (a === '-C' || a === '--work-tree' || a === '--git-dir' || a === '--namespace') { out.add(off + k + 1); k++; continue }
+    if (/^--(?:work-tree|git-dir|namespace)=/.test(a)) { out.add(off + k); continue }
+    if (a === '-c' || a === '--config-env' || a === '--super-prefix') k++ // (their values are not paths this rule exempts)
+  }
+  for (let k = g.subIdx + 1; k < args.length; k++) {
+    const a = args[k]
+    if (a === '--') break
+    if (a === '-m' || a === '--message') { out.add(off + k + 1); k++; continue }
+    if (a.startsWith('--message=') || /^-m./.test(a)) out.add(off + k)
+  }
+  return out
+}
+// The directories a relative word after `-C <dir>` is relative to, besides the directory the command runs in: each -C is relative
+// to the one before it (git chdir's in order), from every directory the command may run in. A value that cannot be read is skipped.
+function gitCTargets(words, ci, ctx) {
+  const g = scanGitGlobals(words.slice(ci + 1))
+  const cs = g.ops.filter(([kind]) => kind === 'C').map(([, v]) => v)
+  const out = new Set()
+  if (cs.length === 0 || cs.length > GIT_TREE_MAX_ARGS) return out
+  for (const base of ctx.cwds) {
+    let cur = base
+    for (const v of cs) {
+      if (v === undefined) { cur = null; break }
+      const x = expandWord(v, ctx.vars, cur)
+      if (x === '' || /[$`*?[\]{}]/.test(x) || x.includes(DYN)) { cur = null; break }
+      cur = resolve(cur, x)
+    }
+    if (cur !== null) out.add(cur)
+  }
+  return out
 }
 // dev+ino of the install root and of every protected ancestor, compared instead of strings: APFS ignores case and
 // there are symlinks, so two spellings of one directory have one identity.
@@ -1654,10 +1707,20 @@ export function bashProtectedDecision(command, opts = {}) {
     const { redirects, hasRedirect } = tokenized
     const words = spliceEnvSplit(tokenized.words)
     const kinds = words.map((w) => wordKind(w, ctx))
+    const kindsC = words.map(() => null) // the same words read from the `git -C` directory (below), where they differ from `kinds`
     const rKinds = redirects.map((r) => wordKind(r, ctx))
     // `cd` moves the base of every later relative word (conservatively: the old base stays too).
     const ci = commandWordIndex(words)
     const cmd = ci === -1 ? '' : words[ci].split('/').pop()
+    // a relative word after `git -C <dir>` is relative to <dir>: it is read against that directory too (the directory the command runs in
+    // still counts), the way the tree rule reads the -C chain. The words of the global options themselves are read as they stand.
+    if (cmd === 'git') {
+      const cTargets = gitCTargets(words, ci, ctx)
+      if (cTargets.size > 0) {
+        const ctxC = { ...ctx, cwds: new Set([...ctx.cwds, ...cTargets]) }
+        for (let i = ci + 2 + scanGitGlobals(words.slice(ci + 1)).subIdx; i < words.length; i++) kindsC[i] = wordKind(words[i], ctxC)
+      }
+    }
     if (cmd === 'cd' || cmd === 'pushd') {
       if (words.slice(ci + 1).includes('-')) ctx.unknownCwd = true // `cd -` goes back to a directory this parser never saw
       const arg = words.slice(ci + 1).find((a) => !a.startsWith('-'))
@@ -1724,8 +1787,8 @@ export function bashProtectedDecision(command, opts = {}) {
       const inner = { current: ctx.current, cwds: [...ctx.cwds], unknownCwd: ctx.unknownCwd, union: unionMode, compound, raw: seed?.raw ?? command, joined, envUnknown: envUnknownAt(si), depth: (seed?.depth ?? 0) + 1 }
       const d = bashProtectedDecision(t, { ...opts, prot, cwd: ctx.current, budget, seed: inner }); if (d.deny) return d
     }
-    const hit = kinds.find((k) => k && !isAnc(k)) ?? rKinds.find((k) => k && !isAnc(k)) ?? null
-    const ancKinds = [...kinds, ...rKinds].filter(isAnc)
+    const hit = kinds.find((k) => k && !isAnc(k)) ?? kindsC.find((k) => k && !isAnc(k)) ?? rKinds.find((k) => k && !isAnc(k)) ?? null
+    const ancKinds = [...kinds, ...kindsC, ...rKinds].filter(isAnc)
     const ancestorHit = !hit && ancKinds.length > 0
     if (!hit && !ancestorHit) {
       // a redirect target with an unresolvable shape is only a problem next to a protected word (below)
@@ -1751,11 +1814,17 @@ export function bashProtectedDecision(command, opts = {}) {
     //    strict one (scripts/) denies everything else; the loose ones (store/, the repo root) deny
     //    only what moves, removes, links, extracts or rewrites.
     if (ancestorHit) {
+      // (the value of a git -C / --git-dir / --work-tree / --namespace and the text after -m / --message are not operands of the
+      // command: a LOOSE ancestor in one of them is not read here; the strict one and a protected file still count)
+      const exempt = cmd === 'git' ? gitExemptWords(words, ci) : new Set()
+      const unlessExempt = (k, idx) => isAnc(k) && !(exempt.has(idx) && !k.startsWith('anc-strict'))
+      const ancEff = [...kinds.filter(unlessExempt), ...kindsC.filter(unlessExempt), ...rKinds.filter(isAnc)]
+      if (ancEff.length === 0) continue
       if (isPlainRead(cmd, args, ctx, { si, feedsNonReader, envUnsafe })) continue
-      if (!ancKinds.some((k) => k.startsWith('anc-strict')) && !destructiveCmd(cmd, args)) continue
+      if (!ancEff.some((k) => k.startsWith('anc-strict')) && !destructiveCmd(cmd, args)) continue
       // agents/ and agents/<name> alone: only an operation that can put a settings file in (or take the
       // directory away) is refused
-      if (ancKinds.every((k) => k.startsWith('anc-agentdir'))) {
+      if (ancEff.every((k) => k.startsWith('anc-agentdir'))) {
         const agentWords = kinds.map((k, idx) => (typeof k === 'string' && k.startsWith('anc-agentdir') ? idx : -1)).filter((idx) => idx !== -1)
         if (agentDirOpHarmless(cmd, words, ci, agentWords, ctx)) continue
       }

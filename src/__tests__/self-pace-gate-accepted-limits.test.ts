@@ -2,10 +2,13 @@
 // They were measured against the real gate and they are NOT regressions of the tree-rewriting git rule: the same commands
 // pass on the base too. Each test states the accepted behaviour and has a refused twin, so that a later fix flips a named
 // test on purpose (and the CHANGELOG limit it belongs to is then removed in the same change), not by accident.
-//   L1. `git checkout-index --prefix=<install>/` run from a worktree copy writes into the install
-//   L2. `git config core.worktree <install>` then `git checkout HEAD -- <path>`: two steps, each passes in a worktree copy
-//   L3. a glued or separate `--output=<install path>` on a read-only git (diff, log)
-//   L4. git subcommands that take an output path (archive -o, bundle create, clone, init, config --file) from a worktree copy
+//   L1. CLOSED by the git operand rule (a git that is not read-only counts as a writer for the loose-ancestor tier): the tests are in
+//       self-pace-gate-git-operands.test.ts. The line stays so that the numbers below keep meaning what the CHANGELOG says.
+//   L2. `git checkout HEAD -- <path>` alone (step two of the core.worktree pair) passes in a worktree copy: it is not visible, which is why
+//       the first step is the one that is refused
+//   L3. a glued or separate `--output=<path>` on a read-only git (diff, log) whose path is a NEW file directly in the scripts directory
+//   L4. git subcommands that take an output path (archive -o, bundle create, clone, init) naming a NEW file or directory directly in the scripts directory, from a worktree copy
+//   L8. an operand or option value the parser cannot read (an unset variable, a command substitution, arguments that arrive through xargs)
 //   L5. `cd -P <symlink>/..` : the gate counts lexically, the shell goes physically
 //   L6. CDPATH, inline or exported, changes where `cd <name>` goes
 //   L7. an inline interpreter (python3 -c, node -e, perl -e, awk) that starts git: the text is not a shell script
@@ -48,36 +51,39 @@ const PASSES = (c: string) => ({ c, agent: false, root: false, copy: false })
 const REFUSED_EVERYWHERE = (c: string) => ({ c, agent: true, root: true, copy: true })
 
 describe('accepted behaviours of the tree rule, pinned by name (a later fix flips the named test on purpose)', () => {
-  it('L1. KNOWN LIMIT: git checkout-index --prefix=<install>/ from a worktree copy is not judged by where it WRITES (all three spellings)', () => {
-    const c = [`git checkout-index -a -f --prefix=${root}/`, `git checkout-index -a -f --prefix ${root}/`, `git checkout-index -a -f --prefix="${root}/"`]
-    for (const x of c) expect(where(x)).toEqual(COPY_ONLY(x))
-    // the twin: a prefix that names a protected directory is refused wherever it runs
-    const t = `git checkout-index -a -f --prefix=${root}/scripts/`
-    expect(where(t)).toEqual(REFUSED_EVERYWHERE(t))
-  })
-
-  it('L2. KNOWN LIMIT: core.worktree set in one step and used in the next passes in a worktree copy, each step on its own', () => {
-    const set = `git config core.worktree ${root}`
+  it('L2. KNOWN LIMIT: step two of the core.worktree pair (`git checkout HEAD -- <path>`) passes in a worktree copy on its own: only step one is refused', () => {
     const use = 'git checkout HEAD -- scripts/doctor.sh'
-    expect(where(set)).toEqual(COPY_ONLY(set))
     expect(where(use)).toEqual(COPY_ONLY(use))
-    // the twin: naming the install as the tree in the same command is refused in the copy as well
+    // the twin: step one, with the install as the tree, is refused wherever it runs
+    const set = `git config core.worktree ${root}`
+    expect(where(set)).toEqual(REFUSED_EVERYWHERE(set))
+    // and naming the install as the tree in the same command is refused in the copy as well
     const t = `git -C ${root} checkout other`
     expect(where(t)).toEqual(REFUSED_EVERYWHERE(t))
   })
 
-  it('L3. KNOWN LIMIT: --output=<path> and --output <path> on a read-only git are not read as a write to that path', () => {
+  it('L3. KNOWN LIMIT: --output=<path> and --output <path> on a read-only git are not read as a write when the path is a NEW file directly in scripts/', () => {
     for (const x of [`git diff --output=${root}/scripts/x`, `git log --output=${root}/scripts/x`, `git diff --output ${root}/scripts/x`]) expect(where(x)).toEqual(PASSES(x))
-    // the twin: the same option aimed at a protected file by name is refused
-    const t = `git diff --output=${root}/scripts/doctor.sh`
-    expect(where(t)).toEqual(REFUSED_EVERYWHERE(t))
+    // the twins: the same option aimed at a protected file by name, a protected subdirectory or a directory that holds protected files is refused
+    for (const t of [`git diff --output=${root}/scripts/doctor.sh`, `git diff --output=${root}/scripts/hooks/new.mjs`, `git diff --output=${root}/`]) expect(where(t)).toEqual(REFUSED_EVERYWHERE(t))
   })
 
-  it('L4. KNOWN LIMIT: archive -o, bundle create, clone, init and config --file take an output path under the install that is not read; a worktree copy passes', () => {
+  it('L4. KNOWN LIMIT: archive -o, bundle create, clone and init naming a NEW file or directory directly in scripts/ are not read as a write there; a worktree copy passes', () => {
     for (const x of [
       `git archive -o ${root}/scripts/x.tar HEAD`, `git bundle create ${root}/scripts/x.bundle HEAD`, `git clone . ${root}/scripts/cloned`,
-      `git init ${root}/scripts/inited`, `git config --file ${root}/scripts/x.cfg a.b c`,
+      `git init ${root}/scripts/inited`,
     ]) expect(where(x)).toEqual(COPY_ONLY(x))
+    // the twins: a protected name, a protected subdirectory, or a directory that holds protected files is refused wherever it runs
+    for (const t of [`git archive -o ${root}/scripts/doctor.sh HEAD`, `git bundle create ${root}/scripts/hooks/x.bundle HEAD`, `git clone . ${root}/src/`]) expect(where(t)).toEqual(REFUSED_EVERYWHERE(t))
+  })
+
+  it('L8. KNOWN LIMIT: an operand the parser cannot read (an unset variable, a command substitution, arguments through xargs) keeps the verdict it had: free in a copy', () => {
+    for (const x of [`git checkout-index -f --prefix=$INST/ -a`, `git checkout-index -f --prefix=$(pwd)/../../fixture-root/ -a`, `echo ${root}/ | xargs git checkout-index -f -a --prefix`]) {
+      expect(where(x)).toEqual(COPY_ONLY(x))
+    }
+    // the twin: the same variable assigned in the same command is read
+    const t = `INST=${root}; git checkout-index -f --prefix=$INST/ -a`
+    expect(where(t)).toEqual(REFUSED_EVERYWHERE(t))
   })
 
   it('L5. KNOWN LIMIT: cd -P through a symlink is counted lexically, the shell goes physically', () => {
