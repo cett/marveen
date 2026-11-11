@@ -63,6 +63,9 @@ INSTALL = os.path.dirname(os.path.dirname(HERE))
 STORE = os.path.join(INSTALL, 'store')
 KEY_NAME = '.claim-signing-key'
 KEY_PATH = os.path.join(STORE, KEY_NAME)
+# What the strict text rules of a tier A file look for in a command text: fragments of its name that no ordinary
+# command contains, and the boundary form of its first word (`.claim` after a separator).
+KEY_MARKERS = ('claim-signing', 'signing-key', 'claim_signing')
 
 FILE_PATH_KEYS = ('file_path', 'notebook_path', 'path', 'filePath', 'notebookPath')
 PATHISH_KEY = re.compile(r'path|file|source|dest|src|target|dir|folder|uri|url|glob|pattern|location|root|name|^from$|^to$')
@@ -95,8 +98,29 @@ def _real(path: str) -> str:
     return os.path.realpath(path)
 
 
-KEY_REAL = _real(KEY_PATH)
 STORE_REAL = _real(STORE)
+
+
+class Protected:
+    """One file the gate guards. tier 'A' is the claim signing key (the strict text rules apply to it); `dir_real`
+    is the real path of the directory the file is expected in, `real` the real path of the file itself."""
+    __slots__ = ('name', 'path', 'real', 'dir_real', 'tier')
+
+    def __init__(self, name: str, path: str, tier: str) -> None:
+        self.name = name
+        self.path = path
+        self.real = _real(path)
+        self.dir_real = _real(os.path.dirname(path))
+        self.tier = tier
+
+
+# The protected-file set. It holds ONLY the claim signing key; every rule below loops over it, so a file added to the
+# set is judged by the same path, glob and recursive-reader rules as the key.
+_PROTECTED = (Protected(KEY_NAME, KEY_PATH, 'A'),)
+
+
+def _protected_files() -> tuple:
+    return _PROTECTED
 
 
 def _absolute(path: str, cwd: str) -> str:
@@ -104,33 +128,47 @@ def _absolute(path: str, cwd: str) -> str:
     return p if os.path.isabs(p) else os.path.join(cwd, p)
 
 
-def _is_key_file(path: str, cwd: str, by_text: bool = True) -> bool:
-    """True when `path` is, resolves to, or is another name (a hard link) for the key file; by_text: also when its
-    text merely names the key."""
+def _unwrap_file_url(path: str) -> str:
     if path[:7].lower() == 'file://':
         path = unquote(path[7:])
         if not path.startswith('/'):
             path = '/' + path.split('/', 1)[1] if '/' in path else path      # file://localhost/x or file://host/x: the host is dropped
-    if by_text and KEY_NAME in path.lower().replace('\\', ''):
-        return True
+    return path
+
+
+def _protected_hit(path: str, cwd: str, by_text: bool = True):
+    """The protected file `path` is, resolves to, or is another name (a hard link) for; None when it is none of
+    them. by_text: also when the text of the path merely names a tier A file."""
+    path = _unwrap_file_url(path)
+    files = _protected_files()
+    if by_text:
+        low = path.lower().replace('\\', '')
+        for f in files:
+            if f.tier == 'A' and f.name in low:
+                return f
     abs_path = _absolute(path, cwd)
     real = _real(abs_path)
-    if real == KEY_REAL or (by_text and os.path.basename(real) == KEY_NAME):
-        return True
-    try:
-        a, b = os.stat(abs_path), os.stat(KEY_PATH)
-        return (a.st_dev, a.st_ino) == (b.st_dev, b.st_ino)
-    except OSError:
-        return False
+    for f in files:
+        if real == f.real or (by_text and f.tier == 'A' and os.path.basename(real) == f.name):
+            return f
+    for f in files:
+        try:
+            a, b = os.stat(abs_path), os.stat(f.path)
+        except OSError:
+            continue
+        if (a.st_dev, a.st_ino) == (b.st_dev, b.st_ino):
+            return f
+    return None
 
 
 def _inside(child: str, parent: str) -> bool:
     return child == parent or child.startswith(parent.rstrip(os.sep) + os.sep)
 
 
-def _covers_store(path: str, cwd: str) -> bool:
-    """The directory `path` is the store directory or holds it."""
-    return _inside(STORE_REAL, _real(_absolute(path, cwd)))
+def _covered_files(path: str, cwd: str) -> list:
+    """The protected files whose directory is `path` or lies below it: a recursive reader over `path` reaches them."""
+    base = _real(_absolute(path, cwd))
+    return [f for f in _protected_files() if _inside(f.dir_real, base)]
 
 
 def _brace_expand(pat: str, depth: int = 0) -> list:
@@ -149,10 +187,10 @@ def _shell_glob(pat: str) -> str:
     return re.sub(r'\[\^', '[!', pat)
 
 
-def _may_match_key(pat: str) -> bool:
-    """Could the shell glob `pat` select the key's file name? A POSIX class ([[:lower:]]) is not translated: it is
+def _may_match_name(pat: str, name: str) -> bool:
+    """Could the shell glob `pat` select the file name `name`? A POSIX class ([[:lower:]]) is not translated: it is
     judged as a match."""
-    return '[:' in pat or fnmatch.fnmatchcase(KEY_NAME, _shell_glob(pat))
+    return '[:' in pat or fnmatch.fnmatchcase(name, _shell_glob(pat))
 
 
 def _glob_regex(pat: str):
@@ -189,17 +227,17 @@ def _glob_regex(pat: str):
     return re.compile(out)
 
 
-def _glob_matches_key(glob: str, rel_dir: str, any_depth: bool) -> bool:
-    """Could `glob`, applied below a searched directory, select the key? rel_dir is the path from that directory to
-    the store directory. any_depth: a pattern without a slash matches the file name at any depth (a ripgrep
-    glob); otherwise the whole relative path has to match (the Glob tool)."""
-    rel_key = KEY_NAME if rel_dir in ('', '.') else rel_dir.rstrip('/') + '/' + KEY_NAME
+def _glob_matches_name(glob: str, rel_dir: str, name: str, any_depth: bool) -> bool:
+    """Could `glob`, applied below a searched directory, select the file `name`? rel_dir is the path from that
+    directory to the directory the file sits in. any_depth: a pattern without a slash matches the file name at any
+    depth (a ripgrep glob); otherwise the whole relative path has to match (the Glob tool)."""
+    rel_key = name if rel_dir in ('', '.') else rel_dir.rstrip('/') + '/' + name
     for alt in _brace_expand(glob.strip().replace('\\', '/')):
         alt = alt[2:] if alt.startswith('./') else alt
         if not alt:
             continue
         if '/' not in alt.strip('/') and any_depth:
-            if fnmatch.fnmatchcase(KEY_NAME, alt.lstrip('!')):
+            if fnmatch.fnmatchcase(name, alt.lstrip('!')):
                 return True
             continue
         try:
@@ -208,6 +246,17 @@ def _glob_matches_key(glob: str, rel_dir: str, any_depth: bool) -> bool:
         except re.error:
             return True      # a pattern we cannot read is judged as one that matches
     return False
+
+
+def _glob_selects_protected(glob: str, base_real: str, any_depth: bool, rooted: bool = False):
+    """The protected file `glob` could select when applied below `base_real` (rooted: `glob` is already an
+    absolute pattern with its slash removed, tested from the filesystem root); None when it selects none."""
+    base = '/' if rooted else base_real
+    for f in _protected_files():
+        if rooted or _inside(f.dir_real, base_real):
+            if _glob_matches_name(glob, os.path.relpath(f.dir_real, base), f.name, any_depth):
+                return f
+    return None
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -240,10 +289,11 @@ def check_any_tool(tool: str, ti: dict, cwd: str) -> None:
         if tool in SEARCH_TOOLS and field == 'pattern':
             continue         # Grep: a regular expression is content; Glob: a name filter. The search rules below judge both
         if PATHISH_KEY.search(field.lower()):
-            if _is_key_file(text, cwd) or _word_reaches_key(text, cwd):
+            f = _protected_hit(text, cwd) or _word_reaches(text, cwd)
+            if f:
                 deny('the call reads or writes the claim signing key (%s) through the field %s' % (KEY_NAME, field[:40]))
         elif text and len(text) <= MAX_LENIENT and '\n' not in text and '\x00' not in text:
-            if _word_reaches_key(text, cwd, by_text=False):
+            if _word_reaches(text, cwd, by_text=False):
                 deny('the call reads or writes the claim signing key (%s) through the field %s' % (KEY_NAME, field[:40]))
 
 
@@ -255,13 +305,13 @@ def check_file_tool(tool: str, ti: dict, cwd: str) -> None:
             continue
         if not isinstance(v, str):
             deny('the %s of the call is not text' % key)
-        if _is_key_file(v, cwd):
+        if _protected_hit(v, cwd):
             deny('the call reads or writes the claim signing key (%s)' % KEY_NAME)
     if tool not in SEARCH_TOOLS:
         return
     given = ti.get('path')
     base_real = _real(_absolute(given if isinstance(given, str) and given else cwd, cwd))
-    if _inside(base_real, STORE_REAL):
+    if any(_inside(base_real, f.dir_real) for f in _protected_files()):
         deny('a search inside the store directory could return the claim signing key')
     selector = ti.get('glob') if tool == 'Grep' else ti.get('pattern')
     if selector is None:
@@ -273,9 +323,9 @@ def check_file_tool(tool: str, ti: dict, cwd: str) -> None:
     if os.path.isabs(selector) or '..' in selector.replace('\\', '/').split('/'):
         # an absolute pattern names its own directory, and `..` leaves the searched one: test the joined pattern from the root
         full = selector if os.path.isabs(selector) else os.path.normpath(os.path.join(base_real, selector))
-        if _glob_matches_key(full.lstrip('/'), os.path.relpath(STORE_REAL, '/'), False):
+        if _glob_selects_protected(full.lstrip('/'), base_real, False, rooted=True):
             deny('the pattern could match the claim signing key (%s)' % KEY_NAME)
-    elif _inside(STORE_REAL, base_real) and _glob_matches_key(selector, os.path.relpath(STORE_REAL, base_real), tool == 'Grep'):
+    elif _glob_selects_protected(selector, base_real, tool == 'Grep'):
         deny('the glob could match the claim signing key (%s)' % KEY_NAME)
 
 
@@ -296,25 +346,29 @@ def _spellings(text: str) -> list:
 
 
 def _names_key_in_text(text: str) -> bool:
-    hexed = KEY_NAME.encode().hex()
-    for form in _spellings(text):
-        if 'claim-signing' in form or 'signing-key' in form or 'claim_signing' in form or _BOUNDARY_CLAIM.search(form):
-            return True
-        if KEY_NAME[::-1] in form:
-            return True
-        if hexed in re.sub(r'\\x|%|0x|\\u00|\s', '', form):
-            return True
-        for m in _STORE_SEGMENT.finditer(form):
-            for alt in _brace_expand(m.group(1)):
-                if alt and (alt == KEY_NAME or (re.search(r'[*?\[]', alt) and _may_match_key(alt))):
-                    return True
-    raw = text[:MAX_TEXT].encode('utf-8', 'ignore')
-    for pad in (0, 1, 2):
-        # the middle of the encoding does not depend on the bytes around the name
-        inner = base64.b64encode(b'\x00' * pad + KEY_NAME.encode()).decode()[4:-4]
-        for variant in (inner, inner.replace('+', '-').replace('/', '_')):
-            if variant and variant.encode() in raw:
+    """The strict text rules of a tier A file: its name anywhere in the text, in every spelling."""
+    for f in _protected_files():
+        if f.tier != 'A':
+            continue
+        hexed = f.name.encode().hex()
+        for form in _spellings(text):
+            if any(m in form for m in KEY_MARKERS) or _BOUNDARY_CLAIM.search(form):
                 return True
+            if f.name[::-1] in form:
+                return True
+            if hexed in re.sub(r'\\x|%|0x|\\u00|\s', '', form):
+                return True
+            for m in _STORE_SEGMENT.finditer(form):
+                for alt in _brace_expand(m.group(1)):
+                    if alt and (alt == f.name or (re.search(r'[*?\[]', alt) and _may_match_name(alt, f.name))):
+                        return True
+        raw = text[:MAX_TEXT].encode('utf-8', 'ignore')
+        for pad in (0, 1, 2):
+            # the middle of the encoding does not depend on the bytes around the name
+            inner = base64.b64encode(b'\x00' * pad + f.name.encode()).decode()[4:-4]
+            for variant in (inner, inner.replace('+', '-').replace('/', '_')):
+                if variant and variant.encode() in raw:
+                    return True
     return False
 
 
@@ -360,10 +414,15 @@ def _expand_word(word: str, cwd: str) -> list:
     return [w]
 
 
-def _word_reaches_key(word: str, cwd: str, by_text: bool = True) -> bool:
+def _word_reaches(word: str, cwd: str, by_text: bool = True):
+    """The protected file a shell word reaches (itself, through a link, or through a glob); None when none."""
     if not word or (word.startswith('-') and '/' not in word):
-        return False
-    return any(_is_key_file(c, cwd, by_text) for c in _expand_word(word, cwd))
+        return None
+    for c in _expand_word(word, cwd):
+        f = _protected_hit(c, cwd, by_text)
+        if f:
+            return f
+    return None
 
 
 def _has_flag(toks: list, short: str, longs: tuple) -> bool:
@@ -387,7 +446,7 @@ def _excludes_store(toks: list) -> bool:
 
 def _covers_dir(path: str, cwd: str) -> bool:
     try:
-        return os.path.isdir(_absolute(path, cwd)) and _covers_store(path, cwd)
+        return os.path.isdir(_absolute(path, cwd)) and bool(_covered_files(path, cwd))
     except (OSError, ValueError):
         return True
 
@@ -400,7 +459,7 @@ def check_bash(cmd: str, cwd: str) -> None:
         if not toks:
             continue
         for w in toks[1:]:
-            if _word_reaches_key(w, cwd):
+            if _word_reaches(w, cwd):
                 deny('a path in the command resolves to the claim signing key')
         head = os.path.basename(toks[0])
         operands = [w for w in toks[1:] if w and not w.startswith('-')]
