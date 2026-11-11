@@ -1128,6 +1128,11 @@ const SHELL_RX = /^(?:bash|sh|zsh|dash|ksh|ksh93|mksh|pdksh|oksh|ash|yash|posh|h
 const INNER_DEPTH_MAX = 4
 const INNER_BUDGET = 16
 const SUBST_BUDGET = 64 // substitutions that name git, judged per command
+// Does a text name git as a word? Also when quotes or backslashes split the name (g'i't, g"i"t, g''it): the shell that reads the
+// text removes them, so the git is there. (A text that only looks like it, `g it`, has a space and is not matched.)
+const GIT_WORD = /\bgit\b/
+const GIT_WORD_STRICT = /(?:^|[^\w-])git(?:[^\w-]|$)/
+const namesGit = (t, rx = GIT_WORD) => { const s = String(t ?? ''); return rx.test(s) || rx.test(s.replace(/['"\\]/g, '')) }
 // The script texts one segment hands to a shell: { texts, unreadable }. `prevSeg`: the segment before a pipe (or null).
 // `unreadable`: the script is handed over in a form this parser cannot read, so what it runs is not known:
 //   'always'  the text is spelled so that the words are not the words that run ($'..' / $".." quoting, a \xHH, \uHHHH or octal
@@ -1401,7 +1406,7 @@ export function bashProtectedDecision(command, opts = {}) {
   // its outer text is judged, so the cost stays linear; the number judged per command is bounded, over it the rest is refused
   // unread). A substitution is not a group of the outer command: a subshell cannot move the outer cd (see `compound` below).
   for (const inner of substitutionTexts(command)) {
-    if (/\bgit\b/.test(inner)) {
+    if (namesGit(inner)) {
       budget.subs = (budget.subs ?? 0) + 1
       if (budget.subs > SUBST_BUDGET) return { deny: true, reason: 'gate-scripts' }
       const d = bashProtectedDecision(inner, { ...opts, prot, cwd, budget, seed: undefined }); if (d.deny) return d
@@ -1500,17 +1505,17 @@ export function bashProtectedDecision(command, opts = {}) {
     // a script handed to a shell as text (sh -c STRING, eval STRING, stdin): a git in it is judged as a command of its own
     // a command word built by an expansion (`G=git; $G checkout x`, `$(echo git) pull`): what runs is not known. Judged as the worst
     // case, a tree-rewriting git, when the command names git as a word anywhere
-    if (gci !== -1 && /[$`]/.test(words[gci]) && /(?:^|[^\w-])git(?:[^\w-]|$)/.test(String(seed?.raw ?? command))) {
+    if (gci !== -1 && /[$`]/.test(words[gci]) && namesGit(seed?.raw ?? command, GIT_WORD_STRICT)) {
       if (gitRewritesInstallTree(['git', 'checkout'], 0, ctx, { exact: !unionMode, compound, ...gmode, envUnknown: envUnknownAt(si) })) return { deny: true, reason: 'gate-scripts' }
     }
     const st = shellScriptTexts(words, cmdIdx, seg, si > 0 && prevSep === '|' ? segs[si - 1] : null)
     // a script whose text cannot be read off the command is judged as the worst case, a tree-rewriting git: refused where such a
     // git is refused (the install), free in a worktree copy. 'if-git': only when the command names git anywhere.
-    if (st.unreadable === 'always' || (st.unreadable === 'if-git' && /\bgit\b/.test(String(seed?.raw ?? command)))) {
+    if (st.unreadable === 'always' || (st.unreadable === 'if-git' && namesGit(seed?.raw ?? command))) {
       if (gitRewritesInstallTree(['git', 'checkout'], 0, ctx, { exact: !unionMode, compound, ...gmode, envUnknown: envUnknownAt(si) })) return { deny: true, reason: 'gate-scripts' }
     }
     for (const t of st.texts) {
-      if (!/\bgit\b/.test(t)) continue
+      if (!namesGit(t)) continue
       if (++budget.n > INNER_BUDGET || (seed?.depth ?? 0) >= INNER_DEPTH_MAX) return { deny: true, reason: 'gate-scripts' }
       const inner = { current: ctx.current, cwds: [...ctx.cwds], unknownCwd: ctx.unknownCwd, union: unionMode, compound, raw: seed?.raw ?? command, joined, envUnknown: envUnknownAt(si), depth: (seed?.depth ?? 0) + 1 }
       const d = bashProtectedDecision(t, { ...opts, prot, cwd: ctx.current, budget, seed: inner }); if (d.deny) return d
