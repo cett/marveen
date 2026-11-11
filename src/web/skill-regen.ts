@@ -506,7 +506,7 @@ function removeCompanionFiles(skillDir: string, files: SkillFileRow[]): void {
  * (an activation that dropped the file) moves it aside instead. Returns how many
  * copies were taken out of the skill (removed or moved aside).
  */
-function removeGeneratedCompanionFileLocked(id: string, relPath: string, content: Buffer, tenantId: string, quarantineModified = false): number {
+function removeGeneratedCompanionFileLocked(id: string, relPath: string, content: Buffer, tenantId: string, quarantineModified: boolean): number {
   if (!SKILL_SQL_REGEN) return 0
   let removed = 0
   const taken = (r: ReturnType<typeof removeCompanionFile>): boolean => r === 'removed' || r === 'quarantined'
@@ -980,4 +980,4 @@ export const regenTenantSkillFiles = serialized(regenTenantSkillFilesLocked)
 // The two removers are in the queue as well: a single regen that already read the row would otherwise write the
 // file back after the delete route removed it, and the file of a deleted skill would stay on disk.
 export const removeGeneratedSkillFile = serialized((id: string, content: string, tenantId: string, files: SkillFileRow[] = []) => Promise.resolve().then(() => removeGeneratedSkillFileLocked(id, content, tenantId, files)))
-export const removeGeneratedCompanionFile = serialized((id: string, relPath: string, content: Buffer, tenantId: string, quarantineModified?: boolean) => Promise.resolve().then(() => removeGeneratedCompanionFileLocked(id, relPath, content, tenantId, quarantineModified === true)))
+export const removeGeneratedCompanionFile = serialized((id: string, relPath: string, content: Buffer, tenantId: string, quarantineModified: boolean) => Promise.resolve().then(() => removeGeneratedCompanionFileLocked(id, relPath, content, tenantId, quarantineModified)))

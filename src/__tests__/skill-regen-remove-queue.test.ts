@@ -104,7 +104,7 @@ describe('companion file remove vs in-flight regen', () => {
     listSkillFilesMock.mockImplementationOnce(async () => { const snap = [fileRow]; await slow.promise; return snap })
     const inFlight = regenSingleSkillFile(ID, true)
     await settle()
-    const removing = removeGeneratedCompanionFile(ID, 'scripts/a.sh', Buffer.from('a\n'), 'fleet')
+    const removing = removeGeneratedCompanionFile(ID, 'scripts/a.sh', Buffer.from('a\n'), 'fleet', true)
     slow.open()
     await inFlight
     expect(await removing).toBe(1)
