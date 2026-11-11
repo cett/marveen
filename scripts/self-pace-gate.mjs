@@ -1065,22 +1065,37 @@ function isPlainRead(cmd, args, ctx, { si, feedsNonReader, envUnsafe }) {
 // submodule update, bisect ...).
 const GIT_HARMLESS_SUBS = new Set(['help', 'version', 'worktree']) // worktree: its own governance gate decides, not this one
 const SHELL_KEYWORDS = new Set(['if', 'then', 'else', 'elif', 'while', 'until', 'do', '!', 'time', '{'])
-const GIT_LAUNCHERS = new Set([...WRAPPER_WORDS, 'timeout', 'xargs'])
+const GIT_LAUNCHERS = new Set([...WRAPPER_WORDS, 'timeout', 'xargs', 'busybox'])
 const GIT_TREE_MAX_ARGS = 256
 const GIT_TREE_MAX_CWDS = 32
 const GIT_CANDIDATES_MAX = 8
 // A shell that is handed its script as text (sh -c STRING, eval STRING, a script on stdin) runs a command the word rules
 // cannot see inside. The text is judged as a command of its own, from the directory (and the cd history) the outer
 // command had at that point, bounded in depth and in the number of texts per command (the cost stays linear).
-const SHELL_RX = /^(?:bash|sh|zsh|dash|ksh)$/
+const SHELL_RX = /^(?:bash|sh|zsh|dash|ksh|ash|fish|csh|tcsh)$/
 const INNER_DEPTH_MAX = 4
 const INNER_BUDGET = 16
-// The script texts one segment hands to a shell. `prevWords`: the words of the segment before a pipe (or null).
-function shellScriptTexts(words, cmdIdx, seg, prevWords) {
-  if (cmdIdx === -1) return []
+// The script texts one segment hands to a shell: { texts, unreadable }. `prevSeg`: the segment before a pipe (or null).
+// `unreadable`: the script is handed over in a form this parser cannot read, so what it runs is not known:
+//   'always'  the text is spelled so that the words are not the words that run ($'..' / $".." quoting, a \xHH, \uHHHH or octal
+//             escape, a printf format directive): judged as the worst case, a tree-rewriting git
+//   'if-git'  the script comes from a source that is not text in the command (a command substitution, a pipe from anything but
+//             echo / printf / a heredoc, a redirect from a file, `source /dev/stdin`): the same, but only when the command
+//             mentions git at all (a plain `cat run.sh | sh` of a command with no git in it is not this rule's business)
+function shellScriptTexts(words, cmdIdx, seg, prevSeg) {
+  const none = { texts: [], unreadable: null }
+  if (cmdIdx === -1) return none
   const base = (w) => w.split('/').pop()
-  if (base(words[cmdIdx]) === 'eval') return [words.slice(cmdIdx + 1).join(' ')]
-  let sh = SHELL_RX.test(base(words[cmdIdx])) ? cmdIdx : -1
+  const OBFUSCATED = /\$['"]|\\x[0-9A-Fa-f]|\\u[0-9A-Fa-f]|\\0[0-7]|\\[1-7][0-7]{2}/
+  // (a plain $NAME in a text is expanded by the inner shell and judged there, like any word; only a substitution builds a command)
+  const DYNAMIC = /\$\(|`|\$\{/
+  if (base(words[cmdIdx]) === 'eval') {
+    const t = words.slice(cmdIdx + 1).join(' ')
+    return { texts: [t], unreadable: OBFUSCATED.test(seg) ? 'always' : DYNAMIC.test(t) ? 'if-git' : null }
+  }
+  // `source /dev/stdin` and `. /dev/stdin` read their script from stdin exactly like a bare shell
+  const stdinSource = /^(?:source|\.)$/.test(base(words[cmdIdx])) && words.slice(cmdIdx + 1).some((a) => /^\/(?:dev\/stdin|dev\/fd\/0|proc\/self\/fd\/0)$/.test(a))
+  let sh = SHELL_RX.test(base(words[cmdIdx])) || stdinSource ? cmdIdx : -1
   if (sh === -1) {
     // behind a launcher word (`xargs sh -c ...`, `nice -n 5 bash -c ...`, `timeout 5 sh ...`)
     // (a launcher with its own option value, `nice -n 1`, leaves the command word on the value: the launcher is looked
@@ -1088,20 +1103,34 @@ function shellScriptTexts(words, cmdIdx, seg, prevWords) {
     const l = words.findIndex((w) => GIT_LAUNCHERS.has(base(w)))
     sh = l === -1 || l > cmdIdx ? -1 : words.findIndex((w, i) => i > l && SHELL_RX.test(base(w)))
   }
-  if (sh === -1) return []
-  const args = words.slice(sh + 1)
+  if (sh === -1) return none
+  const args = stdinSource ? [] : words.slice(sh + 1)
   const k = args.findIndex((a) => /^-[A-Za-z]*c[A-Za-z]*$/.test(a))
-  if (k !== -1) { const s = args.slice(k + 1).find((a) => !a.startsWith('-')); return s === undefined ? [] : [s] }
-  if (args.some((a) => !a.startsWith('-'))) return [] // a script FILE operand: not text
-  // no -c and no file: the shell reads its script from stdin. A here-string and an echo / printf before the pipe are text.
-  const out = []
-  const hs = /<<<\s*(?:'([^']*)'|"([^"]*)"|([^\s;|&<>]+))/.exec(seg)
-  if (hs) out.push(hs[1] ?? hs[2] ?? hs[3])
-  if (prevWords) {
-    const pi = commandWordIndex(prevWords)
-    if (pi !== -1 && /^(?:echo|printf)$/.test(base(prevWords[pi]))) out.push(prevWords.slice(pi + 1).filter((a) => !/^-[neE]+$/.test(a)).join(' '))
+  if (k !== -1) {
+    const s = args.slice(k + 1).find((a) => !a.startsWith('-'))
+    if (s === undefined) return none
+    return { texts: [s], unreadable: OBFUSCATED.test(seg) ? 'always' : DYNAMIC.test(s) ? 'if-git' : null }
   }
-  return out.map((t) => t.replace(/\\n/g, '\n'))
+  if (args.some((a) => !a.startsWith('-'))) return none // a script FILE operand: not text
+  // no -c and no file: the shell reads its script from stdin. A here-string and an echo / printf before the pipe are text;
+  // a heredoc is text too (its lines are segments of their own, judged as commands).
+  const texts = []
+  let unreadable = null
+  const hs = /<<<\s*(?:'([^']*)'|"([^"]*)"|([^\s;|&<>]+))/.exec(seg)
+  if (hs) { texts.push(hs[1] ?? hs[2] ?? hs[3]); if (OBFUSCATED.test(seg)) unreadable = 'always'; else if (DYNAMIC.test(texts[0])) unreadable = 'if-git' }
+  else if (/<<-?\s*['"\\]?[A-Za-z_]/.test(seg) || (prevSeg !== null && /<<-?\s*['"\\]?[A-Za-z_]/.test(prevSeg))) { /* a heredoc: the body lines are segments */ }
+  else if (prevSeg !== null) {
+    const pw = tokenizeShell(prevSeg).words
+    const pi = commandWordIndex(pw)
+    if (pi !== -1 && /^(?:echo|printf)$/.test(base(pw[pi]))) {
+      const t = pw.slice(pi + 1).filter((a) => !/^-[neE]+$/.test(a)).join(' ')
+      texts.push(t)
+      // a printf format directive builds the text at run time (`printf 'g%s' it`), and so does an escape
+      if (OBFUSCATED.test(prevSeg) || (base(pw[pi]) === 'printf' && /%/.test(t))) unreadable = 'always'
+      else if (DYNAMIC.test(t)) unreadable = 'if-git'
+    } else unreadable = 'if-git' // cat, curl, git show ... | sh: the script is whatever the feeder prints
+  } else if (/(?:^|[\s;&|])\d*<(?![<(&])/.test(seg) || stdinSource) unreadable = 'if-git' // sh < run.sh, source /dev/stdin
+  return { texts: texts.map((t) => t.replace(/\\n/g, '\n')), unreadable }
 }
 // Global git options in front of the subcommand, in order: -C <path> (repeatable, each relative to the one before),
 // --work-tree, --git-dir; the others that take a value are skipped so the subcommand is found correctly.
@@ -1369,7 +1398,13 @@ export function bashProtectedDecision(command, opts = {}) {
       if (gitRewritesInstallTree(words, g, ctx, { exact: !unionMode, compound, raw: seed?.raw ?? command })) return { deny: true, reason: 'gate-scripts' }
     }
     // a script handed to a shell as text (sh -c STRING, eval STRING, stdin): a git in it is judged as a command of its own
-    for (const t of shellScriptTexts(words, cmdIdx, seg, si > 0 && prevSep === '|' ? tokenizeShell(segs[si - 1]).words : null)) {
+    const st = shellScriptTexts(words, cmdIdx, seg, si > 0 && prevSep === '|' ? segs[si - 1] : null)
+    // a script whose text cannot be read off the command is judged as the worst case, a tree-rewriting git: refused where such a
+    // git is refused (the install), free in a worktree copy. 'if-git': only when the command names git anywhere.
+    if (st.unreadable === 'always' || (st.unreadable === 'if-git' && /\bgit\b/.test(String(seed?.raw ?? command)))) {
+      if (gitRewritesInstallTree(['git', 'checkout'], 0, ctx, { exact: !unionMode, compound, raw: seed?.raw ?? command })) return { deny: true, reason: 'gate-scripts' }
+    }
+    for (const t of st.texts) {
       if (!/\bgit\b/.test(t)) continue
       if (++budget.n > INNER_BUDGET || (seed?.depth ?? 0) >= INNER_DEPTH_MAX) return { deny: true, reason: 'gate-scripts' }
       const inner = { current: ctx.current, cwds: [...ctx.cwds], unknownCwd: ctx.unknownCwd, union: unionMode, compound, raw: seed?.raw ?? command, depth: (seed?.depth ?? 0) + 1 }
