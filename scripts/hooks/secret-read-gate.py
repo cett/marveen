@@ -1,9 +1,25 @@
 #!/usr/bin/env python3
-"""PreToolUse read guard for the claim signing key: store/.claim-signing-key.
+"""PreToolUse read guard for the secret files of the install: the claim signing key and the token files.
 
-The dashboard signs every successful approval claim with the key in <install>/store/.claim-signing-key; the
-email send gate and the official sender check that signature. An agent that can READ the key can forge the
-signature of a mirror server, so this hook refuses every tool call that would read (or overwrite) that file.
+TIER A, the claim signing key store/.claim-signing-key. The dashboard signs every successful approval claim with
+the key in <install>/store/.claim-signing-key; the email send gate and the official sender check that signature. An
+agent that can READ the key can forge the signature of a mirror server, so this hook refuses every tool call that
+would read (or overwrite) that file. All the rules below apply to it, the strict text rules included.
+
+TIER B, the token files: store/.operator-token, store/.dashboard-token, store/.claude-oauth-token,
+store/.claude-oauth-token.verified, <install>/.agent-token (the main agent's) and <install>/agents/<id>/.agent-token
+for EVERY id, the caller's own included (an agent never needs to read its own token: scripts/agent-api.sh reads it
+for the caller and the command text never names the file). The agents directory is enumerated at decision time, once
+per call (agents appear and disappear at run time); a missing directory holds no agent, an unreadable one or one with
+more than MAX_AGENTS entries is a refusal, never a pass. A tier B file is reached by the same path rules as the key
+(realpath, device/inode, `..`, the caller's cwd, file://, a glob expanded with dotfiles, a glob read from its text,
+a recursive reader over a directory that holds an existing token file) and by its DOTTED name as the last component
+of a path word wherever the path leads (`cat .agent-token` from inside agents/<id> is the likeliest real read).
+It is NOT reached by the dotless spelling alone (`dashboard-token` is all over code, docs and recipes) nor by a name
+inside free text or the PATTERN / --exclude value of a grep: a gate that cries wolf gets switched off. The block
+reason names the file only and says "a token file is not for an agent to read or change". `--exclude=<name>` over a
+directory lets a legitimate recursive search through. A recipe that names a dotted token file is a recipe to change
+(run a script that reads it), not an exemption in the gate.
 
 What it refuses (exit 2, the reason on stderr):
 
@@ -83,11 +99,13 @@ MAX_TEXT = 200000
 
 
 class Block(Exception):
-    pass
+    def __init__(self, why: str, protected=None) -> None:
+        super().__init__(why)
+        self.protected = protected      # the Protected file the call reaches, when one is known
 
 
-def deny(why: str) -> None:
-    raise Block(why)
+def deny(why: str, protected=None) -> None:
+    raise Block(why, protected)
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -114,13 +132,37 @@ class Protected:
         self.tier = tier
 
 
-# The protected-file set. It holds ONLY the claim signing key; every rule below loops over it, so a file added to the
-# set is judged by the same path, glob and recursive-reader rules as the key.
-_PROTECTED = (Protected(KEY_NAME, KEY_PATH, 'A'),)
+# The protected-file set; every rule below loops over it. Tier A: the claim signing key (strict text rules). Tier B:
+# the token files, matched by path, by dotted name and by glob, never by a bare mention of the name in text.
+AGENTS = os.path.join(INSTALL, 'agents')
+AGENT_TOKEN = '.agent-token'
+STORE_TOKEN_NAMES = ('.operator-token', '.dashboard-token', '.claude-oauth-token', '.claude-oauth-token.verified')
+TIER_B_NAMES = frozenset(STORE_TOKEN_NAMES + (AGENT_TOKEN,))
+MAX_AGENTS = 1000      # entries of the agents directory the gate looks through; more is a refusal
+_FIXED = (Protected(KEY_NAME, KEY_PATH, 'A'),
+          *(Protected(n, os.path.join(STORE, n), 'B') for n in STORE_TOKEN_NAMES),
+          Protected(AGENT_TOKEN, os.path.join(INSTALL, AGENT_TOKEN), 'B'))
+_ENUMERATED: list = []
 
 
 def _protected_files() -> tuple:
-    return _PROTECTED
+    """The fixed files plus the token file of EVERY agent directory, enumerated now (agents appear and disappear
+    at run time; once per call). A missing agents directory holds no agent; an unreadable one, or one with more
+    entries than MAX_AGENTS, is a refusal, never a pass."""
+    if not _ENUMERATED:
+        files = list(_FIXED)
+        try:
+            with os.scandir(AGENTS) as it:
+                for n, entry in enumerate(it):
+                    if n >= MAX_AGENTS:
+                        deny('the agents directory holds more entries than the gate checks', Protected(AGENT_TOKEN, os.path.join(INSTALL, AGENT_TOKEN), 'B'))
+                    files.append(Protected(AGENT_TOKEN, os.path.join(AGENTS, entry.name, AGENT_TOKEN), 'B'))
+        except (FileNotFoundError, NotADirectoryError):
+            pass
+        except OSError:
+            deny('the agents directory cannot be read', Protected(AGENT_TOKEN, os.path.join(INSTALL, AGENT_TOKEN), 'B'))
+        _ENUMERATED.append(tuple(files))
+    return _ENUMERATED[0]
 
 
 def _absolute(path: str, cwd: str) -> str:
@@ -151,6 +193,12 @@ def _protected_hit(path: str, cwd: str, by_text: bool = True):
     for f in files:
         if real == f.real or (by_text and f.tier == 'A' and os.path.basename(real) == f.name):
             return f
+    if by_text:
+        # a tier B file is also hit by its DOTTED name as the last component of the path, wherever the path leads
+        # (also quoted, also upper case on a case-insensitive volume); a bare mention in free text is not a path
+        for last in (os.path.basename(path.rstrip('/')), os.path.basename(real)):
+            if last.lower() in TIER_B_NAMES:
+                return next(f for f in files if f.name == last.lower())
     for f in files:
         try:
             a, b = os.stat(abs_path), os.stat(f.path)
@@ -291,10 +339,11 @@ def check_any_tool(tool: str, ti: dict, cwd: str) -> None:
         if PATHISH_KEY.search(field.lower()):
             f = _protected_hit(text, cwd) or _word_reaches(text, cwd)
             if f:
-                deny('the call reads or writes the claim signing key (%s) through the field %s' % (KEY_NAME, field[:40]))
+                deny('the call reads or writes the claim signing key (%s) through the field %s' % (KEY_NAME, field[:40]), f)
         elif text and len(text) <= MAX_LENIENT and '\n' not in text and '\x00' not in text:
-            if _word_reaches(text, cwd, by_text=False):
-                deny('the call reads or writes the claim signing key (%s) through the field %s' % (KEY_NAME, field[:40]))
+            f = _word_reaches(text, cwd, by_text=False)
+            if f:
+                deny('the call reads or writes the claim signing key (%s) through the field %s' % (KEY_NAME, field[:40]), f)
 
 
 def check_file_tool(tool: str, ti: dict, cwd: str) -> None:
@@ -305,13 +354,14 @@ def check_file_tool(tool: str, ti: dict, cwd: str) -> None:
             continue
         if not isinstance(v, str):
             deny('the %s of the call is not text' % key)
-        if _protected_hit(v, cwd):
-            deny('the call reads or writes the claim signing key (%s)' % KEY_NAME)
+        hit = _protected_hit(v, cwd)
+        if hit:
+            deny('the call reads or writes the claim signing key (%s)' % KEY_NAME, hit)
     if tool not in SEARCH_TOOLS:
         return
     given = ti.get('path')
     base_real = _real(_absolute(given if isinstance(given, str) and given else cwd, cwd))
-    if any(_inside(base_real, f.dir_real) for f in _protected_files()):
+    if any(f.tier == 'A' and _inside(base_real, f.dir_real) for f in _protected_files()):
         deny('a search inside the store directory could return the claim signing key')
     selector = ti.get('glob') if tool == 'Grep' else ti.get('pattern')
     if selector is None:
@@ -323,10 +373,13 @@ def check_file_tool(tool: str, ti: dict, cwd: str) -> None:
     if os.path.isabs(selector) or '..' in selector.replace('\\', '/').split('/'):
         # an absolute pattern names its own directory, and `..` leaves the searched one: test the joined pattern from the root
         full = selector if os.path.isabs(selector) else os.path.normpath(os.path.join(base_real, selector))
-        if _glob_selects_protected(full.lstrip('/'), base_real, False, rooted=True):
-            deny('the pattern could match the claim signing key (%s)' % KEY_NAME)
-    elif _glob_selects_protected(selector, base_real, tool == 'Grep'):
-        deny('the glob could match the claim signing key (%s)' % KEY_NAME)
+        hit = _glob_selects_protected(full.lstrip('/'), base_real, False, rooted=True)
+        if hit:
+            deny('the pattern could match the claim signing key (%s)' % KEY_NAME, hit)
+    else:
+        hit = _glob_selects_protected(selector, base_real, tool == 'Grep')
+        if hit:
+            deny('the glob could match the claim signing key (%s)' % KEY_NAME, hit)
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -414,6 +467,42 @@ def _expand_word(word: str, cwd: str) -> list:
     return [w]
 
 
+_POSIX_CLASS = {'lower': 'a-z', 'upper': 'A-Z', 'alpha': 'a-zA-Z', 'alnum': 'a-zA-Z0-9', 'digit': '0-9', 'xdigit': '0-9a-fA-F',
+                'punct': '!-/:-@\\[-`{-~', 'print': ' -~', 'graph': '!-~', 'space': ' \\t\\n', 'blank': ' \\t', 'cntrl': '\\x00-\\x1f', 'word': 'a-zA-Z0-9_'}
+
+
+def _posix_to_ranges(pat: str) -> str:
+    """`[[:lower:]]` -> `[a-z]`: _glob_regex reads a bracket up to its first `]`, so a POSIX class has to be spelled out
+    first. An unknown class name is read as any character."""
+    return re.sub(r'\[:(\w+):\]', lambda m: _POSIX_CLASS.get(m.group(1), '\\x00-\\x7f'), pat)
+
+
+def _tier_b_glob_selects(word: str, cwd: str):
+    """The tier B file a shell word with a glob could select, from its TEXT (a file that does not exist yet, an agent
+    whose token has not been written, is selected too). `*` and `?` match a leading dot: the conservative reading."""
+    w = os.path.expanduser(word)
+    if not re.search(r'[*?\[]', w):
+        return None
+    for alt in _brace_expand(w):
+        p = _absolute(alt, cwd)
+        cut = re.search(r'[*?\[]', p).start()
+        slash = p.rfind('/', 0, cut)
+        prefix, rest = (p[:slash] or '/'), p[slash + 1:]
+        spellings = {os.path.normpath(p), os.path.join(_real(prefix), rest)}
+        for spelled in spellings:
+            try:
+                rx = _glob_regex(_posix_to_ranges(_shell_glob(spelled)).lstrip('/'))
+            except re.error:
+                return next(f for f in _protected_files() if f.tier == 'B')      # a pattern we cannot read matches
+            for f in _protected_files():
+                if f.tier != 'B':
+                    continue
+                for target in (f.path, os.path.join(f.dir_real, f.name)):
+                    if rx.fullmatch(os.path.normpath(target).lstrip('/')):
+                        return f
+    return None
+
+
 def _word_reaches(word: str, cwd: str, by_text: bool = True):
     """The protected file a shell word reaches (itself, through a link, or through a glob); None when none."""
     if not word or (word.startswith('-') and '/' not in word):
@@ -422,7 +511,7 @@ def _word_reaches(word: str, cwd: str, by_text: bool = True):
         f = _protected_hit(c, cwd, by_text)
         if f:
             return f
-    return None
+    return _tier_b_glob_selects(word, cwd)
 
 
 def _has_flag(toks: list, short: str, longs: tuple) -> bool:
@@ -435,51 +524,160 @@ def _has_flag(toks: list, short: str, longs: tuple) -> bool:
     return False
 
 
-def _excludes_store(toks: list) -> bool:
+def _exclude_values(toks: list) -> list:
+    """The values of the `--exclude*` options of a command (`--exclude=V`, `--exclude V`, `--exclude-dir=V`)."""
+    out = []
     for i, t in enumerate(toks):
         if t.startswith('--exclude'):
-            val = t.split('=', 1)[1] if '=' in t else (toks[i + 1] if i + 1 < len(toks) else '')
-            if re.fullmatch(r'(?:\./)?(?:\*/)?store/?', val.strip()):
-                return True
+            out.append(t.split('=', 1)[1] if '=' in t else (toks[i + 1] if i + 1 < len(toks) else ''))
+    return out
+
+
+def _excludes_store(toks: list) -> bool:
+    return any(re.fullmatch(r'(?:\./)?(?:\*/)?store/?', val.strip()) for val in _exclude_values(toks))
+
+
+def _excludes_file(toks: list, f: Protected, base_real: str) -> bool:
+    """A recursive reader over `base_real` that excludes the protected file `f` does not read it. Tier A: the store is
+    excluded (the key sits in it). Tier B: an exclude value matches the file's NAME (a shell pattern, `.agent-token`,
+    `.agent-*`) or a directory between the searched one and the file (`agents`, `store`); a value that matches neither
+    excludes nothing."""
+    if f.tier == 'A':
+        return _excludes_store(toks)
+    # the searched directory itself counts as well (`--exclude-dir=store` over `store`, as the tier A rule reads it)
+    parts = [os.path.basename(base_real)] + [p for p in os.path.relpath(f.dir_real, base_real).split(os.sep) if p not in ('', '.')]
+    for val in _exclude_values(toks):
+        val = val.strip().strip('\'"')
+        val = val[2:] if val.startswith('./') else val
+        val = val.rstrip('/')
+        if val and (fnmatch.fnmatchcase(f.name, val) or any(fnmatch.fnmatchcase(part, val) for part in parts)):
+            return True
     return False
 
 
-def _covers_dir(path: str, cwd: str) -> bool:
+def _covered_dir_files(path: str, cwd: str) -> list:
+    """(real directory, protected file) pairs a recursive reader over `path` reaches: `path` is a directory that holds
+    the key's directory (tier A, whether or not the key exists) or an existing tier B token file."""
     try:
-        return os.path.isdir(_absolute(path, cwd)) and bool(_covered_files(path, cwd))
+        if not os.path.isdir(_absolute(path, cwd)):
+            return []
+        base = _real(_absolute(path, cwd))
+        return [(base, f) for f in _covered_files(path, cwd) if f.tier == 'A' or os.path.lexists(f.path)]
     except (OSError, ValueError):
-        return True
+        return [(_real(cwd), f) for f in _protected_files()]      # cannot tell: judged as reaching every file
+
+
+# Options whose VALUE is a filter or a pattern, not a path: a name there is not a read (`--exclude=.agent-token`).
+FILTER_FLAGS = frozenset(('exclude', 'include', 'exclude-dir', 'include-dir', 'regexp', 'glob', 'iglob', 'grep', 'message'))
+FILTER_HEADS = GREP_FAMILY | RG_FAMILY | frozenset(('git', 'tar', 'gtar', 'bsdtar', 'rsync', 'zip'))
+
+
+def _nonpath_words(toks: list) -> set:
+    """Indexes of the words that are a pattern or a filter value, not a path: the value of --exclude / --include /
+    --regexp / --glob / --grep / --message (inline or the next word), of `-e` (grep, rg) and `-m` (git), and the
+    PATTERN of a grep that was given none with -e / --regexp / -f. The dotted-name rule skips them."""
+    head = os.path.basename(toks[0]) if toks else ''
+    skip: set = set()
+    if head not in FILTER_HEADS:
+        return skip
+    is_grep = head in GREP_FAMILY or head in RG_FAMILY
+    pattern_given = False
+    for i in range(1, len(toks)):
+        t = toks[i]
+        if t.startswith('--') and len(t) > 2:
+            name, eq, _ = t[2:].partition('=')
+            if name in FILTER_FLAGS:
+                skip.add(i)
+                if not eq and i + 1 < len(toks):
+                    skip.add(i + 1)
+                pattern_given = pattern_given or name == 'regexp'
+        elif is_grep and re.fullmatch(r'-[A-Za-z]+', t) and t[-1] in 'eg':
+            if i + 1 < len(toks):
+                skip.add(i + 1)
+            pattern_given = pattern_given or t[-1] == 'e'
+        elif is_grep and re.fullmatch(r'-[A-Za-z]*f', t):
+            pattern_given = True
+        elif head == 'git' and t in ('-m', '-S', '-G') and i + 1 < len(toks):
+            skip.add(i + 1)
+    if is_grep and not pattern_given:
+        for i in range(1, len(toks)):
+            if i not in skip and not toks[i].startswith('-'):
+                skip.add(i)      # the PATTERN, the first word that is not an option
+                break
+    return skip
+
+
+def _word_variants(w: str) -> list:
+    """A word and the paths it may carry glued to something else: a redirection (`<.agent-token`, `>x`), a substitution
+    or quote around it (`$(cat x)`, `'x')`), an assignment or an option value (`X=path`, `--file=path`), a `host:path`."""
+    out = [w]
+    s = w.lstrip('<>&')
+    for cand in (s, s.strip('()`;|&<>"\'$')):
+        if cand and cand not in out:
+            out.append(cand)
+    if '=' in s or ':' in s:
+        out.extend(p for p in re.split(r'[=:,]', s) if p)
+    return out
+
+
+# A tier B dotted name INSIDE a longer word (the code of `python3 -c "open('store/<name>')"`, `$(cat x/<name>)`): preceded
+# by a path separator, a quote, a paren, `=`, `:`, a backtick or `$`, and not followed by another name character. A name
+# after a space (free text: "the <name> file") is not a hit.
+_TIER_B_EMBEDDED = re.compile(r"(?:^|[/'\"(=:`$])(" + '|'.join(re.escape(n) for n in sorted(TIER_B_NAMES, key=len, reverse=True)) + r")(?![A-Za-z0-9_.\-])", re.I)
+
+
+def _embedded_token(w: str):
+    m = _TIER_B_EMBEDDED.search(w)
+    if not m:
+        return None
+    name = m.group(1).lower()
+    return next((f for f in _protected_files() if f.name == name), None)
 
 
 def check_bash(cmd: str, cwd: str) -> None:
     if _names_key_in_text(cmd):
         deny('the command names the claim signing key (%s) or a glob that could match it' % KEY_NAME)
-    for toks in _commands(cmd):
-        toks = _skip_wrappers(toks)
+    for all_toks in _commands(re.sub(r"\$(?=['\"])", '', cmd)):      # $'..' / $"..": ANSI-C quoting, read as plain quotes
+        toks = _skip_wrappers(all_toks)
+        skip = {i + len(all_toks) - len(toks) for i in _nonpath_words(toks)}
+        # every word, the assignments and wrappers in front of the command included: `F=.agent-token cat "$F"`
+        for idx, w in enumerate(all_toks):
+            if idx in skip:
+                continue
+            for v in _word_variants(w):
+                f = _word_reaches(v, cwd)
+                if f:
+                    deny('a path in the command resolves to the claim signing key', f)
+            f = _embedded_token(w)
+            if f:
+                deny('a path in the command names a token file', f)
         if not toks:
             continue
-        for w in toks[1:]:
-            if _word_reaches(w, cwd):
-                deny('a path in the command resolves to the claim signing key')
         head = os.path.basename(toks[0])
         operands = [w for w in toks[1:] if w and not w.startswith('-')]
-        covering = [w for w in operands if any(_covers_dir(c, cwd) for c in _expand_word(w, cwd))]
+        covering = []
+        for w in operands:
+            pairs = [pr for c in _expand_word(w, cwd) for pr in _covered_dir_files(c, cwd)]
+            if pairs:
+                covering.append(pairs)
         grep_recursive = head in GREP_FAMILY and (_has_flag(toks, 'rR', ('--recursive', '--dereference-recursive'))
                                                   or ('-d' in toks and 'recurse' in toks))
-        if grep_recursive and len(operands) <= 1 and _covers_dir(cwd, cwd):
-            covering = [cwd]      # grep -r PATTERN searches the current directory
-        if not covering:
-            continue
-        if _excludes_store(toks):
+        if grep_recursive and len(operands) <= 1:
+            own = _covered_dir_files(cwd, cwd)
+            if own:
+                covering = [own]      # grep -r PATTERN searches the current directory
+        # a recursive reader reaches a protected file unless the command excludes it
+        reached = next((f for pairs in covering for base, f in pairs if not _excludes_file(toks, f, base)), None)
+        if reached is None:
             continue
         if grep_recursive:
-            deny('a recursive grep over a directory that holds the store would read the claim signing key')
+            deny('a recursive grep over a directory that holds the store would read the claim signing key', reached)
         if head in RG_FAMILY and any(w in ('--hidden', '--no-ignore', '--no-ignore-vcs', '--unrestricted') or re.fullmatch(r'-[A-Za-z]*u+[A-Za-z]*', w) for w in toks[1:]):
-            deny('a search that includes hidden or ignored files over a directory that holds the store would read the claim signing key')
+            deny('a search that includes hidden or ignored files over a directory that holds the store would read the claim signing key', reached)
         if head in ARCHIVERS or (head in COPIERS and _has_flag(toks, 'rRaA', ('--recursive', '--archive'))):
-            deny('copying or archiving a directory that holds the store would take the claim signing key')
+            deny('copying or archiving a directory that holds the store would take the claim signing key', reached)
         if head == 'find' and any(w in FIND_EXEC for w in toks) and '-prune' not in toks:
-            deny('find -exec over a directory that holds the store could read the claim signing key')
+            deny('find -exec over a directory that holds the store could read the claim signing key', reached)
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -519,7 +717,11 @@ def main() -> None:
     try:
         decide(sys.stdin.read())
     except Block as why:
-        sys.stderr.write('SECRET READ GATE: BLOCKED -- %s. The key store/%s is not for an agent to read or change.\n' % (why, KEY_NAME))
+        if why.protected is not None and why.protected.tier == 'B':
+            # tier B: generic wording, the file NAME only (never a path, an agent id or content)
+            sys.stderr.write('SECRET READ GATE: BLOCKED -- a token file is not for an agent to read or change (%s).\n' % why.protected.name)
+        else:
+            sys.stderr.write('SECRET READ GATE: BLOCKED -- %s. The key store/%s is not for an agent to read or change.\n' % (why, KEY_NAME))
         sys.exit(2)
     except BaseException as exc:  # noqa: BLE001 -- fail closed: a bug is a block
         sys.stderr.write('SECRET READ GATE: BLOCKED -- internal error while checking the call (%s).\n' % type(exc).__name__)
