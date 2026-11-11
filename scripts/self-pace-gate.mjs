@@ -32,7 +32,7 @@
 // `tar xf` / `unzip` / `cpio -i` into a directory under the install, `rsync` / `cp -r a/. .` onto `.`,
 // `git config core.hooksPath`, `git -c core.fsmonitor=...`, and a diff program or textconv filter that the repository
 // configuration already names (diff.external, diff.<driver>.textconv) for a plain `git diff`. A git hidden from the parser
-// (`sh -c 'git ...'`, `xargs git`, `find -exec git`, `env -C <dir> git`, a nested command substitution) is not judged by
+// (`sh -c 'git ...'`, `find -exec git`, `env -C <dir> git`, a nested command substitution) is not judged by
 // the working-tree rule (gitRewritesInstallTree), and neither is a repository whose configuration sets core.worktree.
 
 import { readFileSync, readdirSync, realpathSync, statSync, lstatSync } from 'node:fs'
@@ -1061,6 +1061,7 @@ function isPlainRead(cmd, args, ctx, { si, feedsNonReader, envUnsafe }) {
 // submodule update, bisect ...).
 const GIT_HARMLESS_SUBS = new Set(['help', 'version', 'worktree']) // worktree: its own governance gate decides, not this one
 const SHELL_KEYWORDS = new Set(['if', 'then', 'else', 'elif', 'while', 'until', 'do', '!', 'time', '{'])
+const GIT_LAUNCHERS = new Set([...WRAPPER_WORDS, 'timeout', 'xargs'])
 const GIT_TREE_MAX_ARGS = 256
 const GIT_TREE_MAX_CWDS = 32
 // Global git options in front of the subcommand, in order: -C <path> (repeatable, each relative to the one before),
@@ -1131,9 +1132,14 @@ function gitRewritesInstallTree(words, ci, ctx, mode) {
   const g = scanGitGlobals(args)
   if (g.sub === null || SAFE_GIT.has(g.sub) || GIT_HARMLESS_SUBS.has(g.sub) || (g.sub === 'fetch' && gitFetchPlain(args, g))) return false
   if (args.length > GIT_TREE_MAX_ARGS || g.bad || ctx.unknownCwd || mode.compound || ctx.cwds.size > GIT_TREE_MAX_CWDS) return true
+  // GIT_WORK_TREE / GIT_DIR / GIT_COMMON_DIR set anywhere else in the command (`export GIT_WORK_TREE=...; git checkout x`, an
+  // assignment-only segment, `set -a`) move the tree without being a prefix of THIS git: more mentions than prefixes = refuse
+  const mentions = (String(mode.raw ?? '').match(/GIT_(?:WORK_TREE|DIR|COMMON_DIR)\b/g) ?? []).length
+  const prefixes = words.slice(0, ci).filter((x) => /^GIT_(?:WORK_TREE|DIR|COMMON_DIR)=/.test(x)).length
+  if (mentions > prefixes) return true
   const inst = installIdentities(ctx)
   const env = (name) => { const w = words.slice(0, ci).filter((x) => x.startsWith(name + '=')).pop(); return w === undefined ? null : w.slice(name.length + 1) }
-  const envWt = env('GIT_WORK_TREE'); const envGd = env('GIT_DIR')
+  const envWt = env('GIT_WORK_TREE'); const envGd = env('GIT_DIR') ?? env('GIT_COMMON_DIR')
   const value = (v, from) => { // a path the command spells, or null when it cannot be read off the text
     if (v === undefined) return null
     const x = expandWord(v, ctx.vars, from)
@@ -1249,7 +1255,11 @@ export function bashProtectedDecision(command, opts = {}) {
   // same rules from the directory the outer command starts in (a nested one is not matched here and stays a word).
   for (const m of String(command).matchAll(/\$\(([^()]*)\)|`([^`]*)`/g)) {
     const inner = m[1] ?? m[2]
-    if (/\bgit\b/.test(inner)) { const d = bashProtectedDecision(inner, { ...opts, prot, cwd }); if (d.deny) return d }
+    if (/\bgit\b/.test(inner)) {
+      const d = bashProtectedDecision(inner, { ...opts, prot, cwd }); if (d.deny) return d
+      // with a cd in the command the substitution may run anywhere: judge it as if it ran in the install too
+      if (/\b(?:cd|pushd|popd)\b/.test(String(command))) { const d2 = bashProtectedDecision(inner, { ...opts, prot, cwd: dirname(prot.scriptsDir) }); if (d2.deny) return d2 }
+    }
   }
   const feedsNonReader = (idx) => {
     if (seps[idx] !== '|' || idx + 1 >= segs.length) return false
@@ -1284,7 +1294,8 @@ export function bashProtectedDecision(command, opts = {}) {
       else { ctx.current = resolve(ctx.current, target); ctx.cwds.add(ctx.current); ctx.cwds.add(realOrSelf(ctx.current)) }
     }
     if (cmd === 'popd') ctx.unknownCwd = true // the directory it returns to is not tracked
-    if (cmd === 'cd' || cmd === 'pushd') { if (prevSep === '&&') condCd = true }
+    // (any cd may fail: `cd /missing; git checkout x` runs the git where the command already was)
+    if (cmd === 'cd' || cmd === 'pushd') condCd = true
     if (cmd === 'cp') {
       const ck = copyIntoDirKind(words.slice(ci + 1), ctx)
       if (ck) return { deny: true, reason: ck }
@@ -1293,7 +1304,14 @@ export function bashProtectedDecision(command, opts = {}) {
     // (the command word may sit behind a shell keyword: `then git checkout x`, `do git pull`, `! git merge x`)
     let gci = ci
     while (gci !== -1 && SHELL_KEYWORDS.has(words[gci])) { const r = commandWordIndex(words.slice(gci + 1)); gci = r === -1 ? -1 : gci + 1 + r }
-    if (gci !== -1 && words[gci].split('/').pop() === 'git' && gitRewritesInstallTree(words, gci, ctx, { exact: !unionMode, compound })) return { deny: true, reason: 'gate-scripts' }
+    // a launcher with its own option value (`nice -n 5 git ...`, `env -u X git ...`, `timeout 5 git ...`, `xargs git ...`) hides
+    // the git from commandWordIndex: the first git word behind a launcher word counts as the command
+    if (gci !== -1 && words[gci].split('/').pop() !== 'git') {
+      const l = words.findIndex((w) => GIT_LAUNCHERS.has(w.split('/').pop()))
+      const g = l === -1 ? -1 : words.findIndex((w, i) => i > l && w.split('/').pop() === 'git')
+      if (g !== -1) gci = g
+    }
+    if (gci !== -1 && words[gci].split('/').pop() === 'git' && gitRewritesInstallTree(words, gci, ctx, { exact: !unionMode, compound, raw: command })) return { deny: true, reason: 'gate-scripts' }
     const hit = kinds.find((k) => k && !isAnc(k)) ?? rKinds.find((k) => k && !isAnc(k)) ?? null
     const ancKinds = [...kinds, ...rKinds].filter(isAnc)
     const ancestorHit = !hit && ancKinds.length > 0

@@ -144,8 +144,10 @@ describe('where the command runs: -C, --work-tree, --git-dir, the environment', 
 describe('a cd in front of git (the same compound command, sequential)', () => {
   it('cd into the worktree copy from the install is free, cd into the install from the worktree copy is refused', () => {
     expect(bash(`cd ${wt} && git checkout feature`, agentCwd)).toEqual(ALLOW)
-    expect(bash(`cd ${wt}; git pull`, root)).toEqual(ALLOW)
-    expect(bash(`cd ${wt}\ngit rebase feature`, root)).toEqual(ALLOW)
+    // after `;` or a newline the git runs wherever the command was if the cd failed: the directory it came from counts too
+    expect(bash(`cd ${wt}; git pull`, root)).toMatchObject(DENY)
+    expect(bash(`cd ${wt}\ngit rebase feature`, root)).toMatchObject(DENY)
+    expect(bash(`cd ${wt}; git pull`, wt2)).toEqual(ALLOW) // every directory in play is outside the install
     expect(bash(`cd ${root} && git checkout feature`, wt)).toMatchObject(DENY)
     expect(bash(`cd ${root}; git checkout feature`, wt)).toMatchObject(DENY)
     expect(bash(`cd ${root}\ngit checkout feature`, wt)).toMatchObject(DENY)
@@ -223,6 +225,40 @@ describe('a path that cannot be read off the text is refused, one that can is co
     const sibling = join(base, 'fixture-root-copy'); mkdirSync(sibling)
     expect(bash(`git -C ${sibling} checkout feature`, agentCwd)).toEqual(ALLOW)
     expect(bash(`git -C ${base} checkout feature`, agentCwd)).toEqual(ALLOW)
+  })
+})
+
+describe('review findings: ways to move the tree or hide the git that the first version missed', () => {
+  it('a cd that fails: `cd /missing; git ...` runs where the command already was', () => {
+    expect(bash(`cd ${base}/does-not-exist; git checkout feature`, agentCwd)).toMatchObject(DENY)
+    expect(bash(`cd ${base}/does-not-exist\ngit pull`, agentCwd)).toMatchObject(DENY)
+    expect(bash(`cd ${base}/does-not-exist || git pull`, agentCwd)).toMatchObject(DENY)
+    expect(bash(`cd ${base}/does-not-exist; git checkout feature`, wt)).toEqual(ALLOW)
+    expect(bash(`cd ${wt} && git checkout feature`, agentCwd)).toEqual(ALLOW) // the && chain is exact
+  })
+  it('GIT_WORK_TREE / GIT_DIR / GIT_COMMON_DIR set elsewhere in the command', () => {
+    for (const command of [`export GIT_WORK_TREE=${root}; git checkout feature`, `GIT_WORK_TREE=${root}\ngit checkout feature`, `export GIT_DIR=${join(root, '.git')} && git reset --hard`,
+      `set -a; GIT_WORK_TREE=${root}; git pull`, `declare -x GIT_WORK_TREE=${root}; git merge feature`, `export GIT_COMMON_DIR=${join(root, '.git')}; git checkout feature`,
+      `GIT_COMMON_DIR=${join(root, '.git')} git checkout feature`, `bash -c 'x=1'; export GIT_WORK_TREE=${root} && git checkout feature`]) {
+      expect({ command, r: bash(command, wt) }).toMatchObject({ command, r: DENY })
+    }
+    expect(bash(`export GIT_WORK_TREE=${wt}; git checkout feature`, wt)).toMatchObject(DENY) // even an outside value: refused, not guessed
+    expect(bash(`GIT_WORK_TREE=${wt} git checkout feature`, agentCwd)).toEqual(ALLOW) // the prefix of this very git is read
+  })
+  it('a launcher with an option value in front of git does not hide it', () => {
+    for (const command of ['nice -n 5 git checkout feature', 'env -u FOO git checkout feature', 'timeout 5 git pull', 'sudo -u nobody git merge feature', 'xargs git checkout', 'nice -n 5 /usr/bin/git pull', 'time -p git rebase feature']) {
+      expect({ command, r: bash(command, agentCwd) }).toMatchObject({ command, r: DENY })
+      expect({ command, r: bash(command, wt) }).toEqual({ command, r: ALLOW })
+    }
+    expect(bash('nice -n 5 git status', agentCwd)).toEqual(ALLOW)
+    expect(bash('echo nice git', agentCwd)).toEqual(ALLOW) // no launcher word in front of the git word
+  })
+  it('a command substitution after a cd is judged as if it ran in the install as well', () => {
+    expect(bash(`cd ${root} && echo $(git checkout feature)`, wt)).toMatchObject(DENY)
+    expect(bash(`cd ${root}; x=$(git pull)`, wt)).toMatchObject(DENY)
+    expect(bash(`cd ${wt} && echo $(git checkout feature)`, wt)).toMatchObject(DENY) // not worth tracking: refused with any cd
+    expect(bash('echo $(git checkout feature)', wt)).toEqual(ALLOW) // no cd: the start directory decides
+    expect(bash(`cd ${root} && echo $(git status)`, wt)).toEqual(ALLOW)
   })
 })
 
