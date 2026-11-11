@@ -1068,6 +1068,7 @@ const SHELL_KEYWORDS = new Set(['if', 'then', 'else', 'elif', 'while', 'until', 
 const GIT_LAUNCHERS = new Set([...WRAPPER_WORDS, 'timeout', 'xargs'])
 const GIT_TREE_MAX_ARGS = 256
 const GIT_TREE_MAX_CWDS = 32
+const GIT_CANDIDATES_MAX = 8
 // A shell that is handed its script as text (sh -c STRING, eval STRING, a script on stdin) runs a command the word rules
 // cannot see inside. The text is judged as a command of its own, from the directory (and the cd history) the outer
 // command had at that point, bounded in depth and in the number of texts per command (the cost stays linear).
@@ -1350,13 +1351,23 @@ export function bashProtectedDecision(command, opts = {}) {
     while (gci !== -1 && SHELL_KEYWORDS.has(words[gci])) { const r = commandWordIndex(words.slice(gci + 1)); gci = r === -1 ? -1 : gci + 1 + r }
     const cmdIdx = gci
     // a launcher with its own option value (`nice -n 5 git ...`, `env -u X git ...`, `timeout 5 git ...`, `xargs git ...`) hides
-    // the git from commandWordIndex: the first git word behind a launcher word counts as the command
-    if (gci !== -1 && words[gci].split('/').pop() !== 'git') {
-      const l = words.findIndex((w) => GIT_LAUNCHERS.has(w.split('/').pop()))
-      const g = l === -1 ? -1 : words.findIndex((w, i) => i > l && w.split('/').pop() === 'git')
-      if (g !== -1) gci = g
+    // the git from commandWordIndex. This parser does not know the option grammar of each launcher (which word is a value and
+    // which is the command), so EVERY git word behind a launcher word is judged as the command: one of them is the real one,
+    // and a git word that is only an option value (`env -u git git checkout x`, `xargs -I git ...`) cannot hide it.
+    let gitIdxs = []
+    const launcherAt = gci === -1 ? -1 : words.findIndex((w) => GIT_LAUNCHERS.has(w.split('/').pop()))
+    if (gci !== -1 && (launcherAt === -1 || launcherAt >= gci) && words[gci].split('/').pop() === 'git') gitIdxs = [gci]
+    else if (gci !== -1) {
+      for (let i = launcherAt + 1; launcherAt !== -1 && i < words.length && gitIdxs.length <= GIT_CANDIDATES_MAX; i++) if (words[i].split('/').pop() === 'git') gitIdxs.push(i)
     }
-    if (gci !== -1 && words[gci].split('/').pop() === 'git' && gitRewritesInstallTree(words, gci, ctx, { exact: !unionMode, compound, raw: seed?.raw ?? command })) return { deny: true, reason: 'gate-scripts' }
+    // (a bound on the candidates keeps the cost linear: more git words than this behind one launcher are refused unread)
+    if (gitIdxs.length > GIT_CANDIDATES_MAX) return { deny: true, reason: 'gate-scripts' }
+    for (let n = 0; n < gitIdxs.length; n++) {
+      const g = gitIdxs[n]
+      // a git word followed by another git word is an option value of the launcher (`-u git`, `-I git`): the next one is judged
+      if (gitIdxs[n + 1] === g + 1) continue
+      if (gitRewritesInstallTree(words, g, ctx, { exact: !unionMode, compound, raw: seed?.raw ?? command })) return { deny: true, reason: 'gate-scripts' }
+    }
     // a script handed to a shell as text (sh -c STRING, eval STRING, stdin): a git in it is judged as a command of its own
     for (const t of shellScriptTexts(words, cmdIdx, seg, si > 0 && prevSep === '|' ? tokenizeShell(segs[si - 1]).words : null)) {
       if (!/\bgit\b/.test(t)) continue
