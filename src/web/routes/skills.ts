@@ -82,6 +82,22 @@ export function summarizeRevokeFiles(outcomes: readonly RevokeFilesOutcome[]): R
 // Skills are stored in SQL and mirrored to disk for the Claude Code loader --
 // derive per-agent coverage for a skill name from the `agent/<agentId>/<name>`
 // id scheme instead of statting each agent's on-disk skills directory.
+/**
+ * Parses a request body that must be a JSON object. Answers 400 `parse_error` for text that is not JSON and 400
+ * `invalid_value` for JSON that is not an object (null, an array, a string, a number) and returns null in both cases,
+ * so the caller just returns. The routes read fields off the result, and JSON.parse('null') is null: without this the
+ * first field access throws and the server answers 500.
+ */
+function parseObjectBody<T extends object>(res: RouteContext['res'], raw: Buffer): T | null {
+  let parsed: unknown
+  try { parsed = JSON.parse(raw.toString()) } catch { json(res, { error: 'parse_error', hint: 'Invalid JSON' }, 400); return null }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    json(res, { error: 'invalid_value', hint: 'Body must be a JSON object' }, 400)
+    return null
+  }
+  return parsed as T
+}
+
 async function getSkillAgents(skillDirName: string): Promise<string[]> {
   const agents: string[] = []
   for (const row of await listLiveSkills()) {
@@ -699,8 +715,8 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     if (fleetAgent) { await countFleetSkillDenial(''); json(res, { error: 'forbidden', hint: 'A fleet agent token changes its own agent skills only (PUT agent/<name>/<skill>)' }, 403); return true }
     if (!isAdmin && !callerTenantId) { json(res, { error: 'forbidden', hint: 'No tenant scope' }, 403); return true }
     const body = await readBody(req)
-    let parsed: { name?: string; description?: string; content?: string; is_global?: boolean } = {}
-    try { parsed = JSON.parse(body.toString()) } catch { json(res, { error: 'parse_error', hint: 'Invalid JSON' }, 400); return true }
+    const parsed = parseObjectBody<{ name?: string; description?: string; content?: string; is_global?: boolean }>(res, body)
+    if (parsed === null) return true
     const { name, description, content, is_global } = parsed
     if (typeof name !== 'string' || !name.trim()) { json(res, { error: 'required', field: 'name', hint: 'name is required' }, 400); return true }
     if (typeof content !== 'string' || !content.trim()) { json(res, { error: 'required', field: 'content', hint: 'content is required' }, 400); return true }
@@ -756,8 +772,8 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     // the answer for a skill that is not there, so a revoke freezes the text and the write does not tell the id exists.
     if (existing && !isAdmin && existing.status !== 'live') { json(res, { error: 'not_found' }, 404); return true }
     const body = await readBody(req)
-    let parsed: { name?: string; description?: string; content?: string; is_global?: boolean } = {}
-    try { parsed = JSON.parse(body.toString()) } catch { json(res, { error: 'parse_error', hint: 'Invalid JSON' }, 400); return true }
+    let parsed = parseObjectBody<{ name?: string; description?: string; content?: string; is_global?: boolean }>(res, body)
+    if (parsed === null) return true
     if (parsed.is_global !== undefined && !isAdmin) { json(res, { error: 'forbidden', hint: 'Only admin can set is_global' }, 403); return true }
     if (createSpec) {
       if (typeof parsed.content !== 'string' || !parsed.content.trim()) { json(res, { error: 'required', field: 'content', hint: 'content is required to create a skill' }, 400); return true }
@@ -872,8 +888,8 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
         if (err instanceof RequestBodyTooLargeError) { json(res, { error: 'limit_exceeded', hint: `File too large (max ${MAX_SKILL_FILE_BYTES} bytes)` }, 413); return true }
         throw err
       }
-      let parsed: { content?: unknown; content_base64?: unknown; mode?: unknown } = {}
-      try { parsed = JSON.parse(raw.toString()) } catch { json(res, { error: 'parse_error', hint: 'Invalid JSON' }, 400); return true }
+      const parsed = parseObjectBody<{ content?: unknown; content_base64?: unknown; mode?: unknown }>(res, raw)
+      if (parsed === null) return true
       const hasText = typeof parsed.content === 'string'
       const hasB64 = typeof parsed.content_base64 === 'string'
       if (hasText === hasB64) { json(res, { error: 'required', field: 'content', hint: 'Send exactly one of content (utf-8 text) or content_base64' }, 400); return true }
@@ -916,8 +932,8 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'invalid_value', field: 'id', hint: 'Revision id must be a positive integer' }, 400); return true
     }
     const body = await readBody(req)
-    let parsed: { decision?: unknown; reason?: unknown }
-    try { parsed = JSON.parse(body.toString()) as { decision?: unknown; reason?: unknown } } catch { json(res, { error: 'parse_error', hint: 'Invalid JSON' }, 400); return true }
+    const parsed = parseObjectBody<{ decision?: unknown; reason?: unknown }>(res, body)
+    if (parsed === null) return true
     if (parsed.decision !== 'activate' && parsed.decision !== 'reject') {
       json(res, { error: 'invalid_value', field: 'decision', hint: 'decision must be "activate" or "reject"' }, 400); return true
     }
@@ -1056,8 +1072,8 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     const existing = await getSkill(id)
     if (!existing) { json(res, { error: 'not_found' }, 404); return true }
     const body = await readBody(req)
-    let parsed: { tenant_id?: string } = {}
-    try { parsed = JSON.parse(body.toString()) } catch { json(res, { error: 'parse_error', hint: 'Invalid JSON' }, 400); return true }
+    const parsed = parseObjectBody<{ tenant_id?: string }>(res, body)
+    if (parsed === null) return true
     if (typeof parsed.tenant_id !== 'string' || !parsed.tenant_id) { json(res, { error: 'required', field: 'tenant_id', hint: 'tenant_id is required' }, 400); return true }
     await grantSkillAccess(id, parsed.tenant_id, ctx.auth?.kind === 'session' ? ctx.auth.user : undefined)
     // A granted tenant skill also lands under the grantee tenant's agents.

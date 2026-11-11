@@ -3627,7 +3627,7 @@ paths:
                     type: string
                     enum: [activated, rejected]
         "400":
-          description: "`invalid_value` (id is not a positive integer, or decision is neither activate nor reject) or `parse_error` (the body is not valid JSON)"
+          description: "`invalid_value` (id is not a positive integer, decision is neither activate nor reject, or the body is JSON but not an object: null, an array, a string or a number, hint `Body must be a JSON object`) or `parse_error` (the body is not valid JSON)"
         "403":
           description: Not an admin dashboard session, or (activate only) the proposal was authored by an agent whose id equals this session user (separation of duties; not applied to import, human or operator submitters, so the importing admin can activate their own import)
         "404":
