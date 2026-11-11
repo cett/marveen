@@ -6,7 +6,7 @@
 --
 -- prev_state_sha256 is the hash of the whole live state at the time the proposal was recorded (text, description and
 -- file set, see hashSkillState in db/skill-revisions.ts). At activation the same hash is computed from the live tables
--- and compared. NULL on every row that exists today (a pending import written before this migration) and on any row
+-- and compared. NULL on every row that exists today (a proposal that was waiting when this migration ran) and on any row
 -- that is not a proposal: such a row keeps the old text-only comparison.
 --
 -- ADD COLUMN only, nullable, no default: the same shape needs no rebuild of skill_revisions and no rename.

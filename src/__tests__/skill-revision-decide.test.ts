@@ -99,9 +99,9 @@ describe('decideSkillRevision', () => {
     // (the hash of the skill's content at propose time, and of the proposed file set, respectively).
     const proposedFiles = [{ rel_path: 'scripts/run.sh', mode: 0o755, content: Buffer.from('#!/bin/sh\n') }]
     const revisionId = db.prepare(`
-      INSERT INTO skill_revisions (skill_id, tenant_id, seq, action, content, prev_sha256, files_sha256, author_kind, status)
-      VALUES (?, ?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM skill_revisions WHERE skill_id = ?), 'modify', ?, ?, ?, 'human', 'pending')
-    `).run('agent/a/with-files', 'fleet', 'agent/a/with-files', PRIVILEGED, sha256Hex(PLAIN), hashFileSet(proposedFiles)).lastInsertRowid as number
+      INSERT INTO skill_revisions (skill_id, tenant_id, seq, action, content, content_sha256, prev_sha256, files_sha256, author_kind, status)
+      VALUES (?, ?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM skill_revisions WHERE skill_id = ?), 'modify', ?, ?, ?, ?, 'human', 'pending')
+    `).run('agent/a/with-files', 'fleet', 'agent/a/with-files', PRIVILEGED, sha256Hex(PRIVILEGED), sha256Hex(PLAIN), hashFileSet(proposedFiles)).lastInsertRowid as number
     db.prepare('INSERT INTO skill_revision_files (revision_id, rel_path, mode, content) VALUES (?, ?, ?, ?)')
       .run(revisionId, 'scripts/run.sh', 0o755, Buffer.from('#!/bin/sh\n'))
     await decideSkillRevision(revisionId, 'activate', { kind: 'human', id: 'reviewer' })
@@ -391,9 +391,9 @@ async function pendingModifyWithFiles(id: string, live: Record<string, string>, 
   }
   const files = Object.entries(proposed).map(([rel_path, text]) => ({ rel_path, mode: 0o755, content: Buffer.from(text) }))
   const revisionId = db.prepare(`
-    INSERT INTO skill_revisions (skill_id, tenant_id, seq, action, content, prev_sha256, files_sha256, author_kind, status)
-    VALUES (?, ?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM skill_revisions WHERE skill_id = ?), 'modify', ?, ?, ?, 'human', 'pending')
-  `).run(id, tenant, id, PRIVILEGED, sha256Hex(PLAIN), hashFileSet(files)).lastInsertRowid as number
+    INSERT INTO skill_revisions (skill_id, tenant_id, seq, action, content, content_sha256, prev_sha256, files_sha256, author_kind, status)
+    VALUES (?, ?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM skill_revisions WHERE skill_id = ?), 'modify', ?, ?, ?, ?, 'human', 'pending')
+  `).run(id, tenant, id, PRIVILEGED, sha256Hex(PRIVILEGED), sha256Hex(PLAIN), hashFileSet(files)).lastInsertRowid as number
   for (const f of files) {
     db.prepare('INSERT INTO skill_revision_files (revision_id, rel_path, mode, content) VALUES (?, ?, ?, ?)')
       .run(revisionId, f.rel_path, f.mode, f.content)

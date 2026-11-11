@@ -156,9 +156,9 @@ describe('a pending row without prev_state_sha256 keeps the old text-only compar
   // The shape a pending dashboard import had before migration 0095: no state hash, prev_sha256 = the text it replaces.
   function legacyPending(id: string): number {
     return db.prepare(`
-      INSERT INTO skill_revisions (skill_id, tenant_id, seq, action, content, prev_sha256, files_sha256, author_kind, status)
-      VALUES (?, 'fleet', (SELECT COALESCE(MAX(seq), 0) + 1 FROM skill_revisions WHERE skill_id = ?), 'modify', ?, ?, NULL, 'human', 'pending')
-    `).run(id, id, PRIVILEGED, sha256Hex(PLAIN)).lastInsertRowid as number
+      INSERT INTO skill_revisions (skill_id, tenant_id, seq, action, content, content_sha256, prev_sha256, files_sha256, author_kind, status)
+      VALUES (?, 'fleet', (SELECT COALESCE(MAX(seq), 0) + 1 FROM skill_revisions WHERE skill_id = ?), 'modify', ?, ?, ?, NULL, 'human', 'pending')
+    `).run(id, id, PRIVILEGED, sha256Hex(PRIVILEGED), sha256Hex(PLAIN)).lastInsertRowid as number
   }
 
   it('text unchanged: activated', async () => {
@@ -180,5 +180,60 @@ describe('a pending row without prev_state_sha256 keeps the old text-only compar
     const id = legacyPending('agent/a/legacy-desc')
     expect((await updateSkill('agent/a/legacy-desc', { description: 'edited directly' }, SYSTEM, {})).outcome).toBe('updated')
     expect((await decideSkillRevision(id, 'activate', REVIEWER)).outcome).toBe('activated')
+  })
+})
+
+// A NULL hash is not an ordinary value. No writer of skill_revisions leaves content_sha256 out and a proposal for a live
+// skill is always recorded after the skill's baseline (so it has a prev_sha256), which makes both shapes damage, not
+// history: they fail closed instead of matching "NULL equals NULL".
+describe('a NULL that no writer produces fails closed', () => {
+  function rawPending(id: string, contentSha: string | null, prevSha: string | null): number {
+    return db.prepare(`
+      INSERT INTO skill_revisions (skill_id, tenant_id, seq, action, content, content_sha256, prev_sha256, files_sha256, author_kind, status)
+      VALUES (?, 'fleet', (SELECT COALESCE(MAX(seq), 0) + 1 FROM skill_revisions WHERE skill_id = ?), 'modify', ?, ?, ?, NULL, 'human', 'pending')
+    `).run(id, id, PRIVILEGED, contentSha, prevSha).lastInsertRowid as number
+  }
+
+  it('a pending revision without a recorded text hash is corrupt_proposal, not accepted unchecked', async () => {
+    await liveSkill('agent/a/null-content')
+    const id = rawPending('agent/a/null-content', null, sha256Hex(PLAIN))
+    expect(await decideSkillRevision(id, 'activate', REVIEWER)).toEqual({ outcome: 'corrupt_proposal' })
+    expect((await getSkill('agent/a/null-content'))?.content).toBe(PLAIN)
+    expect(await listPendingRevisions('agent/a/null-content')).toHaveLength(1)
+  })
+
+  it('a text that does not match its recorded hash is still corrupt_proposal', async () => {
+    await liveSkill('agent/a/bad-content')
+    const id = rawPending('agent/a/bad-content', sha256Hex('something else'), sha256Hex(PLAIN))
+    expect(await decideSkillRevision(id, 'activate', REVIEWER)).toEqual({ outcome: 'corrupt_proposal' })
+  })
+
+  it('a modify proposal without a prev_sha256 (and no state hash) is stale_proposal, not matched against nothing', async () => {
+    await liveSkill('agent/a/null-prev')
+    const id = rawPending('agent/a/null-prev', sha256Hex(PRIVILEGED), null)
+    expect(await decideSkillRevision(id, 'activate', REVIEWER)).toEqual({ outcome: 'stale_proposal' })
+    expect((await getSkill('agent/a/null-prev'))?.content).toBe(PLAIN)
+  })
+
+  it('a modify proposal for a skill with no activated revision at all is stale_proposal', async () => {
+    await liveSkill('agent/a/no-trail')
+    db.prepare("DELETE FROM skill_revisions WHERE skill_id = 'agent/a/no-trail'").run()
+    const id = rawPending('agent/a/no-trail', sha256Hex(PRIVILEGED), sha256Hex(PLAIN))
+    expect(await decideSkillRevision(id, 'activate', REVIEWER)).toEqual({ outcome: 'stale_proposal' })
+  })
+
+  it('no activated revision and no prev_sha256 is stale_proposal, not "nothing equals nothing"', async () => {
+    await liveSkill('agent/a/nothing-nothing')
+    db.prepare("DELETE FROM skill_revisions WHERE skill_id = 'agent/a/nothing-nothing'").run()
+    const id = rawPending('agent/a/nothing-nothing', sha256Hex(PRIVILEGED), null)
+    expect(await decideSkillRevision(id, 'activate', REVIEWER)).toEqual({ outcome: 'stale_proposal' })
+    expect((await getSkill('agent/a/nothing-nothing'))?.content).toBe(PLAIN)
+  })
+
+  it('an activated revision without a text hash and a proposal without prev_sha256 do not match each other', async () => {
+    await liveSkill('agent/a/null-null')
+    db.prepare("UPDATE skill_revisions SET content_sha256 = NULL WHERE skill_id = 'agent/a/null-null'").run()
+    const id = rawPending('agent/a/null-null', sha256Hex(PRIVILEGED), null)
+    expect(await decideSkillRevision(id, 'activate', REVIEWER)).toEqual({ outcome: 'stale_proposal' })
   })
 })

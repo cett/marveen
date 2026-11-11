@@ -482,10 +482,10 @@ export async function decideSkillRevision(
         'SELECT rel_path, mode, content FROM skill_revision_files WHERE revision_id = ?', revisionId)
       if (hashFileSet(files) !== revision.files_sha256) throw new SkillRevisionCorruptAtActivate()
       // Same check for the proposed text itself: its hash was recorded at propose time, and the row sits in the same
-      // table family as the files. A row without a recorded hash (legacy) has nothing to compare against.
-      if (revision.content_sha256 !== null && sha256Hex(revision.content ?? '') !== revision.content_sha256) {
-        throw new SkillRevisionCorruptAtActivate()
-      }
+      // table family as the files. Every writer of this table records content_sha256 (writeSkillRevision and
+      // submitPendingRevision compute it before the insert, and the 0092 rebuild copies it), so a pending row without
+      // one is not a legacy shape but damage: it fails the comparison and answers corrupt_proposal.
+      if (sha256Hex(revision.content ?? '') !== revision.content_sha256) throw new SkillRevisionCorruptAtActivate()
 
       // ORDER IS DELIBERATE (do not move the staleness read above the lock, and do not move the lock below the real
       // write). The first statement that touches the skill row is the lock-taking no-op below: it takes that row's
@@ -528,16 +528,19 @@ export async function decideSkillRevision(
             throw new SkillRevisionStaleAtActivate()
           }
         } else {
-          // A proposal recorded before migration 0095 (only a pending dashboard import can still be one) carries no
-          // state hash. It keeps the old comparison, the SKILL.md text alone against the latest activated revision: not
-          // stale on purpose (that would strand the pending import for no safety gain). No new row has a NULL here.
+          // The one NULL path. A proposal recorded before migration 0095 (any pending revision that was waiting when it
+          // ran: a gated write by an agent or the file sync, an import) carries no state hash. It keeps the old
+          // comparison, the SKILL.md text alone against the latest activated revision: not stale on purpose (that would
+          // strand the pending proposal for no safety gain). No new row has a NULL here.
           // Excludes THIS row: the CAS above already flipped it to 'activated', so without the exclusion it would be
           // its own "latest activated" -- its content_sha256 is the proposed (new) text, which can never equal its
           // own prev_sha256 (the old text it was proposed against), so every activation would wrongly read as stale.
+          // A NULL prev_sha256 is not a value to match: a proposal for a live skill is always recorded after the skill's
+          // baseline (submitPendingRevision), so it carries one, and without one nothing can be compared: stale.
           const latestActivated = await tx.get<{ content_sha256: string | null }>(
             "SELECT content_sha256 FROM skill_revisions WHERE skill_id = ? AND status = 'activated' AND id != ? ORDER BY seq DESC LIMIT 1",
             revision.skill_id, revisionId)
-          if ((latestActivated?.content_sha256 ?? null) !== revision.prev_sha256) throw new SkillRevisionStaleAtActivate()
+          if (revision.prev_sha256 === null || latestActivated?.content_sha256 !== revision.prev_sha256) throw new SkillRevisionStaleAtActivate()
         }
       }
 
