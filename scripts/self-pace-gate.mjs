@@ -31,7 +31,8 @@
 // so an operation that changes the install without naming a protected path is not seen: `patch -p1 < x.diff`,
 // `tar xf` / `unzip` / `cpio -i` into a directory under the install, `rsync` / `cp -r a/. .` onto `.`,
 // `git config core.hooksPath`, `git -c core.fsmonitor=...`, and a diff program or textconv filter that the repository
-// configuration already names (diff.external, diff.<driver>.textconv) for a plain `git diff`. A git hidden from the parser
+// configuration already names (diff.external, diff.<driver>.textconv) for a plain `git diff`, and a pager that the repository
+// configuration names (core.pager, pager.<command>) for `git --paginate` / `git -p` (allowed, like diff.external). A git hidden from the parser
 // (`sh -c 'git ...'`, `find -exec git`, `env -C <dir> git`, a nested command substitution) is not judged by
 // the working-tree rule (gitRewritesInstallTree), and neither is a repository whose configuration sets core.worktree.
 

@@ -47,7 +47,8 @@ describe('a strict ancestor (the scripts/ directory): a read-only git subcommand
     'git diff scripts/', 'git diff scripts', 'git diff --stat scripts/', 'git log --oneline -- scripts', 'git log -- scripts/lib', 'git log -3 scripts/',
     'git status scripts', 'git status --short scripts/', 'git grep -n needle scripts', 'git grep -n needle scripts/hooks', 'git ls-files scripts', 'git ls-files -o scripts/',
     'git show HEAD:scripts/hooks/egress-gate.mjs', 'git blame scripts/lib/homoglyph.py', 'git add scripts/', 'git diff develop -- scripts',
-    'git -C /some/worktree diff -- scripts', 'git log --oneline -- scripts | head -5', 'git log --oneline -- scripts | grep fix', 'git diff scripts | wc -l',
+    'git -C /some/worktree diff -- scripts', 'git --paginate log -- scripts', 'git -p diff scripts', // known limit: the pager comes from the repo configuration
+'git log --oneline -- scripts | head -5', 'git log --oneline -- scripts | grep fix', 'git diff scripts | wc -l',
   ]
   it.each(ALLOWED)('allows: %s', (command) => {
     expect({ command, r: bash(command) }).toEqual({ command, r: ALLOW })
@@ -141,7 +142,7 @@ describe('the worktree copy and an unrelated path are free as before (positive t
 })
 
 describe('loose ancestors (src, src/web, src/security, store, the root): still loose, the strict rule did not spread', () => {
-  // Boo's D1 mutation (strict: false -> true for these) must turn something red AFTER the git reads are allowed at a
+  // The mutation "strict: false -> true for these directories" must turn something red AFTER the git reads are allowed at a
   // strict ancestor too, so the git reads alone cannot tell loose from strict any more: a plain, non-destructive,
   // non-read command naming the directory is what separates them (loose lets it run, strict refuses it).
   it.each(['src', 'src/web', 'src/security'])('a non-destructive command naming %s runs (loose)', (dir) => {
