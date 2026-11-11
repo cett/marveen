@@ -288,6 +288,10 @@ const READERS = new Set([
 const SAFE_GIT = new Set([
   'status', 'diff', 'log', 'show', 'blame', 'ls-files', 'add', 'grep', 'rev-parse', 'cat-file', 'check-ignore',
   'diff-tree', 'show-ref', 'ls-tree', 'shortlog', 'commit', 'diff-index', 'diff-files', 'rev-list', 'describe',
+  // pure read-only names (no write form of their own; gitSafe still refuses -c, --output, --ext-diff, --textconv in front of or after them).
+  // NOT here, on purpose: branch, tag, remote, stash, reflog, config (they have write forms), ls-remote (--upload-pack runs a program),
+  // verify-commit / verify-tag (run the configured gpg program), fsck (--lost-found writes), merge-tree (writes objects)
+  'merge-base', 'for-each-ref', 'name-rev', 'cherry', 'whatchanged', 'count-objects', 'show-branch', 'range-diff',
 ])
 const WRAPPER_WORDS = new Set(['env', 'time', 'nohup', 'command', 'builtin', 'exec', 'nice', 'sudo', 'doas', 'stdbuf', 'setsid'])
 const INTERPRETERS = /^(?:python(?:\d+(?:\.\d+)?)?|node(?:js)?|bash|sh|zsh|dash|ksh|perl|ruby|php|deno|bun|tsx|ts-node|source|\.)$/
