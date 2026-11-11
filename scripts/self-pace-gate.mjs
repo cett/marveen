@@ -26,6 +26,15 @@
 // Wired into every sub-agent's .claude/settings.json by
 // writeAgentSettingsFromProfile() (agent-scaffold.ts), guarded by
 // name !== MAIN_AGENT_ID, re-applied on every spawn (respawn-safe).
+//
+// KNOWN, NOT COVERED (listed on purpose, not fixed here): the protected-path rule below judges the WORDS of a command,
+// so an operation that changes the install without naming a protected path is not seen: `patch -p1 < x.diff`,
+// `tar xf` / `unzip` / `cpio -i` into a directory under the install, `rsync` / `cp -r a/. .` onto `.`,
+// `git config core.hooksPath`, `git -c core.fsmonitor=...`, and a diff program or textconv filter that the repository
+// configuration already names (diff.external, diff.<driver>.textconv) for a plain `git diff`, and a pager that the repository
+// configuration names (core.pager, pager.<command>) for `git --paginate` / `git -p` (allowed, like diff.external). A git hidden from the parser
+// (`sh -c 'git ...'`, `find -exec git`, `env -C <dir> git`, a nested command substitution) is not judged by
+// the working-tree rule (gitRewritesInstallTree), and neither is a repository whose configuration sets core.worktree.
 
 import { readFileSync, readdirSync, realpathSync, statSync, lstatSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -312,7 +321,10 @@ export function protectedSet(opts = {}) {
     ? [realOrSelf(opts.storeDir)]
     : [...new Set([join(scriptsDir, '..', 'store'), ...(process.env.MARVEEN_STORE_DIR ? [process.env.MARVEEN_STORE_DIR] : [])].map(realOrSelf))]
   const entries = []
-  const add = (path, dir, kind) => entries.push({ real: realOrSelf(path), dir, kind })
+  // `lex` is the path as the fixed name spells it (installation root joined with the name), `real` its resolved
+  // form: the integrity check must name files the way git does (by name), so a symlink put in place of a gate
+  // file or directory is a change there and not a quiet jump to the target
+  const add = (path, dir, kind) => entries.push({ real: realOrSelf(path), lex: path, dir, kind })
   for (const s of storeDirs) {
     add(join(s, ALLOWLIST_BASENAME), false, 'egress-allowlist')
     add(join(s, 'egress-allowlist.history'), true, 'egress-allowlist')
@@ -432,9 +444,12 @@ export function fileToolTargetsAllowlist(toolInput, allowlistPath = join(DEFAULT
 // { }. NOT split: inside quotes, inside $( ) <( ) >( ) and backticks (kept in the segment, which
 // then denies if it names a protected path), >& &> >| <&. A heredoc body is not parsed for quotes:
 // each body line becomes a segment of its own. `unterminated` = a quote or $( never closed.
+// `grouped` = the STRUCTURE has a subshell, a group or a brace group: an unquoted, unescaped ( ) or standalone { } outside
+// every substitution (a parenthesis in quotes or in a $( ) is text or a command of its own). A heredoc body line counts as
+// a command line, as it is judged as one.
 export function splitShell(command) {
   const src = String(command ?? '').replace(/\\\r?\n/g, ' ')
-  const segs = []; const seps = []; let cur = ''; let i = 0; let depth = 0; let q = null; let unterminated = false
+  const segs = []; const seps = []; let cur = ''; let i = 0; let depth = 0; let q = null; let unterminated = false; let grouped = false
   const pending = []
   const push = (s = '') => { if (cur.trim()) { segs.push(cur); seps.push(s) } cur = '' }
   const n = src.length
@@ -466,7 +481,7 @@ export function splitShell(command) {
           let e = src.indexOf('\n', i); if (e === -1) e = n
           const line = src.slice(i, e); i = Math.min(e + 1, n)
           if (line.trim() === tag) break
-          if (line.trim()) { segs.push(line); seps.push('\n') }
+          if (line.trim()) { segs.push(line); seps.push('\n'); if (!grouped && splitShell(line).grouped) grouped = true }
         }
       }
       continue
@@ -482,13 +497,61 @@ export function splitShell(command) {
       const two = src[i + 1] === '|'
       push(two ? '||' : '|'); i += two || src[i + 1] === '&' ? 2 : 1; continue
     }
-    if (c === '(' || c === ')') { push(); i++; continue }
-    if ((c === '{' || c === '}') && (i === 0 || /\s/.test(src[i - 1])) && (i + 1 >= n || /\s/.test(src[i + 1]))) { push(); i++; continue }
+    if (c === '(' || c === ')') { grouped = true; push(); i++; continue }
+    if ((c === '{' || c === '}') && (i === 0 || /\s/.test(src[i - 1])) && (i + 1 >= n || /\s/.test(src[i + 1]))) { grouped = true; push(); i++; continue }
     cur += c; i++
   }
   if (q || depth > 0) unterminated = true
   push()
-  return { segs, seps, unterminated }
+  return { segs, seps, unterminated, grouped }
+}
+// The text of every OUTERMOST command or process substitution in a command: $( ), <( ), >( ) (balanced, quote-aware, a $( ) in
+// double quotes counts) and `...`. A nested one sits inside the text of its outer one and is found when that text is judged.
+// An unclosed one runs to the end of the command. Bounded: a nesting deeper than SUBST_NEST_MAX takes the rest as its text.
+const SUBST_NEST_MAX = 64
+function substitutionTexts(command) {
+  const s = String(command ?? ''); const n = s.length; const out = []
+  let close // forward: close <-> skipDouble
+  // the index after a double-quoted string that starts at i (a $( ) or a backtick inside it is live)
+  const skipDouble = (i, nest) => {
+    i++
+    while (i < n && s[i] !== '"') {
+      if (s[i] === '\\') { i += 2; continue }
+      if (s[i] === '$' && s[i + 1] === '(') { i = close(i + 1, nest + 1) + 1; continue }
+      if (s[i] === '`') { const e = s.indexOf('`', i + 1); i = e === -1 ? n : e + 1; continue }
+      i++
+    }
+    return i + 1
+  }
+  // the index of the ")" that closes the "(" at `open`; n when it never closes
+  close = (open, nest) => {
+    if (nest > SUBST_NEST_MAX) return n
+    let depth = 1; let i = open + 1
+    while (i < n) {
+      const c = s[i]
+      if (c === '\\') { i += 2; continue }
+      if (c === "'") { const e = s.indexOf("'", i + 1); i = e === -1 ? n : e + 1; continue }
+      if (c === '"') { i = skipDouble(i, nest); continue }
+      if (c === '`') { const e = s.indexOf('`', i + 1); i = e === -1 ? n : e + 1; continue }
+      if (c === '(') depth++
+      else if (c === ')' && --depth === 0) return i
+      i++
+    }
+    return n
+  }
+  let inDouble = false
+  for (let i = 0; i < n;) {
+    const c = s[i]
+    if (c === '\\') { i += 2; continue }
+    if (c === "'" && !inDouble) { const e = s.indexOf("'", i + 1); i = e === -1 ? n : e + 1; continue }
+    if (c === '"') { inDouble = !inDouble; i++; continue }
+    if (c === '`') { const e = s.indexOf('`', i + 1); out.push(s.slice(i + 1, e === -1 ? n : e)); i = e === -1 ? n : e + 1; continue }
+    if (s[i + 1] === '(' && (c === '$' || (!inDouble && (c === '<' || c === '>')))) {
+      const e = close(i + 1, 0); out.push(s.slice(i + 2, e)); i = e + 1; continue
+    }
+    i++
+  }
+  return out
 }
 // Words and redirect targets of one simple command, unquoted and unescaped. `hasRedirect` = any
 // redirect operator at all (including fd duplication and input).
@@ -692,6 +755,90 @@ function listDir(dir, ctx, depth = 0, out = []) {
 // whether a `cd` went somewhere unknowable.
 function makeContext(command, cwd, prot) {
   return { cwds: new Set([resolve(cwd)]), current: resolve(cwd), vars: collectVars(command), unknownCwd: false, prot, listing: null, cache: new Map() }
+}
+// A call of the fleet API wrapper (scripts/agent-api.sh, the protected file, run directly or as the script of a shell) carries its
+// JSON body in a single-quoted argument: data for the script, not a command and not a path. The words of a quoted command line are
+// read piece by piece (see wordKind), so a protected path, a pipe or a $( ) inside that body made the call look like a write.
+// Returns the segment with the BODY word (the third positional after the wrapper, past its options) replaced by 'x' when it is only
+// single-quoted spans. Narrow on purpose: nothing at all when the segment has a live substitution ($( ), backtick, <( ), >( ): the
+// code in it runs, whatever words it holds), not for any other command, not for a word that follows a redirect operator (`> '...'` is a target, not data), not for a word that has anything
+// attached to its quotes (`>""'...'`, `--out='...'`), never a double-quoted span (a live $( ) there stays), and an unclosed quote
+// is left as it is.
+// (a command that defines a function or an alias, or moves PATH / BASH_ENV / ENV, may have given `bash` or the wrapper another
+// meaning: no masking; the same for a group or a shell keyword in the command, which is where a function body sits)
+const SHADOW_RX = /\balias\b|expand_aliases|\benable\b|\bhash\b|\bBASH_ENV\b|\bBASH_FUNC|\b(?:PATH|ENV|IFS)\s*=|\bPS4\b|\bSHELLOPTS\b|\bBASHOPTS\b|\bBASH_XTRACEFD\b|\bPROMPT_COMMAND\b/
+const SYSTEM_SHELL_RX = /^\/(?:usr\/(?:local\/)?|opt\/homebrew\/)?bin\/(?:bash|sh|zsh|dash)$/
+function maskApiBody(seg, ctx, whole, compound) {
+  if (compound || SHADOW_RX.test(whole)) return seg
+  // (a newline inside the segment means a quote spans lines: after a comment (`# '`) the splitter's quote state is not the shell's,
+  // so the text of a later command line could sit inside a span this would mask. Such a segment is left as it is.)
+  if (!seg.includes("'") || /[\r\n]/.test(seg)) return seg
+  const w = spliceEnvSplit(tokenizeShell(seg).words)
+  const ci = commandWordIndex(w)
+  // (anything in front of the command word - a NAME=value setting, env, nice - can change what the shell does with the call: PS4 with
+  // -x runs code, SHELLOPTS turns xtrace on: no masking then)
+  if (ci !== 0) return seg
+  const cmd = w[ci].split('/').pop()
+  let k = -1
+  if (cmd === 'agent-api.sh') k = ci
+  else if (/^(?:bash|sh|zsh|dash)$/.test(cmd) && (!w[ci].includes('/') || SYSTEM_SHELL_RX.test(w[ci]))) {
+    // between the shell and the wrapper only flags that change nothing about WHAT the shell runs (-e -u -x -v, alone or bundled):
+    // -c / -s / -i (inline code, a script from stdin, an interactive shell: the wrapper path is then only a positional parameter),
+    // -o / -O / +O with a value, --rcfile, --init-file and any option this does not know leave the segment as it is
+    for (let j = ci + 1; j < w.length; j++) {
+      if (/^-[euv]+$/.test(w[j])) continue // (no x: with xtrace a PS4 runs code)
+      if (w[j].startsWith('-') && w[j].length > 1) return seg
+      k = j; break
+    }
+  }
+  // (the wrapper is named by a path: a bare name is looked up in PATH, not in the directory the parser resolved it in)
+  if (k === -1 || !w[k].includes('/') || w[k].split('/').pop() !== 'agent-api.sh' || wordKind(w[k], ctx) !== 'gate-scripts') return seg
+  const apiWord = w[k]
+  const n = seg.length
+  let out = ''; let i = 0; let seen = false; let raw = ''; let word = ''; let last = ''
+  let live = false // an unquoted (or double-quoted) $( ), backtick, <( ) or >( ): code that runs, whatever sits in its words
+  let pos = 0; let optsDone = false; let skipNext = false
+  // The wrapper's own arguments: [--agent X] [--token X] [--max-time X] [--with-status] [--] METHOD PATH [BODY]. Only the BODY, the
+  // third positional word, is data; a quoted word anywhere else (the method, the path, a fourth word) stays as it is.
+  // A WORD (a run up to unquoted whitespace) is masked only when it is made of single-quoted spans and escaped quotes and nothing
+  // else (`'{...}'`, `'it'\''s'`): a word that has anything attached to the quotes (`>''"'p'"`, `>""'p'`, `--out='p'`, `$'p'`) is
+  // kept whole, so a redirect target built from several quoted pieces cannot be cut in the middle. `last` is the last character
+  // before the word: after a redirect operator (`> '...'`, `>& '...'`, `>| '...'`) the word is a target, not a body.
+  const flush = () => {
+    if (raw === '') return
+    let mask = false
+    if (!seen) { if (word === apiWord) seen = true } else {
+      let positional = true
+      if (skipNext) { skipNext = false; positional = false } else if (!optsDone) {
+        if (/^--(?:agent|token|max-time)$/.test(word)) { skipNext = true; positional = false } else if (word === '--with-status') positional = false
+        else if (word === '--') { optsDone = true; positional = false } else optsDone = true
+      }
+      if (positional && ++pos === 3 && raw.includes("'") && /^(?:'[^']*'|\\')+$/.test(raw) && !/[<>|&]/.test(last)) mask = true
+    }
+    out += mask ? "'x'" : raw
+    last = raw[raw.length - 1]
+    raw = ''; word = ''
+  }
+  while (i < n) {
+    const c = seg[i]
+    if (c === '\\' && i + 1 < n) { raw += c + seg[i + 1]; word += seg[i + 1]; i += 2; continue }
+    if (c === '"') {
+      let j = i + 1; let inner = ''
+      while (j < n && seg[j] !== '"') { if (seg[j] === '\\' && j + 1 < n) { inner += seg[j + 1]; j += 2 } else { inner += seg[j]; j++ } }
+      if (/\$\(|`/.test(inner)) live = true
+      raw += seg.slice(i, j + 1); word += inner; i = j + 1; continue
+    }
+    if (c === "'") {
+      const e = seg.indexOf("'", i + 1)
+      if (e === -1) { raw += seg.slice(i); word += seg.slice(i + 1); i = n; continue }
+      raw += seg.slice(i, e + 1); word += seg.slice(i + 1, e); i = e + 1; continue
+    }
+    if (c === '`' || (seg[i + 1] === '(' && (c === '$' || c === '<' || c === '>'))) live = true
+    if (/\s/.test(c)) { flush(); out += c; i++; continue }
+    raw += c; word += c; i++
+  }
+  flush()
+  return live ? seg : out
 }
 function protectedBasenames(ctx) {
   if (ctx.listing) return ctx.listing
@@ -1013,9 +1160,245 @@ function gitSafe(args) {
     }
     if (a === '--') break
     if (/^--ou/.test(a)) return false
-    if (sub === 'grep' && (/^-O/.test(a) || /^--open/.test(a))) return false
+    // git grep -O[<pager>] / --open-files-in-pager[=<pager>] runs a program on the matching files. -O can sit inside a
+    // short-option cluster (-nOless, -inO) and git takes any unambiguous abbreviation of the long form (--op and up;
+    // --o alone is ambiguous with --only-matching and --or, and git refuses it). A cluster that merely contains an O
+    // in a pattern (-eOther) is refused too: the cost of failing closed here is one false deny.
+    if (sub === 'grep') {
+      if (/^-[^-]*O/.test(a)) return false
+      const gname = a.split('=')[0]
+      if (gname.length >= 4 && '--open-files-in-pager'.startsWith(gname)) return false
+    }
+    // --ext-diff runs the configured external diff program, --textconv the configured textconv filter. git takes any
+    // unambiguous abbreviation, so every prefix that can only be that option counts: --ext (>= 5 chars) and --textc
+    // (>= 7 chars; --text itself is a different option, "treat as text"). --extended-regexp is not a prefix of
+    // --ext-diff and stays a read.
+    const name = a.split('=')[0]
+    if ((name.length >= 5 && '--ext-diff'.startsWith(name)) || (name.length >= 7 && '--textconv'.startsWith(name))) return false
   }
   return true
+}
+// ONE definition of a plain read, used by every step of bashProtectedDecision that lets a read through (the strict
+// ancestor step and the protected-file step): a reader that readerOk() shows safe, or a read-only git subcommand
+// that gitSafe() shows safe, AND not fed into anything but another reader (it may be handing paths to xargs / sh),
+// AND without an environment that makes it run a program or write a file. Two steps with their own copy of this
+// condition is how a git read was refused at a strict ancestor while a git read piped into xargs passed at a file.
+function isReadCommand(cmd, args, ctx) {
+  return (READERS.has(cmd) && readerOk(cmd, args, ctx)) || (cmd === 'git' && gitSafe(args))
+}
+function isPlainRead(cmd, args, ctx, { si, feedsNonReader, envUnsafe }) {
+  return isReadCommand(cmd, args, ctx) && !envUnsafe && !feedsNonReader(si)
+}
+
+// ---- git operations that rewrite a working tree -------------------------------------------------------------------
+// `git checkout <branch>`, `switch`, `merge`, `pull`, `rebase`, `cherry-pick`, `reset --hard`, `restore --source`,
+// `read-tree -u`, `stash pop`, `apply`, `am`, `clean` ... rewrite the files of the tree they run in without naming a
+// single protected path, so the word-based rules above never see them. They are judged by WHERE they run: a git
+// subcommand that is not read-only (not in SAFE_GIT, not in the short harmless list below) is refused when its working
+// tree is the install or anything under it, and free when the tree is a real path outside it (a git worktree copy).
+// An ALLOWLIST on purpose: naming the rewriting subcommands would miss the next one (restore --source, sparse-checkout,
+// submodule update, bisect ...).
+const GIT_HARMLESS_SUBS = new Set(['help', 'version', 'worktree']) // worktree: its own governance gate decides, not this one
+const SHELL_KEYWORDS = new Set(['if', 'then', 'else', 'elif', 'while', 'until', 'do', '!', 'time', '{'])
+const GIT_LAUNCHERS = new Set([...WRAPPER_WORDS, 'timeout', 'xargs', 'busybox'])
+const GIT_TREE_MAX_ARGS = 256
+const GIT_TREE_MAX_CWDS = 32
+const GIT_CANDIDATES_MAX = 8
+// A shell that is handed its script as text (sh -c STRING, eval STRING, a script on stdin) runs a command the word rules
+// cannot see inside. The text is judged as a command of its own, from the directory (and the cd history) the outer
+// command had at that point, bounded in depth and in the number of texts per command (the cost stays linear).
+// (a numeric suffix is tolerated: bash5, sh-3.2, zsh-5.9)
+const SHELL_RX = /^(?:bash|sh|zsh|dash|ksh|ksh93|mksh|pdksh|oksh|ash|yash|posh|hush|rbash|fish|csh|tcsh)(?:[-.]?[0-9][0-9.]*)?$/
+const INNER_DEPTH_MAX = 4
+const INNER_BUDGET = 16
+const SUBST_BUDGET = 64 // substitutions that name git, judged per command
+// Does a text name git as a word? Also when quotes or backslashes split the name (g'i't, g"i"t, g''it): the shell that reads the
+// text removes them, so the git is there. (A text that only looks like it, `g it`, has a space and is not matched.)
+const GIT_WORD = /\bgit\b/
+const GIT_WORD_STRICT = /(?:^|[^\w-])git(?:[^\w-]|$)/
+const namesGit = (t, rx = GIT_WORD) => { const s = String(t ?? ''); return rx.test(s) || rx.test(s.replace(/['"\\]/g, '')) }
+// The script texts one segment hands to a shell: { texts, unreadable }. `prevSeg`: the segment before a pipe (or null).
+// `unreadable`: the script is handed over in a form this parser cannot read, so what it runs is not known:
+//   'always'  the text is spelled so that the words are not the words that run ($'..' / $".." quoting, a \xHH, \uHHHH or octal
+//             escape, a printf format directive): judged as the worst case, a tree-rewriting git
+//   'if-git'  the script comes from a source that is not text in the command (a command substitution, a pipe from anything but
+//             echo / printf / a heredoc, a redirect from a file, `source /dev/stdin`): the same, but only when the command
+//             mentions git at all (a plain `cat run.sh | sh` of a command with no git in it is not this rule's business)
+function shellScriptTexts(words, cmdIdx, seg, prevSeg) {
+  const none = { texts: [], unreadable: null }
+  if (cmdIdx === -1) return none
+  const base = (w) => w.split('/').pop()
+  const OBFUSCATED = /\$['"]|\\x[0-9A-Fa-f]|\\u[0-9A-Fa-f]|\\0[0-7]|\\[1-7][0-7]{2}/
+  // (a plain $NAME in a text is expanded by the inner shell and judged there, like any word; only a substitution builds a command)
+  const BUILT = /\$\(|`/ // a command substitution inside the text builds (part of) the command: `$(printf 'g%s' it) checkout x`
+  const DYNAMIC = /\$\{/
+  if (base(words[cmdIdx]) === 'eval') {
+    const t = words.slice(cmdIdx + 1).join(' ')
+    return { texts: [t], unreadable: OBFUSCATED.test(seg) || BUILT.test(t) ? 'always' : DYNAMIC.test(t) ? 'if-git' : null }
+  }
+  // `source /dev/stdin` and `. /dev/stdin` read their script from stdin exactly like a bare shell
+  const stdinSource = /^(?:source|\.)$/.test(base(words[cmdIdx])) && (words.slice(cmdIdx + 1).some((a) => /^\/(?:dev\/stdin|dev\/fd\/[0-9]+|proc\/(?:self|[0-9]+)\/fd\/[0-9]+)$/.test(a)) || /<\(/.test(seg))
+  let sh = SHELL_RX.test(base(words[cmdIdx])) || stdinSource ? cmdIdx : -1
+  if (sh === -1) {
+    // behind a launcher word (`xargs sh -c ...`, `nice -n 5 bash -c ...`, `timeout 5 sh ...`)
+    // (a launcher with its own option value, `nice -n 1`, leaves the command word on the value: the launcher is looked
+    // for from the start of the segment, but only counts when it is at or before the command word)
+    const l = words.findIndex((w) => GIT_LAUNCHERS.has(base(w)))
+    sh = l === -1 || l > cmdIdx ? -1 : words.findIndex((w, i) => i > l && SHELL_RX.test(base(w)))
+  }
+  if (sh === -1) return none
+  const STDIN_DEV = /^\/(?:dev\/stdin|dev\/fd\/[0-9]+|proc\/(?:self|[0-9]+)\/fd\/[0-9]+)$/
+  const devOperand = words.slice(sh + 1).some((a) => STDIN_DEV.test(a))
+  const args = stdinSource ? [] : words.slice(sh + 1).filter((a) => !STDIN_DEV.test(a)) // `sh /dev/fd/3` is a bare shell reading a descriptor
+  // a process substitution as the script (`bash <(cmd)`): the script is whatever cmd prints
+  if (!args.some((a) => /^-[A-Za-z]*c[A-Za-z]*$/.test(a)) && /<\(/.test(seg)) return { texts: [], unreadable: 'if-git' }
+  const k = args.findIndex((a) => /^-[A-Za-z]*c[A-Za-z]*$/.test(a))
+  if (k !== -1) {
+    const s = args.slice(k + 1).find((a) => !a.startsWith('-'))
+    if (s === undefined) return none
+    return { texts: [s], unreadable: OBFUSCATED.test(seg) || BUILT.test(s) ? 'always' : DYNAMIC.test(s) ? 'if-git' : null }
+  }
+  if (args.some((a) => !a.startsWith('-'))) return none // a script FILE operand: not text
+  // no -c and no file: the shell reads its script from stdin. A here-string and an echo / printf before the pipe are text;
+  // a heredoc is text too (its lines are segments of their own, judged as commands).
+  const texts = []
+  let unreadable = null
+  const hs = /<<<\s*(?:'([^']*)'|"([^"]*)"|([^\s;|&<>]+))/.exec(seg)
+  if (hs) { texts.push(hs[1] ?? hs[2] ?? hs[3]); if (OBFUSCATED.test(seg) || BUILT.test(texts[0])) unreadable = 'always'; else if (DYNAMIC.test(texts[0])) unreadable = 'if-git' }
+  else if (/<<-?\s*['"\\]?[A-Za-z_]/.test(seg) || (prevSeg !== null && /<<-?\s*['"\\]?[A-Za-z_]/.test(prevSeg))) { /* a heredoc: the body lines are segments */ }
+  else if (prevSeg !== null) {
+    const pw = tokenizeShell(prevSeg).words
+    const pi = commandWordIndex(pw)
+    if (pi !== -1 && /^(?:echo|printf)$/.test(base(pw[pi]))) {
+      const t = pw.slice(pi + 1).filter((a) => !/^-[neE]+$/.test(a)).join(' ')
+      texts.push(t)
+      // a printf format directive builds the text at run time (`printf 'g%s' it`), and so does an escape
+      if (OBFUSCATED.test(prevSeg) || BUILT.test(t) || (base(pw[pi]) === 'printf' && /%/.test(t))) unreadable = 'always'
+      else if (DYNAMIC.test(t)) unreadable = 'if-git'
+    } else unreadable = 'if-git' // cat, curl, git show ... | sh: the script is whatever the feeder prints
+  } else if (/(?:^|[\s;&|])\d*<(?![<(&])/.test(seg) || stdinSource) unreadable = 'if-git' // sh < run.sh, source /dev/stdin
+  if (devOperand && unreadable === null && texts.length === 0) unreadable = 'if-git' // sh /dev/fd/3 with nothing readable behind it
+  return { texts: texts.map((t) => t.replace(/\\n/g, '\n')), unreadable }
+}
+// Global git options in front of the subcommand, in order: -C <path> (repeatable, each relative to the one before),
+// --work-tree, --git-dir; the others that take a value are skipped so the subcommand is found correctly.
+function scanGitGlobals(args) {
+  const ops = []; let bad = false; let k = 0
+  for (; k < args.length; k++) {
+    const a = args[k]
+    if (!a.startsWith('-') || a === '--') break
+    if (a === '-C') { ops.push(['C', args[++k]]); continue }
+    if (/^-C./.test(a)) { bad = true; continue } // not a form git takes: do not guess
+    if (a === '--work-tree' || a === '--git-dir') { ops.push([a === '--work-tree' ? 'wt' : 'gd', args[++k]]); continue }
+    if (a.startsWith('--work-tree=')) { ops.push(['wt', a.slice('--work-tree='.length)]); continue }
+    if (a.startsWith('--git-dir=')) { ops.push(['gd', a.slice('--git-dir='.length)]); continue }
+    // a config override that moves the tree (core.worktree, core.*) or reads its value from the environment is not judged: refuse
+    // (deny by default: only keys that cannot run a program or move a tree are let through; include.path, alias.*, filter.*, diff.*,
+    // merge.*driver, core.* and the like are refused on a rewriting subcommand)
+    const SAFE_C = /^(?:user|color|advice)\.[a-z0-9.-]+=/i
+    if (a === '-c' && !SAFE_C.test(args[k + 1] ?? '')) bad = true
+    if (/^-c.+/.test(a) && !SAFE_C.test(a.slice(2))) bad = true
+    if (a === '--config-env' || a.startsWith('--config-env=')) bad = true
+    if (a === '-c' || a === '--namespace' || a === '--config-env' || a === '--super-prefix') k++
+  }
+  return { ops, bad, sub: args[k] ?? null, subIdx: k }
+}
+const isOptionPrefix = (a, full, min) => { const n = a.split('=')[0]; return n.length >= min && full.startsWith(n) }
+// `git fetch` only moves refs: the one rewriting-class subcommand with a daily need that is harmless in the install,
+// unless an option or an operand makes it run a program (--upload-pack and its abbreviations, a remote helper such as
+// ext::, a global -c / --config-env).
+function gitFetchPlain(args, g) {
+  if (args.slice(0, g.subIdx).some((a) => a === '-c' || /^-c./.test(a) || /^--(config-env|exec-path|super-prefix)/.test(a))) return false
+  for (let k = g.subIdx + 1; k < args.length; k++) {
+    const a = args[k]
+    if (a === '--') break
+    if (a.startsWith('--')) {
+      if (isOptionPrefix(a, '--upload-pack', 5) || isOptionPrefix(a, '--receive-pack', 5) || isOptionPrefix(a, '--exec', 5) || isOptionPrefix(a, '--update-head-ok', 5)) return false
+      continue
+    }
+    if (/^-[^-]*u/.test(a)) return false // -u is --update-head-ok
+    if (/^[A-Za-z][A-Za-z0-9+.-]*::/.test(a)) return false // remote helper (ext::<command>)
+  }
+  return true
+}
+// dev+ino of the install root and of every protected ancestor, compared instead of strings: APFS ignores case and
+// there are symlinks, so two spellings of one directory have one identity.
+function installIdentities(ctx) {
+  let c = ctx.cache.get('install-ids')
+  if (c) return c
+  const reals = [dirname(ctx.prot.scriptsDir), ...ctx.prot.ancestors.map((a) => a.real)]
+  c = { lower: reals.map((r) => r.toLowerCase()), ids: [] }
+  for (const r of reals) { try { const st = statSync(r); c.ids.push(`${st.dev}:${st.ino}`) } catch { /* not there: the string form still counts */ } }
+  ctx.cache.set('install-ids', c)
+  return c
+}
+// Is this path the install or under it? Resolved to a real path first (a symlinked spelling), then walked upward with
+// a stat of each level (bounded). A path deeper than the bound is treated as inside.
+function insideInstall(p, inst) {
+  let cur = realOrSelf(p)
+  const lc = cur.toLowerCase()
+  if (inst.lower.some((r) => lc === r || lc.startsWith(r + sep))) return true
+  for (let n = 0; n < 128; n++) {
+    try { const st = statSync(cur); if (inst.ids.includes(`${st.dev}:${st.ino}`)) return true } catch { /* not there (yet): look one level up */ }
+    const up = dirname(cur)
+    if (up === cur) return false
+    cur = up
+  }
+  return true
+}
+// true = refuse. `mode.exact`: the cwd of this segment is exactly ctx.current (a plain `cd X && git ...` chain);
+// otherwise the cwd may be ANY directory the command has been in (a pipe, `||`, a background job, a `cd` that only
+// ran after `&&` followed by a `;`), so every one of them must be outside the install. `mode.compound`: the command
+// has a subshell, a brace group or a shell keyword, where the cd tracking above cannot be trusted: refuse.
+function gitRewritesInstallTree(words, ci, ctx, mode) {
+  const args = words.slice(ci + 1)
+  const g = scanGitGlobals(args)
+  if (g.sub === null || SAFE_GIT.has(g.sub) || GIT_HARMLESS_SUBS.has(g.sub) || (g.sub === 'fetch' && gitFetchPlain(args, g))) return false
+  if (args.length > GIT_TREE_MAX_ARGS || g.bad || ctx.unknownCwd || mode.compound || ctx.cwds.size > GIT_TREE_MAX_CWDS) return true
+  // GIT_WORK_TREE / GIT_DIR / GIT_COMMON_DIR set anywhere else in the command (`export GIT_WORK_TREE=...; git checkout x`, an
+  // assignment-only segment, `set -a`) move the tree without being a prefix of THIS git: more mentions than prefixes = refuse
+  // (counted on the raw text AND on the words with their quotes removed: `G"IT"_WORK_TREE=x` has no GIT_WORK_TREE in the raw text.
+  // GIT_CONFIG_COUNT / _KEY_n / _VALUE_n / _PARAMETERS / GIT_CONFIG_GLOBAL can set core.worktree: any mention is a refusal)
+  const names = /GIT_(?:WORK_TREE|DIR|COMMON_DIR|CONFIG[A-Z0-9_]*)\b/g
+  const count = (t) => (String(t ?? '').match(names) ?? []).length
+  const mentions = Math.max(count(mode.raw), count(mode.joined))
+  const prefixes = words.slice(0, ci).filter((x) => /^GIT_(?:WORK_TREE|DIR|COMMON_DIR)=/.test(x)).length
+  if (mentions > prefixes) return true
+  // a segment that loads an environment this parser cannot read (a sourced file, eval, set -a) may have set any of them
+  if (mode.envUnknown) return true
+  const inst = installIdentities(ctx)
+  const env = (name) => { const w = words.slice(0, ci).filter((x) => x.startsWith(name + '=')).pop(); return w === undefined ? null : w.slice(name.length + 1) }
+  const envWt = env('GIT_WORK_TREE'); const envGd = env('GIT_DIR') ?? env('GIT_COMMON_DIR')
+  const value = (v, from) => { // a path the command spells, or null when it cannot be read off the text
+    if (v === undefined) return null
+    const x = expandWord(v, ctx.vars, from)
+    return x === '' || /[$`*?[\]{}]/.test(x) ? null : resolve(from, x)
+  }
+  const envGdSeen = new Set()
+  for (const base of mode.exact ? [ctx.current] : [...ctx.cwds]) {
+    let cwd = base; let wt = null; let gd = null
+    for (const [kind, v] of g.ops) {
+      const r = value(v, cwd)
+      if (r === null) return true
+      if (kind === 'C') cwd = r; else if (kind === 'wt') wt = r; else gd = r
+    }
+    // the environment is read relative to the directory the command starts in AND to the one -C moved to: both count
+    // (an option beats the environment; with neither, the tree is the directory the command runs in)
+    const trees = new Set(wt !== null ? [wt] : envWt === null ? [cwd] : [])
+    for (const [name, v] of [['wt', envWt], ['gd', envGd]]) {
+      if (v === null) continue
+      for (const from of new Set([base, cwd])) {
+        const r = value(v, from)
+        if (r === null) return true
+        if (name === 'wt' && wt === null) trees.add(r)
+        if (name === 'gd' && gd === null && !envGdSeen.has(r)) { envGdSeen.add(r); if (insideInstall(r, inst)) return true }
+      }
+    }
+    // an explicit git directory inside the install is the install's own repository, whatever tree it is pointed at
+    if (gd !== null && insideInstall(gd, inst)) return true
+    for (const t of trees) if (insideInstall(t, inst)) return true
+  }
+  return false
 }
 // `cp SRC... DIR/` (or `cp -t DIR SRC...`) creates DIR/<basename of SRC>: a file named like a protected
 // one lands there although no word of the command names it. Returns the kind of the protected path a
@@ -1096,7 +1479,26 @@ export function bashProtectedDecision(command, opts = {}) {
   const prot = opts.prot ?? protectedSet(opts)
   const cwd = opts.cwd || process.cwd()
   const ctx = makeContext(command, cwd, prot)
-  const { segs, seps, unterminated } = splitShell(command)
+  // A script text judged as a command of its own (see shellScriptTexts) starts from the state of the outer command at the
+  // point it runs: the directory, the cd history and the union / compound / raw-text context.
+  const seed = opts.seed
+  if (seed) { ctx.current = seed.current; ctx.cwds = new Set(seed.cwds); ctx.unknownCwd = seed.unknownCwd }
+  const budget = opts.budget ?? { n: 0 }
+  const { segs, seps, unterminated, grouped } = splitShell(command)
+  // A command or process substitution is a command of its own: `echo $(git checkout x)`, `tee >(git pull)` run the git. Each
+  // outermost one is judged with the same rules from the directory the outer command starts in (a nested one is found when
+  // its outer text is judged, so the cost stays linear; the number judged per command is bounded, over it the rest is refused
+  // unread). A substitution is not a group of the outer command: a subshell cannot move the outer cd (see `compound` below).
+  for (const inner of substitutionTexts(command)) {
+    if (namesGit(inner)) {
+      budget.subs = (budget.subs ?? 0) + 1
+      if (budget.subs > SUBST_BUDGET) return { deny: true, reason: 'gate-scripts' }
+      const d = bashProtectedDecision(inner, { ...opts, prot, cwd, budget, seed: undefined }); if (d.deny) return d
+      // with a cd in the command the substitution may run anywhere: judge it as if it ran in the install too
+      // (the cd is looked for in the raw text AND in the words with their quotes removed: `"cd" /x`, `c\d /x` and `command cd /x` have no `cd` in the raw text)
+      if (/\b(?:cd|pushd|popd)\b/.test(String(command)) || segs.some((x) => { const w = spliceEnvSplit(tokenizeShell(x).words); const i = commandWordIndex(w); return i !== -1 && /^(?:cd|pushd|popd)$/.test(w[i].split('/').pop()) })) { const d2 = bashProtectedDecision(inner, { ...opts, prot, cwd: dirname(prot.scriptsDir), budget, seed: undefined }); if (d2.deny) return d2 }
+    }
+  }
   const feedsNonReader = (idx) => {
     if (seps[idx] !== '|' || idx + 1 >= segs.length) return false
     const nw = spliceEnvSplit(tokenizeShell(segs[idx + 1]).words)
@@ -1104,8 +1506,32 @@ export function bashProtectedDecision(command, opts = {}) {
     const name = nc === -1 ? '' : nw[nc].split('/').pop()
     return !(READERS.has(name) || name === 'tee')
   }
+  // Where a segment runs: after a pipe, `||` or `&` it may run in any directory the command has been in; after a `cd`
+  // that itself depended on `&&`, a following `;` or newline runs in either. A subshell, a brace group or a shell
+  // keyword hides a cd from the tracking altogether. (Only a git subcommand that rewrites a tree reads this.)
+  // (a script text starts with no pending cd of its own: the outer command's "a cd may have failed" state is already in `union`)
+  let unionMode = seed?.union ?? false; let condCd = false
+  // (a subshell or brace group is a structure of the command - `grouped` from splitShell - not a parenthesis in its text:
+  // `git merge -m "x (y)"` and `echo $(date); git ...` have none)
+  const compound = seed?.compound || grouped || segs.some((s) => /^\s*(?:if|then|else|elif|fi|for|while|until|do|done|case|esac|select|function|!)\b/.test(s))
+  // the whole command as words without quotes, and whether any segment loads an environment this parser cannot read
+  // (a script text carries the outer command's: the environment was set outside it)
+  // (the outer command's words already contain the text: an inner call does not count them twice)
+  const joined = seed?.joined ?? segs.map((x) => tokenizeShell(x).words.join(' ')).join(' ')
+  // (only a git in a LATER segment is affected: the text of the loading segment itself is judged as it stands)
+  const envFrom = segs.findIndex((x) => {
+    const w = spliceEnvSplit(tokenizeShell(x).words); const i = commandWordIndex(w)
+    if (i === -1) return false
+    const c = w[i].split('/').pop()
+    return c === 'source' || c === '.' || c === 'eval' || (c === 'set' && w.slice(i + 1).some((a) => /^-[A-Za-z]*a|^allexport$/.test(a)))
+  })
+  const gmode = { compound, raw: seed?.raw ?? command, joined }
+  const envUnknownAt = (i) => Boolean(seed?.envUnknown) || (envFrom !== -1 && i > envFrom)
   for (let si = 0; si < segs.length; si++) {
-    const seg = segs[si]
+    const seg = maskApiBody(segs[si], ctx, String(seed?.raw ?? command), compound) // (the JSON body of a fleet API wrapper call is data, see maskApiBody)
+    const prevSep = si > 0 ? seps[si - 1] : ''
+    if (prevSep === '|' || prevSep === '||' || prevSep === '&') unionMode = true
+    else if (condCd && (prevSep === ';' || prevSep === '')) unionMode = true
     const tokenized = tokenizeShell(seg)
     const { redirects, hasRedirect } = tokenized
     const words = spliceEnvSplit(tokenized.words)
@@ -1115,14 +1541,70 @@ export function bashProtectedDecision(command, opts = {}) {
     const ci = commandWordIndex(words)
     const cmd = ci === -1 ? '' : words[ci].split('/').pop()
     if (cmd === 'cd' || cmd === 'pushd') {
+      if (words.slice(ci + 1).includes('-')) ctx.unknownCwd = true // `cd -` goes back to a directory this parser never saw
       const arg = words.slice(ci + 1).find((a) => !a.startsWith('-'))
       const target = arg === undefined ? homedir() : expandWord(arg, ctx.vars, ctx.current)
       if (arg === '-' || target.includes('$') || /[*?[`]/.test(target)) ctx.unknownCwd = true
       else { ctx.current = resolve(ctx.current, target); ctx.cwds.add(ctx.current); ctx.cwds.add(realOrSelf(ctx.current)) }
     }
+    if (cmd === 'popd') ctx.unknownCwd = true // the directory it returns to is not tracked
+    // (any cd may fail: `cd /missing; git checkout x` runs the git where the command already was)
+    if (cmd === 'cd' || cmd === 'pushd') condCd = true
     if (cmd === 'cp') {
       const ck = copyIntoDirKind(words.slice(ci + 1), ctx)
       if (ck) return { deny: true, reason: ck }
+    }
+    // a git subcommand that rewrites the tree it runs in, run in the install (see gitRewritesInstallTree)
+    // (the command word may sit behind a shell keyword: `then git checkout x`, `do git pull`, `! git merge x`)
+    let gci = ci
+    while (gci !== -1 && SHELL_KEYWORDS.has(words[gci])) { const r = commandWordIndex(words.slice(gci + 1)); gci = r === -1 ? -1 : gci + 1 + r }
+    const cmdIdx = gci
+    // a launcher with its own option value (`nice -n 5 git ...`, `env -u X git ...`, `timeout 5 git ...`, `xargs git ...`) hides
+    // the git from commandWordIndex. This parser does not know the option grammar of each launcher (which word is a value and
+    // which is the command), so EVERY git word behind a launcher word is judged as the command: one of them is the real one,
+    // and a git word that is only an option value (`env -u git git checkout x`, `xargs -I git ...`) cannot hide it.
+    let gitIdxs = []
+    const launcherAt = gci === -1 ? -1 : words.findIndex((w) => GIT_LAUNCHERS.has(w.split('/').pop()))
+    if (gci !== -1 && (launcherAt === -1 || launcherAt >= gci) && words[gci].split('/').pop() === 'git') gitIdxs = [gci]
+    if (gci !== -1 && (launcherAt === -1 || launcherAt >= gci) && words[gci].split('/').pop() === 'git') gitIdxs = [gci]
+    else if (gci !== -1) {
+      for (let i = launcherAt + 1; launcherAt !== -1 && i < words.length && gitIdxs.length <= GIT_CANDIDATES_MAX; i++) if (words[i].split('/').pop() === 'git') gitIdxs.push(i)
+    }
+    // (a bound on the candidates keeps the cost linear: more git words than this behind one launcher are refused unread)
+    if (gitIdxs.length > GIT_CANDIDATES_MAX) return { deny: true, reason: 'gate-scripts' }
+    for (let n = 0; n < gitIdxs.length; n++) {
+      const g = gitIdxs[n]
+      // a git word followed by another git word is an option value of the launcher (`-u git`, `-I git`): the next one is judged
+      if (gitIdxs[n + 1] === g + 1) continue
+      const gg = scanGitGlobals(words.slice(g + 1))
+      const sub = gg.sub
+      // behind xargs the gate does not see the arguments of the git (the input lines are appended to the command: `echo
+      // --upload-pack=x | xargs git fetch`, `echo 'checkout x' | xargs git`), so only a read-only subcommand (SAFE_GIT) passes; the
+      // fetch / worktree / help exceptions, which depend on the options, do not apply. Any other subcommand, or none, is judged as
+      // `git checkout` with the same global options (-C, --work-tree, --git-dir) in front.
+      const behindXargs = words.slice(0, g).some((w) => w.split('/').pop() === 'xargs')
+      const viaXargs = behindXargs && (sub === null || !SAFE_GIT.has(sub))
+      if (gitRewritesInstallTree(viaXargs ? [...words.slice(0, g + 1 + gg.subIdx), 'checkout'] : words, g, ctx, { exact: !unionMode, compound, ...gmode, envUnknown: envUnknownAt(si) })) return { deny: true, reason: 'gate-scripts' }
+    }
+    // a script handed to a shell as text (sh -c STRING, eval STRING, stdin): a git in it is judged as a command of its own
+    // a command word built by an expansion (`G=git; $G checkout x`, `$(echo git) pull`): what runs is not known. Judged as the worst
+    // case, a tree-rewriting git, when the command names git as a word anywhere
+    if (gci !== -1 && /[$`]/.test(words[gci]) && namesGit(seed?.raw ?? command, GIT_WORD_STRICT)) {
+      if (gitRewritesInstallTree(['git', 'checkout'], 0, ctx, { exact: !unionMode, compound, ...gmode, envUnknown: envUnknownAt(si) })) return { deny: true, reason: 'gate-scripts' }
+    }
+    const st = shellScriptTexts(words, cmdIdx, seg, si > 0 && prevSep === '|' ? segs[si - 1] : null)
+    // a script whose text cannot be read off the command is judged as the worst case, a tree-rewriting git: refused where such a
+    // git is refused (the install), free in a worktree copy. 'if-git': only when the command names git anywhere.
+    if (st.unreadable === 'always' || (st.unreadable === 'if-git' && namesGit(seed?.raw ?? command))) {
+      if (gitRewritesInstallTree(['git', 'checkout'], 0, ctx, { exact: !unionMode, compound, ...gmode, envUnknown: envUnknownAt(si) })) return { deny: true, reason: 'gate-scripts' }
+    }
+    for (const t of st.texts) {
+      // (a text with a variable in it - `eval "$X"` after `X='git pull'` - may hold the git: it is judged too when the command names
+      // git anywhere; its command word built by an expansion is then judged as the worst case by the rule above)
+      if (!namesGit(t) && !(t.includes('$') && namesGit(seed?.raw ?? command))) continue
+      if (++budget.n > INNER_BUDGET || (seed?.depth ?? 0) >= INNER_DEPTH_MAX) return { deny: true, reason: 'gate-scripts' }
+      const inner = { current: ctx.current, cwds: [...ctx.cwds], unknownCwd: ctx.unknownCwd, union: unionMode, compound, raw: seed?.raw ?? command, joined, envUnknown: envUnknownAt(si), depth: (seed?.depth ?? 0) + 1 }
+      const d = bashProtectedDecision(t, { ...opts, prot, cwd: ctx.current, budget, seed: inner }); if (d.deny) return d
     }
     const hit = kinds.find((k) => k && !isAnc(k)) ?? rKinds.find((k) => k && !isAnc(k)) ?? null
     const ancKinds = [...kinds, ...rKinds].filter(isAnc)
@@ -1151,7 +1633,7 @@ export function bashProtectedDecision(command, opts = {}) {
     //    strict one (scripts/) denies everything else; the loose ones (store/, the repo root) deny
     //    only what moves, removes, links, extracts or rewrites.
     if (ancestorHit) {
-      if (READERS.has(cmd) && readerOk(cmd, args, ctx) && !feedsNonReader(si) && !envUnsafe) continue
+      if (isPlainRead(cmd, args, ctx, { si, feedsNonReader, envUnsafe })) continue
       if (!ancKinds.some((k) => k.startsWith('anc-strict')) && !destructiveCmd(cmd, args)) continue
       // agents/ and agents/<name> alone: only an operation that can put a settings file in (or take the
       // directory away) is refused
@@ -1163,8 +1645,9 @@ export function bashProtectedDecision(command, opts = {}) {
     }
     // 5. plain reads
     // (a reader whose output is piped into anything but another reader may be handing paths to xargs / sh)
-    if (READERS.has(cmd) && readerOk(cmd, args, ctx) && !envUnsafe) { if (feedsNonReader(si)) return deny(); continue }
-    if (cmd === 'git' && gitSafe(args) && !envUnsafe) continue
+    if (isPlainRead(cmd, args, ctx, { si, feedsNonReader, envUnsafe })) continue
+    // a read (reader or git) that is fed into a non-reader is refused here, not handed on to the plain-run step
+    if (isReadCommand(cmd, args, ctx) && !envUnsafe) return deny()
     // 6. plain runs: the protected file is the command word, or the SCRIPT operand of an interpreter
     const hitIdx = kinds.map((k, idx) => (k && !isAnc(k) ? idx : -1)).filter((idx) => idx !== -1)
     if (hitIdx.length === 1 && hitIdx[0] === ci && !INTERPRETERS.test(cmd)) continue
