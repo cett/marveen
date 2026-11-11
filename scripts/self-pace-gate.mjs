@@ -26,6 +26,12 @@
 // Wired into every sub-agent's .claude/settings.json by
 // writeAgentSettingsFromProfile() (agent-scaffold.ts), guarded by
 // name !== MAIN_AGENT_ID, re-applied on every spawn (respawn-safe).
+//
+// KNOWN, NOT COVERED (listed on purpose, not fixed here): the protected-path rule below judges the WORDS of a command,
+// so an operation that changes the install without naming a protected path is not seen: `patch -p1 < x.diff`,
+// `tar xf` / `unzip` / `cpio -i` into a directory under the install, `rsync` / `cp -r a/. .` onto `.`,
+// `git config core.hooksPath`, `git -c core.fsmonitor=...`, and a diff program or textconv filter that the repository
+// configuration already names (diff.external, diff.<driver>.textconv) for a plain `git diff`.
 
 import { readFileSync, readdirSync, realpathSync, statSync, lstatSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -1014,8 +1020,25 @@ function gitSafe(args) {
     if (a === '--') break
     if (/^--ou/.test(a)) return false
     if (sub === 'grep' && (/^-O/.test(a) || /^--open/.test(a))) return false
+    // --ext-diff runs the configured external diff program, --textconv the configured textconv filter. git takes any
+    // unambiguous abbreviation, so every prefix that can only be that option counts: --ext (>= 5 chars) and --textc
+    // (>= 7 chars; --text itself is a different option, "treat as text"). --extended-regexp is not a prefix of
+    // --ext-diff and stays a read.
+    const name = a.split('=')[0]
+    if ((name.length >= 5 && '--ext-diff'.startsWith(name)) || (name.length >= 7 && '--textconv'.startsWith(name))) return false
   }
   return true
+}
+// ONE definition of a plain read, used by every step of bashProtectedDecision that lets a read through (the strict
+// ancestor step and the protected-file step): a reader that readerOk() shows safe, or a read-only git subcommand
+// that gitSafe() shows safe, AND not fed into anything but another reader (it may be handing paths to xargs / sh),
+// AND without an environment that makes it run a program or write a file. Two steps with their own copy of this
+// condition is how a git read was refused at a strict ancestor while a git read piped into xargs passed at a file.
+function isReadCommand(cmd, args, ctx) {
+  return (READERS.has(cmd) && readerOk(cmd, args, ctx)) || (cmd === 'git' && gitSafe(args))
+}
+function isPlainRead(cmd, args, ctx, { si, feedsNonReader, envUnsafe }) {
+  return isReadCommand(cmd, args, ctx) && !envUnsafe && !feedsNonReader(si)
 }
 // `cp SRC... DIR/` (or `cp -t DIR SRC...`) creates DIR/<basename of SRC>: a file named like a protected
 // one lands there although no word of the command names it. Returns the kind of the protected path a
@@ -1151,7 +1174,7 @@ export function bashProtectedDecision(command, opts = {}) {
     //    strict one (scripts/) denies everything else; the loose ones (store/, the repo root) deny
     //    only what moves, removes, links, extracts or rewrites.
     if (ancestorHit) {
-      if (READERS.has(cmd) && readerOk(cmd, args, ctx) && !feedsNonReader(si) && !envUnsafe) continue
+      if (isPlainRead(cmd, args, ctx, { si, feedsNonReader, envUnsafe })) continue
       if (!ancKinds.some((k) => k.startsWith('anc-strict')) && !destructiveCmd(cmd, args)) continue
       // agents/ and agents/<name> alone: only an operation that can put a settings file in (or take the
       // directory away) is refused
@@ -1163,8 +1186,9 @@ export function bashProtectedDecision(command, opts = {}) {
     }
     // 5. plain reads
     // (a reader whose output is piped into anything but another reader may be handing paths to xargs / sh)
-    if (READERS.has(cmd) && readerOk(cmd, args, ctx) && !envUnsafe) { if (feedsNonReader(si)) return deny(); continue }
-    if (cmd === 'git' && gitSafe(args) && !envUnsafe) continue
+    if (isPlainRead(cmd, args, ctx, { si, feedsNonReader, envUnsafe })) continue
+    // a read (reader or git) that is fed into a non-reader is refused here, not handed on to the plain-run step
+    if (isReadCommand(cmd, args, ctx) && !envUnsafe) return deny()
     // 6. plain runs: the protected file is the command word, or the SCRIPT operand of an interpreter
     const hitIdx = kinds.map((k, idx) => (k && !isAnc(k) ? idx : -1)).filter((idx) => idx !== -1)
     if (hitIdx.length === 1 && hitIdx[0] === ci && !INTERPRETERS.test(cmd)) continue
