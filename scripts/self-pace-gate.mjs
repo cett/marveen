@@ -687,8 +687,11 @@ function expandBraces(tok, cap = 256) {
 }
 function collectVars(command) {
   const vars = {}
-  for (const m of String(command).matchAll(/(?:^|[\s;&|(])(?:export\s+|local\s+|declare\s+)?([A-Za-z_]\w*)=("([^"]*)"|'([^']*)'|[^\s;&|()]*)/g)) {
-    vars[m[1]] = m[3] ?? m[4] ?? m[2]
+  // (a value spelled $'..' or $".." is the text the shell builds from it, like the same word in a path: `D=$'doctor.sh'` is `D=doctor.sh`;
+  // one that cannot be decoded stays unset)
+  for (const m of String(command).matchAll(/(?:^|[\s;&|(])(?:export\s+|local\s+|declare\s+)?([A-Za-z_]\w*)=("([^"]*)"|'([^']*)'|\$'((?:[^'\\]|\\.)*)'|\$"([^"]*)"|[^\s;&|()]*)/g)) {
+    if (m[5] !== undefined) { const a = readAnsiC(`${m[5]}'`, 0); if (a.ok) vars[m[1]] = a.text; continue }
+    vars[m[1]] = m[3] ?? m[4] ?? m[6] ?? m[2]
   }
   return vars
 }
@@ -1051,7 +1054,8 @@ export function spliceEnvSplit(words, depth = 0) {
         if (attached) value = attached; else { value = words[k + 1] ?? ''; used = 2 }
       } else if (ENV_VALUE_OPTS.has(o)) used = 2
       if (value !== null) {
-        const spliced = [...words.slice(0, k), ...tokenizeShell(value).words, ...words.slice(k + used)]
+        // (the value is text that is read again: the marker of a substitution behind a literal head is not part of it, see shellScriptTexts)
+        const spliced = [...words.slice(0, k), ...tokenizeShell(value.replaceAll(DYN, '')).words, ...words.slice(k + used)]
         return spliceEnvSplit(spliced, depth + 1)
       }
       k += used
@@ -1336,6 +1340,11 @@ const namesGit = (t, rx = GIT_WORD) => { const s = String(t ?? ''); return rx.te
 function shellScriptTexts(words, cmdIdx, seg, prevSeg) {
   const none = { texts: [], unreadable: null }
   if (cmdIdx === -1) return none
+  // The words carry the DYN marker of a substitution behind a literal head (see tokenizeShell). The text a shell is handed is judged
+  // as a command of its own, and the marker is not part of that text: with it `$(` reads `$<marker>(`, the BUILT test below does not see
+  // the substitution and the inner parse takes the `(` for a group. The marker comes after the `$` and in front of a backtick, so
+  // taking it out gives back the text the command had.
+  words = words.map((w) => w.replaceAll(DYN, ''))
   const base = (w) => w.split('/').pop()
   const OBFUSCATED = /\$['"]|\\x[0-9A-Fa-f]|\\u[0-9A-Fa-f]|\\0[0-7]|\\[1-7][0-7]{2}/
   // (a plain $NAME in a text is expanded by the inner shell and judged there, like any word; only a substitution builds a command)
@@ -1376,7 +1385,7 @@ function shellScriptTexts(words, cmdIdx, seg, prevSeg) {
   if (hs) { texts.push(hs[1] ?? hs[2] ?? hs[3]); if (OBFUSCATED.test(seg) || BUILT.test(texts[0])) unreadable = 'always'; else if (DYNAMIC.test(texts[0])) unreadable = 'if-git' }
   else if (/<<-?\s*['"\\]?[A-Za-z_]/.test(seg) || (prevSeg !== null && /<<-?\s*['"\\]?[A-Za-z_]/.test(prevSeg))) { /* a heredoc: the body lines are segments */ }
   else if (prevSeg !== null) {
-    const pw = tokenizeShell(prevSeg).words
+    const pw = tokenizeShell(prevSeg).words.map((w) => w.replaceAll(DYN, ''))
     const pi = commandWordIndex(pw)
     if (pi !== -1 && /^(?:echo|printf)$/.test(base(pw[pi]))) {
       const t = pw.slice(pi + 1).filter((a) => !/^-[neE]+$/.test(a)).join(' ')
