@@ -686,18 +686,24 @@ function expandBraces(tok, cap = 256) {
   return out
 }
 function collectVars(command) {
-  const vars = {}
+  const vars = {}; let read = 0
   // (a value spelled $'..' or $".." is the text the shell builds from it, like the same word in a path: `D=$'doctor.sh'` is `D=doctor.sh`;
   // one that cannot be decoded stays unset)
   for (const m of String(command).matchAll(/(?:^|[\s;&|(])(?:export\s+|local\s+|declare\s+)?([A-Za-z_]\w*)=("([^"]*)"|'([^']*)'|\$'((?:[^'\\]|\\.)*)'|\$"([^"]*)"|[^\s;&|()]*)/g)) {
     // a value the parser cannot read is UNREADABLE (the DYN marker: a word that uses it is judged by its literal head, see wordKind), not
     // unset: bash cuts a $'..' value at a NUL and joins a quoted piece with the characters that follow it (`D=$'doc'tor.sh` is
     // `doctor.sh`), so neither a value this decoder refuses nor a quoted piece that the word goes on after is the text the regex took
+    // (the value word is read by the tokenizer itself: pieces joined as the shell joins them, $'..' decoded, a piece it cannot decode
+    // is an unreadable word that carries the marker; bounded in size and in number, past a bound the value is the marker alone)
     const next = String(command)[m.index + m[0].length]
     const goesOn = next !== undefined && !/[\s;&|()]/.test(next)
     const quoted = m[3] !== undefined || m[4] !== undefined || m[5] !== undefined || m[6] !== undefined
-    if (quoted && goesOn) { vars[m[1]] = DYN; continue }
-    if (m[5] !== undefined) { const a = readAnsiC(`${m[5]}'`, 0); vars[m[1]] = a.ok ? a.text : DYN; continue }
+    if (quoted && (goesOn || m[5] !== undefined)) {
+      const rest = String(command).slice(m.index + m[0].length - m[2].length, m.index + m[0].length - m[2].length + 2048)
+      const word = ++read > 64 || rest.length >= 2048 ? undefined : tokenizeShell(rest).words[0]
+      vars[m[1]] = word === undefined ? DYN : word
+      continue
+    }
     vars[m[1]] = m[3] ?? m[4] ?? m[6] ?? m[2]
   }
   return vars
@@ -990,10 +996,17 @@ function wordKind(word, ctx) {
     for (const part of parts) {
       if (part.includes(DYN)) { const dk = dynamicHeadKind(part, ctx); if (dk) results.push(dk); continue }
       for (const cwd of ctx.cwds) {
-        const w = expandWord(part, ctx.vars, cwd)
+        let w = expandWord(part, ctx.vars, cwd)
         if (!w) continue
-        // a variable whose value cannot be read (see collectVars) put the marker into the word: judged by its literal head, like any such word
-        if (w.includes(DYN)) { const dk = dynamicHeadKind(w, ctx); if (dk) results.push(dk); continue }
+        // a variable whose value cannot be read (see collectVars) put the marker into the word: judged by its literal head, and when the
+        // head names nothing it is an unresolved variable like any other (the tail is matched as a suffix of the protected paths below)
+        if (w.includes(DYN)) {
+          const dk = dynamicHeadKind(w, ctx)
+          if (dk) { results.push(dk); continue }
+          // (the unreadable piece is the raw text of what it was, up to the next slash: the tail from that slash on is what is matched)
+          const cut = w.indexOf('/', w.lastIndexOf(DYN))
+          w = cut === -1 ? '$__dyn' : `$__dyn${w.slice(cut)}`
+        }
         if (/[*?[]/.test(w)) {
           const abs = isAbsolute(w) ? w : join(cwd, w)
           const firstGlob = abs.search(/[*?[]/)

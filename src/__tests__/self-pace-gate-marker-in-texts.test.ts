@@ -88,6 +88,12 @@ describe('C. a variable value spelled $\'..\' or $".." is the text the shell bui
       "D=$'doctor.sh\\x00'; cp /tmp/x @R/scripts/$D", "D=$'doctor.sh\\x00junk'; cp /tmp/x @R/scripts/$D", "D=$'doctor.sh\\q'; cp /tmp/x @R/scripts/$D",
       "D=$'doc'tor.sh; cp /tmp/x @R/scripts/$D", "D='doc'tor.sh; cp /tmp/x @R/scripts/$D", 'D="doc"tor.sh; cp /tmp/x @R/scripts/$D', 'D=$"doc"tor.sh; cp /tmp/x @R/scripts/$D',
     ]) expect([c, where(c)]).toEqual([c, REFUSED])
+    // the variable holds (or may hold) a directory and the tail names a protected path: the tail is matched, as for an unresolved variable
+    // (a value the tokenizer joins is read whole: `D='<dir>'""` is `<dir>`, so even a one-segment tail is judged against it)
+    for (const c of [
+      "D=$'\\x00'; cp /tmp/x $D/scripts/hooks/egress-gate.mjs", "D=$'\\q'; cp /tmp/x $D/scripts/self-pace-gate.mjs", "D='@R'\"\"; cp /tmp/x $D/scripts/self-pace-gate.mjs",
+      "D='@R/scripts'\"\"; cp /tmp/x $D/doctor.sh", "D=\"@R\"/scripts; cp /tmp/x $D/doctor.sh",
+    ]) expect([c, where(c)]).toEqual([c, REFUSED])
     // the twins: the same shapes naming an unrelated file are judged by the head only (the directory holds protected files: refused);
     // a variable with no head at all keeps the reading it had (the head-less limit), and a plain assignment followed by a separator is read
     expect(where("D=$'doc'tor.sh; echo x > $D")).toEqual(PASSES)
