@@ -194,23 +194,29 @@ def block(msg, agent_id=None, tool_name=''):
 
 def _dq_subst_end(text, i):
     """`text[i]` opens a command substitution inside a double quote: `$(` (kind '(') or a backtick (kind '`').
-    Returns the index just past its end. Inside it the shell reads QUOTES AFRESH, so a nested pair of double
-    quotes is a pair of its own and does not close the outer string: `echo "$(grep "a b" f)"`. A flat
-    quote state machine pairs them the other way round (the nested pattern ends up outside every quote, the
-    path after it inside one). The body is judged on its own through shell_subst.top_bodies (see check_bash),
-    so the outer reading only has to treat the whole region as one quoted piece.
+    Returns the index just past its end, or None when the end cannot be found (no region). Inside it the
+    shell reads QUOTES AFRESH, so a nested pair of double quotes is a pair of its own and does not close the
+    outer string: `echo "$(grep "a b" f)"`. A flat quote state machine pairs them the other way round (the
+    nested pattern ends up outside every quote, the path after it inside one). The body is judged on its own
+    through shell_subst.top_bodies (see check_bash), so the outer reading only has to treat the whole region
+    as one quoted piece.
 
     One pass with an explicit stack (each character is visited once), the same reading as shell_subst's:
     `\\` skips a character, single quotes and $'..' run to their closing quote, `(` / `)` count inside
-    a `$( )` frame, a comment runs to its newline. An unterminated substitution takes the rest of the text.
+    a `$( )` frame, a comment runs to its newline, `${ ... }` is a frame of its own that runs to its
+    matching `}` (a paren inside a parameter-expansion word, `${x:-(}`, is NOT a paren of the substitution).
+
+    When this reader is unsure where the region ends it must EXPOSE text, never hide it: a frame still open
+    at the end of the text (an unterminated substitution, quote or `${`) returns None, and the caller then
+    reads that spot flat, which is what the gate did before regions existed (the old deny stays).
     """
     n = len(text)
     if text[i] == '`':
         j = i + 1
         while j < n and text[j] != '`':
             j += 2 if text[j] == '\\' else 1
-        return min(j + 1, n)
-    frames = [['sub', 1]]  # ['sub', open parens] | ['dq'] | ['bt']
+        return j + 1 if j < n else None
+    frames = [['sub', 1]]  # ['sub', open parens] | ['dq'] | ['bt'] | ['par']
     j = i + 2
     while j < n and frames:
         c = text[j]
@@ -231,12 +237,16 @@ def _dq_subst_end(text, i):
             elif c == '$' and text.startswith('(', j + 1):
                 frames.append(['sub', 1])
                 j += 2
+            elif c == '$' and text.startswith('{', j + 1):
+                frames.append(['par'])
+                j += 2
             elif c == '`':
                 frames.append(['bt'])
                 j += 1
             else:
                 j += 1
         else:
+            # 'sub' (parens are counted) or 'par' (a `${ }` word: the closing brace ends it, parens are plain text)
             if c == '\\':
                 j += 2
             elif c == "'":
@@ -253,8 +263,15 @@ def _dq_subst_end(text, i):
             elif c == '$' and text.startswith('(', j + 1):
                 frames.append(['sub', 1])
                 j += 2
+            elif c == '$' and text.startswith('{', j + 1):
+                frames.append(['par'])
+                j += 2
             elif c == '`':
                 frames.append(['bt'])
+                j += 1
+            elif kind == 'par':
+                if c == '}':
+                    frames.pop()
                 j += 1
             elif c == '#' and (text[j - 1] in ' \t\n;&|(' if j > 0 else True):
                 e = text.find('\n', j)
@@ -269,7 +286,8 @@ def _dq_subst_end(text, i):
                     frames.pop()
             else:
                 j += 1
-    return min(j, n)
+    # a frame still open, or a skip that ran past the end (a trailing backslash, an unclosed quote): no region
+    return j if not frames and j <= n else None
 
 
 @functools.lru_cache(maxsize=4)
@@ -285,6 +303,7 @@ def _quote_map(text):
     state = [0] * len(text)
     q = 0
     i = 0
+    regions = True      # cleared by the first substitution whose end is not found: the rest is read flat (see below)
     while i < len(text):
         ch = text[i]
         if ch == '\\' and q != 1 and i + 1 < len(text):
@@ -292,12 +311,17 @@ def _quote_map(text):
             state[i + 1] = q
             i += 2
             continue
-        if q == 2 and (ch == '`' or (ch == '$' and text.startswith('(', i + 1))):
+        if regions and q == 2 and (ch == '`' or (ch == '$' and text.startswith('(', i + 1))):
             end = _dq_subst_end(text, i)
-            for k in range(i, end):
-                state[k] = 2
-            i = end
-            continue
+            if end is not None:
+                for k in range(i, end):
+                    state[k] = 2
+                i = end
+                continue
+            # No region (the end is not found): read this spot flat, as before regions existed, and the rest of the
+            # text too. A failed search ran to the end of the text, so trying again at every later `$(` would be
+            # quadratic; flat is the direction that exposes more, never less.
+            regions = False
         if q == 0 and ch in ("'", '"'):
             q = 1 if ch == "'" else 2
             state[i] = 0

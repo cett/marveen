@@ -95,11 +95,66 @@ DENY = [
     ("the banned command as the plain first word", X),
 ]
 
+# A paren that belongs to a parameter-expansion word is not a paren of the substitution: `${x:-(}`, `${x#(}`,
+# `${y//(/Z}`. The zsh of the Bash tool parses these and RUNS whatever follows the closing quote. A reader that
+# counted the paren by hand never closed the region and hid the tail (the gate was looser than before regions).
+PAREN_WORDS = [
+    ("default word", '${x:-(}'),
+    ("trim pattern", '${x#(}'),
+    ("substitution pattern", '${y//(/Z}'),
+]
+
+
+def _par_shapes(word):
+    """The shapes of the table: a closed double-quoted substitution holding `word`, then a banned tail."""
+    region = 'echo "$(echo %s )"' % word
+    return [
+        ("semicolon", region + ' ; ' + X),
+        ("assignment", 'v="$(echo %s )" ; ' % word + X),
+        ("newline", region + '\n' + X),
+        ("pipe", region + ' | ' + X),
+        ("and", region + ' && ' + X),
+    ]
+
+
+PAR_DENY = [("%s, %s" % (w, shape), cmd) for w, word in PAREN_WORDS for shape, cmd in _par_shapes(word)] + [
+    # a stray close paren in the word: the region may end early, the tail is still refused
+    ("stray close paren in the word", 'echo "$(echo ${x:-)} )" ; ' + X),
+    # a case body: the `)` of the pattern ends the region early, the tail after the closing quote is still refused
+    ("case body, tail after the region", 'echo "$(case q in q) echo y;; esac)" ; ' + X),
+    ("case body, then a conditional with an extglob", 'echo "$(case q in q) echo y;; esac ; [[ x == @(a|b) ]])" ; ' + X),
+    # a quoted paren and a nested expansion inside the word
+    ("quoted paren in the word", 'echo "$(echo ${x:-"("} )" ; ' + X),
+    ("single-quoted paren in the word", 'echo "$(echo ${x:-' + "'('" + '} )" ; ' + X),
+    ("nested expansion in the word", 'echo "$(echo ${x:-${z:-(}} )" ; ' + X),
+    ("substitution in the word", 'echo "$(echo ${x:-$(echo ()} )" ; ' + X),
+    ("escaped brace in the word", 'echo "$(echo ${x:-' + BS + '}(} )" ; ' + X),
+    # unterminated: no region, the flat reading (the old deny) applies
+    ("unterminated expansion", 'echo "$(echo ${x:-( )" ; ' + X),
+    ("unterminated substitution after an open paren word", 'echo "$(echo ${x:-(} ; ' + X),
+    ("unterminated backtick", 'echo "`echo a ; ' + X),
+]
+
+PAR_ALLOW = [("%s, harmless tail" % w, 'echo "$(echo %s )" ; echo after' % word) for w, word in PAREN_WORDS] + [
+    ("%s, alone" % w, 'echo "$(echo %s )"' % word) for w, word in PAREN_WORDS
+] + [
+    ("%s, a read-only grep with a nested pattern after it" % w, 'echo "$(echo %s ; grep "a b" /tmp/f)"' % word)
+    for w, word in PAREN_WORDS
+]
+
 # balanced fragments a substitution body can hold; each one is a complete command on its own
 FRAGMENTS = [
     'grep -n "p q" /tmp/f', "echo ')'", 'echo ")"', 'echo "a' + BS + '"b"', 'echo `echo "k"`', 'echo $(echo "n")',
     '(echo a)', 'cat /tmp/f | grep "a|b"', "echo 'x\"y'", 'grep -E "(a|b);c" /tmp/f', 'echo "$(echo "z")"', 'echo a # c)\n', 'true',
+    # a paren in a parameter-expansion word, in single quotes, in an ANSI-C string
+    'echo ${v:-(}', 'echo ${v#(}', 'echo ${v//(/x}', "echo '('", "echo ')'", "echo $'('", "echo $')'", 'echo ${v:-"("}',
+    # a heredoc body, a case body, a conditional with an extglob
+    'cat <<EOF\n( x\nEOF\n', 'cat <<EOF\n) x\nEOF\n', '[[ x == @(a|b) ]]',
 ]
+# NOT a fragment: a `case` pattern's `)` ends the region early, so a quote after it can shift the pairing and hide a
+# banned command that sits in the same body (`echo "$(case q in q) echo y;; esac && echo 'x"y')"`). The installed
+# gate has that hole too (a known limit, parked: not part of this change); the cells that matter, the tail after
+# the closing quote, are in PAR_DENY above.
 
 
 class TestFalselyBlockedCellsAreAllowed(unittest.TestCase):
@@ -114,6 +169,33 @@ class TestTwinsStayBlocked(unittest.TestCase):
         for name, cmd in DENY:
             with self.subTest(name):
                 self.assertEqual(verdict(cmd), 'deny', cmd)
+
+
+class TestParenInAParameterWord(unittest.TestCase):
+    def test_tail_is_refused(self):
+        for name, cmd in PAR_DENY:
+            with self.subTest(name):
+                self.assertEqual(verdict(cmd), 'deny', cmd)
+
+    def test_valid_commands_are_allowed(self):
+        for name, cmd in PAR_ALLOW:
+            with self.subTest(name):
+                self.assertEqual(verdict(cmd), 'allow', cmd)
+
+    def test_region_reader_knows_the_word(self):
+        for name, word in PAREN_WORDS:
+            text = 'echo "$(echo %s )" ; x' % word
+            with self.subTest(name):
+                # the region ends at the real closing paren, the `;` after the closing quote is outside every quote
+                self.assertEqual(hook._dq_subst_end(text, text.index('$(')), text.index(' )"') + 2)
+                hook._quote_map.cache_clear()
+                self.assertEqual(hook._quote_map(text)[text.index(';')], 0)
+
+    def test_unterminated_is_no_region(self):
+        for text in ['echo "$(echo a', 'echo "$(echo ${x:-(} ', 'echo "$(echo ${x', 'echo "$(echo "a', "echo \"$(echo 'a",
+                     'echo "$(echo $\'a', 'echo "`echo a', 'echo "$(echo a' + BS]:
+            with self.subTest(text):
+                self.assertIsNone(hook._dq_subst_end(text, text.index('$(') if '$(' in text else text.index('`')))
 
 
 class TestRegionEndsWhereTheShellEnds(unittest.TestCase):
@@ -152,6 +234,17 @@ class TestLinear(unittest.TestCase):
         t0 = time.process_time()
         verdict(cmd[:-3])
         self.assertLess(time.process_time() - t0, 5.0)
+
+    def test_many_unterminated_substitutions(self):
+        # a failed search runs to the end of the text; trying again at every later `$(` would be quadratic
+        for cmd in ['echo "$(' * 6000, 'echo "$(echo ${x:-(} ' * 3000, 'echo "`echo ' * 6000]:
+            t0 = time.process_time()
+            verdict(cmd)
+            self.assertLess(time.process_time() - t0, 5.0, cmd[:30])
+
+    def test_a_valid_region_after_an_unterminated_one_still_exposes_the_tail(self):
+        cmd = 'echo "$(echo a ; echo "$(echo b)" ; ' + X
+        self.assertEqual(verdict(cmd), 'deny', cmd)
 
     def test_deep_nesting(self):
         cmd = 'echo "' + '$(echo "' * 40 + 'x' + '")' * 40 + '"'
