@@ -164,11 +164,12 @@ describe('decideSkillRevision', () => {
     // the FIRST one is now stale: its prev_sha256 was PLAIN's hash, but the live text has moved past that
     const result = await decideSkillRevision(first.revision.id, 'activate', { kind: 'human', id: 'reviewer' })
     expect(result).toEqual({ outcome: 'stale_proposal' })
-    // The skills write now happens BEFORE the staleness check (row lock first, see the comment in decideSkillRevision),
-    // so a stale refusal must roll that write back: the newer live text survives and the stale revision stays pending.
-    // NOTE: on serial SQLite this cannot tell "write before the check" from "check before the write" apart (the order
-    // only matters under Postgres READ COMMITTED, migration checklist), so a mutant that swaps them is not killed here.
-    // What this pins is the rollback, which the new order depends on.
+    // The row lock (a no-op UPDATE) comes first, the live-state read and the staleness check after it, the real write
+    // last (see the comment in decideSkillRevision). A stale refusal still rolls back the status flip of the decision:
+    // the newer live text survives and the stale revision stays pending.
+    // NOTE: on serial SQLite the lock itself cannot be told from its absence (the order only matters under Postgres READ
+    // COMMITTED, migration checklist), so a mutant that drops the lock is not killed here. The read-after-write mistake
+    // IS killed (skill-revision-state-staleness.test.ts: the unchanged live state must activate).
     expect((await getSkill('agent/a/stale'))?.content).toBe(PRIVILEGED.replace('body', 'body v2'))
     expect(await listPendingRevisions('agent/a/stale')).toHaveLength(1)
   })

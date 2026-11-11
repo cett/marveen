@@ -1,0 +1,13 @@
+-- Migration 0095: the live state a skill proposal was built against.
+--
+-- A pending revision recorded only the hash of the latest activated SKILL.md text (prev_sha256). Two parts of the live
+-- skill sit outside that hash: the description column and the companion file set. A direct write that changes only
+-- one of them leaves no revision, so a proposal built before it activated over it and silently discarded it.
+--
+-- prev_state_sha256 is the hash of the whole live state at the time the proposal was recorded (text, description and
+-- file set, see hashSkillState in db/skill-revisions.ts). At activation the same hash is computed from the live tables
+-- and compared. NULL on every row that exists today (a pending import written before this migration) and on any row
+-- that is not a proposal: such a row keeps the old text-only comparison.
+--
+-- ADD COLUMN only, nullable, no default: the same shape needs no rebuild of skill_revisions and no rename.
+ALTER TABLE skill_revisions ADD COLUMN prev_state_sha256 TEXT;

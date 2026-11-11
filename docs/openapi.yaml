@@ -3638,8 +3638,9 @@ paths:
             so a client can branch without parsing the `hint` prose. The three reasons: the revision was already decided (or is no longer
             pending) by the time this request ran; activate only, the skill moved out of the state the proposal
             assumed (revoked, deleted, or already activated by a concurrent decide) since it was submitted; activate
-            of a non-create revision only, the skill's live content changed since the proposal was submitted
-            (re-read the diff before deciding again).
+            of a non-create revision only, the skill's live state changed since the proposal was submitted: its text,
+            its description or its companion file set (re-read the diff before deciding again). A proposal recorded
+            before migration 0095 has no state hash and is compared on the text alone.
         "500":
           description: |
             `error: internal_error`, activate only, two different causes (tell them apart by the `hint`):

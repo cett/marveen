@@ -942,7 +942,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
       return true
     }
     if (result.outcome === 'stale_proposal') {
-      json(res, { error: 'status_conflict', reason: 'stale_proposal', hint: 'The skill\'s live content changed since this proposal was submitted; re-read the diff before deciding again' }, 409)
+      json(res, { error: 'status_conflict', reason: 'stale_proposal', hint: 'The skill\'s live state (text, description or companion files) changed since this proposal was submitted; re-read the diff before deciding again' }, 409)
       return true
     }
     if (result.outcome === 'corrupt_proposal') {
