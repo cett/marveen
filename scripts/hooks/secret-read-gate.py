@@ -528,23 +528,41 @@ def _has_flag(toks: list, short: str, longs: tuple) -> bool:
 
 
 def _exclude_values(toks: list) -> list:
-    """The values of the `--exclude*` options of a command (`--exclude=V`, `--exclude V`, `--exclude-dir=V`)."""
+    """The values of the `--exclude` / `--exclude-dir` options of a grep (`--exclude=V`, `--exclude V`). They count ONLY
+    when the whole command parses without doubt: every option is a known one that takes no value (SAFE_SHORT / SAFE_LONG),
+    a `-e` / `-f` / `--regexp` / `--file` whose value is consumed, or one of `--exclude` / `--exclude-dir` / `--include`.
+    Anything else (a long option with a value and no `=` such as `--label X`, an abbreviated or unknown long option, a
+    short cluster with a value-taking letter) may swallow the next word, so the parse could disagree with grep about
+    which word is an option: then NO exclude counts (fail closed)."""
     if not toks or os.path.basename(toks[0]) not in EXCLUDE_HEADS:
         return []
     out, consumed = [], set()
     for i, t in enumerate(toks):
+        if i == 0:
+            continue      # the command itself
         if t == '--':
             break      # after `--` every word is an operand
         if i in consumed:
             continue
-        if re.fullmatch(r'-[A-Za-z0-9]+', t) and not all(c in SAFE_SHORT or c == 'a' for c in t[1:]) and t not in ('-e', '-f', '-g'):
-            return []      # a short option cluster with a value-taking letter (`-er`, `-cf`, `-A2`): fail closed, no exclude counts
-        if t in ('-e', '-f', '-g', '--regexp', '--file', '--glob'):
-            consumed.add(i + 1)      # the value of a pattern / file option is that value, not an option of ours
-        elif t.startswith('--exclude'):
-            out.append(t.split('=', 1)[1] if '=' in t else (toks[i + 1] if i + 1 < len(toks) else ''))
-            if '=' not in t:
-                consumed.add(i + 1)
+        if t.startswith('--'):
+            name, eq, val = t[2:].partition('=')
+            if name in ('exclude', 'exclude-dir', 'include'):
+                if name != 'include':
+                    out.append(val if eq else (toks[i + 1] if i + 1 < len(toks) else ''))
+                if not eq:
+                    consumed.add(i + 1)      # the value of a filter option is that value, not an option of ours
+            elif name in ('regexp', 'file'):
+                if not eq:
+                    consumed.add(i + 1)
+            elif name not in SAFE_LONG or eq:
+                return []      # unknown, abbreviated, or value-taking without a clear value: fail closed
+        elif re.fullmatch(r'-[A-Za-z0-9]+', t):
+            if t in ('-e', '-f'):
+                consumed.add(i + 1)      # a pattern / pattern-file option: the next word is its value
+            elif not all(c in SAFE_SHORT for c in t[1:]):
+                return []      # a short option cluster with a value-taking letter (`-er`, `-cf`, `-A2`, `-5`)
+        elif t.startswith('-') and t != '-':
+            return []      # an option shape the parse does not know
     return out
 
 
@@ -592,7 +610,7 @@ SAFE_LONG = frozenset(('recursive', 'dereference-recursive', 'ignore-case', 'lin
                        'files-with-matches', 'files-without-match', 'count', 'invert-match', 'word-regexp', 'line-regexp', 'fixed-strings',
                        'extended-regexp', 'perl-regexp', 'no-messages', 'with-filename', 'no-filename', 'only-matching', 'smart-case', 'quiet'))
 # Commands whose --exclude option is a real filter (find, cp, zip and the rest have none: the word is an operand there).
-EXCLUDE_HEADS = GREP_FAMILY | frozenset(('rsync',))      # tar is out: its bundled `czf` word and `-f` value hide the archive name
+EXCLUDE_HEADS = GREP_FAMILY      # tar is out (its bundled `czf` word and `-f` value hide the archive name), rsync too (`--filter`, `-e`, `--files-from` take values)
 
 
 def _nonpath_words(toks: list) -> set:

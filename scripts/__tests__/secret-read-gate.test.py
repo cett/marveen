@@ -144,7 +144,9 @@ class BashReads(GateCase):
         for cmd in ['grep -r foo store', 'grep -rn foo .', 'grep -R foo ' + '%ROOT%', 'grep -r foo', 'grep --recursive foo .', 'grep -d recurse foo .',
                     'egrep -ri foo store/', 'grep -r foo *', 'cp -r store /tmp/copy', 'cp -a . /tmp/copy', 'tar cf - store', 'tar czf /tmp/a.tgz .',
                     'rsync -a . /tmp/y', 'zip -r a.zip .', 'find . -exec cat {} +', 'find store -exec cat {} ;', 'rg --hidden foo .', 'rg -uu foo store',
-                    'rg --no-ignore foo %ROOT%', 'ag --unrestricted foo .']:
+                    'rg --no-ignore foo %ROOT%', 'ag --unrestricted foo .',
+                    # rsync takes values through --filter / -e / --files-from, so its --exclude is no longer trusted as a filter
+                    'rsync -a --exclude=store . /tmp/y']:
             cmd = cmd.replace('%ROOT%', self.root)
             with self.subTest(cmd=cmd):
                 self.assert_denied(self.bash(cmd), cmd)
@@ -152,7 +154,7 @@ class BashReads(GateCase):
     def test_the_same_readers_over_other_directories_pass(self):
         for cmd in ['grep -rn claim src', 'grep -r foo scripts', 'grep -rn claim src scripts', 'rg claim src', 'rg --hidden foo src', 'tar cf x.tar scripts',
                     'cp -r scripts /tmp/y', 'find . -name "*.py"', 'find src -exec cat {} +', 'grep -r --exclude-dir=store foo .',
-                    'grep -r --exclude-dir store foo .', 'rsync -a --exclude=store . /tmp/y', 'rg foo .', 'grep -n claim scripts/gmail-send.py',
+                    'grep -r --exclude-dir store foo .', 'rg foo .', 'grep -n claim scripts/gmail-send.py',
                     'cp scripts/gmail-send.py /tmp/y']:
             with self.subTest(cmd=cmd):
                 self.assert_allowed(self.bash(cmd), cmd)

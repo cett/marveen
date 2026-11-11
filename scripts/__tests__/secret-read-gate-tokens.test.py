@@ -277,7 +277,7 @@ class BashOnEveryTokenFile(Tree):
         for cmd, cwd in [('grep -r foo agents/agent-a --exclude=.agent-token', None), ('grep -rn --exclude=.agent-token foo agents', None),
                          ('grep -r --exclude .agent-token foo agents/agent-b', None), ('grep -r foo . --exclude=.agent-token', self.p('agents', 'agent-a')),
                          ('grep -r foo --exclude=.agent-token', self.p('agents', 'agent-a')), ("grep -r --exclude='.agent-*' foo agents", None),
-                         ('rsync -a --exclude=.agent-token agents /tmp/y', None), ('grep -r --exclude-dir=agents --exclude-dir=store --exclude=.agent-token foo agents/..', None),
+                         ('grep -r --exclude-dir=agents --exclude-dir=store --exclude=.agent-token foo agents/..', None),
                          ('grep -r --exclude-dir=store --exclude-dir=agents --exclude=.agent-token foo .', None), ('rg foo agents', None), ('rg -g "*.md" foo agents', None)]:
             with self.subTest(cmd=cmd, cwd=cwd):
                 self.assert_allowed(self.bash(cmd, cwd=cwd), cmd)
@@ -297,6 +297,24 @@ class BashOnEveryTokenFile(Tree):
                     'grep -e --exclude=.agent-token -r foo agents', 'grep -r foo agents -- --exclude=.agent-token', 'grep -f --exclude=.agent-token -r foo agents']:
             with self.subTest(cmd=cmd):
                 self.assert_denied(self.bash(cmd), cmd)
+
+    def test_an_exclude_counts_only_when_every_option_of_the_command_is_understood(self):
+        # an option with a value and no `=` (`--label X`, `--group-separator X`), an abbreviated or unknown long option
+        # and rsync (its own value-taking options) can swallow the word the parse took for the exclude: fail closed
+        for cmd in ['grep -r --label x --exclude=.agent-token foo agents', 'grep -r --group-separator x --exclude=.agent-token foo agents',
+                    'rsync -a --exclude=.agent-token agents /tmp/y', 'grep -r --label --exclude=.agent-token foo agents',
+                    'grep -r --reg x --exclude=.agent-token foo agents', 'grep -r --color=never --exclude=.agent-token foo agents',
+                    'grep -r --exclude=.agent-token --max-count 1 foo agents', 'grep -r --exclude=.agent-token --recursive=x foo agents',
+                    'grep -r -A2 --exclude=.agent-token foo agents', 'grep -r -5 --exclude=.agent-token foo agents',
+                    'grep -r --exclude-from=x --exclude=.agent-token foo agents', 'grep -r -+ --exclude=.agent-token foo agents']:
+            with self.subTest(cmd=cmd):
+                self.assert_denied(self.bash(cmd), cmd)
+        # the same understood options keep the exclude working: known no-value options, `=` and space forms, -e / --regexp
+        for cmd in ['grep -rn --include=*.md --exclude=.agent-token foo agents', 'grep -r --exclude .agent-token --include *.md foo agents',
+                    'grep -r -e foo --exclude=.agent-token agents', 'grep -r --regexp foo --exclude=.agent-token agents',
+                    'grep -r --ignore-case --line-number --exclude=.agent-token foo agents', 'grep -r --exclude=.agent-token foo agents -']:
+            with self.subTest(cmd=cmd):
+                self.assert_allowed(self.bash(cmd), cmd)
 
     def test_exclude_of_another_name_does_not(self):
         for cmd, cwd in [('grep -r foo agents/agent-a --exclude=.other-token', None), ('grep -r foo agents --exclude=CLAUDE.md', None),
