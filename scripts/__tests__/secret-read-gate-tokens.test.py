@@ -119,24 +119,60 @@ class Tree(unittest.TestCase):
         self.assertEqual((rc, out, err), (0, '', ''), label)
 
 
+def upper_form(tree, rel):
+    """The absolute path of the protected file `rel` with its file NAME upper-cased."""
+    abs_p = tree.p(rel)
+    return abs_p.replace(os.path.basename(abs_p), os.path.basename(abs_p).upper())
+
+
+def fs_is_case_insensitive(tree, rel):
+    """Probe, not a guess: does the fixture's own file system find the protected file `rel` under its upper-cased name?
+    True on a default macOS volume (the upper-cased spelling is the SAME inode), False on Linux and on a case-sensitive
+    volume (there it is a different file that does not exist)."""
+    return os.path.lexists(upper_form(tree, rel))
+
+
+def expects_block(tool, path, upper, insensitive):
+    """Is the call expected to be blocked? The upper-cased spelling under a GENERIC key (`mcp__x__y {q: path}`, a key that
+    is not path-like) is judged by realpath / device-inode resolution only, so it is the protected file only where the file
+    system is case-insensitive; on a case-sensitive one it names a file that does not exist and is ALLOWED. Under a
+    path-like key (`file_path`, `path`, `source`, ...) the dotted-name rule is case-insensitive and blocks it on either file
+    system, and every other spelling resolves to the file everywhere."""
+    return not (tool == 'mcp__x__y' and path == upper and not insensitive)
+
+
 def forms(tree, rel):
     """Every way a path to the protected file `rel` can be spelled for a file tool, from the install root."""
     sym, rsym, hard = tree.links[rel]
     abs_p = tree.p(rel)
     return [abs_p, rel, './' + rel, tree.p('src', '..', rel), tree.p(os.path.dirname(rel) or '.', '.', os.path.basename(rel)),
             tree.p(sym), sym, tree.p(rsym), tree.p(hard), 'work/../' + rel, 'file://' + abs_p, 'FILE://localhost' + tree.p(hard),
-            'file://' + tree.p(sym), abs_p.replace(os.path.basename(abs_p), os.path.basename(abs_p).upper())]
+            'file://' + tree.p(sym), upper_form(tree, rel)]
 
 
 class FileToolsOnEveryTokenFile(Tree):
     def test_every_spelling_of_every_file_is_blocked(self):
         for rel in PROTECTED:
+            upper, insensitive = upper_form(self, rel), fs_is_case_insensitive(self, rel)
             for path in forms(self, rel):
                 for tool, ti in [('Read', {'file_path': path}), ('Write', {'file_path': path, 'content': 'x'}),
                                  ('mcp__filesystem__read_text_file', {'path': path}), ('mcp__x__y', {'q': path}),
                                  ('mcp__filesystem__move_file', {'source': self.p('work', 'a.txt'), 'destination': path})]:
                     with self.subTest(file=rel, path=path, tool=tool):
-                        self.assert_denied_b(self.run_gate(tool, ti), '%s %s' % (tool, path), os.path.basename(rel))
+                        if expects_block(tool, path, upper, insensitive):
+                            self.assert_denied_b(self.run_gate(tool, ti), '%s %s' % (tool, path), os.path.basename(rel))
+                        else:
+                            self.assert_allowed(self.run_gate(tool, ti), '%s %s (case-sensitive file system: another, missing file)' % (tool, path))
+
+    def test_the_expectation_for_an_upper_cased_name_follows_the_file_system(self):
+        # both branches of expects_block, without needing the two kinds of file system: only the generic key + the
+        # upper-cased spelling + a case-sensitive file system flips to "allowed"
+        up = '/t/.AGENT-TOKEN'
+        self.assertTrue(expects_block('mcp__x__y', up, up, True))
+        self.assertFalse(expects_block('mcp__x__y', up, up, False))
+        for tool in ('Read', 'Write', 'mcp__filesystem__read_text_file', 'mcp__filesystem__move_file'):
+            self.assertTrue(expects_block(tool, up, up, False), tool)      # a path-like key blocks on either file system
+        self.assertTrue(expects_block('mcp__x__y', '/t/.agent-token', up, False))      # the lower-case spelling is the file itself
 
     def test_the_file_name_from_the_callers_own_cwd(self):
         for rel in PROTECTED:
