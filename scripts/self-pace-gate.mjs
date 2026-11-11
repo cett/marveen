@@ -1072,7 +1072,8 @@ const GIT_CANDIDATES_MAX = 8
 // A shell that is handed its script as text (sh -c STRING, eval STRING, a script on stdin) runs a command the word rules
 // cannot see inside. The text is judged as a command of its own, from the directory (and the cd history) the outer
 // command had at that point, bounded in depth and in the number of texts per command (the cost stays linear).
-const SHELL_RX = /^(?:bash|sh|zsh|dash|ksh|ksh93|mksh|pdksh|oksh|ash|yash|posh|hush|rbash|fish|csh|tcsh)$/
+// (a numeric suffix is tolerated: bash5, sh-3.2, zsh-5.9)
+const SHELL_RX = /^(?:bash|sh|zsh|dash|ksh|ksh93|mksh|pdksh|oksh|ash|yash|posh|hush|rbash|fish|csh|tcsh)(?:[-.]?[0-9][0-9.]*)?$/
 const INNER_DEPTH_MAX = 4
 const INNER_BUDGET = 16
 // The script texts one segment hands to a shell: { texts, unreadable }. `prevSeg`: the segment before a pipe (or null).
@@ -1095,7 +1096,7 @@ function shellScriptTexts(words, cmdIdx, seg, prevSeg) {
     return { texts: [t], unreadable: OBFUSCATED.test(seg) || BUILT.test(t) ? 'always' : DYNAMIC.test(t) ? 'if-git' : null }
   }
   // `source /dev/stdin` and `. /dev/stdin` read their script from stdin exactly like a bare shell
-  const stdinSource = /^(?:source|\.)$/.test(base(words[cmdIdx])) && words.slice(cmdIdx + 1).some((a) => /^\/(?:dev\/stdin|dev\/fd\/0|proc\/self\/fd\/0)$/.test(a))
+  const stdinSource = /^(?:source|\.)$/.test(base(words[cmdIdx])) && (words.slice(cmdIdx + 1).some((a) => /^\/(?:dev\/stdin|dev\/fd\/[0-9]+|proc\/(?:self|[0-9]+)\/fd\/[0-9]+)$/.test(a)) || /<\(/.test(seg))
   let sh = SHELL_RX.test(base(words[cmdIdx])) || stdinSource ? cmdIdx : -1
   if (sh === -1) {
     // behind a launcher word (`xargs sh -c ...`, `nice -n 5 bash -c ...`, `timeout 5 sh ...`)
@@ -1105,8 +1106,11 @@ function shellScriptTexts(words, cmdIdx, seg, prevSeg) {
     sh = l === -1 || l > cmdIdx ? -1 : words.findIndex((w, i) => i > l && SHELL_RX.test(base(w)))
   }
   if (sh === -1) return none
-  const STDIN_DEV = /^\/(?:dev\/stdin|dev\/fd\/0|proc\/self\/fd\/0)$/
-  const args = stdinSource ? [] : words.slice(sh + 1).filter((a) => !STDIN_DEV.test(a)) // `sh /dev/stdin` is a bare shell reading stdin
+  const STDIN_DEV = /^\/(?:dev\/stdin|dev\/fd\/[0-9]+|proc\/(?:self|[0-9]+)\/fd\/[0-9]+)$/
+  const devOperand = words.slice(sh + 1).some((a) => STDIN_DEV.test(a))
+  const args = stdinSource ? [] : words.slice(sh + 1).filter((a) => !STDIN_DEV.test(a)) // `sh /dev/fd/3` is a bare shell reading a descriptor
+  // a process substitution as the script (`bash <(cmd)`): the script is whatever cmd prints
+  if (!args.some((a) => /^-[A-Za-z]*c[A-Za-z]*$/.test(a)) && /<\(/.test(seg)) return { texts: [], unreadable: 'if-git' }
   const k = args.findIndex((a) => /^-[A-Za-z]*c[A-Za-z]*$/.test(a))
   if (k !== -1) {
     const s = args.slice(k + 1).find((a) => !a.startsWith('-'))
@@ -1132,6 +1136,7 @@ function shellScriptTexts(words, cmdIdx, seg, prevSeg) {
       else if (DYNAMIC.test(t)) unreadable = 'if-git'
     } else unreadable = 'if-git' // cat, curl, git show ... | sh: the script is whatever the feeder prints
   } else if (/(?:^|[\s;&|])\d*<(?![<(&])/.test(seg) || stdinSource) unreadable = 'if-git' // sh < run.sh, source /dev/stdin
+  if (devOperand && unreadable === null && texts.length === 0) unreadable = 'if-git' // sh /dev/fd/3 with nothing readable behind it
   return { texts: texts.map((t) => t.replace(/\\n/g, '\n')), unreadable }
 }
 // Global git options in front of the subcommand, in order: -C <path> (repeatable, each relative to the one before),
@@ -1146,6 +1151,13 @@ function scanGitGlobals(args) {
     if (a === '--work-tree' || a === '--git-dir') { ops.push([a === '--work-tree' ? 'wt' : 'gd', args[++k]]); continue }
     if (a.startsWith('--work-tree=')) { ops.push(['wt', a.slice('--work-tree='.length)]); continue }
     if (a.startsWith('--git-dir=')) { ops.push(['gd', a.slice('--git-dir='.length)]); continue }
+    // a config override that moves the tree (core.worktree, core.*) or reads its value from the environment is not judged: refuse
+    // (deny by default: only keys that cannot run a program or move a tree are let through; include.path, alias.*, filter.*, diff.*,
+    // merge.*driver, core.* and the like are refused on a rewriting subcommand)
+    const SAFE_C = /^(?:user|color|advice)\.[a-z0-9.-]+=/i
+    if (a === '-c' && !SAFE_C.test(args[k + 1] ?? '')) bad = true
+    if (/^-c.+/.test(a) && !SAFE_C.test(a.slice(2))) bad = true
+    if (a === '--config-env' || a.startsWith('--config-env=')) bad = true
     if (a === '-c' || a === '--namespace' || a === '--config-env' || a === '--super-prefix') k++
   }
   return { ops, bad, sub: args[k] ?? null, subIdx: k }
@@ -1204,9 +1216,15 @@ function gitRewritesInstallTree(words, ci, ctx, mode) {
   if (args.length > GIT_TREE_MAX_ARGS || g.bad || ctx.unknownCwd || mode.compound || ctx.cwds.size > GIT_TREE_MAX_CWDS) return true
   // GIT_WORK_TREE / GIT_DIR / GIT_COMMON_DIR set anywhere else in the command (`export GIT_WORK_TREE=...; git checkout x`, an
   // assignment-only segment, `set -a`) move the tree without being a prefix of THIS git: more mentions than prefixes = refuse
-  const mentions = (String(mode.raw ?? '').match(/GIT_(?:WORK_TREE|DIR|COMMON_DIR)\b/g) ?? []).length
+  // (counted on the raw text AND on the words with their quotes removed: `G"IT"_WORK_TREE=x` has no GIT_WORK_TREE in the raw text.
+  // GIT_CONFIG_COUNT / _KEY_n / _VALUE_n / _PARAMETERS / GIT_CONFIG_GLOBAL can set core.worktree: any mention is a refusal)
+  const names = /GIT_(?:WORK_TREE|DIR|COMMON_DIR|CONFIG[A-Z0-9_]*)\b/g
+  const count = (t) => (String(t ?? '').match(names) ?? []).length
+  const mentions = Math.max(count(mode.raw), count(mode.joined))
   const prefixes = words.slice(0, ci).filter((x) => /^GIT_(?:WORK_TREE|DIR|COMMON_DIR)=/.test(x)).length
   if (mentions > prefixes) return true
+  // a segment that loads an environment this parser cannot read (a sourced file, eval, set -a) may have set any of them
+  if (mode.envUnknown) return true
   const inst = installIdentities(ctx)
   const env = (name) => { const w = words.slice(0, ci).filter((x) => x.startsWith(name + '=')).pop(); return w === undefined ? null : w.slice(name.length + 1) }
   const envWt = env('GIT_WORK_TREE'); const envGd = env('GIT_DIR') ?? env('GIT_COMMON_DIR')
@@ -1333,7 +1351,8 @@ export function bashProtectedDecision(command, opts = {}) {
     if (/\bgit\b/.test(inner)) {
       const d = bashProtectedDecision(inner, { ...opts, prot, cwd, budget, seed: undefined }); if (d.deny) return d
       // with a cd in the command the substitution may run anywhere: judge it as if it ran in the install too
-      if (/\b(?:cd|pushd|popd)\b/.test(String(command))) { const d2 = bashProtectedDecision(inner, { ...opts, prot, cwd: dirname(prot.scriptsDir), budget, seed: undefined }); if (d2.deny) return d2 }
+      // (the cd is looked for in the raw text AND in the words with their quotes removed: `"cd" /x`, `c\d /x` and `command cd /x` have no `cd` in the raw text)
+      if (/\b(?:cd|pushd|popd)\b/.test(String(command)) || segs.some((x) => { const w = spliceEnvSplit(tokenizeShell(x).words); const i = commandWordIndex(w); return i !== -1 && /^(?:cd|pushd|popd)$/.test(w[i].split('/').pop()) })) { const d2 = bashProtectedDecision(inner, { ...opts, prot, cwd: dirname(prot.scriptsDir), budget, seed: undefined }); if (d2.deny) return d2 }
     }
   }
   const feedsNonReader = (idx) => {
@@ -1349,6 +1368,19 @@ export function bashProtectedDecision(command, opts = {}) {
   // (a script text starts with no pending cd of its own: the outer command's "a cd may have failed" state is already in `union`)
   let unionMode = seed?.union ?? false; let condCd = false
   const compound = seed?.compound || /[()]|(?:^|[\s;&|])\{(?:\s|$)/.test(String(command)) || segs.some((s) => /^\s*(?:if|then|else|elif|fi|for|while|until|do|done|case|esac|select|function|!)\b/.test(s))
+  // the whole command as words without quotes, and whether any segment loads an environment this parser cannot read
+  // (a script text carries the outer command's: the environment was set outside it)
+  // (the outer command's words already contain the text: an inner call does not count them twice)
+  const joined = seed?.joined ?? segs.map((x) => tokenizeShell(x).words.join(' ')).join(' ')
+  // (only a git in a LATER segment is affected: the text of the loading segment itself is judged as it stands)
+  const envFrom = segs.findIndex((x) => {
+    const w = spliceEnvSplit(tokenizeShell(x).words); const i = commandWordIndex(w)
+    if (i === -1) return false
+    const c = w[i].split('/').pop()
+    return c === 'source' || c === '.' || c === 'eval' || (c === 'set' && w.slice(i + 1).some((a) => /^-[A-Za-z]*a|^allexport$/.test(a)))
+  })
+  const gmode = { compound, raw: seed?.raw ?? command, joined }
+  const envUnknownAt = (i) => Boolean(seed?.envUnknown) || (envFrom !== -1 && i > envFrom)
   for (let si = 0; si < segs.length; si++) {
     const seg = segs[si]
     const prevSep = si > 0 ? seps[si - 1] : ''
@@ -1398,23 +1430,32 @@ export function bashProtectedDecision(command, opts = {}) {
       const g = gitIdxs[n]
       // a git word followed by another git word is an option value of the launcher (`-u git`, `-I git`): the next one is judged
       if (gitIdxs[n + 1] === g + 1) continue
-      const sub = scanGitGlobals(words.slice(g + 1)).sub
-      // behind xargs the subcommand may come from the input lines (`echo 'checkout x' | xargs git`): a git with no subcommand is
-      // judged as `git checkout`
-      const viaXargs = sub === null && words.slice(0, g).some((w) => w.split('/').pop() === 'xargs')
-      if (gitRewritesInstallTree(viaXargs ? [...words, 'checkout'] : words, g, ctx, { exact: !unionMode, compound, raw: seed?.raw ?? command })) return { deny: true, reason: 'gate-scripts' }
+      const gg = scanGitGlobals(words.slice(g + 1))
+      const sub = gg.sub
+      // behind xargs the gate does not see the arguments of the git (the input lines are appended to the command: `echo
+      // --upload-pack=x | xargs git fetch`, `echo 'checkout x' | xargs git`), so only a read-only subcommand (SAFE_GIT) passes; the
+      // fetch / worktree / help exceptions, which depend on the options, do not apply. Any other subcommand, or none, is judged as
+      // `git checkout` with the same global options (-C, --work-tree, --git-dir) in front.
+      const behindXargs = words.slice(0, g).some((w) => w.split('/').pop() === 'xargs')
+      const viaXargs = behindXargs && (sub === null || !SAFE_GIT.has(sub))
+      if (gitRewritesInstallTree(viaXargs ? [...words.slice(0, g + 1 + gg.subIdx), 'checkout'] : words, g, ctx, { exact: !unionMode, compound, ...gmode, envUnknown: envUnknownAt(si) })) return { deny: true, reason: 'gate-scripts' }
     }
     // a script handed to a shell as text (sh -c STRING, eval STRING, stdin): a git in it is judged as a command of its own
+    // a command word built by an expansion (`G=git; $G checkout x`, `$(echo git) pull`): what runs is not known. Judged as the worst
+    // case, a tree-rewriting git, when the command names git as a word anywhere
+    if (gci !== -1 && /[$`]/.test(words[gci]) && /(?:^|[^\w-])git(?:[^\w-]|$)/.test(String(seed?.raw ?? command))) {
+      if (gitRewritesInstallTree(['git', 'checkout'], 0, ctx, { exact: !unionMode, compound, ...gmode, envUnknown: envUnknownAt(si) })) return { deny: true, reason: 'gate-scripts' }
+    }
     const st = shellScriptTexts(words, cmdIdx, seg, si > 0 && prevSep === '|' ? segs[si - 1] : null)
     // a script whose text cannot be read off the command is judged as the worst case, a tree-rewriting git: refused where such a
     // git is refused (the install), free in a worktree copy. 'if-git': only when the command names git anywhere.
     if (st.unreadable === 'always' || (st.unreadable === 'if-git' && /\bgit\b/.test(String(seed?.raw ?? command)))) {
-      if (gitRewritesInstallTree(['git', 'checkout'], 0, ctx, { exact: !unionMode, compound, raw: seed?.raw ?? command })) return { deny: true, reason: 'gate-scripts' }
+      if (gitRewritesInstallTree(['git', 'checkout'], 0, ctx, { exact: !unionMode, compound, ...gmode, envUnknown: envUnknownAt(si) })) return { deny: true, reason: 'gate-scripts' }
     }
     for (const t of st.texts) {
       if (!/\bgit\b/.test(t)) continue
       if (++budget.n > INNER_BUDGET || (seed?.depth ?? 0) >= INNER_DEPTH_MAX) return { deny: true, reason: 'gate-scripts' }
-      const inner = { current: ctx.current, cwds: [...ctx.cwds], unknownCwd: ctx.unknownCwd, union: unionMode, compound, raw: seed?.raw ?? command, depth: (seed?.depth ?? 0) + 1 }
+      const inner = { current: ctx.current, cwds: [...ctx.cwds], unknownCwd: ctx.unknownCwd, union: unionMode, compound, raw: seed?.raw ?? command, joined, envUnknown: envUnknownAt(si), depth: (seed?.depth ?? 0) + 1 }
       const d = bashProtectedDecision(t, { ...opts, prot, cwd: ctx.current, budget, seed: inner }); if (d.deny) return d
     }
     const hit = kinds.find((k) => k && !isAnc(k)) ?? rKinds.find((k) => k && !isAnc(k)) ?? null
