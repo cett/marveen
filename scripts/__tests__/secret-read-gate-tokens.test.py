@@ -282,6 +282,20 @@ class BashOnEveryTokenFile(Tree):
             with self.subTest(cmd=cmd, cwd=cwd):
                 self.assert_allowed(self.bash(cmd, cwd=cwd), cmd)
 
+    def test_a_word_that_is_a_file_is_never_guessed_to_be_the_pattern(self):
+        # `-er` is `-e` with the attached pattern `r`: the next word is a FILE; `-f`, `-m 5`, `-A1` take values too
+        for cmd in ['grep -er .agent-token', 'grep -A1 .agent-token', 'grep -m 1 .agent-token', 'grep -f pats.txt .agent-token', 'grep -e x -- .agent-token',
+                    'grep -rne x .agent-token', 'grep -nf pats.txt .operator-token', 'rg --max-count 1 .agent-token', 'grep -x foo .agent-token',
+                    'grep foo .agent-token', 'grep -e x store/.dashboard-token', 'grep --file=pats.txt .agent-token']:
+            with self.subTest(cmd=cmd):
+                self.assert_denied_b(self.bash(cmd), cmd)
+
+    def test_an_exclude_that_is_not_an_option_of_the_command_excludes_nothing(self):
+        for cmd in ['find agents --exclude=.agent-token -exec cat {} +', 'cp -r --exclude=.agent-token agents /tmp/y', 'zip -r a.zip agents --exclude=.agent-token',
+                    'grep -e --exclude=.agent-token -r foo agents', 'grep -r foo agents -- --exclude=.agent-token', 'grep -f --exclude=.agent-token -r foo agents']:
+            with self.subTest(cmd=cmd):
+                self.assert_denied(self.bash(cmd), cmd)
+
     def test_exclude_of_another_name_does_not(self):
         for cmd, cwd in [('grep -r foo agents/agent-a --exclude=.other-token', None), ('grep -r foo agents --exclude=CLAUDE.md', None),
                          ('grep -r --exclude=.agent-tokens foo agents/agent-b', None), ('grep -r foo . --exclude=.operator-token', self.p('agents', 'agent-a')),

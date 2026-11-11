@@ -44,7 +44,10 @@ KNOWN LIMITS. This is a conservative TEXT + REALPATH denylist, not a sandbox, an
     character-code spelling, an encoding other than the ones above;
   * `cd store` followed by reading dotfiles whose names do not appear in the text of one command;
   * a Grep from a directory that holds the install, with no glob, relies on ripgrep skipping the git-ignored
-    store/ directory;
+    store/ directory; likewise a Grep (and a Bash rg) over agents/ or agents/<id> with no glob and no --hidden relies
+    on ripgrep skipping dotfiles, where the token files sit;
+  * a grep whose pattern the parse cannot tell from its files (`-f`, `-m 5`, `-er`: an option with a value) reads every
+    plain word as a path; a plain simple grep reads its first word as the pattern, which is not judged as a path;
   * a process that is not a tool call of this session (a script the agent starts that reads the file);
   * the key staying readable by the same OS user: the owner chose a hook-level guard, not an OS permission.
 It stops the careless or lazily prompted read, not a determined bypass.
@@ -526,10 +529,20 @@ def _has_flag(toks: list, short: str, longs: tuple) -> bool:
 
 def _exclude_values(toks: list) -> list:
     """The values of the `--exclude*` options of a command (`--exclude=V`, `--exclude V`, `--exclude-dir=V`)."""
-    out = []
+    if not toks or os.path.basename(toks[0]) not in EXCLUDE_HEADS:
+        return []
+    out, consumed = [], set()
     for i, t in enumerate(toks):
-        if t.startswith('--exclude'):
+        if t == '--':
+            break      # after `--` every word is an operand
+        if i in consumed:
+            continue
+        if t in ('-e', '-f', '-g', '--regexp', '--file', '--glob'):
+            consumed.add(i + 1)      # the value of a pattern / file option is that value, not an option of ours
+        elif t.startswith('--exclude'):
             out.append(t.split('=', 1)[1] if '=' in t else (toks[i + 1] if i + 1 < len(toks) else ''))
+            if '=' not in t:
+                consumed.add(i + 1)
     return out
 
 
@@ -570,6 +583,14 @@ def _covered_dir_files(path: str, cwd: str) -> list:
 # Options whose VALUE is a filter or a pattern, not a path: a name there is not a read (`--exclude=.agent-token`).
 FILTER_FLAGS = frozenset(('exclude', 'include', 'exclude-dir', 'include-dir', 'regexp', 'glob', 'iglob', 'grep', 'message'))
 FILTER_HEADS = GREP_FAMILY | RG_FAMILY | frozenset(('git', 'tar', 'gtar', 'bsdtar', 'rsync', 'zip'))
+# Short options of grep / rg that take NO value, and long options likewise: only a command made of these (plus -e / the
+# filter options) lets the first plain word be read as the PATTERN.
+SAFE_SHORT = frozenset('rRnilLcvwxsHhoEFGPaIzZqTyUb')
+SAFE_LONG = frozenset(('recursive', 'dereference-recursive', 'ignore-case', 'line-number', 'hidden', 'no-ignore', 'no-ignore-vcs', 'unrestricted',
+                       'files-with-matches', 'files-without-match', 'count', 'invert-match', 'word-regexp', 'line-regexp', 'fixed-strings',
+                       'extended-regexp', 'perl-regexp', 'no-messages', 'with-filename', 'no-filename', 'only-matching', 'smart-case', 'quiet'))
+# Commands whose --exclude option is a real filter (find, cp, zip and the rest have none: the word is an operand there).
+EXCLUDE_HEADS = GREP_FAMILY | frozenset(('rsync', 'tar', 'gtar', 'bsdtar'))
 
 
 def _nonpath_words(toks: list) -> set:
@@ -582,24 +603,31 @@ def _nonpath_words(toks: list) -> set:
         return skip
     is_grep = head in GREP_FAMILY or head in RG_FAMILY
     pattern_given = False
+    unclear = False      # an option with a value the parse cannot place: then NO word is guessed to be the pattern
     for i in range(1, len(toks)):
         t = toks[i]
         if t.startswith('--') and len(t) > 2:
             name, eq, _ = t[2:].partition('=')
+            if name in ('regexp', 'file'):
+                pattern_given = True      # the patterns come from the option: the plain words are all files
             if name in FILTER_FLAGS:
                 skip.add(i)
                 if not eq and i + 1 < len(toks):
                     skip.add(i + 1)
                 pattern_given = pattern_given or name == 'regexp'
-        elif is_grep and re.fullmatch(r'-[A-Za-z]+', t) and t[-1] in 'eg':
-            if i + 1 < len(toks):
-                skip.add(i + 1)
-            pattern_given = pattern_given or t[-1] == 'e'
-        elif is_grep and re.fullmatch(r'-[A-Za-z]*f', t):
-            pattern_given = True
+        elif is_grep and re.fullmatch(r'-[A-Za-z0-9]+', t):
+            letters = t[1:]
+            if letters[-1] in 'eg' and all(c in SAFE_SHORT for c in letters[:-1]):
+                if i + 1 < len(toks):
+                    skip.add(i + 1)      # `-e PATTERN`, `-ne PATTERN`, rg `-g GLOB`
+                pattern_given = pattern_given or letters[-1] == 'e'
+            elif not all(c in SAFE_SHORT for c in letters):
+                unclear = True           # `-f`, `-m 5`, `-er`, `-A3`: a value is attached or follows, which word is the pattern is unclear
+        elif is_grep and t.startswith('--') and '=' not in t and t[2:] not in SAFE_LONG | FILTER_FLAGS:
+            unclear = True
         elif head == 'git' and t in ('-m', '-S', '-G') and i + 1 < len(toks):
             skip.add(i + 1)
-    if is_grep and not pattern_given:
+    if is_grep and not pattern_given and not unclear:
         for i in range(1, len(toks)):
             if i not in skip and not toks[i].startswith('-'):
                 skip.add(i)      # the PATTERN, the first word that is not an option
