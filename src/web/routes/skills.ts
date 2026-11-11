@@ -22,6 +22,7 @@ import {
   grantSkillAccess, revokeSkillAccess, listSkillAccess,
   listSkillFiles, getSkillFile, putSkillFile, deleteSkillFile, countSkillFiles,
   listSkillRevisions, revokeSkill, MAX_REVOKE_REASON_CHARS, type CreateSkillResult,
+  listPendingRevisions, decideSkillRevision, getRevisionDetail,
 } from '../../db.js'
 
 function parseFrontmatterField(content: string, field: string): string {
@@ -675,6 +676,11 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
   const sqlFilesBase = path.match(/^\/api(?:\/v1)?\/skills\/sql\/([^/]+)\/files$/)
   const sqlFilesItem = path.match(/^\/api(?:\/v1)?\/skills\/sql\/([^/]+)\/files\/([^/]+)$/)
   const sqlRevisionsBase = path.match(/^\/api(?:\/v1)?\/skills\/sql\/([^/]+)\/revisions$/)
+  // The pending-decision queue (quarantine, step 3). A literal path segment, checked before sqlRevisionItem below
+  // so a GET of /revisions/pending is never mistaken for a GET of one revision whose id happens to be "pending".
+  const sqlRevisionsPending = path === '/api/skills/sql/revisions/pending' || path === '/api/v1/skills/sql/revisions/pending'
+  const sqlRevisionDecide = path.match(/^\/api(?:\/v1)?\/skills\/sql\/revisions\/([^/]+)\/decide$/)
+  const sqlRevisionItem = path.match(/^\/api(?:\/v1)?\/skills\/sql\/revisions\/([^/]+)$/)
   const sqlRevokeBase = path.match(/^\/api(?:\/v1)?\/skills\/sql\/([^/]+)\/revoke$/)
   const sqlAccessBase = path.match(/^\/api(?:\/v1)?\/skills\/sql\/([^/]+)\/access$/)
   const sqlAccessItem = path.match(/^\/api(?:\/v1)?\/skills\/sql\/([^/]+)\/access\/([^/]+)$/)
@@ -887,6 +893,90 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
       json(res, { ok: true, file: fileView(result.file) }, isNew ? 201 : 200)
       return true
     }
+  }
+
+  // Pending skill revisions (quarantine, step 3 decide route): admin DASHBOARD SESSION only, never an agent token
+  // or a tenant session -- this is a human reviewing and deciding a proposal that already exists, not a pre-approval
+  // of a future action (the /api/approvals category system is for that other shape), so it follows the is_global /
+  // requireLive-bypass pattern (isAdmin + ctx.auth.kind === 'session') rather than that system.
+  const isAdminSession = isAdmin && ctx.auth?.kind === 'session'
+
+  if (sqlRevisionsPending && method === 'GET') {
+    if (!isAdminSession) { json(res, { error: 'forbidden', hint: 'Admin dashboard session only' }, 403); return true }
+    json(res, { revisions: await listPendingRevisions() })
+    return true
+  }
+
+  if (sqlRevisionDecide && method === 'POST') {
+    if (!isAdminSession) { json(res, { error: 'forbidden', hint: 'Admin dashboard session only' }, 403); return true }
+    const idRaw = decodeSegment(sqlRevisionDecide[1])
+    if (idRaw === null) return badSegment()
+    const revisionId = Number(idRaw)
+    if (!Number.isInteger(revisionId) || revisionId <= 0) {
+      json(res, { error: 'invalid_value', field: 'id', hint: 'Revision id must be a positive integer' }, 400); return true
+    }
+    const body = await readBody(req)
+    let parsed: { decision?: unknown; reason?: unknown }
+    try { parsed = JSON.parse(body.toString()) as { decision?: unknown; reason?: unknown } } catch { json(res, { error: 'parse_error', hint: 'Invalid JSON' }, 400); return true }
+    if (parsed.decision !== 'activate' && parsed.decision !== 'reject') {
+      json(res, { error: 'invalid_value', field: 'decision', hint: 'decision must be "activate" or "reject"' }, 400); return true
+    }
+    const reason = typeof parsed.reason === 'string' && parsed.reason.trim() ? parsed.reason.trim() : null
+    const result = await decideSkillRevision(revisionId, parsed.decision, actor, reason)
+    if (result.outcome === 'not_found') { json(res, { error: 'not_found' }, 404); return true }
+    if (result.outcome === 'self_approval_forbidden') {
+      json(res, { error: 'forbidden', hint: 'Cannot activate a revision you submitted yourself; a different admin must decide it' }, 403)
+      return true
+    }
+    if (result.outcome === 'not_pending') {
+      // The CAS (status='pending' at the time of the UPDATE) missed: someone else decided it first. Canonical
+      // status_conflict, same shape as the kanban move guard -- current_status for a caller that may re-read it.
+      const current = await getRevisionDetail(revisionId)
+      json(res, { error: 'status_conflict', reason: 'not_pending', current_status: current?.status ?? null, hint: 'Already decided; re-read the revision before deciding again' }, 409)
+      return true
+    }
+    if (result.outcome === 'skill_not_decidable') {
+      // The skill moved out of the state this proposal assumed (revoked, deleted, or already activated by a
+      // concurrent decide) between the propose and this decide. Refused rather than silently reviving/overwriting it.
+      json(res, { error: 'status_conflict', reason: 'skill_not_decidable', hint: 'The skill is no longer in the state this proposal assumed (revoked, deleted, or changed by another decision); re-read it before deciding again' }, 409)
+      return true
+    }
+    if (result.outcome === 'stale_proposal') {
+      json(res, { error: 'status_conflict', reason: 'stale_proposal', hint: 'The skill\'s live content changed since this proposal was submitted; re-read the diff before deciding again' }, 409)
+      return true
+    }
+    if (result.outcome === 'corrupt_proposal') {
+      json(res, { error: 'internal_error', hint: 'The proposal\'s stored text or companion files no longer match the hash recorded with it' }, 500)
+      return true
+    }
+    if (result.skillId) {
+      // The files the activation dropped: their generated copies leave the disk too (byte-equal only, the same call
+      // the single-file DELETE route makes). The regen below only writes, so without this an old script stays on disk
+      // and the boot-time companion import copies it back into the live skill without a review. Before the regen.
+      for (const f of result.removedFiles ?? []) {
+        await removeGeneratedCompanionFile(result.skillId, f.rel_path, f.content, result.tenantId ?? 'fleet')
+      }
+      // Disk regen after the transaction, same rule as every other skill write path (db/ never calls skill-regen.js).
+      const regen = await regenSingleSkillFile(result.skillId, true)
+      if (regen.reason === 'write_error') { json(res, { error: 'internal_error', hint: 'Activated, but the on-disk copy could not be written' }, 500); return true }
+    }
+    json(res, { ok: true, outcome: result.outcome })
+    return true
+  }
+
+  if (sqlRevisionItem && method === 'GET') {
+    if (!isAdminSession) { json(res, { error: 'forbidden', hint: 'Admin dashboard session only' }, 403); return true }
+    const idRaw = decodeSegment(sqlRevisionItem[1])
+    if (idRaw === null) return badSegment()
+    const revisionId = Number(idRaw)
+    if (!Number.isInteger(revisionId) || revisionId <= 0) {
+      json(res, { error: 'invalid_value', field: 'id', hint: 'Revision id must be a positive integer' }, 400); return true
+    }
+    const detail = await getRevisionDetail(revisionId)
+    if (!detail) { json(res, { error: 'not_found' }, 404); return true }
+    const current = await getSkill(detail.skill_id)
+    json(res, { revision: detail, current_content: current?.content ?? null })
+    return true
   }
 
   // The write trail of a skill (skill_revisions): who changed it, when, and the hashes of the text and the files, never
