@@ -8,7 +8,7 @@ import { MAIN_AGENT_ID } from '../../config.js'
 import { agentDir } from '../agent-config.js'
 import { generateSkillMd } from '../agent-scaffold.js'
 import { parseMultipart } from '../multipart.js'
-import { readBody, json } from '../http-helpers.js'
+import { readBody, json, parseObjectBody } from '../http-helpers.js'
 import { sanitizeAgentName, sanitizeSkillName, safeJoin } from '../sanitize.js'
 import { regenSingleSkillFile } from '../skill-regen.js'
 import { extractSkillArchive, quarantineStagedSkills, removeStage, type ExtractResult } from '../skill-import-quarantine.js'
@@ -175,7 +175,9 @@ export async function tryHandleAgentsSkills(ctx: RouteContext): Promise<boolean>
     const agentName = decodeURIComponent(skillsMatch[1])
     if (!agentExistsFor(agentName)) { json(res, { error: 'not_found', hint: 'Agent not found' }, 404); return true }
     const body = await readBody(req)
-    const { name: rawSkillName, description } = JSON.parse(body.toString()) as { name: string; description: string }
+    const createBody = parseObjectBody<{ name: string; description: string }>(res, body)
+    if (createBody === null) return true
+    const { name: rawSkillName, description } = createBody
     const skillName = sanitizeSkillName(rawSkillName || '')
     if (!skillName) { json(res, { error: 'required', field: 'name', hint: 'Skill name is required' }, 400); return true }
     if (!description) { json(res, { error: 'required', field: 'description', hint: 'Skill description is required' }, 400); return true }

@@ -162,6 +162,22 @@ function reportViolation(violation: string, token: string, status: number): void
   logger.error({ token, status, violation }, 'api-error-catalog: invariant violation')
 }
 
+/**
+ * Parses a request body that must be a JSON object. Answers 400 `parse_error` for text that is not JSON and 400
+ * `invalid_value` for JSON that is not an object (null, an array, a string, a number) and returns null in both cases,
+ * so the caller just returns. The routes read fields off the result, and JSON.parse('null') is null: without this the
+ * first field access throws and the server answers 500.
+ */
+export function parseObjectBody<T extends object>(res: http.ServerResponse, raw: Buffer): T | null {
+  let parsed: unknown
+  try { parsed = JSON.parse(raw.toString()) } catch { json(res, { error: 'parse_error', hint: 'Invalid JSON' }, 400); return null }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    json(res, { error: 'invalid_value', hint: 'Body must be a JSON object' }, 400)
+    return null
+  }
+  return parsed as T
+}
+
 export function json(res: http.ServerResponse, data: unknown, status = 200): void {
   if (
     data !== null &&

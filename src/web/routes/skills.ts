@@ -8,7 +8,7 @@ import { AGENTS_BASE_DIR, listAgentNames, readFileOr, agentDir } from '../agent-
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../../config.js'
 import { generateSkillMd } from '../agent-scaffold.js'
 import { parseMultipart } from '../multipart.js'
-import { readBody, json, RequestBodyTooLargeError } from '../http-helpers.js'
+import { readBody, json, parseObjectBody, RequestBodyTooLargeError } from '../http-helpers.js'
 import { recordFleetSkillWriteDenied } from '../token-shadow.js'
 import { sanitizeSkillName, shellEscape } from '../sanitize.js'
 import { regenSingleSkillFile, removeGeneratedSkillFile, removeGeneratedCompanionFile } from '../skill-regen.js'
@@ -82,22 +82,6 @@ export function summarizeRevokeFiles(outcomes: readonly RevokeFilesOutcome[]): R
 // Skills are stored in SQL and mirrored to disk for the Claude Code loader --
 // derive per-agent coverage for a skill name from the `agent/<agentId>/<name>`
 // id scheme instead of statting each agent's on-disk skills directory.
-/**
- * Parses a request body that must be a JSON object. Answers 400 `parse_error` for text that is not JSON and 400
- * `invalid_value` for JSON that is not an object (null, an array, a string, a number) and returns null in both cases,
- * so the caller just returns. The routes read fields off the result, and JSON.parse('null') is null: without this the
- * first field access throws and the server answers 500.
- */
-function parseObjectBody<T extends object>(res: RouteContext['res'], raw: Buffer): T | null {
-  let parsed: unknown
-  try { parsed = JSON.parse(raw.toString()) } catch { json(res, { error: 'parse_error', hint: 'Invalid JSON' }, 400); return null }
-  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    json(res, { error: 'invalid_value', hint: 'Body must be a JSON object' }, 400)
-    return null
-  }
-  return parsed as T
-}
-
 async function getSkillAgents(skillDirName: string): Promise<string[]> {
   const agents: string[] = []
   for (const row of await listLiveSkills()) {
@@ -418,7 +402,9 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/skills' && method === 'POST') {
     const body = await readBody(req)
-    const { name: rawSkillName, description } = JSON.parse(body.toString()) as { name: string; description: string }
+    const createBody = parseObjectBody<{ name: string; description: string }>(res, body)
+    if (createBody === null) return true
+    const { name: rawSkillName, description } = createBody
     const skillName = sanitizeSkillName(rawSkillName || '')
     if (!skillName) { json(res, { error: 'required', field: 'name', hint: 'Skill name is required' }, 400); return true }
     if (!description) { json(res, { error: 'required', field: 'description', hint: 'Skill description is required' }, 400); return true }
@@ -525,7 +511,11 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     if (sourceRow && sourceRow.status !== 'live') { json(res, { error: 'not_found', hint: 'Skill not found' }, 404); return true }
 
     const body = await readBody(req)
-    const { agents: targetAgents } = JSON.parse(body.toString()) as { agents: string[] }
+    const assignBody = parseObjectBody<{ agents: string[] }>(res, body)
+    if (assignBody === null) return true
+    const { agents: targetAgents } = assignBody
+    // The loop below iterates it: a missing or non-array `agents` threw into a 500.
+    if (!Array.isArray(targetAgents)) { json(res, { error: 'required', field: 'agents', hint: 'agents must be an array of agent ids' }, 400); return true }
 
     const allAgentNames = listAgentNames()
 
@@ -587,7 +577,9 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
       }
       if (!existsSync(skillDir)) { json(res, { error: 'not_found', hint: 'Skill not found' }, 404); return true }
       const body = await readBody(req)
-      const { content } = JSON.parse(body.toString()) as { content: string }
+      const agentPutBody = parseObjectBody<{ content: string }>(res, body)
+      if (agentPutBody === null) return true
+      const { content } = agentPutBody
       if (typeof content !== 'string') { json(res, { error: 'required', field: 'content', hint: 'content is required' }, 400); return true }
       const agentSqlId = `agent/${agentPutParam}/${skillName}`
       const agentDesc = parseFrontmatterField(content, 'description')
@@ -628,7 +620,9 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     }
     if (!existsSync(skillDir)) { json(res, { error: 'not_found', hint: 'Skill not found' }, 404); return true }
     const body = await readBody(req)
-    const { content } = JSON.parse(body.toString()) as { content: string }
+    const globalPutBody = parseObjectBody<{ content: string }>(res, body)
+    if (globalPutBody === null) return true
+    const { content } = globalPutBody
     if (typeof content !== 'string') { json(res, { error: 'required', field: 'content', hint: 'content is required' }, 400); return true }
     const globalSqlId = `global/${skillName}`
     const globalDesc = parseFrontmatterField(content, 'description')
