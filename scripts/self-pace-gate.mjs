@@ -756,6 +756,90 @@ function listDir(dir, ctx, depth = 0, out = []) {
 function makeContext(command, cwd, prot) {
   return { cwds: new Set([resolve(cwd)]), current: resolve(cwd), vars: collectVars(command), unknownCwd: false, prot, listing: null, cache: new Map() }
 }
+// A call of the fleet API wrapper (scripts/agent-api.sh, the protected file, run directly or as the script of a shell) carries its
+// JSON body in a single-quoted argument: data for the script, not a command and not a path. The words of a quoted command line are
+// read piece by piece (see wordKind), so a protected path, a pipe or a $( ) inside that body made the call look like a write.
+// Returns the segment with the BODY word (the third positional after the wrapper, past its options) replaced by 'x' when it is only
+// single-quoted spans. Narrow on purpose: nothing at all when the segment has a live substitution ($( ), backtick, <( ), >( ): the
+// code in it runs, whatever words it holds), not for any other command, not for a word that follows a redirect operator (`> '...'` is a target, not data), not for a word that has anything
+// attached to its quotes (`>""'...'`, `--out='...'`), never a double-quoted span (a live $( ) there stays), and an unclosed quote
+// is left as it is.
+// (a command that defines a function or an alias, or moves PATH / BASH_ENV / ENV, may have given `bash` or the wrapper another
+// meaning: no masking; the same for a group or a shell keyword in the command, which is where a function body sits)
+const SHADOW_RX = /\balias\b|expand_aliases|\benable\b|\bhash\b|\bBASH_ENV\b|\bBASH_FUNC|\b(?:PATH|ENV|IFS)\s*=|\bPS4\b|\bSHELLOPTS\b|\bBASHOPTS\b|\bBASH_XTRACEFD\b|\bPROMPT_COMMAND\b/
+const SYSTEM_SHELL_RX = /^\/(?:usr\/(?:local\/)?|opt\/homebrew\/)?bin\/(?:bash|sh|zsh|dash)$/
+function maskApiBody(seg, ctx, whole, compound) {
+  if (compound || SHADOW_RX.test(whole)) return seg
+  // (a newline inside the segment means a quote spans lines: after a comment (`# '`) the splitter's quote state is not the shell's,
+  // so the text of a later command line could sit inside a span this would mask. Such a segment is left as it is.)
+  if (!seg.includes("'") || /[\r\n]/.test(seg)) return seg
+  const w = spliceEnvSplit(tokenizeShell(seg).words)
+  const ci = commandWordIndex(w)
+  // (anything in front of the command word - a NAME=value setting, env, nice - can change what the shell does with the call: PS4 with
+  // -x runs code, SHELLOPTS turns xtrace on: no masking then)
+  if (ci !== 0) return seg
+  const cmd = w[ci].split('/').pop()
+  let k = -1
+  if (cmd === 'agent-api.sh') k = ci
+  else if (/^(?:bash|sh|zsh|dash)$/.test(cmd) && (!w[ci].includes('/') || SYSTEM_SHELL_RX.test(w[ci]))) {
+    // between the shell and the wrapper only flags that change nothing about WHAT the shell runs (-e -u -x -v, alone or bundled):
+    // -c / -s / -i (inline code, a script from stdin, an interactive shell: the wrapper path is then only a positional parameter),
+    // -o / -O / +O with a value, --rcfile, --init-file and any option this does not know leave the segment as it is
+    for (let j = ci + 1; j < w.length; j++) {
+      if (/^-[euv]+$/.test(w[j])) continue // (no x: with xtrace a PS4 runs code)
+      if (w[j].startsWith('-') && w[j].length > 1) return seg
+      k = j; break
+    }
+  }
+  // (the wrapper is named by a path: a bare name is looked up in PATH, not in the directory the parser resolved it in)
+  if (k === -1 || !w[k].includes('/') || w[k].split('/').pop() !== 'agent-api.sh' || wordKind(w[k], ctx) !== 'gate-scripts') return seg
+  const apiWord = w[k]
+  const n = seg.length
+  let out = ''; let i = 0; let seen = false; let raw = ''; let word = ''; let last = ''
+  let live = false // an unquoted (or double-quoted) $( ), backtick, <( ) or >( ): code that runs, whatever sits in its words
+  let pos = 0; let optsDone = false; let skipNext = false
+  // The wrapper's own arguments: [--agent X] [--token X] [--max-time X] [--with-status] [--] METHOD PATH [BODY]. Only the BODY, the
+  // third positional word, is data; a quoted word anywhere else (the method, the path, a fourth word) stays as it is.
+  // A WORD (a run up to unquoted whitespace) is masked only when it is made of single-quoted spans and escaped quotes and nothing
+  // else (`'{...}'`, `'it'\''s'`): a word that has anything attached to the quotes (`>''"'p'"`, `>""'p'`, `--out='p'`, `$'p'`) is
+  // kept whole, so a redirect target built from several quoted pieces cannot be cut in the middle. `last` is the last character
+  // before the word: after a redirect operator (`> '...'`, `>& '...'`, `>| '...'`) the word is a target, not a body.
+  const flush = () => {
+    if (raw === '') return
+    let mask = false
+    if (!seen) { if (word === apiWord) seen = true } else {
+      let positional = true
+      if (skipNext) { skipNext = false; positional = false } else if (!optsDone) {
+        if (/^--(?:agent|token|max-time)$/.test(word)) { skipNext = true; positional = false } else if (word === '--with-status') positional = false
+        else if (word === '--') { optsDone = true; positional = false } else optsDone = true
+      }
+      if (positional && ++pos === 3 && raw.includes("'") && /^(?:'[^']*'|\\')+$/.test(raw) && !/[<>|&]/.test(last)) mask = true
+    }
+    out += mask ? "'x'" : raw
+    last = raw[raw.length - 1]
+    raw = ''; word = ''
+  }
+  while (i < n) {
+    const c = seg[i]
+    if (c === '\\' && i + 1 < n) { raw += c + seg[i + 1]; word += seg[i + 1]; i += 2; continue }
+    if (c === '"') {
+      let j = i + 1; let inner = ''
+      while (j < n && seg[j] !== '"') { if (seg[j] === '\\' && j + 1 < n) { inner += seg[j + 1]; j += 2 } else { inner += seg[j]; j++ } }
+      if (/\$\(|`/.test(inner)) live = true
+      raw += seg.slice(i, j + 1); word += inner; i = j + 1; continue
+    }
+    if (c === "'") {
+      const e = seg.indexOf("'", i + 1)
+      if (e === -1) { raw += seg.slice(i); word += seg.slice(i + 1); i = n; continue }
+      raw += seg.slice(i, e + 1); word += seg.slice(i + 1, e); i = e + 1; continue
+    }
+    if (c === '`' || (seg[i + 1] === '(' && (c === '$' || c === '<' || c === '>'))) live = true
+    if (/\s/.test(c)) { flush(); out += c; i++; continue }
+    raw += c; word += c; i++
+  }
+  flush()
+  return live ? seg : out
+}
 function protectedBasenames(ctx) {
   if (ctx.listing) return ctx.listing
   const set = new Map()
@@ -1444,7 +1528,7 @@ export function bashProtectedDecision(command, opts = {}) {
   const gmode = { compound, raw: seed?.raw ?? command, joined }
   const envUnknownAt = (i) => Boolean(seed?.envUnknown) || (envFrom !== -1 && i > envFrom)
   for (let si = 0; si < segs.length; si++) {
-    const seg = segs[si]
+    const seg = maskApiBody(segs[si], ctx, String(seed?.raw ?? command), compound) // (the JSON body of a fleet API wrapper call is data, see maskApiBody)
     const prevSep = si > 0 ? seps[si - 1] : ''
     if (prevSep === '|' || prevSep === '||' || prevSep === '&') unionMode = true
     else if (condCd && (prevSep === ';' || prevSep === '')) unionMode = true
