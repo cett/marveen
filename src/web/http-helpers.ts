@@ -195,6 +195,22 @@ export function requireStringFields(res: http.ServerResponse, body: object, fiel
   return true
 }
 
+/**
+ * The boolean twin of requireStringFields: a field that is present (not undefined) and not a real boolean answers 400
+ * `invalid_value` ("<field> must be a boolean"). For a flag that was read by truthiness, where the string "false" or the
+ * number 1 flipped it the wrong way.
+ */
+export function requireBooleanFields(res: http.ServerResponse, body: object, fields: readonly string[]): boolean {
+  for (const field of fields) {
+    const value = (body as Record<string, unknown>)[field]
+    if (value !== undefined && typeof value !== 'boolean') {
+      json(res, { error: 'invalid_value', field, hint: `${field} must be a boolean` }, 400)
+      return false
+    }
+  }
+  return true
+}
+
 export function json(res: http.ServerResponse, data: unknown, status = 200): void {
   if (
     data !== null &&
