@@ -50,7 +50,7 @@ beforeEach(async () => {
   await createSkill({ id: ID, name: 'ft-skill', description: 'original', content: PLAIN, tenant_id: 'fleet', is_global: true }, { kind: 'system', id: null })
 })
 
-async function call(handler: (c: RouteContext) => Promise<boolean>, method: string, path: string, body: unknown) {
+async function call(handler: (c: RouteContext) => Promise<boolean>, method: string, path: string, body: unknown, extras: Partial<RouteContext> = {}) {
   const buf = Buffer.from(JSON.stringify(body))
   const req = new EventEmitter() as unknown as NodeJS.EventEmitter & { method: string; headers: Record<string, string> }
   req.method = method
@@ -64,7 +64,7 @@ async function call(handler: (c: RouteContext) => Promise<boolean>, method: stri
     end(b?: string | Buffer) { if (b) { const s = Buffer.isBuffer(b) ? b.toString('utf-8') : b; try { out.body = JSON.parse(s) } catch { out.body = s } } },
   }
   const url = new URL('http://localhost:3420' + path)
-  const ctx = { req, res, path: url.pathname, method, url, tenantId: null, auth: { kind: 'session', user: 'reviewer' }, role: 'admin' } as unknown as RouteContext
+  const ctx = { req, res, path: url.pathname, method, url, tenantId: null, auth: { kind: 'session', user: 'reviewer' }, role: 'admin', ...extras } as unknown as RouteContext
   expect(await handler(ctx)).toBe(true)
   return out
 }
@@ -154,6 +154,31 @@ describe('POST /api/skills and POST /api/agents/:name/skills (create): name and 
       }
     })
   }
+})
+
+// The type check runs AFTER the route's 403/404 decisions: a caller who may not touch the skill gets the same 403/404 as
+// with a valid body, so the 400 says nothing about a skill the caller must not learn about (content: null in each case).
+describe('the type check comes after the 403/404 decisions (PUT /api/skills/sql/:id, content null)', () => {
+  const put = (id: string, extras: Partial<RouteContext>) => call(tryHandleSkills, 'PUT', `/api/skills/sql/${enc(id)}`, { content: null }, extras)
+
+  it('a fleet agent token on another agent\'s skill: 403, not 400', async () => {
+    await createSkill({ id: 'agent/agent-b/ft-other', name: 'ft-other', description: 'd', content: PLAIN, tenant_id: 'fleet', is_global: false }, { kind: 'system', id: null })
+    const out = await put('agent/agent-b/ft-other', { auth: { kind: 'token', tokenName: 'tok' }, role: 'fleet_agent', tokenAgentId: 'agent-a' } as Partial<RouteContext>)
+    expect(out.status).toBe(403)
+    expect(out.body).toMatchObject({ error: 'forbidden' })
+  })
+
+  it('an id that does not exist (and is not a file-backed id): 404, not 400', async () => {
+    const out = await put('no-such-skill-id', {})
+    expect(out.status).toBe(404)
+    expect(out.body).toMatchObject({ error: 'not_found' })
+  })
+
+  it('a skill of another tenant: 404, not 400', async () => {
+    const out = await put(ID, { auth: { kind: 'session', user: 'viewer' }, role: 'viewer', tenantId: 'co-x' } as Partial<RouteContext>)
+    expect(out.status).toBe(404)
+    expect(out.body).toMatchObject({ error: 'not_found' })
+  })
 })
 
 describe('the helper decides on the type only', () => {
