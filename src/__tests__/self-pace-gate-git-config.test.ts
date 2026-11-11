@@ -64,7 +64,7 @@ const KEYS: Array<[string, string, string]> = [
   ['rerere.enabled', 'false', 'yes'],
   ['push.autosetupremote', 'true', '!echo x'],
   ['push.default', 'simple', 'tracking'],
-  ['push.default', 'matching', '!x'],
+  ['push.default', 'upstream', '!x'],
   ['core.filemode', 'false', '!x'],
   ['core.ignorecase', 'true', '1'],
   ['core.quotepath', 'false', 'x y'],
@@ -89,6 +89,10 @@ describe('A. every key of the allowlist: an allowed value passes, a refused valu
     const odd = key.replace(/(^|\.)([a-z])/g, (_m, d, c) => d + c.toUpperCase())
     expect(inCopies(`git config ${odd} '${ok}'`)).toEqual(ALLOWED)
     expect(inCopies(`git config ${key.toUpperCase()} '${ok}'`)).toEqual(ALLOWED)
+  })
+  it('push.default=matching is left out (no daily use, it widens what a plain push sends)', () => {
+    expect(inCopies('git config push.default matching')).toEqual(REFUSED)
+    expect(inCopies('git config push.default simple')).toEqual(ALLOWED)
   })
   it('a value with a rule is also compared in either case', () => {
     expect(inCopies('git config pull.rebase TRUE')).toEqual(ALLOWED)
@@ -142,9 +146,9 @@ describe('C. read forms and removals stay free', () => {
     'git config --list --show-scope', 'git config --list --name-only', 'git config --global --list', 'git config --system -l', 'git config --local --get remote.origin.url', 'git config remote.origin.url',
     'git config core.hooksPath', 'git config --type=bool --get pull.rebase', 'git config --bool --get pull.rebase', 'git config --get --default x core.x', 'git config --get --default=x core.x',
     'git config --null --get core.x', 'git config -z --get core.x', 'git config --get-urlmatch http.proxy https://example.invalid', 'git config --get-color color.diff.meta',
-    'git config --get-colorbool color.ui', 'git config --includes --get core.x', 'git config --no-includes --list', 'git config --unset core.hooksPath', 'git config --unset-all core.hooksPath',
-    'git config --global --unset alias.x', 'git config --unset core.hooksPath oldpattern', 'git config --remove-section alias', 'git config --global --remove-section includeif.x',
-    'git config get core.hooksPath', 'git config list', 'git config list --show-origin', 'git config unset core.hooksPath', 'git config remove-section alias', 'git config get --all core.x',
+    'git config --get-colorbool color.ui', 'git config --includes --get core.x', 'git config --no-includes --list', 'git config --unset user.name', 'git config --unset-all user.name',
+    'git config --global --unset pull.rebase', 'git config --unset user.name oldpattern', 'git config --remove-section user', 'git config --global --remove-section color.diff',
+    'git config get core.hooksPath', 'git config list', 'git config list --show-origin', 'git config unset user.name', 'git config remove-section advice', 'git config get --all core.x',
     'git config get --regexp "alias.*"', 'git config get --show-names --regexp x',
     'git config core.hooksPath=x'] // (one word and no value: a read of a key that does not exist, git writes nothing)
   it.each(free)('free in a copy: %s', (c) => { expect(inCopies(c)).toEqual(ALLOWED) })
@@ -269,15 +273,35 @@ describe('G. where the words come from', () => {
     expect(inCopies('git config set --value=old core.hooksPath x')).toEqual(REFUSED)
     expect(inCopies('git config --global set --append alias.x !x')).toEqual(REFUSED)
   })
-  it('--rename-section: both names must be in an allowed family', () => {
-    expect(inCopies('git config --rename-section color.diff color.mydiff')).toEqual(ALLOWED)
-    expect(inCopies('git config --rename-section user user.old')).toEqual(ALLOWED)
-    expect(inCopies('git config --rename-section evil core')).toEqual(REFUSED)
-    expect(inCopies('git config --rename-section core evil')).toEqual(REFUSED)
-    expect(inCopies('git config --rename-section user core')).toEqual(REFUSED)
-    expect(inCopies('git config --rename-section user')).toEqual(REFUSED)
-    expect(inCopies('git config rename-section user user.old')).toEqual(ALLOWED)
-    expect(inCopies('git config rename-section alias core')).toEqual(REFUSED)
+  it('--rename-section is refused whatever the names (no daily use, and a moved section is a way around the key rule)', () => {
+    for (const c of ['git config --rename-section color.diff color.mydiff', 'git config --rename-section user user.old', 'git config --rename-section evil core', 'git config --rename-section core evil',
+      'git config --rename-section user core', 'git config --rename-section user', 'git config rename-section user user.old', 'git config rename-section alias core']) {
+      expect([c, inCopies(c)]).toEqual([c, REFUSED])
+    }
+  })
+  it('a removal is judged like a write: only an allowlisted key, only a section of the free families', () => {
+    // the shared config guards that a removal would lift (a read-only upstream, the repository format) and whole sections
+    for (const c of ['git config --unset remote.upstream.pushurl', 'git config --unset-all remote.upstream.pushurl', 'git config --remove-section remote.upstream', 'git config --remove-section core',
+      'git config --unset core.repositoryformatversion', 'git config --unset core.hooksPath', 'git config --unset-all alias.x', 'git config --unset branch.main.remote', 'git config unset remote.upstream.pushurl',
+      'git config remove-section core', 'git config remove-section remote.upstream', 'git config --unset user.name core.hooksPath x', 'git config --unset', 'git config --remove-section', 'git config --remove-section user core',
+      'git config --global --unset diff.external', 'git config --system --remove-section includeif.x', 'git config --unset $K', 'git config --remove-section $S', 'git config --unset REMOTE.UPSTREAM.PUSHURL']) {
+      expect([c, inCopies(c)]).toEqual([c, REFUSED])
+    }
+    // the twins: the same forms on a key or section the rule lets through, both case spellings
+    for (const c of ['git config --unset user.name', 'git config --unset USER.NAME', 'git config --unset-all color.ui', 'git config --remove-section USER', 'git config --remove-section color.diff', 'git config unset pull.rebase', 'git config remove-section advice']) {
+      expect([c, inCopies(c)]).toEqual([c, ALLOWED])
+    }
+  })
+  it('a subcommand and an action flag that name different actions are refused (the flag cannot turn the subcommand into a write)', () => {
+    for (const c of ['git config get --add core.hooksPath /tmp/h', 'git config get --replace-all core.hooksPath /tmp/h', 'git config list --add core.hooksPath /tmp/h', 'git config get --unset user.name',
+      'git config set --get user.name', 'git config unset --remove-section user', 'git config get --remove-section core', 'git config --get --unset user.name', 'git config --list --remove-section user',
+      'git config --unset --remove-section user']) {
+      expect([c, inCopies(c)]).toEqual([c, REFUSED])
+    }
+    // the same action spelled twice is not a collision
+    for (const c of ['git config get --get user.name', 'git config set --add user.name x', 'git config unset --unset user.name', 'git config list --list']) {
+      expect([c, inCopies(c)]).toEqual([c, ALLOWED])
+    }
   })
   it('a free twin: a git that is not config is not touched by this rule', () => {
     for (const c of ['git status', 'git commit -m "core.hooksPath x"', 'git log --oneline', 'git branch --set-upstream-to=origin/x', 'git tag -a v1 -m "git config core.hooksPath x"', 'git stash push -m "config core.worktree"']) {

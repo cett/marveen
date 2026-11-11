@@ -1487,7 +1487,7 @@ const GIT_CFG_KEYS = [
   [/^pull\.ff$/, /^(?:true|false|only)$/i],
   [/^core\.autocrlf$/, /^(?:true|false|input)$/i],
   [/^core\.safecrlf$/, /^(?:true|false|warn)$/i],
-  [/^push\.default$/, /^(?:simple|current|upstream|nothing|matching)$/i],
+  [/^push\.default$/, /^(?:simple|current|upstream|nothing)$/i],
   [/^init\.defaultbranch$/, /^[A-Za-z0-9._/-]+$/],
 ]
 // Options that change how a config is read or typed, none of which writes a file or runs a program. Matched EXACTLY (no abbreviation):
@@ -1495,7 +1495,10 @@ const GIT_CFG_KEYS = [
 const GIT_CFG_PLAIN = new Set(['--local', '--global', '--system', '--worktree', '--show-origin', '--show-scope', '--name-only', '--show-names', '--null', '-z',
   '--includes', '--no-includes', '--fixed-value', '--no-type', '--bool', '--int', '--bool-or-int', '--path', '--expiry-date', '--all', '--regexp'])
 const GIT_CFG_READ = new Set(['--get', '--get-all', '--get-regexp', '--get-urlmatch', '--get-color', '--get-colorbool', '-l', '--list'])
-const GIT_CFG_UNSET = new Set(['--unset', '--unset-all', '--remove-section']) // they only remove
+// A removal is judged like a write (a key from the allowlist, a section from the free families): deleting remote.<name>.pushurl lifts the
+// read-only guard of a remote, deleting core.repositoryformatversion or a whole [core] section breaks the shared repository.
+const GIT_CFG_UNSET = new Set(['--unset', '--unset-all'])
+const GIT_CFG_RMSEC = new Set(['--remove-section'])
 const GIT_CFG_WRITE = new Set(['--add', '--replace-all', '--rename-section', '--append'])
 const GIT_CFG_VALUED = /^--(?:type|default|value|url)=/ // the value is glued: text, never a path this rule reads
 const GIT_CFG_VALUED_SEP = new Set(['--type', '--default', '-t']) // the next word is the value of the option
@@ -1505,30 +1508,42 @@ const GIT_CFG_SUBS = new Set(['get', 'list', 'unset', 'remove-section', 'set', '
 function gitConfigAllowed(rest, ctx) {
   if (rest.length > GIT_TREE_MAX_ARGS) return false
   const readable = (w) => { const x = expandWord(w, ctx.vars, ctx.current); return /[$`]/.test(x) || x.includes(DYN) ? null : x }
-  const pos = []; let act = null; let end = false
+  const pos = []; let act = null; let end = false; let conflict = false
+  // two action flags that disagree (`--get --unset`) are refused, except that a write wins over the others and is judged by its key
+  const setAct = (v) => {
+    if (act === null || act === v) { act = v; return }
+    if (v === 'write' || v === 'rename') { act = v; return }
+    if (act !== 'write' && act !== 'rename') conflict = true
+  }
   for (let k = 0; k < rest.length; k++) {
     const a = rest[k]
     if (end || !a.startsWith('-') || a === '-') { pos.push(a); continue }
     if (a === '--') { end = true; continue }
     if (GIT_CFG_PLAIN.has(a) || GIT_CFG_VALUED.test(a)) continue
     if (GIT_CFG_VALUED_SEP.has(a)) { k++; continue }
-    if (GIT_CFG_READ.has(a)) { act ??= 'read'; continue }
-    if (GIT_CFG_UNSET.has(a)) { act ??= 'unset'; continue }
-    if (GIT_CFG_WRITE.has(a)) { act = a === '--rename-section' ? 'rename' : 'write'; continue }
+    if (GIT_CFG_READ.has(a)) { setAct('read'); continue }
+    if (GIT_CFG_UNSET.has(a)) { setAct('unset'); continue }
+    if (GIT_CFG_RMSEC.has(a)) { setAct('rmsec'); continue }
+    if (GIT_CFG_WRITE.has(a)) { setAct(a === '--rename-section' ? 'rename' : 'write'); continue }
     return false // -f / --file / --blob / -e / --edit (a file target is a path writer, an editor is a program), or a spelling not known
   }
+  if (conflict) return false
   const first = pos[0] !== undefined && GIT_CFG_SUBS.has(pos[0]) ? pos.shift() : null
   if (first === 'edit') return false
-  if (first === 'get' || first === 'list') act = 'read'
-  else if (first === 'unset' || first === 'remove-section') act = 'unset'
-  else if (first === 'set') act = 'write'
-  else if (first === 'rename-section') act = 'rename'
-  if (act === 'rename') {
-    const SECTION = /^(?:user|color|advice)(?:\.[a-z0-9.-]+)?$/
-    const [from, to] = [pos[0], pos[1]].map((p) => (p === undefined ? null : readable(p)?.toLowerCase() ?? null))
-    return pos.length === 2 && from !== null && to !== null && SECTION.test(from) && SECTION.test(to)
+  const subAct = { get: 'read', list: 'read', unset: 'unset', 'remove-section': 'rmsec', set: 'write', 'rename-section': 'rename' }[first]
+  // a subcommand and an action flag that name different actions (`get --add k v`) are refused, the flag is not allowed to turn the
+  // subcommand into something else
+  if (subAct !== undefined) { if (act !== null && act !== subAct) return false; act = subAct }
+  if (act === 'rename') return false // no daily use, and a section moved into another name is a way around the key rule
+  if (act === 'read') return true
+  if (act === 'rmsec') { // removing a whole section: only the free families
+    const sec = pos.length === 1 ? readable(pos[0])?.toLowerCase() : null
+    return typeof sec === 'string' && /^(?:user|color|advice)(?:\.[a-z0-9.-]+)?$/.test(sec)
   }
-  if (act === 'read' || act === 'unset') return true
+  if (act === 'unset') { // removing a key: the same allowlist as writing it (the value pattern after it is text)
+    const key = pos.length >= 1 && pos.length <= 2 ? readable(pos[0])?.toLowerCase() : null
+    return typeof key === 'string' && GIT_CFG_KEYS.some(([rx]) => rx.test(key))
+  }
   if (act === null && pos.length <= 1) return true // one key and no value: a read
   if (pos.length === 0 || pos.length > 3) return false
   const key = readable(pos[0])?.toLowerCase()
