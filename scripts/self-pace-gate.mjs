@@ -1019,7 +1019,15 @@ function gitSafe(args) {
     }
     if (a === '--') break
     if (/^--ou/.test(a)) return false
-    if (sub === 'grep' && (/^-O/.test(a) || /^--open/.test(a))) return false
+    // git grep -O[<pager>] / --open-files-in-pager[=<pager>] runs a program on the matching files. -O can sit inside a
+    // short-option cluster (-nOless, -inO) and git takes any unambiguous abbreviation of the long form (--op and up;
+    // --o alone is ambiguous with --only-matching and --or, and git refuses it). A cluster that merely contains an O
+    // in a pattern (-eOther) is refused too: the cost of failing closed here is one false deny.
+    if (sub === 'grep') {
+      if (/^-[^-]*O/.test(a)) return false
+      const gname = a.split('=')[0]
+      if (gname.length >= 4 && '--open-files-in-pager'.startsWith(gname)) return false
+    }
     // --ext-diff runs the configured external diff program, --textconv the configured textconv filter. git takes any
     // unambiguous abbreviation, so every prefix that can only be that option counts: --ext (>= 5 chars) and --textc
     // (>= 7 chars; --text itself is a different option, "treat as text"). --extended-regexp is not a prefix of

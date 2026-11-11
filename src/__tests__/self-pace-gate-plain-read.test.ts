@@ -52,6 +52,12 @@ describe('a strict ancestor (the scripts/ directory): a read-only git subcommand
   it.each(ALLOWED)('allows: %s', (command) => {
     expect({ command, r: bash(command) }).toEqual({ command, r: ALLOW })
   })
+  // The twins of the grep refusals: the same git grep without a pager option is a read, also with clusters and the options
+  // that merely start like the dangerous one (--only-matching, --or, -o, -E, -i, -n, -l, -c, -w).
+  it.each(['git grep -n needle scripts', 'git grep -inE needle scripts', 'git grep -o needle scripts', 'git grep --only-matching needle scripts', 'git grep -l needle scripts', 'git grep -c needle scripts',
+    'git grep -w -e needle --or -e other scripts', 'git grep --no-index needle scripts'])('allows a grep without a pager option: %s', (command) => {
+    expect({ command, r: bash(command) }).toEqual({ command, r: ALLOW })
+  })
   // The readers keep their old verdict (the change must not move them).
   it.each(['ls scripts', 'cat scripts/unrelated.sh', 'grep -rn needle scripts', 'ls scripts | head', 'cd scripts', 'cd scripts && ls'])('control, a reader: %s', (command) => {
     expect({ command, r: bash(command) }).toEqual({ command, r: ALLOW })
@@ -62,7 +68,7 @@ describe('a strict ancestor (the scripts/ directory): a read-only git subcommand
   const DENIED = [
     'git diff --output=/tmp/o scripts/', 'git diff --output /tmp/o scripts', 'git diff --outp=/tmp/o scripts', 'git diff --out=/tmp/o scripts',
     'git log --output=/tmp/o -- scripts/lib', 'git show --output=/tmp/o HEAD scripts', 'git diff-tree --output=/tmp/o HEAD scripts', 'git rev-list --output=/tmp/o HEAD scripts',
-    'git grep -O/tmp/evil needle scripts', 'git grep -Oless needle scripts', 'git grep --open-files-in-pager=/tmp/evil needle scripts', 'git grep --open needle scripts',
+    'git grep -O/tmp/evil needle scripts', 'git grep -Oless needle scripts', 'git grep -nOless needle scripts', 'git grep -inO/tmp/evil needle scripts', 'git grep -n -O needle scripts', 'git grep --op=less needle scripts', 'git grep --ope needle scripts', 'git grep --open-files-in-pag needle scripts', 'git grep --open-files-in-pager=/tmp/evil needle scripts', 'git grep --open needle scripts',
     "git -c core.pager='sh -c x' diff scripts/", 'git -ccore.pager=evil diff scripts', 'git -c alias.x=evil log scripts', 'git --config-env=core.pager=X diff scripts', 'git --exec-path=/tmp/e status scripts',
     'git log -- scripts/lib | xargs rm', 'git diff scripts | xargs rm', 'git ls-files scripts | xargs rm -f', 'git log --oneline -- scripts | sh', 'git status scripts | xargs cat',
     'GIT_EXTERNAL_DIFF=/tmp/evil git diff scripts/', 'GIT_PAGER=/tmp/evil git log -- scripts', 'PAGER=/tmp/evil git log scripts', 'LESS=x git diff scripts',
