@@ -690,7 +690,14 @@ function collectVars(command) {
   // (a value spelled $'..' or $".." is the text the shell builds from it, like the same word in a path: `D=$'doctor.sh'` is `D=doctor.sh`;
   // one that cannot be decoded stays unset)
   for (const m of String(command).matchAll(/(?:^|[\s;&|(])(?:export\s+|local\s+|declare\s+)?([A-Za-z_]\w*)=("([^"]*)"|'([^']*)'|\$'((?:[^'\\]|\\.)*)'|\$"([^"]*)"|[^\s;&|()]*)/g)) {
-    if (m[5] !== undefined) { const a = readAnsiC(`${m[5]}'`, 0); if (a.ok) vars[m[1]] = a.text; continue }
+    // a value the parser cannot read is UNREADABLE (the DYN marker: a word that uses it is judged by its literal head, see wordKind), not
+    // unset: bash cuts a $'..' value at a NUL and joins a quoted piece with the characters that follow it (`D=$'doc'tor.sh` is
+    // `doctor.sh`), so neither a value this decoder refuses nor a quoted piece that the word goes on after is the text the regex took
+    const next = String(command)[m.index + m[0].length]
+    const goesOn = next !== undefined && !/[\s;&|()]/.test(next)
+    const quoted = m[3] !== undefined || m[4] !== undefined || m[5] !== undefined || m[6] !== undefined
+    if (quoted && goesOn) { vars[m[1]] = DYN; continue }
+    if (m[5] !== undefined) { const a = readAnsiC(`${m[5]}'`, 0); vars[m[1]] = a.ok ? a.text : DYN; continue }
     vars[m[1]] = m[3] ?? m[4] ?? m[6] ?? m[2]
   }
   return vars
@@ -985,6 +992,8 @@ function wordKind(word, ctx) {
       for (const cwd of ctx.cwds) {
         const w = expandWord(part, ctx.vars, cwd)
         if (!w) continue
+        // a variable whose value cannot be read (see collectVars) put the marker into the word: judged by its literal head, like any such word
+        if (w.includes(DYN)) { const dk = dynamicHeadKind(w, ctx); if (dk) results.push(dk); continue }
         if (/[*?[]/.test(w)) {
           const abs = isAbsolute(w) ? w : join(cwd, w)
           const firstGlob = abs.search(/[*?[]/)

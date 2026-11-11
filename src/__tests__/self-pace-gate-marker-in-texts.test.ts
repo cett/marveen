@@ -78,10 +78,21 @@ describe('C. a variable value spelled $\'..\' or $".." is the text the shell bui
     "export D=$'doctor.sh'; cp /tmp/x @R/scripts/$D", "D=$'doctor.sh'; cp /tmp/x @R/scripts/${D}",
   ]
   it.each(spelled)('refused like the single-quoted spelling: %s', (c) => { expect(where(c)).toEqual(REFUSED) })
-  it('the single-quoted spelling is the twin (refused), an unrelated name is free, an undecodable value stays unset (as before)', () => {
+  it('the single-quoted spelling is the twin (refused), an unrelated name is free', () => {
     expect(where("D='doctor.sh'; cp /tmp/x @R/scripts/$D")).toEqual(REFUSED)
     expect(where("D=$'notes.txt'; cp /tmp/x @R/scripts/$D")).toEqual(PASSES)
-    expect(where("D=$'doctor.sh\\x00'; cp /tmp/x @R/scripts/$D")).toEqual(PASSES)
+    expect(where("D='doc'; cp /tmp/x @R/scripts/$D")).toEqual(PASSES)
+  })
+  it('a value the parser cannot read is UNREADABLE, not unset: bash cuts $\'..\' at a NUL and joins a quoted piece with what follows it', () => {
+    for (const c of [
+      "D=$'doctor.sh\\x00'; cp /tmp/x @R/scripts/$D", "D=$'doctor.sh\\x00junk'; cp /tmp/x @R/scripts/$D", "D=$'doctor.sh\\q'; cp /tmp/x @R/scripts/$D",
+      "D=$'doc'tor.sh; cp /tmp/x @R/scripts/$D", "D='doc'tor.sh; cp /tmp/x @R/scripts/$D", 'D="doc"tor.sh; cp /tmp/x @R/scripts/$D', 'D=$"doc"tor.sh; cp /tmp/x @R/scripts/$D',
+    ]) expect([c, where(c)]).toEqual([c, REFUSED])
+    // the twins: the same shapes naming an unrelated file are judged by the head only (the directory holds protected files: refused);
+    // a variable with no head at all keeps the reading it had (the head-less limit), and a plain assignment followed by a separator is read
+    expect(where("D=$'doc'tor.sh; echo x > $D")).toEqual(PASSES)
+    expect(where("D='doc' ; cp /tmp/x @R/scripts/$D")).toEqual(PASSES)
+    expect(where("D=$'doc'; cp /tmp/x @R/scripts/$D")).toEqual(PASSES)
   })
 })
 
