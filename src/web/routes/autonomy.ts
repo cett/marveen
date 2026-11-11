@@ -8,6 +8,7 @@ import {
 import { APPROVAL_HUMAN_ONLY_ENFORCE } from '../../config.js'
 import { MAX_CATEGORY_TIMEOUT_MINUTES } from '../approval-timeout.js'
 import { humanSessionOf, isHumanOnlyFloorKey } from '../approval-human-only.js'
+import { auditAutonomyLevelChange } from '../autonomy-audit.js'
 import type { RouteContext } from './types.js'
 
 // Wire shape kept identical to the retired JSON side-car so the dashboard
@@ -110,9 +111,22 @@ export async function tryHandleAutonomy(ctx: RouteContext): Promise<boolean> {
           json(res, { error: 'invalid_value', field: 'level', hint: `Category "${key}" max level is ${cat.max_level}` }, 400)
           return true
         }
+
+        // RAISING a level (more autonomy for the agents) needs a person logged in to the dashboard: an admin token, which
+        // the main agent and any agent holding an admin-capable token carry, must not be able to widen its own freedom
+        // (skill_patch 2 -> 3 would be autonomous skill patching without approval). Lowering and setting the same level
+        // stay on the token: tightening is cheap and has to work from an agent. No first-run exception.
+        const raising = typeof cat.level !== 'number' || (level as number) > cat.level
+        if (raising && !await humanSessionOf(req)) {
+          json(res, { error: 'forbidden', code: 'human_session_required', hint: 'Raising an autonomy level needs a person logged in to the dashboard' }, 403)
+          return true
+        }
       }
 
       if (hasLevel) await setAutonomyCategoryLevel(key, level as number, 'dashboard')
+      if (hasLevel && level !== cat.level) {
+        await auditAutonomyLevelChange(ctx.auth?.user ?? ctx.auth?.tokenName ?? 'system', key, cat.level, level)
+      }
       if (hasHumanOnly) {
         await setAutonomyCategoryHumanOnly(key, human_only as boolean, 'dashboard')
         try {

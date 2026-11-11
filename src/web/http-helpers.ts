@@ -178,6 +178,23 @@ export function parseObjectBody<T extends object>(res: http.ServerResponse, raw:
   return parsed as T
 }
 
+/**
+ * Checks the TYPE of body fields that are present: a field that is there (not undefined) and not a string answers 400
+ * `invalid_value` with the field name and the hint "<field> must be a string", and the function returns false so the
+ * caller just returns. A missing field (undefined) is left alone: the route's own required rules decide about it.
+ * Call it after the route's 403/404 decisions and before anything is written, so a refusal changes nothing.
+ */
+export function requireStringFields(res: http.ServerResponse, body: object, fields: readonly string[]): boolean {
+  for (const field of fields) {
+    const value = (body as Record<string, unknown>)[field]
+    if (value !== undefined && typeof value !== 'string') {
+      json(res, { error: 'invalid_value', field, hint: `${field} must be a string` }, 400)
+      return false
+    }
+  }
+  return true
+}
+
 export function json(res: http.ServerResponse, data: unknown, status = 200): void {
   if (
     data !== null &&

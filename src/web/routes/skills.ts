@@ -8,7 +8,7 @@ import { AGENTS_BASE_DIR, listAgentNames, readFileOr, agentDir } from '../agent-
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../../config.js'
 import { generateSkillMd } from '../agent-scaffold.js'
 import { parseMultipart } from '../multipart.js'
-import { readBody, json, parseObjectBody, RequestBodyTooLargeError } from '../http-helpers.js'
+import { readBody, json, parseObjectBody, requireStringFields, RequestBodyTooLargeError } from '../http-helpers.js'
 import { recordFleetSkillWriteDenied } from '../token-shadow.js'
 import { sanitizeSkillName, shellEscape } from '../sanitize.js'
 import { regenSingleSkillFile, removeGeneratedSkillFile, removeGeneratedCompanionFile } from '../skill-regen.js'
@@ -404,6 +404,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     const body = await readBody(req)
     const createBody = parseObjectBody<{ name: string; description: string }>(res, body)
     if (createBody === null) return true
+    if (!requireStringFields(res, createBody, ['name', 'description'])) return true
     const { name: rawSkillName, description } = createBody
     const skillName = sanitizeSkillName(rawSkillName || '')
     if (!skillName) { json(res, { error: 'required', field: 'name', hint: 'Skill name is required' }, 400); return true }
@@ -715,6 +716,8 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     if (typeof name !== 'string' || !name.trim()) { json(res, { error: 'required', field: 'name', hint: 'name is required' }, 400); return true }
     if (typeof content !== 'string' || !content.trim()) { json(res, { error: 'required', field: 'content', hint: 'content is required' }, 400); return true }
     if (is_global && !isAdmin) { json(res, { error: 'forbidden', hint: 'Only admin can set is_global' }, 403); return true }
+    // description: null has always meant "none" on this route (it is stored as ''), so it stays; any other non-string is a 400.
+    if (!requireStringFields(res, { description: description ?? undefined }, ['description'])) return true
     const tenantId = callerTenantId ?? 'fleet'
     const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 64)
     const id = `${tenantId}-${slug}`
@@ -769,6 +772,9 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     let parsed = parseObjectBody<{ name?: string; description?: string; content?: string; is_global?: boolean }>(res, body)
     if (parsed === null) return true
     if (parsed.is_global !== undefined && !isAdmin) { json(res, { error: 'forbidden', hint: 'Only admin can set is_global' }, 403); return true }
+    // After the 403/404 decisions above, before anything is written: a wrong type changes nothing (null content or
+    // description would hit a NOT NULL column and answer 500).
+    if (!requireStringFields(res, parsed, ['name', 'description', 'content'])) return true
     if (createSpec) {
       if (typeof parsed.content !== 'string' || !parsed.content.trim()) { json(res, { error: 'required', field: 'content', hint: 'content is required to create a skill' }, 400); return true }
       const result = await createSkill({

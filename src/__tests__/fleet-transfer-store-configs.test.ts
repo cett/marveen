@@ -289,7 +289,7 @@ describe('exportFleet/importFleet -- autonomy (DB-backed)', () => {
       autonomy: [{ key: 'deploy_retry', label: 'Deploy retry (source)', level: 3, locked: 0, max_level: 3, timeout_minutes: 15, updated_at: 1, updated_by: 'migrated_from_json' }],
     }))
     const { importFleet } = await import('../web/fleet-transfer.js')
-    const applied = await importFleet(fleetJson, { apply: true }) as any
+    const applied = await importFleet(fleetJson, { apply: true, humanSession: true }) as any
     expect(applied.ok).toBe(true)
 
     expect(await getAutonomyCategory('deploy_retry')).toEqual(expect.objectContaining({ label: 'Deploy retry (source)', level: 3, timeout_minutes: 15 }))
