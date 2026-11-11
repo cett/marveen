@@ -65,3 +65,26 @@ describe('F3. the name of git split by quotes inside a script text is still git'
     expect(guarded('cat run.sh | sh; echo "g\'it"')).toEqual(REFUSED('cat run.sh | sh; echo "g\'it"'))
   })
 })
+
+describe('F2. a script text that is a variable, in a command that names git', () => {
+  it.each([
+    `X='git checkout other'; eval "$X"`, `X='git pull'; sh -c "$X"`, `X='git pull'; bash -c "$X"`, `X='git pull'; echo "$X" | sh`, `X='git pull'; bash <<< "$X"`,
+    `X='git checkout other'; eval $X`, `CMD=git; eval "$CMD checkout other"`, `X='git checkout other'; sh -c "echo hi; $X"`, `X='git pull'; sh -c "\${X}"`,
+    `X='git pull'; nice sh -c "$X"`, `X='git checkout other'; xargs sh -c "$X"`, `X=g'i't; eval "$X checkout other"`,
+  ])('the variable may hold the git: refused in the install, free in the copy: %s', (c) => {
+    expect(guarded(c)).toEqual(REFUSED(c))
+  })
+  it.each([`X='echo hi'; eval "$X"`, 'eval "$X"', `sh -c "echo $HOME"`, `X=ls; sh -c "$X"`, `echo "$X" | sh`])('with no git in the command it is not this rule\'s business: %s', (c) => {
+    expect(guarded(c)).toEqual(FREE(c))
+  })
+  it.each([`git status; sh -c 'echo $HOME'`, `git log -1; sh -c "ls $DIR"`, `git diff; eval "echo $X"`])('a text with a variable that is not the command word is judged by its words: %s', (c) => {
+    expect(guarded(c)).toEqual(FREE(c))
+  })
+  it('texts with a variable are judged only when the command names git (they do not use up the bound of 16 texts otherwise)', () => {
+    const many = Array.from({ length: 20 }, () => `sh -c 'echo $HOME'`).join('; ')
+    expect(guarded(many)).toEqual(FREE(many))
+  })
+  it('KNOWN LIMIT (worst case): a text that IS a variable next to any git word is judged as a tree-rewriting git', () => {
+    for (const c of ['git status; eval "$X"', 'git log; sh -c "$CMD"']) expect(guarded(c)).toEqual(REFUSED(c))
+  })
+})

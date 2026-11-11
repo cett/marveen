@@ -1515,7 +1515,9 @@ export function bashProtectedDecision(command, opts = {}) {
       if (gitRewritesInstallTree(['git', 'checkout'], 0, ctx, { exact: !unionMode, compound, ...gmode, envUnknown: envUnknownAt(si) })) return { deny: true, reason: 'gate-scripts' }
     }
     for (const t of st.texts) {
-      if (!namesGit(t)) continue
+      // (a text with a variable in it - `eval "$X"` after `X='git pull'` - may hold the git: it is judged too when the command names
+      // git anywhere; its command word built by an expansion is then judged as the worst case by the rule above)
+      if (!namesGit(t) && !(t.includes('$') && namesGit(seed?.raw ?? command))) continue
       if (++budget.n > INNER_BUDGET || (seed?.depth ?? 0) >= INNER_DEPTH_MAX) return { deny: true, reason: 'gate-scripts' }
       const inner = { current: ctx.current, cwds: [...ctx.cwds], unknownCwd: ctx.unknownCwd, union: unionMode, compound, raw: seed?.raw ?? command, joined, envUnknown: envUnknownAt(si), depth: (seed?.depth ?? 0) + 1 }
       const d = bashProtectedDecision(t, { ...opts, prot, cwd: ctx.current, budget, seed: inner }); if (d.deny) return d
