@@ -54,6 +54,14 @@ vi.mock('../db.js', () => ({
   writeAgentAuditLog: (entry: Record<string, any>) => { auditWrites.push(entry) },
 }))
 
+// Raising a level needs a person logged in to the dashboard. The default here is "nobody", what a request without a
+// session cookie gets; the tests that raise a level set `loggedInOwner`.
+let loggedInOwner: { user: string } | null = null
+vi.mock('../web/approval-human-only.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../web/approval-human-only.js')>()),
+  humanSessionOf: () => Promise.resolve(loggedInOwner),
+}))
+
 import { tryHandleAutonomy } from '../web/routes/autonomy.js'
 
 function makeCtx(method: string, path: string, body?: object, role?: RouteContext['role']): { ctx: RouteContext; out: { status: number; body: any } } {
@@ -73,6 +81,7 @@ function makeCtx(method: string, path: string, body?: object, role?: RouteContex
 
 describe('tryHandleAutonomy', () => {
   beforeEach(() => {
+    loggedInOwner = null
     dbUnavailable = false
     auditWrites.length = 0
     seedRows([
@@ -130,6 +139,7 @@ describe('tryHandleAutonomy', () => {
   })
 
   it('POST returns ok for valid update', async () => {
+    loggedInOwner = { user: 'owner' }
     const { ctx, out } = makeCtx('POST', '/api/autonomy', { key: 'deploy', level: 2 })
     await tryHandleAutonomy(ctx)
     expect(out.status).toBe(200)
@@ -158,6 +168,7 @@ describe('tryHandleAutonomy', () => {
     })
 
     it('level and timeout_minutes can be changed in one call', async () => {
+      loggedInOwner = { user: 'owner' }
       const { ctx, out } = makeCtx('POST', '/api/autonomy', { key: 'deploy', level: 2, timeout_minutes: 30 }, 'admin')
       await tryHandleAutonomy(ctx)
       expect(out.status).toBe(200)
