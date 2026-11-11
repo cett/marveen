@@ -189,6 +189,43 @@ describe('the type check comes after the 403/404 decisions (PUT /api/skills/sql/
   })
 })
 
+// is_global was read by truthiness: the string "false" or the number 1 made a skill global. Only a boolean is a flag.
+describe('is_global must be a boolean (PUT /api/skills/sql/:id and POST /api/skills/sql)', () => {
+  const NOT_BOOLEAN: Array<[string, unknown]> = [['the string "false"', 'false'], ['the string "true"', 'true'], ['the number 1', 1], ['the number 0', 0], ['an array', []], ['an object', {}]]
+  const globalFlag = () => (db.prepare('SELECT is_global FROM skills WHERE id = ?').get(ID) as { is_global: number }).is_global
+
+  for (const [label, value] of NOT_BOOLEAN) {
+    it(`PUT with is_global as ${label}: 400, the flag and the row are unchanged, nothing is regenerated`, async () => {
+      db.prepare("UPDATE skills SET is_global = 0 WHERE id = ?").run(ID)
+      const before = JSON.stringify(await getSkill(ID))
+      const out = await call(tryHandleSkills, 'PUT', `/api/skills/sql/${enc(ID)}`, { is_global: value })
+      expect(out.status).toBe(400)
+      expect(out.body).toMatchObject({ error: 'invalid_value', field: 'is_global', hint: 'is_global must be a boolean' })
+      expect(JSON.stringify(await getSkill(ID))).toBe(before)
+      expect(globalFlag()).toBe(0)
+      expect(regenSingleSkillFile).not.toHaveBeenCalled()
+    })
+
+    it(`POST (tenant create) with is_global as ${label}: 400 and no row`, async () => {
+      const before = rowCount()
+      const out = await call(tryHandleSkills, 'POST', '/api/skills/sql', { name: 'flag skill', content: PLAIN, is_global: value })
+      expect(out.status).toBe(400)
+      expect(out.body).toMatchObject({ error: 'invalid_value', field: 'is_global' })
+      expect(rowCount()).toBe(before)
+    })
+  }
+
+  it('a real boolean still works on both routes, null still means not global on create, and a non-admin gets the 403 before the type check', async () => {
+    expect([200, 202]).toContain((await call(tryHandleSkills, 'PUT', `/api/skills/sql/${enc(ID)}`, { is_global: false })).status)
+    expect(rowCount()).toBe(1)
+    expect((await call(tryHandleSkills, 'POST', '/api/skills/sql', { name: 'flag ok', content: PLAIN, is_global: false })).status).toBeLessThan(300)
+    expect((await call(tryHandleSkills, 'POST', '/api/skills/sql', { name: 'flag null', content: PLAIN, is_global: null })).status).toBeLessThan(300)
+    const viewer = { auth: { kind: 'session', user: 'viewer' }, role: 'viewer', tenantId: 'fleet' } as Partial<RouteContext>
+    const out = await call(tryHandleSkills, 'PUT', `/api/skills/sql/${enc(ID)}`, { is_global: 'false' }, viewer)
+    expect(out.status).toBe(403)
+  })
+})
+
 describe('the helper decides on the type only', () => {
   it('a missing field is left to the route\'s own required rule', async () => {
     const out = await call(tryHandleSkills, 'POST', '/api/skills', { description: 'does a thing' })

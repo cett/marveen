@@ -8,7 +8,7 @@ import { AGENTS_BASE_DIR, listAgentNames, readFileOr, agentDir } from '../agent-
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../../config.js'
 import { generateSkillMd } from '../agent-scaffold.js'
 import { parseMultipart } from '../multipart.js'
-import { readBody, json, parseObjectBody, requireStringFields, RequestBodyTooLargeError } from '../http-helpers.js'
+import { readBody, json, parseObjectBody, requireStringFields, requireBooleanFields, RequestBodyTooLargeError } from '../http-helpers.js'
 import { recordFleetSkillWriteDenied } from '../token-shadow.js'
 import { sanitizeSkillName, shellEscape } from '../sanitize.js'
 import { regenSingleSkillFile, removeGeneratedSkillFile, removeGeneratedCompanionFile } from '../skill-regen.js'
@@ -718,6 +718,8 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     if (is_global && !isAdmin) { json(res, { error: 'forbidden', hint: 'Only admin can set is_global' }, 403); return true }
     // description: null has always meant "none" on this route (it is stored as ''), so it stays; any other non-string is a 400.
     if (!requireStringFields(res, { description: description ?? undefined }, ['description'])) return true
+    // is_global: null has always meant "not global" here (`is_global ?? false`), so it stays; any other non-boolean is a 400.
+    if (!requireBooleanFields(res, { is_global: is_global ?? undefined }, ['is_global'])) return true
     const tenantId = callerTenantId ?? 'fleet'
     const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 64)
     const id = `${tenantId}-${slug}`
@@ -775,6 +777,8 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     // After the 403/404 decisions above, before anything is written: a wrong type changes nothing (null content or
     // description would hit a NOT NULL column and answer 500).
     if (!requireStringFields(res, parsed, ['name', 'description', 'content'])) return true
+    // is_global was read by truthiness: the string "false" or the number 1 made a skill global. Only a boolean is a flag.
+    if (!requireBooleanFields(res, parsed, ['is_global'])) return true
     if (createSpec) {
       if (typeof parsed.content !== 'string' || !parsed.content.trim()) { json(res, { error: 'required', field: 'content', hint: 'content is required to create a skill' }, 400); return true }
       const result = await createSkill({
