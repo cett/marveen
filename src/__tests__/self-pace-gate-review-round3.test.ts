@@ -75,6 +75,11 @@ describe('4. a script text this parser cannot read is judged as the worst case, 
   ])('unknown source next to a git: refused in the install and free in the copy: %s', (c) => {
     expect(guarded(c)).toEqual(REFUSED(c))
   })
+  it.each(['sh -c "$(printf \'g%s\' it) checkout other"', 'sh -c "$(cat run.sh)"', 'eval "$(printf \'g%s\' it) checkout other"', 'bash <<< "$(printf \'g%s\' it) checkout other"',
+    'echo "$(printf \'g%s\' it) checkout other" | sh'])(
+    'a command substitution builds the command in the script text: refused in the install whatever the command names (the copy: compound rule): %s', (c) => {
+      expect(guarded(c)).toEqual({ c, agent: true, root: true, copy: true })
+    })
   it.each(["sh -c \"$(printf 'git checkout other')\"", 'sh -c "$(cat run.sh)"; git status', 'sh -c "$(echo git) checkout other"'])(
     'a command substitution as the script: refused in the install; also in the copy, where any command with a $( ) and a rewriting git is refused (compound rule, unchanged): %s', (c) => {
       expect(guarded(c)).toEqual({ c, agent: true, root: true, copy: true })
@@ -83,7 +88,7 @@ describe('4. a script text this parser cannot read is judged as the worst case, 
     'a backtick or ${} substitution as the script (no parenthesis, so no compound rule): refused in the install, free in the copy: %s', (c) => {
       expect(guarded(c)).toEqual(REFUSED(c))
     })
-  it.each(['cat run.sh | sh', 'sh < run.sh', 'cat run.sh | bash -s', 'sh -c "$(cat run.sh)"', 'echo hi | sh', "printf 'hello\\n' | sh", 'sh run.sh', 'bash -c "echo $HOME"'])(
+  it.each(['cat run.sh | sh', 'sh < run.sh', 'cat run.sh | bash -s', 'echo hi | sh', "printf 'hello\\n' | sh", 'sh run.sh', 'bash -c "echo $HOME"'])(
     'the same forms with no git in the command are not this rule\'s business (KNOWN LIMIT: the content of a pipe or a file is not read): %s', (c) => {
       expect(guarded(c)).toEqual({ c, agent: false, root: false, copy: false })
     })
@@ -93,13 +98,41 @@ describe('4. a script text this parser cannot read is judged as the worst case, 
     expect(denied('cat <<EOF | sh\ngit status\nEOF', agentCwd)).toBe(false)
     expect(denied('cat <<EOF | sh\necho hi\nEOF', agentCwd)).toBe(false)
   })
-  it('more shells: ash, fish, csh, tcsh and busybox sh are followed like sh', () => {
-    for (const sh of ['ash', 'fish', 'csh', 'tcsh', 'busybox sh', 'busybox ash', 'busybox bash']) {
+  it('a stdin device as the script operand reads stdin like a bare shell', () => {
+    for (const c of ["sh /dev/stdin <<< 'git checkout other'", "bash /dev/fd/0 <<< $'git checkout other'", 'git show HEAD:run.sh | sh /dev/stdin']) expect(guarded(c)).toEqual(REFUSED(c))
+    expect(guarded('sh /dev/stdin <<< "echo hi"')).toEqual({ c: 'sh /dev/stdin <<< "echo hi"', agent: false, root: false, copy: false })
+  })
+  it('more shells: ash, fish, csh, tcsh, mksh, yash, rbash, posh, hush and busybox sh are followed like sh', () => {
+    for (const sh of ['ash', 'fish', 'csh', 'tcsh', 'mksh', 'yash', 'rbash', 'posh', 'hush', 'oksh', 'pdksh', 'ksh93', 'busybox sh', 'busybox ash', 'busybox bash']) {
       expect(guarded(`${sh} -c 'git checkout other'`)).toEqual(REFUSED(`${sh} -c 'git checkout other'`))
     }
   })
   it('a readable text with a variable or a literal escape that is harmless is still judged by its words', () => {
     expect(denied("sh -c 'echo $HOME; git status'", agentCwd)).toBe(false) // a variable in a text with a read-only git
     expect(denied("sh -c 'git checkout other'", wt)).toBe(false) // the plain twin
+  })
+})
+
+describe('5. a git behind xargs without a subcommand, and a git behind a launcher the parser does not list', () => {
+  // xargs appends its input lines to the command: the subcommand can come from stdin
+  it.each([
+    'echo "checkout other" | xargs git', 'printf "reset --hard" | xargs git', 'xargs git < args.txt', 'cat args.txt | xargs -n2 git', 'echo "pull" | xargs git -C .', 'echo x | nice xargs git',
+  ])('a git with no subcommand behind xargs is judged as git checkout: refused in the install, free in the copy: %s', (c) => {
+    expect(guarded(c)).toEqual(REFUSED(c))
+  })
+  it.each(['echo "status" | xargs git status', 'xargs git log < revs.txt'])('with a subcommand written, or with no git to run, the usual rules apply: %s', (c) => {
+    expect(guarded(c)).toEqual({ c, agent: false, root: false, copy: false })
+  })
+  it('xargs git with a rewriting subcommand written stays as before', () => {
+    expect(guarded('echo x | xargs git checkout')).toEqual(REFUSED('echo x | xargs git checkout'))
+  })
+  // a launcher word the parser does not list: a KNOWN LIMIT, listed (the launcher list is a denylist; a generic "any git word" scan
+  // was tried and refused plain commands such as `echo $(git checkout x)` in the copy, so the variants are for a decision)
+  it.each(['ionice -c3 git checkout other', 'caffeinate git pull', 'arch -arm64 git checkout other', 'watch git pull', 'taskpolicy -b git merge feature'])(
+    'KNOWN LIMIT: a rewriting git behind a launcher the parser does not list is not followed: %s', (c) => {
+      expect(guarded(c)).toEqual({ c, agent: false, root: false, copy: false })
+    })
+  it.each(['busybox git checkout other', 'nice -n 5 git checkout other'])('the launchers that are listed (busybox, nice, ...) are followed: %s', (c) => {
+    expect(guarded(c)).toEqual(REFUSED(c))
   })
 })

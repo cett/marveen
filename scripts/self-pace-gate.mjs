@@ -1072,7 +1072,7 @@ const GIT_CANDIDATES_MAX = 8
 // A shell that is handed its script as text (sh -c STRING, eval STRING, a script on stdin) runs a command the word rules
 // cannot see inside. The text is judged as a command of its own, from the directory (and the cd history) the outer
 // command had at that point, bounded in depth and in the number of texts per command (the cost stays linear).
-const SHELL_RX = /^(?:bash|sh|zsh|dash|ksh|ash|fish|csh|tcsh)$/
+const SHELL_RX = /^(?:bash|sh|zsh|dash|ksh|ksh93|mksh|pdksh|oksh|ash|yash|posh|hush|rbash|fish|csh|tcsh)$/
 const INNER_DEPTH_MAX = 4
 const INNER_BUDGET = 16
 // The script texts one segment hands to a shell: { texts, unreadable }. `prevSeg`: the segment before a pipe (or null).
@@ -1088,10 +1088,11 @@ function shellScriptTexts(words, cmdIdx, seg, prevSeg) {
   const base = (w) => w.split('/').pop()
   const OBFUSCATED = /\$['"]|\\x[0-9A-Fa-f]|\\u[0-9A-Fa-f]|\\0[0-7]|\\[1-7][0-7]{2}/
   // (a plain $NAME in a text is expanded by the inner shell and judged there, like any word; only a substitution builds a command)
-  const DYNAMIC = /\$\(|`|\$\{/
+  const BUILT = /\$\(|`/ // a command substitution inside the text builds (part of) the command: `$(printf 'g%s' it) checkout x`
+  const DYNAMIC = /\$\{/
   if (base(words[cmdIdx]) === 'eval') {
     const t = words.slice(cmdIdx + 1).join(' ')
-    return { texts: [t], unreadable: OBFUSCATED.test(seg) ? 'always' : DYNAMIC.test(t) ? 'if-git' : null }
+    return { texts: [t], unreadable: OBFUSCATED.test(seg) || BUILT.test(t) ? 'always' : DYNAMIC.test(t) ? 'if-git' : null }
   }
   // `source /dev/stdin` and `. /dev/stdin` read their script from stdin exactly like a bare shell
   const stdinSource = /^(?:source|\.)$/.test(base(words[cmdIdx])) && words.slice(cmdIdx + 1).some((a) => /^\/(?:dev\/stdin|dev\/fd\/0|proc\/self\/fd\/0)$/.test(a))
@@ -1104,12 +1105,13 @@ function shellScriptTexts(words, cmdIdx, seg, prevSeg) {
     sh = l === -1 || l > cmdIdx ? -1 : words.findIndex((w, i) => i > l && SHELL_RX.test(base(w)))
   }
   if (sh === -1) return none
-  const args = stdinSource ? [] : words.slice(sh + 1)
+  const STDIN_DEV = /^\/(?:dev\/stdin|dev\/fd\/0|proc\/self\/fd\/0)$/
+  const args = stdinSource ? [] : words.slice(sh + 1).filter((a) => !STDIN_DEV.test(a)) // `sh /dev/stdin` is a bare shell reading stdin
   const k = args.findIndex((a) => /^-[A-Za-z]*c[A-Za-z]*$/.test(a))
   if (k !== -1) {
     const s = args.slice(k + 1).find((a) => !a.startsWith('-'))
     if (s === undefined) return none
-    return { texts: [s], unreadable: OBFUSCATED.test(seg) ? 'always' : DYNAMIC.test(s) ? 'if-git' : null }
+    return { texts: [s], unreadable: OBFUSCATED.test(seg) || BUILT.test(s) ? 'always' : DYNAMIC.test(s) ? 'if-git' : null }
   }
   if (args.some((a) => !a.startsWith('-'))) return none // a script FILE operand: not text
   // no -c and no file: the shell reads its script from stdin. A here-string and an echo / printf before the pipe are text;
@@ -1117,7 +1119,7 @@ function shellScriptTexts(words, cmdIdx, seg, prevSeg) {
   const texts = []
   let unreadable = null
   const hs = /<<<\s*(?:'([^']*)'|"([^"]*)"|([^\s;|&<>]+))/.exec(seg)
-  if (hs) { texts.push(hs[1] ?? hs[2] ?? hs[3]); if (OBFUSCATED.test(seg)) unreadable = 'always'; else if (DYNAMIC.test(texts[0])) unreadable = 'if-git' }
+  if (hs) { texts.push(hs[1] ?? hs[2] ?? hs[3]); if (OBFUSCATED.test(seg) || BUILT.test(texts[0])) unreadable = 'always'; else if (DYNAMIC.test(texts[0])) unreadable = 'if-git' }
   else if (/<<-?\s*['"\\]?[A-Za-z_]/.test(seg) || (prevSeg !== null && /<<-?\s*['"\\]?[A-Za-z_]/.test(prevSeg))) { /* a heredoc: the body lines are segments */ }
   else if (prevSeg !== null) {
     const pw = tokenizeShell(prevSeg).words
@@ -1126,7 +1128,7 @@ function shellScriptTexts(words, cmdIdx, seg, prevSeg) {
       const t = pw.slice(pi + 1).filter((a) => !/^-[neE]+$/.test(a)).join(' ')
       texts.push(t)
       // a printf format directive builds the text at run time (`printf 'g%s' it`), and so does an escape
-      if (OBFUSCATED.test(prevSeg) || (base(pw[pi]) === 'printf' && /%/.test(t))) unreadable = 'always'
+      if (OBFUSCATED.test(prevSeg) || BUILT.test(t) || (base(pw[pi]) === 'printf' && /%/.test(t))) unreadable = 'always'
       else if (DYNAMIC.test(t)) unreadable = 'if-git'
     } else unreadable = 'if-git' // cat, curl, git show ... | sh: the script is whatever the feeder prints
   } else if (/(?:^|[\s;&|])\d*<(?![<(&])/.test(seg) || stdinSource) unreadable = 'if-git' // sh < run.sh, source /dev/stdin
@@ -1386,6 +1388,7 @@ export function bashProtectedDecision(command, opts = {}) {
     let gitIdxs = []
     const launcherAt = gci === -1 ? -1 : words.findIndex((w) => GIT_LAUNCHERS.has(w.split('/').pop()))
     if (gci !== -1 && (launcherAt === -1 || launcherAt >= gci) && words[gci].split('/').pop() === 'git') gitIdxs = [gci]
+    if (gci !== -1 && (launcherAt === -1 || launcherAt >= gci) && words[gci].split('/').pop() === 'git') gitIdxs = [gci]
     else if (gci !== -1) {
       for (let i = launcherAt + 1; launcherAt !== -1 && i < words.length && gitIdxs.length <= GIT_CANDIDATES_MAX; i++) if (words[i].split('/').pop() === 'git') gitIdxs.push(i)
     }
@@ -1395,7 +1398,11 @@ export function bashProtectedDecision(command, opts = {}) {
       const g = gitIdxs[n]
       // a git word followed by another git word is an option value of the launcher (`-u git`, `-I git`): the next one is judged
       if (gitIdxs[n + 1] === g + 1) continue
-      if (gitRewritesInstallTree(words, g, ctx, { exact: !unionMode, compound, raw: seed?.raw ?? command })) return { deny: true, reason: 'gate-scripts' }
+      const sub = scanGitGlobals(words.slice(g + 1)).sub
+      // behind xargs the subcommand may come from the input lines (`echo 'checkout x' | xargs git`): a git with no subcommand is
+      // judged as `git checkout`
+      const viaXargs = sub === null && words.slice(0, g).some((w) => w.split('/').pop() === 'xargs')
+      if (gitRewritesInstallTree(viaXargs ? [...words, 'checkout'] : words, g, ctx, { exact: !unionMode, compound, raw: seed?.raw ?? command })) return { deny: true, reason: 'gate-scripts' }
     }
     // a script handed to a shell as text (sh -c STRING, eval STRING, stdin): a git in it is judged as a command of its own
     const st = shellScriptTexts(words, cmdIdx, seg, si > 0 && prevSep === '|' ? segs[si - 1] : null)
