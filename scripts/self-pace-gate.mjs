@@ -444,9 +444,12 @@ export function fileToolTargetsAllowlist(toolInput, allowlistPath = join(DEFAULT
 // { }. NOT split: inside quotes, inside $( ) <( ) >( ) and backticks (kept in the segment, which
 // then denies if it names a protected path), >& &> >| <&. A heredoc body is not parsed for quotes:
 // each body line becomes a segment of its own. `unterminated` = a quote or $( never closed.
+// `grouped` = the STRUCTURE has a subshell, a group or a brace group: an unquoted, unescaped ( ) or standalone { } outside
+// every substitution (a parenthesis in quotes or in a $( ) is text or a command of its own). A heredoc body line counts as
+// a command line, as it is judged as one.
 export function splitShell(command) {
   const src = String(command ?? '').replace(/\\\r?\n/g, ' ')
-  const segs = []; const seps = []; let cur = ''; let i = 0; let depth = 0; let q = null; let unterminated = false
+  const segs = []; const seps = []; let cur = ''; let i = 0; let depth = 0; let q = null; let unterminated = false; let grouped = false
   const pending = []
   const push = (s = '') => { if (cur.trim()) { segs.push(cur); seps.push(s) } cur = '' }
   const n = src.length
@@ -478,7 +481,7 @@ export function splitShell(command) {
           let e = src.indexOf('\n', i); if (e === -1) e = n
           const line = src.slice(i, e); i = Math.min(e + 1, n)
           if (line.trim() === tag) break
-          if (line.trim()) { segs.push(line); seps.push('\n') }
+          if (line.trim()) { segs.push(line); seps.push('\n'); if (!grouped && splitShell(line).grouped) grouped = true }
         }
       }
       continue
@@ -494,13 +497,61 @@ export function splitShell(command) {
       const two = src[i + 1] === '|'
       push(two ? '||' : '|'); i += two || src[i + 1] === '&' ? 2 : 1; continue
     }
-    if (c === '(' || c === ')') { push(); i++; continue }
-    if ((c === '{' || c === '}') && (i === 0 || /\s/.test(src[i - 1])) && (i + 1 >= n || /\s/.test(src[i + 1]))) { push(); i++; continue }
+    if (c === '(' || c === ')') { grouped = true; push(); i++; continue }
+    if ((c === '{' || c === '}') && (i === 0 || /\s/.test(src[i - 1])) && (i + 1 >= n || /\s/.test(src[i + 1]))) { grouped = true; push(); i++; continue }
     cur += c; i++
   }
   if (q || depth > 0) unterminated = true
   push()
-  return { segs, seps, unterminated }
+  return { segs, seps, unterminated, grouped }
+}
+// The text of every OUTERMOST command or process substitution in a command: $( ), <( ), >( ) (balanced, quote-aware, a $( ) in
+// double quotes counts) and `...`. A nested one sits inside the text of its outer one and is found when that text is judged.
+// An unclosed one runs to the end of the command. Bounded: a nesting deeper than SUBST_NEST_MAX takes the rest as its text.
+const SUBST_NEST_MAX = 64
+function substitutionTexts(command) {
+  const s = String(command ?? ''); const n = s.length; const out = []
+  let close // forward: close <-> skipDouble
+  // the index after a double-quoted string that starts at i (a $( ) or a backtick inside it is live)
+  const skipDouble = (i, nest) => {
+    i++
+    while (i < n && s[i] !== '"') {
+      if (s[i] === '\\') { i += 2; continue }
+      if (s[i] === '$' && s[i + 1] === '(') { i = close(i + 1, nest + 1) + 1; continue }
+      if (s[i] === '`') { const e = s.indexOf('`', i + 1); i = e === -1 ? n : e + 1; continue }
+      i++
+    }
+    return i + 1
+  }
+  // the index of the ")" that closes the "(" at `open`; n when it never closes
+  close = (open, nest) => {
+    if (nest > SUBST_NEST_MAX) return n
+    let depth = 1; let i = open + 1
+    while (i < n) {
+      const c = s[i]
+      if (c === '\\') { i += 2; continue }
+      if (c === "'") { const e = s.indexOf("'", i + 1); i = e === -1 ? n : e + 1; continue }
+      if (c === '"') { i = skipDouble(i, nest); continue }
+      if (c === '`') { const e = s.indexOf('`', i + 1); i = e === -1 ? n : e + 1; continue }
+      if (c === '(') depth++
+      else if (c === ')' && --depth === 0) return i
+      i++
+    }
+    return n
+  }
+  let inDouble = false
+  for (let i = 0; i < n;) {
+    const c = s[i]
+    if (c === '\\') { i += 2; continue }
+    if (c === "'" && !inDouble) { const e = s.indexOf("'", i + 1); i = e === -1 ? n : e + 1; continue }
+    if (c === '"') { inDouble = !inDouble; i++; continue }
+    if (c === '`') { const e = s.indexOf('`', i + 1); out.push(s.slice(i + 1, e === -1 ? n : e)); i = e === -1 ? n : e + 1; continue }
+    if (s[i + 1] === '(' && (c === '$' || (!inDouble && (c === '<' || c === '>')))) {
+      const e = close(i + 1, 0); out.push(s.slice(i + 2, e)); i = e + 1; continue
+    }
+    i++
+  }
+  return out
 }
 // Words and redirect targets of one simple command, unquoted and unescaped. `hasRedirect` = any
 // redirect operator at all (including fd duplication and input).
@@ -1076,6 +1127,7 @@ const GIT_CANDIDATES_MAX = 8
 const SHELL_RX = /^(?:bash|sh|zsh|dash|ksh|ksh93|mksh|pdksh|oksh|ash|yash|posh|hush|rbash|fish|csh|tcsh)(?:[-.]?[0-9][0-9.]*)?$/
 const INNER_DEPTH_MAX = 4
 const INNER_BUDGET = 16
+const SUBST_BUDGET = 64 // substitutions that name git, judged per command
 // The script texts one segment hands to a shell: { texts, unreadable }. `prevSeg`: the segment before a pipe (or null).
 // `unreadable`: the script is handed over in a form this parser cannot read, so what it runs is not known:
 //   'always'  the text is spelled so that the words are not the words that run ($'..' / $".." quoting, a \xHH, \uHHHH or octal
@@ -1343,12 +1395,15 @@ export function bashProtectedDecision(command, opts = {}) {
   const seed = opts.seed
   if (seed) { ctx.current = seed.current; ctx.cwds = new Set(seed.cwds); ctx.unknownCwd = seed.unknownCwd }
   const budget = opts.budget ?? { n: 0 }
-  const { segs, seps, unterminated } = splitShell(command)
-  // A command substitution is a command of its own: `echo $(git checkout x)` runs the git. One level, judged with the
-  // same rules from the directory the outer command starts in (a nested one is not matched here and stays a word).
-  for (const m of String(command).matchAll(/\$\(([^()]*)\)|`([^`]*)`/g)) {
-    const inner = m[1] ?? m[2]
+  const { segs, seps, unterminated, grouped } = splitShell(command)
+  // A command or process substitution is a command of its own: `echo $(git checkout x)`, `tee >(git pull)` run the git. Each
+  // outermost one is judged with the same rules from the directory the outer command starts in (a nested one is found when
+  // its outer text is judged, so the cost stays linear; the number judged per command is bounded, over it the rest is refused
+  // unread). A substitution is not a group of the outer command: a subshell cannot move the outer cd (see `compound` below).
+  for (const inner of substitutionTexts(command)) {
     if (/\bgit\b/.test(inner)) {
+      budget.subs = (budget.subs ?? 0) + 1
+      if (budget.subs > SUBST_BUDGET) return { deny: true, reason: 'gate-scripts' }
       const d = bashProtectedDecision(inner, { ...opts, prot, cwd, budget, seed: undefined }); if (d.deny) return d
       // with a cd in the command the substitution may run anywhere: judge it as if it ran in the install too
       // (the cd is looked for in the raw text AND in the words with their quotes removed: `"cd" /x`, `c\d /x` and `command cd /x` have no `cd` in the raw text)
@@ -1367,7 +1422,9 @@ export function bashProtectedDecision(command, opts = {}) {
   // keyword hides a cd from the tracking altogether. (Only a git subcommand that rewrites a tree reads this.)
   // (a script text starts with no pending cd of its own: the outer command's "a cd may have failed" state is already in `union`)
   let unionMode = seed?.union ?? false; let condCd = false
-  const compound = seed?.compound || /[()]|(?:^|[\s;&|])\{(?:\s|$)/.test(String(command)) || segs.some((s) => /^\s*(?:if|then|else|elif|fi|for|while|until|do|done|case|esac|select|function|!)\b/.test(s))
+  // (a subshell or brace group is a structure of the command - `grouped` from splitShell - not a parenthesis in its text:
+  // `git merge -m "x (y)"` and `echo $(date); git ...` have none)
+  const compound = seed?.compound || grouped || segs.some((s) => /^\s*(?:if|then|else|elif|fi|for|while|until|do|done|case|esac|select|function|!)\b/.test(s))
   // the whole command as words without quotes, and whether any segment loads an environment this parser cannot read
   // (a script text carries the outer command's: the environment was set outside it)
   // (the outer command's words already contain the text: an inner call does not count them twice)
