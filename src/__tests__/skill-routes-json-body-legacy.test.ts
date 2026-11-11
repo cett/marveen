@@ -71,6 +71,16 @@ const ROUTES: Array<{ label: string; handler: (c: RouteContext) => Promise<boole
   { label: 'POST /api/agents/:name/skills (create)', handler: tryHandleAgentsSkills, method: 'POST', path: '/api/agents/agent-b/skills' },
 ]
 
+describe('assign: a missing or wrong-typed agents field is 400 required, not a throw in the loop', () => {
+  for (const body of ['{}', '{"agents":"x"}', '{"agents":5}', '{"agents":null}', '{"agents":{}}']) {
+    it(`${body} answers 400 required for agents`, async () => {
+      const out = await call(tryHandleSkills, 'POST', '/api/skills/jb-skill/assign', body)
+      expect(out.status).toBe(400)
+      expect(out.body).toMatchObject({ error: 'required', field: 'agents' })
+    })
+  }
+})
+
 describe('the remaining bare JSON.parse routes answer 400, not 500', () => {
   for (const route of ROUTES) {
     describe(route.label, () => {
