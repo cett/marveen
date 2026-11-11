@@ -231,7 +231,7 @@ describe('6. the environment that moves the tree: names hidden by quotes, config
   it.each(["bashful -c 'git checkout other'", "shell -c 'git checkout other'", "sh-x -c 'git checkout other'", "bash_5 -c 'git checkout other'"])('a name that only starts like a shell is not one: %s', (c) => {
     expect(denied(c, agentCwd)).toBe(false)
   })
-  // the denylist variants Rick accepted as named limits (CHANGELOG): pinned, so that a later change flips a named test and is decided on purpose
+  // the denylist variants accepted as named limits (CHANGELOG): pinned, so that a later change flips a named test and is decided on purpose
   it('KNOWN LIMIT (denylist): a shell that is not on the list, and fish --command, are not followed', () => {
     for (const c of ["xonsh -c 'git checkout other'", "fish --command 'git checkout other'", "fish --command='git checkout other'"]) {
       expect({ c, agent: denied(c, agentCwd) }).toEqual({ c, agent: false })
