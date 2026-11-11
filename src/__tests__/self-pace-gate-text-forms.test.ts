@@ -113,15 +113,15 @@ describe('named costs and limits of the git rule (pinned, so that a later change
     // a read-only git with the same comment is not touched (the group rule applies to a rewriting git only)
     expect(guarded('git status # (careful)')).toEqual(FREE('git status # (careful)'))
   })
-  it('W7. KNOWN LIMIT: a protected path spelled as an ANSI-C word ($\'..\'), a $".." word or with a partial $(..) in the word is not read as a path by cp, >, tee, mv or rm', () => {
-    const spelled = [
-      "rm $'scripts/doctor.sh'", 'rm $"scripts/doctor.sh"', 'rm scripts/$(echo doctor.sh)',
-      "cp a $'scripts/doctor.sh'", 'cp a scripts/$(echo doctor.sh)',
-      "echo x > $'scripts/doctor.sh'", 'echo x > scripts/$(echo doctor.sh)',
-      "mv a $'scripts/doctor.sh'", 'tee $"scripts/doctor.sh"',
+  it('W7. (the former limit is closed) a protected path spelled as an ANSI-C word, a $".." word or with a partial $(..) in the word has the verdict of the plain spelling', () => {
+    const pairs: Array<[string, string]> = [
+      ["rm $'scripts/doctor.sh'", 'rm scripts/doctor.sh'], ['rm $"scripts/doctor.sh"', 'rm scripts/doctor.sh'], ['rm scripts/$(echo doctor.sh)', 'rm scripts/doctor.sh'],
+      ["cp a $'scripts/doctor.sh'", 'cp a scripts/doctor.sh'], ['cp a scripts/$(echo doctor.sh)', 'cp a scripts/doctor.sh'],
+      ["echo x > $'scripts/doctor.sh'", 'echo x > scripts/doctor.sh'], ['echo x > scripts/$(echo doctor.sh)', 'echo x > scripts/doctor.sh'],
+      ["mv a $'scripts/doctor.sh'", 'mv a scripts/doctor.sh'], ['tee $"scripts/doctor.sh"', 'tee scripts/doctor.sh'],
     ]
-    for (const c of spelled) expect(guarded(c)).toEqual(FREE(c))
-    // the twin: the plain spelling of the same path is refused in the install
-    expect(denied('rm scripts/doctor.sh', root)).toBe(true)
+    for (const [spelled, plain] of pairs) expect(guarded(spelled)).toEqual({ ...guarded(plain), c: spelled })
+    // the plain spelling is refused in the install, free in the copy: so are the spelled ones
+    for (const [spelled] of pairs) expect({ c: spelled, root: denied(spelled, root), copy: denied(spelled, wt) }).toEqual({ c: spelled, root: true, copy: false })
   })
 })

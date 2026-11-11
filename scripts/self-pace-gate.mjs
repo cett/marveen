@@ -555,6 +555,59 @@ function substitutionTexts(command) {
 }
 // Words and redirect targets of one simple command, unquoted and unescaped. `hasRedirect` = any
 // redirect operator at all (including fd duplication and input).
+// A word with a part the parser cannot read (a command substitution after a literal head, an ANSI-C string it cannot
+// decode) carries this marker where the unreadable part starts: the text in front of it is the literal HEAD of the word,
+// the text behind it is the raw unreadable part. wordKind judges such a word by its head (see dynamicHeadKind).
+// A private-use code point: no shell word spells it, and PATH_JUNK in wordKind treats it as junk.
+export const DYN = ''
+// bounds of the balanced scan of a substitution: past either one the word is flagged and the rest is read as before
+const MAX_DYN_LEN = 8192
+const MAX_DYN_DEPTH = 64
+// The end (exclusive) of the substitution that starts at seg[i] (`$(` or a backtick), or -1 when it is not closed or a bound
+// is passed. One linear pass; quote-, escape- and nesting-aware.
+function skipDynamic(seg, i) {
+  const n = Math.min(seg.length, i + MAX_DYN_LEN)
+  if (seg[i] === '`') {
+    for (let j = i + 1; j < n; j++) { if (seg[j] === '\\') j++; else if (seg[j] === '`') return j + 1 }
+    return -1
+  }
+  let depth = 1
+  for (let j = i + 2; j < n; j++) {
+    const c = seg[j]
+    if (c === '\\') { j++; continue }
+    if (c === "'") { const e = seg.indexOf("'", j + 1); if (e === -1 || e >= n) return -1; j = e; continue }
+    if (c === '"') { let k = j + 1; while (k < n && seg[k] !== '"') { if (seg[k] === '\\') k++; k++ } if (k >= n) return -1; j = k; continue }
+    if (c === '`') { const e = skipDynamic(seg, j); if (e === -1) return -1; j = e - 1; continue }
+    if (c === '(') { if (++depth > MAX_DYN_DEPTH) return -1 }
+    else if (c === ')' && --depth === 0) return j + 1
+  }
+  return -1
+}
+// The ANSI-C string $'...' whose body starts at seg[i]: { text, end, ok }. `end` is the index after the closing quote (the end of
+// the segment when it is not closed). ok=false when the string cannot be decoded to the text bash would build: an unterminated
+// string, a NUL (bash cuts the string there), an escape this does not know, a byte above 0x7f (not text), a code point out of range.
+function readAnsiC(seg, i) {
+  const n = seg.length
+  let text = ''; let ok = true; let j = i
+  const SIMPLE = { a: '\x07', b: '\b', e: '\x1b', E: '\x1b', f: '\f', n: '\n', r: '\r', t: '\t', v: '\v', '\\': '\\', "'": "'", '"': '"', '?': '?' }
+  const take = (re, max, radix) => { let k = 0; let v = 0; while (k < max && j + k < n && re.test(seg[j + k])) { v = v * radix + parseInt(seg[j + k], radix); k++ } return { v, k } }
+  while (j < n && seg[j] !== "'") {
+    if (seg[j] !== '\\') { text += seg[j]; j++; continue }
+    const e = seg[j + 1]
+    if (e === undefined) { ok = false; j = n; break }
+    if (e in SIMPLE) { text += SIMPLE[e]; j += 2; continue }
+    j += 2
+    let v = null
+    if (/[0-7]/.test(e)) { j--; const r = take(/[0-7]/, 3, 8); j += r.k; v = r.v }
+    else if (e === 'x') { const r = take(/[0-9a-fA-F]/, 2, 16); if (r.k) { j += r.k; v = r.v } }
+    else if (e === 'u' || e === 'U') { const r = take(/[0-9a-fA-F]/, e === 'u' ? 4 : 8, 16); if (r.k) { j += r.k; v = r.v; if (v > 0x10ffff || (v >= 0xd800 && v < 0xe000)) v = null; else if (v > 0x7f) { text += String.fromCodePoint(v); continue } } }
+    else if (e === 'c' && j < n) { v = seg.charCodeAt(j) & 0x1f; j++ }
+    if (v === null || v === 0 || v > 0x7f) ok = false
+    else text += String.fromCharCode(v)
+  }
+  if (j >= n) return { text, end: n, ok: false }
+  return { text, end: j + 1, ok }
+}
 export function tokenizeShell(seg) {
   const words = []; const redirects = []; let hasRedirect = false; let i = 0
   const n = seg.length
@@ -565,9 +618,37 @@ export function tokenizeShell(seg) {
       const c = seg[i]
       if (/\s/.test(c) || c === '>' || c === '<' || c === '|' || c === ';' || c === '&' || c === '(' || c === ')') break
       if (c === "'") { const e = seg.indexOf("'", i + 1); const end = e === -1 ? n : e; cur += seg.slice(i + 1, end); i = end + 1; any = true; continue }
+      // $'...' is an ANSI-C string: the word is what bash builds from it (escapes decoded); one it cannot decode is unreadable
+      if (c === '$' && seg[i + 1] === "'") {
+        const a = readAnsiC(seg, i + 2)
+        cur += a.ok ? a.text : DYN + seg.slice(i, a.end); i = a.end; any = true; continue
+      }
+      if (c === '$' && seg[i + 1] === '"') { i++; continue } // $"..." is a double-quoted string (the locale lookup changes nothing here)
+      // a command substitution behind a literal head (`<dir>/$(echo x)`, `a/`echo x``) is ONE unreadable word, read to its balanced end
+      // (the marker comes AFTER the `$` of `$(`, and in front of a backtick: the piece in front of it reads `head$` / `head`, as it did
+      // when the word was cut here, so a rule that looked at that piece looks at the same one)
+      if (cur !== '' && ((c === '$' && seg[i + 1] === '(') || c === '`')) {
+        const e = skipDynamic(seg, i)
+        const sub = c === '$' ? '$' + DYN : DYN
+        const from = c === '$' ? i + 1 : i
+        if (e !== -1) { cur += sub + seg.slice(from, e); i = e; any = true; continue }
+        // unbalanced or past a bound: flagged, the rest is read as before
+        if (c === '$') { cur += sub; i++; any = true; continue }
+        cur += DYN
+      }
       if (c === '"') {
         let j = i + 1
-        while (j < n && seg[j] !== '"') { if (seg[j] === '\\' && j + 1 < n) { cur += seg[j + 1]; j += 2 } else { cur += seg[j]; j++ } }
+        while (j < n && seg[j] !== '"') {
+          if (seg[j] === '\\' && j + 1 < n) { cur += seg[j + 1]; j += 2; continue }
+          if (cur !== '' && ((seg[j] === '$' && seg[j + 1] === '(') || seg[j] === '`')) {
+            const e = skipDynamic(seg, j)
+            const dollar = seg[j] === '$'
+            if (e !== -1) { cur += (dollar ? '$' + DYN : DYN) + seg.slice(dollar ? j + 1 : j, e); j = e; continue }
+            if (dollar) { cur += '$' + DYN; j++; continue }
+            cur += DYN
+          }
+          cur += seg[j]; j++
+        }
         i = j + 1; any = true; continue
       }
       if (c === '\\' && i + 1 < n) { cur += seg[i + 1]; i += 2; any = true; continue }
@@ -850,6 +931,33 @@ function protectedBasenames(ctx) {
   }
   return (ctx.listing = set)
 }
+// The kind of a word with an unreadable part (see DYN): judged by its literal HEAD, because what the unreadable part builds is not known.
+// A head that names a protected path, a directory that holds protected paths (the gate scripts directory, the store, the install root),
+// or the directory a name started by the head would land in, counts as that protected kind: `<install>/scripts/$(echo x)` may be any
+// file in the scripts directory. A head in the agent directories, a glob, a head with an unresolved variable, or a word with no head
+// at all (the marker comes first) is not judged here: that is the reading the word had before the marker existed.
+function dynamicHeadKind(part, ctx) {
+  // (the `$` in front of the marker belongs to the substitution; an assignment `at=$(date)` has the value as its head)
+  const head = part.slice(0, part.indexOf(DYN)).replace(/\$$/, '').replace(/^[A-Za-z_]\w*=/, '')
+  if (!head || /[*?[]/.test(head)) return null
+  let anc = null
+  for (const cwd of ctx.cwds) {
+    const w = expandWord(head, ctx.vars, cwd)
+    if (!w || w.includes('$') || w.includes(DYN)) continue
+    const abs = isAbsolute(w) ? w : join(cwd, w)
+    const dir = w.endsWith('/') ? abs : dirname(abs)
+    for (const p of [abs, dir]) {
+      const real = realOrSelf(p)
+      const k = kindOf(real, ctx.prot)
+      if (k) return k
+      const a = ancestorOf(real, ctx.prot)
+      // a bare name (no slash) lands in the working directory: only the strict ancestor (the gate scripts directory itself) counts
+      // for it, the loose ones (the install root, the store) are where every command runs and would refuse `x$(date)` there
+      if (a && !a.startsWith('anc-agentdir') && (head.includes('/') || a.startsWith('anc-strict'))) anc ??= a.split(':')[1]
+    }
+  }
+  return anc
+}
 // kind of ONE shell word ('egress-allowlist' | 'gate-scripts' | null); a directory that holds protected paths gives 'anc-strict:<kind>' or 'anc-loose:<kind>'.
 function wordKind(word, ctx) {
   const results = []
@@ -870,6 +978,7 @@ function wordKind(word, ctx) {
     const eq = stripped.indexOf('=')
     if (eq > 0 && eq < stripped.length - 1) parts.push(stripped.slice(eq + 1)) // of=PATH, --out=PATH
     for (const part of parts) {
+      if (part.includes(DYN)) { const dk = dynamicHeadKind(part, ctx); if (dk) results.push(dk); continue }
       for (const cwd of ctx.cwds) {
         const w = expandWord(part, ctx.vars, cwd)
         if (!w) continue
