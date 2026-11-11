@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest'
 import { EventEmitter } from 'node:events'
-import { readFileSync, existsSync, rmSync, mkdirSync, writeFileSync, statSync, symlinkSync } from 'node:fs'
+import { readFileSync, existsSync, rmSync, mkdirSync, writeFileSync, statSync, symlinkSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import type { RouteContext } from '../web/routes/types.js'
 import { addGeneratedHeader } from '../skill-header.js'
@@ -122,7 +122,7 @@ describe('PUT/GET/DELETE /api/skills/sql/<id>/files/<rel>', () => {
     expect(readFileSync(join(gdir(), 'references', 'blob.bin'), 'utf-8')).toBe('v2')
   })
 
-  it('DELETE removes the row and the generated file (and the emptied directory), not a hand-edited one', async () => {
+  it('DELETE removes the row and the generated file (and the emptied directory); a hand-edited one is moved aside, not deleted and not left in place', async () => {
     await call('PUT', `${base}/${enc('scripts/a.py')}`, { content: 'print(1)\n' })
     await call('PUT', `${base}/${enc('scripts/b.py')}`, { content: 'print(2)\n' })
     expect((await call('DELETE', `${base}/${enc('scripts/a.py')}`)).status).toBe(200)
@@ -130,7 +130,11 @@ describe('PUT/GET/DELETE /api/skills/sql/<id>/files/<rel>', () => {
     expect(files.has(fk(SID, 'scripts/a.py'))).toBe(false)
     writeFileSync(join(gdir(), 'scripts', 'b.py'), 'hand edited\n')
     expect((await call('DELETE', `${base}/${enc('scripts/b.py')}`)).status).toBe(200)
-    expect(readFileSync(join(gdir(), 'scripts', 'b.py'), 'utf-8')).toBe('hand edited\n')
+    // the edit is kept under the quarantine name, and is no longer where the boot-time companion import would find it
+    expect(existsSync(join(gdir(), 'scripts', 'b.py'))).toBe(false)
+    const aside = readdirSync(join(gdir(), 'scripts')).filter((n) => /^b\.py\.revoked-\d+$/.test(n))
+    expect(aside).toHaveLength(1)
+    expect(readFileSync(join(gdir(), 'scripts', aside[0]), 'utf-8')).toBe('hand edited\n')
     expect((await call('DELETE', `${base}/${enc('scripts/nope.py')}`)).status).toBe(404)
   })
 

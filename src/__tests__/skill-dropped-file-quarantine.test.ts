@@ -46,10 +46,10 @@ const PRIVILEGED = '---\nname: x\ndescription: d\nallowed-tools: Bash\n---\nbody
 const ORIGINAL = '#!/bin/sh\necho original\n'
 const EDITED = '#!/bin/sh\necho hand edit\n'
 
-async function call(path: string, body: unknown) {
+async function call(path: string, body: unknown, method = 'POST') {
   const buf = Buffer.from(JSON.stringify(body))
   const req = new EventEmitter() as unknown as NodeJS.EventEmitter & { method: string; headers: Record<string, string> }
-  req.method = 'POST'
+  req.method = method
   req.headers = {}
   setImmediate(() => { (req as NodeJS.EventEmitter).emit('data', buf); (req as NodeJS.EventEmitter).emit('end') })
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -60,7 +60,7 @@ async function call(path: string, body: unknown) {
     end(b?: string | Buffer) { if (b) { const s = Buffer.isBuffer(b) ? b.toString('utf-8') : b; try { out.body = JSON.parse(s) } catch { out.body = s } } },
   }
   const url = new URL('http://localhost:3420' + path)
-  const ctx = { req, res, path: url.pathname, method: 'POST', url, tenantId: null, auth: { kind: 'session', user: 'reviewer' }, role: 'admin' } as unknown as RouteContext
+  const ctx = { req, res, path: url.pathname, method, url, tenantId: null, auth: { kind: 'session', user: 'reviewer' }, role: 'admin' } as unknown as RouteContext
   expect(await tryHandleSkills(ctx)).toBe(true)
   return out
 }
@@ -120,14 +120,34 @@ describe('an activation drops a script that was edited by hand on disk', () => {
   })
 })
 
-describe('the scope of the quarantine', () => {
-  it('without the flag (the single-file DELETE route) a hand-edited copy still stays where it is', async () => {
-    const { id, dir } = await skillWithDroppedScript('dq-scope')
+describe('the single-file DELETE route', () => {
+  const del = (id: string) => call(`/api/skills/sql/${encodeURIComponent(id)}/files/${encodeURIComponent('scripts/run.sh')}`, {}, 'DELETE')
+
+  it('a hand-edited copy is moved aside with its bytes, the original path is gone, and the boot import seeds nothing back', async () => {
+    const { id, dir } = await skillWithDroppedScript('dq-delete-edited')
     writeFileSync(join(dir, 'scripts', 'run.sh'), EDITED)
-    await removeGeneratedCompanionFile(id, 'scripts/run.sh', Buffer.from(ORIGINAL), 'fleet')
-    expect(readFileSync(join(dir, 'scripts', 'run.sh'), 'utf-8')).toBe(EDITED)
-    expect(asideCopies(dir, 'run\\.sh')).toEqual([])
+    expect((await del(id)).status).toBe(200)
+    expect(existsSync(join(dir, 'scripts', 'run.sh'))).toBe(false)
+    const aside = asideCopies(dir, 'run\\.sh')
+    expect(aside).toHaveLength(1)
+    expect(readFileSync(join(dir, 'scripts', aside[0]), 'utf-8')).toBe(EDITED)
+    expect(await getSkillFile(id, 'scripts/run.sh')).toBeUndefined()
+    expect((await importSkillCompanionFilesFromDisk()).seeded).toBe(0)
+    expect(await listSkillFiles(id)).toEqual([])
   })
+
+  it('a copy nobody edited is removed, nothing is left aside', async () => {
+    const { id, dir } = await skillWithDroppedScript('dq-delete-clean')
+    expect((await del(id)).status).toBe(200)
+    expect(existsSync(join(dir, 'scripts', 'run.sh'))).toBe(false)
+    expect(existsSync(join(dir, 'scripts')) ? asideCopies(dir, 'run\\.sh') : []).toEqual([])
+    expect((await importSkillCompanionFilesFromDisk()).seeded).toBe(0)
+  })
+})
+
+describe('the scope of the quarantine', () => {
+  // Every caller of removeGeneratedCompanionFile asks for the move now (the activation and the DELETE route), so there
+  // is no flag-less caller left to pin. The removal of a whole skill's files on revoke and delete is a different path.
 
   it('with the flag it moves the copy aside, and a byte-equal copy is simply removed', async () => {
     const { id, dir } = await skillWithDroppedScript('dq-flag')

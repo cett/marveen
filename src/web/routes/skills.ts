@@ -877,8 +877,9 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
         const f = await getSkillFile(id, rel)
         if (!f) { json(res, { error: 'not_found' }, 404); return true }
         await deleteSkillFile(id, rel, actor)
-        // Drop the generated copy too (only while it still equals the deleted row).
-        await removeGeneratedCompanionFile(id, rel, f.content, skill.tenant_id)
+        // Drop the generated copy too: removed while it still equals the deleted row; a copy somebody edited by hand is
+        // moved aside, not left in place where the boot-time companion import would seed it back without a review.
+        await removeGeneratedCompanionFile(id, rel, f.content, skill.tenant_id, true)
         json(res, { ok: true })
         return true
       }
