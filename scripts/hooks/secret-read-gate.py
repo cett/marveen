@@ -537,6 +537,8 @@ def _exclude_values(toks: list) -> list:
             break      # after `--` every word is an operand
         if i in consumed:
             continue
+        if re.fullmatch(r'-[A-Za-z0-9]+', t) and not all(c in SAFE_SHORT or c == 'a' for c in t[1:]) and t not in ('-e', '-f', '-g'):
+            return []      # a short option cluster with a value-taking letter (`-er`, `-cf`, `-A2`): fail closed, no exclude counts
         if t in ('-e', '-f', '-g', '--regexp', '--file', '--glob'):
             consumed.add(i + 1)      # the value of a pattern / file option is that value, not an option of ours
         elif t.startswith('--exclude'):
@@ -590,7 +592,7 @@ SAFE_LONG = frozenset(('recursive', 'dereference-recursive', 'ignore-case', 'lin
                        'files-with-matches', 'files-without-match', 'count', 'invert-match', 'word-regexp', 'line-regexp', 'fixed-strings',
                        'extended-regexp', 'perl-regexp', 'no-messages', 'with-filename', 'no-filename', 'only-matching', 'smart-case', 'quiet'))
 # Commands whose --exclude option is a real filter (find, cp, zip and the rest have none: the word is an operand there).
-EXCLUDE_HEADS = GREP_FAMILY | frozenset(('rsync', 'tar', 'gtar', 'bsdtar'))
+EXCLUDE_HEADS = GREP_FAMILY | frozenset(('rsync',))      # tar is out: its bundled `czf` word and `-f` value hide the archive name
 
 
 def _nonpath_words(toks: list) -> set:
@@ -606,6 +608,8 @@ def _nonpath_words(toks: list) -> set:
     unclear = False      # an option with a value the parse cannot place: then NO word is guessed to be the pattern
     for i in range(1, len(toks)):
         t = toks[i]
+        if t == '--':
+            break      # every word after `--` is an operand, never an option
         if t.startswith('--') and len(t) > 2:
             name, eq, _ = t[2:].partition('=')
             if name in ('regexp', 'file'):
@@ -623,11 +627,11 @@ def _nonpath_words(toks: list) -> set:
                 pattern_given = pattern_given or letters[-1] == 'e'
             elif not all(c in SAFE_SHORT for c in letters):
                 unclear = True           # `-f`, `-m 5`, `-er`, `-A3`: a value is attached or follows, which word is the pattern is unclear
-        elif is_grep and t.startswith('--') and '=' not in t and t[2:] not in SAFE_LONG | FILTER_FLAGS:
-            unclear = True
+        if t.startswith('--') and len(t) > 2 and t[2:].partition('=')[0] not in SAFE_LONG | FILTER_FLAGS | {'regexp', 'file'}:
+            unclear = True      # an unknown or ABBREVIATED long option (`--fil=pats`): which word is the pattern is unclear
         elif head == 'git' and t in ('-m', '-S', '-G') and i + 1 < len(toks):
             skip.add(i + 1)
-    if is_grep and not pattern_given and not unclear:
+    if is_grep and not pattern_given and not unclear and '--' not in toks:
         for i in range(1, len(toks)):
             if i not in skip and not toks[i].startswith('-'):
                 skip.add(i)      # the PATTERN, the first word that is not an option

@@ -286,7 +286,9 @@ class BashOnEveryTokenFile(Tree):
         # `-er` is `-e` with the attached pattern `r`: the next word is a FILE; `-f`, `-m 5`, `-A1` take values too
         for cmd in ['grep -er .agent-token', 'grep -A1 .agent-token', 'grep -m 1 .agent-token', 'grep -f pats.txt .agent-token', 'grep -e x -- .agent-token',
                     'grep -rne x .agent-token', 'grep -nf pats.txt .operator-token', 'rg --max-count 1 .agent-token', 'grep -x foo .agent-token',
-                    'grep foo .agent-token', 'grep -e x store/.dashboard-token', 'grep --file=pats.txt .agent-token']:
+                    'grep foo .agent-token', 'grep -e x store/.dashboard-token', 'grep --file=pats.txt .agent-token', 'grep --fil=pats.txt .agent-token',
+                    'grep --reg=x .agent-token', 'grep --color=never foo .agent-token', 'grep -- -e .agent-token', 'tar -cf --exclude=.agent-token x.tar agents',
+                    'tar czf --exclude=.agent-token x.tgz agents', 'grep -rA2 --exclude=.agent-token foo agents']:
             with self.subTest(cmd=cmd):
                 self.assert_denied_b(self.bash(cmd), cmd)
 
