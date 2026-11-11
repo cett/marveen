@@ -1068,6 +1068,40 @@ const SHELL_KEYWORDS = new Set(['if', 'then', 'else', 'elif', 'while', 'until', 
 const GIT_LAUNCHERS = new Set([...WRAPPER_WORDS, 'timeout', 'xargs'])
 const GIT_TREE_MAX_ARGS = 256
 const GIT_TREE_MAX_CWDS = 32
+// A shell that is handed its script as text (sh -c STRING, eval STRING, a script on stdin) runs a command the word rules
+// cannot see inside. The text is judged as a command of its own, from the directory (and the cd history) the outer
+// command had at that point, bounded in depth and in the number of texts per command (the cost stays linear).
+const SHELL_RX = /^(?:bash|sh|zsh|dash|ksh)$/
+const INNER_DEPTH_MAX = 4
+const INNER_BUDGET = 16
+// The script texts one segment hands to a shell. `prevWords`: the words of the segment before a pipe (or null).
+function shellScriptTexts(words, cmdIdx, seg, prevWords) {
+  if (cmdIdx === -1) return []
+  const base = (w) => w.split('/').pop()
+  if (base(words[cmdIdx]) === 'eval') return [words.slice(cmdIdx + 1).join(' ')]
+  let sh = SHELL_RX.test(base(words[cmdIdx])) ? cmdIdx : -1
+  if (sh === -1) {
+    // behind a launcher word (`xargs sh -c ...`, `nice -n 5 bash -c ...`, `timeout 5 sh ...`)
+    // (a launcher with its own option value, `nice -n 1`, leaves the command word on the value: the launcher is looked
+    // for from the start of the segment, but only counts when it is at or before the command word)
+    const l = words.findIndex((w) => GIT_LAUNCHERS.has(base(w)))
+    sh = l === -1 || l > cmdIdx ? -1 : words.findIndex((w, i) => i > l && SHELL_RX.test(base(w)))
+  }
+  if (sh === -1) return []
+  const args = words.slice(sh + 1)
+  const k = args.findIndex((a) => /^-[A-Za-z]*c[A-Za-z]*$/.test(a))
+  if (k !== -1) { const s = args.slice(k + 1).find((a) => !a.startsWith('-')); return s === undefined ? [] : [s] }
+  if (args.some((a) => !a.startsWith('-'))) return [] // a script FILE operand: not text
+  // no -c and no file: the shell reads its script from stdin. A here-string and an echo / printf before the pipe are text.
+  const out = []
+  const hs = /<<<\s*(?:'([^']*)'|"([^"]*)"|([^\s;|&<>]+))/.exec(seg)
+  if (hs) out.push(hs[1] ?? hs[2] ?? hs[3])
+  if (prevWords) {
+    const pi = commandWordIndex(prevWords)
+    if (pi !== -1 && /^(?:echo|printf)$/.test(base(prevWords[pi]))) out.push(prevWords.slice(pi + 1).filter((a) => !/^-[neE]+$/.test(a)).join(' '))
+  }
+  return out.map((t) => t.replace(/\\n/g, '\n'))
+}
 // Global git options in front of the subcommand, in order: -C <path> (repeatable, each relative to the one before),
 // --work-tree, --git-dir; the others that take a value are skipped so the subcommand is found correctly.
 function scanGitGlobals(args) {
@@ -1254,15 +1288,20 @@ export function bashProtectedDecision(command, opts = {}) {
   const prot = opts.prot ?? protectedSet(opts)
   const cwd = opts.cwd || process.cwd()
   const ctx = makeContext(command, cwd, prot)
+  // A script text judged as a command of its own (see shellScriptTexts) starts from the state of the outer command at the
+  // point it runs: the directory, the cd history and the union / compound / raw-text context.
+  const seed = opts.seed
+  if (seed) { ctx.current = seed.current; ctx.cwds = new Set(seed.cwds); ctx.unknownCwd = seed.unknownCwd }
+  const budget = opts.budget ?? { n: 0 }
   const { segs, seps, unterminated } = splitShell(command)
   // A command substitution is a command of its own: `echo $(git checkout x)` runs the git. One level, judged with the
   // same rules from the directory the outer command starts in (a nested one is not matched here and stays a word).
   for (const m of String(command).matchAll(/\$\(([^()]*)\)|`([^`]*)`/g)) {
     const inner = m[1] ?? m[2]
     if (/\bgit\b/.test(inner)) {
-      const d = bashProtectedDecision(inner, { ...opts, prot, cwd }); if (d.deny) return d
+      const d = bashProtectedDecision(inner, { ...opts, prot, cwd, budget, seed: undefined }); if (d.deny) return d
       // with a cd in the command the substitution may run anywhere: judge it as if it ran in the install too
-      if (/\b(?:cd|pushd|popd)\b/.test(String(command))) { const d2 = bashProtectedDecision(inner, { ...opts, prot, cwd: dirname(prot.scriptsDir) }); if (d2.deny) return d2 }
+      if (/\b(?:cd|pushd|popd)\b/.test(String(command))) { const d2 = bashProtectedDecision(inner, { ...opts, prot, cwd: dirname(prot.scriptsDir), budget, seed: undefined }); if (d2.deny) return d2 }
     }
   }
   const feedsNonReader = (idx) => {
@@ -1275,8 +1314,9 @@ export function bashProtectedDecision(command, opts = {}) {
   // Where a segment runs: after a pipe, `||` or `&` it may run in any directory the command has been in; after a `cd`
   // that itself depended on `&&`, a following `;` or newline runs in either. A subshell, a brace group or a shell
   // keyword hides a cd from the tracking altogether. (Only a git subcommand that rewrites a tree reads this.)
-  let unionMode = false; let condCd = false
-  const compound = /[()]|(?:^|[\s;&|])\{(?:\s|$)/.test(String(command)) || segs.some((s) => /^\s*(?:if|then|else|elif|fi|for|while|until|do|done|case|esac|select|function|!)\b/.test(s))
+  // (a script text starts with no pending cd of its own: the outer command's "a cd may have failed" state is already in `union`)
+  let unionMode = seed?.union ?? false; let condCd = false
+  const compound = seed?.compound || /[()]|(?:^|[\s;&|])\{(?:\s|$)/.test(String(command)) || segs.some((s) => /^\s*(?:if|then|else|elif|fi|for|while|until|do|done|case|esac|select|function|!)\b/.test(s))
   for (let si = 0; si < segs.length; si++) {
     const seg = segs[si]
     const prevSep = si > 0 ? seps[si - 1] : ''
@@ -1308,6 +1348,7 @@ export function bashProtectedDecision(command, opts = {}) {
     // (the command word may sit behind a shell keyword: `then git checkout x`, `do git pull`, `! git merge x`)
     let gci = ci
     while (gci !== -1 && SHELL_KEYWORDS.has(words[gci])) { const r = commandWordIndex(words.slice(gci + 1)); gci = r === -1 ? -1 : gci + 1 + r }
+    const cmdIdx = gci
     // a launcher with its own option value (`nice -n 5 git ...`, `env -u X git ...`, `timeout 5 git ...`, `xargs git ...`) hides
     // the git from commandWordIndex: the first git word behind a launcher word counts as the command
     if (gci !== -1 && words[gci].split('/').pop() !== 'git') {
@@ -1315,7 +1356,14 @@ export function bashProtectedDecision(command, opts = {}) {
       const g = l === -1 ? -1 : words.findIndex((w, i) => i > l && w.split('/').pop() === 'git')
       if (g !== -1) gci = g
     }
-    if (gci !== -1 && words[gci].split('/').pop() === 'git' && gitRewritesInstallTree(words, gci, ctx, { exact: !unionMode, compound, raw: command })) return { deny: true, reason: 'gate-scripts' }
+    if (gci !== -1 && words[gci].split('/').pop() === 'git' && gitRewritesInstallTree(words, gci, ctx, { exact: !unionMode, compound, raw: seed?.raw ?? command })) return { deny: true, reason: 'gate-scripts' }
+    // a script handed to a shell as text (sh -c STRING, eval STRING, stdin): a git in it is judged as a command of its own
+    for (const t of shellScriptTexts(words, cmdIdx, seg, si > 0 && prevSep === '|' ? tokenizeShell(segs[si - 1]).words : null)) {
+      if (!/\bgit\b/.test(t)) continue
+      if (++budget.n > INNER_BUDGET || (seed?.depth ?? 0) >= INNER_DEPTH_MAX) return { deny: true, reason: 'gate-scripts' }
+      const inner = { current: ctx.current, cwds: [...ctx.cwds], unknownCwd: ctx.unknownCwd, union: unionMode, compound, raw: seed?.raw ?? command, depth: (seed?.depth ?? 0) + 1 }
+      const d = bashProtectedDecision(t, { ...opts, prot, cwd: ctx.current, budget, seed: inner }); if (d.deny) return d
+    }
     const hit = kinds.find((k) => k && !isAnc(k)) ?? rKinds.find((k) => k && !isAnc(k)) ?? null
     const ancKinds = [...kinds, ...rKinds].filter(isAnc)
     const ancestorHit = !hit && ancKinds.length > 0
