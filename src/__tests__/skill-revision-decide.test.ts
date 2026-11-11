@@ -468,6 +468,8 @@ describe('POST decide: the disk copies of the dropped files are removed after th
     expect(calls[0][1]).toBe('scripts/old.sh')
     expect(calls[0][2]).toEqual(Buffer.from('OLD-BYTES'))
     expect(calls[0][3]).toBe('fleet')
+    // the activation asks for a hand-edited copy to be moved aside (the single-file DELETE route does not)
+    expect(calls[0][4]).toBe(true)
   })
 
   it('several dropped files: one call each', async () => {

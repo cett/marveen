@@ -950,11 +950,13 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
       return true
     }
     if (result.skillId) {
-      // The files the activation dropped: their generated copies leave the disk too (byte-equal only, the same call
-      // the single-file DELETE route makes). The regen below only writes, so without this an old script stays on disk
-      // and the boot-time companion import copies it back into the live skill without a review. Before the regen.
+      // The files the activation dropped: their generated copies leave the disk too (byte-equal ones are removed). The
+      // regen below only writes, so without this an old script stays on disk and the boot-time companion import copies
+      // it back into the live skill without a review. A copy somebody edited by hand is not deleted (it may hold work
+      // the database does not have) and is not left in place either, where the import would seed it back: it is moved
+      // aside (quarantineModified). Before the regen.
       for (const f of result.removedFiles ?? []) {
-        await removeGeneratedCompanionFile(result.skillId, f.rel_path, f.content, result.tenantId ?? 'fleet')
+        await removeGeneratedCompanionFile(result.skillId, f.rel_path, f.content, result.tenantId ?? 'fleet', true)
       }
       // Disk regen after the transaction, same rule as every other skill write path (db/ never calls skill-regen.js).
       const regen = await regenSingleSkillFile(result.skillId, true)
