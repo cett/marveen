@@ -527,13 +527,16 @@ def _has_flag(toks: list, short: str, longs: tuple) -> bool:
     return False
 
 
-def _exclude_values(toks: list) -> list:
+def _exclude_values(toks: list, strict: bool = False) -> list:
     """The values of the `--exclude` / `--exclude-dir` options of a grep (`--exclude=V`, `--exclude V`). They count ONLY
     when the whole command parses without doubt: every option is a known one that takes no value (SAFE_SHORT / SAFE_LONG),
     a `-e` / `-f` / `--regexp` / `--file` whose value is consumed, or one of `--exclude` / `--exclude-dir` / `--include`.
     Anything else (a long option with a value and no `=` such as `--label X`, an abbreviated or unknown long option, a
     short cluster with a value-taking letter) may swallow the next word, so the parse could disagree with grep about
-    which word is an option: then NO exclude counts (fail closed)."""
+    which word is an option: then NO exclude counts (fail closed).
+    `strict` (tier B) keeps only the `--exclude` shape: an `--include*` or an `--exclude-dir*` anywhere in the command
+    voids every exclude (the last matching include / exclude wins in grep, so an include can re-include the excluded
+    file, and a directory exclude never excludes a file)."""
     if not toks or os.path.basename(toks[0]) not in EXCLUDE_HEADS:
         return []
     out, consumed = [], set()
@@ -547,6 +550,8 @@ def _exclude_values(toks: list) -> list:
         if t.startswith('--'):
             name, eq, val = t[2:].partition('=')
             if name in ('exclude', 'exclude-dir', 'include'):
+                if strict and name != 'exclude':
+                    return []      # tier B: an include or a directory exclude in the command, whatever its order
                 if name != 'include':
                     out.append(val if eq else (toks[i + 1] if i + 1 < len(toks) else ''))
                 if not eq:
@@ -572,20 +577,18 @@ def _excludes_store(toks: list) -> bool:
 
 def _excludes_file(toks: list, f: Protected, base_real: str) -> bool:
     """A recursive reader over `base_real` that excludes the protected file `f` does not read it. Tier A: the store is
-    excluded (the key sits in it). Tier B: an exclude value matches the file's NAME (a shell pattern, `.agent-token`,
-    `.agent-*`) or a directory between the searched one and the file (`agents`, `store`); a value that matches neither
-    excludes nothing."""
+    excluded (the key sits in it). Tier B: ONE shape only. The grep carries `--exclude=NAME` (or `--exclude NAME`) whose
+    NAME is the token file's dotted name EXACTLY (no slash, no glob, no `./`, no case folding), every `--exclude` of the
+    command names it, there is no `--include*`, no `--exclude-dir*` and no `--exclude-from` anywhere, and no word of the
+    command holds `$`, a backtick or `{` (an unresolved word can carry an include: `$EXTRA`, `$(echo --include='*')`,
+    `{--include=*,}`). Anything else excludes nothing: the implementations differ in the order they apply include and
+    exclude, so the gate does not depend on it."""
     if f.tier == 'A':
         return _excludes_store(toks)
-    # the searched directory itself counts as well (`--exclude-dir=store` over `store`, as the tier A rule reads it)
-    parts = [os.path.basename(base_real)] + [p for p in os.path.relpath(f.dir_real, base_real).split(os.sep) if p not in ('', '.')]
-    for val in _exclude_values(toks):
-        val = val.strip().strip('\'"')
-        val = val[2:] if val.startswith('./') else val
-        val = val.rstrip('/')
-        if val and (fnmatch.fnmatchcase(f.name, val) or any(fnmatch.fnmatchcase(part, val) for part in parts)):
-            return True
-    return False
+    if any(c in w for w in toks for c in ('$', '`', '{')):
+        return False
+    vals = _exclude_values(toks, strict=True)
+    return bool(vals) and all(v == f.name for v in vals)
 
 
 def _covered_dir_files(path: str, cwd: str) -> list:

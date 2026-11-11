@@ -276,11 +276,55 @@ class BashOnEveryTokenFile(Tree):
     def test_exclude_of_the_token_name_lets_a_legitimate_search_through(self):
         for cmd, cwd in [('grep -r foo agents/agent-a --exclude=.agent-token', None), ('grep -rn --exclude=.agent-token foo agents', None),
                          ('grep -r --exclude .agent-token foo agents/agent-b', None), ('grep -r foo . --exclude=.agent-token', self.p('agents', 'agent-a')),
-                         ('grep -r foo --exclude=.agent-token', self.p('agents', 'agent-a')), ("grep -r --exclude='.agent-*' foo agents", None),
-                         ('grep -r --exclude-dir=agents --exclude-dir=store --exclude=.agent-token foo agents/..', None),
-                         ('grep -r --exclude-dir=store --exclude-dir=agents --exclude=.agent-token foo .', None), ('rg foo agents', None), ('rg -g "*.md" foo agents', None)]:
+                         ('grep -r foo --exclude=.agent-token', self.p('agents', 'agent-a')),
+                         ('grep -r --exclude=.agent-token --exclude=.agent-token foo agents', None), ('egrep -r foo agents --exclude=.agent-token', None),
+                         ('rg foo agents', None), ('rg -g "*.md" foo agents', None)]:
             with self.subTest(cmd=cmd, cwd=cwd):
                 self.assert_allowed(self.bash(cmd, cwd=cwd), cmd)
+
+    # The six real spellings (plus brace expansion) that read the tokens through the exclude carve-out. Each one was run
+    # against the system BSD grep 2.6.0-FreeBSD in a throw-away tree with agents/agent-a/.agent-token and
+    # agents/agent-b/.agent-token: every command of the next three tests (F1, F2, F3) printed the token content (the
+    # `command grep` and `egrep` spellings behave as the plain one). A wrapper `grep` on a host can be ugrep, which ignores
+    # the include / exclude order: do not trust it for the check. The carve-out counts ONE shape only:
+    # `--exclude=<the exact dotted name>` and nothing else.
+    def test_an_include_after_the_exclude_re_includes_the_token(self):      # F1
+        for cmd in ['grep -r x agents --exclude=.agent-token --include=.agent-token', "grep -r x agents --exclude=.agent-token --include='*'",
+                    'grep -r x agents --exclude .agent-token --include .agent-token', 'command grep -r x agents --exclude=.agent-token --include=.agent-token',
+                    'egrep -r x agents --exclude=.agent-token --include=.agent-token',
+                    # the include BEFORE the exclude is safe in grep, the gate does not depend on the order: refused as well
+                    "grep -r x agents --include='*' --exclude=.agent-token"]:
+            with self.subTest(cmd=cmd):
+                self.assert_denied_b(self.bash(cmd), cmd)
+
+    def test_an_exclude_that_does_not_match_the_file_name_exactly_excludes_nothing(self):      # F2
+        for cmd in ['grep -r x agents --exclude=.agent-token/', 'grep -r x agents --exclude-dir=.agent-token', 'grep -r x agents --exclude-dir .agent-token',
+                    "grep -r x agents --exclude='.agent-*'", 'grep -r x agents --exclude=./.agent-token', 'grep -r x agents --exclude=.AGENT-TOKEN',
+                    "grep -r x agents --exclude='*'", 'grep -r x agents --exclude=agent-token']:
+            with self.subTest(cmd=cmd):
+                self.assert_denied_b(self.bash(cmd), cmd)
+
+    def test_a_word_that_is_resolved_at_run_time_could_carry_an_include(self):      # F3
+        for cmd in ['grep -r x agents --exclude=.agent-token $EXTRA', "grep -r x agents --exclude=.agent-token $(echo --include='*')",
+                    "grep -r x agents --exclude=.agent-token `echo --include='*'`", 'grep -r x agents --exclude=.agent-token "$EXTRA"',
+                    # brace expansion: bash turns the word into `--include=.agent-token` (no glob character, so the glob rules do not see it)
+                    'grep -r x agents --exclude=.agent-token {--include=.agent-token,--include=x}',
+                    'grep -r x agents --exclude=.agent-token ${EXTRA}']:
+            with self.subTest(cmd=cmd):
+                self.assert_denied_b(self.bash(cmd), cmd)
+
+    def test_a_command_outside_the_one_exclude_shape_is_refused_although_grep_would_honour_it(self):
+        # these do NOT read the token in the system BSD grep (a second exclude of another name, a directory exclude, an
+        # include of a directory, a variable as the pattern); the gate refuses them anyway: it does not read the order in
+        # which an implementation applies include and exclude, and it does not guess what a variable holds
+        for cmd in ['grep -r x agents --exclude=.agent-token --include-dir=agents', 'grep -r x agents --exclude=.agent-token --exclude=CLAUDE.md',
+                    'grep -r x agents --exclude=.agent-token --exclude-dir=agents', 'grep -r x agents --exclude-dir=agents --exclude=.agent-token',
+                    'grep -r $PATTERN agents --exclude=.agent-token', 'grep -r x agents --exclude=.agent-token `a`',
+                    'grep -r x agents --exclude=.agent-token {--include=a,--include=b}',
+                    'grep -r --exclude-dir=agents --exclude-dir=store --exclude=.agent-token foo agents/..',
+                    'grep -r --exclude-dir=store --exclude-dir=agents --exclude=.agent-token foo .']:
+            with self.subTest(cmd=cmd):
+                self.assert_denied_b(self.bash(cmd), cmd)
 
     def test_a_word_that_is_a_file_is_never_guessed_to_be_the_pattern(self):
         # `-er` is `-e` with the attached pattern `r`: the next word is a FILE; `-f`, `-m 5`, `-A1` take values too
@@ -310,7 +354,7 @@ class BashOnEveryTokenFile(Tree):
             with self.subTest(cmd=cmd):
                 self.assert_denied(self.bash(cmd), cmd)
         # the same understood options keep the exclude working: known no-value options, `=` and space forms, -e / --regexp
-        for cmd in ['grep -rn --include=*.md --exclude=.agent-token foo agents', 'grep -r --exclude .agent-token --include *.md foo agents',
+        for cmd in ['grep -rn --exclude=.agent-token foo agents', 'grep -r --exclude .agent-token foo agents',
                     'grep -r -e foo --exclude=.agent-token agents', 'grep -r --regexp foo --exclude=.agent-token agents',
                     'grep -r --ignore-case --line-number --exclude=.agent-token foo agents', 'grep -r --exclude=.agent-token foo agents -']:
             with self.subTest(cmd=cmd):
