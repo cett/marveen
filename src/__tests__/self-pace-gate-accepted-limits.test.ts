@@ -86,6 +86,15 @@ describe('accepted behaviours of the tree rule, pinned by name (a later fix flip
     expect(where(t)).toEqual(REFUSED_EVERYWHERE(t))
   })
 
+  it('L9. KNOWN LIMIT: a git word built by an expansion, and the other commands that write the shared configuration (remote, submodule), are not judged by key: free in a copy', () => {
+    for (const x of ['G=git; $G config core.hooksPath /x', '$(echo git) config core.hooksPath /x', 'git remote add evil x', 'git remote set-url origin x', 'git branch --set-upstream-to=origin/x']) {
+      expect(where(x)).toEqual(COPY_ONLY(x))
+    }
+    // the twin: the same key spelled as a plain git word is refused in the copy too (the key rule)
+    const t = 'git config core.hooksPath /x'
+    expect(where(t)).toEqual(REFUSED_EVERYWHERE(t))
+  })
+
   it('L5. KNOWN LIMIT: cd -P through a symlink is counted lexically, the shell goes physically', () => {
     const c = 'cd -P lnk/.. && git checkout other' // lexically the copy, physically the install's agents directory
     expect(where(c)).toEqual(COPY_ONLY(c))

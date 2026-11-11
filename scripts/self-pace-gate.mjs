@@ -1469,6 +1469,78 @@ function gitFetchPlain(args, g) {
   }
   return true
 }
+// ---- git config: a write is judged by its KEY and its VALUE, from any directory ----------------------------------------------------
+// A worktree copy shares its repository configuration with the install, so a `git config` run in a copy reaches the install: core.hooksPath
+// and diff.external make the next plain git in the install run a program, core.worktree re-points the install repository, alias.x=!cmd,
+// core.fsmonitor, core.pager, filter.*, include.path and the like do the same. The key set is open-ended, so this is an ALLOWLIST (the shape
+// the global `-c` rule already has, SAFE_C): a write form passes only for a key that cannot run a program or move a tree, AND only with a
+// value that is one of that key's plain settings (pull.rebase=interactive opens an editor on the next pull). Compared lower-cased: git reads
+// the section and the variable name case-insensitively. `branch.<name>.remote|merge|rebase` are NOT here: a remote can be a URL or a remote
+// helper that the next pull runs, and `git branch --set-upstream-to` covers the daily need without a config write.
+const GIT_CFG_TEXT = /^[^\r\n\0]*$/
+const GIT_CFG_BOOL = /^(?:true|false)$/i // (git reads a boolean and these words case-insensitively)
+const GIT_CFG_KEYS = [
+  [/^(?:user|color)\.[a-z0-9.-]+$/, GIT_CFG_TEXT],
+  [/^advice\.[a-z0-9.-]+$/, GIT_CFG_BOOL],
+  [/^pull\.rebase$/, GIT_CFG_BOOL], [/^fetch\.prune$/, GIT_CFG_BOOL], [/^rerere\.enabled$/, GIT_CFG_BOOL], [/^push\.autosetupremote$/, GIT_CFG_BOOL],
+  [/^core\.(?:filemode|ignorecase|quotepath)$/, GIT_CFG_BOOL],
+  [/^pull\.ff$/, /^(?:true|false|only)$/i],
+  [/^core\.autocrlf$/, /^(?:true|false|input)$/i],
+  [/^core\.safecrlf$/, /^(?:true|false|warn)$/i],
+  [/^push\.default$/, /^(?:simple|current|upstream|nothing|matching)$/i],
+  [/^init\.defaultbranch$/, /^[A-Za-z0-9._/-]+$/],
+]
+// Options that change how a config is read or typed, none of which writes a file or runs a program. Matched EXACTLY (no abbreviation):
+// anything else that starts with a dash is refused, so a spelling this table does not know can only cost a false deny.
+const GIT_CFG_PLAIN = new Set(['--local', '--global', '--system', '--worktree', '--show-origin', '--show-scope', '--name-only', '--show-names', '--null', '-z',
+  '--includes', '--no-includes', '--fixed-value', '--no-type', '--bool', '--int', '--bool-or-int', '--path', '--expiry-date', '--all', '--regexp'])
+const GIT_CFG_READ = new Set(['--get', '--get-all', '--get-regexp', '--get-urlmatch', '--get-color', '--get-colorbool', '-l', '--list'])
+const GIT_CFG_UNSET = new Set(['--unset', '--unset-all', '--remove-section']) // they only remove
+const GIT_CFG_WRITE = new Set(['--add', '--replace-all', '--rename-section', '--append'])
+const GIT_CFG_VALUED = /^--(?:type|default|value|url)=/ // the value is glued: text, never a path this rule reads
+const GIT_CFG_VALUED_SEP = new Set(['--type', '--default', '-t']) // the next word is the value of the option
+const GIT_CFG_SUBS = new Set(['get', 'list', 'unset', 'remove-section', 'set', 'edit', 'rename-section']) // git >= 2.46: `git config set k v`
+// May this `git config` run? `rest` = the words after `config`. A word that cannot be read off the text ($VAR not set in the command, a
+// substitution) is unreadable: for the key, and for the value of a key that has a value rule, it is a refusal.
+function gitConfigAllowed(rest, ctx) {
+  if (rest.length > GIT_TREE_MAX_ARGS) return false
+  const readable = (w) => { const x = expandWord(w, ctx.vars, ctx.current); return /[$`]/.test(x) || x.includes(DYN) ? null : x }
+  const pos = []; let act = null; let end = false
+  for (let k = 0; k < rest.length; k++) {
+    const a = rest[k]
+    if (end || !a.startsWith('-') || a === '-') { pos.push(a); continue }
+    if (a === '--') { end = true; continue }
+    if (GIT_CFG_PLAIN.has(a) || GIT_CFG_VALUED.test(a)) continue
+    if (GIT_CFG_VALUED_SEP.has(a)) { k++; continue }
+    if (GIT_CFG_READ.has(a)) { act ??= 'read'; continue }
+    if (GIT_CFG_UNSET.has(a)) { act ??= 'unset'; continue }
+    if (GIT_CFG_WRITE.has(a)) { act = a === '--rename-section' ? 'rename' : 'write'; continue }
+    return false // -f / --file / --blob / -e / --edit (a file target is a path writer, an editor is a program), or a spelling not known
+  }
+  const first = pos[0] !== undefined && GIT_CFG_SUBS.has(pos[0]) ? pos.shift() : null
+  if (first === 'edit') return false
+  if (first === 'get' || first === 'list') act = 'read'
+  else if (first === 'unset' || first === 'remove-section') act = 'unset'
+  else if (first === 'set') act = 'write'
+  else if (first === 'rename-section') act = 'rename'
+  if (act === 'rename') {
+    const SECTION = /^(?:user|color|advice)(?:\.[a-z0-9.-]+)?$/
+    const [from, to] = [pos[0], pos[1]].map((p) => (p === undefined ? null : readable(p)?.toLowerCase() ?? null))
+    return pos.length === 2 && from !== null && to !== null && SECTION.test(from) && SECTION.test(to)
+  }
+  if (act === 'read' || act === 'unset') return true
+  if (act === null && pos.length <= 1) return true // one key and no value: a read
+  if (pos.length === 0 || pos.length > 3) return false
+  const key = readable(pos[0])?.toLowerCase()
+  if (key === undefined || key === null) return false
+  const rule = GIT_CFG_KEYS.find(([rx]) => rx.test(key))
+  if (!rule) return false
+  const value = pos[1] === undefined ? '' : readable(pos[1])
+  // a free-text value (user.*, color.*) may be built by the shell: git stores it quoted, a newline in it cannot start a new key. A value
+  // with a rule must be read off the text and match.
+  if (rule[1] === GIT_CFG_TEXT) return value === null || GIT_CFG_TEXT.test(value)
+  return value !== null && rule[1].test(value)
+}
 // Can this git never write through a path it was handed? Only a read-only subcommand (SAFE_GIT, and gitSafe agrees: no --output,
 // no -c, no pager option), the harmless list without `worktree` (its add / move / remove take a target path), or a plain fetch.
 // Everything else, and a git whose subcommand cannot be read, counts as writing: the same split gitRewritesInstallTree makes.
@@ -1791,6 +1863,9 @@ export function bashProtectedDecision(command, opts = {}) {
       // `git checkout` with the same global options (-C, --work-tree, --git-dir) in front.
       const behindXargs = words.slice(0, g).some((w) => w.split('/').pop() === 'xargs')
       const viaXargs = behindXargs && (sub === null || !SAFE_GIT.has(sub))
+      // a `git config` is judged by its key and value wherever it runs (a worktree copy shares the repository configuration with the
+      // install). Behind xargs the words the gate sees are not all the words git gets, so there it is refused unread.
+      if (sub === 'config' && (behindXargs || !gitConfigAllowed(words.slice(g + 1 + gg.subIdx + 1), ctx))) return { deny: true, reason: 'gate-scripts' }
       if (gitRewritesInstallTree(viaXargs ? [...words.slice(0, g + 1 + gg.subIdx), 'checkout'] : words, g, ctx, { exact: !unionMode, compound, ...gmode, envUnknown: envUnknownAt(si) })) return { deny: true, reason: 'gate-scripts' }
     }
     // a script handed to a shell as text (sh -c STRING, eval STRING, stdin): a git in it is judged as a command of its own
