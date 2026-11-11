@@ -102,9 +102,19 @@ _EVENT = {"session_id": None}
 
 def _post(payload: dict) -> str:
     """Send one write-back to the dashboard and return the message it logs.
-    Raises when the dashboard cannot be reached or rejects the payload."""
-    return dashboard_api.request("POST", "/api/skill-sync", payload, timeout=POST_TIMEOUT,
-                                 session_id=_EVENT["session_id"])["message"]
+    Raises when the dashboard cannot be reached or rejects the payload.
+    A `pending: true` response (the write touches privilege, queued for review instead of going live) is also
+    surfaced as additionalContext, the same way a failed write-back already is in _warn_not_synced: the agent's
+    file and the DB now differ and it should know why."""
+    resp = dashboard_api.request("POST", "/api/skill-sync", payload, timeout=POST_TIMEOUT,
+                                  session_id=_EVENT["session_id"])
+    if resp.get("pending"):
+        print(json.dumps({"hookSpecificOutput": {
+            "hookEventName": "PostToolUse",
+            "additionalContext": f"{resp['message']} -- the running session already has whatever it just granted "
+                                 "itself; this only keeps it from becoming the fleet's approved state until reviewed.",
+        }}))
+    return resp["message"]
 
 
 def read_generated_header(content: str) -> "tuple[str | None, bool] | None":

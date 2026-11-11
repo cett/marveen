@@ -93,14 +93,14 @@ describe('SQL skills tenant isolation (716)', () => {
 
   it('updateSkill updates content and description', async () => {
     await createSkill({ id: 'update-skill', name: 'Update Me', content: 'v1', tenant_id: 'iso-acme' }, { kind: 'system', id: null })
-    const updated = await updateSkill('update-skill', { content: 'v2', description: 'updated desc' }, { kind: 'system', id: null })
-    expect(updated?.content).toBe('v2')
-    expect(updated?.description).toBe('updated desc')
+    const result = await updateSkill('update-skill', { content: 'v2', description: 'updated desc' }, { kind: 'system', id: null })
+    expect(result.outcome === 'updated' && result.skill.content).toBe('v2')
+    expect(result.outcome === 'updated' && result.skill.description).toBe('updated desc')
   })
 
-  it('updateSkill on non-existent id returns undefined', async () => {
+  it('updateSkill on non-existent id returns not_found', async () => {
     const result = await updateSkill('does-not-exist-xyz', { content: 'x' }, { kind: 'system', id: null })
-    expect(result).toBeUndefined()
+    expect(result.outcome).toBe('not_found')
   })
 
   it('getSkill returns undefined for unknown id', async () => {

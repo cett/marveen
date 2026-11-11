@@ -103,9 +103,17 @@ describe('a fleet_agent token writes back the skills of its own agent', () => {
   })
 
   it('a companion file of its own skill: stored', async () => {
+    // Not scripts/ and no exec bit: a runnable companion is gated by guard.gatePrivilege regardless of
+    // ownership (see skill-sync-route.test.ts), which is a different concern than the ownership check this test is about.
+    const r = await callAs(await tokenAuth('tok-alpha'), { kind: 'companion', skill_id: 'agent/alpha/mine', rel_path: 'notes/run.txt', content_base64: b64('hi'), mode: 0o644 })
+    expect(r.status).toBe(200)
+    expect(await getSkillFile('agent/alpha/mine', 'notes/run.txt')).toMatchObject({ mode: 0o644 })
+  })
+
+  it('a runnable companion file of its own skill is queued pending by the privilege gate, not stored', async () => {
     const r = await callAs(await tokenAuth('tok-alpha'), { kind: 'companion', skill_id: 'agent/alpha/mine', rel_path: 'scripts/run.sh', content_base64: b64('#!/bin/sh\n'), mode: 0o755 })
     expect(r.status).toBe(200)
-    expect(await getSkillFile('agent/alpha/mine', 'scripts/run.sh')).toMatchObject({ mode: 0o755 })
+    expect(await getSkillFile('agent/alpha/mine', 'scripts/run.sh')).toBeUndefined()
   })
 })
 

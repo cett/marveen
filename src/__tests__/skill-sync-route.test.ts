@@ -66,6 +66,22 @@ describe('kind: skill', () => {
     expect(res.status).toBe(400)
     expect((await post({ kind: 'skill', skill_id: 'fleet-thing', content: 'x' })).status).toBe(400)
   })
+
+  it('a write-back that introduces a privilege block on an existing live skill is queued pending, the live content untouched', async () => {
+    await createSkill({ id: 'global/p', name: 'p', content: 'plain body', tenant_id: 'fleet', is_global: true }, { kind: 'system', id: null })
+    const res = await post({ kind: 'skill', skill_id: 'global/p', content: '---\nname: p\ndescription: d\nallowed-tools: Bash\n---\nbody' })
+    expect(res.body).toMatchObject({ ok: true, pending: true })
+    const row = (await getSkill('global/p'))!
+    expect(row.status).toBe('live')
+    expect(row.content).toBe('plain body')
+  })
+
+  it('a brand-new file-backed skill with a privilege block is queued pending_review instead of upserted live', async () => {
+    const res = await post({ kind: 'skill', skill_id: 'global/new-priv', content: '---\nname: new-priv\ndescription: d\nallowed-tools: Bash\n---\nbody' })
+    expect(res.body).toMatchObject({ ok: true, pending: true })
+    const row = (await getSkill('global/new-priv'))!
+    expect(row.status).toBe('pending_review')
+  })
 })
 
 describe('kind: tenant', () => {
@@ -110,12 +126,13 @@ describe('kind: companion', () => {
     await createSkill({ id: 'global/s', name: 's', content: 'c', tenant_id: 'fleet', is_global: true }, { kind: 'system', id: null })
   })
 
-  it('stores a file for an existing skill, normalising the mode, and overwrites on the second edit', async () => {
-    const first = await post({ kind: 'companion', skill_id: 'global/s', rel_path: 'scripts/run.sh', content_base64: b64('#!/bin/sh\n'), mode: 0o755 })
-    expect(first.body).toEqual({ ok: true, message: 'stored companion scripts/run.sh of global/s' })
-    expect(await getSkillFile('global/s', 'scripts/run.sh')).toMatchObject({ mode: 0o755 })
-    await post({ kind: 'companion', skill_id: 'global/s', rel_path: 'scripts/run.sh', content_base64: b64('v2'), mode: 0o600 })
-    const f = (await getSkillFile('global/s', 'scripts/run.sh'))!
+  it('stores a non-runnable file for an existing skill, normalising the mode, and overwrites on the second edit', async () => {
+    // Not scripts/ and no exec bit: a runnable companion is gated (see the dedicated test below), this one is not.
+    const first = await post({ kind: 'companion', skill_id: 'global/s', rel_path: 'notes/run.txt', content_base64: b64('v1'), mode: 0o644 })
+    expect(first.body).toEqual({ ok: true, message: 'stored companion notes/run.txt of global/s' })
+    expect(await getSkillFile('global/s', 'notes/run.txt')).toMatchObject({ mode: 0o644 })
+    await post({ kind: 'companion', skill_id: 'global/s', rel_path: 'notes/run.txt', content_base64: b64('v2'), mode: 0o600 })
+    const f = (await getSkillFile('global/s', 'notes/run.txt'))!
     expect(f.content.toString()).toBe('v2')
     expect(f.mode).toBe(0o644)
   })
@@ -141,6 +158,12 @@ describe('kind: companion', () => {
     const again = await post({ kind: 'companion', skill_id: 'global/s', rel_path: 'f0.txt', content_base64: b64('new') })
     expect(again.body.ignored).toBeUndefined()
     expect((await getSkillFile('global/s', 'f0.txt'))!.content.toString()).toBe('new')
+  })
+
+  it('a runnable companion file is queued pending instead of being written to disk via the DB', async () => {
+    const res = await post({ kind: 'companion', skill_id: 'global/s', rel_path: 'scripts/run.sh', content_base64: b64('#!/bin/sh\necho hi'), mode: 0o755 })
+    expect(res.body).toMatchObject({ ok: true, pending: true })
+    expect(await getSkillFile('global/s', 'scripts/run.sh')).toBeUndefined()
   })
 
   it('applies the tenant qualification check to a generated tenant copy', async () => {

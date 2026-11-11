@@ -11,7 +11,8 @@ import { parseMultipart } from '../multipart.js'
 import { readBody, json, RequestBodyTooLargeError } from '../http-helpers.js'
 import { recordFleetSkillWriteDenied } from '../token-shadow.js'
 import { sanitizeSkillName, shellEscape } from '../sanitize.js'
-import { regenSingleSkillFile, removeGeneratedSkillFile, removeGeneratedCompanionFile, importCompanionFilesOfDir } from '../skill-regen.js'
+import { regenSingleSkillFile, removeGeneratedSkillFile, removeGeneratedCompanionFile } from '../skill-regen.js'
+import { extractSkillArchive, quarantineStagedSkills, removeStage, type ExtractResult } from '../skill-import-quarantine.js'
 import { MAX_SKILL_FILE_BYTES, MAX_SKILL_FILES_PER_SKILL, normalizeSkillRelPath } from '../../skill-files.js'
 import { skillActorFromRoute } from '../skill-actor.js'
 import type { RouteContext } from './types.js'
@@ -20,7 +21,7 @@ import {
   listSkillsForTenant, listAllSkills, listLiveSkills,
   grantSkillAccess, revokeSkillAccess, listSkillAccess,
   listSkillFiles, getSkillFile, putSkillFile, deleteSkillFile, countSkillFiles,
-  listSkillRevisions, revokeSkill, MAX_REVOKE_REASON_CHARS,
+  listSkillRevisions, revokeSkill, MAX_REVOKE_REASON_CHARS, type CreateSkillResult,
 } from '../../db.js'
 
 function parseFrontmatterField(content: string, field: string): string {
@@ -422,10 +423,15 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     }
 
     const sqlId = `global/${skillName}`
+    let createResult: CreateSkillResult
     try {
-      await createSkill({ id: sqlId, name: skillName, description, content: skillMd, tenant_id: 'fleet', is_global: true }, actor)
+      createResult = await createSkill({ id: sqlId, name: skillName, description, content: skillMd, tenant_id: 'fleet', is_global: true }, actor, {}, { gatePrivilege: true })
     } catch {
       json(res, { error: 'conflict', hint: 'Skill already exists' }, 409)
+      return true
+    }
+    if (createResult.outcome === 'pending') {
+      json(res, { ok: true, status: 'pending_review', revision: createResult.revision.seq, touches_privilege: createResult.revision.touches_privilege === 1 }, 202)
       return true
     }
 
@@ -444,108 +450,43 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     if (!file) { json(res, { error: 'required', field: 'file', hint: 'No file uploaded' }, 400); return true }
 
     const skillsDir = join(homedir(), '.claude', 'skills')
-    mkdirSync(skillsDir, { recursive: true })
-
-    const tmpPath = join(skillsDir, `_import_${randomUUID()}.zip`)
-    const before = new Set(readdirSync(skillsDir))
+    let staged: ExtractResult | null = null
     try {
-      writeFileSync(tmpPath, file.data)
-      const listOutput = execSync(`unzip -Z1 "${tmpPath}" 2>&1`, { timeout: 5000, encoding: 'utf-8' })
-      const entries = listOutput.split('\n').map(l => l.trim()).filter(Boolean)
-      for (const entry of entries) {
-        if (entry.includes('..') || entry.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(entry)) {
-          unlinkSync(tmpPath)
-          json(res, { error: 'invalid_value', field: 'file', hint: 'Invalid skill file: path traversal detected' }, 400)
+      // The archive is unzipped OUTSIDE every skills directory and recorded as a pending revision (quarantine): nothing
+      // of it is written where an agent loads skills from until a person activates it.
+      staged = extractSkillArchive(file.data)
+      if (staged.kind === 'invalid') { json(res, { error: 'invalid_value', field: 'file', hint: staged.hint }, 400); return true }
+      for (const td of staged.skills) {
+        if (existsSync(join(skillsDir, td))) {
+          json(res, { error: 'conflict', hint: `Skill already exists: ${td}. Delete it first if you want to overwrite.` }, 409)
           return true
         }
       }
-      const topLevel = new Set<string>()
-      for (const entry of entries) {
-        const seg = entry.split('/')[0]
-        if (seg) topLevel.add(seg)
-      }
-      for (const td of topLevel) {
-        if (before.has(td)) {
-          unlinkSync(tmpPath)
-          json(res, {
-            error: 'conflict',
-            hint: `Skill already exists: ${td}. Delete it first if you want to overwrite.`,
-          }, 409)
-          return true
-        }
-      }
-      execSync(`unzip -o "${tmpPath}" -d "${skillsDir}"`, { timeout: 10000 })
-      unlinkSync(tmpPath)
-
-      const after = readdirSync(skillsDir).filter(f => !before.has(f))
-      const rejectSymlinks = (dir: string): boolean => {
-        for (const entry of readdirSync(dir)) {
-          const p = join(dir, entry)
-          const st = lstatSync(p)
-          if (st.isSymbolicLink()) return true
-          if (st.isDirectory() && rejectSymlinks(p)) return true
-        }
-        return false
-      }
-      const tainted: string[] = []
-      for (const f of after) {
-        const p = join(skillsDir, f)
-        try {
-          if (lstatSync(p).isSymbolicLink() || (statSync(p).isDirectory() && rejectSymlinks(p))) {
-            tainted.push(f)
-          }
-        } catch { /* ignored */ }
-      }
-      if (tainted.length > 0) {
-        for (const f of after) {
-          try { rmSync(join(skillsDir, f), { recursive: true, force: true }) } catch { /* best effort */ }
-        }
-        json(res, { error: 'invalid_value', field: 'file', hint: 'Invalid skill file: symlink entries rejected' }, 400)
-        return true
-      }
-
-      const extracted = after.filter(f => {
-        const p = join(skillsDir, f)
-        try { return statSync(p).isDirectory() && existsSync(join(p, 'SKILL.md')) } catch { return false }
+      const outcome = await quarantineStagedSkills(staged, {
+        idFor: (dir) => `global/${dir}`, isGlobal: true,
+        describe: (dir) => parseFrontmatterField(readFileOr(join(dir, 'SKILL.md'), ''), 'description'),
+        // An archive import is traced as an import (source: the skill directory name in the archive), by whoever sent it.
+        actor: { kind: 'import', id: actor.id },
       })
-      if (extracted.length === 0) {
-        for (const f of after) {
-          try { rmSync(join(skillsDir, f), { recursive: true, force: true }) } catch { /* best effort */ }
-        }
-        json(res, { error: 'invalid_value', field: 'file', hint: 'No valid skill (SKILL.md) found in archive' }, 400)
+      if (outcome.conflict) {
+        json(res, { error: 'conflict', hint: `Skill already exists: ${outcome.conflict}. Delete it first if you want to overwrite.` }, 409)
         return true
       }
-
-      for (const dirName of extracted) {
-        const skillMdPath = join(skillsDir, dirName, 'SKILL.md')
-        const content = readFileOr(skillMdPath, '')
-        const desc = parseFrontmatterField(content, 'description')
-        try {
-          // An archive import is traced as an import (source: the skill directory name in the archive), by whoever sent it.
-          const importActor = { kind: 'import', id: actor.id } as const
-          const importSource = { sourceRef: `skill-archive:${dirName}` }
-          await seedSkillIfAbsent({ id: `global/${dirName}`, name: dirName, description: desc, content, tenant_id: 'fleet', is_global: true }, importActor, importSource)
-          // scripts/, references/ ... of the archive belong in the DB too (skill_files).
-          await importCompanionFilesOfDir(`global/${dirName}`, join(skillsDir, dirName), importActor, false, importSource)
-        } catch (sqlErr) {
-          logger.warn({ dirName, err: sqlErr }, 'Failed to upsert imported skill into SQL')
-        }
+      if (outcome.quarantined.length === 0 && outcome.refused.length > 0) {
+        json(res, { error: 'invalid_value', field: 'file', hint: outcome.refused[0].hint }, 400)
+        return true
       }
-
-      logger.info({ skills: extracted }, 'Global skill(s) imported')
-      json(res, { ok: true, imported: extracted })
+      const names = outcome.quarantined.map((q) => q.name)
+      logger.info({ skills: names }, 'Global skill(s) imported into quarantine')
+      // 202, not 200: the skill is NOT saved as a usable skill, it waits for a review.
+      json(res, { ok: true, status: 'pending_review', imported: names, skills: outcome.quarantined, refused: outcome.refused }, 202)
       return true
     } catch (err) {
-      try { unlinkSync(tmpPath) } catch { /* ignored */ }
-      try {
-        const leftover = readdirSync(skillsDir).filter(f => !before.has(f))
-        for (const f of leftover) {
-          try { rmSync(join(skillsDir, f), { recursive: true, force: true }) } catch { /* best effort */ }
-        }
-      } catch { /* dir gone or unreadable; nothing to do */ }
       logger.error({ err }, 'Failed to import global skill')
       json(res, { error: 'internal_error', hint: 'Failed to extract .skill file' }, 500)
       return true
+    } finally {
+      if (staged && staged.kind === 'ok') removeStage(staged.stage)
     }
   }
 
@@ -634,9 +575,18 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
       const agentSqlId = `agent/${agentPutParam}/${skillName}`
       const agentDesc = parseFrontmatterField(content, 'description')
       if (await getSkill(agentSqlId)) {
-        await updateSkill(agentSqlId, { content, description: agentDesc }, actor)
+        const result = await updateSkill(agentSqlId, { content, description: agentDesc }, actor, {}, { gatePrivilege: true })
+        if (result.outcome === 'pending') {
+          json(res, { ok: true, status: 'pending_review', revision: result.revision.seq, touches_privilege: result.revision.touches_privilege === 1 }, 202)
+          return true
+        }
+        if (result.outcome === 'not_found') { json(res, { error: 'not_found', hint: 'Skill not found' }, 404); return true }
       } else {
-        await createSkill({ id: agentSqlId, name: skillName, description: agentDesc, content, tenant_id: 'fleet', is_global: false }, actor)
+        const created = await createSkill({ id: agentSqlId, name: skillName, description: agentDesc, content, tenant_id: 'fleet', is_global: false }, actor, {}, { gatePrivilege: true })
+        if (created.outcome === 'pending') {
+          json(res, { ok: true, status: 'pending_review', revision: created.revision.seq, touches_privilege: created.revision.touches_privilege === 1 }, 202)
+          return true
+        }
       }
       // DB-first: the row above is the source of truth, the file is generated
       // from it. forceEnabled: this is an explicit user edit of an existing
@@ -666,9 +616,18 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     const globalSqlId = `global/${skillName}`
     const globalDesc = parseFrontmatterField(content, 'description')
     if (await getSkill(globalSqlId)) {
-      await updateSkill(globalSqlId, { content, description: globalDesc }, actor)
+      const result = await updateSkill(globalSqlId, { content, description: globalDesc }, actor, {}, { gatePrivilege: true })
+      if (result.outcome === 'pending') {
+        json(res, { ok: true, status: 'pending_review', revision: result.revision.seq, touches_privilege: result.revision.touches_privilege === 1 }, 202)
+        return true
+      }
+      if (result.outcome === 'not_found') { json(res, { error: 'not_found', hint: 'Skill not found' }, 404); return true }
     } else {
-      await createSkill({ id: globalSqlId, name: skillName, description: globalDesc, content, tenant_id: 'fleet', is_global: true }, actor)
+      const created = await createSkill({ id: globalSqlId, name: skillName, description: globalDesc, content, tenant_id: 'fleet', is_global: true }, actor, {}, { gatePrivilege: true })
+      if (created.outcome === 'pending') {
+        json(res, { ok: true, status: 'pending_review', revision: created.revision.seq, touches_privilege: created.revision.touches_privilege === 1 }, 202)
+        return true
+      }
     }
     // DB-first (see the agent-local branch above): generate the file from the row.
     const globalRegen = await regenSingleSkillFile(globalSqlId, true)
@@ -744,13 +703,17 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 64)
     const id = `${tenantId}-${slug}`
     if (await getSkill(id)) { json(res, { error: 'conflict', hint: 'A skill with this name already exists for this tenant' }, 409); return true }
-    const row = await createSkill({ id, name: name.trim(), description: description ?? '', content, tenant_id: tenantId, is_global: is_global ?? false, created_by: ctx.auth?.kind === 'session' ? (ctx.auth.user ?? null) : null }, actor)
+    const result = await createSkill({ id, name: name.trim(), description: description ?? '', content, tenant_id: tenantId, is_global: is_global ?? false, created_by: ctx.auth?.kind === 'session' ? (ctx.auth.user ?? null) : null }, actor, {}, { gatePrivilege: true })
+    if (result.outcome === 'pending') {
+      json(res, { ok: true, status: 'pending_review', revision: result.revision.seq, touches_privilege: result.revision.touches_privilege === 1 }, 202)
+      return true
+    }
     // Phase 1 of the file->SQL-only migration: push this
     // write to disk immediately rather than waiting for the next startup
     // regen. No-op (skipped) for non-fleet skills and while SKILL_SQL_REGEN
     // is off.
     await regenSingleSkillFile(id)
-    json(res, { ok: true, skill: row }, 201)
+    json(res, { ok: true, skill: result.skill }, 201)
     return true
   }
 
@@ -792,13 +755,17 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     if (parsed.is_global !== undefined && !isAdmin) { json(res, { error: 'forbidden', hint: 'Only admin can set is_global' }, 403); return true }
     if (createSpec) {
       if (typeof parsed.content !== 'string' || !parsed.content.trim()) { json(res, { error: 'required', field: 'content', hint: 'content is required to create a skill' }, 400); return true }
-      const row = await createSkill({
+      const result = await createSkill({
         id, name: createSpec.name, description: parsed.description ?? parseSkillDescription(parsed.content),
         content: parsed.content, tenant_id: 'fleet', is_global: createSpec.isGlobal,
         created_by: ctx.auth?.kind === 'session' ? (ctx.auth.user ?? null) : null,
-      }, actor)
+      }, actor, {}, { gatePrivilege: true })
+      if (result.outcome === 'pending') {
+        json(res, { ok: true, status: 'pending_review', revision: result.revision.seq, touches_privilege: result.revision.touches_privilege === 1 }, 202)
+        return true
+      }
       await regenSingleSkillFile(id)
-      json(res, { ok: true, skill: row }, 201)
+      json(res, { ok: true, skill: result.skill }, 201)
       return true
     }
     // The description column mirrors the frontmatter (that is what the loader and the list show):
@@ -808,11 +775,20 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
       if (fmDescription) parsed = { ...parsed, description: fmDescription }
     }
     // The status is checked again inside the write for everybody but the admin: a revoke that committed after the read
-    // above (the body can be slow) must not be written over. undefined = the row is not live (or gone): the not-there answer.
-    const updated = await updateSkill(id, parsed, actor, {}, { requireLive: !isAdmin })
-    if (!isAdmin && !updated) { json(res, { error: 'not_found' }, 404); return true }
+    // above (the body can be slow) must not be written over. 'not_found' = the row is not live (or gone): the not-there answer.
+    const result = await updateSkill(id, parsed, actor, {}, { requireLive: !isAdmin, gatePrivilege: true })
+    if (result.outcome === 'rejected_combo') {
+      json(res, { error: 'invalid_value', field: parsed.name !== undefined ? 'name' : 'is_global', hint: 'A name or is_global change cannot be combined with a privilege-gated content or description change; send them as two separate requests' }, 400)
+      return true
+    }
+    if (result.outcome === 'pending') {
+      json(res, { ok: true, status: 'pending_review', revision: result.revision.seq, touches_privilege: result.revision.touches_privilege === 1 }, 202)
+      return true
+    }
+    // Reached by admin too only on a concurrent delete between the read above and the write: same answer either way.
+    if (result.outcome === 'not_found') { json(res, { error: 'not_found' }, 404); return true }
     await regenSingleSkillFile(id)
-    json(res, { ok: true, skill: updated })
+    json(res, { ok: true, skill: result.skill })
     return true
   }
 
@@ -901,10 +877,14 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
       if (parsed.mode !== undefined && (typeof parsed.mode !== 'number' || !Number.isInteger(parsed.mode))) { json(res, { error: 'invalid_value', field: 'mode', hint: 'mode must be an integer (permission bits)' }, 400); return true }
       const isNew = !await getSkillFile(id, rel)
       if (isNew && await countSkillFiles(id) >= MAX_SKILL_FILES_PER_SKILL) { json(res, { error: 'limit_exceeded', hint: `At most ${MAX_SKILL_FILES_PER_SKILL} companion files per skill` }, 400); return true }
-      const saved = await putSkillFile(id, rel, bytes, parsed.mode as number | undefined, actor)
+      const result = await putSkillFile(id, rel, bytes, parsed.mode as number | undefined, actor, {}, { gatePrivilege: true })
+      if (result.outcome === 'pending') {
+        json(res, { ok: true, status: 'pending_review', revision: result.revision.seq, touches_privilege: result.revision.touches_privilege === 1 }, 202)
+        return true
+      }
       const regen = await regenSingleSkillFile(id, true)   // an explicit write always reaches disk, like PUT /api/skills/:name
       if (regen.reason === 'write_error') { json(res, { error: 'internal_error', hint: 'Saved to the DB, but the on-disk copy could not be written' }, 500); return true }
-      json(res, { ok: true, file: fileView(saved) }, isNew ? 201 : 200)
+      json(res, { ok: true, file: fileView(result.file) }, isNew ? 201 : 200)
       return true
     }
   }

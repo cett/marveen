@@ -1,14 +1,11 @@
 // #751 step 7: src/web/routes/agents-skills.ts was at 0%. Real filesystem
 // (mkdtempSync-based fake project/home, mirroring the skill-regen.test.ts
 // pattern) and a real in-memory DB for the skills table, since the route's
-// whole job is filesystem/DB bookkeeping around skill dirs. `execSync` (the
-// actual `unzip` calls) is mocked -- unzip itself isn't our code, but the
-// route's branching on ITS output (path traversal, symlink rejection, "no
-// SKILL.md found") is, so the mock performs the real filesystem side effects
-// a real unzip would, keeping those branches exercised for real.
+// whole job is filesystem/DB bookkeeping around skill dirs. The archive import
+// (real zips, the quarantine) is covered in skill-import-quarantine.test.ts.
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest'
 import {
-  existsSync, mkdirSync, writeFileSync, rmSync, symlinkSync, readFileSync,
+  existsSync, mkdirSync, writeFileSync, rmSync, readFileSync,
 } from 'node:fs'
 import { join } from 'node:path'
 import { EventEmitter } from 'node:events'
@@ -34,17 +31,11 @@ vi.mock('../config.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../config.js')>()
   // SKILL_SQL_REGEN: true matches the live server (Phase 1-3 of the
   // file->SQL-only migration shipped) -- regenSingleSkillFile() actually writes in these tests.
-  return { ...actual, PROJECT_ROOT: FAKE_PROJECT, MAIN_AGENT_ID: 'marveen', SKILL_SQL_REGEN: true }
+  return { ...actual, PROJECT_ROOT: FAKE_PROJECT, MAIN_AGENT_ID: 'marveen', SKILL_SQL_REGEN: true, STORE_DIR: join(FAKE_HOME, 'store') }
 })
 vi.mock('../logger.js', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }))
 vi.mock('../web/agent-scaffold.js', () => ({ generateSkillMd: vi.fn() }))
 vi.mock('../web/multipart.js', () => ({ parseMultipart: vi.fn() }))
-
-const { execSyncMock } = vi.hoisted(() => ({ execSyncMock: vi.fn() }))
-vi.mock('node:child_process', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('node:child_process')>()
-  return { ...actual, execSync: execSyncMock }
-})
 
 // Wraps the real atomicWriteFileSync by default so every "happy path" test
 // writes for real; only the disk-failure rollback test overrides it once.
@@ -94,7 +85,6 @@ function writeSkillDir(root: string, name: string, opts: { skillMd?: string } = 
 
 beforeEach(() => {
   initDatabase(':memory:')
-  execSyncMock.mockReset()
   vi.mocked(generateSkillMd).mockReset()
   rmSync(GLOBAL_SKILLS_DIR, { recursive: true, force: true })
   rmSync(join(FAKE_PROJECT, 'agents'), { recursive: true, force: true })
@@ -293,107 +283,11 @@ describe('POST /api/agents/:name/skills/import', () => {
     expect(status()).toBe(400)
   })
 
-  it('rejects a zip whose listing contains a path-traversal entry, without extracting', async () => {
-    const { parseMultipart } = await import('../web/multipart.js')
-    vi.mocked(parseMultipart).mockReturnValue({ file: { data: Buffer.from('zip-bytes'), filename: 'evil.zip' } } as any)
-    execSyncMock.mockImplementation((cmd: string) => {
-      if (cmd.startsWith('unzip -Z1')) return '../escape.txt\n'
-      throw new Error(`unexpected execSync call in traversal test: ${cmd}`)
-    })
-    const { ctx, status, body } = multipartCtx('marveen')
-    await tryHandleAgentsSkills(ctx)
-    expect(status()).toBe(400)
-    expect((body() as any).hint).toMatch(/path traversal/i)
-    // Only the -Z1 listing call happened -- extraction never ran.
-    expect(execSyncMock).toHaveBeenCalledTimes(1)
-  })
-
-  it('rejects an archive that extracts a symlink, and cleans up the extracted entries', async () => {
-    const { parseMultipart } = await import('../web/multipart.js')
-    vi.mocked(parseMultipart).mockReturnValue({ file: { data: Buffer.from('zip-bytes'), filename: 'sneaky.zip' } } as any)
-    execSyncMock.mockImplementation((cmd: string) => {
-      if (cmd.startsWith('unzip -Z1')) return 'sneaky/\nsneaky/SKILL.md\n'
-      if (cmd.startsWith('unzip -o')) {
-        const dir = join(GLOBAL_SKILLS_DIR, 'sneaky')
-        mkdirSync(dir, { recursive: true })
-        writeFileSync(join(dir, 'SKILL.md'), '# ok')
-        symlinkSync('/etc/passwd', join(dir, 'evil-link'))
-        return ''
-      }
-      throw new Error(`unexpected execSync call: ${cmd}`)
-    })
-    const { ctx, status, body } = multipartCtx('marveen')
-    await tryHandleAgentsSkills(ctx)
-    expect(status()).toBe(400)
-    expect((body() as any).hint).toMatch(/symlink/i)
-    expect(existsSync(join(GLOBAL_SKILLS_DIR, 'sneaky'))).toBe(false)
-  })
-
-  it('rejects an archive with no SKILL.md in any extracted top-level entry', async () => {
-    const { parseMultipart } = await import('../web/multipart.js')
-    vi.mocked(parseMultipart).mockReturnValue({ file: { data: Buffer.from('zip-bytes'), filename: 'empty.zip' } } as any)
-    execSyncMock.mockImplementation((cmd: string) => {
-      if (cmd.startsWith('unzip -Z1')) return 'junk/\njunk/readme.txt\n'
-      if (cmd.startsWith('unzip -o')) {
-        mkdirSync(join(GLOBAL_SKILLS_DIR, 'junk'), { recursive: true })
-        writeFileSync(join(GLOBAL_SKILLS_DIR, 'junk', 'readme.txt'), 'not a skill')
-        return ''
-      }
-      throw new Error(`unexpected execSync call: ${cmd}`)
-    })
-    const { ctx, status, body } = multipartCtx('marveen')
-    await tryHandleAgentsSkills(ctx)
-    expect(status()).toBe(400)
-    expect((body() as any).hint).toMatch(/no valid skill/i)
-    expect(existsSync(join(GLOBAL_SKILLS_DIR, 'junk'))).toBe(false)
-  })
-
-  it('imports a valid skill archive for the main agent: extracts, seeds the DB, reports it', async () => {
-    const { parseMultipart } = await import('../web/multipart.js')
-    vi.mocked(parseMultipart).mockReturnValue({ file: { data: Buffer.from('zip-bytes'), filename: 'good.zip' } } as any)
-    execSyncMock.mockImplementation((cmd: string) => {
-      if (cmd.startsWith('unzip -Z1')) return 'good-skill/\ngood-skill/SKILL.md\n'
-      if (cmd.startsWith('unzip -o')) {
-        const dir = join(GLOBAL_SKILLS_DIR, 'good-skill')
-        mkdirSync(dir, { recursive: true })
-        writeFileSync(join(dir, 'SKILL.md'), '---\ndescription: imported\n---\nbody')
-        return ''
-      }
-      throw new Error(`unexpected execSync call: ${cmd}`)
-    })
-    const { ctx, status, body } = multipartCtx('marveen')
-    await tryHandleAgentsSkills(ctx)
-    expect(status()).toBe(200)
-    expect(body()).toEqual({ ok: true, imported: ['good-skill'] })
-    expect(await getSkill('global/good-skill')).toMatchObject({ name: 'good-skill', description: 'imported', is_global: 1 })
-  })
-
-  it('imports into the sub-agent-scoped DB id for a non-main agent', async () => {
-    const { parseMultipart } = await import('../web/multipart.js')
-    vi.mocked(parseMultipart).mockReturnValue({ file: { data: Buffer.from('zip-bytes'), filename: 'good.zip' } } as any)
-    execSyncMock.mockImplementation((cmd: string) => {
-      if (cmd.startsWith('unzip -Z1')) return 'sub-good/\nsub-good/SKILL.md\n'
-      if (cmd.startsWith('unzip -o')) {
-        const dir = join(agentSkillsDir('agent-b'), 'sub-good')
-        mkdirSync(dir, { recursive: true })
-        writeFileSync(join(dir, 'SKILL.md'), '# sub good')
-        return ''
-      }
-      throw new Error(`unexpected execSync call: ${cmd}`)
-    })
-    const { ctx, status } = multipartCtx('agent-b')
-    await tryHandleAgentsSkills(ctx)
-    expect(status()).toBe(200)
-    expect(await getSkill('agent/agent-b/sub-good')).toMatchObject({ is_global: 0 })
-  })
-
-  it('returns 500 and cleans up the tmp zip when extraction itself throws', async () => {
+  // The import itself (staging, quarantine, 202, 409, the refused entries) is covered end to end with real archives in
+  // skill-import-quarantine.test.ts; here only the route's own failure path is pinned.
+  it('returns 500 when the archive cannot be read at all, and leaves no staging directory behind', async () => {
     const { parseMultipart } = await import('../web/multipart.js')
     vi.mocked(parseMultipart).mockReturnValue({ file: { data: Buffer.from('corrupt'), filename: 'corrupt.zip' } } as any)
-    execSyncMock.mockImplementation((cmd: string) => {
-      if (cmd.startsWith('unzip -Z1')) throw new Error('corrupt archive')
-      throw new Error(`unexpected execSync call: ${cmd}`)
-    })
     const { ctx, status, body } = multipartCtx('marveen')
     await tryHandleAgentsSkills(ctx)
     expect(status()).toBe(500)
