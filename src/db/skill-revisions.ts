@@ -344,6 +344,14 @@ export interface DecideSkillRevisionResult {
   /** Set only on 'activated': the caller regenerates this skill's disk file AFTER the transaction, the same way
    * every other skill write path regenerates from the route layer, never from inside db/. */
   skillId?: string
+  /** Set only on 'activated': the companion files the skill HAD that the activated set no longer carries (rel_path +
+   * the bytes that were in the DB), read inside the transaction just before the whole-set replace. The caller removes
+   * their generated copies from disk after the commit (removeGeneratedCompanionFile, byte-equal only), the way the
+   * single-file DELETE route does: the regen only writes, so without this a dropped (possibly executable) script
+   * stays on disk and the boot-time companion import copies it back into the live skill unreviewed. */
+  removedFiles?: { rel_path: string; content: Buffer }[]
+  /** Set only on 'activated': the skill row's tenant, which removeGeneratedCompanionFile needs to find the disk copy. */
+  tenantId?: string
 }
 
 /**
@@ -389,7 +397,9 @@ const SELF_APPROVAL_EXEMPT_AUTHOR_KINDS: ReadonlySet<string> = new Set(['import'
  *  - the companion files become EXACTLY the proposed set: a DELETE of the skill's current files followed by an
  *    INSERT of the proposed ones, the same "whole set" shape putSkillFile's gated branch uses.
  *  - the result carries `skillId` so the CALLER regenerates the disk file after the transaction commits, the same
- *    way every other skill write path regenerates from the route layer (db/ never imports skill-regen.js).
+ *    way every other skill write path regenerates from the route layer (db/ never imports skill-regen.js). It also
+ *    carries `removedFiles` (the files the skill had that the proposed set drops) and `tenantId`, so the caller can
+ *    take their generated copies off the disk: the regen only writes, it never deletes.
  *
  * reject:
  *  - the revision row is marked 'rejected'; the live skill and its files are untouched.
@@ -490,6 +500,13 @@ export async function decideSkillRevision(
         if ((latestActivated?.content_sha256 ?? null) !== revision.prev_sha256) throw new SkillRevisionStaleAtActivate()
       }
 
+      // The files the skill has NOW, read before the whole-set replace: the ones whose rel_path is not in the proposed
+      // set are handed back so the caller can remove their disk copies (see removedFiles on the result).
+      const proposedPaths = new Set(files.map((f) => f.rel_path))
+      const before = await tx.all<{ rel_path: string; content: Buffer }>(
+        'SELECT rel_path, content FROM skill_files WHERE skill_id = ?', revision.skill_id)
+      const removedFiles = before.filter((f) => !proposedPaths.has(f.rel_path)).map((f) => ({ rel_path: f.rel_path, content: f.content }))
+      const skillRow = await tx.get<{ tenant_id: string }>('SELECT tenant_id FROM skills WHERE id = ?', revision.skill_id)
       await tx.run('DELETE FROM skill_files WHERE skill_id = ?', revision.skill_id)
       for (const f of files) {
         await tx.run(
@@ -505,7 +522,7 @@ export async function decideSkillRevision(
         detail: { seq: revision.seq, decision: 'activate', content_sha256: revision.content_sha256?.slice(0, 12) ?? null },
         tenant_id: revision.tenant_id,
       }, tx)
-      return { outcome: 'activated' as const, skillId: revision.skill_id }
+      return { outcome: 'activated' as const, skillId: revision.skill_id, removedFiles, tenantId: skillRow?.tenant_id ?? revision.tenant_id }
     })
   } catch (err) {
     if (err instanceof SkillNotDecidableAtActivate) return { outcome: 'skill_not_decidable' }

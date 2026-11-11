@@ -10,6 +10,7 @@ import {
 import { tryHandleSkills } from '../web/routes/skills.js'
 import { resolveRequiredPermission } from '../web/rbac.js'
 import type { RouteContext } from '../web/routes/types.js'
+import { regenSingleSkillFile, removeGeneratedCompanionFile } from '../web/skill-regen.js'
 
 vi.mock('../web/skill-regen.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../web/skill-regen.js')>()),
@@ -20,6 +21,8 @@ vi.mock('../web/skill-regen.js', async (importOriginal) => ({
 
 beforeEach(() => {
   initDatabase(':memory:')
+  vi.mocked(regenSingleSkillFile).mockClear()
+  vi.mocked(removeGeneratedCompanionFile).mockClear()
 })
 
 const SYSTEM = { kind: 'system' as const, id: null }
@@ -35,7 +38,8 @@ const LEGACY_ADMIN_TOKEN: Extras = { auth: { kind: 'token', tokenName: 'legacy-s
 const TENANT_SESSION: Extras ={ auth: { kind: 'session', user: 'viewer' }, role: 'viewer', tenantId: 'co-x' }
 
 async function call(method: string, path: string, body: unknown, extras: Extras) {
-  const buf = Buffer.from(JSON.stringify(body ?? {}))
+  // A string body is sent as-is (to exercise a body that is not JSON); anything else is JSON-encoded.
+  const buf = Buffer.from(typeof body === 'string' ? body : JSON.stringify(body ?? {}))
   const req = new EventEmitter() as unknown as NodeJS.EventEmitter & { method: string; headers: Record<string, string> }
   req.method = method
   req.headers = {}
@@ -70,7 +74,7 @@ describe('decideSkillRevision', () => {
   it('activate on a pending create: the skill goes live with the proposed content', async () => {
     const id = await pendingCreate('agent/a/new-skill')
     const result = await decideSkillRevision(id, 'activate', { kind: 'human', id: 'reviewer' })
-    expect(result).toEqual({ outcome: 'activated', skillId: 'agent/a/new-skill' })
+    expect(result).toEqual({ outcome: 'activated', skillId: 'agent/a/new-skill', removedFiles: [], tenantId: 'fleet' })
     const skill = await getSkill('agent/a/new-skill')
     expect(skill).toMatchObject({ status: 'live', content: PRIVILEGED, description: 'd' })
   })
@@ -78,7 +82,7 @@ describe('decideSkillRevision', () => {
   it('activate on a pending modify: the already-live skill is overwritten, nothing else changes', async () => {
     const id = await pendingModify('agent/a/existing')
     const result = await decideSkillRevision(id, 'activate', { kind: 'human', id: 'reviewer' })
-    expect(result).toEqual({ outcome: 'activated', skillId: 'agent/a/existing' })
+    expect(result).toEqual({ outcome: 'activated', skillId: 'agent/a/existing', removedFiles: [], tenantId: 'fleet' })
     const skill = await getSkill('agent/a/existing')
     expect(skill).toMatchObject({ status: 'live', content: PRIVILEGED })
   })
@@ -214,7 +218,7 @@ describe('decideSkillRevision', () => {
       const created = await createSkill({ id, name: 'x', content: PRIVILEGED, tenant_id: 'fleet' }, { kind, id: 'admin-1' }, {}, { gatePrivilege: true })
       if (created.outcome !== 'pending') throw new Error('fixture did not queue a pending create')
       const result = await decideSkillRevision(created.revision.id, 'activate', { kind: 'human', id: 'admin-1' })
-      expect(result).toEqual({ outcome: 'activated', skillId: id })
+      expect(result).toMatchObject({ outcome: 'activated', skillId: id })
       expect((await getSkill(id))?.status).toBe('live')
     })
 
@@ -373,6 +377,192 @@ describe('POST /api/skills/sql/revisions/:id/decide', () => {
     expect(out.status).toBe(200)
     expect(out.body).toEqual({ ok: true, outcome: 'activated' })
     expect((await getSkill('agent/a/own-import'))?.status).toBe('live')
+  })
+})
+
+// A live skill that carries `live` companion files, plus a pending modify whose proposed set is `proposed`. Built on
+// the tables directly (updateSkill always carries the CURRENT file set into its own proposal, so it cannot drop one).
+async function pendingModifyWithFiles(id: string, live: Record<string, string>, proposed: Record<string, string>, tenant = 'fleet'): Promise<number> {
+  await createSkill({ id, name: 'x', content: PLAIN, tenant_id: tenant }, SYSTEM, {})
+  for (const [rel, text] of Object.entries(live)) {
+    db.prepare('INSERT INTO skill_files (skill_id, rel_path, content, mode, created_at, updated_at) VALUES (?, ?, ?, ?, 0, 0)')
+      .run(id, rel, Buffer.from(text), 0o755)
+  }
+  const files = Object.entries(proposed).map(([rel_path, text]) => ({ rel_path, mode: 0o755, content: Buffer.from(text) }))
+  const revisionId = db.prepare(`
+    INSERT INTO skill_revisions (skill_id, tenant_id, seq, action, content, prev_sha256, files_sha256, author_kind, status)
+    VALUES (?, ?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM skill_revisions WHERE skill_id = ?), 'modify', ?, ?, ?, 'human', 'pending')
+  `).run(id, tenant, id, PRIVILEGED, sha256Hex(PLAIN), hashFileSet(files)).lastInsertRowid as number
+  for (const f of files) {
+    db.prepare('INSERT INTO skill_revision_files (revision_id, rel_path, mode, content) VALUES (?, ?, ?, ?)')
+      .run(revisionId, f.rel_path, f.mode, f.content)
+  }
+  return revisionId
+}
+
+describe('decideSkillRevision: the files an activation drops are handed back for the disk cleanup', () => {
+  const REVIEWER = { kind: 'human' as const, id: 'reviewer' }
+
+  it('removedFiles is exactly the live files whose rel_path is not in the proposed set, with their live bytes', async () => {
+    const id = await pendingModifyWithFiles('agent/a/drop1',
+      { 'scripts/old.sh': 'OLD-BYTES', 'scripts/keep.sh': 'LIVE-KEEP', 'notes/gone.txt': 'GONE' },
+      { 'scripts/keep.sh': 'PROPOSED-KEEP', 'scripts/new.sh': 'NEW' })
+    const result = await decideSkillRevision(id, 'activate', REVIEWER)
+    expect(result.outcome).toBe('activated')
+    const dropped = (result.removedFiles ?? []).map((f) => [f.rel_path, f.content.toString()]).sort()
+    expect(dropped).toEqual([['notes/gone.txt', 'GONE'], ['scripts/old.sh', 'OLD-BYTES']])
+    // a path that stays in the set is NOT dropped, even though its bytes change
+    expect((result.removedFiles ?? []).some((f) => f.rel_path === 'scripts/keep.sh')).toBe(false)
+    expect(result.tenantId).toBe('fleet')
+  })
+
+  it('a proposal that carries every live file drops nothing', async () => {
+    const id = await pendingModifyWithFiles('agent/a/drop2', { 'a.sh': 'A' }, { 'a.sh': 'A', 'b.sh': 'B' })
+    expect((await decideSkillRevision(id, 'activate', REVIEWER)).removedFiles).toEqual([])
+  })
+
+  it('an empty proposed set drops every live file', async () => {
+    const id = await pendingModifyWithFiles('agent/a/drop3', { 'a.sh': 'A', 'b.sh': 'B' }, {})
+    const result = await decideSkillRevision(id, 'activate', REVIEWER)
+    expect((result.removedFiles ?? []).map((f) => f.rel_path).sort()).toEqual(['a.sh', 'b.sh'])
+    expect(await getSkillFile('agent/a/drop3', 'a.sh')).toBeUndefined()
+  })
+
+  it('the tenant of the skill row comes back, so a tenant copy is found on disk', async () => {
+    const id = await pendingModifyWithFiles('agent/a/drop4', { 'a.sh': 'A' }, {}, 'tenant-x')
+    const result = await decideSkillRevision(id, 'activate', REVIEWER)
+    expect(result.tenantId).toBe('tenant-x')
+  })
+
+  it('reject and the refusals carry no removedFiles (nothing was replaced)', async () => {
+    const id = await pendingModifyWithFiles('agent/a/drop5', { 'a.sh': 'A' }, {})
+    const rejected = await decideSkillRevision(id, 'reject', REVIEWER)
+    expect(rejected).toEqual({ outcome: 'rejected' })
+    expect(await getSkillFile('agent/a/drop5', 'a.sh')).toBeDefined()
+    const again = await decideSkillRevision(id, 'activate', REVIEWER)
+    expect(again).toEqual({ outcome: 'not_pending' })
+  })
+
+  it('a refused activation (revoked skill) leaves the files in the DB and reports none to remove', async () => {
+    const id = await pendingModifyWithFiles('agent/a/drop6', { 'a.sh': 'A' }, {})
+    await revokeSkill('agent/a/drop6', { kind: 'human', id: 'admin-1' }, 'x')
+    const result = await decideSkillRevision(id, 'activate', { kind: 'human', id: 'admin-2' })
+    expect(result).toEqual({ outcome: 'skill_not_decidable' })
+    expect(await getSkillFile('agent/a/drop6', 'a.sh')).toBeDefined()
+  })
+})
+
+describe('POST decide: the disk copies of the dropped files are removed after the commit, before the regen', () => {
+  const decide = (id: number, decision: string) => call('POST', `/api/skills/sql/revisions/${id}/decide`, { decision }, SESSION)
+
+  it('activate calls removeGeneratedCompanionFile exactly for the dropped files, with (id, rel, bytes, tenant), never for a kept one', async () => {
+    const id = await pendingModifyWithFiles('agent/a/rm1',
+      { 'scripts/old.sh': 'OLD-BYTES', 'scripts/keep.sh': 'LIVE-KEEP' },
+      { 'scripts/keep.sh': 'PROPOSED-KEEP' })
+    const out = await decide(id, 'activate')
+    expect(out.status).toBe(200)
+    const calls = vi.mocked(removeGeneratedCompanionFile).mock.calls
+    expect(calls).toHaveLength(1)
+    expect(calls[0][0]).toBe('agent/a/rm1')
+    expect(calls[0][1]).toBe('scripts/old.sh')
+    expect(calls[0][2]).toEqual(Buffer.from('OLD-BYTES'))
+    expect(calls[0][3]).toBe('fleet')
+  })
+
+  it('several dropped files: one call each', async () => {
+    const id = await pendingModifyWithFiles('agent/a/rm2', { 'a.sh': 'A', 'b/c.sh': 'C', 'k.sh': 'K' }, { 'k.sh': 'K' })
+    expect((await decide(id, 'activate')).status).toBe(200)
+    const rels = vi.mocked(removeGeneratedCompanionFile).mock.calls.map((c) => c[1]).sort()
+    expect(rels).toEqual(['a.sh', 'b/c.sh'])
+  })
+
+  it('the tenant of a tenant skill is passed through (the tenant copies are the ones removed)', async () => {
+    const id = await pendingModifyWithFiles('agent/a/rm3', { 'a.sh': 'A' }, {}, 'tenant-x')
+    expect((await decide(id, 'activate')).status).toBe(200)
+    expect(vi.mocked(removeGeneratedCompanionFile).mock.calls.map((c) => c[3])).toEqual(['tenant-x'])
+  })
+
+  it('nothing dropped: removeGeneratedCompanionFile is not called', async () => {
+    const id = await pendingModifyWithFiles('agent/a/rm4', { 'a.sh': 'A' }, { 'a.sh': 'A2' })
+    expect((await decide(id, 'activate')).status).toBe(200)
+    expect(removeGeneratedCompanionFile).not.toHaveBeenCalled()
+  })
+
+  it('reject, and a refused activation, never touch the disk copies', async () => {
+    const id = await pendingModifyWithFiles('agent/a/rm5', { 'a.sh': 'A' }, {})
+    expect((await decide(id, 'reject')).status).toBe(200)
+    const id2 = await pendingModifyWithFiles('agent/a/rm6', { 'a.sh': 'A' }, {})
+    await revokeSkill('agent/a/rm6', { kind: 'human', id: 'admin-1' }, 'x')
+    expect((await decide(id2, 'activate')).status).toBe(409)
+    expect(removeGeneratedCompanionFile).not.toHaveBeenCalled()
+    expect(regenSingleSkillFile).not.toHaveBeenCalled()
+  })
+
+  it('the regen runs after the decision as (skillId, true), and after the removals', async () => {
+    const id = await pendingModifyWithFiles('agent/a/rm7', { 'a.sh': 'A' }, {})
+    expect((await decide(id, 'activate')).status).toBe(200)
+    expect(regenSingleSkillFile).toHaveBeenCalledTimes(1)
+    expect(regenSingleSkillFile).toHaveBeenCalledWith('agent/a/rm7', true)
+    const removeOrder = vi.mocked(removeGeneratedCompanionFile).mock.invocationCallOrder[0]
+    const regenOrder = vi.mocked(regenSingleSkillFile).mock.invocationCallOrder[0]
+    expect(removeOrder).toBeLessThan(regenOrder)
+  })
+
+  it('a pending create activates and regenerates too (the regen is not only for modify)', async () => {
+    const id = await pendingCreate('agent/a/rm8')
+    expect((await decide(id, 'activate')).status).toBe(200)
+    expect(regenSingleSkillFile).toHaveBeenCalledWith('agent/a/rm8', true)
+    expect(removeGeneratedCompanionFile).not.toHaveBeenCalled()
+  })
+
+  it('a regen write error after the commit is a 500, the skill stays activated and a second decide is 409', async () => {
+    vi.mocked(regenSingleSkillFile).mockResolvedValueOnce({ reason: 'write_error' } as Awaited<ReturnType<typeof regenSingleSkillFile>>)
+    const id = await pendingModifyWithFiles('agent/a/rm9', { 'a.sh': 'A' }, {})
+    const out = await decide(id, 'activate')
+    expect(out.status).toBe(500)
+    expect(out.body).toMatchObject({ error: 'internal_error', hint: 'Activated, but the on-disk copy could not be written' })
+    expect((await getRevisionDetail(id))?.status).toBe('activated')
+    expect((await decide(id, 'activate')).status).toBe(409)
+  })
+})
+
+describe('POST decide: a body that is not JSON', () => {
+  it('is 400 parse_error with the same hint as the other skills routes, not the off-catalog invalid_json', async () => {
+    const id = await pendingCreate('agent/a/badjson')
+    const out = await call('POST', `/api/skills/sql/revisions/${id}/decide`, '{not json', SESSION)
+    expect(out.status).toBe(400)
+    expect(out.body).toEqual({ error: 'parse_error', hint: 'Invalid JSON' })
+    expect(await listPendingRevisions('agent/a/badjson')).toHaveLength(1)
+  })
+})
+
+describe('reject of a create: only a still-pending_review skill is deleted', () => {
+  const REVIEWER = { kind: 'human' as const, id: 'reviewer' }
+
+  it.each(['live', 'disabled'] as const)('the skill moved to %s since the proposal: reject deletes nothing (skill row and files stay)', async (status) => {
+    const id = `agent/a/m8-${status}`
+    const revisionId = await pendingCreate(id)
+    // another path took the skill out of pending_review between the propose and this reject
+    db.prepare('UPDATE skills SET status = ? WHERE id = ?').run(status, id)
+    db.prepare('INSERT INTO skill_files (skill_id, rel_path, content, mode, created_at, updated_at) VALUES (?, ?, ?, ?, 0, 0)')
+      .run(id, 'scripts/run.sh', Buffer.from('#!/bin/sh\n'), 0o755)
+    const result = await decideSkillRevision(revisionId, 'reject', REVIEWER)
+    expect(result).toEqual({ outcome: 'rejected' })
+    expect((await getSkill(id))?.status).toBe(status)
+    expect(await getSkillFile(id, 'scripts/run.sh')).toBeDefined()
+    expect((await getRevisionDetail(revisionId))?.status).toBe('rejected')
+  })
+
+  it('the same through the route: 200, skill row and file still there', async () => {
+    const id = 'agent/a/m8-route'
+    const revisionId = await pendingCreate(id)
+    db.prepare("UPDATE skills SET status = 'live' WHERE id = ?").run(id)
+    db.prepare('INSERT INTO skill_files (skill_id, rel_path, content, mode, created_at, updated_at) VALUES (?, ?, ?, ?, 0, 0)')
+      .run(id, 'a.sh', Buffer.from('A'), 0o755)
+    const out = await call('POST', `/api/skills/sql/revisions/${revisionId}/decide`, { decision: 'reject' }, SESSION)
+    expect(out.status).toBe(200)
+    expect(await getSkill(id)).toBeDefined()
+    expect(await getSkillFile(id, 'a.sh')).toBeDefined()
   })
 })
 

@@ -3587,6 +3587,11 @@ paths:
         (always empty) file set outright, so a rejected create does not leave pending_review debris behind. The
         decision is a compare-and-set on the revision's own `pending` status: of two concurrent decisions on the
         same id, only one wins. Admin dashboard session only.
+
+        An `activate` replaces the companion files with exactly the proposed set, and the generated copies on disk of
+        the files the proposal drops are removed after the commit (only a copy that is byte-equal to the dropped
+        file; one edited by hand is left). Without that, a dropped script would stay on disk and be copied back
+        into the skill at the next start.
       parameters:
         - name: id
           in: path
@@ -3622,7 +3627,7 @@ paths:
                     type: string
                     enum: [activated, rejected]
         "400":
-          description: id is not a positive integer, or decision is neither activate nor reject
+          description: "`invalid_value` (id is not a positive integer, or decision is neither activate nor reject) or `parse_error` (the body is not valid JSON)"
         "403":
           description: Not an admin dashboard session, or (activate only) the proposal was authored by an agent whose id equals this session user (separation of duties; not applied to import, human or operator submitters, so the importing admin can activate their own import)
         "404":
@@ -3636,7 +3641,14 @@ paths:
             of a non-create revision only, the skill's live content changed since the proposal was submitted
             (re-read the diff before deciding again).
         "500":
-          description: 'error: internal_error -- activate only, the proposal''s stored text or companion files no longer match the hash recorded with it (data integrity, not a normal conflict)'
+          description: |
+            `error: internal_error`, activate only, two different causes (tell them apart by the `hint`):
+            the proposal's stored text or companion files no longer match the hash recorded with it
+            (`corrupt_proposal` inside the server, data integrity, nothing was changed and the revision stays pending);
+            or the hint `Activated, but the on-disk copy could not be written`: the decision was already committed
+            (the revision is `activated`, the skill is live with the new text and files), only the generated copy on
+            disk could not be written. Deciding it again answers `409` `not_pending`, and the disk copy stays as it was
+            until the skill's next regeneration.
 
   /skills/sql/{id}/revoke:
     post:
