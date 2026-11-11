@@ -174,6 +174,14 @@ describe('the type check comes after the 403/404 decisions (PUT /api/skills/sql/
     expect(out.body).toMatchObject({ error: 'not_found' })
   })
 
+  it('a skill of the caller\'s own tenant that is not live (revoked), caller not an admin: 404, not 400', async () => {
+    await createSkill({ id: 'co-x-ft-revoked', name: 'ft-revoked', description: 'd', content: PLAIN, tenant_id: 'co-x', is_global: false }, { kind: 'system', id: null })
+    db.prepare("UPDATE skills SET status = 'disabled' WHERE id = 'co-x-ft-revoked'").run()
+    const out = await put('co-x-ft-revoked', { auth: { kind: 'session', user: 'viewer' }, role: 'viewer', tenantId: 'co-x' } as Partial<RouteContext>)
+    expect(out.status).toBe(404)
+    expect(out.body).toMatchObject({ error: 'not_found' })
+  })
+
   it('a skill of another tenant: 404, not 400', async () => {
     const out = await put(ID, { auth: { kind: 'session', user: 'viewer' }, role: 'viewer', tenantId: 'co-x' } as Partial<RouteContext>)
     expect(out.status).toBe(404)
