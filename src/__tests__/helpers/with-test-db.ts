@@ -85,6 +85,9 @@ function usePgTestDb(): { dbx: Dbx } {
     await loadSystemConfigCacheAsync()
     await loadModelProfileMapCacheAsync()
     await loadAgentSettingsCacheAsync()
+    // the loads above are db calls without a db context, and the context counters are something tests assert on
+    // (db-context-route): SQLite's initDatabase() loads its caches without dbx, so the test starts with zero there
+    resetDbContextForTest()
   })
   afterEach(async () => {
     resetDbTestState()
