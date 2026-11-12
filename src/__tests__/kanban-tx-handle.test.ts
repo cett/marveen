@@ -77,7 +77,10 @@ describe('the statements of a kanban transaction body go through the tx handle, 
 })
 
 describe('the tenant of the audit rows of a kanban transaction is resolved before it opens', () => {
-  const auditTenants = (action: string) => (db.prepare('SELECT tenant_id FROM agent_audit_log WHERE entity = ? AND action = ?').all('kanban', action) as { tenant_id: string | null }[]).map((r) => r.tenant_id)
+  // In the order the rows were written. Without the ORDER BY the query is answered from idx_aal_entity
+  // (entity, created_at DESC), so two rows written a second apart come back newest first and the order flips with
+  // the wall clock.
+  const auditTenants = (action: string) => (db.prepare('SELECT tenant_id FROM agent_audit_log WHERE entity = ? AND action = ? ORDER BY id').all('kanban', action) as { tenant_id: string | null }[]).map((r) => r.tenant_id)
 
   it('the rows of the subtasks and of a delete carry the tenant of the card agent', async () => {
     await createKanbanCard({ id: 'p1', title: 'Parent', assignee: 'agent-a' })
@@ -112,5 +115,14 @@ describe('the tenant of the audit rows of a kanban transaction is resolved befor
     expect((db.prepare('SELECT COUNT(*) AS c FROM kanban_cards WHERE parent_id = ?').get('p1') as { c: number }).c).toBe(1)
     // the parent's own create row (written before the lookup broke) is 'default', the subtask's is unknown
     expect(auditTenants('create')).toEqual(['default', null])
+  })
+
+  it('the order of the rows is the order they were written, whatever their timestamps are (the helper does not follow the index)', async () => {
+    await createKanbanCard({ id: 'p1', title: 'Parent', assignee: 'agent-a' })
+    await createKanbanSubtasks('p1', [{ title: 'A', assignee: 'agent-a' }, { title: 'B' }], 'bot')
+    // the later the row, the newer its timestamp: an index scan on (entity, created_at DESC) now returns them newest first
+    db.prepare("UPDATE agent_audit_log SET created_at = 1000000 + id WHERE entity = 'kanban'").run()
+    db.prepare("UPDATE agent_audit_log SET tenant_id = CASE WHEN id = (SELECT MIN(id) FROM agent_audit_log WHERE entity = 'kanban') THEN NULL ELSE 'default' END WHERE entity = 'kanban'").run()
+    expect(auditTenants('create')).toEqual([null, 'default', 'default'])
   })
 })
