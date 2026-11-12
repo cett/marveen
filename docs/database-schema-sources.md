@@ -50,3 +50,25 @@ server: `MARVEEN_PG_TEST_URL=postgres://... npm run test:pg` (see `docs/db-facad
 
 Migration numbers are not required to be contiguous (there is no 0014): the runner orders files by
 version and applies everything above the highest recorded one.
+
+## The PostgreSQL runner
+
+`src/db-migrations-pg.ts` applies the numbered files of `src/migrations-pg/` (`NNNN_description.sql`; a `.sql` file with
+another name is an error, it would never run). The PostgreSQL number is its own line: 0001 is the SQLite baseline 95, 0002 is
+SQLite 0096, so a SQLite migration `N` above 95 has its twin at `N - 94`, and a test (`pg-migration-twins.test.ts`, no
+server needed) fails a new SQLite migration that has none.
+
+- Each file runs in one transaction together with its `schema_version` row (`version`, `applied_at`, `description`,
+  `checksum`, the shape the baseline gives the table). A file that fails leaves nothing behind, the files before it stay.
+- A session advisory lock covers the whole run, so two processes that start together apply every file once between them.
+  The wait for the lock is bounded (`lockTimeoutMs`, default 60 s): a stuck migrator fails the later start with a message
+  that names the lock instead of blocking it for ever.
+- An applied file that changed (its checksum), an applied version whose file is gone, and an unapplied file below an
+  applied one (merged out of order) are errors. There is no tolerance for "already exists": PostgreSQL has
+  `ADD COLUMN IF NOT EXISTS` natively and a file that wants it says so.
+- `schema_version` is looked up on the `search_path`, not in `public`.
+- Files are compared byte for byte, so `.gitattributes` keeps `*.sql` at LF on every checkout.
+- A file runs inside a transaction, so `CREATE INDEX CONCURRENTLY`, `VACUUM`, `ALTER SYSTEM` and `CREATE DATABASE` cannot
+  be in one; such a step is run by hand before the file that needs it, and the file says so in a comment.
+
+Nothing in the production start-up calls the runner yet; the PG tests and the adapter work build on it.
