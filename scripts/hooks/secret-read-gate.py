@@ -244,36 +244,31 @@ class _BraceTooBig(Exception):
 
 
 def _brace_group(s: str):
-    """The first brace group of `s` that bash expands: (start, end, kind, body-or-parts). A group has a comma at its top
-    level or is a sequence `x..y[..step]`; `{x}`, `{}` and `${...}` are not groups. A brace that is no group is skipped,
-    so an inner group of it is still found (`{{a,b}}`)."""
+    """The OUTERMOST brace group of `s` that bash expands: (start, end, kind, body-or-parts). A group has a comma at its
+    top level or is a sequence `x..y[..step]`; `{x}`, `{}` and `${...}` are not groups. A brace that is no group is
+    skipped, so an inner group of it is still found (`{{a,b}}`). One pass with a stack of open braces: the work is linear
+    in len(s) whatever the input (20000 opening braces, an unmatched one, 50000 closing ones)."""
     _brace_work[0] += len(s)
     if _brace_work[0] > BRACE_MAX_WORK:
         raise _BraceTooBig()
-    i = s.find('{')
-    while i != -1:
-        if i == 0 or s[i - 1] != '$':
-            depth, commas, j = 0, [], i
-            while j < len(s):
-                c = s[j]
-                if c == '{':
-                    depth += 1
-                elif c == '}':
-                    depth -= 1
-                    if depth == 0:
-                        break
-                elif c == ',' and depth == 1:
-                    commas.append(j)
-                j += 1
-            if j < len(s) and depth == 0:
-                if commas:
-                    cuts = [i] + commas + [j]
-                    return i, j, 'list', [s[cuts[k] + 1:cuts[k + 1]] for k in range(len(cuts) - 1)]
-                seq = _SEQ.fullmatch(s[i + 1:j])
+    stack, best = [], None      # open braces: [position, commas, is a ${ parameter expansion]
+    for pos, c in enumerate(s):
+        if c == '{':
+            stack.append([pos, [], pos > 0 and s[pos - 1] == '$'])
+        elif c == '}' and stack:
+            start, commas, dollar = stack.pop()
+            if dollar or (best is not None and best[0] < start):
+                continue
+            if commas:
+                cuts = [start] + commas + [pos]
+                best = (start, pos, 'list', [s[cuts[k] + 1:cuts[k + 1]] for k in range(len(cuts) - 1)])
+            elif pos - start <= 64:
+                seq = _SEQ.fullmatch(s[start + 1:pos])
                 if seq:
-                    return i, j, 'seq', seq
-        i = s.find('{', i + 1)
-    return None
+                    best = (start, pos, 'seq', seq)
+        elif c == ',' and stack:
+            stack[-1][1].append(pos)
+    return best
 
 
 def _brace_sequence(m) -> list:
@@ -336,8 +331,11 @@ def _brace_alternatives(word: str) -> list:
         return [word]
     mask = getattr(word, 'mask', None)
     if mask is None:
-        marked = str(word)
-        if _brace_group(marked) is not None:
+        if len(word) > BRACE_MAX_WORD:      # over the cap: judged without a search for groups
+            if '{' in word:
+                deny('a long word of the command holds a brace and its quoting could not be read (brace expansion)')
+            return [word]
+        if _brace_group(str(word)) is not None:
             deny('a word of the command holds a brace group and its quoting could not be read (brace expansion)')
         return [word]
     if len(mask) != len(word) or any(ch in _UNMARK for ch in word):
@@ -346,7 +344,7 @@ def _brace_alternatives(word: str) -> list:
     if '{' not in marked or ('..' not in marked and ',' not in marked):
         return [word]      # the braces, if any, are quoted
     try:
-        if len(word) > BRACE_MAX_WORD:
+        if len(word) > BRACE_MAX_WORD:      # over the cap, with an unquoted brace in it: refused without a search
             raise _BraceTooBig()
         alts = _brace_all(marked, [0])
     except _BraceTooBig:
@@ -585,6 +583,7 @@ def _scan_masks(line: str):
             i = j + 1
         elif c == '"':
             i += 1
+            sub = []      # open command substitutions inside the double quotes: ')' for $( ... ), '`' for a backtick pair
             while True:
                 if i >= n:
                     return None
@@ -594,11 +593,29 @@ def _scan_masks(line: str):
                     break
                 if d == '\\' and i + 1 < n and line[i + 1] in '"\\':
                     cur.append(line[i + 1])
-                    mask.append(True)
+                    mask.append(not sub)
                     i += 2
                     continue
+                if sub and d == "'" and sub[-1] != '`':
+                    j = line.find("'", i + 1)      # a single-quoted run inside the substitution is literal again
+                    k = line.find('"', i + 1)
+                    if j != -1 and (k == -1 or j < k):
+                        cur.extend(line[i:j + 1])
+                        mask.extend([True] * (j + 1 - i))
+                        i = j + 1
+                        continue
+                if d == '`':
+                    if sub and sub[-1] == '`':
+                        sub.pop()
+                    else:
+                        sub.append('`')
+                elif d == '(' and (sub or (i > 0 and line[i - 1] == '$')):
+                    sub.append(')')
+                elif d == ')' and sub and sub[-1] == ')':
+                    sub.pop()
+                # inside a substitution the shell starts a fresh, UNQUOTED context (an unterminated one stays open: fail closed)
                 cur.append(d)
-                mask.append(True)
+                mask.append(not sub)
                 i += 1
         else:
             cur.append(c)

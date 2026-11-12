@@ -371,6 +371,27 @@ class BashOnEveryTokenFile(Tree):
                     with self.subTest(cmd=cmd, protected=rel):
                         self.assert_denied(self.bash(cmd), cmd)
 
+    def test_a_command_substitution_inside_double_quotes_opens_an_unquoted_context(self):
+        # in bash and zsh the text of $( ... ) and `...` inside double quotes is a command of its own: its braces expand
+        T = 'agents/agent-a/.agent-token'
+        cells = [('echo "$(cat agents/agent-a/{.agent-token,x})"', True), ('echo "`cat agents/agent-a/{.agent-token,x}`"', True),
+                 ('echo "$(echo "$(cat agents/agent-a/{.agent-token,x})")"', True), ('echo "$(echo $(cat agents/agent-a/{.agent-token,x}))"', True),
+                 ('echo "x $(cat agents/agent-a/{.agent-token,x}) y"', True), ('echo "$(cat \\"agents/agent-a/{.agent-token,x}\\")"', True),
+                 ("echo \"$(cat 'agents/agent-a/{.agent-token,x}')\"", False), ('echo "${v:-agents/agent-a/{.agent-token,x}}"', False),
+                 ('echo "agents/agent-a/{.agent-token,x}"', False), ('echo "$(date) agents/agent-a/{.agent-token,x}"', False)]
+        for cmd, reads in cells:
+            probe = cmd.replace('cat ', 'echo ')      # the oracle: the shell only prints what it would have read
+            for shell in ('bash', 'zsh'):
+                exe = shutil.which(shell)
+                if exe:
+                    out = subprocess.run([exe, '-c', probe], cwd=self.root, capture_output=True, timeout=30).stdout.decode()
+                    with self.subTest(cmd=cmd, shell=shell):
+                        self.assertEqual(T in out, reads, 'the oracle: %s printed %r' % (shell, out[:90]))
+            with self.subTest(cmd=cmd):
+                (self.assert_denied if reads else self.assert_allowed)(self.bash(cmd), cmd)
+        # an unterminated substitution: the rest is judged as unquoted
+        self.assert_denied(self.bash('echo "$(cat agents/agent-a/{.agent-token,x}"'), 'unterminated $(')
+
     def test_a_quoted_or_escaped_brace_group_is_literal_and_an_unquoted_one_next_to_a_quoted_space_expands(self):
         # what the shell prints is the oracle: a quoted brace group stays as typed, so it is no read of the token
         for word, expands in [("'agents/agent-a/{.agent-token,x}'", False), ('"agents/agent-a/{.agent-token,x}"', False), ('agents/agent-a/\\{.agent-token,x\\}', False),

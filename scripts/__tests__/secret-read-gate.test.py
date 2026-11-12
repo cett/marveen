@@ -195,6 +195,26 @@ class BashReads(GateCase):
         # no group in the unreadable word: nothing to guess
         self.assert_allowed(self.bash("echo it's fine"), "echo it's fine")
 
+    def test_the_brace_search_is_linear_and_the_caps_come_before_it(self):
+        import resource
+        import time
+        bodies = [('echo "' + '{' * 20000, 'opening braces, unterminated quote'), ('echo ' + '{' * 20000, 'opening braces'), ('echo ' + '}' * 50000, 'closing braces'),
+                  ('echo ' + '{a,' * 20000, 'nested open groups'), ('echo ' + '{a,' * 20000 + '}' * 20000, 'nested groups'),
+                  ('echo ' + '{' * 2000 + ',a', 'braces under the word cap, no group'), ("echo '" + '{' * 20000 + "'", 'quoted braces'),
+                  ('echo "$(' * 5000, 'open substitutions')]
+        for cmd, label in bodies:
+            before, t0 = resource.getrusage(resource.RUSAGE_CHILDREN), time.time()
+            rc, out, err = self.bash(cmd)
+            used = resource.getrusage(resource.RUSAGE_CHILDREN)
+            cpu = (used.ru_utime + used.ru_stime) - (before.ru_utime + before.ru_stime)
+            with self.subTest(label=label):
+                self.assertIn(rc, (0, 2), label)      # a verdict, whichever it is
+                self.assertLess(cpu, 2.0, '%s: %.2fs of CPU' % (label, cpu))
+                self.assertLess(time.time() - t0, 4.0, label)
+        # past the word cap an unquoted brace is refused without a search, a quoted one is not looked at
+        self.assert_denied(self.bash('echo ' + '{' * 3000 + ',a}'), 'long word with unquoted braces')
+        self.assert_allowed(self.bash("echo '" + '{' * 3000 + ",a}'"), 'long word with quoted braces')
+
     def test_globs_that_can_match_the_file_are_blocked(self):
         for cmd in ['cat store/.claim*', 'cat store/.c*', 'cat store/.[c]*', 'cat store/.*', 'cat store/*', 'cat store/.claim?signing*', 'cat store/.cl?im-sig*',
                     'cat *signing-key*', 'cat store/*key', 'cat store/.{claim-signing-key,x}', 'cat store/.[a-z]*', 'cat ../store/.cl*',
