@@ -88,6 +88,17 @@ class BashReads(GateCase):
             with self.subTest(cmd=cmd):
                 self.assert_denied(self.bash(cmd), cmd)
 
+    def test_a_link_to_the_key_next_to_a_glob_alternative_in_a_brace_word_is_blocked(self):
+        # a brace alternative without a glob is judged as a plain path: a symlink or a hard link to the key is the key
+        for link in ('keylink', 'innocent-name.txt'):
+            for alts in ('%s,x*', 'x*,%s', '%s,y?', '[a]*,%s'):
+                cmd = 'cat work/{%s}' % (alts % link)
+                with self.subTest(cmd=cmd):
+                    self.assert_denied(self.bash(cmd), cmd)
+        for cmd in ['cat src/{a.ts,b*}', 'cat src/{b*,a.ts}', 'cat work/{x,y*}', 'echo \'{"a": 1, "b": "*"}\'']:
+            with self.subTest(cmd=cmd):
+                self.assert_allowed(self.bash(cmd), cmd)
+
     def test_globs_that_can_match_the_file_are_blocked(self):
         for cmd in ['cat store/.claim*', 'cat store/.c*', 'cat store/.[c]*', 'cat store/.*', 'cat store/*', 'cat store/.claim?signing*', 'cat store/.cl?im-sig*',
                     'cat *signing-key*', 'cat store/*key', 'cat store/.{claim-signing-key,x}', 'cat store/.[a-z]*', 'cat ../store/.cl*',
@@ -150,6 +161,167 @@ class BashReads(GateCase):
             cmd = cmd.replace('%ROOT%', self.root)
             with self.subTest(cmd=cmd):
                 self.assert_denied(self.bash(cmd), cmd)
+
+    # find start directories and whether a reader that gets the file list reaches the store: (find words, denied)
+    FIND_ROOTS = [('find .', True), ('find store', True), ('find store/', True), ('find', True), ('find -type f', True), ('find -name x', True),
+                  ('find -L .', True), ('find -H store', True), ('find . store', True), ('find *', True), ('find . -name "*.py"', True),
+                  ('find src', False), ('find scripts', False), ('find src scripts', False), ('find . -prune', False),
+                  ('find . -path ./store -prune -o -type f -print', False), ('find /nonexistent', False)]
+
+    def test_find_exec_and_find_pipe_into_xargs_are_judged_by_the_same_decision(self):
+        # 1:1 cells: every find prefix gets the verdict of its -exec form AND its xargs form, and both equal the expectation
+        for find, denied in self.FIND_ROOTS:
+            for tail in (' -exec cat {} +', ' -exec cat {} ;', ' -execdir head {} ;', ' | xargs cat', ' | xargs -0 cat', ' | parallel cat {}'):
+                cmd = find + tail
+                with self.subTest(cmd=cmd):
+                    (self.assert_denied if denied else self.assert_allowed)(self.bash(cmd), cmd)
+
+    def test_find_piped_into_a_reader_launcher_is_blocked(self):
+        for tail in ['xargs cat', 'xargs -0 cat', 'xargs -n1 head', 'xargs -n 1 head', 'xargs -I{} cat {}', 'xargs -I {} cat {}', 'xargs -P4 -0 tail', 'xargs -0r cat', 'xargs --null cat',
+                     'xargs --max-args=1 cat', 'xargs --max-args 1 cat', 'xargs -- cat', 'xargs /bin/cat', 'xargs env cat', 'xargs grep foo', 'xargs sed -n p', 'xargs awk 1',
+                     'xargs strings', 'xargs base64', 'xargs xxd', 'xargs cp -t /tmp', 'xargs tar cf /tmp/a.tar', 'xargs gzip -c', 'xargs diff x', 'xargs rg foo', 'xargs less',
+                     'xargs sh -c "cat \\"$0\\""', 'xargs bash -c cat', 'xargs python3 -c 1', 'xargs node -e 1', 'xargs perl -ne print', 'xargs ruby -e 1',
+                     'parallel cat', 'parallel -j4 cat {}', 'parallel --jobs 2 grep foo', 'parallel -k head']:
+            for find in ('find store -type f', 'find . -type f', 'find -type f'):
+                cmd = '%s | %s' % (find, tail)
+                with self.subTest(cmd=cmd):
+                    self.assert_denied(self.bash(cmd), cmd)
+
+    def test_find_pipe_through_other_segments_and_the_pipe_ampersand_is_blocked(self):
+        for cmd in ['find store -type f | sort | xargs cat', 'find store -type f | head -3 | xargs cat', 'find store -type f |& xargs cat', 'find store -type f -print0 | xargs -0 cat',
+                    'sudo find store -type f | xargs cat', 'find store -type f | sudo xargs cat', 'find store -type f | nohup xargs cat']:
+            with self.subTest(cmd=cmd):
+                self.assert_denied(self.bash(cmd), cmd)
+
+    def test_find_pipe_an_undecidable_launcher_is_blocked_fail_closed(self):
+        for tail in ['xargs $READER', 'xargs "$(echo cat)"', 'xargs `echo cat`', 'xargs -Z cat', 'xargs --bogus cat', 'xargs --max-arg=1 cat', 'xargs nice -n5 cat',
+                     'xargs sudo -u x cat', 'xargs c*t', 'xargs ./c[a]t', 'parallel --bogus cat', 'parallel -Z cat']:
+            cmd = 'find store -type f | ' + tail
+            with self.subTest(cmd=cmd):
+                self.assert_denied(self.bash(cmd), cmd)
+
+    def test_find_pipe_into_a_command_that_is_no_reader_passes(self):
+        for tail in ['xargs wc -l', 'xargs ls', 'xargs ls -la', 'xargs stat', 'xargs file', 'xargs du -h', 'xargs basename', 'xargs dirname', 'xargs echo', 'xargs printf "%s\\n"',
+                     'xargs test -e', 'xargs', 'xargs -0', 'xargs -n1', 'xargs -I{} echo {}', 'parallel wc -l', 'parallel', 'wc -l', 'sort', 'head -3', 'cat']:
+            cmd = 'find store -type f | ' + tail
+            with self.subTest(cmd=cmd):
+                self.assert_allowed(self.bash(cmd), cmd)
+
+    def test_find_pipe_that_does_not_start_the_pipeline_or_is_not_a_pipe_passes(self):
+        # accepted limits: only a find that STARTS the pipeline is followed (a separator ends the pipeline)
+        for cmd in ['find store ; xargs cat', 'find store && xargs cat', 'find store || xargs cat', 'echo store | xargs cat', 'ls store | xargs cat',
+                    'find src -type f | xargs cat', 'find scripts | sort | xargs grep foo']:
+            with self.subTest(cmd=cmd):
+                self.assert_allowed(self.bash(cmd), cmd)
+
+    def test_find_pipe_into_xargs_cat_really_reads_the_key_and_the_gate_blocks_it(self):
+        # the real tools (BSD or GNU find and xargs): the command prints the key, and the gate refuses that very command
+        cmd = 'find store -type f -name ".c*" | xargs cat'
+        shown = subprocess.run(['/bin/sh', '-c', cmd], cwd=self.root, capture_output=True, timeout=30)
+        self.assertIn(KEY.encode(), shown.stdout, 'the positive control: the pipe reads the key')
+        self.assert_denied(self.bash(cmd), cmd)
+        # the real tool, the same pipe over a directory without the store, prints and the gate lets it
+        ok = 'find src -type f | xargs cat'
+        shown = subprocess.run(['/bin/sh', '-c', ok], cwd=self.root, capture_output=True, timeout=30)
+        self.assertIn(b'export const claim', shown.stdout)
+        self.assert_allowed(self.bash(ok), ok)
+
+    DIRECTORIES_RECURSE = ['--directories=recurse', '--directories recurse', '--dir=recurse', '-d recurse', '-drecurse']
+
+    def test_grep_directories_recurse_in_every_spelling_over_the_store_is_blocked(self):
+        # the long option and its abbreviations, the short one attached or apart, with a directory that holds the store
+        for opt in self.DIRECTORIES_RECURSE:
+            for target in ('store', 'store/', '.', '%ROOT%'):
+                cmd = 'grep %s foo %s' % (opt, target)
+                cmd = cmd.replace('%ROOT%', self.root)
+                with self.subTest(cmd=cmd):
+                    self.assert_denied(self.bash(cmd), cmd)
+
+    def test_grep_directories_other_abbreviations_clusters_and_unknown_values_are_blocked(self):
+        for cmd in ['grep --d=recurse foo store', 'grep --di=recurse foo store', 'grep --direc recurse foo store', 'grep --directori=recurse foo .',
+                    'grep -nd recurse foo store', 'grep -ndrecurse foo store', 'grep -in --directories=recurse foo .', 'egrep --dir=recurse foo store',
+                    # an unknown or missing ACTION is not read / skip: fail closed
+                    'grep --directories=recurs foo store', 'grep --directories=RECURSE foo store', 'grep -d bogus foo store', 'grep --directories= foo store',
+                    # the ACTION word is the option value, so the directory without an operand is the cwd
+                    'grep -d recurse foo', 'grep --directories recurse foo', 'grep --dir=recurse foo']:
+            with self.subTest(cmd=cmd):
+                self.assert_denied(self.bash(cmd), cmd)
+
+    def test_grep_directories_read_and_skip_do_not_recurse(self):
+        for cmd in ['grep -d read foo store', 'grep -d skip foo store', 'grep -dskip foo store', 'grep --directories=skip foo store',
+                    'grep --directories read foo store', 'grep --dir=skip foo .', 'grep -nd skip foo .', 'grep -d skip foo',
+                    # `d` after a value-taking letter is that letter's value (the pattern `d`), not the option
+                    'grep -ed store', 'grep -ed foo store/rules.json']:
+            with self.subTest(cmd=cmd):
+                self.assert_allowed(self.bash(cmd), cmd)
+
+    RECURSIVE_LONG_PREFIXES = ['--recursive', '--recursiv', '--recurs', '--recur', '--recu', '--rec', '--dereference-recursive', '--dereference-recursiv',
+                               '--dereference-r', '--dereference', '--dereferenc', '--derefer', '--dere', '--der']
+
+    def test_grep_abbreviated_long_recursive_options_over_the_store_are_blocked(self):
+        # the real grep reads a unique prefix of a long option as the option; every one of them is a recursive read
+        for opt in self.RECURSIVE_LONG_PREFIXES:
+            for target in ('store', 'store/', '.', '%ROOT%'):
+                cmd = ('grep %s foo %s' % (opt, target)).replace('%ROOT%', self.root)
+                with self.subTest(cmd=cmd):
+                    self.assert_denied(self.bash(cmd), cmd)
+        for cmd in ['grep --rec foo', 'grep --dere foo', 'egrep --rec foo store', 'grep -n --rec foo .', 'grep --rec=x foo store',
+                    # a prefix two options share: grep itself stops with an error, the gate does not guess (fail closed)
+                    'grep --r foo store', 'grep --re foo store', 'grep --d foo store', 'grep --de foo store']:
+            with self.subTest(cmd=cmd):
+                self.assert_denied(self.bash(cmd), cmd)
+
+    def test_grep_long_option_resolution_cells_over_the_store_are_blocked(self):
+        # the cells of the one resolver (GNU + BSD names, exact or prefix): the --recursive and the --directories branch together.
+        # On the real BSD grep (macOS) --rec, --recur and --recurs READ the tree (the token and the key included); --re, --r, --d
+        # are ambiguous there (grep stops), --dere / --dereference-rec are unrecognised there but work on GNU grep. The rule does not
+        # depend on the host: any candidate that is recursive, or --directories with an ACTION other than read/skip, is refused.
+        for opt in ['--rec', '--recur', '--recurs', '--recursive', '--dereference-recursive', '--dereference-rec', '--dere', '--directories=recurse', '--dir=recurse', '--d=recurse']:
+            for target in ('store', 'store/', '.'):
+                cmd = 'grep %s foo %s' % (opt, target)
+                with self.subTest(cmd=cmd):
+                    self.assert_denied(self.bash(cmd), cmd)
+
+    def test_grep_unknown_long_option_over_a_directory_with_the_store_is_blocked(self):
+        # a name that is no option and no prefix of one (`--recursively` is LONGER than --recursive): the reach is not decided
+        for cmd in ['grep --bogus foo store', 'grep --recursively foo .', 'grep --recursivee foo store/', 'egrep --nonesuch=1 foo store']:
+            with self.subTest(cmd=cmd):
+                self.assert_denied(self.bash(cmd), cmd)
+        for cmd in ['grep --bogus foo src', 'grep --recursively foo src scripts', 'grep --bogus claim scripts/gmail-send.py', 'grep --bogus claim store/rules.json']:
+            with self.subTest(cmd=cmd):
+                self.assert_allowed(self.bash(cmd), cmd)
+
+    def test_whatever_the_host_grep_reads_the_gate_refuses(self):
+        # the real grep of this host: when a spelling prints the key, the gate must refuse that very command
+        for opt in ['--rec', '--recur', '--recurs', '--recursive', '--dereference-recursive', '--dereference-rec', '--dere', '--directories=recurse', '--dir=recurse', '--directories recurse']:
+            cmd = 'grep %s -h a1a1 store' % opt
+            shown = subprocess.run(['/bin/sh', '-c', cmd], cwd=self.root, capture_output=True, timeout=30)
+            if KEY.encode() in shown.stdout:
+                with self.subTest(cmd=cmd):
+                    self.assert_denied(self.bash(cmd), cmd)
+        # the control that this host reads at least with the full long name
+        full = subprocess.run(['/bin/sh', '-c', 'grep --recursive -h a1a1 store'], cwd=self.root, capture_output=True, timeout=30)
+        self.assertIn(KEY.encode(), full.stdout)
+
+    def test_grep_abbreviated_long_recursive_with_a_store_exclude_is_not_trusted(self):
+        for cmd in ['grep --rec --exclude-dir=store foo .', 'grep --dere --exclude-dir store foo .']:
+            with self.subTest(cmd=cmd):
+                self.assert_denied(self.bash(cmd), cmd)
+
+    def test_grep_abbreviated_long_recursive_over_other_directories_and_other_long_options_pass(self):
+        for cmd in ['grep --rec foo src', 'grep --recur foo src scripts', 'grep --dere foo src', 'grep --dereference-recursive foo src',
+                    'grep --regexp=claim scripts/gmail-send.py', 'grep --reg=claim scripts/gmail-send.py', 'grep --regexp claim src/a.ts',
+                    'grep --no-messages claim scripts/gmail-send.py', 'grep --line-number claim src/a.ts', 'grep --devices=skip claim src/a.ts',
+                    # after `--` every word is an operand
+                    'grep -n claim -- src/a.ts']:
+            with self.subTest(cmd=cmd):
+                self.assert_allowed(self.bash(cmd), cmd)
+
+    def test_grep_directories_recurse_over_other_directories_passes(self):
+        for cmd in ['grep --directories=recurse foo src', 'grep --dir=recurse foo scripts', 'grep -d recurse foo src scripts',
+                    'grep -d recurse --exclude-dir=store foo src']:
+            with self.subTest(cmd=cmd):
+                self.assert_allowed(self.bash(cmd), cmd)
 
     def test_the_same_readers_over_other_directories_pass(self):
         for cmd in ['grep -rn claim src', 'grep -r foo scripts', 'grep -rn claim src scripts', 'rg claim src', 'rg --hidden foo src', 'tar cf x.tar scripts',
