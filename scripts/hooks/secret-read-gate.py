@@ -718,14 +718,94 @@ def _shlex_view(line: str):
     return words
 
 
+_WORD_END = ' \t\n;&|()<>'      # after one of these (or at the start of a text) a `#` opens a comment
+_HEREDOC_BAD = object()          # _heredoc_operator: the delimiter word has an unterminated quote
+
+
+def _heredoc_operator(text: str, i: int):
+    """The here-document operator at `text[i:]` (`<<` or `<<-`; a here-string `<<<` has no delimiter word, the next character
+    is a `<`): (delimiter, strip_tabs, quoted, end) where `quoted` says that the delimiter word has a quote or a backslash in it (the body is then a literal),
+    None when no delimiter word follows (not a here-document), _HEREDOC_BAD when a quote of the word is not closed."""
+    n, j, strip = len(text), i + 2, False
+    if j < n and text[j] == '-':
+        strip, j = True, j + 1
+    while j < n and text[j] in ' \t':
+        j += 1
+    delim, quoted = [], False
+    while j < n and text[j] not in _WORD_END:
+        c = text[j]
+        if c == '\\':
+            quoted = True
+            if j + 1 < n:
+                delim.append(text[j + 1])
+            j += 2
+        elif c == "'":
+            k = text.find("'", j + 1)
+            if k == -1:
+                return _HEREDOC_BAD
+            quoted = True
+            delim.append(text[j + 1:k])
+            j = k + 1
+        elif c == '"':
+            quoted, k = True, j + 1
+            while k < n and text[k] != '"':
+                if text[k] == '\\' and k + 1 < n and text[k + 1] in '"\\$`':
+                    k += 1
+                delim.append(text[k])
+                k += 1
+            if k >= n:
+                return _HEREDOC_BAD
+            j = k + 1
+        else:
+            delim.append(c)
+            j += 1
+    if not delim:
+        return None
+    return ''.join(delim), strip, quoted, j
+
+
+def _heredoc_body(text: str, i: int, here: tuple, quoted: list, out):
+    """Skip the body of one here-document that starts at the line start `i`; returns the index after its delimiter line (the
+    end of the text when the delimiter never comes, which is what a shell does too). An UNQUOTED delimiter makes the body a
+    double-quote-like text: command substitutions in it run at once and an apostrophe is a literal; they are appended to
+    `out` when it is given. A quoted delimiter makes the body a literal. Returns None when a substitution is not closed."""
+    delim, strip, qd = here
+    n = len(text)
+    while i < n:
+        eol = text.find('\n', i)
+        end = n if eol == -1 else eol
+        line = text[i:end]
+        if (line.lstrip('\t') if strip else line) == delim:
+            return min(end + 1, n)
+        if qd or out is None:
+            i = end + 1
+            continue
+        k = i
+        while k < n and text[k] != '\n':      # a substitution may run past the end of the line
+            if text[k] == '\\':
+                k += 2
+                continue
+            j = _body_at(text, k, quoted, out, True)
+            if j is None:
+                return None
+            k = j if j != k else k + 1
+        i = k + 1
+    return n
+
+
 def _bash_subst(line: str, i: int, closer: str, quoted: list, depth: int):
     """The body of `$( ... )` (closer ')') or of a backtick pair (closer '`'), which the shell reads as a command of its own,
     so an UNQUOTED context: a quote inside it opens a span of its own, `)` closes it only at parenthesis depth zero outside
-    quotes. `quoted[k]` is set for the characters that are quoted or escaped there. Returns the index after the closer, or
-    None when it is unterminated or nested too deep (the quote state is then unknown)."""
+    quotes. `quoted[k]` is set for the characters that are quoted or escaped there. A comment (a `#` at the start of a word,
+    to the end of its line) holds no quote and no parenthesis, and the body of a here-document (read from the line after its
+    operator) is skipped by its own rules. Arithmetic, `$(( ... ))`, is read the same way: a shift `<<` with a quote or a
+    newline in it is then taken for a here-document and the text is refused when it does not close (fail closed, never a
+    body hidden: a here-document body is judged as a text that can hold substitutions). Returns the index after the
+    closer, or None when it is unterminated or nested too deep (the quote state is then unknown)."""
     if depth > _SCAN_DEPTH:
         return None
     n, parens = len(line), 0
+    ws, pending = True, []
     while i < n:
         c = line[i]
         if c == closer and parens == 0:
@@ -739,6 +819,7 @@ def _bash_subst(line: str, i: int, closer: str, quoted: list, depth: int):
             if i + 1 >= n:
                 return None
             quoted[i] = quoted[i + 1] = True
+            ws = ws and line[i + 1] == '\n'      # a backslash-newline is not there for the shell
             i += 2
         elif c == "'":
             j = line.find("'", i + 1)
@@ -746,21 +827,42 @@ def _bash_subst(line: str, i: int, closer: str, quoted: list, depth: int):
                 return None
             for k in range(i, j + 1):
                 quoted[k] = True
-            i = j + 1
+            i, ws = j + 1, False
         elif c == '"':
             quoted[i] = True
             i = _bash_dq(line, i + 1, quoted, depth + 1)
+            ws = False
             if i is None:
                 return None
         elif c == '$' and i + 1 < n and line[i + 1] == '(':
             i = _bash_subst(line, i + 2, ')', quoted, depth + 1)
+            ws = False
             if i is None:
                 return None
         elif c == '`' and closer == ')':
             i = _bash_subst(line, i + 1, '`', quoted, depth + 1)
+            ws = False
             if i is None:
                 return None
+        elif c == '#' and ws and closer == ')':
+            j = line.find('\n', i)
+            i = n if j == -1 else j      # the newline itself stays: a pending here-document starts after it
+        elif c == '\n' and pending:
+            i += 1
+            for here in pending:
+                i = _heredoc_body(line, i, here, quoted, None)
+            pending, ws = [], True
+        elif c == '<' and line.startswith('<<', i):
+            op = _heredoc_operator(line, i)
+            if op is _HEREDOC_BAD:
+                return None
+            if op is None:
+                i, ws = i + 2, True
+            else:
+                pending.append(op[:3])
+                i, ws = op[3], False
         else:
+            ws = c in _WORD_END
             i += 1
     return None
 
@@ -891,11 +993,30 @@ def _pipelines(text: str) -> list:
 _WRAPPERS = ('env', 'command', 'exec', 'nohup', 'sudo', 'time', 'nice', 'builtin')
 
 
+# Reserved words after which a command follows in the same piece (`{ cmd`, `! cmd`, `if cmd`, `then cmd`, `do cmd`): they are
+# skipped like a wrapper, so the reader behind them is the head that gets judged.
+_KEYWORD_HEADS = frozenset(('{', '!', 'if', 'then', 'elif', 'else', 'while', 'until', 'do'))
+
+
 def _skip_wrappers(toks: list) -> list:
     i = 0
     while i < len(toks):
-        if re.match(r'^[A-Za-z_][A-Za-z0-9_]*=', toks[i]) or os.path.basename(toks[i]) in _WRAPPERS:
+        w = toks[i]
+        if re.match(r'^[A-Za-z_][A-Za-z0-9_]*=', w) or os.path.basename(w) in _WRAPPERS or w in _KEYWORD_HEADS:
             i += 1
+            continue
+        if w == 'function':
+            i += 2      # `function name {`: the name is no command
+            continue
+        if w == 'case':
+            j = next((k for k in range(i + 1, len(toks)) if toks[k].endswith(')')), None)
+            if j is None:
+                i += 1      # no label in this piece: the head that follows is judged as it stands
+            else:
+                i = j + 1      # `case x in x) cmd`: the command follows the label
+            continue
+        if w.endswith(')') and not w.startswith('$') and '=' not in w and i + 1 < len(toks):
+            i += 1      # a case label `x)` or a function header `f()`: the command follows it
             continue
         break
     return toks[i:]
@@ -1315,11 +1436,136 @@ def _check_find_pipe(segs: list, cwd: str) -> None:
             deny('a find over a directory that holds the store piped into %s would read the claim signing key' % os.path.basename(t[0]), reached)
 
 
+BODY_MAX_DEPTH = 8              # nested command bodies the gate judges; deeper is refused
+BODY_MAX_WORK = 4 * MAX_TEXT    # characters handed to _judge across all bodies of one command (each call also costs BODY_CALL_COST)
+BODY_CALL_COST = 1000
+_FUNSUB_NEXT = ('', ' ', '\t', '\n', '|')      # what may follow `${` of a funsub; '' is the end of the text (an unclosed `${`)
+_body_work = [0]
+
+
+def _body_at(text: str, i: int, quoted: list, out: list, in_dq: bool):
+    """If a command body starts at `i`, append its text to `out` and return the index after it; return `i` when none
+    starts there, None when the body is not closed. Bodies: `$( )`, backticks, and (outside double quotes) `<( )`,
+    `>( )` and a bare `( )` group, a subshell. `$(( ))` is read as a body too (its text, `( ... )`, is a harmless
+    subshell, and a substitution inside it is found one level down): a superset."""
+    c = text[i]
+    if c == '$' and text.startswith('{', i + 1) and text[i + 2:i + 3] in _FUNSUB_NEXT:
+        # bash 5.3 `${ cmd; }` and `${| cmd; }` run cmd in the current shell: a command body without a `$(`. Such a text is
+        # a bad substitution to an older bash, so nothing legitimate is lost by refusing it
+        deny('the command uses a ${ ...; } command substitution, which the gate does not look into')
+    if c == '$' and text.startswith('(', i + 1):
+        start, closer = i + 2, ')'
+    elif c == '`':
+        start, closer = i + 1, '`'
+    elif not in_dq and c in '<>' and text.startswith('(', i + 1):
+        start, closer = i + 2, ')'
+    elif not in_dq and c == '(':
+        start, closer = i + 1, ')'
+    else:
+        return i
+    end = _bash_subst(text, start, closer, quoted, 0)
+    if end is None:
+        return None
+    body = text[start:end - 1]
+    out.append(body)
+    if closer == '`':
+        plain = re.sub(r'\\([`\\$])', r'\1', body)      # the backslash rule of backticks; the raw text is judged as well
+        if plain != body:
+            out.append(plain)
+    return end
+
+
+def _find_bodies(text: str):
+    """The OUTERMOST command bodies of a shell text (a body inside a body is found when that body is judged): `$( )`,
+    backticks, `<( )`, `>( )` and `( )`, in the open and inside double quotes. A single-quoted span is a literal. None
+    when a quote or a body is not closed (the caller refuses it). One pass, linear in the text."""
+    n = len(text)
+    quoted = [False] * n      # filled by _bash_subst; shared so that the pass stays linear
+    out, i = [], 0
+    ws, pending, arith_end = True, [], -1      # at the start of a word; here-documents waiting for their line; end of a `$[ ]`
+    while i < n:
+        c = text[i]
+        if c == '\\':
+            ws = ws and text[i + 1:i + 2] == '\n'      # a backslash-newline is not there for the shell
+            i += 2
+        elif c == "'":
+            j = text.find("'", i + 1)
+            if j == -1:
+                return None
+            i, ws = j + 1, False
+        elif c == '"':
+            i, ws = i + 1, False
+            while True:
+                if i >= n:
+                    return None
+                d = text[i]
+                if d == '"':
+                    i += 1
+                    break
+                if d == '\\':
+                    i += 2
+                    continue
+                j = _body_at(text, i, quoted, out, True)
+                if j is None:
+                    return None
+                i = j if j != i else i + 1
+        elif c == '#' and ws:
+            # a comment: no quote and no body in it; the newline stays for a pending here-document
+            j = text.find('\n', i)
+            i = n if j == -1 else j
+        elif c == '\n' and pending:
+            i, ws = i + 1, True
+            for here in pending:
+                i = _heredoc_body(text, i, here, quoted, out)
+                if i is None:
+                    return None
+            pending = []
+        elif c == '<' and text.startswith('<<', i) and i >= arith_end:
+            # `$[ 1<<2 ]` is a shift: no here-document starts inside the old arithmetic brackets
+            op = _heredoc_operator(text, i)
+            if op is _HEREDOC_BAD:
+                return None
+            if op is None:
+                i, ws = i + 2, True
+            else:
+                pending.append(op[:3])
+                i, ws = op[3], False
+        else:
+            if c == '$' and i >= arith_end and text.startswith('[', i + 1):      # one scan per bracket span: linear
+                depth, k = 1, i + 2
+                while k < n and depth:
+                    depth += (text[k] == '[') - (text[k] == ']')
+                    k += 1
+                arith_end = max(arith_end, k if depth == 0 else n)
+            j = _body_at(text, i, quoted, out, False)
+            if j is None:
+                return None
+            if j != i:
+                i, ws = j, False
+            else:
+                i, ws = i + 1, c in _WORD_END
+    return out
+
+
 def check_bash(cmd: str, cwd: str) -> None:
     _brace_work[0] = 0      # the brace expansion work cap is per command
+    _body_work[0] = 0
     if _names_key_in_text(cmd):
         deny('the command names the claim signing key (%s) or a glob that could match it' % KEY_NAME)
     plain_cmd = re.sub(r"\$(?=['\"])", '', cmd)      # $'..' / $"..": ANSI-C quoting, read as plain quotes
+    _judge(plain_cmd, cwd, 0)
+
+
+def _judge(plain_cmd: str, cwd: str, depth: int) -> None:
+    """ONE judgment for a shell text, the whole command or the body of a command substitution, a backtick pair, a process
+    substitution or a subshell: every rule runs on a body exactly as on the top level (a body is an unquoted context of its
+    own, also where it sits inside double quotes). The bodies are found on the whole text first, because the command splitter
+    cuts at `;` and `|` even inside `$( )`. A body that does not parse, nesting past BODY_MAX_DEPTH and the work budget
+    are refusals (generic reason, never the text). Accepted limits: a body built at run time (`bash -c "$X"`), heredoc
+    bodies, `source`, `python -c`, aliases and functions defined earlier."""
+    _body_work[0] += len(plain_cmd) + BODY_CALL_COST
+    if depth > BODY_MAX_DEPTH or _body_work[0] > BODY_MAX_WORK:
+        deny('the command nests command bodies deeper than the gate can look through')
     for segs in _pipelines(plain_cmd):
         _check_find_pipe(segs, cwd)
     for all_toks in _commands(plain_cmd):
@@ -1374,6 +1620,15 @@ def check_bash(cmd: str, cwd: str) -> None:
             deny('a search that includes hidden or ignored files over a directory that holds the store would read the claim signing key', reached)
         if head in ARCHIVERS or (head in COPIERS and _has_flag(toks, 'rRaA', ('--recursive', '--archive'))):
             deny('copying or archiving a directory that holds the store would take the claim signing key', reached)
+    bodies = _find_bodies(plain_cmd[:MAX_TEXT])
+    if bodies is None:
+        # unread text: refused when it could hold a body (`(` or a backtick anywhere); a stray apostrophe in a text with
+        # neither (`echo it's fine`) keeps the verdict it always had
+        if re.search(r'[(`]', plain_cmd[:MAX_TEXT]):
+            deny('a command body of the command could not be read (an unterminated quote or substitution)')
+        bodies = []
+    for body in bodies:
+        _judge(body, cwd, depth + 1)
 
 
 # ---------------------------------------------------------------------------------------------------

@@ -873,5 +873,160 @@ class BraceDifferential(Tree):
         self.assertEqual(leaks, [], '%d of %d words that a shell expands to a protected file pass the gate (first: %r)' % (len(leaks), positives, leaks[:3]))
 
 
+class BodiesAreJudged(Tree):
+    """The body of a command substitution, a backtick pair, a process substitution, a subshell and the commands behind a
+    reserved word (`{ cmd; }`, `if`, `then`, `do`, `!`, `case x in x) cmd`, a function body) are judged by the SAME rules as
+    the top-level command. The reader rules (recursive grep, find -exec, archivers, copiers) used to look at the head of a
+    top-level piece only. Every deny cell has benign twins; the in-process corpus is the cross product of the wrappers and
+    the bodies."""
+    DENY = ['grep -rn zzmark .', 'cat agents/agent-a/.agent-token', 'find store -type f -exec cat {} +', 'cp -r store out', 'tar cf - store',
+            'cat work/key-link', 'cat work/{key-link,x}', 'cat work/{sym-0,x}', 'rg --hidden zzmark .']
+    ALLOW = ['grep -rn zzmark src', 'ls docs', 'date', 'echo hi', 'cat src/a.ts', 'cd docs && ls', 'find src -type f', 'tar cf - src']
+    WRAPPERS = ['{}', 'x=$({})', 'echo $({})', 'echo `{}`', 'echo "$({})"', 'echo "`{}`"', '({})', '{{ {}; }}', 'if true; then {}; fi', 'for i in 1; do {}; done',
+                'while true; do {}; done', 'until false; do {}; done', '! {}', 'case x in x) {} ;; esac', 'f() {{ {}; }}; f', 'function f {{ {}; }}; f',
+                'echo <({})', 'echo $(( $({}) + 1 ))', 'echo "x $(echo "y" "$({})")"', 'echo $(echo $({}))', 'time {}', 'if {}; then echo; fi',
+                'echo "a" | ({})', '$({})']
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        os.symlink(cls.p_abs('store/' + KEY_NAME), cls.p_abs('work/key-link'))
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('gate_under_test_bodies', cls.gate)
+        cls.mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.mod)
+
+    @classmethod
+    def p_abs(cls, rel):
+        return os.path.join(cls.root, rel)
+
+    def verdict(self, cmd):
+        try:
+            self.mod.check_bash(cmd, self.root)
+        except self.mod.Block:
+            return 'DENY'
+        return 'ALLOW'
+
+    def test_the_cross_product_of_wrappers_and_bodies(self):
+        wrong, n = [], 0
+        for wrapper in self.WRAPPERS:
+            for bodies, expect in ((self.DENY, 'DENY'), (self.ALLOW, 'ALLOW')):
+                for body in bodies:
+                    # the doubled braces of a wrapper are literal braces
+                    cmd = wrapper.replace('{{', '\x00').replace('}}', '\x01').replace('{}', body).replace('\x00', '{').replace('\x01', '}')
+                    n += 1
+                    got = self.verdict(cmd)
+                    if got != expect:
+                        wrong.append((expect, cmd))
+        self.assertGreaterEqual(n, 300)
+        self.assertEqual(wrong, [], '%d of %d cells differ, first: %r' % (len(wrong), n, wrong[:4]))
+
+    def test_the_reason_does_not_quote_the_body(self):
+        for cmd in ['x=$(grep -rn zzmark .)', 'echo "`grep -rn zzmark .`"', '(grep -rn zzmark .)', '{ grep -rn zzmark .; }']:
+            rc, out, err = self.bash(cmd)
+            with self.subTest(cmd=cmd):
+                self.assertEqual(rc, 2)
+                self.assertNotIn('zzmark', err)
+                self.assertNotIn(self.root, err)
+
+    def test_a_body_that_does_not_parse_is_refused(self):
+        for cmd in ['echo $(grep -rn zzmark src', 'echo `ls docs', 'echo $(echo "unterminated)', '(ls docs', 'echo <(ls docs']:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self.verdict(cmd), 'DENY')
+
+    def test_the_depth_cap(self):
+        ok = 'echo ' + '$(echo ' * 8 + 'hi' + ')' * 8
+        too_deep = 'echo ' + '$(echo ' * 9 + 'hi' + ')' * 9
+        self.assertEqual(self.verdict(ok), 'ALLOW')
+        self.assertEqual(self.verdict(too_deep), 'DENY')
+        # the reader at the bottom of the deepest allowed nesting is still found
+        self.assertEqual(self.verdict('echo ' + '$(' * 7 + 'grep -rn zzmark .' + ')' * 7), 'DENY')
+
+    def test_a_single_quoted_span_is_a_literal_and_the_name_rules_still_see_the_text(self):
+        self.assertEqual(self.verdict("echo '$(grep -rn zzmark .)'"), 'ALLOW')
+        self.assertEqual(self.verdict('x=$(cat agents/agent-a/.agent-token)'), 'DENY')
+
+    def test_the_link_cells_with_the_shell_as_oracle(self):
+        link = os.path.basename(self.links['agents/agent-a/.agent-token'][0])
+        cmd = 'echo "$(echo work/{%s,x})"' % link
+        for shell in ('bash', 'zsh'):
+            out = shell_words(shell, cmd, self.root)
+            if out is not None:
+                with self.subTest(shell=shell):
+                    self.assertIn('work/' + link, ' '.join(out).split())
+        self.assertEqual(self.verdict('echo "$(cat work/{%s,x})"' % link), 'DENY')
+        self.assertEqual(self.verdict('echo "$(cat src/{a.ts,x})"'), 'ALLOW')
+
+    # Three ways the scanner could lose its place in a text (commit 1, review): a comment, a here-document, and the bash 5.3
+    # `${ cmd; }`. READER is the command the gate refuses; ORACLE stands in for it when a shell runs the cell: `expr 40 + 2`
+    # prints 42 only when it RUNS (the literal text of a quoted here-document holds the words, never the number).
+    READER, ORACLE = 'grep -rn foo .', 'expr 40 + 2 >&2'
+    # the body RUNS in a shell (at least one of bash and zsh proves it below) and the gate refuses it
+    RUNS = ["x=$(R)", ": # it's\n x=$(R)\n : # don't", 'echo $( # it\'s\n R) # don\'t', 'echo "$( # it\'s\n R) # don\'t"', '(  # it\'s\n R\n) # don\'t',
+            'echo a\\ #b $(R)', 'echo "a"#b $(R)', 'echo $(true)#y $(R)', 'echo ${X#*/} $(R)', 'echo $# #x it\'s\n $(R)',
+            "cat <<EOF\nit's\n$(R)\nit's\nEOF", "cat <<-EOF\n\tit's\n\t$(R)\n\tit's\n\tEOF", "cat <<EOF\nit's `R`\nit's\nEOF",
+            "x=$(cat <<EOF\nit's\n$(R)\nit's\nEOF\n)", 'cat <<EOF\nEOF\nx=$(R)', "cat <<'EOF'\nit's\nEOF\nx=$(R)", "cat <<A <<'B'\nit's $(R)\nA\nit's\nB",
+            'x=$((1<<"2"))\n y=$(R)', 'echo $[1<<"2"]\n $(R)', '(( x = 1 <<"2" ))\n $(R)', 'cat <<< "x"\n $(R)', 'x=$(cat <<\'EOF\'\nit\'s\nEOF\nR)',
+            'echo "$(cat <<EOF\nit\'s\n$(R)\nEOF\n)"', "cat <<EOF # note\nit's\n$(R)\nit's\nEOF", "x=$(cat <<EOF # note\nit's\n$(R)\nit's\nEOF\n)"]
+    # literal text: no shell runs it and the gate lets it pass
+    LITERAL = ["echo a#b '$(R)'", ": # it's $(R)\n echo ok", ": # it's (maybe)\n echo ok", "cat <<'EOF'\nit's $(R)\nEOF", 'cat <<"EOF"\nit\'s $(R)\nEOF',
+               "cat <<\\EOF\nit's $(R)\nEOF", "cat <<EOF\nit's \\$(R)\nEOF", "cat <<A <<'B'\nit's ok\nA\nit's $(R)\nB", "x=$(cat <<'EOF'\nit's fine\nEOF\n)",
+               'echo "$(cat <<\'EOF\'\nit\'s fine\nEOF\n)"', "x=$(cat <<'EOF'\nit's $(R) it's\nEOF\n)", 'echo $((1<<2)) $[1<<2]', 'cat <<< "it\'s $(echo hi)"',
+               'echo ${X:-a} ${X} ${#X} ${X#a} ${X:- b}', "echo '${ R; }'", "cat <<EOF\nit's ok\nEOF", "cat <<-EOF\n\tit's ok\n\tEOF",
+               # the delimiter line of `<<-` may start with tabs; after it the apostrophes pair up again and the text is a literal
+               "cat <<-EOF\n\tx\n\tEOF\necho it's $(R) don't",
+               # a comment in a substitution holds a quote and a parenthesis
+               "echo $( # it's here\n date)", "echo $( # ) it's\n date)",
+               # a comment after the operator of a here-document: the body still starts on the next line
+               "x=$(cat <<EOF # note\nit's fine\nEOF\n)", "cat <<EOF # note\nit's fine\nEOF"]
+    # bash 5.3 only (the local bash is 3.2 and zsh has no such form): the gate refuses them, no oracle
+    FUNSUB = ['x=${ R; }', 'x=${| R; }', 'echo "${ R; }"', 'echo $(echo ${ R; })', 'cat <<EOF\n${ R; }\nEOF', 'echo ${\n R\n}']
+
+    def ran(self, shell, cmd):
+        """Did `shell` run the ORACLE of the cell? None when the shell is not installed."""
+        exe = shutil.which(shell)
+        if not exe:
+            return None
+        p = subprocess.run([exe, '-c', cmd], cwd=self.root, capture_output=True, text=True, timeout=30,
+                           stdin=subprocess.DEVNULL, env={'PATH': '/usr/bin:/bin', 'HOME': self.root, 'LC_ALL': 'C'})
+        return '42' in p.stdout + p.stderr
+
+    def cell(self, template, reader):
+        """The template with the reader placed in it (a lone `R` stands for it)."""
+        return re.sub(r'(?<![A-Za-z0-9_$%])R(?![A-Za-z0-9_])', lambda _m: reader, template)
+
+    def test_a_comment_a_here_document_and_a_shift_do_not_hide_a_body(self):
+        for tmpl in self.RUNS:
+            with self.subTest(cell=tmpl):
+                self.assertEqual(self.verdict(self.cell(tmpl, self.READER)), 'DENY')
+                shells = [self.ran(sh, self.cell(tmpl, self.ORACLE)) for sh in ('bash', 'zsh')]
+                if all(s is None for s in shells):
+                    self.skipTest('no shell installed')
+                # the cell is a real one: a shell runs the body (bash 3.2 mishandles two here-documents on one line)
+                self.assertTrue(any(shells), 'no shell ran the body of %r' % tmpl)
+
+    def test_literal_text_in_a_comment_and_a_here_document_still_passes(self):
+        for tmpl in self.LITERAL:
+            with self.subTest(cell=tmpl):
+                self.assertEqual(self.verdict(self.cell(tmpl, self.READER)), 'ALLOW')
+                for sh in ('bash', 'zsh'):
+                    if '$(R)' in tmpl or 'R;' in tmpl:
+                        self.assertIn(self.ran(sh, self.cell(tmpl, self.ORACLE)), (False, None), '%s ran the text of %r' % (sh, tmpl))
+
+    def test_a_funsub_is_refused_and_a_plain_expansion_is_not(self):
+        for tmpl in self.FUNSUB:
+            with self.subTest(cell=tmpl):
+                self.assertEqual(self.verdict(self.cell(tmpl, self.READER)), 'DENY')
+                self.assertEqual(self.verdict(self.cell(tmpl, 'date')), 'DENY')      # whatever it runs: the form is refused
+        for cmd in ['echo ${X}', 'echo ${X:-a}', 'echo ${#X}', 'echo "${X:- b}"', 'echo ${X// /}', "echo '${ date; }'", 'echo \\${ date; }']:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self.verdict(cmd), 'ALLOW')
+
+    def test_the_reason_of_a_refused_funsub_does_not_quote_it(self):
+        rc, out, err = self.bash('x=${ grep -rn zzmark .; }')
+        self.assertEqual(rc, 2)
+        self.assertNotIn('zzmark', err)
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=1)
