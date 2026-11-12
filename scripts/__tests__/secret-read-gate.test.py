@@ -151,6 +151,70 @@ class BashReads(GateCase):
             with self.subTest(cmd=cmd):
                 self.assert_denied(self.bash(cmd), cmd)
 
+    # find start directories and whether a reader that gets the file list reaches the store: (find words, denied)
+    FIND_ROOTS = [('find .', True), ('find store', True), ('find store/', True), ('find', True), ('find -type f', True), ('find -name x', True),
+                  ('find -L .', True), ('find -H store', True), ('find . store', True), ('find *', True), ('find . -name "*.py"', True),
+                  ('find src', False), ('find scripts', False), ('find src scripts', False), ('find . -prune', False),
+                  ('find . -path ./store -prune -o -type f -print', False), ('find /nonexistent', False)]
+
+    def test_find_exec_and_find_pipe_into_xargs_are_judged_by_the_same_decision(self):
+        # 1:1 cells: every find prefix gets the verdict of its -exec form AND its xargs form, and both equal the expectation
+        for find, denied in self.FIND_ROOTS:
+            for tail in (' -exec cat {} +', ' -exec cat {} ;', ' -execdir head {} ;', ' | xargs cat', ' | xargs -0 cat', ' | parallel cat {}'):
+                cmd = find + tail
+                with self.subTest(cmd=cmd):
+                    (self.assert_denied if denied else self.assert_allowed)(self.bash(cmd), cmd)
+
+    def test_find_piped_into_a_reader_launcher_is_blocked(self):
+        for tail in ['xargs cat', 'xargs -0 cat', 'xargs -n1 head', 'xargs -n 1 head', 'xargs -I{} cat {}', 'xargs -I {} cat {}', 'xargs -P4 -0 tail', 'xargs -0r cat', 'xargs --null cat',
+                     'xargs --max-args=1 cat', 'xargs --max-args 1 cat', 'xargs -- cat', 'xargs /bin/cat', 'xargs env cat', 'xargs grep foo', 'xargs sed -n p', 'xargs awk 1',
+                     'xargs strings', 'xargs base64', 'xargs xxd', 'xargs cp -t /tmp', 'xargs tar cf /tmp/a.tar', 'xargs gzip -c', 'xargs diff x', 'xargs rg foo', 'xargs less',
+                     'xargs sh -c "cat \\"$0\\""', 'xargs bash -c cat', 'xargs python3 -c 1', 'xargs node -e 1', 'xargs perl -ne print', 'xargs ruby -e 1',
+                     'parallel cat', 'parallel -j4 cat {}', 'parallel --jobs 2 grep foo', 'parallel -k head']:
+            for find in ('find store -type f', 'find . -type f', 'find -type f'):
+                cmd = '%s | %s' % (find, tail)
+                with self.subTest(cmd=cmd):
+                    self.assert_denied(self.bash(cmd), cmd)
+
+    def test_find_pipe_through_other_segments_and_the_pipe_ampersand_is_blocked(self):
+        for cmd in ['find store -type f | sort | xargs cat', 'find store -type f | head -3 | xargs cat', 'find store -type f |& xargs cat', 'find store -type f -print0 | xargs -0 cat',
+                    'sudo find store -type f | xargs cat', 'find store -type f | sudo xargs cat', 'find store -type f | nohup xargs cat']:
+            with self.subTest(cmd=cmd):
+                self.assert_denied(self.bash(cmd), cmd)
+
+    def test_find_pipe_an_undecidable_launcher_is_blocked_fail_closed(self):
+        for tail in ['xargs $READER', 'xargs "$(echo cat)"', 'xargs `echo cat`', 'xargs -Z cat', 'xargs --bogus cat', 'xargs --max-arg=1 cat', 'xargs nice -n5 cat',
+                     'xargs sudo -u x cat', 'xargs c*t', 'xargs ./c[a]t', 'parallel --bogus cat', 'parallel -Z cat']:
+            cmd = 'find store -type f | ' + tail
+            with self.subTest(cmd=cmd):
+                self.assert_denied(self.bash(cmd), cmd)
+
+    def test_find_pipe_into_a_command_that_is_no_reader_passes(self):
+        for tail in ['xargs wc -l', 'xargs ls', 'xargs ls -la', 'xargs stat', 'xargs file', 'xargs du -h', 'xargs basename', 'xargs dirname', 'xargs echo', 'xargs printf "%s\\n"',
+                     'xargs test -e', 'xargs', 'xargs -0', 'xargs -n1', 'xargs -I{} echo {}', 'parallel wc -l', 'parallel', 'wc -l', 'sort', 'head -3', 'cat']:
+            cmd = 'find store -type f | ' + tail
+            with self.subTest(cmd=cmd):
+                self.assert_allowed(self.bash(cmd), cmd)
+
+    def test_find_pipe_that_does_not_start_the_pipeline_or_is_not_a_pipe_passes(self):
+        # accepted limits: only a find that STARTS the pipeline is followed (a separator ends the pipeline)
+        for cmd in ['find store ; xargs cat', 'find store && xargs cat', 'find store || xargs cat', 'echo store | xargs cat', 'ls store | xargs cat',
+                    'find src -type f | xargs cat', 'find scripts | sort | xargs grep foo']:
+            with self.subTest(cmd=cmd):
+                self.assert_allowed(self.bash(cmd), cmd)
+
+    def test_find_pipe_into_xargs_cat_really_reads_the_key_and_the_gate_blocks_it(self):
+        # the real tools (BSD or GNU find and xargs): the command prints the key, and the gate refuses that very command
+        cmd = 'find store -type f -name ".c*" | xargs cat'
+        shown = subprocess.run(['/bin/sh', '-c', cmd], cwd=self.root, capture_output=True, timeout=30)
+        self.assertIn(KEY.encode(), shown.stdout, 'the positive control: the pipe reads the key')
+        self.assert_denied(self.bash(cmd), cmd)
+        # the real tool, the same pipe over a directory without the store, prints and the gate lets it
+        ok = 'find src -type f | xargs cat'
+        shown = subprocess.run(['/bin/sh', '-c', ok], cwd=self.root, capture_output=True, timeout=30)
+        self.assertIn(b'export const claim', shown.stdout)
+        self.assert_allowed(self.bash(ok), ok)
+
     DIRECTORIES_RECURSE = ['--directories=recurse', '--directories recurse', '--dir=recurse', '-d recurse', '-drecurse']
 
     def test_grep_directories_recurse_in_every_spelling_over_the_store_is_blocked(self):

@@ -428,18 +428,32 @@ def _names_key_in_text(text: str) -> bool:
     return False
 
 
+def _words(line: str) -> list:
+    """The words of one simple command. Never raises: an unparsable line is cut at spaces."""
+    try:
+        return shlex.split(line, posix=True)
+    except ValueError:
+        return [re.sub(r'[\\\'"]', '', w) for w in line.split()]
+
+
 def _commands(text: str) -> list:
     """The simple commands of a shell text as token lists. Never raises: an unparsable line is cut at spaces."""
     out = []
     for line in re.split(r'[\n;]|&&|\|\||\||&(?!>)', text[:MAX_TEXT]):
         line = line.strip()
-        if not line:
-            continue
-        try:
-            toks = shlex.split(line, posix=True)
-        except ValueError:
-            toks = [re.sub(r'[\\\'"]', '', w) for w in line.split()]
-        out.append(toks)
+        if line:
+            out.append(_words(line))
+    return out
+
+
+def _pipelines(text: str) -> list:
+    """The pipelines of a shell text: a list of segments (token lists) per pipeline. A pipeline ends at `;`, a newline,
+    `&&`, `||` or `&`; its segments are cut at a single `|` (`|&` too)."""
+    out = []
+    for stmt in re.split(r'[\n;]|&&|\|\||&(?!>)', text[:MAX_TEXT].replace('|&', '|')):
+        segs = [_words(s.strip()) for s in stmt.split('|') if s.strip()]
+        if len(segs) > 1:
+            out.append(segs)
     return out
 
 
@@ -723,10 +737,121 @@ def _embedded_token(w: str):
     return next((f for f in _protected_files() if f.name == name), None)
 
 
+def _find_roots(toks: list) -> list:
+    """The words of a find that may be a start directory: every word that is not an option (the over-approximation the
+    other readers use), plus `.` when no start directory leads the expression: GNU find then searches the cwd."""
+    roots = [w for w in toks[1:] if w and not w.startswith('-')]
+    i = 1
+    while i < len(toks) and toks[i] in ('-H', '-L', '-P', '-E', '-X', '-x', '-s', '-d'):
+        i += 1
+    if i >= len(toks) or toks[i][:1] in ('-', '(', '!', ','):
+        roots.append('.')      # no leading start directory
+    return roots
+
+
+def _find_reach(toks: list, cwd: str):
+    """The ONE decision for a find whose file list ends up in a reader (`-exec`, or a pipe into xargs / parallel): the
+    protected file the find reaches over its start directories, or None. A `-prune` anywhere is the carve-out (the
+    walk can skip the store, and no filter is parsed any further). Both callers use this function, so the two
+    routes cannot judge differently."""
+    if '-prune' in toks:
+        return None
+    for w in _find_roots(toks):
+        for c in _expand_word(w, cwd):
+            for _base, f in _covered_dir_files(c, cwd):
+                return f
+    return None
+
+
+# The command word an xargs / parallel hands the found files to: these read them (or run what the word says).
+LAUNCHER_READERS = (GREP_FAMILY | RG_FAMILY | frozenset((
+    'cat', 'head', 'tail', 'less', 'more', 'sed', 'awk', 'cut', 'sort', 'strings', 'xxd', 'od', 'base64', 'nl', 'tac', 'cp', 'mv', 'tar', 'zip',
+    'gzip', 'diff', 'gsed', 'gawk')))
+LAUNCHER_INTERPRETERS = frozenset(('sh', 'bash', 'zsh', 'dash', 'ksh', 'python', 'python3', 'node', 'perl', 'ruby'))
+# xargs / parallel options as getopt reads them: (short letters without a value, short letters that take a value (attached
+# or the next word), short letters with an optional attached value, long names without a value, long names with a
+# value (`=V` or the next word), long names with an optional `=V`). Anything else is not decided: deny.
+_LAUNCHER_OPTS = {
+    'xargs': ('0oprtx', 'nPLsIJERSda', 'iel', frozenset(('null', 'no-run-if-empty', 'verbose', 'interactive', 'exit', 'open-tty')),
+              frozenset(('max-args', 'max-procs', 'max-chars', 'delimiter', 'arg-file', 'process-slot-var')), frozenset(('replace', 'eof', 'max-lines'))),
+    'parallel': ('0kXmqrtvuU', 'jnNPSaI', '', frozenset(('null', 'keep-order', 'will-cite', 'no-notice', 'bar', 'eta', 'progress', 'verbose', 'xargs', 'no-run-if-empty')),
+                 frozenset(('jobs', 'max-args', 'max-procs', 'replace', 'sshlogin', 'arg-file')), frozenset()),
+}
+
+
+def _launcher_command(toks: list) -> tuple:
+    """(command word, decided) of an xargs / parallel word list: the first word after its own options. `decided` is
+    False when an option is not a known one or the command word cannot be read without running a shell (a variable,
+    a substitution, a glob, a leading dash behind a wrapper): the caller refuses it (fail closed)."""
+    noval, valued, optional, lnoval, lvalued, loptional = _LAUNCHER_OPTS[os.path.basename(toks[0])]
+    i = 1
+    while i < len(toks):
+        t = toks[i]
+        if t == '--':
+            i += 1
+            break
+        if t.startswith('--'):
+            name, eq, _ = t[2:].partition('=')
+            if name in lnoval and not eq:
+                i += 1
+            elif name in lvalued:
+                i += 1 if eq else 2
+            elif name in loptional:
+                i += 1
+            else:
+                return None, False
+            continue
+        if t.startswith('-') and len(t) > 1:
+            letters, step = t[1:], 1
+            for j, c in enumerate(letters):
+                if c in noval:
+                    continue
+                if c in valued:
+                    step = 1 if letters[j + 1:] else 2      # the value is attached, or it is the next word
+                    break
+                if c in optional:
+                    break
+                return None, False
+            i += step
+            continue
+        break
+    rest = _skip_wrappers(toks[i:])
+    if not rest:
+        return None, True      # no command word: xargs runs echo
+    word = rest[0]
+    if not word or word.startswith('-') or re.search(r'[$`(){}<>*?\[\]\\]', word):
+        return None, False
+    return os.path.basename(word), True
+
+
+def _check_find_pipe(segs: list, cwd: str) -> None:
+    """`find ... | xargs READER`: the first segment of a pipeline is a find that reaches a protected file and a later
+    segment is an xargs / parallel whose command word is a reader or an interpreter (or cannot be decided). The find
+    judgment is `_find_reach`, the same one `find -exec` uses. Not covered (accepted limits): `while read f; do cat
+    "$f"; done`, `for f in $(find ...)`, `ls -R | xargs`, a find that is not the FIRST segment, a launcher behind a
+    wrapper that takes options (`nice -n5 xargs`), and any other consumer of the list (`xargs git add`, a hash tool)."""
+    src = _skip_wrappers(segs[0])
+    if not src or os.path.basename(src[0]) != 'find':
+        return
+    consumers = [t for t in (_skip_wrappers(s) for s in segs[1:]) if t and os.path.basename(t[0]) in _LAUNCHER_OPTS]
+    if not consumers:
+        return
+    reached = _find_reach(src, cwd)
+    if reached is None:
+        return
+    for t in consumers:
+        word, decided = _launcher_command(t)
+        if not decided or (word is not None and (word in LAUNCHER_READERS or word in LAUNCHER_INTERPRETERS)):
+            deny('a find over a directory that holds the store piped into %s would read the claim signing key' % os.path.basename(t[0]), reached)
+
+
 def check_bash(cmd: str, cwd: str) -> None:
     if _names_key_in_text(cmd):
         deny('the command names the claim signing key (%s) or a glob that could match it' % KEY_NAME)
-    for all_toks in _commands(re.sub(r"\$(?=['\"])", '', cmd)):      # $'..' / $"..": ANSI-C quoting, read as plain quotes
+    plain_cmd = re.sub(r"\$(?=['\"])", '', cmd)      # $'..' / $"..": ANSI-C quoting, read as plain quotes
+    for segs in _pipelines(plain_cmd):
+        _check_find_pipe(segs, cwd)
+    for all_toks in _commands(plain_cmd):
         toks = _skip_wrappers(all_toks)
         skip = {i + len(all_toks) - len(toks) for i in _nonpath_words(toks)}
         # every word, the assignments and wrappers in front of the command included: `F=.agent-token cat "$F"`
@@ -759,6 +884,10 @@ def check_bash(cmd: str, cwd: str) -> None:
             own = _covered_dir_files(cwd, cwd)
             if own:
                 covering = [own]      # grep -r PATTERN searches the current directory
+        if head == 'find' and any(w in FIND_EXEC for w in toks):
+            f = _find_reach(toks, cwd)      # the same decision the find | xargs check uses
+            if f:
+                deny('find -exec over a directory that holds the store could read the claim signing key', f)
         # a recursive reader reaches a protected file unless the command excludes it
         reached = next((f for pairs in covering for base, f in pairs if not _excludes_file(toks, f, base)), None)
         if reached is None:
@@ -769,8 +898,6 @@ def check_bash(cmd: str, cwd: str) -> None:
             deny('a search that includes hidden or ignored files over a directory that holds the store would read the claim signing key', reached)
         if head in ARCHIVERS or (head in COPIERS and _has_flag(toks, 'rRaA', ('--recursive', '--archive'))):
             deny('copying or archiving a directory that holds the store would take the claim signing key', reached)
-        if head == 'find' and any(w in FIND_EXEC for w in toks) and '-prune' not in toks:
-            deny('find -exec over a directory that holds the store could read the claim signing key', reached)
 
 
 # ---------------------------------------------------------------------------------------------------

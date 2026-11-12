@@ -323,6 +323,19 @@ class BashOnEveryTokenFile(Tree):
             with self.subTest(cmd=cmd):
                 self.assert_denied(self.bash(cmd), cmd)
 
+    def test_find_over_a_token_directory_piped_into_a_reader_is_blocked_like_find_exec(self):
+        # 1:1 with the -exec cells: the same find words get the same verdict through -exec and through xargs
+        for find, cwd, denied in [('find agents -type f', None, True), ('find agents/agent-a', None, True), ('find . -type f', None, True),
+                                  ('find -type f', self.p('agents', 'agent-a'), True), ('find . -type f', self.p('agents', 'agent-a'), True),
+                                  ('find src -type f', None, False), ('find agents -prune', None, False)]:
+            for tail in (' -exec cat {} +', ' | xargs cat', ' | xargs -0 head', ' | parallel cat'):
+                cmd = find + tail
+                with self.subTest(cmd=cmd, cwd=cwd):
+                    (self.assert_denied if denied else self.assert_allowed)(self.bash(cmd, cwd=cwd), cmd)
+        for cmd in ('find agents -type f | xargs wc -l', 'find agents -type f | xargs ls', 'find agents -type f | xargs'):
+            with self.subTest(cmd=cmd):
+                self.assert_allowed(self.bash(cmd), cmd)
+
     def test_grep_directories_recurse_with_a_token_exclude_is_not_trusted(self):
         # the option is not a known no-value one, so the exclude parse voids (fail closed), exactly as for `-d recurse` before
         for cmd in ('grep --directories=recurse --exclude=.agent-token foo agents', 'grep --dir=recurse foo agents --exclude=.agent-token'):
