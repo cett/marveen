@@ -14,7 +14,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 // @ts-expect-error -- plain .mjs hook script, no types
 import { gateDecision } from '../../scripts/self-pace-gate.mjs'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync, statSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -110,11 +110,11 @@ describe('B. prefix spellings of the install root and of the directories under i
     for (const c of ['git archive -o@R/scripts/hooks/x.tar HEAD', 'git archive --output=@R/scripts/hooks/x.tar HEAD', 'git archive -o @R/scripts/hooks/x.tar HEAD']) expect(denied(c, wt)).toBe(true)
     for (const c of ['git archive -o@W2/x.tar HEAD', 'git archive --output=@W2/x.tar HEAD', 'git archive -o @W2/x.tar HEAD']) expect(denied(c, wt)).toBe(false)
   })
-  it('a case spelling of the install path is the install on a case-insensitive volume only: the gate compares identity, not text', () => {
-    // (on a case-sensitive volume the upper-case path is another, non-existent directory and is free; on APFS it is the install)
+  it('a case spelling of the install path is refused on every volume, because the gate folds case for the install path text (APFS ignores case); a case-sensitive volume pays a harmless false deny', () => {
+    // insideInstall() matches the install path as case-insensitive text on purpose (fail-closed): on APFS the
+    // upper-case spelling IS the install, on a case-sensitive volume it is another path and is denied anyway.
     const upper = root.replace('fixture-root', 'FIXTURE-ROOT')
-    const sameDir = (() => { try { return statSync(upper).ino === statSync(root).ino } catch { return false } })()
-    expect(denied(`git checkout-index -f --prefix=${upper}/ -a`, wt)).toBe(sameDir)
+    expect(denied(`git checkout-index -f --prefix=${upper}/ -a`, wt)).toBe(true)
   })
 })
 
