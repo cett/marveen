@@ -342,6 +342,23 @@ class BashOnEveryTokenFile(Tree):
                 self.assertNotIn('internal error', err, cmd)
                 self.assert_denied((rc, out, err), cmd)
 
+    def test_a_link_to_a_protected_file_next_to_a_glob_alternative_is_blocked_whatever_the_order(self):
+        # the alternative without a glob is judged as a plain path of EITHER tier: a symlink (absolute or relative) or a hard link to a
+        # token file, and to the claim signing key, in a brace word with a glob alternative, in both orders
+        for rel, (sym, rsym, hard) in self.links.items():
+            for link in (sym, rsym, hard):
+                d, name = os.path.split(link)
+                for alts in ('%s,x*', 'x*,%s', '%s,y?', '[a]*,%s'):
+                    cmd = 'cat %s/{%s}' % (d, alts % name)
+                    with self.subTest(cmd=cmd, protected=rel):
+                        rc, out, err = self.bash(cmd)
+                        self.assertNotIn('internal error', err, cmd)
+                        self.assert_denied((rc, out, err), cmd)
+        # a benign alternative next to a glob passes
+        for cmd in ('cat src/{a.ts,b*}', 'cat src/{b*,a.ts}', 'cat work/{x,y*}', 'cat docs/{x,y}*'):
+            with self.subTest(cmd=cmd):
+                self.assert_allowed(self.bash(cmd), cmd)
+
     def test_grep_abbreviated_long_recursive_options_over_a_token_directory_are_blocked(self):
         for opt in ('--recursive', '--recursiv', '--recur', '--rec', '--dereference-recursive', '--dereference-r', '--dereference', '--dere', '--der'):
             for target in ('agents', 'agents/', 'agents/agent-a', '.'):

@@ -505,9 +505,10 @@ def _tier_b_glob_selects(word: str, cwd: str):
         glob_at = re.search(r'[*?\[]', p)
         if glob_at is None:
             # an alternative of a brace word that has no glob (`{*,.agent-token}`, a JSON text `{"a": 1, "b": "*"}`): it
-            # names one path, no pattern to read; judged as a plain path (it used to raise AttributeError here)
+            # names one path, no pattern to read; judged as a plain path, of EITHER tier (a link to the key counts), so
+            # that a brace word the crash used to block by accident (`src/{k,x*}`) stays refused
             hit = _protected_hit(alt, cwd, True)
-            if hit is not None and hit.tier == 'B':
+            if hit is not None:
                 return hit
             continue
         cut = glob_at.start()

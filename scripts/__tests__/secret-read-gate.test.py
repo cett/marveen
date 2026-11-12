@@ -88,6 +88,17 @@ class BashReads(GateCase):
             with self.subTest(cmd=cmd):
                 self.assert_denied(self.bash(cmd), cmd)
 
+    def test_a_link_to_the_key_next_to_a_glob_alternative_in_a_brace_word_is_blocked(self):
+        # a brace alternative without a glob is judged as a plain path: a symlink or a hard link to the key is the key
+        for link in ('keylink', 'innocent-name.txt'):
+            for alts in ('%s,x*', 'x*,%s', '%s,y?', '[a]*,%s'):
+                cmd = 'cat work/{%s}' % (alts % link)
+                with self.subTest(cmd=cmd):
+                    self.assert_denied(self.bash(cmd), cmd)
+        for cmd in ['cat src/{a.ts,b*}', 'cat src/{b*,a.ts}', 'cat work/{x,y*}', 'echo \'{"a": 1, "b": "*"}\'']:
+            with self.subTest(cmd=cmd):
+                self.assert_allowed(self.bash(cmd), cmd)
+
     def test_globs_that_can_match_the_file_are_blocked(self):
         for cmd in ['cat store/.claim*', 'cat store/.c*', 'cat store/.[c]*', 'cat store/.*', 'cat store/*', 'cat store/.claim?signing*', 'cat store/.cl?im-sig*',
                     'cat *signing-key*', 'cat store/*key', 'cat store/.{claim-signing-key,x}', 'cat store/.[a-z]*', 'cat ../store/.cl*',
