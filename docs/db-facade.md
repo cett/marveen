@@ -440,3 +440,20 @@ The approval transactions keep the modes of the synchronous transactions they re
 `claimApproval` the default (deferred) one, `createApprovalOnce` `immediate`. Their guarded `UPDATE ... WHERE` is
 the line that decides when another connection or process writes between the read and the write; the lock only
 keeps other facade callers out of the body.
+
+## PostgreSQL test harness
+
+The tests that need a PostgreSQL server are the `src/**/*.pg.test.ts` files. The default `vitest run` excludes them
+with that one glob, so the default suite has no test that skips when there is no server; `npm run test:pg`
+(`vitest.pg.config.ts`) runs them and fails before any test when `MARVEEN_PG_TEST_URL` is missing or the server does not
+answer. The variable is the admin URL of a throwaway server (the `pg-parity` CI job uses a `postgres:16` service container).
+
+`src/__tests__/helpers/pg-test-db.ts` gives every test file its own database, cloned from a template that holds the
+baseline (`src/migrations-pg/*.sql`, applied in file-name order). The template name carries a hash of that SQL, so a
+changed baseline builds a new template. Building and cloning run under one advisory lock (PostgreSQL refuses to clone
+a template another session is using), and a template is built under a temporary name and renamed when complete. A
+`bigint` is read as a JS number and a value beyond `Number.MAX_SAFE_INTEGER` throws instead of rounding.
+
+`src/__tests__/pg/baseline-parity.pg.test.ts` compares the baseline with the SQLite chain (tables, columns, keys,
+`CHECK`s, indexes, triggers) and runs its own mutants: DDL changes inside a rolled-back transaction that the comparison
+must report. Nothing in `src/` uses PostgreSQL yet; the facade has one working backend, SQLite.
