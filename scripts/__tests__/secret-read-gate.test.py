@@ -215,6 +215,28 @@ class BashReads(GateCase):
         self.assert_denied(self.bash('echo ' + '{' * 3000 + ',a}'), 'long word with unquoted braces')
         self.assert_allowed(self.bash("echo '" + '{' * 3000 + ",a}'"), 'long word with quoted braces')
 
+    def test_many_words_just_under_the_word_cap_are_searched_in_linear_time(self):
+        # the cells the single long word cannot be: the search for a group in the quadratic form took 0.1 s per word of 2000
+        # opening braces, 5.8 s for 50 of them (and the caps cannot answer them first: each word is under the word cap and
+        # the characters of the command are under the work cap). No brace closes, so nothing expands: the verdict is allow.
+        import resource
+        import time
+        cells = [('echo ' + ' '.join(['{' * 2000 + ',a'] * 50), '50 words of 2000 opening braces'),
+                 ('echo ' + ' '.join(['{' * 400 + ',a'] * 400), '400 words of 400 opening braces'),
+                 ('echo ' + ' '.join(['{' * 1000 + ',a' + '}' * 1000] * 20), '20 words of 1000 nested groups')]
+        for cmd, label in cells:
+            before, t0 = resource.getrusage(resource.RUSAGE_CHILDREN), time.time()
+            rc, out, err = self.bash(cmd)
+            used = resource.getrusage(resource.RUSAGE_CHILDREN)
+            cpu = (used.ru_utime + used.ru_stime) - (before.ru_utime + before.ru_stime)
+            with self.subTest(label=label):
+                self.assertLess(cpu, 2.0, '%s: %.2fs of CPU (the quadratic search needs about 5 s for the first cell)' % (label, cpu))
+                self.assertLess(time.time() - t0, 4.0, label)
+                self.assertIn(rc, (0, 2), label)
+        # the verdicts: no brace closes in the first two, nothing expands, nothing is read
+        self.assert_allowed(self.bash(cells[0][0]), cells[0][1])
+        self.assert_allowed(self.bash(cells[1][0]), cells[1][1])
+
     def test_globs_that_can_match_the_file_are_blocked(self):
         for cmd in ['cat store/.claim*', 'cat store/.c*', 'cat store/.[c]*', 'cat store/.*', 'cat store/*', 'cat store/.claim?signing*', 'cat store/.cl?im-sig*',
                     'cat *signing-key*', 'cat store/*key', 'cat store/.{claim-signing-key,x}', 'cat store/.[a-z]*', 'cat ../store/.cl*',
