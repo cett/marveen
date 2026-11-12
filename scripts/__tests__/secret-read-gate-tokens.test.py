@@ -24,6 +24,7 @@ Run: python3 <thisfile>   (SECRET_GATE_PATH names a gate file other than scripts
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -342,6 +343,72 @@ class BashOnEveryTokenFile(Tree):
                 self.assertNotIn('internal error', err, cmd)
                 self.assert_denied((rc, out, err), cmd)
 
+    def test_a_brace_word_without_a_glob_is_judged_alternative_by_alternative(self):
+        # every token file x the name, in either order, nested, as a sequence, from the directory itself; the prefix is quoted like a
+        # user would (a directory with a space or a quote in its name), the braces are not
+        for rel in PROTECTED:
+            d, name = os.path.split(rel)
+            pre = shlex.quote(d + '/') if d else ''
+            seq = name[:-1] + '{' + name[-1] + '..' + name[-1] + '}'
+            cmds = ['cat %s{%s,x}' % (pre, name), 'cat %s{x,%s}' % (pre, name), 'cat %s{x,{y,%s}}' % (pre, name), 'cat %s{{x,y},%s}' % (pre, name),
+                    'cat %s%s' % (pre, seq), 'head -c 5 %s{%s,x,y}' % (pre, name), 'cat < %s{%s,x}' % (pre, name)]
+            if d:
+                cmds += ['cat %s{%s,x}' % (shlex.quote(os.path.dirname(d) + '/') if os.path.dirname(d) else '', os.path.basename(d) + '/' + name)]
+            for cmd in cmds:
+                with self.subTest(cmd=cmd, protected=rel):
+                    rc, out, err = self.bash(cmd)
+                    self.assertNotIn('internal error', err, cmd)
+                    self.assert_denied((rc, out, err), cmd)
+            with self.subTest(cmd='cat {name,x}', cwd=d):
+                self.assert_denied(self.bash('cat {%s,x}' % name, cwd=os.path.join(self.root, d)), 'cat {name,x} from %s' % d)
+
+    def test_a_link_to_a_protected_file_in_a_glob_less_brace_word_is_blocked(self):
+        for rel, (sym, rsym, hard) in self.links.items():
+            for link in (sym, rsym, hard):
+                d, name = os.path.split(link)
+                for cmd in ('cat %s/{%s,x}' % (d, name), 'cat %s/{x,%s}' % (d, name), 'cat {%s,x}' % link, 'cat {x,%s}' % link, 'cat %s/{x,{y,%s}}' % (d, name),
+                            'cat {%s,src}/{x,%s}' % (d, name)):
+                    with self.subTest(cmd=cmd, protected=rel):
+                        self.assert_denied(self.bash(cmd), cmd)
+
+    def test_a_command_substitution_inside_double_quotes_opens_an_unquoted_context(self):
+        # in bash and zsh the text of $( ... ) and `...` inside double quotes is a command of its own: its braces expand
+        T = 'agents/agent-a/.agent-token'
+        cells = [('echo "$(cat agents/agent-a/{.agent-token,x})"', True), ('echo "`cat agents/agent-a/{.agent-token,x}`"', True),
+                 ('echo "$(echo "$(cat agents/agent-a/{.agent-token,x})")"', True), ('echo "$(echo $(cat agents/agent-a/{.agent-token,x}))"', True),
+                 ('echo "x $(cat agents/agent-a/{.agent-token,x}) y"', True), ('echo "$(cat \\"agents/agent-a/{.agent-token,x}\\")"', True),
+                 ("echo \"$(cat 'agents/agent-a/{.agent-token,x}')\"", False), ('echo "${v:-agents/agent-a/{.agent-token,x}}"', False),
+                 ('echo "agents/agent-a/{.agent-token,x}"', False), ('echo "$(date) agents/agent-a/{.agent-token,x}"', False)]
+        for cmd, reads in cells:
+            probe = cmd.replace('cat ', 'echo ')      # the oracle: the shell only prints what it would have read
+            for shell in ('bash', 'zsh'):
+                exe = shutil.which(shell)
+                if exe:
+                    out = subprocess.run([exe, '-c', probe], cwd=self.root, capture_output=True, timeout=30).stdout.decode()
+                    with self.subTest(cmd=cmd, shell=shell):
+                        self.assertEqual(T in out, reads, 'the oracle: %s printed %r' % (shell, out[:90]))
+            with self.subTest(cmd=cmd):
+                (self.assert_denied if reads else self.assert_allowed)(self.bash(cmd), cmd)
+        # an unterminated substitution: the rest is judged as unquoted
+        self.assert_denied(self.bash('echo "$(cat agents/agent-a/{.agent-token,x}"'), 'unterminated $(')
+
+    def test_a_quoted_or_escaped_brace_group_is_literal_and_an_unquoted_one_next_to_a_quoted_space_expands(self):
+        # what the shell prints is the oracle: a quoted brace group stays as typed, so it is no read of the token
+        for word, expands in [("'agents/agent-a/{.agent-token,x}'", False), ('"agents/agent-a/{.agent-token,x}"', False), ('agents/agent-a/\\{.agent-token,x\\}', False),
+                              ('agents/agent-a/{.agent-token,x}', True), ('"agents/agent-a/"{.agent-token,x}', True), ('agents/"agent c d"/{.agent-token,x}', True),
+                              ("agents/{'agent c d',agent-a}/.agent-token", True), ('agents/agent-a/{".agent-token",x}', True)]:
+            lines = subprocess.run(['bash', '-c', "printf '%s\\n' " + word], cwd=self.root, capture_output=True, timeout=30).stdout.decode().split('\n')
+            self.assertEqual(any(l.endswith('/.agent-token') for l in lines), expands, 'the oracle for %r' % word)
+            with self.subTest(word=word):
+                (self.assert_denied if expands else self.assert_allowed)(self.bash('cat ' + word), 'cat ' + word)
+
+    def test_a_brace_word_without_a_glob_that_names_no_protected_file_passes(self):
+        for cmd in ['echo src/{a,b}.ts', 'cat src/{a.ts,x}', 'cat {src/a.ts,x}', 'cat docs/{x,agent-token.md}', 'echo \'{"a": 1, "b": 2}\'', 'echo {1..3}', 'echo {a..e}',
+                    'echo ${HOME}', 'echo {x}', 'cat agents/agent-a/{CLAUDE.md,notes.txt}', 'cat agents/{agent-a,agent-b}/CLAUDE.md', 'grep -r foo {src,scripts}',
+                    'curl -s -X POST localhost:3420/api/messages -d \'{"from":"agent-a","to":"agent-b","content":"hi"}\'']:
+            with self.subTest(cmd=cmd):
+                self.assert_allowed(self.bash(cmd), cmd)
+
     def test_a_link_to_a_protected_file_next_to_a_glob_alternative_is_blocked_whatever_the_order(self):
         # the alternative without a glob is judged as a plain path of EITHER tier: a symlink (absolute or relative) or a hard link to a
         # token file, and to the claim signing key, in a brace word with a glob alternative, in both orders
@@ -617,6 +684,193 @@ class TierAUnchanged(Tree):
         rc, out, err = self.bash('cat store/%s store/.dashboard-token' % KEY_NAME)
         self.assertEqual(rc, 2)
         self.assertIn('claim signing key', err)
+
+
+def shell_words(shell, word, cwd):
+    """The words `shell` makes of `word` (what it would hand a command as arguments): `printf` is the only thing that runs,
+    PATH is empty, so a command substitution in the word runs nothing. None when the shell is not installed."""
+    exe = shutil.which(shell)
+    if not exe:
+        return None
+    p = subprocess.run([exe, '-c', 'eval "printf \'%s\\0\' $1"', 'x', word], cwd=cwd, capture_output=True, timeout=30, stdin=subprocess.DEVNULL,
+                       env={'PATH': '/nonexistent', 'HOME': cwd, 'LC_ALL': 'C'})
+    return [w.decode('utf-8', 'replace') for w in p.stdout.split(b'\0') if w]
+
+
+class BraceFixupTwo(Tree):
+    """PR 878, second fixup: where a brace group starts and ends is decided the way the shell decides it, and the quote
+    state of a command substitution inside double quotes is read the way the shell reads it."""
+
+    def reads(self, shell, word, rel):
+        """Does `shell` expand `word` to a path that is the protected file `rel` (or a link to it)? None: no such shell."""
+        out = shell_words(shell, word, self.root)
+        if out is None:
+            return None
+        target = os.path.realpath(self.p(rel))
+        return any(os.path.realpath(os.path.join(self.root, w)) == target for w in out)
+
+    def test_quotes_inside_a_command_substitution_inside_double_quotes_are_the_shells_own(self):
+        # F1: `"$(cat "agents/a/"{x,y})"` is the idiom `"$(cmd "arg")"`. The inner quotes open spans of their own, so a newer
+        # bash and zsh expand the braces in the unquoted part; bash 3.2 expands them textually and toggles at EVERY double
+        # quote, so it also expands a group between the inner quotes. The gate expands wherever either reading leaves a
+        # brace unquoted. (The first inner quote used to end the span, and the quote parity flipped for good.)
+        T = 'agents/agent-a/.agent-token'
+        cells = [('echo "$(cat "agents/agent-a/"{.agent-token,x})"', True),
+                 ('echo "$(cat "a" agents/agent-a/{.agent-token,x})"', True),
+                 ('echo "$(cat \'agents/agent-a/\'{.agent-token,x})"', True),
+                 ('echo "$(echo "x" "$(cat "agents/agent-a/"{.agent-token,x})")"', True),
+                 ('echo "x $(cat "q" "agents/agent-a/"{.agent-token,x}) y"', True),
+                 ('echo "$(cat "agents/agent-a/{.agent-token,x}")"', True),      # bash 3.2 reads it, see above
+                 # the same quoting, no protected path: the idiom stays allowed
+                 ('echo "$(cat "src/"{a.ts,b.ts})"', False),
+                 ('echo "$(echo "x" src/{a.ts,b})"', False),
+                 ('echo "$(echo \'{a,b}\')"', False),
+                 ('echo "${v:-agents/agent-a/{.agent-token,x}}"', False)]
+        for cmd, must_deny in cells:
+            probe = cmd.replace('cat ', 'echo ')      # the oracle prints what the command would have read
+            for shell in ('bash', 'zsh'):
+                out = shell_words(shell, probe, self.root)
+                if out is not None and any(T in w.split() for w in out):
+                    with self.subTest(cmd=cmd, shell=shell):
+                        self.assertTrue(must_deny, '%s reads the token, the cell says it may pass' % shell)
+            with self.subTest(cmd=cmd):
+                (self.assert_denied if must_deny else self.assert_allowed)(self.bash(cmd), cmd)
+        # at least one installed shell reads the token in the first cell: the cells are not vacuous
+        probe = 'echo "$(echo "agents/agent-a/"{.agent-token,x})"'
+        self.assertTrue(any(T in w.split() for sh in ('bash', 'zsh') for w in (shell_words(sh, probe, self.root) or [])), 'no shell reads the first cell')
+
+    def test_a_brace_pair_in_front_of_the_commas_does_not_close_the_group(self):
+        # F2: bash closes a group at the first `}` AFTER a comma, so `{b}` in front of the commas belongs to the first
+        # alternative and the real group runs on to a later `}`. The leaks of the review, plus a link to the key
+        T = '.agent-token'
+        link = self.links[T][0]
+        cells = ['cat agents/agent-a/{b},.agent-token,{}}', 'cat agents/agent-a/{b},,.agent-token}', 'cat agents/agent-a/{x},.agent-token,{y}}',
+                 'cat {b},.agent-token,{}}', 'cat work/{b},%s,{}}' % os.path.basename(link), 'cat agents/agent-a/{},.agent-token}']
+        for cmd in cells:
+            with self.subTest(cmd=cmd):
+                self.assert_denied(self.bash(cmd), cmd)
+        # bash 3.2 (and the versions that pair the same way) does expand the first cell to the token; where it does not, the
+        # verdict is still deny: the gate judges the bash pairing AND the nesting one, a superset on purpose
+        if self.reads('bash', 'agents/agent-a/{b},.agent-token,{}}', 'agents/agent-a/' + T) is False:
+            print('note: this bash nests the braces, it does not expand the review shape to the token', file=sys.stderr)
+
+    def test_how_many_words_a_word_may_expand_to(self):
+        # F4: the cap counts the words of the FINAL expansion. 26 * 26 = 676 is under it, 1024 is the last that passes
+        passes = ['echo {a..z}{a..z}', 'echo {1..32}{1..32}', 'echo ' + '{a,b}' * 10, 'echo {1..1024}']
+        refused = ['echo {1..33}{1..32}', 'echo {a..z}{a..z}{a..z}', 'echo ' + '{a,b}' * 11, 'echo {1..1025}', 'echo {a,b,c,d}{a,b,c,d}{a,b,c,d}{a,b,c,d}{a,b,c,d}{a,b}']
+        for cmd in passes:
+            with self.subTest(cmd=cmd[:40]):
+                self.assert_allowed(self.bash(cmd), cmd[:40])
+        for cmd in refused:
+            with self.subTest(cmd=cmd[:40]):
+                rc, out, err = self.bash(cmd)
+                self.assertEqual(rc, 2, cmd[:40])
+                self.assertIn('more paths than the gate can look through', err)
+
+
+class BraceDifferential(Tree):
+    """The gate against real shells over random words: if a shell's brace expansion of a word is a protected file (or a link
+    to one), the gate must refuse the command that names the word. The words are built from the shapes of the review
+    (a stray `}` or a balanced `{b}` in front of the commas, quotes, backslash, dollar, parentheses) and a planted token
+    path; the seed is fixed. A shell that is not installed is skipped (bash is always there). The oracle runs one shell
+    for the whole batch (`eval` in a subshell per word, an empty PATH so nothing but builtins can run).
+
+    Left out of the comparison, as a different class of its own: a word with a variable or a command substitution, whose
+    value the gate cannot know (`$a{x,y}`, `$(){x,y}`)."""
+    SEED, CASES = 878, 12000
+    PLANTS = ['agents/agent-a/', 'agents/agent-a/.agent-token', 'store/', '.operator-token', 'agents/']
+    ATOMS = list('abx01,.-{}\'"\\$()`') + ['..', '{a,b}', ',', '{', '}', '{}', '"', "'"]
+    JUNK = ['', '', '', '{b}', '{}', '}', '{', "'", '"', '\\', '$', '$(', ')', '(', '`', '..', ',', 'a', 'x', '-', '0', '{a,b}', '${', '"x"', "'y'"]
+    CLEAN = ['', '', '', '{b}', '{}', '}', '{', 'a', 'x', ',', '..', '-', '0', '{a,b}', '{x}', ',,']
+    ITEMS = ['.agent-token', '.agent-token', 'x', 'b', '', '{b}', '{}', '}', '{', '{x}', '{y,z}', '"', "'", '$(', ')', '..', '\\', '.agent-', 'token']
+    DRIVER = 'cd "$1"\nwhile IFS= read -r w; do\n  ( eval "printf \'%s\\0\' $w" ) 2>/dev/null </dev/null\n  printf \'\\001\'\ndone < "$2"\n'
+    VARIABLE = re.compile(r'\$[A-Za-z0-9_{*@#?!(-]|`')
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('gate_under_test_brace', cls.gate)
+        cls.mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.mod)
+
+    def make_words(self):
+        import random
+        rng = random.Random(self.SEED)
+
+        def junk():
+            pool = self.CLEAN if rng.random() < 0.65 else self.JUNK
+            return ''.join(rng.choice(pool) for _ in range(rng.randint(0, 3)))
+
+        words = []
+        for _ in range(self.CASES):
+            if rng.random() < 0.35:
+                out = [rng.choice(self.ATOMS) for _ in range(rng.randint(2, 12))]
+                out.insert(rng.randint(0, min(2, len(out))), 'agents/agent-a/')
+                out.insert(rng.randint(0, len(out)), '.agent-token')
+                words.append(''.join(out))
+                continue
+            items = [rng.choice(self.ITEMS) for _ in range(rng.randint(1, 4))]
+            if '.agent-token' not in items:
+                items.insert(rng.randint(0, len(items)), '.agent-token')
+            body = ','.join(items) if rng.random() < 0.9 else '..'.join(items)
+            pre = 'agents/agent-a/' if rng.random() < 0.9 else rng.choice(self.PLANTS)
+            lead = junk() if rng.random() < 0.3 else ''
+            mid = junk() if rng.random() < 0.2 else ''
+            tail = junk() if rng.random() < 0.2 else ''
+            if rng.random() < 0.3:      # a balanced stray pair in front of the commas: the shape of the F2 leaks
+                body = rng.choice(['{b}', '{}', '{x}', 'b}', '{']) + ',' + body
+            words.append(lead + pre + mid + '{' + body + '}' + tail)
+        return words
+
+    def expansions(self, shell, words):
+        exe = shutil.which(shell)
+        if not exe:
+            return None
+        inp = os.path.join(self.root, 'work', 'words-%s.txt' % shell)
+        env = {'PATH': '/nonexistent', 'HOME': self.root, 'LC_ALL': 'C'}
+
+        def run(ws):
+            with open(inp, 'w', encoding='utf-8') as fh:
+                fh.write('\n'.join(ws) + '\n')
+            try:
+                p = subprocess.run([exe, '-c', self.DRIVER, 'x', self.root, inp], capture_output=True, timeout=30, env=env, stdin=subprocess.DEVNULL, cwd=self.root)
+            except subprocess.TimeoutExpired:
+                if len(ws) == 1:
+                    return [[]]      # a word the shell hangs on reads nothing
+                h = len(ws) // 2
+                return run(ws[:h]) + run(ws[h:])
+            chunks = p.stdout.split(b'\x01')[:-1]
+            self.assertEqual(len(chunks), len(ws), '%s: the oracle lost its place' % shell)
+            return [[x.decode('utf-8', 'replace') for x in c.split(b'\0') if x] for c in chunks]
+
+        return run(words)
+
+    def test_the_gate_refuses_every_word_a_shell_expands_to_a_protected_file(self):
+        words = self.make_words()
+        protected = {os.path.realpath(self.p(r)) for r in PROTECTED}
+        shells = {sh: self.expansions(sh, words) for sh in ('bash', 'zsh')}
+        shells = {sh: ex for sh, ex in shells.items() if ex is not None}
+        self.assertIn('bash', shells)
+        positives, leaks, crashes = 0, [], []
+        for i, w in enumerate(words):
+            if self.VARIABLE.search(w):
+                continue
+            hit = [sh for sh, ex in shells.items() if any(os.path.realpath(os.path.join(self.root, o)) in protected for o in ex[i])]
+            if not hit:
+                continue
+            positives += 1
+            try:
+                self.mod.check_bash('cat ' + w, self.root)
+            except self.mod.Block:
+                continue
+            except Exception as exc:      # noqa: BLE001 -- the gate would block on it too, but a crash is a bug of its own
+                crashes.append((w, type(exc).__name__))
+                continue
+            leaks.append((w, hit))
+        self.assertGreater(positives, 300, 'the corpus is too thin to prove anything (%d shell-positive words)' % positives)
+        self.assertEqual(crashes, [], 'the gate raised on %d words' % len(crashes))
+        self.assertEqual(leaks, [], '%d of %d words that a shell expands to a protected file pass the gate (first: %r)' % (len(leaks), positives, leaks[:3]))
 
 
 if __name__ == '__main__':
