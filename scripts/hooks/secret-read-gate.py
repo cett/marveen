@@ -527,6 +527,42 @@ def _has_flag(toks: list, short: str, longs: tuple) -> bool:
     return False
 
 
+def _directories_option(toks: list) -> tuple:
+    """grep's `--directories=ACTION` / `-d ACTION` (the BSD and GNU grep both read a directory operand recursively for
+    `recurse`, with or without `-r`). Returns (recursive, consumed): `recursive` is True when any occurrence names an
+    ACTION that is not exactly `read` or `skip` (so `recurse`, an unknown word, a missing value: fail closed, the
+    gate does not guess what grep would do with it); `consumed` holds the index of every word taken as such a value,
+    so the caller does not count it as a file operand.
+    The long option is matched the way getopt_long does: ANY prefix of `directories` (`--d`, `--di`, ... `--dir`, ...),
+    the value inline (`--dir=recurse`) or the next word. The short one is `d` in a cluster of known no-value letters
+    (`-d recurse`, `-drecurse`, `-nd recurse`); a value-taking letter before the `d` (`-ed`, `-A3d`) swallows it as
+    its own value, so that `d` is no option. Words after `--` are operands and are not read."""
+    recursive, consumed = False, set()
+    for i in range(1, len(toks)):
+        t = toks[i]
+        if t == '--':
+            break
+        if i in consumed:
+            continue
+        val = None
+        if t.startswith('--') and len(t) > 2:
+            name, eq, inline = t[2:].partition('=')
+            if name and 'directories'.startswith(name):
+                val = inline if eq else (toks[i + 1] if i + 1 < len(toks) else '')
+                if not eq and i + 1 < len(toks):
+                    consumed.add(i + 1)
+        elif re.fullmatch(r'-[A-Za-z0-9]+', t):
+            letters = t[1:]
+            k = letters.find('d')
+            if k >= 0 and all(c in SAFE_SHORT for c in letters[:k]):
+                val = letters[k + 1:] or (toks[i + 1] if i + 1 < len(toks) else '')
+                if not letters[k + 1:] and i + 1 < len(toks):
+                    consumed.add(i + 1)
+        if val is not None and val not in ('read', 'skip'):
+            recursive = True
+    return recursive, consumed
+
+
 def _exclude_values(toks: list, strict: bool = False) -> list:
     """The values of the `--exclude` / `--exclude-dir` options of a grep (`--exclude=V`, `--exclude V`). They count ONLY
     when the whole command parses without doubt: every option is a known one that takes no value (SAFE_SHORT / SAFE_LONG),
@@ -707,13 +743,17 @@ def check_bash(cmd: str, cwd: str) -> None:
         if not toks:
             continue
         head = os.path.basename(toks[0])
-        operands = [w for w in toks[1:] if w and not w.startswith('-')]
+        dir_recursive, dir_values = _directories_option(toks) if head in GREP_FAMILY else (False, set())
+        # the ACTION word of `-d ACTION` / `--directories ACTION` is the option's value, not a file operand
+        operands = [w for idx, w in enumerate(toks) if idx and w and not w.startswith('-') and idx not in dir_values]
         covering = []
         for w in operands:
             pairs = [pr for c in _expand_word(w, cwd) for pr in _covered_dir_files(c, cwd)]
             if pairs:
                 covering.append(pairs)
         grep_recursive = head in GREP_FAMILY and (_has_flag(toks, 'rR', ('--recursive', '--dereference-recursive'))
+                                                  or dir_recursive
+                                                  # the former check, kept so no verdict loosens: `-d` and the word `recurse` anywhere
                                                   or ('-d' in toks and 'recurse' in toks))
         if grep_recursive and len(operands) <= 1:
             own = _covered_dir_files(cwd, cwd)

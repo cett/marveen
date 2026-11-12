@@ -309,6 +309,35 @@ class BashOnEveryTokenFile(Tree):
             with self.subTest(cmd=cmd, cwd=cwd):
                 self.assert_denied(self.bash(cmd, cwd=cwd), cmd)
 
+    def test_grep_directories_recurse_in_every_spelling_over_a_token_directory_is_blocked(self):
+        for opt in ('--directories=recurse', '--directories recurse', '--dir=recurse', '-d recurse', '-drecurse', '--d=recurse', '-nd recurse'):
+            for target in ('agents', 'agents/', 'agents/agent-a', '.'):
+                cmd = 'grep %s foo %s' % (opt, target)
+                with self.subTest(cmd=cmd):
+                    self.assert_denied(self.bash(cmd), cmd)
+        # no operand: the ACTION word is the option value and the cwd holds a token
+        for cmd in ('grep -d recurse foo', 'grep --directories recurse foo', 'grep --dir=recurse foo'):
+            with self.subTest(cmd=cmd, cwd='agent-a'):
+                self.assert_denied(self.bash(cmd, cwd=self.p('agents', 'agent-a')), cmd)
+        for cmd in ('grep --directories=recurs foo agents', 'grep -d bogus foo agents', 'grep --directories= foo agents'):
+            with self.subTest(cmd=cmd):
+                self.assert_denied(self.bash(cmd), cmd)
+
+    def test_grep_directories_recurse_with_a_token_exclude_is_not_trusted(self):
+        # the option is not a known no-value one, so the exclude parse voids (fail closed), exactly as for `-d recurse` before
+        for cmd in ('grep --directories=recurse --exclude=.agent-token foo agents', 'grep --dir=recurse foo agents --exclude=.agent-token'):
+            with self.subTest(cmd=cmd):
+                self.assert_denied(self.bash(cmd), cmd)
+
+    def test_grep_directories_read_and_skip_over_a_token_directory_pass(self):
+        for cmd in ('grep -d skip foo agents', 'grep --directories=read foo agents', 'grep --dir=skip foo agents/agent-a', 'grep -dskip foo agents', 'grep -ed agents'):
+            with self.subTest(cmd=cmd):
+                self.assert_allowed(self.bash(cmd), cmd)
+        for opt in ('--directories=recurse', '-d recurse'):
+            cmd = 'grep %s foo src' % opt
+            with self.subTest(cmd=cmd):
+                self.assert_allowed(self.bash(cmd), cmd)
+
     def test_exclude_of_the_token_name_lets_a_legitimate_search_through(self):
         for cmd, cwd in [('grep -r foo agents/agent-a --exclude=.agent-token', None), ('grep -rn --exclude=.agent-token foo agents', None),
                          ('grep -r --exclude .agent-token foo agents/agent-b', None), ('grep -r foo . --exclude=.agent-token', self.p('agents', 'agent-a')),

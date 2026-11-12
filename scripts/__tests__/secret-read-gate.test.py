@@ -151,6 +151,41 @@ class BashReads(GateCase):
             with self.subTest(cmd=cmd):
                 self.assert_denied(self.bash(cmd), cmd)
 
+    DIRECTORIES_RECURSE = ['--directories=recurse', '--directories recurse', '--dir=recurse', '-d recurse', '-drecurse']
+
+    def test_grep_directories_recurse_in_every_spelling_over_the_store_is_blocked(self):
+        # the long option and its abbreviations, the short one attached or apart, with a directory that holds the store
+        for opt in self.DIRECTORIES_RECURSE:
+            for target in ('store', 'store/', '.', '%ROOT%'):
+                cmd = 'grep %s foo %s' % (opt, target)
+                cmd = cmd.replace('%ROOT%', self.root)
+                with self.subTest(cmd=cmd):
+                    self.assert_denied(self.bash(cmd), cmd)
+
+    def test_grep_directories_other_abbreviations_clusters_and_unknown_values_are_blocked(self):
+        for cmd in ['grep --d=recurse foo store', 'grep --di=recurse foo store', 'grep --direc recurse foo store', 'grep --directori=recurse foo .',
+                    'grep -nd recurse foo store', 'grep -ndrecurse foo store', 'grep -in --directories=recurse foo .', 'egrep --dir=recurse foo store',
+                    # an unknown or missing ACTION is not read / skip: fail closed
+                    'grep --directories=recurs foo store', 'grep --directories=RECURSE foo store', 'grep -d bogus foo store', 'grep --directories= foo store',
+                    # the ACTION word is the option value, so the directory without an operand is the cwd
+                    'grep -d recurse foo', 'grep --directories recurse foo', 'grep --dir=recurse foo']:
+            with self.subTest(cmd=cmd):
+                self.assert_denied(self.bash(cmd), cmd)
+
+    def test_grep_directories_read_and_skip_do_not_recurse(self):
+        for cmd in ['grep -d read foo store', 'grep -d skip foo store', 'grep -dskip foo store', 'grep --directories=skip foo store',
+                    'grep --directories read foo store', 'grep --dir=skip foo .', 'grep -nd skip foo .', 'grep -d skip foo',
+                    # `d` after a value-taking letter is that letter's value (the pattern `d`), not the option
+                    'grep -ed store', 'grep -ed foo store/rules.json']:
+            with self.subTest(cmd=cmd):
+                self.assert_allowed(self.bash(cmd), cmd)
+
+    def test_grep_directories_recurse_over_other_directories_passes(self):
+        for cmd in ['grep --directories=recurse foo src', 'grep --dir=recurse foo scripts', 'grep -d recurse foo src scripts',
+                    'grep -d recurse --exclude-dir=store foo src']:
+            with self.subTest(cmd=cmd):
+                self.assert_allowed(self.bash(cmd), cmd)
+
     def test_the_same_readers_over_other_directories_pass(self):
         for cmd in ['grep -rn claim src', 'grep -r foo scripts', 'grep -rn claim src scripts', 'rg claim src', 'rg --hidden foo src', 'tar cf x.tar scripts',
                     'cp -r scripts /tmp/y', 'find . -name "*.py"', 'find src -exec cat {} +', 'grep -r --exclude-dir=store foo .',
