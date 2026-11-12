@@ -31,11 +31,22 @@ export function twinProblems(sqliteNames: string[], pgNames: string[]): string[]
   const pgFiles = versionsOf(pgNames)
   const problems: string[] = []
 
+  // a .sql file the runners do not recognise never runs: a typo in a migration name must not pass as "no migration"
+  for (const [dirName, names] of [['src/migrations', sqliteNames], ['src/migrations-pg', pgNames]] as const) {
+    for (const n of names) {
+      if (n.endsWith('.sql') && !FILE.test(n)) problems.push(`${dirName}/${n} does not match NNNN_description.sql, so the runner would never apply it`)
+    }
+  }
+
   const wanted = new Map<number, string>() // pg number -> the sqlite file it twins
   for (const [v, name] of sqlite) {
     if (v > PG_BASELINE_SQLITE_VERSION) wanted.set(v - PG_TO_SQLITE_OFFSET, name)
   }
   for (const [n, sqliteName] of [...wanted].sort((a, b) => a[0] - b[0])) {
+    const have = pgFiles.get(n)
+    if (have !== undefined && have.replace(/^\d+_/, '') !== sqliteName.replace(/^\d+_/, '')) {
+      problems.push(`PostgreSQL migration ${have} is the twin of SQLite ${sqliteName} by number, but the names differ: rename it to ${pad(n)}_${sqliteName.replace(/^\d+_/, '')}`)
+    }
     if (!pgFiles.has(n)) {
       const suffix = sqliteName.replace(/^\d+_/, '')
       problems.push(`SQLite migration ${sqliteName} has no PostgreSQL twin: add src/migrations-pg/${pad(n)}_${suffix} (the PG number is the SQLite number minus ${PG_TO_SQLITE_OFFSET})`)

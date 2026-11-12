@@ -63,7 +63,18 @@ describe('twinProblems', () => {
     expect(twinProblems(SQLITE, ['0002_schedules_author.sql'])).toEqual(['src/migrations-pg has no 0001 baseline file'])
   })
 
-  it('files that are not migrations (a README, a .sql with no number) do not count', () => {
-    expect(twinProblems([...SQLITE, 'README.md', 'notes.sql'], [...PG, 'README.md'])).toEqual([])
+  it('a file that is not a .sql (a README) does not count', () => {
+    expect(twinProblems([...SQLITE, 'README.md'], [...PG, 'README.md'])).toEqual([])
+  })
+
+  it('a .sql file with no number, on either side, is reported: the runner would never apply it', () => {
+    const pgSide = twinProblems(SQLITE, [...PG, 'notes.sql'])
+    expect(pgSide).toEqual(['src/migrations-pg/notes.sql does not match NNNN_description.sql, so the runner would never apply it'])
+    expect(twinProblems([...SQLITE, '97_short.sql'], PG)).toHaveLength(1)
+  })
+
+  it('a twin with the right number and another name is reported, and the message gives the name to use', () => {
+    const problems = twinProblems(SQLITE, ['0001_baseline.sql', '0002_something_else.sql'])
+    expect(problems).toEqual(['PostgreSQL migration 0002_something_else.sql is the twin of SQLite 0096_schedules_author.sql by number, but the names differ: rename it to 0002_schedules_author.sql'])
   })
 })
