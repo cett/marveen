@@ -27,6 +27,11 @@ const args = process.argv.slice(2)
 const flag = (name) => args.includes(name)
 const opt = (name, dflt) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : dflt }
 const dryRun = flag('--dry-run')
+// --tests: the targets are TEST files. The raw handle is recognised as `db` imported from db.js / db/index.js / db/connection.js,
+// as getDb(), and as a local alias `const x = getDb()`. The callbacks of it/test/beforeEach/afterEach/beforeAll/afterAll may become
+// async (describe may not), db.transaction is never rewritten (it is reported: the transaction shape is a manual decision),
+// and the facade import is merged into the db.js import of the file.
+const testsMode = flag('--tests')
 const root = path.resolve(opt('--root', process.cwd()))
 const reportPath = opt('--report', null)
 const bootFiles = (opt('--boot-files', 'src/db/index.ts')).split(',').map((f) => path.resolve(root, f))
@@ -66,14 +71,20 @@ const nearestFn = (n) => n.getAncestors().find((a) => isFn(a) || isSpecialFn(a))
 const isAsyncFn = (f) => Node.isAsyncable(f) && f.isAsync()
 
 // ---- db handle recognition -----------------------------------------------------------------------------------
+const DB_MODULE = testsMode ? /(^|\/)db(\/connection|\/index)?\.js$/ : /connection\.js$/
+const isGetDbCall = (n) => Node.isCallExpression(n) && n.getArguments().length === 0 && n.getExpression().getText() === 'getDb'
+const isGetDbAlias = (decl) => !!decl && Node.isVariableDeclaration(decl) && !!decl.getInitializer() && isGetDbCall(decl.getInitializer())
 function isDbIdentifier(n) {
-  if (!Node.isIdentifier(n) || n.getText() !== 'db') return false
+  if (!Node.isIdentifier(n)) return false
   const decl = n.getSymbol()?.getDeclarations()?.[0]
-  return !!decl && Node.isImportSpecifier(decl) && /connection\.js$/.test(decl.getImportDeclaration().getModuleSpecifierValue())
+  if (testsMode && isGetDbAlias(decl)) return true
+  if (n.getText() !== 'db') return false
+  return !!decl && Node.isImportSpecifier(decl) && DB_MODULE.test(decl.getImportDeclaration().getModuleSpecifierValue())
 }
+const isDbReceiver = (r) => isDbIdentifier(r) || (testsMode && isGetDbCall(r))
 const callOnDb = (call, method) => {
   const e = call.getExpression()
-  return Node.isPropertyAccessExpression(e) && isDbIdentifier(e.getExpression()) && e.getName() === method
+  return Node.isPropertyAccessExpression(e) && isDbReceiver(e.getExpression()) && e.getName() === method
 }
 
 // ---- analysis of one target module ------------------------------------------------------------------------------
@@ -107,6 +118,66 @@ function block(owner, why, node) {
   note(why, node)
 }
 
+// ---- tests mode: the imports and the alias declarations ---------------------------------------------------------
+const insideAny = (id, nodes) => { for (const r of nodes) if (r.getSourceFile() === id.getSourceFile() && r.getStart() <= id.getStart() && id.getEnd() <= r.getEnd()) return true; return false }
+function lineRange(sf, node) {
+  const text = sf.getFullText()
+  let st = node.getStart()
+  while (st > 0 && (text[st - 1] === ' ' || text[st - 1] === '\t')) st -= 1
+  let en = node.getEnd()
+  if (text[en] === '\n') en += 1
+  return [st, en]
+}
+function fixTestImports(sf, file, rewritten) {
+  const all = sf.getDescendantsOfKind(SyntaxKind.Identifier)
+  // 1. an alias `const x = getDb()` that nothing reads any more goes away (its getDb() call too)
+  for (const decl of sf.getDescendantsOfKind(SyntaxKind.VariableDeclaration)) {
+    if (!isGetDbAlias(decl) || !Node.isIdentifier(decl.getNameNode())) continue
+    const nameNode = decl.getNameNode()
+    const rest = all.filter((i) => i !== nameNode && i.getSymbol()?.getDeclarations()?.[0] === decl && !insideAny(i, rewritten))
+    if (rest.length > 0) continue
+    const stmt = decl.getVariableStatement()
+    if (!stmt || stmt.getDeclarations().length !== 1) continue
+    const [st, en] = lineRange(sf, stmt)
+    edit(file, st, en, '')
+    rewritten.add(decl.getInitializer())
+  }
+  // 2. db / getDb specifiers that nothing reads any more are dropped, dbx joins the db.js import
+  const decls = sf.getImportDeclarations()
+  const hasDbx = decls.some((d) => d.getNamedImports().some((n) => n.getName() === 'dbx'))
+  const dbSpecs = []
+  for (const d of decls) {
+    if (!DB_MODULE.test(d.getModuleSpecifierValue())) continue
+    for (const n of d.getNamedImports()) if (['db', 'getDb'].includes(n.getName())) dbSpecs.push(n)
+  }
+  const removed = new Set()
+  for (const n of dbSpecs) {
+    const rest = all.filter((i) => i.getSymbol()?.getDeclarations()?.[0] === n && !Node.isImportSpecifier(i.getParent()) && !insideAny(i, rewritten))
+    if (rest.length === 0) removed.add(n)
+  }
+  const isDbJs = (d) => /(^|\/)db\.js$/.test(d.getModuleSpecifierValue()) && d.getNamedImports().length > 0 && !d.isTypeOnly()
+  const host = hasDbx ? null : decls.find(isDbJs) ?? null
+  const touched = new Set([...removed].map((n) => n.getImportDeclaration()))
+  if (host) touched.add(host)
+  for (const d of touched) {
+    const named = d.getNamedImports()
+    const kept = named.filter((n) => !removed.has(n)).map((n) => n.getText())
+    if (d === host) kept.push('dbx')
+    if (kept.length === 0 && !d.getDefaultImport() && !d.getNamespaceImport()) {
+      const [st, en] = lineRange(sf, d)
+      edit(file, st, en, '')
+    } else {
+      edit(file, named[0].getStart(), named[named.length - 1].getEnd(), kept.join(', '))
+    }
+  }
+  if (!hasDbx && !host) {
+    const relFacade = path.relative(path.dirname(file), facadeFile).replace(/\\/g, '/').replace(/\.ts$/, '.js')
+    const spec = relFacade.startsWith('.') ? relFacade : `./${relFacade}`
+    const anchor = decls[decls.length - 1]
+    edit(file, anchor.getEnd(), anchor.getEnd(), `\nimport { dbx } from '${spec}'`)
+  }
+}
+
 function convertTarget(sf) {
   const file = sf.getFilePath()
   const chains = [] // { call, method, prepareArg, owner, tx }
@@ -134,13 +205,13 @@ function convertTarget(sf) {
       continue
     }
     // db.transaction(fn)(...)  /  db.transaction(fn).immediate(...)
-    if (Node.isCallExpression(inner) && callOnDb(inner, 'transaction') && ['immediate', 'deferred', 'exclusive'].includes(name)) {
+    if (!testsMode && Node.isCallExpression(inner) && callOnDb(inner, 'transaction') && ['immediate', 'deferred', 'exclusive'].includes(name)) {
       handled.add(inner.getExpression().getExpression())
       txs.push({ outer: call, tx: inner, mode: name })
       continue
     }
   }
-  for (const call of sf.getDescendantsOfKind(SyntaxKind.CallExpression)) {
+  for (const call of testsMode ? [] : sf.getDescendantsOfKind(SyntaxKind.CallExpression)) {
     const inner = call.getExpression()
     if (Node.isCallExpression(inner) && callOnDb(inner, 'transaction')) {
       handled.add(inner.getExpression().getExpression())
@@ -149,10 +220,23 @@ function convertTarget(sf) {
   }
   // every other use of the raw handle blocks its function (a stored statement, .pragma, iterate, a stored transaction ...)
   for (const id of sf.getDescendantsOfKind(SyntaxKind.Identifier)) {
-    if (!isDbIdentifier(id) || handled.has(id)) continue
-    if (Node.isImportSpecifier(id.getParent())) continue
-    const owner = nearestFn(id)
-    block(owner, 'unsupported-db-use', id.getParent() ?? id)
+    if (handled.has(id)) continue
+    if (testsMode && id.getText() === 'db' && !isDbIdentifier(id) && !Node.isImportSpecifier(id.getParent())) {
+      const d = id.getSymbol()?.getDeclarations()?.[0]
+      // a `db` that is a variable of this file but not an alias of getDb(): not recognised, so it is reported, not silently left
+      if (d && Node.isVariableDeclaration(d)) { note('other-db-variable', id.getParent() ?? id); continue }
+    }
+    if (!isDbIdentifier(id)) continue
+    const par = id.getParent()
+    if (Node.isImportSpecifier(par)) continue
+    if (testsMode && Node.isVariableDeclaration(par) && par.getNameNode() === id) continue // the alias declaration itself
+    block(nearestFn(id), 'unsupported-db-use', par ?? id)
+  }
+  if (testsMode) {
+    for (const c of sf.getDescendantsOfKind(SyntaxKind.CallExpression)) {
+      if (!isGetDbCall(c) || handled.has(c) || Node.isVariableDeclaration(c.getParent())) continue
+      block(nearestFn(c), 'unsupported-db-use', c.getParent() ?? c)
+    }
   }
 
   const used = new Set() // owners that really get converted
@@ -241,7 +325,8 @@ function convertTarget(sf) {
     used.add(t.holder)
   }
 
-  if (used.size > 0) {
+  if (used.size > 0 && testsMode) fixTestImports(sf, file, new Set([...rewrittenDb]))
+  if (used.size > 0 && !testsMode) {
     convertedModules.add(file)
     // imports: add dbx, drop db when nothing else uses it
     const remaining = sf.getDescendantsOfKind(SyntaxKind.Identifier).filter((i) => isDbIdentifier(i) && !Node.isImportSpecifier(i.getParent()) && !rewrittenDb.has(i))
@@ -313,6 +398,7 @@ function nameNodeOf(f) {
 }
 
 const BLOCKING_CALLEES = new Set(['map', 'filter', 'forEach', 'some', 'every', 'find', 'findIndex', 'reduce', 'sort', 'flatMap', 'on', 'once', 'addListener', 'setInterval', 'setTimeout', 'setImmediate', 'addEventListener', 'toSorted', 'findLast', 'expect'])
+const TEST_BLOCKING = new Set(['describe', 'fn', 'mockImplementation', 'mockImplementationOnce', 'mockReturnValue'])
 // `expect` is in the list for the thrown-error assertions: `expect(() => f()).not.toThrow()` turned into
 // `expect(async () => ...)` can never fail (a rejection is not a throw). The test is rewritten by hand as
 // `await expect(f()).resolves...` / `.rejects.toThrow(...)`.
@@ -323,7 +409,7 @@ function callbackVerdict(g) {
   if (!Node.isCallExpression(call)) return { ok: true }
   const callee = call.getExpression()
   const calleeName = Node.isPropertyAccessExpression(callee) ? callee.getName() : callee.getText()
-  if (BLOCKING_CALLEES.has(calleeName)) return { ok: false, why: `callback of ${calleeName}` }
+  if (BLOCKING_CALLEES.has(calleeName) || (testsMode && (TEST_BLOCKING.has(calleeName) || /^describe\b/.test(calleeName)))) return { ok: false, why: `callback of ${calleeName}` }
   const ctx = g.getContextualType()
   const sig = ctx?.getCallSignatures?.()[0]
   const rt = sig?.getReturnType().getText() ?? ''
