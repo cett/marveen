@@ -52,6 +52,60 @@ def sh_quote(s):
     return "'" + s.replace("'", "'\\''") + "'"
 
 
+# The shells that stand in as the oracle (the real shells the cells are run in; the gate reads for both). CI installs zsh and sets
+# REQUIRE_ZSH=1: a cell that only zsh proves is then never skipped for a missing zsh, and a skip of any kind fails the run (see main).
+ZSH = shutil.which('zsh')
+REQUIRE_ZSH = os.environ.get('REQUIRE_ZSH') == '1'
+
+
+def _bash_major():
+    """The major version of the `bash` that is the oracle (a version probe, not an assumption: the local /bin/bash is 3.2, the
+    runner's is 5.x). 0 when there is none."""
+    exe = shutil.which('bash')
+    if not exe:
+        return 0
+    out = subprocess.run([exe, '-c', 'printf %s "${BASH_VERSINFO[0]}"'], capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL).stdout
+    return int(out) if out.isdigit() else 0
+
+
+BASH_MAJOR = _bash_major()
+# bash 3.2 reads some text differently from bash 4+ and zsh: it does not pad `{01..03}`, it expands the target of `>&` without quote
+# removal, and so on. A cell that only that bash runs is proven on a machine that has it (macOS, /bin/bash); on bash 4+ it is NAMED
+# (BASH32_UNPROVEN, printed at the end of the run), never counted as proven and never silently dropped: the gate verdict of the cell is
+# asserted everywhere.
+BASH32 = BASH_MAJOR in range(1, 4)
+BASH32_UNPROVEN = []
+
+# Linux caps ONE argument at 128 KiB (MAX_ARG_STRLEN); macOS does not. A command text this long reaches a shell as a script file.
+ARG_FILE_MIN = 60000
+
+
+def run_shell_text(exe, cmd, **kw):
+    """Run `cmd` in the shell `exe` as `-c` text; a text too long to be one argument on Linux is run from a script file instead (same
+    cwd, env and stdin; the shell reads the same bytes either way)."""
+    if len(cmd.encode('utf-8', 'surrogateescape')) < ARG_FILE_MIN:
+        return subprocess.run([exe, '-c', cmd], **kw)
+    with tempfile.TemporaryDirectory(prefix='long-cell-') as d:
+        script = os.path.join(d, 'cell.sh')
+        with open(script, 'w', encoding='utf-8', errors='surrogateescape') as f:
+            f.write(cmd + '\n')
+        return subprocess.run([exe, script], **kw)
+
+
+def assert_ran(case, tmpl, shells, bash32_only=False):
+    """The cell is a real one: a shell ran its body. `shells` are the results of the oracle (True, False or None: not installed).
+    No shell ran it, then: without zsh the oracle is not there (a NAMED skip; REQUIRE_ZSH=1 makes that a failure in CI); a cell that
+    only bash 3.2 runs (`bash32_only`) is named on a bash 4+ and fails on a bash 3.2 that did not run it; any other cell fails."""
+    if any(shells):
+        return
+    if ZSH is None and not REQUIRE_ZSH:
+        case.skipTest('zsh is not installed: the cell %r has no oracle here' % (tmpl[:60],))
+    if bash32_only and BASH_MAJOR >= 4:
+        BASH32_UNPROVEN.append(tmpl)
+        return
+    case.fail('no shell ran the body of (or read through) %r: the cell proves nothing' % tmpl)
+
+
 class Tree(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -768,6 +822,209 @@ class BraceFixupTwo(Tree):
                 self.assertIn('more paths than the gate can look through', err)
 
 
+class BracePaddingBothReadings(Tree):
+    """Commit 4: a brace sequence with a zero in an end (`{1..03}`, `{01..03}`) is `1 2 3` to bash 3.2 and `01 02 03` to bash 4+ and
+    zsh. Both are words of the shell that runs the command, so a token file behind either spelling is refused."""
+
+    def make_agent(self, name):
+        d = self.p('agents', name)
+        os.makedirs(d)
+        self.write('agents/%s/.agent-token' % name, TOKEN)
+        self.addCleanup(shutil.rmtree, d, True)
+        return 'agents/%s/.agent-token' % name
+
+    # a recursive reader over the directories the sequence names: refused when one of them holds a token file (the dotted name
+    # itself is refused wherever it stands, so the cells name the directory)
+    READ = 'grep -r foo agents/pad-%s'
+
+    def test_the_plain_and_the_padded_words_of_a_sequence_are_both_judged(self):
+        # an agent directory of its own for every case: the token file of `pad-1` (bash 3.2 expands `{01..03}` to it) and of
+        # `pad-01` (zsh and bash 4+ expand `{1..03}` to it)
+        for existing in ('pad-1', 'pad-01'):
+            self.make_agent(existing)
+            for seq in ('{01..03}', '{1..03}', '{01..3}', '{3..01}'):
+                with self.subTest(dir=existing, seq=seq):
+                    self.assertEqual(self.bash(self.READ % seq)[0], 2, 'the directory %s is read through %s' % (existing, seq))
+            # the sequences that do not reach the directory pass
+            for seq in ('{4..06}', '{2..4}', '{02..04}', '{3..5}'):
+                with self.subTest(dir=existing, seq=seq):
+                    self.assertEqual(self.bash(self.READ % seq)[0], 0)
+            shutil.rmtree(self.p('agents', existing))
+
+    def test_the_two_readings_are_the_shells_own(self):
+        # bash 3.2 does not pad, bash 4+ and zsh do: the cells above are real ones. The expectation follows the version of the bash
+        # that is there (BASH32: `{01..03}` is `1 2 3`, so it reaches pad-1 and `{1..03}` does not reach pad-01; bash 4+ the other way round)
+        rel1, rel01 = self.make_agent('pad-1'), self.make_agent('pad-01')
+        self.assertIn(BraceFixupTwo.reads(self, 'bash', 'agents/pad-{01..03}/.agent-token', rel1), (BASH32, None))
+        self.assertIn(BraceFixupTwo.reads(self, 'zsh', 'agents/pad-{1..03}/.agent-token', rel01), (True, None))
+        self.assertIn(BraceFixupTwo.reads(self, 'bash', 'agents/pad-{1..03}/.agent-token', rel01), (not BASH32, None))
+
+    def test_the_words_of_a_padded_sequence(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('gate_pad', self.gate)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        # review F3: a padded sequence is the SUPERSET of every integer at every width 0..W+1 (W: the widest end or step, its sign
+        # included), not a model of one shell's rule; the plain words come first
+        self.assertEqual(mod._brace_all('{01..03}'), ['1', '2', '3', '01', '02', '03', '001', '002', '003'])
+        self.assertEqual(mod._brace_all('{1..03}'), mod._brace_all('{01..03}'))
+        self.assertEqual(mod._brace_all('{1..3}'), ['1', '2', '3'])      # no zero and no sign in an end: one reading
+        self.assertEqual(mod._brace_all('{0..3}'), ['0', '1', '2', '3'])      # a lone zero pads in no shell
+        self.assertEqual(mod._brace_all('{1..3..2}'), ['1', '3'])
+        self.assertEqual(set(mod._brace_all('{08..10}')), {str(v).zfill(k) for k in range(4) for v in (8, 9, 10)})      # widths 0..3
+        self.assertEqual(set(mod._brace_all('{-1..1}')), {'-1', '0', '1', '-01', '00', '01', '-001', '000', '001'})      # the sign counts in the width, or not
+        self.assertIn('01', mod._brace_all('{1..3..01}'))      # a step with a leading zero pads
+        self.assertNotIn('01', mod._brace_all('{1..3..1}'))
+        self.assertIn('0010', mod._brace_all('{01..010..01}'))
+        # the cap counts the words of the FINAL expansion: 300 words at four widths pass, 600 do not (a generic refusal)
+        self.assertLessEqual(len(mod._brace_all('{001..300}')), 1024)
+        with self.assertRaises(mod._BraceTooBig):
+            mod._brace_all('{001..600}')
+        self.assertEqual(len(mod._brace_all('{1..1000}')), 1000)      # an unpadded sequence is not multiplied
+
+    # review F3: zsh pads by its own rule (the width of the FIRST end when it starts with a zero, else of the second, the sign in the
+    # width, a step with a leading zero pads too), so the word of the shell is not one the commit modelled. (directory, sequence)
+    ZSH_PADDING = [('pad-01', '{01..010}'), ('pad-01', '{01..001}'), ('pad-00', '{00..001}'), ('pad-00', '{00..010..5}'), ('pad-01', '{1..3..01}'),
+                   ('pad-001', '{1..3..001}'), ('pad-000', '{-01..1}'), ('pad-00', '{-1..01}'), ('pad--01', '{-01..1}'), ('pad--001', '{-001..-003}'),
+                   ('pad-05', '{-5..5..01}'), ('pad-10', '{01..010..01}')]
+
+    def test_the_padding_of_zsh_is_judged(self):
+        for dirname, seq in self.ZSH_PADDING:
+            self.make_agent(dirname)
+            with self.subTest(dir=dirname, seq=seq):
+                self.assertEqual(self.bash(self.READ % seq)[0], 2, 'the directory %s is read through %s' % (dirname, seq))
+                # a real shell reads the directory through the same spelling: the cell is not vacuous (bash 3.2 has no step and no
+                # padding, zsh has both: one of them is enough)
+                reads = [self.reads_dir(sh, seq, dirname) for sh in ('zsh', 'bash')]
+                if any(r is not None for r in reads):
+                    # zsh pads by its own rule, bash 4+ by another: without zsh a cell may have no oracle (named skip, a failure under
+                    # REQUIRE_ZSH=1), with it every cell is proven
+                    assert_ran(self, '%s through %s' % (dirname, seq), reads)
+            shutil.rmtree(self.p('agents', dirname))
+
+    def test_a_sequence_that_does_not_reach_the_directory_passes(self):
+        self.make_agent('pad-01')
+        for seq in ('{02..09}', '{2..9}', '{010..020}', '{-5..-2}', '{3..5..01}', '{1..9..2}', '{a..e}', '{02..09..01}'):
+            with self.subTest(seq=seq):
+                self.assertEqual(self.bash(self.READ % seq)[0], 0, seq)
+        # a refused size is a generic refusal that does not quote the text
+        rc, out, err = self.bash('echo zzmark {001..600}')
+        self.assertEqual(rc, 2)
+        self.assertNotIn('zzmark', err)
+
+    # review P52 (taken into this commit, decided by the owner): bash 3.2 expands an end with a plus sign (`{0..+1}` is `0 1`, `{+01..3}`
+    # is `1 2 3`, never padded), zsh leaves the whole group as text. The gate read it as text, so a directory behind it was read by
+    # bash 3.2 and not by the gate. (directory, sequence)
+    PLUS_SIGN = [('pad-1', '{0..+1}'), ('pad-1', '{+1..3}'), ('pad-2', '{+1..+3}'), ('pad-0', '{-1..+1}'), ('pad-1', '{+01..3}'), ('pad-3', '{01..+3}'),
+                 ('pad-0', '{+0..2}'), ('pad--1', '{-1..+1}')]
+
+    PLUS_BASH32_ONLY = ('{01..+3}',)      # measured: bash 5.3 expands the other cells above, not this one
+
+    def test_a_plus_sign_in_an_end_is_expanded_the_bash_way(self):
+        for dirname, seq in self.PLUS_SIGN:
+            self.make_agent(dirname)
+            with self.subTest(dir=dirname, seq=seq):
+                self.assertEqual(self.bash(self.READ % seq)[0], 2, 'the directory %s is read through %s' % (dirname, seq))
+                bash, zsh = self.reads_dir('bash', seq, dirname), self.reads_dir('zsh', seq, dirname)
+                if bash is not None and not (bash or zsh):
+                    # a bash 4+ leaves `{01..+3}` as text, only bash 3.2 expands it: named, never a bare pass
+                    if BASH_MAJOR >= 4 and seq in self.PLUS_BASH32_ONLY:
+                        BASH32_UNPROVEN.append(seq)
+                    else:
+                        self.fail('no shell reads %s through %s' % (dirname, seq))
+                # the two readings are the shells' own: zsh leaves the group as text, so it never reads the directory
+                if zsh is not None:
+                    self.assertFalse(zsh, 'zsh reads %s through %s' % (dirname, seq))
+            shutil.rmtree(self.p('agents', dirname))
+        # the text itself is a word of the zsh reading and is judged as before; a sequence that does not reach the directory passes
+        self.make_agent('pad-1')
+        for seq in ('{2..+3}', '{+2..4}', '{+5..+7}', '{-2..+0}'):
+            with self.subTest(seq=seq):
+                self.assertEqual(self.bash(self.READ % seq)[0], 0, seq)
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('gate_pad_plus', self.gate)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        def words(s):
+            """The words of a group, the marked braces of a kept text turned back into braces."""
+            return [''.join(mod._UNMARK.get(ch, ch) for ch in w) for w in mod._brace_all(s)]
+
+        # (a plus group is expanded and its TEXT is the last word: zsh leaves it as text, see the third note below)
+        self.assertEqual(words('{0..+1}'), ['0', '1', '{0..+1}'])
+        self.assertEqual(words('{+1..+3}'), ['1', '2', '3', '{+1..+3}'])
+        # review (second round): a plus sign in the STEP. Neither local shell expands it (bash 3.2 has no step, zsh leaves the group as
+        # text; the text itself is judged as a word anyway), but bash 4+ may (legal_number takes a sign) and none is installed here: the
+        # step is read like the unsigned one, so the words are the same set, also in the padded form
+        self.assertEqual(words('{1..3..+1}'), words('{1..3..1}') + ['{1..3..+1}'])
+        self.assertEqual(words('{1..3..+1}'), ['1', '2', '3', '{1..3..+1}'])
+        self.assertEqual(words('{1..5..+2}'), ['1', '3', '5', '{1..5..+2}'])
+        self.assertEqual(set(words('{01..03..+1}')), set(words('{01..03..1}')) | {'{01..03..+1}'})
+        # a step with a leading zero pads, signed too (the sign counts in the width, so the signed step has one width more: a superset)
+        self.assertTrue(set(words('{1..3..01}')) <= set(words('{1..3..+01}')))
+        self.assertIn('01', words('{1..3..+01}'))
+        self.assertNotIn('01', words('{1..3..+1}'))
+        # review (third note): zsh leaves a plus group as TEXT while it expands the list group next to it, so `d{1..3..+1}` is a word of
+        # the shell; the whole-word reading does not have it (the list group is expanded in the others). The text of a plus group is
+        # one of its words, an end or a step alike; a group without a plus sign has no such word
+        for cell, word in (('{x,d}{1..3..+1}', 'd{1..3..+1}'), ('{x,d}{0..+1}', 'd{0..+1}'), ('{x,d}{+1..+3}', 'd{+1..+3}'), ('{x,d}{01..03..+1}', 'd{01..03..+1}')):
+            with self.subTest(cell=cell):
+                self.assertIn(word, words(cell))
+        self.assertNotIn('d{1..3}', words('{x,d}{1..3}'))
+        self.assertIn('d1', words('{x,d}{1..3..+1}'))      # the expanded words stay
+        # and a real directory named like the text of the group is refused (zsh reads it: the group stays text there)
+        self.make_agent('pad-{1..3..+1}')
+        self.assertEqual(self.bash("grep -r foo agents/{x,pad-}{1..3..+1}")[0], 2)
+
+    def reads_dir(self, shell, seq, dirname):
+        out = shell_words(shell, 'agents/pad-%s/.agent-token' % seq, self.root)
+        if out is None:
+            return None
+        return 'agents/%s/.agent-token' % dirname in out
+
+    def test_every_word_of_a_real_shell_is_a_word_of_the_gate(self):
+        # the differential (review: seqdiff2): ends and steps of every class, one printf per sequence in one script per shell; each word the
+        # shell makes must be among the words of the gate (a refused size is fail closed and skipped). zsh 5.9 and bash 3.2.
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('gate_pad_diff', self.gate)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        ends = ['0', '00', '1', '01', '001', '5', '05', '9', '10', '010', '0100', '-1', '-01', '-001', '-0', '-5', '-05', '-10', '-010',
+                '+0', '+1', '+01', '+5', '+10']      # the plus sign is bash 3.2's (zsh leaves the group as text)
+        steps = [None, '1', '01', '2', '02', '001', '-1', '-01', '+1', '+01', '+2']      # (a plus step: neither local shell expands it)
+        seqs = ['{%s..%s%s}' % (a, b, '' if s is None else '..' + s) for a in ends for b in ends for s in steps]
+        script = os.path.join(self.root, 'work', 'seqdiff.sh')
+        with open(script, 'w') as fh:
+            fh.write('\n'.join("printf '%%s\\0' %s @@" % q for q in seqs) + '\n')
+        ran = 0
+        for shell in ('zsh', 'bash'):
+            exe = shutil.which(shell)
+            if not exe:
+                continue
+            p = subprocess.run([exe, script], capture_output=True, timeout=120, stdin=subprocess.DEVNULL,
+                               env={'PATH': '/nonexistent', 'LC_ALL': 'C', 'HOME': self.root})
+            groups, cur = [], []
+            for w in p.stdout.split(b'\0'):
+                if w == b'@@':
+                    groups.append(cur)
+                    cur = []
+                elif w:
+                    cur.append(w.decode())
+            self.assertEqual(len(groups), len(seqs), '%s did not expand every sequence' % shell)
+            ran += 1
+            missing = []
+            for q, g in zip(seqs, groups):
+                try:
+                    mine = set(mod._brace_all(q)) | {q}      # (the word itself is judged too: bash 3.2 has no step and leaves `{1..3..2}` as text)
+                except mod._BraceTooBig:
+                    continue
+                if any(w not in mine for w in g):
+                    missing.append(q)
+            self.assertEqual(missing, [], '%s makes words the gate does not judge: %s' % (shell, missing[:5]))
+        if not ran:
+            self.skipTest('no shell installed')
+
+
 class BraceDifferential(Tree):
     """The gate against real shells over random words: if a shell's brace expansion of a word is a protected file (or a link
     to one), the gate must refuse the command that names the word. The words are built from the shapes of the review
@@ -989,7 +1246,7 @@ class BodiesAreJudged(Tree):
         exe = shutil.which(shell)
         if not exe:
             return None
-        p = subprocess.run([exe, '-c', cmd], cwd=self.root, capture_output=True, text=True, timeout=30,
+        p = run_shell_text(exe, cmd, cwd=self.root, capture_output=True, text=True, timeout=30,
                            stdin=subprocess.DEVNULL, env={'PATH': '/usr/bin:/bin', 'HOME': self.root, 'LC_ALL': 'C'})
         return 'ORACLE' in p.stdout + p.stderr
 
@@ -1002,10 +1259,7 @@ class BodiesAreJudged(Tree):
             with self.subTest(cell=tmpl):
                 self.assertEqual(self.verdict(self.cell(tmpl, self.READER)), 'DENY')
                 shells = [self.ran(sh, self.cell(tmpl, self.ORACLE)) for sh in ('bash', 'zsh')]
-                if all(s is None for s in shells):
-                    self.skipTest('no shell installed')
-                # the cell is a real one: a shell runs the body (bash 3.2 mishandles two here-documents on one line)
-                self.assertTrue(any(shells), 'no shell ran the body of %r' % tmpl)
+                assert_ran(self, tmpl, shells)
 
     def test_literal_text_in_a_comment_and_a_here_document_still_passes(self):
         for tmpl in self.LITERAL:
@@ -1054,18 +1308,14 @@ class BodiesAreJudged(Tree):
             with self.subTest(cell=tmpl):
                 self.assertEqual(self.verdict(self.cell(tmpl, self.READER)), 'DENY')
                 shells = [self.ran(sh, self.cell(tmpl, self.ORACLE)) for sh in ('bash', 'zsh')]
-                if all(s is None for s in shells):
-                    self.skipTest('no shell installed')
-                self.assertTrue(any(shells), 'no shell ran the body of %r' % tmpl)
+                assert_ran(self, tmpl, shells)
 
     def test_a_backslash_newline_inside_a_substitution_opener_is_removed_before_the_search(self):
         for tmpl in self.BACKSLASH_NEWLINE:
             with self.subTest(cell=tmpl):
                 self.assertEqual(self.verdict(self.cell(tmpl, self.READER)), 'DENY')
                 shells = [self.ran(sh, self.cell(tmpl, self.ORACLE)) for sh in ('bash', 'zsh')]
-                if all(s is None for s in shells):
-                    self.skipTest('no shell installed')
-                self.assertTrue(any(shells), 'no shell ran the body of %r' % tmpl)
+                assert_ran(self, tmpl, shells)
         # a pair in a single-quoted text or in a comment is a literal: the joined text must not allow what the first reading refuses
         self.assertEqual(self.verdict("echo '$\\\n(ls docs)'"), 'ALLOW')
         self.assertEqual(self.verdict("echo a\\\n b"), 'ALLOW')
@@ -1094,9 +1344,8 @@ class BodiesAreJudged(Tree):
             with self.subTest(cell=tmpl):
                 self.assertEqual(self.verdict(self.cell(tmpl, self.READER)), 'DENY')
                 shells = [self.ran(sh, self.cell(tmpl, self.ORACLE)) for sh in ('bash', 'zsh')]
-                if all(s is None for s in shells):
-                    self.skipTest('no shell installed')
-                self.assertTrue(any(shells), 'no shell ran the body of %r' % tmpl)
+                # the quirk of these cells is bash 3.2's own (no quote removal in the target of `>&`): bash 4+ and zsh do not run them
+                assert_ran(self, tmpl, shells, bash32_only=True)
         # `<&` is refused the same way though no local shell runs it (the cheaper reading is the safe one)
         self.assertEqual(self.verdict(self.cell("echo a <&'$(R)'", self.READER)), 'DENY')
         self.assertEqual(self.verdict(self.cell("echo a 2>&1'$(R)'", self.READER)), 'DENY')      # no shell runs it (a bad fd), same reading
@@ -1129,9 +1378,8 @@ class BodiesAreJudged(Tree):
             with self.subTest(cell=tmpl):
                 self.assertEqual(self.verdict(self.cell(tmpl, self.READER)), 'DENY')
                 shells = [self.ran(sh, self.cell(tmpl, self.ORACLE)) for sh in ('bash', 'zsh')]
-                if all(s is None for s in shells):
-                    self.skipTest('no shell installed')
-                self.assertTrue(any(shells), 'no shell ran the body of %r' % tmpl)
+                # the same bash 3.2 quirk of `>&` (see the cells above)
+                assert_ran(self, tmpl, shells, bash32_only=True)
         # `$( )` stays refused too, though neither local shell runs it (a syntax error): the cheaper reading is the safe one
         self.assertEqual(self.verdict(self.cell("x=$( echo >&2${Y:-)}'$(R)'\n)", self.READER)), 'DENY')
         # the mutant that reverts the fix (the span not skipped) truncates the body: a reader placed right after the closing
@@ -1171,9 +1419,7 @@ class BodiesAreJudged(Tree):
             with self.subTest(cell=tmpl):
                 self.assertEqual(self.verdict(self.cell(tmpl, self.READER)), 'DENY')
                 shells = [self.ran(sh, self.cell(tmpl, self.ORACLE)) for sh in ('bash', 'zsh')]
-                if all(s is None for s in shells):
-                    self.skipTest('no shell installed')
-                self.assertTrue(any(shells), 'no shell ran the body of %r' % tmpl)
+                assert_ran(self, tmpl, shells)
         # the twins at the start of a command stay comments (both shells)
         for cmd in ['(echo a)#x $(grep -rn zzmark .)', 'echo a;(echo a)#x $(grep -rn zzmark .)', 'echo a &(echo a)#x $(grep -rn zzmark .)',
                     'echo a\n(echo a)#x $(grep -rn zzmark .)', 'echo a && (echo a)#x $(grep -rn zzmark .)']:
@@ -1185,9 +1431,7 @@ class BodiesAreJudged(Tree):
             with self.subTest(cell=tmpl):
                 self.assertEqual(self.verdict(self.cell(tmpl, self.READER)), 'DENY')
                 shells = [self.ran(sh, self.cell(tmpl, self.ORACLE)) for sh in ('bash', 'zsh')]
-                if all(s is None for s in shells):
-                    self.skipTest('no shell installed')
-                self.assertTrue(any(shells), 'no shell ran %r' % tmpl)
+                assert_ran(self, tmpl, shells)
         # a substitution that is an argument, or a head with nothing recursive behind it, keeps its verdict
         for cmd in ['echo $(date) grep -rn zzmark .', 'ls $(pwd)', '$(which ls) docs', '$(date)', 'x=$(date) ls docs']:
             with self.subTest(cmd=cmd):
@@ -1221,9 +1465,7 @@ class BodiesAreJudged(Tree):
             with self.subTest(cell=tmpl):
                 self.assertEqual(self.verdict(self.cell(tmpl, self.READER)), 'DENY')
                 shells = [self.ran(sh, self.cell(tmpl, self.ORACLE)) for sh in ('bash', 'zsh')]
-                if all(s is None for s in shells):
-                    self.skipTest('no shell installed')
-                self.assertTrue(any(shells), 'no shell ran the body of %r' % tmpl)
+                assert_ran(self, tmpl, shells)
 
     def test_an_arithmetic_span_with_no_body_in_it_still_passes(self):
         for tmpl in self.ARITH_LITERAL:
@@ -1245,9 +1487,7 @@ class BodiesAreJudged(Tree):
             with self.subTest(cell=tmpl):
                 self.assertEqual(self.verdict(self.cell(tmpl, self.READER)), 'DENY')
                 shells = [self.ran(sh, self.cell(tmpl, self.ORACLE)) for sh in ('bash', 'zsh')]
-                if all(s is None for s in shells):
-                    self.skipTest('no shell installed')
-                self.assertTrue(any(shells), 'no shell ran the body of %r' % tmpl)
+                assert_ran(self, tmpl, shells)
         for tmpl in self.PARAM_LITERAL:
             with self.subTest(cell=tmpl):
                 self.assertEqual(self.verdict(self.cell(tmpl, self.READER)), 'ALLOW')
@@ -1276,9 +1516,7 @@ class BodiesAreJudged(Tree):
             with self.subTest(cell=tmpl):
                 self.assertEqual(self.verdict(self.cell(tmpl, self.READER)), 'DENY')
                 shells = [self.ran(sh, self.cell(tmpl, self.ORACLE)) for sh in ('bash', 'zsh')]
-                if all(s is None for s in shells):
-                    self.skipTest('no shell installed')
-                self.assertTrue(any(shells), 'no shell ran the body of %r' % tmpl)
+                assert_ran(self, tmpl, shells)
         for tmpl in self.OPENER_LITERAL + self.UNCLOSED_LITERAL:
             with self.subTest(cell=tmpl):
                 self.assertEqual(self.verdict(self.cell(tmpl, self.READER)), 'ALLOW')
@@ -1333,6 +1571,21 @@ class BodiesAreJudged(Tree):
         # `$` and a locale string `"..."` after the pair is removed, and zsh takes the `#` glued to `|&` for a comment, so the
         # here-document operator behind it starts nothing there while the gate read it as a word and let it swallow the body
         '(bash -c $\\\n"R")', "echo x |&#x $<<'E'\n(R)", "echo x |&#x <<'E'\n(R)",
+        # review F2: the body of an UNQUOTED here-document holds substitutions, and an ANSI-C string inside one is read by the same
+        # rule (a literal-body shortcut loses the live `$(R)` behind the escaped quote)
+        "cat <<EOF\n$(echo $'\\'' $(R) $'a' # ')\nEOF",
+        # review F2: the text of `bash -c` and `eval` is judged under the ANSI-C rewrite too (outer double quotes: `\$` is `$`, `\\` is `\`)
+        'bash -c "echo \\$\'\\\\\'\' \\$(R) \\$\'a\' # \'"', 'eval "echo \\$\'\\\\\'\' \\$(R) \\$\'a\' # \'"',
+        # review F2: a here-document delimiter written as an ANSI-C string, the body ends at the line of its VALUE and the command behind
+        # it runs (the spellings of `EOF`: a hex escape, an octal one, a plain one, with `<<-`, and a value that holds a quote)
+        "cat <<$'E\\x4fF'\nx\nEOF\n$(R)", "cat <<$'EOF'\nx\nEOF\n$(R)", "cat <<-$'EOF'\n\tx\n\tEOF\n$(R)", "cat <<$'\\x45OF'\nx\nEOF\n$(R)",
+        "cat <<$'E\\'F'\nx\nE'F\n$(R)", "cat <<$'EOF'\nx\nEOF\n$(R)\necho $'\\'' $(R) $'a'",
+        # review F1: bash 3.2 reads `$$'` as the process id and an ordinary quote, zsh 5.9 as the process id and the START of an ANSI-C
+        # string. In zsh the escaped quote does not close the string, so the live `$(R)` behind it runs (the gate read the bash reading only)
+        "echo $$'\\'' ; $(R) ; echo $$'\\'' # '", "echo $$'\\''$(R)$$'\\'' #'#x", "echo &&$$'\\'' $(R) $$'a' # '", "echo $$'\\'' $(R) $$'a'",
+        "echo $$'\\'' `R` $$'a' # '", "echo $$'a\\'b' $(R) $$'c'", "echo $$'\\\\\\'' $(R) $$'a'", "echo x $$'\\'' | ( R ) | $$'a'",
+        "echo $(echo $$'\\'') $(R) $$'a'",
+        'zsh -c "echo \\$\\$\'\\\\\'\' \\$(R) \\$\\$\'a\' # \'"', 'eval "echo \\$\\$\'\\\\\'\' \\$(R) \\$\\$\'a\' # \'"',
     ]
     # the VALUE of an ANSI-C string is the word the rules judge: every spelling of a dot reads a protected file
     ANSI_READS = [
@@ -1358,8 +1611,11 @@ class BodiesAreJudged(Tree):
             with self.subTest(cell=tmpl):
                 self.assertEqual(self.verdict(self.cell(tmpl, self.READER)), 'DENY')
                 ran = [self.ran(sh, self.cell(tmpl, self.ORACLE)) for sh in ('bash', 'zsh')]
-                if all(r is not None for r in ran):
-                    self.assertTrue(any(ran), 'no shell runs the body of %r: the cell proves nothing' % tmpl)
+                # the body of an unquoted here-document that holds `$( ... $'\'' ... )` is run by bash 3.2 only (the quote of the
+                # ANSI-C string is read by its own rule there); bash 4+ and zsh do not, the verdict above is the gate's
+                assert_ran(self, tmpl, ran, bash32_only=tmpl in self.ANSI_BASH32_ONLY)
+
+    ANSI_BASH32_ONLY = ("cat <<EOF\n$(echo $'\\'' $(R) $'a' # ')\nEOF",)
 
     def test_a_protected_file_behind_an_ansi_c_spelling_is_refused(self):
         for cmd in self.ANSI_READS:
@@ -1421,7 +1677,33 @@ class BodiesAreJudged(Tree):
         self.assertEqual(v('echo "$\'a"'), ['echo "$\'a"'])
         self.assertEqual(v("echo a # $'x'"), ["echo a # $'x'"])
         self.assertEqual(v("echo \\$'x'"), ["echo \\$'x'"])
-        self.assertEqual(v("echo $$'x'"), ["echo $$'x'"])
+        self.assertEqual(v("echo $$'x'"), ["echo $$'x'"])      # both readings give the same text
+        # review F1: `$$'..'` is the process id and a plain quote (bash 3.2) or the process id and an ANSI-C string (zsh 5.9): both are variants
+        self.assertEqual(v("echo $$'\\x41'"), ["echo $$'\\x41'", "echo $$'A'"])
+        self.assertEqual(v("echo $$'\\''"), ["echo $$'\\''", "echo $$''\\'''"])
+        # an ordinary `$$` without a quote behind it has one reading, and so has a `$$` before a `$'` string
+        self.assertEqual(v("echo $$ $'a'"), ["echo $$ 'a'"])
+        self.assertEqual(v("echo $$$'a'"), ["echo $$'a'"])
+
+    def test_the_two_shells_read_a_quote_behind_the_process_id_differently(self):
+        # the cell of the review is a real one: zsh runs the body behind the escaped quote, bash 3.2 does not (the quote text is data
+        # to it). The gate judges both readings, so the shell that runs it is the one the gate has read.
+        cell = "echo $$'\\'' ; R ; echo $$'\\'' # '"
+        zsh, bash = self.ran('zsh', self.cell(cell, self.ORACLE)), self.ran('bash', self.cell(cell, self.ORACLE))
+        if zsh is None and not REQUIRE_ZSH:
+            self.skipTest('zsh is not installed: this cell compares zsh with bash')
+        self.assertTrue(zsh, 'zsh runs the body (zsh is installed: REQUIRE_ZSH=%s)' % REQUIRE_ZSH)
+        self.assertFalse(bash, 'bash reads the quote as an ordinary one (bash 3.2 and 5.x alike)')
+        self.assertEqual(self.verdict(self.cell(cell, self.READER)), 'DENY')
+        # the same text handed to a shell as a string: `bash -c` is judged under both readings as well (over-refusal for bash, none for zsh)
+        for wrapper in ('zsh -c "%s"', 'eval "%s"', 'bash -c "%s"'):
+            inner = self.cell("echo \\$\\$'\\\\'' ; R ; echo \\$\\$'\\\\'' # '", self.READER)
+            with self.subTest(wrapper=wrapper):
+                self.assertEqual(self.verdict(wrapper % inner), 'DENY')
+        # benign twins with a quote behind the process id pass in both readings
+        for cmd in ["echo $$'a' $(date)", "echo $$'\\x41' ok", "echo $$'\\'' ; date ; echo $$'\\'' # '", "echo $$ ; echo $$'x'"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self.verdict(cmd), 'ALLOW')
 
     def test_an_ansi_c_twin_and_a_literal_quoted_substitution_still_pass(self):
         self.assertEqual(self.verdict("echo $'\\'' ls $'a' # '"), 'ALLOW')
@@ -1467,9 +1749,7 @@ class BodiesAreJudged(Tree):
             with self.subTest(cell=tmpl):
                 self.assertEqual(self.verdict(self.cell(tmpl, self.READER)), 'DENY')
                 shells = [self.ran(sh, self.cell(tmpl, self.ORACLE)) for sh in ('bash', 'zsh')]
-                if all(s is None for s in shells):
-                    self.skipTest('no shell installed')
-                self.assertTrue(any(shells), 'no shell ran %r' % tmpl)
+                assert_ran(self, tmpl, shells)
 
     def test_an_option_the_gate_does_not_know_leaves_every_later_word_a_text(self):
         # a long option that is no known one may take a value: where the string is, is not decided, so each later word is judged
@@ -1520,9 +1800,8 @@ class BodiesAreJudged(Tree):
             with self.subTest(cell=tmpl[:6] + '...' + tmpl[-16:]):
                 self.assertEqual(self.verdict(self.cell(tmpl, self.READER)), 'DENY')
                 shells = [self.ran(sh, self.cell(tmpl, self.ORACLE)) for sh in ('bash', 'zsh')]
-                if all(s is None for s in shells):
-                    self.skipTest('no shell installed')
-                self.assertTrue(any(shells), 'no shell ran the reader behind the limit')
+                # the long text goes to the oracle as a script file (run_shell_text): one argument is capped at 128 KiB on Linux
+                assert_ran(self, tmpl[:6] + '...' + tmpl[-16:], shells)
 
     def test_the_scan_limit_is_exact_and_a_command_under_it_keeps_its_verdict(self):
         limit = self.mod.MAX_TEXT
@@ -1764,5 +2043,45 @@ class ScannerDifferentialFuzz(Tree):
         self.assertEqual(holes, [], '%d of %d cases that a shell runs pass the gate, first: %r' % (len(holes), ran_n, holes[:5]))
         self.assertLess(used.ru_utime + used.ru_stime - before.ru_utime - before.ru_stime, 60.0)
 
+class OracleShells(unittest.TestCase):
+    """The oracle the cells above lean on: zsh is where the CI run puts it (REQUIRE_ZSH=1), and the bash has a version."""
+
+    def test_zsh_is_installed_where_the_run_requires_it(self):
+        if REQUIRE_ZSH:
+            self.assertIsNotNone(ZSH, 'REQUIRE_ZSH=1 and no zsh on PATH: install it (apt-get install -y zsh), the cells would have no oracle')
+
+    def test_the_bash_oracle_has_a_known_version(self):
+        self.assertGreater(BASH_MAJOR, 0, 'no bash on PATH, or its version is unreadable')
+
+    def test_a_text_over_the_argument_limit_reaches_the_oracle_as_a_script_file(self):
+        # Linux refuses one argument over 128 KiB (OSError: Argument list too long); `$0` tells which way the text came in
+        exe = shutil.which('bash')
+        kw = dict(capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL, env={'PATH': '/usr/bin:/bin', 'LC_ALL': 'C'})
+        probe = 'printf "%s|" "$0"; printf %s ORA CLE'
+        short = run_shell_text(exe, probe, **kw).stdout
+        self.assertTrue(short.startswith(os.path.basename(exe) + '|') or short.startswith(exe + '|'), short)      # -c: $0 is the shell
+        for size in (ARG_FILE_MIN, 200000, 300000):
+            with self.subTest(size=size):
+                long_out = run_shell_text(exe, ' ' * size + '\n' + probe, **kw).stdout
+                self.assertTrue(long_out.endswith('cell.sh|ORACLE'), long_out[-60:])      # a script file, and the text ran in full
+        # just under the cut it is still an argument, as before
+        under = run_shell_text(exe, ' ' * (ARG_FILE_MIN - 100) + '\n' + probe, **kw).stdout
+        self.assertFalse('cell.sh' in under, under[-60:])
+        self.assertTrue(under.endswith('ORACLE'))
+        # no argument of the oracle's argv is near the Linux cap whatever the size (the cut is far below 131072 bytes)
+        self.assertLess(ARG_FILE_MIN, 131072 // 2)
+
+
 if __name__ == '__main__':
-    unittest.main(verbosity=1)
+    program = unittest.main(verbosity=1, exit=False)
+    ok = program.result.wasSuccessful()
+    if BASH32_UNPROVEN:
+        # named, not hidden: these cells are proven only on a machine with a bash 3.2 (macOS /bin/bash); the gate verdict of each one
+        # was asserted above
+        print('note: bash %d is the oracle: %d cell(s) are bash 3.2 only and not proven here, first: %r' % (BASH_MAJOR, len(set(BASH32_UNPROVEN)), sorted(set(BASH32_UNPROVEN))[:3]),
+              file=sys.stderr)
+    if REQUIRE_ZSH and program.result.skipped:
+        # a skip is a cell without an oracle: under REQUIRE_ZSH=1 none is allowed (a green run with skips proves less than it says)
+        print('REQUIRE_ZSH=1: %d skipped test(s), first: %r' % (len(program.result.skipped), program.result.skipped[0]), file=sys.stderr)
+        ok = False
+    sys.exit(0 if ok else 1)

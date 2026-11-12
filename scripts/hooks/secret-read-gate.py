@@ -235,7 +235,7 @@ def _brace_expand(pat: str, depth: int = 0) -> list:
 BRACE_MAX_ALTS = 1024        # alternatives one word may expand to
 BRACE_MAX_WORD = 2048        # characters of a word the expansion reads
 BRACE_MAX_WORK = 1000000     # characters scanned for the whole command (both readings of the braces count)
-_SEQ = re.compile(r'(-?\d+|[A-Za-z])\.\.(-?\d+|[A-Za-z])(?:\.\.(-?\d+))?')
+_SEQ = re.compile(r'([-+]?\d+|[A-Za-z])\.\.([-+]?\d+|[A-Za-z])(?:\.\.([-+]?\d+))?')
 _brace_work = [0]
 
 
@@ -272,15 +272,33 @@ def _brace_group(s: str):
 
 
 def _brace_sequence(m) -> list:
-    """The words of `{a..b[..step]}`: integers (zero padded like bash when an end has a leading zero) or single letters."""
+    """The words of `{a..b[..step]}` (see `_brace_sequence_words`). A group with a plus sign is expanded by bash (3.2 for an end,
+    4+ perhaps for a step) and left as TEXT by zsh, so its text is one of its words too: next to a list group (`{x,d}{1..3..+1}`)
+    the whole-word reading does not cover `d{1..3..+1}`, the zsh word."""
+    words = _brace_sequence_words(m)
+    # (the match is the text between the braces; the braces are the marked ones, a brace of the text is no group to expand again)
+    text = _MARK['{'] + m.group(0) + _MARK['}']
+    if '+' in m.group(0) and text not in words:
+        words.append(text)
+    return words
+
+
+def _brace_sequence_words(m) -> list:
+    """The words of `{a..b[..step]}`: integers (zero padded when an end has a leading zero, and the unpadded words too, see
+    below) or single letters."""
     a, b, step = m.group(1), m.group(2), m.group(3)
-    if a.lstrip('-').isdigit() and b.lstrip('-').isdigit():
-        da, db = a.lstrip('-'), b.lstrip('-')
+    if a.lstrip('+-').isdigit() and b.lstrip('+-').isdigit():
+        # an end may carry a plus sign: bash 3.2 expands `{0..+1}` to `0 1` (and never pads it), zsh leaves it as text. The sign is
+        # part of the width below, so the superset of widths covers it; the text itself is judged as a word too (`_brace_alternatives`)
+        da, db = a.lstrip('+-'), b.lstrip('+-')
         lo, hi = int(a), int(b)
-        padded = (len(da) > 1 and da.startswith('0')) or (len(db) > 1 and db.startswith('0'))
-        width = max(len(da), len(db)) if padded else 0
+        # a shell may pad when an end has a leading zero or a sign, or the step has a leading zero (see below); the width of
+        # the widest of them, its sign included, bounds every width a shell uses
+        zero = lambda d: len(d) > 1 and d.startswith('0')
+        padded = zero(da) or zero(db) or a.startswith('-') or b.startswith('-') or bool(step and zero(step.lstrip('+-')))
+        width = max(len(a), len(b), len(step or '')) if padded else None
     elif a.isalpha() and b.isalpha():
-        lo, hi, width = ord(a), ord(b), 0
+        lo, hi, width = ord(a), ord(b), None
     else:
         return [m.group(0)]      # mixed ends: bash leaves it as text
     inc = (abs(int(step)) or 1) if step else 1
@@ -290,7 +308,24 @@ def _brace_sequence(m) -> list:
     seq = range(lo, hi + 1, inc) if lo <= hi else range(lo, hi - 1, -inc)
     if a.isalpha():
         return [chr(v) for v in seq]
-    return [('-' if v < 0 else '') + str(abs(v)).zfill(width) for v in seq]
+    if width is None:
+        return [('-' if v < 0 else '') + str(abs(v)) for v in seq]
+    # `{1..03}`, `{01..03}`, `{-1..1}`, `{1..3..01}`: bash 3.2 does not pad (1 2 3), bash 4+ and zsh do, but each by a rule of its
+    # own: zsh takes the width of the FIRST end when it starts with a zero and else of the second, the sign counts in the width, and
+    # a step with a leading zero pads as well (`pad-{01..010}` is `pad-01 ... pad-010` to zsh, whose width is that of `01`).
+    # The word of the shell that runs the command is any of them, so ONE superset is judged instead of a model of each rule: every
+    # integer of the sequence at every width from 0 to width + 1 (the sign kept in front of the digits, which gives the width with
+    # and without the sign). The words of the FINAL expansion are what the cap counts.
+    out, seen = [], set()
+    for k in range(width + 2):
+        for v in seq:
+            w = ('-' if v < 0 else '') + str(abs(v)).zfill(k)
+            if w not in seen:
+                seen.add(w)
+                out.append(w)
+                if len(out) > BRACE_MAX_ALTS:
+                    raise _BraceTooBig()
+    return out
 
 
 def _brace_all(s: str, depth: int = 0) -> list:
@@ -2102,8 +2137,10 @@ class _AnsiScan:
     `$[ ]` and the body of a here-document (a literal one is copied, an unquoted one holds substitutions, which are code).
     `out` holds text pieces and, for a string, the index of its tokens in `spans`."""
 
-    def __init__(self, text: str):
+    def __init__(self, text: str, zsh_pid_quote: bool = False):
         self.t, self.n, self.out, self.spans = text, len(text), [], []
+        # `$$'..'`: bash 3.2 reads the process id and then a plain quote, zsh 5.9 the process id and then an ANSI-C string
+        self.zsh_pid_quote = zsh_pid_quote
 
     def code(self, i: int, closer, depth: int) -> int:
         """Unquoted code from `i` up to (and with) `closer` (None: the end of the text); returns the index after it."""
@@ -2147,8 +2184,16 @@ class _AnsiScan:
                         out.append(len(self.spans) - 1)
                         i = j
                 elif nxt == '$':
-                    out.append('$$')      # the process id: a quote behind it is an ordinary one
+                    out.append('$$')      # the process id
                     i += 2
+                    if self.zsh_pid_quote and t[i:i + 1] == "'":
+                        # the zsh reading: the quote behind the process id opens an ANSI-C string (`t[i - 1:i + 1]` is `$'`);
+                        # in the bash 3.2 reading (the other scan) it is an ordinary quote
+                        j = _ansi_c_end(t, i - 1)
+                        if j != -1:
+                            self.spans.append(_ansi_span_tokens(t[i + 1:j - 1]))
+                            out.append(len(self.spans) - 1)
+                            i = j
                 elif nxt in ('(', '{', '['):
                     out.append(c + nxt)
                     i = self.code(i + 2, {'(': ')', '{': '}', '[': ']'}[nxt], depth + 1)
@@ -2248,24 +2293,30 @@ class _AnsiScan:
 
 
 def _ansi_c_variants(text: str) -> list:
-    """The readings of a shell text with its ANSI-C strings replaced by their values (see above); [text] when it has none."""
+    """The readings of a shell text with its ANSI-C strings replaced by their values (see above); [text] when it has none.
+    A text with `$$'` is scanned twice, once for each reading of the quote behind the process id (bash 3.2: an ordinary quote,
+    zsh 5.9: the start of an ANSI-C string); the variants of both are judged and the cap on the readings is shared."""
     if "$'" not in text:
         return [text]
-    scan = _AnsiScan(text)
-    scan.code(0, None, 0)
-    out, spans = scan.out, scan.spans
-    if not spans:
-        return [''.join(out)]
-    sensitive = any(tok[0] in ('unk', 'nd', 'c') for toks in spans for tok in toks)
-    modes = (False, True) if sensitive else (False,)
-    plans = []
-    for drop in modes:
-        points = sum(1 for toks in spans for tok in toks if _ansi_is_nul(tok, drop))
-        plans.append((drop, points))
-    if sum(3 ** points for _drop, points in plans) > _ANSI_MAX_VARIANTS:
+    scans = []
+    for zsh_pid_quote in ((False, True) if "$$'" in text else (False,)):
+        scan = _AnsiScan(text, zsh_pid_quote)
+        scan.code(0, None, 0)
+        scans.append(scan)
+    if not any(scan.spans for scan in scans):
+        return [''.join(scans[0].out)]
+    plans, total = [], 0
+    for scan in scans:
+        sensitive = any(tok[0] in ('unk', 'nd', 'c') for toks in scan.spans for tok in toks)
+        for drop in ((False, True) if sensitive else (False,)):
+            points = sum(1 for toks in scan.spans for tok in toks if _ansi_is_nul(tok, drop))
+            plans.append((scan, drop, points))
+            total += 3 ** points
+    if total > _ANSI_MAX_VARIANTS:
         deny('the command holds more ANSI-C strings with several readings than the gate looks through')
     seen, result = set(), []
-    for drop, points in plans:
+    for scan, drop, points in plans:
+        out, spans = scan.out, scan.spans
         for choice in itertools.product((0, 1, 2), repeat=points):
             picks = iter(choice)
             parts = []
