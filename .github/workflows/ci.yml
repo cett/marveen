@@ -452,3 +452,7 @@ jobs:
 
       - name: PostgreSQL tests (baseline parity, harness)
         run: npm run test:pg
+
+      - name: PostgreSQL module run (the useTestDb files of the ported list, MARVEEN_TEST_DB=pg)
+        # the same files also run on SQLite in the default suite; the list is src/__tests__/helpers/pg-modules.ts
+        run: npm run test:pg-modules
