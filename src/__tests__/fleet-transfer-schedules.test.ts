@@ -132,6 +132,23 @@ describe('importFleet -- schedules', () => {
     expect(row.schedule).toBe('*/15 * * * *')
   })
 
+  it('does not carry the author or the activator of the source instance: a user id is local to one instance', async () => {
+    const { exportFleet, importFleet } = await import('../web/fleet-transfer.js')
+    insertSchedule({ id: 'authored' })
+    getDb().prepare("UPDATE schedules SET author_user_id = 7, author_label = 'user-a', activated_by = 'admin-a', activated_at = 1234 WHERE id = 'authored'").run()
+    const exported = await exportFleet()
+    // Positive pair: the bundle really holds the source's author, so a NULL on the other side is the import's doing.
+    const inBundle = JSON.parse(exported.data).schedules[0]
+    expect(inBundle.author_user_id).toBe(7)
+
+    initDatabase(':memory:') // fresh target, whose user 7 (if any) is somebody else
+    const applied = await importFleet(exported.data, { apply: true }) as any
+    expect(applied.imported.schedules).toBe(1)
+
+    const row = getDb().prepare('SELECT author_user_id, author_label, activated_by, activated_at FROM schedules WHERE id = ?').get('authored') as any
+    expect(row).toEqual({ author_user_id: null, author_label: null, activated_by: null, activated_at: null })
+  })
+
   describe('tenant of an imported schedule', () => {
     async function exportWithTenants() {
       const { exportFleet } = await import('../web/fleet-transfer.js')

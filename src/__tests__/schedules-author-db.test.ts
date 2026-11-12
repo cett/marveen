@@ -45,6 +45,12 @@ describe('schedules author and activation columns at the db layer', () => {
     expect(await authorOf('t1')).toEqual({ userId: null, label: 'token:ci', by: 'admin-a', at: 1234 })
   })
 
+  it('an activation of null clears the activator and leaves the author (a task moved to another tenant is activated again)', async () => {
+    await upsertSchedule('t1', base({ author: { userId: 7, label: 'user-a' }, activation: { by: 'admin-a', at: 1234 } }))
+    await upsertSchedule('t1', base({ activation: null }))
+    expect(await authorOf('t1')).toEqual({ userId: 7, label: 'user-a', by: null, at: null })
+  })
+
   it('an upsert that names only an activation leaves the author, and the other way round', async () => {
     await upsertSchedule('t1', base({ author: { userId: 7, label: 'user-a' } }))
     await upsertSchedule('t1', base({ activation: { by: 'admin-a', at: 55 } }))

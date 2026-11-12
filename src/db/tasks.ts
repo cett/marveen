@@ -326,9 +326,10 @@ export interface UpsertScheduleOpts {
   created_at?: number
   // Who wrote the content / who activated it. Left out = the stored value is kept (a new row gets NULL), so a
   // caller that only mirrors a file or flips a flag can never blank the author. null inside the object is a
-  // deliberate 'no user-bound author'.
+  // deliberate 'no user-bound author'. activation: null clears the activator (a task moved to another tenant has
+  // to be activated again), an object records one.
   author?: { userId: number | null; label: string | null }
-  activation?: { by: string; at: number }
+  activation?: { by: string; at: number } | null
 }
 
 export async function upsertSchedule(id: string, opts: UpsertScheduleOpts): Promise<ScheduleRow> {
@@ -378,7 +379,7 @@ export async function upsertSchedule(id: string, opts: UpsertScheduleOpts): Prom
     opts.stuck_after_minutes ?? null, opts.requires ?? null, opts.status ?? 'live',
     opts.created_at ?? now, now,
     opts.author?.userId ?? null, opts.author?.label ?? null, opts.activation?.by ?? null, opts.activation?.at ?? null,
-    opts.author ? 1 : 0, opts.author ? 1 : 0, opts.activation ? 1 : 0, opts.activation ? 1 : 0,
+    opts.author ? 1 : 0, opts.author ? 1 : 0, opts.activation !== undefined ? 1 : 0, opts.activation !== undefined ? 1 : 0,
   )
   return (await dbx.get('SELECT * FROM schedules WHERE id = ?', id)) as ScheduleRow
 }

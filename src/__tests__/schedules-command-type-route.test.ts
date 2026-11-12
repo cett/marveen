@@ -115,7 +115,9 @@ describe('PUT from the Edit dialog leaves a command task exactly as it was', () 
     const before = await row('nightly-backup')
     const payload = { ...await dialogPayloadFor('nightly-backup'), timeoutMs: 300000, failThreshold: 3 }
     expect((await call('PUT', '/api/schedules/nightly-backup', payload)).status).toBe(200)
-    expect(await row('nightly-backup')).toEqual({ ...before, timeout_ms: 300000, fail_threshold: 3 })
+    // The edit changes reviewed fields, so the caller becomes the author: a session with no user name is labelled
+    // 'session' and has no user id. The untouched save above is the pair: it changes no field, and so not the author.
+    expect(await row('nightly-backup')).toEqual({ ...before, timeout_ms: 300000, fail_threshold: 3, author_label: 'session' })
   })
 })
 

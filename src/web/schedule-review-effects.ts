@@ -1,4 +1,4 @@
-import { createAgentMessage, writeAgentAuditLog } from '../db.js'
+import { createAgentMessage, getDashboardUser, writeAgentAuditLog } from '../db.js'
 import { MAIN_AGENT_ID } from '../config.js'
 import { logger } from '../logger.js'
 import type { RouteContext } from './routes/types.js'
@@ -39,6 +39,22 @@ export function scheduleActor(ctx: RouteContext): ScheduleActor {
     return { agentId: claimedAgent ? `claimed:${claimedAgent}` : 'token:shared', actorKind: 'token', claimedAgent }
   }
   return { agentId: claimedAgent ? `claimed:${claimedAgent}` : 'unknown', actorKind: 'other', claimedAgent }
+}
+
+// The dashboard user id behind a write, or null. Only a real login (auth.kind === 'session') is a user: a
+// token, a device key or an agent's self-declared X-Agent-Id is not a person with a life cycle, so none of them
+// ever resolves to an id (a `claimed:` agent must not be matched to a user of the same name). The lookup is by
+// username (UNIQUE, NOCASE); a session whose user row is gone resolves to null, and a lookup error propagates
+// so the write fails instead of storing an author that silently escapes the check.
+export async function resolveActorUserId(ctx: RouteContext): Promise<number | null> {
+  if (ctx.auth?.kind !== 'session' || !ctx.auth.user) return null
+  const user = await getDashboardUser(ctx.auth.user)
+  return user ? user.id : null
+}
+
+/** The author to record for a content write by this caller: the user id (or null) and the readable label. */
+export async function scheduleAuthor(ctx: RouteContext): Promise<{ userId: number | null; label: string }> {
+  return { userId: await resolveActorUserId(ctx), label: scheduleActor(ctx).agentId }
 }
 
 export async function auditScheduleWrite(
