@@ -1,6 +1,7 @@
 -- PostgreSQL baseline of the Marveen schema, cut from the SQLite end state at schema_version 95.
 -- Generated from the SQLite migration chain (an empty database after applyMigrations): 85 tables, 740 columns,
--- 116 indexes (10 partial) plus 14 UNIQUE constraints, 17 foreign keys, 65 CHECK constraints.
+-- 116 indexes in the SQLite end state (117 here: one more for the lower-case username, see below; 10 partial), 14 UNIQUE constraints,
+-- 17 foreign keys, 65 CHECK constraints.
 --
 -- Type map: TEXT -> text; INTEGER -> bigint; REAL -> double precision; BLOB -> bytea; the 18 0/1 flag columns -> smallint + CHECK (col IN (0, 1)),
 -- not boolean, because the code compares them with = 1. unixepoch() -> (extract(epoch from now())::bigint).
