@@ -541,6 +541,24 @@ def _has_flag(toks: list, short: str, longs: tuple) -> bool:
     return False
 
 
+_RECURSIVE_LONGS = ('recursive', 'dereference-recursive')
+
+
+def _has_recursive_long(toks: list) -> bool:
+    """grep's long recursive options in ANY spelling getopt_long accepts: every non-empty prefix of `--recursive` or
+    `--dereference-recursive` (`--rec`, `--recur`, `--dere`, `--dereference-r`, ...), with or without an `=value`. A
+    prefix that two options share (`--r`, `--re`, `--d`, `--de`) makes grep itself stop with an error; the gate still
+    counts it (fail closed: it does not guess how an implementation resolves it). Words after `--` are operands."""
+    for w in toks[1:]:
+        if w == '--':
+            break
+        if w.startswith('--') and len(w) > 2:
+            name = w[2:].partition('=')[0]
+            if name and any(full.startswith(name) for full in _RECURSIVE_LONGS):
+                return True
+    return False
+
+
 def _directories_option(toks: list) -> tuple:
     """grep's `--directories=ACTION` / `-d ACTION` (the BSD and GNU grep both read a directory operand recursively for
     `recurse`, with or without `-r`). Returns (recursive, consumed): `recursive` is True when any occurrence names an
@@ -877,6 +895,7 @@ def check_bash(cmd: str, cwd: str) -> None:
             if pairs:
                 covering.append(pairs)
         grep_recursive = head in GREP_FAMILY and (_has_flag(toks, 'rR', ('--recursive', '--dereference-recursive'))
+                                                  or _has_recursive_long(toks)
                                                   or dir_recursive
                                                   # the former check, kept so no verdict loosens: `-d` and the word `recurse` anywhere
                                                   or ('-d' in toks and 'recurse' in toks))

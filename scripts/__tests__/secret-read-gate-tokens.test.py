@@ -323,6 +323,23 @@ class BashOnEveryTokenFile(Tree):
             with self.subTest(cmd=cmd):
                 self.assert_denied(self.bash(cmd), cmd)
 
+    def test_grep_abbreviated_long_recursive_options_over_a_token_directory_are_blocked(self):
+        for opt in ('--recursive', '--recursiv', '--recur', '--rec', '--dereference-recursive', '--dereference-r', '--dereference', '--dere', '--der'):
+            for target in ('agents', 'agents/', 'agents/agent-a', '.'):
+                cmd = 'grep %s foo %s' % (opt, target)
+                with self.subTest(cmd=cmd):
+                    self.assert_denied(self.bash(cmd), cmd)
+        for cmd in ('grep --rec foo', 'grep --dere foo'):
+            with self.subTest(cmd=cmd, cwd='agent-a'):
+                self.assert_denied(self.bash(cmd, cwd=self.p('agents', 'agent-a')), cmd)
+        # an abbreviated option is not a known no-value one: the exclude parse voids, so even the token-name exclude does not let it through
+        for cmd in ('grep --rec --exclude=.agent-token foo agents', 'grep --dere foo agents --exclude=.agent-token'):
+            with self.subTest(cmd=cmd):
+                self.assert_denied(self.bash(cmd), cmd)
+        for cmd in ('grep --rec foo src', 'grep --dere foo src', 'grep --regexp=foo notes.txt', 'grep --reg=foo notes.txt'):
+            with self.subTest(cmd=cmd):
+                self.assert_allowed(self.bash(cmd), cmd)
+
     def test_find_over_a_token_directory_piped_into_a_reader_is_blocked_like_find_exec(self):
         # 1:1 with the -exec cells: the same find words get the same verdict through -exec and through xargs
         for find, cwd, denied in [('find agents -type f', None, True), ('find agents/agent-a', None, True), ('find . -type f', None, True),

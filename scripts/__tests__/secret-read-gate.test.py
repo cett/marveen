@@ -244,6 +244,36 @@ class BashReads(GateCase):
             with self.subTest(cmd=cmd):
                 self.assert_allowed(self.bash(cmd), cmd)
 
+    RECURSIVE_LONG_PREFIXES = ['--recursive', '--recursiv', '--recurs', '--recur', '--recu', '--rec', '--dereference-recursive', '--dereference-recursiv',
+                               '--dereference-r', '--dereference', '--dereferenc', '--derefer', '--dere', '--der']
+
+    def test_grep_abbreviated_long_recursive_options_over_the_store_are_blocked(self):
+        # the real grep reads a unique prefix of a long option as the option; every one of them is a recursive read
+        for opt in self.RECURSIVE_LONG_PREFIXES:
+            for target in ('store', 'store/', '.', '%ROOT%'):
+                cmd = ('grep %s foo %s' % (opt, target)).replace('%ROOT%', self.root)
+                with self.subTest(cmd=cmd):
+                    self.assert_denied(self.bash(cmd), cmd)
+        for cmd in ['grep --rec foo', 'grep --dere foo', 'egrep --rec foo store', 'grep -n --rec foo .', 'grep --rec=x foo store',
+                    # a prefix two options share: grep itself stops with an error, the gate does not guess (fail closed)
+                    'grep --r foo store', 'grep --re foo store', 'grep --d foo store', 'grep --de foo store']:
+            with self.subTest(cmd=cmd):
+                self.assert_denied(self.bash(cmd), cmd)
+
+    def test_grep_abbreviated_long_recursive_with_a_store_exclude_is_not_trusted(self):
+        for cmd in ['grep --rec --exclude-dir=store foo .', 'grep --dere --exclude-dir store foo .']:
+            with self.subTest(cmd=cmd):
+                self.assert_denied(self.bash(cmd), cmd)
+
+    def test_grep_abbreviated_long_recursive_over_other_directories_and_other_long_options_pass(self):
+        for cmd in ['grep --rec foo src', 'grep --recur foo src scripts', 'grep --dere foo src', 'grep --dereference-recursive foo src',
+                    'grep --regexp=claim scripts/gmail-send.py', 'grep --reg=claim scripts/gmail-send.py', 'grep --regexp claim src/a.ts',
+                    'grep --no-messages claim scripts/gmail-send.py', 'grep --line-number claim src/a.ts', 'grep --devices=skip claim src/a.ts',
+                    # after `--` every word is an operand
+                    'grep -n claim -- src/a.ts']:
+            with self.subTest(cmd=cmd):
+                self.assert_allowed(self.bash(cmd), cmd)
+
     def test_grep_directories_recurse_over_other_directories_passes(self):
         for cmd in ['grep --directories=recurse foo src', 'grep --dir=recurse foo scripts', 'grep -d recurse foo src scripts',
                     'grep -d recurse --exclude-dir=store foo src']:
