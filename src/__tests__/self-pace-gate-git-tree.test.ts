@@ -45,7 +45,7 @@ const REWRITES = [
   'git checkout feature', 'git checkout -b feature', 'git checkout feature -- .', 'git switch feature', 'git switch -c feature', 'git merge feature', 'git merge --ff-only feature',
   'git pull', 'git pull --ff-only origin develop', 'git rebase feature', 'git rebase --continue', 'git cherry-pick abc123', 'git revert abc123', 'git reset --hard',
   'git reset --hard feature', 'git restore --source=feature .', 'git restore .', 'git read-tree -u feature', 'git stash', 'git stash pop', 'git apply change.diff', 'git am change.mbox',
-  'git clean -fd', 'git sparse-checkout set src', 'git submodule update --init', 'git bisect start', 'git mv a b', 'git rm a', 'git config core.hooksPath /tmp/h', 'git update-index --assume-unchanged x',
+  'git clean -fd', 'git sparse-checkout set src', 'git submodule update --init', 'git bisect start', 'git mv a b', 'git rm a', 'git config user.name x','git update-index --assume-unchanged x',
   'git unknown-alias-name', 'git co feature',
 ]
 

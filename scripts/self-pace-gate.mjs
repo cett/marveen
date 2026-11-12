@@ -288,6 +288,10 @@ const READERS = new Set([
 const SAFE_GIT = new Set([
   'status', 'diff', 'log', 'show', 'blame', 'ls-files', 'add', 'grep', 'rev-parse', 'cat-file', 'check-ignore',
   'diff-tree', 'show-ref', 'ls-tree', 'shortlog', 'commit', 'diff-index', 'diff-files', 'rev-list', 'describe',
+  // pure read-only names (no write form of their own; gitSafe still refuses -c, --output, --ext-diff, --textconv in front of or after them).
+  // NOT here, on purpose: branch, tag, remote, stash, reflog, config (they have write forms), ls-remote (--upload-pack runs a program),
+  // verify-commit / verify-tag (run the configured gpg program), fsck (--lost-found writes), merge-tree (writes objects)
+  'merge-base', 'for-each-ref', 'name-rev', 'cherry', 'whatchanged', 'count-objects', 'show-branch', 'range-diff',
 ])
 const WRAPPER_WORDS = new Set(['env', 'time', 'nohup', 'command', 'builtin', 'exec', 'nice', 'sudo', 'doas', 'stdbuf', 'setsid'])
 const INTERPRETERS = /^(?:python(?:\d+(?:\.\d+)?)?|node(?:js)?|bash|sh|zsh|dash|ksh|perl|ruby|php|deno|bun|tsx|ts-node|source|\.)$/
@@ -555,6 +559,59 @@ function substitutionTexts(command) {
 }
 // Words and redirect targets of one simple command, unquoted and unescaped. `hasRedirect` = any
 // redirect operator at all (including fd duplication and input).
+// A word with a part the parser cannot read (a command substitution after a literal head, an ANSI-C string it cannot
+// decode) carries this marker where the unreadable part starts: the text in front of it is the literal HEAD of the word,
+// the text behind it is the raw unreadable part. wordKind judges such a word by its head (see dynamicHeadKind).
+// A private-use code point: no shell word spells it, and PATH_JUNK in wordKind treats it as junk.
+export const DYN = ''
+// bounds of the balanced scan of a substitution: past either one the word is flagged and the rest is read as before
+const MAX_DYN_LEN = 8192
+const MAX_DYN_DEPTH = 64
+// The end (exclusive) of the substitution that starts at seg[i] (`$(` or a backtick), or -1 when it is not closed or a bound
+// is passed. One linear pass; quote-, escape- and nesting-aware.
+function skipDynamic(seg, i) {
+  const n = Math.min(seg.length, i + MAX_DYN_LEN)
+  if (seg[i] === '`') {
+    for (let j = i + 1; j < n; j++) { if (seg[j] === '\\') j++; else if (seg[j] === '`') return j + 1 }
+    return -1
+  }
+  let depth = 1
+  for (let j = i + 2; j < n; j++) {
+    const c = seg[j]
+    if (c === '\\') { j++; continue }
+    if (c === "'") { const e = seg.indexOf("'", j + 1); if (e === -1 || e >= n) return -1; j = e; continue }
+    if (c === '"') { let k = j + 1; while (k < n && seg[k] !== '"') { if (seg[k] === '\\') k++; k++ } if (k >= n) return -1; j = k; continue }
+    if (c === '`') { const e = skipDynamic(seg, j); if (e === -1) return -1; j = e - 1; continue }
+    if (c === '(') { if (++depth > MAX_DYN_DEPTH) return -1 }
+    else if (c === ')' && --depth === 0) return j + 1
+  }
+  return -1
+}
+// The ANSI-C string $'...' whose body starts at seg[i]: { text, end, ok }. `end` is the index after the closing quote (the end of
+// the segment when it is not closed). ok=false when the string cannot be decoded to the text bash would build: an unterminated
+// string, a NUL (bash cuts the string there), an escape this does not know, a byte above 0x7f (not text), a code point out of range.
+function readAnsiC(seg, i) {
+  const n = seg.length
+  let text = ''; let ok = true; let j = i
+  const SIMPLE = { a: '\x07', b: '\b', e: '\x1b', E: '\x1b', f: '\f', n: '\n', r: '\r', t: '\t', v: '\v', '\\': '\\', "'": "'", '"': '"', '?': '?' }
+  const take = (re, max, radix) => { let k = 0; let v = 0; while (k < max && j + k < n && re.test(seg[j + k])) { v = v * radix + parseInt(seg[j + k], radix); k++ } return { v, k } }
+  while (j < n && seg[j] !== "'") {
+    if (seg[j] !== '\\') { text += seg[j]; j++; continue }
+    const e = seg[j + 1]
+    if (e === undefined) { ok = false; j = n; break }
+    if (e in SIMPLE) { text += SIMPLE[e]; j += 2; continue }
+    j += 2
+    let v = null
+    if (/[0-7]/.test(e)) { j--; const r = take(/[0-7]/, 3, 8); j += r.k; v = r.v }
+    else if (e === 'x') { const r = take(/[0-9a-fA-F]/, 2, 16); if (r.k) { j += r.k; v = r.v } }
+    else if (e === 'u' || e === 'U') { const r = take(/[0-9a-fA-F]/, e === 'u' ? 4 : 8, 16); if (r.k) { j += r.k; v = r.v; if (v > 0x10ffff || (v >= 0xd800 && v < 0xe000)) v = null; else if (v > 0x7f) { text += String.fromCodePoint(v); continue } } }
+    else if (e === 'c' && j < n) { v = seg.charCodeAt(j) & 0x1f; j++ }
+    if (v === null || v === 0 || v > 0x7f) ok = false
+    else text += String.fromCharCode(v)
+  }
+  if (j >= n) return { text, end: n, ok: false }
+  return { text, end: j + 1, ok }
+}
 export function tokenizeShell(seg) {
   const words = []; const redirects = []; let hasRedirect = false; let i = 0
   const n = seg.length
@@ -565,9 +622,37 @@ export function tokenizeShell(seg) {
       const c = seg[i]
       if (/\s/.test(c) || c === '>' || c === '<' || c === '|' || c === ';' || c === '&' || c === '(' || c === ')') break
       if (c === "'") { const e = seg.indexOf("'", i + 1); const end = e === -1 ? n : e; cur += seg.slice(i + 1, end); i = end + 1; any = true; continue }
+      // $'...' is an ANSI-C string: the word is what bash builds from it (escapes decoded); one it cannot decode is unreadable
+      if (c === '$' && seg[i + 1] === "'") {
+        const a = readAnsiC(seg, i + 2)
+        cur += a.ok ? a.text : DYN + seg.slice(i, a.end); i = a.end; any = true; continue
+      }
+      if (c === '$' && seg[i + 1] === '"') { i++; continue } // $"..." is a double-quoted string (the locale lookup changes nothing here)
+      // a command substitution behind a literal head (`<dir>/$(echo x)`, `a/`echo x``) is ONE unreadable word, read to its balanced end
+      // (the marker comes AFTER the `$` of `$(`, and in front of a backtick: the piece in front of it reads `head$` / `head`, as it did
+      // when the word was cut here, so a rule that looked at that piece looks at the same one)
+      if (cur !== '' && ((c === '$' && seg[i + 1] === '(') || c === '`')) {
+        const e = skipDynamic(seg, i)
+        const sub = c === '$' ? '$' + DYN : DYN
+        const from = c === '$' ? i + 1 : i
+        if (e !== -1) { cur += sub + seg.slice(from, e); i = e; any = true; continue }
+        // unbalanced or past a bound: flagged, the rest is read as before
+        if (c === '$') { cur += sub; i++; any = true; continue }
+        cur += DYN
+      }
       if (c === '"') {
         let j = i + 1
-        while (j < n && seg[j] !== '"') { if (seg[j] === '\\' && j + 1 < n) { cur += seg[j + 1]; j += 2 } else { cur += seg[j]; j++ } }
+        while (j < n && seg[j] !== '"') {
+          if (seg[j] === '\\' && j + 1 < n) { cur += seg[j + 1]; j += 2; continue }
+          if (cur !== '' && ((seg[j] === '$' && seg[j + 1] === '(') || seg[j] === '`')) {
+            const e = skipDynamic(seg, j)
+            const dollar = seg[j] === '$'
+            if (e !== -1) { cur += (dollar ? '$' + DYN : DYN) + seg.slice(dollar ? j + 1 : j, e); j = e; continue }
+            if (dollar) { cur += '$' + DYN; j++; continue }
+            cur += DYN
+          }
+          cur += seg[j]; j++
+        }
         i = j + 1; any = true; continue
       }
       if (c === '\\' && i + 1 < n) { cur += seg[i + 1]; i += 2; any = true; continue }
@@ -605,9 +690,25 @@ function expandBraces(tok, cap = 256) {
   return out
 }
 function collectVars(command) {
-  const vars = {}
-  for (const m of String(command).matchAll(/(?:^|[\s;&|(])(?:export\s+|local\s+|declare\s+)?([A-Za-z_]\w*)=("([^"]*)"|'([^']*)'|[^\s;&|()]*)/g)) {
-    vars[m[1]] = m[3] ?? m[4] ?? m[2]
+  const vars = {}; let read = 0
+  // (a value spelled $'..' or $".." is the text the shell builds from it, like the same word in a path: `D=$'doctor.sh'` is `D=doctor.sh`;
+  // one that cannot be decoded stays unset)
+  for (const m of String(command).matchAll(/(?:^|[\s;&|(])(?:export\s+|local\s+|declare\s+)?([A-Za-z_]\w*)=("([^"]*)"|'([^']*)'|\$'((?:[^'\\]|\\.)*)'|\$"([^"]*)"|[^\s;&|()]*)/g)) {
+    // a value the parser cannot read is UNREADABLE (the DYN marker: a word that uses it is judged by its literal head, see wordKind), not
+    // unset: bash cuts a $'..' value at a NUL and joins a quoted piece with the characters that follow it (`D=$'doc'tor.sh` is
+    // `doctor.sh`), so neither a value this decoder refuses nor a quoted piece that the word goes on after is the text the regex took
+    // (the value word is read by the tokenizer itself: pieces joined as the shell joins them, $'..' decoded, a piece it cannot decode
+    // is an unreadable word that carries the marker; bounded in size and in number, past a bound the value is the marker alone)
+    const next = String(command)[m.index + m[0].length]
+    const goesOn = next !== undefined && !/[\s;&|()]/.test(next)
+    const quoted = m[3] !== undefined || m[4] !== undefined || m[5] !== undefined || m[6] !== undefined
+    if (quoted && (goesOn || m[5] !== undefined)) {
+      const rest = String(command).slice(m.index + m[0].length - m[2].length, m.index + m[0].length - m[2].length + 2048)
+      const word = ++read > 64 || rest.length >= 2048 ? undefined : tokenizeShell(rest).words[0]
+      vars[m[1]] = word === undefined ? DYN : word
+      continue
+    }
+    vars[m[1]] = m[3] ?? m[4] ?? m[6] ?? m[2]
   }
   return vars
 }
@@ -850,6 +951,33 @@ function protectedBasenames(ctx) {
   }
   return (ctx.listing = set)
 }
+// The kind of a word with an unreadable part (see DYN): judged by its literal HEAD, because what the unreadable part builds is not known.
+// A head that names a protected path, a directory that holds protected paths (the gate scripts directory, the store, the install root),
+// or the directory a name started by the head would land in, counts as that protected kind: `<install>/scripts/$(echo x)` may be any
+// file in the scripts directory. A head in the agent directories, a glob, a head with an unresolved variable, or a word with no head
+// at all (the marker comes first) is not judged here: that is the reading the word had before the marker existed.
+function dynamicHeadKind(part, ctx) {
+  // (the `$` in front of the marker belongs to the substitution; an assignment `at=$(date)` has the value as its head)
+  const head = part.slice(0, part.indexOf(DYN)).replace(/\$$/, '').replace(/^[A-Za-z_]\w*=/, '')
+  if (!head || /[*?[]/.test(head)) return null
+  let anc = null
+  for (const cwd of ctx.cwds) {
+    const w = expandWord(head, ctx.vars, cwd)
+    if (!w || w.includes('$') || w.includes(DYN)) continue
+    const abs = isAbsolute(w) ? w : join(cwd, w)
+    const dir = w.endsWith('/') ? abs : dirname(abs)
+    for (const p of [abs, dir]) {
+      const real = realOrSelf(p)
+      const k = kindOf(real, ctx.prot)
+      if (k) return k
+      const a = ancestorOf(real, ctx.prot)
+      // a bare name (no slash) lands in the working directory: only the strict ancestor (the gate scripts directory itself) counts
+      // for it, the loose ones (the install root, the store) are where every command runs and would refuse `x$(date)` there
+      if (a && !a.startsWith('anc-agentdir') && (head.includes('/') || a.startsWith('anc-strict'))) anc ??= a.split(':')[1]
+    }
+  }
+  return anc
+}
 // kind of ONE shell word ('egress-allowlist' | 'gate-scripts' | null); a directory that holds protected paths gives 'anc-strict:<kind>' or 'anc-loose:<kind>'.
 function wordKind(word, ctx) {
   const results = []
@@ -870,9 +998,19 @@ function wordKind(word, ctx) {
     const eq = stripped.indexOf('=')
     if (eq > 0 && eq < stripped.length - 1) parts.push(stripped.slice(eq + 1)) // of=PATH, --out=PATH
     for (const part of parts) {
+      if (part.includes(DYN)) { const dk = dynamicHeadKind(part, ctx); if (dk) results.push(dk); continue }
       for (const cwd of ctx.cwds) {
-        const w = expandWord(part, ctx.vars, cwd)
+        let w = expandWord(part, ctx.vars, cwd)
         if (!w) continue
+        // a variable whose value cannot be read (see collectVars) put the marker into the word: judged by its literal head, and when the
+        // head names nothing it is an unresolved variable like any other (the tail is matched as a suffix of the protected paths below)
+        if (w.includes(DYN)) {
+          const dk = dynamicHeadKind(w, ctx)
+          if (dk) { results.push(dk); continue }
+          // (the unreadable piece is the raw text of what it was, up to the next slash: the tail from that slash on is what is matched)
+          const cut = w.indexOf('/', w.lastIndexOf(DYN))
+          w = cut === -1 ? '$__dyn' : `$__dyn${w.slice(cut)}`
+        }
         if (/[*?[]/.test(w)) {
           const abs = isAbsolute(w) ? w : join(cwd, w)
           const firstGlob = abs.search(/[*?[]/)
@@ -942,7 +1080,8 @@ export function spliceEnvSplit(words, depth = 0) {
         if (attached) value = attached; else { value = words[k + 1] ?? ''; used = 2 }
       } else if (ENV_VALUE_OPTS.has(o)) used = 2
       if (value !== null) {
-        const spliced = [...words.slice(0, k), ...tokenizeShell(value).words, ...words.slice(k + used)]
+        // (the value is text that is read again: the marker of a substitution behind a literal head is not part of it, see shellScriptTexts)
+        const spliced = [...words.slice(0, k), ...tokenizeShell(value.replaceAll(DYN, '')).words, ...words.slice(k + used)]
         return spliceEnvSplit(spliced, depth + 1)
       }
       k += used
@@ -1130,7 +1269,11 @@ const DESTRUCTIVE = new Set(['mv', 'rm', 'rmdir', 'ln', 'rename', 'unlink', 'rsy
 function destructiveCmd(cmd, args) {
   if (DESTRUCTIVE.has(cmd)) return true
   if (cmd === 'cp') return args.some((a) => /^-[A-Za-z]*[rRa]/.test(a) || /^--(recursive|archive)/.test(a))
-  if (cmd === 'git') return ['rm', 'mv', 'clean', 'checkout', 'restore', 'reset', 'stash', 'apply', 'am', 'worktree'].includes(gitSubcommand(args) ?? '')
+  // a git that is not read-only can write through an operand or an option value (`checkout-index --prefix=DIR`, `format-patch -o DIR`,
+  // `archive -o FILE`, `clone ... DIR`): it is judged by the SAME classification the working-tree rule uses (gitRewritesInstallTree),
+  // never by a list of the writing subcommands (that list missed checkout-index)
+  if (cmd === 'git') return !gitNeverWrites(args)
+
   if (cmd === 'find') return !readerOk('find', args)
   if (INTERPRETERS.test(cmd)) return args.some((a) => INLINE_FLAGS.has(a))
   return false
@@ -1227,6 +1370,11 @@ const namesGit = (t, rx = GIT_WORD) => { const s = String(t ?? ''); return rx.te
 function shellScriptTexts(words, cmdIdx, seg, prevSeg) {
   const none = { texts: [], unreadable: null }
   if (cmdIdx === -1) return none
+  // The words carry the DYN marker of a substitution behind a literal head (see tokenizeShell). The text a shell is handed is judged
+  // as a command of its own, and the marker is not part of that text: with it `$(` reads `$<marker>(`, the BUILT test below does not see
+  // the substitution and the inner parse takes the `(` for a group. The marker comes after the `$` and in front of a backtick, so
+  // taking it out gives back the text the command had.
+  words = words.map((w) => w.replaceAll(DYN, ''))
   const base = (w) => w.split('/').pop()
   const OBFUSCATED = /\$['"]|\\x[0-9A-Fa-f]|\\u[0-9A-Fa-f]|\\0[0-7]|\\[1-7][0-7]{2}/
   // (a plain $NAME in a text is expanded by the inner shell and judged there, like any word; only a substitution builds a command)
@@ -1267,7 +1415,7 @@ function shellScriptTexts(words, cmdIdx, seg, prevSeg) {
   if (hs) { texts.push(hs[1] ?? hs[2] ?? hs[3]); if (OBFUSCATED.test(seg) || BUILT.test(texts[0])) unreadable = 'always'; else if (DYNAMIC.test(texts[0])) unreadable = 'if-git' }
   else if (/<<-?\s*['"\\]?[A-Za-z_]/.test(seg) || (prevSeg !== null && /<<-?\s*['"\\]?[A-Za-z_]/.test(prevSeg))) { /* a heredoc: the body lines are segments */ }
   else if (prevSeg !== null) {
-    const pw = tokenizeShell(prevSeg).words
+    const pw = tokenizeShell(prevSeg).words.map((w) => w.replaceAll(DYN, ''))
     const pi = commandWordIndex(pw)
     if (pi !== -1 && /^(?:echo|printf)$/.test(base(pw[pi]))) {
       const t = pw.slice(pi + 1).filter((a) => !/^-[neE]+$/.test(a)).join(' ')
@@ -1320,6 +1468,145 @@ function gitFetchPlain(args, g) {
     if (/^[A-Za-z][A-Za-z0-9+.-]*::/.test(a)) return false // remote helper (ext::<command>)
   }
   return true
+}
+// ---- git config: a write is judged by its KEY and its VALUE, from any directory ----------------------------------------------------
+// A worktree copy shares its repository configuration with the install, so a `git config` run in a copy reaches the install: core.hooksPath
+// and diff.external make the next plain git in the install run a program, core.worktree re-points the install repository, alias.x=!cmd,
+// core.fsmonitor, core.pager, filter.*, include.path and the like do the same. The key set is open-ended, so this is an ALLOWLIST (the shape
+// the global `-c` rule already has, SAFE_C): a write form passes only for a key that cannot run a program or move a tree, AND only with a
+// value that is one of that key's plain settings (pull.rebase=interactive opens an editor on the next pull). Compared lower-cased: git reads
+// the section and the variable name case-insensitively. `branch.<name>.remote|merge|rebase` are NOT here: a remote can be a URL or a remote
+// helper that the next pull runs, and `git branch --set-upstream-to` covers the daily need without a config write.
+const GIT_CFG_TEXT = /^[^\r\n\0]*$/
+const GIT_CFG_BOOL = /^(?:true|false)$/i // (git reads a boolean and these words case-insensitively)
+const GIT_CFG_KEYS = [
+  [/^(?:user|color)\.[a-z0-9.-]+$/, GIT_CFG_TEXT],
+  [/^advice\.[a-z0-9.-]+$/, GIT_CFG_BOOL],
+  [/^pull\.rebase$/, GIT_CFG_BOOL], [/^fetch\.prune$/, GIT_CFG_BOOL], [/^rerere\.enabled$/, GIT_CFG_BOOL], [/^push\.autosetupremote$/, GIT_CFG_BOOL],
+  [/^core\.(?:filemode|ignorecase|quotepath)$/, GIT_CFG_BOOL],
+  [/^pull\.ff$/, /^(?:true|false|only)$/i],
+  [/^core\.autocrlf$/, /^(?:true|false|input)$/i],
+  [/^core\.safecrlf$/, /^(?:true|false|warn)$/i],
+  [/^push\.default$/, /^(?:simple|current|upstream|nothing)$/i],
+  [/^init\.defaultbranch$/, /^[A-Za-z0-9._/-]+$/],
+]
+// Options that change how a config is read or typed, none of which writes a file or runs a program. Matched EXACTLY (no abbreviation):
+// anything else that starts with a dash is refused, so a spelling this table does not know can only cost a false deny.
+const GIT_CFG_PLAIN = new Set(['--local', '--global', '--system', '--worktree', '--show-origin', '--show-scope', '--name-only', '--show-names', '--null', '-z',
+  '--includes', '--no-includes', '--fixed-value', '--no-type', '--bool', '--int', '--bool-or-int', '--path', '--expiry-date', '--all', '--regexp'])
+const GIT_CFG_READ = new Set(['--get', '--get-all', '--get-regexp', '--get-urlmatch', '--get-color', '--get-colorbool', '-l', '--list'])
+// A removal is judged like a write (a key from the allowlist, a section from the free families): deleting remote.<name>.pushurl lifts the
+// read-only guard of a remote, deleting core.repositoryformatversion or a whole [core] section breaks the shared repository.
+const GIT_CFG_UNSET = new Set(['--unset', '--unset-all'])
+const GIT_CFG_RMSEC = new Set(['--remove-section'])
+const GIT_CFG_WRITE = new Set(['--add', '--replace-all', '--rename-section', '--append'])
+const GIT_CFG_VALUED = /^--(?:type|default|value|url)=/ // the value is glued: text, never a path this rule reads
+const GIT_CFG_VALUED_SEP = new Set(['--type', '--default', '-t']) // the next word is the value of the option
+const GIT_CFG_SUBS = new Set(['get', 'list', 'unset', 'remove-section', 'set', 'edit', 'rename-section']) // git >= 2.46: `git config set k v`
+// May this `git config` run? `rest` = the words after `config`. A word that cannot be read off the text ($VAR not set in the command, a
+// substitution) is unreadable: for the key, and for the value of a key that has a value rule, it is a refusal.
+function gitConfigAllowed(rest, ctx) {
+  if (rest.length > GIT_TREE_MAX_ARGS) return false
+  const readable = (w) => { const x = expandWord(w, ctx.vars, ctx.current); return /[$`]/.test(x) || x.includes(DYN) ? null : x }
+  const pos = []; let act = null; let end = false; let conflict = false
+  // two action flags that disagree (`--get --unset`) are refused, except that a write wins over the others and is judged by its key
+  const setAct = (v) => {
+    if (act === null || act === v) { act = v; return }
+    if (v === 'write' || v === 'rename') { act = v; return }
+    if (act !== 'write' && act !== 'rename') conflict = true
+  }
+  for (let k = 0; k < rest.length; k++) {
+    const a = rest[k]
+    if (end || !a.startsWith('-') || a === '-') { pos.push(a); continue }
+    if (a === '--') { end = true; continue }
+    if (GIT_CFG_PLAIN.has(a) || GIT_CFG_VALUED.test(a)) continue
+    if (GIT_CFG_VALUED_SEP.has(a)) { k++; continue }
+    if (GIT_CFG_READ.has(a)) { setAct('read'); continue }
+    if (GIT_CFG_UNSET.has(a)) { setAct('unset'); continue }
+    if (GIT_CFG_RMSEC.has(a)) { setAct('rmsec'); continue }
+    if (GIT_CFG_WRITE.has(a)) { setAct(a === '--rename-section' ? 'rename' : 'write'); continue }
+    return false // -f / --file / --blob / -e / --edit (a file target is a path writer, an editor is a program), or a spelling not known
+  }
+  if (conflict) return false
+  const first = pos[0] !== undefined && GIT_CFG_SUBS.has(pos[0]) ? pos.shift() : null
+  if (first === 'edit') return false
+  const subAct = { get: 'read', list: 'read', unset: 'unset', 'remove-section': 'rmsec', set: 'write', 'rename-section': 'rename' }[first]
+  // a subcommand and an action flag that name different actions (`get --add k v`) are refused, the flag is not allowed to turn the
+  // subcommand into something else
+  if (subAct !== undefined) { if (act !== null && act !== subAct) return false; act = subAct }
+  if (act === 'rename') return false // no daily use, and a section moved into another name is a way around the key rule
+  if (act === 'read') return true
+  if (act === 'rmsec') { // removing a whole section: only the free families
+    const sec = pos.length === 1 ? readable(pos[0])?.toLowerCase() : null
+    return typeof sec === 'string' && /^(?:user|color|advice)(?:\.[a-z0-9.-]+)?$/.test(sec)
+  }
+  if (act === 'unset') { // removing a key: the same allowlist as writing it (the value pattern after it is text)
+    const key = pos.length >= 1 && pos.length <= 2 ? readable(pos[0])?.toLowerCase() : null
+    return typeof key === 'string' && GIT_CFG_KEYS.some(([rx]) => rx.test(key))
+  }
+  if (act === null && pos.length <= 1) return true // one key and no value: a read
+  if (pos.length === 0 || pos.length > 3) return false
+  const key = readable(pos[0])?.toLowerCase()
+  if (key === undefined || key === null) return false
+  const rule = GIT_CFG_KEYS.find(([rx]) => rx.test(key))
+  if (!rule) return false
+  const value = pos[1] === undefined ? '' : readable(pos[1])
+  // a free-text value (user.*, color.*) may be built by the shell: git stores it quoted, a newline in it cannot start a new key. A value
+  // with a rule must be read off the text and match.
+  if (rule[1] === GIT_CFG_TEXT) return value === null || GIT_CFG_TEXT.test(value)
+  return value !== null && rule[1].test(value)
+}
+// Can this git never write through a path it was handed? Only a read-only subcommand (SAFE_GIT, and gitSafe agrees: no --output,
+// no -c, no pager option), the harmless list without `worktree` (its add / move / remove take a target path), or a plain fetch.
+// Everything else, and a git whose subcommand cannot be read, counts as writing: the same split gitRewritesInstallTree makes.
+function gitNeverWrites(args) {
+  const g = scanGitGlobals(args)
+  if (g.sub === null || g.sub === 'worktree') return false
+  if (SAFE_GIT.has(g.sub)) return gitSafe(args)
+  return GIT_HARMLESS_SUBS.has(g.sub) || (g.sub === 'fetch' && gitFetchPlain(args, g))
+}
+// The words of a git command that are NOT operands of the writing subcommand, as indexes into `words` (`ci` = the git word):
+// the value of -C / --git-dir / --work-tree / --namespace (they select the tree, and the tree rule judges that), and the value of
+// -m / --message (text: `-m TEXT`, `-mTEXT`, `--message TEXT`, `--message=TEXT`). No other option is exempt. A word in this set is
+// never a reason for the loose-ancestor tier on its own (a protected FILE or the strict ancestor in it still counts, see the caller).
+function gitExemptWords(words, ci) {
+  const args = words.slice(ci + 1); const off = ci + 1; const out = new Set()
+  const g = scanGitGlobals(args)
+  for (let k = 0; k < g.subIdx; k++) {
+    const a = args[k]
+    if (a === '-C' || a === '--work-tree' || a === '--git-dir' || a === '--namespace') { out.add(off + k + 1); k++; continue }
+    if (/^--(?:work-tree|git-dir|namespace)=/.test(a)) { out.add(off + k); continue }
+    if (a === '-c' || a === '--config-env' || a === '--super-prefix') k++ // (their values are not paths this rule exempts)
+  }
+  for (let k = g.subIdx + 1; k < args.length; k++) {
+    const a = args[k]
+    if (a === '--') break
+    // (`-m` is a flag without a value in some subcommands, `read-tree -m --prefix=<dir>`: the word after it is text only when it does not
+    // start with a dash; a message that starts with a dash is rare and `--message=TEXT` still covers it. `--message` always takes a value.)
+    if (a === '--message') { out.add(off + k + 1); k++; continue }
+    if (a === '-m') { if (args[k + 1] !== undefined && !args[k + 1].startsWith('-')) { out.add(off + k + 1); k++ } continue }
+    if (a.startsWith('--message=') || /^-m[^-]/.test(a)) out.add(off + k)
+  }
+  return out
+}
+// The directories a relative word after `-C <dir>` is relative to, besides the directory the command runs in: each -C is relative
+// to the one before it (git chdir's in order), from every directory the command may run in. A value that cannot be read is skipped.
+function gitCTargets(words, ci, ctx) {
+  const g = scanGitGlobals(words.slice(ci + 1))
+  const cs = g.ops.filter(([kind]) => kind === 'C').map(([, v]) => v)
+  const out = new Set()
+  if (cs.length === 0 || cs.length > GIT_TREE_MAX_ARGS) return out
+  for (const base of ctx.cwds) {
+    let cur = base
+    for (const v of cs) {
+      if (v === undefined) { cur = null; break }
+      const x = expandWord(v, ctx.vars, cur)
+      if (x === '' || /[$`*?[\]{}]/.test(x) || x.includes(DYN)) { cur = null; break }
+      cur = resolve(cur, x)
+    }
+    if (cur !== null) out.add(cur)
+  }
+  return out
 }
 // dev+ino of the install root and of every protected ancestor, compared instead of strings: APFS ignores case and
 // there are symlinks, so two spellings of one directory have one identity.
@@ -1536,10 +1823,20 @@ export function bashProtectedDecision(command, opts = {}) {
     const { redirects, hasRedirect } = tokenized
     const words = spliceEnvSplit(tokenized.words)
     const kinds = words.map((w) => wordKind(w, ctx))
+    const kindsC = words.map(() => null) // the same words read from the `git -C` directory (below), where they differ from `kinds`
     const rKinds = redirects.map((r) => wordKind(r, ctx))
     // `cd` moves the base of every later relative word (conservatively: the old base stays too).
     const ci = commandWordIndex(words)
     const cmd = ci === -1 ? '' : words[ci].split('/').pop()
+    // a relative word after `git -C <dir>` is relative to <dir>: it is read against that directory too (the directory the command runs in
+    // still counts), the way the tree rule reads the -C chain. The words of the global options themselves are read as they stand.
+    if (cmd === 'git') {
+      const cTargets = gitCTargets(words, ci, ctx)
+      if (cTargets.size > 0) {
+        const ctxC = { ...ctx, cwds: new Set([...ctx.cwds, ...cTargets]) }
+        for (let i = ci + 2 + scanGitGlobals(words.slice(ci + 1)).subIdx; i < words.length; i++) kindsC[i] = wordKind(words[i], ctxC)
+      }
+    }
     if (cmd === 'cd' || cmd === 'pushd') {
       if (words.slice(ci + 1).includes('-')) ctx.unknownCwd = true // `cd -` goes back to a directory this parser never saw
       const arg = words.slice(ci + 1).find((a) => !a.startsWith('-'))
@@ -1566,7 +1863,6 @@ export function bashProtectedDecision(command, opts = {}) {
     let gitIdxs = []
     const launcherAt = gci === -1 ? -1 : words.findIndex((w) => GIT_LAUNCHERS.has(w.split('/').pop()))
     if (gci !== -1 && (launcherAt === -1 || launcherAt >= gci) && words[gci].split('/').pop() === 'git') gitIdxs = [gci]
-    if (gci !== -1 && (launcherAt === -1 || launcherAt >= gci) && words[gci].split('/').pop() === 'git') gitIdxs = [gci]
     else if (gci !== -1) {
       for (let i = launcherAt + 1; launcherAt !== -1 && i < words.length && gitIdxs.length <= GIT_CANDIDATES_MAX; i++) if (words[i].split('/').pop() === 'git') gitIdxs.push(i)
     }
@@ -1584,6 +1880,9 @@ export function bashProtectedDecision(command, opts = {}) {
       // `git checkout` with the same global options (-C, --work-tree, --git-dir) in front.
       const behindXargs = words.slice(0, g).some((w) => w.split('/').pop() === 'xargs')
       const viaXargs = behindXargs && (sub === null || !SAFE_GIT.has(sub))
+      // a `git config` is judged by its key and value wherever it runs (a worktree copy shares the repository configuration with the
+      // install). Behind xargs the words the gate sees are not all the words git gets, so there it is refused unread.
+      if (sub === 'config' && (behindXargs || !gitConfigAllowed(words.slice(g + 1 + gg.subIdx + 1), ctx))) return { deny: true, reason: 'gate-scripts' }
       if (gitRewritesInstallTree(viaXargs ? [...words.slice(0, g + 1 + gg.subIdx), 'checkout'] : words, g, ctx, { exact: !unionMode, compound, ...gmode, envUnknown: envUnknownAt(si) })) return { deny: true, reason: 'gate-scripts' }
     }
     // a script handed to a shell as text (sh -c STRING, eval STRING, stdin): a git in it is judged as a command of its own
@@ -1606,8 +1905,8 @@ export function bashProtectedDecision(command, opts = {}) {
       const inner = { current: ctx.current, cwds: [...ctx.cwds], unknownCwd: ctx.unknownCwd, union: unionMode, compound, raw: seed?.raw ?? command, joined, envUnknown: envUnknownAt(si), depth: (seed?.depth ?? 0) + 1 }
       const d = bashProtectedDecision(t, { ...opts, prot, cwd: ctx.current, budget, seed: inner }); if (d.deny) return d
     }
-    const hit = kinds.find((k) => k && !isAnc(k)) ?? rKinds.find((k) => k && !isAnc(k)) ?? null
-    const ancKinds = [...kinds, ...rKinds].filter(isAnc)
+    const hit = kinds.find((k) => k && !isAnc(k)) ?? kindsC.find((k) => k && !isAnc(k)) ?? rKinds.find((k) => k && !isAnc(k)) ?? null
+    const ancKinds = [...kinds, ...kindsC, ...rKinds].filter(isAnc)
     const ancestorHit = !hit && ancKinds.length > 0
     if (!hit && !ancestorHit) {
       // a redirect target with an unresolvable shape is only a problem next to a protected word (below)
@@ -1633,11 +1932,17 @@ export function bashProtectedDecision(command, opts = {}) {
     //    strict one (scripts/) denies everything else; the loose ones (store/, the repo root) deny
     //    only what moves, removes, links, extracts or rewrites.
     if (ancestorHit) {
+      // (the value of a git -C / --git-dir / --work-tree / --namespace and the text after -m / --message are not operands of the
+      // command: a LOOSE ancestor in one of them is not read here; the strict one and a protected file still count)
+      const exempt = cmd === 'git' ? gitExemptWords(words, ci) : new Set()
+      const unlessExempt = (k, idx) => isAnc(k) && !(exempt.has(idx) && !k.startsWith('anc-strict'))
+      const ancEff = [...kinds.filter(unlessExempt), ...kindsC.filter(unlessExempt), ...rKinds.filter(isAnc)]
+      if (ancEff.length === 0) continue
       if (isPlainRead(cmd, args, ctx, { si, feedsNonReader, envUnsafe })) continue
-      if (!ancKinds.some((k) => k.startsWith('anc-strict')) && !destructiveCmd(cmd, args)) continue
+      if (!ancEff.some((k) => k.startsWith('anc-strict')) && !destructiveCmd(cmd, args)) continue
       // agents/ and agents/<name> alone: only an operation that can put a settings file in (or take the
       // directory away) is refused
-      if (ancKinds.every((k) => k.startsWith('anc-agentdir'))) {
+      if (ancEff.every((k) => k.startsWith('anc-agentdir'))) {
         const agentWords = kinds.map((k, idx) => (typeof k === 'string' && k.startsWith('anc-agentdir') ? idx : -1)).filter((idx) => idx !== -1)
         if (agentDirOpHarmless(cmd, words, ci, agentWords, ctx)) continue
       }
