@@ -22,9 +22,9 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import pg from 'pg'
 import { applyPgMigrations } from '../../db-migrations-pg.js'
+import { parseInt8Safe, pgTypes } from '../../db/pg/types.js'
 
 export const PG_TEST_URL_ENV = 'MARVEEN_PG_TEST_URL'
-const INT8_OID = 20
 const LOCK_KEY = 'marveen-pg-test-template'
 const DEFAULT_MIGRATIONS_DIR = fileURLToPath(new URL('../../migrations-pg', import.meta.url))
 
@@ -37,22 +37,8 @@ export function pgTestUrl(): string {
   return url
 }
 
-/** bigint text -> number, refusing a value a number cannot hold exactly. */
-export function parseInt8Safe(text: string): number {
-  const n = /^-?\d+$/.test(text) ? Number(text) : NaN // Number('') is 0 and Number(' 7 ') is 7: not an int8 text
-  if (!Number.isSafeInteger(n)) {
-    throw new RangeError(`int8 value ${text} is outside the safe integer range of a JS number`)
-  }
-  return n
-}
-
-/** The `types` option of a pg Pool/Client: int8 as a checked number, everything else as the driver has it. */
-export const pgTypes = {
-  getTypeParser(oid: number, format?: 'text' | 'binary') {
-    if (oid === INT8_OID && format !== 'binary') return parseInt8Safe
-    return pg.types.getTypeParser(oid, format as 'text')
-  },
-} as unknown as pg.CustomTypesConfig
+// The int8 parser lives with the adapter now (src/db/pg/types.ts); the tests keep importing it from here.
+export { parseInt8Safe, pgTypes }
 
 /** The `.sql` files of a baseline directory in file-name order; an absent directory is an empty baseline. */
 export function listBaselineFiles(dir: string = DEFAULT_MIGRATIONS_DIR): string[] {
