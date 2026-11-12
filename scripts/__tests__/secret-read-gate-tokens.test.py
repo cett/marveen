@@ -309,6 +309,115 @@ class BashOnEveryTokenFile(Tree):
             with self.subTest(cmd=cmd, cwd=cwd):
                 self.assert_denied(self.bash(cmd, cwd=cwd), cmd)
 
+    def test_grep_directories_recurse_in_every_spelling_over_a_token_directory_is_blocked(self):
+        for opt in ('--directories=recurse', '--directories recurse', '--dir=recurse', '-d recurse', '-drecurse', '--d=recurse', '-nd recurse'):
+            for target in ('agents', 'agents/', 'agents/agent-a', '.'):
+                cmd = 'grep %s foo %s' % (opt, target)
+                with self.subTest(cmd=cmd):
+                    self.assert_denied(self.bash(cmd), cmd)
+        # no operand: the ACTION word is the option value and the cwd holds a token
+        for cmd in ('grep -d recurse foo', 'grep --directories recurse foo', 'grep --dir=recurse foo'):
+            with self.subTest(cmd=cmd, cwd='agent-a'):
+                self.assert_denied(self.bash(cmd, cwd=self.p('agents', 'agent-a')), cmd)
+        for cmd in ('grep --directories=recurs foo agents', 'grep -d bogus foo agents', 'grep --directories= foo agents'):
+            with self.subTest(cmd=cmd):
+                self.assert_denied(self.bash(cmd), cmd)
+
+    def test_a_brace_word_with_a_star_and_an_alternative_without_a_glob_does_not_crash(self):
+        # `_tier_b_glob_selects` expands the braces and used to take the `*` position of EVERY alternative: an alternative with
+        # no glob raised AttributeError, which the gate turns into an "internal error" block (a false block for a JSON text)
+        for cmd in ('echo \'{"a": 1, "b": "*"}\'', 'echo \'{"k": "*", "n": 2}\'', 'echo {x,y}*z',
+                    'curl -s -X POST localhost:3420/api/messages -d \'{"from":"agent-a","content":"1 * 2, x"}\'',
+                    'echo {a,b}', 'echo {a,b} *.md'):
+            with self.subTest(cmd=cmd):
+                rc, out, err = self.bash(cmd)
+                self.assertNotIn('internal error', err, cmd)
+                self.assert_allowed((rc, out, err), cmd)
+        # the real token shapes next to such an alternative are still refused, by the rule and not by a crash
+        # a bare `*` alternative is judged by the rule like the bare `*` word (the install root of this fixture holds a token file)
+        for cmd in ('echo "{a,b,*}"', 'echo {a,b,*}', 'cat agents/agent-a/{*,.agent-token}', 'cat agents/agent-a/{x,.agent-t*}', 'cat agents/agent-a/{x,.agent-token}*',
+                    'cat agents/*/{x,.agent-token}', 'cat agents/agent-a/.agent-t*', 'cat agents/*/.agent-token'):
+            with self.subTest(cmd=cmd):
+                rc, out, err = self.bash(cmd)
+                self.assertNotIn('internal error', err, cmd)
+                self.assert_denied((rc, out, err), cmd)
+
+    def test_a_link_to_a_protected_file_next_to_a_glob_alternative_is_blocked_whatever_the_order(self):
+        # the alternative without a glob is judged as a plain path of EITHER tier: a symlink (absolute or relative) or a hard link to a
+        # token file, and to the claim signing key, in a brace word with a glob alternative, in both orders
+        for rel, (sym, rsym, hard) in self.links.items():
+            for link in (sym, rsym, hard):
+                d, name = os.path.split(link)
+                for alts in ('%s,x*', 'x*,%s', '%s,y?', '[a]*,%s'):
+                    cmd = 'cat %s/{%s}' % (d, alts % name)
+                    with self.subTest(cmd=cmd, protected=rel):
+                        rc, out, err = self.bash(cmd)
+                        self.assertNotIn('internal error', err, cmd)
+                        self.assert_denied((rc, out, err), cmd)
+        # a benign alternative next to a glob passes
+        for cmd in ('cat src/{a.ts,b*}', 'cat src/{b*,a.ts}', 'cat work/{x,y*}', 'cat docs/{x,y}*'):
+            with self.subTest(cmd=cmd):
+                self.assert_allowed(self.bash(cmd), cmd)
+
+    def test_grep_abbreviated_long_recursive_options_over_a_token_directory_are_blocked(self):
+        for opt in ('--recursive', '--recursiv', '--recur', '--rec', '--dereference-recursive', '--dereference-r', '--dereference', '--dere', '--der'):
+            for target in ('agents', 'agents/', 'agents/agent-a', '.'):
+                cmd = 'grep %s foo %s' % (opt, target)
+                with self.subTest(cmd=cmd):
+                    self.assert_denied(self.bash(cmd), cmd)
+        for cmd in ('grep --rec foo', 'grep --dere foo'):
+            with self.subTest(cmd=cmd, cwd='agent-a'):
+                self.assert_denied(self.bash(cmd, cwd=self.p('agents', 'agent-a')), cmd)
+        # an abbreviated option is not a known no-value one: the exclude parse voids, so even the token-name exclude does not let it through
+        for cmd in ('grep --rec --exclude=.agent-token foo agents', 'grep --dere foo agents --exclude=.agent-token'):
+            with self.subTest(cmd=cmd):
+                self.assert_denied(self.bash(cmd), cmd)
+        for cmd in ('grep --rec foo src', 'grep --dere foo src', 'grep --regexp=foo notes.txt', 'grep --reg=foo notes.txt'):
+            with self.subTest(cmd=cmd):
+                self.assert_allowed(self.bash(cmd), cmd)
+
+    def test_grep_long_option_resolution_cells_over_a_token_directory_are_blocked(self):
+        # the cells of the one resolver (see the tier A test): --rec, --recur, --recurs read on the real BSD grep
+        for opt in ('--rec', '--recur', '--recurs', '--recursive', '--dereference-recursive', '--dereference-rec', '--dere', '--directories=recurse', '--dir=recurse', '--d=recurse'):
+            for target in ('agents', 'agents/', 'agents/agent-a', '.'):
+                cmd = 'grep %s foo %s' % (opt, target)
+                with self.subTest(cmd=cmd):
+                    self.assert_denied(self.bash(cmd), cmd)
+        for cmd in ('grep --bogus foo agents', 'grep --recursively foo agents/agent-a', 'grep --bogus foo .'):
+            with self.subTest(cmd=cmd):
+                self.assert_denied(self.bash(cmd), cmd)
+        for cmd in ('grep --bogus foo src', 'grep --bogus foo notes.txt'):
+            with self.subTest(cmd=cmd):
+                self.assert_allowed(self.bash(cmd), cmd)
+
+    def test_find_over_a_token_directory_piped_into_a_reader_is_blocked_like_find_exec(self):
+        # 1:1 with the -exec cells: the same find words get the same verdict through -exec and through xargs
+        for find, cwd, denied in [('find agents -type f', None, True), ('find agents/agent-a', None, True), ('find . -type f', None, True),
+                                  ('find -type f', self.p('agents', 'agent-a'), True), ('find . -type f', self.p('agents', 'agent-a'), True),
+                                  ('find src -type f', None, False), ('find agents -prune', None, False)]:
+            for tail in (' -exec cat {} +', ' | xargs cat', ' | xargs -0 head', ' | parallel cat'):
+                cmd = find + tail
+                with self.subTest(cmd=cmd, cwd=cwd):
+                    (self.assert_denied if denied else self.assert_allowed)(self.bash(cmd, cwd=cwd), cmd)
+        for cmd in ('find agents -type f | xargs wc -l', 'find agents -type f | xargs ls', 'find agents -type f | xargs'):
+            with self.subTest(cmd=cmd):
+                self.assert_allowed(self.bash(cmd), cmd)
+
+    def test_grep_directories_recurse_with_a_token_exclude_is_not_trusted(self):
+        # the option is not a known no-value one, so the exclude parse voids (fail closed), exactly as for `-d recurse` before
+        for cmd in ('grep --directories=recurse --exclude=.agent-token foo agents', 'grep --dir=recurse foo agents --exclude=.agent-token'):
+            with self.subTest(cmd=cmd):
+                self.assert_denied(self.bash(cmd), cmd)
+
+    def test_grep_directories_read_and_skip_over_a_token_directory_pass(self):
+        for cmd in ('grep -d skip foo agents', 'grep --directories=read foo agents', 'grep --dir=skip foo agents/agent-a', 'grep -dskip foo agents', 'grep -ed agents'):
+            with self.subTest(cmd=cmd):
+                self.assert_allowed(self.bash(cmd), cmd)
+        for opt in ('--directories=recurse', '-d recurse'):
+            cmd = 'grep %s foo src' % opt
+            with self.subTest(cmd=cmd):
+                self.assert_allowed(self.bash(cmd), cmd)
+
     def test_exclude_of_the_token_name_lets_a_legitimate_search_through(self):
         for cmd, cwd in [('grep -r foo agents/agent-a --exclude=.agent-token', None), ('grep -rn --exclude=.agent-token foo agents', None),
                          ('grep -r --exclude .agent-token foo agents/agent-b', None), ('grep -r foo . --exclude=.agent-token', self.p('agents', 'agent-a')),
