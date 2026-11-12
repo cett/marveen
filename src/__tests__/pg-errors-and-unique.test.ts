@@ -2,6 +2,7 @@
 // (src/web/unique-violation.ts). The PostgreSQL errors here are the shape the pg driver produces, built by hand: no server.
 import { describe, expect, it } from 'vitest'
 import { isPgRetryable, isPgUniqueViolation, PG_ERROR, pgErrorCode } from '../db/pg/errors.js'
+import { parseInt8Safe } from '../db/pg/types.js'
 import { isUniqueViolationOn } from '../web/unique-violation.js'
 
 const pgError = (code: string, extra: Record<string, unknown> = {}): Error => Object.assign(new Error('pg error'), { code }, extra)
@@ -35,6 +36,17 @@ describe('pgErrorCode', () => {
     expect(isPgUniqueViolation(pgError('23505'))).toBe(true)
     expect(isPgUniqueViolation(pgError('23503'))).toBe(false)
     expect(isPgUniqueViolation(new Error('23505'))).toBe(false)
+  })
+})
+
+describe('parseInt8Safe', () => {
+  it('reads an int8 text exactly and refuses everything that is not one', () => {
+    expect(parseInt8Safe('7')).toBe(7)
+    expect(parseInt8Safe('-7')).toBe(-7)
+    expect(parseInt8Safe('9007199254740991')).toBe(Number.MAX_SAFE_INTEGER)
+    for (const bad of ['', ' ', ' 7 ', '7 ', '1e3', '0x10', '7.0', '+7', 'abc', '9007199254740992', '-9007199254740992']) {
+      expect(() => parseInt8Safe(bad), JSON.stringify(bad)).toThrow(RangeError)
+    }
   })
 })
 

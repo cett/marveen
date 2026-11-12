@@ -243,6 +243,30 @@ describe('a transaction', () => {
     expect(f.story(2).slice(-2)).toEqual(['ROLLBACK', 'release(false)'])
   })
 
+  it('a handle kept past a FAILED body refuses too, and sends nothing to the connection (it may already serve another tenant)', async () => {
+    const f = fakePool()
+    const dbx = createPgDbx(f.pool)
+    let kept: Parameters<Parameters<typeof dbx.tx>[0]>[0] | undefined
+    await expect(dbx.tx((tx) => { kept = tx; return Promise.reject(new Error('body failed')) })).rejects.toThrow('body failed')
+    const sent = f.log.length
+    await expect(kept!.get('SELECT 1')).rejects.toThrow(/already finished/)
+    await expect(kept!.run('UPDATE t SET a = 1')).rejects.toThrow(/already finished/)
+    await expect(kept!.tx(nop)).rejects.toThrow(/already finished/)
+    expect(f.log.length).toBe(sent)
+  })
+
+  it('the same for the handle of a savepoint body that failed, while the outer transaction is still open', async () => {
+    const f = fakePool()
+    const dbx = createPgDbx(f.pool)
+    let inner: Parameters<Parameters<typeof dbx.tx>[0]>[0] | undefined
+    await dbx.tx(async (tx) => {
+      await tx.tx((sp) => { inner = sp; return Promise.reject(new Error('inner failed')) }).catch(() => undefined)
+      const sent = f.log.length
+      await expect(inner!.get('SELECT 1')).rejects.toThrow(/already finished/)
+      expect(f.log.length).toBe(sent)
+    })
+  })
+
   it('two transactions at once run on two connections with no lock between them', async () => {
     const f = fakePool()
     const dbx = createPgDbx(f.pool)
