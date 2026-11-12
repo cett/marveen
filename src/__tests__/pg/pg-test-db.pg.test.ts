@@ -68,10 +68,10 @@ describe('listBaselineFiles and templateName', () => {
   })
 
   it('a different SQL text, file name or file order is a different template; the same files are the same', () => {
-    const a = baselineDir({ '0001.sql': 'create table t (id bigint)' })
-    const b = baselineDir({ '0001.sql': 'create table t (id bigint)' })
-    const c = baselineDir({ '0001.sql': 'create table t (id bigint, n text)' })
-    const d = baselineDir({ '0002.sql': 'create table t (id bigint)' })
+    const a = baselineDir({ '0001_x.sql': 'create table t (id bigint)' })
+    const b = baselineDir({ '0001_x.sql': 'create table t (id bigint)' })
+    const c = baselineDir({ '0001_x.sql': 'create table t (id bigint, n text)' })
+    const d = baselineDir({ '0002_x.sql': 'create table t (id bigint)' })
     expect(templateName(listBaselineFiles(a))).toBe(templateName(listBaselineFiles(b)))
     expect(templateName(listBaselineFiles(a))).not.toBe(templateName(listBaselineFiles(c)))
     expect(templateName(listBaselineFiles(a))).not.toBe(templateName(listBaselineFiles(d)))
@@ -95,7 +95,7 @@ describe('createPgTestDb', () => {
   })
 
   it('returns bigint as a number and refuses one beyond the safe range', async () => {
-    const db = await make({ '0001.sql': 'create table n (v bigint);' })
+    const db = await make({ '0001_x.sql': 'create table n (v bigint);' })
     await db.pool.query('insert into n values ($1)', ['9007199254740991'])
     expect((await db.pool.query('select v from n')).rows[0].v).toBe(Number.MAX_SAFE_INTEGER)
     await db.pool.query('delete from n')
@@ -104,7 +104,7 @@ describe('createPgTestDb', () => {
   })
 
   it('keeps every other type as the driver has it (numeric stays text, smallint a number, bytea a Buffer)', async () => {
-    const db = await make({ '0001.sql': 'create table o (a numeric, b smallint, c bytea, d text);' })
+    const db = await make({ '0001_x.sql': 'create table o (a numeric, b smallint, c bytea, d text);' })
     await db.pool.query('insert into o values (1.50, 3, $1, $2)', [Buffer.from([1, 2, 3]), 'x'])
     const row = (await db.pool.query('select a, b, c, d from o')).rows[0]
     expect(row.a).toBe('1.50')
@@ -115,7 +115,7 @@ describe('createPgTestDb', () => {
   })
 
   it('gives every call its own database: a write in one is not seen in the other', async () => {
-    const files = { '0001.sql': 'create table t (id bigint);' }
+    const files = { '0001_x.sql': 'create table t (id bigint);' }
     const a = await make(files)
     const b = await make(files)
     expect(a.name).not.toBe(b.name)
@@ -126,7 +126,7 @@ describe('createPgTestDb', () => {
   })
 
   it('close() drops the database', async () => {
-    const db = await createPgTestDb({ migrationsDir: baselineDir({ '0001.sql': 'create table t (id bigint);' }) })
+    const db = await createPgTestDb({ migrationsDir: baselineDir({ '0001_x.sql': 'create table t (id bigint);' }) })
     templates.add(db.template)
     expect(await databaseNames(db.name)).toEqual([db.name])
     await db.close()
@@ -142,7 +142,7 @@ describe('createPgTestDb', () => {
   })
 
   it('four databases at once from a fresh baseline: the template is built once and every clone succeeds', async () => {
-    const dir = baselineDir({ '0001.sql': `create table t (id bigint); -- ${Math.random()}` })
+    const dir = baselineDir({ '0001_x.sql': `create table t (id bigint); -- ${Math.random()}` })
     const dbs = await Promise.all([1, 2, 3, 4].map(() => createPgTestDb({ migrationsDir: dir })))
     open.push(...dbs)
     templates.add(dbs[0].template)
@@ -157,7 +157,7 @@ describe('createPgTestDb', () => {
     await expect(createPgTestDb({ migrationsDir: dir })).rejects.toThrow(/0002_broken\.sql.*failed to apply.*no_such_table/s)
     expect(await databaseNames(`${name}%`)).toEqual([])
     // the lock was released: a later, valid baseline works
-    const db = await make({ '0001.sql': 'create table t (id bigint);' })
+    const db = await make({ '0001_x.sql': 'create table t (id bigint);' })
     expect((await db.pool.query('select 1 as one')).rows[0].one).toBe(1)
   })
 })

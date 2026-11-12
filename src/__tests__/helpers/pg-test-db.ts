@@ -10,7 +10,8 @@
 // old one is never reused. Building and cloning run under one advisory lock: PostgreSQL refuses a CREATE DATABASE
 // from a template that another session is using, and two vitest workers start at the same time. The template is
 // built under a temporary name and renamed when complete, so a crash mid-build leaves no half-built template that a
-// later run would trust.
+// later run would trust. The template is built by the PG migration runner (src/db-migrations-pg.ts), the same code path
+// a real database takes, so a test database carries the schema_version rows of the files it was built from.
 //
 // int8 (bigint) comes back as a JS number, checked: a value beyond Number.MAX_SAFE_INTEGER throws instead of
 // rounding silently (the default driver returns a string, better-sqlite3 returns a number, and the facade code is
@@ -20,9 +21,10 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import pg from 'pg'
+import { applyPgMigrations } from '../../db-migrations-pg.js'
+import { parseInt8Safe, pgTypes } from '../../db/pg/types.js'
 
 export const PG_TEST_URL_ENV = 'MARVEEN_PG_TEST_URL'
-const INT8_OID = 20
 const LOCK_KEY = 'marveen-pg-test-template'
 const DEFAULT_MIGRATIONS_DIR = fileURLToPath(new URL('../../migrations-pg', import.meta.url))
 
@@ -35,22 +37,8 @@ export function pgTestUrl(): string {
   return url
 }
 
-/** bigint text -> number, refusing a value a number cannot hold exactly. */
-export function parseInt8Safe(text: string): number {
-  const n = /^-?\d+$/.test(text) ? Number(text) : NaN // Number('') is 0 and Number(' 7 ') is 7: not an int8 text
-  if (!Number.isSafeInteger(n)) {
-    throw new RangeError(`int8 value ${text} is outside the safe integer range of a JS number`)
-  }
-  return n
-}
-
-/** The `types` option of a pg Pool/Client: int8 as a checked number, everything else as the driver has it. */
-export const pgTypes = {
-  getTypeParser(oid: number, format?: 'text' | 'binary') {
-    if (oid === INT8_OID && format !== 'binary') return parseInt8Safe
-    return pg.types.getTypeParser(oid, format as 'text')
-  },
-} as unknown as pg.CustomTypesConfig
+// The int8 parser lives with the adapter now (src/db/pg/types.ts); the tests keep importing it from here.
+export { parseInt8Safe, pgTypes }
 
 /** The `.sql` files of a baseline directory in file-name order; an absent directory is an empty baseline. */
 export function listBaselineFiles(dir: string = DEFAULT_MIGRATIONS_DIR): string[] {
@@ -58,9 +46,12 @@ export function listBaselineFiles(dir: string = DEFAULT_MIGRATIONS_DIR): string[
   return readdirSync(dir).filter((f) => f.endsWith('.sql')).sort().map((f) => path.join(dir, f))
 }
 
+// bump when the way the template is built changes in a way the SQL text does not show
+const TEMPLATE_BUILD_SALT = 'runner-v1'
+
 /** The template database name for a baseline: a different SQL text is a different name. */
 export function templateName(files: string[]): string {
-  const h = createHash('sha256')
+  const h = createHash('sha256').update(TEMPLATE_BUILD_SALT).update('\0')
   for (const f of files) h.update(path.basename(f)).update('\0').update(readFileSync(f)).update('\0')
   return `marveen_tpl_${h.digest('hex').slice(0, 16)}`
 }
@@ -91,7 +82,7 @@ function withDatabase(adminUrl: string, database: string): string {
   return u.toString()
 }
 
-async function buildTemplate(adminUrl: string, template: string, files: string[]): Promise<void> {
+async function buildTemplate(adminUrl: string, template: string, files: string[], dir: string): Promise<void> {
   const building = `${template}_building`
   const admin = new pg.Client({ connectionString: adminUrl })
   await admin.connect()
@@ -101,18 +92,17 @@ async function buildTemplate(adminUrl: string, template: string, files: string[]
   } finally {
     await admin.end()
   }
-  const client = new pg.Client({ connectionString: withDatabase(adminUrl, building) })
-  await client.connect()
+  const builder = new pg.Pool({ connectionString: withDatabase(adminUrl, building), max: 1 })
   try {
-    for (const f of files) await client.query(readFileSync(f, 'utf8'))
+    if (files.length > 0) await applyPgMigrations(builder, { dir }) // no file = an empty template
   } catch (err) {
-    await client.end()
+    await builder.end()
     const cleanup = new pg.Client({ connectionString: adminUrl })
     await cleanup.connect()
     try { await cleanup.query(`DROP DATABASE IF EXISTS ${quote(building)} WITH (FORCE)`) } finally { await cleanup.end() }
     throw new Error(`baseline ${files.map((x) => path.basename(x)).join(', ')} failed to apply: ${(err as Error).message}`, { cause: err })
   }
-  await client.end()
+  await builder.end()
   const rename = new pg.Client({ connectionString: adminUrl })
   await rename.connect()
   try { await rename.query(`ALTER DATABASE ${quote(building)} RENAME TO ${quote(template)}`) } finally { await rename.end() }
@@ -131,7 +121,7 @@ export async function createPgTestDb(opts: PgTestDbOptions = {}): Promise<PgTest
     await admin.query('SELECT pg_advisory_lock(hashtext($1))', [LOCK_KEY])
     try {
       const have = await admin.query('SELECT 1 FROM pg_database WHERE datname = $1', [template])
-      if (have.rowCount === 0) await buildTemplate(adminUrl, template, files)
+      if (have.rowCount === 0) await buildTemplate(adminUrl, template, files, opts.migrationsDir ?? DEFAULT_MIGRATIONS_DIR)
       await admin.query(`CREATE DATABASE ${quote(name)} TEMPLATE ${quote(template)}`)
     } finally {
       await admin.query('SELECT pg_advisory_unlock(hashtext($1))', [LOCK_KEY])

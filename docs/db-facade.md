@@ -457,3 +457,65 @@ a template another session is using), and a template is built under a temporary 
 `src/__tests__/pg/baseline-parity.pg.test.ts` compares the baseline with the SQLite chain (tables, columns, keys,
 `CHECK`s, indexes, triggers) and runs its own mutants: DDL changes inside a rolled-back transaction that the comparison
 must report. Nothing in `src/` uses PostgreSQL yet; the facade has one working backend, SQLite.
+
+## The PostgreSQL adapter
+
+`createPgDbx(pool)` in `src/db/pg/` implements the same `Dbx` on a `pg` Pool. Nothing in the production start-up imports
+it: `dbx` stays the SQLite facade, the adapter is reached through the tests and `createPgDbx` only. The backend switch
+comes with the first module that is ported to the PostgreSQL dialect. What is different, and why:
+
+| | SQLite facade | PostgreSQL adapter |
+|---|---|---|
+| Concurrency | one connection, one FIFO lock: a transaction holds it from `BEGIN` to `COMMIT` | the pool: two transactions run side by side on two connections (`READ COMMITTED`), a conflicting `UPDATE` waits for the row |
+| `mode: 'immediate'` | `BEGIN IMMEDIATE` | ignored, a plain `BEGIN` |
+| A statement outside `dbx.tx` | one statement on the connection | `BEGIN`, the tenant context, the statement, `COMMIT`: four round trips on one connection |
+| Nested `tx` | `SAVEPOINT` | `SAVEPOINT`; without it a failed statement leaves the transaction aborted and the next one fails with `25P02` |
+| `dbx.*` inside a transaction body | joins the transaction through the async context | throws `dbx: use the tx handle inside a transaction body`; `dbx.tx(fn, { ambient: true })` allows it and the call runs on another connection, outside the transaction (a pool of one connection then waits for itself) |
+| `run().changes` | rows changed | the driver's row count (`INSERT ... ON CONFLICT DO NOTHING` that skipped the row is 0) |
+| `run().lastInsertRowid` | the rowid | always 0: use `RETURNING id` and `get` |
+| `bigint` | number | number, checked: a value beyond `Number.MAX_SAFE_INTEGER` throws |
+| `SUM()` of a bigint column, `AVG()` of an integer or numeric column | a number | `numeric`, which arrives as a STRING (exact decimals are not floats; `AVG()` of a double precision column is a float and arrives as a number): the ported statement casts where a number is wanted, `SUM(x)::bigint`, `AVG(x)::float8`. `SUM()` of smallint or integer columns and `count(*)` are int8 and arrive as numbers |
+| A column alias in camelCase | kept as written | an unquoted alias is folded to lower case (`AS inputTokens` comes back as `inputtokens`): quote it (`AS "inputTokens"`) or use snake_case and map in the caller |
+| A fraction into an `INTEGER` column | stored as a REAL, silently | `22P02` (invalid input syntax for type bigint): the caller rounds before binding (`Math.trunc`, `Math.floor`). PostgreSQL failing loudly is the safe direction |
+| An older build on a newer database | the SQLite runner applies what is above the highest recorded version and does not look back | the PG runner is strict: an applied version whose file is gone is an error, so a build older than the database refuses to start (the rollback of a bad release is a database restore). Tolerating newer versions is a decision of the backend switch, with expand-only migrations across a release |
+
+**The tenant context.** Every transaction starts with one statement that sets four transaction-local settings from
+`currentDbContext()`: `app.tenant_id`, `app.role`, `app.agent_id` and `app.job` (the job name of a `runAs.system`). A
+policy reads them with `current_setting('app.tenant_id', true)`. Without a context all four are the empty string, never a
+default tenant, so a policy that compares with them finds nothing. The values are taken once, when the transaction
+opens; a `runAs` inside the body does not change them. They are transaction-local on purpose: they end with the
+transaction, so a connection that goes back to the pool carries nothing. The adapter gives a connection back only after
+`COMMIT` or `ROLLBACK` (a connection whose `ROLLBACK` failed, or that raised an error while it was checked out, is
+destroyed instead). The context is never set in the same statement as the work (no CTE around a statement): PostgreSQL does
+not promise the order in which a row-level policy and such a CTE are evaluated.
+
+**The price.** A lone statement is four round trips on a connection where SQLite has none; one plain round trip took about
+0.26 ms on a CI runner, so the context and the transaction wrapper cost roughly four times the bare round trip. The context
+is a statement of its own, not folded into the work, on purpose (see above). A transaction pays the `BEGIN`, the context and the `COMMIT` once.
+A hot path that runs several statements opens `dbx.tx` once and uses the handle; the hot paths (kanban, audit, tasks,
+agents, observability) move into an explicit `dbx.tx` when their modules are ported.
+
+**A body that swallows an error.** After a failed statement the transaction is aborted. If the body catches the error and
+returns normally, `COMMIT` does not fail, the server answers with the command tag `ROLLBACK` and the writes are gone. The
+adapter checks the tag and rejects the transaction instead of reporting a success that did not happen. A failure that is
+meant to be survived goes in a nested `tx`.
+
+**Statement text.** The same text the SQLite facade takes: positional `?`, or one object for `@name` (the same name twice
+binds once). The translator to `$n` is a scanner: quoted text, quoted identifiers, `--` and nested `/* */` comments, `E''`
+strings and dollar-quoted bodies are data. It refuses `?` and `@name` in one statement, a native `$n`, a parameter count
+that does not match and a missing name. It does not translate the jsonb operators `?`, `?|`, `?&` (write
+`jsonb_exists`, `jsonb_exists_any`, `jsonb_exists_all`), and the PostgreSQL absolute-value prefix `@x` must be written
+`abs(x)`. SQLite's `?NNN`, `:name` and `$name` are not part of the facade.
+
+**Limits.** The pool settings come from `pgPoolConfig(connectionString)`: `statement_timeout` (30 s), `lock_timeout` (10 s),
+`idle_in_transaction_session_timeout` (60 s), the wait for a free connection (10 s) and the pool size (10), each with an
+environment variable (`DB_PG_STATEMENT_TIMEOUT_MS`, `DB_PG_LOCK_TIMEOUT_MS`, `DB_PG_IDLE_IN_TX_TIMEOUT_MS`,
+`DB_PG_CONNECT_TIMEOUT_MS`, `DB_PG_POOL_MAX`; 0 switches a timeout off, an invalid value is ignored with a warning). A
+transaction open longer than `DB_TX_WARN_MS` is logged with where it was opened, as on SQLite. `pgErrorCode(err)` returns
+the SQLSTATE (`23505` unique, `40001` serialization, `40P01` deadlock, `25P02` aborted transaction); the unique-violation
+check of the routes (`isUniqueViolationOn`) recognises both drivers, and for PostgreSQL needs the English server message
+(an expression index or a localized message is not matched and the error propagates).
+
+**Not covered.** A statement PostgreSQL refuses inside a transaction (`VACUUM`, `CREATE INDEX CONCURRENTLY`, `CREATE
+DATABASE`) cannot go through this facade. The wiring (`DB_BACKEND`), the row-level-security roles and policies, the
+`useTestDb` PostgreSQL mode and pgvector are later steps.
