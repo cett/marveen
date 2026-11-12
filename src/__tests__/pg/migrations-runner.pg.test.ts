@@ -140,6 +140,55 @@ describe('immutability and order', () => {
   })
 })
 
+describe('a schema other than public', () => {
+  it('the runner finds its own table on the search_path: the second run applies nothing instead of replaying the files', async () => {
+    await pool.query('CREATE SCHEMA app_x')
+    const scoped = new pg.Pool({ connectionString: withDatabase(dbName), max: 1, options: '-c search_path=app_x' })
+    created.push(scoped)
+    put('0001_a.sql', 'CREATE TABLE schema_version (version bigint PRIMARY KEY, applied_at bigint NOT NULL, description text NOT NULL, checksum text); CREATE TABLE a_t (id bigint);')
+    expect((await applyPgMigrations(scoped, { dir })).applied).toEqual([1])
+    expect((await applyPgMigrations(scoped, { dir })).applied).toEqual([])
+    expect((await pool.query("SELECT to_regclass('app_x.schema_version')::text AS t")).rows[0].t).toBe('app_x.schema_version')
+    expect((await pool.query("SELECT to_regclass('public.schema_version')::text AS t")).rows[0].t).toBeNull()
+  })
+})
+
+describe('waiting for the migration lock', () => {
+  const holdTheLock = async (): Promise<pg.Client> => {
+    const holder = new pg.Client({ connectionString: withDatabase(dbName) })
+    await holder.connect()
+    await holder.query('SELECT pg_advisory_lock(hashtext($1))', ['marveen-pg-migrations'])
+    return holder
+  }
+
+  it('gives up after lockTimeoutMs with a message that names the lock, and works once the holder is gone', async () => {
+    put('0001_a.sql', 'CREATE TABLE a_t (id bigint);')
+    const holder = await holdTheLock()
+    try {
+      const started = Date.now()
+      await expect(applyPgMigrations(pool, { dir, lockTimeoutMs: 300 })).rejects.toThrow(/migration lock was not free within 300 ms/)
+      expect(Date.now() - started).toBeLessThan(10000)
+      expect(await tableExists('a_t')).toBe(false)
+    } finally {
+      await holder.end()
+    }
+    expect((await applyPgMigrations(pool, { dir, lockTimeoutMs: 300 })).applied).toEqual([1])
+  })
+
+  it('puts the session lock_timeout back after the run (the lock wait limit does not stay on the connection)', async () => {
+    put('0001_a.sql', 'CREATE TABLE a_t (id bigint);')
+    const one = new pg.Pool({ connectionString: withDatabase(dbName), max: 1 })
+    created.push(one)
+    await applyPgMigrations(one, { dir, lockTimeoutMs: 4000 })
+    expect((await one.query<{ lock_timeout: string }>('SHOW lock_timeout')).rows[0].lock_timeout).toBe('0')
+  })
+
+  it('refuses a timeout that is not a whole number of milliseconds, before it touches the database', async () => {
+    await expect(applyPgMigrations(pool, { dir, lockTimeoutMs: -1 })).rejects.toThrow(RangeError)
+    await expect(applyPgMigrations(pool, { dir, lockTimeoutMs: 1.5 })).rejects.toThrow(RangeError)
+  })
+})
+
 describe('two processes that start at once', () => {
   it('apply every file exactly once between them (the loser applies nothing)', async () => {
     // each file takes a moment, so both runs are really in flight together

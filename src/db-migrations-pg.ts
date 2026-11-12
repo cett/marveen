@@ -18,7 +18,13 @@ import { logger } from './logger.js'
 //   - two processes that start at the same moment run the files once between them (the lock is held for the whole
 //     run, and the loser reads schema_version only after it got the lock);
 //   - there is no tolerance: no "already exists" is swallowed (PostgreSQL has ADD COLUMN IF NOT EXISTS natively,
-//     a file that wants it says so).
+//     a file that wants it says so);
+//   - waiting for the lock has a limit (lockTimeoutMs): a migrator that hangs while holding it must not block every
+//     later start for ever, the waiting run fails with a message that names the lock.
+//
+// A file runs inside a transaction, so a statement PostgreSQL refuses inside one cannot be in a migration file:
+// CREATE INDEX CONCURRENTLY, VACUUM, ALTER SYSTEM, CREATE DATABASE. Such a step is run by hand before the file that
+// needs it, and the file says so in a comment.
 //
 // schema_version is the table the baseline (0001) creates, with the shape of the SQLite one (version, applied_at,
 // description, checksum): the schema parity test holds the two together, so the runner does not invent a second
@@ -32,6 +38,11 @@ export const DEFAULT_PG_MIGRATIONS_DIR = join(__dirname, 'migrations-pg')
 
 /** The key of the session advisory lock, hashed by the server (`hashtext`) into the lock's number. */
 export const PG_MIGRATIONS_LOCK_KEY = 'marveen-pg-migrations'
+
+/** How long a run waits for the migration lock before it gives up (0 waits for ever). */
+export const DEFAULT_PG_MIGRATION_LOCK_TIMEOUT_MS = 60_000
+
+const LOCK_NOT_AVAILABLE = '55P03'
 
 const FILE_PATTERN = /^(\d{4,})_(.+)\.sql$/
 
@@ -89,7 +100,9 @@ export function loadPgMigrationFiles(dir: string = DEFAULT_PG_MIGRATIONS_DIR): P
 interface AppliedRow { version: number; checksum: string | null }
 
 async function readApplied(client: pg.PoolClient): Promise<Map<number, AppliedRow>> {
-  const have = await client.query<{ t: string | null }>("SELECT to_regclass('public.schema_version')::text AS t")
+  // unqualified on purpose: the table is looked up on the search_path, exactly as the SELECT below and the files read
+  // it, so a database whose schema is not `public` is not taken for an empty one
+  const have = await client.query<{ t: string | null }>("SELECT to_regclass('schema_version')::text AS t")
   if (have.rows[0]?.t == null) return new Map()
   // version is a bigint: the driver hands it back as text, and a migration number is far below 2^53
   const res = await client.query<{ version: string; checksum: string | null }>('SELECT version, checksum FROM schema_version')
@@ -142,16 +155,31 @@ async function applyOne(client: pg.PoolClient, file: PgMigrationFile): Promise<v
  * Brings the database behind `pool` up to the newest file of `dir`. Takes one connection for the whole run (the
  * advisory lock belongs to the session), and gives it back whatever happens.
  */
-export async function applyPgMigrations(pool: PgMigrationPool, opts: { dir?: string } = {}): Promise<PgMigrationResult> {
+export async function applyPgMigrations(pool: PgMigrationPool, opts: { dir?: string; lockTimeoutMs?: number } = {}): Promise<PgMigrationResult> {
   const files = loadPgMigrationFiles(opts.dir)
+  const lockTimeoutMs = opts.lockTimeoutMs ?? DEFAULT_PG_MIGRATION_LOCK_TIMEOUT_MS
+  if (!Number.isInteger(lockTimeoutMs) || lockTimeoutMs < 0) {
+    throw new RangeError(`lockTimeoutMs must be a whole number of milliseconds, 0 or more (got ${lockTimeoutMs})`)
+  }
   const client = await pool.connect()
   let broken = false
   try {
-    await client.query('SELECT pg_advisory_lock(hashtext($1))', [PG_MIGRATIONS_LOCK_KEY]).catch((err: unknown) => {
-      broken = true // no answer to the lock: the connection is not to be reused
-      throw err
-    })
+    // lock_timeout bounds the wait for the advisory lock too; the session value is put back once the lock is held
+    let previous: string
     try {
+      const was = await client.query<{ previous: string }>("SELECT current_setting('lock_timeout') AS previous")
+      previous = was.rows[0]!.previous
+      await client.query("SELECT set_config('lock_timeout', $1, false)", [`${lockTimeoutMs}ms`])
+      await client.query('SELECT pg_advisory_lock(hashtext($1))', [PG_MIGRATIONS_LOCK_KEY])
+    } catch (err) {
+      broken = true // no answer to the lock (or a timeout): the connection is not to be reused, its lock_timeout stays on it
+      if ((err as { code?: unknown }).code === LOCK_NOT_AVAILABLE) {
+        throw new Error(`PG migrations: the migration lock was not free within ${lockTimeoutMs} ms (another migrator holds it, or is stuck)`, { cause: err })
+      }
+      throw err
+    }
+    try {
+      await client.query("SELECT set_config('lock_timeout', $1, false)", [previous])
       const applied = await readApplied(client)
       checkAgainstFiles(files, applied)
       const done: number[] = []
