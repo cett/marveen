@@ -70,6 +70,35 @@ not stop the others.
   neither covered by a t1 row nor on the commented exclusion list in `t1.mjs`, so a new CI step cannot quietly
   drift away from T1.
 
+## Delta class: what a delta is made of
+
+`node tools/qa/delta-class.mjs --base <sha> [--root <repo>] [--ts-root <dir>] [--json <path>]` counts, from
+`git diff base..HEAD`, what a delta QA used to count by hand ("this is docs/tests only", "src changed by N lines").
+JSON on stdout, a three-line summary on stderr, exit 0 when the report was made (2 on a bad argument or a base that is
+no commit).
+
+| Field | Meaning |
+|---|---|
+| `files[]` | per file: `path`, `oldPath` (renames), `status` (A/M/D/R/C), `class`, `oldClass` (only when a rename changed class), `added`, `deleted`, `binary` |
+| `counts` | files per class |
+| `srcLinesChanged` | lines added plus lines deleted in `src` files (a rename counts when either path is `src`) |
+| `awaitsAdded` | awaits added to `src`: the length of the `await-mutants.mjs --list` list (same code, `lib/mutants.mjs`); `null` plus `awaitsError` when the TypeScript of `tools/eslint` is not installed (nobody counted, so not 0) |
+| `migrations` | the migration files the delta touches |
+| `touchesGateFiles` | any gate file touched (either path of a rename) |
+| `testsOnly`, `docsOnly` | every file is a test / every file is docs; false for an empty delta |
+| `dirty` | a tracked file has an uncommitted change (the awaits are read from the working tree, the rest from the commits) |
+
+Classes, first matching rule wins: `migracio` (`src/migrations/*.sql`), `kapu-fajl` (`scripts/hooks/` except
+`test_*`, a `scripts/` file with "gate" in its name, the gate-adjacent scripts and sources `self-pace-gate.mjs`
+guards, the secret-gate workflow), `teszt` (`__tests__/`, `*.test.*`, `*.spec.*`, `test_*.py`, `test/` and `tests/`
+directories), `docs` (`docs/`, `*.md`, `LICENSE`; but a Markdown file under `src/`, `seed-skills/`, `web/`, `agents/`,
+`personas/` or `templates/` is loaded by the product and stays `src`), `ci/tools` (`.github/`, `tools/`, package
+manifests and lock files, `tsconfig*`, the vitest and eslint config), and `src` for everything else, so "no src
+lines" is never claimed for a path the rules do not know. `classifyPath` in `delta-class.mjs` is the one list; a
+test pins every rule.
+
+The report decides nothing: there is no "QA not needed" field. What the facts mean stays with the QA agent.
+
 ## Self-test
 
 `node tools/qa/check-scanners.mjs` runs both scanners over `tools/qa/fixture` and fails unless they report
