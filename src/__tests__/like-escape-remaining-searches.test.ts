@@ -9,9 +9,7 @@
 import { describe, it, expect } from 'vitest'
 import { useTestDb } from './helpers/with-test-db.js'
 import {
-  getDb, createKanbanCard, searchKanbanCards, createApproval, listApprovals, countApprovals,
-  saveWorkspaceDoc, listWorkspaceDocs, countWorkspaceDocs, getTokenDetails, correlateWithKanban,
-  queryAuditLog, createTenant, createSkill, listAgentOwnedSkills,
+  createKanbanCard, searchKanbanCards, createApproval, listApprovals, countApprovals, saveWorkspaceDoc, listWorkspaceDocs, countWorkspaceDocs, getTokenDetails, correlateWithKanban, queryAuditLog, createTenant, createSkill, listAgentOwnedSkills, dbx,
 } from '../db.js'
 import { likeContains, likePrefix } from '../db/like.js'
 
@@ -170,26 +168,24 @@ describe('listAgentOwnedSkills: the agent id is a literal prefix', () => {
 
 describe('getTokenDetails: the q search is literal', () => {
   let n = 0
-  function usage(cols: Record<string, string>): void {
+  async function usage(cols: Record<string, string>): Promise<void> {
     n++
-    getDb().prepare(
-      'INSERT INTO token_usage (agent, session_id, timestamp, input_tokens, output_tokens, tool_name, content_preview, task_title) VALUES (?, ?, ?, 1, 1, ?, ?, ?)',
-    ).run(cols.agent ?? 'agent-a', `s${n}`, NOW + n, cols.tool_name ?? null, cols.content_preview ?? null, cols.task_title ?? null)
+    await dbx.run('INSERT INTO token_usage (agent, session_id, timestamp, input_tokens, output_tokens, tool_name, content_preview, task_title) VALUES (?, ?, ?, 1, 1, ?, ?, ?)', cols.agent ?? 'agent-a', `s${n}`, NOW + n, cols.tool_name ?? null, cols.content_preview ?? null, cols.task_title ?? null)
   }
   const found = async (q: string) => (await getTokenDetails({ q })).map((r) => r.id).sort((a, b) => a - b)
 
   it.each(['agent', 'tool_name', 'content_preview', 'task_title'])('the %s column is searched literally', async (column) => {
-    usage({ [column]: HIT })
-    usage({ [column]: DECOY })
+    await usage({ [column]: HIT })
+    await usage({ [column]: DECOY })
     expect(await found(Q)).toHaveLength(1)
     const hit = (await getTokenDetails({ q: Q }))[0]!
     expect(JSON.stringify(hit)).toContain(HIT)
   })
 
   it('"%" and "\\" are literal', async () => {
-    usage({ content_preview: 'plain' })
-    usage({ content_preview: 'used 60% of it' })
-    usage({ content_preview: 'dir a\\b' })
+    await usage({ content_preview: 'plain' })
+    await usage({ content_preview: 'used 60% of it' })
+    await usage({ content_preview: 'dir a\\b' })
     expect(await found('%')).toHaveLength(1)
     expect(await found('\\')).toHaveLength(1)
     expect(await found('plain')).toHaveLength(1)
@@ -197,34 +193,34 @@ describe('getTokenDetails: the q search is literal', () => {
 })
 
 describe('correlateWithKanban: an agent name is matched literally in the assignee', () => {
-  function usageAt(agent: string, ts: number): void {
-    getDb().prepare('INSERT INTO token_usage (agent, session_id, timestamp, input_tokens, output_tokens) VALUES (?, ?, ?, 1, 1)').run(agent, `s-${agent}`, ts)
+  async function usageAt(agent: string, ts: number): Promise<void> {
+    await dbx.run('INSERT INTO token_usage (agent, session_id, timestamp, input_tokens, output_tokens) VALUES (?, ?, ?, 1, 1)', agent, `s-${agent}`, ts)
   }
   async function card(id: string, assignee: string, title: string, ts: number): Promise<void> {
     await createKanbanCard({ id, title, assignee })
-    getDb().prepare('UPDATE kanban_cards SET updated_at = ? WHERE id = ?').run(ts, id)
+    await dbx.run('UPDATE kanban_cards SET updated_at = ? WHERE id = ?', ts, id)
   }
-  const titleOfUsage = (agent: string) => (getDb().prepare('SELECT task_title FROM token_usage WHERE agent = ?').get(agent) as { task_title: string | null }).task_title
+  const titleOfUsage = async (agent: string) => ((await dbx.get('SELECT task_title FROM token_usage WHERE agent = ?', agent)) as { task_title: string | null }).task_title
 
   it('the usage of "agent_a" is not labelled with the card of an assignee that differs only where "_" would match', async () => {
-    usageAt('agent_a', NOW)
+    await usageAt('agent_a', NOW)
     await card('decoy', 'agentXa', 'Other agent card', NOW)
     await correlateWithKanban()
-    expect(titleOfUsage('agent_a')).toBeNull()
+    expect(await titleOfUsage('agent_a')).toBeNull()
   })
 
   it('an assignee list that contains the agent name still labels the usage (substring semantics kept)', async () => {
-    usageAt('agent_a', NOW)
+    await usageAt('agent_a', NOW)
     await card('hit', 'agent-b,agent_a', 'Right card', NOW)
     await correlateWithKanban()
-    expect(titleOfUsage('agent_a')).toBe('Right card')
+    expect(await titleOfUsage('agent_a')).toBe('Right card')
   })
 
   it('an exact assignee still labels the usage', async () => {
-    usageAt('agent-c', NOW)
+    await usageAt('agent-c', NOW)
     await card('exact', 'agent-c', 'Exact card', NOW)
     await correlateWithKanban()
-    expect(titleOfUsage('agent-c')).toBe('Exact card')
+    expect(await titleOfUsage('agent-c')).toBe('Exact card')
   })
 })
 
@@ -235,9 +231,8 @@ describe('queryAuditLog: every source searches the query literally, per column',
 
   const CONFIG = ['key', 'old_value', 'new_value', 'actor']
   it.each(CONFIG)('config_change_log.%s', async (column) => {
-    const insert = (v: string) => getDb().prepare('INSERT INTO config_change_log (key, old_value, new_value, actor, created_at) VALUES (?, ?, ?, ?, ?)')
-      .run(...(['key', 'old_value', 'new_value', 'actor'].map((c) => (c === column ? v : 'n'))), NOW)
-    insert(HIT); insert(DECOY)
+    const insert = async (v: string) => dbx.run('INSERT INTO config_change_log (key, old_value, new_value, actor, created_at) VALUES (?, ?, ?, ?, ?)', ...(['key', 'old_value', 'new_value', 'actor'].map((c) => (c === column ? v : 'n'))), NOW)
+    await insert(HIT); await insert(DECOY)
     const r = await q('config', Q)
     expect(r.total).toBe(1)
     expect(r.entries).toHaveLength(1)
@@ -245,44 +240,40 @@ describe('queryAuditLog: every source searches the query literally, per column',
 
   const IDEA = ['idea_id', 'to_status', 'note', 'actor']
   it.each(IDEA)('idea_status_log.%s', async (column) => {
-    const insert = (v: string) => getDb().prepare('INSERT INTO idea_status_log (idea_id, to_status, note, actor, created_at) VALUES (?, ?, ?, ?, ?)')
-      .run(...(['idea_id', 'to_status', 'note', 'actor'].map((c) => (c === column ? v : 'n'))), NOW)
-    insert(HIT); insert(DECOY)
+    const insert = async (v: string) => dbx.run('INSERT INTO idea_status_log (idea_id, to_status, note, actor, created_at) VALUES (?, ?, ?, ?, ?)', ...(['idea_id', 'to_status', 'note', 'actor'].map((c) => (c === column ? v : 'n'))), NOW)
+    await insert(HIT); await insert(DECOY)
     const r = await q('idea', Q)
     expect(r.total).toBe(1)
     expect(r.entries).toHaveLength(1)
   })
 
   it.each(['rel_path', 'agent'])('store_file_audit.%s', async (column) => {
-    const insert = (v: string) => getDb().prepare("INSERT INTO store_file_audit (rel_path, event_type, agent, created_at) VALUES (?, 'write', ?, ?)")
-      .run(column === 'rel_path' ? v : 'n', column === 'agent' ? v : 'n', NOW)
-    insert(HIT); insert(DECOY)
+    const insert = async (v: string) => dbx.run("INSERT INTO store_file_audit (rel_path, event_type, agent, created_at) VALUES (?, 'write', ?, ?)", column === 'rel_path' ? v : 'n', column === 'agent' ? v : 'n', NOW)
+    await insert(HIT); await insert(DECOY)
     const r = await q('store', Q)
     expect(r.total).toBe(1)
     expect(r.entries).toHaveLength(1)
   })
 
   it.each(['agent_id', 'entity', 'action', 'detail'])('agent_audit_log.%s', async (column) => {
-    const insert = (v: string) => getDb().prepare('INSERT INTO agent_audit_log (agent_id, entity, action, detail, created_at) VALUES (?, ?, ?, ?, ?)')
-      .run(...(['agent_id', 'entity', 'action', 'detail'].map((c) => (c === column ? v : 'n'))), NOW)
-    insert(HIT); insert(DECOY)
+    const insert = async (v: string) => dbx.run('INSERT INTO agent_audit_log (agent_id, entity, action, detail, created_at) VALUES (?, ?, ?, ?, ?)', ...(['agent_id', 'entity', 'action', 'detail'].map((c) => (c === column ? v : 'n'))), NOW)
+    await insert(HIT); await insert(DECOY)
     const r = await q('agent', Q)
     expect(r.total).toBe(1)
     expect(r.entries).toHaveLength(1)
   })
 
   it.each(['agent_id', 'hook_type', 'verdict', 'tool_name', 'reason'])('hook_audit_log.%s', async (column) => {
-    const insert = (v: string) => getDb().prepare('INSERT INTO hook_audit_log (ts, agent_id, hook_type, verdict, tool_name, reason) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(NOW, ...(['agent_id', 'hook_type', 'verdict', 'tool_name', 'reason'].map((c) => (c === column ? v : 'n'))))
-    insert(HIT); insert(DECOY)
+    const insert = async (v: string) => dbx.run('INSERT INTO hook_audit_log (ts, agent_id, hook_type, verdict, tool_name, reason) VALUES (?, ?, ?, ?, ?, ?)', NOW, ...(['agent_id', 'hook_type', 'verdict', 'tool_name', 'reason'].map((c) => (c === column ? v : 'n'))))
+    await insert(HIT); await insert(DECOY)
     const r = await q('hook', Q)
     expect(r.total).toBe(1)
     expect(r.entries).toHaveLength(1)
   })
 
   it('"%" and "\\" are literal in a source (the agent audit log), and a plain word still matches', async () => {
-    const insert = (detail: string) => getDb().prepare("INSERT INTO agent_audit_log (agent_id, entity, action, detail, created_at) VALUES ('agent-a', 'memory', 'create', ?, ?)").run(detail, NOW)
-    insert('plain'); insert('60% done'); insert('a\\b')
+    const insert = async (detail: string) => dbx.run("INSERT INTO agent_audit_log (agent_id, entity, action, detail, created_at) VALUES ('agent-a', 'memory', 'create', ?, ?)", detail, NOW)
+    await insert('plain'); await insert('60% done'); await insert('a\\b')
     expect((await q('agent', '%')).total).toBe(1)
     expect((await q('agent', '\\')).total).toBe(1)
     expect((await q('agent', 'plain')).total).toBe(1)

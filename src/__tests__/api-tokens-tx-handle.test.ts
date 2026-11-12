@@ -9,7 +9,7 @@
 // Privacy: neutral fixtures only (tok-a).
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { useTestDb } from './helpers/with-test-db.js'
-import { dbx, getDb, insertApiToken, replaceActiveApiToken, rotateSharedDashboardToken, listActiveApiTokensByName } from '../db.js'
+import { dbx, insertApiToken, replaceActiveApiToken, rotateSharedDashboardToken, listActiveApiTokensByName } from '../db.js'
 import { currentTxScope } from '../db/tx-lock.js'
 
 useTestDb()
@@ -36,8 +36,8 @@ const mint = (name: string, hash: string, createdAt = NOW - 100) =>
   insertApiToken({ tokenHash: hash, name, role: 'admin', tenantId: 'default', createdAt, expiresAt: null, agentId: null })
 const activeHashes = async (name: string) => (await listActiveApiTokensByName(name, NOW)).map((r) => r.token_hash).sort()
 /** The insert of this one hash cannot be written: an INSERT of it aborts. */
-function breakInsertOf(hash: string): void {
-  getDb().exec(`CREATE TRIGGER no_boom_insert BEFORE INSERT ON api_tokens
+async function breakInsertOf(hash: string): Promise<void> {
+  await dbx.exec(`CREATE TRIGGER no_boom_insert BEFORE INSERT ON api_tokens
     WHEN NEW.token_hash = '${hash}' BEGIN SELECT RAISE(ABORT, 'insert refused'); END`)
 }
 const replace = (fileHash: string | null, tokenHash: string) =>
@@ -78,7 +78,7 @@ describe('replaceActiveApiToken: every statement runs on the transaction handle'
   it('when the replacement cannot be written, the stale revokes roll back: the original active rows stay', async () => {
     await mint('tok-a', 'h-one')
     await mint('tok-a', 'h-two', NOW - 200)
-    breakInsertOf('boom')
+    await breakInsertOf('boom')
     await expect(replace(null, 'boom')).rejects.toThrow('insert refused')
     expect(await activeHashes('tok-a')).toEqual(['h-one', 'h-two'])
   })
@@ -86,7 +86,7 @@ describe('replaceActiveApiToken: every statement runs on the transaction handle'
   it('when the rotation cannot be written, the stale revokes and the revoke of the old row roll back', async () => {
     await mint('tok-a', 'h-current')
     await mint('tok-a', 'h-stale', NOW - 200)
-    breakInsertOf('boom')
+    await breakInsertOf('boom')
     await expect(replace('h-current', 'boom')).rejects.toThrow('insert refused')
     expect(await activeHashes('tok-a')).toEqual(['h-current', 'h-stale'])
   })
@@ -114,7 +114,7 @@ describe('rotateSharedDashboardToken: every statement runs on the transaction ha
   it('when the replacement cannot be written, nothing is revoked', async () => {
     await mint('dashboard', 'h-newest')
     await mint('dashboard', 'h-older', NOW - 200)
-    breakInsertOf('boom')
+    await breakInsertOf('boom')
     await expect(rotateSharedDashboardToken('boom', NOW)).rejects.toThrow('insert refused')
     expect(await activeHashes('dashboard')).toEqual(['h-newest', 'h-older'])
   })

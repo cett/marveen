@@ -8,7 +8,7 @@
 // Privacy: neutral fixtures only (agent-a, key-a).
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { useTestDb } from './helpers/with-test-db.js'
-import { dbx, getDb, pruneAuditLogs, pruneHookAuditLogJournaled, writeAgentAuditLog } from '../db.js'
+import { dbx, pruneAuditLogs, pruneHookAuditLogJournaled, writeAgentAuditLog } from '../db.js'
 import { currentTxScope } from '../db/tx-lock.js'
 
 useTestDb()
@@ -34,20 +34,19 @@ function watchFacade(): void {
 }
 const insideTx = () => facadeCalls.filter((c) => c.inTx)
 
-function count(table: string): number {
-  return (getDb().prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n
+async function count(table: string): Promise<number> {
+  return ((await dbx.get(`SELECT COUNT(*) AS n FROM ${table}`)) as { n: number }).n
 }
-function seedOldRows(): void {
-  const db = getDb()
-  db.prepare("INSERT INTO config_change_log (key, old_value, new_value, actor, created_at) VALUES ('key-a', '1', '2', 'agent-a', ?)").run(VERY_OLD())
-  db.prepare("INSERT INTO hook_audit_log (ts, hook_type, verdict) VALUES (?, 'Stop', 'allow')").run(VERY_OLD())
+async function seedOldRows(): Promise<void> {
+  await dbx.run("INSERT INTO config_change_log (key, old_value, new_value, actor, created_at) VALUES ('key-a', '1', '2', 'agent-a', ?)", VERY_OLD())
+  await dbx.run("INSERT INTO hook_audit_log (ts, hook_type, verdict) VALUES (?, 'Stop', 'allow')", VERY_OLD())
 }
 /** The next journal row cannot be written: an INSERT of a retention_prune row aborts. */
-function breakTheJournal(): void {
-  getDb().exec(`CREATE TRIGGER no_prune_journal BEFORE INSERT ON agent_audit_log
+async function breakTheJournal(): Promise<void> {
+  await dbx.exec(`CREATE TRIGGER no_prune_journal BEFORE INSERT ON agent_audit_log
     WHEN NEW.action = 'retention_prune' BEGIN SELECT RAISE(ABORT, 'journal write refused'); END`)
 }
-const journalRows = () => (getDb().prepare("SELECT COUNT(*) AS n FROM agent_audit_log WHERE action = 'retention_prune'").get() as { n: number }).n
+const journalRows = async () => ((await dbx.get("SELECT COUNT(*) AS n FROM agent_audit_log WHERE action = 'retention_prune'")) as { n: number }).n
 
 beforeEach(() => { vi.restoreAllMocks() })
 afterEach(() => { vi.restoreAllMocks() })
@@ -69,43 +68,43 @@ describe('the harness', () => {
 
 describe('pruneAuditLogs: every statement of the sweep transaction goes through the transaction handle', () => {
   it('no call reaches the facade while the transaction is open, and the sweep still deletes and journals', async () => {
-    seedOldRows()
+    await seedOldRows()
     watchFacade()
     const result = await pruneAuditLogs()
     expect(insideTx(), JSON.stringify(insideTx())).toHaveLength(0)
     expect(result.deleted.config_change_log).toBe(1)
     expect(result.deleted.hook_audit_log).toBe(1)
-    expect(journalRows()).toBe(1)
+    expect(await journalRows()).toBe(1)
   })
 
   it('when the journal row cannot be written the deletes roll back with it', async () => {
-    seedOldRows()
-    breakTheJournal()
+    await seedOldRows()
+    await breakTheJournal()
     await expect(pruneAuditLogs()).rejects.toThrow('journal write refused')
-    expect(count('config_change_log')).toBe(1)
-    expect(count('hook_audit_log')).toBe(1)
-    expect(journalRows()).toBe(0)
+    expect(await count('config_change_log')).toBe(1)
+    expect(await count('hook_audit_log')).toBe(1)
+    expect(await journalRows()).toBe(0)
   })
 })
 
 describe('pruneHookAuditLogJournaled: the same proof for the manual prune', () => {
   it('no call reaches the facade while the transaction is open, and the prune still deletes and journals', async () => {
-    seedOldRows()
+    await seedOldRows()
     watchFacade()
     const removed = await pruneHookAuditLogJournaled(30 * DAY, { agentId: 'agent-a' })
     expect(insideTx(), JSON.stringify(insideTx())).toHaveLength(0)
     expect(removed).toBe(1)
-    expect(count('hook_audit_log')).toBe(0)
-    expect(count('config_change_log')).toBe(1) // the manual prune touches the hook log only
-    expect(journalRows()).toBe(1)
+    expect(await count('hook_audit_log')).toBe(0)
+    expect(await count('config_change_log')).toBe(1) // the manual prune touches the hook log only
+    expect(await journalRows()).toBe(1)
   })
 
   it('when the journal row cannot be written the delete rolls back with it', async () => {
-    seedOldRows()
-    breakTheJournal()
+    await seedOldRows()
+    await breakTheJournal()
     await expect(pruneHookAuditLogJournaled(30 * DAY, { agentId: 'agent-a' })).rejects.toThrow('journal write refused')
-    expect(count('hook_audit_log')).toBe(1)
-    expect(journalRows()).toBe(0)
+    expect(await count('hook_audit_log')).toBe(1)
+    expect(await journalRows()).toBe(0)
   })
 })
 
@@ -116,7 +115,7 @@ describe('writeAgentAuditLog keeps its default for every other caller', () => {
     const inserts = facadeCalls.filter((c) => c.op === 'run' && c.sql.startsWith('INSERT INTO agent_audit_log'))
     expect(inserts).toHaveLength(1)
     expect(inserts[0]!.inTx).toBe(false)
-    expect(count('agent_audit_log')).toBe(1)
+    expect(await count('agent_audit_log')).toBe(1)
   })
 
   it('with a handle it writes on that handle and not on the facade', async () => {
@@ -125,6 +124,6 @@ describe('writeAgentAuditLog keeps its default for every other caller', () => {
       await writeAgentAuditLog({ agent_id: 'agent-a', entity: 'system', action: 'create', tenant_id: null }, tx)
       expect(facadeCalls).toHaveLength(0)
     })
-    expect(count('agent_audit_log')).toBe(1)
+    expect(await count('agent_audit_log')).toBe(1)
   })
 })

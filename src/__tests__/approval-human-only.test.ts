@@ -21,8 +21,7 @@ vi.mock('../notify.js', async (importOriginal) => ({
   deliverToChannel: vi.fn().mockResolvedValue(true),
 }))
 
-import { createDashboardUser, getApproval, listApprovalEvents, getAutonomyCategory } from '../db.js'
-import { db } from '../db/connection.js'
+import { createDashboardUser, getApproval, listApprovalEvents, getAutonomyCategory, dbx } from '../db.js'
 import { createSession, _clearSessionCacheForTest } from '../web/auth-sessions.js'
 import { tryHandleApprovals } from '../web/routes/approvals.js'
 import { tryHandleAutonomy } from '../web/routes/autonomy.js'
@@ -40,7 +39,7 @@ let cookies: Record<string, string>
 
 async function makeUser(name: string, role: string, tenant: string | null): Promise<string> {
   const u = await createDashboardUser(name, HASH)
-  db.prepare('UPDATE dashboard_users SET role = ?, tenant_id = ? WHERE id = ?').run(role, tenant, u.id)
+  await dbx.run('UPDATE dashboard_users SET role = ?, tenant_id = ? WHERE id = ?', role, tenant, u.id)
   return createSession({ userId: u.id, username: u.username })
 }
 
@@ -124,7 +123,7 @@ describe('the category check', () => {
     expect(await isHumanOnly('email_send')).toBe(true)
     expect(await isHumanOnly('email_standing_recipient')).toBe(true)
     expect(await isHumanOnly('file_write')).toBe(false)
-    db.prepare("UPDATE autonomy_categories SET human_only = 1 WHERE key = 'payment'").run()
+    await dbx.run("UPDATE autonomy_categories SET human_only = 1 WHERE key = 'payment'")
     expect(await isHumanOnly('payment')).toBe(true)
   })
 })
@@ -142,7 +141,7 @@ describe('humanSessionOf', () => {
   })
 
   it('stops being a person when the user is disabled', async () => {
-    db.prepare("UPDATE dashboard_users SET disabled = 1 WHERE username = 'owner'").run()
+    await dbx.run("UPDATE dashboard_users SET disabled = 1 WHERE username = 'owner'")
     expect(await humanSessionOf(reqWith(cookies.owner))).toBeNull()
   })
 })
@@ -212,10 +211,10 @@ describe('deciding a human-only approval (enforce)', () => {
 
   it('treats a request as human-only by its snapshot when the set shrinks, and by the category when it grows', async () => {
     const id = await request('payment')
-    db.prepare("UPDATE autonomy_categories SET human_only = 1 WHERE key = 'payment'").run()
+    await dbx.run("UPDATE autonomy_categories SET human_only = 1 WHERE key = 'payment'")
     expect((await patch(id, TOKEN)).status).toBe(403) // widened after the request: the pending row is covered too
-    db.prepare("UPDATE approvals SET human_only = 1 WHERE id = ?").run(id)
-    db.prepare("UPDATE autonomy_categories SET human_only = 0 WHERE key = 'payment'").run()
+    await dbx.run("UPDATE approvals SET human_only = 1 WHERE id = ?", id)
+    await dbx.run("UPDATE autonomy_categories SET human_only = 0 WHERE key = 'payment'")
     expect((await patch(id, TOKEN)).status).toBe(403) // narrowed: the snapshot keeps it human-only
   })
 })
@@ -232,7 +231,7 @@ describe('asking for an approval (enforce)', () => {
     const out = await call('POST', '/api/approvals', OPENER, { agent_id: 'agent-d', category, action_description: 'x' })
     expect(out.status).toBe(400)
     expect(out.body.field).toBe('category')
-    expect(db.prepare('SELECT COUNT(*) AS n FROM approvals').get()).toEqual({ n: 0 })
+    expect(await dbx.get('SELECT COUNT(*) AS n FROM approvals')).toEqual({ n: 0 })
   })
 })
 

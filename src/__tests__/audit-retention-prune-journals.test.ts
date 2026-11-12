@@ -12,7 +12,7 @@ import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { useTestDb } from './helpers/with-test-db.js'
-import { getDb, getKanbanCardEvents, pruneAuditLogs, setSystemConfig } from '../db.js'
+import { getKanbanCardEvents, pruneAuditLogs, setSystemConfig, dbx } from '../db.js'
 import { getSettingDefinition, validateSettingValue } from '../config-registry.js'
 
 useTestDb()
@@ -26,81 +26,81 @@ const KEPT = () => nowSec() - 90 * DAY + 60
 const A_OLD = () => nowSec() - 365 * DAY - 60
 const A_KEPT = () => nowSec() - 365 * DAY + 60
 
-function count(table: string): number {
-  return (getDb().prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n
+async function count(table: string): Promise<number> {
+  return ((await dbx.get(`SELECT COUNT(*) AS n FROM ${table}`)) as { n: number }).n
 }
 
-function insertApproval(createdAt: number): number {
-  return Number(getDb().prepare("INSERT INTO approval_events (approval_id, tenant_id, event, created_at) VALUES ('approval-a', 'default', 'requested', ?)").run(createdAt).lastInsertRowid)
+async function insertApproval(createdAt: number): Promise<number> {
+  return Number((await dbx.run("INSERT INTO approval_events (approval_id, tenant_id, event, created_at) VALUES ('approval-a', 'default', 'requested', ?)", createdAt)).lastInsertRowid)
 }
-function insertKanban(createdAt: number): number {
-  return Number(getDb().prepare("INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at) VALUES ('card-a', NULL, 'planned', 'agent-a', ?)").run(createdAt).lastInsertRowid)
+async function insertKanban(createdAt: number): Promise<number> {
+  return Number((await dbx.run("INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at) VALUES ('card-a', NULL, 'planned', 'agent-a', ?)", createdAt)).lastInsertRowid)
 }
-function insertSource(): void {
-  getDb().prepare("INSERT INTO import_sources (id, type, path, label, interval_hours, enabled, created_at, updated_at) VALUES ('source-a', 'local', '/x', 'a', 24, 1, 1, 1)").run()
+async function insertSource(): Promise<void> {
+  await dbx.run("INSERT INTO import_sources (id, type, path, label, interval_hours, enabled, created_at, updated_at) VALUES ('source-a', 'local', '/x', 'a', 24, 1, 1, 1)")
 }
-function insertImportRun(runAt: number): void {
-  getDb().prepare("INSERT INTO import_audit_log (source_id, run_at) VALUES ('source-a', ?)").run(runAt)
+async function insertImportRun(runAt: number): Promise<void> {
+  await dbx.run("INSERT INTO import_audit_log (source_id, run_at) VALUES ('source-a', ?)", runAt)
 }
-function insertRestore(restoredAt: number): void {
-  getDb().prepare("INSERT INTO restore_log (archive_path, integrity_ok, restored_at) VALUES ('archive-a', 1, ?)").run(restoredAt)
+async function insertRestore(restoredAt: number): Promise<void> {
+  await dbx.run("INSERT INTO restore_log (archive_path, integrity_ok, restored_at) VALUES ('archive-a', 1, ?)", restoredAt)
 }
-function setCursor(source: string, lastId: number): void {
-  getDb().prepare('INSERT INTO otel_logs_export_state (source, last_id) VALUES (?, ?) ON CONFLICT(source) DO UPDATE SET last_id = excluded.last_id').run(source, lastId)
+async function setCursor(source: string, lastId: number): Promise<void> {
+  await dbx.run('INSERT INTO otel_logs_export_state (source, last_id) VALUES (?, ?) ON CONFLICT(source) DO UPDATE SET last_id = excluded.last_id', source, lastId)
 }
 
 describe('the three journals are pruned to their windows', () => {
   it('deletes the rows older than the window and keeps the rest, per table', async () => {
-    insertSource()
-    insertApproval(A_OLD()); insertApproval(A_OLD()); insertApproval(A_KEPT()); insertApproval(nowSec())
-    insertImportRun(OLD()); insertImportRun(OLD()); insertImportRun(OLD()); insertImportRun(nowSec())
-    insertRestore(OLD()); insertRestore(KEPT())
+    await insertSource()
+    await insertApproval(A_OLD()); await insertApproval(A_OLD()); await insertApproval(A_KEPT()); await insertApproval(nowSec())
+    await insertImportRun(OLD()); await insertImportRun(OLD()); await insertImportRun(OLD()); await insertImportRun(nowSec())
+    await insertRestore(OLD()); await insertRestore(KEPT())
 
     const r = await pruneAuditLogs()
 
     expect(r.deleted.approval_events).toBe(2)
     expect(r.deleted.import_audit_log).toBe(3)
     expect(r.deleted.restore_log).toBe(1)
-    expect(count('approval_events')).toBe(2)
-    expect(count('import_audit_log')).toBe(1)
-    expect(count('restore_log')).toBe(1)
+    expect(await count('approval_events')).toBe(2)
+    expect(await count('import_audit_log')).toBe(1)
+    expect(await count('restore_log')).toBe(1)
   })
 
   it('uses each table\'s own time column (a fresh run_at / restored_at is kept even with old ids)', async () => {
-    insertSource()
-    insertImportRun(nowSec()); insertImportRun(OLD())
-    insertRestore(nowSec()); insertRestore(OLD())
+    await insertSource()
+    await insertImportRun(nowSec()); await insertImportRun(OLD())
+    await insertRestore(nowSec()); await insertRestore(OLD())
     await pruneAuditLogs()
-    expect(count('import_audit_log')).toBe(1)
-    expect(count('restore_log')).toBe(1)
-    const left = getDb().prepare('SELECT run_at FROM import_audit_log').get() as { run_at: number }
+    expect(await count('import_audit_log')).toBe(1)
+    expect(await count('restore_log')).toBe(1)
+    const left = (await dbx.get('SELECT run_at FROM import_audit_log')) as { run_at: number }
     expect(left.run_at).toBeGreaterThan(nowSec() - 60)
   })
 
   it('a 100-day-old approval event survives while a 100-day-old import run and restore row are deleted', async () => {
-    insertSource()
-    insertApproval(nowSec() - 100 * DAY)
-    insertImportRun(nowSec() - 100 * DAY)
-    insertRestore(nowSec() - 100 * DAY)
+    await insertSource()
+    await insertApproval(nowSec() - 100 * DAY)
+    await insertImportRun(nowSec() - 100 * DAY)
+    await insertRestore(nowSec() - 100 * DAY)
     const r = await pruneAuditLogs()
     expect(r.deleted.approval_events).toBe(0)
     expect(r.deleted.import_audit_log).toBe(1)
     expect(r.deleted.restore_log).toBe(1)
-    expect(count('approval_events')).toBe(1)
-    expect(count('import_audit_log')).toBe(0)
-    expect(count('restore_log')).toBe(0)
+    expect(await count('approval_events')).toBe(1)
+    expect(await count('import_audit_log')).toBe(0)
+    expect(await count('restore_log')).toBe(0)
   })
 
   it('a 400-day-old approval event is deleted by the default window', async () => {
-    insertApproval(nowSec() - 400 * DAY)
+    await insertApproval(nowSec() - 400 * DAY)
     const r = await pruneAuditLogs()
     expect(r.deleted.approval_events).toBe(1)
-    expect(count('approval_events')).toBe(0)
+    expect(await count('approval_events')).toBe(0)
   })
 
   it('import and restore follow AUDIT_LOG_RETENTION_DAYS: a shorter window removes what the default kept', async () => {
-    insertSource()
-    insertImportRun(nowSec() - 10 * DAY); insertRestore(nowSec() - 10 * DAY)
+    await insertSource()
+    await insertImportRun(nowSec() - 10 * DAY); await insertRestore(nowSec() - 10 * DAY)
     const keep = await pruneAuditLogs()
     expect(keep.deleted.import_audit_log).toBe(0)
     expect(keep.deleted.restore_log).toBe(0)
@@ -112,24 +112,24 @@ describe('the three journals are pruned to their windows', () => {
   })
 
   it('approval_events does NOT follow AUDIT_LOG_RETENTION_DAYS: a short audit window leaves a 100-day-old event', async () => {
-    insertApproval(nowSec() - 100 * DAY)
+    await insertApproval(nowSec() - 100 * DAY)
     await setSystemConfig('AUDIT_LOG_RETENTION_DAYS', '5', 'db')
     const r = await pruneAuditLogs()
     expect(r.cutoffDays).toBe(5)
     expect(r.approvalCutoffDays).toBe(365)
     expect(r.deleted.approval_events).toBe(0)
-    expect(count('approval_events')).toBe(1)
+    expect(await count('approval_events')).toBe(1)
   })
 
   it('the approval cut moves with APPROVAL_EVENTS_RETENTION_DAYS: at 30 days the 100-day-old event goes', async () => {
-    insertApproval(nowSec() - 100 * DAY); insertApproval(nowSec() - 10 * DAY)
+    await insertApproval(nowSec() - 100 * DAY); await insertApproval(nowSec() - 10 * DAY)
     const keep = await pruneAuditLogs()
     expect(keep.deleted.approval_events).toBe(0)
     await setSystemConfig('APPROVAL_EVENTS_RETENTION_DAYS', '30', 'db')
     const cut = await pruneAuditLogs()
     expect(cut.approvalCutoffDays).toBe(30)
     expect(cut.deleted.approval_events).toBe(1)
-    expect(count('approval_events')).toBe(1)
+    expect(await count('approval_events')).toBe(1)
   })
 
   it('the approval cut is the clock minus the approval window, and the audit cut is untouched by it', async () => {
@@ -197,28 +197,28 @@ describe('the APPROVAL_EVENTS_RETENTION_DAYS setting', () => {
 
 describe('kanban_card_events is not pruned', () => {
   it('every event survives the sweep, a 200-day-old one and one 91 days old included', async () => {
-    insertKanban(nowSec() - 200 * DAY); insertKanban(OLD()); insertKanban(KEPT()); insertKanban(nowSec())
+    await insertKanban(nowSec() - 200 * DAY); await insertKanban(OLD()); await insertKanban(KEPT()); await insertKanban(nowSec())
     const r = await pruneAuditLogs()
-    expect(count('kanban_card_events')).toBe(4)
+    expect(await count('kanban_card_events')).toBe(4)
     expect(Object.keys(r.deleted)).not.toContain('kanban_card_events')
     expect(Object.keys(r.unexportedLogsDeleted)).not.toContain('kanban_card_events')
   })
 
   it('stays out of the journal row and survives with an export cursor and a short window too', async () => {
-    const k = insertKanban(nowSec() - 200 * DAY)
-    setCursor('kanban_card_events', k - 1)
+    const k = await insertKanban(nowSec() - 200 * DAY)
+    await setCursor('kanban_card_events', k - 1)
     await setSystemConfig('AUDIT_LOG_RETENTION_DAYS', '5', 'db')
     await setSystemConfig('APPROVAL_EVENTS_RETENTION_DAYS', '1', 'db')
     await pruneAuditLogs()
-    expect(count('kanban_card_events')).toBe(1)
-    const row = getDb().prepare("SELECT detail FROM agent_audit_log WHERE action = 'retention_prune'").get() as { detail: string }
+    expect(await count('kanban_card_events')).toBe(1)
+    const row = (await dbx.get("SELECT detail FROM agent_audit_log WHERE action = 'retention_prune'")) as { detail: string }
     const detail = JSON.parse(row.detail)
     expect(Object.keys(detail.tables)).not.toContain('kanban_card_events')
     expect(Object.keys(detail.unexported_logs_deleted)).not.toContain('kanban_card_events')
   })
 
   it('the event timeline of an old card still reads in full', async () => {
-    insertKanban(nowSec() - 300 * DAY)
+    await insertKanban(nowSec() - 300 * DAY)
     await pruneAuditLogs()
     const events = await getKanbanCardEvents('card-a')
     expect(events).toHaveLength(1)
@@ -227,14 +227,14 @@ describe('kanban_card_events is not pruned', () => {
 
 describe('the rows the OTLP log cursor had not passed', () => {
   it('without a cursor row every deleted row counts as never exported', async () => {
-    insertApproval(A_OLD()); insertApproval(A_OLD()); insertApproval(A_KEPT())
+    await insertApproval(A_OLD()); await insertApproval(A_OLD()); await insertApproval(A_KEPT())
     const r = await pruneAuditLogs()
     expect(r.unexportedLogsDeleted).toEqual({ approval_events: 2 })
   })
 
   it('only the rows above the cursor count; the ones it already passed were exported', async () => {
-    const a = insertApproval(A_OLD()); const b = insertApproval(A_OLD()); insertApproval(A_OLD())
-    setCursor('approval_events', b)
+    const a = await insertApproval(A_OLD()); const b = await insertApproval(A_OLD()); await insertApproval(A_OLD())
+    await setCursor('approval_events', b)
     expect(a).toBeLessThan(b)
     const r = await pruneAuditLogs()
     expect(r.deleted.approval_events).toBe(3)
@@ -242,30 +242,30 @@ describe('the rows the OTLP log cursor had not passed', () => {
   })
 
   it('a cursor at or beyond the last old row means nothing was lost', async () => {
-    insertApproval(A_OLD()); const last = insertApproval(A_OLD())
-    setCursor('approval_events', last + 10)
+    await insertApproval(A_OLD()); const last = await insertApproval(A_OLD())
+    await setCursor('approval_events', last + 10)
     const r = await pruneAuditLogs()
     expect(r.deleted.approval_events).toBe(2)
     expect(r.unexportedLogsDeleted.approval_events).toBe(0)
   })
 
   it('a young row above the cursor is not counted: only rows the cut removes are', async () => {
-    insertApproval(A_OLD()); insertApproval(nowSec()); insertApproval(A_KEPT())
-    setCursor('approval_events', 0)
+    await insertApproval(A_OLD()); await insertApproval(nowSec()); await insertApproval(A_KEPT())
+    await setCursor('approval_events', 0)
     const r = await pruneAuditLogs()
     expect(r.unexportedLogsDeleted.approval_events).toBe(1)
   })
 
   it('the unexported count uses the approval cut, not the audit cut: a 100-day-old row above the cursor is not counted', async () => {
-    insertApproval(nowSec() - 100 * DAY); insertApproval(A_OLD())
-    setCursor('approval_events', 0)
+    await insertApproval(nowSec() - 100 * DAY); await insertApproval(A_OLD())
+    await setCursor('approval_events', 0)
     const r = await pruneAuditLogs()
     expect(r.deleted.approval_events).toBe(1)
     expect(r.unexportedLogsDeleted.approval_events).toBe(1)
   })
 
   it('the count follows APPROVAL_EVENTS_RETENTION_DAYS and equals what the delete removed', async () => {
-    insertApproval(nowSec() - 100 * DAY); insertApproval(nowSec() - 100 * DAY); insertApproval(nowSec() - 5 * DAY)
+    await insertApproval(nowSec() - 100 * DAY); await insertApproval(nowSec() - 100 * DAY); await insertApproval(nowSec() - 5 * DAY)
     await setSystemConfig('APPROVAL_EVENTS_RETENTION_DAYS', '30', 'db')
     const r = await pruneAuditLogs()
     expect(r.deleted.approval_events).toBe(2)
@@ -273,9 +273,9 @@ describe('the rows the OTLP log cursor had not passed', () => {
   })
 
   it('the journal row carries the counts and the approval cut', async () => {
-    insertApproval(A_OLD())
+    await insertApproval(A_OLD())
     const r = await pruneAuditLogs()
-    const row = getDb().prepare("SELECT detail FROM agent_audit_log WHERE action = 'retention_prune'").get() as { detail: string }
+    const row = (await dbx.get("SELECT detail FROM agent_audit_log WHERE action = 'retention_prune'")) as { detail: string }
     const detail = JSON.parse(row.detail)
     expect(detail.approval_cutoff_days).toBe(365)
     expect(detail.approval_cutoff_ts).toBe(r.approvalCutoffTs)
@@ -289,15 +289,15 @@ describe('the rows the OTLP log cursor had not passed', () => {
 
 describe('one transaction', () => {
   it('rolls the new deletes back with the rest when the journal row cannot be written', async () => {
-    insertSource()
-    insertApproval(A_OLD()); insertKanban(OLD()); insertImportRun(OLD()); insertRestore(OLD())
-    getDb().exec(`CREATE TRIGGER block_prune_row BEFORE INSERT ON agent_audit_log WHEN NEW.action = 'retention_prune'
+    await insertSource()
+    await insertApproval(A_OLD()); await insertKanban(OLD()); await insertImportRun(OLD()); await insertRestore(OLD())
+    await dbx.exec(`CREATE TRIGGER block_prune_row BEFORE INSERT ON agent_audit_log WHEN NEW.action = 'retention_prune'
                   BEGIN SELECT RAISE(ABORT, 'journal refused'); END`)
     await expect(pruneAuditLogs()).rejects.toThrow(/journal refused/)
-    expect(count('approval_events')).toBe(1)
-    expect(count('kanban_card_events')).toBe(1)
-    expect(count('import_audit_log')).toBe(1)
-    expect(count('restore_log')).toBe(1)
+    expect(await count('approval_events')).toBe(1)
+    expect(await count('kanban_card_events')).toBe(1)
+    expect(await count('import_audit_log')).toBe(1)
+    expect(await count('restore_log')).toBe(1)
   })
 })
 
@@ -315,48 +315,48 @@ describe('the boundary on a fixed clock', () => {
   })
   afterEach(() => { vi.useRealTimers() })
 
-  function times(table: string, column: string): number[] {
-    return (getDb().prepare(`SELECT ${column} AS t FROM ${table} ORDER BY ${column}`).all() as { t: number }[]).map((r) => r.t)
+  async function times(table: string, column: string): Promise<number[]> {
+    return ((await dbx.all(`SELECT ${column} AS t FROM ${table} ORDER BY ${column}`)) as { t: number }[]).map((r) => r.t)
   }
 
   it('approval_events: the row at its own cut stays, the row one second older goes', async () => {
     // A row on the audit cut and one just older than it must survive: the approval window is longer.
-    insertApproval(APPROVAL_CUT - 1); insertApproval(APPROVAL_CUT); insertApproval(AUDIT_CUT - 1)
+    await insertApproval(APPROVAL_CUT - 1); await insertApproval(APPROVAL_CUT); await insertApproval(AUDIT_CUT - 1)
     const r = await pruneAuditLogs()
     expect(r.approvalCutoffTs).toBe(APPROVAL_CUT)
     expect(r.deleted.approval_events).toBe(1)
-    expect(times('approval_events', 'created_at')).toEqual([APPROVAL_CUT, AUDIT_CUT - 1])
+    expect(await times('approval_events', 'created_at')).toEqual([APPROVAL_CUT, AUDIT_CUT - 1])
   })
 
   it('import_audit_log: the run at the audit cut stays, the run one second older goes', async () => {
-    insertSource()
-    insertImportRun(AUDIT_CUT - 1); insertImportRun(AUDIT_CUT)
+    await insertSource()
+    await insertImportRun(AUDIT_CUT - 1); await insertImportRun(AUDIT_CUT)
     const r = await pruneAuditLogs()
     expect(r.cutoffTs).toBe(AUDIT_CUT)
     expect(r.deleted.import_audit_log).toBe(1)
-    expect(times('import_audit_log', 'run_at')).toEqual([AUDIT_CUT])
+    expect(await times('import_audit_log', 'run_at')).toEqual([AUDIT_CUT])
   })
 
   it('restore_log: the row at the audit cut stays, the row one second older goes', async () => {
-    insertRestore(AUDIT_CUT - 1); insertRestore(AUDIT_CUT)
+    await insertRestore(AUDIT_CUT - 1); await insertRestore(AUDIT_CUT)
     const r = await pruneAuditLogs()
     expect(r.deleted.restore_log).toBe(1)
-    expect(times('restore_log', 'restored_at')).toEqual([AUDIT_CUT])
+    expect(await times('restore_log', 'restored_at')).toEqual([AUDIT_CUT])
   })
 
   it('the unexported count is exact on the boundary and equals what the delete removed', async () => {
     // No cursor row: every deleted row is "never exported". The row AT the cut is neither deleted nor counted.
-    insertApproval(APPROVAL_CUT - 2); insertApproval(APPROVAL_CUT - 1); insertApproval(APPROVAL_CUT)
+    await insertApproval(APPROVAL_CUT - 2); await insertApproval(APPROVAL_CUT - 1); await insertApproval(APPROVAL_CUT)
     const r = await pruneAuditLogs()
     expect(r.deleted.approval_events).toBe(2)
     expect(r.unexportedLogsDeleted.approval_events).toBe(2)
     expect(r.unexportedLogsDeleted.approval_events).toBe(r.deleted.approval_events)
-    expect(times('approval_events', 'created_at')).toEqual([APPROVAL_CUT])
+    expect(await times('approval_events', 'created_at')).toEqual([APPROVAL_CUT])
   })
 
   it('the unexported count above a cursor is exact on the boundary too', async () => {
-    const first = insertApproval(APPROVAL_CUT - 2); insertApproval(APPROVAL_CUT - 1); insertApproval(APPROVAL_CUT)
-    setCursor('approval_events', first)
+    const first = await insertApproval(APPROVAL_CUT - 2); await insertApproval(APPROVAL_CUT - 1); await insertApproval(APPROVAL_CUT)
+    await setCursor('approval_events', first)
     const r = await pruneAuditLogs()
     // Two rows are deleted, only the one above the cursor was never exported; the row at the cut is neither.
     expect(r.deleted.approval_events).toBe(2)
@@ -364,11 +364,11 @@ describe('the boundary on a fixed clock', () => {
   })
 
   it('deleted_total sums the new tables with the old ones, in the result and in the journal row', async () => {
-    insertSource()
-    insertApproval(APPROVAL_CUT - 1)
-    insertImportRun(AUDIT_CUT - 1); insertImportRun(AUDIT_CUT - 2)
-    insertRestore(AUDIT_CUT - 1)
-    getDb().prepare("INSERT INTO config_change_log (key, old_value, new_value, actor, created_at) VALUES ('k', '1', '2', 'a', ?)").run(AUDIT_CUT - 1)
+    await insertSource()
+    await insertApproval(APPROVAL_CUT - 1)
+    await insertImportRun(AUDIT_CUT - 1); await insertImportRun(AUDIT_CUT - 2)
+    await insertRestore(AUDIT_CUT - 1)
+    await dbx.run("INSERT INTO config_change_log (key, old_value, new_value, actor, created_at) VALUES ('k', '1', '2', 'a', ?)", AUDIT_CUT - 1)
     const r = await pruneAuditLogs()
     // 1 approval + 2 import + 1 restore + 1 config change = 5 rows removed.
     expect(r.deleted.approval_events).toBe(1)
@@ -376,7 +376,7 @@ describe('the boundary on a fixed clock', () => {
     expect(r.deleted.restore_log).toBe(1)
     expect(r.deleted.config_change_log).toBe(1)
     expect(r.deletedTotal).toBe(5)
-    const row = getDb().prepare("SELECT detail FROM agent_audit_log WHERE action = 'retention_prune'").get() as { detail: string }
+    const row = (await dbx.get("SELECT detail FROM agent_audit_log WHERE action = 'retention_prune'")) as { detail: string }
     expect(JSON.parse(row.detail).deleted_total).toBe(5)
   })
 })

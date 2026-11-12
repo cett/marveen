@@ -2,15 +2,15 @@
 // connection) are two copies of the same two statements. They must agree on every step of a rotation, or the
 // token the dashboard enrolls at boot would behave differently from the one a rotation enrolls later.
 import { describe, it, expect } from 'vitest'
-import { dbx, enrollDashboardApiToken, enrollDashboardApiTokenSync, getDb } from '../db.js'
+import { dbx, enrollDashboardApiToken, enrollDashboardApiTokenSync } from '../db.js'
 import { useTestDb } from './helpers/with-test-db.js'
 
 useTestDb()
 
 interface Snapshot { token_hash: string; role: string; revoked_at: number | null }
 
-const snapshot = (): Snapshot[] =>
-  getDb().prepare("SELECT token_hash, role, revoked_at FROM api_tokens WHERE name = 'dashboard' ORDER BY token_hash").all() as Snapshot[]
+const snapshot = async (): Promise<Snapshot[]> =>
+  dbx.all<Snapshot>("SELECT token_hash, role, revoked_at FROM api_tokens WHERE name = 'dashboard' ORDER BY token_hash")
 
 type Enroll = (hash: string, now: number) => Promise<number> | number
 
@@ -23,7 +23,7 @@ async function scenario(enroll: Enroll): Promise<{ answers: number[]; rows: Snap
   const rows: Snapshot[][] = []
   for (const [hash, now] of [['hash-a', 100], ['hash-a', 101], ['hash-b', 200], ['hash-a', 300]] as const) {
     answers.push(await enroll(hash, now))
-    rows.push(snapshot())
+    rows.push(await snapshot())
   }
   return { answers, rows }
 }

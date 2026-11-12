@@ -2,7 +2,7 @@
 // moved onto the facade (it is part of the auth path, so a lost await must fail a test, not only the lint).
 
 import { describe, it, expect, beforeEach } from 'vitest'
-import { db } from '../db.js'
+import { dbx } from '../db.js'
 import {
   insertDeviceKey,
   deleteDeviceKeyByHash,
@@ -20,9 +20,9 @@ import { useTestDb } from './helpers/with-test-db.js'
 
 useTestDb()
 
-beforeEach(() => {
-  db.prepare("INSERT OR IGNORE INTO tenants (id, display_name, created_at) VALUES ('default', 'Fleet', 0)").run()
-  db.prepare("INSERT INTO tenants (id, display_name, created_at) VALUES ('acme', 'Acme', 1)").run()
+beforeEach(async () => {
+  await dbx.run("INSERT OR IGNORE INTO tenants (id, display_name, created_at) VALUES ('default', 'Fleet', 0)")
+  await dbx.run("INSERT INTO tenants (id, display_name, created_at) VALUES ('acme', 'Acme', 1)")
 })
 
 describe('on an empty table', () => {
