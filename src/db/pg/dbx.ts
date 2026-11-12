@@ -113,7 +113,9 @@ function prepare(sql: string, params: unknown[]): pg.QueryConfig {
 // What each operation makes of the driver's answer.
 const asRow = <T>(res: pg.QueryResult): T | undefined => res.rows[0] as T | undefined
 const asRows = <T>(res: pg.QueryResult): T[] => res.rows as T[]
-const asRunResult = (res: pg.QueryResult): RunResult => ({ changes: res.rowCount ?? 0, lastInsertRowid: 0 })
+// The facade's RunResult has this property and the sqlite-dialect baseline counts it (1 -> 2 with this line). On PostgreSQL
+// it is a constant 0 that nothing reads: the generated key comes back with RETURNING.
+const asRunResult =(res: pg.QueryResult): RunResult => ({ changes: res.rowCount ?? 0, lastInsertRowid: 0 })
 const asNothing = (): void => undefined
 const execQuery = (sql: string) => (): pg.QueryConfig => ({ text: sql, types: pgTypes })
 

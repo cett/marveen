@@ -172,6 +172,20 @@ describe('transactions', () => {
     expect((await dbx.all<{ id: number }>('SELECT id FROM dx_t ORDER BY id')).map((r) => r.id)).toEqual([1]) // agent-b's row is gone
   })
 
+  it('25P02 then COMMIT: the statement after the failure is refused with 25P02, the body returns normally, and the COMMIT is reported as a failure', async () => {
+    const dbx = plainDbx(2)
+    await dbx.run('INSERT INTO dx_t (id, name) VALUES (1, ?)', 'agent-a')
+    const codes: Array<string | undefined> = []
+    await expect(
+      dbx.tx(async (tx) => {
+        await tx.run('INSERT INTO dx_t (id, name) VALUES (2, ?)', 'agent-a').catch((e: unknown) => codes.push(pgErrorCode(e)))
+        await tx.get('SELECT 1').catch((e: unknown) => codes.push(pgErrorCode(e)))
+        return 'looks fine'
+      }),
+    ).rejects.toThrow(/nothing was committed/)
+    expect(codes).toEqual(['23505', '25P02'])
+  })
+
   it('two transactions run side by side on two connections; a conflicting UPDATE waits for the row and applies after the first commit', async () => {
     const dbx = plainDbx(4)
     await dbx.run('INSERT INTO dx_t (id, v) VALUES (1, 0)')
@@ -319,6 +333,19 @@ describe('limits (pgPoolConfig)', () => {
     await expect(dbx.run('UPDATE dx_t SET v = 2 WHERE id = 1')).rejects.toMatchObject({ code: '55P03' })
     letGo()
     await holder
+  })
+
+  it('a backend killed while the body is idle: the process survives (the handler on the checked-out connection), the transaction fails, the pool keeps serving', async () => {
+    const { dbx } = limitedDbx({ max: 1 })
+    await expect(
+      dbx.tx(async (tx) => {
+        const pid = (await tx.get<{ pid: number }>('SELECT pg_backend_pid() AS pid'))!.pid
+        await db.pool.query('SELECT pg_terminate_backend($1)', [pid])
+        await sleep(500) // no query is running: the connection error arrives as an event, not as a query error
+        await tx.get('SELECT 2')
+      }),
+    ).rejects.toThrow()
+    expect(await dbx.get('SELECT 1 AS one')).toEqual({ one: 1 })
   })
 
   it('idle_in_transaction_session_timeout ends a forgotten transaction; the pool keeps serving', async () => {
