@@ -718,7 +718,8 @@ def _shlex_view(line: str):
     return words
 
 
-_WORD_END = ' \t\n;&|()<>'      # after one of these (or at the start of a text) a `#` opens a comment
+_WORD_END = ' \t\n;&|()<>'      # ends the delimiter word of a here-document
+_COMMENT_PREV = ' \t\n;'      # a `#` opens a comment at the start of a text and after one of these ONLY: after `<`, `>`, `|` or `&` bash 3.2 reads it as the first character of a redirection target
 _HEREDOC_BAD = object()          # _heredoc_operator: the delimiter word has an unterminated quote
 
 
@@ -857,12 +858,12 @@ def _bash_subst(line: str, i: int, closer: str, quoted: list, depth: int):
             if op is _HEREDOC_BAD:
                 return None
             if op is None:
-                i, ws = i + 2, True
+                i, ws = i + 2, False      # `<<<` and its target: a `#` right behind is no comment
             else:
                 pending.append(op[:3])
                 i, ws = op[3], False
         else:
-            ws = c in _WORD_END
+            ws = c in _COMMENT_PREV
             i += 1
     return None
 
@@ -1443,6 +1444,73 @@ _FUNSUB_NEXT = ('', ' ', '\t', '\n', '|')      # what may follow `${` of a funsu
 _body_work = [0]
 
 
+def _arith_bodies(text: str, start: int, end: int, quoted: list, out: list, depth: int) -> bool:
+    """The command bodies inside an arithmetic span `text[start:end]` (`$(( ))`, `$[ ]`, a `(( ))` command). Bash expands the
+    span as if it stood in double quotes: a `'` is a literal and shields nothing, `<<` is a shift (no here-document, so a
+    quote behind it does not open a delimiter word), `#` opens no comment, and `$( )` and a backtick pair run wherever a
+    backslash does not escape them. The command reading of the same span (`_bash_subst`) takes a `'` for a quote and `<<"x"`
+    for a delimiter, which hides a body from it: this reading finds what that one hides. Bodies are appended to `out`.
+    False when a body does not close or the nesting is too deep (the caller refuses the text)."""
+    if depth > _SCAN_DEPTH:
+        return False
+    i = start
+    while i < end:
+        c = text[i]
+        if c == '\\':
+            i += 2      # the character behind a backslash is a literal; a body can only start at a `$` or a backtick, both of which a backslash escapes
+        elif c == '$' and text.startswith('{', i + 1) and text[i + 2:i + 3] in _FUNSUB_NEXT:
+            deny('the command uses a ${ ...; } command substitution, which the gate does not look into')
+        elif c == '$' and text.startswith('((', i + 1):
+            j = _bash_subst(text, i + 2, ')', quoted, depth + 1)      # a nested arithmetic span: read it the same way
+            if j is None or not _arith_bodies(text, i + 2, j - 1, quoted, out, depth + 1):
+                return False
+            i = j
+        elif c == '$' and text.startswith('(', i + 1) or c == '`':
+            s = i + (2 if c == '$' else 1)
+            j = _bash_subst(text, s, ')' if c == '$' else '`', quoted, depth + 1)
+            if j is None:
+                return False
+            out.append(text[s:j - 1])
+            i = j
+        else:
+            i += 1
+    return True
+
+
+def _no_heredoc_end(text: str, i: int, quoted: list) -> int:
+    """`text[i]` is a `$` before `[` or `{`: the index after the closer that ends the span, the LATEST of the ends a shell may
+    take: the closers counted plainly (`_count_end`), and counted with quotes skipped and with a nested `$( )`, backtick pair
+    and `${ }` skipped as a whole (a closer inside them closes nothing, as in the matched-pair scan of bash and zsh). The end
+    of the text when none closes. No here-document starts inside (`$[ 1<<2 ]` is a shift, `${X//<<E/y}` a pattern), so a too
+    short end would read the rest of a pattern as a here-document and swallow the commands behind it, while a too long end
+    only keeps a real here-document from being recognised (its text is then judged as code: refused, never allowed unread)."""
+    op, cl = ('[', ']') if text[i + 1] == '[' else ('{', '}')
+    n, depth, k = len(text), 1, i + 2
+    while k < n and depth:
+        c = text[k]
+        if c == '\\':
+            k += 2
+            continue
+        if c in '\'"':
+            j = text.find(c, k + 1)
+            if j == -1:
+                return n
+            k = j + 1
+            continue
+        if c == '`' or (c == '$' and text.startswith('(', k + 1)):
+            j = _bash_subst(text, k + (1 if c == '`' else 2), '`' if c == '`' else ')', quoted, 0)
+            if j is None:
+                return n
+            k = j
+            continue
+        if c == '$' and text.startswith('{', k + 1):
+            k = _count_end(text, k)      # the matching `}`, counted plainly (no recursion)
+            continue
+        depth += (c == op) - (c == cl)
+        k += 1
+    return max(_count_end(text, i), k if depth == 0 else n)
+
+
 def _body_at(text: str, i: int, quoted: list, out: list, in_dq: bool):
     """If a command body starts at `i`, append its text to `out` and return the index after it; return `i` when none
     starts there, None when the body is not closed. Bodies: `$( )`, backticks, and (outside double quotes) `<( )`,
@@ -1468,11 +1536,26 @@ def _body_at(text: str, i: int, quoted: list, out: list, in_dq: bool):
         return None
     body = text[start:end - 1]
     out.append(body)
+    if closer == ')' and text.startswith('(', start) and (c == '$' or c == '('):
+        # `$(( ))` and a `(( ))` command: the span is also arithmetic, which bash expands like a double-quoted text
+        if not _arith_bodies(text, start, end - 1, quoted, out, 0):
+            return None
     if closer == '`':
         plain = re.sub(r'\\([`\\$])', r'\1', body)      # the backslash rule of backticks; the raw text is judged as well
         if plain != body:
             out.append(plain)
     return end
+
+
+def _count_end(text: str, i: int) -> int:
+    """`text[i]` is a `$` before `[` or `{`: the index after the matching closer, counted with no quote state (the end of the
+    text when there is none). One of the ends `_no_heredoc_end` takes the latest of."""
+    op, cl = ('[', ']') if text[i + 1] == '[' else ('{', '}')
+    depth, k, n = 1, i + 2, len(text)
+    while k < n and depth:
+        depth += (text[k] == op) - (text[k] == cl)
+        k += 1
+    return k if depth == 0 else n
 
 
 def _find_bodies(text: str):
@@ -1526,24 +1609,224 @@ def _find_bodies(text: str):
             if op is _HEREDOC_BAD:
                 return None
             if op is None:
-                i, ws = i + 2, True
+                i, ws = i + 2, False      # `<<<` and its target: a `#` right behind is no comment
             else:
                 pending.append(op[:3])
                 i, ws = op[3], False
+        elif c == '$' and text.startswith('[', i + 1):
+            # `$[ ... ]`: arithmetic, expanded like a double-quoted text (see _arith_bodies); the span is consumed whole
+            j = _no_heredoc_end(text, i, quoted)
+            if not _arith_bodies(text, i + 2, j, quoted, out, 0):
+                return None
+            i, ws = j, False
         else:
-            if c == '$' and i >= arith_end and text.startswith('[', i + 1):      # one scan per bracket span: linear
-                depth, k = 1, i + 2
-                while k < n and depth:
-                    depth += (text[k] == '[') - (text[k] == ']')
-                    k += 1
-                arith_end = max(arith_end, k if depth == 0 else n)
+            if c == '$' and i >= arith_end and text[i + 1:i + 2] in ('[', '{'):      # one scan per span: linear
+                arith_end = max(arith_end, _no_heredoc_end(text, i, quoted))
             j = _body_at(text, i, quoted, out, False)
             if j is None:
                 return None
             if j != i:
                 i, ws = j, False
             else:
-                i, ws = i + 1, c in _WORD_END
+                i, ws = i + 1, c in _COMMENT_PREV
+    return out
+
+
+def _lex_commands(text: str):
+    """The simple commands of a shell text as lists of words, split the way the shell splits (`_commands` cuts at `;`
+    and `|` even inside quotes, which is fine for the head of a piece and useless for the ARGUMENT of `bash -c "a; b"`).
+    Quotes are removed from the words; a command substitution or a `$[ ]` is kept in its word as it stands (its body is
+    judged on its own); a comment and the body of a here-document are skipped. `;`, `&`, `|`, `(` and `)` end a command
+    (`>&2` and `<&3` do not). None when a quote or a substitution is not closed. One pass, linear."""
+    n = len(text)
+    quoted = [False] * n      # scratch of _bash_subst
+    cmds, cur, word, has = [], [], [], False
+    ws, pending, arith_end = True, [], -1
+    i = 0
+    while i < n:
+        c = text[i]
+        if c == '$' and i >= arith_end and text[i + 1:i + 2] in ('[', '{'):
+            arith_end = max(arith_end, _no_heredoc_end(text, i, quoted))      # `${X//<<E/y}`: a pattern, no here-document in it
+        if c in ' \t' or c == '\n' or c in ';&|()':
+            if c == '&' and word and word[-1][-1:] in ('>', '<'):
+                word.append(c)      # `>&2`, `<&3`: part of the word
+                i += 1
+                continue
+            if has:
+                cur.append(''.join(word))
+                word, has = [], False
+            if c not in ' \t':
+                if cur:
+                    cmds.append(cur)
+                    cur = []
+                if c == '(' and i >= arith_end and text.startswith('(', i + 1):
+                    # `(( 1 << 2 ))`: a shift, no here-document starts inside; one scan per span: linear
+                    depth, k = 0, i
+                    while k < n:
+                        depth += (text[k] == '(') - (text[k] == ')')
+                        k += 1
+                        if depth == 0:
+                            break
+                    arith_end = max(arith_end, k if depth == 0 else n)
+            ws = c in _COMMENT_PREV
+            i += 1
+            if c == '\n' and pending:
+                for here in pending:
+                    i = _heredoc_body(text, i, here, quoted, None)
+                pending = []
+        elif c == '#' and ws:
+            j = text.find('\n', i)
+            i = n if j == -1 else j
+        elif c == '\\':
+            if i + 1 >= n:
+                return None
+            if text[i + 1] != '\n':      # a backslash-newline is not there for the shell
+                word.append(text[i + 1])
+                has, ws = True, False
+            i += 2
+        elif c == "'":
+            j = text.find("'", i + 1)
+            if j == -1:
+                return None
+            word.append(text[i + 1:j])
+            has, ws = True, False
+            i = j + 1
+        elif c == '"':
+            has, ws = True, False
+            i += 1
+            while True:
+                if i >= n:
+                    return None
+                d = text[i]
+                if d == '"':
+                    i += 1
+                    break
+                if d == '\\':
+                    if i + 1 >= n:
+                        return None
+                    e = text[i + 1]
+                    if e in '"\\$`':
+                        word.append(e)
+                    elif e != '\n':
+                        word.append(d + e)
+                    i += 2
+                    continue
+                if d == '`' or (d == '$' and text.startswith('(', i + 1)):
+                    j = _bash_subst(text, i + 1, '`', quoted, 0) if d == '`' else _bash_subst(text, i + 2, ')', quoted, 0)
+                    if j is None:
+                        return None
+                    word.append(text[i:j])
+                    i = j
+                    continue
+                word.append(d)
+                i += 1
+        elif c == '`' or (c == '$' and text.startswith('(', i + 1)):
+            j = _bash_subst(text, i + 1, '`', quoted, 0) if c == '`' else _bash_subst(text, i + 2, ')', quoted, 0)
+            if j is None:
+                return None
+            word.append(text[i:j])
+            has, ws = True, False
+            i = j
+        elif c == '$' and text.startswith('[', i + 1):
+            depth, k = 1, i + 2
+            while k < n and depth:
+                depth += (text[k] == '[') - (text[k] == ']')
+                k += 1
+            word.append(text[i:k])
+            has, ws = True, False
+            i = k
+        elif c == '<' and text.startswith('<<', i) and i >= arith_end:
+            op = _heredoc_operator(text, i)
+            if op is _HEREDOC_BAD:
+                return None
+            if op is None:      # a here-string `<<<`
+                word.append('<<')
+                has, ws = True, False
+                i += 2
+            else:
+                pending.append(op[:3])
+                i = op[3]
+        else:
+            word.append(c)
+            has, ws = True, False
+            i += 1
+    if has:
+        cur.append(''.join(word))
+    if cur:
+        cmds.append(cur)
+    return cmds
+
+
+_SHELLS = frozenset(('bash', 'sh', 'zsh', 'dash', 'ksh', 'ash', 'mksh', 'csh', 'tcsh', 'fish', 'rbash', 'rksh', 'rzsh', 'pdksh', 'yash', 'ksh93', 'busybox'))
+_UNREADABLE_HEAD = re.compile(r'[$`*?\[{]')      # a variable, a substitution, a glob or a brace in the word that would be the shell
+_C_CLUSTER = re.compile(r'-[A-Za-z]*c[A-Za-z]*')
+# long options of a shell: without a value, and with a value (the next word, or `=V`); any other long option is not decided
+_SHELL_LONG_PLAIN = frozenset(('login', 'noprofile', 'norc', 'posix', 'restricted', 'verbose', 'debugger', 'noediting', 'help', 'version',
+                               'dump-strings', 'dump-po-strings', 'pretty-print', 'no-rcs', 'no-globalrcs'))
+_SHELL_LONG_VALUED = frozenset(('rcfile', 'init-file'))
+_EXEC_MAX_HEADS = 32      # shell words and `eval` in one command that the gate looks behind; more is refused
+# a text that cannot be read is refused when it names a shell or `eval` (an apostrophe in plain prose keeps its old verdict)
+_SHELL_WORD = re.compile(r'(?<![\w.-])(?:bash|sh|zsh|dash|ksh|ash|mksh|csh|tcsh|fish|eval)(?![\w-])')
+
+
+def _shell_c_texts(words: list, i: int) -> list:
+    """The command texts a shell word hands to `-c`: `words[i:]` are the words after the shell. The options are read as a
+    shell reads them (a cluster such as `-lc`, `-o NAME`, `+o NAME`, `-O NAME`, `--rcfile FILE`, `--` ends them); the first
+    word that is no option is the command string when a `-c` was seen, a script file otherwise. When the place of that
+    string is not decided (an unknown long option may take a value) every later word is a text: a superset."""
+    c_seen, n = False, len(words)
+    while i < n:
+        w = words[i]
+        if w == '--':
+            return [words[i + 1]] if c_seen and i + 1 < n else []
+        if len(w) > 1 and w[0] in '-+':
+            if w.startswith('--'):
+                name, eq, _v = w[2:].partition('=')
+                if name in _SHELL_LONG_PLAIN and not eq:
+                    i += 1
+                elif name in _SHELL_LONG_VALUED:
+                    i += 1 if eq else 2
+                else:
+                    # not decided: the value of `--name=VALUE` may be a text (fish `--init-command=CMD`), and so may every later word
+                    return ([_v] if eq else []) + words[i + 1:]
+                continue
+            takes = 0
+            for ch in w[1:]:
+                if ch == 'c':
+                    c_seen = True
+                elif ch in 'oO':
+                    takes += 1      # `-o NAME`, `-O SHOPT`: the next word is the value
+                elif ch in 'CRT':
+                    return words[i + 1:]      # fish `-C CMD` runs a command, ksh `-R FILE` takes a value: not decided
+            i += 1 + takes
+            continue
+        return [w] if c_seen else []
+    return []
+
+
+def _exec_texts(words: list) -> list:
+    """The shell texts a simple command (its words, quotes removed) hands to another shell: the string of `bash -c`, `sh -c`
+    and the other shells, and the joined arguments of `eval`. Found at ANY place of the command, so a wrapper with options,
+    `xargs ... sh -c`, `find -exec sh -c`, `timeout 5 bash -c` and `ssh host bash -c` need no list of their own. A text
+    is judged like the body of a substitution (`_judge`). Accepted limit: a text built at run time (`bash -c "$X"`)."""
+    out, seen = [], 0
+    for k, w in enumerate(words):
+        head = os.path.basename(w)
+        # a shell by name, or a word the gate cannot read (`$sh`, `/bin/ba?h`, a substitution) that is followed by a `-c` cluster
+        unreadable = _UNREADABLE_HEAD.search(w) and k + 1 < len(words) and _C_CLUSTER.fullmatch(words[k + 1])
+        if head in _SHELLS or unreadable:
+            out.extend(_shell_c_texts(words, k + 1))
+        elif head == 'eval':
+            args = words[k + 1:]
+            if args[:1] == ['--']:
+                args = args[1:]
+            if args:
+                out.append(' '.join(args))
+        else:
+            continue
+        seen += 1
+        if seen > _EXEC_MAX_HEADS:
+            deny('the command hands text to more shells than the gate can look through')
     return out
 
 
@@ -1561,8 +1844,9 @@ def _judge(plain_cmd: str, cwd: str, depth: int) -> None:
     substitution or a subshell: every rule runs on a body exactly as on the top level (a body is an unquoted context of its
     own, also where it sits inside double quotes). The bodies are found on the whole text first, because the command splitter
     cuts at `;` and `|` even inside `$( )`. A body that does not parse, nesting past BODY_MAX_DEPTH and the work budget
-    are refusals (generic reason, never the text). Accepted limits: a body built at run time (`bash -c "$X"`), heredoc
-    bodies, `source`, `python -c`, aliases and functions defined earlier."""
+    are refusals (generic reason, never the text). The string of `bash -c` (and sh, zsh, dash, ksh) and the arguments of
+    `eval` are judged the same way (`_exec_texts`). Accepted limits: a body built at run time (`bash -c "$X"`), heredoc
+    bodies of a command that RUNS them as a script, `source`, `python -c`, aliases and functions defined earlier."""
     _body_work[0] += len(plain_cmd) + BODY_CALL_COST
     if depth > BODY_MAX_DEPTH or _body_work[0] > BODY_MAX_WORK:
         deny('the command nests command bodies deeper than the gate can look through')
@@ -1629,6 +1913,15 @@ def _judge(plain_cmd: str, cwd: str, depth: int) -> None:
         bodies = []
     for body in bodies:
         _judge(body, cwd, depth + 1)
+    # the text another shell is handed: `bash -c ARG`, `eval ARGS` (also behind xargs, find -exec, a wrapper with options)
+    lexed = _lex_commands(plain_cmd[:MAX_TEXT])
+    if lexed is None:
+        if _SHELL_WORD.search(plain_cmd[:MAX_TEXT]):
+            deny('a command text of the command could not be read (an unterminated quote or substitution)')
+        lexed = []
+    for words in lexed:
+        for text in _exec_texts(words):
+            _judge(text, cwd, depth + 1)
 
 
 # ---------------------------------------------------------------------------------------------------

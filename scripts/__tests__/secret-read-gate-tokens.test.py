@@ -967,7 +967,7 @@ class BodiesAreJudged(Tree):
             "cat <<EOF\nit's\n$(R)\nit's\nEOF", "cat <<-EOF\n\tit's\n\t$(R)\n\tit's\n\tEOF", "cat <<EOF\nit's `R`\nit's\nEOF",
             "x=$(cat <<EOF\nit's\n$(R)\nit's\nEOF\n)", 'cat <<EOF\nEOF\nx=$(R)', "cat <<'EOF'\nit's\nEOF\nx=$(R)", "cat <<A <<'B'\nit's $(R)\nA\nit's\nB",
             'x=$((1<<"2"))\n y=$(R)', 'echo $[1<<"2"]\n $(R)', '(( x = 1 <<"2" ))\n $(R)', 'cat <<< "x"\n $(R)', 'x=$(cat <<\'EOF\'\nit\'s\nEOF\nR)',
-            'echo "$(cat <<EOF\nit\'s\n$(R)\nEOF\n)"', "cat <<EOF # note\nit's\n$(R)\nit's\nEOF", "x=$(cat <<EOF # note\nit's\n$(R)\nit's\nEOF\n)"]
+            'echo "$(cat <<EOF\nit\'s\n$(R)\nEOF\n)"', "echo ${X//<<'E'/y}\n $(R)", "echo ${X//<<'E'/y}\n `R`", "cat <<EOF # note\nit's\n$(R)\nit's\nEOF", "x=$(cat <<EOF # note\nit's\n$(R)\nit's\nEOF\n)"]
     # literal text: no shell runs it and the gate lets it pass
     LITERAL = ["echo a#b '$(R)'", ": # it's $(R)\n echo ok", ": # it's (maybe)\n echo ok", "cat <<'EOF'\nit's $(R)\nEOF", 'cat <<"EOF"\nit\'s $(R)\nEOF',
                "cat <<\\EOF\nit's $(R)\nEOF", "cat <<EOF\nit's \\$(R)\nEOF", "cat <<A <<'B'\nit's ok\nA\nit's $(R)\nB", "x=$(cat <<'EOF'\nit's fine\nEOF\n)",
@@ -1013,6 +1013,92 @@ class BodiesAreJudged(Tree):
                     if '$(R)' in tmpl or 'R;' in tmpl:
                         self.assertIn(self.ran(sh, self.cell(tmpl, self.ORACLE)), (False, None), '%s ran the text of %r' % (sh, tmpl))
 
+    # F1 (review of the fixup): a `#` right behind a redirection operator is not a comment for bash 3.2 (the reviewer's
+    # oracle runs the body there; the local /bin/bash 3.2.57 and zsh call these a syntax error, so no oracle here): refused.
+    HASH_AFTER_REDIRECT = ['echo >#x $(R)', 'echo 2>#x $(R)', 'echo >&#x $(R)', 'echo a >>#x $(R)', 'echo a &>#x $(R)', 'echo a >|#x $(R)', 'echo a <>#x $(R)',
+                           'echo a <#x $(R)', 'echo a <<<#x $(R)', 'cat <<EOF>#x $(R)\nbody\nEOF', 'echo x |&#x $(R)', 'echo x |#x $(R)', 'echo x &#x $(R)',
+                           'echo ${X}#x $(R)', '(#x $(R)', 'echo "a" |#x $(R)']
+    # R2 (review): the backslash-quote of an ANSI-C string flips the quote state of the finder; the pass without quote state sees the body
+    ANSI_C = ["echo $'\\'' $(R) $'a' # '", "echo $'\\'' $(R) $'a'", "echo $'\\'' `R` $'a' # '"]
+
+    def test_a_hash_behind_a_redirection_is_no_comment(self):
+        for tmpl in self.HASH_AFTER_REDIRECT:
+            with self.subTest(cell=tmpl):
+                self.assertEqual(self.verdict(self.cell(tmpl, self.READER)), 'DENY')
+        # the twins that really are comments
+        for cmd in ["echo hi # it's (x)", "echo a; # it's", "echo a && # it's", "# it's\necho hi", "echo a\n# it's (\necho hi"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self.verdict(cmd), 'ALLOW')
+
+    # Arithmetic (fixup 3, found by the differential fuzz): bash expands `$(( ))`, `$[ ]` and a `(( ))` command like a double-quoted
+    # text. A `'` there shields nothing, `<<` is a shift (no delimiter word) and `#` is no comment, so a body stands where the
+    # command reading of the same span sees a quote, a here-document or a comment. A `(( ))` command is arithmetic in zsh only.
+    ARITH_RUNS = ["x=$(('$(R)'))", "echo $['$(R)']", "echo $[ 1 + '$(R)' ]", "((' $(R) '))", "(( '$(R)' ))", "x=$((1 <<'$(R)'))", 'x=$(( \'`R`\' ))',
+                  "x=$(( $(echo 1) + $(( '$(R)' )) ))", "echo $[ $[ '$(R)' ] ]", "echo $[ ']' + '$(R)' ]", "echo $(( ')' + '$(R)' ))",
+                  '((<<"$(R)"))', 'x=$((1<<"$(R)"))', "x=$(( <<'EOF'\"$(R)\"#))", "echo $[ 1<<'$(R)' ]",
+                  # an arithmetic span inside an arithmetic span, found only by the double-quote reading of the outer one
+                  "echo $[ '$(( '$(R)' ))' ]", "echo $(( '$[ '$(R)' ]' ))", "x=$(( 1 + $(( 2 + $(( '$(R)' )) )) ))",
+                  # a `]` inside a nested substitution or parameter expansion does not close the `$[` (zsh runs the body behind it)
+                  "echo $[ $(echo ]) + '$(R)' ]", "echo $[ `echo ]` + '$(R)' ]", "echo $[ ${x:-]} + '$(R)' ]"]
+    ARITH_LITERAL = ["echo $(( 1 )) '$(R)'", "echo $[ 1 ] '$(R)'", "echo $[ ']' ] '$(R)'", "echo $(( ')' )) '$(R)'", '(( x = 1 + 2 )); echo ok',
+                     'echo $(( 1 + $(date +%s) ))', "echo $[ 1 + 2 ] $(( 3 << 1 )) 'it'", "echo $(( 1 << 2 ))'$(R)'", "x=$(( 1 + 2 )) # '$(R)'",
+                     "echo $[ $(echo ]) + 1 ] '$(R)'", "echo $[ ${x:-]} + 1 ] '$(R)'"]
+
+    def test_an_arithmetic_span_does_not_hide_a_body(self):
+        for tmpl in self.ARITH_RUNS:
+            with self.subTest(cell=tmpl):
+                self.assertEqual(self.verdict(self.cell(tmpl, self.READER)), 'DENY')
+                shells = [self.ran(sh, self.cell(tmpl, self.ORACLE)) for sh in ('bash', 'zsh')]
+                if all(s is None for s in shells):
+                    self.skipTest('no shell installed')
+                self.assertTrue(any(shells), 'no shell ran the body of %r' % tmpl)
+
+    def test_an_arithmetic_span_with_no_body_in_it_still_passes(self):
+        for tmpl in self.ARITH_LITERAL:
+            with self.subTest(cell=tmpl):
+                self.assertEqual(self.verdict(self.cell(tmpl, self.READER)), 'ALLOW')
+                if '$(R)' in tmpl:      # the text after the span is a literal: no shell runs it
+                    for sh in ('bash', 'zsh'):
+                        self.assertIn(self.ran(sh, self.cell(tmpl, self.ORACLE)), (False, None), '%s ran the text of %r' % (sh, tmpl))
+
+    # A quoted `}` inside `${ }` closes nothing, and no here-document starts inside it: `<<'E'` there is a pattern. The end of the
+    # span used to be found by counting braces only, so the `<<'E'` behind a quoted `}` was read as a here-document whose body
+    # swallowed the commands behind it (the body of the cell is then on the next line).
+    PARAM_RUNS = ["echo ${X//'}'<<'E'/y}\n $(R)", 'echo ${X//"}"<<\'E\'/y}\n $(R)', "echo ${X//\\}<<'E'/y}\n $(R)", "echo ${X:-'}'<<E}\n $(R)",
+                  "echo ${X//'}'<<'E'/y}\n `R`", 'x=${X//\'}\'<<"E"/y}\n $(R)', "${X//'}'<<'E'/y}\n $(R)", "echo ${X//'}'<<'E'/y} $(R)"]
+    PARAM_LITERAL = ["echo ${X//'}'/y} ok", "cat <<'E'\n${X//'}'<<'E'/y}\nE\necho done", "echo ${X//'}'<<'E'/y}\n echo ok"]
+
+    def test_a_quoted_closer_in_a_parameter_expansion_does_not_start_a_here_document(self):
+        for tmpl in self.PARAM_RUNS:
+            with self.subTest(cell=tmpl):
+                self.assertEqual(self.verdict(self.cell(tmpl, self.READER)), 'DENY')
+                shells = [self.ran(sh, self.cell(tmpl, self.ORACLE)) for sh in ('bash', 'zsh')]
+                if all(s is None for s in shells):
+                    self.skipTest('no shell installed')
+                self.assertTrue(any(shells), 'no shell ran the body of %r' % tmpl)
+        for tmpl in self.PARAM_LITERAL:
+            with self.subTest(cell=tmpl):
+                self.assertEqual(self.verdict(self.cell(tmpl, self.READER)), 'ALLOW')
+
+    def test_an_arithmetic_span_that_does_not_close_is_refused_when_a_body_in_it_does_not_close(self):
+        self.assertEqual(self.verdict("echo $(( 1 + $(date"), 'DENY')
+        self.assertEqual(self.verdict("echo $[ 1 + $(date"), 'DENY')
+
+    @unittest.expectedFailure
+    def test_an_ansi_c_string_cannot_hide_a_body(self):
+        # R2 (review): RED until commit 3 reads a `$'...'` span by bash's rule (a backslash escapes the next character, the quote
+        # included) BEFORE the finder runs. The quote-blind pass that had refused these was retracted.
+        for tmpl in self.ANSI_C:
+            with self.subTest(cell=tmpl):
+                self.assertEqual(self.verdict(self.cell(tmpl, self.READER)), 'DENY')
+
+    def test_an_ansi_c_twin_and_a_literal_quoted_substitution_still_pass(self):
+        self.assertEqual(self.verdict("echo $'\\'' ls $'a' # '"), 'ALLOW')
+        self.assertEqual(self.verdict("echo $'a' $(date)"), 'ALLOW')
+        self.assertEqual(self.verdict("echo '$(grep -rn foo .)'"), 'ALLOW')
+        # text in a quoted here-document
+        self.assertEqual(self.verdict("git commit -m \"$(cat <<'EOF'\nsubject $(grep -rn foo .)\nEOF\n)\""), 'ALLOW')
+
     def test_a_funsub_is_refused_and_a_plain_expansion_is_not(self):
         for tmpl in self.FUNSUB:
             with self.subTest(cell=tmpl):
@@ -1022,10 +1108,160 @@ class BodiesAreJudged(Tree):
             with self.subTest(cmd=cmd):
                 self.assertEqual(self.verdict(cmd), 'ALLOW')
 
+    # Commit 2: the text another shell is handed. The string of `bash -c` (sh, zsh, dash, ksh) and the arguments of `eval` are
+    # judged like the body of a substitution, wherever the shell word stands (behind a wrapper with options, `xargs`, `find -exec`).
+    EXEC_RUNS = ["bash -c 'R'", 'bash -c "R"', "sh -c 'R'", "zsh -c 'R'", 'dash -c "echo hi; R"', "bash -lc 'R'", "bash -ec 'R'", "bash -xc 'R'",
+                 "bash -c -l 'R'", "bash -o pipefail -c 'R'", "bash +o history -c 'R'", "bash -O extglob -c 'R'", "bash --norc -c 'R'",
+                 "bash --rcfile /dev/null -c 'R'", "bash -c -- 'R'", "bash -c 'R' name arg", "/bin/bash -c 'R'", "env bash -c 'R'", "env -i bash -c 'R'",
+                 "nohup sh -c 'R' &", 'eval "R"', 'eval R', "eval -- 'R'", "echo x | xargs sh -c 'R'", "echo x | xargs -I{} bash -c 'R'",
+                 "find . -maxdepth 0 -exec sh -c 'R' \\;", "find . -maxdepth 0 -exec sh -c 'R' {} +", "bash -c 'bash -c \"R\"'",
+                 'bash -c "bash -c \\"R\\""', "bash -c 'echo $(R)'", "echo ok; bash -c 'R'", "x=$(bash -c 'R')", 'echo "$(bash -c \'R\')"',
+                 "bash -c 'R' # it's", "cat <<EOF\nx\nEOF\nbash -c 'R'", "bash -c 'x=1; R'", "bash -c 'echo a | R'",
+                 # a shift is no here-document: the line behind it is still read
+                 '(( x = 1 <<"2" ))\n bash -c \'R\'', 'echo $[1<<"2"]\n bash -c \'R\'', 'cat <<< "x"\n bash -c \'R\'',
+                 # the here-document of the command line ends, the next line is a command again
+                 "cat <<'EOF'\nit's\nEOF\nbash -c 'R'", "cat <<-EOF\n\tx\n\tEOF\neval R",
+                 # a shift or a pattern in a parameter expansion is no here-document, the lines behind it are read
+                 "echo ${X//<<'E'/y}\n bash -c 'R'", "echo ${X//<<E/y}\n bash -c 'R'", "echo ${X:-<<'E'}\n eval R",
+                 # the word that would be the shell is a variable or a glob: followed by a -c cluster it is taken for one
+                 "sh=bash; $sh -c 'R'", "/bin/ba?h -c 'R'", "sh=bash; $sh -lc 'R'"]
+    # no reader: allowed; with a reader in a place that is no command string of a shell: allowed too
+    EXEC_PLAIN = ["bash -c 'echo hi'", 'bash -c "grep -rn foo src"', "sh -c 'ls docs'", 'bash script.sh', "bash script.sh -c 'R'", "bash -x script.sh 'R'",
+                  'eval echo hi', 'eval "ls docs"', "eval 'echo hi' 'R'", 'xargs -a /dev/null sh -c "ls docs"', 'grep -rn bash src', 'echo eval',
+                  'ls bash', "echo it's fine", "bash -c 'echo it'\"'\"'s fine'", "cat <<'EOF'\nbash -c \"R\"\nEOF", 'echo $((1<<2)) $[1<<2] && bash -c "ls docs"',
+                  'git commit -m "use sh -c \'R\' here"']
+
+    def test_the_string_of_a_shell_and_the_arguments_of_eval_are_judged(self):
+        for tmpl in self.EXEC_RUNS:
+            with self.subTest(cell=tmpl):
+                self.assertEqual(self.verdict(self.cell(tmpl, self.READER)), 'DENY')
+                shells = [self.ran(sh, self.cell(tmpl, self.ORACLE)) for sh in ('bash', 'zsh')]
+                if all(s is None for s in shells):
+                    self.skipTest('no shell installed')
+                self.assertTrue(any(shells), 'no shell ran %r' % tmpl)
+
+    def test_an_option_the_gate_does_not_know_leaves_every_later_word_a_text(self):
+        # a long option that is no known one may take a value: where the string is, is not decided, so each later word is judged
+        # (no local shell takes the option, hence no oracle)
+        for tmpl in ["bash --weird -c 'R'", "bash --weird script.sh 'R'", "bash --weird 'R'", "sh --weird=1 -c 'R'", "bash --weird='R'",
+                      "fish --init-command='R'", "fish -C 'R'", "ksh -T x -c 'R'", "rbash -c 'R'", "rksh -c 'R'", "busybox sh -c 'R'"]:
+            with self.subTest(cell=tmpl):
+                self.assertEqual(self.verdict(self.cell(tmpl, self.READER)), 'DENY')
+        self.assertEqual(self.verdict("bash --weird script.sh 'ls docs'"), 'ALLOW')
+
+    def test_a_shell_that_runs_a_script_or_a_plain_text_is_not_refused(self):
+        for tmpl in self.EXEC_PLAIN:
+            with self.subTest(cell=tmpl):
+                self.assertEqual(self.verdict(self.cell(tmpl, self.READER)), 'ALLOW')
+                for sh in ('bash', 'zsh'):
+                    self.assertIn(self.ran(sh, self.cell(tmpl, self.ORACLE)), (False, None), '%s ran %r' % (sh, tmpl))
+
+    def test_a_string_in_the_string_is_found_to_the_depth_cap(self):
+        def nest(inner, levels):
+            for _ in range(levels):
+                inner = 'bash -c "%s"' % inner.replace('\\', '\\\\').replace('"', '\\"')
+            return inner
+        self.assertEqual(self.verdict(nest('ls docs', 7)), 'ALLOW')
+        self.assertEqual(self.verdict(nest(self.READER, 7)), 'DENY')
+        self.assertEqual(self.verdict(nest('ls docs', 14)), 'DENY')      # past the depth cap: refused, never allowed unread
+        self.assertEqual(self.verdict(nest(self.READER, 14)), 'DENY')
+
+    def test_too_many_shells_in_one_command_are_refused(self):
+        self.assertEqual(self.verdict('echo ' + 'bash ' * 32), 'ALLOW')
+        self.assertEqual(self.verdict('echo ' + 'bash ' * 33), 'DENY')
+
+    def test_an_unreadable_text_that_names_a_shell_is_refused(self):
+        self.assertEqual(self.verdict("bash -c 'ls docs"), 'DENY')
+        self.assertEqual(self.verdict("sh -c \"ls docs"), 'DENY')
+        self.assertEqual(self.verdict("echo it's fine"), 'ALLOW')      # plain prose keeps its verdict
+
+    def test_the_reason_of_a_refused_string_does_not_quote_it(self):
+        rc, out, err = self.bash("bash -c 'grep -rn zzmark .'")
+        self.assertEqual(rc, 2)
+        self.assertNotIn('zzmark', err)
+        self.assertNotIn(self.root, err)
+
     def test_the_reason_of_a_refused_funsub_does_not_quote_it(self):
         rc, out, err = self.bash('x=${ grep -rn zzmark .; }')
         self.assertEqual(rc, 2)
         self.assertNotIn('zzmark', err)
+
+
+class ScannerDifferentialFuzz(Tree):
+    """Seeded differential fuzz on the alphabet of the body scanner (fixup 2 review rules). Each case is a random string of
+    scanner-relevant tokens with ONE body in it, `$(B)` or a backtick pair. The oracle runs the case in bash 3.2 and zsh with
+    B = a printer of EXEC; if either shell RUNS it, the gate (B = a recursive grep over the install root) must refuse it.
+    Over-refusal is fine, a hole is not. The `$'` token is not in the alphabet before commit 3 (R2 is red until then, see
+    test_an_ansi_c_string_cannot_hide_a_body). The printer is `printf %s%s EX EC`: its own text does not contain EXEC, so
+    the echo of a never-run text (a "command not found" line, the body of a heredoc that cat prints) cannot pass for a run."""
+    SEED, CASES = 20261112, 3000
+    TOKENS = ["'", '"', '\\', '#', '$(', ')', '(', '`', '<<EOF', '<<-EOF', "<<'EOF'", '\nEOF\n', '\n', '<', '>', '>#', ' ', ' ', 'a', ';', '|', '&', '{', '}', '${', '$[', ']', '$((', '))', '\t', '\\\n', '<<<', '\n\tEOF\n']
+    BODIES = ['$(B)', '`B`', '"$(B)"', '<(B)', '(B)']
+    # contexts that put the body INSIDE another span, so the scanner has to carry a quote / comment / heredoc state into it
+    WRAPS = [('$(', ')'), ('$(', ')'), ('"', '"'), ("'", "'"), ('`', '`'), ('<(', ')'), ('(', ')'), ('{ ', '; }'), ('$((', '))'),
+             ('<<EOF\n', '\nEOF\n'), ('$(cat <<EOF\n', '\nEOF\n)'), ('$(: ', ')')]
+
+    @classmethod
+    def templates(cls, n):
+        """n templates, each with exactly one `B` (the body), from a seeded stream: random tokens around the body, in 0 to 2 wrappers."""
+        import random
+        rng = random.Random(cls.SEED)
+        out = []
+        for _ in range(n):
+            parts = [rng.choice(cls.TOKENS) for _ in range(rng.randint(1, 6))]
+            parts.insert(rng.randint(0, len(parts)), rng.choice(cls.BODIES))
+            t = ''.join(parts)
+            for _ in range(rng.choice((0, 1, 1, 2))):
+                o, c = rng.choice(cls.WRAPS)
+                t = ''.join(rng.choice(cls.TOKENS) for _ in range(rng.randint(0, 2))) + o + t + c + ''.join(rng.choice(cls.TOKENS) for _ in range(rng.randint(0, 2)))
+            if t.count('B') == 1:
+                out.append(t)
+        return out
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('gate_under_test_fuzz', cls.gate)
+        cls.mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.mod)
+
+    def gate_denies(self, cmd):
+        try:
+            self.mod.check_bash(cmd, self.root)
+        except self.mod.Block:
+            return True
+        return False
+
+    def test_no_case_that_a_shell_runs_passes_the_gate(self):
+        import resource
+        shells = [s for s in ('bash', 'zsh') if shutil.which(s)]
+        if not shells:
+            self.skipTest('no bash or zsh installed: the differential fuzz has no oracle')
+        before = resource.getrusage(resource.RUSAGE_SELF)
+        holes, ran_n = [], 0
+        for template in self.templates(self.CASES):
+            # The printer also prints the subshell level, so `EXEC1` or more is a body that ran and `EXEC0` a stand-in that ran as a
+            # command of its own. Only the first counts: a stand-in behind an empty substitution that is glued to it (`$(:)grep ...`
+            # runs grep) passes the gate in the base too. That is a word-expansion hole older than the body scanner (parking
+            # list), not a body that the scanner hides. B is a word of its own (a space on both sides) for the same reason.
+            exec_text = template.replace('B', ' printf %s%s%s%s EX EC $BASH_SUBSHELL $ZSH_SUBSHELL >&2 ')
+            ran = False
+            for sh in shells:
+                try:
+                    p = subprocess.run([shutil.which(sh), '-c', exec_text], cwd=self.root, capture_output=True, timeout=10,
+                                       stdin=subprocess.DEVNULL, env={'PATH': '/usr/bin:/bin', 'HOME': self.root, 'LC_ALL': 'C'})
+                except subprocess.TimeoutExpired:
+                    continue
+                ran = ran or re.search(rb'EXEC[1-9]', p.stderr + p.stdout) is not None      # bytes: a shell may print a byte that is not UTF-8
+            if ran:
+                ran_n += 1
+                if not self.gate_denies(template.replace('B', ' grep -rn foo . ')):
+                    holes.append(template)
+        used = resource.getrusage(resource.RUSAGE_SELF)
+        self.assertGreater(ran_n, 100, 'the fuzz is not exercising the oracle (%d cases ran a body)' % ran_n)
+        self.assertEqual(holes, [], '%d of %d cases that a shell runs pass the gate, first: %r' % (len(holes), ran_n, holes[:5]))
+        self.assertLess(used.ru_utime + used.ru_stime - before.ru_utime - before.ru_stime, 60.0)
 
 
 if __name__ == '__main__':
