@@ -2215,6 +2215,8 @@ window._i18n.en = {
   'errors.timeout':                  'Timeout',
   'errors.disabled':                 'Feature disabled',
   'errors.not_live':                 'This task is not live yet -- an admin must activate it',
+  'errors.author_inactive':          'The user who last wrote this task may no longer write schedules -- an admin has to take it over',
+  'errors.author_unverifiable':      'The author of this task cannot be verified right now -- try again later',
   'errors.stale_revision':           'The task changed after you opened it -- review the current version and activate again',
   'errors.status_conflict':          'The status changed in the meantime -- reload and check the current state',
   'errors.managed_settings_missing': 'Managed settings missing',

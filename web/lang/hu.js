@@ -2216,6 +2216,8 @@ window._i18n.hu = {
   'errors.timeout':                  'Időtúllépés',
   'errors.disabled':                 'A funkció le van tiltva',
   'errors.not_live':                 'A feladat nincs élesítve -- egy adminnak aktiválnia kell',
+  'errors.author_inactive':          'A feladat utolsó szerzője már nem írhat ütemezést -- egy adminnak át kell vennie',
+  'errors.author_unverifiable':      'A feladat szerzője most nem ellenőrizhető -- próbáld újra később',
   'errors.stale_revision':           'A feladat megváltozott, mióta megnyitottad -- nézd át az aktuális változatot, és aktiváld újra',
   'errors.status_conflict':          'Közben megváltozott az állapot -- töltsd újra, és nézd meg az aktuális állapotot',
   'errors.managed_settings_missing': 'Hiányzó menedzselt beállítás',

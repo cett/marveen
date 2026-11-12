@@ -299,6 +299,16 @@ describe('the schedule list and the author user id', () => {
   })
 })
 
+describe('a run-now refused by the author check', () => {
+  it.each([['author_inactive', 409], ['author_unverifiable', 409], ['invalid_value', 400]])('%s answers %i', async (error, status) => {
+    const runner = await import('../web/schedule-runner.js')
+    vi.mocked(runner.runScheduledTaskNow).mockResolvedValue({ ok: false, error, hint: 'h' })
+    const r = await post('/api/schedules/t-live/run', undefined, human())
+    expect(r.status).toBe(status)
+    expect(r.body['error']).toBe(error)
+  })
+})
+
 describe('activating a task records the activator and leaves the author', () => {
   it('a human admin activating a draft is the activator, now; the author stays the tenant user', async () => {
     const before = Math.floor(Date.now() / 1000)

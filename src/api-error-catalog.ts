@@ -15,6 +15,8 @@ export const ERROR_TOKENS = [
   'timeout',
   'disabled',
   'not_live',
+  'author_inactive', // not not_live: the task is live, but the user who last wrote it may no longer write schedules (an admin takes it over)
+  'author_unverifiable', // as author_inactive, but the author could not be looked up right now (retry later)
   'managed_settings_missing',
   'upstream_error',
   // Domain tokens (canonicalized; a distinct token is justified):
@@ -48,11 +50,13 @@ export const ALLOWED_STATUS_TOKENS: Record<number, ReadonlyArray<ErrorToken>> = 
   // not_live = review-gate conflict (entity exists but is draft/pending_review,
   // distinct from disabled -- the fix is activation by an admin, not re-enabling);
   // managed_settings_missing = precondition unmet (entity exists, external config missing);
+  // author_inactive / author_unverifiable = run-time author check refused a manual run (the task is live and fine,
+  // its author is not / cannot be verified);
   // stale_revision = optimistic-lock miss on an activation (content changed since it was loaded);
   // status_conflict = compare-and-set miss on a status (a message that is already closed, a kanban
   // card that is no longer in the status the caller expected);
   // all five are state conflicts, not malformed requests.
-  409: ['conflict', 'disabled', 'not_live', 'stale_revision', 'status_conflict', 'managed_settings_missing'],
+  409: ['conflict', 'disabled', 'not_live', 'author_inactive', 'author_unverifiable', 'stale_revision', 'status_conflict', 'managed_settings_missing'],
   429: ['limit_exceeded'],
   500: ['internal_error'],
   502: ['upstream_error'],

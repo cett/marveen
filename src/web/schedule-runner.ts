@@ -62,6 +62,7 @@ import {
 } from './scheduled-tasks-io.js'
 import { createSkipTracker } from './schedule-skip-ledger.js'
 import { createPairOrphanChecker } from './schedule-tenant.js'
+import { authorGateMode, createAuthorChecker, type AuthorBlock } from './schedule-author.js'
 import { sendTelegramMessage } from './telegram.js'
 import { listAgentNames, readAgentRemoteHost, agentDir, readAgentClaudeConfigDir } from './agent-config.js'
 import { readTranscriptMtimeFromProjectDir } from './active-model.js'
@@ -437,6 +438,44 @@ async function sendTenantMismatchAlert(task: ScheduledTask): Promise<void> {
   const text = `\u26a0\ufe0f \u00dctemez\u0151: a(z) ${task.name} feladat nem fut, mert a(z) ${agent} \u00e1gens m\u00e1r nem szolg\u00e1lja ki a(z) ${tenant} tenantot (kikapcsolt \u00e1gens vagy tenant). Az esed\u00e9kess\u00e9gek skipped_tenant_mismatch sork\u00e9nt a task_runs-ban vannak; \u00e1ll\u00edtsd vissza az \u00e1gens enged\u00e9lyez\u00e9s\u00e9t, vagy tedd \u00e1t a feladatot m\u00e1sik tenantba.`
   sendTelegramMessage(TELEGRAM_BOT_TOKEN, ALLOWED_CHAT_ID, text)
     .catch(err => logger.warn({ err }, 'schedule-runner: tenant-mismatch alert send failed'))
+}
+
+// Tasks whose author no longer passes the check (schedule-author.ts) and that already raised their one
+// notification; pruned every tick to the tasks still blocked, so a later break notifies again.
+const authorBlockedAlerted = new Set<string>()
+// Shadow mode: a task is noted once per process (a restart notes it again, which is one extra audit row).
+const authorShadowNoted = new Set<string>()
+
+async function sendAuthorBlockedAlert(task: ScheduledTask, verdict: AuthorBlock): Promise<void> {
+  const author = task.authorLabel ?? 'unknown'
+  logger.error(
+    { task: task.name, author, verdict },
+    'schedule-runner: the author of this task is no longer allowed to write schedules or cannot be checked -- not running it, occurrences are recorded as skipped_author_*',
+  )
+  try {
+    await writeAgentAuditLog({ agent_id: 'scheduler', entity: 'schedule', action: verdict === 'unverifiable' ? 'skip_author_unverifiable' : 'skip_author_inactive',
+      entity_id: task.name, detail: { author_label: author, verdict } })
+  } catch { /* audit failure must not block the tick */ }
+  if (!TELEGRAM_BOT_TOKEN || !ALLOWED_CHAT_ID) return
+  const why = verdict === 'unverifiable'
+    ? 'a szerz\u0151je nem ellen\u0151rizhet\u0151 (az adatb\u00e1zis-keres\u00e9s hib\u00e1zott), ez\u00e9rt a feladat biztons\u00e1gb\u00f3l nem fut'
+    : 'a szerz\u0151je (' + author + ') m\u00e1r nem jogosult \u00fctemez\u00e9st \u00edrni (t\u00f6r\u00f6lt, letiltott vagy lefokozott felhaszn\u00e1l\u00f3)'
+  const text = `\u26a0\ufe0f \u00dctemez\u0151: a(z) ${task.name} feladat nem fut, mert ${why}. Az esed\u00e9kess\u00e9gek skipped_author_* sork\u00e9nt a task_runs-ban vannak. A feladat tartalm\u00e1t egy admin szerkeszt\u00e9ssel vagy \u00e1tv\u00e9tellel \u00fajra a saj\u00e1tj\u00e1v\u00e1 teheti.`
+  sendTelegramMessage(TELEGRAM_BOT_TOKEN, ALLOWED_CHAT_ID, text)
+    .catch(err => logger.warn({ err }, 'schedule-runner: author-blocked alert send failed'))
+}
+
+// Shadow mode of the author check: the verdict is made and recorded, the task still runs. No task_runs row and no
+// Telegram message, so the observation costs nobody an alert.
+async function noteAuthorShadow(task: ScheduledTask, verdict: AuthorBlock): Promise<void> {
+  if (authorShadowNoted.has(task.name)) return
+  authorShadowNoted.add(task.name)
+  const author = task.authorLabel ?? 'unknown'
+  logger.warn({ task: task.name, author, verdict }, 'schedule-runner: author check would block this task (shadow mode, it still runs)')
+  try {
+    await writeAgentAuditLog({ agent_id: 'scheduler', entity: 'schedule', action: 'author_gate_shadow',
+      entity_id: task.name, detail: { author_label: author, verdict } })
+  } catch { /* audit failure must not block the tick */ }
 }
 
 // Skip ledger (schedule-skip-ledger.ts): one task_runs row per held occurrence
@@ -1369,6 +1408,25 @@ export async function runScheduledTaskNow(
   // through. This is the fail-closed backstop for any other caller.
   if (!isTaskLive(task) && !opts.allowNotLive) return { ok: false, error: 'not_live', hint: 'Schedule is not live -- an admin must activate it first' }
 
+  // Author check: a live task whose author is no longer allowed to write schedules, or cannot be looked up, does not
+  // run on demand either, a human admin included (the way out is to take the task over). A draft previewed by a
+  // human admin (allowNotLive) is not live and is not checked, as before. Command tasks are checked like the rest.
+  if (task.enabled && isTaskLive(task)) {
+    const verdict = await createAuthorChecker()(task)
+    if (verdict !== 'ok') {
+      if (authorGateMode() === 'enforce') {
+        return {
+          ok: false,
+          error: verdict === 'unverifiable' ? 'author_unverifiable' : 'author_inactive',
+          hint: verdict === 'unverifiable'
+            ? 'The author of this schedule cannot be verified right now -- it does not run until the check works again'
+            : 'The author of this schedule is no longer allowed to write schedules -- an admin has to take it over',
+        }
+      }
+      await noteAuthorShadow(task, verdict)
+    }
+  }
+
   const now = Date.now()
 
   // type='command' tasks never go through an agent session: the cron loop runs
@@ -1700,6 +1758,10 @@ export function startScheduleRunner(): NodeJS.Timeout {
     try {
     const tasks = await listScheduledTasks()
     const now = Date.now()
+    // The author check: one checker (one lookup per author) and one mode read per tick, shared by the retry
+    // loop and the fire loop below.
+    const authorCheck = createAuthorChecker()
+    const authorMode = authorGateMode()
     // Scan the real interval elapsed since the previous tick (30 min on the
     // first tick), not a fixed 60s window -- a late/dropped tick must not let a
     // sparse daily cron's single occurrence slip through a gap unscanned (#621).
@@ -1738,6 +1800,20 @@ export function startScheduleRunner(): NodeJS.Timeout {
         } catch { /* audit failure must not block the tick */ }
         await deletePendingTaskRetry(row.task_name, row.agent_name)
         continue
+      }
+      // A retry of a task whose author has since been blocked is dropped too (it would otherwise inject the
+      // moment the session frees up): the way back is the author check passing and the next occurrence.
+      const retryAuthor = await authorCheck(taskDef)
+      if (retryAuthor !== 'ok') {
+        if (authorMode === 'enforce') {
+          try {
+            await writeAgentAuditLog({ agent_id: 'scheduler', entity: 'schedule', action: 'skip_not_live',
+              entity_id: row.task_name, detail: { reason: 'retry_dropped', cause: retryAuthor === 'unverifiable' ? 'author_unverifiable' : 'author_inactive' } })
+          } catch { /* audit failure must not block the tick */ }
+          await deletePendingTaskRetry(row.task_name, row.agent_name)
+          continue
+        }
+        await noteAuthorShadow(taskDef, retryAuthor)
       }
 
       // Register the key only once we know the retry is live, so the cron
@@ -1820,6 +1896,19 @@ export function startScheduleRunner(): NodeJS.Timeout {
       if (t.enabled && isTaskLive(t) && t.type !== 'command' && await pairOrphan(t.tenantId, t.agent)) tenantMismatch.add(t.name)
     }
 
+    // The author verdict of every enabled, live task (any type, command included): the tasks the author check blocks
+    // in enforce mode. In shadow mode the verdict is only noted and the map stays empty, so nothing is held.
+    const authorBlocked = new Map<string, AuthorBlock>()
+    for (const t of tasks) {
+      if (!t.enabled || !isTaskLive(t)) continue
+      const verdict = await authorCheck(t)
+      if (verdict === 'ok') continue
+      if (authorMode === 'enforce') authorBlocked.set(t.name, verdict)
+      else await noteAuthorShadow(t, verdict)
+    }
+    // a task that passes again is forgotten, so its next break notifies again
+    for (const name of [...authorBlockedAlerted]) if (!authorBlocked.has(name)) authorBlockedAlerted.delete(name)
+
     // Skip ledger: a due occurrence of a task that is held back (not live, or
     // part of a mass disable) leaves a task_runs row instead of vanishing with
     // the tick window, and a mass skip alerts once. Must never break the tick.
@@ -1842,6 +1931,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
         },
         dbRunnable: () => dbRunnable,
         tenantMismatch: t => tenantMismatch.has(t.name),
+        authorBlocked: t => authorBlocked.get(t.name) ?? null,
       })
       if (skipScan.alert) await sendMassSkipAlert(skipScan.massHeld, tasks.length)
     } catch (err) {
@@ -1878,6 +1968,16 @@ export function startScheduleRunner(): NodeJS.Timeout {
       if (tenantMismatch.has(task.name)) {
         // The ledger above already recorded the due occurrence; tell the operator once.
         if (shouldAlertTenantMismatch(tenantMismatchAlerted, tenantMismatch, task.name)) await sendTenantMismatchAlert(task)
+        continue
+      }
+      const authorVerdict = authorBlocked.get(task.name)
+      if (authorVerdict) {
+        // Same as above: the ledger recorded the occurrence, the operator hears once. lastRunAt is not stamped, so
+        // the task is neither treated as run nor replayed later: the next occurrence after the author is fine runs.
+        if (!authorBlockedAlerted.has(task.name)) {
+          authorBlockedAlerted.add(task.name)
+          await sendAuthorBlockedAlert(task, authorVerdict)
+        }
         continue
       }
       const occurrenceMs = cronPrevOccurrence(task.schedule, fromMs, now)

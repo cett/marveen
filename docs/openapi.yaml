@@ -284,6 +284,8 @@ components:
             - timeout
             - disabled
             - not_live
+            - author_inactive
+            - author_unverifiable
             - managed_settings_missing
             - upstream_error
             - sender_not_in_allowlist

@@ -132,6 +132,7 @@ export async function countTaskRunsBetween(fromTs: number, toTs?: number, tenant
 // only queue a pending_task_retries row), so they reach the view through the pending half, not through here.
 export const DEAD_LETTER_RUN_STATUSES = [
   'missed', 'lost', 'error', 'skipped', 'skipped_not_live', 'skipped_disabled', 'skipped_tenant_mismatch',
+  'skipped_author_inactive', 'skipped_author_unverifiable',
 ] as const
 
 export interface DeadLetterRunRow { name: string; agent: string; ts: number; status: string }

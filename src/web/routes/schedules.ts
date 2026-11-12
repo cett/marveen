@@ -694,7 +694,8 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     // human admin may still run-now a draft to preview it before activating.
     const result = await runScheduledTaskNow(name, { allowNotLive: isHumanAdmin(ctx) })
     if (!result.ok) {
-      const status = result.error === 'not_found' ? 404 : (result.error === 'disabled' || result.error === 'not_live') ? 409 : 400
+      const status = result.error === 'not_found' ? 404
+        : (result.error === 'disabled' || result.error === 'not_live' || result.error === 'author_inactive' || result.error === 'author_unverifiable') ? 409 : 400
       json(res, { error: result.error, ...(result.hint ? { hint: result.hint } : {}) }, status)
       return true
     }
