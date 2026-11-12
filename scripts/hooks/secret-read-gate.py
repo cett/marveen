@@ -658,6 +658,7 @@ class _QWord(str):
 
 
 _SPACE = ' \t\r\n'
+_SPAN_BUDGET = 30      # characters (per character of the text) that the end finders of the ${ } and $[ ] spans may read in all: linear
 _SCAN_DEPTH = 16      # nested command substitutions the quote scanner follows; deeper is "state unknown"
 
 
@@ -719,7 +720,34 @@ def _shlex_view(line: str):
 
 
 _WORD_END = ' \t\n;&|()<>'      # ends the delimiter word of a here-document
-_COMMENT_PREV = ' \t\n;'      # a `#` opens a comment at the start of a text and after one of these ONLY: after `<`, `>`, `|` or `&` bash 3.2 reads it as the first character of a redirection target
+def _comment_ok_after(text: str, i: int) -> bool:
+    """May a `#` open a comment right after `text[i]`? (bash 3.2 and zsh.) Yes at the start of a word: after a blank, a tab, a
+    newline, `;`, `(` and `)`, and after a `|` or `&` that is a control operator (`|`, `||`, `&`, `&&`). NO right after a
+    redirection operator, where the `#x` is the target word: `<`, `>`, `>>`, `<>`, `>&`, `<&`, `&>`, `>|`, `|&`, `<<<`. A
+    `#` taken for a comment where the shell reads code hides the commands behind it; a `#` taken for code where the shell
+    reads a comment only refuses more."""
+    c = text[i]
+    if c in ' \t\n;()':
+        return True
+    if c == '|':      # `>|` and `|&` are redirections
+        return text[i - 1:i] != '>' and text[i + 1:i + 2] != '&'
+    if c == '&':      # `>&`, `<&`, `|&` and `&>` are redirections
+        return text[i - 1:i] not in ('>', '<', '|') and text[i + 1:i + 2] != '>'
+    return False
+
+
+def _command_start(text: str, i: int) -> bool:
+    """Is `text[i]` the first character of a command: the start of the text, or only blanks behind a `;`, `(`, a newline that no
+    backslash continues, or a control operator (`|`, `||`, `&`, `&&`, not a redirection)? Anything else (a word, a keyword, `{`,
+    `)`) is no certain command start, and the caller then reads on as code."""
+    k = i - 1
+    while k >= 0 and text[k] in ' \t':
+        k -= 1
+    if k < 0 or text[k] in ';(':
+        return True
+    if text[k] == '\n':
+        return text[k - 1:k] != '\\'
+    return text[k] in '|&' and _comment_ok_after(text, k)
 _HEREDOC_BAD = object()          # _heredoc_operator: the delimiter word has an unterminated quote
 
 
@@ -840,6 +868,11 @@ def _bash_subst(line: str, i: int, closer: str, quoted: list, depth: int):
             ws = False
             if i is None:
                 return None
+        elif c == '$' and i + 1 < n and line[i + 1] in '{[':
+            # A `)` or `(` inside a `${ }` or `$[ ]` span (a parameter expansion's default value, `${Y:-)}`) is not a
+            # real paren: skipped whole, as the matched-pair scan of bash and zsh does, so the body does not end there.
+            i = _no_heredoc_end(line, i, quoted)
+            ws = False
         elif c == '`' and closer == ')':
             i = _bash_subst(line, i + 1, '`', quoted, depth + 1)
             ws = False
@@ -863,7 +896,7 @@ def _bash_subst(line: str, i: int, closer: str, quoted: list, depth: int):
                 pending.append(op[:3])
                 i, ws = op[3], False
         else:
-            ws = c in _COMMENT_PREV
+            ws = _comment_ok_after(line, i)
             i += 1
     return None
 
@@ -1021,6 +1054,26 @@ def _skip_wrappers(toks: list) -> list:
             continue
         break
     return toks[i:]
+
+
+def _empty_head_variants(all_toks: list):
+    """The command as typed, then the same command with each leading word that holds a command substitution or a backtick pair
+    dropped, or cut back to the text behind its last `)` or backtick (`$(:)grep` is the word `grep`). Such a word can expand to
+    nothing at run time (`$(true) grep -rn foo .` runs the grep), which the text cannot show: the word behind it is then the
+    head, so it is judged as the head as well (a superset: a word that is never empty only makes the second reading an
+    over-refusal). At most BODY_MAX_DEPTH variants, the last one with every such word dropped."""
+    yield all_toks
+    toks, n = _skip_wrappers(all_toks), 0
+    while toks and re.search(r'\$\(|`', toks[0]):
+        n += 1
+        head = len(all_toks) - len(toks)
+        tail = re.split(r'[)`]', toks[0])[-1]
+        if len(tail) >= len(toks[0]):      # no closer in the word (`$(a`): nothing to cut back to, so the word goes (every round shortens the list or the word)
+            tail = ''
+        all_toks = all_toks[:head] + ([tail] if tail else []) + all_toks[head + 1:]
+        toks = _skip_wrappers(all_toks)
+        if n < BODY_MAX_DEPTH or not (toks and re.search(r'\$\(|`', toks[0])):
+            yield all_toks
 
 
 def _expand_word(word: str, cwd: str) -> list:
@@ -1477,15 +1530,15 @@ def _arith_bodies(text: str, start: int, end: int, quoted: list, out: list, dept
     return True
 
 
-def _no_heredoc_end(text: str, i: int, quoted: list) -> int:
-    """`text[i]` is a `$` before `[` or `{`: the index after the closer that ends the span, the LATEST of the ends a shell may
-    take: the closers counted plainly (`_count_end`), and counted with quotes skipped and with a nested `$( )`, backtick pair
-    and `${ }` skipped as a whole (a closer inside them closes nothing, as in the matched-pair scan of bash and zsh). The end
-    of the text when none closes. No here-document starts inside (`$[ 1<<2 ]` is a shift, `${X//<<E/y}` a pattern), so a too
-    short end would read the rest of a pattern as a here-document and swallow the commands behind it, while a too long end
-    only keeps a real here-document from being recognised (its text is then judged as code: refused, never allowed unread)."""
+def _quoted_end(text: str, i: int, quoted: list, nest: bool) -> int:
+    """`text[i]` is a `$` before `[` or `{`: the index after the closer, counted with quotes skipped and with a nested `$( )`,
+    backtick pair and `${ }` skipped as a whole (a closer inside them closes nothing, as in the matched-pair scan of bash and
+    zsh). `nest` says whether a bare opener inside counts one level deeper (the plain count does, `${X:-{}` is open to it) or
+    not (bash 3.2 closes at the first closer, `${X:-{}` is a complete span to it; zsh does not run that text). -1 when
+    nothing closes."""
     op, cl = ('[', ']') if text[i + 1] == '[' else ('{', '}')
     n, depth, k = len(text), 1, i + 2
+    end, done = -1, False
     while k < n and depth:
         c = text[k]
         if c == '\\':
@@ -1494,21 +1547,64 @@ def _no_heredoc_end(text: str, i: int, quoted: list) -> int:
         if c in '\'"':
             j = text.find(c, k + 1)
             if j == -1:
-                return n
+                break
             k = j + 1
             continue
         if c == '`' or (c == '$' and text.startswith('(', k + 1)):
             j = _bash_subst(text, k + (1 if c == '`' else 2), '`' if c == '`' else ')', quoted, 0)
             if j is None:
-                return n
+                break
             k = j
             continue
         if c == '$' and text.startswith('{', k + 1):
             k = _count_end(text, k)      # the matching `}`, counted plainly (no recursion)
+            if k == -1:
+                break
             continue
-        depth += (c == op) - (c == cl)
+        depth += (c == op and nest) - (c == cl)
         k += 1
-    return max(_count_end(text, i), k if depth == 0 else n)
+    else:
+        end, done = (k if depth == 0 else -1), True
+    # The budget of the span ends (see _no_heredoc_end). A scan that broke off may have read to the end of the text inside a
+    # nested finder (k is then -1 or a stale index): it is charged the whole rest, never less than it read and never a
+    # negative amount.
+    quoted[n] -= (min(k, n) if done else n) - i
+    return end
+
+
+def _no_heredoc_end(text: str, i: int, quoted: list) -> int:
+    """`text[i]` is a `$` before `[` or `{`: the index after the closer that ends the span, the LATEST of the ends a shell may
+    take: the closers counted plainly (`_count_end`), counted with quotes and nested substitutions skipped (`_quoted_end`),
+    and the same without counting a bare opener. A reading that finds no closer is no end: it used to be the end of the text,
+    which turned the comment and here-document rules off for everything behind (`${X:-'{'}` is closed to a shell but open to
+    the plain count, so the `# it's` after it read as code, its quote swallowed the next body, and a shell ran it). When no
+    reading closes, no shell does either (it is a syntax error and nothing behind runs): `i + 2`, so that the text behind is
+    scanned as code from there on. No here-document starts inside (`$[ 1<<2 ]` is a shift, `${X//<<E/y}` a pattern), so a too
+    short end would read the rest of a pattern as a here-document and swallow the commands behind it, while a too long end
+    only keeps a real here-document from being recognised (its text is then judged as code: refused, never allowed unread)."""
+    n = len(text)
+    if quoted[n] <= 0:
+        # The budget of the span ends is spent: thousands of spans that none closes, or a text built to burn it. No end is
+        # right for the rest (the end of the text turns the comment and here-document rules off, so a quote in a comment
+        # could hide a body; the short end is the quadratic one): the command is refused.
+        deny('the command holds more ${ } and $[ ] spans than the gate reads')
+    plain = _count_end(text, i)
+    quoted[n] -= (n if plain == -1 else plain) - i
+    ends = (plain, _quoted_end(text, i, quoted, True), _quoted_end(text, i, quoted, False))
+    return max(max(ends), i + 2)
+
+
+def _resume_end(text: str, i: int, quoted: list, latest: int) -> int:
+    """Where the code scan goes on behind a `$[ ]` span whose arithmetic reading ran up to `latest` (`_no_heredoc_end`): the
+    EARLIEST end that a quote-aware reading closes, `latest` when none does. The LATEST end is right for the arithmetic reading
+    (a body anywhere in the span is found) and wrong for the code behind it: when it is longer than the span of the shell
+    (`$[ '[' ]` is closed to a shell and open to the plain count, which went on to a `]` of the text behind), the commands
+    between the two ends were read as arithmetic and a bare `( cmd )` or `<( cmd )` there stayed hidden. The text between
+    the ends is now read as code as well: a superset."""
+    if quoted[len(text)] <= 0:
+        deny('the command holds more ${ } and $[ ] spans than the gate reads')
+    ends = [e for e in (_quoted_end(text, i, quoted, True), _quoted_end(text, i, quoted, False)) if e != -1]
+    return min(ends) if ends else latest
 
 
 def _body_at(text: str, i: int, quoted: list, out: list, in_dq: bool):
@@ -1548,14 +1644,14 @@ def _body_at(text: str, i: int, quoted: list, out: list, in_dq: bool):
 
 
 def _count_end(text: str, i: int) -> int:
-    """`text[i]` is a `$` before `[` or `{`: the index after the matching closer, counted with no quote state (the end of the
-    text when there is none). One of the ends `_no_heredoc_end` takes the latest of."""
+    """`text[i]` is a `$` before `[` or `{`: the index after the matching closer, counted with no quote state (-1 when there is
+    none). One of the ends `_no_heredoc_end` takes the latest of."""
     op, cl = ('[', ']') if text[i + 1] == '[' else ('{', '}')
     depth, k, n = 1, i + 2, len(text)
     while k < n and depth:
         depth += (text[k] == op) - (text[k] == cl)
         k += 1
-    return k if depth == 0 else n
+    return k if depth == 0 else -1
 
 
 def _find_bodies(text: str):
@@ -1563,11 +1659,22 @@ def _find_bodies(text: str):
     backticks, `<( )`, `>( )` and `( )`, in the open and inside double quotes. A single-quoted span is a literal. None
     when a quote or a body is not closed (the caller refuses it). One pass, linear in the text."""
     n = len(text)
-    quoted = [False] * n      # filled by _bash_subst; shared so that the pass stays linear
+    quoted = [False] * n + [_SPAN_BUDGET * n + 10000]      # filled by _bash_subst; shared so that the pass stays linear; the last cell: _span_end budget
     out, i = [], 0
     ws, pending, arith_end = True, [], -1      # at the start of a word; here-documents waiting for their line; end of a `$[ ]`
+    dup = 0      # 1: the word behind a `>&` or `<&` has not started; 2: inside it (up to an unquoted blank or operator)
     while i < n:
         c = text[i]
+        if dup:
+            if c in ' \t':
+                if dup == 2 and i >= arith_end:      # (a blank inside a `${ }` of the word does not end it either)
+                    dup = 0
+            elif c in '\n;|&()<>' and i >= arith_end:      # (a `;` inside a `${ }` of the word does not end it)
+                dup = 0
+            else:
+                dup = 2
+        if c == '&' and text[i - 1:i] in ('>', '<') and i > 0:
+            dup = 1
         if c == '\\':
             ws = ws and text[i + 1:i + 2] == '\n'      # a backslash-newline is not there for the shell
             i += 2
@@ -1575,6 +1682,11 @@ def _find_bodies(text: str):
             j = text.find("'", i + 1)
             if j == -1:
                 return None
+            if dup:
+                # bash 3.2 expands the WORD behind `>&` and `<&` without removing the quotes: `>&'$(R)'` and `>&2'$(R)'` run R.
+                # Every single-quoted span of the word is read like a double-quoted text, which finds what the quotes would hide
+                if not _arith_bodies(text, i + 1, j, quoted, out, 0):
+                    return None
             i, ws = j + 1, False
         elif c == '"':
             i, ws = i + 1, False
@@ -1588,12 +1700,21 @@ def _find_bodies(text: str):
                 if d == '\\':
                     i += 2
                     continue
+                if d == '$' and text.startswith('[', i + 1):
+                    # `"$[ ... ]"`: the same arithmetic span as in the open. A quote inside it is a literal to the arithmetic
+                    # reading but a quote to this scan (`"$[ "'$(R)'" ]"` runs the body in zsh): the span is consumed whole
+                    j = _no_heredoc_end(text, i, quoted)
+                    if not _arith_bodies(text, i + 2, j, quoted, out, 0):
+                        return None
+                    i = _resume_end(text, i, quoted, j)
+                    continue
                 j = _body_at(text, i, quoted, out, True)
                 if j is None:
                     return None
                 i = j if j != i else i + 1
-        elif c == '#' and ws:
-            # a comment: no quote and no body in it; the newline stays for a pending here-document
+        elif c == '#' and ws and i >= arith_end:
+            # a comment: no quote and no body in it; the newline stays for a pending here-document. Not inside a `${ }` or a
+            # `$[ ]`: `${X: # -a}` is an offset expression, and the text behind its `}` is code
             j = text.find('\n', i)
             i = n if j == -1 else j
         elif c == '\n' and pending:
@@ -1618,7 +1739,8 @@ def _find_bodies(text: str):
             j = _no_heredoc_end(text, i, quoted)
             if not _arith_bodies(text, i + 2, j, quoted, out, 0):
                 return None
-            i, ws = j, False
+            arith_end = max(arith_end, j)      # no comment and no here-document in the span, whatever end the code scan resumes at
+            i, ws = _resume_end(text, i, quoted, j), False
         else:
             if c == '$' and i >= arith_end and text[i + 1:i + 2] in ('[', '{'):      # one scan per span: linear
                 arith_end = max(arith_end, _no_heredoc_end(text, i, quoted))
@@ -1626,9 +1748,12 @@ def _find_bodies(text: str):
             if j is None:
                 return None
             if j != i:
-                i, ws = j, False
+                # a `#` right behind the `)` of a subshell opens a comment; behind `$( )` or `<( )` it is part of the word. A `(`
+                # that is not at the start of a command is no subshell to zsh (`echo (a)#x $(R)`, `x(a)#x $(R)`: a glob group, a
+                # qualifier, a function header), and the `#x` there is a word: it stays code
+                i, ws = j, c == '(' and _command_start(text, i)
             else:
-                i, ws = i + 1, c in _COMMENT_PREV
+                i, ws = i + 1, _comment_ok_after(text, i)
     return out
 
 
@@ -1639,7 +1764,7 @@ def _lex_commands(text: str):
     judged on its own); a comment and the body of a here-document are skipped. `;`, `&`, `|`, `(` and `)` end a command
     (`>&2` and `<&3` do not). None when a quote or a substitution is not closed. One pass, linear."""
     n = len(text)
-    quoted = [False] * n      # scratch of _bash_subst
+    quoted = [False] * n + [_SPAN_BUDGET * n + 10000]      # scratch of _bash_subst; the last cell: the budget of the span ends
     cmds, cur, word, has = [], [], [], False
     ws, pending, arith_end = True, [], -1
     i = 0
@@ -1668,7 +1793,7 @@ def _lex_commands(text: str):
                         if depth == 0:
                             break
                     arith_end = max(arith_end, k if depth == 0 else n)
-            ws = c in _COMMENT_PREV
+            ws = _comment_ok_after(text, i)
             i += 1
             if c == '\n' and pending:
                 for here in pending:
@@ -1833,10 +1958,20 @@ def _exec_texts(words: list) -> list:
 def check_bash(cmd: str, cwd: str) -> None:
     _brace_work[0] = 0      # the brace expansion work cap is per command
     _body_work[0] = 0
+    if len(cmd) > MAX_TEXT:
+        # every scan below stops at MAX_TEXT characters: a reader behind that point is never seen, so the text is refused
+        # (fail closed) rather than judged by its head alone. The reason does not quote the text.
+        deny('the command is longer than %d characters, which the gate does not read to the end' % MAX_TEXT)
     if _names_key_in_text(cmd):
         deny('the command names the claim signing key (%s) or a glob that could match it' % KEY_NAME)
     plain_cmd = re.sub(r"\$(?=['\"])", '', cmd)      # $'..' / $"..": ANSI-C quoting, read as plain quotes
     _judge(plain_cmd, cwd, 0)
+    # The shell removes a backslash-newline pair before it reads anything but a comment (and a single-quoted text), so
+    # `"$\<newline>(cmd)"` runs cmd while the finder sees no `$(`. The joined text is judged as well: a superset (a pair inside a
+    # comment ends the comment at its newline, which only the first reading knows); the work caps stay shared.
+    joined = plain_cmd.replace('\\\n', '')
+    if joined != plain_cmd:
+        _judge(joined, cwd, 0)
 
 
 def _judge(plain_cmd: str, cwd: str, depth: int) -> None:
@@ -1852,7 +1987,7 @@ def _judge(plain_cmd: str, cwd: str, depth: int) -> None:
         deny('the command nests command bodies deeper than the gate can look through')
     for segs in _pipelines(plain_cmd):
         _check_find_pipe(segs, cwd)
-    for all_toks in _commands(plain_cmd):
+    for all_toks in [v for typed in _commands(plain_cmd) for v in _empty_head_variants(typed)]:
         toks = _skip_wrappers(all_toks)
         skip = {i + len(all_toks) - len(toks) for i in _nonpath_words(toks)}
         # every word, the assignments and wrappers in front of the command included: `F=.agent-token cat "$F"`

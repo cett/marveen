@@ -269,6 +269,12 @@ class BashReads(GateCase):
         # (sizes: what the rest of the gate takes per word is the larger part of the cost; an unclosed `$[` run is quadratic
         # in the word code that was there before and is kept small)
         cells = [('echo ' + '$[' * 3000, '3000 unclosed old arithmetic brackets'), ('echo ' + '$[1] ' * 5000, '5000 old arithmetic spans'),
+                 # spans that no end finder closes (the end of such a span is where the code scan resumes, so every one of them
+                 # reads the text behind it unless the finders share a budget: 6 s, 22 s and 8 s of CPU without it)
+                 ('echo ' + '${X:-\'{\'' * 3000, '3000 unclosed parameter expansions with a quoted opener'),
+                 ('echo ' + '$[ $[ ' * 1500, '1500 nested unclosed old arithmetic spans'), ('echo ' + '${' * 3000, '3000 unclosed parameter expansions'),
+                 ('echo "' + '$[' * 2000, '2000 unclosed old arithmetic spans in double quotes'),
+                 ('echo ' + '$[ ${X ] ' * 5000, '5000 brackets with an unclosed brace inside (the charge of a broken-off scan)'),
                  (': ' + '# it\'s\n' * 10000, '10000 comment lines'), ('echo $(' + '# it\'s\n' * 5000 + ')', '5000 comment lines in a substitution'),
                  ('cat ' + '<<E ' * 5000 + '\n' + 'E\n' * 5000, '5000 here-documents on one line'),
                  ('cat ' + '<<E ' * 5000 + '\nnever ends\n' * 5000, '5000 here-documents that never end'),
