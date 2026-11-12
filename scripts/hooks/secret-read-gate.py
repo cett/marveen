@@ -232,6 +232,129 @@ def _brace_expand(pat: str, depth: int = 0) -> list:
     return out[:200]
 
 
+BRACE_MAX_ALTS = 1024        # alternatives one word may expand to
+BRACE_MAX_WORD = 2048        # characters of a word the expansion reads
+BRACE_MAX_WORK = 2000000     # characters scanned for the whole command
+_SEQ = re.compile(r'(-?\d+|[A-Za-z])\.\.(-?\d+|[A-Za-z])(?:\.\.(-?\d+))?')
+_brace_work = [0]
+
+
+class _BraceTooBig(Exception):
+    pass
+
+
+def _brace_group(s: str):
+    """The first brace group of `s` that bash expands: (start, end, kind, body-or-parts). A group has a comma at its top
+    level or is a sequence `x..y[..step]`; `{x}`, `{}` and `${...}` are not groups. A brace that is no group is skipped,
+    so an inner group of it is still found (`{{a,b}}`)."""
+    _brace_work[0] += len(s)
+    if _brace_work[0] > BRACE_MAX_WORK:
+        raise _BraceTooBig()
+    i = s.find('{')
+    while i != -1:
+        if i == 0 or s[i - 1] != '$':
+            depth, commas, j = 0, [], i
+            while j < len(s):
+                c = s[j]
+                if c == '{':
+                    depth += 1
+                elif c == '}':
+                    depth -= 1
+                    if depth == 0:
+                        break
+                elif c == ',' and depth == 1:
+                    commas.append(j)
+                j += 1
+            if j < len(s) and depth == 0:
+                if commas:
+                    cuts = [i] + commas + [j]
+                    return i, j, 'list', [s[cuts[k] + 1:cuts[k + 1]] for k in range(len(cuts) - 1)]
+                seq = _SEQ.fullmatch(s[i + 1:j])
+                if seq:
+                    return i, j, 'seq', seq
+        i = s.find('{', i + 1)
+    return None
+
+
+def _brace_sequence(m) -> list:
+    """The words of `{a..b[..step]}`: integers (zero padded like bash when an end has a leading zero) or single letters."""
+    a, b, step = m.group(1), m.group(2), m.group(3)
+    if a.lstrip('-').isdigit() and b.lstrip('-').isdigit():
+        da, db = a.lstrip('-'), b.lstrip('-')
+        lo, hi = int(a), int(b)
+        padded = (len(da) > 1 and da.startswith('0')) or (len(db) > 1 and db.startswith('0'))
+        width = max(len(da), len(db)) if padded else 0
+    elif a.isalpha() and b.isalpha():
+        lo, hi, width = ord(a), ord(b), 0
+    else:
+        return [m.group(0)]      # mixed ends: bash leaves it as text
+    inc = (abs(int(step)) or 1) if step else 1
+    n = abs(hi - lo) // inc + 1
+    if n > BRACE_MAX_ALTS:
+        raise _BraceTooBig()
+    seq = range(lo, hi + 1, inc) if lo <= hi else range(lo, hi - 1, -inc)
+    if a.isalpha():
+        return [chr(v) for v in seq]
+    return [('-' if v < 0 else '') + str(abs(v)).zfill(width) for v in seq]
+
+
+def _brace_all(s: str, budget: list, depth: int = 0) -> list:
+    if depth > 24:
+        raise _BraceTooBig()
+    g = _brace_group(s)
+    if g is None:
+        return [s]
+    i, j, kind, body = g
+    parts = body if kind == 'list' else _brace_sequence(body)
+    out = []
+    for part in parts:
+        for alt in _brace_all(s[:i] + part + s[j + 1:], budget, depth + 1):
+            budget[0] += 1
+            if budget[0] > BRACE_MAX_ALTS:
+                raise _BraceTooBig()
+            out.append(alt)
+    return out
+
+
+# A quoted or escaped brace, comma or dollar is literal to the shell: it is swapped for a private-use character while
+# the expansion runs, and swapped back in the alternatives.
+_MARK = {'{': '', '}': '', ',': '', '$': ''}
+_UNMARK = {v: k for k, v in _MARK.items()}
+
+
+def _brace_alternatives(word: str) -> list:
+    """Every word a shell makes of `word` by brace expansion, the word itself first. `agents/a/{.agent-token,x}` is
+    two paths, `{src/k,x}` too, `.agent-toke{n..n}` one; the gate judges each alternative as a path of its own.
+    Quote aware: only an UNQUOTED brace group expands. In bash and zsh a brace inside single or double quotes, or behind a
+    backslash, is literal (`'{"a": 1, "b": 2}'`, `\\{x,y\\}`), so quoted JSON or code is not expanded and not refused; a
+    partly quoted word (`"agents/my dir/"{.agent-token,x}`) expands at its unquoted braces and the quotes are gone from
+    the alternatives. Fail closed, with no exception: a word whose unquoted expansion goes over a cap (more than
+    BRACE_MAX_ALTS alternatives, longer than BRACE_MAX_WORD characters, more than BRACE_MAX_WORK characters of work for
+    the command, nested too deep), and a word that holds a brace group while its quote state could not be determined
+    (`mask` is None), are refused."""
+    if '{' not in word or ('..' not in word and ',' not in word):
+        return [word]
+    mask = getattr(word, 'mask', None)
+    if mask is None:
+        marked = str(word)
+        if _brace_group(marked) is not None:
+            deny('a word of the command holds a brace group and its quoting could not be read (brace expansion)')
+        return [word]
+    if len(mask) != len(word) or any(ch in _UNMARK for ch in word):
+        deny('a word of the command could not be read for brace expansion')
+    marked = ''.join(_MARK[ch] if (m and ch in _MARK) else ch for ch, m in zip(word, mask))
+    if '{' not in marked or ('..' not in marked and ',' not in marked):
+        return [word]      # the braces, if any, are quoted
+    try:
+        if len(word) > BRACE_MAX_WORD:
+            raise _BraceTooBig()
+        alts = _brace_all(marked, [0])
+    except _BraceTooBig:
+        deny('a word of the command expands to more paths than the gate can look through (brace expansion)')
+    plain = [''.join(_UNMARK.get(ch, ch) for ch in a) for a in alts]
+    return [word] + [a for a in plain if a != word]
+
+
 def _shell_glob(pat: str) -> str:
     """A shell word's glob in the spelling Python's fnmatch / glob understand: bash negates a bracket with `^` as
     well as `!`, fnmatch only with `!`."""
@@ -428,12 +551,83 @@ def _names_key_in_text(text: str) -> bool:
     return False
 
 
+class _QWord(str):
+    """A word of a command with the quote state of its characters: `mask[i]` is True when character i was quoted or
+    escaped in the command text (a quoted or escaped brace, comma or dollar is literal to the shell). `mask` is None when
+    that state could not be determined. Everything else treats it as the plain str it is."""
+    mask = None
+
+
+def _scan_masks(line: str):
+    """[(text, mask)] per word, read the way `shlex.split(posix=True)` reads it, or None when the line does not parse."""
+    words, cur, mask, in_word, i, n = [], [], [], False, 0, len(line)
+    while i < n:
+        c = line[i]
+        if c in ' \t\r\n':
+            if in_word:
+                words.append((''.join(cur), mask))
+                cur, mask, in_word = [], [], False
+            i += 1
+            continue
+        in_word = True
+        if c == '\\':
+            if i + 1 >= n:
+                return None
+            cur.append(line[i + 1])
+            mask.append(True)
+            i += 2
+        elif c == "'":
+            j = line.find("'", i + 1)
+            if j == -1:
+                return None
+            cur.extend(line[i + 1:j])
+            mask.extend([True] * (j - i - 1))
+            i = j + 1
+        elif c == '"':
+            i += 1
+            while True:
+                if i >= n:
+                    return None
+                d = line[i]
+                if d == '"':
+                    i += 1
+                    break
+                if d == '\\' and i + 1 < n and line[i + 1] in '"\\':
+                    cur.append(line[i + 1])
+                    mask.append(True)
+                    i += 2
+                    continue
+                cur.append(d)
+                mask.append(True)
+                i += 1
+        else:
+            cur.append(c)
+            mask.append(False)
+            i += 1
+    if in_word:
+        words.append((''.join(cur), mask))
+    return words
+
+
 def _words(line: str) -> list:
-    """The words of one simple command. Never raises: an unparsable line is cut at spaces."""
+    """The words of one simple command, with the quote state of each (`_QWord`). Never raises: an unparsable line is
+    cut at spaces, and its words carry no quote state."""
     try:
-        return shlex.split(line, posix=True)
+        toks = shlex.split(line, posix=True)
     except ValueError:
-        return [re.sub(r'[\\\'"]', '', w) for w in line.split()]
+        out = []
+        for w in line.split():
+            q = _QWord(re.sub(r'[\\\'"]', '', w))
+            out.append(q)
+        return out
+    scanned = _scan_masks(line)
+    agree = scanned is not None and len(scanned) == len(toks) and all(t == s[0] for t, s in zip(toks, scanned))
+    out = []
+    for k, t in enumerate(toks):
+        q = _QWord(t)
+        q.mask = scanned[k][1] if agree else None      # the scanner and shlex must read the same words, or the state is unknown
+        out.append(q)
+    return out
 
 
 def _commands(text: str) -> list:
@@ -795,9 +989,10 @@ def _find_reach(toks: list, cwd: str):
     if '-prune' in toks:
         return None
     for w in _find_roots(toks):
-        for c in _expand_word(w, cwd):
-            for _base, f in _covered_dir_files(c, cwd):
-                return f
+        for alt in _brace_alternatives(w):
+            for c in _expand_word(alt, cwd):
+                for _base, f in _covered_dir_files(c, cwd):
+                    return f
     return None
 
 
@@ -884,6 +1079,7 @@ def _check_find_pipe(segs: list, cwd: str) -> None:
 
 
 def check_bash(cmd: str, cwd: str) -> None:
+    _brace_work[0] = 0      # the brace expansion work cap is per command
     if _names_key_in_text(cmd):
         deny('the command names the claim signing key (%s) or a glob that could match it' % KEY_NAME)
     plain_cmd = re.sub(r"\$(?=['\"])", '', cmd)      # $'..' / $"..": ANSI-C quoting, read as plain quotes
@@ -896,13 +1092,14 @@ def check_bash(cmd: str, cwd: str) -> None:
         for idx, w in enumerate(all_toks):
             if idx in skip:
                 continue
-            for v in _word_variants(w):
-                f = _word_reaches(v, cwd)
+            for alt in _brace_alternatives(w):      # a brace word is several paths: each one is judged
+                for v in _word_variants(alt):
+                    f = _word_reaches(v, cwd)
+                    if f:
+                        deny('a path in the command resolves to the claim signing key', f)
+                f = _embedded_token(alt)
                 if f:
-                    deny('a path in the command resolves to the claim signing key', f)
-            f = _embedded_token(w)
-            if f:
-                deny('a path in the command names a token file', f)
+                    deny('a path in the command names a token file', f)
         if not toks:
             continue
         head = os.path.basename(toks[0])
@@ -911,7 +1108,8 @@ def check_bash(cmd: str, cwd: str) -> None:
         operands = [w for idx, w in enumerate(toks) if idx and w and not w.startswith('-') and idx not in dir_values]
         covering = []
         for w in operands:
-            pairs = [pr for c in _expand_word(w, cwd) for pr in _covered_dir_files(c, cwd)]
+            # the operand COUNT above is the one of the typed words; the directories they cover include every brace alternative
+            pairs = [pr for alt in _brace_alternatives(w) for c in _expand_word(alt, cwd) for pr in _covered_dir_files(c, cwd)]
             if pairs:
                 covering.append(pairs)
         if opt_unknown and covering:

@@ -24,6 +24,7 @@ Run: python3 <thisfile>   (SECRET_GATE_PATH names a gate file other than scripts
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -341,6 +342,51 @@ class BashOnEveryTokenFile(Tree):
                 rc, out, err = self.bash(cmd)
                 self.assertNotIn('internal error', err, cmd)
                 self.assert_denied((rc, out, err), cmd)
+
+    def test_a_brace_word_without_a_glob_is_judged_alternative_by_alternative(self):
+        # every token file x the name, in either order, nested, as a sequence, from the directory itself; the prefix is quoted like a
+        # user would (a directory with a space or a quote in its name), the braces are not
+        for rel in PROTECTED:
+            d, name = os.path.split(rel)
+            pre = shlex.quote(d + '/') if d else ''
+            seq = name[:-1] + '{' + name[-1] + '..' + name[-1] + '}'
+            cmds = ['cat %s{%s,x}' % (pre, name), 'cat %s{x,%s}' % (pre, name), 'cat %s{x,{y,%s}}' % (pre, name), 'cat %s{{x,y},%s}' % (pre, name),
+                    'cat %s%s' % (pre, seq), 'head -c 5 %s{%s,x,y}' % (pre, name), 'cat < %s{%s,x}' % (pre, name)]
+            if d:
+                cmds += ['cat %s{%s,x}' % (shlex.quote(os.path.dirname(d) + '/') if os.path.dirname(d) else '', os.path.basename(d) + '/' + name)]
+            for cmd in cmds:
+                with self.subTest(cmd=cmd, protected=rel):
+                    rc, out, err = self.bash(cmd)
+                    self.assertNotIn('internal error', err, cmd)
+                    self.assert_denied((rc, out, err), cmd)
+            with self.subTest(cmd='cat {name,x}', cwd=d):
+                self.assert_denied(self.bash('cat {%s,x}' % name, cwd=os.path.join(self.root, d)), 'cat {name,x} from %s' % d)
+
+    def test_a_link_to_a_protected_file_in_a_glob_less_brace_word_is_blocked(self):
+        for rel, (sym, rsym, hard) in self.links.items():
+            for link in (sym, rsym, hard):
+                d, name = os.path.split(link)
+                for cmd in ('cat %s/{%s,x}' % (d, name), 'cat %s/{x,%s}' % (d, name), 'cat {%s,x}' % link, 'cat {x,%s}' % link, 'cat %s/{x,{y,%s}}' % (d, name),
+                            'cat {%s,src}/{x,%s}' % (d, name)):
+                    with self.subTest(cmd=cmd, protected=rel):
+                        self.assert_denied(self.bash(cmd), cmd)
+
+    def test_a_quoted_or_escaped_brace_group_is_literal_and_an_unquoted_one_next_to_a_quoted_space_expands(self):
+        # what the shell prints is the oracle: a quoted brace group stays as typed, so it is no read of the token
+        for word, expands in [("'agents/agent-a/{.agent-token,x}'", False), ('"agents/agent-a/{.agent-token,x}"', False), ('agents/agent-a/\\{.agent-token,x\\}', False),
+                              ('agents/agent-a/{.agent-token,x}', True), ('"agents/agent-a/"{.agent-token,x}', True), ('agents/"agent c d"/{.agent-token,x}', True),
+                              ("agents/{'agent c d',agent-a}/.agent-token", True), ('agents/agent-a/{".agent-token",x}', True)]:
+            lines = subprocess.run(['bash', '-c', "printf '%s\\n' " + word], cwd=self.root, capture_output=True, timeout=30).stdout.decode().split('\n')
+            self.assertEqual(any(l.endswith('/.agent-token') for l in lines), expands, 'the oracle for %r' % word)
+            with self.subTest(word=word):
+                (self.assert_denied if expands else self.assert_allowed)(self.bash('cat ' + word), 'cat ' + word)
+
+    def test_a_brace_word_without_a_glob_that_names_no_protected_file_passes(self):
+        for cmd in ['echo src/{a,b}.ts', 'cat src/{a.ts,x}', 'cat {src/a.ts,x}', 'cat docs/{x,agent-token.md}', 'echo \'{"a": 1, "b": 2}\'', 'echo {1..3}', 'echo {a..e}',
+                    'echo ${HOME}', 'echo {x}', 'cat agents/agent-a/{CLAUDE.md,notes.txt}', 'cat agents/{agent-a,agent-b}/CLAUDE.md', 'grep -r foo {src,scripts}',
+                    'curl -s -X POST localhost:3420/api/messages -d \'{"from":"agent-a","to":"agent-b","content":"hi"}\'']:
+            with self.subTest(cmd=cmd):
+                self.assert_allowed(self.bash(cmd), cmd)
 
     def test_a_link_to_a_protected_file_next_to_a_glob_alternative_is_blocked_whatever_the_order(self):
         # the alternative without a glob is judged as a plain path of EITHER tier: a symlink (absolute or relative) or a hard link to a

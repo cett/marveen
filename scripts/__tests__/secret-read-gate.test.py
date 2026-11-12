@@ -44,6 +44,7 @@ class GateCase(unittest.TestCase):
         os.symlink('../store', os.path.join(cls.root, 'work', 'storelink'))
         os.symlink(os.path.join(cls.root, 'store'), os.path.join(cls.root, 'work', 'storelink-abs'))
         os.link(os.path.join(cls.root, 'store', NAME), os.path.join(cls.root, 'work', 'innocent-name.txt'))
+        os.symlink('../store/' + NAME, os.path.join(cls.root, 'work', 'relkey'))      # a relative symlink to the key
 
     @classmethod
     def tearDownClass(cls):
@@ -98,6 +99,101 @@ class BashReads(GateCase):
         for cmd in ['cat src/{a.ts,b*}', 'cat src/{b*,a.ts}', 'cat work/{x,y*}', 'echo \'{"a": 1, "b": "*"}\'']:
             with self.subTest(cmd=cmd):
                 self.assert_allowed(self.bash(cmd), cmd)
+
+    def test_a_brace_word_without_a_glob_is_judged_alternative_by_alternative(self):
+        # the shell turns a brace word into several paths; each one is checked as a path: the name, a symlink (absolute, relative),
+        # a hard link, in either order, nested, behind a redirection, from a directory above or beside it
+        links = ['keylink', 'relkey', 'innocent-name.txt']
+        cmds = ['cat store/{%s,x}' % NAME, 'cat store/{x,%s}' % NAME, 'cat {store/%s,x}' % NAME, 'cat store/.claim-signing-ke{y..y}', 'cat store/{x,{y,%s}}' % NAME,
+                'cat store/{{x,y},%s}' % NAME, 'cat {store,x}/%s' % NAME, 'cat {store,work}/{x,%s}' % NAME]
+        for link in links:
+            cmds += ['cat work/{%s,x}' % link, 'cat work/{x,%s}' % link, 'cat {work/%s,x}' % link, 'cat {x,work/%s}' % link, 'cat work/{x,y,%s}' % link,
+                     'cat work/{x,{y,%s}}' % link, 'cat work/{{x,y},%s}' % link, 'cat {work,src}/{x,%s}' % link, 'cat < work/{%s,x}' % link,
+                     'head -c 5 work/{%s,x}' % link, 'cat work/{%s,%s}' % (link, link)]
+        for cmd in cmds:
+            with self.subTest(cmd=cmd):
+                self.assert_denied(self.bash(cmd), cmd)
+        # from a directory beside the key
+        self.assert_denied(self.bash('cat {%s,x}' % NAME, cwd=os.path.join(self.root, 'store')), 'cat {key,x} from store/')
+        self.assert_denied(self.bash('cat {../store/%s,x}' % NAME, cwd=os.path.join(self.root, 'src')), 'cat {../store/key,x} from src/')
+
+    def test_a_brace_word_without_a_glob_that_names_no_protected_file_passes(self):
+        for cmd in ['echo src/{a,b}.ts', 'cat src/{a.ts,x}', 'cat src/{x,a.ts}', 'cat store/{x,rules.json}', 'cat {src/a.ts,x}', 'echo \'{"a": 1, "b": 2}\'',
+                    'echo {1..3}', 'echo {a..e}', 'echo {01..03}', 'echo {a,b}{c,d}', 'cat work/{x,y}', 'echo ${HOME}', 'echo ${A,B}', 'echo {x}', 'echo {}',
+                    'curl -s -X POST localhost:3420/api/messages -d \'{"from":"agent-a","to":"agent-b","content":"hi"}\'',
+                    'grep -r foo {src,scripts}', 'find {src,scripts} -exec cat {} +', 'cp -r {src,scripts} /tmp/y']:
+            with self.subTest(cmd=cmd):
+                self.assert_allowed(self.bash(cmd), cmd)
+
+    def test_brace_expansion_also_reaches_the_recursive_readers_and_the_find_roots(self):
+        for cmd in ['grep -r foo {store,src}', 'grep -r foo {src,store}', 'grep -r foo {x,{src,store}}', 'cp -r {store,src} /tmp/y', 'tar cf - {src,store}',
+                    'find {store,src} -exec cat {} +', 'find {src,store} -type f | xargs cat', 'rg --hidden foo {src,store}', 'grep --rec foo {store,x}',
+                    # a brace PATTERN is one operand: it must not make the cwd (which holds the store) go unlooked
+                    'grep -r {a,b}']:
+            with self.subTest(cmd=cmd):
+                self.assert_denied(self.bash(cmd), cmd)
+
+    def oracle_expansion(self, words):
+        """What the real shells make of `words` (bash and, where there is one, zsh): the lines `printf '%s\\n' WORDS` prints in the
+        install root. The gate must refuse exactly the commands whose expansion holds a protected path."""
+        out = {}
+        for shell in ('bash', 'zsh'):
+            exe = shutil.which(shell)
+            if exe:
+                r = subprocess.run([exe, '-c', "printf '%s\\n' " + words], cwd=self.root, capture_output=True, timeout=30)
+                out[shell] = r.stdout.decode().split('\n')
+        return out
+
+    def test_brace_expansion_is_quote_aware_and_judged_against_the_real_shells(self):
+        # (word as typed, expected: does the shell expand it to the link `work/keylink`?)
+        cells = [('work/{keylink,q}', True), ('work/{q,keylink}', True), ('{work/keylink,q}', True), ('"work"/{keylink,q}', True), ('"work/"{keylink,q}', True),
+                 ("work/{'keylink',q}", True), ('work/{"key"link,q}', True), ("wor'k'/{keylink,q}", True), ('work/{keylink,q}{,}', True),
+                 # quoted or escaped braces are literal to the shell
+                 ("'work/{keylink,q}'", False), ('"work/{keylink,q}"', False), ("work/'{keylink,q}'", False), ('work/\\{keylink,q\\}', False),
+                 ('work/\\{keylink,q}', False), ('work/"{"keylink,q}', False), ('work/{keylink,q"}"', False),
+                 ('$HOME/{x,y}', False), ('work/${x}', False), ('work/{x}', False), ('work/{keylink}', False)]
+        for word, expands in cells:
+            cmd = 'cat ' + word
+            seen = self.oracle_expansion(word)
+            for shell, lines in seen.items():
+                with self.subTest(word=word, shell=shell):
+                    self.assertEqual('work/keylink' in lines, expands, 'the oracle: %s expands %r to %r' % (shell, word, lines[:4]))
+            with self.subTest(cmd=cmd):
+                (self.assert_denied if expands else self.assert_allowed)(self.bash(cmd), cmd)
+
+    def test_brace_expansion_caps_count_the_unquoted_expansion_only(self):
+        eleven = '{a,b}' * 11                           # 2048 alternatives, over the cap
+        # a) unquoted: refused
+        for cmd in ['echo ' + eleven, 'cat src/%s' % eleven, 'cat src/{1..2000}', 'cat src/{a..z}{a..z}{a..z}', 'cat %s%s' % ('a' * 2100, '{x,y}')]:
+            with self.subTest(cmd=cmd[:60]):
+                self.assert_denied(self.bash(cmd), cmd[:60])
+        # b) the same text in single quotes (the shell prints it as it is): allowed
+        self.assert_allowed(self.bash("echo '" + eleven + "'"), 'quoted eleven groups')
+        # c) the playing pattern: eleven groups, a group with a QUOTED space, and the real group. No text exception: refused
+        for cmd in ['cat work/' + eleven + '{"x y",z}{keylink,q}', 'cat work/' + eleven + "{'x y',z}{keylink,q}"]:
+            with self.subTest(cmd=cmd[:60]):
+                self.assert_denied(self.bash(cmd), cmd[:60])
+        # d) a large JSON body in single quotes: allowed, and so is the same in double quotes
+        body = '{"items":[' + '{"a":1,"b":2},' * 3000 + '{}]}'
+        self.assertGreater(len(body), 40000)
+        self.assert_allowed(self.bash("curl -s -X POST localhost:3420/api/messages -d '" + body + "'"), 'large JSON in single quotes')
+        self.assert_allowed(self.bash('curl -s -X POST localhost:3420/api/messages -d "' + body.replace('"', '\\"') + '"'), 'large JSON in double quotes')
+        # e) a quoted path part in front of the real group still expands it
+        for cmd in ['cat "work"/{keylink,q}', 'cat "wo"rk/{keylink,q}', "cat 'work'/{keylink,q}"]:
+            with self.subTest(cmd=cmd):
+                self.assert_denied(self.bash(cmd), cmd)
+        # f) escaped braces around the name: literal
+        self.assert_allowed(self.bash('cat work/\\{keylink,q\\}'), 'escaped braces')
+        # at the cap it is still looked through: 1000 alternatives, none of them protected
+        self.assert_allowed(self.bash('cat src/{1..1000}'), 'cat src/{1..1000}')
+
+    def test_a_brace_group_in_a_word_whose_quoting_cannot_be_read_is_refused(self):
+        # the line does not parse (an apostrophe): its words carry no quote state, and a brace group in one is not guessed at
+        for cmd in ["echo it's {a,b}", "echo it's work/{keylink,q}"]:
+            with self.subTest(cmd=cmd):
+                self.assert_denied(self.bash(cmd), cmd)
+        # no group in the unreadable word: nothing to guess
+        self.assert_allowed(self.bash("echo it's fine"), "echo it's fine")
 
     def test_globs_that_can_match_the_file_are_blocked(self):
         for cmd in ['cat store/.claim*', 'cat store/.c*', 'cat store/.[c]*', 'cat store/.*', 'cat store/*', 'cat store/.claim?signing*', 'cat store/.cl?im-sig*',
