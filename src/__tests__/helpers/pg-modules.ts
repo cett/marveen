@@ -10,8 +10,11 @@
 //   fts               needs FTS5 (MATCH, the *_fts tables): Phase 3
 //   vec               needs sqlite-vec / vec0: Phase 3
 //   p2-4-concurrency  the test is about SQLite's one-connection concurrency semantics: replaced in P2-4
-//   boot-twin         the boot chain (synchronous, 14 twins): P2-5. Also the files whose SUBJECT is the SQLite facade,
-//                     handle or migration chain itself (db-facade*, with-test-db): they stay SQLite by design
+//   boot-twin         the boot chain (synchronous, 14 twins): P2-5
+//   sqlite-only       the files whose SUBJECT is the SQLite facade, handle or migration chain itself (db-facade*,
+//                     with-test-db: own DDL, AUTOINCREMENT, transaction semantics): they stay SQLite by design
+//   sync-cache        the synchronous in-memory cache and its loader (db-config-cache, db-model-profile-map-cache):
+//                     they move with the async cache load, not with a module
 //   (the codes of the first run are assigned from the file text and the failure classes, not file by file: a
 //   wave that takes a module revisits its files)
 //   raw-db            the test or the module under test still reads the raw SQLite handle or a synchronous cache
@@ -19,7 +22,7 @@
 import { readdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 
-export type ExcludeReason = 'fts' | 'vec' | 'p2-4-concurrency' | 'boot-twin' | 'raw-db' | 'unported-sql'
+export type ExcludeReason = 'fts' | 'vec' | 'p2-4-concurrency' | 'boot-twin' | 'sqlite-only' | 'sync-cache' | 'raw-db' | 'unported-sql'
 
 /** Test files (relative to the repository root, `/` separators) that also run in PG mode. */
 export const PORTED: readonly string[] = [
@@ -53,14 +56,14 @@ export const EXCLUDED: Readonly<Record<string, ExcludeReason>> = {
   'src/__tests__/tenant-bindings-facade.test.ts': 'p2-4-concurrency',
   'src/__tests__/vault-facade-overlap.test.ts': 'p2-4-concurrency',
   'src/__tests__/audit-trace-columns.test.ts': 'boot-twin',
-  'src/__tests__/db-config-cache.test.ts': 'boot-twin',
-  'src/__tests__/db-facade-backend.test.ts': 'boot-twin',
-  'src/__tests__/db-facade-tx.test.ts': 'boot-twin',
-  'src/__tests__/db-facade.test.ts': 'boot-twin',
-  'src/__tests__/db-model-profile-map-cache.test.ts': 'boot-twin',
+  'src/__tests__/db-config-cache.test.ts': 'sync-cache',
+  'src/__tests__/db-facade-backend.test.ts': 'sqlite-only',
+  'src/__tests__/db-facade-tx.test.ts': 'sqlite-only',
+  'src/__tests__/db-facade.test.ts': 'sqlite-only',
+  'src/__tests__/db-model-profile-map-cache.test.ts': 'sync-cache',
   'src/__tests__/import-strip-markup-entities.test.ts': 'boot-twin',
   'src/__tests__/memories-content-not-blank.test.ts': 'boot-twin',
-  'src/__tests__/with-test-db.test.ts': 'boot-twin',
+  'src/__tests__/with-test-db.test.ts': 'sqlite-only',
   'src/__tests__/approval-human-only.test.ts': 'raw-db',
   'src/__tests__/audit-retention-prune-journals.test.ts': 'raw-db',
   'src/__tests__/db-api-tokens-enroll-twin.test.ts': 'raw-db',

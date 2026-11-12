@@ -11,7 +11,7 @@ import { EXCLUDED, EXCLUDED_BASELINE, PORTED, listUseTestDbFiles } from './helpe
 import { testDbMode } from './helpers/with-test-db.js'
 
 const ROOT = path.resolve(__dirname, '..', '..')
-const REASONS = new Set(['fts', 'vec', 'p2-4-concurrency', 'boot-twin', 'raw-db', 'unported-sql'])
+const REASONS = new Set(['fts', 'vec', 'p2-4-concurrency', 'boot-twin', 'sqlite-only', 'sync-cache', 'raw-db', 'unported-sql'])
 const listed = [...PORTED, ...Object.keys(EXCLUDED)]
 
 describe('every useTestDb file is in exactly one list', () => {
