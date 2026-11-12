@@ -34,12 +34,15 @@ describe('which permission each schedules route needs', () => {
 
   it('activation and tick-status are admin-only, not swallowed by the prefix rows', () => {
     expect(resolveRequiredPermission('POST', '/api/schedules/my-task/activate')).toBe('admin:all')
+    expect(resolveRequiredPermission('POST', '/api/schedules/my-task/adopt')).toBe('admin:all')
     expect(resolveRequiredPermission('GET', '/api/schedules/tick-status')).toBe('admin:all')
   })
 
   it('a schedule literally named like an action does not slip past: only the exact shapes are special', () => {
     expect(resolveRequiredPermission('GET', '/api/schedules/activate')).toBe('schedules:read')
     expect(resolveRequiredPermission('POST', '/api/schedules/a/b/activate')).toBe('schedules:write')
+    expect(resolveRequiredPermission('GET', '/api/schedules/adopt')).toBe('schedules:read')
+    expect(resolveRequiredPermission('POST', '/api/schedules/a/b/adopt')).toBe('schedules:write')
   })
 })
 
@@ -58,6 +61,8 @@ describe('what each role gets in enforce mode', () => {
     expect(enforced(auth, 'POST', '/api/schedules')).toBe(want.write)
     expect(enforced(auth, 'DELETE', '/api/schedules/my-task')).toBe(want.write)
     expect(enforced(auth, 'POST', '/api/schedules/my-task/activate')).toBe(want.activate)
+    // taking a task over is the same admin-only step as approving it
+    expect(enforced(auth, 'POST', '/api/schedules/my-task/adopt')).toBe(want.activate)
   })
 
   it('the dead-letter view is readable by every role (the route narrows it to the caller tenant), and only by GET', () => {

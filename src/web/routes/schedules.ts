@@ -22,7 +22,8 @@ import {
 } from '../scheduled-tasks-io.js'
 import { withScheduleLock } from '../schedule-lock.js'
 import { REVIEWED_FIELDS, reviewTriggerFields, reviewValueSha256, scheduleContentHash } from '../schedule-review.js'
-import { auditScheduleWrite, isHumanAdmin, notifyScheduleReview, scheduleActor } from '../schedule-review-effects.js'
+import { auditScheduleWrite, isHumanAdmin, notifyScheduleReview, scheduleActor, scheduleAuthor } from '../schedule-review-effects.js'
+import { createAuthorChecker } from '../schedule-author.js'
 import { runScheduledTaskNow, loadLastTickMs, computeTickStatus } from '../schedule-runner.js'
 import { actingAgentId } from '../fleet-agent-identity.js'
 import type { RouteContext } from './types.js'
@@ -265,10 +266,19 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
       // requests to /api/schedules/undefined and silently 404.
       // contentHash fingerprints what an approval covers; the dashboard sends it back as
       // expected_hash on activation so an admin approves what they were looking at.
-      json(res, rows.map(r => {
+      // authorState is the verdict the run-time gate would give today (none = no user-bound author), whatever the
+      // gate mode is: a screen has to show a task that would stop in enforce mode. One checker per request, so ten
+      // tasks of one author are one lookup. The word is given to every caller; the author's id and names are not.
+      const checkAuthor = createAuthorChecker()
+      json(res, await Promise.all(rows.map(async r => {
         const task = rowToTask(r)
-        return { ...task, contentHash: scheduleContentHash({ ...task }, REVIEWED_FIELDS) }
-      }))
+        const authorState = task.authorUserId == null ? 'none' : await checkAuthor(task)
+        // The author's user id and the two names (author, activator) are for an admin: a label can be a privileged
+        // account's username, and listing accounts to a tenant caller is a leak. The activation time stays. The hash
+        // below does not depend on any of them.
+        if (ctx.role !== 'admin') { delete task.authorUserId; delete task.authorLabel; delete task.activatedBy }
+        return { ...task, authorState, contentHash: scheduleContentHash({ ...task }, REVIEWED_FIELDS) }
+      })))
     } else {
       json(res, listScheduledTasksFromFiles())
     }
@@ -372,6 +382,9 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
       }
     }
 
+    // Who wrote it, and (only for a human admin's direct live creation) who activated it. A draft has no activator.
+    const author = await scheduleAuthor(ctx)
+    const activation = status === 'live' ? { by: author.label, at: Math.floor(Date.now() / 1000) } : undefined
     await writeScheduledTask(name, {
       description: data.description || '',
       prompt: (data.prompt ?? '').trim(),
@@ -385,8 +398,12 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
       ...(isCommand ? { command: data.command!.trim(), timeoutMs: data.timeoutMs, failThreshold: data.failThreshold } : {}),
       tenantId,
       status,
+      author,
+      ...(activation ? { activation } : {}),
     })
-    await auditScheduleWrite(ctx, 'create', name, tenantId, { status, type: data.type || 'task', agent })
+    await auditScheduleWrite(ctx, 'create', name, tenantId, {
+      status, type: data.type || 'task', agent, author_label: author.label, activated_by: activation?.by ?? null,
+    })
     if (status === 'draft') await notifyScheduleReview({ name, tenant: tenantId, reason: 'created', by: scheduleActor(ctx).agentId })
     logger.info({ name, schedule: data.schedule, tenantId, status }, 'Scheduled task created')
     json(res, { ok: true, name, status })
@@ -421,16 +438,60 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
         }, 409)
         return true
       }
-      const row = await activateSchedule(name)
+      // The activator is recorded in the same statement as the status; the author is not touched.
+      const activator = scheduleActor(ctx).agentId
+      const row = await activateSchedule(name, activator)
       if (!row) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
       await auditScheduleWrite(ctx, 'activate', name, current.tenant_id ?? DEFAULT_SCHEDULE_TENANT, {
         status_before: current.status, content_hash: currentHash, hash_checked: expectedHash !== null,
+        author_label: row.author_label ?? null, activated_by: activator,
       })
       // Mirror to file (same pattern as toggle's file-mirror call) so a
       // rollback to the file-based fallback keeps the activated state.
       await writeScheduledTask(name, { status: 'live' })
       logger.info({ name }, 'Scheduled task activated')
       json(res, { ok: true, status: 'live' })
+    })
+    return true
+  }
+
+  // Adoption: a signed-in admin takes over a task whose author may no longer run it. The caller becomes the author
+  // (the run-time gate then judges the caller); the status, the content and the activation record stay as they were,
+  // so adopting never approves anything and never makes a held task live. Same shape as the activation: human admin
+  // only, one lock for the hash check and the write, an optional expected_hash.
+  const scheduleAdoptMatch = path.match(/^\/api\/schedules\/([^/]+)\/adopt$/)
+  if (scheduleAdoptMatch && method === 'POST') {
+    if (!isHumanAdmin(ctx)) { json(res, { error: 'forbidden', hint: 'Only an authenticated admin can adopt a schedule' }, 403); return true }
+    const resolved = resolveScheduleDir(scheduleAdoptMatch[1])
+    if (!resolved) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
+    const { name } = resolved
+    await withScheduleLock(name, async () => {
+      const current = await getScheduleFromDb(name)
+      if (!current) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
+      const currentHash = scheduleContentHash({ ...rowToTask(current) }, REVIEWED_FIELDS)
+      const expectedHash = ctx.url.searchParams.get('expected_hash')
+      if (expectedHash !== null && expectedHash !== currentHash) {
+        json(res, {
+          error: 'stale_revision', content_hash: currentHash,
+          hint: 'The schedule changed since it was loaded; review the current content and adopt again',
+        }, 409)
+        return true
+      }
+      // A session whose user row is gone has no id. Writing a NULL author would take the task out of the run-time
+      // check altogether, which is the opposite of taking it over: refuse instead.
+      const author = await scheduleAuthor(ctx)
+      if (author.userId === null) {
+        json(res, { error: 'forbidden', hint: 'This session has no dashboard user to take the schedule over' }, 403)
+        return true
+      }
+      await writeScheduledTask(name, { author: { userId: author.userId, label: author.label } })
+      await auditScheduleWrite(ctx, 'adopt', name, current.tenant_id ?? DEFAULT_SCHEDULE_TENANT, {
+        status: current.status, content_hash: currentHash, hash_checked: expectedHash !== null,
+        author_before: current.author_user_id ?? null, author_label_before: current.author_label ?? null,
+        author_after: author.userId, author_label_after: author.label,
+      })
+      logger.info({ name }, 'Scheduled task adopted')
+      json(res, { ok: true, status: current.status, author_label: author.label })
     })
     return true
   }
@@ -534,6 +595,10 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     // The db is async, so the read, the decision and the write run under the schedule lock:
     // the row read here is the row that gets overwritten, and a concurrent activation or edit
     // of this schedule waits for the write instead of interleaving with it.
+    // The author of a content write is the caller; looked up before the lock (it does not depend on the row) and
+    // only when the patch names a reviewed field at all, so a toggle or a label edit costs no user read.
+    const mayChangeContent = Object.keys(update).some(k => (REVIEWED_FIELDS as ReadonlyArray<string>).includes(k))
+    const author = mayChangeContent ? await scheduleAuthor(ctx) : null
     const locked = await withScheduleLock(name, async () => {
       const before = useDb ? await getScheduleFromDb(name) : undefined
       // A delete or a tenant move that ran since the checks above must not be written over: an edit never creates
@@ -545,11 +610,19 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
         && isTaskLive(rowToTask(before)) && changed.length > 0
       if (demote) update.status = 'pending_review'
 
-      await writeScheduledTask(name, update)
-      return { before, beforeTask, changed, demote }
+      // `changed` also lists tenantId/status on a tenant move, which is not a content edit: only a reviewed field
+      // makes the caller the author (a move keeps the author and clears the activator, the task has to be
+      // activated again).
+      const contentChanged = changed.some(f => (REVIEWED_FIELDS as ReadonlyArray<string>).includes(f))
+      await writeScheduledTask(name, {
+        ...update,
+        ...(contentChanged && author ? { author } : {}),
+        ...(newTenant !== undefined ? { activation: null } : {}),
+      })
+      return { before, beforeTask, changed, demote, contentChanged }
     })
     if (!locked) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
-    const { before, beforeTask, changed, demote } = locked
+    const { before, beforeTask, changed, demote, contentChanged } = locked
 
     const tenantOfTask = newTenant ?? before?.tenant_id ?? DEFAULT_SCHEDULE_TENANT
     // Per changed field: a fingerprint before and after plus a short preview of the new
@@ -561,6 +634,8 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     }]))
     await auditScheduleWrite(ctx, demote ? 'review_requested' : 'update', name, tenantOfTask, {
       changed, fields: fieldDetail,
+      author_label: contentChanged && author ? author.label : (before?.author_label ?? null),
+      activated_by: newTenant !== undefined ? null : (before?.activated_by ?? null),
       ...(newTenant !== undefined ? { moved_to_tenant: newTenant } : {}),
     })
     if (demote) {
@@ -666,7 +741,8 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     // human admin may still run-now a draft to preview it before activating.
     const result = await runScheduledTaskNow(name, { allowNotLive: isHumanAdmin(ctx) })
     if (!result.ok) {
-      const status = result.error === 'not_found' ? 404 : (result.error === 'disabled' || result.error === 'not_live') ? 409 : 400
+      const status = result.error === 'not_found' ? 404
+        : (result.error === 'disabled' || result.error === 'not_live' || result.error === 'author_inactive' || result.error === 'author_unverifiable') ? 409 : 400
       json(res, { error: result.error, ...(result.hint ? { hint: result.hint } : {}) }, status)
       return true
     }

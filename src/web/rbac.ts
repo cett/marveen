@@ -411,6 +411,9 @@ const ENDPOINT_PERMISSION_REGEX_TABLE: readonly RegexPermissionEntry[] = [
   // POST prefix row for /api/schedules is schedules:write. (The route additionally requires a
   // signed-in admin, not just the admin role, because the shared token also carries it.)
   { method: 'POST', regex: /^\/api\/schedules\/[^/]+\/activate$/, permission: 'admin:all' },
+  // Taking over a task whose author may no longer run it (adopt) is an admin decision as well: it moves the
+  // run-time authorisation of the task to the caller. The route also requires a signed-in admin.
+  { method: 'POST', regex: /^\/api\/schedules\/[^/]+\/adopt$/, permission: 'admin:all' },
   // Which tenants may see a skill is the admin's decision: the access sub-resource stays admin-only
   // even though the skill itself (the skills:read/write rows above) is reachable by a fleet agent.
   { method: '*', regex: /^\/api\/skills\/sql\/[^/]+\/access(\/|$)/, permission: 'admin:all' },

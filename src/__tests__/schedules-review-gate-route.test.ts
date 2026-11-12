@@ -215,7 +215,8 @@ describe('POST /api/schedules/:name/activate', () => {
     await tryHandleSchedules(ctx)
     expect(out.status).toBe(200)
     expect(out.body).toEqual({ ok: true, status: 'live' })
-    expect(mockActivateSchedule).toHaveBeenCalledWith('my-task')
+    // The activator is recorded in the same call (a session with no user name is labelled 'session').
+    expect(mockActivateSchedule).toHaveBeenCalledWith('my-task', 'session')
     expect(mockWriteScheduledTask).toHaveBeenCalledWith('my-task', { status: 'live' })
   })
 })

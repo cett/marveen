@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { activateUrl, applyPendingReviewBadge, pendingReviewCount, saveToastKey, statusBadgeKey } from '../../web/modules/schedule-review-ui.js'
+import { activateUrl, adoptUrl, applyPendingReviewBadge, authorBadge, authorLine, canAdopt, pendingReviewCount, saveToastKey, statusBadgeKey } from '../../web/modules/schedule-review-ui.js'
 
 describe('statusBadgeKey', () => {
   it('a held task and a never-approved task read differently', () => {
@@ -135,5 +135,86 @@ describe('sidebar badge wiring', () => {
     const app = read('web', 'app.js')
     expect(app).toContain("m.pollSchedulesBadge())")
     expect(app).toMatch(/setInterval\(\(\) => lazyLoad\('schedules'[^\n]*pollSchedulesBadge\(\)\), 5 \* 60_000\)/)
+  })
+})
+
+describe('adoptUrl', () => {
+  it('sends the hash the list was rendered from, encoded; without one it is the plain adopt call', () => {
+    expect(adoptUrl('my-task', 'abc123')).toBe('/api/schedules/my-task/adopt?expected_hash=abc123')
+    expect(adoptUrl('a b', 'x/y')).toBe('/api/schedules/a%20b/adopt?expected_hash=x%2Fy')
+    expect(adoptUrl('my-task', undefined)).toBe('/api/schedules/my-task/adopt')
+  })
+})
+
+describe('authorBadge and canAdopt', () => {
+  it('only the two blocking states have a badge; none, ok, unknown and missing show nothing', () => {
+    expect(authorBadge('inactive')).toEqual({ key: 'tasks.author.inactive', titleKey: 'tasks.author.inactive_title' })
+    expect(authorBadge('unverifiable')).toEqual({ key: 'tasks.author.unverifiable', titleKey: 'tasks.author.unverifiable_title' })
+    for (const s of ['ok', 'none', 'something_new', '', undefined]) expect(authorBadge(s), String(s)).toBeNull()
+  })
+
+  it('the adopt button is for an admin on a blocked author, and for nobody else', () => {
+    expect(canAdopt({ authorState: 'inactive' }, true)).toBe(true)
+    expect(canAdopt({ authorState: 'unverifiable' }, true)).toBe(true)
+    expect(canAdopt({ authorState: 'inactive' }, false)).toBe(false)
+    expect(canAdopt({ authorState: 'ok' }, true)).toBe(false)
+    expect(canAdopt({ authorState: 'none' }, true)).toBe(false)
+    expect(canAdopt({}, true)).toBe(false)
+    expect(canAdopt(null, true)).toBe(false)
+  })
+})
+
+describe('authorLine', () => {
+  const fmt = (ms: number) => new Date(ms).toISOString().slice(0, 10)
+  const at = Date.UTC(2026, 9, 26) / 1000
+
+  it('an admin sees the author, the approver and the date (the time is in seconds)', () => {
+    expect(authorLine({ authorLabel: 'author-a', activatedBy: 'admin-a', activatedAt: at }, true, fmt))
+      .toEqual({ key: 'tasks.author.admin_approved', params: { author: 'author-a', approver: 'admin-a', date: '2026-10-26' } })
+  })
+
+  it('an admin sees an author who was never approved as awaiting, and an approver without an author alone', () => {
+    expect(authorLine({ authorLabel: 'author-a' }, true, fmt)).toEqual({ key: 'tasks.author.admin_unapproved', params: { author: 'author-a' } })
+    expect(authorLine({ activatedBy: 'admin-a', activatedAt: at }, true, fmt))
+      .toEqual({ key: 'tasks.author.admin_approved_only', params: { approver: 'admin-a', date: '2026-10-26' } })
+  })
+
+  it('a non-admin gets no name, only approved with the date or awaiting; a live task with no record says nothing', () => {
+    const row = { authorLabel: 'leaked-name', activatedBy: 'leaked-admin', activatedAt: at, status: 'live' }
+    const line = authorLine(row, false, fmt)
+    expect(line).toEqual({ key: 'tasks.author.approved', params: { date: '2026-10-26' } })
+    expect(JSON.stringify(line)).not.toContain('leaked')
+    expect(authorLine({ status: 'draft' }, false, fmt)).toEqual({ key: 'tasks.author.awaiting', params: {} })
+    expect(authorLine({ status: 'pending_review' }, false, fmt)).toEqual({ key: 'tasks.author.awaiting', params: {} })
+    expect(authorLine({ status: 'live' }, false, fmt)).toBeNull()
+  })
+
+  it('nothing known is nothing shown', () => {
+    expect(authorLine({}, true, fmt)).toBeNull()
+    expect(authorLine(null, true, fmt)).toBeNull()
+    expect(authorLine({ activatedAt: 0, status: 'live' }, false, fmt)).toBeNull()
+  })
+})
+
+describe('adopt wiring', () => {
+  const root = join(__dirname, '../..')
+  const src = (p: string) => readFileSync(join(root, p), 'utf-8')
+
+  it('schedules.js renders the badge and the line from the helpers and calls the adopt url with the hash', () => {
+    const app = src('web/modules/schedules.js')
+    expect(app).toContain('authorBadge(task.authorState)')
+    expect(app).toContain('authorLine(task, _canActivateSchedules)')
+    expect(app).toContain('canAdopt(task, _canActivateSchedules)')
+    expect(app).toContain('fetch(adoptUrl(task.name, task.contentHash)')
+  })
+
+  it.each(['en', 'hu'])('%s has every key the helpers and the adopt flow can ask for', (lang) => {
+    const file = src(`web/lang/${lang}.js`)
+    const keys = [
+      'tasks.btn.adopt', 'tasks.author.inactive', 'tasks.author.inactive_title', 'tasks.author.unverifiable', 'tasks.author.unverifiable_title',
+      'tasks.author.admin_approved', 'tasks.author.admin_unapproved', 'tasks.author.admin_approved_only', 'tasks.author.approved',
+      'tasks.author.awaiting', 'tasks.confirm.adopt', 'tasks.toast.adopted', 'tasks.toast.adopt_error',
+    ]
+    for (const key of keys) expect(file, key).toContain(`'${key}'`)
   })
 })

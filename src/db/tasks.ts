@@ -132,6 +132,7 @@ export async function countTaskRunsBetween(fromTs: number, toTs?: number, tenant
 // only queue a pending_task_retries row), so they reach the view through the pending half, not through here.
 export const DEAD_LETTER_RUN_STATUSES = [
   'missed', 'lost', 'error', 'skipped', 'skipped_not_live', 'skipped_disabled', 'skipped_tenant_mismatch',
+  'skipped_author_inactive', 'skipped_author_unverifiable',
 ] as const
 
 export interface DeadLetterRunRow { name: string; agent: string; ts: number; status: string }
@@ -277,6 +278,11 @@ export interface ScheduleRow {
   status: 'draft' | 'pending_review' | 'live'
   last_run_at: number | null      // migration 0057
   last_run_result: string | null  // migration 0057
+  // Migration 0096. NULL in all four = no user-bound author (a seed, a token, an agent, a row from before the migration).
+  author_user_id: number | null   // dashboard_users.id of the user who last wrote the content
+  author_label: string | null     // '<username>', 'token:<name>', 'claimed:<agent>'
+  activated_by: string | null     // the human admin who activated the task
+  activated_at: number | null     // epoch seconds
   created_at: number
   updated_at: number
 }
@@ -319,6 +325,12 @@ export interface UpsertScheduleOpts {
   requires?: string | null
   status?: 'draft' | 'pending_review' | 'live'
   created_at?: number
+  // Who wrote the content / who activated it. Left out = the stored value is kept (a new row gets NULL), so a
+  // caller that only mirrors a file or flips a flag can never blank the author. null inside the object is a
+  // deliberate 'no user-bound author'. activation: null clears the activator (a task moved to another tenant has
+  // to be activated again), an object records one.
+  author?: { userId: number | null; label: string | null }
+  activation?: { by: string; at: number } | null
 }
 
 export async function upsertSchedule(id: string, opts: UpsertScheduleOpts): Promise<ScheduleRow> {
@@ -328,12 +340,12 @@ export async function upsertSchedule(id: string, opts: UpsertScheduleOpts): Prom
       id, prompt, description, schedule, agent, type, enabled, tenant_id,
       skip_if_busy, force_send, target_session, command, timeout_ms, fail_threshold,
       pre_check, catch_up_max_age_minutes, stuck_after_minutes, requires, status,
-      created_at, updated_at
+      created_at, updated_at, author_user_id, author_label, activated_by, activated_at
     ) VALUES (
       ?, ?, ?, ?, ?, ?, ?, ?,
       ?, ?, ?, ?, ?, ?,
       ?, ?, ?, ?, ?,
-      ?, ?
+      ?, ?, ?, ?, ?, ?
     )
     ON CONFLICT(id) DO UPDATE SET
       prompt                   = excluded.prompt,
@@ -354,7 +366,11 @@ export async function upsertSchedule(id: string, opts: UpsertScheduleOpts): Prom
       stuck_after_minutes      = excluded.stuck_after_minutes,
       requires                 = excluded.requires,
       status                   = excluded.status,
-      updated_at               = excluded.updated_at
+      updated_at               = excluded.updated_at,
+      author_user_id           = CASE WHEN ? = 1 THEN excluded.author_user_id ELSE schedules.author_user_id END,
+      author_label             = CASE WHEN ? = 1 THEN excluded.author_label   ELSE schedules.author_label   END,
+      activated_by             = CASE WHEN ? = 1 THEN excluded.activated_by   ELSE schedules.activated_by   END,
+      activated_at             = CASE WHEN ? = 1 THEN excluded.activated_at   ELSE schedules.activated_at   END
   `, id, opts.prompt, opts.description, opts.schedule, opts.agent,
     opts.type, opts.enabled ? 1 : 0, opts.tenant_id ?? 'default',
     opts.skip_if_busy ? 1 : 0, opts.force_send ? 1 : 0,
@@ -363,6 +379,8 @@ export async function upsertSchedule(id: string, opts: UpsertScheduleOpts): Prom
     opts.pre_check ?? null, opts.catch_up_max_age_minutes ?? null,
     opts.stuck_after_minutes ?? null, opts.requires ?? null, opts.status ?? 'live',
     opts.created_at ?? now, now,
+    opts.author?.userId ?? null, opts.author?.label ?? null, opts.activation?.by ?? null, opts.activation?.at ?? null,
+    opts.author ? 1 : 0, opts.author ? 1 : 0, opts.activation !== undefined ? 1 : 0, opts.activation !== undefined ? 1 : 0,
   )
   return (await dbx.get('SELECT * FROM schedules WHERE id = ?', id)) as ScheduleRow
 }
@@ -377,12 +395,15 @@ const PATCH_SCHEDULE_ALLOWED_COLS = new Set([
 // Move a schedule from draft/pending_review to live. The only mutation the
 // human-admin-only PUT /api/schedules/:name/activate route performs --
 // separate from patchSchedule so the activation path can never accidentally
-// touch any other column.
-export async function activateSchedule(id: string): Promise<ScheduleRow | null> {
+// touch any other column. `by` (the human admin) and `at` (epoch seconds, default now) are recorded in the same
+// statement; the author is never touched here. Without `by` the activation is recorded as before: status only.
+export async function activateSchedule(id: string, by?: string, at?: number): Promise<ScheduleRow | null> {
   const now = Math.floor(Date.now() / 1000)
   // The statement's own match count says whether the row exists: a separate existence read could be overtaken by
   // a delete, and the row read back afterwards would be undefined. A second activation of a live row only moves updated_at.
-  const result = await dbx.run("UPDATE schedules SET status = 'live', updated_at = ? WHERE id = ?", now, id)
+  const result = by === undefined
+    ? await dbx.run("UPDATE schedules SET status = 'live', updated_at = ? WHERE id = ?", now, id)
+    : await dbx.run("UPDATE schedules SET status = 'live', activated_by = ?, activated_at = ?, updated_at = ? WHERE id = ?", by, at ?? now, now, id)
   if (result.changes === 0) return null
   return (await dbx.get<ScheduleRow>('SELECT * FROM schedules WHERE id = ?', id)) ?? null
 }

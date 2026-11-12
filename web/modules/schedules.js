@@ -14,7 +14,7 @@ import { avatarBust } from './agents.js'
 import { initTenantSelector, fetchAdminTenants } from './tenant-selector.js'
 import { can } from './rbac-client.js'
 import { buildSchedulePayload } from './schedule-payload.js'
-import { statusBadgeKey, activateUrl, saveToastKey, applyPendingReviewBadge } from './schedule-review-ui.js'
+import { statusBadgeKey, activateUrl, adoptUrl, authorBadge, authorLine, canAdopt, saveToastKey, applyPendingReviewBadge } from './schedule-review-ui.js'
 
 // ─── Local utilities ─────────────────────────────────────────────────────────
 
@@ -30,6 +30,11 @@ function trashIcon() {
 }
 function checkIcon() {
   return '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>'
+}
+
+// A person with a check mark: taking a task over (not the plain check of an activation).
+function adoptIcon() {
+  return '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><polyline points="16 11 18 13 22 9"/></svg>'
 }
 
 // Review-gate: mirrors src/web/scheduled-tasks-io.ts's isTaskLive() -- a task
@@ -629,6 +634,9 @@ function makeScheduleRow(task) {
     row.className = 'schedule-row'
     const agent = scheduleAgents.find(a => a.name === task.agent) || { name: task.agent || mainAgentId(), avatar: '/api/marveen/avatar', label: task.agent || mainAgentId() }
     const isLive = taskIsLive(task)
+    const authorBadgeInfo = authorBadge(task.authorState)
+    const authorLineInfo = authorLine(task, _canActivateSchedules)
+    const showAdopt = canAdopt(task, _canActivateSchedules)
 
     row.innerHTML = `
       <div class="schedule-agent-avatar">
@@ -640,6 +648,7 @@ function makeScheduleRow(task) {
           ${task.type === 'heartbeat' ? '<span class="badge" data-variant="info">💓 heartbeat</span>' : ''}
           <span class="badge" data-variant="${task.enabled ? 'success' : 'accent'}">${task.enabled ? t('tasks.status.active') : t('tasks.status.paused')}</span>
           ${!isLive ? `<span class="badge" data-variant="warning">${t(statusBadgeKey(task.status))}</span>` : ''}
+          ${authorBadgeInfo ? `<span class="badge" data-variant="danger" data-author-state="${escapeHtml(task.authorState)}" title="${escapeHtml(t(authorBadgeInfo.titleKey))}">${escapeHtml(t(authorBadgeInfo.key))}</span>` : ''}
         </div>
         <div class="schedule-meta">
           <span class="schedule-cron">${escapeHtml(task.schedule)}</span>
@@ -647,10 +656,15 @@ function makeScheduleRow(task) {
           <span class="schedule-agent-name">${escapeHtml(agent.label || agent.name)}</span>
           ${_tenants.length && task.tenantId ? `<span class="badge" data-size="sm" data-variant="neutral" title="${escapeHtml(t('tasks.tenant.badge_title', { tenant: task.tenantId }))}">${escapeHtml(tenantLabel(task.tenantId))}</span>` : ''}
           <span class="schedule-last-run" title="${task.lastRunAt ? escapeHtml(new Date(task.lastRunAt).toLocaleString()) : ''}">${task.lastRunAt ? escapeHtml(t('tasks.last_run', { time: formatLastRun(task.lastRunAt) })) : escapeHtml(t('tasks.last_run_never'))}</span>
+          ${authorLineInfo ? `<span class="schedule-author">${escapeHtml(t(authorLineInfo.key, authorLineInfo.params))}</span>` : ''}
           ${task.lastRunAt && LAST_RUN_RESULT_LABEL[task.lastRunResult] ? `<span class="badge" data-size="sm" data-variant="${LAST_RUN_RESULT_VARIANT[task.lastRunResult]}">${escapeHtml(LAST_RUN_RESULT_LABEL[task.lastRunResult]())}</span>` : ''}
         </div>
       </div>
       <div class="schedule-actions">
+        ${showAdopt ? `
+        <button class="btn" data-variant="icon" data-action="adopt" title="${escapeHtml(t('tasks.btn.adopt'))}">
+          ${adoptIcon()}
+        </button>` : ''}
         ${!isLive ? `
         <button class="btn" data-variant="icon" data-action="activate" title="${_tenants.length && task.tenantId ? escapeHtml(t('tasks.btn.activate_tenant', { tenant: tenantLabel(task.tenantId) })) : t('tasks.btn.activate')}">
           ${checkIcon()}
@@ -688,6 +702,19 @@ function makeScheduleRow(task) {
     }
 
     // Action buttons
+    if (showAdopt) {
+      row.querySelector('[data-action="adopt"]').addEventListener('click', async (e) => {
+        e.stopPropagation()
+        if (!confirm(t('tasks.confirm.adopt'))) return
+        try {
+          const r = await fetch(adoptUrl(task.name, task.contentHash), { method: 'POST' })
+          const data = await r.json().catch(() => ({}))
+          if (r.ok) showToast(t('tasks.toast.adopted'))
+          else showToast('Hiba: ' + getErrorMessage(data, String(r.status)))
+          loadSchedules()
+        } catch { showToast(t('tasks.toast.adopt_error')) }
+      })
+    }
     if (!isLive) {
       row.querySelector('[data-action="activate"]').addEventListener('click', async (e) => {
         e.stopPropagation()

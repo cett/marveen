@@ -14,6 +14,8 @@ const ERROR_I18N = {
   timeout:                  'errors.timeout',
   disabled:                 'errors.disabled',
   not_live:                 'errors.not_live',
+  author_inactive:          'errors.author_inactive',
+  author_unverifiable:      'errors.author_unverifiable',
   stale_revision:           'errors.stale_revision',
   status_conflict:          'errors.status_conflict',
   managed_settings_missing: 'errors.managed_settings_missing',

@@ -368,6 +368,12 @@ export const RBAC_MODE_ENV: 'shadow' | 'enforce' | undefined = (() => {
   return raw === 'shadow' ? 'shadow' : 'enforce'
 })()
 
+// Mode of the schedule runner's author check (web/schedule-author.ts), as written in the environment file, read once at
+// start. Only the exact word shadow loosens it (the check runs and is logged, the task still runs); anything else,
+// unset or a typo included, is enforce. It is deliberately not an API setting: a token must not be able to switch the
+// gate off, and a change is a restart.
+export const SCHEDULE_AUTHOR_GATE: string = (process.env['SCHEDULE_AUTHOR_GATE'] ?? env['SCHEDULE_AUTHOR_GATE'] ?? '').trim()
+
 // Human-only approval categories. Off by default: the rules (a category an agent may never decide for
 // itself, the dashboard-session-only decision on such a request, the category name checks on
 // POST /api/approvals) only bind when APPROVAL_HUMAN_ONLY_ENFORCE=1; with anything else a bearer

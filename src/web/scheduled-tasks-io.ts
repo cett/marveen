@@ -107,6 +107,12 @@ export interface ScheduledTask {
   // this data) or a schedule that has not fired yet.
   lastRunAt?: number
   lastRunResult?: string
+  // Who wrote the content and who activated it (migration 0096). Read from the DB row only: the file mirror never
+  // carries them, and a task without a user-bound author has none of the four.
+  authorUserId?: number
+  authorLabel?: string
+  activatedBy?: string
+  activatedAt?: number
 }
 
 // True when the runner is allowed to fire this task. A task with no status
@@ -322,6 +328,10 @@ export function rowToTask(row: ScheduleRow): ScheduledTask {
     status: row.status,
     lastRunAt: row.last_run_at ?? undefined,
     lastRunResult: row.last_run_result ?? undefined,
+    authorUserId: row.author_user_id ?? undefined,
+    authorLabel: row.author_label ?? undefined,
+    activatedBy: row.activated_by ?? undefined,
+    activatedAt: row.activated_at ?? undefined,
   }
 }
 
@@ -363,6 +373,11 @@ export interface ScheduledTaskWrite {
   preCheck?: string; catchUpMaxAgeMinutes?: number; stuckAfterMinutes?: number;
   tenantId?: string | null; requires?: { mcp_servers?: string[] };
   status?: 'draft' | 'pending_review' | 'live';
+  // Who wrote the content / who activated it. Left out = the stored value is kept: the toggle, the activation
+  // mirror and every other writer that names neither can never blank them. activation: null clears the activator.
+  // Only the schedules route passes these; the file mirror never carries them.
+  author?: { userId: number | null; label: string | null };
+  activation?: { by: string; at: number } | null;
 }
 
 export function writeScheduledTask(taskName: string, data: ScheduledTaskWrite): Promise<void> {
@@ -399,7 +414,11 @@ async function writeScheduledTaskLocked(taskName: string, data: ScheduledTaskWri
     status:                   data.status ?? existing?.status ?? 'live',
   }
 
-  await upsertSchedule(taskName, merged)
+  await upsertSchedule(taskName, {
+    ...merged,
+    ...(data.author !== undefined ? { author: data.author } : {}),
+    ...(data.activation !== undefined ? { activation: data.activation } : {}),
+  })
 
   // Keep files in sync as safety-net (allows rollback: just clear the DB table).
   _writeScheduledTaskFiles(taskName, merged)

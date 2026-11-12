@@ -64,8 +64,18 @@ export interface Schedule {
   forceSend?: boolean;
   targetSession?: string;
   createdAt?: number;
-  /** Fingerprint of the fields an approval covers (prompt, command, type, schedule, agent, target session, timeout, fail threshold, busy flags). Send it back as `expected_hash` when activating. */
+  /** Fingerprint of the fields an approval covers (prompt, command, type, schedule, agent, target session, timeout, fail threshold, busy flags). Send it back as `expected_hash` when activating or adopting. */
   contentHash?: string;
+  /** The verdict the run-time author check gives the task today, whatever `SCHEDULE_AUTHOR_GATE` is set to. `none`: no user-bound author (a seed, a token, an agent), nothing is checked. `ok`: the author may still write schedules. `inactive`: the author is gone, disabled, without `schedules:write`, or an agent of another tenant. `unverifiable`: the lookup failed just now. Given to every caller. */
+  authorState?: 'none' | 'ok' | 'inactive' | 'unverifiable';
+  /** Dashboard user id of the author. Admin callers only. */
+  authorUserId?: number;
+  /** Readable name of the author (user name, `token:<name>`). Admin callers only. */
+  authorLabel?: string;
+  /** Who activated the task last. Admin callers only. */
+  activatedBy?: string;
+  /** When the task was activated last, seconds since the epoch. Given to every caller. */
+  activatedAt?: number;
 }
 
 export interface TenantStarterPackResult {
@@ -105,7 +115,7 @@ export interface TenantStarterPackState {
 
 export interface Error {
   /** Machine-readable snake_case error token. Canonical values are listed in the enum; additional domain-specific tokens may appear in future API versions. */
-  error: 'not_found' | 'required' | 'invalid_value' | 'forbidden' | 'unauthorized' | 'conflict' | 'limit_exceeded' | 'internal_error' | 'parse_error' | 'not_supported' | 'timeout' | 'disabled' | 'not_live' | 'managed_settings_missing' | 'upstream_error' | 'sender_not_in_allowlist' | 'federation_disabled' | 'tenant_required' | 'unknown_query_parameter' | 'stale_revision' | 'status_conflict' | 'agent_not_allowed' | 'vault_key_unavailable';
+  error: 'not_found' | 'required' | 'invalid_value' | 'forbidden' | 'unauthorized' | 'conflict' | 'limit_exceeded' | 'internal_error' | 'parse_error' | 'not_supported' | 'timeout' | 'disabled' | 'not_live' | 'author_inactive' | 'author_unverifiable' | 'managed_settings_missing' | 'upstream_error' | 'sender_not_in_allowlist' | 'federation_disabled' | 'tenant_required' | 'unknown_query_parameter' | 'stale_revision' | 'status_conflict' | 'agent_not_allowed' | 'vault_key_unavailable';
   /** Optional human-readable debugging note. Present when the server has extra context that helps the caller fix the request (e.g. which parameter name the filter expects, or why a value was rejected). Clients must not rely on its exact text; treat it as informational. */
   hint?: string;
   /** Name of the request field that caused the validation failure. Present on 4xx validation errors when the problem can be attributed to a single input field. */
@@ -664,7 +674,7 @@ export type ListScheduledAgentsResponse = {
 export type ListScheduleRunsResponse = {
   /** Run time, milliseconds since the epoch */
   ts?: number;
-  /** Outcome of the run, for example `fired`, `error` or `skipped`. A due occurrence the scheduler held back is recorded instead of run: `skipped_not_live` (a draft, or a task held for a new review), `skipped_disabled` (switched off in a mass event) and `skipped_tenant_mismatch` (the task's tenant and agent no longer fit together: the agent was switched off for the tenant, the tenant was disabled, or the agent is gone). */
+  /** Outcome of the run, for example `fired`, `error` or `skipped`. A due occurrence the scheduler held back is recorded instead of run: `skipped_not_live` (a draft, or a task held for a new review), `skipped_disabled` (switched off in a mass event) and `skipped_tenant_mismatch` (the task's tenant and agent no longer fit together: the agent was switched off for the tenant, the tenant was disabled, or the agent is gone), `skipped_author_inactive` (the user who last wrote the task may no longer write schedules) and `skipped_author_unverifiable` (the author could not be checked at that moment, so the task did not run). */
   status?: string;
   /** Estimated token use of the run, null when it cannot be estimated */
   tokens_est?: number;

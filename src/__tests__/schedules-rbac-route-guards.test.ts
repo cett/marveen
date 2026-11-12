@@ -163,6 +163,34 @@ describe('only a signed-in user or an API token writes', () => {
   })
 })
 
+describe('adopting a task is for a signed-in admin only', () => {
+  it.each([
+    ['the shared token', sharedToken],
+    ['a scoped token on the tenant', token('tenant-b')],
+    ['a tenant session', session('agent', 'tenant-b')],
+    ['a session of the default tenant', session('agent', 'default')],
+    ['a viewer session', session('viewer', 'tenant-b')],
+    ['a device key', device],
+    ['a federation principal', federation],
+    ['an account with no tenant', session('agent', null)],
+  ])('%s is refused on a task of its own tenant and on one of the default tenant, and the rows do not move', async (_n, who) => {
+    const live = await stored('t-live')
+    const other = await stored('t-other')
+    expect((await call('POST', '/api/schedules/t-live/adopt', undefined, who)).status).toBe(403)
+    expect((await call('POST', '/api/schedules/t-other/adopt', undefined, who)).status).toBe(403)
+    expect(await stored('t-live')).toEqual(live)
+    expect(await stored('t-other')).toEqual(other)
+  })
+
+  it('positive pair: a signed-in admin with a user row adopts the same task (the refusals above are the gate, not a missing route)', async () => {
+    const owner = await dbMod.createDashboardUser('owner', 'hash-a')
+    const out = await call('POST', '/api/schedules/t-live/adopt', undefined, human)
+    expect(out.status).toBe(200)
+    expect((await stored('t-live')).author_user_id).toBe(owner.id)
+    expect((await call('POST', '/api/schedules/no-such-task/adopt', undefined, human)).status).toBe(404)
+  })
+})
+
 describe('cap on tasks waiting for review per tenant', () => {
   const cap = 20
   const seedDrafts = async (n: number, status: 'draft' | 'pending_review' | 'live' = 'draft') => {

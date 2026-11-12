@@ -19,6 +19,11 @@
 //                                 disabled) -> not run; every due occurrence is
 //                                 recorded as `skipped_tenant_mismatch`. It counts
 //                                 as held for the mass-skip alert like not_live.
+//   author_blocked  enabled + live + pair valid, but the dashboard user who last wrote the task is no
+//                                 longer allowed to (gone, disabled, demoted) or cannot be looked up -> not run; every
+//                                 due occurrence is recorded as `skipped_author_inactive` / `skipped_author_unverifiable`.
+//                                 Counts as held for the mass-skip alert. Precedence: disabled > not_live >
+//                                 tenant_mismatch > author_blocked > runnable (one row per occurrence).
 // A `disabled` task is ALSO recorded (`skipped_disabled`) when it is part of a
 // mass event: a majority of the tasks that were runnable a tick ago are all held
 // back at once. That is not an operator's hand (one toggle at a time); it is the
@@ -33,6 +38,8 @@ import { isTaskLive } from './scheduled-tasks-io.js'
 export const SKIP_STATUS_NOT_LIVE = 'skipped_not_live'
 export const SKIP_STATUS_DISABLED = 'skipped_disabled'
 export const SKIP_STATUS_TENANT_MISMATCH = 'skipped_tenant_mismatch'
+export const SKIP_STATUS_AUTHOR_INACTIVE = 'skipped_author_inactive'
+export const SKIP_STATUS_AUTHOR_UNVERIFIABLE = 'skipped_author_unverifiable'
 
 /** A mass event needs at least this many tasks in play, so a fleet with one or
  *  two legitimate drafts or a single toggle never alarms. */
@@ -42,12 +49,13 @@ export const MASS_SKIP_MIN_TASKS = 4
  *  the operator deliberately left disabled after the incident stops being recorded. */
 export const MASS_EPISODE_MAX_MS = 24 * 60 * 60_000
 
-export type TaskKind = 'runnable' | 'disabled' | 'not_live' | 'tenant_mismatch'
+export type TaskKind = 'runnable' | 'disabled' | 'not_live' | 'tenant_mismatch' | 'author_blocked'
 
-export function classifyTask(task: Pick<ScheduledTask, 'enabled' | 'status'>, tenantMismatch = false): TaskKind {
+export function classifyTask(task: Pick<ScheduledTask, 'enabled' | 'status'>, tenantMismatch = false, authorBlocked = false): TaskKind {
   if (!task.enabled) return 'disabled'
   if (!isTaskLive(task)) return 'not_live'
-  return tenantMismatch ? 'tenant_mismatch' : 'runnable'
+  if (tenantMismatch) return 'tenant_mismatch'
+  return authorBlocked ? 'author_blocked' : 'runnable'
 }
 
 export interface SkipLedgerDeps {
@@ -67,6 +75,8 @@ export interface SkipLedgerDeps {
   dbRunnable?: () => Iterable<string>
   /** True when the task's (tenant, agent) pair no longer holds (see `tenant_mismatch`). */
   tenantMismatch?: (task: ScheduledTask) => boolean
+  /** The reason the task's author blocks it (see `author_blocked`), or null. Only asked in enforce mode: in shadow mode the runner passes nothing. */
+  authorBlocked?: (task: ScheduledTask) => 'inactive' | 'unverifiable' | null
 }
 
 export interface SkipScanResult {
@@ -101,13 +111,13 @@ export function createSkipTracker(): SkipTracker {
         try { for (const name of deps.dbRunnable?.() ?? []) prevRunnable.add(name) }
         catch { /* no baseline: behaves like a tracker that has only the tick's own evidence */ }
       }
-      const kinds = new Map(tasks.map(t => [t.name, classifyTask(t, deps.tenantMismatch?.(t) ?? false)] as const))
+      const kinds = new Map(tasks.map(t => [t.name, classifyTask(t, deps.tenantMismatch?.(t) ?? false, (deps.authorBlocked?.(t) ?? null) !== null)] as const))
 
       // Held = would have run on the previous tick's evidence: not_live and
       // tenant_mismatch are always a DB-enabled task, disabled only counts when it was runnable a tick ago.
       const held = tasks.filter(t => {
         const kind = kinds.get(t.name)
-        return kind === 'not_live' || kind === 'tenant_mismatch' || (kind === 'disabled' && prevRunnable.has(t.name))
+        return kind === 'not_live' || kind === 'tenant_mismatch' || kind === 'author_blocked' || (kind === 'disabled' && prevRunnable.has(t.name))
       })
       const inPlay = new Set<string>(prevRunnable)
       for (const t of tasks) if (t.enabled) inPlay.add(t.name)
@@ -131,6 +141,9 @@ export function createSkipTracker(): SkipTracker {
         let status: string | null = null
         if (kind === 'not_live') status = SKIP_STATUS_NOT_LIVE
         else if (kind === 'tenant_mismatch') status = SKIP_STATUS_TENANT_MISMATCH
+        else if (kind === 'author_blocked') {
+          status = deps.authorBlocked?.(task) === 'unverifiable' ? SKIP_STATUS_AUTHOR_UNVERIFIABLE : SKIP_STATUS_AUTHOR_INACTIVE
+        }
         else if (kind === 'disabled' && episode.has(task.name)) status = SKIP_STATUS_DISABLED
         if (status === null) continue
         if (deps.cronPrevOccurrence(task.schedule, fromMs, now) == null) continue

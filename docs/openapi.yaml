@@ -186,7 +186,29 @@ components:
           description: >-
             Fingerprint of the fields an approval covers (prompt, command, type,
             schedule, agent, target session, timeout, fail threshold, busy
-            flags). Send it back as `expected_hash` when activating.
+            flags). Send it back as `expected_hash` when activating or adopting.
+        authorState:
+          type: string
+          enum: [none, ok, inactive, unverifiable]
+          description: >-
+            The verdict the run-time author check gives the task today,
+            whatever `SCHEDULE_AUTHOR_GATE` is set to. `none`: no user-bound
+            author (a seed, a token, an agent), nothing is checked. `ok`: the
+            author may still write schedules. `inactive`: the author is gone,
+            disabled, without `schedules:write`, or an agent of another tenant.
+            `unverifiable`: the lookup failed just now. Given to every caller.
+        authorUserId:
+          type: integer
+          description: Dashboard user id of the author. Admin callers only.
+        authorLabel:
+          type: string
+          description: Readable name of the author (user name, `token:<name>`). Admin callers only.
+        activatedBy:
+          type: string
+          description: Who activated the task last. Admin callers only.
+        activatedAt:
+          type: integer
+          description: When the task was activated last, seconds since the epoch. Given to every caller.
 
     TenantStarterPackResult:
       type: object
@@ -284,6 +306,8 @@ components:
             - timeout
             - disabled
             - not_live
+            - author_inactive
+            - author_unverifiable
             - managed_settings_missing
             - upstream_error
             - sender_not_in_allowlist
@@ -4203,8 +4227,9 @@ paths:
       description: >-
         One newest-first list of the scheduled occurrences that did not run to a
         normal start: `kind: run` rows are the task_runs of the window with status
-        missed, lost, error, skipped, skipped_not_live, skipped_disabled or
-        skipped_tenant_mismatch (never fired or fired_late); `kind: pending` rows
+        missed, lost, error, skipped, skipped_not_live, skipped_disabled,
+        skipped_tenant_mismatch, skipped_author_inactive or
+        skipped_author_unverifiable (never fired or fired_late); `kind: pending` rows
         are the retries still queued now (reason: giveup, lane-busy,
         lost-injection, ...), whatever their age. A retry that was resolved (the
         row deleted after a successful retry) is not listed. Read-only; it returns
@@ -4629,6 +4654,77 @@ paths:
                     description: The task's current `contentHash`; review it and activate again with this value.
                   hint: { type: string }
 
+  /schedules/{name}/adopt:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      tags: [schedules]
+      operationId: adoptSchedule
+      summary: Take over a scheduled task (become its author)
+      description: >-
+        Makes the signed-in caller the author of the task, which is the user
+        the run-time author check judges before every run. Use it when the
+        list shows `authorState: inactive` or `unverifiable`. The status, the
+        content, the pause flag and the activation record are not touched:
+        adopting never approves a draft or a held task and never makes one
+        live. Authenticated admin only (an agent on the shared token or a
+        scoped token is refused) and the session must belong to an existing
+        dashboard user. Pass the `contentHash` the task was listed with as
+        `expected_hash`: if the task changed since, nothing is adopted and the
+        answer is 409 `stale_revision` with the current hash. Needs `admin:all`;
+        writes one audit row (action `adopt`).
+      parameters:
+        - name: expected_hash
+          in: query
+          required: false
+          schema:
+            type: string
+          description: The `contentHash` the admin reviewed. Optional; unchecked when omitted.
+      responses:
+        "200":
+          description: Adopted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, status, author_label]
+                properties:
+                  ok: { type: boolean, enum: [true] }
+                  status:
+                    type: string
+                    enum: [draft, pending_review, live]
+                    description: The status the task had, unchanged.
+                  author_label: { type: string, description: The new author's readable name }
+        "403":
+          description: Caller is not an authenticated admin, or the session has no dashboard user row
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Schedule not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: The task changed after the caller loaded it (`stale_revision`); the body carries the current `content_hash`
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [error]
+                properties:
+                  error: { type: string, enum: [stale_revision] }
+                  content_hash:
+                    type: string
+                    description: The task's current `contentHash`; review it and adopt again with this value.
+                  hint: { type: string }
+
   /schedules/{name}/runs:
     parameters:
       - name: name
@@ -4662,7 +4758,11 @@ paths:
                         `skipped_disabled` (switched off in a mass event) and
                         `skipped_tenant_mismatch` (the task's tenant and agent
                         no longer fit together: the agent was switched off for
-                        the tenant, the tenant was disabled, or the agent is gone).
+                        the tenant, the tenant was disabled, or the agent is gone),
+                        `skipped_author_inactive` (the user who last wrote the
+                        task may no longer write schedules) and
+                        `skipped_author_unverifiable` (the author could not be
+                        checked at that moment, so the task did not run).
                     tokens_est:
                       type: integer
                       description: Estimated token use of the run, null when it cannot be estimated
@@ -4696,7 +4796,10 @@ paths:
         Fires the task immediately, bypassing the cron match, the catch-up
         window and `skipIfBusy`. A disabled task answers 409 `disabled` and a
         draft or `pending_review` task 409 `not_live` (a signed-in admin may
-        still run it to preview it). Needs `schedules:write`.
+        still run it to preview it). A live task whose author may no longer write
+        schedules answers 409 `author_inactive` (409 `author_unverifiable` when
+        the author cannot be checked right now), for an admin too; adopt the task
+        to release it. Needs `schedules:write`.
 
 
         For prompt-type tasks (`task`, `heartbeat`) the prompt is delivered to
@@ -4752,7 +4855,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "409":
-          description: Schedule is disabled (`disabled`) or not live (`not_live`)
+          description: >-
+            Schedule is disabled (`disabled`), not live (`not_live`), or its author
+            is not accepted (`author_inactive`, `author_unverifiable`)
           content:
             application/json:
               schema:
