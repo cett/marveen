@@ -78,7 +78,11 @@ function runRefresh(install: string, home: string): { out: string; code: number 
     'run_seed_refresh',
   ].join('\n') + '\n')
   try {
-    return { out: execFileSync('bash', [script], { encoding: 'utf-8' }).trim(), code: 0 }
+    // update.sh writes the refreshed-skills marker to MARVEEN_STORE_DIR when it is set, else to $INSTALL_DIR/store. The
+    // fixture reads it from <install>/store, so the probe names that directory itself instead of inheriting the store
+    // override of whatever environment runs the suite (QA runs it under an isolated one).
+    const env = { ...process.env, MARVEEN_STORE_DIR: join(install, 'store') }
+    return { out: execFileSync('bash', [script], { encoding: 'utf-8', env }).trim(), code: 0 }
   } catch (e) {
     const err = e as { stdout?: string; stderr?: string; status?: number }
     return { out: `${String(err.stdout ?? '')}${String(err.stderr ?? '')}`.trim(), code: err.status ?? -1 }
