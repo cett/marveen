@@ -313,6 +313,7 @@ describe('scheduled-tasks-io', () => {
         timeout_ms: null, fail_threshold: null, pre_check: null,
         catch_up_max_age_minutes: null, stuck_after_minutes: null, requires: null,
         status: 'draft', last_run_at: null, last_run_result: null,
+        author_user_id: null, author_label: null, activated_by: null, activated_at: null,
         created_at: 1700000000, updated_at: 1700000000,
       } satisfies ScheduleRow
       const task = rowToTask(row)
