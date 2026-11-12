@@ -233,6 +233,33 @@ The steps:
 3. A channel message goes to the tenant's users only when they have a Telegram channel binding to the agent (the `channel-bindings` call above, a private chat) and the same chat is on the `allowFrom` list of the agent's `access.json`. At most 3 recipients get the message, group chats are left out. With no binding the task only writes the daily log.
 4. If the tenant's agent changes later, changing the agent availability re-aims the task automatically (and puts it back to `draft` and disabled). After an agent is deleted or renamed, or when the tenant's main agent is replaced from SQL, there is no automation: repeating the request (or the button) fixes it.
 
+## Schedule author check
+
+Before a live task fires, the scheduler looks up the dashboard user who last wrote its content (`schedules.author_user_id`) and runs the task only while that user may still write schedules. The verdict (`src/web/schedule-author.ts`):
+
+- no user-bound author (a built-in task, a token, an agent): `ok`, and no lookup at all;
+- the lookup fails: `unverifiable`, the task does not run (fail closed);
+- the user is gone, disabled, or its role lacks `schedules:write`: `inactive`;
+- role `admin`: `ok` whatever its tenant (a global admin has no tenant and the fleet's tasks are in `default`; the admin branch is decided before the tenant branch);
+- any other role: `ok` only on its own tenant, and never on `default`.
+
+A blocked occurrence is recorded in `task_runs` as `skipped_author_inactive` or `skipped_author_unverifiable`, once per target agent, the schedule row is left alone, one Telegram alert is sent per task, retries of the task are dropped, and `POST /api/v1/schedules/<name>/run` answers 409 `author_inactive` / `author_unverifiable`. A blocked task does not need an admin to come back: when the author is valid again the next occurrence runs. The way out otherwise is `POST /api/v1/schedules/<name>/adopt` (the **Take over** button of the Schedules list), which makes the signed-in admin the author and changes nothing else.
+
+**The mode.** `SCHEDULE_AUTHOR_GATE` in the dashboard's `.env`, read once at start (a change needs a restart; there is no API for it). `enforce` is the default; only the exact word `shadow` loosens it, anything else (unset, empty, a typo) is `enforce`. In `shadow` the verdict is still made and one `author_gate_shadow` audit row is written per task, but the task runs and no `skipped_author_*` row is written.
+
+**Rollout on a fleet that already has schedules.** Migration 0096 gives every existing schedule the lowest-id enabled admin as its author, so the first restart on a build with this check puts every existing task under it, and `enforce` is the default. A single wrong verdict would stop the whole fleet, the morning chain included. Roll it out in `shadow`:
+
+1. Before the first restart on this build, put `SCHEDULE_AUTHOR_GATE=shadow` in the dashboard's `.env`. Do this first: the migration and the check arrive with the same restart.
+2. Deploy and restart.
+3. Check: `GET /api/v1/schedules` shows `authorState: ok` on every task (the current fleet: 28 tasks, 27 enabled and 1 paused, all `ok`, `authorLabel` the name of the user with id 1), and the audit log has no `author_gate_shadow` row.
+4. Watch one full morning-chain cycle (`dream-engine`, `peter-reggeli-report`, `reggeli-napindito`) and 24 hours: `author_gate_shadow` stays at 0.
+5. Delete the line from `.env` and restart (this is `enforce`).
+6. After the first morning chain in `enforce`, check `task_runs`: no `skipped_author_%` row.
+
+Rollback at any time: write `SCHEDULE_AUTHOR_GATE=shadow` back and restart.
+
+**Check on a copy first (before step 1).** The tests exercise the real user lookup only against synthetic users; the check against the real data is this one, done by someone other than the author of the change and never on the live database. Start a throwaway instance on a copy of the live database (`MARVEEN_STORE_DIR` and a different `WEB_PORT`, see the isolated verification instance recipe), let migration 0096 run on the copy, and check: `GET /api/v1/schedules` shows `authorState: ok` on all 28 rows with the `authorLabel` of the user with id 1; a forced tick in `shadow` writes 0 `author_gate_shadow` rows; a forced tick in `enforce` writes 0 `skipped_author_%` rows in `task_runs`. Keep the raw counts for the pull request.
+
 ## Watchdog
 
 The channel connection is supervised by an independent watchdog (`scripts/channel-watchdog.sh`) that runs separately from the dashboard process (systemd timer, every 5 minutes). If the channel session gets stuck or exits, the watchdog recovers it with `tmux respawn-pane` — only the channel session, not any other agent sessions.

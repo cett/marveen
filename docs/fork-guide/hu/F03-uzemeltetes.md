@@ -233,6 +233,33 @@ A lépések:
 3. Csatornaüzenet csak akkor megy a tenant felhasználóinak, ha van Telegram csatorna-kötésük az ágenshez (a fenti `channel-bindings` hívás, magánbeszélgetés), és ugyanez a chat az ágens `access.json` `allowFrom` listájában is szerepel. Legfeljebb 3 címzett kap üzenetet, a csoportos csevegések kimaradnak. Kötés nélkül a feladat csak a napi naplóba ír.
 4. Ha később a tenant ágense megváltozik, az ágens-hozzáférés módosítása automatikusan újracélozza a feladatot (és visszateszi `draft` és letiltott állapotba). Ágens törlése vagy átnevezése után, illetve a tenant fő ágensének SQL-es cseréjekor nincs automatika: a kérés ismétlése (vagy a gomb) javítja.
 
+## Ütemezés szerzőjének ellenőrzése
+
+Mielőtt egy aktív feladat elindul, az ütemező megkeresi a tartalmát utoljára író dashboard-felhasználót (`schedules.author_user_id`), és a feladatot csak addig futtatja, amíg ez a felhasználó még írhat ütemezést. A döntés (`src/web/schedule-author.ts`):
+
+- nincs felhasználóhoz kötött szerző (beépített feladat, token, ágens): `ok`, és nincs lekérdezés sem;
+- a lekérdezés hibázik: `unverifiable`, a feladat nem fut (zárva hibázik);
+- a felhasználó törölt, letiltott, vagy a szerepköre nem kapott `schedules:write` jogot: `inactive`;
+- `admin` szerepkör: `ok` a tenanttól függetlenül (a globális adminnak nincs tenantja, a flotta feladatai pedig `default` tenantban vannak; az admin-ág a tenant-ág előtt dől el);
+- bármely más szerepkör: `ok` csak a saját tenantján, a `default`-on soha.
+
+A blokkolt előfordulás `skipped_author_inactive` vagy `skipped_author_unverifiable` állapottal kerül a `task_runs` táblába, célágensenként egyszer, az ütemezés sora érintetlen marad, feladatonként egy Telegram-riasztás megy ki, a feladat újrapróbálásai eldobódnak, a `POST /api/v1/schedules/<név>/run` pedig 409 `author_inactive` / `author_unverifiable` választ ad. A blokkolt feladat visszatéréséhez nem kell admin: ha a szerző újra érvényes, a következő előfordulás fut. Egyébként a kiút a `POST /api/v1/schedules/<név>/adopt` (az Ütemezések lista **Átvétel** gombja), amely a bejelentkezett admint teszi szerzővé, és mást nem változtat.
+
+**A mód.** `SCHEDULE_AUTHOR_GATE` a dashboard `.env` fájljában, indításkor egyszer olvasódik (módosításhoz újraindítás kell; API nincs hozzá). Az alap az `enforce`; csak a pontos `shadow` szó lazít, minden más (hiányzó, üres, elírt érték) `enforce`. `shadow` módban a döntés megszületik, és feladatonként egy `author_gate_shadow` audit sor készül, de a feladat fut, és `skipped_author_*` sor nem keletkezik.
+
+**Bevezetés olyan flottán, ahol már vannak ütemezések.** A 0096-os migráció minden meglévő ütemezés szerzőjének a legkisebb azonosítójú engedélyezett admint adja, ezért az ellenőrzést tartalmazó build első újraindítása minden meglévő feladatot alá vesz, és az alap az `enforce`. Egyetlen hibás döntés az egész flottát leállítaná, a reggeli láncot is. Ezért `shadow` módban vezesd be:
+
+1. A build első újraindítása ELŐTT írd be a dashboard `.env` fájljába: `SCHEDULE_AUTHOR_GATE=shadow`. Ez az első lépés: a migráció és az ellenőrzés ugyanazzal az újraindítással érkezik.
+2. Deploy és újraindítás.
+3. Ellenőrzés: a `GET /api/v1/schedules` minden feladaton `authorState: ok`-t mutat (a mai flotta: 28 feladat, ebből 27 engedélyezett és 1 szüneteltetett, mind `ok`, az `authorLabel` az 1-es azonosítójú felhasználó neve), az audit naplóban pedig nincs `author_gate_shadow` sor.
+4. Figyeld egy teljes reggeli lánc ciklusán (`dream-engine`, `peter-reggeli-report`, `reggeli-napindito`) és 24 órán át: az `author_gate_shadow` marad 0.
+5. Told ki a sort a `.env`-ből, és indítsd újra (ez az `enforce`).
+6. Az első `enforce` módú reggeli lánc után nézd meg a `task_runs` táblát: nincs `skipped_author_%` sor.
+
+Visszalépés bármikor: írd vissza a `SCHEDULE_AUTHOR_GATE=shadow` sort, és indítsd újra.
+
+**Előbb ellenőrzés másolaton (az 1. lépés előtt).** A tesztek a valódi felhasználó-lekérdezést csak szintetikus felhasználókkal járatják; a valódi adaton ez az ellenőrzés fut, és nem a változtatás szerzője végzi, az éles adatbázison pedig soha. Indíts egy eldobható példányt az éles adatbázis másolatán (`MARVEEN_STORE_DIR` és más `WEB_PORT`, lásd az izolált verifikációs példány receptjét), futtasd le rajta a 0096-os migrációt, és nézd meg: a `GET /api/v1/schedules` mind a 28 sorban `authorState: ok`-t mutat, az `authorLabel` az 1-es azonosítójú felhasználó neve; a kényszerített tick `shadow` módban 0 `author_gate_shadow` sort ír; a kényszerített tick `enforce` módban 0 `skipped_author_%` sort ír a `task_runs` táblába. A nyers számokat tartsd meg a pull requesthez.
+
 ## Watchdog
 
 A csatorna-kapcsolatot egy független watchdog felügyeli (`scripts/channel-watchdog.sh`), amely a dashboard folyamattól függetlenül fut (systemd timer, 5 percenként). Ha a csatorna-munkamenet elakad vagy leáll, a watchdog `tmux respawn-pane`-nel állítja helyre -- kizárólag a csatorna-munkamenetet, a többi ágenst nem érinti.

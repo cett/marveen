@@ -9,7 +9,7 @@ import type { RouteContext } from './routes/types.js'
 // turns a successful write into an error (the review gate itself is the status the row
 // holds, not these).
 
-export type ScheduleAuditAction = 'create' | 'update' | 'delete' | 'toggle' | 'activate' | 'review_requested' | 'retarget'
+export type ScheduleAuditAction = 'create' | 'update' | 'delete' | 'toggle' | 'activate' | 'adopt' | 'review_requested' | 'retarget'
 
 export interface ScheduleActor {
   /** agent_audit_log.agent_id: the session user, the token name, the device name, or `claimed:<id>`. */

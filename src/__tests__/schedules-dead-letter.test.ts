@@ -80,13 +80,13 @@ const body = (o: Out): Body => o.body as Body
 describe('the rows', () => {
   it('lists exactly the non-start statuses, never fired or fired_late', async () => {
     addSchedule('task-a', 'default')
-    for (const s of ['fired', 'fired_late', 'missed', 'lost', 'error', 'skipped', 'skipped_not_live', 'skipped_disabled', 'skipped_tenant_mismatch', 'missing-retrying']) {
+    for (const s of ['fired', 'fired_late', 'missed', 'lost', 'error', 'skipped', 'skipped_disabled', 'skipped_not_live', 'skipped_tenant_mismatch', 'skipped_author_inactive', 'skipped_author_unverifiable', 'missing-retrying']) {
       addRun('task-a', s, 1000)
     }
     const o = await get('/api/schedules/dead-letter')
     expect(o.status).toBe(200)
     expect(body(o).items.map((i) => i['status']).sort()).toEqual(
-      ['error', 'lost', 'missed', 'skipped', 'skipped_disabled', 'skipped_not_live', 'skipped_tenant_mismatch'])
+      ['error', 'lost', 'missed', 'skipped', 'skipped_author_inactive', 'skipped_author_unverifiable', 'skipped_disabled', 'skipped_not_live', 'skipped_tenant_mismatch'])
   })
 
   it('a run row carries exactly kind, task, agent, ts, status', async () => {
@@ -281,6 +281,20 @@ describe('tenant isolation', () => {
   it('a tenant caller sees only the rows of their own tenant schedules', async () => {
     expect(tasks(await get('/api/schedules/dead-letter', 'viewer', 'tenant-a'))).toEqual(['task-a', 'task-a'])
     expect(tasks(await get('/api/schedules/dead-letter', 'viewer', 'tenant-b'))).toEqual(['task-b', 'task-b'])
+  })
+
+  it('the two author statuses follow the same tenant filter: a tenant caller sees only their own, an admin sees both', async () => {
+    addRun('task-a', 'skipped_author_inactive', 7000)
+    addRun('task-b', 'skipped_author_unverifiable', 8000)
+    addRun('task-gone', 'skipped_author_inactive', 9000)
+    const statusesOf = (o: Out): string[] => body(o).items.filter((i) => i['kind'] === 'run').map((i) => `${String(i['task'])}|${String(i['status'])}`).sort()
+    expect(statusesOf(await get('/api/schedules/dead-letter', 'viewer', 'tenant-a'))).toEqual(['task-a|missed', 'task-a|skipped_author_inactive'])
+    expect(statusesOf(await get('/api/schedules/dead-letter', 'viewer', 'tenant-b'))).toEqual(['task-b|error', 'task-b|skipped_author_unverifiable'])
+    // positive pair: the unfiltered admin sees all three, including the one whose schedule is gone
+    expect(statusesOf(await get('/api/schedules/dead-letter'))).toEqual([
+      'task-a|missed', 'task-a|skipped_author_inactive', 'task-b|error', 'task-b|skipped_author_unverifiable',
+      'task-gone|lost', 'task-gone|skipped_author_inactive',
+    ])
   })
 
   it('a tenant caller never sees the row of a deleted schedule', async () => {

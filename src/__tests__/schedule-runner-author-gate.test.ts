@@ -371,21 +371,21 @@ describe('run now', () => {
   })
 })
 
-describe('production shape: 28 live tasks of the default tenant, authored by the global admin (NULL tenant)', () => {
-  // 9 command, 12 heartbeat, 7 task; the morning chain are named members of the set.
-  const CHAIN = ['dream-engine', 'morning-report', 'morning-briefing']
+describe('production shape: 28 live tasks of the default tenant (27 enabled, 1 paused), authored by the global admin (NULL tenant)', () => {
+  // 9 command, 12 heartbeat, 7 task; the morning chain (the names of the live fleet) are members of the set; one task is paused.
+  const CHAIN = ['dream-engine', 'peter-reggeli-report', 'reggeli-napindito']
   const fleet = (): ScheduledTask[] => [
     ...CHAIN.map(n => task(n, { type: 'task' })),
-    ...Array.from({ length: 4 }, (_, i) => task(`task-${i}`, { type: 'task' })),
+    ...Array.from({ length: 4 }, (_, i) => task(`task-${i}`, { type: 'task', enabled: i !== 3 })),
     ...Array.from({ length: 12 }, (_, i) => task(`beat-${i}`, { type: 'heartbeat' })),
     ...Array.from({ length: 9 }, (_, i) => task(`cmd-${i}`, { type: 'command', command: 'echo hi' })),
   ]
 
-  it('all 28 pass the gate on one tick: 19 attempts, 9 command runs, no skipped row, no shadow audit, one lookup', async () => {
+  it('all 27 enabled tasks pass the gate on one tick: 18 attempts, 9 command runs, no skipped_author row, no shadow audit, one lookup', async () => {
     mockListScheduledTasks.mockResolvedValue(fleet())
     expect(fleet()).toHaveLength(28)
     await tick()
-    expect(attempts()).toBe(19)
+    expect(attempts()).toBe(18)
     expect(commandRuns()).toHaveLength(9)
     expect(skippedAuthor()).toEqual([])
     expect(auditActions()).not.toContain('author_gate_shadow')
@@ -393,13 +393,13 @@ describe('production shape: 28 live tasks of the default tenant, authored by the
     expect(CHAIN.every(n => !runs().some(r => r.startsWith(`${n}|skipped`)))).toBe(true)
   })
 
-  it('positive pair: the same fleet with the admin disabled loses all 28, the chain included', async () => {
+  it('positive pair: the same fleet with the admin disabled loses all 27 enabled tasks, the chain included', async () => {
     mockListScheduledTasks.mockResolvedValue(fleet())
     disable(ADMIN)
     await tick()
     expect(attempts()).toBe(0)
     expect(commandRuns()).toEqual([])
-    expect(skippedAuthor()).toHaveLength(28)
+    expect(skippedAuthor()).toHaveLength(27)
     expect(CHAIN.every(n => runs().includes(`${n}|agent-a|skipped_author_inactive`))).toBe(true)
   })
 })

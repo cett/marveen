@@ -23,6 +23,7 @@ import {
 import { withScheduleLock } from '../schedule-lock.js'
 import { REVIEWED_FIELDS, reviewTriggerFields, reviewValueSha256, scheduleContentHash } from '../schedule-review.js'
 import { auditScheduleWrite, isHumanAdmin, notifyScheduleReview, scheduleActor, scheduleAuthor } from '../schedule-review-effects.js'
+import { createAuthorChecker } from '../schedule-author.js'
 import { runScheduledTaskNow, loadLastTickMs, computeTickStatus } from '../schedule-runner.js'
 import { actingAgentId } from '../fleet-agent-identity.js'
 import type { RouteContext } from './types.js'
@@ -265,14 +266,19 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
       // requests to /api/schedules/undefined and silently 404.
       // contentHash fingerprints what an approval covers; the dashboard sends it back as
       // expected_hash on activation so an admin approves what they were looking at.
-      json(res, rows.map(r => {
+      // authorState is the verdict the run-time gate would give today (none = no user-bound author), whatever the
+      // gate mode is: a screen has to show a task that would stop in enforce mode. One checker per request, so ten
+      // tasks of one author are one lookup. The word is given to every caller; the author's id and names are not.
+      const checkAuthor = createAuthorChecker()
+      json(res, await Promise.all(rows.map(async r => {
         const task = rowToTask(r)
+        const authorState = task.authorUserId == null ? 'none' : await checkAuthor(task)
         // The author's user id and the two names (author, activator) are for an admin: a label can be a privileged
         // account's username, and listing accounts to a tenant caller is a leak. The activation time stays. The hash
         // below does not depend on any of them.
         if (ctx.role !== 'admin') { delete task.authorUserId; delete task.authorLabel; delete task.activatedBy }
-        return { ...task, contentHash: scheduleContentHash({ ...task }, REVIEWED_FIELDS) }
-      }))
+        return { ...task, authorState, contentHash: scheduleContentHash({ ...task }, REVIEWED_FIELDS) }
+      })))
     } else {
       json(res, listScheduledTasksFromFiles())
     }
@@ -445,6 +451,47 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
       await writeScheduledTask(name, { status: 'live' })
       logger.info({ name }, 'Scheduled task activated')
       json(res, { ok: true, status: 'live' })
+    })
+    return true
+  }
+
+  // Adoption: a signed-in admin takes over a task whose author may no longer run it. The caller becomes the author
+  // (the run-time gate then judges the caller); the status, the content and the activation record stay as they were,
+  // so adopting never approves anything and never makes a held task live. Same shape as the activation: human admin
+  // only, one lock for the hash check and the write, an optional expected_hash.
+  const scheduleAdoptMatch = path.match(/^\/api\/schedules\/([^/]+)\/adopt$/)
+  if (scheduleAdoptMatch && method === 'POST') {
+    if (!isHumanAdmin(ctx)) { json(res, { error: 'forbidden', hint: 'Only an authenticated admin can adopt a schedule' }, 403); return true }
+    const resolved = resolveScheduleDir(scheduleAdoptMatch[1])
+    if (!resolved) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
+    const { name } = resolved
+    await withScheduleLock(name, async () => {
+      const current = await getScheduleFromDb(name)
+      if (!current) { json(res, { error: 'not_found', hint: 'Schedule not found' }, 404); return true }
+      const currentHash = scheduleContentHash({ ...rowToTask(current) }, REVIEWED_FIELDS)
+      const expectedHash = ctx.url.searchParams.get('expected_hash')
+      if (expectedHash !== null && expectedHash !== currentHash) {
+        json(res, {
+          error: 'stale_revision', content_hash: currentHash,
+          hint: 'The schedule changed since it was loaded; review the current content and adopt again',
+        }, 409)
+        return true
+      }
+      // A session whose user row is gone has no id. Writing a NULL author would take the task out of the run-time
+      // check altogether, which is the opposite of taking it over: refuse instead.
+      const author = await scheduleAuthor(ctx)
+      if (author.userId === null) {
+        json(res, { error: 'forbidden', hint: 'This session has no dashboard user to take the schedule over' }, 403)
+        return true
+      }
+      await writeScheduledTask(name, { author: { userId: author.userId, label: author.label } })
+      await auditScheduleWrite(ctx, 'adopt', name, current.tenant_id ?? DEFAULT_SCHEDULE_TENANT, {
+        status: current.status, content_hash: currentHash, hash_checked: expectedHash !== null,
+        author_before: current.author_user_id ?? null, author_label_before: current.author_label ?? null,
+        author_after: author.userId, author_label_after: author.label,
+      })
+      logger.info({ name }, 'Scheduled task adopted')
+      json(res, { ok: true, status: current.status, author_label: author.label })
     })
     return true
   }

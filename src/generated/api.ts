@@ -64,8 +64,18 @@ export interface Schedule {
   forceSend?: boolean;
   targetSession?: string;
   createdAt?: number;
-  /** Fingerprint of the fields an approval covers (prompt, command, type, schedule, agent, target session, timeout, fail threshold, busy flags). Send it back as `expected_hash` when activating. */
+  /** Fingerprint of the fields an approval covers (prompt, command, type, schedule, agent, target session, timeout, fail threshold, busy flags). Send it back as `expected_hash` when activating or adopting. */
   contentHash?: string;
+  /** The verdict the run-time author check gives the task today, whatever `SCHEDULE_AUTHOR_GATE` is set to. `none`: no user-bound author (a seed, a token, an agent), nothing is checked. `ok`: the author may still write schedules. `inactive`: the author is gone, disabled, without `schedules:write`, or an agent of another tenant. `unverifiable`: the lookup failed just now. Given to every caller. */
+  authorState?: 'none' | 'ok' | 'inactive' | 'unverifiable';
+  /** Dashboard user id of the author. Admin callers only. */
+  authorUserId?: number;
+  /** Readable name of the author (user name, `token:<name>`). Admin callers only. */
+  authorLabel?: string;
+  /** Who activated the task last. Admin callers only. */
+  activatedBy?: string;
+  /** When the task was activated last, seconds since the epoch. Given to every caller. */
+  activatedAt?: number;
 }
 
 export interface TenantStarterPackResult {
@@ -664,7 +674,7 @@ export type ListScheduledAgentsResponse = {
 export type ListScheduleRunsResponse = {
   /** Run time, milliseconds since the epoch */
   ts?: number;
-  /** Outcome of the run, for example `fired`, `error` or `skipped`. A due occurrence the scheduler held back is recorded instead of run: `skipped_not_live` (a draft, or a task held for a new review), `skipped_disabled` (switched off in a mass event) and `skipped_tenant_mismatch` (the task's tenant and agent no longer fit together: the agent was switched off for the tenant, the tenant was disabled, or the agent is gone). */
+  /** Outcome of the run, for example `fired`, `error` or `skipped`. A due occurrence the scheduler held back is recorded instead of run: `skipped_not_live` (a draft, or a task held for a new review), `skipped_disabled` (switched off in a mass event) and `skipped_tenant_mismatch` (the task's tenant and agent no longer fit together: the agent was switched off for the tenant, the tenant was disabled, or the agent is gone), `skipped_author_inactive` (the user who last wrote the task may no longer write schedules) and `skipped_author_unverifiable` (the author could not be checked at that moment, so the task did not run). */
   status?: string;
   /** Estimated token use of the run, null when it cannot be estimated */
   tokens_est?: number;
