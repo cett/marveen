@@ -416,6 +416,8 @@ jobs:
     # A missing or unreachable server fails the job, it never skips the tests. The other jobs do not depend on it.
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: read
     env:
       MARVEEN_PG_TEST_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
 
