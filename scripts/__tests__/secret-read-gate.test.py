@@ -274,7 +274,17 @@ class BashReads(GateCase):
                  ('cat ' + '<<E ' * 5000 + '\nnever ends\n' * 5000, '5000 here-documents that never end'),
                  ('cat <<EOF\n' + 'a $(date) it\'s\n' * 5000 + 'EOF', '5000 substitutions in a here-document'),
                  ('cat <<\'EOF\'\n' + 'a $(date) it\'s\n' * 5000 + 'EOF', '5000 lines in a quoted here-document'),
-                 ('echo ' + '<<' * 20000, '20000 shift operators'), ('echo ${ ' * 5000, '5000 funsubs')]
+                 ('echo ' + '<<' * 20000, '20000 shift operators'), ('echo ${ ' * 5000, '5000 funsubs'),
+                 # the text another shell is handed (commit 2)
+                 ('eval ' + 'a' * 100000, '100000 character eval argument'), ('eval "' + 'a b ' * 5000 + '"', '10000 words in an eval string'),
+                 ('bash ' * 20000, '20000 shell words'),
+                 ('bash -c ' * 5000, '5000 unfinished bash -c'), ('eval ' * 20000, '20000 eval words'),
+                 ('bash -c "' * 3000, '3000 unterminated bash -c strings'), (': ' + '((' * 5000, '5000 arithmetic openers'),
+                 ('echo ' + '(( 1 << 2 )) ' * 3000, '3000 arithmetic commands')]
+        nest = 'ls docs'
+        for _ in range(14):
+            nest = 'bash -c "%s"' % nest.replace('\\', '\\\\').replace('"', '\\"')
+        cells.append((nest, '14 nested bash -c with escaped quotes'))
         for cmd, label in cells:
             before, t0 = resource.getrusage(resource.RUSAGE_CHILDREN), time.time()
             rc, out, err = self.bash(cmd)
