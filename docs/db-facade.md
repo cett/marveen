@@ -486,9 +486,8 @@ destroyed instead). The context is never set in the same statement as the work (
 not promise the order in which a row-level policy and such a CTE are evaluated.
 
 **The price.** A lone statement is four round trips on a connection where SQLite has none; one plain round trip took about
-0.26 ms on a CI runner. The spike measured the form with the context folded into the statement (three round trips) at about
-twice the latency of the bare statement; this form, with the context as a statement of its own, has one more round trip and
-is not measured. A transaction pays the `BEGIN`, the context and the `COMMIT` once.
+0.26 ms on a CI runner, so the context and the transaction wrapper cost roughly four times the bare round trip. The context
+is a statement of its own, not folded into the work, on purpose (see above). A transaction pays the `BEGIN`, the context and the `COMMIT` once.
 A hot path that runs several statements opens `dbx.tx` once and uses the handle; the hot paths (kanban, audit, tasks,
 agents, observability) move into an explicit `dbx.tx` when their modules are ported.
 
