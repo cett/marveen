@@ -12,8 +12,8 @@
 import { existsSync, readFileSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
 import { db } from './connection.js'
-import { dbx } from './facade.js'
-import { cacheAfterWrite, cachedSystemConfig, cachedSystemConfigList, refreshSystemConfigCacheIfLive } from './config-cache.js'
+import { dbx, dbxDialect } from './facade.js'
+import { cacheAfterWrite, cacheAfterWriteAsync, cachedSystemConfig, cachedSystemConfigList, refreshSystemConfigCacheIfLive } from './config-cache.js'
 import { STORE_DIR } from '../config.js'
 import { logger } from '../logger.js'
 
@@ -55,7 +55,8 @@ const UPSERT_SQL = `INSERT INTO system_config (key, value, updated_at, source) V
 // as opposed to 'migrated_from_json' -- see migrateConfigOverridesToSystemConfig).
 export async function setSystemConfig(key: string, value: string, source: string = 'db'): Promise<void> {
   await dbx.run(UPSERT_SQL, key, value, source)
-  cacheAfterWrite(key) // database first, then the cache
+  if (dbxDialect() === 'pg') await cacheAfterWriteAsync(key)
+  else cacheAfterWrite(key) // database first, then the cache
 }
 
 // The boot twin of setSystemConfig: initDatabase() runs before anything can await, and it restores the
@@ -87,7 +88,10 @@ export async function updateSystemConfig(
     await tx.run(UPSERT_SQL, key, next, source)
     return true
   }, { mode: 'immediate' })
-  if (wrote) cacheAfterWrite(key) // database first, then the cache
+  if (wrote) {
+    if (dbxDialect() === 'pg') await cacheAfterWriteAsync(key)
+    else cacheAfterWrite(key) // database first, then the cache
+  }
   return wrote
 }
 
@@ -101,7 +105,10 @@ export async function setSystemConfigMany(entries: ReadonlyArray<readonly [strin
   await dbx.tx(async (tx) => {
     for (const [key, value] of entries) await tx.run(UPSERT_SQL, key, value, source)
   }, { mode: 'immediate' })
-  for (const [key] of entries) cacheAfterWrite(key) // database first, then the cache
+  for (const [key] of entries) {
+    if (dbxDialect() === 'pg') await cacheAfterWriteAsync(key)
+    else cacheAfterWrite(key) // database first, then the cache
+  }
 }
 
 // Insert only when the key has no row yet; an existing row is never touched. Returns true when this
@@ -115,7 +122,10 @@ export async function insertSystemConfigIfAbsent(key: string, value: string, sou
     Math.floor(Date.now() / 1000),
     source,
   )
-  if (info.changes > 0) cacheAfterWrite(key) // database first, then the cache
+  if (info.changes > 0) {
+    if (dbxDialect() === 'pg') await cacheAfterWriteAsync(key)
+    else cacheAfterWrite(key) // database first, then the cache
+  }
   return info.changes > 0
 }
 
@@ -124,7 +134,8 @@ export async function insertSystemConfigIfAbsent(key: string, value: string, sou
 // worse than removing it outright. Used by removeFederationStore().
 export async function deleteSystemConfig(key: string): Promise<void> {
   await dbx.run('DELETE FROM system_config WHERE key = ?', key)
-  cacheAfterWrite(key) // database first, then the cache
+  if (dbxDialect() === 'pg') await cacheAfterWriteAsync(key)
+  else cacheAfterWrite(key) // database first, then the cache
 }
 
 // One-time migration of store/config-overrides.json into system_config.

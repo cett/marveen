@@ -215,6 +215,7 @@ const sqliteDbx: Dbx = {
 
 let backend: Dbx = sqliteDbx
 let backendDialect: DbxDialect = 'sqlite'
+let backendEpoch = 0
 
 /**
  * Point `dbx` at another implementation (the PostgreSQL adapter, passed in by the caller: this file never imports the
@@ -225,6 +226,16 @@ let backendDialect: DbxDialect = 'sqlite'
 export function useDbxBackend(next: Dbx | null, dialect: DbxDialect = 'pg'): void {
   backend = next ?? sqliteDbx
   backendDialect = next === null ? 'sqlite' : dialect
+  backendEpoch++
+}
+
+/**
+ * A number that grows with every `useDbxBackend` call (also the one that goes back to SQLite). The synchronous caches
+ * (cache-owner.ts) belong to the epoch they were filled under on the PG backend, so a cache of a previous test's
+ * database is never served to the next one.
+ */
+export function dbxBackendEpoch(): number {
+  return backendEpoch
 }
 
 /** The dialect of the current backend. */

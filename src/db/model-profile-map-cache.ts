@@ -20,13 +20,15 @@
 // `reloadModelProfileMapCache()`.
 
 import { db } from './connection.js'
+import { dbx, dbxDialect } from './facade.js'
+import { notLoadedInPg, ownerLive, ownerNow, type CacheOwner } from './cache-owner.js'
 import type { ModelProfileMapRow } from './model-profile-map.js'
 
 const SELECT_COLUMNS = 'profile_id, model_id, updated_at, updated_by'
 const SELECT_ALL = `SELECT ${SELECT_COLUMNS} FROM model_profile_map ORDER BY profile_id`
 
 let rows: Map<string, ModelProfileMapRow> | null = null
-let cachedFor: unknown = null
+let owner: CacheOwner | null = null
 
 function readTable(): ModelProfileMapRow[] {
   return db.prepare(SELECT_ALL).all() as ModelProfileMapRow[]
@@ -37,7 +39,7 @@ export function loadModelProfileMapCache(): void {
   const next = new Map<string, ModelProfileMapRow>()
   for (const row of readTable()) next.set(row.profile_id, row)
   rows = next
-  cachedFor = db
+  owner = { handle: db, epoch: null }
 }
 
 /** Re-read the table: for a script or a test that wrote `model_profile_map` directly. */
@@ -48,22 +50,29 @@ export function reloadModelProfileMapCache(): void {
 /** Forget the cache (the next reads go to the table until the next load). */
 export function clearModelProfileMapCache(): void {
   rows = null
-  cachedFor = null
+  owner = null
+}
+
+/** A synchronous reader: on the PG backend an unloaded cache is an error that names the loader. */
+function liveForRead(): ReturnType<typeof live> {
+  const map = live()
+  if (map === null && dbxDialect() === 'pg') throw notLoadedInPg('loadModelProfileMapCacheAsync()')
+  return map
 }
 
 function live(): Map<string, ModelProfileMapRow> | null {
-  return rows !== null && cachedFor === db ? rows : null
+  return rows !== null && ownerLive(owner) ? rows : null
 }
 
 export function cachedModelProfileMapEntry(profileId: string): ModelProfileMapRow | undefined | null {
-  const map = live()
+  const map = liveForRead()
   if (map === null) return null
   const row = map.get(profileId)
   return row === undefined ? undefined : { ...row }
 }
 
 export function cachedModelProfileMapList(): ModelProfileMapRow[] | null {
-  const map = live()
+  const map = liveForRead()
   if (map === null) return null
   return [...map.values()].sort((a, b) => (a.profile_id < b.profile_id ? -1 : a.profile_id > b.profile_id ? 1 : 0)).map((r) => ({ ...r }))
 }
@@ -75,6 +84,41 @@ export function cacheAfterModelProfileWrite(profileId: string): void {
   const row = db.prepare(`SELECT ${SELECT_COLUMNS} FROM model_profile_map WHERE profile_id = ?`).get(profileId) as
     | ModelProfileMapRow
     | undefined
+  if (row === undefined) map.delete(profileId)
+  else map.set(profileId, row)
+}
+
+/**
+ * Load the cache through the facade (`dbx.all`: a plain SELECT, the same text on both engines). On the PG backend the
+ * cache then belongs to that backend's epoch; on SQLite it belongs to the handle, as the synchronous load makes it.
+ * If the backend was switched while the rows were read, they belong to nobody and are dropped.
+ */
+export async function loadModelProfileMapCacheAsync(): Promise<void> {
+  const mine = ownerNow()
+  const all = await dbx.all<ModelProfileMapRow>(SELECT_ALL)
+  if (!ownerLive(mine)) return
+  const next: Map<string, ModelProfileMapRow> = new Map()
+  for (const row of all) next.set(row.profile_id, row)
+  rows = next
+  owner = mine
+}
+
+/**
+ * After a write, from an async writer: on the PG backend the row is read back with an awaited `dbx.get` and put in the
+ * cache (only if the cache is live for this backend); on SQLite it is the synchronous read-back of cacheAfterModelProfileWrite.
+ * Known limit on PG: two overlapping writers can leave the cache stale until the cross-process invalidation of P2-5;
+ * a test with one connection does not see it.
+ */
+export async function cacheAfterModelProfileWriteAsync(profileId: string): Promise<void> {
+  if (dbxDialect() !== 'pg') {
+    cacheAfterModelProfileWrite(profileId)
+    return
+  }
+  const map = live()
+  if (map === null) return
+  const row = await dbx.get<ModelProfileMapRow>(`SELECT ${SELECT_COLUMNS} FROM model_profile_map WHERE profile_id = ?`, profileId)
+  // `map` is the map checked above: if the backend was switched meanwhile and the cache reloaded, the reloaded one is a
+  // different object and this (older) row lands in the dead one
   if (row === undefined) map.delete(profileId)
   else map.set(profileId, row)
 }

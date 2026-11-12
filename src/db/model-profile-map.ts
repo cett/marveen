@@ -9,9 +9,9 @@
 // async facade -- their callers (the dashboard route, fleet-transfer's
 // import) already are, or can be, async.
 
-import { dbx } from './facade.js'
+import { dbx, dbxDialect } from './facade.js'
 import { db } from './connection.js'
-import { cachedModelProfileMapEntry, cachedModelProfileMapList, cacheAfterModelProfileWrite } from './model-profile-map-cache.js'
+import { cachedModelProfileMapEntry, cachedModelProfileMapList, cacheAfterModelProfileWrite, cacheAfterModelProfileWriteAsync } from './model-profile-map-cache.js'
 
 export interface ModelProfileMapRow {
   profile_id: string
@@ -41,7 +41,8 @@ export async function setModelProfileMapEntry(profileId: string, modelId: string
     `UPDATE model_profile_map SET model_id = ?, updated_at = unixepoch(), updated_by = ? WHERE profile_id = ?`,
     modelId, updatedBy, profileId
   )
-  cacheAfterModelProfileWrite(profileId) // database first, then the cache
+  if (dbxDialect() === 'pg') await cacheAfterModelProfileWriteAsync(profileId)
+  else cacheAfterModelProfileWrite(profileId) // database first, then the cache
 }
 
 // Full row upsert, used by fleet-transfer.ts import (replaces individual
@@ -54,5 +55,6 @@ export async function upsertModelProfileMapEntry(row: Omit<ModelProfileMapRow, '
        model_id = excluded.model_id, updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
     row.profile_id, row.model_id, row.updated_at ?? null, row.updated_by
   )
-  cacheAfterModelProfileWrite(row.profile_id) // database first, then the cache
+  if (dbxDialect() === 'pg') await cacheAfterModelProfileWriteAsync(row.profile_id)
+  else cacheAfterModelProfileWrite(row.profile_id) // database first, then the cache
 }

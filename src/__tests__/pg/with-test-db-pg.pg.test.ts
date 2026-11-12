@@ -4,6 +4,9 @@
 import { describe, expect, it } from 'vitest'
 import { db } from '../../db.js'
 import { dbxDialect } from '../../db/facade.js'
+import { cacheAfterWriteAsync, cachedSystemConfig, cachedSystemConfigList } from '../../db/config-cache.js'
+import { cachedModelProfileMapList } from '../../db/model-profile-map-cache.js'
+import { cachedAgentSettingsByKey } from '../../db/agent-settings-cache.js'
 import { testDbMode, useTestDb } from '../helpers/with-test-db.js'
 
 // before useTestDb() reads it: the hooks registered below are the PG ones
@@ -37,6 +40,20 @@ describe('useTestDb in PG mode', () => {
     expect((await dbx.get<{ n: number }>('SELECT count(*)::int AS n FROM task_runs'))!.n).toBe(0)
     const again = await dbx.get<{ id: number }>('INSERT INTO task_runs (name, agent, ts) VALUES (?, ?, ?) RETURNING id', 'b', 'agent-b', 2)
     expect(again!.id).toBe(1)
+  })
+
+  it('the three caches are loaded for this backend (a reader does not throw), and a row written then read back through the async write-through is served', async () => {
+    expect(cachedSystemConfigList()).toEqual([]) // loaded, and the baseline has no seed rows
+    expect(cachedModelProfileMapList()).toEqual([])
+    expect(cachedAgentSettingsByKey('context_guard' as never)).toEqual({})
+    await dbx.run("INSERT INTO system_config (key, value, source) VALUES (?, ?, ?)", 'cache-probe', 'one', 'db')
+    await cacheAfterWriteAsync('cache-probe')
+    expect(cachedSystemConfig('cache-probe')).toMatchObject({ value: 'one', source: 'db' })
+  })
+
+  it('the next test does not see that cache: its own clone, its own epoch', () => {
+    expect(cachedSystemConfig('cache-probe')).toBeUndefined()
+    expect(cachedSystemConfigList()).toEqual([])
   })
 
   it('a transaction rolls back on the PG adapter too (the facade delegates tx, not only the statements)', async () => {

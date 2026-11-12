@@ -14,11 +14,12 @@
 // (about 0.2 s a test on the development machine; see the PR notes) and a clone cannot leak a row or a sequence value.
 //
 // What PG mode does NOT have: the SQLite handle (`db` stays unset), so a test or a module that still reads the raw
-// handle fails loudly instead of quietly running against a second database, and the synchronous caches
-// (system_config, model_profile_map, agent_settings) are not loaded: they are filled from the SQLite handle only
-// (src/db/*-cache.ts), and an async fill is not part of this helper. (A run with the SQLite database opened beside the
-// PG one was tried and dropped: it hides the leaks PG mode exists to find, and the rows a test writes through the raw
-// handle are invisible to the reads that go to PG, so it separated nothing.)
+// handle fails loudly instead of quietly running against a second database. The three synchronous caches
+// (system_config, model_profile_map, agent_settings) ARE filled, through the facade (load*Async), right after the
+// switch and outside any transaction; they belong to the backend epoch (cache-owner.ts), so the next test never reads
+// this test's cache. (A run with the SQLite database opened beside the PG one was tried and dropped: it hides the
+// leaks PG mode exists to find, and the rows a test writes through the raw handle are invisible to the reads that go
+// to PG, so it separated nothing.)
 //
 // The tests that open the database by hand (288 files) are moved over module by module with the waves.
 
@@ -26,6 +27,9 @@ import { beforeEach, afterEach } from 'vitest'
 import { initDatabase, db, dbx, type Dbx } from '../../db.js'
 import { useDbxBackend } from '../../db/facade.js'
 import { createPgDbx } from '../../db/pg/index.js'
+import { loadSystemConfigCacheAsync } from '../../db/config-cache.js'
+import { loadModelProfileMapCacheAsync } from '../../db/model-profile-map-cache.js'
+import { loadAgentSettingsCacheAsync } from '../../db/agent-settings-cache.js'
 import { resetTxLockState } from '../../db/tx-lock.js'
 import { resetDbContextForTest } from '../../db/context.js'
 import type { PgTestDb } from './pg-test-db.js'
@@ -76,6 +80,11 @@ function usePgTestDb(): { dbx: Dbx } {
     const { createPgTestDb } = await import('./pg-test-db.js')
     current = await createPgTestDb()
     useDbxBackend(createPgDbx(current.pool), 'pg')
+    // outside any transaction, after the clone: the three synchronous caches are filled for THIS backend (the epoch
+    // the switch above just started), the counterpart of the cache loads at the end of initDatabase()
+    await loadSystemConfigCacheAsync()
+    await loadModelProfileMapCacheAsync()
+    await loadAgentSettingsCacheAsync()
   })
   afterEach(async () => {
     resetDbTestState()

@@ -28,6 +28,8 @@
 // per-key `{ [agentId]: config }` shape).
 
 import { db } from './connection.js'
+import { dbx, dbxDialect } from './facade.js'
+import { notLoadedInPg, ownerLive, ownerNow, type CacheOwner } from './cache-owner.js'
 import type { AgentSettingKey, AgentSettingRow } from './agent-settings.js'
 
 const SELECT_COLUMNS = 'agent_id, setting_key, setting_value, tenant_id, updated_at'
@@ -38,7 +40,7 @@ function cacheKey(agentId: string, key: AgentSettingKey): string {
 }
 
 let rows: Map<string, AgentSettingRow> | null = null
-let cachedFor: unknown = null
+let owner: CacheOwner | null = null
 
 function readTable(): AgentSettingRow[] {
   return db.prepare(SELECT_ALL).all() as AgentSettingRow[]
@@ -49,7 +51,7 @@ export function loadAgentSettingsCache(): void {
   const next = new Map<string, AgentSettingRow>()
   for (const row of readTable()) next.set(cacheKey(row.agent_id, row.setting_key), row)
   rows = next
-  cachedFor = db
+  owner = { handle: db, epoch: null }
 }
 
 /** Re-read the table: for a script, a test, or a bypass writer (deleteTenant) that wrote `agent_settings` directly. */
@@ -60,22 +62,29 @@ export function reloadAgentSettingsCache(): void {
 /** Forget the cache (the next reads go to the table until the next load). */
 export function clearAgentSettingsCache(): void {
   rows = null
-  cachedFor = null
+  owner = null
+}
+
+/** A synchronous reader: on the PG backend an unloaded cache is an error that names the loader. */
+function liveForRead(): ReturnType<typeof live> {
+  const map = live()
+  if (map === null && dbxDialect() === 'pg') throw notLoadedInPg('loadAgentSettingsCacheAsync()')
+  return map
 }
 
 function live(): Map<string, AgentSettingRow> | null {
-  return rows !== null && cachedFor === db ? rows : null
+  return rows !== null && ownerLive(owner) ? rows : null
 }
 
 export function cachedAgentSetting(agentId: string, key: AgentSettingKey): AgentSettingRow | undefined | null {
-  const map = live()
+  const map = liveForRead()
   if (map === null) return null
   const row = map.get(cacheKey(agentId, key))
   return row === undefined ? undefined : { ...row }
 }
 
 export function cachedAgentSettingsByKey(key: AgentSettingKey): Record<string, unknown> | null {
-  const map = live()
+  const map = liveForRead()
   if (map === null) return null
   const out: Record<string, unknown> = {}
   for (const row of map.values()) {
@@ -93,6 +102,42 @@ export function cacheAfterAgentSettingWrite(agentId: string, key: AgentSettingKe
     .prepare(`SELECT ${SELECT_COLUMNS} FROM agent_settings WHERE agent_id = ? AND setting_key = ?`)
     .get(agentId, key) as AgentSettingRow | undefined
   const k = cacheKey(agentId, key)
+  if (row === undefined) map.delete(k)
+  else map.set(k, row)
+}
+
+/**
+ * Load the cache through the facade (`dbx.all`: a plain SELECT, the same text on both engines). On the PG backend the
+ * cache then belongs to that backend's epoch; on SQLite it belongs to the handle, as the synchronous load makes it.
+ * If the backend was switched while the rows were read, they belong to nobody and are dropped.
+ */
+export async function loadAgentSettingsCacheAsync(): Promise<void> {
+  const mine = ownerNow()
+  const all = await dbx.all<AgentSettingRow>(SELECT_ALL)
+  if (!ownerLive(mine)) return
+  const next: Map<string, AgentSettingRow> = new Map()
+  for (const row of all) next.set(cacheKey(row.agent_id, row.setting_key), row)
+  rows = next
+  owner = mine
+}
+
+/**
+ * After a write, from an async writer: on the PG backend the row is read back with an awaited `dbx.get` and put in the
+ * cache (only if the cache is live for this backend); on SQLite it is the synchronous read-back of cacheAfterAgentSettingWrite.
+ * Known limit on PG: two overlapping writers can leave the cache stale until the cross-process invalidation of P2-5;
+ * a test with one connection does not see it.
+ */
+export async function cacheAfterAgentSettingWriteAsync(agentId: string, key: AgentSettingKey): Promise<void> {
+  if (dbxDialect() !== 'pg') {
+    cacheAfterAgentSettingWrite(agentId, key)
+    return
+  }
+  const map = live()
+  if (map === null) return
+  const k = cacheKey(agentId, key)
+  const row = await dbx.get<AgentSettingRow>(`SELECT ${SELECT_COLUMNS} FROM agent_settings WHERE agent_id = ? AND setting_key = ?`, agentId, key)
+  // `map` is the map checked above: if the backend was switched meanwhile and the cache reloaded, the reloaded one is a
+  // different object and this (older) row lands in the dead one
   if (row === undefined) map.delete(k)
   else map.set(k, row)
 }

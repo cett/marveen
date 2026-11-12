@@ -27,9 +27,9 @@
 // connection: it is the boot-sync twin (db/index.ts's migrator), the same
 // shape as cost-budgets.ts/vault-bindings.ts's file migrators.
 
-import { dbx } from './facade.js'
+import { dbx, dbxDialect } from './facade.js'
 import { db } from './connection.js'
-import { cachedAgentSetting, cachedAgentSettingsByKey, cacheAfterAgentSettingWrite } from './agent-settings-cache.js'
+import { cachedAgentSetting, cachedAgentSettingsByKey, cacheAfterAgentSettingWrite, cacheAfterAgentSettingWriteAsync } from './agent-settings-cache.js'
 
 export type AgentSettingKey = 'context_guard' | 'auto_restart' | 'context_restart_gate'
 
@@ -67,7 +67,8 @@ export async function setAgentSetting(agentId: string, key: AgentSettingKey, val
       tenant_id = excluded.tenant_id,
       updated_at = excluded.updated_at
   `, agentId, key, JSON.stringify(value), tenantId)
-  cacheAfterAgentSettingWrite(agentId, key) // database first, then the cache
+  if (dbxDialect() === 'pg') await cacheAfterAgentSettingWriteAsync(agentId, key)
+  else cacheAfterAgentSettingWrite(agentId, key) // database first, then the cache
 }
 
 /**
