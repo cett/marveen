@@ -340,6 +340,20 @@ class BashOnEveryTokenFile(Tree):
             with self.subTest(cmd=cmd):
                 self.assert_allowed(self.bash(cmd), cmd)
 
+    def test_grep_long_option_resolution_cells_over_a_token_directory_are_blocked(self):
+        # the cells of the one resolver (see the tier A test): --rec, --recur, --recurs read on the real BSD grep
+        for opt in ('--rec', '--recur', '--recurs', '--recursive', '--dereference-recursive', '--dereference-rec', '--dere', '--directories=recurse', '--dir=recurse', '--d=recurse'):
+            for target in ('agents', 'agents/', 'agents/agent-a', '.'):
+                cmd = 'grep %s foo %s' % (opt, target)
+                with self.subTest(cmd=cmd):
+                    self.assert_denied(self.bash(cmd), cmd)
+        for cmd in ('grep --bogus foo agents', 'grep --recursively foo agents/agent-a', 'grep --bogus foo .'):
+            with self.subTest(cmd=cmd):
+                self.assert_denied(self.bash(cmd), cmd)
+        for cmd in ('grep --bogus foo src', 'grep --bogus foo notes.txt'):
+            with self.subTest(cmd=cmd):
+                self.assert_allowed(self.bash(cmd), cmd)
+
     def test_find_over_a_token_directory_piped_into_a_reader_is_blocked_like_find_exec(self):
         # 1:1 with the -exec cells: the same find words get the same verdict through -exec and through xargs
         for find, cwd, denied in [('find agents -type f', None, True), ('find agents/agent-a', None, True), ('find . -type f', None, True),

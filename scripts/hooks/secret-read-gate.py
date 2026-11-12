@@ -542,34 +542,39 @@ def _has_flag(toks: list, short: str, longs: tuple) -> bool:
 
 
 _RECURSIVE_LONGS = ('recursive', 'dereference-recursive')
+# Every long option name of the grep family, the GNU and the BSD names together. A word the user types is read the way
+# getopt_long reads it: an exact name wins, otherwise it is a PREFIX and every name that starts with it is a candidate.
+_GREP_LONGS = frozenset((
+    'basic-regexp', 'extended-regexp', 'fixed-regexp', 'fixed-strings', 'perl-regexp', 'regexp', 'file', 'ignore-case', 'no-ignore-case',
+    'word-regexp', 'line-regexp', 'null-data', 'no-messages', 'invert-match', 'version', 'help', 'max-count', 'byte-offset', 'line-number',
+    'line-buffered', 'with-filename', 'label', 'no-filename', 'only-matching', 'quiet', 'silent', 'binary-files', 'text', 'directories',
+    'devices', 'include', 'exclude', 'exclude-from', 'exclude-dir', 'include-dir', 'files-without-match',
+    'files-with-matches', 'count', 'initial-tab', 'null', 'before-context', 'after-context', 'context', 'color', 'colour', 'binary',
+    'unix-byte-offsets', 'no-group-separator', 'group-separator', 'mmap', 'smart-case', 'hidden', 'no-ignore', 'no-ignore-vcs',
+    'unrestricted', 'glob', 'iglob', 'grep', 'message')) | frozenset(_RECURSIVE_LONGS)
 
 
-def _has_recursive_long(toks: list) -> bool:
-    """grep's long recursive options in ANY spelling getopt_long accepts: every non-empty prefix of `--recursive` or
-    `--dereference-recursive` (`--rec`, `--recur`, `--dere`, `--dereference-r`, ...), with or without an `=value`. A
-    prefix that two options share (`--r`, `--re`, `--d`, `--de`) makes grep itself stop with an error; the gate still
-    counts it (fail closed: it does not guess how an implementation resolves it). Words after `--` are operands."""
-    for w in toks[1:]:
-        if w == '--':
-            break
-        if w.startswith('--') and len(w) > 2:
-            name = w[2:].partition('=')[0]
-            if name and any(full.startswith(name) for full in _RECURSIVE_LONGS):
-                return True
-    return False
+def _resolve_grep_long(name: str) -> list:
+    """The grep long options a typed name may mean: the name itself when it is one, else every option it is a prefix of."""
+    if name in _GREP_LONGS:
+        return [name]
+    return sorted(n for n in _GREP_LONGS if name and n.startswith(name))
 
 
-def _directories_option(toks: list) -> tuple:
-    """grep's `--directories=ACTION` / `-d ACTION` (the BSD and GNU grep both read a directory operand recursively for
-    `recurse`, with or without `-r`). Returns (recursive, consumed): `recursive` is True when any occurrence names an
-    ACTION that is not exactly `read` or `skip` (so `recurse`, an unknown word, a missing value: fail closed, the
-    gate does not guess what grep would do with it); `consumed` holds the index of every word taken as such a value,
-    so the caller does not count it as a file operand.
-    The long option is matched the way getopt_long does: ANY prefix of `directories` (`--d`, `--di`, ... `--dir`, ...),
-    the value inline (`--dir=recurse`) or the next word. The short one is `d` in a cluster of known no-value letters
-    (`-d recurse`, `-drecurse`, `-nd recurse`); a value-taking letter before the `d` (`-ed`, `-A3d`) swallows it as
-    its own value, so that `d` is no option. Words after `--` are operands and are not read."""
-    recursive, consumed = False, set()
+def _grep_option_effects(toks: list) -> tuple:
+    """What the options of a grep command line do to its reach, from ONE resolver for the long names. Returns
+    (recursive, unknown, consumed):
+    `recursive`: some option reads a directory operand recursively. A long name counts when ANY candidate it may mean
+    is `recursive` or `dereference-recursive` (a prefix two options share, `--re` or `--d`, makes a real grep stop with
+    an error, and a mixed one is refused anyway: fail closed, the gate does not guess how an implementation resolves it),
+    or when it is `--directories` (any prefix that names it, the value inline `--dir=recurse` or the next word) with an
+    ACTION that is not exactly `read` or `skip`. The short `-d ACTION` is read the same way (`-d recurse`, `-drecurse`,
+    `-nd recurse`; a value-taking letter before the `d`, as in `-ed`, `-A3d`, swallows it, so that `d` is no option).
+    `unknown`: a long name that is no option and no prefix of one; the caller refuses it when the command names a
+    directory that holds a protected file (fail closed, as for the exclude parse).
+    `consumed`: the index of every word taken as an ACTION value, so that it is not counted as a file operand.
+    Words after `--` are operands and are not read."""
+    recursive, unknown, consumed = False, False, set()
     for i in range(1, len(toks)):
         t = toks[i]
         if t == '--':
@@ -579,10 +584,16 @@ def _directories_option(toks: list) -> tuple:
         val = None
         if t.startswith('--') and len(t) > 2:
             name, eq, inline = t[2:].partition('=')
-            if name and 'directories'.startswith(name):
-                val = inline if eq else (toks[i + 1] if i + 1 < len(toks) else '')
-                if not eq and i + 1 < len(toks):
-                    consumed.add(i + 1)
+            cands = _resolve_grep_long(name)
+            if not cands:
+                unknown = True
+            else:
+                if any(c in _RECURSIVE_LONGS for c in cands):
+                    recursive = True
+                if 'directories' in cands:      # a prefix shared with another option would be mixed, and is refused above
+                    val = inline if eq else (toks[i + 1] if i + 1 < len(toks) else '')
+                    if not eq and i + 1 < len(toks):
+                        consumed.add(i + 1)
         elif re.fullmatch(r'-[A-Za-z0-9]+', t):
             letters = t[1:]
             k = letters.find('d')
@@ -592,7 +603,7 @@ def _directories_option(toks: list) -> tuple:
                     consumed.add(i + 1)
         if val is not None and val not in ('read', 'skip'):
             recursive = True
-    return recursive, consumed
+    return recursive, unknown, consumed
 
 
 def _exclude_values(toks: list, strict: bool = False) -> list:
@@ -886,7 +897,7 @@ def check_bash(cmd: str, cwd: str) -> None:
         if not toks:
             continue
         head = os.path.basename(toks[0])
-        dir_recursive, dir_values = _directories_option(toks) if head in GREP_FAMILY else (False, set())
+        opt_recursive, opt_unknown, dir_values = _grep_option_effects(toks) if head in GREP_FAMILY else (False, False, set())
         # the ACTION word of `-d ACTION` / `--directories ACTION` is the option's value, not a file operand
         operands = [w for idx, w in enumerate(toks) if idx and w and not w.startswith('-') and idx not in dir_values]
         covering = []
@@ -894,9 +905,11 @@ def check_bash(cmd: str, cwd: str) -> None:
             pairs = [pr for c in _expand_word(w, cwd) for pr in _covered_dir_files(c, cwd)]
             if pairs:
                 covering.append(pairs)
+        if opt_unknown and covering:
+            # a long option that is no known grep option nor a prefix of one: which reach it has is not decided
+            deny('a grep option the gate does not know, over a directory that holds a protected file', covering[0][0][1])
         grep_recursive = head in GREP_FAMILY and (_has_flag(toks, 'rR', ('--recursive', '--dereference-recursive'))
-                                                  or _has_recursive_long(toks)
-                                                  or dir_recursive
+                                                  or opt_recursive
                                                   # the former check, kept so no verdict loosens: `-d` and the word `recurse` anywhere
                                                   or ('-d' in toks and 'recurse' in toks))
         if grep_recursive and len(operands) <= 1:

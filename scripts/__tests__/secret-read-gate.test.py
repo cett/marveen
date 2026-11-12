@@ -260,6 +260,38 @@ class BashReads(GateCase):
             with self.subTest(cmd=cmd):
                 self.assert_denied(self.bash(cmd), cmd)
 
+    def test_grep_long_option_resolution_cells_over_the_store_are_blocked(self):
+        # the cells of the one resolver (GNU + BSD names, exact or prefix): the --recursive and the --directories branch together.
+        # On the real BSD grep (macOS) --rec, --recur and --recurs READ the tree (the token and the key included); --re, --r, --d
+        # are ambiguous there (grep stops), --dere / --dereference-rec are unrecognised there but work on GNU grep. The rule does not
+        # depend on the host: any candidate that is recursive, or --directories with an ACTION other than read/skip, is refused.
+        for opt in ['--rec', '--recur', '--recurs', '--recursive', '--dereference-recursive', '--dereference-rec', '--dere', '--directories=recurse', '--dir=recurse', '--d=recurse']:
+            for target in ('store', 'store/', '.'):
+                cmd = 'grep %s foo %s' % (opt, target)
+                with self.subTest(cmd=cmd):
+                    self.assert_denied(self.bash(cmd), cmd)
+
+    def test_grep_unknown_long_option_over_a_directory_with_the_store_is_blocked(self):
+        # a name that is no option and no prefix of one (`--recursively` is LONGER than --recursive): the reach is not decided
+        for cmd in ['grep --bogus foo store', 'grep --recursively foo .', 'grep --recursivee foo store/', 'egrep --nonesuch=1 foo store']:
+            with self.subTest(cmd=cmd):
+                self.assert_denied(self.bash(cmd), cmd)
+        for cmd in ['grep --bogus foo src', 'grep --recursively foo src scripts', 'grep --bogus claim scripts/gmail-send.py', 'grep --bogus claim store/rules.json']:
+            with self.subTest(cmd=cmd):
+                self.assert_allowed(self.bash(cmd), cmd)
+
+    def test_whatever_the_host_grep_reads_the_gate_refuses(self):
+        # the real grep of this host: when a spelling prints the key, the gate must refuse that very command
+        for opt in ['--rec', '--recur', '--recurs', '--recursive', '--dereference-recursive', '--dereference-rec', '--dere', '--directories=recurse', '--dir=recurse', '--directories recurse']:
+            cmd = 'grep %s -h a1a1 store' % opt
+            shown = subprocess.run(['/bin/sh', '-c', cmd], cwd=self.root, capture_output=True, timeout=30)
+            if KEY.encode() in shown.stdout:
+                with self.subTest(cmd=cmd):
+                    self.assert_denied(self.bash(cmd), cmd)
+        # the control that this host reads at least with the full long name
+        full = subprocess.run(['/bin/sh', '-c', 'grep --recursive -h a1a1 store'], cwd=self.root, capture_output=True, timeout=30)
+        self.assertIn(KEY.encode(), full.stdout)
+
     def test_grep_abbreviated_long_recursive_with_a_store_exclude_is_not_trusted(self):
         for cmd in ['grep --rec --exclude-dir=store foo .', 'grep --dere --exclude-dir store foo .']:
             with self.subTest(cmd=cmd):
