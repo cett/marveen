@@ -56,6 +56,23 @@ describe('useTestDb in PG mode', () => {
     expect(cachedSystemConfigList()).toEqual([])
   })
 
+  let previousDatabase: string | undefined
+
+  it('remembers the name of its own database for the next test to look for', async () => {
+    previousDatabase = (await dbx.get<{ n: string }>('SELECT current_database() AS n'))!.n
+    expect(previousDatabase).toMatch(/^marveen_t_/)
+  })
+
+  it('the database of the previous test is dropped after it (afterEach closes the clone), and this one is another', async () => {
+    const mine = (await dbx.get<{ n: string }>('SELECT current_database() AS n'))!.n
+    expect(mine).not.toBe(previousDatabase)
+    // pg_database is readable from any database of the server
+    const left = await dbx.all<{ datname: string }>('SELECT datname FROM pg_database WHERE datname = ?', previousDatabase)
+    expect(left).toEqual([])
+    const here = await dbx.all<{ datname: string }>('SELECT datname FROM pg_database WHERE datname = ?', mine)
+    expect(here).toHaveLength(1) // positive pair: the same lookup finds a database that exists
+  })
+
   it('a transaction rolls back on the PG adapter too (the facade delegates tx, not only the statements)', async () => {
     await expect(dbx.tx(async (tx) => {
       await tx.run('INSERT INTO task_runs (name, agent, ts) VALUES (?, ?, ?)', 'c', 'agent-c', 3)
