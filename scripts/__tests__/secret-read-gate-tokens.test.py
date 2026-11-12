@@ -1300,14 +1300,128 @@ class BodiesAreJudged(Tree):
         self.assertEqual(self.verdict("echo $(( 1 + $(date"), 'DENY')
         self.assertEqual(self.verdict("echo $[ 1 + $(date"), 'DENY')
 
-    @unittest.expectedFailure
     def test_an_ansi_c_string_cannot_hide_a_body(self):
-        # R2 (review): RED until commit 3 reads a `$'...'` span by bash's rule (a backslash escapes the next character, the quote
-        # included) BEFORE the finder runs. The quote-blind pass that had refused these was retracted, and the reviewer decided
-        # against an interim rule: the merge criterion is zero expectedFailure here.
+        # R2 (review): a `$'...'` span is read by bash's rule (a backslash escapes the next character, the quote included) BEFORE
+        # any scanner runs, so the live substitution behind an escaped quote is found. The merge criterion is zero expectedFailure.
         for tmpl in self.ANSI_C:
             with self.subTest(cell=tmpl):
                 self.assertEqual(self.verdict(self.cell(tmpl, self.READER)), 'DENY')
+
+    # Commit 3. The cells a shell RUNS (the oracle below proves it, bash 3.2 and zsh) and the gate refuses: an escaped quote must not
+    # flip the quote state of any scanner, in the open, in a double-quoted text, inside every kind of substitution, in a
+    # here-document, and in the text another shell is handed.
+    ANSI_RUNS = [
+        "echo $'\\'' $(R) $'a' # '", "echo $'\\'' $(R) $'a'", "echo $'\\'' `R` $'a' # '", "echo $'a\\'b' $(R) $'c'", "echo $'\\\\\\'' $(R) $'a'",
+        "echo $'\\'' ; R ; echo $'\\''", "x=$'\\''; R", "echo $'\\'$(R)' $(R)", "echo $'\\\\' $(R) $'\\\\'", "echo $'\\'' | ( R ) | $'a'",
+        # the string is inside another construct, so the finder of that construct must read it by the same rule
+        "echo $(echo $'\\'') $(R) $'a'", "echo `echo $'\\''` $(R) $'a'", 'echo "$(echo $\'\\\'\')" $(R) $\'a\'', "echo <(echo $'\\'') $(R) $'a'",
+        "( echo $'\\'' ) ; R ; echo $'a'", "echo ${X:-$'\\''} $(R) $'a'", 'echo "${X:-$\'\\\'\'}" $(R)',
+        "cat <<EOF\n$'\\''\n$(R)\nEOF", "x=$(cat <<EOF\n$'\\''\n$(R)\nEOF\n)", "echo $((1)) $'\\'' $(R) $'a'", "echo $[1] $'\\'' $(R) $'a'",
+        # a literal `$'` that is no ANSI-C string: in single or double quotes, in a comment, behind a backslash
+        "echo 'x$' $(R) 'y'", 'echo "a$\'b" ; R ; echo "\'"', "echo a # $'\n$(R)", "echo \\$'x' ; R",
+        # the escapes that make a character: a quote, a dollar sign, a backtick, a newline
+        "echo $'\\x27' $(R)", "echo $'a\\047b' $(R)", "echo $'\\x24(R)' $(R)",
+        # the string is handed to another shell: its VALUE is the command text
+        "bash -c $'echo \\x24(R)'", "eval $'echo \\x24(R)'", "eval $'R'", "bash -c $'R'", "bash -c $'echo a;\\n R'", "bash -c $'ec\\x68o \\'a\\'; R'",
+        "bash -c $'echo $\\\n(R)'", "eval $'echo \\x60 R \\x60'", "sh -c $'echo \\'a\\' ; R'", "bash -c $'bash -c \\'R\\''",
+        "echo $'\\x60' `R` $'a'", "echo $'\\`' `R` $'a'", "echo $'\\`' $(R) $'\\`'",
+        # a NUL: the readings (the rest of the span cut, the NUL dropped, the rest of the word cut) all keep the live body
+        "echo $'\\0' ; R", "echo $'a\\0b' $(R)", "bash -c $'echo a' ; R $'\\0'", "echo $'\\x00\\'' $(R) $'a'",
+        # the delimiter of a here-document written as an ANSI-C string ends the body at its line
+        "cat <<$'EOF'\nx\nEOF\nR", "cat <<$'E\\x4fF'\nx\nEOF\nR", "cat <<-$'EOF'\n\tx\n\tEOF\nR",
+        # two older holes that the new alphabet of the fuzz found (the committed gate lets both through): a backslash-newline joins
+        # `$` and a locale string `"..."` after the pair is removed, and zsh takes the `#` glued to `|&` for a comment, so the
+        # here-document operator behind it starts nothing there while the gate read it as a word and let it swallow the body
+        '(bash -c $\\\n"R")', "echo x |&#x $<<'E'\n(R)", "echo x |&#x <<'E'\n(R)",
+    ]
+    # the VALUE of an ANSI-C string is the word the rules judge: every spelling of a dot reads a protected file
+    ANSI_READS = [
+        "cat $'agents/agent-a/\\x2eagent-token'", "cat $'agents/agent-a/\\056agent-token'", "cat $'agents/agent-a/\\u002eagent-token'",
+        "cat $'agents/agent-a/\\U0000002eagent-token'", "cat agents/agent-a/$'\\x2e'agent-token", "cat $'store/\\x2eclaim-signing-key'",
+        "cat $'\\x73tore/\\x2eclaim-signing-key'", "cat $'store/.cl\\141im-signing-key'", "cat $'agents/agent-a/\\.agent-token'",
+        "cat $'agents/agent-a/\\x2eagent-token\\0junk'", "cat $'agents/agent-a/\\x2eagent-token\\0'junk", "cat $'agents/agent-a/\\x2eagent-token\\x'",
+        "cat $'agents/agent-a/\\x2eagent-token\\u'", "cat $'agents/agent-a/\\x2eagent-token\\000'", "cat $'agents/agent-a/\\x2eagent-token\\c@junk'",
+        "bash -c $'cat agents/agent-a/\\x2eagent-token'", "eval $'cat agents/agent-a/\\x2eagent-token'", "eval $'cat \\'agents/agent-a/\\x2eagent-token\\''",
+        "cat $'agents/agent-a/\\x2eagent-token'$(true)", "cat \"$(echo hi)\"$'agents/agent-a/\\x2eagent-token'", "x=$'agents/agent-a/\\x2eagent-token'; cat $x",
+        "grep -r foo $'\\x2e'", "grep -r foo $'\\x2e' $'a'", "cat $'a'$'\\x2e/store/\\x2eclaim-signing-key'",
+    ]
+    # the ANSI-C text that is data: no shell runs it, the gate lets it pass
+    ANSI_LITERAL = [
+        "echo $'\\'' ls $'a' # '", "echo $'a' $(date)", "echo $'it\\'s' $(date)", "echo $'\\x24(R)'", "echo $'\\`R\\`'", "echo $'$(R)'", "echo $'\\x2e' ok",
+        "echo '$'\"'\"'x'", "echo $'a\\nb' $'c\\td'", "echo $'\\'' '$(R)'", "echo $'\\\\' '$(R)'", "echo $'x' \"$'\" '$(R)'", "echo $'\\0\\0\\0'",
+        "printf %s $'\\x2e\\x2f' | cat", "echo $'\\x24\\x28R\\x29'", "cat <<'EOF'\n$'\\''\n$(R)\nEOF", "cat <<$'EOF'\n$(R)\nEOF",
+        "echo \"$'\" '$(R)'", "echo a # $'\\'' $(R)",
+    ]
+
+    def test_an_ansi_c_string_is_read_by_its_value_in_every_context(self):
+        for tmpl in self.ANSI_RUNS:
+            with self.subTest(cell=tmpl):
+                self.assertEqual(self.verdict(self.cell(tmpl, self.READER)), 'DENY')
+                ran = [self.ran(sh, self.cell(tmpl, self.ORACLE)) for sh in ('bash', 'zsh')]
+                if all(r is not None for r in ran):
+                    self.assertTrue(any(ran), 'no shell runs the body of %r: the cell proves nothing' % tmpl)
+
+    def test_a_protected_file_behind_an_ansi_c_spelling_is_refused(self):
+        for cmd in self.ANSI_READS:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self.verdict(cmd), 'DENY')
+        for cmd in ["cat $'src/a.ts'", "cat $'src/\\x61.ts'", "echo $'agent\\x2dtoken'", "cat $'docs/agent\\x2dtoken.md'", "cat $'agents/agent-a/\\x4eOTES'"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self.verdict(cmd), 'ALLOW')
+
+    def test_the_cells_that_read_a_protected_file_do_read_it(self):
+        # the oracle for the cells above: a real shell reads the token file through the same spelling (zsh drops the backslash of an
+        # unknown escape, bash 3.2 keeps it: one of them is enough for a cell to be a real one)
+        for cmd in self.ANSI_READS[:9] + self.ANSI_READS[11:12]:
+            if 'tore/' in cmd:
+                continue      # (the key file holds KEY, not TOKEN: the token files carry the oracle)
+            reads = []
+            for sh in ('bash', 'zsh'):
+                exe = shutil.which(sh)
+                if exe:
+                    p = subprocess.run([exe, '-c', cmd], cwd=self.root, capture_output=True, text=True, timeout=30,
+                                       stdin=subprocess.DEVNULL, env={'PATH': '/usr/bin:/bin', 'HOME': self.root, 'LC_ALL': 'C'})
+                    reads.append(TOKEN in p.stdout)
+            # (a subtest of its own: a named skip for a missing zsh must not end the loop over the other cells)
+            with self.subTest(cmd=cmd):
+                assert_ran(self, cmd, reads)
+
+    def test_ansi_c_data_is_not_code(self):
+        for tmpl in self.ANSI_LITERAL:
+            with self.subTest(cell=tmpl):
+                self.assertEqual(self.verdict(self.cell(tmpl, self.READER)), 'ALLOW')
+                for sh in ('bash', 'zsh'):
+                    self.assertIn(self.ran(sh, self.cell(tmpl, self.ORACLE)), (False, None), '%s ran the text of %r' % (sh, tmpl))
+
+    def test_the_readings_of_an_ansi_c_string_are_bounded(self):
+        # a NUL has three readings; 3 of them are 27 texts (under the cap), 4 are 81 (refused, generic reason, never the text)
+        self.assertEqual(self.verdict("echo $'\\0\\0\\0'"), 'ALLOW')
+        rc, out, err = self.bash("echo zzmark $'\\0\\0\\0\\0'")
+        self.assertEqual(rc, 2)
+        self.assertNotIn('zzmark', err)
+        self.assertEqual(self.verdict("echo $'\\0\\0\\0\\0' ; echo hi"), 'DENY')
+        # an unknown escape needs the second set of rules, a NUL does not multiply it
+        self.assertEqual(self.verdict("echo $'\\q\\q\\q\\q\\q\\q' $'\\0\\0'"), 'ALLOW')
+
+    def test_the_variants_of_an_ansi_c_string_are_its_values(self):
+        v = self.mod._ansi_c_variants
+        self.assertEqual(v("echo hi"), ["echo hi"])
+        self.assertEqual(v("echo $'a b'"), ["echo 'a b'"])
+        self.assertEqual(v("echo $'\\''"), ["echo ''\\'''"])      # the value is one apostrophe, quoted as '\''
+        self.assertEqual(v("echo $''"), ["echo ''"])
+        self.assertEqual(v("echo $'\\x2e\\056\\u002e\\U0000002e'"), ["echo '....'"])
+        self.assertEqual(v("echo $'\\e\\n\\t\\a\\\\\\?'"), ["echo '\x1b\n\t\x07\\?'"])
+        # a NUL: the rest of the span cut, the NUL dropped, the rest of the word cut (a blank ends the word)
+        self.assertEqual(v("echo $'a\\0b'"), ["echo 'a'", "echo 'ab'", "echo 'a' "])
+        # an unknown escape: bash keeps the backslash, zsh drops it (two sets of rules)
+        self.assertEqual(v("echo $'a\\qb'"), ["echo 'a\\qb'", "echo 'aqb'"])
+        # `$'x` that is not closed loses its `$` only (the quote stays an open one, as it always was)
+        self.assertEqual(v("echo $'x"), ["echo 'x"])
+        self.assertEqual(v("echo '$'x"), ["echo '$'x"])
+        self.assertEqual(v('echo "$\'a"'), ['echo "$\'a"'])
+        self.assertEqual(v("echo a # $'x'"), ["echo a # $'x'"])
+        self.assertEqual(v("echo \\$'x'"), ["echo \\$'x'"])
+        self.assertEqual(v("echo $$'x'"), ["echo $$'x'"])
 
     def test_an_ansi_c_twin_and_a_literal_quoted_substitution_still_pass(self):
         self.assertEqual(self.verdict("echo $'\\'' ls $'a' # '"), 'ALLOW')
@@ -1432,13 +1546,15 @@ class ScannerDifferentialFuzz(Tree):
     """Seeded differential fuzz on the alphabet of the body scanner (fixup 2 review rules). Each case is a random string of
     scanner-relevant tokens with ONE body in it, `$(B)` or a backtick pair. The oracle runs the case in bash 3.2 and zsh with
     B = a printer of EXEC; if either shell RUNS it, the gate (B = a recursive grep over the install root) must refuse it.
-    Over-refusal is fine, a hole is not. The `$'` token is not in the alphabet before commit 3 (R2 is red until then, see
-    test_an_ansi_c_string_cannot_hide_a_body). The printer is `printf %s%s EX EC`: its own text does not contain EXEC, so
+    Over-refusal is fine, a hole is not. The ANSI-C `$'` is in the alphabet (commit 3). The printer is `printf %s%s EX EC`: its own text does not contain EXEC, so
     the echo of a never-run text (a "command not found" line, the body of a heredoc that cat prints) cannot pass for a run."""
     SEED, CASES = 20261112, 6000
     TOKENS = ["'", '"', '\\', '#', '$(', ')', '(', '`', '<<EOF', '<<-EOF', "<<'EOF'", '\nEOF\n', '\n', '<', '>', '>#', ' ', ' ', 'a', ';', '|', '&', '{', '}', '${', '$[', ']', '$((', '))', '\t', '\\\n', '<<<', '\n\tEOF\n', '$',
               # fixup 6: a comment opener glued behind an operator, a line continuation on its own and after a `$` or a here-document operator
-              '&#', '|#', ')#', ';#', '(#', '$\\\n', '<<EOF\\\n', ' #', '>&', '|&', '&&', '||', '2>', '!']
+              '&#', '|#', ')#', ';#', '(#', '$\\\n', '<<EOF\\\n', ' #', '>&', '|&', '&&', '||', '2>', '!',
+              # commit 3: the ANSI-C opener (twice, the likeliest token), an escaped quote, a whole string with one, the escapes
+              # that make a character (a dot, a NUL) and an unknown one
+              "$'", "$'", "$'\\''", "\\'", '\\x2e', '\\0', '\\q']
     BODIES = ['$(B)', '`B`', '"$(B)"', '<(B)', '(B)']
     # contexts that put the body INSIDE another span, so the scanner has to carry a quote / comment / heredoc state into it
     WRAPS = [('$(', ')'), ('$(', ')'), ('"', '"'), ("'", "'"), ('`', '`'), ('<(', ')'), ('(', ')'), ('{ ', '; }'), ('$((', '))'),
@@ -1604,6 +1720,7 @@ class ScannerDifferentialFuzz(Tree):
     ]
     MUTATION_ATOMS = ["'", '"', "\\", "#", " #", "\n", ";", "|", "&", ">", "<", "<<", "<<EOF\n", "\nEOF\n", ">#x", "<<<", "${", "}", "$(", ")",
                       "(", "`", "$[", "]", "((", "))", "a", " ", "{", "$", "echo ", "<<'E'\n", "\nE\n", " # ", "\\\n", "&&", "||", "<(", ">(",
+                      "$'", "$'", "$'\\''", "\\x2e", "\\0", "\\q", "$'a'",
                       "${X:-", "${X#", "${X//", "'a'", '"a"', '$"', "case x in x) ", ";;", "2>", "<&", ">&", "|&", "{ ", "; }", "! ",
                       "if true; then ", "; fi", "<<-EOF\n\t", "\n\tEOF\n", "\\'", '\\"', "$((", "$( ", " )", "&#", "|#", ")#", "$\\\n", "<<EOF\\\n"]
     MUTATION_CASES = 3000
@@ -1628,8 +1745,7 @@ class ScannerDifferentialFuzz(Tree):
                     t = t[:min(pos, q)] + t[max(pos, q):]
                 if t.count('B') != 1:
                     t = t.replace('B', '') + rng.choice(cls.BODIES)
-            # the ANSI-C `$'` is the content of commit 3 (see the class docstring and test_an_ansi_c_string_cannot_hide_a_body)
-            if t.count('B') == 1 and "$'" not in t and not cls.STDIN_FED.search(t):
+            if t.count('B') == 1 and not cls.STDIN_FED.search(t):
                 out.append(t)
         return out
 
