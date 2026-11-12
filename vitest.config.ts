@@ -31,10 +31,13 @@ export default defineConfig({
     // tree (multiple fleet agents checking out worktrees/config under this repo
     // root) otherwise gets picked up by vitest's default glob, causing spurious
     // failures from other agents' Playwright/config files (#807).
+    // 'src/**/*.pg.test.ts' are the PostgreSQL tests: they need a server (MARVEEN_PG_TEST_URL) and run through
+    // `npm run test:pg` (vitest.pg.config.ts) and the pg-parity CI job, so the default suite carries no test that
+    // skips when no server is there.
     // 'tools/qa/fixture/**' holds the scanner fixture (tools/qa/check-scanners.mjs reads it as source text, on
     // purpose with a test file whose `expect` is not imported): it is data for the scanners, not a suite, and a
     // full run would pick it up and fail with "expect is not defined".
-    exclude: [...configDefaults.exclude, 'tests/smoke/**', 'dist/**', 'agents/**', '.channels-config/**', 'tools/qa/fixture/**'],
+    exclude: [...configDefaults.exclude, 'tests/smoke/**', 'dist/**', 'agents/**', '.channels-config/**', 'tools/qa/fixture/**', 'src/**/*.pg.test.ts'],
     // Default 5 s is too tight for DB-heavy tests in a fully-parallel suite run.
     // Affected tests pass in isolation; the timeout is a concurrency artefact.
     testTimeout: 15000,
