@@ -502,7 +502,15 @@ def _tier_b_glob_selects(word: str, cwd: str):
         return None
     for alt in _brace_expand(w):
         p = _absolute(alt, cwd)
-        cut = re.search(r'[*?\[]', p).start()
+        glob_at = re.search(r'[*?\[]', p)
+        if glob_at is None:
+            # an alternative of a brace word that has no glob (`{*,.agent-token}`, a JSON text `{"a": 1, "b": "*"}`): it
+            # names one path, no pattern to read; judged as a plain path (it used to raise AttributeError here)
+            hit = _protected_hit(alt, cwd, True)
+            if hit is not None and hit.tier == 'B':
+                return hit
+            continue
+        cut = glob_at.start()
         slash = p.rfind('/', 0, cut)
         prefix, rest = (p[:slash] or '/'), p[slash + 1:]
         spellings = {os.path.normpath(p), os.path.join(_real(prefix), rest)}

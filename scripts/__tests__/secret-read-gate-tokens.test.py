@@ -323,6 +323,25 @@ class BashOnEveryTokenFile(Tree):
             with self.subTest(cmd=cmd):
                 self.assert_denied(self.bash(cmd), cmd)
 
+    def test_a_brace_word_with_a_star_and_an_alternative_without_a_glob_does_not_crash(self):
+        # `_tier_b_glob_selects` expands the braces and used to take the `*` position of EVERY alternative: an alternative with
+        # no glob raised AttributeError, which the gate turns into an "internal error" block (a false block for a JSON text)
+        for cmd in ('echo \'{"a": 1, "b": "*"}\'', 'echo \'{"k": "*", "n": 2}\'', 'echo {x,y}*z',
+                    'curl -s -X POST localhost:3420/api/messages -d \'{"from":"agent-a","content":"1 * 2, x"}\'',
+                    'echo {a,b}', 'echo {a,b} *.md'):
+            with self.subTest(cmd=cmd):
+                rc, out, err = self.bash(cmd)
+                self.assertNotIn('internal error', err, cmd)
+                self.assert_allowed((rc, out, err), cmd)
+        # the real token shapes next to such an alternative are still refused, by the rule and not by a crash
+        # a bare `*` alternative is judged by the rule like the bare `*` word (the install root of this fixture holds a token file)
+        for cmd in ('echo "{a,b,*}"', 'echo {a,b,*}', 'cat agents/agent-a/{*,.agent-token}', 'cat agents/agent-a/{x,.agent-t*}', 'cat agents/agent-a/{x,.agent-token}*',
+                    'cat agents/*/{x,.agent-token}', 'cat agents/agent-a/.agent-t*', 'cat agents/*/.agent-token'):
+            with self.subTest(cmd=cmd):
+                rc, out, err = self.bash(cmd)
+                self.assertNotIn('internal error', err, cmd)
+                self.assert_denied((rc, out, err), cmd)
+
     def test_grep_abbreviated_long_recursive_options_over_a_token_directory_are_blocked(self):
         for opt in ('--recursive', '--recursiv', '--recur', '--rec', '--dereference-recursive', '--dereference-r', '--dereference', '--dere', '--der'):
             for target in ('agents', 'agents/', 'agents/agent-a', '.'):
