@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [develop, 'feature/pg-p1-*']
+    branches: [develop, 'feature/pg-p1-*', 'feature/pg-p2-*']
   pull_request:
-    branches: [develop, 'feature/pg-p1-*']
+    branches: [develop, 'feature/pg-p1-*', 'feature/pg-p2-*']
 
 # A new push to a pull request supersedes the run still going on its previous
 # head: cancel that one. A push to develop/main gets a group of its own (its
@@ -408,3 +408,42 @@ jobs:
           path: qa-*.json
           if-no-files-found: ignore
           retention-days: 14
+
+  pg-parity:
+    # The PostgreSQL tests (src/**/*.pg.test.ts, `npm run test:pg`): the baseline in src/migrations-pg/ against the
+    # SQLite migration chain, its mutants, and the PG test harness. They need a server, so they live outside the
+    # default vitest run; this job gives them a throwaway PostgreSQL 16 service container.
+    # A missing or unreachable server fails the job, it never skips the tests. The other jobs do not depend on it.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      MARVEEN_PG_TEST_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: PostgreSQL tests (baseline parity, harness)
+        run: npm run test:pg
