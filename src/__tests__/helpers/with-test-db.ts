@@ -13,6 +13,7 @@
 
 import { beforeEach, afterEach } from 'vitest'
 import { initDatabase, db, dbx, type Dbx } from '../../db.js'
+import { useDbxBackend } from '../../db/facade.js'
 import { resetTxLockState } from '../../db/tx-lock.js'
 import { resetDbContextForTest } from '../../db/context.js'
 
@@ -21,8 +22,12 @@ export interface UseTestDbOptions {
   path?: string
 }
 
-/** Reset the db layer state that lives outside the connection. */
+/**
+ * Reset the db layer state that lives outside the connection. This includes the backend behind `dbx`: a test that
+ * pointed it at another implementation must not leave it there for the next test (a context leak between tests).
+ */
 export function resetDbTestState(): void {
+  useDbxBackend(null)
   resetTxLockState()
   resetDbContextForTest()
 }
