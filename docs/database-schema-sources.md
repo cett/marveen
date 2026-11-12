@@ -23,5 +23,30 @@ Moved into the migrations: `incoming_events` and `poll_offset` (0073, previously
 coordinator, together with a copy of the `agent_messages` DDL that had already drifted once), and the
 `agent_messages_delivered_needs_ts` trigger (0074, previously created by `initDatabase()` on every start).
 
+## The PostgreSQL baseline
+
+`src/migrations-pg/0001_baseline.sql` is the PostgreSQL end state of the chain above, cut at `schema_version` 95
+(94 files; the cut point is the highest version the SQLite chain had when the port started). Nothing reads it at
+runtime: the dashboard stays on SQLite, only the PG test harness builds a database from it. It was generated from
+an empty database after `applyMigrations()`, not written by hand, and its header lists the type map and what it
+leaves out.
+
+- Types: `TEXT` is `text`, `INTEGER` is `bigint`, `REAL` is `double precision`, `BLOB` is `bytea`; the 18 columns that
+  hold 0 or 1 are `smallint` with `CHECK (col IN (0, 1))` (not `boolean`, the code compares them with `= 1`);
+  `unixepoch()` is `extract(epoch from now())::bigint`; `AUTOINCREMENT` (and the two rowid-alias keys) is an identity column.
+- `kanban_cards` has no rowid in PostgreSQL: its running number is the identity column `seq`. Other rowid users
+  (`otel_spans` ordering, the `artifacts` and `workspace_docs` rowid joins) are a later migration, not part of 0001.
+- Left out until their phase: the FTS5 tables and their nine sync triggers, the `vec_*` tables (above), the two
+  `kanban_cards_due_date_integer_*` triggers (`due_date` is a `bigint`; the application passes an epoch).
+- Triggers with a twin keep their name: `agent_messages_delivered_needs_ts`, `artifacts_updated_at`,
+  `kanban_cards_status_bumps_updated_at` and the two `homoglyph_*` finders. The two `memories_content_not_blank_*`
+  triggers are one `CHECK` on `memories.content`.
+
+`src/__tests__/pg/baseline-parity.pg.test.ts` holds the baseline to the chain, both ways, and the exceptions above are
+constants in `src/__tests__/helpers/pg-parity.ts` with their reason. A new SQLite migration after the cut point
+therefore fails the `pg-parity` CI job until the PostgreSQL side carries the same change (a new numbered file in
+`src/migrations-pg/`, with its exception entry if it is not a plain mirror). Run it locally with a throwaway
+server: `MARVEEN_PG_TEST_URL=postgres://... npm run test:pg` (see `docs/db-facade.md`).
+
 Migration numbers are not required to be contiguous (there is no 0014): the runner orders files by
 version and applies everything above the highest recorded one.
