@@ -86,13 +86,16 @@ no commit).
 | `migrations` | the migration files the delta touches |
 | `touchesGateFiles` | any gate file touched (either path of a rename) |
 | `testsOnly`, `docsOnly` | every file is a test / every file is docs; false for an empty delta |
+| `depsChanged` | a `package.json` or `package-lock.json` (any directory, so `tools/eslint` and `tools/codemod` too) is in the delta, either path of a rename. Data only: the class stays `ci/tools`, and the lines of a lock file are not in `srcLinesChanged` (thousands of them would bury the number) |
 | `dirty` | a tracked file has an uncommitted change (the awaits are read from the working tree, the rest from the commits) |
 
-Classes, first matching rule wins: `migracio` (`src/migrations/*.sql`), `kapu-fajl` (`scripts/hooks/` except
-`test_*`, a `scripts/` file with "gate" in its name, the gate-adjacent scripts and sources `self-pace-gate.mjs`
-guards, the secret-gate workflow), `teszt` (`__tests__/`, `*.test.*`, `*.spec.*`, `test_*.py`, `test/` and `tests/`
-directories), `docs` (`docs/`, `*.md`, `LICENSE`; but a Markdown file under `src/`, `seed-skills/`, `web/`, `agents/`,
-`personas/` or `templates/` is loaded by the product and stays `src`), `ci/tools` (`.github/`, `tools/`, package
+Classes, first matching rule wins: `migracio` (`src/migrations/*.sql`), `kapu-fajl` (`scripts/hooks/` and
+`scripts/lib/` except tests, a `scripts/` file with "gate" in its name, the gate-adjacent scripts and sources
+`self-pace-gate.mjs` guards, the secret-gate workflow), `teszt` (`__tests__/`, `*.test.*`, `*.spec.*`, `test_*.py`,
+`test/` and `tests/` directories), `docs` (`*.md`, `LICENSE`, and prose or assets under `docs/`: txt, rst, images,
+pdf, html; but a Markdown file under `src/`, `seed-skills/`, `web/`, `agents/`, `personas/` or `templates/` is loaded
+by the product and stays `src`, and so does any other file under `docs/`: `docs/openapi.yaml` is the API contract the
+SDK is generated from, not prose), `ci/tools` (`.github/`, `tools/`, package
 manifests and lock files, `tsconfig*`, the vitest and eslint config), and `src` for everything else, so "no src
 lines" is never claimed for a path the rules do not know. `classifyPath` in `delta-class.mjs` is the one list; a
 test pins every rule.

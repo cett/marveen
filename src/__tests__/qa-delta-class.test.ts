@@ -3,7 +3,7 @@
 // commits), so a rename, a deletion, a binary file and an odd file name are what git itself reports. The tool
 // states facts and never a decision: no test expects, and the report has no, "QA not needed" field.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -16,7 +16,7 @@ interface FileEntry { path: string; oldPath?: string; status: string; class: str
 interface Report {
   base: string; head: string; dirty: boolean; files: FileEntry[]; counts: Record<string, number>
   srcLinesChanged: number; awaitsAdded: number | null; awaitsError?: string
-  migrations: string[]; touchesGateFiles: boolean; testsOnly: boolean; docsOnly: boolean
+  migrations: string[]; touchesGateFiles: boolean; testsOnly: boolean; docsOnly: boolean; depsChanged: boolean
 }
 const delta = deltaClass as (root: string, base: string, opts?: { tsRoot?: string }) => Report
 const parse = parseDelta as (ns: string, nu: string) => Array<{ path: string; oldPath?: string; status: string; added: number; deleted: number; binary: boolean }>
@@ -75,8 +75,16 @@ describe('classifyPath', () => {
     ['src/foo.spec.mts', 'teszt'],
     ['scripts/tests/run.sh', 'teszt'],
     ['scripts/hooks/test_ledger_outbound.py', 'teszt'],
-    ['docs/openapi.yaml', 'docs'],
+    // the API contract is not prose: the SDK is generated from it and CI checks it for breaking changes
+    ['docs/openapi.yaml', 'src'],
+    ['docs/schema.json', 'src'],
+    ['docs/notes', 'src'],
     ['docs/api-deprecation-policy.md', 'docs'],
+    ['docs/fork-guide/setup.md', 'docs'],
+    ['docs/img/diagram.png', 'docs'],
+    ['docs/img/diagram.SVG', 'docs'],
+    ['docs/plain.txt', 'docs'],
+    ['docs/page.html', 'docs'],
     ['CHANGELOG.md', 'docs'],
     ['README.md', 'docs'],
     ['tools/qa/README.md', 'docs'],
@@ -92,6 +100,12 @@ describe('classifyPath', () => {
     ['vitest.config.ts', 'ci/tools'],
     ['scripts/hooks/destructive-gate.py', 'kapu-fajl'],
     ['scripts/hooks/shell_rescan_lib.py', 'kapu-fajl'],
+    // the hooks import scripts/lib/, which the gate protection lists next to scripts/hooks/
+    ['scripts/lib/shared.mjs', 'kapu-fajl'],
+    ['scripts/lib/nested/helper.py', 'kapu-fajl'],
+    ['scripts/lib/test_shared.py', 'teszt'],
+    ['scripts/lib/__tests__/shared.test.mjs', 'teszt'],
+    ['scripts/library.sh', 'src'],
     ['scripts/hooks/send-invocation-cases.json', 'kapu-fajl'],
     ['scripts/self-pace-gate.mjs', 'kapu-fajl'],
     ['scripts/email-send-gate.mjs', 'kapu-fajl'],
@@ -150,7 +164,14 @@ describe('parseDelta and summarize (no git)', () => {
   })
 
   it('an empty delta is neither testsOnly nor docsOnly (vacuous truth is not a fact)', () => {
-    expect(summarize([])).toMatchObject({ srcLinesChanged: 0, testsOnly: false, docsOnly: false, touchesGateFiles: false, migrations: [] })
+    expect(summarize([])).toMatchObject({ srcLinesChanged: 0, testsOnly: false, docsOnly: false, touchesGateFiles: false, depsChanged: false, migrations: [] })
+  })
+
+  it('depsChanged looks at both paths of a rename', () => {
+    const rename = (from: string, to: string) => summarize([{ path: to, oldPath: from, status: 'R', added: 0, deleted: 0, binary: false }])
+    expect(rename('tools/a/package.json', 'tools/a/manifest.json').depsChanged).toBe(true)
+    expect(rename('tools/a/manifest.json', 'tools/a/package-lock.json').depsChanged).toBe(true)
+    expect(rename('tools/a/one.json', 'tools/a/two.json').depsChanged).toBe(false)
   })
 
   it('a cross-class rename counts as src, as a gate file and as a migration when EITHER path is one', () => {
@@ -289,6 +310,60 @@ describe('deltaClass on a throwaway repository', () => {
     expect(r.counts.migracio).toBe(1)
   })
 
+  it('a delta that touches only the API contract (docs/openapi.yaml) is src, not docsOnly', () => {
+    put('docs/openapi.yaml', 'openapi: 3.0.0\n')
+    const base = commit('base with a spec')
+    put('docs/openapi.yaml', 'openapi: 3.0.0\npaths: {}\n')
+    commit('change the contract')
+    const r = delta(repo, base, { tsRoot: REPO_ROOT })
+    expect(byPath(r, 'docs/openapi.yaml')).toMatchObject({ class: 'src', added: 1 })
+    expect(r).toMatchObject({ docsOnly: false, testsOnly: false, srcLinesChanged: 1 })
+  })
+
+  it('a change under scripts/lib touches a gate file; the test next to it does not', () => {
+    const base = baseCommit()
+    put('scripts/lib/shared.mjs', 'export const x = 1\n')
+    commit('lib')
+    const r = delta(repo, base, { tsRoot: REPO_ROOT })
+    expect(byPath(r, 'scripts/lib/shared.mjs').class).toBe('kapu-fajl')
+    expect(r).toMatchObject({ touchesGateFiles: true, srcLinesChanged: 0 })
+    const base2 = git('rev-parse', 'HEAD')
+    put('scripts/lib/test_shared.py', 'assert True\n')
+    commit('lib test')
+    expect(delta(repo, base2, { tsRoot: REPO_ROOT })).toMatchObject({ touchesGateFiles: false, testsOnly: true })
+  })
+
+  it('a delta with only package-lock.json: depsChanged, no src lines, not testsOnly, not docsOnly', () => {
+    put('package-lock.json', lines(50, 'dep'))
+    put('src/a.ts', 'export const a = 1\n')
+    const base = commit('base with a lock')
+    put('package-lock.json', lines(50, 'dep') + lines(2000, 'new dependency line'))
+    commit('bump deps')
+    const r = delta(repo, base, { tsRoot: REPO_ROOT })
+    expect(byPath(r, 'package-lock.json')).toMatchObject({ class: 'ci/tools', added: 2000 })
+    expect(r).toMatchObject({ depsChanged: true, srcLinesChanged: 0, testsOnly: false, docsOnly: false })
+  })
+
+  it('depsChanged: a nested package.json counts, a delta without one is false', () => {
+    const base = baseCommit()
+    put('tools/eslint/package.json', '{"name":"lint"}\n')
+    commit('nested manifest')
+    expect(delta(repo, base, { tsRoot: REPO_ROOT }).depsChanged).toBe(true)
+    const base2 = git('rev-parse', 'HEAD')
+    put('tools/eslint/readme-note.md', 'x\n')
+    put('src/a.ts', 'export const a = 2\n')
+    commit('no manifest')
+    expect(delta(repo, base2, { tsRoot: REPO_ROOT }).depsChanged).toBe(false)
+  })
+
+  it('depsChanged: a file named like a manifest does not count (package.json.bak, my-package.json)', () => {
+    const base = baseCommit()
+    put('package.json.bak', 'x\n')
+    put('my-package.json', 'x\n')
+    commit('lookalikes')
+    expect(delta(repo, base, { tsRoot: REPO_ROOT }).depsChanged).toBe(false)
+  })
+
   it('a gate script touched alone sets touchesGateFiles and leaves src at 0', () => {
     const base = baseCommit()
     put('scripts/hooks/guard.py', 'changed\n')
@@ -343,7 +418,7 @@ describe('deltaClass on a throwaway repository', () => {
     put('docs/guide.md', 'x\n')
     commit('docs')
     const keys = Object.keys(delta(repo, base, { tsRoot: REPO_ROOT })).sort()
-    expect(keys).toEqual(['awaitsAdded', 'base', 'counts', 'dirty', 'docsOnly', 'files', 'head', 'migrations', 'srcLinesChanged', 'testsOnly', 'tool', 'touchesGateFiles'])
+    expect(keys).toEqual(['awaitsAdded', 'base', 'counts', 'dirty', 'docsOnly', 'depsChanged', 'files', 'head', 'migrations', 'srcLinesChanged', 'testsOnly', 'tool', 'touchesGateFiles'].sort())
   })
 })
 
@@ -364,6 +439,16 @@ describe('the command line', () => {
     commit('edit')
     const out = execFileSync('node', [TOOL, '--base', base, '--root', repo, '--ts-root', REPO_ROOT], { env: GIT_ENV, stdio: ['ignore', 'pipe', 'pipe'] })
     expect((JSON.parse(out.toString()) as Report).srcLinesChanged).toBe(3)
+  })
+
+  it('the stderr summary names the facts a reader looks for, depsChanged included', () => {
+    const base = baseCommit()
+    put('package-lock.json', 'x\n')
+    commit('lock')
+    const r = spawnSync('node', [TOOL, '--base', base, '--root', repo, '--ts-root', REPO_ROOT], { env: GIT_ENV, encoding: 'utf8' })
+    expect(r.status).toBe(0)
+    expect(r.stderr).toMatch(/srcLinesChanged 0, awaitsAdded 0, migrations 0, touchesGateFiles false, testsOnly false, docsOnly false, depsChanged true/)
+    expect(r.stderr).toMatch(/ci\/tools 1/)
   })
 
   it('writes the report to --json too', () => {

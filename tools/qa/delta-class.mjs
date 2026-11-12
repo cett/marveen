@@ -12,15 +12,18 @@
 // Classes (one per file, by the first rule that matches; a path no rule names is `src`, so "no src lines" is
 // never claimed for a file the rules do not know):
 //   migracio   src/migrations/*.sql
-//   kapu-fajl  a gate: scripts/hooks/ (except test_*), scripts/ files with "gate" in the name, the gate-adjacent
-//              scripts and sources self-pace-gate.mjs guards, the secret-gate workflow
+//   kapu-fajl  a gate: scripts/hooks/ and scripts/lib/ (except tests), scripts/ files with "gate" in the name, the
+//              gate-adjacent scripts and sources self-pace-gate.mjs guards, the secret-gate workflow
 //   teszt      __tests__/, *.test.* / *.spec.*, test_*.py, test/ and tests/ directories
-//   docs       docs/, *.md (also CHANGELOG.md, README.md), LICENSE; but a Markdown file under src/, seed-skills/,
-//              web/, agents/, personas/ or templates/ is loaded by the product and stays `src`
+//   docs       *.md (also CHANGELOG.md, README.md), LICENSE, and prose or assets under docs/ (txt, rst, images, pdf,
+//              html); but a Markdown file under src/, seed-skills/, web/, agents/, personas/ or templates/ is loaded
+//              by the product and stays `src`, and any other file under docs/ (docs/openapi.yaml, the API contract
+//              the SDK is generated from) is `src`
 //   ci/tools   .github/, tools/, package manifests and lock files, tsconfig*, vitest/eslint config
 //   src        everything else
 // A rename is classed by its new path; when the old path had another class, `oldClass` says so. A file counts
-// as src (and as a migration or gate file) when EITHER of its two paths does.
+// as src (and as a migration or gate file) when EITHER of its two paths does. `depsChanged` is a fact beside the
+// classes: a package.json or package-lock.json in any directory is in the delta (either path of a rename).
 //
 // Exit 0 when the report was made, 2 on a bad argument. Awaits need the TypeScript of tools/eslint; when it is
 // missing `awaitsAdded` is null and `awaitsError` says why (a null, not a zero: nobody counted).
@@ -39,7 +42,9 @@ const GATE_ADJACENT = new Set([
   'scripts/secret-gate.ts', 'src/web/hook-registration-guard.ts', 'src/security/secret-gate.ts',
 ])
 
-const isTestPath = (p) => /(^|\/)(__tests__|tests?)\//.test(p)
+const DOC_PROSE = /\.(mdx?|txt|rst|png|jpe?g|gif|svg|webp|pdf|html?)$/i
+
+const isTestPath =(p) => /(^|\/)(__tests__|tests?)\//.test(p)
   || /\.(test|spec)\.[cm]?[tj]sx?$/.test(p)
   || /(^|\/)test_[^/]*\.py$/.test(p)
 
@@ -47,13 +52,16 @@ const isTestPath = (p) => /(^|\/)(__tests__|tests?)\//.test(p)
 export function classifyPath(p) {
   if (/^src\/migrations\/[^/]+\.sql$/.test(p)) return 'migracio'
   if (GATE_ADJACENT.has(p)) return 'kapu-fajl'
-  if (/^scripts\/hooks\//.test(p) && !isTestPath(p)) return 'kapu-fajl'
+  if (/^scripts\/(hooks|lib)\//.test(p) && !isTestPath(p)) return 'kapu-fajl'
   if (/^scripts\/[^/]*gate[^/]*$/i.test(p) && !isTestPath(p)) return 'kapu-fajl'
   if (p === '.github/workflows/secret-gate.yml') return 'kapu-fajl'
   if (isTestPath(p)) return 'teszt'
   // A Markdown file the product loads at run time (a seed skill, a persona, a prompt) is not documentation.
   if (/^(src|seed-skills|web|agents|personas|templates)\//.test(p)) return 'src'
-  if (/^docs\//.test(p) || /\.md$/i.test(p) || /^LICENSE(\..*)?$/.test(p)) return 'docs'
+  if (/\.md$/i.test(p) || /^LICENSE(\..*)?$/.test(p)) return 'docs'
+  // Under docs/ only prose and assets are docs. docs/openapi.yaml is the API contract (the source of the generated SDK,
+  // checked by CI for breaking changes and by the CHANGELOG rule), so any other file there stays src.
+  if (/^docs\//.test(p)) return DOC_PROSE.test(p) ? 'docs' : 'src'
   if (/^(\.github|tools)\//.test(p)
     || /^(package\.json|package-lock\.json|tsconfig[^/]*\.json|vitest\.config\.[cm]?[tj]s|\.gitignore)$/.test(p)
     || /^eslint\.config\.[cm]?[tj]s$/.test(p) || /^\.eslintrc/.test(p)) return 'ci/tools'
@@ -111,6 +119,9 @@ export function summarize(files) {
     counts,
     srcLinesChanged,
     migrations: out.filter((f) => classesOf(f).includes('migracio')).map((f) => f.path),
+    // data only: a package.json or package-lock.json anywhere (either path of a rename). The lock's lines are
+    // ci/tools lines, so they never reach srcLinesChanged, where thousands of them would bury the number.
+    depsChanged: out.some((f) => [f.path, f.oldPath].some((p) => p !== undefined && /(^|\/)package(-lock)?\.json$/.test(p))),
     touchesGateFiles: out.some((f) => classesOf(f).includes('kapu-fajl')),
     testsOnly: out.length > 0 && out.every((f) => classesOf(f).every((c) => c === 'teszt')),
     docsOnly: out.length > 0 && out.every((f) => classesOf(f).every((c) => c === 'docs')),
@@ -174,7 +185,7 @@ function main() {
     '  ' + CLASSES.map((k) => `${k} ${c[k]}`).join(', '),
     `  srcLinesChanged ${report.srcLinesChanged}, awaitsAdded ${report.awaitsAdded ?? 'n/a'}, `
       + `migrations ${report.migrations.length}, touchesGateFiles ${report.touchesGateFiles}, `
-      + `testsOnly ${report.testsOnly}, docsOnly ${report.docsOnly}`,
+      + `testsOnly ${report.testsOnly}, docsOnly ${report.docsOnly}, depsChanged ${report.depsChanged}`,
   ]
   if (report.awaitsError) human.push(`  awaits not counted: ${report.awaitsError}`)
   if (args.json) writeFileSync(path.resolve(args.json), JSON.stringify(report, null, 2) + '\n')
