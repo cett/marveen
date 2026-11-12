@@ -237,6 +237,54 @@ class BashReads(GateCase):
         self.assert_allowed(self.bash(cells[0][0]), cells[0][1])
         self.assert_allowed(self.bash(cells[1][0]), cells[1][1])
 
+    def test_command_bodies_are_judged_in_linear_time(self):
+        # nested, sibling and unterminated bodies: every one is refused (the depth cap, the work budget, the scanner), fast
+        import resource
+        import time
+        cells = [('echo ' + '$(' * 20000 + 'a' + ')' * 20000, '20000 nested substitutions'), ('echo ' + '$(a) ' * 20000, '20000 sibling substitutions'),
+                 ('echo ' + '$(' * 50000, '50000 unterminated substitutions'), ('(' * 20000 + 'a' + ')' * 20000, '20000 nested subshells'),
+                 ('echo ' + '`a` ' * 20000, '20000 backtick pairs'), ('echo ' + '`' * 20000, '20000 backticks'), ('echo ' + '"$(' * 5000, '5000 open double-quoted substitutions')]
+        # CPU and wall ceilings per cell, 2.0 s and 4.0 s unless listed. The two 20000-word cells cost 2.1-2.7 s (siblings) and 3.8-3.9 s
+        # (backtick pairs) of CPU on a quiet machine and scale linearly (5000 -> 10000 -> 20000: 1.0 -> 1.3 -> 2.3 s and 1.2 -> 2.1 -> 3.9 s,
+        # measured on this gate and on the one before it, the same): the old ceilings sat at their cost and passed or failed with the speed
+        # of the runner. A quadratic shape costs tens of seconds on them, so 6.0 s of CPU and 8.0 s of wall still tell the two apart.
+        cpu_limits = {'20000 sibling substitutions': 6.0, '20000 backtick pairs': 6.0}
+        wall_limits = {'20000 sibling substitutions': 8.0, '20000 backtick pairs': 8.0}
+        for cmd, label in cells:
+            before, t0 = resource.getrusage(resource.RUSAGE_CHILDREN), time.time()
+            rc, out, err = self.bash(cmd)
+            used = resource.getrusage(resource.RUSAGE_CHILDREN)
+            cpu = (used.ru_utime + used.ru_stime) - (before.ru_utime + before.ru_stime)
+            with self.subTest(label=label):
+                self.assertEqual(rc, 2, label)      # refused, not crashed into silence
+                self.assertLess(cpu, cpu_limits.get(label, 2.0), '%s: %.2fs of CPU' % (label, cpu))
+                self.assertLess(time.time() - t0, wall_limits.get(label, 4.0), label)
+        # and a command with a few bodies is neither refused nor slow
+        self.assert_allowed(self.bash('echo ' + '$(date) ' * 100), '100 sibling substitutions')
+
+    def test_comments_here_documents_and_old_arithmetic_are_scanned_in_linear_time(self):
+        # the scanner skips comments, here-document bodies and `$[ ]` spans: none of them may cost more than one pass
+        import resource
+        import time
+        # (sizes: what the rest of the gate takes per word is the larger part of the cost; an unclosed `$[` run is quadratic
+        # in the word code that was there before and is kept small)
+        cells = [('echo ' + '$[' * 3000, '3000 unclosed old arithmetic brackets'), ('echo ' + '$[1] ' * 5000, '5000 old arithmetic spans'),
+                 (': ' + '# it\'s\n' * 10000, '10000 comment lines'), ('echo $(' + '# it\'s\n' * 5000 + ')', '5000 comment lines in a substitution'),
+                 ('cat ' + '<<E ' * 5000 + '\n' + 'E\n' * 5000, '5000 here-documents on one line'),
+                 ('cat ' + '<<E ' * 5000 + '\nnever ends\n' * 5000, '5000 here-documents that never end'),
+                 ('cat <<EOF\n' + 'a $(date) it\'s\n' * 5000 + 'EOF', '5000 substitutions in a here-document'),
+                 ('cat <<\'EOF\'\n' + 'a $(date) it\'s\n' * 5000 + 'EOF', '5000 lines in a quoted here-document'),
+                 ('echo ' + '<<' * 20000, '20000 shift operators'), ('echo ${ ' * 5000, '5000 funsubs')]
+        for cmd, label in cells:
+            before, t0 = resource.getrusage(resource.RUSAGE_CHILDREN), time.time()
+            rc, out, err = self.bash(cmd)
+            used = resource.getrusage(resource.RUSAGE_CHILDREN)
+            cpu = (used.ru_utime + used.ru_stime) - (before.ru_utime + before.ru_stime)
+            with self.subTest(label=label):
+                self.assertIn(rc, (0, 2), label)      # a verdict, not a crash
+                self.assertLess(cpu, 2.0, '%s: %.2fs of CPU' % (label, cpu))
+                self.assertLess(time.time() - t0, 4.0, label)
+
     def test_globs_that_can_match_the_file_are_blocked(self):
         for cmd in ['cat store/.claim*', 'cat store/.c*', 'cat store/.[c]*', 'cat store/.*', 'cat store/*', 'cat store/.claim?signing*', 'cat store/.cl?im-sig*',
                     'cat *signing-key*', 'cat store/*key', 'cat store/.{claim-signing-key,x}', 'cat store/.[a-z]*', 'cat ../store/.cl*',
