@@ -144,6 +144,46 @@ describe('transactions', () => {
     expect((await dbx.all<{ id: number }>('SELECT id FROM dx_t ORDER BY id')).map((r) => r.id)).toEqual([1, 2, 4])
   })
 
+  it('a statement on the PARENT handle while a savepoint body runs falls into that savepoint (one connection): the savepoint rollback takes it back (same as SQLite)', async () => {
+    const dbx = plainDbx(2)
+    let parentWriteAccepted = false
+    await dbx.tx(async (tx) => {
+      await tx.run('INSERT INTO dx_t (id) VALUES (1)')
+      await tx.tx(async (inner) => {
+        await inner.run('INSERT INTO dx_t (id) VALUES (2)')
+        await tx.run('INSERT INTO dx_t (id) VALUES (3)') // the parent handle, the savepoint is the open scope
+        parentWriteAccepted = true // a refusal of the parent handle would end the body above and be swallowed by the catch below
+        throw new Error('inner failed')
+      }).catch(() => undefined)
+      await tx.run('INSERT INTO dx_t (id) VALUES (4)')
+    })
+    expect(parentWriteAccepted).toBe(true)
+    expect((await dbx.all<{ id: number }>('SELECT id FROM dx_t ORDER BY id')).map((r) => r.id)).toEqual([1, 4])
+  })
+
+  it('positive pair: the same parent-handle write inside a savepoint that succeeds is kept', async () => {
+    const dbx = plainDbx(2)
+    await dbx.tx(async (tx) => {
+      await tx.tx(async (inner) => {
+        await inner.run('INSERT INTO dx_t (id) VALUES (2)')
+        await tx.run('INSERT INTO dx_t (id) VALUES (3)')
+      })
+    })
+    expect((await dbx.all<{ id: number }>('SELECT id FROM dx_t ORDER BY id')).map((r) => r.id)).toEqual([2, 3])
+  })
+
+  it('positive pair: the same write through the parent handle after the savepoint body is kept', async () => {
+    const dbx = plainDbx(2)
+    await dbx.tx(async (tx) => {
+      await tx.tx(async (inner) => {
+        await inner.run('INSERT INTO dx_t (id) VALUES (2)')
+        throw new Error('inner failed')
+      }).catch(() => undefined)
+      await tx.run('INSERT INTO dx_t (id) VALUES (3)')
+    })
+    expect((await dbx.all<{ id: number }>('SELECT id FROM dx_t ORDER BY id')).map((r) => r.id)).toEqual([3])
+  })
+
   it('without a savepoint the same failure poisons the transaction: the next statement fails with 25P02', async () => {
     const dbx = plainDbx(2)
     await dbx.run('INSERT INTO dx_t (id, name) VALUES (1, ?)', 'agent-a')

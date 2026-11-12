@@ -136,6 +136,17 @@ describe('what is refused', () => {
     expect(() => t('SELECT ?, $2', 1)).toThrow(/native \$n placeholder/)
   })
 
+  it('the jsonb operator @? (it would read as @ and a placeholder), with the hint; @@ before a placeholder is still an operator', () => {
+    expect(() => t('SELECT 1 WHERE j @? ?', '$.a')).toThrow(/@\? is not accepted.*jsonb_path_exists/)
+    expect(() => t("SELECT 1 WHERE j @?'$.a'")).toThrow(/@\? is not accepted/)
+    expect(() => t('SELECT 1 WHERE j@?x')).toThrow(/@\? is not accepted/)
+    // positive pairs: the same shape inside a literal or a comment, the other operators, and the function form
+    expect(t("SELECT '@?' WHERE a = ?", 1).text).toBe("SELECT '@?' WHERE a = $1")
+    expect(t('SELECT 1 /* @? */ WHERE a = ?', 1).text).toBe('SELECT 1 /* @? */ WHERE a = $1')
+    expect(t('SELECT 1 WHERE d @@?', 'x').text).toBe('SELECT 1 WHERE d @@$1')
+    expect(t('SELECT 1 WHERE jsonb_path_exists(j, ?::jsonpath)', '$.a').text).toBe('SELECT 1 WHERE jsonb_path_exists(j, $1::jsonpath)')
+  })
+
   it('more parameters than PostgreSQL takes', () => {
     const n = PG_MAX_PARAMS + 1
     expect(() => t(Array(n).fill('?').join(','), ...Array(n).fill(1))).toThrow(/at most 65535/)

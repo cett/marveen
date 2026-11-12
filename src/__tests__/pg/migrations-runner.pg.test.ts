@@ -105,6 +105,67 @@ describe('one transaction per file', () => {
   })
 })
 
+describe('a file that ends the transaction itself', () => {
+  const ENDED = /file ended the transaction/
+
+  it('a COMMIT in the file is an error, and no version row is written', async () => {
+    put('0001_commit.sql', 'CREATE TABLE c_t (id bigint); COMMIT;')
+    await expect(applyPgMigrations(pool, { dir })).rejects.toThrow(/PG migration 1 .*0001_commit\.sql.*file ended the transaction/s)
+    expect(await pool.query("SELECT to_regclass('schema_version')::text AS t").then((r) => r.rows[0].t)).toBeNull() // no version row, no table
+  })
+
+  it('COMMIT; BEGIN; (looks harmless, the transaction after it is another one) is an error too', async () => {
+    put('0001_ok.sql', 'CREATE TABLE ok_t (id bigint);')
+    put('0002_swap.sql', 'CREATE TABLE s_t (id bigint); COMMIT; BEGIN; CREATE TABLE s2_t (id bigint);')
+    await expect(applyPgMigrations(pool, { dir })).rejects.toThrow(ENDED)
+    expect(await versions()).toEqual([1])
+    expect(await tableExists('s2_t')).toBe(false) // the half after the swap went with the rollback of the runner's own transaction
+  })
+
+  it('a ROLLBACK in the file is an error (it would leave the file undone and the version row written)', async () => {
+    put('0001_rb.sql', 'CREATE TABLE r_t (id bigint); ROLLBACK;')
+    await expect(applyPgMigrations(pool, { dir })).rejects.toThrow(ENDED)
+    expect(await tableExists('r_t')).toBe(false)
+  })
+
+  it('the message does not say "rolled back" (the file may have committed on its own) and the lock is free afterwards', async () => {
+    put('0001_commit.sql', 'CREATE TABLE c_t (id bigint); COMMIT;')
+    const err = await applyPgMigrations(pool, { dir }).catch((e: Error) => e)
+    expect((err as Error).message).not.toMatch(/rolled back/)
+    expect((err as Error).message).toMatch(/may already be committed/)
+    put('0001_commit.sql', 'CREATE TABLE d_t (id bigint);')
+    // the checksum of nothing is stored, so the corrected file simply applies; the lock was released
+    expect((await applyPgMigrations(pool, { dir, lockTimeoutMs: 500 })).applied).toEqual([1])
+  })
+
+  it('positive pair: a file with several statements, a savepoint and a nested block is one transaction and applies', async () => {
+    put('0001_ok.sql', 'CREATE TABLE p_t (id bigint); SAVEPOINT s; INSERT INTO p_t VALUES (1); RELEASE SAVEPOINT s; DO $$ BEGIN INSERT INTO p_t VALUES (2); END $$;')
+    expect((await applyPgMigrations(pool, { dir })).applied).toEqual([1])
+    expect((await pool.query('SELECT count(*)::int AS n FROM p_t')).rows[0].n).toBe(2)
+  })
+})
+
+describe('the pool statement_timeout and a long file', () => {
+  const limited = (ms: number): pg.Pool => {
+    const p = new pg.Pool({ connectionString: withDatabase(dbName), max: 1, statement_timeout: ms })
+    created.push(p)
+    return p
+  }
+
+  it('a file that runs longer than the pool statement_timeout applies, and the timeout is back on the connection afterwards', async () => {
+    put('0001_slow.sql', 'SELECT pg_sleep(1.5); CREATE TABLE slow_t (id bigint);')
+    const p = limited(500)
+    expect((await applyPgMigrations(p, { dir })).applied).toEqual([1])
+    expect(await tableExists('slow_t')).toBe(true)
+    expect((await p.query<{ statement_timeout: string }>('SHOW statement_timeout')).rows[0].statement_timeout).toBe('500ms')
+  })
+
+  it('positive pair: the same sleep outside the runner IS cut by that timeout (the cell would pass with no limit at all otherwise)', async () => {
+    const p = limited(500)
+    await expect(p.query('SELECT pg_sleep(1.5)')).rejects.toMatchObject({ code: '57014' })
+  })
+})
+
 describe('immutability and order', () => {
   it('a file that changed after it was applied is an error that names it; the data is untouched', async () => {
     put('0001_a.sql', 'CREATE TABLE a_t (id bigint);')

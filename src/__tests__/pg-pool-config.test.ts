@@ -44,7 +44,7 @@ describe('pgPoolConfig', () => {
     const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined)
     for (const bad of ['abc', '-5', '1.5', '10s', ' ', '1e3']) {
       const c = pgPoolConfig(URL, {}, { DB_PG_STATEMENT_TIMEOUT_MS: bad })
-      expect(c.statement_timeout).toBe(bad === ' ' ? 30000 : 30000)
+      expect(c.statement_timeout).toBe(30000)
     }
     expect(warn).toHaveBeenCalled()
     expect(pgPoolConfig(URL, {}, { DB_PG_STATEMENT_TIMEOUT_MS: '' }).statement_timeout).toBe(30000) // empty = unset

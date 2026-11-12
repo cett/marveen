@@ -215,6 +215,43 @@ describe('nested transactions (savepoints)', () => {
     expect(await names()).toEqual(['l2'])
   })
 
+  it('a statement on the PARENT handle while a savepoint body runs falls into that savepoint (one connection): the savepoint rollback takes it back', async () => {
+    let parentWriteAccepted = false
+    await dbx.tx(async (tx) => {
+      await tx.run('INSERT INTO tx_t (name) VALUES (?)', 'before')
+      await tx.tx(async (inner) => {
+        await inner.run('INSERT INTO tx_t (name) VALUES (?)', 'inner')
+        await tx.run('INSERT INTO tx_t (name) VALUES (?)', 'via-parent') // the parent handle, the savepoint is the open scope
+        parentWriteAccepted = true // a refusal of the parent handle would end the body above and be swallowed by the catch below
+        throw new Error('inner failed')
+      }).catch(() => undefined)
+      await tx.run('INSERT INTO tx_t (name) VALUES (?)', 'after')
+    })
+    expect(parentWriteAccepted).toBe(true)
+    expect(await names()).toEqual(['before', 'after']) // pin: via-parent went with the savepoint (the same on PostgreSQL)
+  })
+
+  it('positive pair: the same parent-handle write inside a savepoint that succeeds is kept', async () => {
+    await dbx.tx(async (tx) => {
+      await tx.tx(async (inner) => {
+        await inner.run('INSERT INTO tx_t (name) VALUES (?)', 'inner')
+        await tx.run('INSERT INTO tx_t (name) VALUES (?)', 'via-parent')
+      })
+    })
+    expect(await names()).toEqual(['inner', 'via-parent'])
+  })
+
+  it('positive pair: the same write through the parent handle after the savepoint body is kept', async () => {
+    await dbx.tx(async (tx) => {
+      await tx.tx(async (inner) => {
+        await inner.run('INSERT INTO tx_t (name) VALUES (?)', 'inner')
+        throw new Error('inner failed')
+      }).catch(() => undefined)
+      await tx.run('INSERT INTO tx_t (name) VALUES (?)', 'via-parent')
+    })
+    expect(await names()).toEqual(['via-parent'])
+  })
+
   it('savepoints opened side by side run one after the other', async () => {
     const events: string[] = []
     await dbx.tx(async (tx) => {
