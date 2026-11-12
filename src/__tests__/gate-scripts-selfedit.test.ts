@@ -3,7 +3,7 @@
 // store config that widens egress (egress-allowlist.json, egress-vendor-hosts.json, the runtime
 // cache). The protected set is a set of REAL PATHS under the install, so a git worktree copy, a
 // plain run and a plain read keep working.
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 // @ts-expect-error -- plain .mjs hook script, no types
 import { gateDecision, protectedSet, bashProtectedDecision, splitShell, tokenizeShell } from '../../scripts/self-pace-gate.mjs'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync, realpathSync } from 'node:fs'
@@ -342,7 +342,12 @@ describe('the hook end to end, and where it is wired', () => {
     expect(r.stdout).toBe('')
   })
   it('protectedSet derives from the script location: real paths under scripts/ and store/', () => {
-    const set = protectedSet({})
+    // protectedSet adds the store directory named by MARVEEN_STORE_DIR when the environment sets it (a second store the
+    // gate has to protect). This test is about the location-derived set, so it decides from its own fixture and not from
+    // whatever environment it runs in: a run under an isolated store override (as QA runs it) must not change the answer.
+    vi.stubEnv('MARVEEN_STORE_DIR', '')
+    let set: { entries: Array<{ real: string }> }
+    try { set = protectedSet({}) } finally { vi.unstubAllEnvs() }
     const real = realpathSync(installScripts)
     const paths = set.entries.map((e: { real: string }) => e.real)
     expect(paths).toContain(join(real, 'self-pace-gate.mjs'))
