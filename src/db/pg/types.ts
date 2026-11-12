@@ -1,7 +1,8 @@
 // How rows come back from PostgreSQL, so the facade code (written for better-sqlite3 values) sees the same shapes:
 //   - int8 (bigint columns, count(*), sum() of smallint or integer columns) as a JS number, CHECKED: a value beyond
 //     Number.MAX_SAFE_INTEGER throws instead of rounding (the driver default is a string). sum() of a bigint column and
-//     avg() of anything return numeric, which stays a string (see below): cast in the statement where a number is wanted,
+//     avg() of an integer or numeric column return numeric, which stays a string (see below; avg() of a double precision
+//     column is a float and arrives as a number): cast in the statement where a number is wanted,
 //   - smallint / integer (the flag columns) are numbers in the driver already, bytea is a Buffer,
 //   - everything else keeps the driver's default parser (numeric stays a string: exact decimals are not floats).
 import pg from 'pg'
