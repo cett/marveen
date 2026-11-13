@@ -67,6 +67,12 @@ def strip_comments(text):
     return _LINE_COMMENT.sub("", _BLOCK_COMMENT.sub("", text))
 
 
+# The ONE place that may hold the SQLite spellings (relative to src/): the dialect fragments, which choose the spelling
+# per backend. It is not counted, so the count outside it can only go down; a second home would be a new entry here,
+# reviewed on its own. An exact path, never a pattern: a file of the same name elsewhere is counted.
+DIALECT_HOME = (os.path.join("db", "dialect.ts"),)
+
+
 def is_production_ts(rel):
     if not rel.endswith(".ts") or rel.endswith(".d.ts"):
         return False
@@ -90,7 +96,7 @@ def scan(src_dir=None):
         dirnames[:] = sorted(d for d in dirnames if d != "node_modules")
         for fn in sorted(filenames):
             rel = os.path.relpath(os.path.join(dirpath, fn), src_dir)
-            if not is_production_ts(rel):
+            if not is_production_ts(rel) or rel in DIALECT_HOME:
                 continue
             with open(os.path.join(dirpath, fn), encoding="utf-8", errors="ignore") as f:
                 counts = count_text(f.read())

@@ -177,6 +177,19 @@ class MainTest(unittest.TestCase):
         self.assertEqual(totals["rowid"], 1)
         self.assertEqual(list(per_file), [os.path.join("db", "a.ts")])
 
+    def test_the_dialect_fragments_file_is_the_only_uncounted_home_of_the_spellings(self):
+        spelling = "const f = \"strftime('%Y-%m', x, 'unixepoch', 'localtime') / a = b COLLATE NOCASE\"\n"
+        _write(self.src, "db/dialect.ts", spelling)
+        _write(self.src, "web/dialect.ts", spelling)          # same name, other directory: counted
+        _write(self.src, "db/dialect.ts.bak.ts", spelling)    # look-alike name: counted
+        _write(self.src, "db/other.ts", spelling)             # a neighbour: counted
+        totals, per_file = mod.scan()
+        self.assertNotIn(os.path.join("db", "dialect.ts"), per_file)
+        for rel in (os.path.join("web", "dialect.ts"), os.path.join("db", "dialect.ts.bak.ts"), os.path.join("db", "other.ts")):
+            self.assertEqual(per_file[rel], {"strftime()": 1, "COLLATE NOCASE": 1}, rel)
+        self.assertEqual(totals["strftime()"], 3)
+        self.assertEqual(totals["COLLATE NOCASE"], 3)
+
     def test_check_passes_at_baseline(self):
         self._set_baseline(rowid=1)
         rc, out = self._run()
