@@ -7,7 +7,7 @@
 //
 // Privacy: neutral fixtures only (agent-a, key-a).
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { useTestDb } from './helpers/with-test-db.js'
+import { ambientInTx, testDbMode, useTestDb } from './helpers/with-test-db.js'
 import { dbx, pruneAuditLogs, pruneHookAuditLogJournaled, writeAgentAuditLog } from '../db.js'
 import { currentTxScope } from '../db/tx-lock.js'
 
@@ -54,8 +54,9 @@ afterEach(() => { vi.restoreAllMocks() })
 describe('the harness', () => {
   it('sees a facade call made while a transaction is open (so zero below is not an empty claim)', async () => {
     watchFacade()
-    await dbx.tx(async () => { await dbx.run('SELECT 1') })
-    expect(insideTx().map((c) => c.op)).toEqual(['run'])
+    await ambientInTx(() => dbx.tx(async () => { await dbx.run('SELECT 1') }))
+    // the spy reads SQLite's transaction scope, which PostgreSQL does not have: there the refusal above is the observation
+    if (testDbMode() !== 'pg') expect(insideTx().map((c) => c.op)).toEqual(['run'])
   })
 
   it('sees a facade call made outside a transaction as outside', async () => {

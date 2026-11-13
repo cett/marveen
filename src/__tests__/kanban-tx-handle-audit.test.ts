@@ -10,7 +10,7 @@
 //
 // Privacy: neutral fixtures only (agent-a, idea-1).
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { useTestDb } from './helpers/with-test-db.js'
+import { ambientInTx, testDbMode, useTestDb } from './helpers/with-test-db.js'
 import { createKanbanCard, createKanbanSubtasks, deleteKanbanCard, promoteIdeaToKanban, createIdea, getKanbanCard, getDb } from '../db.js'
 import { dbx } from '../db.js'
 import { currentTxScope } from '../db/tx-lock.js'
@@ -71,8 +71,9 @@ function expectOneRolledBackSavepoint(sql: string[]): void {
 describe('the harness', () => {
   it('sees a facade call and a nested facade transaction made while a transaction is open (so zero below is not an empty claim)', async () => {
     watchFacade()
-    await dbx.tx(async () => { await dbx.run('SELECT 1'); await dbx.tx(() => Promise.resolve()) })
-    expect(insideTx.map((c) => c.op)).toEqual(['run', 'tx'])
+    await ambientInTx(() => dbx.tx(async () => { await dbx.run('SELECT 1'); await dbx.tx(() => Promise.resolve()) }))
+    // the spy reads SQLite's transaction scope, which PostgreSQL does not have: there the refusal above is the observation
+    if (testDbMode() !== 'pg') expect(insideTx.map((c) => c.op)).toEqual(['run', 'tx'])
   })
 })
 

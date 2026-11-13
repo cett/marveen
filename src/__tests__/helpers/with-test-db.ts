@@ -23,7 +23,7 @@
 //
 // The tests that open the database by hand (288 files) are moved over module by module with the waves.
 
-import { beforeEach, afterEach } from 'vitest'
+import { beforeEach, afterEach, expect } from 'vitest'
 import { initDatabase, db, dbx, type Dbx } from '../../db.js'
 import { useDbxBackend } from '../../db/facade.js'
 import { createPgDbx } from '../../db/pg/index.js'
@@ -47,6 +47,20 @@ export function testDbMode(env: NodeJS.ProcessEnv = process.env): 'sqlite' | 'pg
   if (v === undefined || v === '' || v === 'sqlite') return 'sqlite'
   if (v === 'pg') return 'pg'
   throw new Error(`${TEST_DB_ENV} must be "pg" or "sqlite" (or unset), got "${v}"`)
+}
+
+/** The error of the PG adapter's strict transaction rule (db/pg/dbx.ts): an ambient `dbx` call inside a transaction body. */
+export const STRICT_TX_ERROR = /use the tx handle inside a transaction body/
+
+/**
+ * Runs a positive control: a test that makes an AMBIENT `dbx` call inside a `dbx.tx` body on purpose, to prove that the
+ * spy of the test sees such a call. SQLite lets the call join the transaction through the async context; PostgreSQL
+ * refuses it with the strict-tx error (the call would run on another connection, outside the transaction), so there
+ * the control expects the refusal. The spy records the call before the guard throws, so what the test asserts on stays.
+ */
+export async function ambientInTx(run: () => Promise<unknown>): Promise<void> {
+  if (testDbMode() === 'pg') await expect(run()).rejects.toThrow(STRICT_TX_ERROR)
+  else await run()
 }
 
 /**
