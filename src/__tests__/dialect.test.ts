@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { checkZoneName, eqNoCase, epochLocalDate, epochLocalMonth, localTimeZone, orderBytes, orderNoCase } from '../db/dialect.js'
+import { checkZoneName, eqNoCase, epochLocalDate, epochLocalMonth, likeNoCase, localTimeZone, orderBytes, orderNoCase } from '../db/dialect.js'
 import { dbxDialect } from '../db/facade.js'
 
 // The shape of every fragment on both dialects, without a server. The differential cells (same inputs on SQLite and on
@@ -20,6 +20,7 @@ describe('SQLite spellings', () => {
     expect(eqNoCase('username', '?', 'sqlite')).toBe('username = ? COLLATE NOCASE')
     expect(orderNoCase('username', 'sqlite')).toBe('username COLLATE NOCASE')
     expect(orderBytes('username', 'sqlite')).toBe('username')
+    expect(likeNoCase('title', '?', 'sqlite')).toBe("title LIKE ? ESCAPE '\\'")
   })
 })
 
@@ -37,6 +38,12 @@ describe('PostgreSQL spellings', () => {
     expect(eqNoCase('a', 'b', 'pg')).not.toMatch(/lower\(/i)
     expect(orderNoCase('c', 'pg')).toBe(`${fold('c')} COLLATE "C"`)
     expect(orderBytes('c', 'pg')).toBe('c COLLATE "C"')
+  })
+
+  it('likeNoCase folds BOTH sides by asciiFold, never ILIKE or lower(), and always carries its ESCAPE', () => {
+    expect(likeNoCase('c', '$1', 'pg')).toBe(`${fold('c')} LIKE ${fold('$1')} ESCAPE '\\'`)
+    expect(likeNoCase('c', '$1', 'pg')).not.toMatch(/ilike|lower\(/i)
+    for (const d of ['sqlite', 'pg'] as const) expect(likeNoCase('c', '?', d)).toMatch(/ESCAPE '\\'$/)
   })
 })
 

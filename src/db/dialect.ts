@@ -105,3 +105,20 @@ export function orderBytes(col: string, dialect: DbxDialect = dbxDialect()): str
     () => `${col} COLLATE "C"`,
   )
 }
+
+/**
+ * `col LIKE param ESCAPE '\'` ignoring ASCII case, as SQLite's LIKE does. PostgreSQL's LIKE is case sensitive, and ILIKE is
+ * no answer (it folds with lower(), so it also folds non-ASCII: 'Ő' would match 'ő' there and not on SQLite). So on
+ * PostgreSQL BOTH sides go through asciiFold: the parameter may be any pattern (no pre-folding in JS), and the fold touches
+ * letters only, so the wildcards (% and _) and the backslash escape stay intact. The fragment returns the LIKE and its
+ * ESCAPE clause together: an ESCAPE-less shape cannot be written, so a user text always goes through likeContains /
+ * likePrefix (db/like.ts) and a "%" or "_" in it stays a literal. NULL on either side is unknown on both engines.
+ * No index use on PostgreSQL without an expression index (same as eqNoCase).
+ */
+export function likeNoCase(col: string, param: string, dialect: DbxDialect = dbxDialect()): string {
+  return pick(
+    dialect,
+    () => `${col} LIKE ${param} ESCAPE '\\'`,
+    () => `${asciiFold(col)} LIKE ${asciiFold(param)} ESCAPE '\\'`,
+  )
+}

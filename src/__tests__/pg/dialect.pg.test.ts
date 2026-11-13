@@ -3,7 +3,8 @@
 // days, a byte comparison for the order). The shape of the fragments without a server: src/__tests__/dialect.test.ts.
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import Database from 'better-sqlite3'
-import { checkZoneName, epochLocalDate, epochLocalMonth, eqNoCase, localTimeZone, orderBytes, orderNoCase } from '../../db/dialect.js'
+import { checkZoneName, epochLocalDate, epochLocalMonth, eqNoCase, likeNoCase, localTimeZone, orderBytes, orderNoCase } from '../../db/dialect.js'
+import { likeContains, likePrefix } from '../../db/like.js'
 import { createPgTestDb, type PgTestDb } from '../helpers/pg-test-db.js'
 
 let pgdb: PgTestDb
@@ -156,6 +157,62 @@ describe('eqNoCase', () => {
     expect(p2.rows).toEqual([])
   })
 })
+
+describe('likeNoCase', () => {
+  const LONG = `${'x'.repeat(5000)}Needle${'y'.repeat(5000)}`
+  // [value, pattern as written to LIKE, expected]. Patterns built by likeContains / likePrefix are the real call shape.
+  const CASES: [string | null, string | null, 0 | 1 | null][] = [
+    // ASCII case: equal in every combination of upper / lower on the two sides (a one-sided fold goes red here)
+    ['a', 'A', 1], ['A', 'a', 1], ['ALICE', 'ALICE', 1], ['alice', 'alice', 1], ['Alice', 'aLICE', 1],
+    ['Alice', likeContains('ALI'), 1], ['ALICE', likePrefix('ali'), 1], ['alice', likePrefix('ALI'), 1], ['Bob', likePrefix('ali'), 0],
+    // non-ASCII is NOT folded (SQLite does not): O-double-acute vs o-double-acute, E-acute, sharp s
+    ['Őra', 'őra', 0], ['őra', 'ŐRA', 0], ['Őra', likeContains('ő'), 0], ['Őra', likeContains('Ő'), 1], ['É', 'é', 0], ['straße', 'STRASSE', 0],
+    ['Őra', 'őRA%', 0], ['ŐRA', 'Őra', 1],
+    // wildcards unescaped stay wildcards
+    ['abc', 'a_c', 1], ['abc', 'A%', 1], ['abc', 'a_', 0], ['ABC', '_b_', 1],
+    // wildcards and the backslash escaped by likeContains / likePrefix are literals
+    ['a%b', likeContains('%'), 1], ['ab', likeContains('%'), 0], ['a_b', likeContains('_'), 1], ['ab', likeContains('_'), 0],
+    ['a\\b', likeContains('\\'), 1], ['ab', likeContains('\\'), 0], ['A_B', likePrefix('a_'), 1], ['AXB', likePrefix('a_'), 0],
+    ['100%', likeContains('0%'), 1], ['1000', likeContains('0%'), 0],
+    // NULL is unknown on both engines
+    [null, '%', null], ['a', null, null], [null, null, null],
+    // empty string
+    ['', '', 1], ['', '%', 1], ['a', '', 0], ['', likeContains(''), 1], ['', likePrefix('a'), 0],
+    // long value
+    [LONG, likeContains('nEEDLE'), 1], [LONG, likeContains('needlez'), 0], [LONG, likePrefix('XXX'), 1],
+  ]
+
+  it('both engines agree with each other and with the table', async () => {
+    const rows = PAIRS_SQL(CASES)
+    const make = (d: 'sqlite' | 'pg'): string => `SELECT i, ${likeNoCase('v', 'p', d)} AS r FROM (${rows}) ORDER BY i`
+    const r = await both(make('sqlite'), make('pg'))
+    const norm = (v: unknown): 0 | 1 | null => (v === null ? null : v === true || v === 1 ? 1 : 0)
+    const expected = CASES.map((c) => c[2])
+    expect(r.sqlite.map((x) => norm(x[1]))).toEqual(expected)
+    expect(r.pg.map((x) => norm(x[1]))).toEqual(expected)
+  })
+
+  it('works against a column and a bound parameter, upper and lower case, on both engines', async () => {
+    await pgdb.pool.query('CREATE TABLE like_t (id bigint PRIMARY KEY, name text)')
+    sq.exec('CREATE TABLE like_t (id INTEGER PRIMARY KEY, name TEXT)')
+    const names = ['Alice', 'alicia', 'Őra', 'Bob_x', 'BobXx', null]
+    for (const [i, n] of names.entries()) {
+      await pgdb.pool.query('INSERT INTO like_t VALUES ($1, $2)', [i, n])
+      sq.prepare('INSERT INTO like_t VALUES (?, ?)').run(i, n)
+    }
+    for (const [text, ids] of [['ALI', [0, 1]], ['ali', [0, 1]], ['ő', []], ['Ő', [2]], ['bob_', [3]], ['%', []]] as [string, number[]][]) {
+      const s = sq.prepare(`SELECT id FROM like_t WHERE ${likeNoCase('name', '?', 'sqlite')} ORDER BY id`).all(likeContains(text))
+      const p = await pgdb.pool.query(`SELECT id FROM like_t WHERE ${likeNoCase('name', '$1', 'pg')} ORDER BY id`, [likeContains(text)])
+      expect(s.map((x) => (x as { id: number }).id), text).toEqual(ids)
+      expect(p.rows.map((x) => Number(x.id)), text).toEqual(ids)
+    }
+  })
+})
+
+/** `SELECT i, v, p` rows (UNION ALL of literals) for the likeNoCase table. */
+function PAIRS_SQL(cases: [string | null, string | null, 0 | 1 | null][]): string {
+  return cases.map(([v, p], i) => `SELECT ${i} AS i, ${sqlText(v)} AS v, ${sqlText(p)} AS p`).join(' UNION ALL ')
+}
 
 describe('orderNoCase and orderBytes', () => {
   const NAMES = ['a_b', 'a-b', 'Ab', 'ab', 'AB', 'aB', 'Ő', 'ő', '_x', ' sp', 'a1', 'Z', 'é', 'B', 'b', 'ab ', 'a', 'ÿ', '10', '9']
