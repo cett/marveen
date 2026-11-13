@@ -22,6 +22,11 @@ DEST="$BKDIR/${TS}-${LABEL}"
 # portable_sha256 (sha256sum or shasum). A missing helper file only degrades the manifest to NOHASH entries.
 . "$REPO/scripts/lib/portable.sh" 2>/dev/null || echo "  WARN scripts/lib/portable.sh missing -- the manifest will carry NOHASH instead of hashes"
 
+# The snapshot holds the database, the vault and its key: owner-only. umask 077 makes every new file and directory
+# private whatever the caller's umask is, and the directories are chmod 700 so a pre-existing one is tightened too.
+umask 077
+mkdir -p "$BKDIR"
+chmod 700 "$BKDIR"
 mkdir -p "$DEST"
 
 # Consistent SQLite snapshot (NOT a raw cp -- the live dashboard may be mid-write).
@@ -42,6 +47,8 @@ for f in vault.json .vault-key .dashboard-token \
          openrouter-models.json command-task-health.json; do
   [ -f "$STORE/$f" ] && cp -p "$STORE/$f" "$DEST/" 2>/dev/null
 done
+# cp -p carries the source's mode: a loosely moded vault or key file must not stay readable in the copy.
+chmod -R go-rwx "$DEST" 2>/dev/null
 
 # Personal, untracked scripts -- the ones git will NOT bring back.
 #

@@ -116,7 +116,7 @@ OUT="$(verify --drill "$A")"; RC=$?
 
 echo "(f) no sqlite3: the backup stops, the drill fails, the plain check says it skipped"
 MINBIN="$TMPDIR_BASE/minbin"; mkdir -p "$MINBIN"
-for t in bash env sh cat cp mkdir rm ls head tail wc tr grep sed awk sort find tar gzip mktemp dirname basename date hostname stat touch shasum sha256sum perl uname id printf; do
+for t in bash env sh cat cp mkdir rm ls head tail wc tr grep sed awk sort find tar gzip mktemp dirname basename date hostname stat touch chmod shasum sha256sum perl uname id printf; do
   p="$(command -v "$t" 2>/dev/null)" && ln -sf "$p" "$MINBIN/$t"
 done
 R="$(mkrepo nosql)"

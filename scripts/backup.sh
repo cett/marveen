@@ -74,7 +74,9 @@ SECURITY_BIN="${BACKUP_SECURITY_BIN:-/usr/bin/security}"
 KEYCHAIN_SERVICE="com.marveen.vault"
 KEYCHAIN_ACCOUNT="master-key"
 
+# The archive holds the whole database and the channel secrets: the directory is owner-only, a pre-existing one too.
 mkdir -p "${BACKUP_DIR}"
+chmod 700 "${BACKUP_DIR}"
 cd "${REPO_ROOT}"
 
 # Checkpoint WAL into the main DB file so the snapshot is self-contained.
@@ -326,8 +328,10 @@ stage_group "${HOMELIST}" "${HOME}" home
 # Archive only the top-level entries that exist (a group dir is absent when
 # its list was empty), so tar never errors on a missing entry and the names
 # stay clean (no leading "./").
-( cd "${STAGE}" && tar -czf "${ARCHIVE}" MANIFEST.txt \
+# umask 077 + chmod 600: the archive is never group/world readable, whatever the caller's umask.
+( umask 077; cd "${STAGE}" && tar -czf "${ARCHIVE}" MANIFEST.txt \
     $( [[ -d repo ]] && echo repo ) $( [[ -d home ]] && echo home ) )
+chmod 600 "${ARCHIVE}"
 
 # Vault key sidecar, written only after the archive succeeded (no orphan key
 # file when tar fails). umask 077 so it is never group/world readable.
@@ -349,7 +353,7 @@ else
   CHECKSUM="unavailable"
 fi
 # Write a sidecar .sha256 file next to the archive for offline verification.
-echo "${CHECKSUM}  $(basename "${ARCHIVE}")" > "${ARCHIVE%.tar.gz}.sha256"
+( umask 077; echo "${CHECKSUM}  $(basename "${ARCHIVE}")" > "${ARCHIVE%.tar.gz}.sha256" )
 echo "backup: wrote ${ARCHIVE} (${ARCHIVE_BYTES} bytes)"
 echo "backup: sha256 ${CHECKSUM}"
 
