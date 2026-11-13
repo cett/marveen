@@ -143,11 +143,14 @@ export async function listEnabledTenantIds(ops: SqlOps = dbx): Promise<string[]>
 
 /**
  * Rebuild the full-text index of `memories` after a bulk insert. SQLite only: the Postgres schema has no `memories_fts`
- * yet (the full-text tables are a later phase, see the header of the Postgres baseline), and its memory search reads
- * the table directly, so there is no index to bring up to date and the call does nothing there. `ops` is the
- * transaction handle of a caller that holds one, `dbx` otherwise.
+ * yet (the full-text tables are a later phase, see the header of the Postgres baseline), so there is no index to bring
+ * up to date and the call does nothing there; running the statement would fail and abort the open transaction.
+ * Not claimed here: that Postgres memory search works without the index. `searchAgentMemories` falls back to LIKE, but
+ * `searchMemories` joins `memories_fts` and returns an empty list when that fails (parked, outside this change).
+ * `ops` is the transaction handle of a caller that holds one, `dbx` otherwise.
  */
 export async function rebuildMemoriesFts(ops: SqlOps = dbx): Promise<void> {
+  // TODO(fts-phase): remove this guard when memories_fts exists on Postgres, so the rebuild runs there too.
   if (dbxDialect() === 'pg') return
   await ops.run("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')")
 }
