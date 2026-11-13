@@ -27,8 +27,17 @@ async function usage(ts: number, tokens: number, agent = 'agent-a', tenant = 'de
   )
 }
 
+// A rolled-up month row (token_usage_monthly): the month key is the 'YYYY-MM' string the rollup wrote.
+async function monthly(month: string, tokens: number, agent = 'agent-a', tenant = 'default'): Promise<void> {
+  await dbx.run(
+    `INSERT INTO token_usage_monthly (month, agent, model, input_tokens, tenant_id) VALUES (?, ?, 'm', ?, ?)`,
+    month, agent, tokens, tenant,
+  )
+}
+
 beforeEach(async () => {
   await dbx.run('DELETE FROM token_usage')
+  await dbx.run('DELETE FROM token_usage_monthly')
   await dbx.run(`INSERT INTO tenants (id, display_name, created_at) VALUES ('t-b', 'B', 0) ON CONFLICT DO NOTHING`)
 })
 
@@ -56,11 +65,30 @@ describe('the month of a token_usage row is its LOCAL month', () => {
     expect(await spend({ tenant: 'default' }, NOW)).toBe(30)
   })
 
-  it('"now" at the month edge decides the month the same way: 2026-10-31T23:30Z is November', async () => {
-    await usage(utc('2026-11-01T10:00:00Z'), 9)
-    await usage(utc('2026-10-31T10:00:00Z'), 3)
-    expect(await spend({}, utc('2026-10-31T23:30:00Z'))).toBe(9)
-    expect(await spend({}, utc('2026-10-31T21:30:00Z'))).toBe(3)
+  // "now" is itself a local-month decision, made once per query shape and once per source (raw rows, rolled-up months).
+  // So the edge is asserted for every shape and BOTH sources: a raw row and a monthly row of each month, so a "now"
+  // shifted in any one clause (or in the JS month key the tenant shape uses for the monthly table) changes a total.
+  it('"now" at the month edge decides the month the same way in every query shape and both sources', async () => {
+    await usage(utc('2026-11-01T10:00:00Z'), 9)                      // raw, November
+    await usage(utc('2026-10-31T10:00:00Z'), 3)                      // raw, October
+    await monthly('2026-11', 20)                                     // rolled up, November
+    await monthly('2026-10', 5)                                      // rolled up, October
+    await monthly('2026-11', 400, 'agent-b', 't-b')
+    await monthly('2026-10', 70, 'agent-b', 't-b')
+    const EDGE_NOV = utc('2026-10-31T23:30:00Z')   // 00:30 on 1 November in Budapest
+    const EDGE_OCT = utc('2026-10-31T21:30:00Z')   // 22:30 on 31 October in Budapest
+    // November: 9 + 20 (agent-a, default), 400 (agent-b, t-b)
+    expect(await spend({}, EDGE_NOV)).toBe(429)
+    expect(await spend({ tenant: 'default' }, EDGE_NOV)).toBe(29)
+    expect(await spend({ tenant: 't-b' }, EDGE_NOV)).toBe(400)
+    expect(await spend({ agent: 'agent-a' }, EDGE_NOV)).toBe(29)
+    expect(await spend({ agent: 'agent-b' }, EDGE_NOV)).toBe(400)
+    // October: 3 + 5 (agent-a, default), 70 (agent-b, t-b)
+    expect(await spend({}, EDGE_OCT)).toBe(78)
+    expect(await spend({ tenant: 'default' }, EDGE_OCT)).toBe(8)
+    expect(await spend({ tenant: 't-b' }, EDGE_OCT)).toBe(70)
+    expect(await spend({ agent: 'agent-a' }, EDGE_OCT)).toBe(8)
+    expect(await spend({ agent: 'agent-b' }, EDGE_OCT)).toBe(70)
   })
 })
 
