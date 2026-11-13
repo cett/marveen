@@ -21,6 +21,20 @@ async function usage(agent: string, timestamp: number, model: string | null, too
     agent, `session-${++seq}`, timestamp, n, n * 10, n * 100, n * 1000, n * 10000, model, tool)
 }
 
+const COLUMNS = ['totalInput', 'totalOutput', 'totalCacheRead', 'totalCacheCreation', 'totalThinking'] as const
+
+/** Two rows whose `column` is 2 000 000 000 (the other token columns 1): that sum is 4 000 000 000, past 2^31. */
+const BIG = 2_000_000_000
+async function bigRows(column: (typeof COLUMNS)[number], model: string, tool: string | null): Promise<void> {
+  const v = (c: (typeof COLUMNS)[number]): number => (c === column ? BIG : 1)
+  for (let i = 0; i < 2; i++) {
+    await dbx.run(
+      `INSERT INTO token_usage (agent, session_id, timestamp, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, thinking_tokens, model, tool_name)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      'agent-a', `big-${++seq}`, 1000, v('totalInput'), v('totalOutput'), v('totalCacheRead'), v('totalCacheCreation'), v('totalThinking'), model, tool)
+  }
+}
+
 /** The five sums of rows whose scale factors add up to n. */
 const totals = (n: number) => ({ totalInput: n, totalOutput: n * 10, totalCacheRead: n * 100, totalCacheCreation: n * 1000, totalThinking: n * 10000 })
 
@@ -95,6 +109,15 @@ describe('getModelDistribution', () => {
     await dbx.exec('ALTER TABLE token_usage DROP COLUMN model')
     expect(await getModelDistribution()).toEqual([])
   })
+
+  // The sums are CAST to BIGINT on PostgreSQL (a SUM there is numeric or bigint, and an INTEGER cast would overflow past 2^31).
+  // SQLite integers are 64-bit, so SQLite cannot tell the two casts apart: these cells are the PostgreSQL pin.
+  it.each(COLUMNS)('a sum past 2^31 comes back exact, %s', async (column) => {
+    await bigRows(column, 'model-big', null)
+    const row = (await getModelDistribution()).find((r) => r.model === 'model-big')
+    expect(row?.count).toBe(2)
+    expect(row?.[column]).toBe(2 * BIG)
+  })
 })
 
 describe('getToolStats', () => {
@@ -145,5 +168,13 @@ describe('getToolStats', () => {
   it('an empty table is an empty list', async () => {
     await dbx.run('DELETE FROM token_usage')
     expect(await getToolStats()).toEqual([])
+  })
+
+  // the same PostgreSQL pin as the model distribution: the five sums are CAST to BIGINT, past 2^31 they come back exact
+  it.each(COLUMNS)('a sum past 2^31 comes back exact, %s', async (column) => {
+    await bigRows(column, 'model-big', 'tool-big')
+    const row = (await getToolStats()).find((r) => r.tool_name === 'tool-big')
+    expect(row?.count).toBe(2)
+    expect(row?.[column]).toBe(2 * BIG)
   })
 })
