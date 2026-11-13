@@ -46,6 +46,10 @@ export const PORTED: readonly string[] = [
   'src/__tests__/token-usage-sums.test.ts',
   'src/__tests__/token-shadow-totals.test.ts',
   'src/__tests__/task-run-history-tokens.test.ts',
+  'src/__tests__/api-tokens-tx-handle.test.ts',
+  'src/__tests__/db-context.test.ts',
+  'src/__tests__/db-read-then-write-transactions.test.ts',
+  'src/__tests__/retention-sweep-tx-handle.test.ts',
 ]
 
 /** Test files (same form) that do not, each with the reason. */
@@ -63,8 +67,6 @@ export const EXCLUDED: Readonly<Record<string, ExcludeReason>> = {
   'src/__tests__/audit-retention-prune.test.ts': 'p2-4-concurrency',
   'src/__tests__/auth-session-lane.test.ts': 'p2-4-concurrency',
   'src/__tests__/db-api-tokens-rotate.test.ts': 'p2-4-concurrency',
-  'src/__tests__/db-context.test.ts': 'p2-4-concurrency',
-  'src/__tests__/db-read-then-write-transactions.test.ts': 'p2-4-concurrency',
   'src/__tests__/import-crawler-overlap.test.ts': 'p2-4-concurrency',
   'src/__tests__/kanban-audit-after-commit.test.ts': 'p2-4-concurrency',
   'src/__tests__/misc-concurrency.test.ts': 'p2-4-concurrency',
@@ -90,16 +92,14 @@ export const EXCLUDED: Readonly<Record<string, ExcludeReason>> = {
   'src/__tests__/kanban-tx-handle-audit.test.ts': 'raw-db',
   'src/__tests__/like-escape-remaining-searches.test.ts': 'raw-db',
   'src/__tests__/prune-token-usage-tx-handle.test.ts': 'raw-db',
-  'src/__tests__/retention-sweep-tx-handle.test.ts': 'raw-db',
   'src/__tests__/tenant-gate-status-route.test.ts': 'raw-db',
-  'src/__tests__/api-tokens-tx-handle.test.ts': 'unported-sql',
   'src/__tests__/audit-log-trace-filter.test.ts': 'unported-sql',
   'src/__tests__/db-agent-state-facade.test.ts': 'unported-sql',
   'src/__tests__/otel-logs-trace.test.ts': 'unported-sql',
 }
 
 /** The number of EXCLUDED files the partition test accepts. It only goes down. */
-export const EXCLUDED_BASELINE = 46
+export const EXCLUDED_BASELINE = 42
 
 /** A file uses useTestDb when it imports the helper AND calls useTestDb( (a file that only imports resetDbTestState or testDbMode does not). */
 const IMPORT = /from\s+['"][^'"]*helpers\/with-test-db(\.js)?['"]/
