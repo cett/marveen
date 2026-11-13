@@ -44,6 +44,11 @@ TOKENS = {
     "instr()": (r"\binstr\s*\(", re.I),
     "GROUP_CONCAT": (r"\bGROUP_CONCAT\s*\(", re.I),
     "COLLATE NOCASE": (r"\bCOLLATE\s+NOCASE\b", re.I),
+    # SQLite LIKE folds ASCII case, PostgreSQL LIKE does not (and ILIKE folds non-ASCII too). A raw LIKE written in a
+    # query is therefore case-blind on one engine only: use likeNoCase() (db/dialect.ts), which owns the LIKE and its
+    # ESCAPE together, and likeContains / likePrefix (db/like.ts) for the pattern. Matches a LIKE followed by a bound
+    # parameter, a string literal or a template interpolation, so a word "like" in prose is not counted.
+    "raw LIKE": (r"\bLIKE\s+(?:\?|@\w+|:\w+|\$\d+|\$\{|')", re.I),
     "randomblob()/hex()": (r"\brandomblob\s*\(|\bhex\s*\(", re.I),
     "IFNULL()": (r"\bIFNULL\s*\(", re.I),
     "json_extract/json_each": (r"\bjson_(?:extract|each|set|object|group_array)\s*\(", re.I),
@@ -65,6 +70,12 @@ def strip_comments(text):
     """Drop block comments and whole-line // comments (trailing // is kept:
     it may sit inside a string such as a URL)."""
     return _LINE_COMMENT.sub("", _BLOCK_COMMENT.sub("", text))
+
+
+# The ONE place that may hold the SQLite spellings (relative to src/): the dialect fragments, which choose the spelling
+# per backend. It is not counted, so the count outside it can only go down; a second home would be a new entry here,
+# reviewed on its own. An exact path, never a pattern: a file of the same name elsewhere is counted.
+DIALECT_HOME = (os.path.join("db", "dialect.ts"), os.path.join("db", "like.ts"))
 
 
 def is_production_ts(rel):
@@ -90,7 +101,7 @@ def scan(src_dir=None):
         dirnames[:] = sorted(d for d in dirnames if d != "node_modules")
         for fn in sorted(filenames):
             rel = os.path.relpath(os.path.join(dirpath, fn), src_dir)
-            if not is_production_ts(rel):
+            if not is_production_ts(rel) or rel in DIALECT_HOME:
                 continue
             with open(os.path.join(dirpath, fn), encoding="utf-8", errors="ignore") as f:
                 counts = count_text(f.read())

@@ -8,17 +8,25 @@ import { writeAgentAuditLog } from './audit.js'
 import { resolveWriteTenant } from './write-tenant.js'
 import { updateIdeaWithStatusLog } from './misc.js'
 import { logger } from '../logger.js'
-import { dbx, type Dbx, type SqlOps, type Tx } from './facade.js'
+import { dbx, dbxDialect, type Dbx, type SqlOps, type Tx } from './facade.js'
+import { eqNoCase, likeNoCase } from './dialect.js'
 import { likeContains, likePrefix } from './like.js'
 import { currentTraceColumns } from './context.js'
 
-/** The card's running number (#N): the insertion-order id of the row. One definition, shared with the tenant-scoped list. */
-export const KANBAN_SEQ_COLUMN = 'rowid AS seq'
+/**
+ * The select list of a kanban card with its running number (#N), shared with the tenant-scoped list. On SQLite the
+ * number is the rowid (insertion order, never reused); in PostgreSQL the table has no rowid and the number is the
+ * identity column `seq`, which `*` already returns. `alias` qualifies the columns when the table has one.
+ */
+export function kanbanSelectList(alias?: string): string {
+  const q = alias ? `${alias}.` : ''
+  return dbxDialect() === 'pg' ? `${q}*` : `${q}rowid AS seq, ${q}*`
+}
 
 export interface KanbanCard {
   id: string
-  // Stable running number derived from the SQLite rowid (insertion order, never
-  // reused) -- a human-friendly "#N" shown next to the 8-char hex id.
+  // Stable running number (insertion order, never reused): the SQLite rowid, or
+  // the identity column seq in PostgreSQL -- a human-friendly "#N" shown next to the 8-char hex id.
   seq?: number
   title: string
   description: string | null
@@ -79,7 +87,7 @@ export async function listKanbanCards(opts?: { status?: KanbanCard['status']; li
   await dbx.run("UPDATE kanban_cards SET archived_at = ? WHERE status = 'done' AND archived_at IS NULL AND updated_at < ?", Math.floor(Date.now() / 1000), archiveCutoff)
 
   const params: unknown[] = []
-  let sql = `SELECT ${KANBAN_SEQ_COLUMN}, * FROM kanban_cards WHERE archived_at IS NULL`
+  let sql = `SELECT ${kanbanSelectList()} FROM kanban_cards WHERE archived_at IS NULL`
   if (opts?.status) { sql += ' AND status = ?'; params.push(opts.status) }
   sql += ' ORDER BY sort_order ASC, created_at DESC'
   if (opts?.limit !== undefined) {
@@ -101,7 +109,7 @@ export async function listKanbanCardsSummary(): Promise<{ status: string; title:
 }
 
 export async function getKanbanCard(id: string, ops: SqlOps = dbx): Promise<KanbanCard | undefined> {
-  return ops.get<KanbanCard>(`SELECT ${KANBAN_SEQ_COLUMN}, * FROM kanban_cards WHERE id = ?`, id)
+  return ops.get<KanbanCard>(`SELECT ${kanbanSelectList()} FROM kanban_cards WHERE id = ?`, id)
 }
 
 export interface NewKanbanCard {
@@ -423,7 +431,7 @@ export async function getSubtree(cardId: string): Promise<KanbanCard[]> {
       UNION ALL
       SELECT c.id FROM kanban_cards c JOIN subtree s ON c.parent_id = s.id
     )
-    SELECT ${KANBAN_SEQ_COLUMN}, kc.* FROM kanban_cards kc
+    SELECT ${kanbanSelectList('kc')} FROM kanban_cards kc
     WHERE kc.id IN (SELECT id FROM subtree) AND kc.archived_at IS NULL
     ORDER BY kc.depth ASC, kc.sort_order ASC
   `, cardId)
@@ -623,7 +631,7 @@ export async function unarchiveKanbanCard(id: string): Promise<boolean> {
 // Unified search across active AND archived cards -- the single dual-ID text
 // search used by both the global sidebar search and the archived view's q
 // field. Three match modes, tried in order:
-//   1. "#NNN" -> exact rowid match (the human-facing running number).
+//   1. "#NNN" -> exact running-number match (the human-facing #N).
 //   2. 4-8 hex chars -> id prefix match (the stable hex id shown in the UI).
 //   3. otherwise -> title/project/assignee substring match.
 // Active cards rank before archived ones (archived_at IS NOT NULL ASC), then
@@ -635,22 +643,28 @@ export async function searchKanbanCards(opts: {
   tenantId?: string | null
 }): Promise<(KanbanCard & { seq: number; archived: boolean })[]> {
   const { q, limit = 50, tenantId } = opts
-  // The text is searched literally: a % or _ typed by the caller is not a wildcard (ESCAPE '\' below), in the id-prefix
-  // branch too. The GLOB guard of that branch only checks the FIRST character (`[0-9a-fA-F]*` lets anything follow), so
-  // it does not keep a wildcard out of the pattern: the prefix is escaped like every other pattern here.
+  // The text is searched literally: a % or _ typed by the caller is not a wildcard (likeNoCase carries the ESCAPE), in the id-prefix
+  // branch too. The id-prefix guard only checks the FIRST character (a hex digit lets anything follow), so it does not
+  // keep a wildcard out of the pattern: the prefix is escaped like every other pattern here.
   const like = likeContains(q)
+  // The two shape guards are decided here, not with GLOB in the statement (GLOB does not exist in PostgreSQL); a
+  // parameter that is NULL makes its branch match nothing. "#" then a digit -> the text after the "#" is compared with
+  // the running number as text ("#2abc" is not card 2); 4+ characters starting with a hex digit -> an id prefix.
+  const seqText = /^#[0-9]/.test(q) ? q.slice(1) : null
+  const idPrefix = [...q].length >= 4 && /^[0-9a-fA-F]/.test(q) ? likePrefix(q) : null
+  const seqCol = dbxDialect() === 'pg' ? 'seq' : 'rowid'
   let sql = `
-    SELECT rowid AS seq, *
+    SELECT ${kanbanSelectList()}
     FROM kanban_cards
     WHERE (
-      (? GLOB '#[0-9]*' AND CAST(rowid AS TEXT) = LTRIM(?, '#'))
-      OR (LENGTH(?) >= 4 AND ? GLOB '[0-9a-fA-F]*' AND id LIKE ? ESCAPE '\\')
-      OR title LIKE ? ESCAPE '\\'
-      OR project LIKE ? ESCAPE '\\'
-      OR assignee LIKE ? ESCAPE '\\'
+      CAST(${seqCol} AS TEXT) = ?
+      OR ${likeNoCase('id', '?')}
+      OR ${likeNoCase('title', '?')}
+      OR ${likeNoCase('project', '?')}
+      OR ${likeNoCase('assignee', '?')}
     )
   `
-  const params: unknown[] = [q, q, q, q, likePrefix(q), like, like, like]
+  const params: unknown[] = [seqText, idPrefix, like, like, like]
   if (tenantId != null) {
     sql += ' AND tenant_id = ?'
     params.push(tenantId)
@@ -792,7 +806,8 @@ export async function listOtherCardIdsWithProgressEvents(cardId: string, assigne
 // untouched rather than guess). Case-insensitive: breakdown subtask ids are
 // uppercased while createKanbanCard ids stay lowercase.
 export async function getKanbanSeqByIdPrefix(prefix: string): Promise<number | null> {
-  const rows = (await dbx.all('SELECT rowid AS seq FROM kanban_cards WHERE id = ? COLLATE NOCASE LIMIT 2', prefix)) as { seq: number }[]
+  const seqCol = dbxDialect() === 'pg' ? 'seq' : 'rowid'
+  const rows = (await dbx.all(`SELECT ${seqCol} AS seq FROM kanban_cards WHERE ${eqNoCase('id', '?')} LIMIT 2`, prefix)) as { seq: number }[]
   if (rows.length !== 1) return null
   return rows[0].seq
 }
@@ -800,7 +815,7 @@ export async function getKanbanSeqByIdPrefix(prefix: string): Promise<number | n
 // Find an active (non-archived) kanban card by exact title match, or
 // undefined when none exists.
 export async function findActiveKanbanCardByTitle(title: string): Promise<KanbanCard | undefined> {
-  return dbx.get<KanbanCard>('SELECT rowid AS seq, * FROM kanban_cards WHERE title = ? AND archived_at IS NULL LIMIT 1', title)
+  return dbx.get<KanbanCard>(`SELECT ${kanbanSelectList()} FROM kanban_cards WHERE title = ? AND archived_at IS NULL LIMIT 1`, title)
 }
 
 // Move the first active kanban card whose title equals `taskName` to the

@@ -10,7 +10,8 @@
 //
 // Privacy: neutral fixtures only (agent-a, idea-1).
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { useTestDb } from './helpers/with-test-db.js'
+import { ambientInTx, testDbMode, useTestDb } from './helpers/with-test-db.js'
+import { refuseWrite } from './helpers/refuse-write.js'
 import { createKanbanCard, createKanbanSubtasks, deleteKanbanCard, promoteIdeaToKanban, createIdea, getKanbanCard, getDb } from '../db.js'
 import { dbx } from '../db.js'
 import { currentTxScope } from '../db/tx-lock.js'
@@ -52,7 +53,7 @@ const audits = async (action: string) =>
   (await dbx.all("SELECT agent_id, entity_id, tenant_id FROM agent_audit_log WHERE entity = 'kanban' AND action = ? ORDER BY id", action)) as
     { agent_id: string; entity_id: string; tenant_id: string | null }[]
 const blockAuditWrites = async () =>
-  dbx.exec("CREATE TRIGGER audit_blocked BEFORE INSERT ON agent_audit_log BEGIN SELECT RAISE(ABORT, 'audit refused'); END")
+  refuseWrite(dbx, { name: 'audit_blocked', table: 'agent_audit_log', message: 'audit refused' })
 
 beforeEach(() => { vi.restoreAllMocks() })
 afterEach(() => { vi.restoreAllMocks() })
@@ -71,8 +72,9 @@ function expectOneRolledBackSavepoint(sql: string[]): void {
 describe('the harness', () => {
   it('sees a facade call and a nested facade transaction made while a transaction is open (so zero below is not an empty claim)', async () => {
     watchFacade()
-    await dbx.tx(async () => { await dbx.run('SELECT 1'); await dbx.tx(() => Promise.resolve()) })
-    expect(insideTx.map((c) => c.op)).toEqual(['run', 'tx'])
+    await ambientInTx(() => dbx.tx(async () => { await dbx.run('SELECT 1'); await dbx.tx(() => Promise.resolve()) }))
+    // the spy reads SQLite's transaction scope, which PostgreSQL does not have: there the refusal above is the observation
+    if (testDbMode() !== 'pg') expect(insideTx.map((c) => c.op)).toEqual(['run', 'tx'])
   })
 })
 
@@ -171,7 +173,7 @@ describe('promoteIdeaToKanban: the cards, the idea unit and the audit rows run o
 
   it('the idea log row cannot be written: no card stays and the idea is unchanged', async () => {
     await addIdea()
-    await dbx.exec("CREATE TRIGGER log_blocked BEFORE INSERT ON idea_status_log BEGIN SELECT RAISE(ABORT, 'log refused'); END")
+    await refuseWrite(dbx, { name: 'log_blocked', table: 'idea_status_log', message: 'log refused' })
     await expect(promote()).rejects.toThrow('log refused')
     expect(await cardCount()).toBe(0)
     expect(await ideaRow()).toEqual({ status: 'new', kanban_id: null })

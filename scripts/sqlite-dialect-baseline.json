@@ -2,13 +2,13 @@
   "counts": {
     "AUTOINCREMENT": 0,
     "CASE WHEN ? THEN": 0,
-    "COLLATE NOCASE": 6,
+    "COLLATE NOCASE": 0,
     "FTS5 MATCH": 12,
-    "GLOB": 2,
+    "GLOB": 0,
     "GROUP_CONCAT": 1,
     "IFNULL()": 0,
     "INSERT OR IGNORE": 3,
-    "INSERT OR REPLACE": 1,
+    "INSERT OR REPLACE": 0,
     "IS [NOT] <param>": 0,
     "PRAGMA": 10,
     "datetime()": 0,
@@ -17,8 +17,9 @@
     "lastInsertRowid": 2,
     "param IS [NOT] NULL": 0,
     "randomblob()/hex()": 0,
-    "rowid": 24,
-    "strftime()": 8,
+    "raw LIKE": 42,
+    "rowid": 23,
+    "strftime()": 0,
     "unixepoch()": 44,
     "vec0/sqlite-vec": 8
   }

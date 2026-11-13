@@ -127,9 +127,14 @@ export async function storeArtifactEmbedding(
   for (let i = 0; i < embedding.length; i++) buf.writeFloatLE(embedding[i], i * 4)
 
   try {
-    // vec0 virtual tables have no ON CONFLICT upsert, so this stays OR REPLACE
-    // until the pgvector phase replaces the table.
-    await dbx.run('INSERT OR REPLACE INTO vec_artifacts(artifact_rowid, embedding) VALUES(?, ?)', BigInt(rowRow.rowid), buf)
+    // A vec0 virtual table has no ON CONFLICT upsert, and INSERT OR REPLACE does not replace there either: the second
+    // embedding of the same artifact (a renamed title, a changed meta) fails with "UNIQUE constraint failed on
+    // vec_artifacts primary key", which the catch below swallowed, so the vector of a changed artifact stayed stale.
+    // DELETE then INSERT in one transaction, until the pgvector phase replaces the table.
+    await dbx.tx(async (tx) => {
+      await tx.run('DELETE FROM vec_artifacts WHERE artifact_rowid = ?', BigInt(rowRow.rowid))
+      await tx.run('INSERT INTO vec_artifacts(artifact_rowid, embedding) VALUES(?, ?)', BigInt(rowRow.rowid), buf)
+    })
     const { c } = (await dbx.get('SELECT COUNT(*) as c FROM vec_artifacts')) as { c: number }
     if (c >= VEC_REBUILD_THRESHOLD) {
       logger.warn({ vec_count: c }, 'vec_artifacts index approaching rebuild threshold; consider running a periodic VACUUM or re-index')

@@ -8,8 +8,9 @@
 //
 // Privacy: neutral fixtures only (agent-a).
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { useTestDb } from './helpers/with-test-db.js'
-import { dbx, getDb, pruneTokenUsage } from '../db.js'
+import { ambientInTx, testDbMode, useTestDb } from './helpers/with-test-db.js'
+import { dbx, pruneTokenUsage } from '../db.js'
+import { refuseWrite } from './helpers/refuse-write.js'
 import { currentTxScope } from '../db/tx-lock.js'
 
 useTestDb()
@@ -38,13 +39,15 @@ const insideTx = () => facadeCalls.filter((c) => c.inTx)
 async function count(table: string): Promise<number> {
   return ((await dbx.get(`SELECT COUNT(*) AS n FROM ${table}`)) as { n: number }).n
 }
-function seedOldRows(): void {
-  const insert = getDb().prepare(
-    `INSERT INTO token_usage (agent, session_id, timestamp, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens)
-     VALUES ('agent-a', ?, ?, ?, ?, 0, 0)`,
-  )
-  insert.run('sess-a', OLD_TS(), 100, 50)
-  insert.run('sess-b', OLD_TS() + 3600, 200, 75) // same day, one hour later
+async function seedOldRows(): Promise<void> {
+  const insert = (session: string, ts: number, input: number, output: number) =>
+    dbx.run(
+      `INSERT INTO token_usage (agent, session_id, timestamp, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens)
+       VALUES ('agent-a', ?, ?, ?, ?, 0, 0)`,
+      session, ts, input, output,
+    )
+  await insert('sess-a', OLD_TS(), 100, 50)
+  await insert('sess-b', OLD_TS() + 3600, 200, 75) // same day, one hour later
 }
 
 beforeEach(() => { vi.restoreAllMocks() })
@@ -53,14 +56,15 @@ afterEach(() => { vi.restoreAllMocks() })
 describe('the harness', () => {
   it('sees a facade call made while a transaction is open (so zero below is not an empty claim)', async () => {
     watchFacade()
-    await dbx.tx(async () => { await dbx.run('SELECT 1') })
-    expect(insideTx().map((c) => c.op)).toEqual(['run'])
+    await ambientInTx(() => dbx.tx(async () => { await dbx.run('SELECT 1') }))
+    // the spy reads SQLite's transaction scope, which PostgreSQL does not have: there the refusal above is the observation
+    if (testDbMode() !== 'pg') expect(insideTx().map((c) => c.op)).toEqual(['run'])
   })
 })
 
 describe('pruneTokenUsage: every statement runs on the transaction handle', () => {
   it('one transaction, no call reaches the facade while it is open, and the prune still aggregates and deletes', async () => {
-    seedOldRows()
+    await seedOldRows()
     watchFacade()
     const txSpy = vi.spyOn(dbx, 'tx')
     const result = await pruneTokenUsage()
@@ -71,7 +75,7 @@ describe('pruneTokenUsage: every statement runs on the transaction handle', () =
   })
 
   it('the rollups are written BEFORE the raw rows are deleted: the aggregate carries both rows', async () => {
-    seedOldRows()
+    await seedOldRows()
     await pruneTokenUsage()
     const daily = await dbx.all("SELECT input_tokens, output_tokens, row_count FROM token_usage_daily WHERE agent = 'agent-a'")
     expect(daily).toEqual([{ input_tokens: 300, output_tokens: 125, row_count: 2 }])
@@ -80,7 +84,7 @@ describe('pruneTokenUsage: every statement runs on the transaction handle', () =
   })
 
   it('is idempotent: a second run over the same state changes no total', async () => {
-    seedOldRows()
+    await seedOldRows()
     await pruneTokenUsage()
     const again = await pruneTokenUsage()
     expect(again.rawDeleted).toBe(0)
@@ -90,8 +94,8 @@ describe('pruneTokenUsage: every statement runs on the transaction handle', () =
 
 describe('pruneTokenUsage: a later failure takes the rollups back', () => {
   it('when the raw delete fails, neither rollup is left behind and the raw rows stay', async () => {
-    seedOldRows()
-    await dbx.exec(`CREATE TRIGGER no_raw_delete BEFORE DELETE ON token_usage BEGIN SELECT RAISE(ABORT, 'raw delete refused'); END`)
+    await seedOldRows()
+    await refuseWrite(dbx, { name: 'no_raw_delete', table: 'token_usage', event: 'DELETE', message: 'raw delete refused' })
     await expect(pruneTokenUsage()).rejects.toThrow('raw delete refused')
     expect(await count('token_usage')).toBe(2)
     expect(await count('token_usage_daily')).toBe(0)
@@ -99,11 +103,11 @@ describe('pruneTokenUsage: a later failure takes the rollups back', () => {
   })
 
   it('when an aggregator retention delete fails, the rollups AND the raw delete roll back', async () => {
-    seedOldRows()
+    await seedOldRows()
     // A daily row far past its 365 day window: step 4 deletes it, and the trigger refuses.
     await dbx.run(`INSERT INTO token_usage_daily (day, agent, model, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, thinking_tokens, row_count, tenant_id)
        VALUES ('2000-01-01', 'agent-z', '', 1, 1, 0, 0, 0, 1, 'default')`)
-    await dbx.exec(`CREATE TRIGGER no_daily_delete BEFORE DELETE ON token_usage_daily BEGIN SELECT RAISE(ABORT, 'daily delete refused'); END`)
+    await refuseWrite(dbx, { name: 'no_daily_delete', table: 'token_usage_daily', event: 'DELETE', message: 'daily delete refused' })
     await expect(pruneTokenUsage()).rejects.toThrow('daily delete refused')
     expect(await count('token_usage')).toBe(2)
     expect(await count('token_usage_daily')).toBe(1) // only the seeded old row: no rollup of agent-a survived

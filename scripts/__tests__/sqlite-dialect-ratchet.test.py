@@ -112,6 +112,20 @@ class CountTextTest(unittest.TestCase):
         self.assertEqual(c["IS [NOT] <param>"], 0)
         self.assertEqual(c["param IS [NOT] NULL"], 0)
 
+    def test_raw_like_is_counted_in_every_parameter_and_literal_shape(self):
+        text = (
+            "WHERE a LIKE ? ESCAPE '\\\\' AND b LIKE @q AND c LIKE :n AND d LIKE $1 AND e LIKE 'gate-%' "
+            "AND f NOT LIKE ? AND g like ? AND h LIKE ${frag} AND i\nLIKE\n?"
+        )
+        self.assertEqual(mod.count_text(text)["raw LIKE"], 9)
+
+    def test_raw_like_ignores_prose_look_alikes_and_the_fragment_call(self):
+        text = (
+            "const m = 'a message like this'; // LIKE is case blind\n"
+            "const w = `WHERE ${likeNoCase('name', '?')}`; const x = unlike ? 1 : 2; const y = LIKELY ? 1 : 2"
+        )
+        self.assertEqual(mod.count_text(text)["raw LIKE"], 0)
+
     def test_replace_into_counts_as_or_replace(self):
         self.assertEqual(mod.count_text("REPLACE INTO t VALUES (1)")["INSERT OR REPLACE"], 1)
 
@@ -176,6 +190,30 @@ class MainTest(unittest.TestCase):
         totals, per_file = mod.scan()
         self.assertEqual(totals["rowid"], 1)
         self.assertEqual(list(per_file), [os.path.join("db", "a.ts")])
+
+    def test_the_dialect_fragments_file_is_the_only_uncounted_home_of_the_spellings(self):
+        spelling = "const f = \"strftime('%Y-%m', x, 'unixepoch', 'localtime') / a = b COLLATE NOCASE\"\n"
+        _write(self.src, "db/dialect.ts", spelling)
+        _write(self.src, "web/dialect.ts", spelling)          # same name, other directory: counted
+        _write(self.src, "db/dialect.ts.bak.ts", spelling)    # look-alike name: counted
+        _write(self.src, "db/other.ts", spelling)             # a neighbour: counted
+        totals, per_file = mod.scan()
+        self.assertNotIn(os.path.join("db", "dialect.ts"), per_file)
+        for rel in (os.path.join("web", "dialect.ts"), os.path.join("db", "dialect.ts.bak.ts"), os.path.join("db", "other.ts")):
+            self.assertEqual(per_file[rel], {"strftime()": 1, "COLLATE NOCASE": 1}, rel)
+        self.assertEqual(totals["strftime()"], 3)
+        self.assertEqual(totals["COLLATE NOCASE"], 3)
+
+    def test_like_ts_is_the_second_uncounted_home_but_only_at_its_exact_path(self):
+        raw = "const f = \"a LIKE ? ESCAPE '\\\\'\"\n"
+        _write(self.src, "db/like.ts", raw)
+        _write(self.src, "web/like.ts", raw)         # same name, other directory: counted
+        _write(self.src, "db/like.ts.bak.ts", raw)   # look-alike name: counted
+        totals, per_file = mod.scan()
+        self.assertNotIn(os.path.join("db", "like.ts"), per_file)
+        self.assertEqual(per_file[os.path.join("web", "like.ts")], {"raw LIKE": 1})
+        self.assertEqual(per_file[os.path.join("db", "like.ts.bak.ts")], {"raw LIKE": 1})
+        self.assertEqual(totals["raw LIKE"], 2)
 
     def test_check_passes_at_baseline(self):
         self._set_baseline(rowid=1)

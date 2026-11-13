@@ -334,6 +334,11 @@ jobs:
         if: github.event_name == 'pull_request'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          # The time limit of the guard (scripts/vitest-guard.py) is 600 s for `related` and 1800 s for the whole suite.
+          # A change in the database layer reaches nearly the whole suite through the import graph, so 600 s is too
+          # little there: the limit is the whole-suite one (1800 s). The same tests run and a timeout still fails the
+          # step, so the gate is not weaker; only the hang protection is as wide as the full run.
+          VITEST_GUARD_SECS: '1800'
         run: bash scripts/ci-vitest-related.sh "$BASE_SHA"
 
       - name: Coverage

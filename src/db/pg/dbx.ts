@@ -39,7 +39,7 @@ import type pg from 'pg'
 import { logger } from '../../logger.js'
 import { currentDbContext, noteDbCall, type DbContext } from '../context.js'
 import type { RunResult, SqlOps, Tx, TxOptions } from '../facade.js'
-import { AsyncLock, txWarnMs } from '../tx-lock.js'
+import { AsyncLock, originOf, txWarnMs } from '../tx-lock.js'
 import { translatePlaceholders } from './translate.js'
 import { pgTypes } from './types.js'
 
@@ -148,10 +148,6 @@ function guardClient(client: PgClientLike): { failed: () => boolean; stop: () =>
   return { failed: () => failed, stop: () => { client.removeListener?.('error', onError) } }
 }
 
-function frameOf(stack: string | undefined): string {
-  return ((stack ?? '').split('\n')[1] ?? 'unknown').trim()
-}
-
 export function createPgDbx(pool: PgPoolLike, opts: PgDbxOptions = {}): PgDbx {
   const self = {}
   // an idle client that errors (the server restarted) is an event on the pool; without a listener it would end the process
@@ -254,7 +250,7 @@ export function createPgDbx(pool: PgPoolLike, opts: PgDbxOptions = {}): PgDbx {
     if (warnMs > 0) {
       const holder: { stack?: string } = {}
       Error.captureStackTrace(holder, entry) // the frames above the entry are dropped: the first one left is the caller
-      origin = () => frameOf(holder.stack)
+      origin = () => originOf(holder.stack)
     }
 
     const client = await pool.connect()

@@ -11,6 +11,7 @@
 
 import { randomBytes } from 'node:crypto'
 import { dbx, type Tx } from './facade.js'
+import { likeNoCase } from './dialect.js'
 import { likePrefix } from './like.js'
 import { generateEmbedding, floatsToBlob } from './vector.js'
 import { logger } from '../logger.js'
@@ -380,7 +381,7 @@ function workspaceDocsWhere(filter: ListWorkspaceDocsFilter, alias = ""): { wher
   if (filter.contentType) { where += ` AND ${a}content_type = ?`; params.push(filter.contentType) }
   if (filter.taskRef) { where += ` AND ${a}task_ref = ?`; params.push(filter.taskRef) }
   if (filter.docKey) { where += ` AND ${a}doc_key = ?`; params.push(filter.docKey) }
-  else if (filter.docKeyPrefix) { where += ` AND ${a}doc_key LIKE ? ESCAPE '\\'`; params.push(likePrefix(filter.docKeyPrefix)) }
+  else if (filter.docKeyPrefix) { where += ` AND ${likeNoCase(`${a}doc_key`, '?')}`; params.push(likePrefix(filter.docKeyPrefix)) }
   return { where, params }
 }
 

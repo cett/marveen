@@ -6,6 +6,8 @@ import { writeAgentAuditLog } from './audit.js'
 import { deactivatePlanForAgent } from './claude-plans.js'
 import { db } from './connection.js'
 import { dbx, type SqlOps } from './facade.js'
+import { likeNoCase } from './dialect.js'
+import { likePrefix } from './like.js'
 import { getDelegationTenant } from './tenant-channel-bindings.js'
 import { KanbanCard } from './kanban.js'
 import { Tenant, getTenantForMainAgent, COMPLETION_REPORT_PREFIX } from './observability.js'
@@ -255,25 +257,20 @@ export async function setMessageResult(id: number, result: string): Promise<bool
 // deterministic counterpart of the bridge's drip-fail on disable/removal.
 // ONE statement (claimPendingForAgent idiom: no SELECT-then-UPDATE window).
 // pending only: delivered/done/failed rows are conversation history.
-// Per-peer scoping is a LIKE on '<peer>/%' with the peer id escaped, so '_' in
-// a peer id is a literal ('te_dor' does not purge 'teodor'). lower() on both
-// sides: system ids are case-insensitive, and rows written before the
-// lowercase normalization may carry an uppercase prefix that must still be
-// purged with its peer (ASCII-only lower() is fine -- the id charset is
-// [a-zA-Z0-9_-]).
-function escapeLike(value: string): string {
-  return value.replace(/[\\%_]/g, (c) => '\\' + c)
-}
-
+// Per-peer scoping is a LIKE on '<peer>/%' with the peer id escaped (likePrefix), so
+// '_' in a peer id is a literal ('te_dor' does not purge 'teodor'). likeNoCase ignores
+// ASCII case on both engines: system ids are case-insensitive, and rows written before
+// the lowercase normalization may carry an uppercase prefix that must still be purged
+// with its peer (ASCII folding is enough -- the id charset is [a-zA-Z0-9_-]).
 export async function failPendingFederatedMessages(peerId: string | undefined, reason: string): Promise<number[]> {
   const now = Math.floor(Date.now() / 1000)
   const rows = peerId === undefined
     ? (await dbx.all(`UPDATE agent_messages SET status = 'failed', result = ?, completed_at = ?
-           WHERE status = 'pending' AND to_agent LIKE '%/%'
+           WHERE status = 'pending' AND ${likeNoCase('to_agent', "'%/%'")}
          RETURNING id`, reason, now)) as Array<{ id: number }>
     : (await dbx.all(`UPDATE agent_messages SET status = 'failed', result = ?, completed_at = ?
-           WHERE status = 'pending' AND lower(to_agent) LIKE ? ESCAPE '\\'
-         RETURNING id`, reason, now, escapeLike(peerId.toLowerCase()) + '/%')) as Array<{ id: number }>
+           WHERE status = 'pending' AND ${likeNoCase('to_agent', '?')}
+         RETURNING id`, reason, now, likePrefix(`${peerId}/`))) as Array<{ id: number }>
   return rows.map((r) => r.id)
 }
 

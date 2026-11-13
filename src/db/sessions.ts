@@ -4,6 +4,7 @@
 import { APP_TZ } from '../config.js'
 import { db } from './connection.js'
 import { dbx } from './facade.js'
+import { eqNoCase, likeNoCase, orderBytes, orderNoCase } from './dialect.js'
 import { resolveWriteTenant } from './write-tenant.js'
 import { Memory, RECENCY_OVERSAMPLE, buildFtsMatchExpression, reRankByRecency, withoutRank } from './memory.js'
 
@@ -65,11 +66,14 @@ export async function createDashboardUser(username: string, passwordHash: string
 }
 
 export async function getDashboardUser(username: string): Promise<DashboardUser | undefined> {
-  return dbx.get<DashboardUser>('SELECT * FROM dashboard_users WHERE username = ? COLLATE NOCASE', username)
+  return dbx.get<DashboardUser>(`SELECT * FROM dashboard_users WHERE ${eqNoCase('username', '?')}`, username)
 }
 
 export async function listDashboardUsers(): Promise<DashboardUserPublic[]> {
-  return dbx.all<DashboardUserPublic>('SELECT id, username, role, tenant_id, created_at, updated_at, disabled FROM dashboard_users ORDER BY username COLLATE NOCASE')
+  // Ties after the case fold (not possible while username is unique ignoring case, but the order must not depend on it)
+  // are broken in byte order, then by id: the same order on both engines.
+  return dbx.all<DashboardUserPublic>(
+    `SELECT id, username, role, tenant_id, created_at, updated_at, disabled FROM dashboard_users ORDER BY ${orderNoCase('username')}, ${orderBytes('username')}, id`)
 }
 
 // enabled-only count feeds `login_available`; total count feeds `setup_required`.
@@ -85,7 +89,7 @@ export async function updateDashboardUserPassword(userId: number, passwordHash: 
 }
 
 export async function deleteDashboardUser(username: string): Promise<boolean> {
-  const info = await dbx.run('DELETE FROM dashboard_users WHERE username = ? COLLATE NOCASE', username)
+  const info = await dbx.run(`DELETE FROM dashboard_users WHERE ${eqNoCase('username', '?')}`, username)
   return info.changes > 0
 }
 
@@ -212,9 +216,10 @@ export async function recallSearch(query: string, agentId?: string, limit = 50, 
         : (await dbx.all(sql, terms, ...tp, limit * RECENCY_OVERSAMPLE)) as (Memory & { rank: number })[]
       memories = withoutRank(reRankByRecency(candidates, limit)) as Memory[]
     } catch {
+      const textMatch = `(${likeNoCase('content', '?')} OR ${likeNoCase('keywords', '?')})`
       const sql = agentId
-        ? `SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\')${tcFb} ORDER BY created_at DESC LIMIT ?`
-        : `SELECT * FROM memories WHERE (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\')${tcFb} ORDER BY created_at DESC LIMIT ?`
+        ? `SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND ${textMatch}${tcFb} ORDER BY created_at DESC LIMIT ?`
+        : `SELECT * FROM memories WHERE ${textMatch}${tcFb} ORDER BY created_at DESC LIMIT ?`
       const pat = `%${escaped}%`
       memories = agentId
         ? await dbx.all<Memory>(sql, agentId, pat, pat, ...tp, limit)
@@ -222,9 +227,10 @@ export async function recallSearch(query: string, agentId?: string, limit = 50, 
     }
   }
 
+  const logMatch = likeNoCase('content', '?')
   const logSql = agentId
-    ? "SELECT id, agent_id, date, content, created_at FROM daily_logs WHERE content LIKE ? ESCAPE '\\' AND agent_id = ? ORDER BY date DESC, created_at DESC LIMIT ?"
-    : "SELECT id, agent_id, date, content, created_at FROM daily_logs WHERE content LIKE ? ESCAPE '\\' ORDER BY date DESC, created_at DESC LIMIT ?"
+    ? `SELECT id, agent_id, date, content, created_at FROM daily_logs WHERE ${logMatch} AND agent_id = ? ORDER BY date DESC, created_at DESC LIMIT ?`
+    : `SELECT id, agent_id, date, content, created_at FROM daily_logs WHERE ${logMatch} ORDER BY date DESC, created_at DESC LIMIT ?`
   const logPat = `%${escaped}%`
   const logs = agentId
     ? (await dbx.all(logSql, logPat, agentId, limit)) as RecallResult['logs']
@@ -309,7 +315,7 @@ export async function deleteExpiredAuthSessions(idleCutoff: number, absoluteCuto
 /** Role and tenant scope of an ENABLED dashboard user (case-insensitive name), for the auth gate. */
 export async function getDashboardUserAuthRow(username: string): Promise<{ role: string; tenant_id: string | null } | undefined> {
   return dbx.get<{ role: string; tenant_id: string | null }>(
-    'SELECT role, tenant_id FROM dashboard_users WHERE username = ? COLLATE NOCASE AND disabled = 0',
+    `SELECT role, tenant_id FROM dashboard_users WHERE ${eqNoCase('username', '?')} AND disabled = 0`,
     username,
   )
 }

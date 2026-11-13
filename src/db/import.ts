@@ -4,6 +4,7 @@
 
 import { createHash } from 'node:crypto'
 import { dbx, type SqlOps } from './facade.js'
+import { likeNoCase } from './dialect.js'
 import { likeContains } from './like.js'
 import { syncVecMemoryDelete } from './vector.js'
 import { isBlankContent } from '../blank-content.js'
@@ -166,19 +167,21 @@ export async function searchImportMemories(
   const tp = tenantId === null ? [] : [tenantId]
   const like = likeContains(query)
   const params = [like, like, like, ...tp]
+  // One text match for the item list and the count, ignoring ASCII case on both engines (likeNoCase).
+  const textMatch = `(${likeNoCase('im.content', '?')} OR ${likeNoCase('im.keywords', '?')} OR ${likeNoCase('im.file_name', '?')})`
   const items = await dbx.all(`
       SELECT im.id, im.source_id, im.file_path, im.file_name, im.keywords,
              substr(im.content, 1, 300) AS preview, im.created_at, im.updated_at
       FROM import_memories im
       JOIN import_sources s ON s.id = im.source_id
-      WHERE (im.content LIKE ? ESCAPE '\\' OR im.keywords LIKE ? ESCAPE '\\' OR im.file_name LIKE ? ESCAPE '\\')${tc}
+      WHERE ${textMatch}${tc}
       ORDER BY im.updated_at DESC LIMIT ? OFFSET ?
     `, ...params, limit, offset)
   const total = ((await dbx.get(`
       SELECT COUNT(*) AS n
       FROM import_memories im
       JOIN import_sources s ON s.id = im.source_id
-      WHERE (im.content LIKE ? ESCAPE '\\' OR im.keywords LIKE ? ESCAPE '\\' OR im.file_name LIKE ? ESCAPE '\\')${tc}
+      WHERE ${textMatch}${tc}
     `, ...params)) as { n: number }).n
   return { items, total }
 }

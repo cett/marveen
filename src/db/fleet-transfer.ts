@@ -2,7 +2,7 @@
 // is a closed whitelist: the table and column names below are never taken from
 // the fleet file, only the values are.
 
-import { dbx } from './facade.js'
+import { dbx, type Dbx, type SqlOps, type Tx } from './facade.js'
 
 type Row = Record<string, unknown>
 type RowLike = object
@@ -87,12 +87,15 @@ export async function fleetRowIdExists(table: FleetIdTable, id: unknown): Promis
   return !!await dbx.get(`SELECT 1 FROM ${table} WHERE id = ?`, id)
 }
 
-/** True when the table already has a row matching `dedupeBy` of the given row. */
-export async function fleetRowExists(table: FleetImportTable, row: RowLike): Promise<boolean> {
+/**
+ * True when the table already has a row matching `dedupeBy` of the given row. `ops` is the handle to read on: the
+ * transaction handle when the caller holds one (the read must see that transaction's own writes), `dbx` otherwise.
+ */
+export async function fleetRowExists(table: FleetImportTable, row: RowLike, ops: SqlOps = dbx): Promise<boolean> {
   const { dedupeBy } = IMPORT_TABLES[table]
   if (dedupeBy.length === 0) throw new Error(`Fleet import: ${table} has no natural key`)
   const where = dedupeBy.map((c) => `${c} = ?`).join(' AND ')
-  return !!await dbx.get(`SELECT 1 FROM ${table} WHERE ${where}`, ...dedupeBy.map((c) => (row as Row)[c]))
+  return !!await ops.get(`SELECT 1 FROM ${table} WHERE ${where}`, ...dedupeBy.map((c) => (row as Row)[c]))
 }
 
 /**
@@ -104,17 +107,19 @@ export async function fleetRowExists(table: FleetImportTable, row: RowLike): Pro
  * The loop is one transaction of its own (a savepoint when the caller already holds one): the "does a row like
  * this exist" read and the insert after it must not be split by another caller's write, which the synchronous
  * version could not be. Without it two overlapping imports both see "absent" and insert the same memory twice.
+ * Every statement of the loop runs on the transaction handle of that transaction, never on `dbx`; `ops` is where the
+ * transaction is opened from (`dbx` by default, or the handle of a transaction the caller holds).
  */
-export async function importFleetRows(table: FleetImportTable, rows: readonly RowLike[]): Promise<number> {
+export async function importFleetRows(table: FleetImportTable, rows: readonly RowLike[], ops: Dbx | Tx = dbx): Promise<number> {
   const { columns, dedupeBy } = IMPORT_TABLES[table]
   const sql =
     `INSERT INTO ${table} (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')})` +
     (dedupeBy.length === 0 ? ' ON CONFLICT DO NOTHING' : '')
-  return dbx.tx(async () => {
+  return ops.tx(async (tx) => {
     let inserted = 0
     for (const row of rows) {
-      if (dedupeBy.length > 0 && await fleetRowExists(table, row)) continue
-      inserted += (await dbx.run(sql, ...columns.map((c) => (row as Row)[c] ?? null))).changes
+      if (dedupeBy.length > 0 && await fleetRowExists(table, row, tx)) continue
+      inserted += (await tx.run(sql, ...columns.map((c) => (row as Row)[c] ?? null))).changes
     }
     return inserted
   })

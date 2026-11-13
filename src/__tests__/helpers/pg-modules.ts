@@ -27,6 +27,14 @@ export type ExcludeReason = 'fts' | 'vec' | 'p2-4-concurrency' | 'boot-twin' | '
 /** Test files (relative to the repository root, `/` separators) that also run in PG mode. */
 export const PORTED: readonly string[] = [
   'src/__tests__/db-context-route.test.ts',
+  'src/__tests__/db-cost-budgets-month.test.ts',
+  'src/__tests__/db-dashboard-user-delete-case.test.ts',
+  'src/__tests__/db-like-case-vault.test.ts',
+  'src/__tests__/db-like-case-sessions.test.ts',
+  'src/__tests__/db-like-case-agents.test.ts',
+  'src/__tests__/db-like-case-import.test.ts',
+  'src/__tests__/db-like-case-workspace.test.ts',
+  'src/__tests__/db-token-usage-prune-local-day.test.ts',
   'src/__tests__/hook-audit-body-trace.test.ts',
   'src/__tests__/schedules-author-db.test.ts',
   'src/__tests__/agent-state-route.test.ts',
@@ -35,6 +43,21 @@ export const PORTED: readonly string[] = [
   'src/__tests__/import-crawler-blank-source.test.ts',
   'src/__tests__/import-db-helpers.test.ts',
   'src/__tests__/import-strip-markup-entities.test.ts',
+  'src/__tests__/refuse-write.test.ts',
+  'src/__tests__/fleet-import-rows-handle.test.ts',
+  'src/__tests__/kanban-seq.test.ts',
+  'src/__tests__/otel-span-upsert-export-mark.test.ts',
+  'src/__tests__/tool-calls-insertion-order.test.ts',
+  'src/__tests__/token-usage-sums.test.ts',
+  'src/__tests__/token-shadow-totals.test.ts',
+  'src/__tests__/task-run-history-tokens.test.ts',
+  'src/__tests__/api-tokens-tx-handle.test.ts',
+  'src/__tests__/db-context.test.ts',
+  'src/__tests__/db-read-then-write-transactions.test.ts',
+  'src/__tests__/retention-sweep-tx-handle.test.ts',
+  'src/__tests__/prune-token-usage-tx-handle.test.ts',
+  'src/__tests__/approval-human-only.test.ts',
+  'src/__tests__/otel-logs-trace.test.ts',
 ]
 
 /** Test files (same form) that do not, each with the reason. */
@@ -52,8 +75,6 @@ export const EXCLUDED: Readonly<Record<string, ExcludeReason>> = {
   'src/__tests__/audit-retention-prune.test.ts': 'p2-4-concurrency',
   'src/__tests__/auth-session-lane.test.ts': 'p2-4-concurrency',
   'src/__tests__/db-api-tokens-rotate.test.ts': 'p2-4-concurrency',
-  'src/__tests__/db-context.test.ts': 'p2-4-concurrency',
-  'src/__tests__/db-read-then-write-transactions.test.ts': 'p2-4-concurrency',
   'src/__tests__/import-crawler-overlap.test.ts': 'p2-4-concurrency',
   'src/__tests__/kanban-audit-after-commit.test.ts': 'p2-4-concurrency',
   'src/__tests__/misc-concurrency.test.ts': 'p2-4-concurrency',
@@ -69,7 +90,6 @@ export const EXCLUDED: Readonly<Record<string, ExcludeReason>> = {
   'src/__tests__/db-model-profile-map-cache.test.ts': 'sync-cache',
   'src/__tests__/memories-content-not-blank.test.ts': 'raw-db',
   'src/__tests__/with-test-db.test.ts': 'sqlite-only',
-  'src/__tests__/approval-human-only.test.ts': 'raw-db',
   'src/__tests__/audit-retention-prune-journals.test.ts': 'raw-db',
   'src/__tests__/db-api-tokens-enroll-twin.test.ts': 'raw-db',
   'src/__tests__/db-device-keys.test.ts': 'raw-db',
@@ -78,17 +98,13 @@ export const EXCLUDED: Readonly<Record<string, ExcludeReason>> = {
   'src/__tests__/import-crawler-tenant.test.ts': 'raw-db',
   'src/__tests__/kanban-tx-handle-audit.test.ts': 'raw-db',
   'src/__tests__/like-escape-remaining-searches.test.ts': 'raw-db',
-  'src/__tests__/prune-token-usage-tx-handle.test.ts': 'raw-db',
-  'src/__tests__/retention-sweep-tx-handle.test.ts': 'raw-db',
   'src/__tests__/tenant-gate-status-route.test.ts': 'raw-db',
-  'src/__tests__/api-tokens-tx-handle.test.ts': 'unported-sql',
   'src/__tests__/audit-log-trace-filter.test.ts': 'unported-sql',
   'src/__tests__/db-agent-state-facade.test.ts': 'unported-sql',
-  'src/__tests__/otel-logs-trace.test.ts': 'unported-sql',
 }
 
 /** The number of EXCLUDED files the partition test accepts. It only goes down. */
-export const EXCLUDED_BASELINE = 46
+export const EXCLUDED_BASELINE = 39
 
 /** A file uses useTestDb when it imports the helper AND calls useTestDb( (a file that only imports resetDbTestState or testDbMode does not). */
 const IMPORT = /from\s+['"][^'"]*helpers\/with-test-db(\.js)?['"]/

@@ -3,7 +3,8 @@
 
 import { logger } from '../logger.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
-import { dbx, type SqlOps } from './facade.js'
+import { dbx, dbxDialect, type SqlOps } from './facade.js'
+import { epochLocalDate, epochLocalMonth } from './dialect.js'
 import { likeContains } from './like.js'
 import { upsertOtelSpan } from './observability.js'
 import { dashboardUserTenant, resolveWriteTenant } from './write-tenant.js'
@@ -112,15 +113,17 @@ function toolCallRowFromSpan(span: OtelSpanRow, id: number): ToolCallLogRow {
 
 export async function getRecentToolCalls(sinceSecs: number): Promise<ToolCallLogRow[]> {
   const cutoffMs = Date.now() - sinceSecs * 1000
-  // Ordered by rowid (= logging/insertion order), not the derived start_ms:
+  // Ordered by the insertion order of the row, not the derived start_ms:
   // start_ms is computed as end_ms - duration_ms, so two calls logged a
   // millisecond apart with very different durations can invert on start_ms
-  // alone. rowid matches the old tool_call_log's autoincrement-id ordering,
+  // alone. The rowid (SQLite) or the identity column seq (PostgreSQL, the table
+  // has no rowid) matches the old tool_call_log's autoincrement-id ordering,
   // which is what callers actually rely on (calls in the order they happened).
+  const insertionOrder = dbxDialect() === 'pg' ? 'seq' : 'rowid'
   const rows = await dbx.all<OtelSpanRow>(`SELECT trace_id, span_id, agent_id, operation, start_ms, end_ms, status, attributes
        FROM otel_spans
       WHERE operation LIKE 'tool.%' AND start_ms >= ?
-      ORDER BY rowid ASC`, cutoffMs)
+      ORDER BY ${insertionOrder} ASC`, cutoffMs)
   return rows.map((row, i) => toolCallRowFromSpan(row, i))
 }
 
@@ -899,6 +902,9 @@ async function pruneTokenUsageOn(
   monthlyRetentionDays: number,
 ): Promise<TokenUsagePruneResult> {
   const rawCutoff = Math.floor(Date.now() / 1000) - rawRetentionDays * 86400
+  // The local day / month of a raw row, one text per engine (db/dialect.ts). Select list and GROUP BY must carry the same text.
+  const rowDay = epochLocalDate('timestamp')
+  const rowMonth = epochLocalMonth('timestamp')
 
   // 1. Daily rollup upsert (idempotent: ON CONFLICT overwrites with fresh aggregate).
   //    Runs only over rows that fall outside the raw retention window.
@@ -907,7 +913,7 @@ async function pruneTokenUsageOn(
       (day, agent, model, input_tokens, output_tokens, cache_read_tokens,
        cache_creation_tokens, thinking_tokens, row_count, tenant_id)
     SELECT
-      date(timestamp, 'unixepoch', 'localtime') AS day,
+      ${rowDay} AS day,
       agent,
       COALESCE(model, '') AS model,
       SUM(input_tokens),
@@ -919,7 +925,7 @@ async function pruneTokenUsageOn(
       tenant_id
     FROM token_usage
     WHERE timestamp < ?
-    GROUP BY date(timestamp, 'unixepoch', 'localtime'), agent, COALESCE(model, ''), tenant_id
+    GROUP BY ${rowDay}, agent, COALESCE(model, ''), tenant_id
     ON CONFLICT(day, agent, model, tenant_id) DO UPDATE SET
       input_tokens          = excluded.input_tokens,
       output_tokens         = excluded.output_tokens,
@@ -935,7 +941,7 @@ async function pruneTokenUsageOn(
       (month, agent, model, input_tokens, output_tokens, cache_read_tokens,
        cache_creation_tokens, thinking_tokens, session_count, row_count, tenant_id)
     SELECT
-      strftime('%Y-%m', timestamp, 'unixepoch', 'localtime') AS month,
+      ${rowMonth} AS month,
       agent,
       COALESCE(model, '') AS model,
       SUM(input_tokens),
@@ -948,7 +954,7 @@ async function pruneTokenUsageOn(
       tenant_id
     FROM token_usage
     WHERE timestamp < ?
-    GROUP BY strftime('%Y-%m', timestamp, 'unixepoch', 'localtime'), agent, COALESCE(model, ''), tenant_id
+    GROUP BY ${rowMonth}, agent, COALESCE(model, ''), tenant_id
     ON CONFLICT(month, agent, model, tenant_id) DO UPDATE SET
       input_tokens          = excluded.input_tokens,
       output_tokens         = excluded.output_tokens,
@@ -963,9 +969,9 @@ async function pruneTokenUsageOn(
   const deleteResult = await ops.run('DELETE FROM token_usage WHERE timestamp < ?', rawCutoff)
 
   // 4. Prune the aggregator tables to their own retention windows.
-  await ops.run("DELETE FROM token_usage_daily WHERE day < date(?, 'unixepoch', 'localtime')", Math.floor(Date.now() / 1000) - dailyRetentionDays * 86400)
+  await ops.run(`DELETE FROM token_usage_daily WHERE day < ${epochLocalDate('?')}`, Math.floor(Date.now() / 1000) - dailyRetentionDays * 86400)
 
-  await ops.run("DELETE FROM token_usage_monthly WHERE month < strftime('%Y-%m', ?, 'unixepoch', 'localtime')", Math.floor(Date.now() / 1000) - monthlyRetentionDays * 86400)
+  await ops.run(`DELETE FROM token_usage_monthly WHERE month < ${epochLocalMonth('?')}`, Math.floor(Date.now() / 1000) - monthlyRetentionDays * 86400)
 
   return {
     rawDeleted:      deleteResult.changes,

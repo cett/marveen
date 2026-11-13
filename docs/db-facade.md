@@ -588,16 +588,16 @@ job); `MARVEEN_PG_MODULES_ALL=1` runs every file instead, to re-measure what is 
 
 | Code | Files | Meaning |
 |---|---|---|
-| `p2-4-concurrency` | 16 | the test is about SQLite's one-connection concurrency semantics: replaced in P2-4 |
-| `raw-db` | 13 | the test or the module under test still reads the raw SQLite handle |
+| `p2-4-concurrency` | 14 | the test is about SQLite's one-connection concurrency semantics: replaced in P2-4 |
+| `raw-db` | 10 | the test or the module under test still reads the raw SQLite handle |
 | `vec` | 6 | needs sqlite-vec: Phase 3 |
 | `sqlite-only` | 4 | the subject is the SQLite facade, handle or migration chain itself |
-| `unported-sql` | 4 | SQL that has no common text for both dialects yet |
+| `unported-sql` | 2 | SQL that has no common text for both dialects yet |
 | `sync-cache` | 2 | the synchronous cache and its loader (they move with the async cache load) |
 | `boot-twin` | 1 | the synchronous boot chain |
 | `fts` | 0 | needs FTS5: Phase 3 |
 
-Nine files are ported, 46 are excluded. The numbers are a snapshot of the lists, the lists are the authority.
+Thirty-two files are ported, 39 are excluded. The numbers are a snapshot of the lists, the lists are the authority.
 
 ### Moving a test onto the facade
 
@@ -610,6 +610,7 @@ loosen an assertion.
 
 ### What PG mode does not cover yet
 
-The dialect tokens (`rowid`, `INSERT OR`, `GLOB`, `COLLATE NOCASE`, `AUTOINCREMENT`, `PRAGMA`) and `dbx.*` calls that
+The dialect tokens (`rowid`, `INSERT OR`, `GLOB`, `COLLATE NOCASE`, `AUTOINCREMENT`, `PRAGMA`, and a raw `LIKE`: SQLite folds
+ASCII case there, PostgreSQL does not, so a query uses `likeNoCase()` from `db/dialect.ts` instead) and `dbx.*` calls that
 sit inside a transaction body without the `tx` handle (the adapter refuses them, see above) are source changes of the
 modules themselves, done with the next step. A file that needs one of them stays `EXCLUDED` until its module is ported.

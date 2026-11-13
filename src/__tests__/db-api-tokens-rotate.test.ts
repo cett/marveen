@@ -23,7 +23,7 @@ const NOW = 1_800_000_000
 
 // A token can only carry the id of an existing tenant (insertApiToken checks), so a tenant other than 'default' is made first.
 const mint = async (name: string, hash: string, role = 'fleet_agent', createdAt = NOW - 100, expiresAt: number | null = null, tenantId = 'default') => {
-  await dbx.run('INSERT OR IGNORE INTO tenants (id, display_name, created_at) VALUES (?, ?, ?)', tenantId, tenantId, createdAt)
+  await dbx.run('INSERT INTO tenants (id, display_name, created_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING', tenantId, tenantId, createdAt)
   return insertApiToken({ tokenHash: hash, name, role, tenantId, createdAt, expiresAt, agentId: name === 'dashboard' ? null : 'agent-a' })
 }
 

@@ -13,6 +13,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { db } from './connection.js'
 import { dbx } from './facade.js'
+import { epochLocalMonth } from './dialect.js'
 import { STORE_DIR } from '../config.js'
 import { logger } from '../logger.js'
 import type { BudgetEntry } from '../costops/config.js'
@@ -134,7 +135,9 @@ export function migrateCostBudgetsFromFile(): number {
 
 // Month-to-date token volume for the budget check (token_usage raw rows plus
 // the rolled-up token_usage_monthly rows). Evaluation policy lives in
-// costops/budget-alert.ts.
+// costops/budget-alert.ts. Every SUM is cast to BIGINT in the statement: SUM() of a bigint column is numeric on
+// PostgreSQL, which the driver returns as a string ('110'), and the callers add and compare the total as a number
+// (policy: db/pg/types.ts, numeric stays a string, so the statement casts).
 const TOKEN_SUM_EXPR = 'input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens + thinking_tokens'
 
 export interface TokenSpendFilter {
@@ -156,15 +159,15 @@ export async function getMonthlyTokenSpend(filter: TokenSpendFilter, nowSec: num
     const row = await dbx.get<{ total: number }>(`
       SELECT
         COALESCE((
-          SELECT SUM(${TOKEN_SUM_EXPR}) FROM token_usage_monthly
+          SELECT CAST(SUM(${TOKEN_SUM_EXPR}) AS BIGINT) FROM token_usage_monthly
           WHERE month = @month
             AND tenant_id = @tenant
         ), 0)
         +
         COALESCE((
-          SELECT SUM(${TOKEN_SUM_EXPR}) FROM token_usage
-          WHERE strftime('%Y-%m', timestamp, 'unixepoch', 'localtime')
-                = strftime('%Y-%m', @nowSec, 'unixepoch', 'localtime')
+          SELECT CAST(SUM(${TOKEN_SUM_EXPR}) AS BIGINT) FROM token_usage
+          WHERE ${epochLocalMonth('timestamp')}
+                = ${epochLocalMonth('@nowSec')}
             AND tenant_id = @tenant
         ), 0)
         AS total
@@ -179,15 +182,15 @@ export async function getMonthlyTokenSpend(filter: TokenSpendFilter, nowSec: num
   const row = await dbx.get<{ total: number }>(`
     SELECT
       COALESCE((
-        SELECT SUM(${TOKEN_SUM_EXPR}) FROM token_usage_monthly
-        WHERE month = strftime('%Y-%m', @nowSec, 'unixepoch', 'localtime')
+        SELECT CAST(SUM(${TOKEN_SUM_EXPR}) AS BIGINT) FROM token_usage_monthly
+        WHERE month = ${epochLocalMonth('@nowSec')}
           ${agentCond}
       ), 0)
       +
       COALESCE((
-        SELECT SUM(${TOKEN_SUM_EXPR}) FROM token_usage
-        WHERE strftime('%Y-%m', timestamp, 'unixepoch', 'localtime')
-              = strftime('%Y-%m', @nowSec, 'unixepoch', 'localtime')
+        SELECT CAST(SUM(${TOKEN_SUM_EXPR}) AS BIGINT) FROM token_usage
+        WHERE ${epochLocalMonth('timestamp')}
+              = ${epochLocalMonth('@nowSec')}
           ${agentCond}
       ), 0)
       AS total
