@@ -2002,16 +2002,16 @@ async function runImportFleet(
       }
       // DB-backed (system_config 'agents_desired') -- whole-value replace. Array.isArray guards a pre-migration
       // snapshot that still has the old `{}` empty-object shape (nothing to import from that).
-      if (Array.isArray(s.agentsDesired)) await setDesiredAgents(s.agentsDesired as string[])
+      if (Array.isArray(s.agentsDesired)) await setDesiredAgents(s.agentsDesired as string[], tx)
       // DB-backed (system_config 'model_fallback_*') -- see the field-level doc comment on
       // writeModelFallbackFieldsRaw() for why this only sets the fields the source snapshot actually carries.
       if (s.modelFallback && Object.keys(s.modelFallback).length)
-        await writeModelFallbackFieldsRaw(s.modelFallback as Partial<ModelFallbackConfig>)
+        await writeModelFallbackFieldsRaw(s.modelFallback as Partial<ModelFallbackConfig>, tx)
       // DB-backed (system_config 'terminal_input_enabled') -- see readTerminalInputEnabledRaw()'s doc comment for
       // why an absent field must leave the target's current value untouched rather than defaulting it.
-      if (typeof s.terminalInputEnabled === 'boolean') await writeTerminalInputEnabled(s.terminalInputEnabled)
+      if (typeof s.terminalInputEnabled === 'boolean') await writeTerminalInputEnabled(s.terminalInputEnabled, tx)
       // federation: validated in phase 0; the cache is dropped after the commit (reloadImportCaches()).
-      if (federationJson !== null) await setFederationConfigRaw(federationJson)
+      if (federationJson !== null) await setFederationConfigRaw(federationJson, 'db', tx)
       // cost_budgets: validated and de-duplicated in phase 0.
       if (budgetsToReplace !== null) await replaceCostBudgets('default', budgetsToReplace)
       // egress_allowlist -- DB-backed (migration 0056), MERGE not overwrite (see DashboardSettingsExport doc):

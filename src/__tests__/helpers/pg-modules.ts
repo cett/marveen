@@ -45,6 +45,7 @@ export const PORTED: readonly string[] = [
   'src/__tests__/import-strip-markup-entities.test.ts',
   'src/__tests__/refuse-write.test.ts',
   'src/__tests__/fleet-import-rows-handle.test.ts',
+  'src/__tests__/fleet-import-body-handle.test.ts',
   'src/__tests__/kanban-seq.test.ts',
   'src/__tests__/otel-span-upsert-export-mark.test.ts',
   'src/__tests__/tool-calls-insertion-order.test.ts',

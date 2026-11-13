@@ -1,5 +1,6 @@
 import { DEFAULT_AGENT_MODEL } from '../config.js'
 import { getSystemConfig, setSystemConfigMany } from '../db/system-config.js'
+import type { Dbx, Tx } from '../db/facade.js'
 import {
   normalizeModelFallbackConfig,
   DEFAULT_MODEL_CHAIN,
@@ -100,11 +101,12 @@ export function readModelFallbackFieldsRaw(): Partial<ModelFallbackConfig> {
  *  one row each, with no merge against the current value and no normalization.
  *  A field left out of `fields` is left untouched -- see the reasoning above for
  *  why fleet-transfer must not blanket-overwrite an unconfigured chain/enabled/
- *  revertAfterMinutes with whatever the source fleet's code-level default was. */
-export async function writeModelFallbackFieldsRaw(fields: Partial<ModelFallbackConfig>): Promise<void> {
+ *  revertAfterMinutes with whatever the source fleet's code-level default was.
+ *  `ops` is the transaction handle of a caller that holds one (the rows then join that transaction). */
+export async function writeModelFallbackFieldsRaw(fields: Partial<ModelFallbackConfig>, ops?: Dbx | Tx): Promise<void> {
   const entries: Array<[string, string]> = []
   if (fields.enabled !== undefined) entries.push([KEY_ENABLED, fields.enabled ? '1' : '0'])
   if (fields.chain !== undefined) entries.push([KEY_CHAIN, JSON.stringify(fields.chain)])
   if (fields.revertAfterMinutes !== undefined) entries.push([KEY_REVERT_MINUTES, String(fields.revertAfterMinutes)])
-  await setSystemConfigMany(entries)
+  await setSystemConfigMany(entries, 'db', ops)
 }
