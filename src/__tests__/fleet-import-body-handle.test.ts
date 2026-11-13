@@ -95,6 +95,13 @@ const autonomyRow = async (key: string) => dbx.get<{ label: string; level: numbe
 const profileRow = async () => dbx.get<{ model_id: string; updated_by: string }>("SELECT model_id, updated_by FROM model_profile_map WHERE profile_id = 'routine_lowcost'")
 const settingRow = async () => dbx.get<{ setting_value: string }>("SELECT setting_value FROM agent_settings WHERE agent_id = 'agent-a' AND setting_key = 'auto_restart'")
 
+/** The tenant of the audit rows, looked up BEFORE the transaction opens (the lookup is a facade call). */
+async function auditTenantOf(who: string): Promise<{ tenantId: string | null }> {
+  const at = await resolveAutonomyAuditTenant(who)
+  if (at === undefined) throw new Error('the audit tenant lookup failed')
+  return at
+}
+
 async function seedCategory(): Promise<AutonomyCategoryRow> {
   const [row] = await listAutonomyCategories()
   if (!row) throw new Error('the baseline has no autonomy category')
@@ -102,13 +109,9 @@ async function seedCategory(): Promise<AutonomyCategoryRow> {
 }
 
 /** The autonomy, model map and agent settings writers the import body calls, on the handle. */
-async function writeRows(tx: Tx, cat: AutonomyCategoryRow, audit: boolean): Promise<void> {
+async function writeRows(tx: Tx, cat: AutonomyCategoryRow, auditTenant: { tenantId: string | null }): Promise<void> {
   await upsertAutonomyCategory({ ...cat, label: 'Label A' }, tx)
-  if (audit) {
-    const at = await resolveAutonomyAuditTenant('actor-a')
-    expect(at).toBeDefined()
-    await auditAutonomyLevelChange('actor-a', cat.key, cat.level, cat.level + 1, { tx, tenantId: at!.tenantId })
-  }
+  await auditAutonomyLevelChange('actor-a', cat.key, cat.level, cat.level + 1, { tx, tenantId: auditTenant.tenantId })
   await upsertModelProfileMapEntry({ profile_id: 'routine_lowcost', model_id: 'model-a', updated_by: 'actor-a' }, tx)
   await setAgentSetting('agent-a', 'auto_restart', { enabled: true }, 'default', tx)
 }
@@ -118,11 +121,10 @@ describe('autonomy, model profile map and agent settings on the import handle', 
     await loadModelProfileMapCacheAsync()
     await loadAgentSettingsCacheAsync()
     const cat = await seedCategory()
-    const at = await resolveAutonomyAuditTenant('actor-a') // the lookup is the one facade call, made before the body
-    expect(at).toBeDefined()
+    const at = await auditTenantOf('actor-a') // the lookup is the one facade call, made before the body
     const counts = await countFacadeCalls(dbx, () => inFleetImportTransaction(async (tx) => {
       await upsertAutonomyCategory({ ...cat, label: 'Label A' }, tx)
-      await auditAutonomyLevelChange('actor-a', cat.key, cat.level, cat.level + 1, { tx, tenantId: at!.tenantId })
+      await auditAutonomyLevelChange('actor-a', cat.key, cat.level, cat.level + 1, { tx, tenantId: at.tenantId })
       await upsertModelProfileMapEntry({ profile_id: 'routine_lowcost', model_id: 'model-a', updated_by: 'actor-a' }, tx)
       await setAgentSetting('agent-a', 'auto_restart', { enabled: true }, 'default', tx)
     }))
@@ -133,13 +135,14 @@ describe('autonomy, model profile map and agent settings on the import handle', 
     await loadModelProfileMapCacheAsync()
     await loadAgentSettingsCacheAsync()
     const cat = await seedCategory()
-    await inFleetImportTransaction((tx) => writeRows(tx, cat, true))
+    const at = await auditTenantOf('actor-a')
+    await inFleetImportTransaction((tx) => writeRows(tx, cat, at))
     expect((await autonomyRow(cat.key))?.label).toBe('Label A')
     expect(await profileRow()).toEqual({ model_id: 'model-a', updated_by: 'actor-a' })
     expect(JSON.parse((await settingRow())?.setting_value ?? 'null')).toEqual({ enabled: true })
     const audit = await auditRows()
     expect(audit).toHaveLength(1)
-    expect(audit[0]).toMatchObject({ entity: 'approval', entity_id: cat.key, tenant_id: (await resolveAutonomyAuditTenant('actor-a'))!.tenantId })
+    expect(audit[0]).toMatchObject({ entity: 'approval', entity_id: cat.key, tenant_id: at.tenantId })
     expect(JSON.parse(audit[0]!.detail ?? 'null')).toMatchObject({ autonomy_category: cat.key, level_from: cat.level, level_to: cat.level + 1 })
     expect(cachedModelProfileMapEntry('routine_lowcost')?.model_id).toBe('model-a')
     expect(cachedAgentSetting('agent-a', 'auto_restart')?.setting_value).toBe(JSON.stringify({ enabled: true }))
@@ -148,8 +151,9 @@ describe('autonomy, model profile map and agent settings on the import handle', 
   it('the rollback: a throw after the writes takes the rows and the audit row back', async () => {
     const cat = await seedCategory()
     const profileBefore = await profileRow()
+    const at = await auditTenantOf('actor-a')
     await expect(inFleetImportTransaction(async (tx) => {
-      await writeRows(tx, cat, true)
+      await writeRows(tx, cat, at)
       throw new Error('boom')
     })).rejects.toThrow('boom')
     expect((await autonomyRow(cat.key))?.label).toBe(cat.label)
@@ -160,8 +164,9 @@ describe('autonomy, model profile map and agent settings on the import handle', 
 
   it('a refused audit row does not abort the change it describes: the savepoint takes only the audit insert back', async () => {
     const cat = await seedCategory()
+    const at = await auditTenantOf('actor-a')
     await refuseWrite(dbx, { name: 'no_audit_row', table: 'agent_audit_log', message: 'audit refused' })
-    await inFleetImportTransaction((tx) => writeRows(tx, cat, true)) // must not reject: on PG a swallowed failure without a savepoint leaves the transaction aborted
+    await inFleetImportTransaction((tx) => writeRows(tx, cat, at)) // must not reject: on PG a swallowed failure without a savepoint leaves the transaction aborted
     expect((await autonomyRow(cat.key))?.label).toBe('Label A')
     expect(await profileRow()).toEqual({ model_id: 'model-a', updated_by: 'actor-a' })
     expect(await auditRows()).toEqual([])
