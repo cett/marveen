@@ -347,11 +347,11 @@ export async function sumTokenUsageWindow(sinceSec: number, untilSec: number): P
       agent,
       model,
       tenant_id,
-      SUM(input_tokens)          AS input_tokens,
-      SUM(output_tokens)         AS output_tokens,
-      SUM(cache_read_tokens)     AS cache_read_tokens,
-      SUM(cache_creation_tokens) AS cache_creation_tokens,
-      SUM(thinking_tokens)       AS thinking_tokens
+      CAST(SUM(input_tokens) AS BIGINT)          AS input_tokens,
+      CAST(SUM(output_tokens) AS BIGINT)         AS output_tokens,
+      CAST(SUM(cache_read_tokens) AS BIGINT)     AS cache_read_tokens,
+      CAST(SUM(cache_creation_tokens) AS BIGINT) AS cache_creation_tokens,
+      CAST(SUM(thinking_tokens) AS BIGINT)       AS thinking_tokens
     FROM token_usage
     WHERE timestamp > ? AND timestamp <= ?
     GROUP BY agent, model, tenant_id
@@ -382,7 +382,7 @@ function bucketCaseSql(column: string): string {
 export async function tokenUsageHistogramWindow(sinceSec: number, untilSec: number): Promise<TokenHistogramRow[]> {
   const side = (column: 'input_tokens' | 'output_tokens', type: 'input' | 'output') => `
     SELECT agent, model, tenant_id, '${type}' AS token_type, ${bucketCaseSql(column)} AS bucket,
-           COUNT(*) AS n, SUM(${column}) AS total, MIN(${column}) AS min_value, MAX(${column}) AS max_value
+           COUNT(*) AS n, CAST(SUM(${column}) AS BIGINT) AS total, MIN(${column}) AS min_value, MAX(${column}) AS max_value
     FROM token_usage
     WHERE timestamp > @since AND timestamp <= @until AND ${column} > 0
     GROUP BY agent, model, tenant_id, bucket`
@@ -933,27 +933,27 @@ export async function getTokenSummary(from?: number, to?: number): Promise<Token
 
   const rows = (await dbx.all(`
     SELECT agent,
-      COUNT(*) as totalCalls,
-      SUM(input_tokens) as totalInput,
-      SUM(output_tokens) as totalOutput,
-      SUM(cache_read_tokens) as totalCacheRead,
-      SUM(cache_creation_tokens) as totalCacheCreation,
-      SUM(thinking_tokens) as totalThinking,
-      COUNT(DISTINCT session_id) as totalSessions,
-      MIN(timestamp) as firstSeen,
-      MAX(timestamp) as lastSeen
+      COUNT(*) as "totalCalls",
+      CAST(SUM(input_tokens) AS BIGINT) as "totalInput",
+      CAST(SUM(output_tokens) AS BIGINT) as "totalOutput",
+      CAST(SUM(cache_read_tokens) AS BIGINT) as "totalCacheRead",
+      CAST(SUM(cache_creation_tokens) AS BIGINT) as "totalCacheCreation",
+      CAST(SUM(thinking_tokens) AS BIGINT) as "totalThinking",
+      COUNT(DISTINCT session_id) as "totalSessions",
+      MIN(timestamp) as "firstSeen",
+      MAX(timestamp) as "lastSeen"
     FROM token_usage
     ${where}
-    GROUP BY agent ORDER BY totalInput DESC
+    GROUP BY agent ORDER BY "totalInput" DESC
   `, ...params)) as Omit<TokenSummary, 'perModel'>[]
 
   const modelRows = (await dbx.all(`
     SELECT agent, model,
-      SUM(input_tokens) as totalInput,
-      SUM(output_tokens) as totalOutput,
-      SUM(cache_read_tokens) as totalCacheRead,
-      SUM(cache_creation_tokens) as totalCacheCreation,
-      SUM(thinking_tokens) as totalThinking
+      CAST(SUM(input_tokens) AS BIGINT) as "totalInput",
+      CAST(SUM(output_tokens) AS BIGINT) as "totalOutput",
+      CAST(SUM(cache_read_tokens) AS BIGINT) as "totalCacheRead",
+      CAST(SUM(cache_creation_tokens) AS BIGINT) as "totalCacheCreation",
+      CAST(SUM(thinking_tokens) AS BIGINT) as "totalThinking"
     FROM token_usage
     ${where}
     GROUP BY agent, model
@@ -982,10 +982,10 @@ export interface TokenUsageWindowModelRow {
 export async function sumTokenUsageByModel(agent: string, from: number, to: number): Promise<TokenUsageWindowModelRow[]> {
   return dbx.all<TokenUsageWindowModelRow>(`
     SELECT model, COUNT(*) AS calls,
-      COALESCE(SUM(input_tokens), 0) AS inputTokens,
-      COALESCE(SUM(output_tokens), 0) AS outputTokens,
-      COALESCE(SUM(cache_read_tokens), 0) AS cacheReadTokens,
-      COALESCE(SUM(cache_creation_tokens), 0) AS cacheCreationTokens
+      COALESCE(CAST(SUM(input_tokens) AS BIGINT), 0) AS "inputTokens",
+      COALESCE(CAST(SUM(output_tokens) AS BIGINT), 0) AS "outputTokens",
+      COALESCE(CAST(SUM(cache_read_tokens) AS BIGINT), 0) AS "cacheReadTokens",
+      COALESCE(CAST(SUM(cache_creation_tokens) AS BIGINT), 0) AS "cacheCreationTokens"
     FROM token_usage
     WHERE agent = ? AND timestamp >= ? AND timestamp < ?
     GROUP BY model
@@ -1015,11 +1015,11 @@ export async function getModelDistribution(from?: number, to?: number, agent?: s
   let sql = `
     SELECT model,
       COUNT(*) as count,
-      SUM(input_tokens) as totalInput,
-      SUM(output_tokens) as totalOutput,
-      SUM(cache_read_tokens) as totalCacheRead,
-      SUM(cache_creation_tokens) as totalCacheCreation,
-      SUM(thinking_tokens) as totalThinking
+      CAST(SUM(input_tokens) AS BIGINT) as "totalInput",
+      CAST(SUM(output_tokens) AS BIGINT) as "totalOutput",
+      CAST(SUM(cache_read_tokens) AS BIGINT) as "totalCacheRead",
+      CAST(SUM(cache_creation_tokens) AS BIGINT) as "totalCacheCreation",
+      CAST(SUM(thinking_tokens) AS BIGINT) as "totalThinking"
     FROM token_usage
   `
   const conditions: string[] = [
@@ -1055,11 +1055,11 @@ export async function getToolStats(from?: number, to?: number, agent?: string): 
       model,
       COUNT(*) as count,
       GROUP_CONCAT(DISTINCT agent) as agents,
-      SUM(input_tokens) as totalInput,
-      SUM(output_tokens) as totalOutput,
-      SUM(cache_read_tokens) as totalCacheRead,
-      SUM(cache_creation_tokens) as totalCacheCreation,
-      SUM(thinking_tokens) as totalThinking
+      CAST(SUM(input_tokens) AS BIGINT) as "totalInput",
+      CAST(SUM(output_tokens) AS BIGINT) as "totalOutput",
+      CAST(SUM(cache_read_tokens) AS BIGINT) as "totalCacheRead",
+      CAST(SUM(cache_creation_tokens) AS BIGINT) as "totalCacheCreation",
+      CAST(SUM(thinking_tokens) AS BIGINT) as "totalThinking"
     FROM token_usage
     WHERE tool_name IS NOT NULL
   `
@@ -1094,8 +1094,8 @@ export async function getTokenTimeline(
       (timestamp / ${bucketSeconds}) * ${bucketSeconds} as bucket,
       agent,
       COUNT(*) as calls,
-      SUM(input_tokens + cache_read_tokens + cache_creation_tokens) as inputTokens,
-      SUM(output_tokens) as outputTokens
+      CAST(SUM(input_tokens + cache_read_tokens + cache_creation_tokens) AS BIGINT) as "inputTokens",
+      CAST(SUM(output_tokens) AS BIGINT) as "outputTokens"
     FROM token_usage
   `
   const conditions: string[] = []
