@@ -188,6 +188,27 @@ describe('PG twins of the SQLite behaviour', () => {
     }
   })
 
+  it('otel_spans: seq is the insertion order (the stand-in for the SQLite rowid), kept by an upsert and never reused', async () => {
+    await probe.query('BEGIN')
+    try {
+      // inserted out of start_ms order on purpose: seq follows the insertion, not the time
+      await probe.query("INSERT INTO otel_spans (trace_id, span_id, agent_id, operation, start_ms) VALUES ('t1', 's1', 'agent-a', 'tool.x', 300), ('t1', 's2', 'agent-a', 'tool.y', 100), ('t1', 's3', 'agent-a', 'tool.z', 200)")
+      await probe.query("INSERT INTO otel_spans (trace_id, span_id, agent_id, operation, start_ms, status) VALUES ('t1', 's1', 'agent-a', 'tool.x', 300, 'ok') ON CONFLICT (trace_id, span_id) DO UPDATE SET status = excluded.status")
+      const r = await probe.query('SELECT span_id, seq FROM otel_spans ORDER BY seq')
+      const rows = r.rows as { span_id: string; seq: string }[]
+      expect(rows.map((x) => x.span_id)).toEqual(['s1', 's2', 's3'])
+      expect(rows.map((x) => Number(x.seq))).toEqual([1, 2, 3])
+      await probe.query("DELETE FROM otel_spans WHERE span_id = 's3'")
+      await probe.query("INSERT INTO otel_spans (trace_id, span_id, agent_id, operation, start_ms) VALUES ('t1', 's4', 'agent-a', 'tool.w', 1)")
+      const s = await probe.query("SELECT seq FROM otel_spans WHERE span_id = 's4'")
+      // later than every earlier row, not "exactly 4": an upsert that hits the conflict has already drawn a number, so
+      // the sequence has gaps (only the order matters to the reader)
+      expect(Number((s.rows[0] as { seq: string }).seq)).toBeGreaterThan(3)
+    } finally {
+      await probe.query('ROLLBACK')
+    }
+  })
+
   it('artifacts: updated_at is bumped on every update, even one that sets it, as the SQLite trigger does', async () => {
     await probe.query('BEGIN')
     try {

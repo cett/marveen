@@ -167,6 +167,9 @@ export async function expectedFromSqlite(sdb: Database.Database, probe: pg.Clien
   tables.kanban_cards.columns.seq = { type: 'bigint', notNull: true, identity: true, default: null }
   colTypes.kanban_cards.push({ name: 'seq', type: 'bigint' })
   tables.kanban_cards.uniques.push('seq')
+  // ... and otel_spans.seq the insertion order (not unique: the primary key stays (trace_id, span_id))
+  tables.otel_spans.columns.seq = { type: 'bigint', notNull: true, identity: true, default: null }
+  colTypes.otel_spans.push({ name: 'seq', type: 'bigint' })
 
   // CHECKs, rendered by PostgreSQL itself on a scratch table with the mapped types
   const render = async (table: string, expr: string): Promise<string> => {
