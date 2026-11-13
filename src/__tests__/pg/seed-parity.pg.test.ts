@@ -142,10 +142,56 @@ async function unixepochProblems(c: pg.ClientBase): Promise<string[]> {
   // STABLE like now(): the value does not move inside one transaction, like SQLite's inside one statement
   const first = (await c.query('SELECT unixepoch()::text AS u')).rows[0].u
   await c.query('SELECT pg_sleep(1.1)')
-  const second = (await c.query('SELECT unixepoch()::text AS u, extract(epoch from now())::bigint::text AS n')).rows[0]
+  const second = (await c.query('SELECT unixepoch()::text AS u, floor(extract(epoch from now()))::bigint::text AS n')).rows[0]
   if (first !== second.u) out.push(`moved inside a transaction: ${first} then ${second.u}`)
-  if (second.u !== second.n) out.push(`${second.u} is not extract(epoch from now())::bigint = ${second.n}`)
+  if (second.u !== second.n) out.push(`${second.u} is not floor(extract(epoch from now()))::bigint = ${second.n}`)
   return out
+}
+
+/** The one spelling of the clock every default, trigger and the function use: SQLite's unixepoch() truncates, a bare ::bigint cast rounds. */
+const FLOORED_NOW = 'floor(extract(epoch from now()))::bigint'
+
+/**
+ * Lines of a baseline text that read the epoch without the floor (empty = fine). A bare `extract(epoch from now())::bigint`
+ * rounds half up, so from the second's half onward it is one second ahead of SQLite's unixepoch().
+ */
+function unflooredEpochLines(text: string): number[] {
+  const bad: number[] = []
+  text.split('\n').forEach((line, i) => {
+    const total = (line.match(/extract\s*\(\s*epoch/gi) ?? []).length
+    const floored = line.split(FLOORED_NOW).length - 1
+    if (total !== floored) bad.push(i + 1)
+  })
+  return bad
+}
+
+/**
+ * The rounding itself, on a live database (empty = fine). now() is fixed inside a transaction, so the second's fraction only
+ * moves BETWEEN transactions: this starts short transactions until one begins in the upper half of a second (the half where a
+ * rounding cast and a floor disagree; at most about 1 s of looping, capped at 2 s) and checks unixepoch() and a column default
+ * there. Not finding such a transaction is itself a problem: a check that never reached the upper half would pass vacuously.
+ */
+async function floorProblems(c: pg.ClientBase): Promise<string[]> {
+  const deadline = Date.now() + 2000
+  while (Date.now() < deadline) {
+    await c.query('BEGIN')
+    try {
+      const t = (await c.query(
+        `SELECT (extract(epoch from now()) % 1)::float8 AS frac, ${FLOORED_NOW}::text AS fl, unixepoch()::text AS u`,
+      )).rows[0]
+      if (t.frac > 0.5) {
+        const out: string[] = []
+        if (t.u !== t.fl) out.push(`unixepoch() is ${t.u}, the floor is ${t.fl} (fraction ${t.frac.toFixed(3)})`)
+        const d = (await c.query(`INSERT INTO tenants (id, display_name) VALUES ('tenant-floor', 'Floor') RETURNING created_at::text AS d`)).rows[0].d
+        if (d !== t.fl) out.push(`a column default is ${d}, the floor is ${t.fl} (fraction ${t.frac.toFixed(3)})`)
+        return out
+      }
+    } finally {
+      await c.query('ROLLBACK')
+    }
+    await new Promise((r) => setTimeout(r, 20))
+  }
+  return ['no transaction began in the upper half of a second within 2 s: the floor was not exercised']
 }
 
 let db: PgTestDb
@@ -391,6 +437,44 @@ describe('mutants (baseline file): a baseline text that loses or alters a seed r
     }
   })
 
+  it('mutant: unixepoch() back on the rounding cast is reported by the behaviour cell and the text cell', async () => {
+    // a replacer function: in a replacement STRING `$$` would collapse to one `$` and break the dollar quote
+    const mutated = baselineText.replace(`SELECT ${FLOORED_NOW}\n$$;`, () => 'SELECT extract(epoch from now())::bigint\n$$;')
+    expect(mutated).not.toBe(baselineText)
+    expect(unflooredEpochLines(mutated)).toHaveLength(1)
+    const c = await buildFrom(mutated)
+    try {
+      const problems = await floorProblems(c)
+      expect(problems).toHaveLength(1)
+      expect(problems[0]).toMatch(/^unixepoch\(\) is \d+, the floor is \d+ \(fraction 0\.[5-9]/)
+    } finally {
+      await tearDown()
+    }
+  })
+
+  it('mutant: a column default back on the rounding cast is reported by the behaviour cell and the text cell', async () => {
+    const mutated = baselineText.replace(
+      `created_at    bigint NOT NULL DEFAULT (${FLOORED_NOW}),\n  disabled_at`,
+      'created_at    bigint NOT NULL DEFAULT (extract(epoch from now())::bigint),\n  disabled_at',
+    )
+    expect(mutated).not.toBe(baselineText)
+    expect(unflooredEpochLines(mutated)).toHaveLength(1)
+    const c = await buildFrom(mutated)
+    try {
+      const problems = await floorProblems(c)
+      expect(problems).toHaveLength(1)
+      expect(problems[0]).toMatch(/^a column default is \d+, the floor is \d+ \(fraction 0\.[5-9]/)
+    } finally {
+      await tearDown()
+    }
+  })
+
+  it('mutant: a trigger assignment back on the rounding cast is reported by the text cell', () => {
+    const mutated = baselineText.replace(`NEW.updated_at := ${FLOORED_NOW};`, 'NEW.updated_at := extract(epoch from now())::bigint;')
+    expect(mutated).not.toBe(baselineText)
+    expect(unflooredEpochLines(mutated)).toHaveLength(1)
+  })
+
   it('an allowlist row removed from the baseline text is reported', async () => {
     const problems = await runMutant((t) => t.replace(/^  \('www\.github\.com', .*\),\n/m, ''))
     expect(problems.some((p) => /^egress_allowlist: .*missing in PostgreSQL/.test(p) && p.includes('www.github.com'))).toBe(true)
@@ -424,8 +508,33 @@ describe('unixepoch()', () => {
       await probe.query(`CREATE OR REPLACE FUNCTION unixepoch() RETURNS bigint LANGUAGE sql VOLATILE AS $$ SELECT extract(epoch from clock_timestamp())::bigint $$`)
       const problems = await unixepochProblems(probe)
       expect(problems.some((p) => /volatility is v/.test(p))).toBe(true)
-      expect(problems.some((p) => /moved inside a transaction|not extract/.test(p))).toBe(true)
+      expect(problems.some((p) => /moved inside a transaction|not floor/.test(p))).toBe(true)
     })
+  })
+
+  it('truncates like SQLite: in the upper half of a second it is the floor, not the rounded-up next second', async () => {
+    expect(await floorProblems(probe)).toEqual([])
+  })
+
+  it('the baseline text reads the epoch only as floor(extract(epoch from now()))::bigint, in every default, trigger and the function', () => {
+    expect(unflooredEpochLines(baselineText)).toEqual([])
+    // not vacuous: the text really has the floored spelling in many places (defaults, triggers, the function)
+    expect(baselineText.split(FLOORED_NOW).length - 1).toBeGreaterThan(40)
+    expect(baselineText).toMatch(/CREATE FUNCTION unixepoch\(\)[^$]*\$\$\s*SELECT floor\(extract\(epoch from now\(\)\)\)::bigint\s*\$\$;/)
+  })
+
+  it('the text check reports every unfloored shape: a default, a trigger assignment, a rounding cast, an integer cast, another clock', () => {
+    const lines = [
+      `a bigint NOT NULL DEFAULT (${FLOORED_NOW}),`,
+      'b bigint NOT NULL DEFAULT (extract(epoch from now())::bigint),',
+      `NEW.updated_at := ${FLOORED_NOW};`,
+      'NEW.updated_at := extract(epoch from now())::bigint;',
+      'SELECT round(extract(epoch from now()))::bigint',
+      'SELECT extract(epoch from now())::integer',
+      'SELECT extract( epoch from clock_timestamp())::bigint',
+      `x := ${FLOORED_NOW} + extract(epoch from now())::bigint;`,
+    ].join('\n')
+    expect(unflooredEpochLines(lines)).toEqual([2, 4, 5, 6, 7, 8])
   })
 
   it('mutant: a function that returns the wrong type or the wrong number is reported', async () => {

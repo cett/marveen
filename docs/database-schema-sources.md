@@ -33,7 +33,7 @@ leaves out.
 
 - Types: `TEXT` is `text`, `INTEGER` is `bigint`, `REAL` is `double precision`, `BLOB` is `bytea`; the 18 columns that
   hold 0 or 1 are `smallint` with `CHECK (col IN (0, 1))` (not `boolean`, the code compares them with `= 1`);
-  `unixepoch()` is `extract(epoch from now())::bigint`; `AUTOINCREMENT` (and the two rowid-alias keys) is an identity column.
+  `unixepoch()` is `floor(extract(epoch from now()))::bigint`; `AUTOINCREMENT` (and the two rowid-alias keys) is an identity column.
 - `kanban_cards` has no rowid in PostgreSQL: its running number is the identity column `seq`. Other rowid users
   (`otel_spans` ordering, the `artifacts` and `workspace_docs` rowid joins) are a later migration, not part of 0001.
 - Left out until their phase: the FTS5 tables and their nine sync triggers, the `vec_*` tables (above), the two
