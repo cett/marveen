@@ -40,7 +40,7 @@ import { reloadAgentSettingsCache } from '../db/agent-settings-cache.js'
 import { getFederationConfigRaw, setFederationConfigRaw } from '../db/federation.js'
 import { invalidateFederationConfigCache, validateFederationConfig } from './federation/config.js'
 import { logger } from '../logger.js'
-import { auditAutonomyLevelChange } from './autonomy-audit.js'
+import { auditAutonomyLevelChange, resolveAutonomyAuditTenant } from './autonomy-audit.js'
 import { isBlankContent } from '../blank-content.js'
 
 // ---------------------------------------------------------------------------
@@ -1979,6 +1979,10 @@ async function runImportFleet(
     // handle `tx` (a nested transaction becomes a savepoint) and pure row policy: no file I/O, no network, no timer,
     // no LLM, no vault. A call on the outer `dbx` here is refused on Postgres (the strict rule). Rows are written in the same order the
     // pre-transaction block used.
+    // The tenant of the autonomy audit rows is looked up here, before the transaction: the lookup runs on the facade,
+    // which the body may not call. Only when the snapshot has autonomy rows to write.
+    const auditActor = options.actor ?? 'system'
+    const auditTenant = Array.isArray(s.autonomy) ? await resolveAutonomyAuditTenant(auditActor) : undefined
     const importTx = () => inFleetImportTransaction(async (tx) => {
       // DB-backed -- upsert each imported row into autonomy_categories (not a file write). Upsert rather than
       // replace-all: a category that only exists on the target fleet (not in the imported snapshot) is left
@@ -1987,18 +1991,19 @@ async function runImportFleet(
       if (Array.isArray(s.autonomy)) {
         const levelBefore = new Map(autonomyBefore.map((r) => [r.key, r.level]))
         for (const row of s.autonomy) {
-          await upsertAutonomyCategory(row)
-          if (levelBefore.get(row.key) !== row.level) await auditAutonomyLevelChange(options.actor ?? 'system', row.key, levelBefore.get(row.key) ?? null, row.level)
+          await upsertAutonomyCategory(row, tx)
+          if (auditTenant !== undefined && levelBefore.get(row.key) !== row.level)
+            await auditAutonomyLevelChange(auditActor, row.key, levelBefore.get(row.key) ?? null, row.level, { tx, tenantId: auditTenant.tenantId })
         }
       }
       // Same upsert-not-replace rationale as autonomy above. upsertModelProfileMapEntry is write-through
       // (db/model-profile-map-cache.ts), so the cache is re-read after a rollback (reloadImportCaches()).
       if (Array.isArray(s.modelProfileMap)) {
-        for (const row of s.modelProfileMap) await upsertModelProfileMapEntry(row)
+        for (const row of s.modelProfileMap) await upsertModelProfileMapEntry(row, tx)
       }
       // DB-backed (agent_settings) -- upsert per agent, same rationale as autonomy/modelProfileMap above.
       if (s.autoRestart) {
-        for (const [agentId, cfg] of Object.entries(s.autoRestart)) await setAgentSetting(agentId, 'auto_restart', cfg)
+        for (const [agentId, cfg] of Object.entries(s.autoRestart)) await setAgentSetting(agentId, 'auto_restart', cfg, 'default', tx)
       }
       // DB-backed (system_config 'agents_desired') -- whole-value replace. Array.isArray guards a pre-migration
       // snapshot that still has the old `{}` empty-object shape (nothing to import from that).

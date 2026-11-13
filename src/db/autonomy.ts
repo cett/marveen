@@ -3,7 +3,7 @@
 // used to provide was retired once store/autonomy-config.json itself was
 // removed from the repo).
 
-import { dbx } from './facade.js'
+import { dbx, type SqlOps } from './facade.js'
 
 export interface AutonomyCategoryRow {
   key: string
@@ -47,9 +47,10 @@ export async function setAutonomyCategoryHumanOnly(key: string, humanOnly: boole
 }
 
 // Full row upsert, used by fleet-transfer.ts import (replaces the whole
-// category set from an imported snapshot).
-export async function upsertAutonomyCategory(row: Omit<AutonomyCategoryRow, 'updated_at'> & { updated_at?: number }): Promise<void> {
-  await dbx.run(`INSERT INTO autonomy_categories (key, label, level, locked, max_level, timeout_minutes, updated_at, updated_by)
+// category set from an imported snapshot). `ops` is the transaction handle of a caller that holds one (the import
+// body: a call on the outer dbx inside a body is refused on Postgres), `dbx` otherwise.
+export async function upsertAutonomyCategory(row: Omit<AutonomyCategoryRow, 'updated_at'> & { updated_at?: number }, ops: SqlOps = dbx): Promise<void> {
+  await ops.run(`INSERT INTO autonomy_categories (key, label, level, locked, max_level, timeout_minutes, updated_at, updated_by)
      VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, unixepoch()), ?)
      ON CONFLICT(key) DO UPDATE SET
        label = excluded.label, level = excluded.level, locked = excluded.locked,
