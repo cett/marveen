@@ -103,7 +103,7 @@ export async function listTaskRunHistory(name: string, limit: number): Promise<T
     const newerTs = i > 0 ? rows[i - 1].ts : undefined
     const windowEnd = newerTs !== undefined ? Math.min(row.ts + 3600000, newerTs) : row.ts + 3600000
     const tokenRow = await dbx.get(
-      `SELECT COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens), 0) as total
+      `SELECT COALESCE(CAST(SUM(input_tokens + output_tokens + cache_read_tokens) AS BIGINT), 0) as total
        FROM token_usage WHERE agent = ? AND timestamp >= ? AND timestamp < ?`,
       row.agent, Math.floor(row.ts / 1000), Math.floor(windowEnd / 1000),
     ) as { total: number }
