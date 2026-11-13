@@ -10,8 +10,9 @@ import { createArtifact, storeArtifactEmbedding } from '../db/artifacts.js'
 const DIM = 768
 // the first component tells the vectors apart: the stub answers with [marker, 0, 0, ...] for the prompt
 const markers = new Map<string, number>()
+const wrongDimension = new Set<string>()
 const embeddingFor = (prompt: string): number[] => {
-  const v = new Array<number>(DIM).fill(0)
+  const v = new Array<number>(wrongDimension.has(prompt) ? 5 : DIM).fill(0)
   v[0] = markers.get(prompt) ?? 0.5
   return v
 }
@@ -19,6 +20,7 @@ const embeddingFor = (prompt: string): number[] => {
 beforeEach(() => {
   initDatabase(':memory:')
   markers.clear()
+  wrongDimension.clear()
   vi.stubGlobal('fetch', vi.fn((_url: string, init: { body: string }) => {
     const { prompt } = JSON.parse(init.body) as { prompt: string }
     return Promise.resolve({ json: () => Promise.resolve({ embedding: embeddingFor(prompt) }) })
@@ -40,6 +42,16 @@ describe('storeArtifactEmbedding re-embeds', () => {
     expect(await stored()).toEqual([0.25])
     await storeArtifactEmbedding(id, 'second title', '{}')
     expect(await stored()).toEqual([0.75])
+  })
+
+  it('a failing insert (a vector of the wrong dimension) leaves the old vector in place: the delete is rolled back', async () => {
+    markers.set('good {}', 0.125)
+    const { id } = await createArtifact({ agent_id: 'agent-a', title: 'good', kind: 'text', content: Buffer.from('x') })
+    await storeArtifactEmbedding(id, 'good', '{}')
+    expect(await stored()).toEqual([0.125])
+    wrongDimension.add('bad {}')
+    await expect(storeArtifactEmbedding(id, 'bad', '{}')).resolves.toBeUndefined() // the failure is swallowed, as before
+    expect(await stored()).toEqual([0.125])
   })
 
   it('another artifact keeps its own vector, and a third embedding still replaces', async () => {

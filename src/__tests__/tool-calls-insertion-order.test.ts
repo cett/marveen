@@ -1,7 +1,7 @@
 // getRecentToolCalls orders the tool-call spans by INSERTION (the SQLite rowid, the identity column seq in PostgreSQL),
 // not by the derived start_ms: two calls logged a millisecond apart with very different durations can invert on start_ms.
 // The same cells run on both backends (the file is in the ported list).
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { useTestDb } from './helpers/with-test-db.js'
 import { getRecentToolCalls } from '../db/audit.js'
 import { upsertOtelSpan } from '../db/observability.js'
@@ -41,5 +41,28 @@ describe('getRecentToolCalls order', () => {
     await upsertOtelSpan(span('other', 1500, { operation: 'agent.turn' }))
     await upsertOtelSpan(span('old', 400_000))
     expect((await getRecentToolCalls(60)).map((c) => c.trace_id)).toEqual(['t3', 't1', 't2'])
+  })
+
+  it('only an operation that starts with "tool." counts: "toolbox.x", "tool" and "tools.x" are not tool calls', async () => {
+    await upsertOtelSpan(span('real', 1000, { operation: 'tool.read' }))
+    await upsertOtelSpan(span('lookalike-a', 1000, { operation: 'toolbox.x' }))
+    await upsertOtelSpan(span('lookalike-b', 1000, { operation: 'tool' }))
+    await upsertOtelSpan(span('lookalike-c', 1000, { operation: 'tools.x' }))
+    await upsertOtelSpan(span('lookalike-d', 1000, { operation: 'my.tool.x' }))
+    expect((await getRecentToolCalls(60)).map((c) => c.trace_id)).toEqual(['real'])
+  })
+
+  it('the window edge: a span that starts exactly at the cutoff is in, one millisecond earlier is out', async () => {
+    const fixedNow = 1_800_000_000_000
+    const spy = vi.spyOn(Date, 'now').mockReturnValue(fixedNow)
+    try {
+      const cutoff = fixedNow - 60 * 1000
+      await upsertOtelSpan({ ...span('on-edge', 0), start_ms: cutoff })
+      await upsertOtelSpan({ ...span('before-edge', 0), start_ms: cutoff - 1 })
+      await upsertOtelSpan({ ...span('after-edge', 0), start_ms: cutoff + 1 })
+      expect((await getRecentToolCalls(60)).map((c) => c.trace_id)).toEqual(['on-edge', 'after-edge'])
+    } finally {
+      spy.mockRestore()
+    }
   })
 })
