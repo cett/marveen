@@ -35,12 +35,36 @@ function watchFacade(failLookups = false): void {
   }
 }
 
-/** The text of every db.exec (BEGIN, COMMIT, SAVEPOINT, ROLLBACK TO, RELEASE) from now on. */
-function recordExec(): string[] {
+/**
+ * The transaction control statements (BEGIN, COMMIT, SAVEPOINT, ROLLBACK TO, RELEASE) from now on, in one spelling.
+ * SQLite sends them through db.exec; PostgreSQL through the query of the driver's client (the adapter writes
+ * `ROLLBACK TO SAVEPOINT x`, normalised here to the SQLite text). The ordinary statements are left out on both, so the
+ * order of the control statements is what the test compares.
+ */
+const CONTROL = /^(BEGIN|COMMIT|ROLLBACK|SAVEPOINT|RELEASE)\b/
+const control = (text: string): string | undefined =>
+  CONTROL.test(text) ? text.replace(/^(ROLLBACK TO|RELEASE) SAVEPOINT /, '$1 ') : undefined
+
+async function recordExec(): Promise<string[]> {
   const seen: string[] = []
+  if (testDbMode() === 'pg') {
+    const { default: pg } = await import('pg')
+    const original = pg.Client.prototype.query as (...a: unknown[]) => unknown
+    vi.spyOn(pg.Client.prototype, 'query').mockImplementation(function (this: unknown, ...a: unknown[]) {
+      const first = a[0]
+      const c = control(typeof first === 'string' ? first : String((first as { text?: unknown } | undefined)?.text ?? ''))
+      if (c !== undefined) seen.push(c)
+      return original.apply(this, a)
+    } as never)
+    return seen
+  }
   const db = getDb()
   const original = db.exec.bind(db)
-  vi.spyOn(db, 'exec').mockImplementation((sql: string) => { seen.push(sql); return original(sql) })
+  vi.spyOn(db, 'exec').mockImplementation((sql: string) => {
+    const c = control(sql)
+    if (c !== undefined) seen.push(c)
+    return original(sql)
+  })
   return seen
 }
 
@@ -140,8 +164,9 @@ describe('createKanbanSubtasks: the subtask rows, the comment and the audit rows
     await createKanbanCard({ id: 'p1', title: 'Parent' })
     await blockAuditWrites()
     const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never)
-    const sql = recordExec()
+    const seen = await recordExec()
     const ids = await createKanbanSubtasks('p1', [{ title: 'A' }], 'bot')
+    const sql = [...seen] // the control statements of the call itself: the reads below open transactions of their own on PostgreSQL
     expect(ids).toHaveLength(1)
     expect(await cardCount()).toBe(2)
     expect(warn.mock.calls.some((c) => /audit write failed/.test(String(c[1])))).toBe(true)
@@ -191,8 +216,10 @@ describe('promoteIdeaToKanban: the cards, the idea unit and the audit rows run o
     await addIdea()
     await blockAuditWrites()
     const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never)
-    const sql = recordExec()
-    expect(await promoteIdeaToKanban('idea-1', [{ id: 'k1', title: 'Parent' }], { from: 'new', actor: 'bot', note: 'n' })).toBe(true)
+    const seen = await recordExec()
+    const promoted = await promoteIdeaToKanban('idea-1', [{ id: 'k1', title: 'Parent' }], { from: 'new', actor: 'bot', note: 'n' })
+    const sql = [...seen]
+    expect(promoted).toBe(true)
     expect(await cardCount()).toBe(1)
     expect(await ideaRow()).toEqual({ status: 'kanban', kanban_id: 'k1' })
     expect(await statusLog()).toBe(1)
@@ -214,8 +241,10 @@ describe('deleteKanbanCard: the delete and its audit row run on the handle', () 
     await createKanbanCard({ id: 'c1', title: 'One' })
     await blockAuditWrites()
     const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never)
-    const sql = recordExec()
-    expect(await deleteKanbanCard('c1')).toBe(true)
+    const seen = await recordExec()
+    const deleted = await deleteKanbanCard('c1')
+    const sql = [...seen]
+    expect(deleted).toBe(true)
     expect(await getKanbanCard('c1')).toBeUndefined()
     expect(warn.mock.calls.some((c) => /audit write failed/.test(String(c[1])))).toBe(true)
     expectOneRolledBackSavepoint(sql)
