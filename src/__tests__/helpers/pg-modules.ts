@@ -13,7 +13,7 @@
 //   boot-twin         the boot chain (synchronous, 14 twins): P2-5
 //   sqlite-only       the files whose SUBJECT is the SQLite facade, handle or migration chain itself (db-facade*,
 //                     with-test-db: own DDL, AUTOINCREMENT, transaction semantics), and a file that asserts the SQLite
-//                     query planner or catalog (audit-log-trace-filter: EXPLAIN QUERY PLAN): they stay SQLite by design
+//                     query planner or catalog (audit-log-trace-index: EXPLAIN QUERY PLAN): they stay SQLite by design
 //   sync-cache        the synchronous in-memory cache and its loader (db-config-cache, db-model-profile-map-cache):
 //                     they move with the async cache load, not with a module
 //   (the codes of the first run are assigned from the file text and the failure classes, not file by file: a
@@ -72,6 +72,7 @@ export const PORTED: readonly string[] = [
   'src/__tests__/tenant-gate-status-route.test.ts',
   'src/__tests__/db-device-keys.test.ts',
   'src/__tests__/observability-model-tool-stats.test.ts',
+  'src/__tests__/audit-log-trace-filter.test.ts',
 ]
 
 /** Test files (same form) that do not, each with the reason. */
@@ -107,7 +108,7 @@ export const EXCLUDED: Readonly<Record<string, ExcludeReason>> = {
   // two cells assert the SQLite planner (EXPLAIN QUERY PLAN) and the SQLite catalog (sqlite_master) of the trace indexes;
   // on PostgreSQL a tiny test table gets a sequential scan whatever the index says, so the same assertion would need a
   // planner switch (enable_seqscan) and would test the switch, not the filter
-  'src/__tests__/audit-log-trace-filter.test.ts': 'sqlite-only',
+  'src/__tests__/audit-log-trace-index.test.ts': 'sqlite-only',
   'src/__tests__/db-agent-state-facade.test.ts': 'unported-sql',
 }
 
