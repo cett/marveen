@@ -27,6 +27,7 @@ export type ExcludeReason = 'fts' | 'vec' | 'p2-4-concurrency' | 'boot-twin' | '
 /** Test files (relative to the repository root, `/` separators) that also run in PG mode. */
 export const PORTED: readonly string[] = [
   'src/__tests__/db-context-route.test.ts',
+  'src/__tests__/db-cost-budgets-month.test.ts',
   'src/__tests__/hook-audit-body-trace.test.ts',
   'src/__tests__/schedules-author-db.test.ts',
   'src/__tests__/agent-state-route.test.ts',
