@@ -247,6 +247,24 @@ describe('PG twins of the SQLite behaviour', () => {
       await probe.query('ROLLBACK')
     }
   })
+
+  // P45, an ACCEPTED divergence (docs/db-facade.md, "Accepted divergences"): SQLite's COLLATE NOCASE folds ASCII only, lower() of a
+  // UTF-8 server folds a non-ASCII letter too, so a second spelling that differs only in the case of such a letter is refused here
+  // and accepted on SQLite (src/__tests__/db-username-case-divergence.test.ts pins that half). PG is the target engine and the
+  // better behavior; nothing is changed. The precondition is asserted, not assumed: a server with a C ctype would not fold.
+  it('dashboard_users: a non-ASCII username folds by lower() on PostgreSQL (SQLite does not): the second spelling is refused', async () => {
+    const folds = await probe.query('SELECT lower($1::text) = $2::text AS folds', ['É', 'é'])
+    expect((folds.rows[0] as { folds: boolean }).folds, 'the test server needs a UTF-8 ctype (the CI container and a local en_US.UTF-8 server have one)').toBe(true)
+    await probe.query('BEGIN')
+    try {
+      const ins = "INSERT INTO dashboard_users (username, password_hash, created_at, updated_at) VALUES ($1, 'h', 1, 1)"
+      await probe.query(ins, ['Émile']) // E acute, capital
+      expect(await sqlstate2(probe, ins, ['émile'])).toBe('23505') // e acute, small: SQLite accepts it
+      expect(await sqlstate2(probe, ins, ['émila'])).toBeNull()
+    } finally {
+      await probe.query('ROLLBACK')
+    }
+  })
 })
 
 /** Like sqlstate, but inside the caller's transaction: a savepoint keeps one failed statement from aborting it. */
