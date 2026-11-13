@@ -11,9 +11,10 @@ beforeEach(async () => {
   await dbx.run('DELETE FROM workspace_docs')
 })
 
-async function doc(agent: string, docKey: string): Promise<void> {
+/** The title is NOT the doc_key (an echo trap: a filter on the wrong column would still pass), and neither is the body. */
+async function doc(agent: string, docKey: string, title = `Title of ${docKey}`): Promise<void> {
   await saveWorkspaceDoc({
-    agent_id: agent, tenant_id: 't-a', doc_key: docKey, title: docKey, content: `body of ${docKey}`,
+    agent_id: agent, tenant_id: 't-a', doc_key: docKey, title, content: `body of ${docKey}`,
     content_type: 'text', type: 'notes',
   })
 }
@@ -31,6 +32,16 @@ describe('workspace doc_key prefix ignores ASCII case, in the list and in the co
     expect(await keys('nOtEs/t')).toEqual(['Notes/Two'])
     expect(await countWorkspaceDocs({ docKeyPrefix: 'NOTES/' })).toBe(2)
     expect(await countWorkspaceDocs({ docKeyPrefix: 'PLANS' })).toBe(1)
+  })
+
+  it('filters on the doc_key column only: a row whose TITLE (or body) starts with the prefix but whose key does not stays out', async () => {
+    await doc('agent-a', 'notes/real', 'Real note')
+    await doc('agent-a', 'z/other', 'notes/decoy')                         // title matches the prefix, the key does not
+    await doc('agent-a', 'z/third', 'NOTES/Another decoy')                 // same, in another case
+    expect(await keys('notes/')).toEqual(['notes/real'])
+    expect(await keys('NOTES/')).toEqual(['notes/real'])
+    expect(await countWorkspaceDocs({ docKeyPrefix: 'notes/' })).toBe(1)
+    expect(await keys('z/')).toEqual(['z/other', 'z/third'])               // and the other way: key matches, title does not
   })
 
   it('does not fold non-ASCII (the two engines agree): O-double-acute is not o-double-acute', async () => {
