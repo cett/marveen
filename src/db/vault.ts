@@ -4,6 +4,7 @@
 import { createHash } from 'node:crypto'
 import { dbx, type SqlOps } from './facade.js'
 import { likeContains } from './like.js'
+import { likeNoCase } from './dialect.js'
 import { currentTraceColumns } from './context.js'
 
 export interface VaultSshKey {
@@ -399,13 +400,22 @@ export async function useUpApproval(id: string, p: ConsumeParams, now: number, r
 // statements, so a test through claimApproval() cannot tell the UPDATE's WHERE from the SELECT's. This WHERE is the
 // second line (a second connection or process would make it the only one), and adoptReservation() is exported so a
 // test can run it alone against rows that break one condition.
-const ADOPT_STATEMENT = `
+// A function, not a constant: the LIKE is built per dialect (likeNoCase), and the backend can be switched after this
+// module loaded. The ref prefix match ignores ASCII case on both engines, as SQLite's LIKE always did.
+function adoptStatement(): string {
+  return `
   UPDATE approvals SET used_at = ?, used_ref = ?
   WHERE id = ? AND category = ? AND status = 'approved' AND content_hash = ? AND tenant_id = ? AND agent_id = ?
     AND resolved_via = 'dashboard_session'
-    AND consumed_at IS NOT NULL AND consumed_at >= ? AND consumed_by = ? AND consumed_ref LIKE 'gate-send-%'
+    AND consumed_at IS NOT NULL AND consumed_at >= ? AND consumed_by = ? AND ${gateSendRefLike()}
     AND used_at IS NULL
 `
+}
+
+/** `consumed_ref` starts with the gate's send prefix (a literal pattern: the prefix holds no wildcard or backslash). */
+function gateSendRefLike(): string {
+  return likeNoCase('consumed_ref', `'${GATE_SEND_REF_PREFIX}%'`)
+}
 
 /** Stamp the gate's reservation `id` as sealed by the sender's `ref`; false when any adoption condition does not hold. */
 export async function adoptReservation(
@@ -413,7 +423,7 @@ export async function adoptReservation(
   ops: SqlOps = dbx,
 ): Promise<boolean> {
   return (await ops.run(
-    ADOPT_STATEMENT,
+    adoptStatement(),
     now, ref, id, p.category, p.content_hash, p.tenant_id, p.principal, adoptSince, p.principal,
   )).changes > 0
 }
@@ -515,7 +525,7 @@ export async function claimApproval(p: ConsumeParams & { category: string; mode?
         SELECT id FROM approvals
         WHERE agent_id = ? AND tenant_id = ? AND category = ? AND content_hash = ?
           AND status = 'approved' AND resolved_via = 'dashboard_session'
-          AND consumed_at IS NOT NULL AND consumed_at >= ? AND consumed_by = ? AND consumed_ref LIKE 'gate-send-%' AND used_at IS NULL
+          AND consumed_at IS NOT NULL AND consumed_at >= ? AND consumed_by = ? AND ${gateSendRefLike()} AND used_at IS NULL
         ORDER BY consumed_at DESC, id DESC LIMIT 1
       `, ...scope, adoptSince, p.principal)
       if (reserved && await adoptReservation(reserved.id, p, adoptSince, now, ref as string, tx)) {   // send implies a ref (checked above)
@@ -640,8 +650,8 @@ function approvalsWhere(opts: {
 }): { where: string; params: unknown[] } {
   const conditions: string[] = []
   const params: unknown[] = []
-  if (opts.agent_id) { conditions.push("agent_id LIKE ? ESCAPE '\\'"); params.push(likeContains(opts.agent_id)) }
-  if (opts.category) { conditions.push("category LIKE ? ESCAPE '\\'"); params.push(likeContains(opts.category)) }
+  if (opts.agent_id) { conditions.push(likeNoCase('agent_id', '?')); params.push(likeContains(opts.agent_id)) }
+  if (opts.category) { conditions.push(likeNoCase('category', '?')); params.push(likeContains(opts.category)) }
   if (opts.status) { conditions.push('status = ?'); params.push(opts.status) }
   // Exact match, unlike agent_id/category: a hash is looked up whole, never searched by substring.
   if (opts.content_hash) { conditions.push('content_hash = ?'); params.push(opts.content_hash) }

@@ -177,7 +177,7 @@ describe('a second writer between the deciding read and the write', () => {
     const id = await approved()
     db.prepare("UPDATE approvals SET consumed_at = ?, consumed_by = 'agent-a', consumed_ref = 'gate-send-1' WHERE id = ?").run(NOW - 5, id)
     let fired = false
-    hookTx({ afterGet: (sql) => { if (!fired && /consumed_ref LIKE 'gate-send-%' AND used_at IS NULL/.test(sql)) { fired = true; db.prepare('UPDATE approvals SET used_at = 1, used_ref = ?').run('other-sender') } } })
+    hookTx({ afterGet: (sql) => { if (!fired && /consumed_ref LIKE 'gate-send-%' ESCAPE '\\' AND used_at IS NULL/.test(sql)) { fired = true; db.prepare('UPDATE approvals SET used_at = 1, used_ref = ?').run('other-sender') } } })
     const out = await claimApproval({ ...claim, now: NOW, ref: 'send-1', mode: 'send' })
     expect(fired).toBe(true)
     expect(out.ok && out.adopted).not.toBe(true)
