@@ -29,6 +29,12 @@ export const PORTED: readonly string[] = [
   'src/__tests__/db-context-route.test.ts',
   'src/__tests__/hook-audit-body-trace.test.ts',
   'src/__tests__/schedules-author-db.test.ts',
+  'src/__tests__/agent-state-route.test.ts',
+  'src/__tests__/auth-path-failure-modes.test.ts',
+  'src/__tests__/egress-allowlist-quarantine-seed-supplement.test.ts',
+  'src/__tests__/import-crawler-blank-source.test.ts',
+  'src/__tests__/import-db-helpers.test.ts',
+  'src/__tests__/import-strip-markup-entities.test.ts',
 ]
 
 /** Test files (same form) that do not, each with the reason. */
@@ -61,34 +67,28 @@ export const EXCLUDED: Readonly<Record<string, ExcludeReason>> = {
   'src/__tests__/db-facade-tx.test.ts': 'sqlite-only',
   'src/__tests__/db-facade.test.ts': 'sqlite-only',
   'src/__tests__/db-model-profile-map-cache.test.ts': 'sync-cache',
-  'src/__tests__/import-strip-markup-entities.test.ts': 'boot-twin',
-  'src/__tests__/memories-content-not-blank.test.ts': 'boot-twin',
+  'src/__tests__/memories-content-not-blank.test.ts': 'raw-db',
   'src/__tests__/with-test-db.test.ts': 'sqlite-only',
   'src/__tests__/approval-human-only.test.ts': 'raw-db',
   'src/__tests__/audit-retention-prune-journals.test.ts': 'raw-db',
   'src/__tests__/db-api-tokens-enroll-twin.test.ts': 'raw-db',
   'src/__tests__/db-device-keys.test.ts': 'raw-db',
   'src/__tests__/db-overview.test.ts': 'raw-db',
-  'src/__tests__/import-crawler-blank-source.test.ts': 'raw-db',
   'src/__tests__/import-crawler-run-due.test.ts': 'raw-db',
   'src/__tests__/import-crawler-tenant.test.ts': 'raw-db',
-  'src/__tests__/import-db-helpers.test.ts': 'raw-db',
   'src/__tests__/kanban-tx-handle-audit.test.ts': 'raw-db',
   'src/__tests__/like-escape-remaining-searches.test.ts': 'raw-db',
   'src/__tests__/prune-token-usage-tx-handle.test.ts': 'raw-db',
   'src/__tests__/retention-sweep-tx-handle.test.ts': 'raw-db',
   'src/__tests__/tenant-gate-status-route.test.ts': 'raw-db',
-  'src/__tests__/agent-state-route.test.ts': 'unported-sql',
   'src/__tests__/api-tokens-tx-handle.test.ts': 'unported-sql',
   'src/__tests__/audit-log-trace-filter.test.ts': 'unported-sql',
-  'src/__tests__/auth-path-failure-modes.test.ts': 'unported-sql',
   'src/__tests__/db-agent-state-facade.test.ts': 'unported-sql',
-  'src/__tests__/egress-allowlist-quarantine-seed-supplement.test.ts': 'unported-sql',
   'src/__tests__/otel-logs-trace.test.ts': 'unported-sql',
 }
 
 /** The number of EXCLUDED files the partition test accepts. It only goes down. */
-export const EXCLUDED_BASELINE = 52
+export const EXCLUDED_BASELINE = 46
 
 /** A file uses useTestDb when it imports the helper AND calls useTestDb( (a file that only imports resetDbTestState or testDbMode does not). */
 const IMPORT = /from\s+['"][^'"]*helpers\/with-test-db(\.js)?['"]/
