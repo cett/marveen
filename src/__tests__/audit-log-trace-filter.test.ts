@@ -1,6 +1,10 @@
 // GET /api/audit-log?trace_id=: the rows written in one trace, from the sources that keep a trace (config, agent, hook),
 // with the trace on every returned row of those sources. Index 0089 serves the lookup.
 //
+// SQLite only (pg-modules.ts, reason sqlite-only): the two index cells assert the SQLite planner (EXPLAIN QUERY PLAN)
+// and catalog (sqlite_master). On PostgreSQL a tiny test table gets a sequential scan whatever the index says, so an
+// equivalent assertion would test a planner switch, not the filter. The other cells pass on PostgreSQL as well.
+//
 // Privacy: neutral fixtures only (agent-a, user-a).
 
 import { describe, it, expect, vi } from 'vitest'
