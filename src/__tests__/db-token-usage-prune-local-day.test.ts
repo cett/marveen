@@ -80,6 +80,27 @@ describe('the rollups group by the LOCAL day and month of the row', () => {
   })
 })
 
+describe('the raw cut-off is strict: a row AT the cut-off second stays, the row one second older is rolled up and deleted', () => {
+  it('timestamp < cut-off in the daily rollup, the monthly rollup and the raw delete (30 day raw retention)', async () => {
+    const now = '2026-11-13T12:00:00Z'
+    clockAt(now)
+    const cutoff = Math.floor(Date.parse(now) / 1000) - 30 * 86400
+    expect(cutoff).toBe(utc('2026-10-14T12:00:00Z'))   // guards the date arithmetic of this cell
+    const insert = (ts: number, tokens: number): Promise<unknown> => dbx.run(
+      `INSERT INTO token_usage (agent, session_id, timestamp, input_tokens, tenant_id) VALUES ('agent-a', 's1', ?, ?, 'default')`, ts, tokens)
+    await insert(cutoff, 1)        // exactly at the cut-off: stays raw, in no rollup
+    await insert(cutoff - 1, 2)    // one second older: rolled up, then deleted
+    const result = await pruneTokenUsage()
+    expect(result).toEqual({ rawDeleted: 1, dailyUpserted: 1, monthlyUpserted: 1 })
+    expect(await dbx.all<{ timestamp: number; input_tokens: number }>('SELECT timestamp, input_tokens FROM token_usage'))
+      .toEqual([{ timestamp: cutoff, input_tokens: 1 }])
+    expect(await dbx.all('SELECT day, input_tokens, row_count FROM token_usage_daily'))
+      .toEqual([{ day: '2026-10-14', input_tokens: 2, row_count: 1 }])
+    expect(await dbx.all('SELECT month, input_tokens, row_count FROM token_usage_monthly'))
+      .toEqual([{ month: '2026-10', input_tokens: 2, row_count: 1 }])
+  })
+})
+
 describe('the rollup tables are pruned against the LOCAL day / month of "now minus the retention"', () => {
   async function seedDays(days: string[]): Promise<void> {
     for (const d of days) await dbx.run(`INSERT INTO token_usage_daily (day, agent, model, tenant_id) VALUES (?, 'agent-a', 'm', 'default')`, d)
