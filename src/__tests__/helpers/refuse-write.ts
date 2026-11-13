@@ -15,7 +15,7 @@ export interface RefuseWriteOptions {
   /** Trigger name (and, on PostgreSQL, the name of its function): lowercase letters, digits, underscore. */
   name: string
   table: string
-  /** The message of the error the refused statement fails with. No quote, backslash or dollar sign. */
+  /** The message of the error the refused statement fails with. No quote, backslash, dollar sign or percent sign. */
   message: string
   /** The statement to refuse. INSERT when omitted. */
   event?: 'INSERT' | 'UPDATE' | 'DELETE'
@@ -25,6 +25,8 @@ export interface RefuseWriteOptions {
 
 const IDENT = /^[a-z_][a-z0-9_]*$/
 const PLAIN_TEXT = /^[^'\\$]*$/
+// the message of a RAISE EXCEPTION is a format string on PostgreSQL: a percent sign there is a placeholder
+const MESSAGE_TEXT = /^[^'\\$%]*$/
 
 function check(label: string, value: string, re: RegExp): void {
   if (!re.test(value)) throw new Error(`refuseWrite: ${label} ${JSON.stringify(value)} is not allowed`)
@@ -35,7 +37,7 @@ export function refuseWriteSql(dialect: 'sqlite' | 'pg', o: RefuseWriteOptions):
   const event = o.event ?? 'INSERT'
   check('name', o.name, IDENT)
   check('table', o.table, IDENT)
-  check('message', o.message, PLAIN_TEXT)
+  check('message', o.message, MESSAGE_TEXT)
   if (!['INSERT', 'UPDATE', 'DELETE'].includes(event)) throw new Error(`refuseWrite: event ${JSON.stringify(event)} is not allowed`)
   if (o.when) {
     if (event === 'DELETE') throw new Error('refuseWrite: a DELETE has no NEW row, so a condition on a column is not allowed')

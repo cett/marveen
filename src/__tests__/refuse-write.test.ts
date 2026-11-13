@@ -41,6 +41,8 @@ describe('refuseWrite', () => {
       { ...ok, table: 'a b' },
       { ...ok, message: "it's" },
       { ...ok, message: 'a$$b' },
+      { ...ok, message: 'refused 100%' }, // a RAISE format placeholder on PostgreSQL
+      { ...ok, message: 'refused %s' },
       { ...ok, when: { column: 'k', equals: "x' OR '1'='1" } },
       { ...ok, when: { column: 'k = 1 --', equals: 'x' } },
     ]) expect(() => refuseWriteSql('sqlite', bad)).toThrow(/not allowed/)
