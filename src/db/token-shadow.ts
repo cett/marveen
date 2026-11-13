@@ -36,7 +36,7 @@ export async function bumpTokenShadow(key: TokenShadowKey, nowSec: number): Prom
        (day, category, method, route, caller, caller_source, client, target, count, last_ts)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
      ON CONFLICT (day, category, method, route, caller, caller_source, client, target)
-     DO UPDATE SET count = count + 1, last_ts = excluded.last_ts`, key.day, key.category, key.method, key.route, key.caller, key.callerSource, key.client, key.target, nowSec)
+     DO UPDATE SET count = token_usage_shadow.count + 1, last_ts = excluded.last_ts`, key.day, key.category, key.method, key.route, key.caller, key.callerSource, key.client, key.target, nowSec)
 }
 
 export async function tokenShadowKeyExists(key: TokenShadowKey): Promise<boolean> {
@@ -81,5 +81,5 @@ export async function queryTokenShadow(f: TokenShadowFilter): Promise<TokenShado
 /** Total hits per category over the same window. */
 export async function totalsByTokenShadowCategory(f: Pick<TokenShadowFilter, 'fromDay' | 'category' | 'caller' | 'route'>): Promise<Array<{ category: string; count: number }>> {
   const { sql, params } = whereOf(f)
-  return (await dbx.all(`SELECT category, SUM(count) AS count FROM token_usage_shadow ${sql} GROUP BY category ORDER BY count DESC, category ASC`, ...params)) as Array<{ category: string; count: number }>
+  return (await dbx.all(`SELECT category, CAST(SUM(count) AS BIGINT) AS count FROM token_usage_shadow ${sql} GROUP BY category ORDER BY count DESC, category ASC`, ...params)) as Array<{ category: string; count: number }>
 }

@@ -41,6 +41,7 @@ export const PORTED: readonly string[] = [
   'src/__tests__/otel-span-upsert-export-mark.test.ts',
   'src/__tests__/tool-calls-insertion-order.test.ts',
   'src/__tests__/token-usage-sums.test.ts',
+  'src/__tests__/token-shadow-totals.test.ts',
 ]
 
 /** Test files (same form) that do not, each with the reason. */
