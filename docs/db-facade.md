@@ -528,4 +528,88 @@ check of the routes (`isUniqueViolationOn`) recognises both drivers, and for Pos
 
 **Not covered.** A statement PostgreSQL refuses inside a transaction (`VACUUM`, `CREATE INDEX CONCURRENTLY`, `CREATE
 DATABASE`) cannot go through this facade. The wiring (`DB_BACKEND`), the row-level-security roles and policies, the
-`useTestDb` PostgreSQL mode and pgvector are later steps.
+pgvector are later steps (the `useTestDb` PostgreSQL mode is described below).
+
+## The PostgreSQL test mode
+
+`useTestDb()` (`src/__tests__/helpers/with-test-db.ts`) is the one entry point of a test that needs the database. With
+`MARVEEN_TEST_DB=pg` (and `MARVEEN_PG_TEST_URL`, the admin URL of a throwaway server) the same call runs the test on
+PostgreSQL and the test body does not change. Any other value than `pg` or `sqlite` is an error, so a typo cannot run
+SQLite quietly.
+
+**One database per test.** Before each test a database is cloned from the baseline template (`pg-test-db.ts`), `dbx` is
+pointed at the PG adapter on a pool of that clone (`useDbxBackend`), and after the test the pool is closed and the clone
+dropped. A per-file database with a `TRUNCATE` between the tests was measured against it (85 tables on a local server):
+a clone took p50 169 ms and p95 200 ms, a `TRUNCATE ... RESTART IDENTITY CASCADE` of the 84 tables without seed rows
+took p50 183 ms and p95 212 ms even on empty tables, plus the seed would have to be written back. The cost is the same
+and a clone cannot leak a row or a sequence value. The whole `useTestDb` set runs in about 90 s on four workers of an
+idle development machine.
+
+**No SQLite handle.** In this mode `db` stays unset: a test or a module that still reads the raw handle fails with a
+`TypeError` instead of quietly running against a second database. A run with the SQLite database opened beside the PG
+one was tried and dropped: the rows a test writes through the raw handle are invisible to the reads that go to PG, and
+it hides exactly the leaks this mode exists to find.
+
+**The seed.** The baseline carries the rows the SQLite migration chain seeds (the default tenant, `system_config`, the
+autonomy categories, `model_profile_map`, the egress allowlist, the telemetry export state) and the `unixepoch()`
+function, so a clone looks like a migrated SQLite database. The block is generated from the migrated SQLite chain by
+`scripts/generate-pg-baseline-seed.ts` (never typed by hand), and `seed-parity.pg.test.ts` holds the two to each other,
+table by table, with mutants.
+
+### The synchronous caches on PostgreSQL
+
+`system_config`, `model_profile_map` and `agent_settings` are read synchronously from an in-memory cache. On SQLite the
+cache is loaded from the handle and belongs to that handle. On PostgreSQL there is no handle, so:
+
+- the cache is loaded through the facade (`loadSystemConfigCacheAsync`, `loadModelProfileMapCacheAsync`,
+  `loadAgentSettingsCacheAsync`); `useTestDb` does it right after the switch, outside any transaction;
+- the owner of a fill is the BACKEND: `dbxBackendEpoch()` counts every `useDbxBackend` call, and a cache filled under
+  one epoch is not served under another (`src/db/cache-owner.ts`). A cache that belongs to the previous test's database is
+  never read by the next test. On SQLite the owner stays the handle, byte for byte as before;
+- a reader with nothing loaded throws `cache not loaded in PG mode: call load...CacheAsync()` instead of a `TypeError`
+  on the missing handle;
+- a write reads its row back through `dbx.get` and awaits it (`cacheAfter...WriteAsync`). A read-back that finishes after
+  the backend was switched lands in the old map and is dropped, so a slow write cannot put a stale row into the next
+  cache.
+
+Known limit: a load that races a write on the same epoch can leave the cache one write behind. It only happens at boot,
+the same class as overlapping writers; cross-process invalidation belongs to the boot-chain step. A few synchronous
+reload call sites outside the cache modules still use the SQLite handle; they move with the PostgreSQL port of those
+modules.
+
+### Which test files run in PG mode
+
+Every test file that imports the helper and calls `useTestDb` is in exactly ONE of two lists in
+`src/__tests__/helpers/pg-modules.ts`: `PORTED` (it also runs in PG mode, next to its SQLite run in the default suite:
+the double CI) or `EXCLUDED`, with a reason code. `pg-modules-partition.test.ts` fails for a file in neither list, a stale
+entry, an unknown code and an excluded count above `EXCLUDED_BASELINE`; the baseline only goes down and is lowered by hand
+in the commit that ports a file. `npm run test:pg-modules` runs the ported list in PG mode (a CI step of the `pg-parity`
+job); `MARVEEN_PG_MODULES_ALL=1` runs every file instead, to re-measure what is still red.
+
+| Code | Files | Meaning |
+|---|---|---|
+| `p2-4-concurrency` | 16 | the test is about SQLite's one-connection concurrency semantics: replaced in P2-4 |
+| `raw-db` | 13 | the test or the module under test still reads the raw SQLite handle |
+| `vec` | 6 | needs sqlite-vec: Phase 3 |
+| `sqlite-only` | 4 | the subject is the SQLite facade, handle or migration chain itself |
+| `unported-sql` | 4 | SQL that has no common text for both dialects yet |
+| `sync-cache` | 2 | the synchronous cache and its loader (they move with the async cache load) |
+| `boot-twin` | 1 | the synchronous boot chain |
+| `fts` | 0 | needs FTS5: Phase 3 |
+
+Nine files are ported, 46 are excluded. The numbers are a snapshot of the lists, the lists are the authority.
+
+### Moving a test onto the facade
+
+`node tools/codemod/codemod.mjs --tests <file>...` rewrites `db.prepare(sql).get|all|run(...)` and `db.exec(sql)` in the
+test bodies to `await dbx.*` (the handle is `db` imported from `db.js`, `getDb()`, or a local alias of it). What it only
+reports is the manual list: `db.transaction`, `vi.spyOn` on the handle, a handle passed to a helper, a handle the test
+opened itself, and a thrown-error assertion on a converted call (`expect(() => f()).toThrow()` can never fail once `f` is
+async; write `await expect(f()).rejects.toThrow()`). A rewritten test also runs on SQLite, so the conversion must not
+loosen an assertion.
+
+### What PG mode does not cover yet
+
+The dialect tokens (`rowid`, `INSERT OR`, `GLOB`, `COLLATE NOCASE`, `AUTOINCREMENT`, `PRAGMA`) and `dbx.*` calls that
+sit inside a transaction body without the `tx` handle (the adapter refuses them, see above) are source changes of the
+modules themselves, done with the next step. A file that needs one of them stays `EXCLUDED` until its module is ported.
