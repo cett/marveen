@@ -17,10 +17,8 @@ afterAll(() => {
 
 const utc = (iso: string): number => Date.parse(iso) / 1000
 
-// SUM() of bigint columns is numeric in PostgreSQL, which node-pg hands back as a STRING ('110'); SQLite gives a number.
-// The value is what this file is about, so it is compared as a number (the type difference is a finding of its own).
-const spend = async (filter: Parameters<typeof getMonthlyTokenSpend>[0], now: number): Promise<number> =>
-  Number(await getMonthlyTokenSpend(filter, now))
+// The total is a NUMBER on both engines (SUM() of bigint is numeric on PostgreSQL, a string in the driver, unless the statement casts).
+const spend = (filter: Parameters<typeof getMonthlyTokenSpend>[0], now: number): Promise<number> => getMonthlyTokenSpend(filter, now)
 
 async function usage(ts: number, tokens: number, agent = 'agent-a', tenant = 'default'): Promise<void> {
   await dbx.run(
@@ -65,3 +63,22 @@ describe('the month of a token_usage row is its LOCAL month', () => {
     expect(await spend({}, utc('2026-10-31T21:30:00Z'))).toBe(3)
   })
 })
+
+describe('the total is a number, whatever the engine and the query shape', () => {
+  const NOW = utc('2026-11-20T10:00:00Z')
+
+  it('typeof number with rows, with no rows, and for the no-filter, tenant and agent shapes', async () => {
+    for (const filter of [{}, { tenant: 'default' }, { agent: 'agent-a' }]) {
+      const empty = await spend(filter, NOW)
+      expect(typeof empty, JSON.stringify(filter) + ' on no rows').toBe('number')
+      expect(empty).toBe(0)
+    }
+    await usage(utc('2026-11-02T08:00:00Z'), 10)
+    for (const filter of [{}, { tenant: 'default' }, { agent: 'agent-a' }]) {
+      const v = await spend(filter, NOW)
+      expect(typeof v, JSON.stringify(filter) + ' with a row').toBe('number')
+      expect(v + 1).toBe(11)    // an addition, as the callers do: a string total would concatenate to '101'
+    }
+  })
+})
+
