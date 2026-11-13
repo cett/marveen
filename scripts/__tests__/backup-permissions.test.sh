@@ -76,6 +76,25 @@ echo "(d) the owner-only archive is still a good archive (checksum verifies, lis
   && pass "the sidecar checksum matches the archive" || fail "the sidecar checksum does not match"
 tar -tzf "$ARC" | grep -qx 'repo/store/claudeclaw.db' && pass "the database is in the archive" || fail "no database in the archive"
 
+echo "(e) pre-modify-backup.sh: the snapshot directory, the database copy and the copied secrets are owner-only"
+# PRE_MODIFY_SH: another copy of the script (how a mutant is run against these checks)
+R="$(mkrepo e)"
+cp "${PRE_MODIFY_SH:-$INSTALL_DIR/scripts/pre-modify-backup.sh}" "$R/scripts/pre-modify-backup.sh"
+# loosely moded source files: cp -p would carry these modes into the copy
+echo 'token-fixture-0451' > "$R/store/.dashboard-token"; chmod 644 "$R/store/.dashboard-token" "$R/store/vault.json" "$R/store/.vault-key"
+mkdir -p "$R/store/backups"; chmod 755 "$R/store/backups"
+OUT="$( umask 022; cd "$R" && HOME="$R/home" bash scripts/pre-modify-backup.sh perm 2>&1 )"; RC=$?
+[ $RC -eq 0 ] && pass "pre-modify-backup.sh exits 0" || fail "pre-modify-backup.sh exit $RC: $OUT"
+SNAP="$(ls -1d "$R"/store/backups/*-perm | head -1)"
+[ -f "$SNAP/claudeclaw.db" ] && pass "the database snapshot is there" || fail "no database snapshot in $SNAP"
+check_mode "store/backups" "$R/store/backups" 700
+check_mode "the snapshot directory" "$SNAP" 700
+check_mode "the database snapshot" "$SNAP/claudeclaw.db" 600
+check_mode "the copied vault.json" "$SNAP/vault.json" 600
+check_mode "the copied vault key" "$SNAP/.vault-key" 600
+check_mode "the copied dashboard token" "$SNAP/.dashboard-token" 600
+check_mode "the git-HEAD.txt note" "$SNAP/git-HEAD.txt" 600
+
 echo ""
 echo "backup-permissions: ${PASS} passed, ${FAIL} failed"
 [ "$FAIL" -eq 0 ]
