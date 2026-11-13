@@ -5,7 +5,8 @@
 import { describe, expect, it } from 'vitest'
 import { useTestDb } from './helpers/with-test-db.js'
 import {
-  archiveKanbanCard, createKanbanCard, findActiveKanbanCardByTitle, getKanbanCard, getSubtree, listKanbanCards, searchKanbanCards,
+  archiveKanbanCard, createKanbanCard, findActiveKanbanCardByTitle, getKanbanCard, getKanbanSeqByIdPrefix, getSubtree,
+  listKanbanCards, searchKanbanCards,
 } from '../db/kanban.js'
 import { getTenantKanbanCard, listTenantKanbanCards } from '../db/tenant-scoped.js'
 
@@ -93,10 +94,72 @@ describe('searchKanbanCards: the "#N" and the id-prefix branches', () => {
     expect(await searchKanbanCards({ q: 'ca_e' })).toEqual([])
   })
 
+  it('the id branch is a prefix match: a hit in the middle or at the end of an id does not match', async () => {
+    // "afe1" and "1234" are inside cafe1234 but the title (target) holds neither, so only a contains-pattern on the id
+    // could find the card
+    await createKanbanCard({ id: 'cafe1234', title: 'target' })
+    expect(await searchKanbanCards({ q: 'afe1' })).toEqual([])
+    expect(await searchKanbanCards({ q: '1234' })).toEqual([])
+    expect((await searchKanbanCards({ q: 'cafe1' })).map((k) => k.id)).toEqual(['cafe1234'])
+  })
+
+  it('the id prefix and the text search ignore ASCII case on both backends', async () => {
+    await createKanbanCard({ id: 'cafe1234', title: 'Target Card', project: 'Proj-One', assignee: 'Agent-A' })
+    await createKanbanCard({ id: 'ABCD5678', title: 'other' })
+    expect((await searchKanbanCards({ q: 'CAFE' })).map((k) => k.id)).toEqual(['cafe1234'])
+    expect((await searchKanbanCards({ q: 'abcd' })).map((k) => k.id)).toEqual(['ABCD5678'])
+    expect((await searchKanbanCards({ q: 'ABCD56' })).map((k) => k.id)).toEqual(['ABCD5678'])
+    expect((await searchKanbanCards({ q: 'target CARD' })).map((k) => k.id)).toEqual(['cafe1234'])
+    expect((await searchKanbanCards({ q: 'PROJ-one' })).map((k) => k.id)).toEqual(['cafe1234'])
+    expect((await searchKanbanCards({ q: 'agent-a' })).map((k) => k.id)).toEqual(['cafe1234'])
+  })
+
+  it('case folding is ASCII only: a non-ASCII letter of another case does not match, the same one does', async () => {
+    await createKanbanCard({ id: 'aaaa0001', title: 'Őrző szolgáltatás' })
+    expect(await searchKanbanCards({ q: 'őrző' })).toEqual([])
+    expect((await searchKanbanCards({ q: 'Őrző' })).map((k) => k.id)).toEqual(['aaaa0001'])
+    expect((await searchKanbanCards({ q: 'SZOLGÁLTATÁS' })).map((k) => k.id)).toEqual([])
+    expect((await searchKanbanCards({ q: 'szolgáltatás' })).map((k) => k.id)).toEqual(['aaaa0001'])
+  })
+
   it('an unrelated match is not suppressed by a shape guard that does not apply, and the tenant filter still holds', async () => {
     await createKanbanCard({ id: 'aaaa0001', title: 'release #1 notes' })
     expect((await searchKanbanCards({ q: 'release' })).map((k) => k.id)).toEqual(['aaaa0001'])
     expect(await searchKanbanCards({ q: 'release', tenantId: 'other-tenant' })).toEqual([])
     expect((await searchKanbanCards({ q: '#1', tenantId: 'default' })).map((k) => k.id)).toEqual(['aaaa0001'])
+  })
+})
+
+describe('getKanbanSeqByIdPrefix: the running number of a stored id, case-insensitive', () => {
+  it('returns the number as a number, for the stored case and for any ASCII case of it', async () => {
+    const [a, b] = await seed(2)
+    await createKanbanCard({ id: 'CAFE0003', title: 'upper' })
+    expect(await getKanbanSeqByIdPrefix(a)).toBe(1)
+    expect(await getKanbanSeqByIdPrefix(b)).toBe(2)
+    expect(typeof (await getKanbanSeqByIdPrefix(b))).toBe('number')
+    expect(await getKanbanSeqByIdPrefix('CAFE0003')).toBe(3)
+    expect(await getKanbanSeqByIdPrefix('cafe0003')).toBe(3)
+    expect(await getKanbanSeqByIdPrefix('CaFe0003')).toBe(3)
+  })
+
+  it('is null for no match, a partial id (it is an equality, not a prefix) and an empty string', async () => {
+    await seed(1)
+    expect(await getKanbanSeqByIdPrefix('ffffffff')).toBeNull()
+    expect(await getKanbanSeqByIdPrefix('01aa')).toBeNull()
+    expect(await getKanbanSeqByIdPrefix('01aa111')).toBeNull()
+    expect(await getKanbanSeqByIdPrefix('')).toBeNull()
+  })
+
+  it('is null when two ids differ only by case (ambiguous: left untouched, not guessed)', async () => {
+    await createKanbanCard({ id: 'abcd1234', title: 'lower' })
+    await createKanbanCard({ id: 'ABCD1234', title: 'upper' })
+    expect(await getKanbanSeqByIdPrefix('abcd1234')).toBeNull()
+    expect(await getKanbanSeqByIdPrefix('ABCD1234')).toBeNull()
+  })
+
+  it('leaves non-ASCII letters alone: another case of one is not the same id', async () => {
+    await createKanbanCard({ id: 'őőőő0001', title: 'odd id' })
+    expect(await getKanbanSeqByIdPrefix('őőőő0001')).toBe(1)
+    expect(await getKanbanSeqByIdPrefix('ŐŐŐŐ0001')).toBeNull()
   })
 })

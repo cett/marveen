@@ -9,6 +9,7 @@ import { resolveWriteTenant } from './write-tenant.js'
 import { updateIdeaWithStatusLog } from './misc.js'
 import { logger } from '../logger.js'
 import { dbx, dbxDialect, type Dbx, type SqlOps, type Tx } from './facade.js'
+import { eqNoCase, likeNoCase } from './dialect.js'
 import { likeContains, likePrefix } from './like.js'
 import { currentTraceColumns } from './context.js'
 
@@ -642,7 +643,7 @@ export async function searchKanbanCards(opts: {
   tenantId?: string | null
 }): Promise<(KanbanCard & { seq: number; archived: boolean })[]> {
   const { q, limit = 50, tenantId } = opts
-  // The text is searched literally: a % or _ typed by the caller is not a wildcard (ESCAPE '\' below), in the id-prefix
+  // The text is searched literally: a % or _ typed by the caller is not a wildcard (likeNoCase carries the ESCAPE), in the id-prefix
   // branch too. The id-prefix guard only checks the FIRST character (a hex digit lets anything follow), so it does not
   // keep a wildcard out of the pattern: the prefix is escaped like every other pattern here.
   const like = likeContains(q)
@@ -657,10 +658,10 @@ export async function searchKanbanCards(opts: {
     FROM kanban_cards
     WHERE (
       CAST(${seqCol} AS TEXT) = ?
-      OR id LIKE ? ESCAPE '\\'
-      OR title LIKE ? ESCAPE '\\'
-      OR project LIKE ? ESCAPE '\\'
-      OR assignee LIKE ? ESCAPE '\\'
+      OR ${likeNoCase('id', '?')}
+      OR ${likeNoCase('title', '?')}
+      OR ${likeNoCase('project', '?')}
+      OR ${likeNoCase('assignee', '?')}
     )
   `
   const params: unknown[] = [seqText, idPrefix, like, like, like]
@@ -805,7 +806,8 @@ export async function listOtherCardIdsWithProgressEvents(cardId: string, assigne
 // untouched rather than guess). Case-insensitive: breakdown subtask ids are
 // uppercased while createKanbanCard ids stay lowercase.
 export async function getKanbanSeqByIdPrefix(prefix: string): Promise<number | null> {
-  const rows = (await dbx.all('SELECT rowid AS seq FROM kanban_cards WHERE id = ? COLLATE NOCASE LIMIT 2', prefix)) as { seq: number }[]
+  const seqCol = dbxDialect() === 'pg' ? 'seq' : 'rowid'
+  const rows = (await dbx.all(`SELECT ${seqCol} AS seq FROM kanban_cards WHERE ${eqNoCase('id', '?')} LIMIT 2`, prefix)) as { seq: number }[]
   if (rows.length !== 1) return null
   return rows[0].seq
 }
