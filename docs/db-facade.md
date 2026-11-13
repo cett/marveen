@@ -610,6 +610,7 @@ loosen an assertion.
 
 ### What PG mode does not cover yet
 
-The dialect tokens (`rowid`, `INSERT OR`, `GLOB`, `COLLATE NOCASE`, `AUTOINCREMENT`, `PRAGMA`) and `dbx.*` calls that
+The dialect tokens (`rowid`, `INSERT OR`, `GLOB`, `COLLATE NOCASE`, `AUTOINCREMENT`, `PRAGMA`, and a raw `LIKE`: SQLite folds
+ASCII case there, PostgreSQL does not, so a query uses `likeNoCase()` from `db/dialect.ts` instead) and `dbx.*` calls that
 sit inside a transaction body without the `tx` handle (the adapter refuses them, see above) are source changes of the
 modules themselves, done with the next step. A file that needs one of them stays `EXCLUDED` until its module is ported.
