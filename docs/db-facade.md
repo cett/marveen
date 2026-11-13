@@ -597,7 +597,7 @@ job); `MARVEEN_PG_MODULES_ALL=1` runs every file instead, to re-measure what is 
 | `boot-twin` | 1 | the synchronous boot chain |
 | `fts` | 0 | needs FTS5: Phase 3 |
 
-Forty-four files are ported, 30 are excluded. The numbers are a snapshot of the lists, the lists are the authority.
+Forty-five files are ported, 30 are excluded. The numbers are a snapshot of the lists, the lists are the authority.
 
 ### Moving a test onto the facade
 

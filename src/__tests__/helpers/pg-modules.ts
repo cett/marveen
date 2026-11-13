@@ -71,6 +71,7 @@ export const PORTED: readonly string[] = [
   'src/__tests__/memories-content-not-blank.test.ts',
   'src/__tests__/tenant-gate-status-route.test.ts',
   'src/__tests__/db-device-keys.test.ts',
+  'src/__tests__/observability-model-tool-stats.test.ts',
 ]
 
 /** Test files (same form) that do not, each with the reason. */
