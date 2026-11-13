@@ -278,6 +278,34 @@ describe('the strict rule against a real second connection', () => {
     expect(seenByHandle).toEqual({ id: 2 })
     expect(seenByOuter).toBeUndefined()
   })
+
+  it('a nested ambient dbx.tx inside a body is refused like an outer statement; with { ambient: true } on the outer one it is its own transaction on another connection', async () => {
+    const dbx = plainDbx(3)
+    let innerRan = false
+    await expect(
+      dbx.tx(async (tx) => {
+        await tx.run('INSERT INTO dx_t (id) VALUES (1)')
+        await dbx.tx(async (inner) => {
+          innerRan = true
+          await inner.run('INSERT INTO dx_t (id) VALUES (2)')
+        })
+      }),
+    ).rejects.toThrow(/use the tx handle inside a transaction body/)
+    expect(innerRan).toBe(false) // refused before any connection was taken for it
+    expect((await dbx.all('SELECT id FROM dx_t')).length).toBe(0) // the outer transaction rolled back too
+
+    await expect(
+      dbx.tx(async (tx) => {
+        await tx.run('INSERT INTO dx_t (id) VALUES (3)')
+        await dbx.tx(async (inner) => {
+          await inner.run('INSERT INTO dx_t (id) VALUES (4)')
+        })
+        throw new Error('outer fails after the nested one committed')
+      }, { ambient: true }),
+    ).rejects.toThrow(/outer fails/)
+    // the nested transaction was independent: it committed, the outer one rolled back
+    expect((await dbx.all<{ id: number }>('SELECT id FROM dx_t ORDER BY id')).map((r) => r.id)).toEqual([4])
+  })
 })
 
 describe('the tenant context on the server', () => {

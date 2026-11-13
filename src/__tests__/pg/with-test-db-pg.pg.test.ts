@@ -7,7 +7,7 @@ import { dbxDialect } from '../../db/facade.js'
 import { cacheAfterWriteAsync, cachedSystemConfig, cachedSystemConfigList } from '../../db/config-cache.js'
 import { cachedModelProfileMapList } from '../../db/model-profile-map-cache.js'
 import { cachedAgentSettingsByKey } from '../../db/agent-settings-cache.js'
-import { testDbMode, useTestDb } from '../helpers/with-test-db.js'
+import { ambientInTx, testDbMode, useTestDb } from '../helpers/with-test-db.js'
 
 // before useTestDb() reads it: the hooks registered below are the PG ones
 process.env.MARVEEN_TEST_DB = 'pg'
@@ -88,5 +88,25 @@ describe('useTestDb in PG mode', () => {
       throw new Error('rollback me')
     })).rejects.toThrow('rollback me')
     expect((await dbx.get<{ n: number }>('SELECT count(*)::int AS n FROM task_runs'))!.n).toBe(0)
+  })
+})
+
+describe('ambientInTx in PG mode (the positive control is not a no-op)', () => {
+  it('an ambient call inside a transaction body is refused with the strict-tx error, and the control accepts exactly that', async () => {
+    await ambientInTx(() => dbx.tx(async () => {
+      await dbx.get('SELECT 1 AS one')
+    }))
+  })
+
+  it('a run that RESOLVES fails the control: a call that was not refused must not pass for a positive control', async () => {
+    await expect(ambientInTx(async () => {})).rejects.toThrow()
+    await expect(ambientInTx(() => dbx.tx(async (tx) => {
+      await tx.get('SELECT 1 AS one')
+    }))).rejects.toThrow()
+  })
+
+  it('a run that rejects with another error fails the control too', async () => {
+    await expect(ambientInTx(() => Promise.reject(new Error('some other failure')))).rejects.toThrow()
+    await expect(ambientInTx(() => dbx.get('SELECT * FROM table_that_does_not_exist'))).rejects.toThrow()
   })
 })
