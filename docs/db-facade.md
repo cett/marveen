@@ -286,6 +286,22 @@ without overlap (and 2 of other shapes). None of the 60 is on a line with an `aw
 have found a missing `await` the four async rules miss, and the defensive `??` and `?.` of the codebase would
 drown it. It is NOT enabled; the four async rules stay the lint guard.
 
+## Accepted divergences between the two engines
+
+A behavior that differs on purpose, decided, with a cell on each engine that pins today's behavior (a change of either side
+turns a cell red, so it is a decision and not a surprise). SQLite goes away at the cutover; PostgreSQL is the target and the
+better behavior wins where they differ.
+
+- **The username unique rule folds non-ASCII letters on PostgreSQL only.** SQLite: `dashboard_users.username` is
+  `UNIQUE COLLATE NOCASE`, which folds ASCII letters only, so `Émile` and `émile` are two users. PostgreSQL: the
+  baseline has `UNIQUE (lower(username))` (`0001_baseline.sql`), and `lower()` of a UTF-8 server folds the non-ASCII letter too,
+  so the second spelling is refused with `23505`. Nothing is changed in the code: a user created on SQLite with two such
+  spellings is a collision at the import into PostgreSQL (check `SELECT lower(username), count(*) ... GROUP BY 1 HAVING count(*) > 1`
+  before the cutover). The ASCII rule (`Agent-A` and `agent-a` collide) is the same on both. The case-insensitive lookup in
+  `write-tenant.ts` already uses `lower(username) = lower(?)`. Cells: `src/__tests__/db-username-case-divergence.test.ts`
+  (SQLite: both accepted) and `src/__tests__/pg/baseline-parity.pg.test.ts` ("a non-ASCII username folds ...": the second is
+  refused; it asserts the precondition that the test server has a UTF-8 ctype).
+
 ## Known limits
 
 These are behaviours of the code today, listed so that nobody mistakes them for a promise:
