@@ -29,6 +29,7 @@ export const PORTED: readonly string[] = [
   'src/__tests__/db-context-route.test.ts',
   'src/__tests__/db-cost-budgets-month.test.ts',
   'src/__tests__/db-dashboard-user-delete-case.test.ts',
+  'src/__tests__/db-token-usage-prune-local-day.test.ts',
   'src/__tests__/hook-audit-body-trace.test.ts',
   'src/__tests__/schedules-author-db.test.ts',
   'src/__tests__/agent-state-route.test.ts',

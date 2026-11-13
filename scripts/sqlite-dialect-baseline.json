@@ -18,7 +18,7 @@
     "param IS [NOT] NULL": 0,
     "randomblob()/hex()": 0,
     "rowid": 24,
-    "strftime()": 3,
+    "strftime()": 0,
     "unixepoch()": 44,
     "vec0/sqlite-vec": 8
   }
