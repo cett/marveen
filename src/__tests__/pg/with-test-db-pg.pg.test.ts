@@ -1,9 +1,11 @@
 // useTestDb in PG mode, against the real server (MARVEEN_PG_TEST_URL, `npm run test:pg`). The cells that make a "green on
 // PostgreSQL" mean PostgreSQL: dbx really is the PG adapter, every test starts on a clean clone of the baseline, the
 // SQLite handle is not there to catch a stray raw call, and no backend survives into a file that does not ask for one.
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { db } from '../../db.js'
 import { dbxDialect } from '../../db/facade.js'
+import { getDbContextStats } from '../../db/context.js'
+import { logger } from '../../logger.js'
 import { cacheAfterWriteAsync, cachedSystemConfig, cachedSystemConfigList } from '../../db/config-cache.js'
 import { cachedModelProfileMapList } from '../../db/model-profile-map-cache.js'
 import { cachedAgentSettingsByKey } from '../../db/agent-settings-cache.js'
@@ -108,5 +110,41 @@ describe('ambientInTx in PG mode (the positive control is not a no-op)', () => {
   it('a run that rejects with another error fails the control too', async () => {
     await expect(ambientInTx(() => Promise.reject(new Error('some other failure')))).rejects.toThrow()
     await expect(ambientInTx(() => dbx.get('SELECT * FROM table_that_does_not_exist'))).rejects.toThrow()
+  })
+})
+
+describe('the diagnostics name the caller on PostgreSQL, not the adapter', () => {
+  const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
+
+  it('the warning for a call without a db context carries the call site of the test, not a frame of src/db', async () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined)
+    try {
+      await dbx.get('SELECT 1 AS one')
+      const calls = warn.mock.calls.filter((c) => String(c[1] ?? '').includes('without a db context'))
+      expect(calls.length).toBe(1)
+      expect((calls[0]![0] as { callSite: string }).callSite).toContain('with-test-db-pg.pg.test')
+      expect(getDbContextStats().lastCallSite).toContain('with-test-db-pg.pg.test')
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('the slow-transaction warning points at the line that opened the transaction, through the facade too', async () => {
+    const original = process.env.DB_TX_WARN_MS
+    process.env.DB_TX_WARN_MS = '15'
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined)
+    try {
+      await dbx.tx(async (tx) => {
+        await tx.get('SELECT 1 AS one')
+        await sleep(80)
+      })
+      const calls = warn.mock.calls.filter((c) => String(c[1] ?? '').includes('DB_TX_WARN_MS'))
+      expect(calls.length).toBe(1)
+      expect(String((calls[0]![0] as { origin: string }).origin)).toContain('with-test-db-pg.pg.test')
+    } finally {
+      warn.mockRestore()
+      if (original === undefined) delete process.env.DB_TX_WARN_MS
+      else process.env.DB_TX_WARN_MS = original
+    }
   })
 })

@@ -105,9 +105,10 @@ export function txWarnMs(): number {
   return Number.isFinite(n) && n >= 0 ? n : DEFAULT_TX_WARN_MS
 }
 
-function originOf(stack: string | undefined): string {
+/** The first frame outside the db layer (the facade, the lock, the context carrier and the PostgreSQL adapter) and node internals: the caller. */
+export function originOf(stack: string | undefined): string {
   const lines = (stack ?? '').split('\n').slice(1)
-  const outside = lines.find((l) => !/db[\\/](facade|tx-lock|context)\./.test(l) && !/node:internal/.test(l))
+  const outside = lines.find((l) => !/db[\\/](facade|tx-lock|context)\.|[\\/]db[\\/]pg[\\/]/.test(l) && !/node:internal/.test(l))
   return (outside ?? lines[0] ?? 'unknown').trim()
 }
 
