@@ -8,6 +8,7 @@
 // Privacy: neutral fixtures only (agent-a, key-a).
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { ambientInTx, testDbMode, useTestDb } from './helpers/with-test-db.js'
+import { refuseInsert } from './helpers/refuse-insert.js'
 import { dbx, pruneAuditLogs, pruneHookAuditLogJournaled, writeAgentAuditLog } from '../db.js'
 import { currentTxScope } from '../db/tx-lock.js'
 
@@ -43,8 +44,7 @@ async function seedOldRows(): Promise<void> {
 }
 /** The next journal row cannot be written: an INSERT of a retention_prune row aborts. */
 async function breakTheJournal(): Promise<void> {
-  await dbx.exec(`CREATE TRIGGER no_prune_journal BEFORE INSERT ON agent_audit_log
-    WHEN NEW.action = 'retention_prune' BEGIN SELECT RAISE(ABORT, 'journal write refused'); END`)
+  await refuseInsert(dbx, { name: 'no_prune_journal', table: 'agent_audit_log', message: 'journal write refused', when: { column: 'action', equals: 'retention_prune' } })
 }
 const journalRows = async () => ((await dbx.get("SELECT COUNT(*) AS n FROM agent_audit_log WHERE action = 'retention_prune'")) as { n: number }).n
 

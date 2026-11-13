@@ -9,6 +9,7 @@
 // Privacy: neutral fixtures only (tok-a).
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { ambientInTx, testDbMode, useTestDb } from './helpers/with-test-db.js'
+import { refuseInsert } from './helpers/refuse-insert.js'
 import { dbx, insertApiToken, replaceActiveApiToken, rotateSharedDashboardToken, listActiveApiTokensByName } from '../db.js'
 import { currentTxScope } from '../db/tx-lock.js'
 
@@ -37,8 +38,7 @@ const mint = (name: string, hash: string, createdAt = NOW - 100) =>
 const activeHashes = async (name: string) => (await listActiveApiTokensByName(name, NOW)).map((r) => r.token_hash).sort()
 /** The insert of this one hash cannot be written: an INSERT of it aborts. */
 async function breakInsertOf(hash: string): Promise<void> {
-  await dbx.exec(`CREATE TRIGGER no_boom_insert BEFORE INSERT ON api_tokens
-    WHEN NEW.token_hash = '${hash}' BEGIN SELECT RAISE(ABORT, 'insert refused'); END`)
+  await refuseInsert(dbx, { name: 'no_boom_insert', table: 'api_tokens', message: 'insert refused', when: { column: 'token_hash', equals: hash } })
 }
 const replace = (fileHash: string | null, tokenHash: string) =>
   replaceActiveApiToken({ fileHash, tokenHash, name: 'tok-a', role: 'admin', agentId: null, now: NOW })
