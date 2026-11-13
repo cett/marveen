@@ -11,7 +11,7 @@
 // Privacy: neutral fixtures only (agent-a, idea-1).
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { ambientInTx, testDbMode, useTestDb } from './helpers/with-test-db.js'
-import { refuseInsert } from './helpers/refuse-insert.js'
+import { refuseWrite } from './helpers/refuse-write.js'
 import { createKanbanCard, createKanbanSubtasks, deleteKanbanCard, promoteIdeaToKanban, createIdea, getKanbanCard, getDb } from '../db.js'
 import { dbx } from '../db.js'
 import { currentTxScope } from '../db/tx-lock.js'
@@ -53,7 +53,7 @@ const audits = async (action: string) =>
   (await dbx.all("SELECT agent_id, entity_id, tenant_id FROM agent_audit_log WHERE entity = 'kanban' AND action = ? ORDER BY id", action)) as
     { agent_id: string; entity_id: string; tenant_id: string | null }[]
 const blockAuditWrites = async () =>
-  refuseInsert(dbx, { name: 'audit_blocked', table: 'agent_audit_log', message: 'audit refused' })
+  refuseWrite(dbx, { name: 'audit_blocked', table: 'agent_audit_log', message: 'audit refused' })
 
 beforeEach(() => { vi.restoreAllMocks() })
 afterEach(() => { vi.restoreAllMocks() })
@@ -173,7 +173,7 @@ describe('promoteIdeaToKanban: the cards, the idea unit and the audit rows run o
 
   it('the idea log row cannot be written: no card stays and the idea is unchanged', async () => {
     await addIdea()
-    await refuseInsert(dbx, { name: 'log_blocked', table: 'idea_status_log', message: 'log refused' })
+    await refuseWrite(dbx, { name: 'log_blocked', table: 'idea_status_log', message: 'log refused' })
     await expect(promote()).rejects.toThrow('log refused')
     expect(await cardCount()).toBe(0)
     expect(await ideaRow()).toEqual({ status: 'new', kanban_id: null })

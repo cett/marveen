@@ -35,7 +35,7 @@ export const PORTED: readonly string[] = [
   'src/__tests__/import-crawler-blank-source.test.ts',
   'src/__tests__/import-db-helpers.test.ts',
   'src/__tests__/import-strip-markup-entities.test.ts',
-  'src/__tests__/refuse-insert.test.ts',
+  'src/__tests__/refuse-write.test.ts',
 ]
 
 /** Test files (same form) that do not, each with the reason. */
