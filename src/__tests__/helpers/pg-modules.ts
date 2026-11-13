@@ -38,6 +38,8 @@ export const PORTED: readonly string[] = [
   'src/__tests__/refuse-write.test.ts',
   'src/__tests__/fleet-import-rows-handle.test.ts',
   'src/__tests__/kanban-seq.test.ts',
+  'src/__tests__/otel-span-upsert-export-mark.test.ts',
+  'src/__tests__/tool-calls-insertion-order.test.ts',
 ]
 
 /** Test files (same form) that do not, each with the reason. */

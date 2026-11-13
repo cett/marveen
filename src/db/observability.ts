@@ -202,7 +202,7 @@ export async function upsertOtelSpan(span: Omit<OtelSpan, 'end_ms' | 'status'> &
     ON CONFLICT (trace_id, span_id) DO UPDATE SET
       exported_at = CASE
         WHEN otel_spans.exported_at IS NOT NULL
-         AND (excluded.end_ms IS NOT otel_spans.end_ms OR excluded.status IS NOT otel_spans.status)
+         AND (excluded.end_ms IS DISTINCT FROM otel_spans.end_ms OR excluded.status IS DISTINCT FROM otel_spans.status)
         THEN NULL ELSE otel_spans.exported_at END,
       end_ms = excluded.end_ms,
       status = excluded.status,
