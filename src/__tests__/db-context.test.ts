@@ -4,7 +4,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { initDatabase, dbx, runAs, currentDbContext, getDbContextStats, resetDbContextStats, endDbBootPhase } from '../db.js'
 import { logger } from '../logger.js'
-import { useTestDb } from './helpers/with-test-db.js'
+import { ambientInTx, testDbMode, useTestDb } from './helpers/with-test-db.js'
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 
@@ -121,13 +121,14 @@ describe('AsyncLocalStorage traps', () => {
           expect(currentDbContext()?.role).toBe('system')
           // still inside the transaction: this statement must not wait for the lock held by its own transaction
           await tx.run('INSERT INTO ctx_t (name) VALUES (?)', 'a')
-          await dbx.run('INSERT INTO ctx_t (name) VALUES (?)', 'b')
+          // SQLite: the ambient call joins the transaction. PostgreSQL: refused (it would run on another connection)
+          await ambientInTx(() => dbx.run('INSERT INTO ctx_t (name) VALUES (?)', 'b'))
         })
         expect(currentDbContext()?.tenantId).toBe('acme')
       })
       expect(currentDbContext()?.tenantId).toBe('acme')
     })
-    expect((await dbx.all('SELECT name FROM ctx_t')).length).toBe(2)
+    expect((await dbx.all('SELECT name FROM ctx_t')).length).toBe(testDbMode() === 'pg' ? 1 : 2)
   })
 })
 

@@ -15,7 +15,7 @@ import {
   clearChannelAdoption,
   recordChannelDriftCheck,
 } from '../db.js'
-import { useTestDb } from './helpers/with-test-db.js'
+import { ambientInTx, testDbMode, useTestDb } from './helpers/with-test-db.js'
 import { countFacadeCalls } from './helpers/single-transaction.js'
 
 useTestDb()
@@ -86,9 +86,13 @@ describe('read-then-write db functions run as one transaction', () => {
   })
 
   it('a function that opens a transaction but runs its statements outside the handle is caught', async () => {
-    const mixed = await countFacadeCalls(dbx, () => dbx.tx(async () => {
-      await dbx.get('SELECT 1 AS n')
-    }))
-    expect(mixed).toEqual({ tx: 1, outsideTx: 1 })
+    let mixed: Awaited<ReturnType<typeof countFacadeCalls>> | undefined
+    await ambientInTx(async () => {
+      mixed = await countFacadeCalls(dbx, () => dbx.tx(async () => {
+        await dbx.get('SELECT 1 AS n')
+      }))
+    })
+    // SQLite counts the call; PostgreSQL refuses it inside the body (ambientInTx expects that), so there is no count to read
+    if (testDbMode() !== 'pg') expect(mixed).toEqual({ tx: 1, outsideTx: 1 })
   })
 })
