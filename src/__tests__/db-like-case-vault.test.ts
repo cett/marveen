@@ -76,7 +76,9 @@ describe('the gate-send reservation prefix', () => {
   })
 
   it('refuses a ref that only looks like the prefix, and a missing ref', async () => {
-    for (const ref of ['gate-1', 'gateXsend-1', 'xgate-send-1', 'gate-sen', null]) {
+    // gate-sendX (no hyphen after "send") and gate-send (no tail) are the NEAR misses: a prefix that lost its hyphen
+    // ('gate-send%') would adopt them; gate_send-1 pins that the hyphen is not a wildcard-like character.
+    for (const ref of ['gate-1', 'gateXsend-1', 'xgate-send-1', 'gate-sen', 'gate-sendX', 'gate-send', 'GATE-SENDX', 'gate_send-1', null]) {
       const id = await reserved(ref)
       expect(await adopt(id), String(ref)).toBe(false)
       expect((await getApproval(id))?.used_ref ?? null).toBeNull()
@@ -90,10 +92,13 @@ describe('the gate-send reservation prefix', () => {
     expect((await getApproval(id))?.used_ref).toBe('send-3')
   })
 
-  it('claimApproval in send mode does not adopt a reservation with a foreign ref', async () => {
-    const id = await reserved('gateXsend-4')
-    const out = await claimApproval({ ...p, window_s: 1800, now: NOW + 1, ref: 'send-4', consumer: 'gmail-send', mode: 'send' })
-    expect(out).toMatchObject({ ok: false })
-    expect((await getApproval(id))?.used_ref ?? null).toBeNull()
+  it('claimApproval in send mode does not adopt a reservation with a foreign or near-miss ref (the SELECT path)', async () => {
+    for (const ref of ['gateXsend-4', 'gate-sendX', 'Gate-SendX']) {
+      const id = await reserved(ref)
+      const out = await claimApproval({ ...p, window_s: 1800, now: NOW + 1, ref: 'send-4', consumer: 'gmail-send', mode: 'send' })
+      expect(out, ref).toMatchObject({ ok: false })
+      expect((await getApproval(id))?.used_ref ?? null, ref).toBeNull()
+      await dbx.run('DELETE FROM approvals')
+    }
   })
 })
