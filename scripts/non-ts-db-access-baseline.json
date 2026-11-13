@@ -28,7 +28,8 @@
     "scripts/backup.sh": {
       "dialect": {
         "GLOB": 1,
-        "PRAGMA": 6
+        "PRAGMA": 6,
+        "raw LIKE": 2
       },
       "direct": {
         "claudeclaw.db": 9,
@@ -43,6 +44,7 @@
     },
     "scripts/generate-pg-baseline-seed.ts": {
       "dialect": {
+        "raw LIKE": 3,
         "unixepoch()": 1
       },
       "direct": {
@@ -128,7 +130,8 @@
     "scripts/verify-restore.sh": {
       "dialect": {
         "GLOB": 1,
-        "PRAGMA": 3
+        "PRAGMA": 3,
+        "raw LIKE": 2
       },
       "direct": {
         "claudeclaw.db": 6,
@@ -136,7 +139,9 @@
       }
     },
     "seed-skills/fleet-helper/scripts/mail_triage.py": {
-      "dialect": {},
+      "dialect": {
+        "raw LIKE": 1
+      },
       "direct": {
         "python sqlite3": 1,
         "sqlite3.connect": 1
