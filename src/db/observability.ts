@@ -1154,8 +1154,10 @@ export async function getTokenDetails(
 }
 
 export async function correlateWithKanban(): Promise<void> {
+  // The aliases are quoted: PostgreSQL folds an unquoted alias to lower case, so row.minTs and row.maxTs would be
+  // undefined there and no card would ever match (no error, an empty result).
   const uncorrelated = (await dbx.all(`
-    SELECT DISTINCT agent, MIN(timestamp) as minTs, MAX(timestamp) as maxTs
+    SELECT DISTINCT agent, MIN(timestamp) as "minTs", MAX(timestamp) as "maxTs"
     FROM token_usage
     WHERE task_title IS NULL
     GROUP BY agent
