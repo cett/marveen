@@ -6,7 +6,7 @@
 // importFleet requires a live DB and filesystem, so those paths are integration-tested
 // by calling importFleet with a pre-encrypted payload and mocked DB / FS module.
 
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest'
 import { _encryptForTest, _decryptForTest, ENCRYPTED_FLEET_VERSION, MIN_VAULT_PASSWORD_LEN } from '../web/fleet-transfer.js'
 import type { Tx } from '../db/facade.js'
 
@@ -74,6 +74,7 @@ vi.mock('../db.js', () => ({
 vi.mock('../db/system-config.js', () => ({
   getSystemConfig: vi.fn().mockReturnValue(undefined),
   setSystemConfig: vi.fn(() => Promise.resolve()),
+  setSystemConfigMany: vi.fn(() => Promise.resolve()),
 }))
 
 // fleet-transfer.ts (#985 group 6/8) imports listCostBudgets/replaceCostBudgets
@@ -609,6 +610,47 @@ describe('importFleet: the import transaction is awaited', () => {
     expect(calls).toHaveLength(14)
     // a call without the handle would open its transaction from the outer dbx, which Postgres refuses inside a body
     for (const c of calls) expect(c[2], `importFleetRows(${String(c[0])}) handle`).toBe(FAKE_TX)
+  })
+
+  it('every settings, skill and tenant write of the body runs on the handle the transaction wrapper passed', async () => {
+    const t = await import('../db/fleet-transfer.js')
+    const db = await import('../db.js')
+    const sc = await import('../db/system-config.js')
+    const cb = await import('../db/cost-budgets.js')
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    const fleet = JSON.parse(FLEET_WITH_SCHEDULES)
+    fleet.skills = [{ name: 'skill-g', skillMd: '---\nname: skill-g\ndescription: d\n---\nbody\n' }]
+    fleet.dashboardSettings = {
+      autonomy: [{ key: 'category-new', label: 'Category New', level: 1, locked: 0, max_level: 3, timeout_minutes: 30, updated_by: 'import', updated_at: 0 }],
+      modelProfileMap: [{ profile_id: 'build_strong', model_id: 'model-new', updated_by: 'import', updated_at: 0 }],
+      autoRestart: { 'agent-b': { enabled: true } },
+      agentsDesired: ['agent-new'],
+      norbertPersonal: {},
+      modelFallback: { enabled: true, chain: ['model-new'], revertAfterMinutes: 5 },
+      federation: { enabled: false, systemId: 'system-new' },
+      costBudgets: [{ id: 'budget-new', name: 'Budget New', scope: 'global', amount: 200, currency: 'USD' }],
+      terminalInputEnabled: true,
+      egressAllowlist: [{ value: 'imported.example.com', type: 'domain' }],
+    }
+    for (const m of [sc.setSystemConfig, sc.setSystemConfigMany, cb.replaceCostBudgets, db.upsertAutonomyCategory, db.upsertModelProfileMapEntry,
+      db.setAgentSetting, db.mergeEgressAllowlistEntries, db.seedSkillIfAbsent, t.listEnabledTenantIds, t.rebuildMemoriesFts]) (m as unknown as Mock).mockClear()
+
+    await importFleet(JSON.stringify(fleet), { apply: true, humanSession: true })
+
+    // setSystemConfig: desired agents, terminal input, federation; setSystemConfigMany: the model fallback fields.
+    // The handle is the last argument of each call; a call without it would open its own transaction on dbx, which
+    // Postgres refuses inside the body.
+    const last = (m: unknown) => (m as unknown as Mock).mock.calls.map((c: unknown[]) => c[c.length - 1])
+    expect(last(sc.setSystemConfig), 'setSystemConfig (desired agents, terminal input, federation)').toEqual([FAKE_TX, FAKE_TX, FAKE_TX])
+    expect(last(sc.setSystemConfigMany), 'setSystemConfigMany (model fallback)').toEqual([FAKE_TX])
+    for (const [name, m] of Object.entries({
+      replaceCostBudgets: cb.replaceCostBudgets, upsertAutonomyCategory: db.upsertAutonomyCategory,
+      upsertModelProfileMapEntry: db.upsertModelProfileMapEntry, setAgentSetting: db.setAgentSetting,
+      mergeEgressAllowlistEntries: db.mergeEgressAllowlistEntries, seedSkillIfAbsent: db.seedSkillIfAbsent,
+      listEnabledTenantIds: t.listEnabledTenantIds, rebuildMemoriesFts: t.rebuildMemoriesFts,
+    })) {
+      expect(last(m), name).toEqual([FAKE_TX])
+    }
   })
 
   it('the memory index rebuild is awaited too', async () => {
