@@ -10,7 +10,7 @@
 
 import { createHash } from 'node:crypto'
 import { basename } from 'node:path'
-import { KANBAN_SEQ_COLUMN, kanbanWriteClearsDispatch } from './kanban.js'
+import { kanbanSelectList, kanbanWriteClearsDispatch } from './kanban.js'
 import { dbx } from './facade.js'
 import { syncVecMemoryDelete } from './vector.js'
 import { assertNoReservedMarker } from '../server-markers.js'
@@ -125,13 +125,13 @@ export async function listTenantKanbanCards(tenantId: string, status?: string, l
   if (status) {
     const params: unknown[] = [tenantId, status]
     if (limit !== undefined) { params.push(limit); if (offset !== undefined) params.push(offset) }
-    return dbx.all<ScopedKanbanCard>(`SELECT ${KANBAN_SEQ_COLUMN}, * FROM kanban_cards
+    return dbx.all<ScopedKanbanCard>(`SELECT ${kanbanSelectList()} FROM kanban_cards
          WHERE tenant_id = ? AND status = ? AND archived_at IS NULL
          ORDER BY sort_order ASC, created_at DESC${limitClause}`, ...params)
   }
   const params: unknown[] = [tenantId]
   if (limit !== undefined) { params.push(limit); if (offset !== undefined) params.push(offset) }
-  return dbx.all<ScopedKanbanCard>(`SELECT ${KANBAN_SEQ_COLUMN}, * FROM kanban_cards
+  return dbx.all<ScopedKanbanCard>(`SELECT ${kanbanSelectList()} FROM kanban_cards
        WHERE tenant_id = ? AND archived_at IS NULL
        ORDER BY sort_order ASC, created_at DESC${limitClause}`, ...params)
 }
@@ -146,7 +146,7 @@ export async function countTenantKanbanCards(tenantId: string, status?: string):
 
 export async function getTenantKanbanCard(tenantId: string, id: string): Promise<ScopedKanbanCard | null> {
   return (
-    (await dbx.get<ScopedKanbanCard>(`SELECT ${KANBAN_SEQ_COLUMN}, * FROM kanban_cards WHERE tenant_id = ? AND id = ?`, tenantId, id)) ?? null
+    (await dbx.get<ScopedKanbanCard>(`SELECT ${kanbanSelectList()} FROM kanban_cards WHERE tenant_id = ? AND id = ?`, tenantId, id)) ?? null
   )
 }
 
