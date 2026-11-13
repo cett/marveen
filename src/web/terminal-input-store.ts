@@ -1,4 +1,5 @@
 import { getSystemConfig, setSystemConfig } from '../db/system-config.js'
+import type { SqlOps } from '../db/facade.js'
 
 // Master opt-in toggle for the dashboard per-agent terminal-input (send-keys)
 // feature. DEFAULT OFF.
@@ -30,10 +31,10 @@ export function readTerminalInputEnabled(): boolean {
   }
 }
 
-/** Persist the toggle. Returns the new state. */
-export async function writeTerminalInputEnabled(enabled: boolean): Promise<boolean> {
+/** Persist the toggle. Returns the new state. `ops` is the transaction handle of a caller that holds one. */
+export async function writeTerminalInputEnabled(enabled: boolean, ops?: SqlOps): Promise<boolean> {
   const next = enabled === true
-  await setSystemConfig(KEY, next ? '1' : '0')
+  await setSystemConfig(KEY, next ? '1' : '0', 'db', ops)
   return next
 }
 

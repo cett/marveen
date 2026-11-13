@@ -34,13 +34,14 @@ import {
 } from '../db/fleet-transfer.js'
 import { validateConfig, type BudgetEntry } from '../costops/config.js'
 import { listVaultBindings, replaceVaultBindings, type VaultBinding } from '../db/vault-bindings.js'
-import { reloadSystemConfigCache } from '../db/config-cache.js'
-import { reloadModelProfileMapCache } from '../db/model-profile-map-cache.js'
-import { reloadAgentSettingsCache } from '../db/agent-settings-cache.js'
+import { loadSystemConfigCacheAsync } from '../db/config-cache.js'
+import { loadModelProfileMapCacheAsync } from '../db/model-profile-map-cache.js'
+import { loadAgentSettingsCacheAsync } from '../db/agent-settings-cache.js'
 import { getFederationConfigRaw, setFederationConfigRaw } from '../db/federation.js'
 import { invalidateFederationConfigCache, validateFederationConfig } from './federation/config.js'
 import { logger } from '../logger.js'
-import { auditAutonomyLevelChange } from './autonomy-audit.js'
+import { auditAutonomyLevelChange, resolveAutonomyAuditTenant } from './autonomy-audit.js'
+import type { SqlOps } from '../db/facade.js'
 import { isBlankContent } from '../blank-content.js'
 
 // ---------------------------------------------------------------------------
@@ -1152,8 +1153,8 @@ function importedScheduleTenant(localTenants: ReadonlySet<string>, raw: unknown)
   return typeof raw === 'string' && localTenants.has(raw) ? raw : 'default'
 }
 
-async function enabledLocalTenantIds(): Promise<Set<string>> {
-  return new Set<string>(['default', ...await listEnabledTenantIds()])
+async function enabledLocalTenantIds(ops?: SqlOps): Promise<Set<string>> {
+  return new Set<string>(['default', ...await listEnabledTenantIds(ops)])
 }
 
 /**
@@ -1484,16 +1485,18 @@ function dropBackups(tracker: WriteTracker): void {
  * value as soon as the statement ran, inside the transaction, and keeps it after a rollback), and drop the federation
  * config cache for the same reason.
  */
-function reloadImportCaches(): void {
-  reloadModelProfileMapCache()
-  reloadAgentSettingsCache()
-  reloadSystemConfigCache()
+async function reloadImportCaches(): Promise<void> {
+  // The async loaders read through the facade (the same SELECT on both engines); the synchronous reloaders read the
+  // SQLite handle, which does not exist on Postgres. Both only run after the transaction has ended.
+  await loadModelProfileMapCacheAsync()
+  await loadAgentSettingsCacheAsync()
+  await loadSystemConfigCacheAsync()
   invalidateFederationConfigCache()
 }
 
 /** The failure-branch variant: the original error is the one to report, so a reload that fails is only logged. */
-function reloadImportCachesQuietly(): void {
-  try { reloadImportCaches() } catch (err: any) {
+async function reloadImportCachesQuietly(): Promise<void> {
+  try { await reloadImportCaches() } catch (err: any) {
     logger.error({ err: err?.message }, 'Fleet import: could not reload the caches after a failed import')
   }
 }
@@ -1975,12 +1978,15 @@ async function runImportFleet(
     }
 
     // Phase 2: ONE transaction holds every database write of the import -- the settings, the skill rows and the
-    // per-row imports -- so a failure anywhere rolls all of it back. The body holds only `dbx` calls (the modules
-    // below are on the facade, so each joins the ambient transaction and a nested one becomes a savepoint) and pure
-    // row policy: no file I/O, no network, no timer, no LLM, no vault. seedSkillIfAbsent() is on the facade too
-    // (db/tasks.ts), so the skill rows roll back with the rest. Rows are written in the same order the
+    // per-row imports -- so a failure anywhere rolls all of it back. The body holds only calls on the transaction
+    // handle `tx` (a nested transaction becomes a savepoint) and pure row policy: no file I/O, no network, no timer,
+    // no LLM, no vault. A call on the outer `dbx` here is refused on Postgres (the strict rule). Rows are written in the same order the
     // pre-transaction block used.
-    const importTx = () => inFleetImportTransaction(async () => {
+    // The tenant of the autonomy audit rows is looked up here, before the transaction: the lookup runs on the facade,
+    // which the body may not call. Only when the snapshot has autonomy rows to write.
+    const auditActor = options.actor ?? 'system'
+    const auditTenant = Array.isArray(s.autonomy) ? await resolveAutonomyAuditTenant(auditActor) : undefined
+    const importTx = () => inFleetImportTransaction(async (tx) => {
       // DB-backed -- upsert each imported row into autonomy_categories (not a file write). Upsert rather than
       // replace-all: a category that only exists on the target fleet (not in the imported snapshot) is left
       // untouched, consistent with the identity-takeover model not being destructive beyond what the source
@@ -1988,42 +1994,43 @@ async function runImportFleet(
       if (Array.isArray(s.autonomy)) {
         const levelBefore = new Map(autonomyBefore.map((r) => [r.key, r.level]))
         for (const row of s.autonomy) {
-          await upsertAutonomyCategory(row)
-          if (levelBefore.get(row.key) !== row.level) await auditAutonomyLevelChange(options.actor ?? 'system', row.key, levelBefore.get(row.key) ?? null, row.level)
+          await upsertAutonomyCategory(row, tx)
+          if (auditTenant !== undefined && levelBefore.get(row.key) !== row.level)
+            await auditAutonomyLevelChange(auditActor, row.key, levelBefore.get(row.key) ?? null, row.level, { tx, tenantId: auditTenant.tenantId })
         }
       }
       // Same upsert-not-replace rationale as autonomy above. upsertModelProfileMapEntry is write-through
       // (db/model-profile-map-cache.ts), so the cache is re-read after a rollback (reloadImportCaches()).
       if (Array.isArray(s.modelProfileMap)) {
-        for (const row of s.modelProfileMap) await upsertModelProfileMapEntry(row)
+        for (const row of s.modelProfileMap) await upsertModelProfileMapEntry(row, tx)
       }
       // DB-backed (agent_settings) -- upsert per agent, same rationale as autonomy/modelProfileMap above.
       if (s.autoRestart) {
-        for (const [agentId, cfg] of Object.entries(s.autoRestart)) await setAgentSetting(agentId, 'auto_restart', cfg)
+        for (const [agentId, cfg] of Object.entries(s.autoRestart)) await setAgentSetting(agentId, 'auto_restart', cfg, 'default', tx)
       }
       // DB-backed (system_config 'agents_desired') -- whole-value replace. Array.isArray guards a pre-migration
       // snapshot that still has the old `{}` empty-object shape (nothing to import from that).
-      if (Array.isArray(s.agentsDesired)) await setDesiredAgents(s.agentsDesired as string[])
+      if (Array.isArray(s.agentsDesired)) await setDesiredAgents(s.agentsDesired as string[], tx)
       // DB-backed (system_config 'model_fallback_*') -- see the field-level doc comment on
       // writeModelFallbackFieldsRaw() for why this only sets the fields the source snapshot actually carries.
       if (s.modelFallback && Object.keys(s.modelFallback).length)
-        await writeModelFallbackFieldsRaw(s.modelFallback as Partial<ModelFallbackConfig>)
+        await writeModelFallbackFieldsRaw(s.modelFallback as Partial<ModelFallbackConfig>, tx)
       // DB-backed (system_config 'terminal_input_enabled') -- see readTerminalInputEnabledRaw()'s doc comment for
       // why an absent field must leave the target's current value untouched rather than defaulting it.
-      if (typeof s.terminalInputEnabled === 'boolean') await writeTerminalInputEnabled(s.terminalInputEnabled)
+      if (typeof s.terminalInputEnabled === 'boolean') await writeTerminalInputEnabled(s.terminalInputEnabled, tx)
       // federation: validated in phase 0; the cache is dropped after the commit (reloadImportCaches()).
-      if (federationJson !== null) await setFederationConfigRaw(federationJson)
+      if (federationJson !== null) await setFederationConfigRaw(federationJson, 'db', tx)
       // cost_budgets: validated and de-duplicated in phase 0.
-      if (budgetsToReplace !== null) await replaceCostBudgets('default', budgetsToReplace)
+      if (budgetsToReplace !== null) await replaceCostBudgets('default', budgetsToReplace, tx)
       // egress_allowlist -- DB-backed (migration 0056), MERGE not overwrite (see DashboardSettingsExport doc):
       // INSERT OR IGNORE per row is the union semantics, same upsert-not-replace rationale as autonomy above.
       if (Array.isArray(s.egressAllowlist)) {
-        await mergeEgressAllowlistEntries(s.egressAllowlist as EgressAllowlistRow[])
+        await mergeEgressAllowlistEntries(s.egressAllowlist as EgressAllowlistRow[], tx)
       }
 
       // The SQL side of the skill files staged above. A failure is the import's failure (it used to be logged and
       // swallowed, which let a file and its row drift apart).
-      for (const seed of skillSeeds) await seedSkillIfAbsent(seed, { kind: 'import', id: null }, { sourceRef: 'fleet-transfer' })
+      for (const seed of skillSeeds) await seedSkillIfAbsent(seed, { kind: 'import', id: null }, { sourceRef: 'fleet-transfer' }, tx)
 
       // The row-level policy (required fields, enums, forced values) lives here; the SQL itself is in
       // db/fleet-transfer.ts.
@@ -2033,7 +2040,7 @@ async function runImportFleet(
         const l = label as any
         if (!l.id || !l.name || breaksTableRules(l, ['color', 'created_at'])) { logger.warn({ id: l.id }, 'Fleet import: skipping label with missing required fields'); return false }
         return true
-      }))
+      }), tx)
 
       await importFleetRows('kanban_cards', (fleet.kanban?.cards ?? []).filter((card) => {
         const c = card as any
@@ -2045,30 +2052,30 @@ async function runImportFleet(
           logger.warn({ id: c.id }, 'Fleet import: skipping kanban card with missing required fields'); return false
         }
         return true
-      }))
+      }), tx)
 
       // kanban comments (idempotent: card_id + content)
       await importFleetRows('kanban_comments', (fleet.kanban?.comments ?? []).filter((comment) => {
         const c = comment as any
         return !!c.card_id && !!c.content
-      }))
+      }), tx)
 
       // kanban card events -- idempotent on (card_id, created_at, to_status)
       await importFleetRows('kanban_card_events', (fleet.kanban?.cardEvents ?? []).filter((ev) => {
         const e = ev as any
         return !!e.card_id && !!e.to_status
-      }))
+      }), tx)
 
       await importFleetRows('kanban_card_labels', (fleet.kanban?.cardLabels ?? []).filter((cl) => {
         const c = cl as any
         return !!c.card_id && !!c.label_id && c.created_at != null
-      }))
+      }), tx)
 
       // schedules -- idempotent on id. Always imported disabled regardless of the
       // exported value (defense in depth -- mirrors the file-based scheduledTasks
       // pause-on-import above): a migrated fleet must never start firing a source
       // fleet's cron jobs unreviewed, e.g. under a different/missing agent name.
-      const scheduleTenants = await enabledLocalTenantIds()
+      const scheduleTenants = await enabledLocalTenantIds(tx)
       const scheduleRows: Record<string, unknown>[] = []
       for (const sch of fleet.schedules ?? []) {
         const s = sch as any
@@ -2083,7 +2090,7 @@ async function runImportFleet(
           skip_if_busy: s.skip_if_busy ?? 0, force_send: s.force_send ?? 0,
         })
       }
-      await importFleetRows('schedules', scheduleRows)
+      await importFleetRows('schedules', scheduleRows, tx)
 
       // import_sources -- idempotent on id. Always imported disabled with
       // last_run_at cleared, regardless of the exported values (defense in
@@ -2106,7 +2113,7 @@ async function runImportFleet(
           tenant_id: s.tenant_id ?? 'default',
         })
       }
-      await importFleetRows('import_sources', importSourceRows)
+      await importFleetRows('import_sources', importSourceRows, tx)
 
       // vault_ssh_keys -- idempotent on id. Metadata only (no private key column);
       // inserted before vault_ssh_servers below since a server's ssh_key_id refers
@@ -2119,7 +2126,7 @@ async function runImportFleet(
           logger.warn({ id: k.id }, 'Fleet import: skipping SSH key with missing required fields'); return false
         }
         return true
-      }).map((key) => ({ ...(key as any), tenant_id: (key as any).tenant_id ?? 'default' })))
+      }).map((key) => ({ ...(key as any), tenant_id: (key as any).tenant_id ?? 'default' })), tx)
 
       // vault_ssh_servers -- idempotent on id.
       await importFleetRows('vault_ssh_servers', (fleet.vaultSshServers ?? []).filter((srv) => {
@@ -2128,17 +2135,17 @@ async function runImportFleet(
           logger.warn({ id: s2.id }, 'Fleet import: skipping SSH server with missing required fields'); return false
         }
         return true
-      }).map((srv) => ({ ...(srv as any), port: (srv as any).port ?? 22, tenant_id: (srv as any).tenant_id ?? 'default' })))
+      }).map((srv) => ({ ...(srv as any), port: (srv as any).port ?? 22, tenant_id: (srv as any).tenant_id ?? 'default' })), tx)
 
       // memories -- idempotent on (agent_id, content); covers ALL agent_ids
       // agent_id-k pontosan a forrásból kerülnek át (a cél átveszi a forrás főagent identitását)
       const now = Math.floor(Date.now() / 1000)
       await importFleetRows('memories', memoryRows.rows.map((mem) => ({
         ...mem, chat_id: '', accessed_at: mem.accessed_at ?? now, auto_generated: mem.auto_generated ?? 0,
-      })))
+      })), tx)
 
       // daily logs -- idempotent on (agent_id, date, content); multiple rows per date are preserved
-      await importFleetRows('daily_logs', fleet.dailyLogs ?? [])
+      await importFleetRows('daily_logs', fleet.dailyLogs ?? [], tx)
 
       // idea_box -- idempotent on id
       await importFleetRows('idea_box', (fleet.ideaBox?.ideas ?? []).filter((idea) => {
@@ -2147,16 +2154,16 @@ async function runImportFleet(
           logger.warn({ id: i.id }, 'Fleet import: skipping idea with missing required fields'); return false
         }
         return true
-      }).map((idea) => ({ ...(idea as any), source: (idea as any).source ?? '' })))
+      }).map((idea) => ({ ...(idea as any), source: (idea as any).source ?? '' })), tx)
 
       // idea_comments -- M5: idempotent on (idea_id, created_at, content)
-      await importFleetRows('idea_comments', fleet.ideaBox?.comments ?? [])
+      await importFleetRows('idea_comments', fleet.ideaBox?.comments ?? [], tx)
 
       // idea_status_log -- M5: idempotent on (idea_id, created_at, to_status)
-      await importFleetRows('idea_status_log', fleet.ideaBox?.statusLog ?? [])
+      await importFleetRows('idea_status_log', fleet.ideaBox?.statusLog ?? [], tx)
 
       // FTS rebuild after all memory inserts
-      await rebuildMemoriesFts()
+      await rebuildMemoriesFts(tx)
     })
 
     await importTx()
@@ -2165,7 +2172,7 @@ async function runImportFleet(
     // files go and the caches are re-read. The write-through caches may have shown the new values inside the
     // transaction and keep them after the rollback.
     discardStaged(tracker)
-    reloadImportCachesQuietly()
+    await reloadImportCachesQuietly()
     logger.error({ err: err.message }, 'Fleet import failed, nothing applied, staged files removed')
     throw err
   }
@@ -2175,7 +2182,7 @@ async function runImportFleet(
   // from their backups instead, and the error says that the database changes remain.
   try {
     finalizeStaged(tracker.files.filter((e) => !vaultFiles.includes(e)))
-    reloadImportCaches()
+    await reloadImportCaches()
 
     // 6. Vault -- LAST: vault data is plaintext (decrypted at the top of importFleet)
     if (fleet.vault) {

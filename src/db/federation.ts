@@ -22,6 +22,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { getSystemConfig, setSystemConfig, setSystemConfigSync, updateSystemConfig, deleteSystemConfig } from './system-config.js'
+import type { SqlOps } from './facade.js'
 import { STORE_DIR } from '../config.js'
 import { logger } from '../logger.js'
 
@@ -31,8 +32,8 @@ export function getFederationConfigRaw(): string | undefined {
   return getSystemConfig(FEDERATION_CONFIG_KEY)?.value
 }
 
-export async function setFederationConfigRaw(json: string, source: string = 'db'): Promise<void> {
-  await setSystemConfig(FEDERATION_CONFIG_KEY, json, source)
+export async function setFederationConfigRaw(json: string, source: string = 'db', ops?: SqlOps): Promise<void> {
+  await setSystemConfig(FEDERATION_CONFIG_KEY, json, source, ops)
 }
 
 /**

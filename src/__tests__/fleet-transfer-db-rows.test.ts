@@ -68,39 +68,39 @@ describe('importFleetRows', () => {
 
 describe('inFleetImportTransaction', () => {
   it('rolls every write back when the callback throws', async () => {
-    await expect(inFleetImportTransaction(async () => {
-      await importFleetRows('labels', [label])
+    await expect(inFleetImportTransaction(async (tx) => {
+      await importFleetRows('labels', [label], tx)
       // the write is really inside the transaction (visible to it) before the throw takes it back
-      expect(await exportTableRows('labels')).toHaveLength(1)
+      expect(await tx.all('SELECT id FROM labels')).toHaveLength(1)
       throw new Error('boom')
     })).rejects.toThrow('boom')
     expect(await exportTableRows('labels')).toEqual([])
   })
 
   it('rolls the earlier tables back when a later insert is refused', async () => {
-    await expect(inFleetImportTransaction(async () => {
-      await importFleetRows('labels', [label])
+    await expect(inFleetImportTransaction(async (tx) => {
+      await importFleetRows('labels', [label], tx)
       // a status outside the table's CHECK list: the insert is refused after the label went in
       await importFleetRows('kanban_cards', [{
         id: 'c1', title: 't', status: 'bogus', priority: 'normal', sort_order: 0, created_at: 1, updated_at: 1,
-      }])
+      }], tx)
     })).rejects.toThrow(/CHECK constraint/)
     expect(await exportTableRows('labels')).toEqual([])
   })
 
   it('commits every write of a body that finishes', async () => {
-    await inFleetImportTransaction(async () => {
-      await importFleetRows('labels', [label])
-      await importFleetRows('memories', [memory])
+    await inFleetImportTransaction(async (tx) => {
+      await importFleetRows('labels', [label], tx)
+      await importFleetRows('memories', [memory], tx)
     })
     expect(await exportTableRows('labels')).toHaveLength(1)
     expect(await exportMemoryRows()).toHaveLength(1)
   })
 
   it('does not interleave two overlapping imports: the deduped row lands once and both finish', async () => {
-    const run = () => inFleetImportTransaction(async () => {
-      await importFleetRows('labels', [label])
-      await importFleetRows('memories', [memory])
+    const run = () => inFleetImportTransaction(async (tx) => {
+      await importFleetRows('labels', [label], tx)
+      await importFleetRows('memories', [memory], tx)
     })
     await Promise.all([run(), run()])
     expect(await exportTableRows('labels')).toHaveLength(1)

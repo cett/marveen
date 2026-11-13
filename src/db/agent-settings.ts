@@ -27,7 +27,7 @@
 // connection: it is the boot-sync twin (db/index.ts's migrator), the same
 // shape as cost-budgets.ts/vault-bindings.ts's file migrators.
 
-import { dbx, dbxDialect } from './facade.js'
+import { dbx, dbxDialect, type SqlOps } from './facade.js'
 import { db } from './connection.js'
 import { cachedAgentSetting, cachedAgentSettingsByKey, cacheAfterAgentSettingWrite, cacheAfterAgentSettingWriteAsync } from './agent-settings-cache.js'
 
@@ -57,9 +57,10 @@ export function getAgentSetting(agentId: string, key: AgentSettingKey): AgentSet
  * side-cars held one normalized entry per agent). `tenantId` defaults to
  * 'default' for callers (tests, scripts) that have no tenant context --
  * the route always resolves and passes the real owning tenant.
+ * `ops` is the transaction handle of a caller that holds one (the fleet import body); the cache read-back runs on it too.
  */
-export async function setAgentSetting(agentId: string, key: AgentSettingKey, value: unknown, tenantId = 'default'): Promise<void> {
-  await dbx.run(`
+export async function setAgentSetting(agentId: string, key: AgentSettingKey, value: unknown, tenantId = 'default', ops: SqlOps = dbx): Promise<void> {
+  await ops.run(`
     INSERT INTO agent_settings (agent_id, setting_key, setting_value, tenant_id, updated_at)
     VALUES (?, ?, ?, ?, unixepoch())
     ON CONFLICT(agent_id, setting_key) DO UPDATE SET
@@ -67,7 +68,7 @@ export async function setAgentSetting(agentId: string, key: AgentSettingKey, val
       tenant_id = excluded.tenant_id,
       updated_at = excluded.updated_at
   `, agentId, key, JSON.stringify(value), tenantId)
-  if (dbxDialect() === 'pg') await cacheAfterAgentSettingWriteAsync(agentId, key)
+  if (dbxDialect() === 'pg') await cacheAfterAgentSettingWriteAsync(agentId, key, ops)
   else cacheAfterAgentSettingWrite(agentId, key) // database first, then the cache
 }
 

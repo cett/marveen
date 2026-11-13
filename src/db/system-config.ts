@@ -12,7 +12,7 @@
 import { existsSync, readFileSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
 import { db } from './connection.js'
-import { dbx, dbxDialect } from './facade.js'
+import { dbx, dbxDialect, type Dbx, type SqlOps, type Tx } from './facade.js'
 import { cacheAfterWrite, cacheAfterWriteAsync, cachedSystemConfig, cachedSystemConfigList, refreshSystemConfigCacheIfLive } from './config-cache.js'
 import { STORE_DIR } from '../config.js'
 import { logger } from '../logger.js'
@@ -53,9 +53,11 @@ const UPSERT_SQL = `INSERT INTO system_config (key, value, updated_at, source) V
 
 // Upsert. source defaults to 'db' (an operator/admin set this directly,
 // as opposed to 'migrated_from_json' -- see migrateConfigOverridesToSystemConfig).
-export async function setSystemConfig(key: string, value: string, source: string = 'db'): Promise<void> {
-  await dbx.run(UPSERT_SQL, key, value, source)
-  if (dbxDialect() === 'pg') await cacheAfterWriteAsync(key)
+// `ops` is the handle to write on: the transaction handle when the caller holds one (a body on Postgres may not
+// call the outer dbx), `dbx` otherwise. The cache read-back then runs on the same handle.
+export async function setSystemConfig(key: string, value: string, source: string = 'db', ops: SqlOps = dbx): Promise<void> {
+  await ops.run(UPSERT_SQL, key, value, source)
+  if (dbxDialect() === 'pg') await cacheAfterWriteAsync(key, ops)
   else cacheAfterWrite(key) // database first, then the cache
 }
 
@@ -99,14 +101,20 @@ export async function updateSystemConfig(
  * Write several keys as one unit: one transaction, and the cache follows the commit for all of them in one
  * synchronous step, so a reader never sees half of the group (the writes were atomic against the event loop
  * while they were synchronous; three awaited `setSystemConfig` calls would not be).
+ * `ops` is where the unit is opened from: `dbx` by default (its own transaction), or the handle of the transaction
+ * the caller holds (then it is a savepoint of that one, and the cache read-back runs on that handle).
  */
-export async function setSystemConfigMany(entries: ReadonlyArray<readonly [string, string]>, source: string = 'db'): Promise<void> {
+export async function setSystemConfigMany(
+  entries: ReadonlyArray<readonly [string, string]>,
+  source: string = 'db',
+  ops: Dbx | Tx = dbx,
+): Promise<void> {
   if (entries.length === 0) return
-  await dbx.tx(async (tx) => {
+  await ops.tx(async (tx) => {
     for (const [key, value] of entries) await tx.run(UPSERT_SQL, key, value, source)
   }, { mode: 'immediate' })
   for (const [key] of entries) {
-    if (dbxDialect() === 'pg') await cacheAfterWriteAsync(key)
+    if (dbxDialect() === 'pg') await cacheAfterWriteAsync(key, ops)
     else cacheAfterWrite(key) // database first, then the cache
   }
 }

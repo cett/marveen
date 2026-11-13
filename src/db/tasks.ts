@@ -3,7 +3,7 @@
 
 import { AgentMessage } from './agents.js'
 import { db } from './connection.js'
-import { dbx, type SqlOps } from './facade.js'
+import { dbx, type Dbx, type SqlOps, type Tx } from './facade.js'
 import { likePrefix } from './like.js'
 import { ensureSkillBaseline, writeSkillRevision, submitPendingRevision, type ProposedFile, type SkillActor, type SkillRevisionRow, type SkillWriteMeta } from './skill-revisions.js'
 import { resolveWriteTenant } from './write-tenant.js'
@@ -1060,12 +1060,13 @@ export async function seedSkillIfAbsent(opts: {
   tenant_id: string
   is_global: boolean
   created_at?: number
-}, actor: SkillActor, meta: SkillWriteMeta = {}): Promise<boolean> {
+}, actor: SkillActor, meta: SkillWriteMeta = {}, ops: Dbx | Tx = dbx): Promise<boolean> {
   // File-derived input: a row the table would reject (NOT NULL name/content/tenant_id)
   // is skipped, since ON CONFLICT DO NOTHING only absorbs key conflicts.
   if (opts.name == null || opts.content == null || opts.tenant_id == null) return false
   const now = opts.created_at ?? Math.floor(Date.now() / 1000)
-  return dbx.tx(async (tx) => {
+  // `ops`: the handle of a transaction the caller holds (the fleet import body; then a savepoint of it), else dbx.
+  return ops.tx(async (tx) => {
     const result = await tx.run(`
       INSERT INTO skills (id, name, description, content, tenant_id, is_global, created_by, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)

@@ -9,7 +9,7 @@
 // async facade -- their callers (the dashboard route, fleet-transfer's
 // import) already are, or can be, async.
 
-import { dbx, dbxDialect } from './facade.js'
+import { dbx, dbxDialect, type SqlOps } from './facade.js'
 import { db } from './connection.js'
 import { cachedModelProfileMapEntry, cachedModelProfileMapList, cacheAfterModelProfileWrite, cacheAfterModelProfileWriteAsync } from './model-profile-map-cache.js'
 
@@ -46,15 +46,16 @@ export async function setModelProfileMapEntry(profileId: string, modelId: string
 }
 
 // Full row upsert, used by fleet-transfer.ts import (replaces individual
-// rows from an imported snapshot, mirroring upsertAutonomyCategory).
-export async function upsertModelProfileMapEntry(row: Omit<ModelProfileMapRow, 'updated_at'> & { updated_at?: number }): Promise<void> {
-  await dbx.run(
+// rows from an imported snapshot, mirroring upsertAutonomyCategory). `ops` is the transaction handle of a caller that
+// holds one; the cache read-back after the write runs on it too.
+export async function upsertModelProfileMapEntry(row: Omit<ModelProfileMapRow, 'updated_at'> & { updated_at?: number }, ops: SqlOps = dbx): Promise<void> {
+  await ops.run(
     `INSERT INTO model_profile_map (profile_id, model_id, updated_at, updated_by)
      VALUES (?, ?, COALESCE(?, unixepoch()), ?)
      ON CONFLICT(profile_id) DO UPDATE SET
        model_id = excluded.model_id, updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
     row.profile_id, row.model_id, row.updated_at ?? null, row.updated_by
   )
-  if (dbxDialect() === 'pg') await cacheAfterModelProfileWriteAsync(row.profile_id)
+  if (dbxDialect() === 'pg') await cacheAfterModelProfileWriteAsync(row.profile_id, ops)
   else cacheAfterModelProfileWrite(row.profile_id) // database first, then the cache
 }

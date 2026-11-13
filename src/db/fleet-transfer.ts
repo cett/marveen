@@ -2,7 +2,7 @@
 // is a closed whitelist: the table and column names below are never taken from
 // the fleet file, only the values are.
 
-import { dbx, type Dbx, type SqlOps, type Tx } from './facade.js'
+import { dbx, dbxDialect, type Dbx, type SqlOps, type Tx } from './facade.js'
 
 type Row = Record<string, unknown>
 type RowLike = object
@@ -136,20 +136,32 @@ export async function exportDailyLogRows<T>(): Promise<T[]> {
   return dbx.all<T>('SELECT agent_id, date, content, created_at FROM daily_logs ORDER BY agent_id ASC, date ASC')
 }
 
-/** Ids of the tenants that are not disabled. */
-export async function listEnabledTenantIds(): Promise<string[]> {
-  return ((await dbx.all('SELECT id FROM tenants WHERE disabled_at IS NULL')) as { id: string }[]).map((r) => r.id)
+/** Ids of the tenants that are not disabled. `ops` is the transaction handle of a caller that holds one, `dbx` otherwise. */
+export async function listEnabledTenantIds(ops: SqlOps = dbx): Promise<string[]> {
+  return ((await ops.all('SELECT id FROM tenants WHERE disabled_at IS NULL')) as { id: string }[]).map((r) => r.id)
 }
 
-export async function rebuildMemoriesFts(): Promise<void> {
-  await dbx.run("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')")
+/**
+ * Rebuild the full-text index of `memories` after a bulk insert. SQLite only: the Postgres schema has no `memories_fts`
+ * yet (the full-text tables are a later phase, see the header of the Postgres baseline), so there is no index to bring
+ * up to date and the call does nothing there; running the statement would fail and abort the open transaction.
+ * Not claimed here: that Postgres memory search works without the index. `searchAgentMemories` falls back to LIKE, but
+ * `searchMemories` joins `memories_fts` and returns an empty list when that fails (parked, outside this change).
+ * `ops` is the transaction handle of a caller that holds one, `dbx` otherwise.
+ */
+export async function rebuildMemoriesFts(ops: SqlOps = dbx): Promise<void> {
+  // TODO(fts-phase): remove this guard when memories_fts exists on Postgres, so the rebuild runs there too.
+  if (dbxDialect() === 'pg') return
+  await ops.run("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')")
 }
 
 /**
  * Run `fn` in one transaction; any throw or rejection rolls every write back. The body holds the connection's
- * transaction lock from BEGIN to COMMIT: only `dbx` calls and pure row policy in it, no other I/O. The calls
- * inside join the open transaction through the facade's transaction scope, so `fn` takes no handle.
+ * transaction lock from BEGIN to COMMIT: only calls on the handle and pure row policy in it, no other I/O. `fn`
+ * receives the transaction handle and every database call of the body runs on it: on Postgres a call on the outer
+ * `dbx` inside a transaction body is refused (the strict rule), and on SQLite a call without the handle would only
+ * work through the facade's ambient scope.
  */
-export async function inFleetImportTransaction(fn: () => Promise<void>): Promise<void> {
-  await dbx.tx(async () => { await fn() })
+export async function inFleetImportTransaction(fn: (tx: Tx) => Promise<void>): Promise<void> {
+  await dbx.tx(async (tx) => { await fn(tx) })
 }

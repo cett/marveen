@@ -19,7 +19,7 @@
 // script or a test that writes the table directly calls `reloadSystemConfigCache()`.
 
 import { db } from './connection.js'
-import { dbx, dbxDialect } from './facade.js'
+import { dbx, dbxDialect, type SqlOps } from './facade.js'
 import { notLoadedInPg, ownerLive, ownerNow, type CacheOwner } from './cache-owner.js'
 import type { SystemConfigRow } from './system-config.js'
 
@@ -111,15 +111,18 @@ export async function loadSystemConfigCacheAsync(): Promise<void> {
  * cache (only if the cache is live for this backend); on SQLite it is the synchronous read-back of cacheAfterWrite.
  * Known limit on PG: two overlapping writers can leave the cache stale until the cross-process invalidation of P2-5;
  * a test with one connection does not see it.
+ * `ops` is the handle the read-back runs on: the transaction handle of a writer that has not committed yet (the
+ * outer dbx is refused inside a transaction body on PG, and would not see the uncommitted row anyway). The cache
+ * then holds the uncommitted value; a caller whose transaction rolls back re-reads the cache afterwards.
  */
-export async function cacheAfterWriteAsync(key: string): Promise<void> {
+export async function cacheAfterWriteAsync(key: string, ops: SqlOps = dbx): Promise<void> {
   if (dbxDialect() !== 'pg') {
     cacheAfterWrite(key)
     return
   }
   const map = live()
   if (map === null) return
-  const row = await dbx.get<SystemConfigRow>('SELECT key, value, updated_at, source FROM system_config WHERE key = ?', key)
+  const row = await ops.get<SystemConfigRow>('SELECT key, value, updated_at, source FROM system_config WHERE key = ?', key)
   // `map` is the map checked above: if the backend was switched meanwhile and the cache reloaded, the reloaded one is a
   // different object and this (older) row lands in the dead one
   if (row === undefined) map.delete(key)

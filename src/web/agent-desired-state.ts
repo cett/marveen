@@ -1,4 +1,5 @@
 import { getSystemConfig, setSystemConfig, updateSystemConfig } from '../db/system-config.js'
+import type { SqlOps } from '../db/facade.js'
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID } from '../config.js'
 
@@ -88,12 +89,16 @@ export async function removeDesiredAgent(name: string): Promise<void> {
 /** Whole-value replace, for fleet-transfer import -- the identity-takeover model
  *  treats this field as source-authoritative, same as the other P3 overwrite
  *  fields (see DashboardSettingsExport in fleet-transfer.ts). Unlike
- *  add/removeDesiredAgent, this does not merge onto the current set. */
-export async function setDesiredAgents(names: string[]): Promise<void> {
+ *  add/removeDesiredAgent, this does not merge onto the current set.
+ *  Without `ops` a failed write is logged and swallowed, as before. With `ops` (the handle of a transaction the
+ *  caller holds) it is rethrown: swallowing it would leave a Postgres transaction aborted and the caller committing
+ *  into it, and the caller's rollback is the right answer to a write that did not land. */
+export async function setDesiredAgents(names: string[], ops?: SqlOps): Promise<void> {
   try {
-    await setSystemConfig(KEY, JSON.stringify([...new Set(names)].filter((name) => name !== MAIN_AGENT_ID).sort()))
+    await setSystemConfig(KEY, JSON.stringify([...new Set(names)].filter((name) => name !== MAIN_AGENT_ID).sort()), 'db', ops)
   } catch (err) {
     logger.error({ err }, 'Failed to persist agents_desired to system_config')
+    if (ops !== undefined) throw err
   }
 }
 
