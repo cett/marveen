@@ -2,7 +2,7 @@
   "counts": {
     "AUTOINCREMENT": 0,
     "CASE WHEN ? THEN": 0,
-    "COLLATE NOCASE": 6,
+    "COLLATE NOCASE": 1,
     "FTS5 MATCH": 12,
     "GLOB": 2,
     "GROUP_CONCAT": 1,
@@ -18,7 +18,7 @@
     "param IS [NOT] NULL": 0,
     "randomblob()/hex()": 0,
     "rowid": 24,
-    "strftime()": 8,
+    "strftime()": 3,
     "unixepoch()": 44,
     "vec0/sqlite-vec": 8
   }

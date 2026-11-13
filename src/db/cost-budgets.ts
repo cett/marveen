@@ -13,6 +13,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { db } from './connection.js'
 import { dbx } from './facade.js'
+import { epochLocalMonth } from './dialect.js'
 import { STORE_DIR } from '../config.js'
 import { logger } from '../logger.js'
 import type { BudgetEntry } from '../costops/config.js'
@@ -163,8 +164,8 @@ export async function getMonthlyTokenSpend(filter: TokenSpendFilter, nowSec: num
         +
         COALESCE((
           SELECT SUM(${TOKEN_SUM_EXPR}) FROM token_usage
-          WHERE strftime('%Y-%m', timestamp, 'unixepoch', 'localtime')
-                = strftime('%Y-%m', @nowSec, 'unixepoch', 'localtime')
+          WHERE ${epochLocalMonth('timestamp')}
+                = ${epochLocalMonth('@nowSec')}
             AND tenant_id = @tenant
         ), 0)
         AS total
@@ -180,14 +181,14 @@ export async function getMonthlyTokenSpend(filter: TokenSpendFilter, nowSec: num
     SELECT
       COALESCE((
         SELECT SUM(${TOKEN_SUM_EXPR}) FROM token_usage_monthly
-        WHERE month = strftime('%Y-%m', @nowSec, 'unixepoch', 'localtime')
+        WHERE month = ${epochLocalMonth('@nowSec')}
           ${agentCond}
       ), 0)
       +
       COALESCE((
         SELECT SUM(${TOKEN_SUM_EXPR}) FROM token_usage
-        WHERE strftime('%Y-%m', timestamp, 'unixepoch', 'localtime')
-              = strftime('%Y-%m', @nowSec, 'unixepoch', 'localtime')
+        WHERE ${epochLocalMonth('timestamp')}
+              = ${epochLocalMonth('@nowSec')}
           ${agentCond}
       ), 0)
       AS total

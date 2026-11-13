@@ -3,6 +3,7 @@
 
 import { vecExtensionLoaded } from './connection.js'
 import { dbx } from './facade.js'
+import { orderBytes, orderNoCase } from './dialect.js'
 import { likeContains } from './like.js'
 import { Memory, MemoryVersion } from './memory.js'
 import { DashboardUser, DashboardUserPublic } from './sessions.js'
@@ -741,7 +742,7 @@ export async function listDashboardUsersFiltered(opts: ListUsersOpts = {}): Prom
     params.push(opts.tenantId)
   }
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
-  return dbx.all<DashboardUserPublic>(`SELECT id, username, role, tenant_id, email, display_name, created_at, updated_at, disabled FROM dashboard_users ${where} ORDER BY username COLLATE NOCASE`, ...params)
+  return dbx.all<DashboardUserPublic>(`SELECT id, username, role, tenant_id, email, display_name, created_at, updated_at, disabled FROM dashboard_users ${where} ORDER BY ${orderNoCase('username')}, ${orderBytes('username')}, id`, ...params)
 }
 
 export interface AdminUserPatch {

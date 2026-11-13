@@ -4,6 +4,7 @@
 import { APP_TZ } from '../config.js'
 import { db } from './connection.js'
 import { dbx } from './facade.js'
+import { eqNoCase, orderBytes, orderNoCase } from './dialect.js'
 import { resolveWriteTenant } from './write-tenant.js'
 import { Memory, RECENCY_OVERSAMPLE, buildFtsMatchExpression, reRankByRecency, withoutRank } from './memory.js'
 
@@ -65,11 +66,14 @@ export async function createDashboardUser(username: string, passwordHash: string
 }
 
 export async function getDashboardUser(username: string): Promise<DashboardUser | undefined> {
-  return dbx.get<DashboardUser>('SELECT * FROM dashboard_users WHERE username = ? COLLATE NOCASE', username)
+  return dbx.get<DashboardUser>(`SELECT * FROM dashboard_users WHERE ${eqNoCase('username', '?')}`, username)
 }
 
 export async function listDashboardUsers(): Promise<DashboardUserPublic[]> {
-  return dbx.all<DashboardUserPublic>('SELECT id, username, role, tenant_id, created_at, updated_at, disabled FROM dashboard_users ORDER BY username COLLATE NOCASE')
+  // Ties after the case fold (not possible while username is unique ignoring case, but the order must not depend on it)
+  // are broken in byte order, then by id: the same order on both engines.
+  return dbx.all<DashboardUserPublic>(
+    `SELECT id, username, role, tenant_id, created_at, updated_at, disabled FROM dashboard_users ORDER BY ${orderNoCase('username')}, ${orderBytes('username')}, id`)
 }
 
 // enabled-only count feeds `login_available`; total count feeds `setup_required`.
@@ -85,7 +89,7 @@ export async function updateDashboardUserPassword(userId: number, passwordHash: 
 }
 
 export async function deleteDashboardUser(username: string): Promise<boolean> {
-  const info = await dbx.run('DELETE FROM dashboard_users WHERE username = ? COLLATE NOCASE', username)
+  const info = await dbx.run(`DELETE FROM dashboard_users WHERE ${eqNoCase('username', '?')}`, username)
   return info.changes > 0
 }
 
@@ -309,7 +313,7 @@ export async function deleteExpiredAuthSessions(idleCutoff: number, absoluteCuto
 /** Role and tenant scope of an ENABLED dashboard user (case-insensitive name), for the auth gate. */
 export async function getDashboardUserAuthRow(username: string): Promise<{ role: string; tenant_id: string | null } | undefined> {
   return dbx.get<{ role: string; tenant_id: string | null }>(
-    'SELECT role, tenant_id FROM dashboard_users WHERE username = ? COLLATE NOCASE AND disabled = 0',
+    `SELECT role, tenant_id FROM dashboard_users WHERE ${eqNoCase('username', '?')} AND disabled = 0`,
     username,
   )
 }
