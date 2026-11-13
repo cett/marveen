@@ -9,7 +9,7 @@
 // quarantine-reader template render, fleet-transfer.ts export/import) calls
 // straight into these functions.
 
-import { dbx } from './facade.js'
+import { dbx, type Dbx, type Tx } from './facade.js'
 
 export type EgressAllowlistType = 'domain' | 'prefix' | 'quarantine_domain'
 
@@ -71,11 +71,14 @@ export async function deleteEgressAllowlistEntry(id: number): Promise<boolean> {
  * target already has is left completely untouched, one it doesn't gets
  * added. `added_by`/`added_at` on an already-existing row are therefore
  * never touched by an import, by construction (IGNORE never fires UPDATE).
+ * `ops` is where the transaction is opened from: `dbx` by default, or the handle of a transaction the caller holds
+ * (the import body; then it is a savepoint of that one).
  */
 export async function mergeEgressAllowlistEntries(
-  entries: Array<{ value: string; type: EgressAllowlistType; tenant_id?: string; added_by?: string }>
+  entries: Array<{ value: string; type: EgressAllowlistType; tenant_id?: string; added_by?: string }>,
+  ops: Dbx | Tx = dbx,
 ): Promise<void> {
-  await dbx.tx(async (tx) => {
+  await ops.tx(async (tx) => {
     for (const row of entries) {
       await tx.run(
         `INSERT INTO egress_allowlist (value, type, added_by, added_at, tenant_id)

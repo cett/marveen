@@ -10,7 +10,10 @@
 // Privacy: neutral fixtures only (agent-a, model-a).
 import { describe, expect, it } from 'vitest'
 import { dbx } from '../db.js'
-import { inFleetImportTransaction } from '../db/fleet-transfer.js'
+import { inFleetImportTransaction, listEnabledTenantIds, rebuildMemoriesFts } from '../db/fleet-transfer.js'
+import { replaceCostBudgets, listCostBudgets } from '../db/cost-budgets.js'
+import { mergeEgressAllowlistEntries } from '../db/egress-allowlist.js'
+import { seedSkillIfAbsent } from '../db/tasks.js'
 import type { Tx } from '../db/facade.js'
 import { loadSystemConfigCacheAsync, cachedSystemConfig } from '../db/config-cache.js'
 import { listAutonomyCategories, upsertAutonomyCategory, type AutonomyCategoryRow } from '../db/autonomy.js'
@@ -24,7 +27,7 @@ import { setFederationConfigRaw } from '../db/federation.js'
 import { setDesiredAgents } from '../web/agent-desired-state.js'
 import { writeModelFallbackFieldsRaw } from '../web/model-fallback-store.js'
 import { writeTerminalInputEnabled } from '../web/terminal-input-store.js'
-import { useTestDb } from './helpers/with-test-db.js'
+import { testDbMode, useTestDb } from './helpers/with-test-db.js'
 import { countFacadeCalls } from './helpers/single-transaction.js'
 import { refuseWrite } from './helpers/refuse-write.js'
 
@@ -170,6 +173,85 @@ describe('autonomy, model profile map and agent settings on the import handle', 
     expect((await autonomyRow(cat.key))?.label).toBe('Label A')
     expect(await profileRow()).toEqual({ model_id: 'model-a', updated_by: 'actor-a' })
     expect(await auditRows()).toEqual([])
+  })
+})
+
+// ---- cost budgets, egress allowlist, skill seeds, the tenant list, the memory index rebuild ---------------------------
+
+const budget = (id: string, amount: number) => ({ id, amount })
+const skillSeed = { id: 'skill/seed-a', name: 'seed-a', description: 'd', content: 'body', tenant_id: 'default', is_global: false }
+const skillRows = async () => dbx.all<{ id: string }>("SELECT id FROM skills WHERE id = 'skill/seed-a'")
+const revisionRows = async () => dbx.all<{ action: string; source_ref: string | null }>("SELECT action, source_ref FROM skill_revisions WHERE skill_id = 'skill/seed-a'")
+const egressRows = async () => dbx.all<{ value: string; added_by: string }>("SELECT value, added_by FROM egress_allowlist WHERE value IN ('old.example', 'new.example') ORDER BY value")
+
+async function seedTenants(): Promise<void> {
+  await dbx.run("INSERT INTO tenants (id, display_name, created_at) VALUES ('t-on', 'On', 1)")
+  await dbx.run("INSERT INTO tenants (id, display_name, created_at, disabled_at) VALUES ('t-off', 'Off', 1, 2)")
+}
+
+async function seedBefore(): Promise<void> {
+  await replaceCostBudgets('default', [budget('b-old', 1)])
+  await mergeEgressAllowlistEntries([{ value: 'old.example', type: 'domain', added_by: 'actor-old' }])
+}
+
+/** The remaining writers of the import body, on the handle. Resolves to the tenant ids the handle read. */
+async function writeTail(tx: Tx): Promise<string[]> {
+  await replaceCostBudgets('default', [budget('b-new', 2)], tx)
+  await mergeEgressAllowlistEntries([
+    { value: 'old.example', type: 'domain', added_by: 'actor-new' }, // already there: left completely untouched
+    { value: 'new.example', type: 'domain', added_by: 'actor-new' },
+  ], tx)
+  expect(await seedSkillIfAbsent(skillSeed, { kind: 'import', id: null }, { sourceRef: 'fleet-transfer' }, tx)).toBe(true)
+  const tenants = await listEnabledTenantIds(tx)
+  await rebuildMemoriesFts(tx)
+  return tenants
+}
+
+describe('cost budgets, egress allowlist, skill seeds, tenant list and index rebuild on the import handle', () => {
+  it('the handle: one transaction and no plain facade call while the body runs', async () => {
+    await seedTenants()
+    await seedBefore()
+    const counts = await countFacadeCalls(dbx, () => inFleetImportTransaction(async (tx) => { await writeTail(tx) }))
+    expect(counts).toEqual({ tx: 1, outsideTx: 0 })
+  })
+
+  it('the commit: budgets replaced, egress merged without touching the existing row, skill row and its revision written', async () => {
+    await seedTenants()
+    await seedBefore()
+    let tenants: string[] = []
+    await inFleetImportTransaction(async (tx) => { tenants = await writeTail(tx) })
+    expect(await listCostBudgets('default')).toEqual([expect.objectContaining({ id: 'b-new', amount: 2 })])
+    expect(await egressRows()).toEqual([{ value: 'new.example', added_by: 'actor-new' }, { value: 'old.example', added_by: 'actor-old' }])
+    expect(await skillRows()).toEqual([{ id: 'skill/seed-a' }])
+    expect(await revisionRows()).toEqual([{ action: 'seed', source_ref: 'fleet-transfer' }])
+    expect(tenants).toContain('t-on')
+    expect(tenants).not.toContain('t-off') // a disabled tenant is not offered to the schedule import
+  })
+
+  it('the rollback: a throw after the writes restores the budgets (the DELETE too), the allowlist, the skills', async () => {
+    await seedTenants()
+    await seedBefore()
+    await expect(inFleetImportTransaction(async (tx) => {
+      await writeTail(tx)
+      throw new Error('boom')
+    })).rejects.toThrow('boom')
+    expect((await listCostBudgets('default')).map((b) => b.id)).toEqual(['b-old'])
+    expect(await egressRows()).toEqual([{ value: 'old.example', added_by: 'actor-old' }])
+    expect(await skillRows()).toEqual([])
+    expect(await revisionRows()).toEqual([])
+  })
+
+  it('rebuildMemoriesFts: SQLite brings the index up to date on the handle, Postgres has none and does nothing', async () => {
+    await dbx.run("INSERT INTO memories (chat_id, content, sector, salience, created_at, accessed_at, agent_id, category, auto_generated) VALUES ('', 'quokka-needle', 'semantic', 1, 5, 5, 'agent-a', 'warm', 0)")
+    if (testDbMode() === 'sqlite') {
+      await dbx.run("INSERT INTO memories_fts(memories_fts) VALUES('delete-all')") // the index forgets everything
+      const hits = () => dbx.all("SELECT rowid FROM memories_fts WHERE memories_fts MATCH 'quokka'")
+      expect(await hits()).toHaveLength(0)
+      await inFleetImportTransaction((tx) => rebuildMemoriesFts(tx))
+      expect(await hits()).toHaveLength(1)
+    } else {
+      await expect(inFleetImportTransaction((tx) => rebuildMemoriesFts(tx))).resolves.toBeUndefined()
+    }
   })
 })
 

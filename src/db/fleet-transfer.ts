@@ -2,7 +2,7 @@
 // is a closed whitelist: the table and column names below are never taken from
 // the fleet file, only the values are.
 
-import { dbx, type Dbx, type SqlOps, type Tx } from './facade.js'
+import { dbx, dbxDialect, type Dbx, type SqlOps, type Tx } from './facade.js'
 
 type Row = Record<string, unknown>
 type RowLike = object
@@ -136,13 +136,20 @@ export async function exportDailyLogRows<T>(): Promise<T[]> {
   return dbx.all<T>('SELECT agent_id, date, content, created_at FROM daily_logs ORDER BY agent_id ASC, date ASC')
 }
 
-/** Ids of the tenants that are not disabled. */
-export async function listEnabledTenantIds(): Promise<string[]> {
-  return ((await dbx.all('SELECT id FROM tenants WHERE disabled_at IS NULL')) as { id: string }[]).map((r) => r.id)
+/** Ids of the tenants that are not disabled. `ops` is the transaction handle of a caller that holds one, `dbx` otherwise. */
+export async function listEnabledTenantIds(ops: SqlOps = dbx): Promise<string[]> {
+  return ((await ops.all('SELECT id FROM tenants WHERE disabled_at IS NULL')) as { id: string }[]).map((r) => r.id)
 }
 
-export async function rebuildMemoriesFts(): Promise<void> {
-  await dbx.run("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')")
+/**
+ * Rebuild the full-text index of `memories` after a bulk insert. SQLite only: the Postgres schema has no `memories_fts`
+ * yet (the full-text tables are a later phase, see the header of the Postgres baseline), and its memory search reads
+ * the table directly, so there is no index to bring up to date and the call does nothing there. `ops` is the
+ * transaction handle of a caller that holds one, `dbx` otherwise.
+ */
+export async function rebuildMemoriesFts(ops: SqlOps = dbx): Promise<void> {
+  if (dbxDialect() === 'pg') return
+  await ops.run("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')")
 }
 
 /**

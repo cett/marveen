@@ -12,7 +12,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { db } from './connection.js'
-import { dbx } from './facade.js'
+import { dbx, type Dbx, type Tx } from './facade.js'
 import { epochLocalMonth } from './dialect.js'
 import { STORE_DIR } from '../config.js'
 import { logger } from '../logger.js'
@@ -57,10 +57,11 @@ export async function listCostBudgets(tenantId: string = 'default'): Promise<Bud
 // Whole-value replace within a transaction: matches the pre-migration
 // behavior of saveCostopsConfig() overwriting the entire file (so a budget
 // removed by the caller's in-memory edit actually disappears, not just an
-// upsert of what's present).
-export async function replaceCostBudgets(tenantId: string, budgets: BudgetEntry[]): Promise<void> {
+// upsert of what's present). `ops` is where the transaction is opened from: `dbx` by default, or the handle of a
+// transaction the caller holds (the fleet import body; then it is a savepoint of that one).
+export async function replaceCostBudgets(tenantId: string, budgets: BudgetEntry[], ops: Dbx | Tx = dbx): Promise<void> {
   const now = Math.floor(Date.now() / 1000)
-  await dbx.tx(async (tx) => {
+  await ops.tx(async (tx) => {
     await tx.run('DELETE FROM cost_budgets WHERE tenant_id = ?', tenantId)
     for (const b of budgets) {
       await tx.run(

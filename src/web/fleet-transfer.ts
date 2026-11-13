@@ -41,6 +41,7 @@ import { getFederationConfigRaw, setFederationConfigRaw } from '../db/federation
 import { invalidateFederationConfigCache, validateFederationConfig } from './federation/config.js'
 import { logger } from '../logger.js'
 import { auditAutonomyLevelChange, resolveAutonomyAuditTenant } from './autonomy-audit.js'
+import type { SqlOps } from '../db/facade.js'
 import { isBlankContent } from '../blank-content.js'
 
 // ---------------------------------------------------------------------------
@@ -1152,8 +1153,8 @@ function importedScheduleTenant(localTenants: ReadonlySet<string>, raw: unknown)
   return typeof raw === 'string' && localTenants.has(raw) ? raw : 'default'
 }
 
-async function enabledLocalTenantIds(): Promise<Set<string>> {
-  return new Set<string>(['default', ...await listEnabledTenantIds()])
+async function enabledLocalTenantIds(ops?: SqlOps): Promise<Set<string>> {
+  return new Set<string>(['default', ...await listEnabledTenantIds(ops)])
 }
 
 /**
@@ -2018,16 +2019,16 @@ async function runImportFleet(
       // federation: validated in phase 0; the cache is dropped after the commit (reloadImportCaches()).
       if (federationJson !== null) await setFederationConfigRaw(federationJson, 'db', tx)
       // cost_budgets: validated and de-duplicated in phase 0.
-      if (budgetsToReplace !== null) await replaceCostBudgets('default', budgetsToReplace)
+      if (budgetsToReplace !== null) await replaceCostBudgets('default', budgetsToReplace, tx)
       // egress_allowlist -- DB-backed (migration 0056), MERGE not overwrite (see DashboardSettingsExport doc):
       // INSERT OR IGNORE per row is the union semantics, same upsert-not-replace rationale as autonomy above.
       if (Array.isArray(s.egressAllowlist)) {
-        await mergeEgressAllowlistEntries(s.egressAllowlist as EgressAllowlistRow[])
+        await mergeEgressAllowlistEntries(s.egressAllowlist as EgressAllowlistRow[], tx)
       }
 
       // The SQL side of the skill files staged above. A failure is the import's failure (it used to be logged and
       // swallowed, which let a file and its row drift apart).
-      for (const seed of skillSeeds) await seedSkillIfAbsent(seed, { kind: 'import', id: null }, { sourceRef: 'fleet-transfer' })
+      for (const seed of skillSeeds) await seedSkillIfAbsent(seed, { kind: 'import', id: null }, { sourceRef: 'fleet-transfer' }, tx)
 
       // The row-level policy (required fields, enums, forced values) lives here; the SQL itself is in
       // db/fleet-transfer.ts.
@@ -2072,7 +2073,7 @@ async function runImportFleet(
       // exported value (defense in depth -- mirrors the file-based scheduledTasks
       // pause-on-import above): a migrated fleet must never start firing a source
       // fleet's cron jobs unreviewed, e.g. under a different/missing agent name.
-      const scheduleTenants = await enabledLocalTenantIds()
+      const scheduleTenants = await enabledLocalTenantIds(tx)
       const scheduleRows: Record<string, unknown>[] = []
       for (const sch of fleet.schedules ?? []) {
         const s = sch as any
@@ -2160,7 +2161,7 @@ async function runImportFleet(
       await importFleetRows('idea_status_log', fleet.ideaBox?.statusLog ?? [], tx)
 
       // FTS rebuild after all memory inserts
-      await rebuildMemoriesFts()
+      await rebuildMemoriesFts(tx)
     })
 
     await importTx()
