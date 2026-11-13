@@ -84,6 +84,10 @@ export function eqNoCase(a: string, b: string, dialect: DbxDialect = dbxDialect(
  * database collation (en_US puts punctuation, '_' and accents elsewhere), so the folded value gets COLLATE "C" (byte
  * order). Names that tie after the fold (Ab and ab) need a tie-break that is byte order too: write
  * `ORDER BY ${orderNoCase('c')}, ${orderBytes('c')}, id` at the call site.
+ *
+ * This is true for VALUES only. NULL sorts differently by default: SQLite puts NULL first in an ascending order, PostgreSQL
+ * puts it last. For a nullable column write `NULLS FIRST` (SQLite's order) or `NULLS LAST` after the term at the call
+ * site; both engines accept it. A NOT NULL column (dashboard_users.username) needs nothing.
  */
 export function orderNoCase(col: string, dialect: DbxDialect = dbxDialect()): string {
   return pick(

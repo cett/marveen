@@ -199,4 +199,26 @@ describe('orderNoCase and orderBytes', () => {
     expect(r.sqlite.map((x) => x[0])).toEqual(['AB', 'Ab', 'aB', 'ab'])
     expect(r.pg.map((x) => x[0])).toEqual(['AB', 'Ab', 'aB', 'ab'])
   })
+
+  it('NULL: the engines differ by default (SQLite first, PostgreSQL last), and NULLS FIRST / NULLS LAST make them agree', async () => {
+    await pgdb.pool.query('CREATE TABLE ord_n (id bigint PRIMARY KEY, name text)')
+    sq.exec('CREATE TABLE ord_n (id INTEGER PRIMARY KEY, name TEXT)')
+    const rows: [number, string | null][] = [[1, 'b'], [2, null], [3, 'A'], [4, null], [5, 'a']]
+    for (const [id, n] of rows) {
+      await pgdb.pool.query('INSERT INTO ord_n VALUES ($1, $2)', [id, n])
+      sq.prepare('INSERT INTO ord_n VALUES (?, ?)').run(id, n)
+    }
+    const q = (d: 'sqlite' | 'pg', nulls: string): string =>
+      `SELECT id FROM ord_n ORDER BY ${orderNoCase('name', d)} ${nulls}, ${orderBytes('name', d)} ${nulls}, id`
+    const ids = (r: unknown[][]): number[] => r.map((x) => Number(x[0]))
+    const dflt = await both(q('sqlite', ''), q('pg', ''))
+    expect(ids(dflt.sqlite)).toEqual([2, 4, 3, 5, 1])      // SQLite: NULL first
+    expect(ids(dflt.pg)).toEqual([3, 5, 1, 2, 4])          // PostgreSQL: NULL last: the default is NOT portable
+    const first = await both(q('sqlite', 'NULLS FIRST'), q('pg', 'NULLS FIRST'))
+    expect(ids(first.sqlite)).toEqual([2, 4, 3, 5, 1])
+    expect(ids(first.pg)).toEqual([2, 4, 3, 5, 1])
+    const last = await both(q('sqlite', 'NULLS LAST'), q('pg', 'NULLS LAST'))
+    expect(ids(last.sqlite)).toEqual([3, 5, 1, 2, 4])
+    expect(ids(last.pg)).toEqual([3, 5, 1, 2, 4])
+  })
 })
