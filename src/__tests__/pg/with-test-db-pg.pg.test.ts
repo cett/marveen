@@ -43,17 +43,26 @@ describe('useTestDb in PG mode', () => {
   })
 
   it('the three caches are loaded for this backend (a reader does not throw), and a row written then read back through the async write-through is served', async () => {
-    expect(cachedSystemConfigList()).toEqual([]) // loaded, and the baseline has no seed rows
-    expect(cachedModelProfileMapList()).toEqual([])
-    expect(cachedAgentSettingsByKey('context_guard' as never)).toEqual({})
+    // loaded from the backend: the baseline carries seed rows, so the cache holds exactly what the tables hold, and that is
+    // not nothing (an unloaded cache would throw, a cache that loaded the wrong database would not match)
+    const configKeys = (await dbx.all<{ key: string }>('SELECT key FROM system_config')).map((r) => r.key).sort()
+    expect(configKeys.length).toBeGreaterThan(0)
+    expect(cachedSystemConfigList()?.map((r) => r.key).sort()).toEqual(configKeys)
+    const profileIds = (await dbx.all<{ profile_id: string }>('SELECT profile_id FROM model_profile_map')).map((r) => r.profile_id).sort()
+    expect(profileIds.length).toBeGreaterThan(0)
+    expect(cachedModelProfileMapList()?.map((r) => r.profile_id).sort()).toEqual(profileIds)
+    expect(cachedAgentSettingsByKey('context_guard' as never)).toEqual({}) // agent_settings has no seed rows
     await dbx.run("INSERT INTO system_config (key, value, source) VALUES (?, ?, ?)", 'cache-probe', 'one', 'db')
     await cacheAfterWriteAsync('cache-probe')
     expect(cachedSystemConfig('cache-probe')).toMatchObject({ value: 'one', source: 'db' })
   })
 
-  it('the next test does not see that cache: its own clone, its own epoch', () => {
+  it('the next test does not see that cache: its own clone, its own epoch', async () => {
     expect(cachedSystemConfig('cache-probe')).toBeUndefined()
-    expect(cachedSystemConfigList()).toEqual([])
+    // the cache is this clone's seed and nothing of the previous test's probe row
+    const configKeys = (await dbx.all<{ key: string }>('SELECT key FROM system_config')).map((r) => r.key).sort()
+    expect(configKeys).not.toContain('cache-probe')
+    expect(cachedSystemConfigList()?.map((r) => r.key).sort()).toEqual(configKeys)
   })
 
   let previousDatabase: string | undefined
