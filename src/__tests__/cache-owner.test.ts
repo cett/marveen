@@ -6,11 +6,11 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { db } from '../db/connection.js'
 import { dbxBackendEpoch, dbxDialect, useDbxBackend, type Dbx } from '../db/facade.js'
 import { cachedSystemConfig, cachedSystemConfigList, clearSystemConfigCache, loadSystemConfigCacheAsync } from '../db/config-cache.js'
-import { cachedModelProfileMapEntry, cachedModelProfileMapList, loadModelProfileMapCacheAsync } from '../db/model-profile-map-cache.js'
-import { cachedAgentSetting, cachedAgentSettingsByKey, loadAgentSettingsCacheAsync } from '../db/agent-settings-cache.js'
-import { setSystemConfig, deleteSystemConfig } from '../db/system-config.js'
+import { cachedModelProfileMapEntry, cachedModelProfileMapList, clearModelProfileMapCache, loadModelProfileMapCacheAsync } from '../db/model-profile-map-cache.js'
+import { cachedAgentSetting, cachedAgentSettingsByKey, clearAgentSettingsCache, loadAgentSettingsCacheAsync } from '../db/agent-settings-cache.js'
+import { setSystemConfig, deleteSystemConfig, updateSystemConfig, setSystemConfigMany, insertSystemConfigIfAbsent } from '../db/system-config.js'
 import { setAgentSetting } from '../db/agent-settings.js'
-import { setModelProfileMapEntry } from '../db/model-profile-map.js'
+import { setModelProfileMapEntry, upsertModelProfileMapEntry } from '../db/model-profile-map.js'
 import { initDatabase } from '../db.js'
 import { resetDbTestState } from './helpers/with-test-db.js'
 
@@ -22,8 +22,12 @@ afterEach(() => { try { db?.close() } catch { /* closed */ } resetDbTestState() 
 type Row = Record<string, unknown>
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 
-/** A backend whose tables hold rows the test put there; `delayMs` slows the reads (a switch can happen meanwhile). */
-function fake(tables: Record<string, Row[]>, delayMs = 0): { backend: Dbx; runs: string[] } {
+/**
+ * A backend whose tables hold rows the test put there; `delayMs` slows the reads (a switch can happen meanwhile);
+ * `changes` is what every write reports (0 = "the INSERT hit a conflict and wrote nothing"). A write does not touch
+ * the tables: the test puts the row there first, so the cache can only show it by reading it back.
+ */
+function fake(tables: Record<string, Row[]>, delayMs = 0, changes = 1): { backend: Dbx; runs: string[] } {
   const runs: string[] = []
   const table = (sql: string): Row[] => tables[/FROM (\w+)/.exec(sql)![1]!] ?? []
   const backend: Dbx = {
@@ -36,7 +40,7 @@ function fake(tables: Record<string, Row[]>, delayMs = 0): { backend: Dbx; runs:
       })
       return row ? { ...row } : undefined
     }) as Dbx['get'],
-    run: (sql: string) => { runs.push(sql); return Promise.resolve({ changes: 1, lastInsertRowid: 0 }) },
+    run: (sql: string) => { runs.push(sql); return Promise.resolve({ changes, lastInsertRowid: 0 }) },
     exec: () => Promise.resolve(),
     tx: ((fn: (tx: Dbx) => Promise<unknown>) => fn(backend)) as Dbx['tx'],
   }
@@ -72,9 +76,19 @@ describe('the backend epoch', () => {
 })
 
 describe('a reader with nothing loaded', () => {
-  it('on the PG backend throws the error that names the loader, not a TypeError on the missing handle', () => {
+  it('on the PG backend, with the three caches cleared first, throws the error that names the loader, not a TypeError on the missing handle', () => {
+    // cleared, so the throw is about "nothing loaded" and not about a fill that belongs to the SQLite handle
+    clearSystemConfigCache()
+    clearModelProfileMapCache()
+    clearAgentSettingsCache()
     useDbxBackend(fake({}).backend)
     for (const [, read] of readers) expect(read).toThrow(/cache not loaded in PG mode: call load\w+CacheAsync\(\)/)
+  })
+
+  it('a cache filled for the SQLite handle (initDatabase) is not served once the backend is PG', () => {
+    expect(cachedSystemConfigList()?.length ?? 0).toBeGreaterThan(0) // the SQLite fill is there and readable
+    useDbxBackend(fake({}).backend)
+    for (const [, read] of readers) expect(read).toThrow(/cache not loaded in PG mode/)
   })
 
   it('on SQLite it still answers null (the table is read), as before', () => {
@@ -170,21 +184,98 @@ describe('the write-through read-back on PG is awaited', () => {
     expect(cachedModelProfileMapEntry('p1')?.model_id).toBe('m2')
   })
 
-  it('a write with nothing loaded for the backend skips the cache and throws nothing', async () => {
+  it('a write with nothing loaded for the backend skips the cache and throws nothing (each of the three)', async () => {
+    // cleared first: initDatabase() left a map behind, and without the clear the write would find a dead-owner map
+    // instead of none, so the guard on a missing map would never be exercised
+    clearSystemConfigCache()
+    clearModelProfileMapCache()
+    clearAgentSettingsCache()
     useDbxBackend(fake(tablesOf()).backend)
-    await setSystemConfig('k3', 'v3')
+    await expect(setSystemConfig('k3', 'v3')).resolves.toBeUndefined()
+    await expect(setModelProfileMapEntry('p1', 'm3', 'agent-a')).resolves.toBeUndefined()
+    await expect(setAgentSetting('agent-a', 'context_guard' as never, { on: true })).resolves.toBeUndefined()
     expect(() => cachedSystemConfig('k3')).toThrow(/cache not loaded in PG mode/)
+    expect(() => cachedModelProfileMapEntry('p1')).toThrow(/cache not loaded in PG mode/)
+    expect(() => cachedAgentSetting('agent-a', 'context_guard' as never)).toThrow(/cache not loaded in PG mode/)
   })
 
-  it('a backend switch while the read-back runs: the stale row is not put in the new epoch cache', async () => {
+  it('a backend switch while the read-back runs: the stale row is not put in the new epoch cache (each of the three)', async () => {
+    // the OLD backend holds a different value than the NEW one, so a stale row that lands in the new cache is visible
+    const cases: Array<[string, () => Promise<void>, () => Promise<void>, () => unknown, unknown, Record<string, Row[]>]> = [
+      ['system_config', () => setSystemConfig('k1', 'late'), loadSystemConfigCacheAsync, () => cachedSystemConfig('k1')?.value, 'v1', { system_config: [{ ...CFG, value: 'old-backend' }] }],
+      ['model_profile_map', () => setModelProfileMapEntry('p1', 'late', 'agent-a'), loadModelProfileMapCacheAsync, () => cachedModelProfileMapEntry('p1')?.model_id, 'm1', { model_profile_map: [{ ...MPM, model_id: 'old-backend' }] }],
+      ['agent_settings', () => setAgentSetting('agent-a', 'context_guard' as never, { on: true }), loadAgentSettingsCacheAsync, () => cachedAgentSetting('agent-a', 'context_guard' as never)?.tenant_id, 'default', { agent_settings: [{ ...AS, tenant_id: 'old-backend' }] }],
+    ]
+    for (const [name, write, loadNew, read, expected, oldTables] of cases) {
+      useDbxBackend(fake(oldTables, 40).backend)
+      await loadAll()
+      const writing = write()
+      await sleep(10) // the write is now in its (slow) read-back from the old backend
+      useDbxBackend(fake(tablesOf()).backend)
+      await loadNew()
+      expect(read(), `${name}: the new backend's own load`).toBe(expected)
+      await writing // the stale read-back finishes last
+      expect(read(), `${name}: after the stale read-back`).toBe(expected)
+    }
+  })
+})
+
+describe('the other PG writer paths read their keys back (the cache starts with a different value than the backend holds)', () => {
+  it('updateSystemConfig: mutate sees the backend value, and the cache follows the write; a no-op writes and reads nothing', async () => {
     const tables = tablesOf()
-    useDbxBackend(fake(tables, 40).backend)
+    const { backend, runs } = fake(tables)
+    useDbxBackend(backend)
     await loadAll()
-    const writing = setSystemConfig('k1', 'late')
-    await sleep(10)
-    useDbxBackend(fake({ system_config: [CFG] }).backend)
-    await loadSystemConfigCacheAsync()
-    await writing
-    expect(cachedSystemConfig('k1')).toEqual(CFG)
+    tables.system_config = [{ ...CFG, value: 'v-new' }]
+    let seen: string | undefined
+    expect(await updateSystemConfig('k1', (current) => { seen = current; return 'v-new' })).toBe(true)
+    expect(seen).toBe('v-new') // the transaction read the backend row, not the cache
+    expect(runs.length).toBe(1)
+    expect(cachedSystemConfig('k1')?.value).toBe('v-new')
+    // the positive pair: nothing to write, so no read-back (the cache keeps what it had, although the table moved)
+    tables.system_config = [{ ...CFG, value: 'moved-again' }]
+    expect(await updateSystemConfig('k1', () => undefined)).toBe(false)
+    expect(runs.length).toBe(1)
+    expect(cachedSystemConfig('k1')?.value).toBe('v-new')
+  })
+
+  it('setSystemConfigMany: every key of the group is read back', async () => {
+    const tables = tablesOf()
+    const { backend, runs } = fake(tables)
+    useDbxBackend(backend)
+    await loadAll()
+    tables.system_config!.push({ key: 'g1', value: 'a', updated_at: 2, source: 'db' }, { key: 'g2', value: 'b', updated_at: 2, source: 'db' })
+    await setSystemConfigMany([['g1', 'a'], ['g2', 'b']])
+    expect(runs.length).toBe(2)
+    expect(cachedSystemConfig('g1')?.value).toBe('a')
+    expect(cachedSystemConfig('g2')?.value).toBe('b')
+  })
+
+  it('insertSystemConfigIfAbsent: a created row is read back, a conflict (nothing written) is not', async () => {
+    const tables = tablesOf()
+    const created = fake(tables, 0, 1)
+    useDbxBackend(created.backend)
+    await loadAll()
+    tables.system_config!.push({ key: 'i1', value: 'new', updated_at: 2, source: 'db' })
+    expect(await insertSystemConfigIfAbsent('i1', 'new', 'db')).toBe(true)
+    expect(cachedSystemConfig('i1')?.value).toBe('new')
+    // the pair: the same call on a backend that reports 0 changes
+    const conflict = fake(tablesOf(), 0, 0)
+    useDbxBackend(conflict.backend)
+    await loadAll()
+    conflict.backend.get = (() => Promise.resolve({ key: 'i2', value: 'should-not-be-read', updated_at: 2, source: 'db' })) as Dbx['get']
+    expect(await insertSystemConfigIfAbsent('i2', 'x', 'db')).toBe(false)
+    expect(cachedSystemConfig('i2')).toBeUndefined()
+  })
+
+  it('upsertModelProfileMapEntry: the cache follows the row the backend holds', async () => {
+    const tables = tablesOf()
+    const { backend, runs } = fake(tables)
+    useDbxBackend(backend)
+    await loadAll()
+    tables.model_profile_map = [{ ...MPM, model_id: 'm-upserted', updated_by: 'agent-b' }]
+    await upsertModelProfileMapEntry({ profile_id: 'p1', model_id: 'm-upserted', updated_by: 'agent-b' })
+    expect(runs.length).toBe(1)
+    expect(cachedModelProfileMapEntry('p1')).toMatchObject({ model_id: 'm-upserted', updated_by: 'agent-b' })
   })
 })
