@@ -65,6 +65,16 @@ const EDGES: number[] = [
   utc('2026-06-30T22:30:00Z'),                                // summer: July locally, June in UTC
   utc('1970-01-01T00:00:00Z'), utc('2038-01-19T03:14:08Z'),   // zero and past 2^31
   1774745999.5,                                               // fractional seconds
+  // Second-exact month and year starts of each zone: the second before and the second of local midnight. A label that is
+  // off by one second (x + 1, x - 1) is right everywhere else and wrong exactly on these pairs.
+  utc('2026-10-31T22:59:59Z'), utc('2026-10-31T23:00:00Z'),   // Budapest: 2026-11-01 00:00 CET
+  utc('2026-11-01T03:59:59Z'), utc('2026-11-01T04:00:00Z'),   // New York: 2026-11-01 00:00 EDT
+  utc('2026-10-31T23:59:59Z'), utc('2026-11-01T00:00:00Z'),   // UTC
+  utc('2026-12-31T22:59:59Z'), utc('2026-12-31T23:00:00Z'),   // Budapest: 2027-01-01 00:00 CET
+  utc('2027-01-01T04:59:59Z'), utc('2027-01-01T05:00:00Z'),   // New York: 2027-01-01 00:00 EST
+  utc('2026-12-31T23:59:59Z'), utc('2027-01-01T00:00:00Z'),   // UTC
+  utc('2026-06-30T21:59:59Z'), utc('2026-06-30T22:00:00Z'),   // Budapest: 2026-07-01 00:00 CEST
+  utc('2026-07-01T03:59:59Z'), utc('2026-07-01T04:00:00Z'),   // New York: 2026-07-01 00:00 EDT
 ]
 
 describe.each(['Europe/Budapest', 'America/New_York', 'UTC'])('local day and month, process zone %s', (zone) => {
