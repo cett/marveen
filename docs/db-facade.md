@@ -588,16 +588,16 @@ job); `MARVEEN_PG_MODULES_ALL=1` runs every file instead, to re-measure what is 
 
 | Code | Files | Meaning |
 |---|---|---|
-| `p2-4-concurrency` | 16 | the test is about SQLite's one-connection concurrency semantics: replaced in P2-4 |
-| `raw-db` | 13 | the test or the module under test still reads the raw SQLite handle |
+| `p2-4-concurrency` | 15 | the test is about SQLite's one-connection concurrency semantics: replaced in P2-4 |
+| `raw-db` | 11 | the test or the module under test still reads the raw SQLite handle |
 | `vec` | 6 | needs sqlite-vec: Phase 3 |
 | `sqlite-only` | 4 | the subject is the SQLite facade, handle or migration chain itself |
-| `unported-sql` | 4 | SQL that has no common text for both dialects yet |
+| `unported-sql` | 3 | SQL that has no common text for both dialects yet |
 | `sync-cache` | 2 | the synchronous cache and its loader (they move with the async cache load) |
 | `boot-twin` | 1 | the synchronous boot chain |
 | `fts` | 0 | needs FTS5: Phase 3 |
 
-Twenty-nine files are ported, 42 are excluded. The numbers are a snapshot of the lists, the lists are the authority.
+Thirty-three files are ported, 38 are excluded. The numbers are a snapshot of the lists, the lists are the authority.
 
 ### Moving a test onto the facade
 
