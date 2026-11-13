@@ -256,13 +256,13 @@ describe('cost budgets, egress allowlist, skill seeds, tenant list and index reb
 })
 
 describe('setDesiredAgents', () => {
-  it('without a handle a refused write is logged and swallowed, as before', async () => {
+  it('every other caller (no handle): a refused write is still logged and swallowed, unchanged', async () => {
     await refuseWrite(dbx, { name: 'no_desired_row', table: 'system_config', message: 'insert refused', when: { column: 'key', equals: 'agents_desired' } })
     await expect(setDesiredAgents(['agent-a'])).resolves.toBeUndefined()
     expect(await valueOf('agents_desired')).toBeUndefined()
   })
 
-  it('with a handle the refusal is rethrown, so the caller rolls back instead of committing into a failed transaction', async () => {
+  it('BEHAVIOUR CHANGE on the import path (SQLite too): with a handle the refusal is rethrown and the whole import rolls back, where it used to be swallowed and the import carried on without the desired-agents list', async () => {
     await refuseWrite(dbx, { name: 'no_desired_row', table: 'system_config', message: 'insert refused', when: { column: 'key', equals: 'agents_desired' } })
     await expect(inFleetImportTransaction(async (tx) => {
       await setSystemConfig('probe_single', 'v1', 'db', tx)
