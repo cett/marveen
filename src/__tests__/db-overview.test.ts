@@ -23,7 +23,7 @@ import { useTestDb } from './helpers/with-test-db.js'
 useTestDb()
 
 beforeEach(async () => {
-  await dbx.run("INSERT OR IGNORE INTO tenants (id, display_name, created_at) VALUES ('default', 'Fleet', 0)")
+  await dbx.run("INSERT INTO tenants (id, display_name, created_at) VALUES ('default', 'Fleet', 0) ON CONFLICT DO NOTHING")
   await dbx.run("INSERT INTO tenants (id, display_name, created_at) VALUES ('acme', 'Acme', 1)")
 })
 
