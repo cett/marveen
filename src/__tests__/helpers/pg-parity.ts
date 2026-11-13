@@ -88,7 +88,8 @@ function canonSqliteDefault(d: string | null): string | null {
 
 function canonPgDefault(d: string | null): string | null {
   if (d === null) return null
-  if (/^\(EXTRACT\(epoch FROM now\(\)\)\)::bigint$/i.test(d)) return EPOCH_NOW
+  // Only the floored form is unixepoch(): a bare ::bigint cast rounds half up and would be a second ahead of SQLite.
+  if (/^\(floor\(EXTRACT\(epoch FROM now\(\)\)\)\)::bigint$/i.test(d)) return EPOCH_NOW
   if (d === '(gen_random_uuid())::text') return UUID_TEXT
   return d.replace(/::text$/, '')
 }

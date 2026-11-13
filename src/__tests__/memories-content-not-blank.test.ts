@@ -9,7 +9,7 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { BlankContentError, blankCodePoints, isBlankContent } from '../blank-content.js'
-import { getDb, insertImportSource, updateMemory, upsertImportMemory } from '../db.js'
+import { getDb, insertImportSource, updateMemory, upsertImportMemory, dbx } from '../db.js'
 import { updateTenantMemory } from '../db/tenant-scoped.js'
 import { useTestDb } from './helpers/with-test-db.js'
 
@@ -51,12 +51,10 @@ describe('isBlankContent', () => {
 const here = dirname(fileURLToPath(import.meta.url))
 const MIGRATION = readFileSync(join(here, '..', 'migrations', '0087_memories_content_not_blank.sql'), 'utf-8')
 
-function insertRow(content: string, agentId = 'zack'): number {
-  return getDb().prepare(
-    "INSERT INTO memories (chat_id, sector, agent_id, category, content, tenant_id, created_at, accessed_at) VALUES ('c', 'semantic', ?, 'warm', ?, 'default', ?, ?)",
-  ).run(agentId, content, NOW, NOW).lastInsertRowid as number
+async function insertRow(content: string, agentId = 'zack'): Promise<number> {
+  return (await dbx.run("INSERT INTO memories (chat_id, sector, agent_id, category, content, tenant_id, created_at, accessed_at) VALUES ('c', 'semantic', ?, 'warm', ?, 'default', ?, ?)", agentId, content, NOW, NOW)).lastInsertRowid as number
 }
-const contentOf = (id: number): string => (getDb().prepare('SELECT content FROM memories WHERE id = ?').get(id) as { content: string }).content
+const contentOf = async (id: number): Promise<string> => ((await dbx.get('SELECT content FROM memories WHERE id = ?', id)) as { content: string }).content
 
 describe('memories content triggers (migration 0087)', () => {
   it('the code points the triggers trim are exactly the ones isBlankContent treats as blank', () => {
@@ -80,21 +78,21 @@ describe('memories content triggers (migration 0087)', () => {
     expect(disagree).toEqual([])
   })
 
-  it.each(Object.entries(BLANKS))('INSERT of %s is refused', (_name, text) => {
-    expect(() => insertRow(text)).toThrow(/must not be blank/)
-    expect((getDb().prepare('SELECT COUNT(*) AS n FROM memories').get() as { n: number }).n).toBe(0)
+  it.each(Object.entries(BLANKS))('INSERT of %s is refused', async (_name, text) => {
+    await expect(insertRow(text)).rejects.toThrow(/must not be blank/)
+    expect(((await dbx.get('SELECT COUNT(*) AS n FROM memories')) as { n: number }).n).toBe(0)
   })
 
-  it.each(Object.entries(BLANKS))('UPDATE of content to %s is refused and the text stays', (_name, text) => {
-    const id = insertRow('the memory')
-    expect(() => getDb().prepare('UPDATE memories SET content = ? WHERE id = ?').run(text, id)).toThrow(/must not be blank/)
-    expect(contentOf(id)).toBe('the memory')
+  it.each(Object.entries(BLANKS))('UPDATE of content to %s is refused and the text stays', async (_name, text) => {
+    const id = await insertRow('the memory')
+    await expect(dbx.run('UPDATE memories SET content = ? WHERE id = ?', text, id)).rejects.toThrow(/must not be blank/)
+    expect(await contentOf(id)).toBe('the memory')
   })
 
-  it('a row with visible text is accepted, and an update that leaves content alone is not checked', () => {
-    const id = insertRow(`${ZWSP}kept${ZWSP}`)
-    getDb().prepare("UPDATE memories SET category = 'cold' WHERE id = ?").run(id)
-    expect(contentOf(id)).toBe(`${ZWSP}kept${ZWSP}`)
+  it('a row with visible text is accepted, and an update that leaves content alone is not checked', async () => {
+    const id = await insertRow(`${ZWSP}kept${ZWSP}`)
+    await dbx.run("UPDATE memories SET category = 'cold' WHERE id = ?", id)
+    expect(await contentOf(id)).toBe(`${ZWSP}kept${ZWSP}`)
   })
 })
 
@@ -102,29 +100,29 @@ describe('memories content triggers (migration 0087)', () => {
 
 describe('updateMemory and updateTenantMemory refuse blank content', () => {
   it.each(Object.entries(BLANKS))('updateMemory with %s throws, the text stays and no version row is written', async (_name, text) => {
-    const id = insertRow('the memory')
+    const id = await insertRow('the memory')
     await expect(updateMemory(id, text)).rejects.toBeInstanceOf(BlankContentError)
-    expect(contentOf(id)).toBe('the memory')
-    expect((getDb().prepare('SELECT COUNT(*) AS n FROM memory_versions WHERE memory_id = ?').get(id) as { n: number }).n).toBe(0)
+    expect(await contentOf(id)).toBe('the memory')
+    expect(((await dbx.get('SELECT COUNT(*) AS n FROM memory_versions WHERE memory_id = ?', id)) as { n: number }).n).toBe(0)
   })
 
   it('updateMemory still updates with real text (and keeps the old text as a version)', async () => {
-    const id = insertRow('old')
+    const id = await insertRow('old')
     await expect(updateMemory(id, 'new')).resolves.toBe(true)
-    expect(contentOf(id)).toBe('new')
-    expect((getDb().prepare('SELECT content FROM memory_versions WHERE memory_id = ?').get(id) as { content: string }).content).toBe('old')
+    expect(await contentOf(id)).toBe('new')
+    expect(((await dbx.get('SELECT content FROM memory_versions WHERE memory_id = ?', id)) as { content: string }).content).toBe('old')
   })
 
   it.each(Object.entries(BLANKS))('updateTenantMemory with %s throws and the text stays', async (_name, text) => {
-    const id = insertRow('the memory')
+    const id = await insertRow('the memory')
     await expect(updateTenantMemory('default', id, { content: text })).rejects.toBeInstanceOf(BlankContentError)
-    expect(contentOf(id)).toBe('the memory')
+    expect(await contentOf(id)).toBe('the memory')
   })
 
   it('updateTenantMemory with only a category (no content) is untouched by the check', async () => {
-    const id = insertRow('the memory')
+    const id = await insertRow('the memory')
     await expect(updateTenantMemory('default', id, { category: 'cold' })).resolves.toBe(true)
-    expect(contentOf(id)).toBe('the memory')
+    expect(await contentOf(id)).toBe('the memory')
   })
 })
 
@@ -138,28 +136,28 @@ async function source(): Promise<void> {
 }
 const upsert = (file: string, hash: string, content: string) =>
   upsertImportMemory('src-a', `/docs/${file}`, file, hash, content, 'kw', NOW, 'default')
-const count = (table: string): number => (getDb().prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n
+const count = async (table: string): Promise<number> => ((await dbx.get(`SELECT COUNT(*) AS n FROM ${table}`)) as { n: number }).n
 
 describe('upsertImportMemory with a source that came out blank', () => {
   it.each(Object.entries(BLANKS))('%s: the existing memory, its embedding and the import row stay as they were', async (_name, text) => {
     await source()
     expect(await upsert('note.md', 'h1', 'the real text')).toBe('added')
-    const shadow = getDb().prepare("SELECT id FROM memories WHERE agent_id = 'import'").get() as { id: number }
-    getDb().prepare('UPDATE memories SET embedding_blob = ? WHERE id = ?').run(Buffer.from([1, 2, 3, 4]), shadow.id)
-    const before = getDb().prepare('SELECT * FROM memories WHERE id = ?').get(shadow.id)
-    const importBefore = getDb().prepare('SELECT * FROM import_memories').get()
+    const shadow = (await dbx.get("SELECT id FROM memories WHERE agent_id = 'import'")) as { id: number }
+    await dbx.run('UPDATE memories SET embedding_blob = ? WHERE id = ?', Buffer.from([1, 2, 3, 4]), shadow.id)
+    const before = await dbx.get('SELECT * FROM memories WHERE id = ?', shadow.id)
+    const importBefore = await dbx.get('SELECT * FROM import_memories')
 
     expect(await upsert('note.md', 'h2-the-file-was-emptied', text)).toBe('skipped_blank')
 
-    expect(getDb().prepare('SELECT * FROM memories WHERE id = ?').get(shadow.id)).toEqual(before)
-    expect(getDb().prepare('SELECT * FROM import_memories').get()).toEqual(importBefore)
+    expect(await dbx.get('SELECT * FROM memories WHERE id = ?', shadow.id)).toEqual(before)
+    expect(await dbx.get('SELECT * FROM import_memories')).toEqual(importBefore)
   })
 
   it('a blank source that was never imported adds no import row and no memory', async () => {
     await source()
     expect(await upsert('empty.md', 'h1', ZWSP)).toBe('skipped_blank')
-    expect(count('import_memories')).toBe(0)
-    expect(count('memories')).toBe(0)
+    expect(await count('import_memories')).toBe(0)
+    expect(await count('memories')).toBe(0)
   })
 
   it('the file refilled later updates the memory as usual', async () => {
@@ -167,6 +165,6 @@ describe('upsertImportMemory with a source that came out blank', () => {
     await upsert('note.md', 'h1', 'first')
     await upsert('note.md', 'h2', '')
     expect(await upsert('note.md', 'h3', 'second')).toBe('updated')
-    expect(getDb().prepare("SELECT content FROM memories WHERE agent_id = 'import'").get()).toEqual({ content: 'second' })
+    expect(await dbx.get("SELECT content FROM memories WHERE agent_id = 'import'")).toEqual({ content: 'second' })
   })
 })

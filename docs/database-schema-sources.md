@@ -33,7 +33,7 @@ leaves out.
 
 - Types: `TEXT` is `text`, `INTEGER` is `bigint`, `REAL` is `double precision`, `BLOB` is `bytea`; the 18 columns that
   hold 0 or 1 are `smallint` with `CHECK (col IN (0, 1))` (not `boolean`, the code compares them with `= 1`);
-  `unixepoch()` is `extract(epoch from now())::bigint`; `AUTOINCREMENT` (and the two rowid-alias keys) is an identity column.
+  `unixepoch()` is `floor(extract(epoch from now()))::bigint`; `AUTOINCREMENT` (and the two rowid-alias keys) is an identity column.
 - `kanban_cards` has no rowid in PostgreSQL: its running number is the identity column `seq`. Other rowid users
   (`otel_spans` ordering, the `artifacts` and `workspace_docs` rowid joins) are a later migration, not part of 0001.
 - Left out until their phase: the FTS5 tables and their nine sync triggers, the `vec_*` tables (above), the two
@@ -66,6 +66,13 @@ server needed) fails a new SQLite migration that has none.
 - An applied file that changed (its checksum), an applied version whose file is gone, and an unapplied file below an
   applied one (merged out of order) are errors. There is no tolerance for "already exists": PostgreSQL has
   `ADD COLUMN IF NOT EXISTS` natively and a file that wants it says so.
+- A file does not end the runner's transaction: no `COMMIT`, `ROLLBACK` or `BEGIN` in it (not even `COMMIT; BEGIN;`). The
+  runner reads `txid_current()` before and after the file; a different id is the error `file ended the transaction` and
+  no version row is written. What the file did before its own `COMMIT` may already be committed, and the message says so.
+- The pool's `statement_timeout` does not apply to the file section (a backfill can run for minutes). The runner turns it
+  off for that transaction only (a transaction-local setting), so it is back on the connection afterwards.
+- The build copies `src/migrations-pg/` to `dist/migrations-pg/` (tsc does not emit `.sql`); the runner's default
+  directory is `migrations-pg` next to the compiled module.
 - `schema_version` is looked up on the `search_path`, not in `public`.
 - Files are compared byte for byte, so `.gitattributes` keeps `*.sql` at LF on every checkout.
 - A file runs inside a transaction, so `CREATE INDEX CONCURRENTLY`, `VACUUM`, `ALTER SYSTEM` and `CREATE DATABASE` cannot

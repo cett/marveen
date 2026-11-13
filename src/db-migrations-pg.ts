@@ -26,6 +26,13 @@ import { logger } from './logger.js'
 // CREATE INDEX CONCURRENTLY, VACUUM, ALTER SYSTEM, CREATE DATABASE. Such a step is run by hand before the file that
 // needs it, and the file says so in a comment.
 //
+// A file does not open or close a transaction either: no COMMIT, ROLLBACK or BEGIN (not even COMMIT; BEGIN;, which looks
+// harmless). The runner reads txid_current() before and after the file, in the same transaction; a different id means
+// the file ended it, and the run stops with `file ended the transaction` before the version row is written.
+//
+// The pool's statement_timeout does not apply to the file section (a backfill may run for minutes): the runner turns it
+// off for the transaction only, with a transaction-local setting, so it is back on the connection once the file is done.
+//
 // schema_version is the table the baseline (0001) creates, with the shape of the SQLite one (version, applied_at,
 // description, checksum): the schema parity test holds the two together, so the runner does not invent a second
 // shape. It is read before 0001 ran (no table yet means nothing applied) and the runner's own CREATE TABLE IF NOT
@@ -135,10 +142,29 @@ const ENSURE_SCHEMA_VERSION = `CREATE TABLE IF NOT EXISTS schema_version (
   PRIMARY KEY (version)
 )`
 
+/** The file closed the runner's transaction itself (COMMIT, ROLLBACK, or COMMIT; BEGIN;): the one-transaction rule is broken. */
+class FileEndedTransactionError extends Error {}
+
+/** The id of the current transaction. Never equal across two transactions, which `now()` (the transaction start) can be. */
+async function currentTxid(client: pg.PoolClient): Promise<string> {
+  const res = await client.query<{ xid: string }>('SELECT txid_current()::text AS xid')
+  return res.rows[0]!.xid
+}
+
 async function applyOne(client: pg.PoolClient, file: PgMigrationFile): Promise<void> {
   await client.query('BEGIN')
   try {
+    // A file may run longer than the pool's statement_timeout (an index build, a backfill). The setting is local to this
+    // transaction, so it goes with the COMMIT or ROLLBACK and never stays on the connection.
+    await client.query("SELECT set_config('statement_timeout', '0', true)")
+    const before = await currentTxid(client)
     await client.query(file.sql)
+    if ((await currentTxid(client)) !== before) {
+      throw new FileEndedTransactionError(
+        `PG migration ${file.version} (${file.path}): file ended the transaction (a COMMIT, ROLLBACK or BEGIN inside a migration file is not allowed); ` +
+        'what it did before that may already be committed, and no schema_version row was written',
+      )
+    }
     await client.query(ENSURE_SCHEMA_VERSION)
     await client.query(
       'INSERT INTO schema_version (version, applied_at, description, checksum) VALUES ($1, $2, $3, $4)',
@@ -147,6 +173,7 @@ async function applyOne(client: pg.PoolClient, file: PgMigrationFile): Promise<v
     await client.query('COMMIT')
   } catch (err) {
     await client.query('ROLLBACK').catch(() => undefined)
+    if (err instanceof FileEndedTransactionError) throw err // "rolled back" would be false: the file committed on its own
     throw new Error(`PG migration ${file.version} (${file.path}) failed and was rolled back: ${(err as Error).message}`, { cause: err })
   }
 }

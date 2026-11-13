@@ -201,7 +201,55 @@ async function runNested<T>(parent: TxScope, fn: (tx: Tx) => Promise<T>): Promis
   }
 }
 
-export const dbx: Dbx = {
+// ---- The backend behind `dbx` ---------------------------------------------------------------------------
+
+/** Which SQL dialect the current backend speaks: the code that has no common text for both asks (`// dual-sql`). */
+export type DbxDialect = 'sqlite' | 'pg'
+
+// The SQLite implementation, as it was before the backend became replaceable: the locked statement operations and the
+// transaction runner, nothing else. It stays the default and what `useDbxBackend(null)` goes back to.
+const sqliteDbx: Dbx = {
   ...lockedOps,
   tx: <T>(fn: (tx: Tx) => Promise<T>, opts: TxOptions = {}) => runTx(fn, opts),
+}
+
+let backend: Dbx = sqliteDbx
+let backendDialect: DbxDialect = 'sqlite'
+let backendEpoch = 0
+
+/**
+ * Point `dbx` at another implementation (the PostgreSQL adapter, passed in by the caller: this file never imports the
+ * driver), or back at SQLite with `null`. For the TEST helper only: nothing in the production start-up calls it, the
+ * dashboard stays on SQLite. The switch is not safe while a transaction is open, and `resetDbTestState` puts SQLite back
+ * between tests so a backend never leaks from one test into the next.
+ */
+export function useDbxBackend(next: Dbx | null, dialect: DbxDialect = 'pg'): void {
+  backend = next ?? sqliteDbx
+  backendDialect = next === null ? 'sqlite' : dialect
+  backendEpoch++
+}
+
+/**
+ * A number that grows with every `useDbxBackend` call (also the one that goes back to SQLite). The synchronous caches
+ * (cache-owner.ts) belong to the epoch they were filled under on the PG backend, so a cache of a previous test's
+ * database is never served to the next one.
+ */
+export function dbxBackendEpoch(): number {
+  return backendEpoch
+}
+
+/** The dialect of the current backend. */
+export function dbxDialect(): DbxDialect {
+  return backendDialect
+}
+
+// A thin delegate: the backend is looked up on EVERY call (like the connection handle), so a module that imported
+// `dbx` before a switch talks to the current backend. With the SQLite default the behaviour and the errors are those of
+// `sqliteDbx`, call for call.
+export const dbx: Dbx = {
+  get: <T = unknown>(sql: string, ...params: unknown[]) => backend.get<T>(sql, ...params),
+  all: <T = unknown>(sql: string, ...params: unknown[]) => backend.all<T>(sql, ...params),
+  run: (sql: string, ...params: unknown[]) => backend.run(sql, ...params),
+  exec: (sql: string) => backend.exec(sql),
+  tx: <T>(fn: (tx: Tx) => Promise<T>, opts?: TxOptions) => backend.tx(fn, opts),
 }

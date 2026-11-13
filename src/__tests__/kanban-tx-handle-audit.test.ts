@@ -45,14 +45,14 @@ function recordExec(): string[] {
 
 const addIdea = (id = 'idea-1') =>
   createIdea({ id, title: 'Idea', description: null, category: 'x', status: 'new', source: 'test', kanban_id: null, impact: null, effort: null, tenant_id: 'default' })
-const ideaRow = (id = 'idea-1') => getDb().prepare('SELECT status, kanban_id FROM idea_box WHERE id = ?').get(id) as { status: string; kanban_id: string | null } | undefined
-const statusLog = (id = 'idea-1') => (getDb().prepare('SELECT COUNT(*) AS n FROM idea_status_log WHERE idea_id = ?').get(id) as { n: number }).n
-const cardCount = () => (getDb().prepare('SELECT COUNT(*) AS n FROM kanban_cards').get() as { n: number }).n
-const audits = (action: string) =>
-  getDb().prepare("SELECT agent_id, entity_id, tenant_id FROM agent_audit_log WHERE entity = 'kanban' AND action = ? ORDER BY id").all(action) as
+const ideaRow = async (id = 'idea-1') => dbx.get<{ status: string; kanban_id: string | null }>('SELECT status, kanban_id FROM idea_box WHERE id = ?', id)
+const statusLog = async (id = 'idea-1') => ((await dbx.get('SELECT COUNT(*) AS n FROM idea_status_log WHERE idea_id = ?', id)) as { n: number }).n
+const cardCount = async () => ((await dbx.get('SELECT COUNT(*) AS n FROM kanban_cards')) as { n: number }).n
+const audits = async (action: string) =>
+  (await dbx.all("SELECT agent_id, entity_id, tenant_id FROM agent_audit_log WHERE entity = 'kanban' AND action = ? ORDER BY id", action)) as
     { agent_id: string; entity_id: string; tenant_id: string | null }[]
-const blockAuditWrites = () =>
-  getDb().exec("CREATE TRIGGER audit_blocked BEFORE INSERT ON agent_audit_log BEGIN SELECT RAISE(ABORT, 'audit refused'); END")
+const blockAuditWrites = async () =>
+  dbx.exec("CREATE TRIGGER audit_blocked BEFORE INSERT ON agent_audit_log BEGIN SELECT RAISE(ABORT, 'audit refused'); END")
 
 beforeEach(() => { vi.restoreAllMocks() })
 afterEach(() => { vi.restoreAllMocks() })
@@ -131,17 +131,17 @@ describe('createKanbanSubtasks: the subtask rows, the comment and the audit rows
     watchFacade()
     const ids = await createKanbanSubtasks('p1', [{ title: 'A', assignee: 'agent-a' }, { title: 'B' }], 'bot')
     expect(insideTx, JSON.stringify(insideTx)).toHaveLength(0)
-    expect(audits('create').filter((r) => ids.includes(r.entity_id)).map((r) => [r.agent_id, r.tenant_id])).toEqual([['agent-a', 'default'], ['system', 'default']])
+    expect((await audits('create')).filter((r) => ids.includes(r.entity_id)).map((r) => [r.agent_id, r.tenant_id])).toEqual([['agent-a', 'default'], ['system', 'default']])
   })
 
   it('an audit that cannot be written is rolled back in its own savepoint and released; the subtasks and the comment stay', async () => {
     await createKanbanCard({ id: 'p1', title: 'Parent' })
-    blockAuditWrites()
+    await blockAuditWrites()
     const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never)
     const sql = recordExec()
     const ids = await createKanbanSubtasks('p1', [{ title: 'A' }], 'bot')
     expect(ids).toHaveLength(1)
-    expect(cardCount()).toBe(2)
+    expect(await cardCount()).toBe(2)
     expect(warn.mock.calls.some((c) => /audit write failed/.test(String(c[1])))).toBe(true)
     expectOneRolledBackSavepoint(sql)
   })
@@ -156,9 +156,9 @@ describe('promoteIdeaToKanban: the cards, the idea unit and the audit rows run o
     watchFacade()
     expect(await promote()).toBe(true)
     expect(insideTx, JSON.stringify(insideTx)).toHaveLength(0)
-    expect(ideaRow()).toEqual({ status: 'kanban', kanban_id: 'k1' })
-    expect(statusLog()).toBe(1)
-    expect(audits('create').map((r) => [r.entity_id, r.agent_id, r.tenant_id])).toEqual([['k1', 'agent-a', 'default'], ['k2', 'system', 'default']])
+    expect(await ideaRow()).toEqual({ status: 'kanban', kanban_id: 'k1' })
+    expect(await statusLog()).toBe(1)
+    expect((await audits('create')).map((r) => [r.entity_id, r.agent_id, r.tenant_id])).toEqual([['k1', 'agent-a', 'default'], ['k2', 'system', 'default']])
   })
 
   it('an unknown tenant stays an unknown tenant: the rows are stamped NULL, still nothing reaches the facade inside', async () => {
@@ -166,34 +166,34 @@ describe('promoteIdeaToKanban: the cards, the idea unit and the audit rows run o
     watchFacade(true)
     expect(await promote()).toBe(true)
     expect(insideTx, JSON.stringify(insideTx)).toHaveLength(0)
-    expect(audits('create').map((r) => r.tenant_id)).toEqual([null, null])
+    expect((await audits('create')).map((r) => r.tenant_id)).toEqual([null, null])
   })
 
   it('the idea log row cannot be written: no card stays and the idea is unchanged', async () => {
     await addIdea()
-    getDb().exec("CREATE TRIGGER log_blocked BEFORE INSERT ON idea_status_log BEGIN SELECT RAISE(ABORT, 'log refused'); END")
+    await dbx.exec("CREATE TRIGGER log_blocked BEFORE INSERT ON idea_status_log BEGIN SELECT RAISE(ABORT, 'log refused'); END")
     await expect(promote()).rejects.toThrow('log refused')
-    expect(cardCount()).toBe(0)
-    expect(ideaRow()).toEqual({ status: 'new', kanban_id: null })
-    expect(audits('create')).toEqual([])
+    expect(await cardCount()).toBe(0)
+    expect(await ideaRow()).toEqual({ status: 'new', kanban_id: null })
+    expect(await audits('create')).toEqual([])
   })
 
   it('the idea row is gone: false, and nothing is written (no card, no log row, no audit row)', async () => {
     expect(await promote('idea-gone')).toBe(false)
-    expect(cardCount()).toBe(0)
-    expect(statusLog('idea-gone')).toBe(0)
-    expect(audits('create')).toEqual([])
+    expect(await cardCount()).toBe(0)
+    expect(await statusLog('idea-gone')).toBe(0)
+    expect(await audits('create')).toEqual([])
   })
 
   it('an audit that cannot be written is rolled back in its own savepoint and released; the cards and the idea change stay', async () => {
     await addIdea()
-    blockAuditWrites()
+    await blockAuditWrites()
     const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never)
     const sql = recordExec()
     expect(await promoteIdeaToKanban('idea-1', [{ id: 'k1', title: 'Parent' }], { from: 'new', actor: 'bot', note: 'n' })).toBe(true)
-    expect(cardCount()).toBe(1)
-    expect(ideaRow()).toEqual({ status: 'kanban', kanban_id: 'k1' })
-    expect(statusLog()).toBe(1)
+    expect(await cardCount()).toBe(1)
+    expect(await ideaRow()).toEqual({ status: 'kanban', kanban_id: 'k1' })
+    expect(await statusLog()).toBe(1)
     expect(warn.mock.calls.some((c) => /audit write failed/.test(String(c[1])))).toBe(true)
     expectOneRolledBackSavepoint(sql)
   })
@@ -205,12 +205,12 @@ describe('deleteKanbanCard: the delete and its audit row run on the handle', () 
     watchFacade()
     expect(await deleteKanbanCard('c1')).toBe(true)
     expect(insideTx, JSON.stringify(insideTx)).toHaveLength(0)
-    expect(audits('delete').map((r) => [r.entity_id, r.agent_id, r.tenant_id])).toEqual([['c1', 'agent-a', 'default']])
+    expect((await audits('delete')).map((r) => [r.entity_id, r.agent_id, r.tenant_id])).toEqual([['c1', 'agent-a', 'default']])
   })
 
   it('an audit that cannot be written is rolled back in its own savepoint and released; the delete stays', async () => {
     await createKanbanCard({ id: 'c1', title: 'One' })
-    blockAuditWrites()
+    await blockAuditWrites()
     const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never)
     const sql = recordExec()
     expect(await deleteKanbanCard('c1')).toBe(true)

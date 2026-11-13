@@ -6,7 +6,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { getDb } from '../db.js'
+import { dbx } from '../db.js'
 import { useTestDb } from './helpers/with-test-db.js'
 
 const { warn } = vi.hoisted(() => ({ warn: vi.fn() }))
@@ -22,26 +22,22 @@ type AuditRow = {
   files_skipped_hash: number; files_skipped_type: number; error: string | null
 }
 
-const audit = (): AuditRow[] => getDb().prepare(
-  'SELECT files_scanned, files_added, files_updated, files_skipped_hash, files_skipped_type, error FROM import_audit_log WHERE source_id = ? ORDER BY id',
-).all(SOURCE_ID) as AuditRow[]
+const audit = async (): Promise<AuditRow[]> => dbx.all<AuditRow>('SELECT files_scanned, files_added, files_updated, files_skipped_hash, files_skipped_type, error FROM import_audit_log WHERE source_id = ? ORDER BY id', SOURCE_ID)
 
-const importRows = (): { file_name: string; content: string; memory_shadow_id: number }[] => getDb().prepare(
-  'SELECT file_name, content, memory_shadow_id FROM import_memories WHERE source_id = ? ORDER BY file_name',
-).all(SOURCE_ID) as { file_name: string; content: string; memory_shadow_id: number }[]
+const importRows = async (): Promise<{ file_name: string; content: string; memory_shadow_id: number }[]> => (await dbx.all('SELECT file_name, content, memory_shadow_id FROM import_memories WHERE source_id = ? ORDER BY file_name', SOURCE_ID)) as { file_name: string; content: string; memory_shadow_id: number }[]
 
 describe('crawlSource with a source that has no visible text', () => {
   let dir: string
 
   useTestDb()
-  beforeEach(() => {
+  beforeEach(async () => {
     warn.mockClear()
     dir = mkdtempSync(join(tmpdir(), 'import-blank-src-'))
     const now = Math.floor(Date.now() / 1000)
-    getDb().prepare(`
+    await dbx.run(`
       INSERT INTO import_sources (id, type, path, interval_hours, enabled, last_run_at, created_at, updated_at, tenant_id)
       VALUES (?, 'local', ?, 24, 1, NULL, ?, ?, 'default')
-    `).run(SOURCE_ID, dir, now, now)
+    `, SOURCE_ID, dir, now, now)
   })
   afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
 
@@ -52,27 +48,27 @@ describe('crawlSource with a source that has no visible text', () => {
 
     await crawlSource(SOURCE_ID)
 
-    expect(audit()).toEqual([{
+    expect(await audit()).toEqual([{
       files_scanned: 3, files_added: 1, files_updated: 0, files_skipped_hash: 0, files_skipped_type: 2, error: null,
     }])
-    expect(importRows().map((r) => r.file_name)).toEqual(['real.txt'])
-    expect((getDb().prepare('SELECT COUNT(*) AS n FROM memories').get() as { n: number }).n).toBe(1)
+    expect((await importRows()).map((r) => r.file_name)).toEqual(['real.txt'])
+    expect(((await dbx.get('SELECT COUNT(*) AS n FROM memories')) as { n: number }).n).toBe(1)
     expect(warn).toHaveBeenCalledWith(expect.objectContaining({ sourceId: SOURCE_ID }), expect.stringContaining('no visible text'))
   })
 
   it('leaves the memory of an already imported file as it was when the file is emptied', async () => {
     writeFileSync(join(dir, 'notes.txt'), 'notes about the coffee machine on the second floor')
     await crawlSource(SOURCE_ID)
-    const before = importRows()
+    const before = await importRows()
     expect(before).toHaveLength(1)
-    const memoryBefore = getDb().prepare('SELECT id, content FROM memories WHERE id = ?').get(before[0].memory_shadow_id)
+    const memoryBefore = await dbx.get('SELECT id, content FROM memories WHERE id = ?', before[0].memory_shadow_id)
 
     writeFileSync(join(dir, 'notes.txt'), ZWSP)
     await crawlSource(SOURCE_ID)
 
-    expect(audit()[1]).toMatchObject({ files_scanned: 1, files_added: 0, files_updated: 0, files_skipped_hash: 0, files_skipped_type: 1, error: null })
-    expect(importRows()).toEqual(before)
-    expect(getDb().prepare('SELECT id, content FROM memories WHERE id = ?').get(before[0].memory_shadow_id)).toEqual(memoryBefore)
+    expect((await audit())[1]).toMatchObject({ files_scanned: 1, files_added: 0, files_updated: 0, files_skipped_hash: 0, files_skipped_type: 1, error: null })
+    expect(await importRows()).toEqual(before)
+    expect(await dbx.get('SELECT id, content FROM memories WHERE id = ?', before[0].memory_shadow_id)).toEqual(memoryBefore)
     expect(warn).toHaveBeenCalledWith(expect.objectContaining({ sourceId: SOURCE_ID }), expect.stringContaining('no visible text'))
   })
 
@@ -84,9 +80,9 @@ describe('crawlSource with a source that has no visible text', () => {
     writeFileSync(join(dir, 'notes.txt'), 'second version of the notes')
     await crawlSource(SOURCE_ID)
 
-    expect(audit()[2]).toMatchObject({ files_added: 0, files_updated: 1, files_skipped_type: 0 })
-    const row = importRows()[0]
+    expect((await audit())[2]).toMatchObject({ files_added: 0, files_updated: 1, files_skipped_type: 0 })
+    const row = (await importRows())[0]
     expect(row.content).toContain('second version')
-    expect((getDb().prepare('SELECT content FROM memories WHERE id = ?').get(row.memory_shadow_id) as { content: string }).content).toContain('second version')
+    expect(((await dbx.get('SELECT content FROM memories WHERE id = ?', row.memory_shadow_id)) as { content: string }).content).toContain('second version')
   })
 })

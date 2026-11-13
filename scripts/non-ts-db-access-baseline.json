@@ -3,6 +3,7 @@
     "install-macos.sh": "C",
     "scripts/backup.sh": "C",
     "scripts/ensure-native-modules.sh": "C",
+    "scripts/generate-pg-baseline-seed.ts": "C",
     "scripts/hooks/auth-admin-gate.py": "A",
     "scripts/hooks/context-watchdog.py": "A",
     "scripts/hooks/gate_audit_lib.py": "A",
@@ -38,6 +39,14 @@
       "dialect": {},
       "direct": {
         "better-sqlite3": 3
+      }
+    },
+    "scripts/generate-pg-baseline-seed.ts": {
+      "dialect": {
+        "unixepoch()": 1
+      },
+      "direct": {
+        "better-sqlite3": 1
       }
     },
     "scripts/hooks/auth-admin-gate.py": {

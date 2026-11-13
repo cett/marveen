@@ -10,6 +10,9 @@
       "getDb": 1,
       "prepare": 9
     },
+    "scripts/generate-pg-baseline-seed.ts": {
+      "prepare": 4
+    },
     "scripts/migrate-legacy-store-docs.ts": {
       "getDb": 1,
       "prepare": 1
@@ -29,6 +32,7 @@
     "scripts/dashboard-user.ts": "operator CLI that opens the database directly (dashboard stopped)",
     "scripts/eval/recall-eval-run.ts": "offline recall evaluation harness over an isolated copy of the database",
     "scripts/eval/recall-eval.ts": "offline recall evaluation harness over an isolated copy of the database",
+    "scripts/generate-pg-baseline-seed.ts": "dev tool that reads the migrated SQLite chain to generate the PostgreSQL baseline seed block; it has no PostgreSQL form and is retired with the SQLite chain",
     "scripts/migrate-legacy-store-docs.ts": "one-off operator migration script",
     "src/channel-coordinator/ingest.ts": "runs in a separate process (the channel coordinator), not behind the dashboard facade",
     "src/config.ts": "its own short-lived readonly connection: db/connection.ts imports STORE_DIR from config.ts, so importing the db layer would cycle",

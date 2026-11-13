@@ -250,6 +250,10 @@ const tally = { ran: 0, refused: 0 }
 async function mutate(c: pg.ClientBase, ddl: string[]): Promise<{ applied: boolean; diff: string[] }> {
   await c.query('BEGIN')
   try {
+    // The baseline now carries seed rows. PostgreSQL checks a new NOT NULL / CHECK against the rows already there and refuses
+    // the ones the seed violates, which would turn those mutants into "refused" instead of judged. The mutants are about the
+    // schema, so they run on empty tables as before the seed existed (the seed has its own test: seed-parity.pg.test.ts).
+    await c.query('DELETE FROM egress_allowlist; DELETE FROM autonomy_categories; DELETE FROM model_profile_map; DELETE FROM system_config; DELETE FROM otel_metrics_export_state; DELETE FROM tenants')
     try {
       for (const s of ddl) await c.query(s)
     } catch {

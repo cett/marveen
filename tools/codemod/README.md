@@ -8,7 +8,20 @@ npm ci --prefix tools/codemod --ignore-scripts      # once
 node tools/codemod/codemod.mjs --dry-run --report /path/outside/the/repo/first-run.json src/db/<module>.ts ...
 node tools/codemod/codemod.mjs --report /path/outside/the/repo/first-run.json src/db/<module>.ts ...    # writes
 node tools/codemod/selftest.mjs                      # fixture self-test, a few seconds
+node tools/codemod/codemod.mjs --tests --report /path/outside/the/repo/tests.json src/__tests__/<file>.test.ts ...   # test files
 ```
+
+## `--tests`: the raw handle in the test files
+
+The targets are test files whose bodies read or write through the raw SQLite handle. The handle is recognised as `db` imported
+from `db.js` / `db/index.js` / `db/connection.js`, as `getDb()` and as a local alias `const x = getDb()`. The rewrites are the
+same as for a module (`db.prepare(sql).get|all|run(...)` -> `await dbx.get|all|run(sql, ...)`, `db.exec` -> `await dbx.exec`), with
+these differences: the callbacks of `it`/`test`/`beforeEach`/`afterEach`/`beforeAll`/`afterAll` become async, a `describe` callback
+never does, `db.transaction` is never rewritten (reported: the transaction shape is a manual decision), an unrecognised `db`
+variable (a handle the test opened itself) is reported as `other-db-variable`, and the `dbx` import is merged into the `db.js`
+import of the file (the `db` / `getDb` specifier goes away when nothing reads it). A rewritten test runs on SQLite too, so the
+conversion must not touch an assertion: a thrown-error assertion on a converted call (`expect(() => f()).toThrow()`) is reported
+and rewritten by hand as `await expect(f()).rejects.toThrow()`.
 
 ## Keep the report of the FIRST real run
 

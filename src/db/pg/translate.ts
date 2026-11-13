@@ -12,8 +12,10 @@
 //   - `?` and `@name` in one statement, a native `$1` outside a literal, any count that does not match, a missing
 //     name: an error (the SQLite driver throws on the same mistakes, and a silently wrong statement is worse).
 //
-// Not translated, on purpose: the jsonb operators `?` `?|` `?&` (use jsonb_exists / jsonb_exists_any / jsonb_exists_all),
-// SQLite's `?NNN`, `:name` and `$name` (the facade does not offer them).
+// Not translated, on purpose: the jsonb operators `?` `?|` `?&` (use jsonb_exists / jsonb_exists_any / jsonb_exists_all;
+// they read as placeholders), `@?` (use jsonb_path_exists; it is refused with an error, because `@` followed by a
+// placeholder would otherwise bind a value to the wrong place), SQLite's `?NNN`, `:name` and `$name` (the facade does
+// not offer them).
 //
 // Pure, no import: the fuzz cell runs it over every statement text of src/db/ without a server.
 
@@ -124,6 +126,9 @@ export function translatePlaceholders(sql: string, params: readonly unknown[]): 
       }
       const end = skipDollarQuoted(sql, i)
       i = end ?? i + 1
+    } else if (c === '@' && sql[i + 1] === '?' && sql[i - 1] !== '@') {
+      // jsonb "path exists": read as an `@` operator and a placeholder it would bind a value to the wrong place
+      throw new Error('dbx: the jsonb operator @? is not accepted (it would read as @ and a placeholder), use jsonb_path_exists(...)')
     } else if (c === '?') {
       if (named.size > 0) throw new Error('dbx: ? and @name placeholders cannot be mixed in one statement')
       flush(i)

@@ -35,8 +35,8 @@ function watchFacade(): void {
 }
 const insideTx = () => facadeCalls.filter((c) => c.inTx)
 
-function count(table: string): number {
-  return (getDb().prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n
+async function count(table: string): Promise<number> {
+  return ((await dbx.get(`SELECT COUNT(*) AS n FROM ${table}`)) as { n: number }).n
 }
 function seedOldRows(): void {
   const insert = getDb().prepare(
@@ -67,15 +67,15 @@ describe('pruneTokenUsage: every statement runs on the transaction handle', () =
     expect(txSpy).toHaveBeenCalledTimes(1)
     expect(insideTx(), JSON.stringify(insideTx())).toHaveLength(0)
     expect(result).toEqual({ rawDeleted: 2, dailyUpserted: 1, monthlyUpserted: 1 })
-    expect(count('token_usage')).toBe(0)
+    expect(await count('token_usage')).toBe(0)
   })
 
   it('the rollups are written BEFORE the raw rows are deleted: the aggregate carries both rows', async () => {
     seedOldRows()
     await pruneTokenUsage()
-    const daily = getDb().prepare("SELECT input_tokens, output_tokens, row_count FROM token_usage_daily WHERE agent = 'agent-a'").all()
+    const daily = await dbx.all("SELECT input_tokens, output_tokens, row_count FROM token_usage_daily WHERE agent = 'agent-a'")
     expect(daily).toEqual([{ input_tokens: 300, output_tokens: 125, row_count: 2 }])
-    const monthly = getDb().prepare("SELECT input_tokens, session_count, row_count FROM token_usage_monthly WHERE agent = 'agent-a'").all()
+    const monthly = await dbx.all("SELECT input_tokens, session_count, row_count FROM token_usage_monthly WHERE agent = 'agent-a'")
     expect(monthly).toEqual([{ input_tokens: 300, session_count: 2, row_count: 2 }])
   })
 
@@ -84,31 +84,29 @@ describe('pruneTokenUsage: every statement runs on the transaction handle', () =
     await pruneTokenUsage()
     const again = await pruneTokenUsage()
     expect(again.rawDeleted).toBe(0)
-    expect(getDb().prepare("SELECT input_tokens FROM token_usage_daily WHERE agent = 'agent-a'").all()).toEqual([{ input_tokens: 300 }])
+    expect(await dbx.all("SELECT input_tokens FROM token_usage_daily WHERE agent = 'agent-a'")).toEqual([{ input_tokens: 300 }])
   })
 })
 
 describe('pruneTokenUsage: a later failure takes the rollups back', () => {
   it('when the raw delete fails, neither rollup is left behind and the raw rows stay', async () => {
     seedOldRows()
-    getDb().exec(`CREATE TRIGGER no_raw_delete BEFORE DELETE ON token_usage BEGIN SELECT RAISE(ABORT, 'raw delete refused'); END`)
+    await dbx.exec(`CREATE TRIGGER no_raw_delete BEFORE DELETE ON token_usage BEGIN SELECT RAISE(ABORT, 'raw delete refused'); END`)
     await expect(pruneTokenUsage()).rejects.toThrow('raw delete refused')
-    expect(count('token_usage')).toBe(2)
-    expect(count('token_usage_daily')).toBe(0)
-    expect(count('token_usage_monthly')).toBe(0)
+    expect(await count('token_usage')).toBe(2)
+    expect(await count('token_usage_daily')).toBe(0)
+    expect(await count('token_usage_monthly')).toBe(0)
   })
 
   it('when an aggregator retention delete fails, the rollups AND the raw delete roll back', async () => {
     seedOldRows()
     // A daily row far past its 365 day window: step 4 deletes it, and the trigger refuses.
-    getDb().prepare(
-      `INSERT INTO token_usage_daily (day, agent, model, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, thinking_tokens, row_count, tenant_id)
-       VALUES ('2000-01-01', 'agent-z', '', 1, 1, 0, 0, 0, 1, 'default')`,
-    ).run()
-    getDb().exec(`CREATE TRIGGER no_daily_delete BEFORE DELETE ON token_usage_daily BEGIN SELECT RAISE(ABORT, 'daily delete refused'); END`)
+    await dbx.run(`INSERT INTO token_usage_daily (day, agent, model, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, thinking_tokens, row_count, tenant_id)
+       VALUES ('2000-01-01', 'agent-z', '', 1, 1, 0, 0, 0, 1, 'default')`)
+    await dbx.exec(`CREATE TRIGGER no_daily_delete BEFORE DELETE ON token_usage_daily BEGIN SELECT RAISE(ABORT, 'daily delete refused'); END`)
     await expect(pruneTokenUsage()).rejects.toThrow('daily delete refused')
-    expect(count('token_usage')).toBe(2)
-    expect(count('token_usage_daily')).toBe(1) // only the seeded old row: no rollup of agent-a survived
-    expect(count('token_usage_monthly')).toBe(0)
+    expect(await count('token_usage')).toBe(2)
+    expect(await count('token_usage_daily')).toBe(1) // only the seeded old row: no rollup of agent-a survived
+    expect(await count('token_usage_monthly')).toBe(0)
   })
 })

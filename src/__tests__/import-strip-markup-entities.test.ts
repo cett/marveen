@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import Database from 'better-sqlite3'
-import { initDatabase, getDb } from '../db.js'
+import { initDatabase, dbx } from '../db.js'
 import { useTestDb } from './helpers/with-test-db.js'
 import { applyMigrations } from '../db-migrations.js'
 
@@ -82,33 +82,33 @@ describe('crawlers decode entities end to end', () => {
   })
   afterEach(() => { rmSync(tmpDir, { recursive: true, force: true }); vi.unstubAllGlobals() })
 
-  function seedLocal(id: string) {
+  async function seedLocal(id: string) {
     const now = Math.floor(Date.now() / 1000)
-    getDb().prepare(`INSERT INTO import_sources (id, type, path, interval_hours, enabled, created_at, updated_at, tenant_id)
-      VALUES (?, 'local', ?, 4, 1, ?, ?, 'default')`).run(id, tmpDir, now, now)
+    await dbx.run(`INSERT INTO import_sources (id, type, path, interval_hours, enabled, created_at, updated_at, tenant_id)
+      VALUES (?, 'local', ?, 4, 1, ?, ?, 'default')`, id, tmpDir, now, now)
   }
 
   it('local .html file: stored content and shadow memory carry the real accents', async () => {
     writeFileSync(join(tmpDir, 'doc.html'), '<html><body><p>jegyz&#337;k&ouml;nyv &amp; &Eacute;vk&ouml;nyv</p></body></html>', 'utf-8')
-    seedLocal('loc-1')
+    await seedLocal('loc-1')
     await crawlSource('loc-1')
-    const row = getDb().prepare('SELECT content, memory_shadow_id FROM import_memories WHERE source_id = ?').get('loc-1') as any
+    const row = (await dbx.get('SELECT content, memory_shadow_id FROM import_memories WHERE source_id = ?', 'loc-1')) as any
     expect(row.content).toBe('jegyzőkönyv & Évkönyv')
-    const shadow = getDb().prepare('SELECT content FROM memories WHERE id = ?').get(row.memory_shadow_id) as any
+    const shadow = (await dbx.get('SELECT content FROM memories WHERE id = ?', row.memory_shadow_id)) as any
     expect(shadow.content).toBe('jegyzőkönyv & Évkönyv')
   })
 
   it('local .html file: a secret hidden behind character references is caught after the decode', async () => {
     writeFileSync(join(tmpDir, 'leak.html'), '<p>config password&#61;hunter2hunter2 end</p>', 'utf-8')
-    seedLocal('loc-2')
+    await seedLocal('loc-2')
     await crawlSource('loc-2')
-    expect(getDb().prepare('SELECT COUNT(*) AS n FROM import_memories WHERE source_id = ?').get('loc-2')).toEqual({ n: 0 })
+    expect(await dbx.get('SELECT COUNT(*) AS n FROM import_memories WHERE source_id = ?', 'loc-2')).toEqual({ n: 0 })
   })
 
   it('Confluence storage HTML: entity accents are decoded in the stored page', async () => {
     const now = Math.floor(Date.now() / 1000)
-    getDb().prepare(`INSERT INTO import_sources (id, type, path, interval_hours, enabled, created_at, updated_at, tenant_id, vault_token_ref, confluence_email, base_url)
-      VALUES ('cf-1', 'confluence', 'SPACE', 4, 1, ?, ?, 'default', 'tok', 'u@example.com', 'https://example.atlassian.net')`).run(now, now)
+    await dbx.run(`INSERT INTO import_sources (id, type, path, interval_hours, enabled, created_at, updated_at, tenant_id, vault_token_ref, confluence_email, base_url)
+      VALUES ('cf-1', 'confluence', 'SPACE', 4, 1, ?, ?, 'default', 'tok', 'u@example.com', 'https://example.atlassian.net')`, now, now)
     mockGetSecret.mockReturnValue('t')
     const res = (body: unknown) => ({ ok: true, status: 200, headers: { get: () => null }, json: async () => body }) as unknown as Response
     vi.stubGlobal('fetch', vi.fn(async (url: string) => {
@@ -118,7 +118,7 @@ describe('crawlers decode entities end to end', () => {
       throw new Error(`unexpected ${url}`)
     }))
     await crawlSource('cf-1')
-    const row = getDb().prepare("SELECT content FROM import_memories WHERE source_id = 'cf-1'").get() as any
+    const row = (await dbx.get("SELECT content FROM import_memories WHERE source_id = 'cf-1'")) as any
     expect(row.content).toBe('jegyzőkönyv 2026')
   })
 })
@@ -128,27 +128,27 @@ describe('upsertImportMemory -- shadow embedding bookkeeping', () => {
 
   async function seed() {
     const now = 1_700_000_000
-    getDb().prepare(`INSERT INTO import_sources (id, type, path, interval_hours, enabled, created_at, updated_at, tenant_id)
-      VALUES ('s1', 'local', '/x', 4, 1, ?, ?, 'default')`).run(now, now)
+    await dbx.run(`INSERT INTO import_sources (id, type, path, interval_hours, enabled, created_at, updated_at, tenant_id)
+      VALUES ('s1', 'local', '/x', 4, 1, ?, ?, 'default')`, now, now)
     await upsertImportMemory('s1', '/x/a.html', 'a.html', 'h1', 'jegyz k nyv', 'kw', now, 'default')
-    const shadowId = (getDb().prepare("SELECT memory_shadow_id AS id FROM import_memories WHERE file_path = '/x/a.html'").get() as any).id
-    getDb().prepare('UPDATE memories SET embedding_blob = ? WHERE id = ?').run(Buffer.from([1, 2, 3, 4]), shadowId)
+    const shadowId = ((await dbx.get("SELECT memory_shadow_id AS id FROM import_memories WHERE file_path = '/x/a.html'")) as any).id
+    await dbx.run('UPDATE memories SET embedding_blob = ? WHERE id = ?', Buffer.from([1, 2, 3, 4]), shadowId)
     return shadowId as number
   }
-  const blob = (id: number) => (getDb().prepare('SELECT embedding_blob AS b FROM memories WHERE id = ?').get(id) as any).b
+  const blob = async (id: number) => ((await dbx.get('SELECT embedding_blob AS b FROM memories WHERE id = ?', id)) as any).b
 
   it('drops the stale embedding when the text changed, and refreshes the shadow content and updated_at', async () => {
     const id = await seed()
     expect(await upsertImportMemory('s1', '/x/a.html', 'a.html', 'h2', 'jegyzőkönyv', 'kw', 1_700_000_500, 'default')).toBe('updated')
-    expect(blob(id)).toBeNull()
-    const m = getDb().prepare('SELECT content, updated_at FROM memories WHERE id = ?').get(id) as any
+    expect(await blob(id)).toBeNull()
+    const m = (await dbx.get('SELECT content, updated_at FROM memories WHERE id = ?', id)) as any
     expect(m).toEqual({ content: 'jegyzőkönyv', updated_at: 1_700_000_500 })
   })
 
   it('keeps the embedding when only the hash changed and the extracted text is identical', async () => {
     const id = await seed()
     expect(await upsertImportMemory('s1', '/x/a.html', 'a.html', 'h2', 'jegyz k nyv', 'kw', 1_700_000_500, 'default')).toBe('updated')
-    expect(blob(id)).not.toBeNull()
+    expect(await blob(id)).not.toBeNull()
   })
 })
 
@@ -202,12 +202,12 @@ describe('migration 0072', () => {
     try {
       writeFileSync(join(tmp, 'doc.html'), '<p>jegyz&#337;k&ouml;nyv</p>', 'utf-8')
       const now = Math.floor(Date.now() / 1000)
-      getDb().prepare(`INSERT INTO import_sources (id, type, path, interval_hours, enabled, created_at, updated_at, tenant_id) VALUES ('l', 'local', ?, 4, 1, ?, ?, 'default')`).run(tmp, now, now)
+      await dbx.run(`INSERT INTO import_sources (id, type, path, interval_hours, enabled, created_at, updated_at, tenant_id) VALUES ('l', 'local', ?, 4, 1, ?, ?, 'default')`, tmp, now, now)
       await crawlSource('l')
       // simulate the pre-fix state: garbled text, then the migration's marker
-      getDb().prepare("UPDATE import_memories SET content = 'jegyz k nyv', content_hash = 'resync-0072' WHERE source_id = 'l'").run()
+      await dbx.run("UPDATE import_memories SET content = 'jegyz k nyv', content_hash = 'resync-0072' WHERE source_id = 'l'")
       await crawlSource('l')
-      expect((getDb().prepare("SELECT content FROM import_memories WHERE source_id = 'l'").get() as any).content).toBe('jegyzőkönyv')
+      expect(((await dbx.get("SELECT content FROM import_memories WHERE source_id = 'l'")) as any).content).toBe('jegyzőkönyv')
     } finally { rmSync(tmp, { recursive: true, force: true }) }
   })
 })

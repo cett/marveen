@@ -3,7 +3,7 @@
 
 import { describe, it, expect, beforeEach } from 'vitest'
 import { EventEmitter } from 'node:events'
-import { createTenant, setTenantAgentAvailability, setChannelBinding, db, getTenantGateStatus } from '../db.js'
+import { createTenant, setTenantAgentAvailability, setChannelBinding, getTenantGateStatus, dbx } from '../db.js'
 import { tryHandleTenantGateStatus } from '../web/routes/tenant-gate-status.js'
 import type { RouteContext } from '../web/routes/types.js'
 import { useTestDb } from './helpers/with-test-db.js'
@@ -53,7 +53,7 @@ describe('GET /api/admin/tenant-gate-status', () => {
   })
 
   it('lists the per-agent context rows the prompt hook wrote', async () => {
-    db.prepare("INSERT INTO agent_tenant_context (agent_id, tenant_id, status, source, session_id, updated_at) VALUES ('a1','acme','bound','s','',100)").run()
+    await dbx.run("INSERT INTO agent_tenant_context (agent_id, tenant_id, status, source, session_id, updated_at) VALUES ('a1','acme','bound','s','',100)")
     const r = await call('GET', '/api/admin/tenant-gate-status')
     expect(r.body.contexts).toEqual([{ agent_id: 'a1', status: 'bound', tenant_id: 'acme', updated_at: 100 }])
   })
@@ -70,13 +70,13 @@ describe('GET /api/admin/tenant-gate-status', () => {
   it('a disabled tenant does not count towards multi-tenancy', async () => {
     await setTenantAgentAvailability('acme', 'm1', true)
     await setTenantAgentAvailability('beta', 'm1', true)
-    db.prepare("UPDATE tenants SET disabled_at = 5 WHERE id = 'beta'").run()
+    await dbx.run("UPDATE tenants SET disabled_at = 5 WHERE id = 'beta'")
     expect((await getTenantGateStatus()).multi_tenant_agents).toEqual([])
   })
 
   it('reports a missing gate table rather than failing', async () => {
-    db.exec('DROP TABLE agent_tenant_context')
-    db.prepare('DELETE FROM schema_version WHERE version = 65').run()
+    await dbx.exec('DROP TABLE agent_tenant_context')
+    await dbx.run('DELETE FROM schema_version WHERE version = 65')
     const m = (await getTenantGateStatus()).migrations
     expect(m[1]).toEqual({ version: 65, table: 'agent_tenant_context', applied: false, table_exists: false })
     expect(m[0]!.applied).toBe(true)

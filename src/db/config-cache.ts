@@ -19,12 +19,14 @@
 // script or a test that writes the table directly calls `reloadSystemConfigCache()`.
 
 import { db } from './connection.js'
+import { dbx, dbxDialect } from './facade.js'
+import { notLoadedInPg, ownerLive, ownerNow, type CacheOwner } from './cache-owner.js'
 import type { SystemConfigRow } from './system-config.js'
 
 const SELECT_ALL = 'SELECT key, value, updated_at, source FROM system_config ORDER BY key'
 
 let rows: Map<string, SystemConfigRow> | null = null
-let cachedFor: unknown = null
+let owner: CacheOwner | null = null
 
 function readTable(): SystemConfigRow[] {
   return db.prepare(SELECT_ALL).all() as SystemConfigRow[]
@@ -35,7 +37,7 @@ export function loadSystemConfigCache(): void {
   const next = new Map<string, SystemConfigRow>()
   for (const row of readTable()) next.set(row.key, row)
   rows = next
-  cachedFor = db
+  owner = { handle: db, epoch: null }
 }
 
 /** Re-read the table: for a script or a test that wrote `system_config` directly. */
@@ -46,22 +48,29 @@ export function reloadSystemConfigCache(): void {
 /** Forget the cache (the next reads go to the table until the next load). */
 export function clearSystemConfigCache(): void {
   rows = null
-  cachedFor = null
+  owner = null
+}
+
+/** A synchronous reader: on the PG backend an unloaded cache is an error that names the loader. */
+function liveForRead(): ReturnType<typeof live> {
+  const map = live()
+  if (map === null && dbxDialect() === 'pg') throw notLoadedInPg('loadSystemConfigCacheAsync()')
+  return map
 }
 
 function live(): Map<string, SystemConfigRow> | null {
-  return rows !== null && cachedFor === db ? rows : null
+  return rows !== null && ownerLive(owner) ? rows : null
 }
 
 export function cachedSystemConfig(key: string): SystemConfigRow | undefined | null {
-  const map = live()
+  const map = liveForRead()
   if (map === null) return null
   const row = map.get(key)
   return row === undefined ? undefined : { ...row }
 }
 
 export function cachedSystemConfigList(): SystemConfigRow[] | null {
-  const map = live()
+  const map = liveForRead()
   if (map === null) return null
   return [...map.values()].sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0)).map((r) => ({ ...r }))
 }
@@ -80,4 +89,39 @@ export function cacheAfterWrite(key: string): void {
 /** After a bulk write (the migrators): re-read the table if the cache is live; a cache that is not loaded stays unloaded. */
 export function refreshSystemConfigCacheIfLive(): void {
   if (live() !== null) loadSystemConfigCache()
+}
+
+/**
+ * Load the cache through the facade (`dbx.all`: a plain SELECT, the same text on both engines). On the PG backend the
+ * cache then belongs to that backend's epoch; on SQLite it belongs to the handle, as the synchronous load makes it.
+ * If the backend was switched while the rows were read, they belong to nobody and are dropped.
+ */
+export async function loadSystemConfigCacheAsync(): Promise<void> {
+  const mine = ownerNow()
+  const all = await dbx.all<SystemConfigRow>(SELECT_ALL)
+  if (!ownerLive(mine)) return
+  const next: Map<string, SystemConfigRow> = new Map()
+  for (const row of all) next.set(row.key, row)
+  rows = next
+  owner = mine
+}
+
+/**
+ * After a write, from an async writer: on the PG backend the row is read back with an awaited `dbx.get` and put in the
+ * cache (only if the cache is live for this backend); on SQLite it is the synchronous read-back of cacheAfterWrite.
+ * Known limit on PG: two overlapping writers can leave the cache stale until the cross-process invalidation of P2-5;
+ * a test with one connection does not see it.
+ */
+export async function cacheAfterWriteAsync(key: string): Promise<void> {
+  if (dbxDialect() !== 'pg') {
+    cacheAfterWrite(key)
+    return
+  }
+  const map = live()
+  if (map === null) return
+  const row = await dbx.get<SystemConfigRow>('SELECT key, value, updated_at, source FROM system_config WHERE key = ?', key)
+  // `map` is the map checked above: if the backend was switched meanwhile and the cache reloaded, the reloaded one is a
+  // different object and this (older) row lands in the dead one
+  if (row === undefined) map.delete(key)
+  else map.set(key, row)
 }

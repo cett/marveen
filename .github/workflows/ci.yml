@@ -139,7 +139,10 @@ jobs:
           key: tsbuildinfo-${{ hashFiles('src/**/*.ts', 'tsconfig.json') }}
 
       - name: Build
-        run: npm run build
+        run: |
+          npm run build
+          # the PG runner reads dist/migrations-pg next to the compiled module; tsc does not emit .sql
+          test -n "$(ls dist/migrations-pg/*.sql 2>/dev/null)"
 
       - name: Type check
         run: npm run typecheck
@@ -449,3 +452,7 @@ jobs:
 
       - name: PostgreSQL tests (baseline parity, harness)
         run: npm run test:pg
+
+      - name: PostgreSQL module run (the useTestDb files of the ported list, MARVEEN_TEST_DB=pg)
+        # the same files also run on SQLite in the default suite; the list is src/__tests__/helpers/pg-modules.ts
+        run: npm run test:pg-modules
