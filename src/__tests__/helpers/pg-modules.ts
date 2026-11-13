@@ -68,6 +68,7 @@ export const PORTED: readonly string[] = [
   'src/__tests__/import-crawler-tenant.test.ts',
   'src/__tests__/kanban-tx-handle-audit.test.ts',
   'src/__tests__/memories-content-not-blank.test.ts',
+  'src/__tests__/tenant-gate-status-route.test.ts',
 ]
 
 /** Test files (same form) that do not, each with the reason. */
@@ -101,13 +102,12 @@ export const EXCLUDED: Readonly<Record<string, ExcludeReason>> = {
   'src/__tests__/with-test-db.test.ts': 'sqlite-only',
   'src/__tests__/db-api-tokens-enroll-twin.test.ts': 'raw-db',
   'src/__tests__/db-device-keys.test.ts': 'raw-db',
-  'src/__tests__/tenant-gate-status-route.test.ts': 'raw-db',
   'src/__tests__/audit-log-trace-filter.test.ts': 'unported-sql',
   'src/__tests__/db-agent-state-facade.test.ts': 'unported-sql',
 }
 
 /** The number of EXCLUDED files the partition test accepts. It only goes down. */
-export const EXCLUDED_BASELINE = 32
+export const EXCLUDED_BASELINE = 31
 
 /** A file uses useTestDb when it imports the helper AND calls useTestDb( (a file that only imports resetDbTestState or testDbMode does not). */
 const IMPORT = /from\s+['"][^'"]*helpers\/with-test-db(\.js)?['"]/
