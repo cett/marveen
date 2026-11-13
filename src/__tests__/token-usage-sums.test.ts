@@ -8,6 +8,8 @@ import { useTestDb } from './helpers/with-test-db.js'
 import {
   getTokenSummary, getTokenTimeline, sumTokenUsageByModel, sumTokenUsageWindow, tokenUsageHistogramWindow,
 } from '../db/observability.js'
+import { listTaskRunHistory } from '../db/tasks.js'
+import { totalsByTokenShadowCategory } from '../db/token-shadow.js'
 
 const { dbx } = useTestDb()
 
@@ -78,5 +80,92 @@ describe('token aggregates are numbers', () => {
     // inputTokens is input + cache_read + cache_creation of each row
     expect(addTwo(rows, 'inputTokens')).toBe(A[0] + A[2] + A[3] + B[0] + B[2] + B[3])
     expect(addTwo(rows, 'outputTokens')).toBe(SUMS[1])
+  })
+})
+
+// A sum past 2^31 - 1 (2147483647): the all-time cache_read total of a busy fleet gets there. The cast must be BIGINT:
+// CAST(SUM(x) AS INTEGER) is an "integer out of range" error on PostgreSQL (SQLite's INTEGER is 64 bit, so these cells
+// are the PostgreSQL guard). The small values above stay below the limit, so an INTEGER cast would pass them.
+const BIG = 3000000000
+
+/** A third agent with BIG in every column, next to the two rows of seed(). */
+async function seedBig(): Promise<void> {
+  await seed()
+  await dbx.run(
+    `INSERT INTO token_usage (agent, session_id, timestamp, ${COLS.join(', ')}, model, tool_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    'agent-c', 'session-agent-c', T, ...COLS.map(() => BIG), 'model-c', 'tool-x',
+  )
+}
+
+/** The values of `key` added over all rows: every one must be a number, and the total is exact (below 2^53). */
+function addAll(rows: Record<string, unknown>[], key: string, count: number): number {
+  expect(rows, `rows for ${key}`).toHaveLength(count)
+  for (const r of rows) expect(typeof r[key], `${key} is a number`).toBe('number')
+  return rows.reduce((acc, r) => acc + (r[key] as number), 0)
+}
+
+describe('token aggregates hold a value past 2^31', () => {
+  it('sumTokenUsageWindow', async () => {
+    await seedBig()
+    const rows = await sumTokenUsageWindow(0, 2000) as unknown as Record<string, unknown>[]
+    COLS.forEach((c, i) => expect(addAll(rows, c, 3)).toBe(SUMS[i] + BIG))
+  })
+
+  it('tokenUsageHistogramWindow', async () => {
+    await seedBig()
+    const rows = await tokenUsageHistogramWindow(0, 2000) as unknown as Record<string, unknown>[]
+    const input = rows.filter((r) => r.token_type === 'input')
+    const output = rows.filter((r) => r.token_type === 'output')
+    expect(addAll(input, 'total', 3)).toBe(SUMS[0] + BIG)
+    expect(addAll(output, 'total', 3)).toBe(SUMS[1] + BIG)
+  })
+
+  it('getTokenSummary: per agent and per model', async () => {
+    await seedBig()
+    const rows = await getTokenSummary()
+    const keys = ['totalInput', 'totalOutput', 'totalCacheRead', 'totalCacheCreation', 'totalThinking']
+    keys.forEach((k, i) => expect(addAll(rows as unknown as Record<string, unknown>[], k, 3)).toBe(SUMS[i] + BIG))
+    const perModel = rows.flatMap((r) => r.perModel) as unknown as Record<string, unknown>[]
+    keys.forEach((k, i) => expect(addAll(perModel, k, 3)).toBe(SUMS[i] + BIG))
+  })
+
+  it('sumTokenUsageByModel', async () => {
+    await dbx.run(`INSERT INTO token_usage (agent, session_id, timestamp, ${COLS.join(', ')}, model) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, 'agent-a', 's1', T, ...A, 'model-a')
+    await dbx.run(`INSERT INTO token_usage (agent, session_id, timestamp, ${COLS.join(', ')}, model) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, 'agent-a', 's2', T, ...B, 'model-b')
+    await dbx.run(`INSERT INTO token_usage (agent, session_id, timestamp, ${COLS.join(', ')}, model) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, 'agent-a', 's3', T, ...COLS.map(() => BIG), 'model-c')
+    const rows = await sumTokenUsageByModel('agent-a', 0, 2000) as unknown as Record<string, unknown>[]
+    const keys = ['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheCreationTokens']
+    keys.forEach((k, i) => expect(addAll(rows, k, 3)).toBe(SUMS[i] + BIG))
+  })
+
+  it('getTokenTimeline: the expression inside the sum', async () => {
+    await seedBig()
+    const rows = await getTokenTimeline(60, 0, 2000) as unknown as Record<string, unknown>[]
+    expect(addAll(rows, 'inputTokens', 3)).toBe(A[0] + A[2] + A[3] + B[0] + B[2] + B[3] + 3 * BIG)
+    expect(addAll(rows, 'outputTokens', 3)).toBe(SUMS[1] + BIG)
+  })
+
+  it('totalsByTokenShadowCategory: two counters of one category add up past 2^31', async () => {
+    const ins = (route: string) => dbx.run(
+      `INSERT INTO token_usage_shadow (day, category, method, route, caller, caller_source, client, target, count, last_ts)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      '2026-01-01', 'cat-a', 'GET', route, 'agent-a', 'token', 'none', '', BIG, T,
+    )
+    await ins('/route-1')
+    await ins('/route-2')
+    const rows = await totalsByTokenShadowCategory({ fromDay: '2026-01-01' })
+    expect(rows).toHaveLength(1)
+    expect(typeof rows[0].count).toBe('number')
+    expect(rows[0].count).toBe(2 * BIG)
+  })
+
+  it('listTaskRunHistory: the token estimate of a run window', async () => {
+    await seedBig()
+    await dbx.run('INSERT INTO task_runs (name, agent, ts, status) VALUES (?, ?, ?, ?)', 'task-x', 'agent-c', T * 1000, 'fired')
+    const rows = await listTaskRunHistory('task-x', 5)
+    expect(rows).toHaveLength(1)
+    expect(typeof rows[0].tokens_est).toBe('number')
+    // input + output + cache_read of the third agent's row
+    expect(rows[0].tokens_est).toBe(3 * BIG)
   })
 })
