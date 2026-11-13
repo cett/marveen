@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { resetDbContextForTest, runAs } from '../db/context.js'
 import { createPgDbx, PG_SET_CONTEXT_SQL, STRICT_OUTSIDE_CALL_MESSAGE, type PgPoolLike } from '../db/pg/dbx.js'
 import { pgTypes } from '../db/pg/types.js'
+import { PARENT_HANDLE_MESSAGE } from '../db/tx-lock.js'
 import { logger } from '../logger.js'
 
 type Entry = { c: number; kind: 'q'; text: string; values?: unknown[]; types?: unknown } | { c: number; kind: 'release'; arg: unknown }
@@ -309,6 +310,63 @@ describe('savepoints (a transaction inside a transaction)', () => {
     const f = fakePool()
     await expect(createPgDbx(f.pool).tx(async (tx) => { await tx.tx(() => Promise.reject(inner)) })).rejects.toBe(inner)
     expect(f.story(1).slice(-3)).toEqual(['RELEASE SAVEPOINT dbx_sp_1', 'ROLLBACK', 'release(false)'])
+  })
+
+  // P31: the handle of the enclosing transaction inside a savepoint body is refused, and nothing is sent to the connection for it
+  it('the parent handle inside a savepoint body is refused with no statement sent; the savepoint handle and the parent after it work', async () => {
+    const f = fakePool()
+    const seen: string[] = []
+    await createPgDbx(f.pool).tx(async (tx) => {
+      await tx.tx(async (inner) => {
+        for (const op of [() => tx.run('PARENT-RUN'), () => tx.get('PARENT-GET'), () => tx.all('PARENT-ALL'), () => tx.exec('PARENT-EXEC'), () => tx.tx(() => Promise.resolve(1))]) {
+          seen.push(await op().then(() => 'accepted', (e: unknown) => (e as Error).message))
+        }
+        await inner.run('OWN')
+      })
+      await tx.run('AFTER')
+    })
+    expect(seen).toEqual(Array(5).fill(PARENT_HANDLE_MESSAGE))
+    for (const m of seen) expect(m).toMatch(/savepoint handle/)
+    expect(f.story(1)).toEqual(['BEGIN', 'CTX', 'SAVEPOINT dbx_sp_1', 'OWN', 'RELEASE SAVEPOINT dbx_sp_1', 'AFTER', 'COMMIT', 'release(false)'])
+  })
+
+  it('the middle handle inside a deeper savepoint body is refused; a call from the parent body (a sibling that queues) is not', async () => {
+    const f = fakePool()
+    let refused = ''
+    await createPgDbx(f.pool).tx(async (tx) => {
+      await Promise.all([
+        tx.tx(async (mid) => {
+          await mid.tx(async (deep) => {
+            refused = await mid.run('MID').then(() => 'accepted', (e: unknown) => (e as Error).message)
+            await deep.run('DEEP')
+          })
+        }),
+        tx.tx(async (sib) => { await sib.run('SIBLING') }),
+      ])
+    })
+    expect(refused).toBe(PARENT_HANDLE_MESSAGE)
+    expect(refused).toMatch(/savepoint handle/)
+    expect(f.story(1)).not.toContain('MID')
+    expect(f.story(1)).toEqual(expect.arrayContaining(['DEEP', 'SIBLING']))
+  })
+
+  it('the top handle two savepoints down is refused, and a late call of the parent handle that carries a FINISHED savepoint is not', async () => {
+    const f = fakePool()
+    let refused = ''
+    let late: Promise<unknown> = Promise.resolve()
+    await createPgDbx(f.pool).tx(async (tx) => {
+      await tx.tx(async (mid) => {
+        await mid.tx(async () => {
+          refused = await tx.run('TOP').then(() => 'accepted', (e: unknown) => (e as Error).message)
+        })
+        late = new Promise<void>((r) => setTimeout(r, 15)).then(() => tx.run('LATE'))
+      })
+      await late
+    })
+    expect(refused).toBe(PARENT_HANDLE_MESSAGE)
+    expect(refused).toMatch(/savepoint handle/)
+    expect(f.story(1)).not.toContain('TOP')
+    expect(f.story(1)).toContain('LATE')
   })
 
   it('savepoints side by side run one after the other, with names that do not collide; nested ones count on', async () => {
