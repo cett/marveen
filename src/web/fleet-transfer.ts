@@ -1975,12 +1975,11 @@ async function runImportFleet(
     }
 
     // Phase 2: ONE transaction holds every database write of the import -- the settings, the skill rows and the
-    // per-row imports -- so a failure anywhere rolls all of it back. The body holds only `dbx` calls (the modules
-    // below are on the facade, so each joins the ambient transaction and a nested one becomes a savepoint) and pure
-    // row policy: no file I/O, no network, no timer, no LLM, no vault. seedSkillIfAbsent() is on the facade too
-    // (db/tasks.ts), so the skill rows roll back with the rest. Rows are written in the same order the
+    // per-row imports -- so a failure anywhere rolls all of it back. The body holds only calls on the transaction
+    // handle `tx` (a nested transaction becomes a savepoint) and pure row policy: no file I/O, no network, no timer,
+    // no LLM, no vault. A call on the outer `dbx` here is refused on Postgres (the strict rule). Rows are written in the same order the
     // pre-transaction block used.
-    const importTx = () => inFleetImportTransaction(async () => {
+    const importTx = () => inFleetImportTransaction(async (tx) => {
       // DB-backed -- upsert each imported row into autonomy_categories (not a file write). Upsert rather than
       // replace-all: a category that only exists on the target fleet (not in the imported snapshot) is left
       // untouched, consistent with the identity-takeover model not being destructive beyond what the source
@@ -2033,7 +2032,7 @@ async function runImportFleet(
         const l = label as any
         if (!l.id || !l.name || breaksTableRules(l, ['color', 'created_at'])) { logger.warn({ id: l.id }, 'Fleet import: skipping label with missing required fields'); return false }
         return true
-      }))
+      }), tx)
 
       await importFleetRows('kanban_cards', (fleet.kanban?.cards ?? []).filter((card) => {
         const c = card as any
@@ -2045,24 +2044,24 @@ async function runImportFleet(
           logger.warn({ id: c.id }, 'Fleet import: skipping kanban card with missing required fields'); return false
         }
         return true
-      }))
+      }), tx)
 
       // kanban comments (idempotent: card_id + content)
       await importFleetRows('kanban_comments', (fleet.kanban?.comments ?? []).filter((comment) => {
         const c = comment as any
         return !!c.card_id && !!c.content
-      }))
+      }), tx)
 
       // kanban card events -- idempotent on (card_id, created_at, to_status)
       await importFleetRows('kanban_card_events', (fleet.kanban?.cardEvents ?? []).filter((ev) => {
         const e = ev as any
         return !!e.card_id && !!e.to_status
-      }))
+      }), tx)
 
       await importFleetRows('kanban_card_labels', (fleet.kanban?.cardLabels ?? []).filter((cl) => {
         const c = cl as any
         return !!c.card_id && !!c.label_id && c.created_at != null
-      }))
+      }), tx)
 
       // schedules -- idempotent on id. Always imported disabled regardless of the
       // exported value (defense in depth -- mirrors the file-based scheduledTasks
@@ -2083,7 +2082,7 @@ async function runImportFleet(
           skip_if_busy: s.skip_if_busy ?? 0, force_send: s.force_send ?? 0,
         })
       }
-      await importFleetRows('schedules', scheduleRows)
+      await importFleetRows('schedules', scheduleRows, tx)
 
       // import_sources -- idempotent on id. Always imported disabled with
       // last_run_at cleared, regardless of the exported values (defense in
@@ -2106,7 +2105,7 @@ async function runImportFleet(
           tenant_id: s.tenant_id ?? 'default',
         })
       }
-      await importFleetRows('import_sources', importSourceRows)
+      await importFleetRows('import_sources', importSourceRows, tx)
 
       // vault_ssh_keys -- idempotent on id. Metadata only (no private key column);
       // inserted before vault_ssh_servers below since a server's ssh_key_id refers
@@ -2119,7 +2118,7 @@ async function runImportFleet(
           logger.warn({ id: k.id }, 'Fleet import: skipping SSH key with missing required fields'); return false
         }
         return true
-      }).map((key) => ({ ...(key as any), tenant_id: (key as any).tenant_id ?? 'default' })))
+      }).map((key) => ({ ...(key as any), tenant_id: (key as any).tenant_id ?? 'default' })), tx)
 
       // vault_ssh_servers -- idempotent on id.
       await importFleetRows('vault_ssh_servers', (fleet.vaultSshServers ?? []).filter((srv) => {
@@ -2128,17 +2127,17 @@ async function runImportFleet(
           logger.warn({ id: s2.id }, 'Fleet import: skipping SSH server with missing required fields'); return false
         }
         return true
-      }).map((srv) => ({ ...(srv as any), port: (srv as any).port ?? 22, tenant_id: (srv as any).tenant_id ?? 'default' })))
+      }).map((srv) => ({ ...(srv as any), port: (srv as any).port ?? 22, tenant_id: (srv as any).tenant_id ?? 'default' })), tx)
 
       // memories -- idempotent on (agent_id, content); covers ALL agent_ids
       // agent_id-k pontosan a forrásból kerülnek át (a cél átveszi a forrás főagent identitását)
       const now = Math.floor(Date.now() / 1000)
       await importFleetRows('memories', memoryRows.rows.map((mem) => ({
         ...mem, chat_id: '', accessed_at: mem.accessed_at ?? now, auto_generated: mem.auto_generated ?? 0,
-      })))
+      })), tx)
 
       // daily logs -- idempotent on (agent_id, date, content); multiple rows per date are preserved
-      await importFleetRows('daily_logs', fleet.dailyLogs ?? [])
+      await importFleetRows('daily_logs', fleet.dailyLogs ?? [], tx)
 
       // idea_box -- idempotent on id
       await importFleetRows('idea_box', (fleet.ideaBox?.ideas ?? []).filter((idea) => {
@@ -2147,13 +2146,13 @@ async function runImportFleet(
           logger.warn({ id: i.id }, 'Fleet import: skipping idea with missing required fields'); return false
         }
         return true
-      }).map((idea) => ({ ...(idea as any), source: (idea as any).source ?? '' })))
+      }).map((idea) => ({ ...(idea as any), source: (idea as any).source ?? '' })), tx)
 
       // idea_comments -- M5: idempotent on (idea_id, created_at, content)
-      await importFleetRows('idea_comments', fleet.ideaBox?.comments ?? [])
+      await importFleetRows('idea_comments', fleet.ideaBox?.comments ?? [], tx)
 
       // idea_status_log -- M5: idempotent on (idea_id, created_at, to_status)
-      await importFleetRows('idea_status_log', fleet.ideaBox?.statusLog ?? [])
+      await importFleetRows('idea_status_log', fleet.ideaBox?.statusLog ?? [], tx)
 
       // FTS rebuild after all memory inserts
       await rebuildMemoriesFts()

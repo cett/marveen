@@ -8,6 +8,10 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { _encryptForTest, _decryptForTest, ENCRYPTED_FLEET_VERSION, MIN_VAULT_PASSWORD_LEN } from '../web/fleet-transfer.js'
+import type { Tx } from '../db/facade.js'
+
+// The handle the mocked transaction wrapper passes to the import body; the mocked db modules ignore it.
+const FAKE_TX = {} as unknown as Tx
 
 // ---------------------------------------------------------------------------
 // Crypto round-trip
@@ -99,7 +103,7 @@ vi.mock('../db/fleet-transfer.js', () => ({
   importFleetRows: vi.fn(() => Promise.resolve(0)),
   listEnabledTenantIds: vi.fn(() => Promise.resolve([] as string[])),
   rebuildMemoriesFts: vi.fn(() => Promise.resolve()),
-  inFleetImportTransaction: vi.fn((fn: () => Promise<void>) => fn()),
+  inFleetImportTransaction: vi.fn((fn: (tx: Tx) => Promise<void>) => fn(FAKE_TX)),
 }))
 
 // The caches the import re-reads after the commit belong to the real connection, which these tests do not open.
@@ -568,7 +572,7 @@ describe('importFleet: the import transaction is awaited', () => {
     vi.mocked(t.importFleetRows).mockReset().mockImplementation(() => Promise.resolve(0))
     vi.mocked(t.listEnabledTenantIds).mockReset().mockImplementation(() => Promise.resolve(['t-local']))
     vi.mocked(t.rebuildMemoriesFts).mockReset().mockImplementation(() => Promise.resolve())
-    vi.mocked(t.inFleetImportTransaction).mockReset().mockImplementation((fn) => fn())
+    vi.mocked(t.inFleetImportTransaction).mockReset().mockImplementation((fn) => fn(FAKE_TX))
     const { updateEnvFile } = await import('../env.js')
     vi.mocked(updateEnvFile).mockClear()
   })
@@ -595,6 +599,16 @@ describe('importFleet: the import transaction is awaited', () => {
         table === failing ? Promise.reject(new Error(`refused ${failing}`)) : Promise.resolve(0))
       await expect(importFleet(FLEET_WITH_SCHEDULES, { apply: true })).rejects.toThrow(`refused ${failing}`)
     }
+  })
+
+  it('every row import of the body runs on the handle the transaction wrapper passed', async () => {
+    const t = await import('../db/fleet-transfer.js')
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    await importFleet(FLEET_WITH_SCHEDULES, { apply: true })
+    const calls = vi.mocked(t.importFleetRows).mock.calls
+    expect(calls).toHaveLength(14)
+    // a call without the handle would open its transaction from the outer dbx, which Postgres refuses inside a body
+    for (const c of calls) expect(c[2], `importFleetRows(${String(c[0])}) handle`).toBe(FAKE_TX)
   })
 
   it('the memory index rebuild is awaited too', async () => {
@@ -632,7 +646,7 @@ describe('importFleet: the import transaction is awaited', () => {
     const order: string[] = []
     vi.mocked(t.importFleetRows).mockImplementation((table) => { order.push(`insert:${table}`); return Promise.resolve(0) })
     vi.mocked(t.rebuildMemoriesFts).mockImplementation(() => { order.push('fts'); return Promise.resolve() })
-    vi.mocked(t.inFleetImportTransaction).mockImplementation(async (fn) => { order.push('begin'); await fn(); order.push('commit') })
+    vi.mocked(t.inFleetImportTransaction).mockImplementation(async (fn) => { order.push('begin'); await fn(FAKE_TX); order.push('commit') })
 
     await importFleet(FLEET_WITH_SCHEDULES, { apply: true })
 

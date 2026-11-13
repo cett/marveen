@@ -147,9 +147,11 @@ export async function rebuildMemoriesFts(): Promise<void> {
 
 /**
  * Run `fn` in one transaction; any throw or rejection rolls every write back. The body holds the connection's
- * transaction lock from BEGIN to COMMIT: only `dbx` calls and pure row policy in it, no other I/O. The calls
- * inside join the open transaction through the facade's transaction scope, so `fn` takes no handle.
+ * transaction lock from BEGIN to COMMIT: only calls on the handle and pure row policy in it, no other I/O. `fn`
+ * receives the transaction handle and every database call of the body runs on it: on Postgres a call on the outer
+ * `dbx` inside a transaction body is refused (the strict rule), and on SQLite a call without the handle would only
+ * work through the facade's ambient scope.
  */
-export async function inFleetImportTransaction(fn: () => Promise<void>): Promise<void> {
-  await dbx.tx(async () => { await fn() })
+export async function inFleetImportTransaction(fn: (tx: Tx) => Promise<void>): Promise<void> {
+  await dbx.tx(async (tx) => { await fn(tx) })
 }

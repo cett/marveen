@@ -3,6 +3,7 @@
 // .env mirror run. These tests use the real db (in-memory SQLite) and the real fs in a throwaway root, and watch
 // the fs and the transaction boundary through the mocks below.
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest'
+import type { Tx } from '../db/facade.js'
 import {
   initDatabase, getDb, upsertModelProfileMapEntry, setAgentSetting, listAutonomyCategories, insertEgressAllowlistEntry,
   listEgressAllowlistRows,
@@ -117,7 +118,7 @@ vi.mock('../db/fleet-transfer.js', async (importOriginal) => {
   const real = await importOriginal<typeof import('../db/fleet-transfer.js')>()
   return {
     ...real,
-    inFleetImportTransaction: async (fn: () => Promise<void>) => {
+    inFleetImportTransaction: async (fn: (tx: Tx) => Promise<void>) => {
       probe.events.push('begin')
       probe.inTx = true
       try {
