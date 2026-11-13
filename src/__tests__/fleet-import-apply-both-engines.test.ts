@@ -22,11 +22,8 @@ import { testDbMode, useTestDb } from './helpers/with-test-db.js'
 import { refuseWrite } from './helpers/refuse-write.js'
 
 const { ROOT, PROJECT, STORE, HOME, AGENTS, TASKS } = vi.hoisted(() => {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { mkdtempSync } = require('node:fs')
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { tmpdir } = require('node:os')
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { join } = require('node:path')
   const root: string = mkdtempSync(join(tmpdir(), 'fleet-apply-engines-test-'))
   return {
@@ -40,7 +37,7 @@ const { ROOT, PROJECT, STORE, HOME, AGENTS, TASKS } = vi.hoisted(() => {
 })
 
 afterAll(() => {
-  const { rmSync } = require('node:fs') // eslint-disable-line @typescript-eslint/no-require-imports
+  const { rmSync } = require('node:fs')
   rmSync(ROOT, { recursive: true, force: true })
 })
 
