@@ -21,6 +21,11 @@
 //    borrower the previous tenant.
 //  - NESTING. `tx.tx(...)` is a SAVEPOINT: a failing inner body (a unique violation) is undone alone and the outer
 //    transaction goes on. Without it the next statement would fail with 25P02 (aborted transaction).
+//  - THE PARENT HANDLE. Inside the body of a savepoint the handle of the ENCLOSING transaction is refused (a rejection with
+//    PARENT_HANDLE_MESSAGE, nothing is sent to the connection), whatever it is asked: its statement would run inside the
+//    savepoint on the same connection and be undone with it, and a `tx` on it would wait for the lock the running savepoint
+//    holds, for ever. A call from the parent's own body (a sibling savepoint that queues, a statement of its own) and a late
+//    call after the savepoint ended are not affected.
 //  - STRICT. Inside a transaction body the handle must be used. The OUTER `dbx.*` (it would run on another connection,
 //    outside the transaction, and not see its rows) throws `dbx: use the tx handle inside a transaction body`, unless
 //    the transaction was opened with `{ ambient: true }`: then the outer calls are allowed and run OUTSIDE the
@@ -39,7 +44,7 @@ import type pg from 'pg'
 import { logger } from '../../logger.js'
 import { currentDbContext, noteDbCall, type DbContext } from '../context.js'
 import type { RunResult, SqlOps, Tx, TxOptions } from '../facade.js'
-import { AsyncLock, originOf, txWarnMs } from '../tx-lock.js'
+import { AsyncLock, insideOpenChildOf, originOf, PARENT_HANDLE_MESSAGE, txWarnMs } from '../tx-lock.js'
 import { translatePlaceholders } from './translate.js'
 import { pgTypes } from './types.js'
 
@@ -99,6 +104,8 @@ interface PgScope {
   readonly children: AsyncLock
   /** Savepoint counter shared by the whole tree, so names never collide. */
   readonly counter: { n: number }
+  /** The scope this savepoint body was opened under (none for the outermost transaction). */
+  readonly parent?: PgScope
 }
 
 const scopes = new AsyncLocalStorage<PgScope>()
@@ -192,14 +199,17 @@ export function createPgDbx(pool: PgPoolLike, opts: PgDbxOptions = {}): PgDbx {
     return lone(() => ready, shape)
   }
 
-  function newScope(client: PgClientLike, ambient: boolean, counter: { n: number } = { n: 0 }): PgScope {
-    return { owner: self, client, active: true, ambient, children: new AsyncLock(), counter }
+  function newScope(client: PgClientLike, ambient: boolean, counter: { n: number } = { n: 0 }, parent?: PgScope): PgScope {
+    return { owner: self, client, active: true, ambient, children: new AsyncLock(), counter, parent }
   }
 
   // The handle a body receives. It refuses to work once its transaction has ended.
   function makeTx(scope: PgScope): Tx {
     const live = <T>(op: () => Promise<T>): Promise<T> => {
       noteDbCall()
+      // P31: the handle of an enclosing transaction inside the body of one of its savepoints is refused (fail closed): its statement
+      // would run inside the savepoint on the same connection and be undone with it, and a `tx` on it would wait for ever
+      if (insideOpenChildOf(scope, scopes.getStore())) return Promise.reject(new Error(PARENT_HANDLE_MESSAGE))
       return scope.active ? op() : Promise.reject(new Error(FINISHED_MESSAGE))
     }
     return {
@@ -218,7 +228,7 @@ export function createPgDbx(pool: PgPoolLike, opts: PgDbxOptions = {}): PgDbx {
       if (!parent.active) throw new Error(FINISHED_MESSAGE)
       const name = `dbx_sp_${++parent.counter.n}`
       await parent.client.query({ text: `SAVEPOINT ${name}` })
-      const scope = newScope(parent.client, parent.ambient, parent.counter)
+      const scope = newScope(parent.client, parent.ambient, parent.counter, parent)
       let result: T
       try {
         result = await scopes.run(scope, () => fn(makeTx(scope)))

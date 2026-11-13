@@ -63,9 +63,27 @@ export interface TxScope {
   readonly children: AsyncLock
   /** Savepoint counter shared by the whole tree, so names never collide. */
   readonly counter: { n: number }
+  /** The scope this savepoint body was opened under (none for the outermost transaction). */
+  readonly parent?: TxScope
 }
 
 export const txStore = new AsyncLocalStorage<TxScope>()
+
+/** Thrown when the handle of an enclosing transaction is used inside the body of one of its savepoints (both engines). */
+export const PARENT_HANDLE_MESSAGE = 'dbx: use the savepoint handle inside a savepoint body, not the handle of the enclosing transaction'
+
+/**
+ * Is `current` (the scope the caller is running in) an OPEN savepoint body somewhere below `scope`? A call on the handle of
+ * `scope` made from there is the P31 hazard: its statement would land inside the savepoint (and be undone with it), and a
+ * nested `tx` on it would wait for the lock the running savepoint holds, for ever. A call made from `scope`'s own body (a
+ * sibling that queues for the lock, a statement of the parent) and a late call after the savepoint ended are not.
+ */
+export function insideOpenChildOf<S extends { active: boolean; parent?: S }>(scope: S, current: S | undefined): boolean {
+  for (let s = current; s && s !== scope; s = s.parent) {
+    if (s.parent === scope) return s.active
+  }
+  return false
+}
 
 /** The transaction the caller is running inside, if it is still open. */
 export function currentTxScope(): TxScope | undefined {
@@ -73,8 +91,8 @@ export function currentTxScope(): TxScope | undefined {
   return scope && scope.active ? scope : undefined
 }
 
-export function newTxScope(counter: { n: number } = { n: 0 }): TxScope {
-  return { active: true, children: new AsyncLock(), counter }
+export function newTxScope(counter: { n: number } = { n: 0 }, parent?: TxScope): TxScope {
+  return { active: true, children: new AsyncLock(), counter, parent }
 }
 
 let locks = new WeakMap<object, AsyncLock>()

@@ -206,14 +206,19 @@ new cross-module transaction adds one. Until then a function that must take part
 written with `dbx` calls only: a raw `db.prepare(...)` in it would sit beside the lock, not inside the transaction's
 rules (see "What the facade does not cover").
 
-**The parent handle while a savepoint body runs.** Inside `tx.tx(async (inner) => { ... })` the outer handle `tx` is
-still live, and a statement issued on it lands IN the open savepoint: there is one connection, the server has no notion
-of which handle sent a statement. So a write made through the parent handle during the savepoint body is undone by that
-savepoint's `ROLLBACK`, and kept when the savepoint is released. This is the same on SQLite and on PostgreSQL (it is not a
-backend difference), and it is pinned on both (`db-facade-tx.test.ts`, `pg/dbx.pg.test.ts`: the parent write is accepted,
-goes with a failing savepoint, stays with a successful one). It is allowed, not forbidden: a body that wants a write to
-survive its own savepoint failing makes it after the savepoint, not through the parent handle during it. Anyone who
-decides to refuse the parent handle in that window turns both cells red on purpose.
+**The parent handle while a savepoint body runs is refused.** Inside `tx.tx(async (inner) => { ... })` the outer handle `tx`
+must not be used: a call on it (`get`, `all`, `run`, `exec` or a nested `tx`) rejects with `dbx: use the savepoint handle
+inside a savepoint body, not the handle of the enclosing transaction` (`PARENT_HANDLE_MESSAGE` in `src/db/tx-lock.ts`) and
+sends nothing to the connection. Why: there is one connection and the server has no notion of which handle sent a
+statement, so such a statement landed IN the open savepoint and was undone by its `ROLLBACK`, and a nested `tx` on the
+parent handle waits for ever for the lock the running savepoint holds. It was allowed and pinned before; it is the same on
+SQLite and on PostgreSQL, and it fails closed on both (`db-facade-tx.test.ts`, `pg-dbx-flow.test.ts`, `pg/dbx.pg.test.ts`).
+The check is exact, by the scope the call runs in: a handle of a deeper savepoint, the savepoint's OWN handle, a sibling
+savepoint that queues on the parent handle from the parent's own body, the parent handle AFTER the savepoint ended and a
+late call that still carries a finished savepoint are not refused. Not covered, by design: a statement started on the
+parent handle from the parent's own body while a savepoint is running (a `Promise.all` that mixes them) shares the connection
+and still lands in the savepoint; the scope it runs in is the parent's, so it cannot be told from the sibling that queues.
+A body that wants a write to survive its own savepoint failing makes it after the savepoint, on the parent handle.
 
 **The system-config document (read-modify-write).** A change to one stored document (the federation config is the
 example, `mutateFederationConfig`) reads the stored document from the database inside ONE `dbx.tx` (never from the cache),

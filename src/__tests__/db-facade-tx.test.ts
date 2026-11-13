@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
 import { initDatabase, dbx, db } from '../db.js'
-import { lockFor } from '../db/tx-lock.js'
+import { lockFor, PARENT_HANDLE_MESSAGE } from '../db/tx-lock.js'
 import { logger } from '../logger.js'
 import { useTestDb } from './helpers/with-test-db.js'
 
@@ -215,30 +215,92 @@ describe('nested transactions (savepoints)', () => {
     expect(await names()).toEqual(['l2'])
   })
 
-  it('a statement on the PARENT handle while a savepoint body runs falls into that savepoint (one connection): the savepoint rollback takes it back', async () => {
-    let parentWriteAccepted = false
+  // P31 (was pinned as "falls into the savepoint, the same on PostgreSQL"): the handle of the enclosing transaction inside the body of
+  // one of its savepoints is refused on both engines. A statement on it shares the connection and goes with the savepoint's rollback,
+  // and a nested `tx` on it waits for ever for the lock the savepoint holds.
+  it('the PARENT handle inside a savepoint body is refused, a statement and a nested tx alike; nothing of it is written and nothing hangs', async () => {
+    const seen: string[] = []
     await dbx.tx(async (tx) => {
       await tx.run('INSERT INTO tx_t (name) VALUES (?)', 'before')
       await tx.tx(async (inner) => {
         await inner.run('INSERT INTO tx_t (name) VALUES (?)', 'inner')
-        await tx.run('INSERT INTO tx_t (name) VALUES (?)', 'via-parent') // the parent handle, the savepoint is the open scope
-        parentWriteAccepted = true // a refusal of the parent handle would end the body above and be swallowed by the catch below
+        for (const op of [() => tx.run('INSERT INTO tx_t (name) VALUES (?)', 'via-parent'), () => tx.get('SELECT 1'), () => tx.all('SELECT 1'), () => tx.exec('SELECT 1'), () => tx.tx(() => Promise.resolve(1))]) {
+          seen.push(await op().then(() => 'accepted', (e: unknown) => (e as Error).message))
+        }
         throw new Error('inner failed')
       }).catch(() => undefined)
       await tx.run('INSERT INTO tx_t (name) VALUES (?)', 'after')
     })
-    expect(parentWriteAccepted).toBe(true)
-    expect(await names()).toEqual(['before', 'after']) // pin: via-parent went with the savepoint (the same on PostgreSQL)
+    expect(seen).toEqual(Array(5).fill(PARENT_HANDLE_MESSAGE))
+    for (const m of seen) expect(m).toMatch(/savepoint handle/)
+    expect(await names()).toEqual(['before', 'after'])
   })
 
-  it('positive pair: the same parent-handle write inside a savepoint that succeeds is kept', async () => {
+  it('positive pair: a savepoint body that uses its OWN handle (and a handle of a deeper savepoint) is kept', async () => {
     await dbx.tx(async (tx) => {
       await tx.tx(async (inner) => {
         await inner.run('INSERT INTO tx_t (name) VALUES (?)', 'inner')
-        await tx.run('INSERT INTO tx_t (name) VALUES (?)', 'via-parent')
+        await inner.tx((deep) => deep.run('INSERT INTO tx_t (name) VALUES (?)', 'deep'))
       })
     })
-    expect(await names()).toEqual(['inner', 'via-parent'])
+    expect(await names()).toEqual(['inner', 'deep'])
+  })
+
+  it('the middle handle inside a deeper savepoint body is refused too; the deepest one works', async () => {
+    let refused = ''
+    await dbx.tx(async (tx) => {
+      await tx.tx(async (mid) => {
+        await mid.tx(async (deep) => {
+          refused = await mid.run('INSERT INTO tx_t (name) VALUES (?)', 'via-mid').then(() => 'accepted', (e: unknown) => (e as Error).message)
+          await deep.run('INSERT INTO tx_t (name) VALUES (?)', 'deep')
+        })
+      })
+    })
+    expect(refused).toBe(PARENT_HANDLE_MESSAGE)
+    expect(refused).toMatch(/savepoint handle/)
+    expect(await names()).toEqual(['deep'])
+  })
+
+  it('the top handle two savepoints down is refused, and a late call of the parent handle that carries a FINISHED savepoint is not', async () => {
+    let refused = ''
+    let late: Promise<unknown> = Promise.resolve()
+    await dbx.tx(async (tx) => {
+      await tx.tx(async (mid) => {
+        await mid.tx(async () => {
+          refused = await tx.run('INSERT INTO tx_t (name) VALUES (?)', 'via-top').then(() => 'accepted', (e: unknown) => (e as Error).message)
+        })
+        // a timer started inside the savepoint body carries its scope; it fires after the savepoint was released
+        late = new Promise<void>((r) => setTimeout(r, 15)).then(() => tx.run('INSERT INTO tx_t (name) VALUES (?)', 'late'))
+      })
+      await late
+    })
+    expect(refused).toBe(PARENT_HANDLE_MESSAGE)
+    expect(refused).toMatch(/savepoint handle/)
+    expect(await names()).toEqual(['late'])
+  })
+
+  it('a succeeding savepoint body that wrote through the parent handle fails (the refusal is thrown into the body) and takes its own write back', async () => {
+    const failure = await dbx.tx(async (tx) => {
+      const f = await tx.tx(async (inner) => {
+        await inner.run('INSERT INTO tx_t (name) VALUES (?)', 'inner')
+        await tx.run('INSERT INTO tx_t (name) VALUES (?)', 'via-parent')
+      }).then(() => undefined, (e: unknown) => (e as Error).message)
+      await tx.run('INSERT INTO tx_t (name) VALUES (?)', 'after')
+      return f
+    })
+    expect(failure).toBe(PARENT_HANDLE_MESSAGE)
+    expect(failure).toMatch(/savepoint handle/)
+    expect(await names()).toEqual(['after'])
+  })
+
+  it('a sibling savepoint that queues behind a running one on the parent handle is not refused (the call is made from the parent body)', async () => {
+    await dbx.tx(async (tx) => {
+      await Promise.all([
+        tx.tx(async (a) => { await a.run('INSERT INTO tx_t (name) VALUES (?)', 'a') }),
+        tx.tx(async (b) => { await b.run('INSERT INTO tx_t (name) VALUES (?)', 'b') }),
+      ])
+    })
+    expect(await names()).toEqual(['a', 'b'])
   })
 
   it('positive pair: the same write through the parent handle after the savepoint body is kept', async () => {
