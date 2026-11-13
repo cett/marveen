@@ -34,9 +34,9 @@ import {
 } from '../db/fleet-transfer.js'
 import { validateConfig, type BudgetEntry } from '../costops/config.js'
 import { listVaultBindings, replaceVaultBindings, type VaultBinding } from '../db/vault-bindings.js'
-import { reloadSystemConfigCache } from '../db/config-cache.js'
-import { reloadModelProfileMapCache } from '../db/model-profile-map-cache.js'
-import { reloadAgentSettingsCache } from '../db/agent-settings-cache.js'
+import { loadSystemConfigCacheAsync } from '../db/config-cache.js'
+import { loadModelProfileMapCacheAsync } from '../db/model-profile-map-cache.js'
+import { loadAgentSettingsCacheAsync } from '../db/agent-settings-cache.js'
 import { getFederationConfigRaw, setFederationConfigRaw } from '../db/federation.js'
 import { invalidateFederationConfigCache, validateFederationConfig } from './federation/config.js'
 import { logger } from '../logger.js'
@@ -1485,16 +1485,18 @@ function dropBackups(tracker: WriteTracker): void {
  * value as soon as the statement ran, inside the transaction, and keeps it after a rollback), and drop the federation
  * config cache for the same reason.
  */
-function reloadImportCaches(): void {
-  reloadModelProfileMapCache()
-  reloadAgentSettingsCache()
-  reloadSystemConfigCache()
+async function reloadImportCaches(): Promise<void> {
+  // The async loaders read through the facade (the same SELECT on both engines); the synchronous reloaders read the
+  // SQLite handle, which does not exist on Postgres. Both only run after the transaction has ended.
+  await loadModelProfileMapCacheAsync()
+  await loadAgentSettingsCacheAsync()
+  await loadSystemConfigCacheAsync()
   invalidateFederationConfigCache()
 }
 
 /** The failure-branch variant: the original error is the one to report, so a reload that fails is only logged. */
-function reloadImportCachesQuietly(): void {
-  try { reloadImportCaches() } catch (err: any) {
+async function reloadImportCachesQuietly(): Promise<void> {
+  try { await reloadImportCaches() } catch (err: any) {
     logger.error({ err: err?.message }, 'Fleet import: could not reload the caches after a failed import')
   }
 }
@@ -2170,7 +2172,7 @@ async function runImportFleet(
     // files go and the caches are re-read. The write-through caches may have shown the new values inside the
     // transaction and keep them after the rollback.
     discardStaged(tracker)
-    reloadImportCachesQuietly()
+    await reloadImportCachesQuietly()
     logger.error({ err: err.message }, 'Fleet import failed, nothing applied, staged files removed')
     throw err
   }
@@ -2180,7 +2182,7 @@ async function runImportFleet(
   // from their backups instead, and the error says that the database changes remain.
   try {
     finalizeStaged(tracker.files.filter((e) => !vaultFiles.includes(e)))
-    reloadImportCaches()
+    await reloadImportCaches()
 
     // 6. Vault -- LAST: vault data is plaintext (decrypted at the top of importFleet)
     if (fleet.vault) {

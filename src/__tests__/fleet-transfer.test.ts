@@ -107,9 +107,9 @@ vi.mock('../db/fleet-transfer.js', () => ({
 }))
 
 // The caches the import re-reads after the commit belong to the real connection, which these tests do not open.
-vi.mock('../db/config-cache.js', () => ({ reloadSystemConfigCache: vi.fn() }))
-vi.mock('../db/model-profile-map-cache.js', () => ({ reloadModelProfileMapCache: vi.fn() }))
-vi.mock('../db/agent-settings-cache.js', () => ({ reloadAgentSettingsCache: vi.fn() }))
+vi.mock('../db/config-cache.js', () => ({ loadSystemConfigCacheAsync: vi.fn(() => Promise.resolve()) }))
+vi.mock('../db/model-profile-map-cache.js', () => ({ loadModelProfileMapCacheAsync: vi.fn(() => Promise.resolve()) }))
+vi.mock('../db/agent-settings-cache.js', () => ({ loadAgentSettingsCacheAsync: vi.fn(() => Promise.resolve()) }))
 
 vi.mock('../web/agent-config.js', () => ({
   AGENTS_BASE_DIR: '/mock/agents',
