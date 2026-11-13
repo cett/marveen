@@ -17,7 +17,7 @@
     "lastInsertRowid": 2,
     "param IS [NOT] NULL": 0,
     "randomblob()/hex()": 0,
-    "raw LIKE": 53,
+    "raw LIKE": 47,
     "rowid": 23,
     "strftime()": 0,
     "unixepoch()": 44,

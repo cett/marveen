@@ -32,6 +32,7 @@ export const PORTED: readonly string[] = [
   'src/__tests__/db-like-case-vault.test.ts',
   'src/__tests__/db-like-case-sessions.test.ts',
   'src/__tests__/db-like-case-agents.test.ts',
+  'src/__tests__/db-like-case-import.test.ts',
   'src/__tests__/db-token-usage-prune-local-day.test.ts',
   'src/__tests__/hook-audit-body-trace.test.ts',
   'src/__tests__/schedules-author-db.test.ts',
