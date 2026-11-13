@@ -21,17 +21,21 @@ export function bareSumSites(file: string, source: string): SumSite[] {
     const code = text.replace(/\s\/\/.*$/, '')
     // inside src/db any spelling counts (SQL is written in both cases); elsewhere only the upper-case SQL spelling (a
     // python one-liner in a string is not a statement)
-    for (const m of code.matchAll(file.replace(/\\/g, '/').startsWith('src/db/') ? /\bSUM\(/gi : /\bSUM\(/g)) {
+    // (a space between SUM and the paren is the same call)
+    for (const m of code.matchAll(file.replace(/\\/g, '/').startsWith('src/db/') ? /\bSUM\s*\(/gi : /\bSUM\s*\(/g)) {
       const before = code.slice(0, m.index)
-      if (/CAST\(\s*$/i.test(before)) continue
-      // SUM(...)::bigint: find the matching close paren and look behind the cast
+      // find the matching close paren of SUM( ... ): what follows it decides the cast
       let depth = 0
       let end = -1
       for (let k = (m.index ?? 0) + 3; k < code.length; k++) {
         if (code[k] === '(') depth++
         else if (code[k] === ')') { depth--; if (depth === 0) { end = k; break } }
       }
-      if (end >= 0 && /^\s*::\s*bigint\b/i.test(code.slice(end + 1))) continue
+      const after = end >= 0 ? code.slice(end + 1) : ''
+      if (/CAST\s*\(\s*$/i.test(before)) {
+        // CAST(SUM(...) AS BIGINT) only: AS INTEGER overflows past 2^31, AS TEXT / AS NUMERIC is not a number
+        if (/^\s*AS\s+BIGINT\b/i.test(after)) continue
+      } else if (/^\s*::\s*bigint\b/i.test(after)) continue
       out.push({ file, line: i + 1, text: trimmed })
     }
   })
@@ -41,7 +45,8 @@ export function bareSumSites(file: string, source: string): SumSite[] {
 interface Exception { file: string; match: RegExp; count: number; reason: string }
 
 const EXCEPTIONS: Exception[] = [
-  { file: 'src/db/audit.ts', match: /SUM\(CASE WHEN /, count: 4,
+  // the counter form only: THEN 1 ELSE 0 END (a CASE that sums a token column is not an integer counter)
+  { file: 'src/db/audit.ts', match: /SUM\(CASE WHEN [^()]+ THEN 1 ELSE 0 END\)/, count: 4,
     reason: 'a sum of the integers 1 and 0: sum() of an integer column is bigint, which the driver returns as a number' },
   { file: 'src/db/audit.ts', match: /^SUM\((input|output|cache_read|cache_creation|thinking)_tokens\),$/, count: 10,
     reason: 'INSERT INTO ... SELECT inside the database: the numeric is assigned to the bigint rollup column, it never reaches JavaScript' },
@@ -74,6 +79,36 @@ describe('the scanner itself', () => {
     expect(bareSumSites('f.ts', '// SUM(x) is numeric')).toHaveLength(0)
     expect(bareSumSites('f.ts', ' * every SUM(x) is cast')).toHaveLength(0)
     expect(bareSumSites('f.ts', 'const a = 1 // SUM(x) in a trailing comment')).toHaveLength(0)
+  })
+
+  it('a cast to another type is not the BIGINT cast: INTEGER, TEXT and NUMERIC are flagged, the spelling of BIGINT is free', () => {
+    for (const t of ['INTEGER', 'TEXT', 'NUMERIC', 'INT', 'integer', 'BIGINTEGER']) {
+      expect(bareSumSites('f.ts', `SELECT CAST(SUM(x) AS ${t}) AS t FROM a`), t).toHaveLength(1)
+    }
+    expect(bareSumSites('f.ts', 'SELECT CAST(SUM(x) as bigint) AS t FROM a')).toHaveLength(0)
+    expect(bareSumSites('f.ts', 'SELECT CAST(SUM(x)   AS   BIGINT) AS t FROM a')).toHaveLength(0)
+    expect(bareSumSites('f.ts', 'SELECT CAST (SUM(x + COALESCE(y, 0)) AS BIGINT) AS t FROM a')).toHaveLength(0)
+    expect(bareSumSites('f.ts', 'SELECT COALESCE(CAST(SUM(x) AS INTEGER), 0) AS t FROM a')).toHaveLength(1)
+    expect(bareSumSites('f.ts', 'SELECT COALESCE(CAST(SUM(x) AS BIGINT), 0) AS t FROM a')).toHaveLength(0)
+  })
+
+  it('a space between SUM and the paren is still a SUM call, in both spellings', () => {
+    expect(bareSumSites('f.ts', 'SELECT SUM (x) AS t FROM a')).toHaveLength(1)
+    expect(bareSumSites('f.ts', 'SELECT SUM   (x) AS t FROM a')).toHaveLength(1)
+    expect(bareSumSites('src/db/f.ts', 'SELECT sum (x) AS t FROM a')).toHaveLength(1)
+    expect(bareSumSites('f.ts', 'SELECT CAST(SUM (x) AS BIGINT) AS t FROM a')).toHaveLength(0)
+    expect(bareSumSites('f.ts', 'SELECT SUM (x)::bigint AS t FROM a')).toHaveLength(0)
+    expect(bareSumSites('src/web/f.ts', 'python3 -c "print(sum (1 for x in r))"')).toHaveLength(0)
+  })
+
+  it('the audit CASE exception takes the counter form only', () => {
+    const explained = (text: string) => EXCEPTIONS.some((e) => e.file === 'src/db/audit.ts' && e.match.test(text))
+    expect(explained("SUM(CASE WHEN trigger_type = 'tool_call' THEN 1 ELSE 0 END) AS call_count,")).toBe(true)
+    expect(explained('SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) AS count_30d')).toBe(true)
+    expect(explained('SUM(CASE WHEN created_at >= ? THEN input_tokens ELSE 0 END) AS t')).toBe(false)
+    expect(explained('SUM(CASE WHEN created_at >= ? THEN 1 ELSE input_tokens END) AS t')).toBe(false)
+    expect(explained('SUM(CASE WHEN created_at >= ? THEN 2 ELSE 0 END) AS t')).toBe(false)
+    expect(explained('SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END + input_tokens) AS t')).toBe(false)
   })
 
   it('counts two bare sums on one line twice, and a cast one next to a bare one once', () => {
