@@ -16,7 +16,8 @@ import {
   deleteExpiredDeviceKeys,
   setDeviceKeyTenant,
 } from '../db/device-keys.js'
-import { useTestDb } from './helpers/with-test-db.js'
+import { isUniqueViolationOn } from '../web/unique-violation.js'
+import { testDbMode, useTestDb } from './helpers/with-test-db.js'
 
 useTestDb()
 
@@ -50,7 +51,12 @@ describe('insert and read', () => {
 
   it('a duplicate hash is rejected', async () => {
     await insertDeviceKey('dup', 'a', 1, null, null)
-    await expect(insertDeviceKey('dup', 'b', 2, null, null)).rejects.toThrow(/UNIQUE/)
+    // by the shared check, not by the driver's text: SQLite says "UNIQUE constraint failed", PostgreSQL code 23505 with the key in its detail
+    const err = await insertDeviceKey('dup', 'b', 2, null, null).then(() => undefined, (e: unknown) => e)
+    expect(err).toBeInstanceOf(Error)
+    expect(isUniqueViolationOn(err, 'device_keys.key_hash')).toBe(true)
+    expect(isUniqueViolationOn(err, 'device_keys.name')).toBe(false)
+    expect(await listDeviceKeyRows()).toHaveLength(1)
   })
 
   it('auth row by hash carries only the auth columns', async () => {
@@ -98,6 +104,16 @@ describe('update and delete', () => {
     expect(await deleteDeviceKeyById(id)).toBe(0)
   })
 
+  it('delete by id and by hash remove that key only, the neighbours stay', async () => {
+    const a = await insertDeviceKey('h1', 'a', 1, null, null)
+    const b = await insertDeviceKey('h2', 'b', 2, null, null)
+    const c = await insertDeviceKey('h3', 'c', 3, null, null)
+    expect(await deleteDeviceKeyById(b)).toBe(1)
+    expect((await listDeviceKeyRows()).map((r) => r.id).sort((x, y) => x - y)).toEqual([a, c])
+    await deleteDeviceKeyByHash('h1')
+    expect((await listDeviceKeyRows()).map((r) => r.id)).toEqual([c])
+  })
+
   it('delete all returns the count and empties the table', async () => {
     await insertDeviceKey('h1', 'a', 1, null, null)
     await insertDeviceKey('h2', 'b', 2, null, null)
@@ -119,6 +135,7 @@ describe('update and delete', () => {
     expect(await setDeviceKeyTenant(id, 'acme')).toBe(1)
     expect((await getDeviceKeyRowById(id))?.tenant_id).toBe('acme')
     expect(await setDeviceKeyTenant(id + 100, 'acme')).toBe(0)
-    await expect(setDeviceKeyTenant(id, 'no-such-tenant')).rejects.toThrow(/FOREIGN KEY/)
+    await expect(setDeviceKeyTenant(id, 'no-such-tenant')).rejects.toThrow(testDbMode() === 'pg' ? /violates foreign key constraint/ : /FOREIGN KEY/)
+    expect((await getDeviceKeyRowById(id))?.tenant_id).toBe('acme')
   })
 })

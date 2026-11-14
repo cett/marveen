@@ -12,7 +12,8 @@
 //   p2-4-concurrency  the test is about SQLite's one-connection concurrency semantics: replaced in P2-4
 //   boot-twin         the boot chain (synchronous, 14 twins): P2-5
 //   sqlite-only       the files whose SUBJECT is the SQLite facade, handle or migration chain itself (db-facade*,
-//                     with-test-db: own DDL, AUTOINCREMENT, transaction semantics): they stay SQLite by design
+//                     with-test-db: own DDL, AUTOINCREMENT, transaction semantics), and a file that asserts the SQLite
+//                     query planner or catalog (audit-log-trace-index: EXPLAIN QUERY PLAN): they stay SQLite by design
 //   sync-cache        the synchronous in-memory cache and its loader (db-config-cache, db-model-profile-map-cache):
 //                     they move with the async cache load, not with a module
 //   (the codes of the first run are assigned from the file text and the failure classes, not file by file: a
@@ -60,6 +61,18 @@ export const PORTED: readonly string[] = [
   'src/__tests__/prune-token-usage-tx-handle.test.ts',
   'src/__tests__/approval-human-only.test.ts',
   'src/__tests__/otel-logs-trace.test.ts',
+  'src/__tests__/kanban-correlate-usage.test.ts',
+  'src/__tests__/like-escape-remaining-searches.test.ts',
+  'src/__tests__/audit-retention-prune-journals.test.ts',
+  'src/__tests__/db-overview.test.ts',
+  'src/__tests__/import-crawler-run-due.test.ts',
+  'src/__tests__/import-crawler-tenant.test.ts',
+  'src/__tests__/kanban-tx-handle-audit.test.ts',
+  'src/__tests__/memories-content-not-blank.test.ts',
+  'src/__tests__/tenant-gate-status-route.test.ts',
+  'src/__tests__/db-device-keys.test.ts',
+  'src/__tests__/observability-model-tool-stats.test.ts',
+  'src/__tests__/audit-log-trace-filter.test.ts',
 ]
 
 /** Test files (same form) that do not, each with the reason. */
@@ -90,23 +103,17 @@ export const EXCLUDED: Readonly<Record<string, ExcludeReason>> = {
   'src/__tests__/db-facade-tx.test.ts': 'sqlite-only',
   'src/__tests__/db-facade.test.ts': 'sqlite-only',
   'src/__tests__/db-model-profile-map-cache.test.ts': 'sync-cache',
-  'src/__tests__/memories-content-not-blank.test.ts': 'raw-db',
   'src/__tests__/with-test-db.test.ts': 'sqlite-only',
-  'src/__tests__/audit-retention-prune-journals.test.ts': 'raw-db',
   'src/__tests__/db-api-tokens-enroll-twin.test.ts': 'raw-db',
-  'src/__tests__/db-device-keys.test.ts': 'raw-db',
-  'src/__tests__/db-overview.test.ts': 'raw-db',
-  'src/__tests__/import-crawler-run-due.test.ts': 'raw-db',
-  'src/__tests__/import-crawler-tenant.test.ts': 'raw-db',
-  'src/__tests__/kanban-tx-handle-audit.test.ts': 'raw-db',
-  'src/__tests__/like-escape-remaining-searches.test.ts': 'raw-db',
-  'src/__tests__/tenant-gate-status-route.test.ts': 'raw-db',
-  'src/__tests__/audit-log-trace-filter.test.ts': 'unported-sql',
+  // two cells assert the SQLite planner (EXPLAIN QUERY PLAN) and the SQLite catalog (sqlite_master) of the trace indexes;
+  // on PostgreSQL a tiny test table gets a sequential scan whatever the index says, so the same assertion would need a
+  // planner switch (enable_seqscan) and would test the switch, not the filter
+  'src/__tests__/audit-log-trace-index.test.ts': 'sqlite-only',
   'src/__tests__/db-agent-state-facade.test.ts': 'unported-sql',
 }
 
 /** The number of EXCLUDED files the partition test accepts. It only goes down. */
-export const EXCLUDED_BASELINE = 39
+export const EXCLUDED_BASELINE = 30
 
 /** A file uses useTestDb when it imports the helper AND calls useTestDb( (a file that only imports resetDbTestState or testDbMode does not). */
 const IMPORT = /from\s+['"][^'"]*helpers\/with-test-db(\.js)?['"]/

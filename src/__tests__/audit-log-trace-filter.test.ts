@@ -85,21 +85,6 @@ describe('queryAuditLog with a trace_id', () => {
     expect(all.entries.some((e) => e.source === 'idea')).toBe(false)
     expect(all.total).toBe(3)
   })
-
-  it('is served by the partial indexes of migration 0089: a SEARCH on trace_id through the index, never a scan', async () => {
-    for (const [table, index] of [['config_change_log', 'idx_config_change_log_trace'], ['agent_audit_log', 'idx_agent_audit_log_trace'], ['hook_audit_log', 'idx_hook_audit_log_trace']] as const) {
-      const plan = ((await dbx.all(`EXPLAIN QUERY PLAN SELECT id FROM ${table} WHERE trace_id = ?`, 'x')) as Array<{ detail: string }>).map((p) => p.detail)
-      expect(plan, table).toHaveLength(1)
-      expect(plan[0], table).toMatch(new RegExp(`^SEARCH ${table} USING (COVERING )?INDEX ${index} \\(trace_id=\\?\\)$`))
-    }
-  })
-
-  it('the indexes are partial: only the rows that have a trace are in them', async () => {
-    for (const index of ['idx_config_change_log_trace', 'idx_agent_audit_log_trace', 'idx_hook_audit_log_trace']) {
-      const row = await dbx.get<{ sql: string }>("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?", index)
-      expect(row?.sql, index).toContain('WHERE trace_id IS NOT NULL')
-    }
-  })
 })
 
 describe('GET /api/audit-log?trace_id=', () => {

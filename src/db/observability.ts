@@ -2,8 +2,8 @@
 // re-export surface and boot orchestration).
 
 import { vecExtensionLoaded } from './connection.js'
-import { dbx } from './facade.js'
-import { orderBytes, orderNoCase } from './dialect.js'
+import { dbx, dbxDialect } from './facade.js'
+import { groupConcatDistinct, orderBytes, orderNoCase } from './dialect.js'
 import { likeContains } from './like.js'
 import { Memory, MemoryVersion } from './memory.js'
 import { DashboardUser, DashboardUserPublic } from './sessions.js'
@@ -1009,9 +1009,22 @@ export interface ModelDistEntry {
   totalThinking: number
 }
 
+/**
+ * Whether token_usage has its `model` column. The column is in the CREATE TABLE of both baselines, but an install that
+ * predates it (it came with an inline ALTER TABLE before the migration runner; bootstrapLegacyInstall marks such a
+ * database as baseline-applied without adding the column) answers false, so the guard stays and the cell drops the
+ * column to hold it. The two spellings are the engines' catalogs: pragma_table_info on SQLite, information_schema on
+ * PostgreSQL (current_schema(): the schema the connection resolves the table in).
+ */
+async function tokenUsageHasModelColumn(): Promise<boolean> {
+  const sql = dbxDialect() === 'pg'
+    ? "SELECT COUNT(*) AS n FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'token_usage' AND column_name = 'model'" // dual-sql
+    : "SELECT COUNT(*) as n FROM pragma_table_info('token_usage') WHERE name='model'" // dual-sql
+  return ((await dbx.get(sql)) as { n: number }).n > 0
+}
+
 export async function getModelDistribution(from?: number, to?: number, agent?: string): Promise<ModelDistEntry[]> {
-  const hasModelCol = (await dbx.get("SELECT COUNT(*) as n FROM pragma_table_info('token_usage') WHERE name='model'")) as { n: number }
-  if (!hasModelCol.n) return []
+  if (!(await tokenUsageHasModelColumn())) return []
 
   let sql = `
     SELECT model,
@@ -1055,7 +1068,7 @@ export async function getToolStats(from?: number, to?: number, agent?: string): 
     SELECT tool_name,
       model,
       COUNT(*) as count,
-      GROUP_CONCAT(DISTINCT agent) as agents,
+      ${groupConcatDistinct('agent')} as agents,
       CAST(SUM(input_tokens) AS BIGINT) as "totalInput",
       CAST(SUM(output_tokens) AS BIGINT) as "totalOutput",
       CAST(SUM(cache_read_tokens) AS BIGINT) as "totalCacheRead",
@@ -1154,8 +1167,10 @@ export async function getTokenDetails(
 }
 
 export async function correlateWithKanban(): Promise<void> {
+  // The aliases are quoted: PostgreSQL folds an unquoted alias to lower case, so row.minTs and row.maxTs would be
+  // undefined there and no card would ever match (no error, an empty result).
   const uncorrelated = (await dbx.all(`
-    SELECT DISTINCT agent, MIN(timestamp) as minTs, MAX(timestamp) as maxTs
+    SELECT DISTINCT agent, MIN(timestamp) as "minTs", MAX(timestamp) as "maxTs"
     FROM token_usage
     WHERE task_title IS NULL
     GROUP BY agent

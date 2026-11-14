@@ -20,7 +20,7 @@
 import { db } from './connection.js'
 import { logger } from '../logger.js'
 import { noteDbCall } from './context.js'
-import { captureOriginLater, currentTxScope, lockFor, newTxScope, txStore, txWarnMs, type TxScope } from './tx-lock.js'
+import { captureOriginLater, currentTxScope, insideOpenChildOf, lockFor, newTxScope, PARENT_HANDLE_MESSAGE, txStore, txWarnMs, type TxScope } from './tx-lock.js'
 
 export interface RunResult {
   changes: number
@@ -106,6 +106,8 @@ const lockedOps: SqlOps = {
 function makeTx(scope: TxScope): Tx {
   const live = <T>(op: () => Promise<T>): Promise<T> => {
     noteDbCall()
+    // P31: the handle of an enclosing transaction inside the body of one of its savepoints is refused (fail closed)
+    if (insideOpenChildOf(scope, txStore.getStore())) return Promise.reject(new Error(PARENT_HANDLE_MESSAGE))
     return scope.active ? op() : Promise.reject(new Error('dbx: the transaction has already finished'))
   }
   return {
@@ -179,7 +181,7 @@ async function runNested<T>(parent: TxScope, fn: (tx: Tx) => Promise<T>): Promis
     if (!parent.active) throw new Error('dbx: the transaction has already finished')
     const name = `dbx_sp_${++parent.counter.n}`
     db.exec(`SAVEPOINT ${name}`)
-    const scope = newTxScope(parent.counter)
+    const scope = newTxScope(parent.counter, parent)
     let result: T
     try {
       result = await txStore.run(scope, () => fn(makeTx(scope)))

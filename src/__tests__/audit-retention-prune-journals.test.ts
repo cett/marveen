@@ -12,6 +12,7 @@ import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { useTestDb } from './helpers/with-test-db.js'
+import { refuseWrite } from './helpers/refuse-write.js'
 import { getKanbanCardEvents, pruneAuditLogs, setSystemConfig, dbx } from '../db.js'
 import { getSettingDefinition, validateSettingValue } from '../config-registry.js'
 
@@ -30,11 +31,14 @@ async function count(table: string): Promise<number> {
   return ((await dbx.get(`SELECT COUNT(*) AS n FROM ${table}`)) as { n: number }).n
 }
 
+// The new id comes back with RETURNING: run().lastInsertRowid is always 0 on PostgreSQL (the cursor cells compare ids).
 async function insertApproval(createdAt: number): Promise<number> {
-  return Number((await dbx.run("INSERT INTO approval_events (approval_id, tenant_id, event, created_at) VALUES ('approval-a', 'default', 'requested', ?)", createdAt)).lastInsertRowid)
+  const row = await dbx.get<{ id: number }>("INSERT INTO approval_events (approval_id, tenant_id, event, created_at) VALUES ('approval-a', 'default', 'requested', ?) RETURNING id", createdAt)
+  return Number(row?.id)
 }
 async function insertKanban(createdAt: number): Promise<number> {
-  return Number((await dbx.run("INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at) VALUES ('card-a', NULL, 'planned', 'agent-a', ?)", createdAt)).lastInsertRowid)
+  const row = await dbx.get<{ id: number }>("INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at) VALUES ('card-a', NULL, 'planned', 'agent-a', ?) RETURNING id", createdAt)
+  return Number(row?.id)
 }
 async function insertSource(): Promise<void> {
   await dbx.run("INSERT INTO import_sources (id, type, path, label, interval_hours, enabled, created_at, updated_at) VALUES ('source-a', 'local', '/x', 'a', 24, 1, 1, 1)")
@@ -291,8 +295,7 @@ describe('one transaction', () => {
   it('rolls the new deletes back with the rest when the journal row cannot be written', async () => {
     await insertSource()
     await insertApproval(A_OLD()); await insertKanban(OLD()); await insertImportRun(OLD()); await insertRestore(OLD())
-    await dbx.exec(`CREATE TRIGGER block_prune_row BEFORE INSERT ON agent_audit_log WHEN NEW.action = 'retention_prune'
-                  BEGIN SELECT RAISE(ABORT, 'journal refused'); END`)
+    await refuseWrite(dbx, { name: 'block_prune_row', table: 'agent_audit_log', message: 'journal refused', when: { column: 'action', equals: 'retention_prune' } })
     await expect(pruneAuditLogs()).rejects.toThrow(/journal refused/)
     expect(await count('approval_events')).toBe(1)
     expect(await count('kanban_card_events')).toBe(1)

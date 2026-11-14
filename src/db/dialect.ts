@@ -122,3 +122,19 @@ export function likeNoCase(col: string, param: string, dialect: DbxDialect = dbx
     () => `${asciiFold(col)} LIKE ${asciiFold(param)} ESCAPE '\\'`,
   )
 }
+
+/**
+ * The distinct values of `col` within a group as one comma separated text (an aggregate: use it in a GROUP BY query).
+ * SQLite: GROUP_CONCAT(DISTINCT col), which cannot take a separator together with DISTINCT, so the default ',' it is.
+ * PostgreSQL: string_agg(DISTINCT (col)::text, ','). NULLs are skipped on both and a group with no value is NULL on both;
+ * an integer column comes out as its decimal text on both; an empty string is a value and counts. The ORDER of the
+ * values is NOT portable (SQLite: the engine's choice, PostgreSQL: sorted, because DISTINCT sorts): a caller that
+ * needs an order splits and sorts, and a value that contains a comma is indistinguishable from two values on both.
+ */
+export function groupConcatDistinct(col: string, dialect: DbxDialect = dbxDialect()): string {
+  return pick(
+    dialect,
+    () => `GROUP_CONCAT(DISTINCT ${col})`,
+    () => `string_agg(DISTINCT (${col})::text, ',')`,
+  )
+}

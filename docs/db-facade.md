@@ -206,14 +206,19 @@ new cross-module transaction adds one. Until then a function that must take part
 written with `dbx` calls only: a raw `db.prepare(...)` in it would sit beside the lock, not inside the transaction's
 rules (see "What the facade does not cover").
 
-**The parent handle while a savepoint body runs.** Inside `tx.tx(async (inner) => { ... })` the outer handle `tx` is
-still live, and a statement issued on it lands IN the open savepoint: there is one connection, the server has no notion
-of which handle sent a statement. So a write made through the parent handle during the savepoint body is undone by that
-savepoint's `ROLLBACK`, and kept when the savepoint is released. This is the same on SQLite and on PostgreSQL (it is not a
-backend difference), and it is pinned on both (`db-facade-tx.test.ts`, `pg/dbx.pg.test.ts`: the parent write is accepted,
-goes with a failing savepoint, stays with a successful one). It is allowed, not forbidden: a body that wants a write to
-survive its own savepoint failing makes it after the savepoint, not through the parent handle during it. Anyone who
-decides to refuse the parent handle in that window turns both cells red on purpose.
+**The parent handle while a savepoint body runs is refused.** Inside `tx.tx(async (inner) => { ... })` the outer handle `tx`
+must not be used: a call on it (`get`, `all`, `run`, `exec` or a nested `tx`) rejects with `dbx: use the savepoint handle
+inside a savepoint body, not the handle of the enclosing transaction` (`PARENT_HANDLE_MESSAGE` in `src/db/tx-lock.ts`) and
+sends nothing to the connection. Why: there is one connection and the server has no notion of which handle sent a
+statement, so such a statement landed IN the open savepoint and was undone by its `ROLLBACK`, and a nested `tx` on the
+parent handle waits for ever for the lock the running savepoint holds. It was allowed and pinned before; it is the same on
+SQLite and on PostgreSQL, and it fails closed on both (`db-facade-tx.test.ts`, `pg-dbx-flow.test.ts`, `pg/dbx.pg.test.ts`).
+The check is exact, by the scope the call runs in: a handle of a deeper savepoint, the savepoint's OWN handle, a sibling
+savepoint that queues on the parent handle from the parent's own body, the parent handle AFTER the savepoint ended and a
+late call that still carries a finished savepoint are not refused. Not covered, by design: a statement started on the
+parent handle from the parent's own body while a savepoint is running (a `Promise.all` that mixes them) shares the connection
+and still lands in the savepoint; the scope it runs in is the parent's, so it cannot be told from the sibling that queues.
+A body that wants a write to survive its own savepoint failing makes it after the savepoint, on the parent handle.
 
 **The system-config document (read-modify-write).** A change to one stored document (the federation config is the
 example, `mutateFederationConfig`) reads the stored document from the database inside ONE `dbx.tx` (never from the cache),
@@ -280,6 +285,22 @@ optional chains on a non-nullish value, and 60 about a value that is always trut
 without overlap (and 2 of other shapes). None of the 60 is on a line with an `await`, an `async` function or a Promise, so it would not
 have found a missing `await` the four async rules miss, and the defensive `??` and `?.` of the codebase would
 drown it. It is NOT enabled; the four async rules stay the lint guard.
+
+## Accepted divergences between the two engines
+
+A behavior that differs on purpose, decided, with a cell on each engine that pins today's behavior (a change of either side
+turns a cell red, so it is a decision and not a surprise). SQLite goes away at the cutover; PostgreSQL is the target and the
+better behavior wins where they differ.
+
+- **The username unique rule folds non-ASCII letters on PostgreSQL only.** SQLite: `dashboard_users.username` is
+  `UNIQUE COLLATE NOCASE`, which folds ASCII letters only, so `Émile` and `émile` are two users. PostgreSQL: the
+  baseline has `UNIQUE (lower(username))` (`0001_baseline.sql`), and `lower()` of a UTF-8 server folds the non-ASCII letter too,
+  so the second spelling is refused with `23505`. Nothing is changed in the code: a user created on SQLite with two such
+  spellings is a collision at the import into PostgreSQL (check `SELECT lower(username), count(*) ... GROUP BY 1 HAVING count(*) > 1`
+  before the cutover). The ASCII rule (`Agent-A` and `agent-a` collide) is the same on both. The case-insensitive lookup in
+  `write-tenant.ts` already uses `lower(username) = lower(?)`. Cells: `src/__tests__/db-username-case-divergence.test.ts`
+  (SQLite: both accepted) and `src/__tests__/pg/baseline-parity.pg.test.ts` ("a non-ASCII username folds ...": the second is
+  refused; it asserts the precondition that the test server has a UTF-8 ctype).
 
 ## Known limits
 
@@ -589,15 +610,15 @@ job); `MARVEEN_PG_MODULES_ALL=1` runs every file instead, to re-measure what is 
 | Code | Files | Meaning |
 |---|---|---|
 | `p2-4-concurrency` | 14 | the test is about SQLite's one-connection concurrency semantics: replaced in P2-4 |
-| `raw-db` | 10 | the test or the module under test still reads the raw SQLite handle |
+| `raw-db` | 1 | the test or the module under test still reads the raw SQLite handle |
 | `vec` | 6 | needs sqlite-vec: Phase 3 |
-| `sqlite-only` | 4 | the subject is the SQLite facade, handle or migration chain itself |
-| `unported-sql` | 2 | SQL that has no common text for both dialects yet |
+| `sqlite-only` | 5 | the subject is the SQLite facade, handle or migration chain itself, or the file asserts the SQLite query planner (an EXPLAIN QUERY PLAN cell) |
+| `unported-sql` | 1 | SQL that has no common text for both dialects yet |
 | `sync-cache` | 2 | the synchronous cache and its loader (they move with the async cache load) |
 | `boot-twin` | 1 | the synchronous boot chain |
 | `fts` | 0 | needs FTS5: Phase 3 |
 
-Thirty-four files are ported, 39 are excluded. The numbers are a snapshot of the lists, the lists are the authority.
+Forty-six files are ported, 30 are excluded. The numbers are a snapshot of the lists, the lists are the authority.
 
 ### Moving a test onto the facade
 
@@ -611,6 +632,6 @@ loosen an assertion.
 ### What PG mode does not cover yet
 
 The dialect tokens (`rowid`, `INSERT OR`, `GLOB`, `COLLATE NOCASE`, `AUTOINCREMENT`, `PRAGMA`, and a raw `LIKE`: SQLite folds
-ASCII case there, PostgreSQL does not, so a query uses `likeNoCase()` from `db/dialect.ts` instead) and `dbx.*` calls that
+ASCII case there, PostgreSQL does not, so a query uses `likeNoCase()` from `db/dialect.ts` instead; `GROUP_CONCAT(DISTINCT x)`, which `groupConcatDistinct()` spells for both engines) and `dbx.*` calls that
 sit inside a transaction body without the `tx` handle (the adapter refuses them, see above) are source changes of the
 modules themselves, done with the next step. A file that needs one of them stays `EXCLUDED` until its module is ported.

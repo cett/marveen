@@ -5,7 +5,7 @@
     "COLLATE NOCASE": 0,
     "FTS5 MATCH": 12,
     "GLOB": 0,
-    "GROUP_CONCAT": 1,
+    "GROUP_CONCAT": 0,
     "IFNULL()": 0,
     "INSERT OR IGNORE": 3,
     "INSERT OR REPLACE": 0,

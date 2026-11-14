@@ -6,9 +6,24 @@ import { EventEmitter } from 'node:events'
 import { createTenant, setTenantAgentAvailability, setChannelBinding, getTenantGateStatus, dbx } from '../db.js'
 import { tryHandleTenantGateStatus } from '../web/routes/tenant-gate-status.js'
 import type { RouteContext } from '../web/routes/types.js'
-import { useTestDb } from './helpers/with-test-db.js'
+import { testDbMode, useTestDb } from './helpers/with-test-db.js'
 
 useTestDb()
+
+// The gate migrations are SQLite migration numbers (64 and 65). A migrated SQLite database has a schema_version row for
+// each. The PostgreSQL baseline folds both tables into file 0001 and its schema_version holds the file numbers, so on a
+// fresh PostgreSQL database `applied` is false while the tables exist: the report's `applied` follows the rows of the
+// ACTIVE backend, `table_exists` is the fact that is the same on both.
+const APPLIED_ON_FRESH_DB = testDbMode() !== 'pg'
+const GATE_VERSIONS = [64, 65]
+
+async function gateRows(): Promise<number[]> {
+  return ((await dbx.all('SELECT version FROM schema_version WHERE version IN (64, 65) ORDER BY version')) as { version: number }[]).map((r) => r.version)
+}
+async function markApplied(version: number, on: boolean): Promise<void> {
+  if (on) await dbx.run("INSERT INTO schema_version (version, applied_at, description) VALUES (?, 1, 'test') ON CONFLICT (version) DO NOTHING", version)
+  else await dbx.run('DELETE FROM schema_version WHERE version = ?', version)
+}
 
 beforeEach(async () => {
   await createTenant('acme', 'Acme')
@@ -38,9 +53,10 @@ describe('GET /api/admin/tenant-gate-status', () => {
   it('reports both gate migrations as applied with their tables on a migrated database', async () => {
     const r = await call('GET', '/api/admin/tenant-gate-status')
     expect(r.handled).toBe(true)
+    expect(await gateRows()).toEqual(APPLIED_ON_FRESH_DB ? GATE_VERSIONS : [])
     expect(r.body.migrations).toEqual([
-      { version: 64, table: 'tenant_channel_bindings', applied: true, table_exists: true },
-      { version: 65, table: 'agent_tenant_context', applied: true, table_exists: true },
+      { version: 64, table: 'tenant_channel_bindings', applied: APPLIED_ON_FRESH_DB, table_exists: true },
+      { version: 65, table: 'agent_tenant_context', applied: APPLIED_ON_FRESH_DB, table_exists: true },
     ])
     expect(r.body.contexts).toEqual([])
     expect(r.body.multi_tenant_agents).toEqual([])
@@ -74,9 +90,19 @@ describe('GET /api/admin/tenant-gate-status', () => {
     expect((await getTenantGateStatus()).multi_tenant_agents).toEqual([])
   })
 
+  it('applied follows the schema_version rows of the active backend, table_exists follows the table', async () => {
+    for (const v of GATE_VERSIONS) await markApplied(v, false)
+    expect((await getTenantGateStatus()).migrations.map((m) => [m.version, m.applied, m.table_exists])).toEqual([[64, false, true], [65, false, true]])
+    await markApplied(64, true)
+    expect((await getTenantGateStatus()).migrations.map((m) => [m.version, m.applied])).toEqual([[64, true], [65, false]])
+    await markApplied(65, true)
+    expect((await getTenantGateStatus()).migrations.map((m) => [m.version, m.applied])).toEqual([[64, true], [65, true]])
+  })
+
   it('reports a missing gate table rather than failing', async () => {
+    await markApplied(64, true)
     await dbx.exec('DROP TABLE agent_tenant_context')
-    await dbx.run('DELETE FROM schema_version WHERE version = 65')
+    await markApplied(65, false)
     const m = (await getTenantGateStatus()).migrations
     expect(m[1]).toEqual({ version: 65, table: 'agent_tenant_context', applied: false, table_exists: false })
     expect(m[0]!.applied).toBe(true)

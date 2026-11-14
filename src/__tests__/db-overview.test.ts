@@ -3,7 +3,7 @@
 // not only in the type checker.
 
 import { describe, it, expect, beforeEach } from 'vitest'
-import { db, dbx } from '../db.js'
+import { dbx } from '../db.js'
 import {
   countOverviewMemories,
   countOverviewMemoryCategories,
@@ -74,10 +74,10 @@ describe('the counts', () => {
   })
 
   it('artifacts: fleet-wide count and tenant narrowing', async () => {
-    const ins = db.prepare("INSERT INTO artifacts (agent_id, title, kind, content, tenant_id) VALUES ('agent-a', ?, 'text', 'x', ?)")
-    ins.run('one', 'default')
-    ins.run('two', 'acme')
-    ins.run('three', 'acme')
+    const ins = (title: string, tenant: string) => dbx.run("INSERT INTO artifacts (agent_id, title, kind, content, tenant_id) VALUES ('agent-a', ?, 'text', 'x', ?)", title, tenant)
+    await ins('one', 'default')
+    await ins('two', 'acme')
+    await ins('three', 'acme')
     expect(await countOverviewArtifacts(null)).toBe(3)
     expect(await countOverviewArtifacts('acme')).toBe(2)
     expect(await countOverviewArtifacts('default')).toBe(1)
@@ -112,10 +112,10 @@ describe('the counts', () => {
   })
 
   it('stuck scheduled tasks: active and due before the cut-off', async () => {
-    const ins = db.prepare("INSERT INTO scheduled_tasks (id, chat_id, prompt, schedule, next_run, status, created_at) VALUES (?, 'c', 'p', '* * * * *', ?, ?, 0)")
-    ins.run('t1', 100, 'active')
-    ins.run('t2', 200, 'active')
-    ins.run('t3', 50, 'paused')
+    const ins = (id: string, nextRun: number, status: string) => dbx.run("INSERT INTO scheduled_tasks (id, chat_id, prompt, schedule, next_run, status, created_at) VALUES (?, 'c', 'p', '* * * * *', ?, ?, 0)", id, nextRun, status)
+    await ins('t1', 100, 'active')
+    await ins('t2', 200, 'active')
+    await ins('t3', 50, 'paused')
     expect(await countOverviewStuckScheduledTasks(150)).toBe(1)
     expect(await countOverviewStuckScheduledTasks(300)).toBe(2)
     expect(await countOverviewStuckScheduledTasks(100)).toBe(0)

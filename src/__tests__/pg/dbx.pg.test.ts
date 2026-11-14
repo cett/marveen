@@ -7,6 +7,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import pg from 'pg'
 import { runAs } from '../../db/context.js'
 import { createPgDbx, type PgDbx } from '../../db/pg/dbx.js'
+import { PARENT_HANDLE_MESSAGE } from '../../db/tx-lock.js'
 import { isPgUniqueViolation, pgErrorCode } from '../../db/pg/errors.js'
 import { pgPoolConfig, type PgPoolSettings } from '../../db/pg/pool.js'
 import { isUniqueViolationOn } from '../../web/unique-violation.js'
@@ -144,32 +145,52 @@ describe('transactions', () => {
     expect((await dbx.all<{ id: number }>('SELECT id FROM dx_t ORDER BY id')).map((r) => r.id)).toEqual([1, 2, 4])
   })
 
-  it('a statement on the PARENT handle while a savepoint body runs falls into that savepoint (one connection): the savepoint rollback takes it back (same as SQLite)', async () => {
+  // P31 (was: "falls into the savepoint, same as SQLite", pinned here as today's behavior): a statement on the PARENT handle while a
+  // savepoint body runs shares the connection and would be undone with the savepoint, and a `tx` on it would wait for ever for the
+  // lock the savepoint holds. It is refused now, on a real server as on the fake pool; the savepoint handle works as before.
+  it('the PARENT handle inside a savepoint body is refused, a statement and a nested tx alike; nothing of it is written and nothing hangs', async () => {
     const dbx = plainDbx(2)
-    let parentWriteAccepted = false
+    const seen: string[] = []
     await dbx.tx(async (tx) => {
       await tx.run('INSERT INTO dx_t (id) VALUES (1)')
       await tx.tx(async (inner) => {
         await inner.run('INSERT INTO dx_t (id) VALUES (2)')
-        await tx.run('INSERT INTO dx_t (id) VALUES (3)') // the parent handle, the savepoint is the open scope
-        parentWriteAccepted = true // a refusal of the parent handle would end the body above and be swallowed by the catch below
+        for (const op of [() => tx.run('INSERT INTO dx_t (id) VALUES (3)'), () => tx.get('SELECT 1'), () => tx.all('SELECT 1'), () => tx.exec('SELECT 1'), () => tx.tx(() => Promise.resolve(1))]) {
+          seen.push(await op().then(() => 'accepted', (e: unknown) => (e as Error).message))
+        }
         throw new Error('inner failed')
       }).catch(() => undefined)
       await tx.run('INSERT INTO dx_t (id) VALUES (4)')
     })
-    expect(parentWriteAccepted).toBe(true)
+    expect(seen).toEqual(Array(5).fill(PARENT_HANDLE_MESSAGE))
+    for (const m of seen) expect(m).toMatch(/savepoint handle/)
     expect((await dbx.all<{ id: number }>('SELECT id FROM dx_t ORDER BY id')).map((r) => r.id)).toEqual([1, 4])
   })
 
-  it('positive pair: the same parent-handle write inside a savepoint that succeeds is kept', async () => {
+  it('positive pair: a savepoint body that uses its OWN handle (and a handle of a deeper savepoint) is kept', async () => {
     const dbx = plainDbx(2)
     await dbx.tx(async (tx) => {
       await tx.tx(async (inner) => {
         await inner.run('INSERT INTO dx_t (id) VALUES (2)')
-        await tx.run('INSERT INTO dx_t (id) VALUES (3)')
+        await inner.tx((deep) => deep.run('INSERT INTO dx_t (id) VALUES (3)'))
       })
     })
     expect((await dbx.all<{ id: number }>('SELECT id FROM dx_t ORDER BY id')).map((r) => r.id)).toEqual([2, 3])
+  })
+
+  it('a succeeding savepoint body that wrote through the parent handle fails (the refusal is thrown into the body) and takes its own write back', async () => {
+    const dbx = plainDbx(2)
+    const result = await dbx.tx(async (tx) => {
+      const failure = await tx.tx(async (inner) => {
+        await inner.run('INSERT INTO dx_t (id) VALUES (2)')
+        await tx.run('INSERT INTO dx_t (id) VALUES (3)')
+      }).then(() => undefined, (e: unknown) => (e as Error).message)
+      await tx.run('INSERT INTO dx_t (id) VALUES (5)')
+      return failure
+    })
+    expect(result).toBe(PARENT_HANDLE_MESSAGE)
+    expect(result).toMatch(/savepoint handle/)
+    expect((await dbx.all<{ id: number }>('SELECT id FROM dx_t ORDER BY id')).map((r) => r.id)).toEqual([5])
   })
 
   it('positive pair: the same write through the parent handle after the savepoint body is kept', async () => {

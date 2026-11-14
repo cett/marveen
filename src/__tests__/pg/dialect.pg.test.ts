@@ -3,7 +3,7 @@
 // days, a byte comparison for the order). The shape of the fragments without a server: src/__tests__/dialect.test.ts.
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import Database from 'better-sqlite3'
-import { checkZoneName, epochLocalDate, epochLocalMonth, eqNoCase, likeNoCase, localTimeZone, orderBytes, orderNoCase } from '../../db/dialect.js'
+import { checkZoneName, epochLocalDate, epochLocalMonth, eqNoCase, groupConcatDistinct, likeNoCase, localTimeZone, orderBytes, orderNoCase } from '../../db/dialect.js'
 import { likeContains, likePrefix } from '../../db/like.js'
 import { createPgTestDb, type PgTestDb } from '../helpers/pg-test-db.js'
 
@@ -277,5 +277,54 @@ describe('orderNoCase and orderBytes', () => {
     const last = await both(q('sqlite', 'NULLS LAST'), q('pg', 'NULLS LAST'))
     expect(ids(last.sqlite)).toEqual([3, 5, 1, 2, 4])
     expect(ids(last.pg)).toEqual([3, 5, 1, 2, 4])
+  })
+})
+
+describe('groupConcatDistinct', () => {
+  // (group, text value, integer value); NULL in the text column is skipped, a group of NULLs aggregates to NULL
+  const ROWS: [number, string | null, number | null][] = [
+    [1, 'b', 3], [1, 'a', 1], [1, 'b', 3], [1, null, null], [1, 'c', 2],   // duplicates collapse, NULL is skipped
+    [2, null, null], [2, null, null],                                       // only NULLs: NULL
+    [3, '', 7],                                                             // an empty string is a value
+    [4, 'x,y', 4],                                                          // a comma in a value is not escaped
+    [5, 'only', 5],
+  ]
+
+  /** Per group: the distinct values as a sorted list (the order is not portable), or null for a NULL aggregate. */
+  async function groups(col: string): Promise<{ sqlite: Record<number, string[] | null>; pg: Record<number, string[] | null> }> {
+    await pgdb.pool.query('CREATE TABLE IF NOT EXISTS agg_t (g bigint, s text, n bigint)')
+    sq.exec('CREATE TABLE IF NOT EXISTS agg_t (g INTEGER, s TEXT, n INTEGER)')
+    await pgdb.pool.query('TRUNCATE agg_t')
+    sq.exec('DELETE FROM agg_t')
+    for (const r of ROWS) {
+      await pgdb.pool.query('INSERT INTO agg_t VALUES ($1, $2, $3)', r)
+      sq.prepare('INSERT INTO agg_t VALUES (?, ?, ?)').run(...r)
+    }
+    const q = (d: 'sqlite' | 'pg'): string => `SELECT g, ${groupConcatDistinct(col, d)} AS v FROM agg_t GROUP BY g ORDER BY g`
+    const r = await both(q('sqlite'), q('pg'))
+    const shape = (rows: unknown[][]): Record<number, string[] | null> =>
+      Object.fromEntries(rows.map((x) => [Number(x[0]), x[1] === null ? null : String(x[1]).split(',').sort()]))
+    return { sqlite: shape(r.sqlite), pg: shape(r.pg) }
+  }
+
+  it('text column: the same distinct values per group on both engines (sorted, the order is not portable)', async () => {
+    const r = await groups('s')
+    const want = { 1: ['a', 'b', 'c'], 2: null, 3: [''], 4: ['x', 'y'], 5: ['only'] }
+    expect(r.sqlite).toEqual(want)
+    expect(r.pg).toEqual(want)
+  })
+
+  it('integer column: decimal text on both engines, duplicates collapsed', async () => {
+    const r = await groups('n')
+    const want = { 1: ['1', '2', '3'], 2: null, 3: ['7'], 4: ['4'], 5: ['5'] }
+    expect(r.sqlite).toEqual(want)
+    expect(r.pg).toEqual(want)
+  })
+
+  it('the separator is a bare comma on both engines (no space)', async () => {
+    const q = (d: 'sqlite' | 'pg'): string => `SELECT ${groupConcatDistinct('s', d)} AS v FROM agg_t WHERE g = 1`
+    const r = await both(q('sqlite'), q('pg'))
+    expect(String(r.sqlite[0]![0])).toMatch(/^[abc](,[abc]){2}$/)
+    expect(String(r.pg[0]![0])).toBe('a,b,c')
   })
 })
