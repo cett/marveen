@@ -52,6 +52,60 @@ def sh_quote(s):
     return "'" + s.replace("'", "'\\''") + "'"
 
 
+# The shells that stand in as the oracle (the real shells the cells are run in; the gate reads for both). CI installs zsh and sets
+# REQUIRE_ZSH=1: a cell that only zsh proves is then never skipped for a missing zsh, and a skip of any kind fails the run (see main).
+ZSH = shutil.which('zsh')
+REQUIRE_ZSH = os.environ.get('REQUIRE_ZSH') == '1'
+
+
+def _bash_major():
+    """The major version of the `bash` that is the oracle (a version probe, not an assumption: the local /bin/bash is 3.2, the
+    runner's is 5.x). 0 when there is none."""
+    exe = shutil.which('bash')
+    if not exe:
+        return 0
+    out = subprocess.run([exe, '-c', 'printf %s "${BASH_VERSINFO[0]}"'], capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL).stdout
+    return int(out) if out.isdigit() else 0
+
+
+BASH_MAJOR = _bash_major()
+# bash 3.2 reads some text differently from bash 4+ and zsh: it does not pad `{01..03}`, it expands the target of `>&` without quote
+# removal, and so on. A cell that only that bash runs is proven on a machine that has it (macOS, /bin/bash); on bash 4+ it is NAMED
+# (BASH32_UNPROVEN, printed at the end of the run), never counted as proven and never silently dropped: the gate verdict of the cell is
+# asserted everywhere.
+BASH32 = BASH_MAJOR in range(1, 4)
+BASH32_UNPROVEN = []
+
+# Linux caps ONE argument at 128 KiB (MAX_ARG_STRLEN); macOS does not. A command text this long reaches a shell as a script file.
+ARG_FILE_MIN = 60000
+
+
+def run_shell_text(exe, cmd, **kw):
+    """Run `cmd` in the shell `exe` as `-c` text; a text too long to be one argument on Linux is run from a script file instead (same
+    cwd, env and stdin; the shell reads the same bytes either way)."""
+    if len(cmd.encode('utf-8', 'surrogateescape')) < ARG_FILE_MIN:
+        return subprocess.run([exe, '-c', cmd], **kw)
+    with tempfile.TemporaryDirectory(prefix='long-cell-') as d:
+        script = os.path.join(d, 'cell.sh')
+        with open(script, 'w', encoding='utf-8', errors='surrogateescape') as f:
+            f.write(cmd + '\n')
+        return subprocess.run([exe, script], **kw)
+
+
+def assert_ran(case, tmpl, shells, bash32_only=False):
+    """The cell is a real one: a shell ran its body. `shells` are the results of the oracle (True, False or None: not installed).
+    No shell ran it, then: without zsh the oracle is not there (a NAMED skip; REQUIRE_ZSH=1 makes that a failure in CI); a cell that
+    only bash 3.2 runs (`bash32_only`) is named on a bash 4+ and fails on a bash 3.2 that did not run it; any other cell fails."""
+    if any(shells):
+        return
+    if ZSH is None and not REQUIRE_ZSH:
+        case.skipTest('zsh is not installed: the cell %r has no oracle here' % (tmpl[:60],))
+    if bash32_only and BASH_MAJOR >= 4:
+        BASH32_UNPROVEN.append(tmpl)
+        return
+    case.fail('no shell ran the body of (or read through) %r: the cell proves nothing' % tmpl)
+
+
 class Tree(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -768,6 +822,209 @@ class BraceFixupTwo(Tree):
                 self.assertIn('more paths than the gate can look through', err)
 
 
+class BracePaddingBothReadings(Tree):
+    """Commit 4: a brace sequence with a zero in an end (`{1..03}`, `{01..03}`) is `1 2 3` to bash 3.2 and `01 02 03` to bash 4+ and
+    zsh. Both are words of the shell that runs the command, so a token file behind either spelling is refused."""
+
+    def make_agent(self, name):
+        d = self.p('agents', name)
+        os.makedirs(d)
+        self.write('agents/%s/.agent-token' % name, TOKEN)
+        self.addCleanup(shutil.rmtree, d, True)
+        return 'agents/%s/.agent-token' % name
+
+    # a recursive reader over the directories the sequence names: refused when one of them holds a token file (the dotted name
+    # itself is refused wherever it stands, so the cells name the directory)
+    READ = 'grep -r foo agents/pad-%s'
+
+    def test_the_plain_and_the_padded_words_of_a_sequence_are_both_judged(self):
+        # an agent directory of its own for every case: the token file of `pad-1` (bash 3.2 expands `{01..03}` to it) and of
+        # `pad-01` (zsh and bash 4+ expand `{1..03}` to it)
+        for existing in ('pad-1', 'pad-01'):
+            self.make_agent(existing)
+            for seq in ('{01..03}', '{1..03}', '{01..3}', '{3..01}'):
+                with self.subTest(dir=existing, seq=seq):
+                    self.assertEqual(self.bash(self.READ % seq)[0], 2, 'the directory %s is read through %s' % (existing, seq))
+            # the sequences that do not reach the directory pass
+            for seq in ('{4..06}', '{2..4}', '{02..04}', '{3..5}'):
+                with self.subTest(dir=existing, seq=seq):
+                    self.assertEqual(self.bash(self.READ % seq)[0], 0)
+            shutil.rmtree(self.p('agents', existing))
+
+    def test_the_two_readings_are_the_shells_own(self):
+        # bash 3.2 does not pad, bash 4+ and zsh do: the cells above are real ones. The expectation follows the version of the bash
+        # that is there (BASH32: `{01..03}` is `1 2 3`, so it reaches pad-1 and `{1..03}` does not reach pad-01; bash 4+ the other way round)
+        rel1, rel01 = self.make_agent('pad-1'), self.make_agent('pad-01')
+        self.assertIn(BraceFixupTwo.reads(self, 'bash', 'agents/pad-{01..03}/.agent-token', rel1), (BASH32, None))
+        self.assertIn(BraceFixupTwo.reads(self, 'zsh', 'agents/pad-{1..03}/.agent-token', rel01), (True, None))
+        self.assertIn(BraceFixupTwo.reads(self, 'bash', 'agents/pad-{1..03}/.agent-token', rel01), (not BASH32, None))
+
+    def test_the_words_of_a_padded_sequence(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('gate_pad', self.gate)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        # review F3: a padded sequence is the SUPERSET of every integer at every width 0..W+1 (W: the widest end or step, its sign
+        # included), not a model of one shell's rule; the plain words come first
+        self.assertEqual(mod._brace_all('{01..03}'), ['1', '2', '3', '01', '02', '03', '001', '002', '003'])
+        self.assertEqual(mod._brace_all('{1..03}'), mod._brace_all('{01..03}'))
+        self.assertEqual(mod._brace_all('{1..3}'), ['1', '2', '3'])      # no zero and no sign in an end: one reading
+        self.assertEqual(mod._brace_all('{0..3}'), ['0', '1', '2', '3'])      # a lone zero pads in no shell
+        self.assertEqual(mod._brace_all('{1..3..2}'), ['1', '3'])
+        self.assertEqual(set(mod._brace_all('{08..10}')), {str(v).zfill(k) for k in range(4) for v in (8, 9, 10)})      # widths 0..3
+        self.assertEqual(set(mod._brace_all('{-1..1}')), {'-1', '0', '1', '-01', '00', '01', '-001', '000', '001'})      # the sign counts in the width, or not
+        self.assertIn('01', mod._brace_all('{1..3..01}'))      # a step with a leading zero pads
+        self.assertNotIn('01', mod._brace_all('{1..3..1}'))
+        self.assertIn('0010', mod._brace_all('{01..010..01}'))
+        # the cap counts the words of the FINAL expansion: 300 words at four widths pass, 600 do not (a generic refusal)
+        self.assertLessEqual(len(mod._brace_all('{001..300}')), 1024)
+        with self.assertRaises(mod._BraceTooBig):
+            mod._brace_all('{001..600}')
+        self.assertEqual(len(mod._brace_all('{1..1000}')), 1000)      # an unpadded sequence is not multiplied
+
+    # review F3: zsh pads by its own rule (the width of the FIRST end when it starts with a zero, else of the second, the sign in the
+    # width, a step with a leading zero pads too), so the word of the shell is not one the commit modelled. (directory, sequence)
+    ZSH_PADDING = [('pad-01', '{01..010}'), ('pad-01', '{01..001}'), ('pad-00', '{00..001}'), ('pad-00', '{00..010..5}'), ('pad-01', '{1..3..01}'),
+                   ('pad-001', '{1..3..001}'), ('pad-000', '{-01..1}'), ('pad-00', '{-1..01}'), ('pad--01', '{-01..1}'), ('pad--001', '{-001..-003}'),
+                   ('pad-05', '{-5..5..01}'), ('pad-10', '{01..010..01}')]
+
+    def test_the_padding_of_zsh_is_judged(self):
+        for dirname, seq in self.ZSH_PADDING:
+            self.make_agent(dirname)
+            with self.subTest(dir=dirname, seq=seq):
+                self.assertEqual(self.bash(self.READ % seq)[0], 2, 'the directory %s is read through %s' % (dirname, seq))
+                # a real shell reads the directory through the same spelling: the cell is not vacuous (bash 3.2 has no step and no
+                # padding, zsh has both: one of them is enough)
+                reads = [self.reads_dir(sh, seq, dirname) for sh in ('zsh', 'bash')]
+                if any(r is not None for r in reads):
+                    # zsh pads by its own rule, bash 4+ by another: without zsh a cell may have no oracle (named skip, a failure under
+                    # REQUIRE_ZSH=1), with it every cell is proven
+                    assert_ran(self, '%s through %s' % (dirname, seq), reads)
+            shutil.rmtree(self.p('agents', dirname))
+
+    def test_a_sequence_that_does_not_reach_the_directory_passes(self):
+        self.make_agent('pad-01')
+        for seq in ('{02..09}', '{2..9}', '{010..020}', '{-5..-2}', '{3..5..01}', '{1..9..2}', '{a..e}', '{02..09..01}'):
+            with self.subTest(seq=seq):
+                self.assertEqual(self.bash(self.READ % seq)[0], 0, seq)
+        # a refused size is a generic refusal that does not quote the text
+        rc, out, err = self.bash('echo zzmark {001..600}')
+        self.assertEqual(rc, 2)
+        self.assertNotIn('zzmark', err)
+
+    # review P52 (taken into this commit, decided by the owner): bash 3.2 expands an end with a plus sign (`{0..+1}` is `0 1`, `{+01..3}`
+    # is `1 2 3`, never padded), zsh leaves the whole group as text. The gate read it as text, so a directory behind it was read by
+    # bash 3.2 and not by the gate. (directory, sequence)
+    PLUS_SIGN = [('pad-1', '{0..+1}'), ('pad-1', '{+1..3}'), ('pad-2', '{+1..+3}'), ('pad-0', '{-1..+1}'), ('pad-1', '{+01..3}'), ('pad-3', '{01..+3}'),
+                 ('pad-0', '{+0..2}'), ('pad--1', '{-1..+1}')]
+
+    PLUS_BASH32_ONLY = ('{01..+3}',)      # measured: bash 5.3 expands the other cells above, not this one
+
+    def test_a_plus_sign_in_an_end_is_expanded_the_bash_way(self):
+        for dirname, seq in self.PLUS_SIGN:
+            self.make_agent(dirname)
+            with self.subTest(dir=dirname, seq=seq):
+                self.assertEqual(self.bash(self.READ % seq)[0], 2, 'the directory %s is read through %s' % (dirname, seq))
+                bash, zsh = self.reads_dir('bash', seq, dirname), self.reads_dir('zsh', seq, dirname)
+                if bash is not None and not (bash or zsh):
+                    # a bash 4+ leaves `{01..+3}` as text, only bash 3.2 expands it: named, never a bare pass
+                    if BASH_MAJOR >= 4 and seq in self.PLUS_BASH32_ONLY:
+                        BASH32_UNPROVEN.append(seq)
+                    else:
+                        self.fail('no shell reads %s through %s' % (dirname, seq))
+                # the two readings are the shells' own: zsh leaves the group as text, so it never reads the directory
+                if zsh is not None:
+                    self.assertFalse(zsh, 'zsh reads %s through %s' % (dirname, seq))
+            shutil.rmtree(self.p('agents', dirname))
+        # the text itself is a word of the zsh reading and is judged as before; a sequence that does not reach the directory passes
+        self.make_agent('pad-1')
+        for seq in ('{2..+3}', '{+2..4}', '{+5..+7}', '{-2..+0}'):
+            with self.subTest(seq=seq):
+                self.assertEqual(self.bash(self.READ % seq)[0], 0, seq)
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('gate_pad_plus', self.gate)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        def words(s):
+            """The words of a group, the marked braces of a kept text turned back into braces."""
+            return [''.join(mod._UNMARK.get(ch, ch) for ch in w) for w in mod._brace_all(s)]
+
+        # (a plus group is expanded and its TEXT is the last word: zsh leaves it as text, see the third note below)
+        self.assertEqual(words('{0..+1}'), ['0', '1', '{0..+1}'])
+        self.assertEqual(words('{+1..+3}'), ['1', '2', '3', '{+1..+3}'])
+        # review (second round): a plus sign in the STEP. Neither local shell expands it (bash 3.2 has no step, zsh leaves the group as
+        # text; the text itself is judged as a word anyway), but bash 4+ may (legal_number takes a sign) and none is installed here: the
+        # step is read like the unsigned one, so the words are the same set, also in the padded form
+        self.assertEqual(words('{1..3..+1}'), words('{1..3..1}') + ['{1..3..+1}'])
+        self.assertEqual(words('{1..3..+1}'), ['1', '2', '3', '{1..3..+1}'])
+        self.assertEqual(words('{1..5..+2}'), ['1', '3', '5', '{1..5..+2}'])
+        self.assertEqual(set(words('{01..03..+1}')), set(words('{01..03..1}')) | {'{01..03..+1}'})
+        # a step with a leading zero pads, signed too (the sign counts in the width, so the signed step has one width more: a superset)
+        self.assertTrue(set(words('{1..3..01}')) <= set(words('{1..3..+01}')))
+        self.assertIn('01', words('{1..3..+01}'))
+        self.assertNotIn('01', words('{1..3..+1}'))
+        # review (third note): zsh leaves a plus group as TEXT while it expands the list group next to it, so `d{1..3..+1}` is a word of
+        # the shell; the whole-word reading does not have it (the list group is expanded in the others). The text of a plus group is
+        # one of its words, an end or a step alike; a group without a plus sign has no such word
+        for cell, word in (('{x,d}{1..3..+1}', 'd{1..3..+1}'), ('{x,d}{0..+1}', 'd{0..+1}'), ('{x,d}{+1..+3}', 'd{+1..+3}'), ('{x,d}{01..03..+1}', 'd{01..03..+1}')):
+            with self.subTest(cell=cell):
+                self.assertIn(word, words(cell))
+        self.assertNotIn('d{1..3}', words('{x,d}{1..3}'))
+        self.assertIn('d1', words('{x,d}{1..3..+1}'))      # the expanded words stay
+        # and a real directory named like the text of the group is refused (zsh reads it: the group stays text there)
+        self.make_agent('pad-{1..3..+1}')
+        self.assertEqual(self.bash("grep -r foo agents/{x,pad-}{1..3..+1}")[0], 2)
+
+    def reads_dir(self, shell, seq, dirname):
+        out = shell_words(shell, 'agents/pad-%s/.agent-token' % seq, self.root)
+        if out is None:
+            return None
+        return 'agents/%s/.agent-token' % dirname in out
+
+    def test_every_word_of_a_real_shell_is_a_word_of_the_gate(self):
+        # the differential (review: seqdiff2): ends and steps of every class, one printf per sequence in one script per shell; each word the
+        # shell makes must be among the words of the gate (a refused size is fail closed and skipped). zsh 5.9 and bash 3.2.
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('gate_pad_diff', self.gate)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        ends = ['0', '00', '1', '01', '001', '5', '05', '9', '10', '010', '0100', '-1', '-01', '-001', '-0', '-5', '-05', '-10', '-010',
+                '+0', '+1', '+01', '+5', '+10']      # the plus sign is bash 3.2's (zsh leaves the group as text)
+        steps = [None, '1', '01', '2', '02', '001', '-1', '-01', '+1', '+01', '+2']      # (a plus step: neither local shell expands it)
+        seqs = ['{%s..%s%s}' % (a, b, '' if s is None else '..' + s) for a in ends for b in ends for s in steps]
+        script = os.path.join(self.root, 'work', 'seqdiff.sh')
+        with open(script, 'w') as fh:
+            fh.write('\n'.join("printf '%%s\\0' %s @@" % q for q in seqs) + '\n')
+        ran = 0
+        for shell in ('zsh', 'bash'):
+            exe = shutil.which(shell)
+            if not exe:
+                continue
+            p = subprocess.run([exe, script], capture_output=True, timeout=120, stdin=subprocess.DEVNULL,
+                               env={'PATH': '/nonexistent', 'LC_ALL': 'C', 'HOME': self.root})
+            groups, cur = [], []
+            for w in p.stdout.split(b'\0'):
+                if w == b'@@':
+                    groups.append(cur)
+                    cur = []
+                elif w:
+                    cur.append(w.decode())
+            self.assertEqual(len(groups), len(seqs), '%s did not expand every sequence' % shell)
+            ran += 1
+            missing = []
+            for q, g in zip(seqs, groups):
+                try:
+                    mine = set(mod._brace_all(q)) | {q}      # (the word itself is judged too: bash 3.2 has no step and leaves `{1..3..2}` as text)
+                except mod._BraceTooBig:
+                    continue
+                if any(w not in mine for w in g):
+                    missing.append(q)
+            self.assertEqual(missing, [], '%s makes words the gate does not judge: %s' % (shell, missing[:5]))
+        if not ran:
+            self.skipTest('no shell installed')
+
+
 class BraceDifferential(Tree):
     """The gate against real shells over random words: if a shell's brace expansion of a word is a protected file (or a link
     to one), the gate must refuse the command that names the word. The words are built from the shapes of the review
@@ -873,5 +1130,958 @@ class BraceDifferential(Tree):
         self.assertEqual(leaks, [], '%d of %d words that a shell expands to a protected file pass the gate (first: %r)' % (len(leaks), positives, leaks[:3]))
 
 
+class BodiesAreJudged(Tree):
+    """The body of a command substitution, a backtick pair, a process substitution, a subshell and the commands behind a
+    reserved word (`{ cmd; }`, `if`, `then`, `do`, `!`, `case x in x) cmd`, a function body) are judged by the SAME rules as
+    the top-level command. The reader rules (recursive grep, find -exec, archivers, copiers) used to look at the head of a
+    top-level piece only. Every deny cell has benign twins; the in-process corpus is the cross product of the wrappers and
+    the bodies."""
+    DENY = ['grep -rn zzmark .', 'cat agents/agent-a/.agent-token', 'find store -type f -exec cat {} +', 'cp -r store out', 'tar cf - store',
+            'cat work/key-link', 'cat work/{key-link,x}', 'cat work/{sym-0,x}', 'rg --hidden zzmark .']
+    ALLOW = ['grep -rn zzmark src', 'ls docs', 'date', 'echo hi', 'cat src/a.ts', 'cd docs && ls', 'find src -type f', 'tar cf - src']
+    WRAPPERS = ['{}', 'x=$({})', 'echo $({})', 'echo `{}`', 'echo "$({})"', 'echo "`{}`"', '({})', '{{ {}; }}', 'if true; then {}; fi', 'for i in 1; do {}; done',
+                'while true; do {}; done', 'until false; do {}; done', '! {}', 'case x in x) {} ;; esac', 'f() {{ {}; }}; f', 'function f {{ {}; }}; f',
+                'echo <({})', 'echo $(( $({}) + 1 ))', 'echo "x $(echo "y" "$({})")"', 'echo $(echo $({}))', 'time {}', 'if {}; then echo; fi',
+                'echo "a" | ({})', '$({})']
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        os.symlink(cls.p_abs('store/' + KEY_NAME), cls.p_abs('work/key-link'))
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('gate_under_test_bodies', cls.gate)
+        cls.mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.mod)
+
+    @classmethod
+    def p_abs(cls, rel):
+        return os.path.join(cls.root, rel)
+
+    def verdict(self, cmd):
+        try:
+            self.mod.check_bash(cmd, self.root)
+        except self.mod.Block:
+            return 'DENY'
+        return 'ALLOW'
+
+    def test_the_cross_product_of_wrappers_and_bodies(self):
+        wrong, n = [], 0
+        for wrapper in self.WRAPPERS:
+            for bodies, expect in ((self.DENY, 'DENY'), (self.ALLOW, 'ALLOW')):
+                for body in bodies:
+                    # the doubled braces of a wrapper are literal braces
+                    cmd = wrapper.replace('{{', '\x00').replace('}}', '\x01').replace('{}', body).replace('\x00', '{').replace('\x01', '}')
+                    n += 1
+                    got = self.verdict(cmd)
+                    if got != expect:
+                        wrong.append((expect, cmd))
+        self.assertGreaterEqual(n, 300)
+        self.assertEqual(wrong, [], '%d of %d cells differ, first: %r' % (len(wrong), n, wrong[:4]))
+
+    def test_the_reason_does_not_quote_the_body(self):
+        for cmd in ['x=$(grep -rn zzmark .)', 'echo "`grep -rn zzmark .`"', '(grep -rn zzmark .)', '{ grep -rn zzmark .; }']:
+            rc, out, err = self.bash(cmd)
+            with self.subTest(cmd=cmd):
+                self.assertEqual(rc, 2)
+                self.assertNotIn('zzmark', err)
+                self.assertNotIn(self.root, err)
+
+    def test_a_body_that_does_not_parse_is_refused(self):
+        for cmd in ['echo $(grep -rn zzmark src', 'echo `ls docs', 'echo $(echo "unterminated)', '(ls docs', 'echo <(ls docs']:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self.verdict(cmd), 'DENY')
+
+    def test_the_depth_cap(self):
+        ok = 'echo ' + '$(echo ' * 8 + 'hi' + ')' * 8
+        too_deep = 'echo ' + '$(echo ' * 9 + 'hi' + ')' * 9
+        self.assertEqual(self.verdict(ok), 'ALLOW')
+        self.assertEqual(self.verdict(too_deep), 'DENY')
+        # the reader at the bottom of the deepest allowed nesting is still found
+        self.assertEqual(self.verdict('echo ' + '$(' * 7 + 'grep -rn zzmark .' + ')' * 7), 'DENY')
+
+    def test_a_single_quoted_span_is_a_literal_and_the_name_rules_still_see_the_text(self):
+        self.assertEqual(self.verdict("echo '$(grep -rn zzmark .)'"), 'ALLOW')
+        self.assertEqual(self.verdict('x=$(cat agents/agent-a/.agent-token)'), 'DENY')
+
+    def test_the_link_cells_with_the_shell_as_oracle(self):
+        link = os.path.basename(self.links['agents/agent-a/.agent-token'][0])
+        cmd = 'echo "$(echo work/{%s,x})"' % link
+        for shell in ('bash', 'zsh'):
+            out = shell_words(shell, cmd, self.root)
+            if out is not None:
+                with self.subTest(shell=shell):
+                    self.assertIn('work/' + link, ' '.join(out).split())
+        self.assertEqual(self.verdict('echo "$(cat work/{%s,x})"' % link), 'DENY')
+        self.assertEqual(self.verdict('echo "$(cat src/{a.ts,x})"'), 'ALLOW')
+
+    # Three ways the scanner could lose its place in a text (commit 1, review): a comment, a here-document, and the bash 5.3
+    # `${ cmd; }`. READER is the command the gate refuses; ORACLE stands in for it when a shell runs the cell: `printf %s%s ORA CLE`
+    # prints ORACLE only when it RUNS (the literal text of a quoted here-document holds the words, never the joined marker).
+    # The marker used to be the number 42 (`expr 40 + 2`), which the output of a `$(date)` in a cell holds at minute 42, second 42
+    # or in an epoch time: an unexplained red run of a cell that no shell runs, once an hour.
+    READER, ORACLE = 'grep -rn foo .', 'printf %s%s ORA CLE >&2'
+    # the body RUNS in a shell (at least one of bash and zsh proves it below) and the gate refuses it
+    RUNS = ["x=$(R)", ": # it's\n x=$(R)\n : # don't", 'echo $( # it\'s\n R) # don\'t', 'echo "$( # it\'s\n R) # don\'t"', '(  # it\'s\n R\n) # don\'t',
+            'echo a\\ #b $(R)', 'echo "a"#b $(R)', 'echo $(true)#y $(R)', 'echo ${X#*/} $(R)', 'echo $# #x it\'s\n $(R)',
+            "cat <<EOF\nit's\n$(R)\nit's\nEOF", "cat <<-EOF\n\tit's\n\t$(R)\n\tit's\n\tEOF", "cat <<EOF\nit's `R`\nit's\nEOF",
+            "x=$(cat <<EOF\nit's\n$(R)\nit's\nEOF\n)", 'cat <<EOF\nEOF\nx=$(R)', "cat <<'EOF'\nit's\nEOF\nx=$(R)", "cat <<A <<'B'\nit's $(R)\nA\nit's\nB",
+            'x=$((1<<"2"))\n y=$(R)', 'echo $[1<<"2"]\n $(R)', '(( x = 1 <<"2" ))\n $(R)', 'cat <<< "x"\n $(R)', 'x=$(cat <<\'EOF\'\nit\'s\nEOF\nR)',
+            'echo "$(cat <<EOF\nit\'s\n$(R)\nEOF\n)"', "echo ${X//<<'E'/y}\n $(R)", "echo ${X//<<'E'/y}\n `R`", "cat <<EOF # note\nit's\n$(R)\nit's\nEOF", "x=$(cat <<EOF # note\nit's\n$(R)\nit's\nEOF\n)"]
+    # literal text: no shell runs it and the gate lets it pass
+    LITERAL = ["echo a#b '$(R)'", ": # it's $(R)\n echo ok", ": # it's (maybe)\n echo ok", "cat <<'EOF'\nit's $(R)\nEOF", 'cat <<"EOF"\nit\'s $(R)\nEOF',
+               "cat <<\\EOF\nit's $(R)\nEOF", "cat <<EOF\nit's \\$(R)\nEOF", "cat <<A <<'B'\nit's ok\nA\nit's $(R)\nB", "x=$(cat <<'EOF'\nit's fine\nEOF\n)",
+               'echo "$(cat <<\'EOF\'\nit\'s fine\nEOF\n)"', "x=$(cat <<'EOF'\nit's $(R) it's\nEOF\n)", 'echo $((1<<2)) $[1<<2]', 'cat <<< "it\'s $(echo hi)"',
+               'echo ${X:-a} ${X} ${#X} ${X#a} ${X:- b}', "echo '${ R; }'", "cat <<EOF\nit's ok\nEOF", "cat <<-EOF\n\tit's ok\n\tEOF",
+               # the delimiter line of `<<-` may start with tabs; after it the apostrophes pair up again and the text is a literal
+               "cat <<-EOF\n\tx\n\tEOF\necho it's $(R) don't",
+               # a comment in a substitution holds a quote and a parenthesis
+               "echo $( # it's here\n date)", "echo $( # ) it's\n date)",
+               # a comment after the operator of a here-document: the body still starts on the next line
+               "x=$(cat <<EOF # note\nit's fine\nEOF\n)", "cat <<EOF # note\nit's fine\nEOF"]
+    # bash 5.3 only (the local bash is 3.2 and zsh has no such form): the gate refuses them, no oracle
+    FUNSUB = ['x=${ R; }', 'x=${| R; }', 'echo "${ R; }"', 'echo $(echo ${ R; })', 'cat <<EOF\n${ R; }\nEOF', 'echo ${\n R\n}']
+
+    def ran(self, shell, cmd):
+        """Did `shell` run the ORACLE of the cell? None when the shell is not installed."""
+        exe = shutil.which(shell)
+        if not exe:
+            return None
+        p = run_shell_text(exe, cmd, cwd=self.root, capture_output=True, text=True, timeout=30,
+                           stdin=subprocess.DEVNULL, env={'PATH': '/usr/bin:/bin', 'HOME': self.root, 'LC_ALL': 'C'})
+        return 'ORACLE' in p.stdout + p.stderr
+
+    def cell(self, template, reader):
+        """The template with the reader placed in it (a lone `R` stands for it)."""
+        return re.sub(r'(?<![A-Za-z0-9_$%])R(?![A-Za-z0-9_])', lambda _m: reader, template)
+
+    def test_a_comment_a_here_document_and_a_shift_do_not_hide_a_body(self):
+        for tmpl in self.RUNS:
+            with self.subTest(cell=tmpl):
+                self.assertEqual(self.verdict(self.cell(tmpl, self.READER)), 'DENY')
+                shells = [self.ran(sh, self.cell(tmpl, self.ORACLE)) for sh in ('bash', 'zsh')]
+                assert_ran(self, tmpl, shells)
+
+    def test_literal_text_in_a_comment_and_a_here_document_still_passes(self):
+        for tmpl in self.LITERAL:
+            with self.subTest(cell=tmpl):
+                self.assertEqual(self.verdict(self.cell(tmpl, self.READER)), 'ALLOW')
+                for sh in ('bash', 'zsh'):
+                    if '$(R)' in tmpl or 'R;' in tmpl:
+                        self.assertIn(self.ran(sh, self.cell(tmpl, self.ORACLE)), (False, None), '%s ran the text of %r' % (sh, tmpl))
+
+    # F1 (review of the fixup): a `#` right behind a redirection operator is not a comment for bash 3.2 (the reviewer's
+    # oracle runs the body there; the local /bin/bash 3.2.57 and zsh call these a syntax error, so no oracle here): refused.
+    HASH_AFTER_REDIRECT = ['echo >#x $(R)', 'echo 2>#x $(R)', 'echo >&#x $(R)', 'echo a >>#x $(R)', 'echo a &>#x $(R)', 'echo a >|#x $(R)', 'echo a <>#x $(R)',
+                           'echo a <#x $(R)', 'echo a <<<#x $(R)', 'cat <<EOF>#x $(R)\nbody\nEOF', 'echo x |&#x $(R)', 'echo ${X}#x $(R)']
+    # L2 (review of fixup 2): behind `|`, `||`, `&`, `&&`, `(` and `)` a `#` DOES open a comment (both shells, the oracle below proves
+    # it); the text of that comment is no code. Taking it for code opens a here-document or a quote in the comment that swallows the
+    # real subshell bodies on the next lines.
+    COMMENT_AFTER_CONTROL = ['echo x |#x $(R)', 'echo x &#x $(R)', 'echo x &&#x $(R)', 'echo x ||#x $(R)', '(#x $(R)\n:)', 'echo "a" |#x $(R)',
+                             '(echo a)#x $(R)', "echo a &# it's (x)", "echo a |# <<EOF\nit's\nEOF"]
+    COMMENT_SWALLOWS_BODY = ['echo a &# <<EOF\n(R)', 'echo a |# <<EOF\n(R)', 'echo a &# <<-EOF\n\t(R)', "echo a &# it's\n(R)\necho it's",
+                             "echo a &# '\n(R)\n#'", 'echo a &# "\n(R)\n#"', 'echo &# $<<-EOF\n\t(R)', '(echo a)# <<EOF\n(R)', 'echo a && # <<EOF\n(R)',
+                             'false ||# <<EOF\n(R)']
+    # L3 (review of fixup 2): the shell removes a backslash-newline pair before it reads a substitution, so `$\<newline>(R)` is `$(R)`
+    BACKSLASH_NEWLINE = ['echo "$\\\n(R)"', 'cat <<EOF\n$\\\n(R)\nEOF', 'echo ${X:-"$\\\n(R)"}', 'echo $\\\n(R)', 'echo "`\\\nR`"', 'echo a #\\\n$(R)']
+    # R2 (review): the backslash-quote of an ANSI-C string flips the quote state of the finder; the pass without quote state sees the body
+    ANSI_C = ["echo $'\\'' $(R) $'a' # '", "echo $'\\'' $(R) $'a'", "echo $'\\'' `R` $'a' # '"]
+
+    def test_a_hash_behind_a_redirection_is_no_comment(self):
+        for tmpl in self.HASH_AFTER_REDIRECT:
+            with self.subTest(cell=tmpl):
+                self.assertEqual(self.verdict(self.cell(tmpl, self.READER)), 'DENY')
+        # the twins that really are comments
+        for cmd in ["echo hi # it's (x)", "echo a; # it's", "echo a && # it's", "# it's\necho hi", "echo a\n# it's (\necho hi"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self.verdict(cmd), 'ALLOW')
+
+    def test_a_hash_behind_a_control_operator_is_a_comment(self):
+        for tmpl in self.COMMENT_AFTER_CONTROL:
+            with self.subTest(cell=tmpl):
+                self.assertEqual(self.verdict(self.cell(tmpl, self.READER)), 'ALLOW')
+                if '$(R)' in tmpl:      # the cell is a real one: no shell runs the text of the comment
+                    for sh in ('bash', 'zsh'):
+                        self.assertIn(self.ran(sh, self.cell(tmpl, self.ORACLE)), (False, None), '%s ran the comment of %r' % (sh, tmpl))
+
+    def test_the_text_of_a_comment_after_a_control_operator_does_not_swallow_a_body(self):
+        for tmpl in self.COMMENT_SWALLOWS_BODY:
+            with self.subTest(cell=tmpl):
+                self.assertEqual(self.verdict(self.cell(tmpl, self.READER)), 'DENY')
+                shells = [self.ran(sh, self.cell(tmpl, self.ORACLE)) for sh in ('bash', 'zsh')]
+                assert_ran(self, tmpl, shells)
+
+    def test_a_backslash_newline_inside_a_substitution_opener_is_removed_before_the_search(self):
+        for tmpl in self.BACKSLASH_NEWLINE:
+            with self.subTest(cell=tmpl):
+                self.assertEqual(self.verdict(self.cell(tmpl, self.READER)), 'DENY')
+                shells = [self.ran(sh, self.cell(tmpl, self.ORACLE)) for sh in ('bash', 'zsh')]
+                assert_ran(self, tmpl, shells)
+        # a pair in a single-quoted text or in a comment is a literal: the joined text must not allow what the first reading refuses
+        self.assertEqual(self.verdict("echo '$\\\n(ls docs)'"), 'ALLOW')
+        self.assertEqual(self.verdict("echo a\\\n b"), 'ALLOW')
+
+    # Fixup 6 (found by the mutation fuzz of the reviewer's shapes). A `(` that does not start a command is no subshell to zsh
+    # (a glob group, a qualifier, a function header), so the `#x` behind its `)` is a word and the `$(R)` after it runs.
+    GLUED_PAREN = ['}(echo a)#x $(R)', 'x(echo a)#x $(R)', 'echo (echo a)#x $(R)', 'echo ${X}(echo a)#x $(R)', 'echo "a"(echo a)#x $(R)',
+                   'ech(o a )#x $(R)', 'ec|ho a (echo)#x $(R)']
+    # The head of a command may be a substitution that expands to nothing: `$(true) grep -rn foo .` runs the grep, and so does a
+    # backtick pair or a run of them, behind an assignment or a wrapper too.
+    EMPTY_HEAD = ['$(a) R', '`a` R', '$(:)R', '$(a) $(b) R', 'x=1 $(a) R', 'nice $(a) R', 'echo hi; $(a) R', '$(a) R &', '`a` R `\n`&']
+
+    # bash 3.2 expands the target word of `>&` and `<&` without quote removal, so a single-quoted substitution there runs (found by
+    # the `>&` token of the fuzz; the local /bin/bash 3.2.57 runs it, zsh does not)
+    # Fixup 8 (reviewer): the quote need not start the word. The whole word behind `>&` (up to an unquoted blank or operator) is
+    # expanded that way: after an fd number, a plain word, a double-quoted part, a substitution or a parameter expansion.
+    DUP_REDIRECT_RUNS = ["echo >&'$(R)'", ">&'$(R)'", ">& '$(R)'", ">&'`R`'", ">&'x'$(R)", ">&'\"$(R)\"(\"'",
+                         "echo >&2'$(R)'", ">&x'$(R)'", '>&"x"\'$(R)\'', ">&$(true)'$(R)'", ">&${X}'$(R)'",
+                         ">&${X:-a;b}'$(R)'", ">&${X:-a|b}'$(R)'", ">&x\\ y'$(R)'", ">&'a'b'$(R)'", ">&x'a b'y'$(R)'"]
+    # a blank or an operator ends the word: the single-quoted text behind it is a literal (no shell runs it)
+    DUP_REDIRECT_LITERAL = [">&x;'$(R)'", ">&x|'$(R)'", ">&x&'$(R)'", ">&x\n'$(R)'", ">&'a' '$(R)'", ">&x '$(R)'", ">&x;echo '$(R)'", ">&x|echo '$(R)'", ">&x&echo '$(R)'", ">&x\necho '$(R)'",
+                            "|&'$(R)'", ">|'$(R)'", "echo '$(R)' >&2", "echo >&2 '$(R)'"]
+
+    def test_a_single_quoted_target_of_a_dup_redirect_does_not_hide_a_body(self):
+        for tmpl in self.DUP_REDIRECT_RUNS:
+            with self.subTest(cell=tmpl):
+                self.assertEqual(self.verdict(self.cell(tmpl, self.READER)), 'DENY')
+                shells = [self.ran(sh, self.cell(tmpl, self.ORACLE)) for sh in ('bash', 'zsh')]
+                # the quirk of these cells is bash 3.2's own (no quote removal in the target of `>&`): bash 4+ and zsh do not run them
+                assert_ran(self, tmpl, shells, bash32_only=True)
+        # `<&` is refused the same way though no local shell runs it (the cheaper reading is the safe one)
+        self.assertEqual(self.verdict(self.cell("echo a <&'$(R)'", self.READER)), 'DENY')
+        self.assertEqual(self.verdict(self.cell("echo a 2>&1'$(R)'", self.READER)), 'DENY')      # no shell runs it (a bad fd), same reading
+        # a blank inside the `${ }` of the word does not end it (automated review of fixup 8). bash 3.2 and zsh call these an
+        # ambiguous redirect, so none runs the body here; the gate keeps the one reading of the word, which a shell that splits
+        # the expansion differently could run
+        for tmpl in [">&${X:-a b}'$(R)'", ">&${X:-a\tb}'$(R)'", ">&${X:-a\nb}'$(R)'", ">&${X:-a b}\"x\"'$(R)'"]:
+            with self.subTest(cell=tmpl):
+                self.assertEqual(self.verdict(self.cell(tmpl, self.READER)), 'DENY')
+        for tmpl in self.DUP_REDIRECT_LITERAL:
+            with self.subTest(cell=tmpl):
+                self.assertEqual(self.verdict(self.cell(tmpl, self.READER)), 'ALLOW')
+                for sh in ('bash', 'zsh'):
+                    self.assertIn(self.ran(sh, self.cell(tmpl, self.ORACLE)), (False, None), '%s ran the text of %r' % (sh, tmpl))
+        # no body in the target, or no dup redirect: as before
+        for cmd in ["echo hi >&'2'", "echo hi 2>&'1' ", ">'$(grep -rn zzmark .)'", "&>'$(grep -rn zzmark .)'", "echo '$(grep -rn zzmark .)' >&2"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self.verdict(cmd), 'ALLOW')
+
+    # Fixup 10 (reviewer): a `)` inside a `${ }` of the dup-redirect word (its default value, `${Y:-)}`) is not a real paren. The
+    # subshell/`$( )`/backtick body-end finder (_bash_subst) had no case for `${ }` or `$[ ]` at all, so such a `)` ended the
+    # enclosing body right there: the dup-word state built up inside the cut body was lost, and the single-quoted span after the
+    # `}` (never reached inside that body) was read as an ordinary literal. The body is now skipped whole (as the matched-pair
+    # scan of bash and zsh does), so the body end-finder sees the real end and the dup-word rule applies throughout.
+    DUP_REDIRECT_SUBSHELL_RUNS = ["( echo >&2${Y:-)}'$(R)'\n)", "(echo >&2${Y:-)}'$(R)')", "( echo >&${Y:-)}'$(R)'\n)",
+                                  "`echo >&2${Y:-)}'$(R)'`"]
+
+    def test_a_paren_inside_a_braced_word_of_a_dup_redirect_does_not_end_the_subshell(self):
+        for tmpl in self.DUP_REDIRECT_SUBSHELL_RUNS:
+            with self.subTest(cell=tmpl):
+                self.assertEqual(self.verdict(self.cell(tmpl, self.READER)), 'DENY')
+                shells = [self.ran(sh, self.cell(tmpl, self.ORACLE)) for sh in ('bash', 'zsh')]
+                # the same bash 3.2 quirk of `>&` (see the cells above)
+                assert_ran(self, tmpl, shells, bash32_only=True)
+        # `$( )` stays refused too, though neither local shell runs it (a syntax error): the cheaper reading is the safe one
+        self.assertEqual(self.verdict(self.cell("x=$( echo >&2${Y:-)}'$(R)'\n)", self.READER)), 'DENY')
+        # the mutant that reverts the fix (the span not skipped) truncates the body: a reader placed right after the closing
+        # brace, outside any quote, proves the remainder is read as code either way
+        self.assertEqual(self.verdict(self.cell('( echo >&2${Y:-)} ; R\n)', self.READER)), 'DENY')
+
+    # A shell that reads its script from a here-document: the fuzz leaves these shapes out (STDIN_FED, the accepted limit of a
+    # shell that reads stdin), so the refusals of today are pinned here. The body is judged line by line like any here-document
+    # text (a reader written as text in a here-document is refused, `cat <<EOF` included); a harmless body passes, and
+    # `echo B | bash` and `bash <<< B` stay the accepted limit.
+    HEREDOC_TO_SHELL = ['bash <<EOF\nR\nEOF', 'bash <<-EOF\n\tR\n\tEOF', 'bash 0<<EOF\nR\nEOF', 'bash <<\\EOF\nR\nEOF', 'bash <<"EOF"\nR\nEOF',
+                        "bash <<'EOF'\nR\nEOF", '{ bash; } <<EOF\nR\nEOF', '(bash) <<EOF\nR\nEOF', 'env bash <<EOF\nR\nEOF',
+                        'x=1 bash <<EOF\nR\nEOF', 'exec bash <<EOF\nR\nEOF', 'sh -e <<EOF\nR\nEOF', 'dash <<EOF\nR\nEOF', 'ksh <<EOF\nR\nEOF',
+                        'zsh <<EOF\nR\nEOF', 'source /dev/stdin <<EOF\nR\nEOF', 'bash <<A <<B\nR\nA\nB', "bash <<E'O'F\nR\nEOF"]
+
+    def test_a_here_document_fed_to_a_shell_with_a_reader_in_it_is_refused(self):
+        for tmpl in self.HEREDOC_TO_SHELL:
+            with self.subTest(cell=tmpl):
+                self.assertEqual(self.verdict(tmpl.replace('R', 'grep -rn zzmark .')), 'DENY')
+                self.assertEqual(self.verdict(tmpl.replace('R', 'date')), 'ALLOW')
+
+    # a `#` inside a `${ }` is no comment (an offset expression, a pattern): the text behind the `}` is code (found by a second seed of the mutation fuzz)
+    HASH_IN_BRACES_RUNS = ['echo ${X: # -a}#x $(R)', 'echo $${X: # -a}#x $(R)', 'echo "${X: # -a}"#x $(R)']
+
+    def test_a_hash_inside_a_parameter_expansion_is_no_comment(self):
+        for tmpl in self.HASH_IN_BRACES_RUNS:
+            with self.subTest(cell=tmpl):
+                self.assertEqual(self.verdict(self.cell(tmpl, self.READER)), 'DENY')
+        self.assertTrue(any(self.ran(sh, self.cell(self.HASH_IN_BRACES_RUNS[0], self.ORACLE)) for sh in ('bash', 'zsh')))
+        # a comment behind the expansion is still a comment
+        for cmd in ['echo ${X} # $(grep -rn zzmark .)', 'echo ${X:-a} #x $(grep -rn zzmark .)', 'echo ${X: -1} # it\'s $(grep -rn zzmark .)']:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self.verdict(cmd), 'ALLOW')
+
+    def test_a_hash_behind_a_paren_that_starts_no_command_is_no_comment(self):
+        for tmpl in self.GLUED_PAREN:
+            with self.subTest(cell=tmpl):
+                self.assertEqual(self.verdict(self.cell(tmpl, self.READER)), 'DENY')
+                shells = [self.ran(sh, self.cell(tmpl, self.ORACLE)) for sh in ('bash', 'zsh')]
+                assert_ran(self, tmpl, shells)
+        # the twins at the start of a command stay comments (both shells)
+        for cmd in ['(echo a)#x $(grep -rn zzmark .)', 'echo a;(echo a)#x $(grep -rn zzmark .)', 'echo a &(echo a)#x $(grep -rn zzmark .)',
+                    'echo a\n(echo a)#x $(grep -rn zzmark .)', 'echo a && (echo a)#x $(grep -rn zzmark .)']:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self.verdict(cmd), 'ALLOW')
+
+    def test_a_head_that_can_expand_to_nothing_leaves_the_next_word_the_head(self):
+        for tmpl in self.EMPTY_HEAD:
+            with self.subTest(cell=tmpl):
+                self.assertEqual(self.verdict(self.cell(tmpl, self.READER)), 'DENY')
+                shells = [self.ran(sh, self.cell(tmpl, self.ORACLE)) for sh in ('bash', 'zsh')]
+                assert_ran(self, tmpl, shells)
+        # a substitution that is an argument, or a head with nothing recursive behind it, keeps its verdict
+        for cmd in ['echo $(date) grep -rn zzmark .', 'ls $(pwd)', '$(which ls) docs', '$(date)', 'x=$(date) ls docs']:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self.verdict(cmd), 'ALLOW')
+        # more empty heads than the depth cap: still judged (the last variant has every one dropped)
+        self.assertEqual(self.verdict(' '.join(['$(a)'] * 20) + ' grep -rn zzmark .'), 'DENY')
+
+    # Arithmetic (fixup 3, found by the differential fuzz): bash expands `$(( ))`, `$[ ]` and a `(( ))` command like a double-quoted
+    # text. A `'` there shields nothing, `<<` is a shift (no delimiter word) and `#` is no comment, so a body stands where the
+    # command reading of the same span sees a quote, a here-document or a comment. A `(( ))` command is arithmetic in zsh only.
+    ARITH_RUNS = ["x=$(('$(R)'))", "echo $['$(R)']", "echo $[ 1 + '$(R)' ]", "((' $(R) '))", "(( '$(R)' ))", "x=$((1 <<'$(R)'))", 'x=$(( \'`R`\' ))',
+                  "x=$(( $(echo 1) + $(( '$(R)' )) ))", "echo $[ $[ '$(R)' ] ]", "echo $[ ']' + '$(R)' ]", "echo $(( ')' + '$(R)' ))",
+                  '((<<"$(R)"))', 'x=$((1<<"$(R)"))', "x=$(( <<'EOF'\"$(R)\"#))", "echo $[ 1<<'$(R)' ]",
+                  # an arithmetic span inside an arithmetic span, found only by the double-quote reading of the outer one
+                  "echo $[ '$(( '$(R)' ))' ]", "echo $(( '$[ '$(R)' ]' ))", "x=$(( 1 + $(( 2 + $(( '$(R)' )) )) ))",
+                  # a `]` inside a nested substitution or parameter expansion does not close the `$[` (zsh runs the body behind it)
+                  "echo $[ $(echo ]) + '$(R)' ]", "echo $[ `echo ]` + '$(R)' ]", "echo $[ ${x:-]} + '$(R)' ]",
+                  # `$[ ]` inside double quotes (fixup 6): a quote in it is a quote to the scan, a literal to the arithmetic
+                  'echo "$[ " \'$(R)\' " ]"', 'echo "$[ "\'$(R)\'" ]"', 'echo "$[ 1 + "\'$(R)\'" ]"', 'echo "$[ \'"\'$(R)\'"\' ]"',
+                  # the reviewer's forms: an assignment, a word around the span, a parameter default, and the `$(( ))` of a double-quoted text
+                  'x="$[ "\'$(R)\'" ]"', 'x="$[ " \'$(R)\' " ]"', 'echo "a $[ "\'$(R)\'" ] b"', 'echo "${X:-$[ "\'$(R)\'" ]}"',
+                  'echo "$(( "\'$(R)\'" ))"', 'echo "$(( " \'$(R)\' " ))"', 'x="$(( "\'$(R)\'" ))"', 'echo "a $(( "\'$(R)\'" )) b"',
+                  'echo "${X:-$(( "\'$(R)\'" ))}"', 'echo "$(( 1 + "\'$(R)\'" ))"']
+    ARITH_LITERAL = ["echo $(( 1 )) '$(R)'", "echo $[ 1 ] '$(R)'", "echo $[ ']' ] '$(R)'", "echo $(( ')' )) '$(R)'", '(( x = 1 + 2 )); echo ok',
+                     'echo $(( 1 + $(date +%s) ))', "echo $[ 1 + 2 ] $(( 3 << 1 )) 'it'", "echo $(( 1 << 2 ))'$(R)'", "x=$(( 1 + 2 )) # '$(R)'",
+                     "echo $[ $(echo ]) + 1 ] '$(R)'", "echo $[ ${x:-]} + 1 ] '$(R)'",
+                     'echo "$[ 1 ]" \'$(R)\'', 'echo "$[ "1" ]" \'$(R)\'', 'echo "$[ 1 + 2 ] $(date)" \'$(R)\'']
+
+    def test_an_arithmetic_span_does_not_hide_a_body(self):
+        for tmpl in self.ARITH_RUNS:
+            with self.subTest(cell=tmpl):
+                self.assertEqual(self.verdict(self.cell(tmpl, self.READER)), 'DENY')
+                shells = [self.ran(sh, self.cell(tmpl, self.ORACLE)) for sh in ('bash', 'zsh')]
+                assert_ran(self, tmpl, shells)
+
+    def test_an_arithmetic_span_with_no_body_in_it_still_passes(self):
+        for tmpl in self.ARITH_LITERAL:
+            with self.subTest(cell=tmpl):
+                self.assertEqual(self.verdict(self.cell(tmpl, self.READER)), 'ALLOW')
+                if '$(R)' in tmpl:      # the text after the span is a literal: no shell runs it
+                    for sh in ('bash', 'zsh'):
+                        self.assertIn(self.ran(sh, self.cell(tmpl, self.ORACLE)), (False, None), '%s ran the text of %r' % (sh, tmpl))
+
+    # A quoted `}` inside `${ }` closes nothing, and no here-document starts inside it: `<<'E'` there is a pattern. The end of the
+    # span used to be found by counting braces only, so the `<<'E'` behind a quoted `}` was read as a here-document whose body
+    # swallowed the commands behind it (the body of the cell is then on the next line).
+    PARAM_RUNS = ["echo ${X//'}'<<'E'/y}\n $(R)", 'echo ${X//"}"<<\'E\'/y}\n $(R)', "echo ${X//\\}<<'E'/y}\n $(R)", "echo ${X:-'}'<<E}\n $(R)",
+                  "echo ${X//'}'<<'E'/y}\n `R`", 'x=${X//\'}\'<<"E"/y}\n $(R)', "${X//'}'<<'E'/y}\n $(R)", "echo ${X//'}'<<'E'/y} $(R)"]
+    PARAM_LITERAL = ["echo ${X//'}'/y} ok", "cat <<'E'\n${X//'}'<<'E'/y}\nE\necho done", "echo ${X//'}'<<'E'/y}\n echo ok"]
+
+    def test_a_quoted_closer_in_a_parameter_expansion_does_not_start_a_here_document(self):
+        for tmpl in self.PARAM_RUNS:
+            with self.subTest(cell=tmpl):
+                self.assertEqual(self.verdict(self.cell(tmpl, self.READER)), 'DENY')
+                shells = [self.ran(sh, self.cell(tmpl, self.ORACLE)) for sh in ('bash', 'zsh')]
+                assert_ran(self, tmpl, shells)
+        for tmpl in self.PARAM_LITERAL:
+            with self.subTest(cell=tmpl):
+                self.assertEqual(self.verdict(self.cell(tmpl, self.READER)), 'ALLOW')
+
+    # A closer that the plain count of `{` and `}` never reaches: a quoted or escaped opener (`${X:-'{'}`) is no opener to a shell,
+    # and a bare one (`${X:-{}`) is none to bash 3.2 (zsh does not run that text), so the span is closed to it and open to the plain count. The end
+    # of such a span used to be the end of the TEXT, which turned off the comment and here-document rules behind it: the `'` in
+    # a comment (`# it's`) then opened a quote that swallowed the body behind it. The three first cells and the bare ones were
+    # allowed by the gate of the previous fixup, and bash and zsh run the body in all of them.
+    OPENER_RUNS = ["echo ${X:-'{'}\n# it's\n$(R)\n# '", "echo ${X:-\\{}\n# it's\n$(R)\n# '", 'echo ${X:-"{"}\n# it\'s\n$(R)\n# \'',
+                   "echo ${X:-'{'}\n# it's\n`R`\n# '", "echo ${X:-'{'}\ncat <<'E'\nx\nE\n$(R)", "echo ${X:-{}\n# it's\n$(R)\n# '",
+                   "echo ${X:-{}\ncat <<'E'\nit's\nE\n$(R)\n# '", "echo ${X:-{ <<'E'}\n$(R)", "echo ${X:-{ <<E}\n$(R)\nE",
+                   "echo ${X//{<<'E'/y}\n$(R)", "x=${X:-'{'}\n# it's\n$(R)\n# '",
+                   # a `$[ ]` that the plain count closes at a `]` of the text behind: the commands between the two ends are code
+                   "echo $[ '[' ]\n(R)\n]", '$[ "[" ]\n(R)\n]', "echo $[ '[' ]\n# it's\n\n(R)\n# '", "$[ \\[ ]\n(R)\n}", "$[ \\[ ]<(R)\nE"]
+    # a here-document or a comment behind such a span is still a here-document and a comment: the text in it is a literal
+    OPENER_LITERAL = ["echo ${X:-'{'}\ncat <<'E'\n$(R)\nE\necho done", "echo ${X:-'{'}\n# it's $(R)\necho done", "echo ${X:-\\{}\ncat <<'E'\n$(R)\nE\n",
+                      'echo ${X:-"{"}\ncat <<\'E\'\n$(R)\nE\n']
+    # Nothing closes the span: a syntax error to every shell, nothing behind it runs, and the text behind is read as code
+    # from the opener on (it was the end of the text: no comment and no here-document in it)
+    UNCLOSED_LITERAL = ["echo ${X:-'{'\ncat <<'E'\n$(R)\nE\necho done", "echo $[ 1 \ncat <<'E'\n$(R)\nE\necho done",
+                        "echo ${X\ncat <<'E'\n$(R)\nE\necho done"]
+
+    def test_an_opener_that_the_plain_count_misses_does_not_turn_the_comment_rules_off(self):
+        for tmpl in self.OPENER_RUNS:
+            with self.subTest(cell=tmpl):
+                self.assertEqual(self.verdict(self.cell(tmpl, self.READER)), 'DENY')
+                shells = [self.ran(sh, self.cell(tmpl, self.ORACLE)) for sh in ('bash', 'zsh')]
+                assert_ran(self, tmpl, shells)
+        for tmpl in self.OPENER_LITERAL + self.UNCLOSED_LITERAL:
+            with self.subTest(cell=tmpl):
+                self.assertEqual(self.verdict(self.cell(tmpl, self.READER)), 'ALLOW')
+                for sh in ('bash', 'zsh'):
+                    self.assertIn(self.ran(sh, self.cell(tmpl, self.ORACLE)), (False, None), '%s ran the text of %r' % (sh, tmpl))
+
+    def test_a_text_that_burns_the_span_budget_is_refused_and_hides_nothing(self):
+        # The end finders of the spans share a budget (linear time). A spent budget used to fall back to the end of the text, which
+        # turns the comment rules off: a quote in a comment behind it then hid a body. It is a refusal now. (automated review)
+        reader = '$(grep -rn zzmark .)'
+        for burn in ['${' * 400, '$[ ' * 400, '${X:-\'{\'' * 400, '$[ ${X ] ' * 800, '$[ ' * 1500 + '1' + ' ]' * 1500]:
+            with self.subTest(burn=burn[:12]):
+                self.assertEqual(self.verdict('echo ' + burn + "\n${Y}\n# it's\n" + reader + "\n# '"), 'DENY')
+        # an ordinary text with many closed spans does not come near the budget
+        self.assertEqual(self.verdict('echo ' + '${X} $[1] ' * 500 + "# it's"), 'ALLOW')
+        self.assertEqual(self.verdict('echo ' + '$[ $[ 1 ] ] ' * 100), 'ALLOW')
+
+    def test_an_arithmetic_span_that_does_not_close_is_refused_when_a_body_in_it_does_not_close(self):
+        self.assertEqual(self.verdict("echo $(( 1 + $(date"), 'DENY')
+        self.assertEqual(self.verdict("echo $[ 1 + $(date"), 'DENY')
+
+    def test_an_ansi_c_string_cannot_hide_a_body(self):
+        # R2 (review): a `$'...'` span is read by bash's rule (a backslash escapes the next character, the quote included) BEFORE
+        # any scanner runs, so the live substitution behind an escaped quote is found. The merge criterion is zero expectedFailure.
+        for tmpl in self.ANSI_C:
+            with self.subTest(cell=tmpl):
+                self.assertEqual(self.verdict(self.cell(tmpl, self.READER)), 'DENY')
+
+    # Commit 3. The cells a shell RUNS (the oracle below proves it, bash 3.2 and zsh) and the gate refuses: an escaped quote must not
+    # flip the quote state of any scanner, in the open, in a double-quoted text, inside every kind of substitution, in a
+    # here-document, and in the text another shell is handed.
+    ANSI_RUNS = [
+        "echo $'\\'' $(R) $'a' # '", "echo $'\\'' $(R) $'a'", "echo $'\\'' `R` $'a' # '", "echo $'a\\'b' $(R) $'c'", "echo $'\\\\\\'' $(R) $'a'",
+        "echo $'\\'' ; R ; echo $'\\''", "x=$'\\''; R", "echo $'\\'$(R)' $(R)", "echo $'\\\\' $(R) $'\\\\'", "echo $'\\'' | ( R ) | $'a'",
+        # the string is inside another construct, so the finder of that construct must read it by the same rule
+        "echo $(echo $'\\'') $(R) $'a'", "echo `echo $'\\''` $(R) $'a'", 'echo "$(echo $\'\\\'\')" $(R) $\'a\'', "echo <(echo $'\\'') $(R) $'a'",
+        "( echo $'\\'' ) ; R ; echo $'a'", "echo ${X:-$'\\''} $(R) $'a'", 'echo "${X:-$\'\\\'\'}" $(R)',
+        "cat <<EOF\n$'\\''\n$(R)\nEOF", "x=$(cat <<EOF\n$'\\''\n$(R)\nEOF\n)", "echo $((1)) $'\\'' $(R) $'a'", "echo $[1] $'\\'' $(R) $'a'",
+        # a literal `$'` that is no ANSI-C string: in single or double quotes, in a comment, behind a backslash
+        "echo 'x$' $(R) 'y'", 'echo "a$\'b" ; R ; echo "\'"', "echo a # $'\n$(R)", "echo \\$'x' ; R",
+        # the escapes that make a character: a quote, a dollar sign, a backtick, a newline
+        "echo $'\\x27' $(R)", "echo $'a\\047b' $(R)", "echo $'\\x24(R)' $(R)",
+        # the string is handed to another shell: its VALUE is the command text
+        "bash -c $'echo \\x24(R)'", "eval $'echo \\x24(R)'", "eval $'R'", "bash -c $'R'", "bash -c $'echo a;\\n R'", "bash -c $'ec\\x68o \\'a\\'; R'",
+        "bash -c $'echo $\\\n(R)'", "eval $'echo \\x60 R \\x60'", "sh -c $'echo \\'a\\' ; R'", "bash -c $'bash -c \\'R\\''",
+        "echo $'\\x60' `R` $'a'", "echo $'\\`' `R` $'a'", "echo $'\\`' $(R) $'\\`'",
+        # a NUL: the readings (the rest of the span cut, the NUL dropped, the rest of the word cut) all keep the live body
+        "echo $'\\0' ; R", "echo $'a\\0b' $(R)", "bash -c $'echo a' ; R $'\\0'", "echo $'\\x00\\'' $(R) $'a'",
+        # the delimiter of a here-document written as an ANSI-C string ends the body at its line
+        "cat <<$'EOF'\nx\nEOF\nR", "cat <<$'E\\x4fF'\nx\nEOF\nR", "cat <<-$'EOF'\n\tx\n\tEOF\nR",
+        # two older holes that the new alphabet of the fuzz found (the committed gate lets both through): a backslash-newline joins
+        # `$` and a locale string `"..."` after the pair is removed, and zsh takes the `#` glued to `|&` for a comment, so the
+        # here-document operator behind it starts nothing there while the gate read it as a word and let it swallow the body
+        '(bash -c $\\\n"R")', "echo x |&#x $<<'E'\n(R)", "echo x |&#x <<'E'\n(R)",
+        # review F2: the body of an UNQUOTED here-document holds substitutions, and an ANSI-C string inside one is read by the same
+        # rule (a literal-body shortcut loses the live `$(R)` behind the escaped quote)
+        "cat <<EOF\n$(echo $'\\'' $(R) $'a' # ')\nEOF",
+        # review F2: the text of `bash -c` and `eval` is judged under the ANSI-C rewrite too (outer double quotes: `\$` is `$`, `\\` is `\`)
+        'bash -c "echo \\$\'\\\\\'\' \\$(R) \\$\'a\' # \'"', 'eval "echo \\$\'\\\\\'\' \\$(R) \\$\'a\' # \'"',
+        # review F2: a here-document delimiter written as an ANSI-C string, the body ends at the line of its VALUE and the command behind
+        # it runs (the spellings of `EOF`: a hex escape, an octal one, a plain one, with `<<-`, and a value that holds a quote)
+        "cat <<$'E\\x4fF'\nx\nEOF\n$(R)", "cat <<$'EOF'\nx\nEOF\n$(R)", "cat <<-$'EOF'\n\tx\n\tEOF\n$(R)", "cat <<$'\\x45OF'\nx\nEOF\n$(R)",
+        "cat <<$'E\\'F'\nx\nE'F\n$(R)", "cat <<$'EOF'\nx\nEOF\n$(R)\necho $'\\'' $(R) $'a'",
+        # review F1: bash 3.2 reads `$$'` as the process id and an ordinary quote, zsh 5.9 as the process id and the START of an ANSI-C
+        # string. In zsh the escaped quote does not close the string, so the live `$(R)` behind it runs (the gate read the bash reading only)
+        "echo $$'\\'' ; $(R) ; echo $$'\\'' # '", "echo $$'\\''$(R)$$'\\'' #'#x", "echo &&$$'\\'' $(R) $$'a' # '", "echo $$'\\'' $(R) $$'a'",
+        "echo $$'\\'' `R` $$'a' # '", "echo $$'a\\'b' $(R) $$'c'", "echo $$'\\\\\\'' $(R) $$'a'", "echo x $$'\\'' | ( R ) | $$'a'",
+        "echo $(echo $$'\\'') $(R) $$'a'",
+        'zsh -c "echo \\$\\$\'\\\\\'\' \\$(R) \\$\\$\'a\' # \'"', 'eval "echo \\$\\$\'\\\\\'\' \\$(R) \\$\\$\'a\' # \'"',
+    ]
+    # the VALUE of an ANSI-C string is the word the rules judge: every spelling of a dot reads a protected file
+    ANSI_READS = [
+        "cat $'agents/agent-a/\\x2eagent-token'", "cat $'agents/agent-a/\\056agent-token'", "cat $'agents/agent-a/\\u002eagent-token'",
+        "cat $'agents/agent-a/\\U0000002eagent-token'", "cat agents/agent-a/$'\\x2e'agent-token", "cat $'store/\\x2eclaim-signing-key'",
+        "cat $'\\x73tore/\\x2eclaim-signing-key'", "cat $'store/.cl\\141im-signing-key'", "cat $'agents/agent-a/\\.agent-token'",
+        "cat $'agents/agent-a/\\x2eagent-token\\0junk'", "cat $'agents/agent-a/\\x2eagent-token\\0'junk", "cat $'agents/agent-a/\\x2eagent-token\\x'",
+        "cat $'agents/agent-a/\\x2eagent-token\\u'", "cat $'agents/agent-a/\\x2eagent-token\\000'", "cat $'agents/agent-a/\\x2eagent-token\\c@junk'",
+        "bash -c $'cat agents/agent-a/\\x2eagent-token'", "eval $'cat agents/agent-a/\\x2eagent-token'", "eval $'cat \\'agents/agent-a/\\x2eagent-token\\''",
+        "cat $'agents/agent-a/\\x2eagent-token'$(true)", "cat \"$(echo hi)\"$'agents/agent-a/\\x2eagent-token'", "x=$'agents/agent-a/\\x2eagent-token'; cat $x",
+        "grep -r foo $'\\x2e'", "grep -r foo $'\\x2e' $'a'", "cat $'a'$'\\x2e/store/\\x2eclaim-signing-key'",
+    ]
+    # the ANSI-C text that is data: no shell runs it, the gate lets it pass
+    ANSI_LITERAL = [
+        "echo $'\\'' ls $'a' # '", "echo $'a' $(date)", "echo $'it\\'s' $(date)", "echo $'\\x24(R)'", "echo $'\\`R\\`'", "echo $'$(R)'", "echo $'\\x2e' ok",
+        "echo '$'\"'\"'x'", "echo $'a\\nb' $'c\\td'", "echo $'\\'' '$(R)'", "echo $'\\\\' '$(R)'", "echo $'x' \"$'\" '$(R)'", "echo $'\\0\\0\\0'",
+        "printf %s $'\\x2e\\x2f' | cat", "echo $'\\x24\\x28R\\x29'", "cat <<'EOF'\n$'\\''\n$(R)\nEOF", "cat <<$'EOF'\n$(R)\nEOF",
+        "echo \"$'\" '$(R)'", "echo a # $'\\'' $(R)",
+    ]
+
+    def test_an_ansi_c_string_is_read_by_its_value_in_every_context(self):
+        for tmpl in self.ANSI_RUNS:
+            with self.subTest(cell=tmpl):
+                self.assertEqual(self.verdict(self.cell(tmpl, self.READER)), 'DENY')
+                ran = [self.ran(sh, self.cell(tmpl, self.ORACLE)) for sh in ('bash', 'zsh')]
+                # the body of an unquoted here-document that holds `$( ... $'\'' ... )` is run by bash 3.2 only (the quote of the
+                # ANSI-C string is read by its own rule there); bash 4+ and zsh do not, the verdict above is the gate's
+                assert_ran(self, tmpl, ran, bash32_only=tmpl in self.ANSI_BASH32_ONLY)
+
+    ANSI_BASH32_ONLY = ("cat <<EOF\n$(echo $'\\'' $(R) $'a' # ')\nEOF",)
+
+    def test_a_protected_file_behind_an_ansi_c_spelling_is_refused(self):
+        for cmd in self.ANSI_READS:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self.verdict(cmd), 'DENY')
+        for cmd in ["cat $'src/a.ts'", "cat $'src/\\x61.ts'", "echo $'agent\\x2dtoken'", "cat $'docs/agent\\x2dtoken.md'", "cat $'agents/agent-a/\\x4eOTES'"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self.verdict(cmd), 'ALLOW')
+
+    def test_the_cells_that_read_a_protected_file_do_read_it(self):
+        # the oracle for the cells above: a real shell reads the token file through the same spelling (zsh drops the backslash of an
+        # unknown escape, bash 3.2 keeps it: one of them is enough for a cell to be a real one)
+        for cmd in self.ANSI_READS[:9] + self.ANSI_READS[11:12]:
+            if 'tore/' in cmd:
+                continue      # (the key file holds KEY, not TOKEN: the token files carry the oracle)
+            reads = []
+            for sh in ('bash', 'zsh'):
+                exe = shutil.which(sh)
+                if exe:
+                    p = subprocess.run([exe, '-c', cmd], cwd=self.root, capture_output=True, text=True, timeout=30,
+                                       stdin=subprocess.DEVNULL, env={'PATH': '/usr/bin:/bin', 'HOME': self.root, 'LC_ALL': 'C'})
+                    reads.append(TOKEN in p.stdout)
+            # (a subtest of its own: a named skip for a missing zsh must not end the loop over the other cells)
+            with self.subTest(cmd=cmd):
+                assert_ran(self, cmd, reads)
+
+    def test_ansi_c_data_is_not_code(self):
+        for tmpl in self.ANSI_LITERAL:
+            with self.subTest(cell=tmpl):
+                self.assertEqual(self.verdict(self.cell(tmpl, self.READER)), 'ALLOW')
+                for sh in ('bash', 'zsh'):
+                    self.assertIn(self.ran(sh, self.cell(tmpl, self.ORACLE)), (False, None), '%s ran the text of %r' % (sh, tmpl))
+
+    def test_the_readings_of_an_ansi_c_string_are_bounded(self):
+        # a NUL has three readings; 3 of them are 27 texts (under the cap), 4 are 81 (refused, generic reason, never the text)
+        self.assertEqual(self.verdict("echo $'\\0\\0\\0'"), 'ALLOW')
+        rc, out, err = self.bash("echo zzmark $'\\0\\0\\0\\0'")
+        self.assertEqual(rc, 2)
+        self.assertNotIn('zzmark', err)
+        self.assertEqual(self.verdict("echo $'\\0\\0\\0\\0' ; echo hi"), 'DENY')
+        # an unknown escape needs the second set of rules, a NUL does not multiply it
+        self.assertEqual(self.verdict("echo $'\\q\\q\\q\\q\\q\\q' $'\\0\\0'"), 'ALLOW')
+
+    def test_the_variants_of_an_ansi_c_string_are_its_values(self):
+        v = self.mod._ansi_c_variants
+        self.assertEqual(v("echo hi"), ["echo hi"])
+        self.assertEqual(v("echo $'a b'"), ["echo 'a b'"])
+        self.assertEqual(v("echo $'\\''"), ["echo ''\\'''"])      # the value is one apostrophe, quoted as '\''
+        self.assertEqual(v("echo $''"), ["echo ''"])
+        self.assertEqual(v("echo $'\\x2e\\056\\u002e\\U0000002e'"), ["echo '....'"])
+        self.assertEqual(v("echo $'\\e\\n\\t\\a\\\\\\?'"), ["echo '\x1b\n\t\x07\\?'"])
+        # a NUL: the rest of the span cut, the NUL dropped, the rest of the word cut (a blank ends the word)
+        self.assertEqual(v("echo $'a\\0b'"), ["echo 'a'", "echo 'ab'", "echo 'a' "])
+        # an unknown escape: bash keeps the backslash, zsh drops it (two sets of rules)
+        self.assertEqual(v("echo $'a\\qb'"), ["echo 'a\\qb'", "echo 'aqb'"])
+        # `$'x` that is not closed loses its `$` only (the quote stays an open one, as it always was)
+        self.assertEqual(v("echo $'x"), ["echo 'x"])
+        self.assertEqual(v("echo '$'x"), ["echo '$'x"])
+        self.assertEqual(v('echo "$\'a"'), ['echo "$\'a"'])
+        self.assertEqual(v("echo a # $'x'"), ["echo a # $'x'"])
+        self.assertEqual(v("echo \\$'x'"), ["echo \\$'x'"])
+        self.assertEqual(v("echo $$'x'"), ["echo $$'x'"])      # both readings give the same text
+        # review F1: `$$'..'` is the process id and a plain quote (bash 3.2) or the process id and an ANSI-C string (zsh 5.9): both are variants
+        self.assertEqual(v("echo $$'\\x41'"), ["echo $$'\\x41'", "echo $$'A'"])
+        self.assertEqual(v("echo $$'\\''"), ["echo $$'\\''", "echo $$''\\'''"])
+        # an ordinary `$$` without a quote behind it has one reading, and so has a `$$` before a `$'` string
+        self.assertEqual(v("echo $$ $'a'"), ["echo $$ 'a'"])
+        self.assertEqual(v("echo $$$'a'"), ["echo $$'a'"])
+
+    def test_the_two_shells_read_a_quote_behind_the_process_id_differently(self):
+        # the cell of the review is a real one: zsh runs the body behind the escaped quote, bash 3.2 does not (the quote text is data
+        # to it). The gate judges both readings, so the shell that runs it is the one the gate has read.
+        cell = "echo $$'\\'' ; R ; echo $$'\\'' # '"
+        zsh, bash = self.ran('zsh', self.cell(cell, self.ORACLE)), self.ran('bash', self.cell(cell, self.ORACLE))
+        if zsh is None and not REQUIRE_ZSH:
+            self.skipTest('zsh is not installed: this cell compares zsh with bash')
+        self.assertTrue(zsh, 'zsh runs the body (zsh is installed: REQUIRE_ZSH=%s)' % REQUIRE_ZSH)
+        self.assertFalse(bash, 'bash reads the quote as an ordinary one (bash 3.2 and 5.x alike)')
+        self.assertEqual(self.verdict(self.cell(cell, self.READER)), 'DENY')
+        # the same text handed to a shell as a string: `bash -c` is judged under both readings as well (over-refusal for bash, none for zsh)
+        for wrapper in ('zsh -c "%s"', 'eval "%s"', 'bash -c "%s"'):
+            inner = self.cell("echo \\$\\$'\\\\'' ; R ; echo \\$\\$'\\\\'' # '", self.READER)
+            with self.subTest(wrapper=wrapper):
+                self.assertEqual(self.verdict(wrapper % inner), 'DENY')
+        # benign twins with a quote behind the process id pass in both readings
+        for cmd in ["echo $$'a' $(date)", "echo $$'\\x41' ok", "echo $$'\\'' ; date ; echo $$'\\'' # '", "echo $$ ; echo $$'x'"]:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self.verdict(cmd), 'ALLOW')
+
+    def test_an_ansi_c_twin_and_a_literal_quoted_substitution_still_pass(self):
+        self.assertEqual(self.verdict("echo $'\\'' ls $'a' # '"), 'ALLOW')
+        self.assertEqual(self.verdict("echo $'a' $(date)"), 'ALLOW')
+        self.assertEqual(self.verdict("echo '$(grep -rn foo .)'"), 'ALLOW')
+        # text in a quoted here-document
+        self.assertEqual(self.verdict("git commit -m \"$(cat <<'EOF'\nsubject $(grep -rn foo .)\nEOF\n)\""), 'ALLOW')
+
+    def test_a_funsub_is_refused_and_a_plain_expansion_is_not(self):
+        for tmpl in self.FUNSUB:
+            with self.subTest(cell=tmpl):
+                self.assertEqual(self.verdict(self.cell(tmpl, self.READER)), 'DENY')
+                self.assertEqual(self.verdict(self.cell(tmpl, 'date')), 'DENY')      # whatever it runs: the form is refused
+        for cmd in ['echo ${X}', 'echo ${X:-a}', 'echo ${#X}', 'echo "${X:- b}"', 'echo ${X// /}', "echo '${ date; }'", 'echo \\${ date; }']:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self.verdict(cmd), 'ALLOW')
+
+    # Commit 2: the text another shell is handed. The string of `bash -c` (sh, zsh, dash, ksh) and the arguments of `eval` are
+    # judged like the body of a substitution, wherever the shell word stands (behind a wrapper with options, `xargs`, `find -exec`).
+    EXEC_RUNS = ["bash -c 'R'", 'bash -c "R"', "sh -c 'R'", "zsh -c 'R'", 'dash -c "echo hi; R"', "bash -lc 'R'", "bash -ec 'R'", "bash -xc 'R'",
+                 "bash -c -l 'R'", "bash -o pipefail -c 'R'", "bash +o history -c 'R'", "bash -O extglob -c 'R'", "bash --norc -c 'R'",
+                 "bash --rcfile /dev/null -c 'R'", "bash -c -- 'R'", "bash -c 'R' name arg", "/bin/bash -c 'R'", "env bash -c 'R'", "env -i bash -c 'R'",
+                 "nohup sh -c 'R' &", 'eval "R"', 'eval R', "eval -- 'R'", "echo x | xargs sh -c 'R'", "echo x | xargs -I{} bash -c 'R'",
+                 "find . -maxdepth 0 -exec sh -c 'R' \\;", "find . -maxdepth 0 -exec sh -c 'R' {} +", "bash -c 'bash -c \"R\"'",
+                 'bash -c "bash -c \\"R\\""', "bash -c 'echo $(R)'", "echo ok; bash -c 'R'", "x=$(bash -c 'R')", 'echo "$(bash -c \'R\')"',
+                 "bash -c 'R' # it's", "cat <<EOF\nx\nEOF\nbash -c 'R'", "bash -c 'x=1; R'", "bash -c 'echo a | R'",
+                 # a shift is no here-document: the line behind it is still read
+                 '(( x = 1 <<"2" ))\n bash -c \'R\'', 'echo $[1<<"2"]\n bash -c \'R\'', 'cat <<< "x"\n bash -c \'R\'',
+                 # the here-document of the command line ends, the next line is a command again
+                 "cat <<'EOF'\nit's\nEOF\nbash -c 'R'", "cat <<-EOF\n\tx\n\tEOF\neval R",
+                 # a shift or a pattern in a parameter expansion is no here-document, the lines behind it are read
+                 "echo ${X//<<'E'/y}\n bash -c 'R'", "echo ${X//<<E/y}\n bash -c 'R'", "echo ${X:-<<'E'}\n eval R",
+                 # the word that would be the shell is a variable or a glob: followed by a -c cluster it is taken for one
+                 "sh=bash; $sh -c 'R'", "/bin/ba?h -c 'R'", "sh=bash; $sh -lc 'R'"]
+    # no reader: allowed; with a reader in a place that is no command string of a shell: allowed too
+    EXEC_PLAIN = ["bash -c 'echo hi'", 'bash -c "grep -rn foo src"', "sh -c 'ls docs'", 'bash script.sh', "bash script.sh -c 'R'", "bash -x script.sh 'R'",
+                  'eval echo hi', 'eval "ls docs"', "eval 'echo hi' 'R'", 'xargs -a /dev/null sh -c "ls docs"', 'grep -rn bash src', 'echo eval',
+                  'ls bash', "echo it's fine", "bash -c 'echo it'\"'\"'s fine'", "cat <<'EOF'\nbash -c \"R\"\nEOF", 'echo $((1<<2)) $[1<<2] && bash -c "ls docs"',
+                  'git commit -m "use sh -c \'R\' here"']
+
+    def test_the_string_of_a_shell_and_the_arguments_of_eval_are_judged(self):
+        for tmpl in self.EXEC_RUNS:
+            with self.subTest(cell=tmpl):
+                self.assertEqual(self.verdict(self.cell(tmpl, self.READER)), 'DENY')
+                shells = [self.ran(sh, self.cell(tmpl, self.ORACLE)) for sh in ('bash', 'zsh')]
+                assert_ran(self, tmpl, shells)
+
+    def test_an_option_the_gate_does_not_know_leaves_every_later_word_a_text(self):
+        # a long option that is no known one may take a value: where the string is, is not decided, so each later word is judged
+        # (no local shell takes the option, hence no oracle)
+        for tmpl in ["bash --weird -c 'R'", "bash --weird script.sh 'R'", "bash --weird 'R'", "sh --weird=1 -c 'R'", "bash --weird='R'",
+                      "fish --init-command='R'", "fish -C 'R'", "ksh -T x -c 'R'", "rbash -c 'R'", "rksh -c 'R'", "busybox sh -c 'R'"]:
+            with self.subTest(cell=tmpl):
+                self.assertEqual(self.verdict(self.cell(tmpl, self.READER)), 'DENY')
+        self.assertEqual(self.verdict("bash --weird script.sh 'ls docs'"), 'ALLOW')
+
+    def test_a_shell_that_runs_a_script_or_a_plain_text_is_not_refused(self):
+        for tmpl in self.EXEC_PLAIN:
+            with self.subTest(cell=tmpl):
+                self.assertEqual(self.verdict(self.cell(tmpl, self.READER)), 'ALLOW')
+                for sh in ('bash', 'zsh'):
+                    self.assertIn(self.ran(sh, self.cell(tmpl, self.ORACLE)), (False, None), '%s ran %r' % (sh, tmpl))
+
+    def test_a_string_in_the_string_is_found_to_the_depth_cap(self):
+        def nest(inner, levels):
+            for _ in range(levels):
+                inner = 'bash -c "%s"' % inner.replace('\\', '\\\\').replace('"', '\\"')
+            return inner
+        self.assertEqual(self.verdict(nest('ls docs', 7)), 'ALLOW')
+        self.assertEqual(self.verdict(nest(self.READER, 7)), 'DENY')
+        self.assertEqual(self.verdict(nest('ls docs', 14)), 'DENY')      # past the depth cap: refused, never allowed unread
+        self.assertEqual(self.verdict(nest(self.READER, 14)), 'DENY')
+
+    def test_too_many_shells_in_one_command_are_refused(self):
+        self.assertEqual(self.verdict('echo ' + 'bash ' * 32), 'ALLOW')
+        self.assertEqual(self.verdict('echo ' + 'bash ' * 33), 'DENY')
+
+    def test_an_unreadable_text_that_names_a_shell_is_refused(self):
+        self.assertEqual(self.verdict("bash -c 'ls docs"), 'DENY')
+        self.assertEqual(self.verdict("sh -c \"ls docs"), 'DENY')
+        self.assertEqual(self.verdict("echo it's fine"), 'ALLOW')      # plain prose keeps its verdict
+
+    def test_the_reason_of_a_refused_string_does_not_quote_it(self):
+        rc, out, err = self.bash("bash -c 'grep -rn zzmark .'")
+        self.assertEqual(rc, 2)
+        self.assertNotIn('zzmark', err)
+        self.assertNotIn(self.root, err)
+
+    def test_a_command_longer_than_the_scan_limit_is_refused(self):
+        # every scan stops at MAX_TEXT characters: a reader behind that point was never seen and the text passed on its head
+        limit = self.mod.MAX_TEXT
+        pad = ' ' * limit
+        for tmpl in ['true' + pad + '\nR', 'true' + pad + '; R', 'x=1' + pad + '\nx=$(R)', 'true' + pad + "\nbash -c 'R'"]:
+            with self.subTest(cell=tmpl[:6] + '...' + tmpl[-16:]):
+                self.assertEqual(self.verdict(self.cell(tmpl, self.READER)), 'DENY')
+                shells = [self.ran(sh, self.cell(tmpl, self.ORACLE)) for sh in ('bash', 'zsh')]
+                # the long text goes to the oracle as a script file (run_shell_text): one argument is capped at 128 KiB on Linux
+                assert_ran(self, tmpl[:6] + '...' + tmpl[-16:], shells)
+
+    def test_the_scan_limit_is_exact_and_a_command_under_it_keeps_its_verdict(self):
+        limit = self.mod.MAX_TEXT
+        self.assertEqual(self.verdict('echo ' + 'a' * (limit - 5)), 'ALLOW')           # exactly the limit
+        self.assertEqual(self.verdict('echo ' + 'a' * (limit - 4)), 'DENY')            # one character over
+        self.assertEqual(self.verdict('cat <<EOF\n' + 'it is fine\n' * 10000 + 'EOF'), 'ALLOW')      # a long here-document under the limit
+        self.assertEqual(self.verdict('echo ' + 'a' * (limit - 5 - 16) + '\ngrep -rn foo .'), 'DENY')      # a reader inside the limit
+
+    def test_the_reason_of_a_command_over_the_limit_does_not_quote_it(self):
+        rc, out, err = self.bash('echo zzmark ' + 'a' * self.mod.MAX_TEXT)
+        self.assertEqual(rc, 2)
+        self.assertNotIn('zzmark', err)
+
+    def test_the_reason_of_a_refused_funsub_does_not_quote_it(self):
+        rc, out, err = self.bash('x=${ grep -rn zzmark .; }')
+        self.assertEqual(rc, 2)
+        self.assertNotIn('zzmark', err)
+
+
+class ScannerDifferentialFuzz(Tree):
+    """Seeded differential fuzz on the alphabet of the body scanner (fixup 2 review rules). Each case is a random string of
+    scanner-relevant tokens with ONE body in it, `$(B)` or a backtick pair. The oracle runs the case in bash 3.2 and zsh with
+    B = a printer of EXEC; if either shell RUNS it, the gate (B = a recursive grep over the install root) must refuse it.
+    Over-refusal is fine, a hole is not. The ANSI-C `$'` is in the alphabet (commit 3). The printer is `printf %s%s EX EC`: its own text does not contain EXEC, so
+    the echo of a never-run text (a "command not found" line, the body of a heredoc that cat prints) cannot pass for a run."""
+    SEED, CASES = 20261112, 6000
+    TOKENS = ["'", '"', '\\', '#', '$(', ')', '(', '`', '<<EOF', '<<-EOF', "<<'EOF'", '\nEOF\n', '\n', '<', '>', '>#', ' ', ' ', 'a', ';', '|', '&', '{', '}', '${', '$[', ']', '$((', '))', '\t', '\\\n', '<<<', '\n\tEOF\n', '$',
+              # fixup 6: a comment opener glued behind an operator, a line continuation on its own and after a `$` or a here-document operator
+              '&#', '|#', ')#', ';#', '(#', '$\\\n', '<<EOF\\\n', ' #', '>&', '|&', '&&', '||', '2>', '!',
+              # commit 3: the ANSI-C opener (twice, the likeliest token), an escaped quote, a whole string with one, the escapes
+              # that make a character (a dot, a NUL) and an unknown one
+              "$'", "$'", "$'\\''", "\\'", '\\x2e', '\\0', '\\q']
+    BODIES = ['$(B)', '`B`', '"$(B)"', '<(B)', '(B)']
+    # contexts that put the body INSIDE another span, so the scanner has to carry a quote / comment / heredoc state into it
+    WRAPS = [('$(', ')'), ('$(', ')'), ('"', '"'), ("'", "'"), ('`', '`'), ('<(', ')'), ('(', ')'), ('{ ', '; }'), ('$((', '))'),
+             ('<<EOF\n', '\nEOF\n'), ('$(cat <<EOF\n', '\nEOF\n)'), ('$(: ', ')')]
+
+    @classmethod
+    def templates(cls, n):
+        """n templates, each with exactly one `B` (the body), from a seeded stream: random tokens around the body, in 0 to 2 wrappers."""
+        import random
+        rng = random.Random(cls.SEED)
+        out = []
+        for _ in range(n):
+            parts = [rng.choice(cls.TOKENS) for _ in range(rng.randint(1, 6))]
+            parts.insert(rng.randint(0, len(parts)), rng.choice(cls.BODIES))
+            t = ''.join(parts)
+            for _ in range(rng.choice((0, 1, 1, 2))):
+                o, c = rng.choice(cls.WRAPS)
+                t = ''.join(rng.choice(cls.TOKENS) for _ in range(rng.randint(0, 2))) + o + t + c + ''.join(rng.choice(cls.TOKENS) for _ in range(rng.randint(0, 2)))
+            if t.count('B') == 1:
+                out.append(t)
+        return out
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('gate_under_test_fuzz', cls.gate)
+        cls.mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.mod)
+
+    def gate_denies(self, cmd):
+        try:
+            self.mod.check_bash(cmd, self.root)
+        except self.mod.Block:
+            return True
+        return False
+
+    def holes_among(self, templates):
+        """(holes, n): the templates that a shell runs the body of and that the gate lets through, and how many ran a body."""
+        shells = [s for s in ('bash', 'zsh') if shutil.which(s)]
+        holes, ran_n = [], 0
+        for template in templates:
+            # The printer also prints the subshell level, so `EXEC1` or more is a body that ran and `EXEC0` a stand-in that ran as a
+            # command of its own. Only the first counts: a stand-in behind an empty substitution that is glued to it (`$(:)grep ...`
+            # runs grep) passes the gate in the base too. That is a word-expansion hole older than the body scanner (parking
+            # list), not a body that the scanner hides. B is a word of its own (a space on both sides) for the same reason.
+            exec_text = template.replace('B', ' printf %s%s%s%s EX EC $BASH_SUBSHELL $ZSH_SUBSHELL >&2 ')
+            ran = False
+            for sh in shells:
+                # a directory of its own for every run: a redirect in a template creates files, and a later `find .` or `ls` would
+                # list the name of one (a name with the marker in it) as if a body had printed it
+                with tempfile.TemporaryDirectory() as cwd:
+                    try:
+                        p = subprocess.run([shutil.which(sh), '-c', exec_text], cwd=cwd, capture_output=True, timeout=10,
+                                           stdin=subprocess.DEVNULL, env={'PATH': '/usr/bin:/bin', 'HOME': cwd, 'LC_ALL': 'C'})
+                    except subprocess.TimeoutExpired:
+                        continue
+                ran = ran or re.search(rb'EXEC[1-9]', p.stderr + p.stdout) is not None      # bytes: a shell may print a byte that is not UTF-8
+            if ran:
+                ran_n += 1
+                if not self.gate_denies(template.replace('B', ' grep -rn foo . ')):
+                    holes.append(template)
+        return holes, ran_n
+
+    def test_no_case_that_a_shell_runs_passes_the_gate(self):
+        import resource
+        if not [s for s in ('bash', 'zsh') if shutil.which(s)]:
+            self.skipTest('no bash or zsh installed: the differential fuzz has no oracle')
+        before = resource.getrusage(resource.RUSAGE_SELF)
+        holes, ran_n = self.holes_among(self.templates(self.CASES))
+        used = resource.getrusage(resource.RUSAGE_SELF)
+        self.assertGreater(ran_n, 100, 'the fuzz is not exercising the oracle (%d cases ran a body)' % ran_n)
+        self.assertEqual(holes, [], '%d of %d cases that a shell runs pass the gate, first: %r' % (len(holes), ran_n, holes[:5]))
+        self.assertLess(used.ru_utime + used.ru_stime - before.ru_utime - before.ru_stime, 60.0)
+
+    # Known shapes, mutated (fixup 6): a random token string almost never reaches a 4-6 token shape such as `&#` + a quote + a
+    # newline + a body, so the seeds are shapes that a shell is known to run, with one to three atoms inserted or cut out.
+    # Left out, as accepted limits of the gate (see _judge): a shell fed through stdin (`echo B | bash`, `bash <<< B`, `source
+    # /dev/stdin`), a script written and run in two commands, and a text built at run time (`bash -c "$x"`).
+    SEED_SHAPES = [
+        '(echo a)#x $(B)',
+        'echo $(echo a)#x $(B)',
+        'echo `ls`#x $(B)',
+        'echo ${X}#x $(B)',
+        'echo >&#x $(B)',
+        'echo 2>#x $(B)',
+        'cat <#x\n$(B)',
+        'echo }#x $(B)',
+        'echo $((1))#x $(B)',
+        'echo ${X:-a}#x $(B)',
+        'echo x &&#x $(B)',
+        'echo x ||#x $(B)',
+        'echo x |&#x $(B)',
+        'echo\t#x $(B)',
+        'echo "a" \\\n  #x $(B)',
+        'cat <(#x\nB)',
+        'echo a <#x $(B)',
+        'echo a >>#x $(B)',
+        'echo a &>#x $(B)',
+        'echo a >|#x $(B)',
+        'echo a <>#x $(B)',
+        'echo a <<<#x $(B)',
+        'cat <<EOF>#x $(B)\nEOF',
+        'cat <<EOF #x\n$(B)\nEOF',
+        'echo a; #x\n$(B)',
+        'echo $( #x\nB)',
+        'echo x{#x,y} $(B)',
+        'echo ~#x $(B)',
+        'echo a=#x $(B)',
+        'echo x:#x $(B)',
+        'echo \\#x $(B)',
+        "echo '#'x $(B)",
+        'echo "#" $(B)',
+        'bash -c "B"',
+        "sh -c 'B'",
+        'zsh -c "B"',
+        'eval "B"',
+        'eval B',
+        'bash -lc "B"',
+        'bash -ec "B"',
+        'bash -c "echo a; B"',
+        'bash -c "echo a\nB"',
+        'env -i bash -c "B"',
+        'env FOO=1 bash -c "B"',
+        'timeout 5 bash -c "B"',
+        'nice bash -c "B"',
+        'echo | xargs sh -c "B"',
+        'find . -maxdepth 0 -exec sh -c "B" \\;',
+        'bash -c "bash -c \\"B\\""',
+        'eval "eval \\"B\\""',
+        'bash -o pipefail -c "B"',
+        'bash +o history -c "B"',
+        'bash --norc -c "B"',
+        'bash -c "B" _ arg',
+        'bash -c -- "B"',
+        'bash -c "B" # it\'s',
+        'bash -c "echo it\'s; B"',
+        'sh -c "echo \'x\'; B"',
+        "bash --noprofile --norc -c 'B'",
+        "bash --rcfile /dev/null -c 'B'",
+        "bash --bogus -c 'B'",
+        'bash script.sh -c "B"',
+        'echo bash -c "B"',
+        'echo hi | sh -c "B"',
+        '(bash -c "B")',
+        'x=$(bash -c "B")',
+        '{ bash -c "B"; }',
+        'if true; then eval "B"; fi',
+        'bash -c "B" &',
+        'eval -- "B"',
+        'eval echo a ";" B',
+        'cat <<EOF | sh -c "B"\nx\nEOF',
+        'echo ${X: # -a}#x $(B)',
+        'echo "$[ "\'$(B)\'" ]"',
+        'echo "$(( "\'$(B)\'" ))"',
+        # the target word of a dup redirect (bash 3.2 keeps its quotes): the quote need not start the word
+        "echo >&2'$(B)'",
+        ">&x'$(B)'",
+        '>&"x"\'$(B)\'',
+        ">&$(true)'$(B)'",
+        ">&${X:-a b}'$(B)'",
+        "echo >&'$(B)'",
+    ]
+    MUTATION_ATOMS = ["'", '"', "\\", "#", " #", "\n", ";", "|", "&", ">", "<", "<<", "<<EOF\n", "\nEOF\n", ">#x", "<<<", "${", "}", "$(", ")",
+                      "(", "`", "$[", "]", "((", "))", "a", " ", "{", "$", "echo ", "<<'E'\n", "\nE\n", " # ", "\\\n", "&&", "||", "<(", ">(",
+                      "$'", "$'", "$'\\''", "\\x2e", "\\0", "\\q", "$'a'",
+                      "${X:-", "${X#", "${X//", "'a'", '"a"', '$"', "case x in x) ", ";;", "2>", "<&", ">&", "|&", "{ ", "; }", "! ",
+                      "if true; then ", "; fi", "<<-EOF\n\t", "\n\tEOF\n", "\\'", '\\"', "$((", "$( ", " )", "&#", "|#", ")#", "$\\\n", "<<EOF\\\n"]
+    MUTATION_CASES = 3000
+
+    @classmethod
+    def mutated_templates(cls, n):
+        import random
+        rng = random.Random(cls.SEED + 1)
+        out = []
+        for _ in range(n):
+            t = rng.choice(cls.SEED_SHAPES)
+            for _ in range(rng.randint(1, 3)):
+                pos = rng.randint(0, len(t))
+                op = rng.random()
+                if op < 0.6:
+                    t = t[:pos] + rng.choice(cls.MUTATION_ATOMS) + t[pos:]
+                elif op < 0.8 and len(t) > 3:
+                    q = rng.randint(0, len(t) - 1)
+                    t = t[:q] + t[q + 1:]
+                else:
+                    q = rng.randint(0, len(t))
+                    t = t[:min(pos, q)] + t[max(pos, q):]
+                if t.count('B') != 1:
+                    t = t.replace('B', '') + rng.choice(cls.BODIES)
+            if t.count('B') == 1 and not cls.STDIN_FED.search(t):
+                out.append(t)
+        return out
+
+    # a shell that reads its script from stdin (a here-document or here-string to it, a pipe into it) without a `-c` string:
+    # the accepted limit above, whatever the mutation made of a seed
+    STDIN_FED = re.compile(r'\b(?:ba|z|da|k)?sh\b(?![^\n;|&]*\s-\w*c\b)[^\n;|&]*<<|\|\s*(?:ba|z|da|k)?sh\b(?!\s+-\w*c\b)')
+
+    def test_no_mutated_known_shape_that_a_shell_runs_passes_the_gate(self):
+        import resource
+        if not [s for s in ('bash', 'zsh') if shutil.which(s)]:
+            self.skipTest('no bash or zsh installed: the differential fuzz has no oracle')
+        before = resource.getrusage(resource.RUSAGE_SELF)
+        holes, ran_n = self.holes_among(self.mutated_templates(self.MUTATION_CASES))
+        used = resource.getrusage(resource.RUSAGE_SELF)
+        self.assertGreater(ran_n, 100, 'the mutation fuzz is not exercising the oracle (%d cases ran a body)' % ran_n)
+        self.assertEqual(holes, [], '%d of %d cases that a shell runs pass the gate, first: %r' % (len(holes), ran_n, holes[:5]))
+        self.assertLess(used.ru_utime + used.ru_stime - before.ru_utime - before.ru_stime, 60.0)
+
+class OracleShells(unittest.TestCase):
+    """The oracle the cells above lean on: zsh is where the CI run puts it (REQUIRE_ZSH=1), and the bash has a version."""
+
+    def test_zsh_is_installed_where_the_run_requires_it(self):
+        if REQUIRE_ZSH:
+            self.assertIsNotNone(ZSH, 'REQUIRE_ZSH=1 and no zsh on PATH: install it (apt-get install -y zsh), the cells would have no oracle')
+
+    def test_the_bash_oracle_has_a_known_version(self):
+        self.assertGreater(BASH_MAJOR, 0, 'no bash on PATH, or its version is unreadable')
+
+    def test_a_text_over_the_argument_limit_reaches_the_oracle_as_a_script_file(self):
+        # Linux refuses one argument over 128 KiB (OSError: Argument list too long); `$0` tells which way the text came in
+        exe = shutil.which('bash')
+        kw = dict(capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL, env={'PATH': '/usr/bin:/bin', 'LC_ALL': 'C'})
+        probe = 'printf "%s|" "$0"; printf %s ORA CLE'
+        short = run_shell_text(exe, probe, **kw).stdout
+        self.assertTrue(short.startswith(os.path.basename(exe) + '|') or short.startswith(exe + '|'), short)      # -c: $0 is the shell
+        for size in (ARG_FILE_MIN, 200000, 300000):
+            with self.subTest(size=size):
+                long_out = run_shell_text(exe, ' ' * size + '\n' + probe, **kw).stdout
+                self.assertTrue(long_out.endswith('cell.sh|ORACLE'), long_out[-60:])      # a script file, and the text ran in full
+        # just under the cut it is still an argument, as before
+        under = run_shell_text(exe, ' ' * (ARG_FILE_MIN - 100) + '\n' + probe, **kw).stdout
+        self.assertFalse('cell.sh' in under, under[-60:])
+        self.assertTrue(under.endswith('ORACLE'))
+        # no argument of the oracle's argv is near the Linux cap whatever the size (the cut is far below 131072 bytes)
+        self.assertLess(ARG_FILE_MIN, 131072 // 2)
+
+
 if __name__ == '__main__':
-    unittest.main(verbosity=1)
+    program = unittest.main(verbosity=1, exit=False)
+    ok = program.result.wasSuccessful()
+    if BASH32_UNPROVEN:
+        # named, not hidden: these cells are proven only on a machine with a bash 3.2 (macOS /bin/bash); the gate verdict of each one
+        # was asserted above
+        print('note: bash %d is the oracle: %d cell(s) are bash 3.2 only and not proven here, first: %r' % (BASH_MAJOR, len(set(BASH32_UNPROVEN)), sorted(set(BASH32_UNPROVEN))[:3]),
+              file=sys.stderr)
+    if REQUIRE_ZSH and program.result.skipped:
+        # a skip is a cell without an oracle: under REQUIRE_ZSH=1 none is allowed (a green run with skips proves less than it says)
+        print('REQUIRE_ZSH=1: %d skipped test(s), first: %r' % (len(program.result.skipped), program.result.skipped[0]), file=sys.stderr)
+        ok = False
+    sys.exit(0 if ok else 1)
