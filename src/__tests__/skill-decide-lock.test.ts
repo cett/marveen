@@ -1,4 +1,4 @@
-// Two decisions on two pending proposals of one live skill (db/skill-revisions.ts decideSkillRevision, A16). Both proposals were
+// Two decisions on two pending proposals of one live skill (db/skill-revisions.ts decideSkillRevision). Both proposals were
 // built against the same live state. A holder transaction keeps the skill row locked; the two decisions queue behind it
 // (PostgreSQL: seen in pg_stat_activity, interleave helper, no timing; SQLite: the connection lock). Exactly one activates, the
 // other is refused as a stale proposal (its staleness read runs after the lock, so it sees the first activation).
@@ -54,5 +54,15 @@ describe('skill decision: two activations of one live skill', () => {
     expect([r1.outcome, r2.outcome].sort()).toEqual(['activated', 'stale_proposal'])
     const live = await dbx.get<{ content: string }>("SELECT content FROM skills WHERE id = 'global/demo-a'")
     expect(['# v1\n', '# v2\n']).toContain(live?.content)
+  })
+
+  // The status condition of the lock (the compare-and-set on the skill's status): a skill revoked after the proposal is not
+  // decided, and it is not resurrected. Same answer on both engines.
+  it('a skill revoked after the proposal is not decided (skill_not_decidable)', async () => {
+    await seedLiveSkill()
+    const p = await propose('# v3\n')
+    await dbx.run("UPDATE skills SET status = 'disabled' WHERE id = 'global/demo-a'")
+    expect((await decideSkillRevision(p, 'activate', DECIDER)).outcome).toBe('skill_not_decidable')
+    expect(await dbx.get<{ content: string }>("SELECT content FROM skills WHERE id = 'global/demo-a'")).toEqual({ content: '# v0\n' })
   })
 })
