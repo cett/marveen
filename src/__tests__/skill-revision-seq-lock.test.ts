@@ -7,7 +7,7 @@
 
 import { describe, it, expect } from 'vitest'
 import { forUpdate } from '../db/dialect.js'
-import { writeSkillRevision } from '../db/skill-revisions.js'
+import { submitPendingRevision, writeSkillRevision } from '../db/skill-revisions.js'
 import { useTestDb, testDbMode } from './helpers/with-test-db.js'
 import { interleave, waitBlockedOnLock } from './helpers/interleave.js'
 
@@ -20,6 +20,14 @@ async function seedSkill(): Promise<void> {
     "INSERT INTO skills (id, name, description, content, tenant_id, is_global, created_by, created_at, updated_at) VALUES ('global/demo-a', 'demo-a', '', '# v0\n', 'fleet', 0, NULL, 1, 1)",
   )
 }
+
+describe('skill revision seq: a proposal without its skill row', () => {
+  it('is refused (fail closed: there is no row to lock, so no seq can be taken safely)', async () => {
+    await expect(dbx.tx((tx) => submitPendingRevision(tx, {
+      skill: { id: 'global/no-such-skill', tenant_id: 'fleet' }, action: 'create', content: '# x\n', files: [], actor: HUMAN, touchesPrivilege: false,
+    }))).rejects.toThrow(/no skill row to lock/)
+  })
+})
 
 describe('skill revision seq: two writers of one skill', () => {
   it('queue behind the skill row lock and take two distinct seq numbers', async () => {

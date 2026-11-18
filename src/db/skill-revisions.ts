@@ -18,8 +18,8 @@ import { forUpdate } from './dialect.js'
  * on one skill otherwise read the same MAX and one of them fails on UNIQUE(skill_id, seq) (a 500). A lock taken outside a
  * transaction is released at once, so every caller passes its transaction handle.
  */
-async function lockSkillForRevision(tx: SqlOps, skillId: string): Promise<void> {
-  await tx.all(`SELECT id FROM skills WHERE id = ? ${forUpdate()}`, skillId)
+async function lockSkillForRevision(tx: SqlOps, skillId: string): Promise<number> {
+  return (await tx.all(`SELECT id FROM skills WHERE id = ? ${forUpdate()}`, skillId)).length
 }
 
 export type SkillRevisionAction = 'baseline' | 'create' | 'modify' | 'seed' | 'delete' | 'file_put' | 'file_delete' | 'file_seed' | 'revoke'
@@ -281,7 +281,10 @@ export async function submitPendingRevision(tx: SqlOps, opts: SubmitPendingRevis
   // row (status pending_review) in the same transaction (db/tasks.ts, the create paths): the lock has a row to take. Two
   // proposals for the same NEW skill id therefore meet the placeholder's primary key, not the seq: the second insert waits
   // for the first transaction and then fails as a duplicate create, the same answer as any duplicate create.
-  await lockSkillForRevision(tx, skill.id)
+  // Fail closed: a lock that finds no row locked nothing, and a proposal without its skill row would race on the seq.
+  if ((await lockSkillForRevision(tx, skill.id)) === 0) {
+    throw new Error(`skill revision: no skill row to lock for ${skill.id} (a create is proposed after its placeholder row is inserted)`)
+  }
   // A proposal for a skill that already has a live state records that state first; a new skill has none to record
   // (a baseline of the proposed text would read as a live state, which it is not).
   if (opts.action === 'modify') await ensureSkillBaseline(tx, skill.id)
@@ -520,6 +523,9 @@ export async function decideSkillRevision(
       // FOR UPDATE is the CAS and the lock in one (a no-op UPDATE would write a new row version on PostgreSQL) -- 0 rows aborts the
       // whole decision, the revision stays pending (the throw rolls back the status flip above too).
       const expectedSkillStatus = revision.action === 'create' ? 'pending_review' : 'live'
+      // The status condition in this lock is an EARLY guard: the real write further down repeats the same compare-and-set
+      // (UPDATE skills ... AND status = ?) under the same row lock. A refusal here and a refusal there are the same answer,
+      // SkillNotDecidableAtActivate, so the write is what decides, and this guard only stops the decision sooner.
       const locked = await tx.all<{ id: string }>(
         `SELECT id FROM skills WHERE id = ? AND status = ? ${forUpdate()}`, revision.skill_id, expectedSkillStatus,
       )
