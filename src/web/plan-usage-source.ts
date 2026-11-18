@@ -1,4 +1,4 @@
-import { readFileSync, statSync } from 'node:fs'
+import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { STORE_DIR } from '../config.js'
@@ -33,12 +33,30 @@ import { readWindow } from './quota.js'
 /** Directory holding one snapshot file per plan. */
 export const PLAN_RATE_LIMITS_DIR = join(STORE_DIR, '.claude-rate-limits.d')
 
+/** Above this many files in the snapshot directory the monitor logs ONE line
+ *  (no dashboard warning). Every session writes a file for its own config
+ *  dir, including each sub-agent's, so the directory grows with the fleet. */
+export const PLAN_SNAPSHOT_FILE_NOTICE_THRESHOLD = 50
+
+const SNAPSHOT_FILE_RE = /^[0-9a-f]{8}\.json$/
+
+/** How many snapshot files the directory holds (0 when it does not exist).
+ *  Only counts: the reader never lists or opens files that are not a
+ *  registered plan's own, and nothing here deletes anything. */
+export function countPlanSnapshotFiles(dir: string = PLAN_RATE_LIMITS_DIR): number {
+  try {
+    return readdirSync(dir).filter((f) => SNAPSHOT_FILE_RE.test(f)).length
+  } catch {
+    return 0
+  }
+}
+
 /** A snapshot file is a few hundred bytes. Anything bigger is not ours. */
 const MAX_SNAPSHOT_BYTES = 64 * 1024
 
 export type PlanSnapshotDetail =
   | 'ok'
-  | 'no-config-dir' // the plan's configDir does not exist / has no canonical form
+  | 'no-config-dir' // the plan's configDir has no canonical form (empty, relative, ~user)
   | 'no-file'
   | 'unreadable'
   | 'no-rate-limits'

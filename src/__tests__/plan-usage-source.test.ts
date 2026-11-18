@@ -16,7 +16,11 @@ import {
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { canonicalConfigDir, configDirHash } from '../web/plan-config-hash.js'
-import { readPlanSnapshot } from '../web/plan-usage-source.js'
+import {
+  countPlanSnapshotFiles,
+  PLAN_SNAPSHOT_FILE_NOTICE_THRESHOLD,
+  readPlanSnapshot,
+} from '../web/plan-usage-source.js'
 import { classifyPlanHealth } from '../claude-plan-health.js'
 
 const SCRIPT = resolve(__dirname, '../../scripts/statusline-ratelimit.sh')
@@ -53,8 +57,8 @@ const sha8 = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex')
 
 /** Run the REAL statusLine script. `configDir === undefined` leaves the
  *  variable unset; any string (also '') sets it. */
-function runStatusline(payload: unknown, configDir?: string): string {
-  const env: NodeJS.ProcessEnv = { PATH: process.env.PATH, HOME: home }
+function runStatusline(payload: unknown, configDir?: string, homeOverride?: string): string {
+  const env: NodeJS.ProcessEnv = { PATH: process.env.PATH, HOME: homeOverride ?? home }
   if (configDir !== undefined) env.CLAUDE_CONFIG_DIR = configDir
   return execFileSync('bash', [join(root, 'install', 'scripts', 'statusline-ratelimit.sh')], {
     input: typeof payload === 'string' ? payload : JSON.stringify(payload),
@@ -107,10 +111,27 @@ describe('configDirHash / canonicalConfigDir', () => {
     expect(configDirHash('~someone/.claude', home)).toBeNull()
   })
 
-  it('missing directory, empty string and NUL byte yield null', () => {
-    expect(configDirHash(join(root, 'nope'), home)).toBeNull()
+  it('a directory that does not exist yet still has a canonical form (nearest real ancestor + normalised tail)', () => {
+    const base = mkDir('cfg-a')
+    const link = join(root, 'link-to-a')
+    symlinkSync(base, link)
+    // missing tail below a REAL dir and below a SYMLINKED dir: both resolve through the ancestor
+    expect(canonicalConfigDir(join(base, 'sub', 'x'), home)).toBe(join(base, 'sub', 'x'))
+    expect(canonicalConfigDir(join(link, 'sub', 'x'), home)).toBe(join(base, 'sub', 'x'))
+    expect(canonicalConfigDir(join(base, 'sub', '..', 'x'), home)).toBe(join(base, 'x'))
+  })
+
+  it('a path with no canonical form yields null: empty, NUL byte, relative', () => {
     expect(configDirHash('', home)).toBeNull()
     expect(configDirHash('/tmp/a\0b', home)).toBeNull()
+    expect(configDirHash('relative/cfg', home)).toBeNull()
+    expect(configDirHash('./cfg', home)).toBeNull()
+  })
+
+  it('a path whose parent is a FILE (ENOTDIR) is still walked to the real ancestor', () => {
+    const file = join(root, 'a-file')
+    writeFileSync(file, 'x')
+    expect(canonicalConfigDir(join(file, 'child'), home)).toBe(join(file, 'child'))
   })
 })
 
@@ -167,10 +188,25 @@ describe('statusline-ratelimit.sh writer (real script)', () => {
     })
   }
 
-  it('a config dir that does not exist: legacy file written, NO plan file', () => {
-    runStatusline(payload(), join(root, 'does-not-exist'))
+  it('a config dir that does not exist still gets the normalised-path id (same as the TS side)', () => {
+    const missingDir = join(root, 'does-not-exist')
+    runStatusline(payload(), missingDir)
     expect(existsSync(join(store, '.claude-rate-limits.json'))).toBe(true)
-    expect(existsSync(planDir) ? readdirSync(planDir) : []).toEqual([])
+    expect(readdirSync(planDir)).toEqual([`${configDirHash(missingDir, home)}.json`])
+  })
+
+  it('a RELATIVE CLAUDE_CONFIG_DIR: legacy file written, NO plan file (the id would depend on the cwd)', () => {
+    runStatusline(payload(), 'relative/cfg')
+    expect(existsSync(join(store, '.claude-rate-limits.json'))).toBe(true)
+    expect(existsSync(planDir)).toBe(false)
+  })
+
+  it('the writer never deletes: a noise file of another session survives and a render does not touch it', () => {
+    mkdirSync(planDir, { recursive: true })
+    const noise = join(planDir, 'deadbeef.json')
+    writeFileSync(noise, '{"keep":"me"}')
+    runStatusline(payload(), mkDir('cfg-a'))
+    expect(readFileSync(noise, 'utf8')).toBe('{"keep":"me"}')
   })
 
   it('two plans get two files; the legacy file is the last renderer', () => {
@@ -246,8 +282,20 @@ describe('readPlanSnapshot (reader, fixtures written by hand)', () => {
     expect(read(mkDir('cfg-a')).snapshot).toEqual({ kind: 'missing' })
   })
 
-  it('plan configDir that does not exist', () => {
-    expect(read(join(root, 'nope')).detail).toBe('no-config-dir')
+  it('plan configDir that does not exist yet has an id but no file', () => {
+    expect(read(join(root, 'nope')).detail).toBe('no-file')
+  })
+
+  it('plan configDir without a canonical form (relative) -> no-config-dir', () => {
+    expect(read('relative/cfg').detail).toBe('no-config-dir')
+  })
+
+  it('noise files of other sessions in the directory are never read for a plan', () => {
+    const a = mkDir('cfg-a')
+    const other = mkDir('agent-x-config')
+    // a PERFECT-looking record, but it belongs to another dir's id
+    write(other, base(other, { rate_limits: { five_hour: { used_percentage: 100, resets_at: NOW_S + 60 } } }))
+    expect(read(a).detail).toBe('no-file')
   })
 
   it('corrupt JSON, array and scalar files are unreadable', () => {
@@ -339,6 +387,58 @@ describe('readPlanSnapshot (reader, fixtures written by hand)', () => {
     const r = read(a)
     expect(r.snapshot.kind === 'snapshot' && r.snapshot.ageSec).toBe(-600)
     expect(classifyPlanHealth(r.snapshot, NOW_MS).reason).toBe('snapshot-from-future')
+  })
+})
+
+// One fixture, two implementations. The vectors were generated with Python
+// (the writer's side) and are checked here against the TS util AND the real
+// script, so neither can drift without a red cell.
+interface HashVector {
+  name: string
+  input: string
+  canonical: string
+  hash: string
+}
+const FIXTURE = JSON.parse(
+  readFileSync(resolve(__dirname, 'fixtures/plan-config-hash-vectors.json'), 'utf8'),
+) as { home: string; vectors: HashVector[] }
+
+describe('hash parity: shared fixture vectors', () => {
+  it('the fixture is non-trivial (guards against an emptied vector list passing vacuously)', () => {
+    expect(FIXTURE.vectors.length).toBeGreaterThanOrEqual(10)
+    expect(new Set(FIXTURE.vectors.map((v) => v.hash)).size).toBeGreaterThanOrEqual(4)
+  })
+
+  for (const v of FIXTURE.vectors) {
+    it(`TS util: ${v.name} (${v.input})`, () => {
+      expect(canonicalConfigDir(v.input, FIXTURE.home)).toBe(v.canonical)
+      expect(configDirHash(v.input, FIXTURE.home)).toBe(v.hash)
+    })
+
+    it(`real script: ${v.name} (${v.input})`, () => {
+      rmSync(planDir, { recursive: true, force: true })
+      runStatusline(payload(), v.input, FIXTURE.home)
+      expect(readdirSync(planDir)).toEqual([`${v.hash}.json`])
+      expect(readJson(join(planDir, `${v.hash}.json`)).config_dir).toBe(v.canonical)
+    })
+  }
+})
+
+describe('countPlanSnapshotFiles', () => {
+  it('0 for a missing directory', () => {
+    expect(countPlanSnapshotFiles(join(root, 'nope'))).toBe(0)
+  })
+
+  it('counts only <8 hex>.json files (temp files and strangers are not snapshots)', () => {
+    mkdirSync(planDir, { recursive: true })
+    for (const f of ['aaaaaaaa.json', '01234567.json', 'aaaaaaaa.json.tmp.123', 'README', 'AAAAAAAA.json', 'abc.json']) {
+      writeFileSync(join(planDir, f), '{}')
+    }
+    expect(countPlanSnapshotFiles(planDir)).toBe(2)
+  })
+
+  it('the notice threshold is 50: one file above it is the first that counts', () => {
+    expect(PLAN_SNAPSHOT_FILE_NOTICE_THRESHOLD).toBe(50)
   })
 })
 

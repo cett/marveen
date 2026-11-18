@@ -73,7 +73,8 @@ if rl:
     # statusLine process did not inherit the variable".
     env_dir = os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
     cfg_source = "env" if env_dir else "default"
-    cfg_dir = os.path.realpath(os.path.expanduser(env_dir or "~/.claude"))
+    cfg_expanded = os.path.expanduser(env_dir or "~/.claude")
+    cfg_dir = os.path.realpath(cfg_expanded)
 
     rec = {
         "written_at": int(time.time()),
@@ -88,9 +89,11 @@ if rl:
     write_atomic(out, rec)
 
     # Per-plan file: store/.claude-rate-limits.d/<sha256(realpath dir)[:8]>.json,
-    # the same id src/web/plan-config-hash.ts computes. Only for a config dir
-    # that exists (a path that cannot be resolved has no stable id).
-    if os.path.isdir(cfg_dir):
+    # the same id src/web/plan-config-hash.ts computes (shared fixture). Only
+    # when the configured path is absolute after ~ expansion: a relative one
+    # would hash differently per working directory and has no stable id.
+    # Nothing here ever deletes a file: other sessions own their own files.
+    if os.path.isabs(cfg_expanded):
         plan_id = hashlib.sha256(cfg_dir.encode("utf-8")).hexdigest()[:8]
         plan_dir = os.path.join(os.path.dirname(out), ".claude-rate-limits.d")
         try:
