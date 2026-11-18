@@ -6,7 +6,7 @@
 // Privacy: neutral fixtures only (agent-a, skill-a, session-a).
 
 import { describe, expect, it } from 'vitest'
-import { advisoryLockKeyed } from '../db/dialect.js'
+import { advisoryKeyOf, advisoryLockKeyed } from '../db/dialect.js'
 import { logSkillUsage } from '../db/audit.js'
 import { useTestDb, testDbMode } from './helpers/with-test-db.js'
 import { interleave, waitBlockedOnLock } from './helpers/interleave.js'
@@ -18,7 +18,7 @@ describe('skill usage dedup: two logs of one invocation', () => {
     const il = interleave()
     il.hold('usage-key-held')
     const holder = dbx.tx(async (tx) => {
-      const lock = advisoryLockKeyed('skill-usage:', JSON.stringify(['agent-a', 'skill-a']), testDbMode())
+      const lock = advisoryLockKeyed('skill-usage:', advisoryKeyOf('agent-a', 'skill-a'), testDbMode())
       if (lock) await tx.run(lock.sql, ...lock.params)
       await il.pass('usage-key-held')
     })
