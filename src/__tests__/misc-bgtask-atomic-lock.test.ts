@@ -7,7 +7,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { advisoryLockKeyed } from '../db/dialect.js'
-import { createBackgroundTaskAtomic } from '../db/misc.js'
+import { createBackgroundTaskAtomic, finishBackgroundTask } from '../db/misc.js'
 import { useTestDb, testDbMode } from './helpers/with-test-db.js'
 import { interleave, waitBlockedOnLock } from './helpers/interleave.js'
 
@@ -36,6 +36,14 @@ describe('background task start: the per-agent limit under concurrency', () => {
     expect([r1 !== null, r2 !== null].sort()).toEqual([false, true])
     const running = await dbx.get<{ c: number }>("SELECT COUNT(*) AS c FROM background_tasks WHERE agent_id = 'agent-a' AND status = 'running'")
     expect(running?.c).toBe(1)
+  })
+
+  it('a finished task (done or failed) does not count as running against the limit', async () => {
+    expect(await createBackgroundTaskAtomic('task-done', 'agent-a', 'prompt', 'session-d', 2)).not.toBeNull()
+    expect(await createBackgroundTaskAtomic('task-failed', 'agent-a', 'prompt', 'session-f', 2)).not.toBeNull()
+    await finishBackgroundTask('task-done', 'done', null)
+    await finishBackgroundTask('task-failed', 'failed', null)
+    expect(await createBackgroundTaskAtomic('task-new', 'agent-a', 'prompt', 'session-n', 1)).not.toBeNull()
   })
 
   it('a running task of another agent does not count against this agent', async () => {
