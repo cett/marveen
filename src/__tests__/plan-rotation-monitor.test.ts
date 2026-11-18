@@ -210,10 +210,56 @@ describe('act: the rotation', () => {
   it('a stale snapshot that was already high is sticky pressure and still rotates: the frozen-session case', async () => {
     // INDEPENDENCE: there is no agent session in this harness. The main session is frozen on the spent plan, the
     // snapshot stopped changing three hours ago at 100%, nothing refreshes it, and the rotation still happens.
+    // The file is REALLY frozen: absolute writtenAt and resetsAt, only the clock moves (ageSec grows with it).
+    // A snapshot rebuilt from `now` on every read would slide resetsAt forward and prove nothing.
     const { h, tick, apply } = harness()
-    h.snaps['plan-a'] = (now) => snap({ five: 100, seven: 40 }, { nowMs: now, ageSec: 3 * 3600 })
+    const writtenMs = T0 - 3 * 3600 * 1000
+    const resetsAtSec = Math.floor(T0 / 1000) + 2 * 3600
+    h.snaps['plan-a'] = (now) => ({
+      snapshot: {
+        kind: 'snapshot',
+        ageSec: Math.floor((now - writtenMs) / 1000),
+        windows: { five_hour: { usedPercent: 100, resetsAt: resetsAtSec }, seven_day: { usedPercent: 40, resetsAt: resetsAtSec + 3 * 86400 } },
+      },
+      detail: 'ok',
+      writtenAt: Math.floor(writtenMs / 1000),
+    })
     expect((await tick()).outcome).toBe('rotated')
     expect(apply).toHaveBeenCalledTimes(1)
+  })
+
+  it('the sticky 100% EXPIRES: a frozen snapshot whose resetsAt has passed is not pressure, no rotation', async () => {
+    // Counterpart of the frozen-session cell. The same frozen file, but the clock is past its resetsAt: the
+    // stored 100% describes a window that has rolled over. Without the expiry the monitor would rotate on a
+    // window that already reset (and, once the plan was spent for real, would never see it recover).
+    const { h, tick, apply } = harness()
+    const writtenMs = T0 - 3 * 3600 * 1000
+    const resetsAtSec = Math.floor(T0 / 1000) + 2 * 3600
+    h.snaps['plan-a'] = (now) => ({
+      snapshot: {
+        kind: 'snapshot',
+        ageSec: Math.floor((now - writtenMs) / 1000),
+        windows: { five_hour: { usedPercent: 100, resetsAt: resetsAtSec }, seven_day: { usedPercent: 40, resetsAt: resetsAtSec + 3 * 86400 } },
+      },
+      detail: 'ok',
+      writtenAt: Math.floor(writtenMs / 1000),
+    })
+    // 31 minutes BEFORE the reset (just outside the 30 min near-reset hold): still sticky pressure, so a
+    // premature expiry is caught too
+    h.t = (resetsAtSec - 31 * 60) * 1000
+    expect((await tick()).outcome).toBe('rotated')
+    expect(apply).toHaveBeenCalledTimes(1)
+
+    // fresh harness, clock exactly ON the reset and past it: the five_hour window is gone, the weekly one is
+    // low and old -> unknown, never a rotation
+    for (const offsetSec of [0, 60, 3600]) {
+      const x = harness()
+      x.h.snaps['plan-a'] = h.snaps['plan-a']!
+      x.h.t = (resetsAtSec + offsetSec) * 1000
+      const out = await x.tick()
+      expect(out.outcome).toBe('unknown')
+      expect(x.apply).not.toHaveBeenCalled()
+    }
   })
 
   it('a stale snapshot that was LOW is unknown: no blind rotation', async () => {
@@ -335,9 +381,14 @@ describe('act: failures and races', () => {
     h.onNotify = (msg) => {
       if (msg.startsWith('🔄')) h.state = { ...h.state, activePlanByAgent: { [AGENT]: 'plan-b' } }
     }
-    expect((await tick()).outcome).toBe('stale-decision')
+    const r = await tick()
+    expect(r.outcome).toBe('stale-decision')
+    // the detail names WHICH of the two re-check legs failed; a swapped pair would mislabel the audit trail
+    expect(r.detail).toBe('active plan changed')
     expect(apply).not.toHaveBeenCalled()
     expect(h.notices[h.notices.length - 1]).toContain('lemondva')
+    // and the cancelled decision enters the 50-entry log (observable on the dashboard), it is not silent
+    expect(log(h)[log(h).length - 1]).toMatchObject({ mode: 'act', result: 'stale-decision' })
   })
 
   it('stale decision: the target got spent while the notice was out', async () => {
@@ -346,8 +397,11 @@ describe('act: failures and races', () => {
     h.onNotify = (msg) => {
       if (msg.startsWith('🔄')) h.snaps['plan-b'] = (now) => snap({ five: 100, seven: 100 }, { nowMs: now })
     }
-    expect((await tick()).outcome).toBe('stale-decision')
+    const r = await tick()
+    expect(r.outcome).toBe('stale-decision')
+    expect(r.detail).toBe('target no longer eligible')
     expect(apply).not.toHaveBeenCalled()
+    expect(log(h)[log(h).length - 1]).toMatchObject({ mode: 'act', result: 'stale-decision' })
   })
 
   it('a notice channel that throws does not stop the rotation', async () => {
