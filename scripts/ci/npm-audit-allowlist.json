@@ -1,0 +1,12 @@
+{
+  "allow": [
+    {
+      "id": "GHSA-fc5q-39xc-vjpf",
+      "package": "picomatch",
+      "added": "2026-11-18",
+      "expires": "2026-12-18",
+      "addedBy": "repository owner (decision recorded in the pull request)",
+      "reason": "picomatch ReDoS: every version is affected and there was no fixed release when this was added. It sits only in the dev chain (vitest, vite, tinyglobby, fdir), never in the shipped runtime, and it is not caused by any one change. The date is when a fix through a Dependabot update is expected. Renew only in a reviewed change."
+    }
+  ]
+}
