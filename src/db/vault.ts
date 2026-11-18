@@ -554,6 +554,18 @@ export async function claimApproval(p: ConsumeParams & { category: string; mode?
       if (send) await recordApprovalEvent({ approval_id: usable.id, tenant_id: approval.tenant_id, event: 'used', reason: 'reserved_and_sealed', actor: p.principal, ref }, tx)
       return send ? { ok: true, replayed: false, adopted: false, approval } : { ok: true, replayed: false, approval }
     }
+    // A same-ref retry whose first claim took the row while this one waited in the guarded write above: on PostgreSQL the
+    // write re-checks its WHERE on the committed row and changes nothing, so this read runs again on the same transaction,
+    // after the wait, and answers the retry as the replay it is (not as already_consumed). Non-send claims only.
+    if (!send && usable && typeof p.ref === 'string' && p.ref !== '') {
+      const replayed = await tx.get<Approval>(`
+        SELECT * FROM approvals
+        WHERE agent_id = ? AND tenant_id = ? AND category = ? AND content_hash = ?
+          AND consumed_by = ? AND consumed_ref = ? AND consumed_at >= ?
+        ORDER BY consumed_at DESC, id DESC LIMIT 1
+      `, ...scope, p.principal, p.ref, now - CONSUME_REPLAY_WINDOW_S)
+      if (replayed) return { ok: true, replayed: true, approval: replayed }
+    }
     // A request still open (its deadline not passed, even if the sweeper has not marked it yet) beats any old decision.
     const open = await tx.get<Approval>(`
       SELECT * FROM approvals

@@ -81,6 +81,7 @@ export const PORTED: readonly string[] = [
   'src/__tests__/skill-decide-lock.test.ts',
   'src/__tests__/misc-bgtask-atomic-lock.test.ts',
   'src/__tests__/approval-create-once-lock.test.ts',
+  'src/__tests__/approval-claim-replay.test.ts',
 ]
 
 /** Test files (same form) that do not, each with the reason. */
