@@ -10,6 +10,9 @@
 // soft-pressure streak is in-memory, and losing it on a restart is the
 // conservative direction (one more tick of waiting before a soft rotation).
 //
+// A human reset (resetAtMs) makes the breaker and the backoff forget every
+// entry at or before it; the cooldown keeps seeing them all.
+//
 // Rules, in the order they are checked:
 //   1. breaker: BREAKER_MAX act-rotations inside BREAKER_WINDOW_MS (or a
 //      persisted tripped flag) -> no automatic rotation at all.
@@ -59,12 +62,16 @@ export interface GuardInput {
   log: readonly RotationLogEntry[]
   /** A persisted tripped breaker flag. */
   breakerTripped: boolean
+  /** Epoch ms of the last human reset (monitor.resetAt). The breaker and the
+   *  restart-failure count ignore entries at or before it; the cooldown does
+   *  not. */
+  resetAtMs?: number
 }
 
 const isAct = (e: RotationLogEntry): boolean => e.mode === 'act'
 
 export function evaluateRotationGuard(input: GuardInput): GuardVerdict {
-  const { agentId, urgency, nowMs, softStreak, log, breakerTripped } = input
+  const { agentId, urgency, nowMs, softStreak, log, breakerTripped, resetAtMs } = input
 
   if (breakerTripped) return { verdict: 'breaker-open', reason: 'breaker-tripped' }
 
@@ -72,17 +79,20 @@ export function evaluateRotationGuard(input: GuardInput): GuardVerdict {
   //    protection is against the monitor itself flapping, whichever agent it
   //    moved. `>=`: the third rotation inside the window is the last allowed,
   //    so the FOURTH decision (count already 3) trips it.
+  // A human reset forgets what came before it, for the breaker and the backoff only.
+  const counted = resetAtMs === undefined ? log : log.filter((e) => e.ts > resetAtMs)
   const windowStart = nowMs - GUARD.BREAKER_WINDOW_MS
-  const recentRotations = log.filter((e) => isAct(e) && e.result === 'rotated' && e.ts > windowStart)
+  const recentRotations = counted.filter((e) => isAct(e) && e.result === 'rotated' && e.ts > windowStart)
   if (recentRotations.length >= GUARD.BREAKER_MAX) {
     return { verdict: 'breaker-trip', reason: `${recentRotations.length}-rotations-in-${GUARD.BREAKER_WINDOW_MS / 3600_000}h` }
   }
 
   const mine = log.filter((e) => e.agentId === agentId && isAct(e))
   const lastOk = lastOf(mine, (e) => e.result === 'rotated')
+  const mineCounted = counted.filter((e) => e.agentId === agentId && isAct(e))
 
   // 2. Restart backoff: failures since this agent's last success.
-  const failuresSinceOk = mine.filter((e) => e.result === 'failed' && (!lastOk || e.ts > lastOk.ts))
+  const failuresSinceOk = mineCounted.filter((e) => e.result === 'failed' && (!lastOk || e.ts > lastOk.ts))
   if (failuresSinceOk.length >= GUARD.MAX_RESTART_FAILURES) {
     return { verdict: 'gave-up', reason: `${failuresSinceOk.length}-restart-failures` }
   }

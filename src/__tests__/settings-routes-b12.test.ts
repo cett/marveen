@@ -32,6 +32,14 @@ vi.mock('../web/rbac-mode.js', () => ({
   describeRbacMode: vi.fn(),
 }))
 vi.mock('../web/session-only-guard.js', () => ({ denyUnlessHumanSessionAlways: () => false, denyUnlessHumanOnlyEnforced: () => false }))
+// Same for the CLAUDE_ROTATION_MODE branch (plan-rotation-mode.test.ts covers it): inert here.
+vi.mock('../web/plan-rotation-mode.js', () => ({
+  ROTATION_MODE_KEY: 'CLAUDE_ROTATION_MODE',
+  readRotationMode: vi.fn(),
+  parseRotationModeStrict: () => null,
+}))
+vi.mock('../web/approval-human-only.js', () => ({ humanSessionOf: vi.fn() }))
+vi.mock('../web/claude-plans-state.js', () => ({ resetRotationGuards: vi.fn() }))
 
 import { tryHandleSettings } from '../web/routes/settings.js'
 

@@ -80,6 +80,11 @@ export interface RotationMonitorState {
   /** Set when the breaker tripped (too many rotations in a window); the
    *  monitor acts as observe until a person writes the mode setting again. */
   breaker?: { tripped: boolean; since: number }
+  /** Unix epoch ms of the last human mode write. The breaker and the restart
+   *  failure count only look at log entries NEWER than this, so a person
+   *  re-arming the monitor is not undone by the very entries that tripped it.
+   *  The cooldown still sees every entry: a reset does not un-rotate. */
+  resetAt?: number
 }
 
 export const ROTATION_LOG_MAX = 50
@@ -167,6 +172,7 @@ function parseMonitorState(raw: unknown): RotationMonitorState | undefined {
     const entries = raw.rotationLog.map(parseLogEntry).filter((e): e is RotationLogEntry => e !== null)
     out.rotationLog = entries.slice(-ROTATION_LOG_MAX)
   }
+  if (isFiniteNumber(raw.resetAt)) out.resetAt = raw.resetAt
   if (isPlainObject(raw.breaker) && typeof raw.breaker.tripped === 'boolean' && isFiniteNumber(raw.breaker.since)) {
     out.breaker = { tripped: raw.breaker.tripped, since: raw.breaker.since }
   }
@@ -224,6 +230,21 @@ export function patchMonitorState(
   const merged: RotationMonitorState = { ...state.monitor, ...patch }
   if (merged.rotationLog) merged.rotationLog = merged.rotationLog.slice(-ROTATION_LOG_MAX)
   return { ...state, monitor: merged }
+}
+
+/** A person re-armed the monitor: drop a tripped breaker flag and stamp
+ *  `resetAt`, so the log entries that tripped it (or that count as restart
+ *  failures) stop counting. Returns true when there was anything to reset.
+ *  Nothing is written when the side-car holds no log and no breaker: there is
+ *  nothing to forget, and entries appended later are newer than any reset.
+ *  Read-modify-write of the side-car, no awaits inside. */
+export function resetRotationGuards(nowMs: number): boolean {
+  const state = readClaudePlansState()
+  const m = state.monitor
+  if (!m?.breaker && !(m?.rotationLog && m.rotationLog.length > 0)) return false
+  const { breaker: _dropped, ...rest } = m
+  writeClaudePlansState({ ...state, monitor: { ...rest, resetAt: nowMs } })
+  return true
 }
 
 /** Pure: append one entry to the rotation log (newest last, capped). */

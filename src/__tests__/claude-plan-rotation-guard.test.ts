@@ -171,6 +171,41 @@ describe('restart backoff', () => {
   })
 })
 
+describe('human reset (resetAtMs)', () => {
+  const rot = (ageMs: number, agentId: string) => entry({ ageMs, agentId })
+  const three = [rot(300 * MIN, 'agent-x'), rot(200 * MIN, 'agent-y'), rot(100 * MIN, 'agent-z')]
+
+  it('3 rotations trip the breaker; after a human reset the next decision does NOT trip', () => {
+    expect(guard({ urgency: 'hard', log: three })).toMatchObject({ verdict: 'breaker-trip' })
+    expect(guard({ urgency: 'hard', log: three, resetAtMs: NOW - 10 * MIN })).toEqual({ verdict: 'go', trigger: 'hard' })
+  })
+  it('rotations AFTER the reset count again: three new ones trip it once more', () => {
+    const after = [rot(9 * MIN, 'agent-p'), rot(8 * MIN, 'agent-q'), rot(7 * MIN, 'agent-r')]
+    expect(guard({ urgency: 'hard', log: [...three, ...after], resetAtMs: NOW - 10 * MIN })).toMatchObject({
+      verdict: 'breaker-trip',
+    })
+  })
+  it('an entry exactly at the reset instant is before it (not counted)', () => {
+    // two rotations after the reset plus one AT it: only the two count, so no trip
+    const log = [rot(10 * MIN, 'agent-x'), rot(9 * MIN, 'agent-y'), rot(8 * MIN, 'agent-z')]
+    expect(guard({ urgency: 'hard', log, resetAtMs: NOW - 10 * MIN })).toMatchObject({ verdict: 'go' })
+    // reset one millisecond earlier: the 10-minute entry is now after it, all three count
+    expect(guard({ urgency: 'hard', log, resetAtMs: NOW - 10 * MIN - 1 })).toMatchObject({ verdict: 'breaker-trip' })
+  })
+  it('the gave-up after 3 failed restarts is lifted by a reset too', () => {
+    const fails = [60, 40, 20].map((m) => entry({ ageMs: m * MIN, result: 'failed' }))
+    expect(guard({ urgency: 'hard', log: fails })).toMatchObject({ verdict: 'gave-up' })
+    expect(guard({ urgency: 'hard', log: fails, resetAtMs: NOW - 10 * MIN })).toEqual({ verdict: 'go', trigger: 'hard' })
+  })
+  it('the cooldown still sees entries from before the reset (a reset does not un-rotate)', () => {
+    const log = [entry({ ageMs: 20 * MIN })]
+    expect(guard({ urgency: 'soft', log, resetAtMs: NOW - 10 * MIN })).toMatchObject({ verdict: 'wait-cooldown' })
+  })
+  it('no reset recorded: nothing is forgotten', () => {
+    expect(guard({ urgency: 'hard', log: three, resetAtMs: undefined })).toMatchObject({ verdict: 'breaker-trip' })
+  })
+})
+
 describe('precedence', () => {
   it('breaker beats cooldown bypass', () => {
     const log = [

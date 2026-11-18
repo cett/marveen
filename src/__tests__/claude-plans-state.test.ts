@@ -156,6 +156,7 @@ describe('monitor block: reading', () => {
   it('reads a full monitor block back', () => {
     const monitor = {
       lastTickAt: 1_700_000_100_000,
+      resetAt: 1_700_000_095_000,
       consecutiveUnknown: 2,
       health: { 'plan-a': { observedAt: 1_700_000_050_000, status: 'pressure', window: 'five_hour', usedPercent: 93 } },
       rotationLog: [goodEntry],
@@ -188,6 +189,11 @@ describe('monitor block: reading', () => {
       CLAUDE_PLANS_STATE_PATH,
       JSON.stringify({ activePlanByAgent: {}, plans: {}, monitor: { lastTickAt: 5, breaker: { tripped: 'yes', since: 1 } } }),
     )
+    expect(readClaudePlansState().monitor).toEqual({ lastTickAt: 5 })
+  })
+
+  it('a resetAt that is not a number is dropped', () => {
+    writeFileSync(CLAUDE_PLANS_STATE_PATH, JSON.stringify({ activePlanByAgent: {}, plans: {}, monitor: { lastTickAt: 5, resetAt: 'later' } }))
     expect(readClaudePlansState().monitor).toEqual({ lastTickAt: 5 })
   })
 
