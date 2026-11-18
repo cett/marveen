@@ -45,6 +45,7 @@ export const BACKGROUND_JOBS = {
   'inbound-probe': { file: 'src/web/inbound-probe.ts', role: 'system', note: 'userbot inbound-deafness probe, reads settings' },
   'stuck-tool-call': { file: 'src/web/stuck-tool-call-watcher.ts', role: 'system', note: 'stuck tool-call detector, may restart a session' },
   'inbox-nudge-watcher': { file: 'src/web/inbox-nudge-watcher.ts', role: 'system', note: 'nudges an agent whose pending messages wait' },
+  'plan-rotation-monitor': { file: 'src/web/plan-rotation-monitor.ts', role: 'system', note: 'plan-rotation tick: reads the mode row and the rotation state, may restart the main session (act mode only)' },
   'model-fallback': { file: 'src/web/model-fallback-runner.ts', role: 'system', note: 'usage-limit fallback, restarts the session on the other model' },
   'otel-push-exporter': { file: 'src/web/otel-push-exporter.ts', role: 'system', note: 'ships spans, logs and metrics, keeps its cursor in the db' },
   'rbac-mode-refresh': { file: 'src/web/rbac-mode.ts', role: 'system', note: 'refreshes the cached RBAC mode from system_config' },
