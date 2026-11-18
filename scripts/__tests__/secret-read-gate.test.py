@@ -291,6 +291,11 @@ class BashReads(GateCase):
         for _ in range(14):
             nest = 'bash -c "%s"' % nest.replace('\\', '\\\\').replace('"', '\\"')
         cells.append((nest, '14 nested bash -c with escaped quotes'))
+        # CPU ceiling per cell, 2.0 s unless listed. The broken-off-scan cell costs 2.5-2.7 s of CPU on a loaded machine
+        # even before the budget fix, while its quadratic shape costs 6-22 s, so 4.0 s still tells the two apart.
+        cpu_limits = {'5000 brackets with an unclosed brace inside (the charge of a broken-off scan)': 4.0}
+        # its wall limit is as wide as its CPU one: 4.0 s of wall under a 4.0 s CPU ceiling is no ceiling at all on a slower runner
+        wall_limits = {'5000 brackets with an unclosed brace inside (the charge of a broken-off scan)': 6.0}
         for cmd, label in cells:
             before, t0 = resource.getrusage(resource.RUSAGE_CHILDREN), time.time()
             rc, out, err = self.bash(cmd)
@@ -298,8 +303,8 @@ class BashReads(GateCase):
             cpu = (used.ru_utime + used.ru_stime) - (before.ru_utime + before.ru_stime)
             with self.subTest(label=label):
                 self.assertIn(rc, (0, 2), label)      # a verdict, not a crash
-                self.assertLess(cpu, 2.0, '%s: %.2fs of CPU' % (label, cpu))
-                self.assertLess(time.time() - t0, 4.0, label)
+                self.assertLess(cpu, cpu_limits.get(label, 2.0), '%s: %.2fs of CPU' % (label, cpu))
+                self.assertLess(time.time() - t0, wall_limits.get(label, 4.0), label)
 
     def test_globs_that_can_match_the_file_are_blocked(self):
         for cmd in ['cat store/.claim*', 'cat store/.c*', 'cat store/.[c]*', 'cat store/.*', 'cat store/*', 'cat store/.claim?signing*', 'cat store/.cl?im-sig*',
