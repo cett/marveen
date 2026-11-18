@@ -4,9 +4,12 @@
 import { APP_TZ } from '../config.js'
 import { db } from './connection.js'
 import { dbx, type Tx } from './facade.js'
-import { eqNoCase, forUpdate, likeNoCase, orderBytes, orderNoCase } from './dialect.js'
+import { advisoryLockSql, eqNoCase, forUpdate, likeNoCase, orderBytes, orderNoCase } from './dialect.js'
 import { resolveWriteTenant } from './write-tenant.js'
 import { Memory, RECENCY_OVERSAMPLE, buildFtsMatchExpression, reRankByRecency, withoutRank } from './memory.js'
+
+/** The advisory key of the first-admin election (see createDashboardUser). */
+export const ELECTION_KEY = 'dashboard-users-election'
 
 export async function getSession(chatId: string): Promise<{ sessionId: string; messageCount: number } | undefined> {
   const row = await dbx.get<{ session_id: string; message_count: number }>('SELECT session_id, message_count FROM sessions WHERE chat_id = ?', chatId)
@@ -56,12 +59,24 @@ export async function createDashboardUser(username: string, passwordHash: string
   // tenant_id=NULL). All subsequent users start as viewer so they can only read until an admin grants them higher
   // access. The emptiness check and the insert are ONE statement: a count read first and an insert after it would
   // let two overlapping first sign-ups both see an empty table and both become admin.
-  const { id, role } = (await dbx.get<{ id: number; role: string }>(
-    `INSERT INTO dashboard_users (username, password_hash, role, tenant_id, created_at, updated_at)
-     VALUES (?, ?, CASE WHEN (SELECT COUNT(*) FROM dashboard_users) = 0 THEN 'admin' ELSE 'viewer' END, ?, ?, ?)
-     RETURNING id, role`,
-    username, passwordHash, tenantId, now, now,
-  ))!
+  // The election lock comes first, on the same transaction: a second sign-up waits until the first one has committed,
+  // and then its statement sees the first admin. One key for the whole table: the election is global (tenant NULL), so a
+  // per-tenant key would not serialize two sign-ups that both write NULL. Tenant-scoped provisioning takes no lock here.
+  // ACCEPTED RACE (not a bug): a tenant admin created in parallel (provisionDashboardUser, no election lock) is counted
+  // only if it committed before this statement's snapshot. Either order of the two writes is a serial order, so the
+  // outcome depends on the order the database chose. The invariant that holds on both orders: a global sign-up becomes
+  // admin only when the table had no user at its snapshot, and two global sign-ups never both become admin.
+  // The lock is transaction-level (pg_advisory_xact_lock): it is released at COMMIT or ROLLBACK, never kept by the pool.
+  const { id, role } = await dbx.tx(async (tx) => {
+    const lock = advisoryLockSql(ELECTION_KEY)
+    if (lock) await tx.run(lock)
+    return (await tx.get<{ id: number; role: string }>(
+      `INSERT INTO dashboard_users (username, password_hash, role, tenant_id, created_at, updated_at)
+       VALUES (?, ?, CASE WHEN (SELECT COUNT(*) FROM dashboard_users) = 0 THEN 'admin' ELSE 'viewer' END, ?, ?, ?)
+       RETURNING id, role`,
+      username, passwordHash, tenantId, now, now,
+    ))!
+  })
   return { id, username, password_hash: passwordHash, role, tenant_id: tenantId, email: null, display_name: null, created_at: now, updated_at: now, disabled: 0 }
 }
 
