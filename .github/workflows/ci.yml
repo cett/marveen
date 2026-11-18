@@ -32,7 +32,10 @@ jobs:
         run: npm ci
 
       - name: Security audit
-        run: npm audit --audit-level=high
+        # High and critical advisories fail the build, except those on scripts/ci/npm-audit-allowlist.json, which
+        # carry an expiry date and a reason: an advisory without a fixed release can be accepted until a date, and
+        # the build fails again when the date passes or a new advisory appears (replaces `npm audit --audit-level=high`).
+        run: node scripts/ci/npm-audit-gate.mjs
 
       - name: Security audit (tools/eslint lint toolchain, advisory)
         # The isolated lint toolchain has its own lock, so the root audit does not see it. A high advisory

@@ -1,0 +1,9 @@
+{
+  "allow": [
+    {
+      "id": "GHSA-fc5q-39xc-vjpf",
+      "expires": "2026-12-18",
+      "reason": "picomatch ReDoS: every version is affected and there is no fixed release. It sits only in the dev chain (vitest, vite, tinyglobby, fdir), never in the shipped runtime. Review when a fixed picomatch is published, or on the expiry date."
+    }
+  ]
+}
