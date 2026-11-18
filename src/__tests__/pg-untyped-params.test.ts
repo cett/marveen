@@ -21,7 +21,18 @@ async function sqlOf(fn: () => Promise<unknown>): Promise<Array<{ sql: string; p
     const real = (dbx[m] as (...a: unknown[]) => Promise<unknown>).bind(dbx)
     return vi.spyOn(dbx, m as 'all').mockImplementation(((sql: string, ...params: unknown[]) => { seen.push({ sql, params }); return real(sql, ...params) }) as never)
   })
-  try { await fn() } finally { for (const s of spies) s.mockRestore() }
+  // statements on a transaction handle (a writer that takes its key lock in dbx.tx) are recorded too
+  const realTx = dbx.tx.bind(dbx) as unknown as (fn: (tx: Record<string, unknown>) => Promise<unknown>, opts?: unknown) => Promise<unknown>
+  const txSpy = vi.spyOn(dbx, 'tx').mockImplementation(((fn: (tx: Record<string, unknown>) => Promise<unknown>, opts?: unknown) =>
+    realTx((tx) => {
+      const rec = Object.create(tx) as Record<string, unknown>
+      for (const m of ['all', 'get', 'run'] as const) {
+        const real = (tx[m] as (...a: unknown[]) => Promise<unknown>).bind(tx)
+        rec[m] = (sql: string, ...params: unknown[]) => { seen.push({ sql, params }); return real(sql, ...params) }
+      }
+      return fn(rec)
+    }, opts)) as never)
+  try { await fn() } finally { for (const s of spies) s.mockRestore(); txSpy.mockRestore() }
   return seen
 }
 function expectPortable(statements: Array<{ sql: string; params: unknown[] }>): void {
