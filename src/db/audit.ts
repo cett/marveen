@@ -4,7 +4,7 @@
 import { logger } from '../logger.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
 import { dbx, dbxDialect, type SqlOps } from './facade.js'
-import { advisoryLockKeyed, epochLocalDate, epochLocalMonth } from './dialect.js'
+import { advisoryKeyOf, advisoryLockKeyed, epochLocalDate, epochLocalMonth } from './dialect.js'
 import { likeContains } from './like.js'
 import { upsertOtelSpan } from './observability.js'
 import { dashboardUserTenant, resolveWriteTenant } from './write-tenant.js'
@@ -230,7 +230,7 @@ export async function logSkillUsage(
   // The (agent, skill) lock is the first statement of one transaction, then the same single INSERT ... WHERE NOT EXISTS: on
   // PostgreSQL two overlapping calls for one invocation would otherwise both see no row (READ COMMITTED) and both insert.
   // No unique index can express the sliding window, so the lock is what serializes them; the statement is unchanged.
-  const lock = advisoryLockKeyed('skill-usage:', JSON.stringify([agentId, skillName]))
+  const lock = advisoryLockKeyed('skill-usage:', advisoryKeyOf(agentId, skillName))
   const res = await dbx.tx(async (tx) => {
     if (lock) await tx.run(lock.sql, ...lock.params)
     return tx.run(`INSERT INTO skill_usage (agent_id, skill_name, trigger_type, session_id, created_at, source, tenant_id)
