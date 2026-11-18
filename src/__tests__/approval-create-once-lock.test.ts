@@ -25,6 +25,35 @@ function holdCreateKey(il: ReturnType<typeof interleave>, point: string): Promis
   })
 }
 
+// The scope of the count and of the dedup (one tenant, one category, a live deadline): each row below is a pending row that
+// must NOT count against the limit or dedup the create of agent-a in the default tenant and email_send.
+describe('create once: the scope of the count and of the dedup', () => {
+  it('a pending row of another tenant does not count against the limit', async () => {
+    expect((await createApprovalOnce({ id: 'ap-other-tenant', agent_id: 'agent-a', tenant_id: 'other', category: 'email_send', action_description: 'x', content_hash: HASH_B, human_only: true, max_pending: 10 })).ok).toBe(true)
+    const r = await createApprovalOnce({ id: 'ap-scope-1', agent_id: 'agent-a', category: 'email_send', action_description: 'x', content_hash: HASH_A, human_only: true, max_pending: 1 })
+    expect(r.ok).toBe(true)
+  })
+
+  it('a pending row of another tenant with the same hash does not dedup the create', async () => {
+    await createApprovalOnce({ id: 'ap-other-hash', agent_id: 'agent-a', tenant_id: 'other', category: 'email_send', action_description: 'x', content_hash: HASH_A, human_only: true, max_pending: 10 })
+    const r = await createApprovalOnce({ id: 'ap-scope-2', agent_id: 'agent-a', category: 'email_send', action_description: 'x', content_hash: HASH_A, human_only: true, max_pending: 10 })
+    expect(r).toMatchObject({ ok: true, deduplicated: false })
+  })
+
+  it('a pending row of another category does not count against the limit', async () => {
+    expect((await createApprovalOnce({ id: 'ap-other-cat', agent_id: 'agent-a', category: 'other_cat', action_description: 'x', content_hash: HASH_B, human_only: true, max_pending: 10 })).ok).toBe(true)
+    const r = await createApprovalOnce({ id: 'ap-scope-3', agent_id: 'agent-a', category: 'email_send', action_description: 'x', content_hash: HASH_A, human_only: true, max_pending: 1 })
+    expect(r.ok).toBe(true)
+  })
+
+  it('an expired pending row does not count against the limit', async () => {
+    await createApprovalOnce({ id: 'ap-expired', agent_id: 'agent-a', category: 'email_send', action_description: 'x', content_hash: HASH_B, human_only: true, max_pending: 10 })
+    await dbx.run("UPDATE approvals SET timeout_at = ? WHERE id = 'ap-expired'", Math.floor(Date.now() / 1000) - 100)
+    const r = await createApprovalOnce({ id: 'ap-scope-4', agent_id: 'agent-a', category: 'email_send', action_description: 'x', content_hash: HASH_A, human_only: true, max_pending: 1 })
+    expect(r.ok).toBe(true)
+  })
+})
+
 describe('create once: two creates with one key', () => {
   it('the same hash twice gives one approval, and the second one is deduplicated', async () => {
     const il = interleave()
