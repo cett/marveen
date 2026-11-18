@@ -6,7 +6,7 @@
 // Privacy: neutral fixtures only (agent-a, email_send).
 
 import { describe, expect, it } from 'vitest'
-import { advisoryLockKeyed } from '../db/dialect.js'
+import { advisoryKeyOf, advisoryLockKeyed } from '../db/dialect.js'
 import { createApprovalOnce } from '../db/vault.js'
 import { useTestDb, testDbMode } from './helpers/with-test-db.js'
 import { interleave, waitBlockedOnLock } from './helpers/interleave.js'
@@ -19,7 +19,7 @@ const HASH_B = 'b'.repeat(64)
 /** Holds the create key of (agent-a, default, email_send) until the gate opens, as the creates of that key take it. */
 function holdCreateKey(il: ReturnType<typeof interleave>, point: string): Promise<void> {
   return dbx.tx(async (tx) => {
-    const lock = advisoryLockKeyed('approval:', JSON.stringify(['agent-a', 'default', 'email_send']), testDbMode())
+    const lock = advisoryLockKeyed('approval:', advisoryKeyOf('agent-a', 'default', 'email_send'), testDbMode())
     if (lock) await tx.run(lock.sql, ...lock.params)
     await il.pass(point)
   })
