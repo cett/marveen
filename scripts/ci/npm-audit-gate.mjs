@@ -1,18 +1,31 @@
 #!/usr/bin/env node
-// CI gate for the root `npm audit`: high and critical advisories fail the build, except the ones that sit on a
-// small allowlist with an expiry date and a reason (scripts/ci/npm-audit-allowlist.json). It replaces the plain
-// `npm audit --audit-level=high`, which cannot say "this advisory has no fixed release, accept it until <date>".
+// CI gate for the root `npm audit`: high advisories fail the build, except the ones that sit on a small allowlist
+// with a package, an adding date, an expiry date no more than MAX_WINDOW_DAYS later, a reason and the person who
+// added it (scripts/ci/npm-audit-allowlist.json). It replaces the plain `npm audit --audit-level=high`, which cannot
+// say "this advisory has no fixed release, accept it until <date>".
+//
+// The allowlist is gate configuration: adding an entry is a human decision made in a reviewed change. Nothing in
+// this script, and no agent automation, writes it.
 //
 // The rules (all fail closed):
-//   - a high or critical advisory that is not on the list fails;
-//   - an allowlist entry whose date has passed fails, whether or not the advisory is still reported (a stale
-//     exception must be removed or renewed by a person, it does not silently keep protecting a build);
-//   - a malformed allowlist, an unreadable or unexpected audit report (registry error, other report version,
-//     empty output) fails;
+//   - a high advisory that is not on the list fails; the match is on the GHSA id AND the package it hits, so one
+//     advisory reported on several packages needs one entry per package, and an unlisted advisory next to a listed
+//     one still fails;
+//   - a critical advisory can never be excepted: it fails even when it is listed, and the entry is reported;
+//   - an entry whose date has passed fails, whether or not the advisory is still reported (a stale exception must
+//     be removed or renewed by a person, it does not silently keep protecting a build). An entry is valid through
+//     its expiry day (UTC) and fails from the next day on;
+//   - an entry whose window (expires minus added) is longer than MAX_WINDOW_DAYS, whose expiry is before its adding
+//     date, or whose adding date lies in the future fails (a future "added" would stretch the window);
+//   - a malformed list, an unreadable or unexpected audit report (registry error, other report version, empty or
+//     non-JSON output, npm killed by a signal) fails;
 //   - a package that npm marks high or critical but whose advisory this script cannot find in the report fails
 //     (an unexplained severity is never waved through).
-// An entry is valid through its expiry day (UTC) and fails from the next day on. Moderate and lower advisories
-// are not this gate's business, as with `--audit-level=high`.
+// An exception with WARN_DAYS or fewer days left is printed as a warning. Moderate and lower advisories are not this
+// gate's business, as with `--audit-level=high`.
+//
+// The clock is an argument of evaluate() (tests pass a fake date); the CLI reads the real UTC date and has no flag
+// to change it, so a workflow cannot move the clock.
 //
 // No dependencies, so it runs before anything else is trusted. Usage:
 //   node scripts/ci/npm-audit-gate.mjs                          (runs `npm audit --json`)
@@ -25,9 +38,12 @@ import { fileURLToPath } from 'node:url'
 
 const BLOCKING = new Set(['high', 'critical'])
 const GHSA_RE = /^GHSA(-[a-z0-9]{4}){3}$/i
+const PKG_RE = /^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/
 const DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/
-/** A warning is raised when an exception has this many days or fewer left. */
-export const WARN_DAYS = 14
+/** The longest an exception may last, counted from the day it was added. */
+export const MAX_WINDOW_DAYS = 30
+/** An exception with this many days or fewer left is printed as a warning. */
+export const WARN_DAYS = 7
 
 /** True for a real calendar date written YYYY-MM-DD (2026-02-30 is not one). */
 function isCalendarDate(s) {
@@ -41,9 +57,15 @@ function daysBetween(fromIso, toIso) {
   return Math.round((Date.parse(toIso + 'T00:00:00Z') - Date.parse(fromIso + 'T00:00:00Z')) / 86_400_000)
 }
 
+const plural = (n) => `${n} day${n === 1 ? '' : 's'}`
+const keyOf = (id, pkg) => `${id.toLowerCase()}|${pkg}`
+
 /**
- * Validate the allowlist document: { "allow": [ { "id": "GHSA-...", "expires": "YYYY-MM-DD", "reason": "..." } ] }.
- * Returns { entries: Map<lowercased id, entry>, errors: string[] }; any error means the gate fails.
+ * Validate the allowlist document:
+ *   { "allow": [ { "id": "GHSA-...", "package": "name", "added": "YYYY-MM-DD", "expires": "YYYY-MM-DD",
+ *                  "reason": "...", "addedBy": "..." } ] }
+ * Returns { entries: Map<"lower-case id|package", entry>, errors: string[] }; any error means the gate fails.
+ * The window and the future-date checks need the clock, so evaluate() does those.
  */
 export function parseAllowlist(doc) {
   const errors = []
@@ -55,11 +77,15 @@ export function parseAllowlist(doc) {
     const at = `allow[${i}]`
     if (!e || typeof e !== 'object' || Array.isArray(e)) { errors.push(`${at} is not an object`); return }
     if (typeof e.id !== 'string' || !GHSA_RE.test(e.id)) { errors.push(`${at}.id is not a GHSA id`); return }
-    if (typeof e.expires !== 'string' || !isCalendarDate(e.expires)) { errors.push(`${at} (${e.id}): "expires" is not a YYYY-MM-DD date`); return }
-    if (typeof e.reason !== 'string' || e.reason.trim() === '') { errors.push(`${at} (${e.id}): "reason" is empty`); return }
-    const key = e.id.toLowerCase()
-    if (entries.has(key)) { errors.push(`${at}: ${e.id} is listed twice`); return }
-    entries.set(key, { id: e.id, expires: e.expires, reason: e.reason })
+    const who = `${at} (${e.id})`
+    if (typeof e.package !== 'string' || !PKG_RE.test(e.package)) { errors.push(`${who}: "package" is not an npm package name`); return }
+    if (typeof e.added !== 'string' || !isCalendarDate(e.added)) { errors.push(`${who}: "added" is not a YYYY-MM-DD date`); return }
+    if (typeof e.expires !== 'string' || !isCalendarDate(e.expires)) { errors.push(`${who}: "expires" is not a YYYY-MM-DD date`); return }
+    if (typeof e.reason !== 'string' || e.reason.trim() === '') { errors.push(`${who}: "reason" is empty`); return }
+    if (typeof e.addedBy !== 'string' || e.addedBy.trim() === '') { errors.push(`${who}: "addedBy" is empty`); return }
+    const key = keyOf(e.id, e.package)
+    if (entries.has(key)) { errors.push(`${who}: ${e.id} on ${e.package} is listed twice`); return }
+    entries.set(key, { id: e.id, package: e.package, added: e.added, expires: e.expires, reason: e.reason, addedBy: e.addedBy })
   })
   return { entries, errors }
 }
@@ -83,6 +109,16 @@ export function evaluate({ audit, allowlist, today }) {
   const { entries, errors } = parseAllowlist(allowlist)
   for (const e of errors) failures.push(`allowlist: ${e}`)
 
+  // Window checks per entry (these need the clock). A bad entry stays in the map so the rest is still reported,
+  // but the failure below fails the gate whatever else happens.
+  const badEntry = new Set()
+  for (const [key, e] of entries) {
+    const window = daysBetween(e.added, e.expires)
+    if (e.added > today) { failures.push(`allowlist: ${e.id} on ${e.package} has an "added" date in the future (${e.added})`); badEntry.add(key) }
+    else if (window < 0) { failures.push(`allowlist: ${e.id} on ${e.package} expires (${e.expires}) before it was added (${e.added})`); badEntry.add(key) }
+    else if (window > MAX_WINDOW_DAYS) { failures.push(`allowlist: ${e.id} on ${e.package} lasts ${plural(window)} (${e.added} to ${e.expires}), more than the ${MAX_WINDOW_DAYS} allowed`); badEntry.add(key) }
+  }
+
   // The report must be one this script understands, otherwise "no findings" would mean "no idea".
   const vulns = audit && typeof audit === 'object' ? audit.vulnerabilities : undefined
   if (!audit || typeof audit !== 'object' || audit.error || audit.auditReportVersion !== 2 ||
@@ -91,17 +127,16 @@ export function evaluate({ audit, allowlist, today }) {
     return { ok: false, failures, warnings, notes }
   }
 
-  // Every blocking advisory object, once per id, with the packages it hits.
+  // Every blocking advisory object, once per (id, package), with its severity.
   const advisories = new Map()
   for (const [pkg, v] of Object.entries(vulns)) {
     for (const via of Array.isArray(v?.via) ? v.via : []) {
-      if (!via || typeof via !== 'object') continue
+      if (!via || typeof via !== 'object') continue // a string is only a link of the chain
       if (!BLOCKING.has(String(via.severity).toLowerCase())) continue
       const id = advisoryId(via)
       if (!id) { failures.push(`audit: a ${via.severity} advisory on ${pkg} has neither a GHSA url nor a source id`); continue }
-      const cur = advisories.get(id) ?? { id, severity: String(via.severity).toLowerCase(), title: String(via.title ?? ''), packages: new Set() }
-      cur.packages.add(String(via.name ?? pkg))
-      advisories.set(id, cur)
+      const name = String(via.name ?? pkg)
+      advisories.set(keyOf(id, name), { id, name, severity: String(via.severity).toLowerCase(), title: String(via.title ?? '') })
     }
   }
 
@@ -116,25 +151,28 @@ export function evaluate({ audit, allowlist, today }) {
   }
   for (const [pkg, v] of Object.entries(vulns)) {
     if (BLOCKING.has(String(v?.severity).toLowerCase()) && !reaches(pkg)) {
-      failures.push(`audit: ${pkg} is marked ${v.severity} but no ${v.severity}/critical advisory explains it in the report`)
+      failures.push(`audit: ${pkg} is marked ${v.severity} but no high or critical advisory explains it in the report`)
     }
   }
 
   const used = new Set()
-  for (const adv of [...advisories.values()].sort((a, b) => a.id.localeCompare(b.id))) {
-    const hit = entries.get(adv.id.toLowerCase())
-    const what = `${adv.id} (${adv.severity}, ${[...adv.packages].sort().join(', ')}): ${adv.title}`
+  for (const [key, adv] of [...advisories.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+    const what = `${adv.id} on ${adv.name} (${adv.severity}): ${adv.title}`
+    const hit = entries.get(key)
     if (!hit) { failures.push(`not allowlisted: ${what}`); continue }
-    used.add(adv.id.toLowerCase())
+    used.add(key)
+    if (adv.severity === 'critical') { failures.push(`a critical advisory cannot be excepted, remove the entry and fix the dependency: ${what}`); continue }
+    if (badEntry.has(key)) continue // reported above
     if (today > hit.expires) continue // reported once, as an expired entry, below
     const left = daysBetween(today, hit.expires)
-    notes.push(`allowed until ${hit.expires} (${left} day${left === 1 ? '' : 's'} left): ${what}. Reason: ${hit.reason}`)
-    if (left <= WARN_DAYS) warnings.push(`the exception for ${adv.id} ends on ${hit.expires} (${left} day${left === 1 ? '' : 's'} left): renew it with a reason or remove it`)
+    notes.push(`exception in use, ${plural(left)} left (until ${hit.expires}, added ${hit.added} by ${hit.addedBy}): ${what}. Reason: ${hit.reason}`)
+    if (left <= WARN_DAYS) warnings.push(`the exception for ${adv.id} on ${adv.name} ends on ${hit.expires} (${plural(left)} left): fix the dependency or renew the entry in a reviewed change`)
   }
 
-  for (const hit of entries.values()) {
-    if (today > hit.expires) failures.push(`expired exception: ${hit.id} ended on ${hit.expires}. Fix the dependency, or renew the entry with a new date and reason`)
-    else if (!used.has(hit.id.toLowerCase())) warnings.push(`the exception for ${hit.id} matches no advisory in this report: remove it`)
+  for (const [key, hit] of entries) {
+    if (badEntry.has(key)) continue
+    if (today > hit.expires) failures.push(`expired exception: ${hit.id} on ${hit.package} ended on ${hit.expires}. Fix the dependency, or renew the entry with a new date and reason`)
+    else if (!used.has(key)) warnings.push(`the exception for ${hit.id} on ${hit.package} matches no advisory in this report: remove it`)
   }
 
   return { ok: failures.length === 0, failures, warnings, notes }
@@ -165,11 +203,13 @@ function main(argv) {
     audit = r.value
     auditError = r.error
   } else {
-    // npm exits 1 whenever it finds anything, so the exit code says nothing here: the JSON on stdout does.
+    // npm exits 1 whenever it finds anything, so a non-zero exit alone says nothing: the JSON on stdout does. But
+    // a run that was killed, timed out or printed nothing usable is not a report.
     const r = spawnSync('npm', ['audit', '--json'], { encoding: 'utf-8', maxBuffer: 64 * 1024 * 1024, timeout: 180_000 })
     if (r.error) auditError = `npm audit could not run: ${r.error.message}`
+    else if (r.signal) auditError = `npm audit was killed by ${r.signal}`
     else {
-      try { audit = JSON.parse(r.stdout) } catch { auditError = 'npm audit printed no JSON (registry or network error?)' }
+      try { audit = JSON.parse(r.stdout) } catch { auditError = `npm audit printed no JSON (exit ${r.status}; registry or network error?)` }
     }
   }
 
