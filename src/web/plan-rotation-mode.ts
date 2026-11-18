@@ -27,13 +27,19 @@
 
 import { getSystemConfigUncached, getLastConfigChangeValue } from '../db.js'
 import { logger } from '../logger.js'
+import { IS_ISOLATED_MODE } from '../config.js'
 
 export const ROTATION_MODE_KEY = 'CLAUDE_ROTATION_MODE'
 
 export type RotationMode = 'off' | 'observe' | 'act'
 
 /** Why the live mode is not simply the stored value. null: it is. */
-export type RotationModeReason = 'invalid_value' | 'not_db_source' | 'unlogged_value' | 'read_error'
+export type RotationModeReason =
+  | 'invalid_value'
+  | 'not_db_source'
+  | 'unlogged_value'
+  | 'read_error'
+  | 'isolated_instance'
 
 export interface RotationModeReading {
   /** What the monitor applies. */
@@ -70,8 +76,25 @@ export function _resetRotationModeWarningForTest(): void {
   lastWarned = ''
 }
 
+/**
+ * An isolated instance (MARVEEN_STORE_DIR: a verify copy of the live data) can inherit a trusted-looking `act`
+ * from the copied system_config (source db and a matching journal row), while the tmux session name of the
+ * main agent is the same on the whole machine: an isolated instance in act would restart the REAL main
+ * session. So there the applied mode is observe whatever is stored. The constant comes from config.ts,
+ * not from the environment (a guard test keeps the environment out of this reader): it can only LOWER the mode.
+ */
 /** The mode the monitor applies right now. Never throws. */
 export async function readRotationMode(): Promise<RotationModeReading> {
+  const reading = await readStoredRotationMode()
+  // min(stored, observe): the clamp only LOWERS. act -> observe; observe stays observe; off stays off (nothing
+  // runs, not even the pane read), and then no reason is given because nothing was clamped.
+  if (IS_ISOLATED_MODE && reading.mode === 'act') {
+    return { mode: 'observe', stored: reading.stored, reason: 'isolated_instance' }
+  }
+  return reading
+}
+
+async function readStoredRotationMode(): Promise<RotationModeReading> {
   let stored: string | null = null
   try {
     const row = await getSystemConfigUncached(ROTATION_MODE_KEY)

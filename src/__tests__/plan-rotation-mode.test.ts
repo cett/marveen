@@ -20,7 +20,7 @@ import { fileURLToPath } from 'node:url'
 import type http from 'node:http'
 import type { RouteContext } from '../web/routes/types.js'
 
-const flags = vi.hoisted(() => ({ enforce: true, unreadable: false, storeDir: '' }))
+const flags = vi.hoisted(() => ({ enforce: true, unreadable: false, storeDir: '', isolated: false }))
 
 vi.mock('../config.js', async (importOriginal) => {
   const { mkdtempSync: mk, mkdirSync: mkd } = await import('node:fs')
@@ -35,6 +35,9 @@ vi.mock('../config.js', async (importOriginal) => {
     ...orig,
     STORE_DIR: store,
     MAIN_AGENT_ID: 'main-agent',
+    get IS_ISOLATED_MODE() {
+      return flags.isolated
+    },
     get APPROVAL_HUMAN_ONLY_ENFORCE() {
       if (flags.unreadable) throw new Error('switch unreadable')
       return flags.enforce
@@ -55,6 +58,7 @@ import {
   ROTATION_MODE_KEY,
 } from '../web/plan-rotation-mode.js'
 import { CLAUDE_PLANS_STATE_PATH, readClaudePlansState } from '../web/claude-plans-state.js'
+import { createPlanRotationMonitor } from '../web/plan-rotation-monitor.js'
 
 const HASH = '$scrypt$ln=16,r=8,p=1$c2FsdA==$a2V5'
 let cookies: Record<string, string>
@@ -128,6 +132,7 @@ function trippedBreakerOnDisk(): void {
 beforeEach(async () => {
   flags.enforce = true
   flags.unreadable = false
+  flags.isolated = false
   initDatabase(':memory:')
   _clearSessionCacheForTest()
   _resetRotationModeWarningForTest()
@@ -468,5 +473,79 @@ describe('the other writers of system_config cannot reach CLAUDE_ROTATION_MODE',
       expect(r.status, JSON.stringify(key)).toBe(404)
     }
     expect(getSystemConfig(ROTATION_MODE_KEY)).toBeUndefined()
+  })
+})
+
+describe('an isolated instance (MARVEEN_STORE_DIR) applies observe whatever is stored', () => {
+  // A verify copy of the live data can carry a confirmed act (source db + matching journal row), while the tmux
+  // session name of the main agent is the same on the whole machine: act there would restart the REAL session.
+  it('a confirmed act reads as observe, and the reason names the instance', async () => {
+    await post(sessionCaller(cookies['owner']!), 'act')
+    flags.isolated = true
+    expect(await readRotationMode()).toEqual({ mode: 'observe', stored: 'act', reason: 'isolated_instance' })
+  })
+
+  it('a confirmed off stays off, with no reason: the clamp only lowers, nothing was clamped', async () => {
+    await post(sessionCaller(cookies['owner']!), 'off')
+    flags.isolated = true
+    expect(await readRotationMode()).toEqual({ mode: 'off', stored: 'off', reason: null })
+  })
+
+  it('observe and no row need no explanation', async () => {
+    flags.isolated = true
+    expect(await readRotationMode()).toEqual({ mode: 'observe', stored: null, reason: null })
+    await setSystemConfig(ROTATION_MODE_KEY, 'observe', 'db')
+    expect(await readRotationMode()).toEqual({ mode: 'observe', stored: 'observe', reason: null })
+  })
+
+  it('an untrusted act keeps its own, more specific reason', async () => {
+    await setSystemConfig(ROTATION_MODE_KEY, 'act', 'db') // no journal row
+    flags.isolated = true
+    expect(await readRotationMode()).toEqual({ mode: 'observe', stored: 'act', reason: 'unlogged_value' })
+  })
+
+  it('the same confirmed act on a non-isolated process is act (the control)', async () => {
+    await post(sessionCaller(cookies['owner']!), 'act')
+    flags.isolated = false
+    expect(await readRotationMode()).toEqual({ mode: 'act', stored: 'act', reason: null })
+  })
+
+  it('GET /api/settings shows applied observe, stored act and the reason', async () => {
+    await post(sessionCaller(cookies['owner']!), 'act')
+    flags.isolated = true
+    expect(await rotationRow()).toMatchObject({ value: 'observe', stored: 'act', reason: 'isolated_instance' })
+  })
+
+  it('the monitor, fed by the real reader, never calls apply or restarts anything: stored act + isolated', async () => {
+    await post(sessionCaller(cookies['owner']!), 'act')
+    flags.isolated = true
+    const now = Date.now()
+    const resets = Math.floor(now / 1000) + 2 * 3600
+    const spent = { snapshot: { kind: 'snapshot' as const, ageSec: 5, windows: { five_hour: { usedPercent: 100, resetsAt: resets }, seven_day: { usedPercent: 40, resetsAt: resets + 86400 } } }, detail: 'ok' as const, writtenAt: Math.floor(now / 1000) }
+    const fresh = { snapshot: { kind: 'snapshot' as const, ageSec: 5, windows: { five_hour: { usedPercent: 5, resetsAt: resets }, seven_day: { usedPercent: 5, resetsAt: resets + 86400 } } }, detail: 'ok' as const, writtenAt: Math.floor(now / 1000) }
+    let state = { activePlanByAgent: { 'agent-a': 'plan-a' }, plans: {} } as import('../web/claude-plans-state.js').ClaudePlansState
+    const apply = vi.fn()
+    const notify = vi.fn(() => Promise.resolve(true))
+    const plan = (id: string) => ({ id, label: id, configDir: `/cfg/${id}`, planType: 'personal' as const, channelsAllowed: true })
+    const monitor = createPlanRotationMonitor({
+      now: () => now,
+      mainAgentId: 'agent-a',
+      readMode: readRotationMode,
+      isEnabled: () => true,
+      readPlans: () => [plan('plan-a'), plan('plan-b')],
+      readSnapshot: (p) => (p.id === 'plan-a' ? spent : fresh),
+      readState: () => state,
+      writeState: (s) => { state = s },
+      apply,
+      notify,
+    })
+    expect((await monitor.tick()).outcome).toBe('would-rotate')
+    expect(apply).not.toHaveBeenCalled()
+    expect(notify).not.toHaveBeenCalled()
+    // the control: the same set-up on a non-isolated process rotates
+    flags.isolated = false
+    apply.mockResolvedValue({ ok: true, agentId: 'agent-a', activePlanId: 'plan-b' })
+    expect((await monitor.tick()).outcome).toBe('rotated')
+    expect(apply).toHaveBeenCalledTimes(1)
   })
 })
