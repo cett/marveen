@@ -402,6 +402,14 @@ export async function useUpApproval(id: string, p: ConsumeParams, now: number, r
 // test can run it alone against rows that break one condition.
 // A function, not a constant: the LIKE is built per dialect (likeNoCase), and the backend can be switched after this
 // module loaded. The ref prefix match ignores ASCII case on both engines, as SQLite's LIKE always did.
+/**
+ * The adoption write. Its WHERE repeats the reservation's conditions as a backstop: the reserved-row select before it is the
+ * first filter, and this write holds for a direct call too (adoptReservation is exported). The two columns the backstop
+ * names cannot change between the reservation and this write: consumed_by is written only by consumeStatement, which needs
+ * consumed_at IS NULL (a reserved row has it set), and resolved_via only by resolveApproval, which needs status = 'pending'
+ * (a reserved row is approved). So under the writers that exist, a mutant that drops either condition is equivalent in the
+ * race, and it is pinned by the direct-call scope cells in approval-consume-race.test.ts.
+ */
 function adoptStatement(): string {
   return `
   UPDATE approvals SET used_at = ?, used_ref = ?
