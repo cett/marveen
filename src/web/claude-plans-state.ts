@@ -37,8 +37,14 @@ export interface ObservedPlanState {
 }
 
 /** Why a rotation was decided. 'hard-bypass' is the one immediate re-rotation
- *  the cooldown allows when the NEW active plan is already spent. */
-export type RotationTrigger = 'soft' | 'hard' | 'hard-bypass'
+ *  the cooldown allows when the NEW active plan is already spent. 'manual' is
+ *  a person's rotate request (POST /api/claude-plans/rotate). */
+export type RotationTrigger = 'soft' | 'hard' | 'hard-bypass' | 'manual'
+
+/** Who decided it. An entry without a source (older file) is the monitor's.
+ *  The breaker and the restart backoff judge the MONITOR's behaviour only; the
+ *  cooldown sees both, because a manual switch moves the fleet just as well. */
+export type RotationSource = 'monitor' | 'manual'
 
 /** What became of a decision. Only mode 'act' + 'rotated' counts toward the
  *  cooldown and the breaker; mode 'act' + 'failed' toward the restart backoff. */
@@ -55,6 +61,7 @@ export interface RotationLogEntry {
   usedPercent?: number
   mode: 'observe' | 'act'
   result: RotationOutcome
+  source?: RotationSource
 }
 
 /** Last verdict the monitor reached for one plan (dashboard telemetry). */
@@ -111,7 +118,7 @@ function isStringRecord(v: unknown): v is Record<string, string> {
 }
 
 const HEALTH_STATUSES: readonly string[] = ['ok', 'pressure', 'exhausted', 'unknown']
-const TRIGGERS: readonly string[] = ['soft', 'hard', 'hard-bypass']
+const TRIGGERS: readonly string[] = ['soft', 'hard', 'hard-bypass', 'manual']
 const OUTCOMES: readonly string[] = ['rotated', 'would-rotate', 'failed', 'refused', 'stale-decision']
 
 const isFiniteNumber = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)
@@ -134,6 +141,7 @@ function parseLogEntry(v: unknown): RotationLogEntry | null {
     ...(isFiniteNumber(v.usedPercent) ? { usedPercent: v.usedPercent } : {}),
     mode: v.mode,
     result: v.result as RotationOutcome,
+    ...(v.source === 'monitor' || v.source === 'manual' ? { source: v.source } : {}),
   }
 }
 
@@ -245,6 +253,12 @@ export function resetRotationGuards(nowMs: number): boolean {
   const { breaker: _dropped, ...rest } = m
   writeClaudePlansState({ ...state, monitor: { ...rest, resetAt: nowMs } })
   return true
+}
+
+/** Append one entry to the persisted rotation log (read-modify-write of the
+ *  side-car, no awaits inside). */
+export function recordRotationEntry(entry: RotationLogEntry): void {
+  writeClaudePlansState(appendRotationLog(readClaudePlansState(), entry))
 }
 
 /** Pure: append one entry to the rotation log (newest last, capped). */

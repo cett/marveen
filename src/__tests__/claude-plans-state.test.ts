@@ -221,6 +221,28 @@ describe('monitor block: reading', () => {
     expect(log?.map((e) => e.ts)).toEqual([1_700_000_000_000, 1_700_000_000_001])
   })
 
+  it('a log entry source is kept when valid (monitor, manual) and dropped otherwise; manual is a valid trigger', () => {
+    writeFileSync(
+      CLAUDE_PLANS_STATE_PATH,
+      JSON.stringify({
+        activePlanByAgent: {},
+        plans: {},
+        monitor: {
+          rotationLog: [
+            { ...goodEntry, ts: 1, source: 'manual', trigger: 'manual' },
+            { ...goodEntry, ts: 2, source: 'monitor' },
+            { ...goodEntry, ts: 3, source: 'robot' },
+            { ...goodEntry, ts: 4 },
+          ],
+        },
+      }),
+    )
+    const log = readClaudePlansState().monitor!.rotationLog!
+    expect(log.map((e) => e.source)).toEqual(['manual', 'monitor', undefined, undefined])
+    expect(log[0]!.trigger).toBe('manual')
+    expect('source' in log[3]!).toBe(false)
+  })
+
   it('an unknown health status is dropped, a known one kept', () => {
     writeFileSync(
       CLAUDE_PLANS_STATE_PATH,

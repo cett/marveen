@@ -18,7 +18,7 @@ import { readBody, json } from '../http-helpers.js'
 import { logger } from '../../logger.js'
 import { MAIN_AGENT_ID } from '../../config.js'
 import { readClaudePlans, writeClaudePlans, validatePlan } from '../claude-plans.js'
-import { readClaudePlansState } from '../claude-plans-state.js'
+import { readClaudePlansState, recordRotationEntry } from '../claude-plans-state.js'
 import { performRotation } from '../plan-rotation-apply.js'
 import type { RouteContext } from './types.js'
 
@@ -103,10 +103,28 @@ export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> 
     // Every gate, the state write, the restart and the mirror write live in
     // performRotation (plan-rotation-apply.ts), shared with the backend
     // rotation monitor. This route only parses and maps the result.
+    const fromPlanId = readClaudePlansState().activePlanByAgent[agentId] ?? null
     const result = await performRotation({ agentId, targetPlanId })
     if (!result.ok) {
       json(res, { error: result.error, hint: result.hint }, result.status)
       return true
+    }
+    // A person's rotation goes in the same log the monitor's cooldown reads, tagged manual: it starts the
+    // cooldown (the fleet did move) but does not count toward the breaker or the restart give-up. The
+    // rotation already happened, so a log write failure must not turn the answer into an error.
+    try {
+      recordRotationEntry({
+        ts: Date.now(),
+        agentId: result.agentId,
+        from: fromPlanId,
+        to: result.activePlanId,
+        trigger: 'manual',
+        mode: 'act',
+        result: 'rotated',
+        source: 'manual',
+      })
+    } catch (err) {
+      logger.warn({ err, agentId: result.agentId }, 'Could not log the manual plan rotation')
     }
     json(res, { ok: true, agentId: result.agentId, activePlanId: result.activePlanId })
     return true

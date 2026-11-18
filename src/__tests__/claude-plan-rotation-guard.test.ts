@@ -206,6 +206,65 @@ describe('human reset (resetAtMs)', () => {
   })
 })
 
+describe('manual rotations (source manual)', () => {
+  const manual = (ageMs: number, over: Partial<RotationLogEntry> = {}) =>
+    entry({ ageMs, trigger: 'manual', source: 'manual', agentId: 'agent-m', ...over })
+
+  it('manual rotations do not count toward the breaker (3 of them: no trip)', () => {
+    const log = [manual(300 * MIN), manual(200 * MIN), manual(100 * MIN)]
+    expect(guard({ urgency: 'hard', log })).toEqual({ verdict: 'go', trigger: 'hard' })
+  })
+  it('the monitor entries still count next to many manual ones: 2 monitor + 5 manual does not trip, 3 monitor does', () => {
+    const mon = (ageMs: number, agentId: string) => entry({ ageMs, agentId })
+    const manuals = [330, 320, 310, 150, 140].map((m) => manual(m * MIN))
+    expect(guard({ urgency: 'hard', log: [...manuals, mon(300 * MIN, 'agent-x'), mon(200 * MIN, 'agent-y')] })).toMatchObject({ verdict: 'go' })
+    expect(guard({ urgency: 'hard', log: [...manuals, mon(300 * MIN, 'agent-x'), mon(200 * MIN, 'agent-y'), mon(100 * MIN, 'agent-z')] })).toMatchObject({ verdict: 'breaker-trip' })
+  })
+  it('a manual rotation of this agent starts the cooldown', () => {
+    expect(guard({ agentId: 'agent-m', urgency: 'soft', log: [manual(5 * MIN)] })).toMatchObject({ verdict: 'wait-cooldown' })
+  })
+  it('a hard decision may bypass the cooldown once after a manual rotation', () => {
+    expect(guard({ agentId: 'agent-m', urgency: 'hard', log: [manual(5 * MIN)] })).toEqual({ verdict: 'go', trigger: 'hard-bypass' })
+  })
+  it('manual restart failures do not count toward the give-up or the backoff', () => {
+    const fails = [60, 40, 20].map((m) => manual(m * MIN, { result: 'failed' }))
+    expect(guard({ agentId: 'agent-m', urgency: 'hard', log: fails })).toEqual({ verdict: 'go', trigger: 'hard' })
+    expect(guard({ agentId: 'agent-m', urgency: 'hard', log: [manual(1 * MIN, { result: 'failed' })] })).toMatchObject({ verdict: 'go' })
+  })
+  it('an entry with no source is the monitor (older files): it counts', () => {
+    const log = [300, 200, 100].map((m) => entry({ ageMs: m * MIN, agentId: `agent-${m}` }))
+    expect(log.every((e) => e.source === undefined)).toBe(true)
+    expect(guard({ urgency: 'hard', log })).toMatchObject({ verdict: 'breaker-trip' })
+  })
+})
+
+describe('restart failures expire', () => {
+  const failure = (ageMs: number) => entry({ ageMs, result: 'failed' })
+
+  it('the window is 6 hours (pinned as a literal, not read back from the constant)', () => {
+    const H = 60 * MIN
+    // three failures 7 hours old: expired; the same three 5 hours old: still a give-up
+    expect(guard({ urgency: 'hard', log: [failure(7 * H + 3 * MIN), failure(7 * H + 2 * MIN), failure(7 * H + MIN)] })).toMatchObject({ verdict: 'go' })
+    expect(guard({ urgency: 'hard', log: [failure(5 * H + 3 * MIN), failure(5 * H + 2 * MIN), failure(5 * H + MIN)] })).toMatchObject({ verdict: 'gave-up' })
+  })
+  it('three failures older than the window no longer give up', () => {
+    const w = GUARD.RESTART_FAILURE_WINDOW_MS
+    expect(guard({ urgency: 'hard', log: [failure(w + 3 * MIN), failure(w + 2 * MIN), failure(w + MIN)] })).toEqual({ verdict: 'go', trigger: 'hard' })
+  })
+  it('a failure exactly at the window edge is outside it', () => {
+    const w = GUARD.RESTART_FAILURE_WINDOW_MS
+    expect(guard({ urgency: 'hard', log: [failure(w), failure(w - 50 * MIN), failure(w - 60 * MIN)] })).toEqual({ verdict: 'go', trigger: 'hard' })
+  })
+  it('one millisecond inside the edge it still counts: three failures give up', () => {
+    const w = GUARD.RESTART_FAILURE_WINDOW_MS
+    expect(guard({ urgency: 'hard', log: [failure(w - 1), failure(w - 50 * MIN), failure(w - 60 * MIN)] })).toMatchObject({ verdict: 'gave-up' })
+  })
+  it('the window is the failures only: the old failure still does not block a retry', () => {
+    const w = GUARD.RESTART_FAILURE_WINDOW_MS
+    expect(guard({ urgency: 'hard', log: [failure(w + MIN)] })).toMatchObject({ verdict: 'go' })
+  })
+})
+
 describe('precedence', () => {
   it('breaker beats cooldown bypass', () => {
     const log = [

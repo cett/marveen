@@ -37,6 +37,9 @@ export const GUARD = {
   BREAKER_WINDOW_MS: 6 * 3600_000,
   RESTART_BACKOFF_MS: 5 * 60_000,
   MAX_RESTART_FAILURES: 3,
+  /** A failed restart stops counting toward the give-up after this long, so a
+   *  transient run of failures cannot leave the monitor stopped for good. */
+  RESTART_FAILURE_WINDOW_MS: 6 * 3600_000,
 } as const
 
 export type GuardVerdict =
@@ -69,6 +72,8 @@ export interface GuardInput {
 }
 
 const isAct = (e: RotationLogEntry): boolean => e.mode === 'act'
+/** An entry with no source (older file) is the monitor's own. */
+const isMonitor = (e: RotationLogEntry): boolean => e.source !== 'manual'
 
 export function evaluateRotationGuard(input: GuardInput): GuardVerdict {
   const { agentId, urgency, nowMs, softStreak, log, breakerTripped, resetAtMs } = input
@@ -80,7 +85,9 @@ export function evaluateRotationGuard(input: GuardInput): GuardVerdict {
   //    moved. `>=`: the third rotation inside the window is the last allowed,
   //    so the FOURTH decision (count already 3) trips it.
   // A human reset forgets what came before it, for the breaker and the backoff only.
-  const counted = resetAtMs === undefined ? log : log.filter((e) => e.ts > resetAtMs)
+  // The breaker and the backoff also judge only the MONITOR's own entries: a person's manual rotate is
+  // not flapping (it still starts the cooldown, which reads the whole log).
+  const counted = (resetAtMs === undefined ? log : log.filter((e) => e.ts > resetAtMs)).filter(isMonitor)
   const windowStart = nowMs - GUARD.BREAKER_WINDOW_MS
   const recentRotations = counted.filter((e) => isAct(e) && e.result === 'rotated' && e.ts > windowStart)
   if (recentRotations.length >= GUARD.BREAKER_MAX) {
@@ -92,7 +99,10 @@ export function evaluateRotationGuard(input: GuardInput): GuardVerdict {
   const mineCounted = counted.filter((e) => e.agentId === agentId && isAct(e))
 
   // 2. Restart backoff: failures since this agent's last success.
-  const failuresSinceOk = mineCounted.filter((e) => e.result === 'failed' && (!lastOk || e.ts > lastOk.ts))
+  const failureWindowStart = nowMs - GUARD.RESTART_FAILURE_WINDOW_MS
+  const failuresSinceOk = mineCounted.filter(
+    (e) => e.result === 'failed' && e.ts > failureWindowStart && (!lastOk || e.ts > lastOk.ts),
+  )
   if (failuresSinceOk.length >= GUARD.MAX_RESTART_FAILURES) {
     return { verdict: 'gave-up', reason: `${failuresSinceOk.length}-restart-failures` }
   }
