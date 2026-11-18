@@ -4,7 +4,7 @@
 import { createHash } from 'node:crypto'
 import { dbx, type SqlOps } from './facade.js'
 import { likeContains } from './like.js'
-import { likeNoCase } from './dialect.js'
+import { advisoryLockKeyed, likeNoCase } from './dialect.js'
 import { currentTraceColumns } from './context.js'
 
 export interface VaultSshKey {
@@ -611,6 +611,11 @@ export async function createApprovalOnce(params: Parameters<typeof createApprova
   const tenant = params.tenant_id ?? 'default'
   if (!isContentHash(params.content_hash)) return { ok: false, reason: 'hash_mismatch' }
   const outcome = await dbx.tx(async (tx): Promise<OpenOnceOutcome> => {
+    // The lock is the first statement, keyed on (agent, tenant, category): two creates with the same key queue, so the dedup
+    // SELECT and the COUNT of the second one see the first one's insert. The tenant is part of the key, and the three values
+    // are one JSON array, so no two keys can be the same text by a separator.
+    const lock = advisoryLockKeyed('approval:', JSON.stringify([params.agent_id, tenant, params.category]))
+    if (lock) await tx.run(lock.sql, ...lock.params)
     const now = nowSeconds()
     const same = await tx.get<Approval>(`
       SELECT * FROM approvals
