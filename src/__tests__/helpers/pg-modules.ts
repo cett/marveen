@@ -74,6 +74,7 @@ export const PORTED: readonly string[] = [
   'src/__tests__/observability-model-tool-stats.test.ts',
   'src/__tests__/audit-log-trace-filter.test.ts',
   'src/__tests__/interleave-helper.test.ts',
+  'src/__tests__/dashboard-user-last-admin-lock.test.ts',
 ]
 
 /** Test files (same form) that do not, each with the reason. */

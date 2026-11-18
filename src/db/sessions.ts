@@ -3,8 +3,8 @@
 
 import { APP_TZ } from '../config.js'
 import { db } from './connection.js'
-import { dbx } from './facade.js'
-import { eqNoCase, likeNoCase, orderBytes, orderNoCase } from './dialect.js'
+import { dbx, type Tx } from './facade.js'
+import { eqNoCase, forUpdate, likeNoCase, orderBytes, orderNoCase } from './dialect.js'
 import { resolveWriteTenant } from './write-tenant.js'
 import { Memory, RECENCY_OVERSAMPLE, buildFtsMatchExpression, reRankByRecency, withoutRank } from './memory.js'
 
@@ -105,15 +105,46 @@ export async function deleteDashboardUserKeepingLastAdmin(username: string): Pro
   // The name is resolved once (case-insensitively, by getDashboardUser); the guarded delete then goes by id.
   const user = await getDashboardUser(username)
   if (!user) return 'not_found'
-  const info = await dbx.run(
-    `DELETE FROM dashboard_users
-     WHERE id = ?
-       AND NOT (role = 'admin' AND (SELECT COUNT(*) FROM dashboard_users WHERE role = 'admin' AND disabled = 0) <= 1)`,
-    user.id,
-  )
-  if (info.changes > 0) return 'deleted'
-  // Nothing deleted: either the guard held or the user went away since the lookup. Only the answer depends on this read.
-  return (await dbx.get('SELECT 1 AS present FROM dashboard_users WHERE id = ?', user.id)) ? 'last_admin' : 'not_found'
+  return dbx.tx(async (tx) => {
+    // The lock comes first: two guarded writes on the active admins would otherwise both count the admins before either
+    // one commits (READ COMMITTED: each statement sees the snapshot at its start), and both would pass.
+    await lockAdminRows(tx, user.id)
+    const info = await tx.run(
+      `DELETE FROM dashboard_users
+       WHERE id = ?
+         AND NOT (role = 'admin' AND (SELECT COUNT(*) FROM dashboard_users WHERE role = 'admin' AND disabled = 0) <= 1)`,
+      user.id,
+    )
+    if (info.changes > 0) return 'deleted'
+    // Nothing deleted: either the guard held or the user went away since the lookup. Only the answer depends on this read.
+    return (await tx.get('SELECT 1 AS present FROM dashboard_users WHERE id = ?', user.id)) ? 'last_admin' : 'not_found'
+  })
+}
+
+/**
+ * The lock of a guarded write on the admin set: the target row and every active admin, in id order, held until the
+ * transaction ends. ONE statement with ONE order for every caller: a caller that locks the admins and the target in
+ * two steps, or in another order, can deadlock with a second caller (each holds the row the other waits for). Call it
+ * on the transaction handle, before the guarded statement, never on the ambient handle.
+ *
+ * ORDER OF THE READS (equivalence of the target row): the lock does not read the
+ * target's admin status, only its row. The status is read by the guarded statement that follows, AFTER the lock is
+ * granted (READ COMMITTED: that statement takes its snapshot when it starts, which is after the lock). A status read
+ * before the lock would be stale after a concurrent demotion, and then the target row would have to be locked on its
+ * own; the guarded write does not do that. Keep the guarded statement after lockAdminRows.
+ *
+ * Equivalence (the target row is not locked on its own): every guarded write touches only an ACTIVE admin, and those rows
+ * are all in the lock. A target that is not an active admin when the guarded statement runs is not counted, so it needs no
+ * admin lock. The one case that is not covered by the lock: an inactive target admin that is activated concurrently. Such a
+ * reactivation starts from zero active admins (the lock sees the active set without it), so it is outside the invariant
+ * (the invariant is about the active set, not about the rows that are being reactivated).
+ *
+ * A lock statement that leaves the target row out is killed by a TEXT pin in the test file, not by a behavioural cell:
+ * it is behaviourally equivalent (killed by a text pin, behaviourally equivalent). The same holds for a lock statement
+ * without ORDER BY on SQLite: the text pin is the only kill there, the PostgreSQL cells are the behavioural ones.
+ */
+export async function lockAdminRows(tx: Tx, targetId: number): Promise<void> {
+  await tx.all(`SELECT id FROM dashboard_users WHERE id = ? OR (role = 'admin' AND disabled = 0) ORDER BY id ${forUpdate()}`, targetId)
 }
 
 /**

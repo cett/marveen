@@ -2,11 +2,11 @@
 // re-export surface and boot orchestration).
 
 import { vecExtensionLoaded } from './connection.js'
-import { dbx, dbxDialect } from './facade.js'
+import { dbx, dbxDialect, type SqlOps } from './facade.js'
 import { groupConcatDistinct, orderBytes, orderNoCase } from './dialect.js'
 import { likeContains } from './like.js'
 import { Memory, MemoryVersion } from './memory.js'
-import { DashboardUser, DashboardUserPublic } from './sessions.js'
+import { DashboardUser, DashboardUserPublic, lockAdminRows } from './sessions.js'
 import { syncVecMemoryDelete } from './vector.js'
 import { resolveWriteTenant } from './write-tenant.js'
 import { reloadAgentSettingsCache } from './agent-settings-cache.js'
@@ -785,12 +785,22 @@ export async function adminPatchDashboardUser(id: number, patch: AdminUserPatch)
   if ('email' in patch) { fields.push('email = ?'); params.push(patch.email ?? null) }
   if ('display_name' in patch) { fields.push('display_name = ?'); params.push(patch.display_name ?? null) }
   params.push(id)
-  const guard = patchLeavesAdmin(patch)
-    ? " AND NOT (role = 'admin' AND disabled = 0 AND (SELECT COUNT(*) FROM dashboard_users WHERE role = 'admin' AND disabled = 0) <= 1)"
-    : ''
-  const user = await dbx.get<DashboardUser>(`UPDATE dashboard_users SET ${fields.join(', ')} WHERE id = ?${guard} RETURNING *`, ...params)
-  if (user) return { status: 'updated', user }
-  return (await dbx.get('SELECT 1 AS present FROM dashboard_users WHERE id = ?', id)) ? { status: 'last_admin' } : { status: 'not_found' }
+  const guarded = patchLeavesAdmin(patch)
+  const write = async (ops: SqlOps): Promise<AdminPatchOutcome> => {
+    const guard = guarded
+      ? " AND NOT (role = 'admin' AND disabled = 0 AND (SELECT COUNT(*) FROM dashboard_users WHERE role = 'admin' AND disabled = 0) <= 1)"
+      : ''
+    const user = await ops.get<DashboardUser>(`UPDATE dashboard_users SET ${fields.join(', ')} WHERE id = ?${guard} RETURNING *`, ...params)
+    if (user) return { status: 'updated', user }
+    return (await ops.get('SELECT 1 AS present FROM dashboard_users WHERE id = ?', id)) ? { status: 'last_admin' } : { status: 'not_found' }
+  }
+  // A patch that cannot take an admin out of the active set needs no admin lock: its UPDATE locks only its own row.
+  if (!guarded) return write(dbx)
+  // The guarded patch: the admin rows are locked first, on the transaction handle (see lockAdminRows in sessions.ts).
+  return dbx.tx(async (tx) => {
+    await lockAdminRows(tx, id)
+    return write(tx)
+  })
 }
 
 export async function countActiveAdmins(): Promise<number> {
