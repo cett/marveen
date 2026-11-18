@@ -77,6 +77,7 @@ export const PORTED: readonly string[] = [
   'src/__tests__/dashboard-user-last-admin-lock.test.ts',
   'src/__tests__/dashboard-user-first-admin.test.ts',
   'src/__tests__/sessions-async-facade.test.ts',
+  'src/__tests__/skill-revision-seq-lock.test.ts',
 ]
 
 /** Test files (same form) that do not, each with the reason. */

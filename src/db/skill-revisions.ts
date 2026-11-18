@@ -10,6 +10,17 @@ import { createHash } from 'node:crypto'
 import { dbx, type SqlOps } from './facade.js'
 import { writeAgentAuditLog } from './audit.js'
 import { logger } from '../logger.js'
+import { forUpdate } from './dialect.js'
+
+/**
+ * The skill row lock of a revision write (A15). Taken FIRST, on the caller's transaction, so that the next seq (MAX + 1 in the
+ * insert) and the idempotence and parent reads see the state the other writers of the same skill have committed. Two writers
+ * on one skill otherwise read the same MAX and one of them fails on UNIQUE(skill_id, seq) (a 500). A lock taken outside a
+ * transaction is released at once, so every caller passes its transaction handle.
+ */
+async function lockSkillForRevision(tx: SqlOps, skillId: string): Promise<void> {
+  await tx.all(`SELECT id FROM skills WHERE id = ? ${forUpdate()}`, skillId)
+}
 
 export type SkillRevisionAction = 'baseline' | 'create' | 'modify' | 'seed' | 'delete' | 'file_put' | 'file_delete' | 'file_seed' | 'revoke'
 export type SkillActorKind = 'human' | 'agent' | 'import' | 'system' | 'operator'
@@ -138,6 +149,7 @@ export function hasRunnableFiles(files: readonly FileFacts[]): boolean {
  */
 export async function writeSkillRevision(tx: SqlOps, opts: WriteSkillRevisionOpts): Promise<SkillRevisionRow | null> {
   const { skill, action, actor } = opts
+  await lockSkillForRevision(tx, skill.id)
   const contentSha = sha256Hex(skill.content)
   const files = await tx.all<FileFacts>('SELECT rel_path, mode, content FROM skill_files WHERE skill_id = ?', skill.id)
   const filesSha = hashFileSet(files)
@@ -265,6 +277,7 @@ export interface SubmitPendingRevisionResult {
  */
 export async function submitPendingRevision(tx: SqlOps, opts: SubmitPendingRevisionOpts): Promise<SubmitPendingRevisionResult> {
   const { skill, actor } = opts
+  await lockSkillForRevision(tx, skill.id)
   // A proposal for a skill that already has a live state records that state first; a new skill has none to record
   // (a baseline of the proposed text would read as a live state, which it is not).
   if (opts.action === 'modify') await ensureSkillBaseline(tx, skill.id)
