@@ -501,7 +501,7 @@ export async function decideSkillRevision(
       if (sha256Hex(revision.content ?? '') !== revision.content_sha256) throw new SkillRevisionCorruptAtActivate()
 
       // ORDER IS DELIBERATE (do not move the staleness read above the lock, and do not move the lock below the real
-      // write). The first statement that touches the skill row is the lock-taking no-op below: it takes that row's
+      // write). The first statement that touches the skill row is the lock-taking SELECT ... FOR UPDATE below: it takes that row's
       // write lock before anything is read from it. The live-state read for the staleness check runs AFTER the lock and
       // BEFORE the real write (a read after the real write would read this proposal's own values). Two concurrent
       // activations of the same skill serialize on the row: the second one waits for the first to commit and then sees
@@ -513,13 +513,13 @@ export async function decideSkillRevision(
       const description = revision.proposed_description ?? frontmatterDescription(content)
       // The skill must still be in the state this proposal assumed: 'pending_review' for a create (nobody else
       // activated or deleted it since), 'live' for anything else (nobody revoked or deleted it since). The no-op
-      // UPDATE is the CAS and the lock in one, like requireLive in updateSkill/deleteSkill -- 0 rows changed aborts the
+      // FOR UPDATE is the CAS and the lock in one (a no-op UPDATE would write a new row version on PostgreSQL) -- 0 rows aborts the
       // whole decision, the revision stays pending (the throw rolls back the status flip above too).
       const expectedSkillStatus = revision.action === 'create' ? 'pending_review' : 'live'
-      const locked = (await tx.run(
-        'UPDATE skills SET updated_at = updated_at WHERE id = ? AND status = ?', revision.skill_id, expectedSkillStatus,
-      )).changes
-      if (locked === 0) throw new SkillNotDecidableAtActivate()
+      const locked = await tx.all<{ id: string }>(
+        `SELECT id FROM skills WHERE id = ? AND status = ? ${forUpdate()}`, revision.skill_id, expectedSkillStatus,
+      )
+      if (locked.length === 0) throw new SkillNotDecidableAtActivate()
 
       // The live state NOW, read under the lock and before the real write: the skill row and the companion files. The
       // files are also what the whole-set replace below drops (the ones whose rel_path is not in the proposed set are
