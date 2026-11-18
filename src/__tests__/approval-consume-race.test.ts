@@ -44,6 +44,29 @@ describe('approval use under a race: the second use after a first use in flight'
     expect(result).toMatchObject({ ok: false, reason: 'already_consumed' })
   })
 
+  it('adoption of a gate reservation: after the first adoption committed, a second send claim does not adopt it again', async () => {
+    await approvedRow('ap-race-adopt')
+    // the gate's reservation for the official sender: consumed by agent-a under a gate-send ref, not yet sealed
+    await dbx.run("UPDATE approvals SET consumed_at = ?, consumed_by = ?, consumed_ref = ? WHERE id = 'ap-race-adopt'", NOW, 'agent-a', 'gate-send-1')
+    const il = interleave()
+    il.hold('first-adoption-in-flight')
+    const first = dbx.tx(async (tx) => {
+      await tx.run('UPDATE approvals SET used_at = ?, used_ref = ? WHERE id = ? AND used_at IS NULL', NOW, 'send-x', 'ap-race-adopt')
+      await il.pass('first-adoption-in-flight')
+    })
+    await il.reached('first-adoption-in-flight')
+    const second = claimApproval({ principal: 'agent-a', tenant_id: 'default', category: 'email_send', content_hash: HASH, window_s: 3600, ref: 'send-y', now: NOW, mode: 'send' })
+    try {
+      await waitBlockedOnLock(dbx, 1, testDbMode())
+    } finally {
+      il.open('first-adoption-in-flight')
+      await Promise.allSettled([first])
+    }
+    const result = await second
+    await first
+    expect(result).toMatchObject({ ok: false })
+  })
+
   it('send (seal) claim: after the first use committed, the approval is not sealed a second time', async () => {
     await approvedRow('ap-race-seal')
     const il = interleave()
