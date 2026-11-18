@@ -186,7 +186,7 @@ session lookup, the user lookup or the `last_seen` write rejects (no fall-throug
 the table row FIRST and the cache entry after it, and a revoke counter (`revokeEpoch`) keeps a lookup that was
 reading the same row from putting a revoked session back in the cache; `auth-session-lane.test.ts` pins both
 orders of the overlap for all three revoke paths. A session revoked by ANOTHER process is noticed at the next
-debounced `last_seen` write (`touchAuthSessionLastSeen` returns the changed-row count, so it must be awaited).
+debounced `last_seen` write (`touchAuthSessionLastSeen` returns the changed-row count, so it must be awaited). Until then, in a multi-instance deployment, a session revoked by one process can stay usable from another process's cache for up to the debounce interval (about 60 s): a cutover precondition, listed in `notes/parkolo-lista`.
 
 ## Transactions with a rule of their own
 
