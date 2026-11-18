@@ -2,7 +2,15 @@
 // parameter (prefix plus id); on SQLite there is no statement. A prefix that is not on the list is refused on both dialects.
 // What the server does with the key (the same key waits, another key does not) is pinned in src/__tests__/pg/dialect-keyed-lock.pg.test.ts.
 import { describe, expect, it } from 'vitest'
-import { advisoryLockKeyed } from '../db/dialect.js'
+import { advisoryKeyOf, advisoryLockKeyed } from '../db/dialect.js'
+
+describe('advisoryKeyOf', () => {
+  it('gives different ids to different compositions, whatever the separator inside a value', () => {
+    expect(advisoryKeyOf('a:b', 'c')).not.toBe(advisoryKeyOf('a', 'b:c'))
+    expect(advisoryKeyOf('a', 'b')).not.toBe(advisoryKeyOf('a', 'b', ''))
+    expect(advisoryKeyOf('a', 'b')).toBe(advisoryKeyOf('a', 'b'))
+  })
+})
 
 describe('advisoryLockKeyed', () => {
   it('is one constant statement with the prefix plus the id bound, on PostgreSQL, and nothing on SQLite', () => {

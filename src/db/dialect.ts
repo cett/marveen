@@ -186,3 +186,12 @@ export function advisoryLockKeyed(
   }
   return pick(dialect, () => null, () => ({ sql: 'SELECT pg_advisory_xact_lock(hashtext(?))', params: [prefix + id] }))
 }
+
+/**
+ * The id of a keyed lock built from several parts (an agent and a tenant and a category, an agent and a skill). The parts are
+ * joined as a JSON array, so the separator cannot be part of a value: ['a:b', 'c'] and ['a', 'b:c'] are different ids. Every
+ * composite keyed lock uses this helper, never its own join.
+ */
+export function advisoryKeyOf(...parts: string[]): string {
+  return JSON.stringify(parts)
+}
