@@ -12,13 +12,20 @@ vi.mock('../config.js', async (importOriginal) => ({
   MAIN_AGENT_ID: 'agent-a',
 }))
 
+// The real pane reader shells out to tmux; the wiring cell below only needs to see WHICH session it asks for.
+const capturePaneMock = vi.hoisted(() => vi.fn((_session: string): string | null => 'pane text'))
+vi.mock('../web/agent-process-session.js', () => ({ capturePane: capturePaneMock }))
+
+import { MAIN_CHANNELS_SESSION } from '../web/main-agent.js'
 import {
+  planRotationMonitorDeps,
   createPlanRotationMonitor,
   FRESH_AFTER_SWITCH_MS,
   NOTIFY_TIMEOUT_MS,
   UNKNOWN_ALERT_TICKS,
   type MonitorDeps,
 } from '../web/plan-rotation-monitor.js'
+import { logger } from '../logger.js'
 import type { ClaudePlansState, RotationLogEntry } from '../web/claude-plans-state.js'
 import type { PlanSnapshotRead } from '../web/plan-usage-source.js'
 import type { RotationApplyResult } from '../web/plan-rotation-apply.js'
@@ -71,6 +78,9 @@ function harness(init: { mode?: RotationMode; log?: RotationLogEntry[]; monitor?
     notices: [] as string[],
     applyResult: { ok: true, agentId: AGENT, activePlanId: 'plan-b' } as RotationApplyResult,
     onNotify: undefined as undefined | ((msg: string) => void | Promise<boolean>),
+    /** The main session's pane (S4). A function may throw. Undefined: the monitor has no pane source at all. */
+    pane: undefined as undefined | (() => string | null),
+    paneReads: 0,
   }
   const apply = vi.fn((input: { agentId: string; targetPlanId: string }): Promise<RotationApplyResult> => {
     h.events.push('apply')
@@ -101,6 +111,10 @@ function harness(init: { mode?: RotationMode; log?: RotationLogEntry[]; monitor?
       h.notices.push(msg)
       const r = h.onNotify?.(msg)
       return r instanceof Promise ? r : true
+    },
+    capturePane: () => {
+      h.paneReads++
+      return h.pane ? h.pane() : null
     },
   }
   const monitor = createPlanRotationMonitor(deps)
@@ -515,5 +529,189 @@ describe('owner notices about measuring', () => {
     h.snaps['plan-b'] = (now) => snap({ five: 100, seven: 40 }, { nowMs: now, writtenAtMs: now, ageSec: 5 })
     h.t += MIN
     expect((await tick()).outcome).toBe('rotated')
+  })
+})
+
+describe('S4: a quota error on the main session pane, observe mode only', () => {
+  const HIT = 'API Error: 429 usage limit reached'
+
+  // The pane is a SECOND opinion that is only logged. Every cell compares the outcome with and without it.
+  it('observe: a corroborated hit is recorded and logged once, and the decision is the one the snapshot gives', async () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined)
+    try {
+      const { h, tick, apply, monitor } = harness({ mode: 'observe' })
+      h.snaps['plan-a'] = exhaustedA
+      h.pane = () => `thinking\n${HIT}\n>`
+      for (let i = 0; i < 3; i++) {
+        h.t += MIN
+        expect((await tick()).outcome).toBe('would-rotate')
+      }
+      expect(monitor.lastS4()).toMatchObject({ planId: 'plan-a', pattern: 'quota_exceeded', line: -2, corroborated: true })
+      const s4Logs = warn.mock.calls.filter((c) => String(c[1]).includes('S4'))
+      expect(s4Logs).toHaveLength(1)
+      expect(s4Logs[0]![0]).toMatchObject({ planId: 'plan-a', pattern: 'quota_exceeded', line: -2, corroborated: true })
+      expect(apply).not.toHaveBeenCalled()
+      expect(h.notices).toHaveLength(0)
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('observe: a hit on a healthy fresh snapshot is logged as UNcorroborated and moves nothing', async () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined)
+    try {
+      const { h, tick, apply, monitor } = harness({ mode: 'observe' })
+      h.snaps['plan-a'] = (now) => snap({ five: 10, seven: 10 }, { nowMs: now })
+      h.pane = () => HIT
+      expect((await tick()).outcome).toBe('no-pressure')
+      expect(monitor.lastS4()).toMatchObject({ corroborated: false })
+      expect(warn.mock.calls.some((c) => (c[0] as { corroborated?: boolean }).corroborated === false)).toBe(true)
+      expect(apply).not.toHaveBeenCalled()
+      // the rotation log is the guard's memory: a pane hit never writes into it
+      expect(log(h)).toHaveLength(0)
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('a hit that goes away and comes back is logged again; an unchanged repeat is not', async () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined)
+    try {
+      const { h, tick } = harness({ mode: 'observe' })
+      h.snaps['plan-a'] = exhaustedA
+      const count = () => warn.mock.calls.filter((c) => String(c[1]).includes('S4')).length
+      h.pane = () => HIT
+      await tick(); h.t += MIN; await tick()
+      expect(count()).toBe(1)
+      h.pane = () => 'all quiet'
+      h.t += MIN; await tick()
+      h.pane = () => HIT
+      h.t += MIN; await tick()
+      expect(count()).toBe(2)
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('the same line is logged again when the snapshot starts to agree with it (uncorroborated -> corroborated)', async () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined)
+    try {
+      const { h, tick } = harness({ mode: 'observe' })
+      h.pane = () => HIT
+      h.snaps['plan-a'] = (now) => snap({ five: 10, seven: 10 }, { nowMs: now })
+      await tick()
+      h.snaps['plan-a'] = exhaustedA
+      h.t += MIN; await tick()
+      const flags = warn.mock.calls.filter((c) => String(c[1]).includes('S4')).map((c) => (c[0] as { corroborated: boolean }).corroborated)
+      expect(flags).toEqual([false, true])
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('a hit never adds anything to the rotation log or the monitor state beyond the normal tick bookkeeping', async () => {
+    const run = async (pane: string | null) => {
+      const { h, tick } = harness({ mode: 'observe' })
+      h.snaps['plan-a'] = (now) => snap({ five: 10, seven: 10 }, { nowMs: now })
+      h.pane = () => pane
+      await tick()
+      return h.state.monitor
+    }
+    expect(await run(HIT)).toEqual(await run(null))
+  })
+
+  it('PRIVACY: nothing from the pane line reaches the log or lastS4(), which feeds the dashboard block', async () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined)
+    const info = vi.spyOn(logger, 'info').mockImplementation(() => undefined)
+    const error = vi.spyOn(logger, 'error').mockImplementation(() => undefined)
+    try {
+      const { h, tick, monitor } = harness({ mode: 'observe' })
+      h.snaps['plan-a'] = exhaustedA
+      // matches the pattern and carries content that must never be echoed
+      h.pane = () => 'user wrote: HTTP 429, mail jane.doe@example.test the key sk-LEAKCANARY-0123456789\n>'
+      await tick()
+      h.t += MIN; await tick()
+      const everything = JSON.stringify([warn.mock.calls, info.mock.calls, error.mock.calls, monitor.lastS4(), h.state, h.notices])
+      for (const piece of ['LEAKCANARY', 'jane.doe', 'example.test', 'user wrote', 'sk-', 'HTTP']) {
+        expect(everything).not.toContain(piece)
+      }
+      // and the entry that WAS written is the class and the position
+      const s4 = warn.mock.calls.find((c) => String(c[1]).includes('S4'))
+      expect(s4).toBeDefined()
+      expect(Object.keys(s4![0] as object).sort()).toEqual(['corroborated', 'health', 'line', 'pattern', 'planId'])
+    } finally {
+      warn.mockRestore(); info.mockRestore(); error.mockRestore()
+    }
+  })
+
+  it('the position moving as the screen scrolls does not re-log the same episode', async () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined)
+    try {
+      const { h, tick, monitor } = harness({ mode: 'observe' })
+      h.snaps['plan-a'] = exhaustedA
+      let extra = 0
+      h.pane = () => `${HIT}\n${'more output\n'.repeat(extra++)}>`
+      for (let i = 0; i < 3; i++) { await tick(); h.t += MIN }
+      expect(warn.mock.calls.filter((c) => String(c[1]).includes('S4'))).toHaveLength(1)
+      // lastS4 follows the live position
+      // third tick: HIT, two output lines, '>' -> the hit is the 4th from the bottom
+      expect(monitor.lastS4()!.line).toBe(-4)
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('the real pane source reads the MAIN channels session, nothing else', () => {
+    capturePaneMock.mockClear()
+    capturePaneMock.mockReturnValueOnce('screen of the main session')
+    const deps = planRotationMonitorDeps()
+    expect(deps.capturePane?.()).toBe('screen of the main session')
+    expect(capturePaneMock).toHaveBeenCalledTimes(1)
+    expect(capturePaneMock).toHaveBeenCalledWith(MAIN_CHANNELS_SESSION)
+  })
+
+  it('act and off never read the pane: S4 is an observe-only signal', async () => {
+    for (const mode of ['act', 'off'] as const) {
+      const { h, tick } = harness({ mode })
+      h.snaps['plan-a'] = (now) => snap({ five: 10, seven: 10 }, { nowMs: now })
+      h.pane = () => HIT
+      await tick()
+      expect(h.paneReads).toBe(0)
+    }
+  })
+
+  it('in act mode a pane hit on a healthy plan changes nothing: it cannot cause a rotation on its own', async () => {
+    const { h, tick, apply } = harness({ mode: 'act' })
+    h.snaps['plan-a'] = (now) => snap({ five: 10, seven: 10 }, { nowMs: now })
+    h.pane = () => HIT
+    for (let i = 0; i < 3; i++) { h.t += MIN; expect((await tick()).outcome).toBe('no-pressure') }
+    expect(apply).not.toHaveBeenCalled()
+  })
+
+  it('the decision with a hit is identical to the decision without one, observe mode', async () => {
+    const run = async (pane: string | null) => {
+      const { h, tick } = harness({ mode: 'observe' })
+      h.snaps['plan-a'] = (now) => snap({ five: 92, seven: 40 }, { nowMs: now })
+      h.pane = () => pane
+      const outcomes: string[] = []
+      for (let i = 0; i < 3; i++) { h.t += MIN; outcomes.push((await tick()).outcome) }
+      return { outcomes, log: log(h).map((e) => e.result) }
+    }
+    expect(await run(HIT)).toEqual(await run(null))
+  })
+
+  it('a pane read that throws or returns nothing never costs the tick', async () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined)
+    try {
+      const { h, tick } = harness({ mode: 'observe' })
+      h.snaps['plan-a'] = exhaustedA
+      h.pane = () => { throw new Error('tmux gone') }
+      expect((await tick()).outcome).toBe('would-rotate')
+      h.pane = () => null
+      h.t += MIN
+      expect((await tick()).outcome).toBe('would-rotate')
+    } finally {
+      warn.mockRestore()
+    }
   })
 })

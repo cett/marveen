@@ -24,6 +24,8 @@ import { logger } from '../logger.js'
 import { deliverToChannel } from '../notify.js'
 import { systemJob } from '../db/background-jobs.js'
 import { readClaudePlans, type ClaudePlan } from './claude-plans.js'
+import { capturePane } from './agent-process-session.js'
+import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import {
   readClaudePlansState,
   writeClaudePlansState,
@@ -52,6 +54,7 @@ import {
   type PlanCandidateHealth,
 } from '../claude-plan-rotation.js'
 import { evaluateRotationGuard, nextSoftStreak } from '../claude-plan-rotation-guard.js'
+import { evaluateS4, type S4Result } from '../claude-plan-s4-signal.js'
 
 export const MONITOR_TICK_MS = 60_000
 /** A Telegram notice that takes longer than this is given up on: it must never hold up a rotation. */
@@ -77,6 +80,8 @@ export interface MonitorDeps {
   apply(input: { agentId: string; targetPlanId: string }): Promise<RotationApplyResult>
   /** Best effort, resolves to whether the owner got it; the monitor adds the timeout. */
   notify(text: string): Promise<boolean>
+  /** The main session's pane text (S4, observe mode only); null when there is no session. Optional. */
+  capturePane?(): string | null
 }
 
 export type TickOutcome =
@@ -145,6 +150,9 @@ export function createPlanRotationMonitor(deps: MonitorDeps) {
   /** After a switch: the plan that must show a snapshot written after `since`. */
   let pendingFresh: { planId: string; since: number } | null = null
   let blockedUntilFresh = false
+  /** S4 (observe): the last pane hit as class + position (never pane text), and the key of the episode already logged. */
+  let lastS4: { at: number; planId: string; pattern: string; line: number; corroborated: boolean } | null = null
+  let lastS4Key: string | null = null
 
   const mutate = (fn: (s: ClaudePlansState) => ClaudePlansState): void => {
     deps.writeState(fn(deps.readState()))
@@ -198,6 +206,33 @@ export function createPlanRotationMonitor(deps: MonitorDeps) {
         }
         return estimateCandidateHealth(p.id, observed, nowMs)
       })
+  }
+
+  /** S4, observe only. Never throws, never changes a decision, never writes the rotation log (the guard reads it). */
+  function observeS4(capture: () => string | null, planId: string, health: PlanHealth, nowMs: number): void {
+    let result: S4Result
+    try {
+      result = evaluateS4(capture(), health)
+    } catch (err) {
+      // A tmux hiccup must not cost a tick.
+      logger.warn({ err }, 'Plan-rotation S4 pane capture failed')
+      return
+    }
+    if (!result.hit) {
+      lastS4Key = null
+      return
+    }
+    lastS4 = { at: nowMs, planId, pattern: result.pattern, line: result.line, corroborated: result.corroborated }
+    // One entry per episode: there is no pane text to tell two hits apart, and the position moves as the screen
+    // scrolls. A hit that goes away and comes back, or whose corroboration flips, is a new episode.
+    const key = `${result.pattern}:${result.corroborated}`
+    if (key === lastS4Key) return
+    lastS4Key = key
+    // The pane holds user messages: only the class and the position of the line are logged, never its text.
+    logger.warn(
+      { planId, pattern: result.pattern, line: result.line, corroborated: result.corroborated, health: health.reason },
+      'Plan-rotation S4 (observe): quota error on the main session pane',
+    )
   }
 
   async function checkFreshAfterSwitch(plans: ClaudePlan[], activeId: string, nowMs: number): Promise<boolean> {
@@ -278,6 +313,10 @@ export function createPlanRotationMonitor(deps: MonitorDeps) {
       }),
     )
     await tellOnce('unknown', unknownTicks >= UNKNOWN_ALERT_TICKS, () => text.unknown(health.reason))
+
+    // S4, observe only: log a quota error on the pane next to what the snapshot says. It never changes the
+    // decision below; the raw hits are for calibrating the rule before it is allowed to act.
+    if (mode === 'observe' && deps.capturePane) observeS4(deps.capturePane, activeId, health, nowMs)
 
     const noFreshBlock = await checkFreshAfterSwitch(plans, activeId, nowMs)
 
@@ -378,7 +417,7 @@ export function createPlanRotationMonitor(deps: MonitorDeps) {
     return { outcome: 'refused', detail: result.hint }
   }
 
-  return { tick }
+  return { tick, lastS4: () => lastS4 }
 }
 
 export type PlanRotationMonitor = ReturnType<typeof createPlanRotationMonitor>
@@ -398,6 +437,8 @@ export function planRotationMonitorDeps(): MonitorDeps {
     writeState: writeClaudePlansState,
     apply: performRotation,
     notify: deliverToChannel,
+    // The visible screen of the main channels session, read by the dashboard process itself (tmux, no agent turn).
+    capturePane: () => capturePane(MAIN_CHANNELS_SESSION),
   }
 }
 
