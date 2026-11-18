@@ -1,4 +1,4 @@
-// The revision seq of a skill under concurrency (db/skill-revisions.ts, A15): two writers of one skill must not take the same
+// The revision seq of a skill under concurrency (db/skill-revisions.ts, the skill row lock of a revision write): two writers of one skill must not take the same
 // seq (MAX + 1 read by both would fail one of them on UNIQUE(skill_id, seq)). A holder transaction keeps the skill row
 // locked; two revision writes queue behind it (PostgreSQL: seen in pg_stat_activity, interleave helper, no timing; SQLite:
 // the connection lock). Afterwards the two rows have two distinct seq numbers, and neither write failed.

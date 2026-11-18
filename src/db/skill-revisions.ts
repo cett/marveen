@@ -13,7 +13,7 @@ import { logger } from '../logger.js'
 import { forUpdate } from './dialect.js'
 
 /**
- * The skill row lock of a revision write (A15). Taken FIRST, on the caller's transaction, so that the next seq (MAX + 1 in the
+ * The skill row lock of a revision write. Taken FIRST, on the caller's transaction, so that the next seq (MAX + 1 in the
  * insert) and the idempotence and parent reads see the state the other writers of the same skill have committed. Two writers
  * on one skill otherwise read the same MAX and one of them fails on UNIQUE(skill_id, seq) (a 500). A lock taken outside a
  * transaction is released at once, so every caller passes its transaction handle.
@@ -277,6 +277,10 @@ export interface SubmitPendingRevisionResult {
  */
 export async function submitPendingRevision(tx: SqlOps, opts: SubmitPendingRevisionOpts): Promise<SubmitPendingRevisionResult> {
   const { skill, actor } = opts
+  // The skill row exists at this point for every caller. A create is proposed after the caller inserted the placeholder
+  // row (status pending_review) in the same transaction (db/tasks.ts, the create paths): the lock has a row to take. Two
+  // proposals for the same NEW skill id therefore meet the placeholder's primary key, not the seq: the second insert waits
+  // for the first transaction and then fails as a duplicate create, the same answer as any duplicate create.
   await lockSkillForRevision(tx, skill.id)
   // A proposal for a skill that already has a live state records that state first; a new skill has none to record
   // (a baseline of the proposed text would read as a live state, which it is not).
