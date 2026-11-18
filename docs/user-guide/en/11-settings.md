@@ -240,8 +240,30 @@ The ninth section is also synthetic: it shows the token cost budgets configured 
 
 | Key | Description |
 |-----|-------------|
-| `CLAUDE_ROTATION_ENABLED` | Enable automatic Claude API key rotation |
+| `CLAUDE_ROTATION_ENABLED` | Enable automatic Claude API key rotation (a precondition of `act` mode below) |
+| `CLAUDE_ROTATION_MODE` | Mode of the background plan-rotation monitor: `off`, `observe` (default) or `act` |
 | `PLAN_STALE_MIN` | Minutes after which the system considers plan status stale |
+
+### Plan-rotation monitor
+
+The dashboard process itself watches the active Claude plan. This replaces the check that the main agent's own session runs from a heartbeat (`claude-plan-rotate-check`): that loop closes on itself when the session freezes at its limit. The old heartbeat stays unchanged and working until the cutover below. The monitor measures from the rate-limit snapshot that the status line already writes for every plan. It makes no token request and reads no keychain. A frozen session is recognised by the age of its snapshot: when the snapshot is older than 10 minutes, its window has not reset and the last reading was at or above the pressure threshold, the pressure stays until the reset. When the last reading was below the threshold, the state is unknown and nothing is switched automatically.
+
+| Mode | What the monitor does |
+|------|-----------------------|
+| `off` | Does not measure at all. |
+| `observe` (default) | Measures, classifies and logs which plan it would switch to. It does not touch the fleet. |
+| `act` | Also performs the switch, which restarts the main agent session. Requires `CLAUDE_ROTATION_ENABLED=1`. |
+
+- Only a signed-in global admin in a human dashboard session can change the mode. A token cannot, and neither can the main agent or any operator token, not even to switch to `off` or `observe`. Switching to `act` additionally needs `APPROVAL_HUMAN_ONLY_ENFORCE` and a human-only approval.
+- Whatever is stored, an isolated instance applies at most `observe`.
+- The monitor only trusts the stored value when the last row of the change journal says the same. A value from the env file, a hand-written or copied row, a typo or a read error all mean `observe`.
+- The circuit breaker (3 switches within 6 hours) turns the mode off. Any human rewrite of the mode turns it back on.
+
+**Cutover (one step).** The old heartbeat and the monitor in `act` mode must never run at the same time, or both would switch. So the roll-out is: deploy with the default `observe`, read the monitor's decisions for about a week, then, in a single step, an admin (1) switches the mode to `act` in the dashboard and (2) disables the `claude-plan-rotate-check` schedule (`PUT /api/schedules/claude-plan-rotate-check` with `enabled=false`, or the schedule page). No code change is part of the cutover. Removing the old script and its module is a separate change after it.
+
+The rotation state, `GET /api/claude-plans/state` and its `monitor.live` block, is visible **only to an admin session**. The main agent cannot read it with its own token either. This is intentional: the block shows measurement and decision details of the plans, so it is not part of what an agent may see.
+
+`monitor.live` is a whitelist. It holds `running`, `mode` (applied, stored, reason), `lastTick`, `activePlan` (id, label, measuredAt), `health` (status, reason, sticky, five-hour and seven-day windows with used percent and reset time), `candidates` (id, label, free five-hour and seven-day percent, exhausted), `unknownTicks`, `pendingFresh` (plan, since, blocked) and `s4` (the second opinion from the session pane: when, pattern, position, corroborated). The pane text itself is never stored or logged.
 
 ### Costops budgets
 
