@@ -498,6 +498,21 @@ export async function consumeApproval(p: ConsumeParams & { id: string }): Promis
  * the latest-decision lookup only names the reason once nothing is usable), so the id only has to make
  * the pick deterministic; it does not need to be the insertion order.
  */
+/**
+ * The approval the principal consumed with this ref inside the replay window, in this scope (agent, tenant, category, hash).
+ * It is the ONE query of the same-ref replay: the early read of a claim and the re-read after a lost race both call it, so the
+ * filters that keep a replay to its owner (consumed_by), to its own claim (consumed_ref), to its scope and to the window exist
+ * in one place only.
+ */
+async function findSameRefClaim(tx: SqlOps, p: ConsumeParams & { category: string }, ref: string, now: number): Promise<Approval | undefined> {
+  return tx.get<Approval>(`
+    SELECT * FROM approvals
+    WHERE agent_id = ? AND tenant_id = ? AND category = ? AND content_hash = ?
+      AND consumed_by = ? AND consumed_ref = ? AND consumed_at >= ?
+    ORDER BY consumed_at DESC, id DESC LIMIT 1
+  `, p.principal, p.tenant_id, p.category, p.content_hash, p.principal, ref, now - CONSUME_REPLAY_WINDOW_S)
+}
+
 export async function claimApproval(p: ConsumeParams & { category: string; mode?: ClaimMode }): Promise<ClaimOutcome> {
   const now = p.now ?? nowSeconds()
   const ref = p.ref ?? null
@@ -534,12 +549,7 @@ export async function claimApproval(p: ConsumeParams & { category: string; mode?
         return { ok: true, replayed: false, adopted: true, approval }
       }
     } else if (typeof p.ref === 'string' && p.ref !== '') {
-      const again = await tx.get<Approval>(`
-        SELECT * FROM approvals
-        WHERE agent_id = ? AND tenant_id = ? AND category = ? AND content_hash = ?
-          AND consumed_by = ? AND consumed_ref = ? AND consumed_at >= ?
-        ORDER BY consumed_at DESC, id DESC LIMIT 1
-      `, ...scope, p.principal, p.ref, now - CONSUME_REPLAY_WINDOW_S)
+      const again = await findSameRefClaim(tx, p, p.ref, now)
       if (again) return { ok: true, replayed: true, approval: again }
     }
     const usable = await tx.get<{ id: string }>(`
@@ -558,12 +568,7 @@ export async function claimApproval(p: ConsumeParams & { category: string; mode?
     // write re-checks its WHERE on the committed row and changes nothing, so this read runs again on the same transaction,
     // after the wait, and answers the retry as the replay it is (not as already_consumed). Non-send claims only.
     if (!send && usable && typeof p.ref === 'string' && p.ref !== '') {
-      const replayed = await tx.get<Approval>(`
-        SELECT * FROM approvals
-        WHERE agent_id = ? AND tenant_id = ? AND category = ? AND content_hash = ?
-          AND consumed_by = ? AND consumed_ref = ? AND consumed_at >= ?
-        ORDER BY consumed_at DESC, id DESC LIMIT 1
-      `, ...scope, p.principal, p.ref, now - CONSUME_REPLAY_WINDOW_S)
+      const replayed = await findSameRefClaim(tx, p, p.ref, now)
       if (replayed) return { ok: true, replayed: true, approval: replayed }
     }
     // A request still open (its deadline not passed, even if the sweeper has not marked it yet) beats any old decision.
