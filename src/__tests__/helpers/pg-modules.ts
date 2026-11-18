@@ -79,6 +79,7 @@ export const PORTED: readonly string[] = [
   'src/__tests__/sessions-async-facade.test.ts',
   'src/__tests__/skill-revision-seq-lock.test.ts',
   'src/__tests__/skill-decide-lock.test.ts',
+  'src/__tests__/misc-bgtask-atomic-lock.test.ts',
 ]
 
 /** Test files (same form) that do not, each with the reason. */
