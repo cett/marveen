@@ -128,6 +128,36 @@ describe('configDirHash / canonicalConfigDir', () => {
     expect(configDirHash('./cfg', home)).toBeNull()
   })
 
+  describe('injected realpath (nothing resolves, not even the root)', () => {
+    const enoent = (): never => {
+      throw Object.assign(new Error('nothing here'), { code: 'ENOENT' })
+    }
+
+    it('the walk ENDS at the root and returns the normalised path (Python non-strict realpath)', () => {
+      // A runaway guard instead of a hang: a mutant without the root stop would
+      // loop forever in sync code, which no test timeout can interrupt.
+      let calls = 0
+      const fn = (): string => {
+        if (++calls > 100) throw new Error('runaway walk')
+        return enoent()
+      }
+      expect(canonicalConfigDir('/a/b/../c/', home, fn)).toBe('/a/c')
+      expect(calls).toBeLessThanOrEqual(3) // /a/c, /a, / and then done
+      expect(configDirHash('/a/c', home, fn)).toBe(sha8('/a/c'))
+    })
+
+    it('the root itself resolves to the root', () => {
+      expect(canonicalConfigDir('/', home, enoent)).toBe('/')
+    })
+
+    it('an error other than "not there" is not walked past (no canonical form)', () => {
+      const eacces = (): never => {
+        throw Object.assign(new Error('denied'), { code: 'EACCES' })
+      }
+      expect(canonicalConfigDir('/a/b', home, eacces)).toBeNull()
+    })
+  })
+
   it('a path whose parent is a FILE (ENOTDIR) is still walked to the real ancestor', () => {
     const file = join(root, 'a-file')
     writeFileSync(file, 'x')

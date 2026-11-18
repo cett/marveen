@@ -35,15 +35,22 @@ function expandTilde(dir: string, home: string): string {
   return dir
 }
 
+/** What realpath is called with; injectable so the "not even the root
+ *  resolves" corner is testable without a hostile filesystem. */
+export type RealpathFn = (p: string) => string
+
 /** realpath that tolerates a missing tail: resolve the longest existing
  *  ancestor, then re-attach the missing names. `p` is absolute and already
- *  lexically normalised (path.resolve). */
-function realpathAllowingMissingTail(p: string): string {
+ *  lexically normalised (path.resolve). If not even the root resolves (only
+ *  possible with an injected realpath) the normalised path is returned as is,
+ *  which is what Python's non-strict realpath yields when nothing in the tree
+ *  can be resolved. */
+function realpathAllowingMissingTail(p: string, realpathFn: RealpathFn): string {
   const missingNames: string[] = []
   let cur = p
   for (;;) {
     try {
-      const real = realpathSync(cur)
+      const real = realpathFn(cur)
       return missingNames.length === 0 ? real : join(real, ...missingNames.reverse())
     } catch (err) {
       const code = (err as NodeJS.ErrnoException)?.code
@@ -51,7 +58,9 @@ function realpathAllowingMissingTail(p: string): string {
       // ENAMETOOLONG ...) means we cannot vouch for a canonical form.
       if (code !== 'ENOENT' && code !== 'ENOTDIR') throw err
       const parent = dirname(cur)
-      if (parent === cur) throw err
+      // The walk ends at the root (dirname('/') === '/'). Without this stop a
+      // filesystem whose root also reports ENOENT would loop forever.
+      if (parent === cur) return join(cur, ...missingNames.reverse())
       missingNames.push(basename(cur))
       cur = parent
     }
@@ -60,12 +69,16 @@ function realpathAllowingMissingTail(p: string): string {
 
 /** Absolute, symlink-resolved form of a config dir, or null when it has none
  *  (see the header comment). */
-export function canonicalConfigDir(dir: string, home: string = homedir()): string | null {
+export function canonicalConfigDir(
+  dir: string,
+  home: string = homedir(),
+  realpathFn: RealpathFn = realpathSync,
+): string | null {
   if (typeof dir !== 'string' || dir.length === 0 || dir.includes('\0')) return null
   const expanded = expandTilde(dir, home)
   if (!isAbsolute(expanded)) return null
   try {
-    return realpathAllowingMissingTail(resolve(expanded))
+    return realpathAllowingMissingTail(resolve(expanded), realpathFn)
   } catch {
     return null
   }
@@ -73,8 +86,12 @@ export function canonicalConfigDir(dir: string, home: string = homedir()): strin
 
 /** The 8-hex snapshot id of a config dir, or null when the dir has no
  *  canonical form. */
-export function configDirHash(dir: string, home: string = homedir()): string | null {
-  const canonical = canonicalConfigDir(dir, home)
+export function configDirHash(
+  dir: string,
+  home: string = homedir(),
+  realpathFn: RealpathFn = realpathSync,
+): string | null {
+  const canonical = canonicalConfigDir(dir, home, realpathFn)
   if (canonical === null) return null
   return createHash('sha256').update(canonical, 'utf8').digest('hex').slice(0, 8)
 }
