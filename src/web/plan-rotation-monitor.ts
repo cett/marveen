@@ -461,3 +461,20 @@ export function stopPlanRotationMonitor(): void {
   if (timer) clearInterval(timer)
   timer = undefined
 }
+
+/**
+ * The dashboard boot hook (the shape of the channel plugin monitor's start in web.ts). A WEB_ONLY process
+ * (staging previews and every isolated QA instance, which sets it) must not run it: in act mode it would restart
+ * the live main session. A start that throws is logged and never stops the boot. Returns whether it started.
+ */
+export function bootPlanRotationMonitor(webOnly: boolean, start: () => void = startPlanRotationMonitor): boolean {
+  if (webOnly) return false
+  try {
+    start()
+    logger.info('Plan-rotation monitor started (60s tick, mode read on every tick)')
+    return true
+  } catch (err) {
+    logger.warn({ err }, 'Plan-rotation monitor failed to start')
+    return false
+  }
+}
