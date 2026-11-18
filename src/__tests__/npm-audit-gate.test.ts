@@ -11,7 +11,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 // @ts-expect-error -- plain .mjs CI script, no types
-import { evaluate, parseAllowlist, MAX_WINDOW_DAYS, WARN_DAYS } from '../../scripts/ci/npm-audit-gate.mjs'
+import { evaluate, parseAllowlist, MAX_HORIZON_DAYS, MAX_WINDOW_DAYS, WARN_DAYS } from '../../scripts/ci/npm-audit-gate.mjs'
 
 const ROOT = join(__dirname, '..', '..')
 const GATE = join(ROOT, 'scripts', 'ci', 'npm-audit-gate.mjs')
@@ -257,6 +257,47 @@ describe('evaluate: the decision', () => {
       expect(r.failures).toHaveLength(1)
     })
   })
+
+  describe('the ceiling counted from today', () => {
+    const ceilingMessage = 'more than the 45 days ahead of today'
+
+    it('is 45 days', () => {
+      expect(MAX_HORIZON_DAYS).toBe(45)
+    })
+
+    it('an expiry 46 days ahead fails with the ceiling message; 45 days ahead does not trip the ceiling', () => {
+      const over = run(oneHigh(), allow(entry({ added: TODAY, expires: addDays(TODAY, 46) })))
+      expect(over.ok).toBe(false)
+      expect(over.failures.join('\n')).toContain(ceilingMessage)
+      expect(over.failures.join('\n')).toContain('expires in 46 days')
+      // 45 days ahead is exactly on the ceiling: the 30-day window (a stricter rule) is what fails it, not the ceiling.
+      const edge = run(oneHigh(), allow(entry({ added: TODAY, expires: addDays(TODAY, 45) })))
+      expect(edge.failures.join('\n')).not.toContain(ceilingMessage)
+      expect(edge.failures.join('\n')).toContain('more than the 30 allowed')
+    })
+
+    it('counts from today, not from the "added" date: a back-dated "added" does not move it', () => {
+      // added far in the past makes the window huge as well, but the ceiling message is its own line of defence
+      const r = run(oneHigh(), allow(entry({ added: addDays(TODAY, -200), expires: addDays(TODAY, 50) })))
+      expect(r.failures.join('\n')).toContain(ceilingMessage)
+    })
+
+    it('moves with the clock: the same entry is inside the ceiling 2 days later', () => {
+      const e = entry({ added: TODAY, expires: addDays(TODAY, 46) })
+      expect(run(oneHigh(), allow(e), TODAY).failures.join('\n')).toContain(ceilingMessage)
+      expect(run(oneHigh(), allow(e), addDays(TODAY, 2)).failures.join('\n')).not.toContain(ceilingMessage)
+    })
+
+    it('a valid entry (inside the 30-day window) never meets the ceiling, so the gate passes it', () => {
+      const r = run(oneHigh(), allow(entry({ added: TODAY, expires: addDays(TODAY, 30) })))
+      expect(r.ok).toBe(true)
+    })
+
+    it('an entry over the ceiling is reported once', () => {
+      const r = run(oneHigh(), allow(entry({ added: TODAY, expires: addDays(TODAY, 100) })))
+      expect(r.failures).toHaveLength(1)
+    })
+  })
 })
 
 describe('evaluate: input it cannot trust fails closed', () => {
@@ -409,10 +450,16 @@ describe('the CLI', () => {
     expect(r.stdout).toContain('expired exception')
   })
 
-  it('exits 1 for an entry whose window is too long, however far off its date is', () => {
-    const r = runFile(oneHigh(), allow(liveEntry({ expires: '2999-01-01' })))
+  it('exits 1 for an entry whose window is too long', () => {
+    const r = runFile(oneHigh(), allow(liveEntry({ expires: addDays(realToday(), 40) })))
     expect(r.status).toBe(1)
     expect(r.stdout).toContain('more than the 30 allowed')
+  })
+
+  it('exits 1 for an entry that expires far ahead, with the ceiling message', () => {
+    const r = runFile(oneHigh(), allow(liveEntry({ expires: '2999-01-01' })))
+    expect(r.status).toBe(1)
+    expect(r.stdout).toContain('days ahead of today that are allowed')
   })
 
   it('exits 1 when the audit report is not JSON', () => {
