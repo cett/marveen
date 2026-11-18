@@ -38,7 +38,7 @@ import {
   type RotationTrigger,
 } from './claude-plans-state.js'
 import { readPlanSnapshot, type PlanSnapshotRead } from './plan-usage-source.js'
-import { readRotationMode, type RotationModeReading } from './plan-rotation-mode.js'
+import { readRotationMode, parseRotationModeStrict, type RotationMode, type RotationModeReading } from './plan-rotation-mode.js'
 import { performRotation, isRotationEnabled, type RotationApplyResult } from './plan-rotation-apply.js'
 import {
   classifyPlanHealth,
@@ -105,6 +105,23 @@ export type TickOutcome =
   | 'refused'
   | 'stale-decision'
 
+// The dashboard view (GET /api/claude-plans/state -> monitor.live). Every field is listed on purpose: this is a
+// whitelist, see live() below. There is no config dir, hash, token, key path or pane text in any of these types.
+export interface MonitorLiveWindows {
+  five_hour?: { usedPercent: number; resetsAt: number | null }
+  seven_day?: { usedPercent: number; resetsAt: number | null }
+}
+
+export interface MonitorLiveCore {
+  lastTick: { at: number; outcome: TickOutcome } | null
+  activePlan: { id: string; label: string; measuredAt: number } | null
+  health: { status: PlanHealth['status']; reason: string; sticky: boolean; windows: MonitorLiveWindows } | null
+  candidates: Array<{ id: string; label: string; freeFivePct: number; freeSevenDayPct: number; exhausted: boolean }>
+  unknownTicks: number
+  pendingFresh: { planId: string; since: number; blocked: boolean } | null
+  s4: { at: number; pattern: string; line: number; corroborated: boolean } | null
+}
+
 export interface TickResult {
   outcome: TickOutcome
   detail?: string
@@ -153,6 +170,10 @@ export function createPlanRotationMonitor(deps: MonitorDeps) {
   /** S4 (observe): the last pane hit as class + position (never pane text), and the key of the episode already logged. */
   let lastS4: { at: number; planId: string; pattern: string; line: number; corroborated: boolean } | null = null
   let lastS4Key: string | null = null
+  /** For the dashboard view (live()): what the last tick measured and decided. In memory only. */
+  let lastTick: { at: number; outcome: TickOutcome } | null = null
+  let lastMeasure: { planId: string; at: number; health: PlanHealth } | null = null
+  let lastCandidates: PlanCandidateHealth[] = []
 
   const mutate = (fn: (s: ClaudePlansState) => ClaudePlansState): void => {
     deps.writeState(fn(deps.readState()))
@@ -269,7 +290,9 @@ export function createPlanRotationMonitor(deps: MonitorDeps) {
     if (running) return { outcome: 'skipped' }
     running = true
     try {
-      return await tickInner()
+      const result = await tickInner()
+      lastTick = { at: deps.now(), outcome: result.outcome }
+      return result
     } finally {
       running = false
     }
@@ -296,6 +319,7 @@ export function createPlanRotationMonitor(deps: MonitorDeps) {
     // --- measure -----------------------------------------------------------------------------------------
     const activeRead = deps.readSnapshot(activePlan, nowSec)
     const health: PlanHealth = classifyPlanHealth(activeRead.snapshot, nowMs)
+    lastMeasure = { planId: activeId, at: nowMs, health }
     const unknownTicks = health.status === 'unknown' ? (state.monitor?.consecutiveUnknown ?? 0) + 1 : 0
     mutate((s) =>
       patchMonitorState(s, {
@@ -322,6 +346,7 @@ export function createPlanRotationMonitor(deps: MonitorDeps) {
 
     // --- decide ------------------------------------------------------------------------------------------
     const candidates = candidatesFor(plans, activeId, state, nowMs)
+    lastCandidates = candidates
     const decision = decidePlanRotation({ activePlanId: activeId, active: health, candidates, nowMs })
     softStreak = nextSoftStreak(softStreak, decision.action === 'rotate' && decision.urgency === 'soft')
 
@@ -417,12 +442,83 @@ export function createPlanRotationMonitor(deps: MonitorDeps) {
     return { outcome: 'refused', detail: result.hint }
   }
 
-  return { tick, lastS4: () => lastS4 }
+  /**
+   * The dashboard view of the monitor (GET /api/claude-plans/state, `monitor.live`). A WHITELIST, built field by
+   * field: plan ids and labels, percentages, reset times, the classification, counters and the S4 class and
+   * position. Nothing else is ever added here: not a config dir or its hash, not a token, not a key path, not
+   * pane text. A new field needs a reason and a cell in plan-rotation-live.test.ts.
+   */
+  function live(): MonitorLiveCore {
+    const plans = deps.readPlans()
+    const label = (id: string): string => plans.find((p) => p.id === id)?.label ?? id
+    const m = lastMeasure
+    const windows: MonitorLiveWindows = {}
+    for (const key of ['five_hour', 'seven_day'] as const) {
+      const w = m?.health.windows[key]
+      if (w) windows[key] = { usedPercent: w.usedPercent, resetsAt: w.resetsAt }
+    }
+    return {
+      lastTick,
+      activePlan: m ? { id: m.planId, label: label(m.planId), measuredAt: m.at } : null,
+      health: m ? { status: m.health.status, reason: m.health.reason, sticky: m.health.sticky, windows } : null,
+      candidates: lastCandidates.map((c) => ({
+        id: c.planId,
+        label: label(c.planId),
+        freeFivePct: c.freeFivePct,
+        freeSevenDayPct: c.freeSevenDayPct,
+        exhausted: c.exhausted,
+      })),
+      unknownTicks: deps.readState().monitor?.consecutiveUnknown ?? 0,
+      pendingFresh: pendingFresh ? { planId: pendingFresh.planId, since: pendingFresh.since, blocked: blockedUntilFresh } : null,
+      s4: lastS4 ? { at: lastS4.at, pattern: lastS4.pattern, line: lastS4.line, corroborated: lastS4.corroborated } : null,
+    }
+  }
+
+  return { tick, lastS4: () => lastS4, live }
 }
 
 export type PlanRotationMonitor = ReturnType<typeof createPlanRotationMonitor>
 
 let timer: NodeJS.Timeout | undefined
+/** The running monitor, for the dashboard view. Null when none is started (WEB_ONLY, isolated, or stopped). */
+let activeMonitor: PlanRotationMonitor | null = null
+
+export interface PlanRotationLive extends MonitorLiveCore {
+  /** Whether a monitor is ticking in this process. */
+  running: boolean
+  /** The applied mode, the stored one (only when it is one of the three values) and why they differ. */
+  mode: { applied: RotationMode; stored: RotationMode | 'invalid' | null; reason: RotationModeReading['reason'] }
+}
+
+const EMPTY_LIVE: MonitorLiveCore = {
+  lastTick: null,
+  activePlan: null,
+  health: null,
+  candidates: [],
+  unknownTicks: 0,
+  pendingFresh: null,
+  s4: null,
+}
+
+/**
+ * What the dashboard shows of the monitor: the applied mode with the stored value and the reason, and, when a
+ * monitor runs in this process, its last measurement. Never throws: a view must not take the state endpoint down.
+ */
+export async function getPlanRotationLive(): Promise<PlanRotationLive> {
+  const reading = await readRotationMode()
+  let core = EMPTY_LIVE
+  try {
+    if (activeMonitor) core = activeMonitor.live()
+  } catch (err) {
+    logger.warn({ err }, 'Plan-rotation live view failed')
+  }
+  const storedMode = reading.stored === null ? null : (parseRotationModeStrict(reading.stored) ?? 'invalid')
+  return {
+    running: activeMonitor !== null,
+    mode: { applied: reading.mode, stored: storedMode, reason: reading.reason },
+    ...core,
+  }
+}
 
 /** The real dependencies: the dashboard process's own readers, the shared apply and the owner channel. */
 export function planRotationMonitorDeps(): MonitorDeps {
@@ -446,6 +542,7 @@ export function planRotationMonitorDeps(): MonitorDeps {
 export function startPlanRotationMonitor(deps: MonitorDeps = planRotationMonitorDeps()): void {
   stopPlanRotationMonitor()
   const monitor = createPlanRotationMonitor(deps)
+  activeMonitor = monitor
   timer = setInterval(
     systemJob('plan-rotation-monitor', () => {
       void monitor.tick().catch((err: unknown) => {
@@ -460,6 +557,7 @@ export function startPlanRotationMonitor(deps: MonitorDeps = planRotationMonitor
 export function stopPlanRotationMonitor(): void {
   if (timer) clearInterval(timer)
   timer = undefined
+  activeMonitor = null
 }
 
 /**

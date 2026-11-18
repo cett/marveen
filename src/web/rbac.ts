@@ -236,6 +236,11 @@ export const ENDPOINT_PERMISSION_TABLE: readonly EndpointPermissionEntry[] = [
   // prefix, which would otherwise cover it. Create, toggle, run, expand-* are POSTs, a delete of a
   // task or of a pending retry is a DELETE: all schedules:write.
   { method: 'GET', pathPattern: '/api/schedules/tick-status', prefix: false, permission: 'admin:all' },
+  // The plan-rotation monitor's state and live view (applied mode, measurements, rotation log): fleet
+  // infrastructure, not tenant data. Listed explicitly even though the unmapped-path fallback is also
+  // admin:all, so a later broad /api/* entry cannot widen it by accident. Every non-admin role is refused.
+  { method: 'GET', pathPattern: '/api/claude-plans/state', prefix: false, permission: 'admin:all' },
+  { method: 'GET', pathPattern: '/api/v1/claude-plans/state', prefix: false, permission: 'admin:all' },
   // The db context counter (src/web/routes/db-context.ts): named here although the /api/admin/ prefix already covers it.
   { method: 'GET', pathPattern: '/api/admin/db-context', prefix: false, permission: 'admin:all' },
   { method: 'GET', pathPattern: '/api/v1/admin/db-context', prefix: false, permission: 'admin:all' },

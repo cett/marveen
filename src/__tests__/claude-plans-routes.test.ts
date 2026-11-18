@@ -54,6 +54,11 @@ const restartAgentProcess = vi.fn(
 )
 vi.mock('../web/agent-process.js', () => ({ restartAgentProcess: (name: string) => restartAgentProcess(name) }))
 
+// The live view needs the mode reader (db, config). This file tests the route's own behaviour, so the view is a
+// stub; the real view, with the real route, is plan-rotation-live.test.ts.
+const LIVE_STUB = { running: false, mode: { applied: 'observe', stored: null, reason: null } }
+vi.mock('../web/plan-rotation-monitor.js', () => ({ getPlanRotationLive: () => Promise.resolve(LIVE_STUB) }))
+
 const { tryHandleClaudePlans } = await import('../web/routes/claude-plans.js')
 const { CLAUDE_PLANS_PATH } = await import('../web/claude-plans.js')
 const { CLAUDE_PLANS_STATE_PATH } = await import('../web/claude-plans-state.js')
@@ -174,14 +179,14 @@ describe('tryHandleClaudePlans', () => {
   it('GET .../state reports an empty state when nothing has ever rotated', async () => {
     const { ctx, out } = fakeCtx('GET', '/api/claude-plans/state')
     expect(await tryHandleClaudePlans(ctx)).toBe(true)
-    expect(out.body).toEqual({ activePlanByAgent: {}, plans: {} })
+    expect(out.body).toEqual({ activePlanByAgent: {}, plans: {}, monitor: { live: LIVE_STUB } })
   })
 
   it('a plan literally named "state" cannot shadow the state route', async () => {
     await tryHandleClaudePlans(fakeCtx('POST', '/api/claude-plans', plan({ id: 'state' })).ctx)
     const { ctx, out } = fakeCtx('GET', '/api/claude-plans/state')
     await tryHandleClaudePlans(ctx)
-    expect(out.body).toEqual({ activePlanByAgent: {}, plans: {} })
+    expect(out.body).toEqual({ activePlanByAgent: {}, plans: {}, monitor: { live: LIVE_STUB } })
   })
 })
 

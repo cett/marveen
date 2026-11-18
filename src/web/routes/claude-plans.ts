@@ -20,6 +20,7 @@ import { MAIN_AGENT_ID } from '../../config.js'
 import { readClaudePlans, writeClaudePlans, validatePlan } from '../claude-plans.js'
 import { readClaudePlansState, recordRotationEntry } from '../claude-plans-state.js'
 import { performRotation } from '../plan-rotation-apply.js'
+import { getPlanRotationLive } from '../plan-rotation-monitor.js'
 import type { RouteContext } from './types.js'
 
 export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> {
@@ -69,8 +70,14 @@ export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> 
   // data yet" instead of treating the endpoint itself as missing. Checked
   // before the :id matcher below so a plan literally named "state" can never
   // shadow this route.
+  //
+  // `monitor.live` is the backend monitor's own view (applied mode + stored + reason, the last measurement and
+  // tick, counters, the S4 class and position). It is a whitelist built in plan-rotation-monitor.ts live(); the
+  // side-car fields next to it (rotationLog, breaker, resetAt, health) are the existing ones. Fleet
+  // infrastructure, not tenant data: the route is listed in rbac.ts as admin only.
   if (path === '/api/claude-plans/state' && method === 'GET') {
-    json(res, readClaudePlansState())
+    const state = readClaudePlansState()
+    json(res, { ...state, monitor: { ...state.monitor, live: await getPlanRotationLive() } })
     return true
   }
 
