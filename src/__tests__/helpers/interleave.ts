@@ -84,8 +84,12 @@ export function interleave(): Interleave {
  * SQLite: returns at once, the second transaction is queued in the connection lock (see the header).
  * `dbx` is only used on PostgreSQL, outside any transaction body.
  */
-export async function waitBlockedOnLock(dbx: { get: <T = unknown>(sql: string, ...params: unknown[]) => Promise<T | undefined> }, count = 1): Promise<void> {
-  if (testDbMode() !== 'pg') return
+export async function waitBlockedOnLock(
+  dbx: { get: <T = unknown>(sql: string, ...params: unknown[]) => Promise<T | undefined> },
+  count = 1,
+  engine: 'sqlite' | 'pg' = testDbMode(),
+): Promise<void> {
+  if (engine !== 'pg') return
   const deadline = Date.now() + BLOCK_TIMEOUT_MS
   for (;;) {
     const row = await dbx.get<{ c: number | string }>(

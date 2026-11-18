@@ -138,3 +138,26 @@ export function groupConcatDistinct(col: string, dialect: DbxDialect = dbxDialec
     () => `string_agg(DISTINCT (${col})::text, ',')`,
   )
 }
+
+/**
+ * The row lock of a SELECT: `FOR UPDATE` on PostgreSQL, '' on SQLite (one connection, the transaction itself is the lock).
+ * It is the LAST clause of the statement (after ORDER BY and LIMIT). Inside a transaction body only: a lock taken outside
+ * one is released at once.
+ */
+export function forUpdate(dialect: DbxDialect = dbxDialect()): string {
+  return pick(dialect, () => '', () => 'FOR UPDATE')
+}
+
+const ADVISORY_KEY = /^[a-z0-9:_-]+$/
+
+/**
+ * A transaction-scoped advisory lock, as the SQL text of ONE statement the caller runs first in the transaction: the lock is
+ * held until COMMIT or ROLLBACK and another transaction on the same key waits for it. PostgreSQL:
+ * `SELECT pg_advisory_xact_lock(hashtext('key'))`. SQLite: '' (the one connection already serializes the transactions); the
+ * caller skips an empty statement. The key is a literal of the calling module (lower-case letters, digits, ':', '_', '-'),
+ * checked here, never user input.
+ */
+export function advisoryLockSql(key: string, dialect: DbxDialect = dbxDialect()): string {
+  if (!ADVISORY_KEY.test(key)) throw new Error(`dialect: the advisory lock key ${JSON.stringify(key)} is not a plain key`)
+  return pick(dialect, () => '', () => `SELECT pg_advisory_xact_lock(hashtext('${key}'))`)
+}
