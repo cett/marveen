@@ -223,4 +223,18 @@ describe('QA-adopted cells: scope, count filters, empty query, offset pages, ran
     await doc({ title: 'Gap doc', content: 'gapalpha between gapbeta' })
     expect(await searchWorkspaceDocs('gapalpha gapbeta', { tenantId: 'default', limit: 10 })).toEqual([])
   })
+
+  // 6a W2: the candidate is the position-free tsquery of the whole text, so a separator word past the 16383rd word is found by
+  // the list search too (the per-word phrase needed the position of the separator); the phrase check then takes the text
+  it('a separator word past the 16383rd word is found by both searches: the candidate is position-free', async () => {
+    const d = await doc({ title: 'Separator doc', content: `${'filler '.repeat(16400)} serper.dev` })
+    expect((await searchWorkspaceDocs('serper.dev', { tenantId: 'default', limit: 10 })).map((x) => x.id)).toEqual([d.id])
+    expect(await ids('serper.dev')).toEqual([d.id])
+  })
+
+  // the phrase check runs on the title too: a two-word phrase in the title is a phrase hit, the content not containing it
+  it('a phrase in the title is a phrase hit, the content need not contain it (title is checked on its own)', async () => {
+    const d = await doc({ title: 'alpha beta', content: 'nothing relevant here' })
+    expect((await searchWorkspaceDocs('alpha beta', { tenantId: 'default', limit: 10 })).map((x) => x.id)).toEqual([d.id])
+  })
 })

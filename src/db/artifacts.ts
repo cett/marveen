@@ -1,7 +1,7 @@
 import { dbx, dbxDialect } from './facade.js'
 import { generateEmbedding } from './vector.js'
 import { logger } from '../logger.js'
-import { ftsEscape, FTS_MATCH, PG_FTS_CONFIG } from './fts.js'
+import { ftsEscape, FTS_MATCH, pgCandidateTsq, pgPhraseIn } from './fts.js'
 
 // At this row count the HNSW graph may benefit from a periodic re-index.
 const VEC_REBUILD_THRESHOLD = 10_000
@@ -152,16 +152,16 @@ export async function storeArtifactEmbedding(
  * no row, as an empty phrase did before.
  */
 function pgArtifactPhrase(q: string): { sql: string; params: unknown[] } {
-  const words = q.split(/\s+/).filter((w) => w.length > 0)
-  if (words.length === 0) return { sql: 'FALSE', params: [] }
-  const wordsSql = words.map(() => `phraseto_tsquery(${PG_FTS_CONFIG}, public.fts_norm(?))`).join(' && ')
+  const cand = pgCandidateTsq(q)
+  if (!cand) return { sql: 'FALSE', params: [] }
   // each part on its own: the index never runs a phrase from one part into the next (the title, the meta, the body)
   const body = "CASE WHEN a.kind = 'binary' THEN '' ELSE public.fts_bytes_text(a.content) END"
-  const inPart = (text: string) =>
-    `strpos(' ' || lower(public.unaccent(trim(public.fts_norm(${text})))) || ' ', ' ' || lower(public.unaccent(trim(public.fts_norm(?)))) || ' ') > 0`
+  const inTitle = pgPhraseIn('a.title', q)
+  const inMeta = pgPhraseIn('a.meta', q)
+  const inBody = pgPhraseIn(body, q)
   return {
-    sql: `a.fts @@ (${wordsSql}) AND (${inPart('a.title')} OR ${inPart('a.meta')} OR ${inPart(body)})`,
-    params: [...words, q, q, q],
+    sql: `a.fts @@ (${cand.sql}) AND ((${inTitle.sql}) OR (${inMeta.sql}) OR (${inBody.sql}))`,
+    params: [...cand.params, ...inTitle.params, ...inMeta.params, ...inBody.params],
   }
 }
 

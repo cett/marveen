@@ -91,3 +91,29 @@ export function ftsPgTsQuery(tokens: string[], weight?: 'A'): string | null {
   if (tokens.length === 0) return null
   return tokens.map((t) => (weight ? `${t}:${weight}*` : `${t}:*`)).join(' & ')
 }
+
+// -- PostgreSQL phrase and word search (phase 3, 6a W2): the one candidate query and the one phrase check --------------
+
+/**
+ * The candidate query of a text search: every lexeme of the normalized text, ANDed, NO positions. It is a superset of
+ * the phrase: a phrase match needs all its lexemes, so the index never drops a row the phrase check would accept. A
+ * phrase query (phraseto_tsquery) is position-dependent: past the tsvector position ceiling (16383) it never matches, so
+ * it must not be the index condition. null when the text has no word (a blank or a punctuation-only text).
+ */
+export function pgCandidateTsq(text: string): { sql: string; params: unknown[] } | null {
+  if (text.trim() === '') return null
+  return { sql: `plainto_tsquery(${PG_FTS_CONFIG}, public.fts_norm(?))`, params: [text] }
+}
+
+/**
+ * The phrase check of one text part: true when the query, normalized the way the index normalizes (fts_norm, then the
+ * accent and case fold of the config), is a whole-word run of the normalized text. `textSql` is an SQL expression of the
+ * text (a column, or a CASE), checked on its own: the text of two parts is never run into one. The query is a bind
+ * parameter; the text is never joined to another part.
+ */
+export function pgPhraseIn(textSql: string, query: string): { sql: string; params: unknown[] } {
+  return {
+    sql: `strpos(' ' || lower(public.unaccent(trim(public.fts_norm(${textSql})))) || ' ', ' ' || lower(public.unaccent(trim(public.fts_norm(?)))) || ' ') > 0`,
+    params: [query],
+  }
+}

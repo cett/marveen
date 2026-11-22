@@ -15,28 +15,14 @@ import { likeNoCase } from './dialect.js'
 import { likePrefix } from './like.js'
 import { generateEmbedding, floatsToBlob } from './vector.js'
 import { logger } from '../logger.js'
-import { ftsEscape, ftsAllTerms, FTS_MATCH, PG_FTS_CONFIG, pgRankSql } from './fts.js'
+import { ftsEscape, ftsAllTerms, FTS_MATCH, PG_FTS_CONFIG, pgRankSql, pgCandidateTsq, pgPhraseIn } from './fts.js'
 
-// -- PostgreSQL search (phase 3, c5) ------------------------------------------------------------------------------------
-// The query is a tsquery over the generated index (migration 0006). The phrase search takes the whole text as one phrase;
-// the list search takes one phrase per word and ANDs them (the SQLite side quotes every word, so the words are AND-ed).
-// The snippet is computed on the rows of the page only: the search picks the page in an inner query, the headline is
-// added in the outer one. The text of the headline is the normalized text (punctuation becomes spaces).
-
-/** The tsquery of one phrase: the whole text is one phrase, the normalizer runs in SQL (bind parameter). */
-function pgPhraseTsq(text: string): { sql: string; params: unknown[] } {
-  return { sql: `phraseto_tsquery(${PG_FTS_CONFIG}, public.fts_norm(?))`, params: [text] }
-}
-
-/** The tsquery of the words of `q`: one phrase per word, ANDed. null when there is no word. */
-function pgWordsTsq(q: string): { sql: string; params: unknown[] } | null {
-  const words = q.split(/\s+/).filter((w) => w.length > 0)
-  if (words.length === 0) return null
-  return {
-    sql: words.map(() => `phraseto_tsquery(${PG_FTS_CONFIG}, public.fts_norm(?))`).join(' && '),
-    params: words,
-  }
-}
+// -- PostgreSQL search (phase 3, c5; 6a W2) ----------------------------------------------------------------------------
+// The query is a tsquery over the generated index (migration 0006). The candidate is the position-free tsquery of the
+// whole text (every lexeme ANDed, pgCandidateTsq); the phrase search then checks the phrase on the normalized text of
+// each candidate (pgPhraseIn), the list search needs no further check. The snippet is computed on the rows of the page
+// only: the search picks the page in an inner query, the headline is added in the outer one. The text of the headline is
+// the normalized text (punctuation becomes spaces).
 
 const PG_HEADLINE_OPTS = "'StartSel=[, StopSel=], MaxWords=15, MinWords=1, MaxFragments=1, FragmentDelimiter=...'"
 
@@ -60,13 +46,13 @@ async function pgWorkspaceSearch(
   where: string,
   params: unknown[],
   page: { limit?: number; offset?: number },
-  phrase?: { words: { sql: string; params: unknown[] }; verify: { sql: string; params: unknown[] } },
+  phrase?: { verify: { sql: string; params: unknown[] } },
 ): Promise<Array<DbRow & { snippet: string | null }>> {
-  // A phrase search (searchWorkspaceDocs): the candidates come from the index as words ANDed (position-free, so a
+  // A phrase search (searchWorkspaceDocs): the candidates come from the index as the position-free tsquery `tsq` (a
   // phrase past the tsvector position ceiling is still a candidate), and the verification checks the phrase in the
-  // normalized text of each candidate (a whole-word substring; the same accent and case fold as the index).
-  const matchSql = phrase ? `wd.fts @@ (${phrase.words.sql}) AND ${phrase.verify.sql}` : 'wd.fts @@ qq.q'
-  const matchParams = phrase ? [...phrase.words.params, ...phrase.verify.params] : []
+  // normalized text of each part (title, content), see pgPhraseIn.
+  const matchSql = phrase ? `wd.fts @@ qq.q AND ${phrase.verify.sql}` : 'wd.fts @@ qq.q'
+  const matchParams = phrase ? phrase.verify.params : []
   const from = `FROM workspace_docs wd, LATERAL (SELECT ${tsq.sql} AS q) qq ${where} AND ${matchSql}`
   const bind = [...tsq.params, ...params, ...matchParams]
   let inner = `SELECT wd.id, ${pgRankSql('wd.fts', 'qq.q')} AS rank, wd.updated_at ${from}
@@ -310,14 +296,17 @@ export async function searchWorkspaceDocs(
 ): Promise<WorkspaceDocSearchResult[]> {
   const { where, params } = workspaceDocsWhere({ agentId: opts.agentId, tenantId: opts.tenantId }, 'wd.')
   if (dbxDialect() === 'pg') {
-    const words = pgWordsTsq(q)
-    if (!words) return []
-    // the phrase text, normalized the way the index normalizes (fts_norm, then the accent and case fold of the config)
+    const cand = pgCandidateTsq(q)
+    if (!cand) return []
+    // the phrase is checked in the title and in the content, each on its own (a phrase never runs from one into the other);
+    // a binary content is no text
+    const inTitle = pgPhraseIn('wd.title', q)
+    const inContent = pgPhraseIn(`CASE WHEN wd.content_type = 'binary' THEN '' ELSE coalesce(wd.content, '') END`, q)
     const verify = {
-      sql: `strpos(' ' || lower(public.unaccent(trim(public.fts_norm(wd.content)))) || ' ', ' ' || lower(public.unaccent(trim(public.fts_norm(?)))) || ' ') > 0`,
-      params: [q],
+      sql: `((${inTitle.sql}) OR (${inContent.sql}))`,
+      params: [...inTitle.params, ...inContent.params],
     }
-    return (await pgWorkspaceSearch(pgPhraseTsq(q), where, params, { limit: opts.limit }, { words, verify })) as unknown as WorkspaceDocSearchResult[]
+    return (await pgWorkspaceSearch(cand, where, params, { limit: opts.limit }, { verify })) as unknown as WorkspaceDocSearchResult[]
   }
   return dbx.all<WorkspaceDocSearchResult>(`
     SELECT wd.id, wd.title, wd.agent_id, wd.tenant_id, wd.type,
@@ -482,7 +471,7 @@ export interface WorkspaceDocSearchHit extends WorkspaceDoc {
  */
 export async function searchWorkspaceDocsPage(q: string, filter: ListWorkspaceDocsFilter): Promise<{ items: WorkspaceDocSearchHit[]; total: number }> {
   if (dbxDialect() === 'pg') {
-    const t = pgWordsTsq(q)
+    const t = pgCandidateTsq(q)
     if (!t) return { items: [], total: 0 }
     const { where, params } = workspaceDocsWhere(filter, 'wd.')
     const total = Number(((await dbx.get(
