@@ -6,7 +6,7 @@ import { writeAgentAuditLog } from './audit.js'
 import { dbx, dbxDialect } from './facade.js'
 import { BlankContentError, isBlankContent } from '../blank-content.js'
 import { floatsToBlob, generateEmbedding, linkToNeighbors, syncVecMemoryEmbeddingUpdate } from './vector.js'
-import { buildFtsMatchExpression, FTS_MATCH, ftsPgTsQuery, ftsTokens, PG_FTS_CONFIG, PG_RANK_SCALE } from './fts.js'
+import { buildFtsMatchExpression, FTS_MATCH, ftsPgTsQuery, ftsTokens, PG_FTS_CONFIG, pgRankSql } from './fts.js'
 
 export interface Memory {
   id: number
@@ -120,10 +120,10 @@ export async function searchMemories(query: string, chatId: string, limit = 3, t
     if (!tsq) return []
     const tc = tenantId ? ' AND m.tenant_id = ?' : ''
     const tp = tenantId ? [tenantId] : []
-    const candidates = (await dbx.all(`SELECT m.*, -(ts_rank('{1,1,1,1}', m.fts, to_tsquery(${PG_FTS_CONFIG}, ?)) * ${PG_RANK_SCALE}) AS rank
+    const candidates = (await dbx.all(`SELECT m.*, ${pgRankSql('m.fts', `to_tsquery(${PG_FTS_CONFIG}, ?)`)} AS rank
          FROM memories m
          WHERE m.fts @@ to_tsquery(${PG_FTS_CONFIG}, ?) AND m.chat_id = ?${tc}
-         ORDER BY rank
+         ORDER BY rank, m.id
          LIMIT ?`, tsq, tsq, chatId, ...tp, limit * RECENCY_OVERSAMPLE)) as (Memory & { rank: number })[]
     return withoutRank(reRankByRecency(candidates, limit)) as Memory[]
   }
@@ -312,10 +312,10 @@ export async function searchAgentMemories(agentId: string, query: string, limit:
     if (!tsq) return []
     const tc = tenantId ? ' AND m.tenant_id = ?' : ''
     const tp = tenantId ? [tenantId] : []
-    const candidates = (await dbx.all(`SELECT m.*, -(ts_rank('{1,1,1,1}', m.fts, to_tsquery(${PG_FTS_CONFIG}, ?)) * ${PG_RANK_SCALE}) AS rank
+    const candidates = (await dbx.all(`SELECT m.*, ${pgRankSql('m.fts', `to_tsquery(${PG_FTS_CONFIG}, ?)`)} AS rank
          FROM memories m
          WHERE m.fts @@ to_tsquery(${PG_FTS_CONFIG}, ?) AND (m.agent_id = ? OR m.category = 'shared')${tc}
-         ORDER BY rank LIMIT ?`, tsq, tsq, agentId, ...tp, limit * RECENCY_OVERSAMPLE)) as (Memory & { rank: number })[]
+         ORDER BY rank, m.id LIMIT ?`, tsq, tsq, agentId, ...tp, limit * RECENCY_OVERSAMPLE)) as (Memory & { rank: number })[]
     return withoutRank(reRankByRecency(candidates, limit)) as Memory[]
   }
   const tc = tenantId ? ' AND m.tenant_id = ?' : ''

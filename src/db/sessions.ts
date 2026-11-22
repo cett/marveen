@@ -7,7 +7,7 @@ import { dbx, dbxDialect, type Tx } from './facade.js'
 import { advisoryLockSql, eqNoCase, forUpdate, likeNoCase, orderBytes, orderNoCase } from './dialect.js'
 import { resolveWriteTenant } from './write-tenant.js'
 import { Memory, RECENCY_OVERSAMPLE, buildFtsMatchExpression, reRankByRecency, withoutRank } from './memory.js'
-import { FTS_MATCH, ftsPgTsQuery, ftsTokens, PG_FTS_CONFIG, PG_RANK_SCALE } from './fts.js'
+import { FTS_MATCH, ftsPgTsQuery, ftsTokens, PG_FTS_CONFIG, pgRankSql } from './fts.js'
 
 /** The advisory key of the first-admin election (see createDashboardUser). */
 export const ELECTION_KEY = 'dashboard-users-election'
@@ -254,8 +254,8 @@ export async function recallSearch(query: string, agentId?: string, limit = 50, 
     // PostgreSQL: the tsvector of both weights, the agent's rows and the shared ones; no LIKE fallback (an error is an error).
     const tsq = ftsPgTsQuery(ftsTokens(query)) ?? ''
     const sqlPg = agentId
-      ? `SELECT m.*, -(ts_rank('{1,1,1,1}', m.fts, to_tsquery(${PG_FTS_CONFIG}, ?)) * ${PG_RANK_SCALE}) AS rank FROM memories m WHERE m.fts @@ to_tsquery(${PG_FTS_CONFIG}, ?) AND (m.agent_id = ? OR m.category = 'shared')${tc} ORDER BY rank LIMIT ?`
-      : `SELECT m.*, -(ts_rank('{1,1,1,1}', m.fts, to_tsquery(${PG_FTS_CONFIG}, ?)) * ${PG_RANK_SCALE}) AS rank FROM memories m WHERE m.fts @@ to_tsquery(${PG_FTS_CONFIG}, ?)${tc} ORDER BY rank LIMIT ?`
+      ? `SELECT m.*, ${pgRankSql('m.fts', `to_tsquery(${PG_FTS_CONFIG}, ?)`)} AS rank FROM memories m WHERE m.fts @@ to_tsquery(${PG_FTS_CONFIG}, ?) AND (m.agent_id = ? OR m.category = 'shared')${tc} ORDER BY rank, m.id LIMIT ?`
+      : `SELECT m.*, ${pgRankSql('m.fts', `to_tsquery(${PG_FTS_CONFIG}, ?)`)} AS rank FROM memories m WHERE m.fts @@ to_tsquery(${PG_FTS_CONFIG}, ?)${tc} ORDER BY rank, m.id LIMIT ?`
     const candidates = agentId
       ? (await dbx.all(sqlPg, tsq, tsq, agentId, ...tp, limit * RECENCY_OVERSAMPLE)) as (Memory & { rank: number })[]
       : (await dbx.all(sqlPg, tsq, tsq, ...tp, limit * RECENCY_OVERSAMPLE)) as (Memory & { rank: number })[]

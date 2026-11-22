@@ -68,6 +68,21 @@ export const PG_FTS_CONFIG = "'public.marveen_fts'"
 export const PG_RANK_SCALE = 1
 
 /**
+ * The ts_rank normalization bitmask (PostgreSQL): 0 = none, 1 = divide by 1+log(document length), 2 = divide by document
+ * length, 8 = divide by the number of unique words, 32 = rank / (rank + 1). ONE constant for every PostgreSQL ranking query
+ * (memories, recall, workspace documents); calibrated by the recall harness (step 6a): 1 (divide by document length).
+ */
+export const PG_RANK_NORMALIZATION = 1
+
+/**
+ * The negated, scaled PostgreSQL rank of one tsvector against one tsquery expression (lower is better, as bm25 is).
+ * `vec` and `query` are SQL expressions (column names, bind placeholders); the constants are interpolated, never user input.
+ */
+export function pgRankSql(vec: string, query: string): string {
+  return `-(ts_rank('{1,1,1,1}', ${vec}, ${query}, ${PG_RANK_NORMALIZATION}) * ${PG_RANK_SCALE})`
+}
+
+/**
  * The tsquery text of the builder output (`tok1* tok2*`): every token prefix-matched, the tokens AND-ed. `weight` restricts
  * the match to one weight (the chat search: content, weight A). The tokens are letters and digits only (the builder
  * sanitizes them), so no tsquery operator can enter; the text is still passed as a bind parameter. null when no token.

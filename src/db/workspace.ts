@@ -15,7 +15,7 @@ import { likeNoCase } from './dialect.js'
 import { likePrefix } from './like.js'
 import { generateEmbedding, floatsToBlob } from './vector.js'
 import { logger } from '../logger.js'
-import { ftsEscape, ftsAllTerms, FTS_MATCH, PG_FTS_CONFIG, PG_RANK_SCALE } from './fts.js'
+import { ftsEscape, ftsAllTerms, FTS_MATCH, PG_FTS_CONFIG, pgRankSql } from './fts.js'
 
 // -- PostgreSQL search (phase 3, c5) ------------------------------------------------------------------------------------
 // The query is a tsquery over the generated index (migration 0006). The phrase search takes the whole text as one phrase;
@@ -63,7 +63,7 @@ async function pgWorkspaceSearch(
 ): Promise<Array<DbRow & { snippet: string | null }>> {
   const from = `FROM workspace_docs wd, LATERAL (SELECT ${tsq.sql} AS q) qq ${where} AND wd.fts @@ qq.q`
   const bind = [...tsq.params, ...params]
-  let inner = `SELECT wd.id, -(ts_rank('{1,1,1,1}', wd.fts, qq.q) * ${PG_RANK_SCALE}) AS rank, wd.updated_at ${from}
+  let inner = `SELECT wd.id, ${pgRankSql('wd.fts', 'qq.q')} AS rank, wd.updated_at ${from}
                ORDER BY rank, wd.updated_at DESC, wd.id`
   const innerBind = [...bind]
   if (page.limit && page.limit > 0) {
