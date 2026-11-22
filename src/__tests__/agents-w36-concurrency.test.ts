@@ -3,20 +3,28 @@
 // statement rolls the whole step back, and the boot twin of the tenant resolver agrees with the asynchronous one.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import {
-  db, dbx, createTenant, createAgentMessage, claimPendingForAgent, closeMessagesWithoutDelivery,
+  dbx, createTenant, createAgentMessage, claimPendingForAgent, closeMessagesWithoutDelivery,
   getAgentConversationThreads, upsertBlackboard, markBlackboardStale, findBlackboardRowByAgent,
   listBlackboardHistory, setTenantAgentAvailability, resolveAgentOwningTenantId, resolveAgentOwningTenantIdSync,
 } from '../db.js'
+import { dbxDialect } from '../db/facade.js'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { useTestDb } from './helpers/with-test-db.js'
+import { useTestDb, testDbMode } from './helpers/with-test-db.js'
+import { refuseWrite } from './helpers/refuse-write.js'
 
 useTestDb()
 
-beforeEach(() => {
-  db.exec('DELETE FROM fleet_blackboard_history; DELETE FROM fleet_blackboard; DELETE FROM agent_messages; DELETE FROM agent_tenant_context; DELETE FROM tenant_agent_availability')
+beforeEach(async () => {
+  for (const table of ['fleet_blackboard_history', 'fleet_blackboard', 'agent_messages', 'agent_tenant_context', 'tenant_agent_availability']) {
+    await dbx.run(`DELETE FROM ${table}`)
+  }
 })
 afterEach(() => { vi.restoreAllMocks() })
+
+// A failure injection is dropped by its own name: PostgreSQL names the table too.
+const dropRefuse = (name: string, table: string): Promise<unknown> =>
+  dbx.run(dbxDialect() === 'pg' ? `DROP TRIGGER ${name} ON ${table}` : `DROP TRIGGER ${name}`)
 
 function spyFacade(): string[] {
   const seen: string[] = []
@@ -27,11 +35,14 @@ function spyFacade(): string[] {
   return seen
 }
 
-const rowCount = (agent: string): number =>
-  (db.prepare('SELECT COUNT(*) AS n FROM fleet_blackboard WHERE agent_id = ?').get(agent) as { n: number }).n
+const rowCount = async (agent: string): Promise<number> =>
+  (await dbx.get<{ n: number }>('SELECT COUNT(*) AS n FROM fleet_blackboard WHERE agent_id = ?', agent))?.n ?? 0
 
 describe('upsertBlackboard: overlapped posts of one agent', () => {
-  it('two first posts end in one row, the later call wins, and both are in the history', async () => {
+  // Order-free invariants, so the cell holds whatever order the commits take: one row; every call returns its own summary;
+  // the history holds each post once; the row shows the summary of the newest history entry (the write and the history
+  // entry commit together, under the row lock). The winner is not named: the later commit is not fixed on PostgreSQL.
+  it('two first posts end in one row; each call returns its own summary; the row shows the newest history entry', async () => {
     const [a, b] = await Promise.all([
       upsertBlackboard('agent-a', { status: 'active', summary: 'first' }),
       upsertBlackboard('agent-a', { status: 'active', summary: 'second' }),
@@ -39,18 +50,21 @@ describe('upsertBlackboard: overlapped posts of one agent', () => {
     expect(a.summary).toBe('first')
     expect(b.summary).toBe('second')
     expect(b.id).toBe(a.id)
-    expect(rowCount('agent-a')).toBe(1)
-    expect((await findBlackboardRowByAgent('agent-a'))?.summary).toBe('second')
-    const history = (await listBlackboardHistory({ agent_id: 'agent-a' })).map((h) => h.summary).sort()
-    expect(history).toEqual(['first', 'second'])
+    expect(await rowCount('agent-a')).toBe(1)
+    expect((await listBlackboardHistory({ agent_id: 'agent-a' })).map((h) => h.summary).sort()).toEqual(['first', 'second'])
+    const newest = await dbx.get<{ summary: string }>('SELECT summary FROM fleet_blackboard_history WHERE agent_id = ? ORDER BY id DESC LIMIT 1', 'agent-a')
+    expect((await findBlackboardRowByAgent('agent-a'))?.summary).toBe(newest?.summary)
   })
 
-  it('eight overlapped first posts leave exactly one row and one history entry per distinct post', async () => {
-    const out = await Promise.all(Array.from({ length: 8 }, (_, i) => upsertBlackboard('agent-b', { status: 'active', summary: `post-${i}` })))
+  it('eight overlapped first posts leave one row; each call returns its own post; one history entry per post; the row shows the newest one', async () => {
+    const posts = Array.from({ length: 8 }, (_, i) => `post-${i}`)
+    const out = await Promise.all(posts.map((summary) => upsertBlackboard('agent-b', { status: 'active', summary })))
     expect(new Set(out.map((r) => r.id)).size).toBe(1)
-    expect(rowCount('agent-b')).toBe(1)
-    expect((await findBlackboardRowByAgent('agent-b'))?.summary).toBe('post-7')
-    expect(await listBlackboardHistory({ agent_id: 'agent-b' })).toHaveLength(8)
+    expect(out.map((r) => r.summary).sort()).toEqual([...posts].sort())
+    expect(await rowCount('agent-b')).toBe(1)
+    expect((await listBlackboardHistory({ agent_id: 'agent-b' })).map((h) => h.summary).sort()).toEqual([...posts].sort())
+    const newest = await dbx.get<{ summary: string }>('SELECT summary FROM fleet_blackboard_history WHERE agent_id = ? ORDER BY id DESC LIMIT 1', 'agent-b')
+    expect((await findBlackboardRowByAgent('agent-b'))?.summary).toBe(newest?.summary)
   })
 
   it('the blocked reason of a blocked row survives a second overlapped blocked post without a reason', async () => {
@@ -74,21 +88,21 @@ describe('upsertBlackboard: overlapped posts of one agent', () => {
 
   it('a failing history insert rolls the row back', async () => {
     await upsertBlackboard('agent-e', { status: 'active', summary: 'before' })
-    db.exec("CREATE TRIGGER w36_fail_history BEFORE INSERT ON fleet_blackboard_history WHEN NEW.summary = 'boom' BEGIN SELECT RAISE(ABORT, 'history refused'); END")
+    await refuseWrite(dbx, { name: 'w36_fail_history', table: 'fleet_blackboard_history', message: 'history refused', when: { column: 'summary', equals: 'boom' } })
     try {
       await expect(upsertBlackboard('agent-e', { status: 'active', summary: 'boom' })).rejects.toThrow('history refused')
-    } finally { db.exec('DROP TRIGGER w36_fail_history') }
+    } finally { await dropRefuse('w36_fail_history', 'fleet_blackboard_history') }
     expect((await findBlackboardRowByAgent('agent-e'))?.summary).toBe('before')
   })
 })
 
 describe('markBlackboardStale: compare-and-set on the row it read', () => {
   const OLD = 1_000
-  const age = (agent: string): void => { db.prepare('UPDATE fleet_blackboard SET updated_at = ? WHERE agent_id = ?').run(OLD, agent) }
+  const age = async (agent: string): Promise<void> => { await dbx.run('UPDATE fleet_blackboard SET updated_at = ? WHERE agent_id = ?', OLD, agent) }
 
   it('marks an old active row stale and records it', async () => {
     await upsertBlackboard('agent-s', { status: 'active', summary: 'old task' })
-    age('agent-s')
+    await age('agent-s')
     expect(await markBlackboardStale({}, 60, 60, 5_000)).toBe(1)
     expect((await findBlackboardRowByAgent('agent-s'))?.status).toBe('stale')
     expect((await listBlackboardHistory({ agent_id: 'agent-s' })).map((h) => h.status)).toContain('stale')
@@ -96,7 +110,7 @@ describe('markBlackboardStale: compare-and-set on the row it read', () => {
 
   it('a post the agent makes between the sweep read and its update is kept', async () => {
     await upsertBlackboard('agent-s', { status: 'active', summary: 'old task' })
-    age('agent-s')
+    await age('agent-s')
     const real = dbx.all.bind(dbx) as (...a: unknown[]) => Promise<unknown>
     vi.spyOn(dbx, 'all').mockImplementation((async (sql: string, ...a: unknown[]) => {
       const rows = await real(sql, ...a)
@@ -115,7 +129,7 @@ describe('markBlackboardStale: compare-and-set on the row it read', () => {
 
   it('a row the agent closed between the sweep read and its update stays done', async () => {
     await upsertBlackboard('agent-s', { status: 'active', summary: 'old task' })
-    age('agent-s')
+    await age('agent-s')
     const real = dbx.all.bind(dbx) as (...a: unknown[]) => Promise<unknown>
     vi.spyOn(dbx, 'all').mockImplementation((async (sql: string, ...a: unknown[]) => {
       const rows = await real(sql, ...a)
@@ -133,14 +147,14 @@ describe('markBlackboardStale: compare-and-set on the row it read', () => {
 describe('markBlackboardStale: the status condition', () => {
   it('a row whose status changed without a newer timestamp is not marked stale', async () => {
     await upsertBlackboard('agent-s', { status: 'active', summary: 'old task' })
-    db.prepare('UPDATE fleet_blackboard SET updated_at = 1000 WHERE agent_id = ?').run('agent-s')
+    await dbx.run('UPDATE fleet_blackboard SET updated_at = 1000 WHERE agent_id = ?', 'agent-s')
     const real = dbx.all.bind(dbx) as (...a: unknown[]) => Promise<unknown>
     vi.spyOn(dbx, 'all').mockImplementation((async (sql: string, ...a: unknown[]) => {
       const rows = await real(sql, ...a)
       if (/FROM fleet_blackboard WHERE status IN/.test(sql)) {
         vi.mocked(dbx.all).mockRestore()
         // a writer in the same second as the row's last write: the timestamp is unchanged, the status is not
-        db.prepare("UPDATE fleet_blackboard SET status = 'done' WHERE agent_id = ?").run('agent-s')
+        await dbx.run("UPDATE fleet_blackboard SET status = 'done' WHERE agent_id = ?", 'agent-s')
       }
       return rows
     }) as never)
@@ -150,15 +164,23 @@ describe('markBlackboardStale: the status condition', () => {
 })
 
 describe('claimPendingForAgent: two claimers', () => {
-  it('every pending message is claimed by exactly one of two overlapped claimers', async () => {
+  // Order- and overlap-independent. Two overlapping claims of limit 4 may split the six messages 4 + 2, or give 4 + 0 when the
+  // second one waits on the first one's rows and finds them delivered (a claim returns fewer rows than its limit; the rest
+  // stay pending for the next tick). Whatever the split: no id twice, no claim above its limit, the pair takes at least four,
+  // and a third, serial claim takes the rest: together exactly the six messages, none pending.
+  it('six messages across two overlapped claimers and a third claim: each delivered once, none pending', async () => {
     for (let i = 0; i < 6; i++) await createAgentMessage('agent-a', 'agent-x', `m${i}`)
     const [one, two] = await Promise.all([claimPendingForAgent('agent-x', 4), claimPendingForAgent('agent-x', 4)])
-    const ids = [...one, ...two].map((m) => m.id)
-    expect(new Set(ids).size).toBe(ids.length)
-    expect(ids).toHaveLength(6)
-    expect(one).toHaveLength(4)
-    expect(two).toHaveLength(2)
-    expect((db.prepare("SELECT COUNT(*) AS n FROM agent_messages WHERE status = 'pending'").get() as { n: number }).n).toBe(0)
+    const overlapped = [...one, ...two].map((m) => m.id)
+    expect(new Set(overlapped).size).toBe(overlapped.length)
+    expect(one.length).toBeLessThanOrEqual(4)
+    expect(two.length).toBeLessThanOrEqual(4)
+    expect(overlapped.length).toBeGreaterThanOrEqual(4)
+    const rest = (await claimPendingForAgent('agent-x', 4)).map((m) => m.id)
+    const all = [...overlapped, ...rest]
+    expect(new Set(all).size).toBe(6)
+    expect(all).toHaveLength(6)
+    expect((await dbx.get<{ n: number }>("SELECT COUNT(*) AS n FROM agent_messages WHERE status = 'pending'"))?.n).toBe(0)
   })
 
   it('eight claimers of one message: one gets it', async () => {
@@ -172,21 +194,21 @@ describe('closeMessagesWithoutDelivery: one transaction', () => {
   it('a failing update leaves every row of the batch pending', async () => {
     const ids: number[] = []
     for (let i = 0; i < 3; i++) ids.push((await createAgentMessage('agent-a', 'agent-z', `c${i}`)).id)
-    db.exec(`CREATE TRIGGER w36_fail_close BEFORE UPDATE ON agent_messages WHEN NEW.id = ${ids[2]} BEGIN SELECT RAISE(ABORT, 'close refused'); END`)
+    await refuseWrite(dbx, { name: 'w36_fail_close', table: 'agent_messages', message: 'close refused', event: 'UPDATE', when: { column: 'id', equals: String(ids[2]) } })
     try {
       await expect(closeMessagesWithoutDelivery(ids, 'stale')).rejects.toThrow('close refused')
-    } finally { db.exec('DROP TRIGGER w36_fail_close') }
-    expect((db.prepare("SELECT COUNT(*) AS n FROM agent_messages WHERE status = 'pending'").get() as { n: number }).n).toBe(3)
+    } finally { await dropRefuse('w36_fail_close', 'agent_messages') }
+    expect((await dbx.get<{ n: number }>("SELECT COUNT(*) AS n FROM agent_messages WHERE status = 'pending'"))?.n).toBe(3)
   })
 
   it('closes the batch, counts only rows that were pending, and runs on the tx handle', async () => {
     const ids: number[] = []
     for (let i = 0; i < 3; i++) ids.push((await createAgentMessage('agent-a', 'agent-z', `c${i}`)).id)
-    db.prepare("UPDATE agent_messages SET status = 'done' WHERE id = ?").run(ids[0])
+    await dbx.run("UPDATE agent_messages SET status = 'done' WHERE id = ?", ids[0])
     const seen = spyFacade()
     expect(await closeMessagesWithoutDelivery(ids, 'stale')).toBe(2)
     expect(seen.filter((s) => /agent_messages/.test(s))).toEqual([])
-    expect((db.prepare('SELECT result FROM agent_messages WHERE id = ?').get(ids[1]) as { result: string }).result).toBe('closed-without-delivery: stale')
+    expect((await dbx.get<{ result: string }>('SELECT result FROM agent_messages WHERE id = ?', ids[1]))?.result).toBe('closed-without-delivery: stale')
   })
 })
 
@@ -208,28 +230,29 @@ describe('getAgentConversationThreads: tenant scope', () => {
 })
 
 describe('setTenantAgentAvailability: availability and context in one step', () => {
-  const context = (): number => (db.prepare("SELECT COUNT(*) AS n FROM agent_tenant_context WHERE agent_id = 'agent-t' AND tenant_id = 'acme'").get() as { n: number }).n
+  const context = async (): Promise<number> =>
+    (await dbx.get<{ n: number }>("SELECT COUNT(*) AS n FROM agent_tenant_context WHERE agent_id = 'agent-t' AND tenant_id = 'acme'"))?.n ?? 0
 
   it('disabling the agent deletes its context for that tenant', async () => {
     await createTenant('acme', 'Acme')
     await setTenantAgentAvailability('acme', 'agent-t', true)
-    db.prepare("INSERT INTO agent_tenant_context (agent_id, tenant_id, status) VALUES ('agent-t', 'acme', 'bound')").run()
+    await dbx.run("INSERT INTO agent_tenant_context (agent_id, tenant_id, status) VALUES ('agent-t', 'acme', 'bound')")
     const row = await setTenantAgentAvailability('acme', 'agent-t', false)
     expect(row.enabled).toBe(0)
-    expect(context()).toBe(0)
+    expect(await context()).toBe(0)
   })
 
   it('a failing context delete keeps the agent enabled', async () => {
     await createTenant('acme', 'Acme')
     await setTenantAgentAvailability('acme', 'agent-t', true)
-    db.prepare("INSERT INTO agent_tenant_context (agent_id, tenant_id, status) VALUES ('agent-t', 'acme', 'bound')").run()
-    db.exec("CREATE TRIGGER w36_fail_ctx BEFORE DELETE ON agent_tenant_context BEGIN SELECT RAISE(ABORT, 'context refused'); END")
+    await dbx.run("INSERT INTO agent_tenant_context (agent_id, tenant_id, status) VALUES ('agent-t', 'acme', 'bound')")
+    await refuseWrite(dbx, { name: 'w36_fail_ctx', table: 'agent_tenant_context', message: 'context refused', event: 'DELETE' })
     try {
       await expect(setTenantAgentAvailability('acme', 'agent-t', false)).rejects.toThrow('context refused')
-    } finally { db.exec('DROP TRIGGER w36_fail_ctx') }
-    const row = db.prepare("SELECT enabled FROM tenant_agent_availability WHERE tenant_id = 'acme' AND agent_id = 'agent-t'").get() as { enabled: number }
-    expect(row.enabled).toBe(1)
-    expect(context()).toBe(1)
+    } finally { await dropRefuse('w36_fail_ctx', 'agent_tenant_context') }
+    const row = await dbx.get<{ enabled: number }>("SELECT enabled FROM tenant_agent_availability WHERE tenant_id = 'acme' AND agent_id = 'agent-t'")
+    expect(row?.enabled).toBe(1)
+    expect(await context()).toBe(1)
   })
 
   it('runs on the tx handle', async () => {
@@ -241,10 +264,12 @@ describe('setTenantAgentAvailability: availability and context in one step', () 
 })
 
 describe('resolveAgentOwningTenantIdSync: the boot twin agrees with the asynchronous resolver', () => {
-  it('main agent of a tenant, agent enabled for a tenant, enabled for two, disabled, unknown', async () => {
+  // SQLite-only by design (boot-twin): the synchronous resolver reads the SQLite handle at start-up, before the async
+  // facade is in use. On PostgreSQL it is never called, so there is nothing to agree with; the cell skips there by name.
+  it.runIf(testDbMode() === 'sqlite')('main agent of a tenant, agent enabled for a tenant, enabled for two, disabled, unknown', async () => {
     await createTenant('acme', 'Acme')
     await createTenant('beta', 'Beta')
-    db.prepare("UPDATE tenants SET main_agent_id = 'coordinator' WHERE id = 'beta'").run()
+    await dbx.run("UPDATE tenants SET main_agent_id = 'coordinator' WHERE id = 'beta'")
     await setTenantAgentAvailability('acme', 'worker', true)
     await setTenantAgentAvailability('acme', 'shared', true)
     await setTenantAgentAvailability('beta', 'shared', true)
