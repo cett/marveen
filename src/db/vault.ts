@@ -572,10 +572,12 @@ export async function claimApproval(p: ConsumeParams & { category: string; mode?
       if (send) await recordApprovalEvent({ approval_id: usable.id, tenant_id: approval.tenant_id, event: 'used', reason: 'reserved_and_sealed', actor: p.principal, ref }, tx)
       return send ? { ok: true, replayed: false, adopted: false, approval } : { ok: true, replayed: false, approval }
     }
-    // A same-ref retry whose first claim took the row while this one waited in the guarded write above: on PostgreSQL the
-    // write re-checks its WHERE on the committed row and changes nothing, so this read runs again on the same transaction,
-    // after the wait, and answers the retry as the replay it is (not as already_consumed). Non-send claims only.
-    if (!send && usable && typeof p.ref === 'string' && p.ref !== '') {
+    // A same-ref retry whose first claim took the row while this one was not yet writing: either the usable read above found no
+    // open row (the first claim committed between this claim's early replay read and that read), or the guarded write waited on
+    // the first claim and changed nothing (PostgreSQL re-checks its WHERE on the committed row). In both cases this read runs
+    // again on the same transaction, after the commit, and answers the retry as the replay it is (not as already_consumed).
+    // Non-send claims only.
+    if (!send && typeof p.ref === 'string' && p.ref !== '') {
       const replayed = await findSameRefClaim(tx, p, p.ref, now)
       if (replayed) return { ok: true, replayed: true, approval: replayed }
     }

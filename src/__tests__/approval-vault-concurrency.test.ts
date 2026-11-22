@@ -201,3 +201,25 @@ describe('open-once under the max_pending limit: overlapping creates', () => {
     expect(await pendingCount()).toBe(1)
   })
 })
+
+// A same-ref retry that loses the race to its own first claim. The retry's early replay read runs before the first claim
+// commits; the first claim commits; the retry's usable read then finds no open row. The retry must be answered as the
+// replay of the first claim (the same principal, ref, scope and window), not as already consumed. Pinned on PostgreSQL:
+// the window between the two reads is a statement boundary, which only the second connection can cross.
+describe('a same-ref retry that loses the race to its own first claim (PostgreSQL)', () => {
+  it.runIf(testDbMode() === 'pg')('is answered as the replay of the first claim, not as already consumed', async () => {
+    await approved()
+    const il = interleave()
+    il.hold('retry-parked')
+    const spy = parkBefore(/SELECT id FROM approvals/, il, 'retry-parked')
+    const retry = claimApproval({ ...p, category: 'email_send', ref: 'same-ref' })
+    await il.reached('retry-parked')
+    const first = await claimApproval({ ...p, category: 'email_send', ref: 'same-ref' })
+    il.open('retry-parked')
+    const late = await retry
+    spy.mockRestore()
+    expect(first.ok && !first.replayed).toBe(true)
+    expect(late.ok && late.replayed).toBe(true)
+    expect(await dbx.get("SELECT COUNT(*) AS n FROM approval_events WHERE event = 'consumed'")).toEqual({ n: 1 })
+  })
+})
