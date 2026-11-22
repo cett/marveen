@@ -5,6 +5,7 @@
 import { describe, expect, it } from 'vitest'
 import { dbx, recallSearch, searchAgentMemories, searchMemories } from '../db.js'
 import { useTestDb, testDbMode } from './helpers/with-test-db.js'
+import { rebuildMemoriesFts } from '../db/fleet-transfer.js'
 
 useTestDb()
 
@@ -21,6 +22,22 @@ async function mem(p: {
   )
   return Number(row?.id)
 }
+
+describe('a bulk insert is searchable after the rebuild call, on both engines (no rebuild is needed on PostgreSQL)', () => {
+  it('fifty rows written in one transaction, rebuild with the transaction handle, all found', async () => {
+    await dbx.tx(async (tx) => {
+      for (let i = 0; i < 50; i++) {
+        await tx.run(
+          `INSERT INTO memories (chat_id, content, sector, created_at, accessed_at, agent_id, category, keywords, tenant_id)
+           VALUES ('chat-bulk', ?, 'semantic', ?, ?, 'agent-a', 'warm', NULL, 'default')`,
+          `bulkword row ${i}`, NOW, NOW,
+        )
+      }
+      await rebuildMemoriesFts(tx)
+    })
+    expect((await searchMemories('bulkword', 'chat-bulk', 100)).length).toBe(50)
+  })
+})
 
 describe('the memory search on the full-text index', () => {
   it('every typed word is a prefix and all of them must match', async () => {
