@@ -31,6 +31,28 @@ function blobToFloats(blob: Buffer): number[] {
   return out
 }
 
+/** The embedding size the vector column holds (migration 0007, vector(768)): the SQLite embedding size too. */
+export const EMBEDDING_DIM = 768
+
+/**
+ * The float32 embedding blob as the text literal pgvector reads ('[v1,v2,...]'). Refuses a blob that is not exactly
+ * EMBEDDING_DIM float32 values, and a non-finite component (NaN, Infinity), so a failing embedder cannot reach the column.
+ * Each value is printed as its double (the shortest decimal that parses back to the same double), and that double is the
+ * float32 it came from: pgvector reads the decimal as the nearest float32, which is the original value.
+ */
+export function blobToVectorLiteral(blob: Buffer): string {
+  if (blob.byteLength !== EMBEDDING_DIM * 4) {
+    throw new Error(`embedding blob is ${blob.byteLength} bytes, expected ${EMBEDDING_DIM * 4} (${EMBEDDING_DIM} float32 values)`)
+  }
+  const parts = new Array<string>(EMBEDDING_DIM)
+  for (let i = 0; i < EMBEDDING_DIM; i++) {
+    const v = blob.readFloatLE(i * 4)
+    if (!Number.isFinite(v)) throw new Error(`embedding component ${i} is ${v}, not a finite value`)
+    parts[i] = String(v)
+  }
+  return `[${parts.join(',')}]`
+}
+
 export async function generateEmbedding(text: string): Promise<number[] | null> {
   try {
     const resp = await fetch(`${OLLAMA_URL}/api/embeddings`, {
