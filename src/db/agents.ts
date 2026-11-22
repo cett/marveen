@@ -6,7 +6,7 @@ import { writeAgentAuditLog } from './audit.js'
 import { deactivatePlanForAgent } from './claude-plans.js'
 import { db } from './connection.js'
 import { dbx, type SqlOps } from './facade.js'
-import { likeNoCase } from './dialect.js'
+import { forUpdate, likeNoCase } from './dialect.js'
 import { likePrefix } from './like.js'
 import { getDelegationTenant } from './tenant-channel-bindings.js'
 import { KanbanCard } from './kanban.js'
@@ -711,41 +711,53 @@ interface BlackboardUpsertData {
   resolved_by?: string | null
 }
 
-// The read, the write and the history entry are ONE transaction: two overlapped first posts of the same agent
-// used to read "no row", pick two ids, and the loser's `SELECT ... WHERE id = ?` found nothing. The
-// transaction lock puts the second call behind the first, so it sees the first one's row and updates it.
+// The write, the read of the locked row and the history entry are ONE transaction. Overlapped first posts of one agent
+// queue on the unique agent_id index (the second insert waits, then finds the row); a post on an existing row queues on
+// its row lock (the FOR UPDATE read). Either way the carried-over fields come from the row as it is committed.
 async function writeBlackboardRow(
   tx: SqlOps,
   agent_id: string,
   data: BlackboardUpsertData,
 ): Promise<{ row: BlackboardRow; changed: boolean }> {
-  const existing = await tx.get<BlackboardRow>('SELECT * FROM fleet_blackboard WHERE agent_id = ?', agent_id)
-  const id = existing?.id ?? randomUUID().replace(/-/g, '').slice(0, 8)
   const tenant_id = await resolveAgentTenant(agent_id, tx)
+  // Create the row when it is missing (a concurrent first post waits on the unique index and then finds it), then read it
+  // FOR UPDATE: `existing` is the latest committed version, and the carried-over blocked fields and the `changed` flag are
+  // never computed from a stale read (READ COMMITTED). A row this call created has no prior state.
+  const insertPlaceholder = (): Promise<{ id: string } | undefined> => tx.get<{ id: string }>(`
+    INSERT INTO fleet_blackboard (id, agent_id, status, summary, updated_at, tenant_id)
+    VALUES (?, ?, 'active', '', unixepoch(), ?)
+    ON CONFLICT(agent_id) DO NOTHING
+    RETURNING id
+  `, randomUUID().replace(/-/g, '').slice(0, 8), agent_id, tenant_id)
+  const readLocked = (): Promise<BlackboardRow | undefined> =>
+    tx.get<BlackboardRow>(`SELECT * FROM fleet_blackboard WHERE agent_id = ? ${forUpdate()}`, agent_id)
+  // A concurrent delete can remove the row between the insert (which takes no lock on an existing row) and the locked read.
+  // Then the row is created again, once, and this call counts as a new row; a second miss is an error, not a guess.
+  let created = await insertPlaceholder()
+  let existing = await readLocked()
+  if (!existing) {
+    created = await insertPlaceholder()
+    existing = await readLocked()
+    if (!existing) throw new Error('fleet_blackboard: the row was removed twice while it was being written')
+  }
+  const prior = created ? undefined : existing
   const status = data.status ?? 'active'
-  const blockedBy = status === 'blocked' ? (data.blocked_by ?? existing?.blocked_by ?? null) : null
-  const blockedReason = status === 'blocked' ? (data.blocked_reason ?? existing?.blocked_reason ?? null) : null
+  const blockedBy = status === 'blocked' ? (data.blocked_by ?? prior?.blocked_by ?? null) : null
+  const blockedReason = status === 'blocked' ? (data.blocked_reason ?? prior?.blocked_reason ?? null) : null
   await tx.run(`
-    INSERT INTO fleet_blackboard (id, agent_id, task_ref, status, summary, updated_at, tenant_id, blocked_by, blocked_reason)
-    VALUES (?, ?, ?, ?, ?, unixepoch(), ?, ?, ?)
-    ON CONFLICT(agent_id) DO UPDATE SET
-      task_ref       = excluded.task_ref,
-      status         = excluded.status,
-      summary        = excluded.summary,
-      updated_at     = unixepoch(),
-      tenant_id      = excluded.tenant_id,
-      blocked_by     = excluded.blocked_by,
-      blocked_reason = excluded.blocked_reason
-  `, id, agent_id, data.task_ref ?? null, status, data.summary, tenant_id, blockedBy, blockedReason)
-  const row = (await tx.get('SELECT * FROM fleet_blackboard WHERE agent_id = ?', agent_id)) as BlackboardRow
-  const changed = !existing ||
-    existing.status !== row.status ||
-    existing.summary !== row.summary ||
-    (existing.task_ref ?? null) !== (row.task_ref ?? null) ||
-    (existing.blocked_by ?? null) !== (row.blocked_by ?? null) ||
-    (existing.blocked_reason ?? null) !== (row.blocked_reason ?? null)
+    UPDATE fleet_blackboard SET task_ref = ?, status = ?, summary = ?, updated_at = unixepoch(),
+      tenant_id = ?, blocked_by = ?, blocked_reason = ?
+    WHERE id = ?
+  `, data.task_ref ?? null, status, data.summary, tenant_id, blockedBy, blockedReason, existing.id)
+  const row = (await tx.get('SELECT * FROM fleet_blackboard WHERE id = ?', existing.id)) as BlackboardRow
+  const changed = !prior ||
+    prior.status !== row.status ||
+    prior.summary !== row.summary ||
+    (prior.task_ref ?? null) !== (row.task_ref ?? null) ||
+    (prior.blocked_by ?? null) !== (row.blocked_by ?? null) ||
+    (prior.blocked_reason ?? null) !== (row.blocked_reason ?? null)
   if (changed) {
-    const resolving = existing?.status === 'blocked' && row.status !== 'blocked'
+    const resolving = prior?.status === 'blocked' && row.status !== 'blocked'
     await insertBlackboardHistory({
       agent_id: row.agent_id, task_ref: row.task_ref, status: row.status, summary: row.summary,
       blocked_by: row.blocked_by, blocked_reason: row.blocked_reason,

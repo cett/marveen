@@ -79,6 +79,126 @@ describe('upsertBlackboard: overlapped posts of one agent', () => {
     expect(row?.blocked_reason).toBe('waiting')
   })
 
+  // Holder cells (two real connections, no Promise.all): the second post waits on the first one's uncommitted write.
+  it.runIf(testDbMode() === 'pg')('a blocked post that waited on a row being written keeps that row\'s blocked reason (PostgreSQL)', async () => {
+    await upsertBlackboard('agent-h', { status: 'active', summary: 'x' })
+    const il = interleave()
+    il.hold('blocked-parked')
+    const holder = dbx.tx(async (tx) => {
+      await tx.run("UPDATE fleet_blackboard SET status = 'blocked', blocked_by = 'agent-z', blocked_reason = 'waiting' WHERE agent_id = ?", 'agent-h')
+      await il.pass('blocked-parked')
+    })
+    await il.reached('blocked-parked')
+    const waiting = upsertBlackboard('agent-h', { status: 'blocked', summary: 'x' })
+    try {
+      await waitBlockedOnLock(dbx, 1, 'pg')
+    } finally {
+      il.open('blocked-parked')
+      await holder
+    }
+    const row = await waiting
+    expect(row.blocked_by).toBe('agent-z')
+    expect(row.blocked_reason).toBe('waiting')
+  })
+
+  it.runIf(testDbMode() === 'pg')('a first post that waited on the unique row of another first post ends as one row (PostgreSQL)', async () => {
+    const il = interleave()
+    il.hold('first-parked')
+    const holder = dbx.tx(async (tx) => {
+      await tx.run(
+        "INSERT INTO fleet_blackboard (id, agent_id, task_ref, status, summary, updated_at, tenant_id, blocked_by, blocked_reason) VALUES ('h-first', 'agent-f', NULL, 'active', 'first', unixepoch(), 'default', NULL, NULL)",
+      )
+      await il.pass('first-parked')
+    })
+    await il.reached('first-parked')
+    const waiting = upsertBlackboard('agent-f', { status: 'active', summary: 'second' })
+    try {
+      await waitBlockedOnLock(dbx, 1, 'pg')
+    } finally {
+      il.open('first-parked')
+      await holder
+    }
+    const row = await waiting
+    expect(row.summary).toBe('second')
+    expect(await rowCount('agent-f')).toBe(1)
+  })
+
+  // Probe cells (PostgreSQL, deterministic, no timing). The facade's transaction handle is wrapped, so the post stops right
+  // before a chosen statement with its transaction open; the other connection runs in between, then the post is released.
+  function parkTxStatement(match: (sql: string) => boolean, il: ReturnType<typeof interleave>, name: string) {
+    const real = dbx.tx.bind(dbx) as (fn: (tx: unknown) => Promise<unknown>, opts?: unknown) => Promise<unknown>
+    let parked = false
+    return vi.spyOn(dbx, 'tx').mockImplementation(((fn: (tx: unknown) => Promise<unknown>, opts?: unknown) =>
+      real((tx) => {
+        const target = tx as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>
+        const wrapped = new Proxy(target, {
+          get(obj, key) {
+            if (key === 'get' || key === 'run' || key === 'all') {
+              return async (sql: string, ...params: unknown[]) => {
+                if (!parked && match(sql)) {
+                  parked = true
+                  await il.pass(name)
+                }
+                return Reflect.apply(obj[key], obj, [sql, ...params])
+              }
+            }
+            const value = Reflect.get(obj, key, obj)
+            return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(obj) : value
+          },
+        })
+        return fn(wrapped)
+      }, opts)) as never)
+  }
+
+  // Bounded: returns when the write has finished, or when it waits on a row lock (the post holds that row).
+  async function waitWriterSettledOrBlocked(state: { settled: boolean }): Promise<void> {
+    for (let i = 0; i < 200 && !state.settled; i++) {
+      const waits = Number((await dbx.get<{ c: number | string }>(
+        "SELECT COUNT(*) AS c FROM pg_locks WHERE NOT granted AND database = (SELECT oid FROM pg_database WHERE datname = current_database())",
+      ))?.c)
+      if (waits >= 1) return
+      await new Promise((resolve) => setTimeout(resolve, 25))
+    }
+  }
+
+  // The blocked fields are read FOR UPDATE: a write that commits after the post's read and before its write must not be
+  // overwritten with the stale carried-over values. Without the lock the write commits inside the window and the post's
+  // UPDATE overwrites it (red); with the lock the write waits for the post and lands last (green).
+  it.runIf(testDbMode() === 'pg')('a write that commits between the post\'s locked read and its write is not overwritten (PostgreSQL)', async () => {
+    await upsertBlackboard('agent-w', { status: 'active', summary: 'first' })
+    const il = interleave()
+    il.hold('write-parked')
+    const spy = parkTxStatement((sql) => /^\s*UPDATE fleet_blackboard SET task_ref/.test(sql), il, 'write-parked')
+    const post = upsertBlackboard('agent-w', { status: 'blocked', summary: 'post' })
+    await il.reached('write-parked')
+    const writer = dbx.run("UPDATE fleet_blackboard SET status = 'blocked', blocked_by = 'agent-z', blocked_reason = 'waiting', summary = 'w' WHERE agent_id = 'agent-w'")
+    const state = { settled: false }
+    writer.then(() => { state.settled = true }, () => { state.settled = true })
+    await waitWriterSettledOrBlocked(state)
+    il.open('write-parked')
+    await post
+    await writer
+    spy.mockRestore()
+    expect(await findBlackboardRowByAgent('agent-w')).toMatchObject({ status: 'blocked', blocked_by: 'agent-z', blocked_reason: 'waiting' })
+  })
+
+  // W1: the row is removed after the post's insert (which takes no lock on an existing row) and before its locked read.
+  // The post creates it again and completes; before the fix the locked read found nothing (red).
+  it.runIf(testDbMode() === 'pg')('a row removed between the post\'s insert and its locked read is created again (PostgreSQL)', async () => {
+    await upsertBlackboard('agent-d', { status: 'active', summary: 'before' })
+    const il = interleave()
+    il.hold('read-parked')
+    const spy = parkTxStatement((sql) => /^\s*SELECT \* FROM fleet_blackboard WHERE agent_id = \? FOR UPDATE/.test(sql), il, 'read-parked')
+    const post = upsertBlackboard('agent-d', { status: 'active', summary: 'after' })
+    await il.reached('read-parked')
+    await dbx.run('DELETE FROM fleet_blackboard WHERE agent_id = ?', 'agent-d')
+    il.open('read-parked')
+    const row = await post
+    spy.mockRestore()
+    expect(row.summary).toBe('after')
+    expect(await rowCount('agent-d')).toBe(1)
+  })
+
   it('every statement of the transaction body runs on the tx handle, not on the facade', async () => {
     const seen = spyFacade()
     await upsertBlackboard('agent-d', { status: 'active', summary: 'one' })

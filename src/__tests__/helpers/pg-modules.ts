@@ -90,6 +90,7 @@ export const PORTED: readonly string[] = [
   'src/__tests__/vault-ssh-delete-race.test.ts',
   'src/__tests__/api-token-replace-race.test.ts',
   'src/__tests__/approval-request-count-scope.test.ts',
+  'src/__tests__/agents-w36-concurrency.test.ts',
 ]
 
 /** Test files (same form) that do not, each with the reason. */
@@ -100,7 +101,6 @@ export const EXCLUDED: Readonly<Record<string, ExcludeReason>> = {
   'src/__tests__/tenant-scoped-db.test.ts': 'vec',
   'src/__tests__/vector-memory-facade.test.ts': 'vec',
   'src/__tests__/vector-memory-reads.test.ts': 'vec',
-  'src/__tests__/agents-w36-concurrency.test.ts': 'p2-4-concurrency',
   'src/__tests__/approval-vault-concurrency.test.ts': 'p2-4-concurrency',
   'src/__tests__/approval-vault-statements.test.ts': 'p2-4-concurrency',
   'src/__tests__/audit-async-writers.test.ts': 'p2-4-concurrency',
@@ -129,7 +129,7 @@ export const EXCLUDED: Readonly<Record<string, ExcludeReason>> = {
 }
 
 /** The number of EXCLUDED files the partition test accepts. It only goes down. */
-export const EXCLUDED_BASELINE = 29
+export const EXCLUDED_BASELINE = 28
 
 /** A file uses useTestDb when it imports the helper AND calls useTestDb( (a file that only imports resetDbTestState or testDbMode does not). */
 const IMPORT = /from\s+['"][^'"]*helpers\/with-test-db(\.js)?['"]/
