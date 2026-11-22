@@ -1,6 +1,6 @@
 // The vector embedding tables of migration 0007 (phase 3, step 6b): the extension, the 768 dimension, the refusal of a
 // NaN component, the cascade from each parent, one embedding per parent, and the preflight refusal of a database without
-// the extension. PostgreSQL only; the parity of the three tables with the SQLite twin is in baseline-parity (PG_ONLY_TABLES).
+// the extension. PostgreSQL only; the three tables are compared against their literal spec (PG_ONLY_TABLE_MODELS) in baseline-parity.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { createPgTestDb, type PgTestDb } from '../helpers/pg-test-db.js'
 import { pgPreflight, PgPreflightError } from '../../db/pg/preflight.js'

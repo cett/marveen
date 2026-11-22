@@ -100,7 +100,6 @@ export const PG_ONLY_TABLE_MODELS: Readonly<Record<string, TableModel>> = {
     checks: [],
   },
 }
-export const PG_ONLY_TABLES: readonly string[] = Object.keys(PG_ONLY_TABLE_MODELS)
 
 export interface ColumnModel { type: string; notNull: boolean; identity: boolean; default: string | null }
 export interface IndexModel { table: string; unique: boolean; keys: string[]; where: string | null }
@@ -348,34 +347,42 @@ function diffLists(label: string, expected: string[], actual: string[], out: str
   for (const x of a) if (!e.includes(x)) out.push(`${label}: only in PG: ${x}`)
 }
 
+/**
+ * One table of the expected model against the same table of the PostgreSQL model: columns (type, NOT NULL, identity,
+ * default), the primary key, and the UNIQUE, FOREIGN KEY and CHECK constraints. Every facet is compared, for the SQLite
+ * twin tables and for the PG-only tables alike.
+ */
+function diffTable(name: string, et: TableModel, at: TableModel, out: string[]): void {
+  diffLists(`columns of ${name}`, Object.keys(et.columns), Object.keys(at.columns), out)
+  for (const [cn, ec] of Object.entries(et.columns)) {
+    const ac = at.columns[cn]
+    if (!ac) continue
+    if (ec.type !== ac.type) out.push(`column ${name}.${cn}: type ${ec.type} expected, ${ac.type} in PG`)
+    if (ec.notNull !== ac.notNull) out.push(`column ${name}.${cn}: NOT NULL ${ec.notNull} expected, ${ac.notNull} in PG`)
+    if (ec.identity !== ac.identity) out.push(`column ${name}.${cn}: identity ${ec.identity} expected, ${ac.identity} in PG`)
+    if (ec.default !== ac.default) out.push(`column ${name}.${cn}: default ${String(ec.default)} expected, ${String(ac.default)} in PG`)
+  }
+  if (et.pk.join(',') !== at.pk.join(',')) out.push(`primary key of ${name}: (${et.pk.join(',')}) expected, (${at.pk.join(',')}) in PG`)
+  diffLists(`UNIQUE of ${name}`, et.uniques, at.uniques, out)
+  diffLists(`FOREIGN KEY of ${name}`, et.fks, at.fks, out)
+  diffLists(`CHECK of ${name}`, et.checks, at.checks, out)
+}
+
 /** Every difference between the expected (SQLite chain) and the actual (PostgreSQL baseline) model; empty means parity. */
 export function diffSchemas(expected: SchemaModel, actual: SchemaModel): string[] {
   const out: string[] = []
-  // a listed PG-only table that is present in PG is compared against its own spec (PG_ONLY_TABLE_MODELS), every facet;
-  // a listed one that is missing is itself a difference (strict)
+  // A listed PG-only table present in PG is compared against its literal spec (PG_ONLY_TABLE_MODELS), every facet and
+  // nothing skipped. A listed one missing from PG is itself a difference (strict). An unlisted extra table is a difference.
   const actualTables: Record<string, TableModel> = actual.tables
   const expectedTables: Record<string, TableModel> = { ...expected.tables }
-  for (const name of PG_ONLY_TABLES) {
-    if (actualTables[name]) expectedTables[name] = PG_ONLY_TABLE_MODELS[name] as TableModel
-    else out.push(`PG-only table listed in PG_ONLY_TABLES is missing in PG: ${name}`)
+  for (const [name, spec] of Object.entries(PG_ONLY_TABLE_MODELS)) {
+    if (actualTables[name]) expectedTables[name] = spec
+    else out.push(`PG-only table listed in PG_ONLY_TABLE_MODELS is missing in PG: ${name}`)
   }
   diffLists('tables', Object.keys(expectedTables), Object.keys(actualTables), out)
   for (const [name, et] of Object.entries(expectedTables)) {
     const at = actualTables[name]
-    if (!at) continue
-    diffLists(`columns of ${name}`, Object.keys(et.columns), Object.keys(at.columns), out)
-    for (const [cn, ec] of Object.entries(et.columns)) {
-      const ac = at.columns[cn]
-      if (!ac) continue
-      if (ec.type !== ac.type) out.push(`column ${name}.${cn}: type ${ec.type} expected, ${ac.type} in PG`)
-      if (ec.notNull !== ac.notNull) out.push(`column ${name}.${cn}: NOT NULL ${ec.notNull} expected, ${ac.notNull} in PG`)
-      if (ec.identity !== ac.identity) out.push(`column ${name}.${cn}: identity ${ec.identity} expected, ${ac.identity} in PG`)
-      if (ec.default !== ac.default) out.push(`column ${name}.${cn}: default ${String(ec.default)} expected, ${String(ac.default)} in PG`)
-    }
-    if (et.pk.join(',') !== at.pk.join(',')) out.push(`primary key of ${name}: (${et.pk.join(',')}) expected, (${at.pk.join(',')}) in PG`)
-    diffLists(`UNIQUE of ${name}`, et.uniques, at.uniques, out)
-    diffLists(`FOREIGN KEY of ${name}`, et.fks, at.fks, out)
-    diffLists(`CHECK of ${name}`, et.checks, at.checks, out)
+    if (at) diffTable(name, et, at, out)
   }
   diffLists('indexes', Object.keys(expected.indexes), Object.keys(actual.indexes), out)
   for (const [name, ei] of Object.entries(expected.indexes)) {
