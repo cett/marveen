@@ -66,3 +66,19 @@ describe('the short document ranks first, with the same match count, on the work
     expect(ids).toEqual([shortDoc.id, longDoc.id])
   })
 })
+
+// W3 (Rick): an accented query finds the unaccented and the accented spelling, on the three memory searches. The default
+// unicode61 tokenizer (SQLite) and the marveen_fts configuration (PostgreSQL) both fold the accent, so both engines agree.
+describe('an accented query finds both spellings, on the memory searches', () => {
+  it('searchMemories, searchAgentMemories and recallSearch find szerzo and szerző with the query szerző', async () => {
+    const plain = await mem('accentprobe szerzo kozlemeny')
+    const accented = await mem('accentprobe szerző kozlemeny')
+    const want = [plain, accented].sort((a, b) => a - b)
+    const chat = (await searchMemories('szerző', 'chat-rank', 10)).map((m) => m.id).sort((a, b) => a - b)
+    const agent = (await searchAgentMemories('agent-a', 'szerző', 10)).map((m) => m.id).sort((a, b) => a - b)
+    const recall = (await recallSearch('szerző', 'agent-a', 10)).memories.map((m) => m.id).sort((a, b) => a - b)
+    expect(chat).toEqual(want)
+    expect(agent).toEqual(want)
+    expect(recall).toEqual(want)
+  })
+})
