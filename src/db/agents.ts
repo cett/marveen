@@ -283,13 +283,15 @@ export async function failPendingFederatedMessages(peerId: string | undefined, r
 // the router tmux-injecting into its perpetually-busy channel session.
 export async function claimPendingForAgent(toAgent: string, limit: number): Promise<AgentMessage[]> {
   const now = Math.floor(Date.now() / 1000)
+  // The outer status condition is the one a waiting claim re-checks after the row lock (PostgreSQL, READ COMMITTED): the
+  // subquery keeps the snapshot it took, so without it a row the first claim delivered meanwhile would be delivered again.
   const rows = await dbx.all<AgentMessage>(`UPDATE agent_messages SET status = 'delivered', delivered_at = ?
        WHERE id IN (
          SELECT id FROM agent_messages
          WHERE to_agent = ? AND status = 'pending'
          ORDER BY created_at ASC, id ASC
          LIMIT ?
-       )
+       ) AND status = 'pending'
      RETURNING id, from_agent, to_agent, content, status, result, created_at, delivered_at, completed_at, tenant_id`, now, toAgent, limit)
   // RETURNING row order is unspecified; restore FIFO (created_at, then id as the
   // tiebreaker for same-second inserts) for delivery.

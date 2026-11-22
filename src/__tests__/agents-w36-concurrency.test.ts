@@ -12,6 +12,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { useTestDb, testDbMode } from './helpers/with-test-db.js'
 import { refuseWrite } from './helpers/refuse-write.js'
+import { interleave, waitBlockedOnLock } from './helpers/interleave.js'
 
 useTestDb()
 
@@ -187,6 +188,42 @@ describe('claimPendingForAgent: two claimers', () => {
     await createAgentMessage('agent-a', 'agent-y', 'only one')
     const out = await Promise.all(Array.from({ length: 8 }, () => claimPendingForAgent('agent-y', 5)))
     expect(out.flat()).toHaveLength(1)
+  })
+})
+
+// The race of the two-claimer cells above is a READ COMMITTED one: the second claim takes its snapshot while the first claim
+// is still uncommitted, waits on the row, and must not deliver that row again once the first claim commits. The holder
+// below writes the first claim's effect on the row (status delivered) and parks before its commit; the production claim
+// runs on another connection and waits on the row (waitBlockedOnLock). A Promise.all of two calls would not hold the row.
+describe('claimPendingForAgent: a claim that waited on the row of a claim in flight', () => {
+  it.runIf(testDbMode() === 'pg')('does not deliver the message the first claim delivered (two real connections)', async () => {
+    const first = await createAgentMessage('agent-a', 'agent-h', 'h1')
+    const second = await createAgentMessage('agent-a', 'agent-h', 'h2')
+    const il = interleave()
+    il.hold('first-claim-parked')
+    const holder = dbx.tx(async (tx) => {
+      await tx.run("UPDATE agent_messages SET status = 'delivered', delivered_at = ? WHERE id = ?", Math.floor(Date.now() / 1000), first.id)
+      await il.pass('first-claim-parked')
+    })
+    await il.reached('first-claim-parked')
+    const waiting = claimPendingForAgent('agent-h', 2)
+    try {
+      await waitBlockedOnLock(dbx, 1, 'pg')
+    } finally {
+      il.open('first-claim-parked')
+      await holder
+    }
+    const got = (await waiting).map((m) => m.id)
+    expect(got).not.toContain(first.id)
+    expect(got).toEqual([second.id])
+  })
+
+  // Weak (end state only, on both engines): a message that is already delivered is not claimed again. It does not test the race.
+  it('a message delivered before the claim is not claimed again', async () => {
+    const first = await createAgentMessage('agent-a', 'agent-w', 'w1')
+    const second = await createAgentMessage('agent-a', 'agent-w', 'w2')
+    await dbx.run("UPDATE agent_messages SET status = 'delivered', delivered_at = ? WHERE id = ?", Math.floor(Date.now() / 1000), first.id)
+    expect((await claimPendingForAgent('agent-w', 2)).map((m) => m.id)).toEqual([second.id])
   })
 })
 
