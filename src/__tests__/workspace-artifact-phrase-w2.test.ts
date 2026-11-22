@@ -234,3 +234,36 @@ describe('R4 a word without a token drops out of the search, on both searches an
     expect(await aids('!!! | &')).toEqual([])
   })
 })
+
+// L2 (Benjamin r8): the list search needs EVERY word. A row with one of two words is no hit, in either order, on a short and
+// on a long row; the page and the count agree. The artifact search takes the whole text as one phrase, so the same row is
+// no hit there either.
+describe('L2 the list search needs every word: a row with one of two words is no hit, on both row sizes', () => {
+  const total = async (q: string) => (await searchWorkspaceDocsPage(q, { tenantId: 'default', limit: 50 } as never)).total
+
+  it('workspace list and count: the rows with one word only are no hit, the rows with both are', async () => {
+    const onlyFirst = await doc({ title: 'L2 first short', content: 'l2word here' })
+    const onlyFirstLong = await doc({ title: 'L2 first long', content: `${filler(16400)} l2word here` })
+    const onlySecond = await doc({ title: 'L2 second short', content: 'l2miss here' })
+    const onlySecondLong = await doc({ title: 'L2 second long', content: `${filler(16400)} l2miss here` })
+    const bothShort = await doc({ title: 'L2 both short', content: 'l2word l2miss here' })
+    const bothLong = await doc({ title: 'L2 both long', content: `${filler(16400)} l2word l2miss here` })
+    const want = [bothShort.id, bothLong.id].sort()
+    expect(await page('l2word l2miss')).toEqual(want)
+    expect(await page('l2miss l2word')).toEqual(want)
+    expect(await total('l2word l2miss')).toBe(2)
+    expect(await total('l2miss l2word')).toBe(2)
+    for (const id of [onlyFirst.id, onlyFirstLong.id, onlySecond.id, onlySecondLong.id]) {
+      expect(want).not.toContain(id)
+    }
+  })
+
+  it('artifact search: a body with one of two words is no hit, a body with both (short and long) is', async () => {
+    const short = await art('L2 both short', 'l2word l2miss here')
+    const long = await art('L2 both long', `${filler(16400)} l2word l2miss here`)
+    await art('L2 first only', 'l2word here')
+    await art('L2 second only long', `${filler(16400)} l2miss here`)
+    expect(await aids('l2word l2miss')).toEqual([short.id, long.id].sort())
+    expect(await countArtifacts({ q: 'l2word l2miss' })).toBe(2)
+  })
+})
