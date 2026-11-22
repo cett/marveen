@@ -3,12 +3,14 @@
 // "no tenant" instead of guessing. Real in-memory database, no mocks.
 // Each test names the line it protects: take that line out of src/db/tenant-channel-bindings.ts and the test fails.
 import { describe, it, expect, beforeEach } from 'vitest'
-import { useTestDb } from './helpers/with-test-db.js'
+import { useTestDb, testDbMode } from './helpers/with-test-db.js'
 import { refuseWrite } from './helpers/refuse-write.js'
+import { interleave, waitBlockedOnLock } from './helpers/interleave.js'
 import {
   dbx, createTenant, setChannelBinding, deleteChannelBinding, getChannelBindingTenant, listChannelBindings,
   getServingTenant, explainServingTenantMiss,
 } from '../db.js'
+import { advisoryKeyOf, advisoryLockKeyed } from '../db/dialect.js'
 
 useTestDb()
 
@@ -86,6 +88,51 @@ describe('deleteChannelBinding', () => {
     ])
     expect(results.filter(Boolean)).toHaveLength(1)
     expect(await getChannelBindingTenant('agent-a', 'telegram', '1')).toBeNull()
+  })
+})
+
+describe('setChannelBinding: the per-binding lock', () => {
+  // Holder cell (PostgreSQL, two real connections): a transaction takes the binding key, moves the source to another tenant and
+  // writes that tenant's context, parked before its commit. The bind to the OLD tenant must wait on the advisory key, and
+  // after the commit it must re-read the tenant the holder committed, so the holder's context is dropped.
+  // The bind may spell the channel in any case: the key is built from the lower-cased channel, so both spellings wait on the same lock.
+  const parkedBind = async (bindChannel: string): Promise<void> => {
+    await setChannelBinding('agent-a', 'telegram', '1', 'acme', 'admin')
+    const key = advisoryLockKeyed('channel:', advisoryKeyOf('agent-a', 'telegram', '1'))
+    if (!key) throw new Error('the binding key is a PostgreSQL advisory lock')
+    const il = interleave()
+    il.hold('binding-parked')
+    const holder = dbx.tx(async (tx) => {
+      await tx.run(key.sql, ...key.params)
+      await tx.run("UPDATE tenant_channel_bindings SET tenant_id = 'beta', updated_at = unixepoch() WHERE agent_id = ? AND channel = ? AND external_id = ?", 'agent-a', 'telegram', '1')
+      await tx.run("INSERT INTO agent_tenant_context (agent_id, tenant_id, status) VALUES ('agent-a', 'beta', 'bound')")
+      await il.pass('binding-parked')
+    })
+    await il.reached('binding-parked')
+    const waiting = setChannelBinding('agent-a', bindChannel, '1', 'acme', 'admin')
+    try {
+      await waitBlockedOnLock(dbx, 1, 'pg')
+      // the waiter is on the advisory key (a row wait would be locktype transactionid)
+      // pg_locks is server-wide: only the waiters of this test database count (other files run in parallel).
+      expect.soft(Number((await dbx.get<{ c: number | string }>(
+        "SELECT COUNT(*) AS c FROM pg_locks WHERE locktype = 'advisory' AND NOT granted AND database = (SELECT oid FROM pg_database WHERE datname = current_database())",
+      ))?.c)).toBe(1)
+    } finally {
+      il.open('binding-parked')
+      await holder
+    }
+    expect((await waiting).tenant_id).toBe('acme')
+    expect(await getChannelBindingTenant('agent-a', 'telegram', '1')).toBe('acme')
+    expect(await contextAgents()).toEqual([])
+  }
+  it.runIf(testDbMode() === 'pg')('waits on the binding key and drops the context the holder committed (two real connections)', () => parkedBind('telegram'))
+  it.runIf(testDbMode() === 'pg')('the same, when the bind spells the channel in capitals: it waits on the same key (PostgreSQL)', () => parkedBind('Telegram'))
+
+  it('re-binding a source to the tenant it already has keeps the agent context', async () => {
+    await setChannelBinding('agent-a', 'telegram', '1', 'acme', 'admin')
+    await seedContext('agent-a', 'acme')
+    await setChannelBinding('agent-a', 'telegram', '1', 'acme', 'admin')
+    expect(await contextAgents()).toEqual(['agent-a'])
   })
 })
 

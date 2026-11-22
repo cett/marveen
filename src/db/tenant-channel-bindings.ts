@@ -2,6 +2,7 @@
 // incoming source (Telegram chat, dashboard chat, inter-agent sender, ...) belongs to,
 // per agent. The use-time skill isolation resolves the active tenant from here.
 import { dbx } from './facade.js'
+import { advisoryKeyOf, advisoryLockKeyed } from './dialect.js'
 
 export interface TenantChannelBinding {
   agent_id: string
@@ -54,6 +55,10 @@ export async function setChannelBinding(agentId: string, channel: string, extern
   // ONE transaction: the binding and the drop of the active-tenant context change together. As two statements, a
   // failure between them would leave the new binding with the old context, an agent serving the previous tenant.
   return await dbx.tx(async (tx) => {
+    // The per-binding lock comes first: `previous` decides whether the context is dropped, so it must be read after any
+    // concurrent change of this binding has committed (on PostgreSQL, READ COMMITTED would read the older tenant).
+    const lock = advisoryLockKeyed('channel:', advisoryKeyOf(agentId, ch, externalId))
+    if (lock) await tx.run(lock.sql, ...lock.params)
     const previous = (await tx.get<{ tenant_id: string }>('SELECT tenant_id FROM tenant_channel_bindings WHERE agent_id = ? AND channel = ? AND external_id = ?', agentId, ch, externalId))?.tenant_id ?? null
     await tx.run(`
       INSERT INTO tenant_channel_bindings (agent_id, channel, external_id, tenant_id, created_by, created_at, updated_at)
