@@ -53,8 +53,8 @@ export const OMITTED_VIRTUAL_TABLES: readonly string[] = ['artifacts_fts', 'memo
 /**
  * PG-only full-text objects (named exception, phase 3 step 6a): the generated tsvector columns of migrations 0004-0006 have
  * no SQLite twin, because the SQLite side keeps its FTS5 virtual tables (OMITTED_VIRTUAL_TABLES) and the chain does not
- * mirror them. Each is removed from the PostgreSQL model in actualFromPg, and the removal fails if the object is missing
- * (a rename must not turn into a silent pass). Any other PG-only object is still a difference.
+ * mirror them. Each is removed from the PostgreSQL model in actualFromPg when it is there; a missing one is no exception
+ * (the mutants that rename a table or drop a column need their own difference). Any other PG-only object is still a difference.
  */
 export const PG_ONLY_COLUMNS: readonly (readonly [string, string])[] = [
   ['memories', 'fts'], ['artifacts', 'fts'], ['workspace_docs', 'fts'],
@@ -285,14 +285,15 @@ export async function actualFromPg(c: pg.ClientBase): Promise<SchemaModel> {
     indexes[r.name] = { table: r.tbl, unique: r.uniq, keys: r.keys.map((k) => k.replace(/"([a-z_][a-z0-9_]*)"/g, '$1')), where: r.pred }
   }
 
-  // the named PG-only full-text objects leave the model (see PG_ONLY_COLUMNS); a missing one is an error, not a pass
+  // the named PG-only full-text objects leave the model when they are there (see PG_ONLY_COLUMNS). An absent one is no
+  // exception to apply: a mutant that renames or drops the table (or drops the column the generated fts depends on, with
+  // CASCADE) then reports its own difference. The exception cannot hide a difference: an fts object not named here, or
+  // one that moved to another table, stays in the model and fails the comparison.
   for (const [table, column] of PG_ONLY_COLUMNS) {
-    if (!tables[table]?.columns[column]) throw new Error(`PG_ONLY_COLUMNS: ${table}.${column} is not in PostgreSQL: update the list`)
-    delete tables[table].columns[column]
+    if (tables[table]?.columns[column]) delete tables[table].columns[column]
   }
   for (const name of PG_ONLY_INDEXES) {
-    if (!indexes[name]) throw new Error(`PG_ONLY_INDEXES: ${name} is not in PostgreSQL: update the list`)
-    delete indexes[name]
+    if (indexes[name]) delete indexes[name]
   }
 
   const tg = await c.query("SELECT t.tgname || '@' || c.relname AS name FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE NOT t.tgisinternal AND n.nspname = 'public' ORDER BY 1")
