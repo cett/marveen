@@ -10,6 +10,17 @@ import { createHash } from 'node:crypto'
 import { dbx, type SqlOps } from './facade.js'
 import { writeAgentAuditLog } from './audit.js'
 import { logger } from '../logger.js'
+import { forUpdate } from './dialect.js'
+
+/**
+ * The skill row lock of a revision write. Taken FIRST, on the caller's transaction, so that the next seq (MAX + 1 in the
+ * insert) and the idempotence and parent reads see the state the other writers of the same skill have committed. Two writers
+ * on one skill otherwise read the same MAX and one of them fails on UNIQUE(skill_id, seq) (a 500). A lock taken outside a
+ * transaction is released at once, so every caller passes its transaction handle.
+ */
+async function lockSkillForRevision(tx: SqlOps, skillId: string): Promise<number> {
+  return (await tx.all(`SELECT id FROM skills WHERE id = ? ${forUpdate()}`, skillId)).length
+}
 
 export type SkillRevisionAction = 'baseline' | 'create' | 'modify' | 'seed' | 'delete' | 'file_put' | 'file_delete' | 'file_seed' | 'revoke'
 export type SkillActorKind = 'human' | 'agent' | 'import' | 'system' | 'operator'
@@ -138,6 +149,7 @@ export function hasRunnableFiles(files: readonly FileFacts[]): boolean {
  */
 export async function writeSkillRevision(tx: SqlOps, opts: WriteSkillRevisionOpts): Promise<SkillRevisionRow | null> {
   const { skill, action, actor } = opts
+  await lockSkillForRevision(tx, skill.id)
   const contentSha = sha256Hex(skill.content)
   const files = await tx.all<FileFacts>('SELECT rel_path, mode, content FROM skill_files WHERE skill_id = ?', skill.id)
   const filesSha = hashFileSet(files)
@@ -265,6 +277,14 @@ export interface SubmitPendingRevisionResult {
  */
 export async function submitPendingRevision(tx: SqlOps, opts: SubmitPendingRevisionOpts): Promise<SubmitPendingRevisionResult> {
   const { skill, actor } = opts
+  // The skill row exists at this point for every caller. A create is proposed after the caller inserted the placeholder
+  // row (status pending_review) in the same transaction (db/tasks.ts, the create paths): the lock has a row to take. Two
+  // proposals for the same NEW skill id therefore meet the placeholder's primary key, not the seq: the second insert waits
+  // for the first transaction and then fails as a duplicate create, the same answer as any duplicate create.
+  // Fail closed: a lock that finds no row locked nothing, and a proposal without its skill row would race on the seq.
+  if ((await lockSkillForRevision(tx, skill.id)) === 0) {
+    throw new Error(`skill revision: no skill row to lock for ${skill.id} (a create is proposed after its placeholder row is inserted)`)
+  }
   // A proposal for a skill that already has a live state records that state first; a new skill has none to record
   // (a baseline of the proposed text would read as a live state, which it is not).
   if (opts.action === 'modify') await ensureSkillBaseline(tx, skill.id)
@@ -488,7 +508,7 @@ export async function decideSkillRevision(
       if (sha256Hex(revision.content ?? '') !== revision.content_sha256) throw new SkillRevisionCorruptAtActivate()
 
       // ORDER IS DELIBERATE (do not move the staleness read above the lock, and do not move the lock below the real
-      // write). The first statement that touches the skill row is the lock-taking no-op below: it takes that row's
+      // write). The first statement that touches the skill row is the lock-taking SELECT ... FOR UPDATE below: it takes that row's
       // write lock before anything is read from it. The live-state read for the staleness check runs AFTER the lock and
       // BEFORE the real write (a read after the real write would read this proposal's own values). Two concurrent
       // activations of the same skill serialize on the row: the second one waits for the first to commit and then sees
@@ -500,13 +520,16 @@ export async function decideSkillRevision(
       const description = revision.proposed_description ?? frontmatterDescription(content)
       // The skill must still be in the state this proposal assumed: 'pending_review' for a create (nobody else
       // activated or deleted it since), 'live' for anything else (nobody revoked or deleted it since). The no-op
-      // UPDATE is the CAS and the lock in one, like requireLive in updateSkill/deleteSkill -- 0 rows changed aborts the
+      // FOR UPDATE is the CAS and the lock in one (a no-op UPDATE would write a new row version on PostgreSQL) -- 0 rows aborts the
       // whole decision, the revision stays pending (the throw rolls back the status flip above too).
       const expectedSkillStatus = revision.action === 'create' ? 'pending_review' : 'live'
-      const locked = (await tx.run(
-        'UPDATE skills SET updated_at = updated_at WHERE id = ? AND status = ?', revision.skill_id, expectedSkillStatus,
-      )).changes
-      if (locked === 0) throw new SkillNotDecidableAtActivate()
+      // The status condition in this lock is an EARLY guard: the real write further down repeats the same compare-and-set
+      // (UPDATE skills ... AND status = ?) under the same row lock. A refusal here and a refusal there are the same answer,
+      // SkillNotDecidableAtActivate, so the write is what decides, and this guard only stops the decision sooner.
+      const locked = await tx.all<{ id: string }>(
+        `SELECT id FROM skills WHERE id = ? AND status = ? ${forUpdate()}`, revision.skill_id, expectedSkillStatus,
+      )
+      if (locked.length === 0) throw new SkillNotDecidableAtActivate()
 
       // The live state NOW, read under the lock and before the real write: the skill row and the companion files. The
       // files are also what the whole-set replace below drops (the ones whose rel_path is not in the proposed set are

@@ -4,6 +4,7 @@
 // (src/web/channel-credentials.ts); read by the voice route, the scheduled-task delivery prefix and
 // the drift check.
 import { dbx } from './facade.js'
+import { forUpdate } from './dialect.js'
 
 export type ChannelDriftState = 'ok' | 'token' | 'access' | 'both' | 'unreadable'
 
@@ -122,8 +123,11 @@ export async function recordChannelDriftCheck(
   tenantId: string = DEFAULT_TENANT,
 ): Promise<boolean> {
   return dbx.tx(async (tx) => {
+    // The baseline row is locked first (FOR UPDATE): two checks of one channel read the previous state one after the other,
+    // so the second one sees the first one's new state and does not start a second episode. A missing row is answered
+    // before any write (the row is created by the adoption, not here), so there is no write to race on without a row.
     const row = await tx.get<{ drift_state: ChannelDriftState }>(
-      'SELECT drift_state FROM channel_credential_baseline WHERE tenant_id = ? AND agent_id = ? AND provider = ?',
+      `SELECT drift_state FROM channel_credential_baseline WHERE tenant_id = ? AND agent_id = ? AND provider = ? ${forUpdate()}`,
       tenantId, agentId, provider,
     )
     if (!row) return false

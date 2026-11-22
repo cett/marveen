@@ -77,6 +77,19 @@ export const PORTED: readonly string[] = [
   'src/__tests__/dashboard-user-last-admin-lock.test.ts',
   'src/__tests__/dashboard-user-first-admin.test.ts',
   'src/__tests__/sessions-async-facade.test.ts',
+  'src/__tests__/skill-revision-seq-lock.test.ts',
+  'src/__tests__/skill-decide-lock.test.ts',
+  'src/__tests__/misc-bgtask-atomic-lock.test.ts',
+  'src/__tests__/approval-create-once-lock.test.ts',
+  'src/__tests__/approval-claim-replay.test.ts',
+  'src/__tests__/channel-drift-lock.test.ts',
+  'src/__tests__/skill-usage-dedup-lock.test.ts',
+  'src/__tests__/approval-replay-scope.test.ts',
+  'src/__tests__/approval-consume-race.test.ts',
+  'src/__tests__/api-token-rotate-race.test.ts',
+  'src/__tests__/vault-ssh-delete-race.test.ts',
+  'src/__tests__/api-token-replace-race.test.ts',
+  'src/__tests__/approval-request-count-scope.test.ts',
 ]
 
 /** Test files (same form) that do not, each with the reason. */

@@ -40,6 +40,9 @@ function slowDriver() {
 }
 
 function failingDriver() {
+  // A writer that runs in a transaction (logSkillUsage takes its key lock there) fails at the transaction entry, the others
+  // at the statement: both are the same driver down, and both must reach the caller.
+  vi.spyOn(dbx, 'tx').mockRejectedValue(new Error('driver down'))
   return vi.spyOn(dbx, 'run').mockRejectedValue(new Error('driver down'))
 }
 

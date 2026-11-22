@@ -5,6 +5,7 @@
 import Database from 'better-sqlite3'
 import { dbx, type SqlOps, type Dbx, type Tx } from './facade.js'
 import { db } from './connection.js'
+import { advisoryKeyOf, advisoryLockKeyed } from './dialect.js'
 
 export interface ApiTokenRow {
   id: number
@@ -155,8 +156,22 @@ export async function revokeApiTokensForAgent(agentId: string, now: number): Pro
   return (await dbx.run('UPDATE api_tokens SET revoked_at = ? WHERE agent_id = ? AND revoked_at IS NULL', now, agentId)).changes
 }
 
+/**
+ * Revokes one token. Guarded on the token still being active: a token revoked earlier keeps its first revoke time (the
+ * stale path of a replacement or a rotation, which can see a row another call has just revoked, must not move it).
+ */
 export async function revokeApiToken(id: number, now: number, ops: SqlOps = dbx): Promise<void> {
-  await ops.run('UPDATE api_tokens SET revoked_at = ? WHERE id = ?', now, id)
+  await ops.run('UPDATE api_tokens SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL', now, id)
+}
+
+/**
+ * The per-name lock of the replacement paths, taken FIRST in their transaction, before the listing of the active rows.
+ * SQLite keeps the one-active-row invariant with its write lock (BEGIN IMMEDIATE); PostgreSQL needs this key, or two calls
+ * on a name with no active row both insert one. The key is the name, so two different names never wait for each other.
+ */
+export async function lockApiTokenName(tx: Tx, name: string): Promise<void> {
+  const lock = advisoryLockKeyed('apitoken:', advisoryKeyOf(name))
+  if (lock) await tx.run(lock.sql, ...lock.params)
 }
 
 /** Thrown by rotateApiToken when the token is no longer active: another caller revoked or rotated it first. */
@@ -218,6 +233,7 @@ export async function replaceActiveApiToken(input: {
   now: number
 }): Promise<{ row: ApiTokenRow; rotated: boolean }> {
   return dbx.tx(async (tx) => {
+    await lockApiTokenName(tx, input.name)
     const active = await listActiveApiTokensByName(input.name, input.now, tx)
     const current = input.fileHash ? active.find(r => r.token_hash === input.fileHash) : undefined
     for (const stale of active) if (stale.id !== current?.id) await revokeApiToken(stale.id, input.now, tx)
@@ -244,6 +260,7 @@ export async function replaceActiveApiToken(input: {
  */
 export async function rotateSharedDashboardToken(tokenHash: string, now: number): Promise<{ row: ApiTokenRow; rotated: boolean }> {
   return dbx.tx(async (tx) => {
+    await lockApiTokenName(tx, 'dashboard')
     const [first, ...others] = await listActiveApiTokensByName('dashboard', now, tx)
     for (const stale of others) await revokeApiToken(stale.id, now, tx)
     if (first) return { row: await rotateApiToken(first, tokenHash, now, null, tx), rotated: true }

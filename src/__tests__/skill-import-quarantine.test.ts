@@ -318,6 +318,9 @@ describe('a pending revision does not disturb the trail of the live state', () =
     db.prepare("INSERT INTO skills (id, name, description, content, tenant_id, is_global) VALUES ('global/old-a', 'old-a', '', '# old\\n', 'fleet', 1)").run()
     await dbx.tx((tx) => submitPendingRevision(tx, { skill: { id: 'global/old-a', tenant_id: 'fleet' }, action: 'modify', content: '# new\n', files: [], actor: SYS, touchesPrivilege: true }))
     expect(revs('global/old-a').map((r) => [r.action, r.status])).toEqual([['baseline', 'activated'], ['modify', 'pending']])
+    // A create is proposed after its placeholder row is inserted in the same transaction (the callers do this; the
+    // submit refuses a create with no row to lock).
+    db.prepare("INSERT INTO skills (id, name, description, content, tenant_id, is_global, status) VALUES ('global/new-a', 'new-a', '', '# new\\n', 'fleet', 0, 'pending_review')").run()
     await dbx.tx((tx) => submitPendingRevision(tx, { skill: { id: 'global/new-a', tenant_id: 'fleet' }, action: 'create', content: '# new\n', files: [], actor: SYS, touchesPrivilege: true }))
     expect(revs('global/new-a').map((r) => [r.action, r.status])).toEqual([['create', 'pending']])
   })

@@ -3,6 +3,7 @@
 
 import { dbx, type Dbx, type SqlOps, type Tx } from './facade.js'
 import { resolveWriteTenant } from './write-tenant.js'
+import { advisoryLockKeyed } from './dialect.js'
 
 export interface BackgroundTask {
   id: string
@@ -15,15 +16,18 @@ export interface BackgroundTask {
   output: string | null
 }
 
-// The count check and the insert share one transaction: the connection lock keeps a second caller's statements out
-// until COMMIT. On PostgreSQL (Phase 2) a plain READ COMMITTED transaction does not stop two callers from both seeing
-// count < max; that move needs a per-agent advisory lock or a SERIALIZABLE retry here.
+// The count check and the insert share one transaction. On SQLite the connection lock keeps a second caller's statements out
+// until COMMIT. On PostgreSQL a READ COMMITTED transaction alone does not stop two callers for one agent from both seeing
+// count < max, so the transaction takes the per-agent advisory lock (advisoryLockKeyed, prefix bgtask:) as its FIRST
+// statement: the second caller's count runs after the first one has committed its insert.
 export async function createBackgroundTaskAtomic(id: string, agentId: string, prompt: string, tmuxSession: string, maxConcurrent: number): Promise<BackgroundTask | null> {
   const now = Math.floor(Date.now() / 1000)
   // Resolved before the transaction: the lookup reads through the facade, which inside the body would run on another
   // connection once the backend pools.
   const tenantId = await resolveWriteTenant(agentId)
   const result = await dbx.tx(async (tx) => {
+    const lock = advisoryLockKeyed('bgtask:', agentId)
+    if (lock) await tx.run(lock.sql, ...lock.params)
     const running = ((await tx.get("SELECT COUNT(*) as c FROM background_tasks WHERE agent_id = ? AND status = 'running'", agentId)) as { c: number }).c
     if (running >= maxConcurrent) return null
     await tx.run('INSERT INTO background_tasks (id, agent_id, prompt, status, tmux_session, started_at, tenant_id) VALUES (?, ?, ?, ?, ?, ?, ?)', id, agentId, prompt, 'running', tmuxSession, now, tenantId)

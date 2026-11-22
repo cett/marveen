@@ -4,7 +4,7 @@
 import { logger } from '../logger.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
 import { dbx, dbxDialect, type SqlOps } from './facade.js'
-import { epochLocalDate, epochLocalMonth } from './dialect.js'
+import { advisoryKeyOf, advisoryLockKeyed, epochLocalDate, epochLocalMonth } from './dialect.js'
 import { likeContains } from './like.js'
 import { upsertOtelSpan } from './observability.js'
 import { dashboardUserTenant, resolveWriteTenant } from './write-tenant.js'
@@ -227,14 +227,21 @@ export async function logSkillUsage(
   // A missing session is matched with IS NULL and a given one with =, chosen when the SQL is built: the SQLite-only
   // `session_id IS ?` is a syntax error on PostgreSQL.
   const sessionCond = sessionId == null ? 'session_id IS NULL' : 'session_id = ?'
-  const res = await dbx.run(`INSERT INTO skill_usage (agent_id, skill_name, trigger_type, session_id, created_at, source, tenant_id)
+  // The (agent, skill) lock is the first statement of one transaction, then the same single INSERT ... WHERE NOT EXISTS: on
+  // PostgreSQL two overlapping calls for one invocation would otherwise both see no row (READ COMMITTED) and both insert.
+  // No unique index can express the sliding window, so the lock is what serializes them; the statement is unchanged.
+  const lock = advisoryLockKeyed('skill-usage:', advisoryKeyOf(agentId, skillName))
+  const res = await dbx.tx(async (tx) => {
+    if (lock) await tx.run(lock.sql, ...lock.params)
+    return tx.run(`INSERT INTO skill_usage (agent_id, skill_name, trigger_type, session_id, created_at, source, tenant_id)
      SELECT ?, ?, ?, ?, ?, ?, ?
       WHERE NOT EXISTS (
         SELECT 1 FROM skill_usage
          WHERE agent_id = ? AND skill_name = ? AND ${sessionCond} AND created_at >= ?
            AND COALESCE(source, ${LEGACY_SOURCE_SQL}) = ?)`,
-    agentId, skillName, triggerType, sessionId ?? null, now, source ?? null, tenantId,
-    agentId, skillName, ...(sessionId == null ? [] : [sessionId]), now - SKILL_USAGE_DEDUP_SECS, effectiveSource)
+      agentId, skillName, triggerType, sessionId ?? null, now, source ?? null, tenantId,
+      agentId, skillName, ...(sessionId == null ? [] : [sessionId]), now - SKILL_USAGE_DEDUP_SECS, effectiveSource)
+  })
   return res.changes > 0
 }
 

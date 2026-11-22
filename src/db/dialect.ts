@@ -161,3 +161,37 @@ export function advisoryLockSql(key: string, dialect: DbxDialect = dbxDialect())
   if (!ADVISORY_KEY.test(key)) throw new Error(`dialect: the advisory lock key ${JSON.stringify(key)} is not a plain key`)
   return pick(dialect, () => '', () => `SELECT pg_advisory_xact_lock(hashtext('${key}'))`)
 }
+
+/**
+ * The advisory key prefixes of the keyed locks. A keyed lock's key is the prefix plus the caller's id, so the modules that
+ * lock on their own ids (one module, one prefix) cannot collide with each other. The list is checked: a prefix that is not
+ * on it is refused, so no caller can invent a key space by accident.
+ */
+export const ADVISORY_PREFIXES = ['bgtask:', 'approval:', 'channel:', 'skill-usage:', 'apitoken:'] as const
+export type AdvisoryPrefix = (typeof ADVISORY_PREFIXES)[number]
+
+/**
+ * A transaction-scoped advisory lock on a keyed value, as ONE statement the caller runs first in the transaction:
+ * `SELECT pg_advisory_xact_lock(hashtext(?))`, bound to the prefix plus the id. The id is a bound parameter, never part of the
+ * statement text, so no id can change the SQL. On SQLite it returns null (the one connection already serializes the
+ * transactions); the caller skips a null.
+ */
+export function advisoryLockKeyed(
+  prefix: AdvisoryPrefix,
+  id: string,
+  dialect: DbxDialect = dbxDialect(),
+): { sql: string; params: string[] } | null {
+  if (!(ADVISORY_PREFIXES as readonly string[]).includes(prefix)) {
+    throw new Error(`dialect: the advisory key prefix ${JSON.stringify(prefix)} is not a known prefix`)
+  }
+  return pick(dialect, () => null, () => ({ sql: 'SELECT pg_advisory_xact_lock(hashtext(?))', params: [prefix + id] }))
+}
+
+/**
+ * The id of a keyed lock built from several parts (an agent and a tenant and a category, an agent and a skill). The parts are
+ * joined as a JSON array, so the separator cannot be part of a value: ['a:b', 'c'] and ['a', 'b:c'] are different ids. Every
+ * composite keyed lock uses this helper, never its own join.
+ */
+export function advisoryKeyOf(...parts: string[]): string {
+  return JSON.stringify(parts)
+}
