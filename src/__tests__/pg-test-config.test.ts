@@ -8,6 +8,10 @@ import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 const ROOT = path.resolve(__dirname, '..', '..')
+// The contract, pinned exactly: the default config excludes both globs, the PG config includes the src glob and the
+// scripts/__tests__ glob (the recall harness test lives under scripts/__tests__, the one place a script test is run by PG).
+const PG_EXCLUDE = ['src/**/*.pg.test.ts', 'scripts/**/*.pg.test.ts']
+const PG_INCLUDE = ['src/**/*.pg.test.ts', 'scripts/__tests__/**/*.pg.test.ts']
 const PG_GLOB = 'src/**/*.pg.test.ts'
 
 interface TestConfig { test: { include?: string[]; exclude?: string[]; globalSetup?: string[] } }
@@ -53,8 +57,16 @@ describe('globToRegExp (the matcher this test uses)', () => {
   ])('%s -> %s', (file, expected) => { expect(re.test(file)).toBe(expected) })
 })
 
+describe('globToRegExp for the scripts glob', () => {
+  const re = globToRegExp('scripts/**/*.pg.test.ts')
+  it.each([
+    ['scripts/__tests__/x.pg.test.ts', true],
+    ['scripts/x.test.ts', false],
+  ])('%s -> %s', (file, expected) => { expect(re.test(file)).toBe(expected) })
+})
+
 describe('the PG test files and the two vitest configs', () => {
-  const pgFiles = walk('src').filter((f) => f.endsWith('.pg.test.ts'))
+  const pgFiles = [...walk('src'), ...walk('scripts')].filter((f) => f.endsWith('.pg.test.ts'))
 
   it('there is at least one PG test file (the checks below are not vacuous)', () => {
     expect(pgFiles.length).toBeGreaterThan(0)
@@ -63,16 +75,16 @@ describe('the PG test files and the two vitest configs', () => {
   it('the default config excludes every PG test file with ONE explicit glob, and no ordinary test file', async () => {
     const { test } = await loadConfig('vitest.config.ts')
     const exclude = test.exclude ?? []
-    expect(exclude.filter((g) => g.includes('.pg.test.'))).toEqual([PG_GLOB])
+    expect(exclude.filter((g) => g.includes('.pg.test.'))).toEqual(PG_EXCLUDE)
     for (const f of pgFiles) expect(matchesAny(exclude, f), f).toBe(true)
-    for (const f of walk('src/__tests__').filter((x) => x.endsWith('.test.ts') && !x.endsWith('.pg.test.ts'))) {
-      expect(globToRegExp(PG_GLOB).test(f), f).toBe(false)
+    for (const f of [...walk('src/__tests__'), ...walk('scripts/__tests__')].filter((x) => x.endsWith('.test.ts') && !x.endsWith('.pg.test.ts'))) {
+      expect(matchesAny(PG_EXCLUDE, f), f).toBe(false)
     }
   })
 
   it('the PG config includes every PG test file and nothing else, and names the server check as its global setup', async () => {
     const { test } = await loadConfig('vitest.pg.config.ts')
-    expect(test.include).toEqual([PG_GLOB])
+    expect(test.include).toEqual(PG_INCLUDE)
     for (const f of pgFiles) expect(matchesAny(test.include ?? [], f), f).toBe(true)
     expect(test.globalSetup).toHaveLength(1)
     expect(existsSync(path.join(ROOT, test.globalSetup![0]))).toBe(true)
