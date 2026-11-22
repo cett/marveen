@@ -63,10 +63,44 @@ export const PG_ONLY_INDEXES: readonly string[] = ['memories_fts_gin', 'artifact
 
 /**
  * PG-only tables (named exception, phase 3 step 6b): the three embedding side tables of migration 0007 have no SQLite twin
- * (the SQLite side keeps its vec0 tables). Unlike PG_ONLY_COLUMNS this list is strict: a listed table must exist in the
- * PostgreSQL model, so a missing one is a difference. Any other PG-only table is still a difference.
+ * (the SQLite side keeps its vec0 tables). Each has its own spec here, the PostgreSQL model it must match (columns, primary
+ * key, the cascading foreign key to its parent), and the comparison checks every facet of it: nothing about these tables is
+ * skipped. The list is strict: a listed table missing from PostgreSQL is a difference. Any other PG-only table is still a
+ * difference.
  */
-export const PG_ONLY_TABLES: readonly string[] = ['memory_embeddings', 'workspace_doc_embeddings', 'artifact_embeddings']
+export const PG_ONLY_TABLE_MODELS: Readonly<Record<string, TableModel>> = {
+  memory_embeddings: {
+    columns: {
+      memory_id: { type: 'bigint', notNull: true, identity: false, default: null },
+      embedding: { type: 'vector(768)', notNull: true, identity: false, default: null },
+    },
+    pk: ['memory_id'],
+    uniques: [],
+    fks: ['memory_id -> memories(id) ON DELETE CASCADE'],
+    checks: [],
+  },
+  workspace_doc_embeddings: {
+    columns: {
+      doc_id: { type: 'text', notNull: true, identity: false, default: null },
+      embedding: { type: 'vector(768)', notNull: true, identity: false, default: null },
+    },
+    pk: ['doc_id'],
+    uniques: [],
+    fks: ['doc_id -> workspace_docs(id) ON DELETE CASCADE'],
+    checks: [],
+  },
+  artifact_embeddings: {
+    columns: {
+      artifact_id: { type: 'text', notNull: true, identity: false, default: null },
+      embedding: { type: 'vector(768)', notNull: true, identity: false, default: null },
+    },
+    pk: ['artifact_id'],
+    uniques: [],
+    fks: ['artifact_id -> artifacts(id) ON DELETE CASCADE'],
+    checks: [],
+  },
+}
+export const PG_ONLY_TABLES: readonly string[] = Object.keys(PG_ONLY_TABLE_MODELS)
 
 export interface ColumnModel { type: string; notNull: boolean; identity: boolean; default: string | null }
 export interface IndexModel { table: string; unique: boolean; keys: string[]; where: string | null }
@@ -317,14 +351,16 @@ function diffLists(label: string, expected: string[], actual: string[], out: str
 /** Every difference between the expected (SQLite chain) and the actual (PostgreSQL baseline) model; empty means parity. */
 export function diffSchemas(expected: SchemaModel, actual: SchemaModel): string[] {
   const out: string[] = []
-  // the named PG-only tables leave the actual model; a listed one that is missing is itself a difference (strict)
-  const actualTables: Record<string, TableModel> = { ...actual.tables }
+  // a listed PG-only table that is present in PG is compared against its own spec (PG_ONLY_TABLE_MODELS), every facet;
+  // a listed one that is missing is itself a difference (strict)
+  const actualTables: Record<string, TableModel> = actual.tables
+  const expectedTables: Record<string, TableModel> = { ...expected.tables }
   for (const name of PG_ONLY_TABLES) {
-    if (!actualTables[name]) out.push(`PG-only table listed in PG_ONLY_TABLES is missing in PG: ${name}`)
-    delete actualTables[name]
+    if (actualTables[name]) expectedTables[name] = PG_ONLY_TABLE_MODELS[name] as TableModel
+    else out.push(`PG-only table listed in PG_ONLY_TABLES is missing in PG: ${name}`)
   }
-  diffLists('tables', Object.keys(expected.tables), Object.keys(actualTables), out)
-  for (const [name, et] of Object.entries(expected.tables)) {
+  diffLists('tables', Object.keys(expectedTables), Object.keys(actualTables), out)
+  for (const [name, et] of Object.entries(expectedTables)) {
     const at = actualTables[name]
     if (!at) continue
     diffLists(`columns of ${name}`, Object.keys(et.columns), Object.keys(at.columns), out)
