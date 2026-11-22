@@ -106,6 +106,7 @@ export const PORTED: readonly string[] = [
   'src/__tests__/db-agent-state-facade.test.ts',
   'src/__tests__/memory-fts.test.ts',
   'src/__tests__/artifacts-fts.test.ts',
+  'src/__tests__/workspace-docs-fts-pg.test.ts',
 ]
 
 /** Test files (same form) that do not, each with the reason. */

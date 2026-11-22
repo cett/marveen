@@ -10,12 +10,77 @@
 //   binary ≤ 16 MB
 
 import { randomBytes } from 'node:crypto'
-import { dbx, type Tx } from './facade.js'
+import { dbx, dbxDialect, type Tx } from './facade.js'
 import { likeNoCase } from './dialect.js'
 import { likePrefix } from './like.js'
 import { generateEmbedding, floatsToBlob } from './vector.js'
 import { logger } from '../logger.js'
-import { ftsEscape, ftsAllTerms, FTS_MATCH } from './fts.js'
+import { ftsEscape, ftsAllTerms, FTS_MATCH, PG_FTS_CONFIG, PG_RANK_SCALE } from './fts.js'
+
+// -- PostgreSQL search (phase 3, c5) ------------------------------------------------------------------------------------
+// The query is a tsquery over the generated index (migration 0006). The phrase search takes the whole text as one phrase;
+// the list search takes one phrase per word and ANDs them (the SQLite side quotes every word, so the words are AND-ed).
+// The snippet is computed on the rows of the page only: the search picks the page in an inner query, the headline is
+// added in the outer one. The text of the headline is the normalized text (punctuation becomes spaces).
+
+/** The tsquery of one phrase: the whole text is one phrase, the normalizer runs in SQL (bind parameter). */
+function pgPhraseTsq(text: string): { sql: string; params: unknown[] } {
+  return { sql: `phraseto_tsquery(${PG_FTS_CONFIG}, public.fts_norm(?))`, params: [text] }
+}
+
+/** The tsquery of the words of `q`: one phrase per word, ANDed. null when there is no word. */
+function pgWordsTsq(q: string): { sql: string; params: unknown[] } | null {
+  const words = q.split(/\s+/).filter((w) => w.length > 0)
+  if (words.length === 0) return null
+  return {
+    sql: words.map(() => `phraseto_tsquery(${PG_FTS_CONFIG}, public.fts_norm(?))`).join(' && '),
+    params: words,
+  }
+}
+
+const PG_HEADLINE_OPTS = "'StartSel=[, StopSel=], MaxWords=15, MinWords=1, MaxFragments=1, FragmentDelimiter=...'"
+
+/**
+ * Snippet of one row: the headline of the content when the content holds a hit (a `[` mark), else of the title; NULL for
+ * an empty headline. `q` is the alias of the LATERAL that holds the tsquery.
+ */
+function pgSnippetSql(q: string): string {
+  const content = `public.fts_norm(CASE WHEN wd.content_type = 'binary' THEN '' ELSE coalesce(wd.content, '') END)`
+  const hc = `ts_headline(${PG_FTS_CONFIG}, ${content}, ${q}.q, ${PG_HEADLINE_OPTS})`
+  const ht = `ts_headline(${PG_FTS_CONFIG}, public.fts_norm(wd.title), ${q}.q, ${PG_HEADLINE_OPTS})`
+  return `NULLIF(CASE WHEN position('[' in ${hc}) > 0 THEN ${hc} ELSE ${ht} END, '')`
+}
+
+/**
+ * Runs the search: the FROM and WHERE of the matches, the rank ordering, and (for the page only) the snippet.
+ * `params` are the workspaceDocsWhere binds, in the order their `?` appear in `where`.
+ */
+async function pgWorkspaceSearch(
+  tsq: { sql: string; params: unknown[] },
+  where: string,
+  params: unknown[],
+  page: { limit?: number; offset?: number },
+): Promise<Array<DbRow & { snippet: string | null }>> {
+  const from = `FROM workspace_docs wd, LATERAL (SELECT ${tsq.sql} AS q) qq ${where} AND wd.fts @@ qq.q`
+  const bind = [...tsq.params, ...params]
+  let inner = `SELECT wd.id, -(ts_rank('{1,1,1,1}', wd.fts, qq.q) * ${PG_RANK_SCALE}) AS rank, wd.updated_at ${from}
+               ORDER BY rank, wd.updated_at DESC, wd.id`
+  const innerBind = [...bind]
+  if (page.limit && page.limit > 0) {
+    inner += ' LIMIT ?'; innerBind.push(page.limit)
+    if (page.offset && page.offset > 0) { inner += ' OFFSET ?'; innerBind.push(page.offset) }
+  }
+  // The outer ORDER BY is required: the join to the page does not keep the order of the inner query (PostgreSQL does not
+  // guarantee the output order of a join), so the page order comes from p.rank here, not from the join. wd.id is the last
+  // key: two rows with the same rank and update time must not swap between pages (LIMIT/OFFSET needs a total order).
+  const sql = `SELECT wd.id, wd.agent_id, wd.tenant_id, wd.doc_key, wd.title, wd.content_type, wd.type, wd.task_ref,
+                      wd.size_bytes, wd.created_at, wd.updated_at, wd.last_accessed_at, ${pgSnippetSql('qq2')} AS snippet
+               FROM (${inner}) p
+               JOIN workspace_docs wd ON wd.id = p.id, LATERAL (SELECT ${tsq.sql} AS q) qq2
+               ORDER BY p.rank, wd.updated_at DESC, wd.id`
+  // the outer query binds the tsquery once more (qq2), so the tsquery parameters come again before no other binds
+  return dbx.all(sql, ...innerBind, ...tsq.params) as Promise<Array<DbRow & { snippet: string | null }>>
+}
 
 export const WORKSPACE_DOC_SIZE_LIMITS: Record<string, number> = {
   text:   2 * 1024 * 1024,
@@ -238,6 +303,9 @@ export async function searchWorkspaceDocs(
   opts: { agentId?: string; tenantId?: string; limit: number },
 ): Promise<WorkspaceDocSearchResult[]> {
   const { where, params } = workspaceDocsWhere({ agentId: opts.agentId, tenantId: opts.tenantId }, 'wd.')
+  if (dbxDialect() === 'pg') {
+    return (await pgWorkspaceSearch(pgPhraseTsq(q), where, params, { limit: opts.limit })) as unknown as WorkspaceDocSearchResult[]
+  }
   return dbx.all<WorkspaceDocSearchResult>(`
     SELECT wd.id, wd.title, wd.agent_id, wd.tenant_id, wd.type,
            wd.task_ref, wd.doc_key, wd.created_at, wd.updated_at,
@@ -400,6 +468,17 @@ export interface WorkspaceDocSearchHit extends WorkspaceDoc {
  * Rows carry metadata and a snippet, never the body. Binary documents have no text and so no hits.
  */
 export async function searchWorkspaceDocsPage(q: string, filter: ListWorkspaceDocsFilter): Promise<{ items: WorkspaceDocSearchHit[]; total: number }> {
+  if (dbxDialect() === 'pg') {
+    const t = pgWordsTsq(q)
+    if (!t) return { items: [], total: 0 }
+    const { where, params } = workspaceDocsWhere(filter, 'wd.')
+    const total = Number(((await dbx.get(
+      `SELECT COUNT(*) AS n FROM workspace_docs wd, LATERAL (SELECT ${t.sql} AS q) qq ${where} AND wd.fts @@ qq.q`,
+      ...t.params, ...params,
+    )) as { n: number } | undefined)?.n ?? 0)
+    const rows = await pgWorkspaceSearch(t, where, params, { limit: filter.limit, offset: filter.offset })
+    return { items: rows.map((r) => ({ ...rowToDocMeta(r), snippet: r.snippet })), total }
+  }
   const match = ftsAllTerms(q)
   if (!match) return { items: [], total: 0 }
   const { where, params } = workspaceDocsWhere(filter, 'wd.')
