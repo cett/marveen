@@ -73,6 +73,10 @@ export const PORTED: readonly string[] = [
   'src/__tests__/db-device-keys.test.ts',
   'src/__tests__/observability-model-tool-stats.test.ts',
   'src/__tests__/audit-log-trace-filter.test.ts',
+  'src/__tests__/interleave-helper.test.ts',
+  'src/__tests__/dashboard-user-last-admin-lock.test.ts',
+  'src/__tests__/dashboard-user-first-admin.test.ts',
+  'src/__tests__/sessions-async-facade.test.ts',
 ]
 
 /** Test files (same form) that do not, each with the reason. */
@@ -93,7 +97,6 @@ export const EXCLUDED: Readonly<Record<string, ExcludeReason>> = {
   'src/__tests__/import-crawler-overlap.test.ts': 'p2-4-concurrency',
   'src/__tests__/kanban-audit-after-commit.test.ts': 'p2-4-concurrency',
   'src/__tests__/misc-concurrency.test.ts': 'p2-4-concurrency',
-  'src/__tests__/sessions-async-facade.test.ts': 'p2-4-concurrency',
   'src/__tests__/telemetry-facade-overlap.test.ts': 'p2-4-concurrency',
   'src/__tests__/tenant-bindings-facade.test.ts': 'p2-4-concurrency',
   'src/__tests__/vault-facade-overlap.test.ts': 'p2-4-concurrency',
@@ -113,7 +116,7 @@ export const EXCLUDED: Readonly<Record<string, ExcludeReason>> = {
 }
 
 /** The number of EXCLUDED files the partition test accepts. It only goes down. */
-export const EXCLUDED_BASELINE = 30
+export const EXCLUDED_BASELINE = 29
 
 /** A file uses useTestDb when it imports the helper AND calls useTestDb( (a file that only imports resetDbTestState or testDbMode does not). */
 const IMPORT = /from\s+['"][^'"]*helpers\/with-test-db(\.js)?['"]/

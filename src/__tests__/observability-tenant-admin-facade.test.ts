@@ -43,6 +43,28 @@ function spyFacade(): string[] {
   return seen
 }
 
+/**
+ * Records the SQL of every statement run on the transaction handle of dbx.tx from now on. The handle is wrapped, not replaced:
+ * each statement still runs on the real handle (the lock, the guarded UPDATE, and any read on the same handle are recorded).
+ */
+function spyTx(): string[] {
+  const seen: string[] = []
+  const realTx = dbx.tx.bind(dbx) as unknown as (fn: (tx: Record<string, unknown>) => Promise<unknown>, opts?: unknown) => Promise<unknown>
+  vi.spyOn(dbx, 'tx').mockImplementation(((fn: (tx: Record<string, unknown>) => Promise<unknown>, opts?: unknown) =>
+    realTx((tx) => {
+      const rec = Object.create(tx) as Record<string, unknown>
+      for (const m of ['get', 'run', 'all'] as const) {
+        const real = (tx[m] as (...a: unknown[]) => Promise<unknown>).bind(tx)
+        rec[m] = (sql: string, ...a: unknown[]) => {
+          seen.push(sql.replace(/\s+/g, ' ').trim())
+          return real(sql, ...a)
+        }
+      }
+      return fn(rec)
+    }, opts)) as never)
+  return seen
+}
+
 /** Records the text of every db.exec (BEGIN, COMMIT, SAVEPOINT, ROLLBACK TO, RELEASE) from now on. */
 function recordExec(): string[] {
   const seen: string[] = []
@@ -126,13 +148,27 @@ describe('adminPatchDashboardUser: the last active admin', () => {
     expect(await adminPatchDashboardUser(424242, { role: 'viewer' })).toEqual({ status: 'not_found' })
   })
 
-  it('the update and the read-back are one statement (no facade read of the old row)', async () => {
+  it('a patch that keeps the admin set is one statement on the facade: the update with RETURNING (no lock, no read of the old row, nothing on a transaction)', async () => {
     const a = await provisionDashboardUser('admin-a', 'h', 'admin', null)
     await provisionDashboardUser('admin-b', 'h', 'admin', null)
     const seen = spyFacade()
-    await adminPatchDashboardUser(a.id, { role: 'viewer' })
+    const txSeen = spyTx()
+    await adminPatchDashboardUser(a.id, { email: 'a@b.c' })
+    expect(txSeen).toHaveLength(0)
     expect(seen).toHaveLength(1)
     expect(seen[0]).toMatch(/^UPDATE dashboard_users SET .* RETURNING \*$/)
+  })
+
+  it('a guarded patch (role or disabled of an admin) is exactly two statements on its transaction handle: the admin lock, then the one guarded UPDATE ... RETURNING; no read of the old row in between, none on the facade', async () => {
+    const a = await provisionDashboardUser('admin-a', 'h', 'admin', null)
+    await provisionDashboardUser('admin-b', 'h', 'admin', null)
+    const seen = spyFacade()
+    const txSeen = spyTx()
+    expect((await adminPatchDashboardUser(a.id, { role: 'viewer' })).status).toBe('updated')
+    expect(seen).toHaveLength(0)
+    expect(txSeen).toHaveLength(2)
+    expect(txSeen[0]).toMatch(/^SELECT id FROM dashboard_users WHERE id = \? OR \(role = 'admin' AND disabled = 0\) ORDER BY id( FOR UPDATE)?$/)
+    expect(txSeen[1]).toMatch(/^UPDATE dashboard_users SET .* WHERE id = \? AND NOT \(.* RETURNING \*$/)
   })
 })
 
