@@ -24,7 +24,29 @@ import { ftsEscape, ftsAllTerms, FTS_MATCH, PG_FTS_CONFIG, pgRankSql, pgCandidat
 // only: the search picks the page in an inner query, the headline is added in the outer one. The text of the headline is
 // the normalized text (punctuation becomes spaces).
 
-const PG_HEADLINE_OPTS = "'StartSel=[, StopSel=], MaxWords=15, MinWords=1, MaxFragments=1, FragmentDelimiter=...'"
+/**
+ * The phrase check of one text (`q`) on a workspace document: a whole-word run of the title, or of the content (each part on
+ * its own; a binary content is no text). The phrase search uses it with the whole text, the list search with each word.
+ */
+function pgInTitleOrContent(q: string): { sql: string; params: unknown[] } {
+  const content = `CASE WHEN wd.content_type = 'binary' THEN '' ELSE coalesce(wd.content, '') END`
+  const t = pgPhraseIn('wd.title', q)
+  const c = pgPhraseIn(content, q)
+  return { sql: `((${t.sql}) OR (${c.sql}))`, params: [...t.params, ...c.params] }
+}
+
+/**
+ * The list search's check: every word of `q` passes pgInTitleOrContent on its own. A hyphenated word is one phrase (its
+ * parts adjacent), as on SQLite; the candidate (pgCandidateTsq) only narrows the rows and does not check adjacency.
+ */
+function pgWordsVerify(q: string): { sql: string; params: unknown[] } {
+  const words = q.split(/\s+/).filter((w) => w.length > 0)
+  if (words.length === 0) return { sql: 'TRUE', params: [] }
+  const parts = words.map((w) => pgInTitleOrContent(w))
+  return { sql: parts.map((p) => p.sql).join(' AND '), params: parts.flatMap((p) => p.params) }
+}
+
+const PG_HEADLINE_OPTS ="'StartSel=[, StopSel=], MaxWords=15, MinWords=1, MaxFragments=1, FragmentDelimiter=...'"
 
 /**
  * Snippet of one row: the headline of the content when the content holds a hit (a `[` mark), else of the title; NULL for
@@ -300,12 +322,7 @@ export async function searchWorkspaceDocs(
     if (!cand) return []
     // the phrase is checked in the title and in the content, each on its own (a phrase never runs from one into the other);
     // a binary content is no text
-    const inTitle = pgPhraseIn('wd.title', q)
-    const inContent = pgPhraseIn(`CASE WHEN wd.content_type = 'binary' THEN '' ELSE coalesce(wd.content, '') END`, q)
-    const verify = {
-      sql: `((${inTitle.sql}) OR (${inContent.sql}))`,
-      params: [...inTitle.params, ...inContent.params],
-    }
+    const verify = pgInTitleOrContent(q)
     return (await pgWorkspaceSearch(cand, where, params, { limit: opts.limit }, { verify })) as unknown as WorkspaceDocSearchResult[]
   }
   return dbx.all<WorkspaceDocSearchResult>(`
@@ -473,12 +490,13 @@ export async function searchWorkspaceDocsPage(q: string, filter: ListWorkspaceDo
   if (dbxDialect() === 'pg') {
     const t = pgCandidateTsq(q)
     if (!t) return { items: [], total: 0 }
+    const v = pgWordsVerify(q)
     const { where, params } = workspaceDocsWhere(filter, 'wd.')
     const total = Number(((await dbx.get(
-      `SELECT COUNT(*) AS n FROM workspace_docs wd, LATERAL (SELECT ${t.sql} AS q) qq ${where} AND wd.fts @@ qq.q`,
-      ...t.params, ...params,
+      `SELECT COUNT(*) AS n FROM workspace_docs wd, LATERAL (SELECT ${t.sql} AS q) qq ${where} AND wd.fts @@ qq.q AND ${v.sql}`,
+      ...t.params, ...params, ...v.params,
     )) as { n: number } | undefined)?.n ?? 0)
-    const rows = await pgWorkspaceSearch(t, where, params, { limit: filter.limit, offset: filter.offset })
+    const rows = await pgWorkspaceSearch(t, where, params, { limit: filter.limit, offset: filter.offset }, { verify: v })
     return { items: rows.map((r) => ({ ...rowToDocMeta(r), snippet: r.snippet })), total }
   }
   const match = ftsAllTerms(q)
