@@ -12,6 +12,7 @@ import { interleave, waitBlockedOnLock } from './helpers/interleave.js'
 const { dbx } = useTestDb()
 
 const HASH = 'd'.repeat(64)
+const OTHER_HASH = 'e'.repeat(64)
 const NOW = Math.floor(Date.now() / 1000)
 const REF = 'retry-ref-1'
 const FAR_PAST = 10_000_000 // seconds: far outside any replay window
@@ -31,8 +32,8 @@ async function stamp(id: string, consumedBy: string, consumedRef: string, consum
   await dbx.run('UPDATE approvals SET consumed_at = ?, consumed_by = ?, consumed_ref = ? WHERE id = ?', consumedAt, consumedBy, consumedRef, id)
 }
 
-function claim(tenant: string, category: string, ref: string, mode?: 'send'): Promise<{ ok: boolean; replayed?: boolean }> {
-  return claimApproval({ principal: 'agent-a', tenant_id: tenant, category, content_hash: HASH, window_s: 3600, ref, now: NOW, ...(mode ? { mode } : {}) } as never) as never
+function claim(tenant: string, category: string, ref: string, mode?: 'send', hash = HASH): Promise<{ ok: boolean; replayed?: boolean }> {
+  return claimApproval({ principal: 'agent-a', tenant_id: tenant, category, content_hash: hash, window_s: 3600, ref, now: NOW, ...(mode ? { mode } : {}) } as never) as never
 }
 
 describe('replay scope: the early read of a claim', () => {
@@ -46,6 +47,14 @@ describe('replay scope: the early read of a claim', () => {
     const id = await approvedRow()
     await stamp(id, 'agent-a', 'other-ref', NOW)
     expect((await claim('default', 'email_send', REF)).replayed).not.toBe(true)
+  })
+
+  it('a same-ref claim with another content hash is not a replay, while the same hash is', async () => {
+    const id = await approvedRow()
+    await stamp(id, 'agent-a', REF, NOW)
+    // The control: the same hash finds this row as the replay, so the second answer below is not a dead read.
+    expect((await claim('default', 'email_send', REF)).replayed).toBe(true)
+    expect((await claim('default', 'email_send', REF, undefined, OTHER_HASH)).replayed).not.toBe(true)
   })
 
   it('a row of another tenant is not a replay', async () => {
