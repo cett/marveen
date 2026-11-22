@@ -90,12 +90,12 @@ async function pgWorkspaceSearch(
   where: string,
   params: unknown[],
   page: { limit?: number; offset?: number },
-  match?: { sql: string; params: unknown[] },
+  rowMatch?: { sql: string; params: unknown[] },
 ): Promise<Array<DbRow & { snippet: string | null }>> {
   // The match is pgMatch (the candidate in `tsq` as the index condition, the exact check per row); without one, the
   // candidate alone (every lexeme of the text).
-  const matchSql = match ? match.sql : 'wd.fts @@ qq.q'
-  const matchParams = match ? match.params : []
+  const matchSql = rowMatch ? rowMatch.sql : 'wd.fts @@ qq.q'
+  const matchParams = rowMatch ? rowMatch.params : []
   const from = `FROM workspace_docs wd, LATERAL (SELECT ${tsq.sql} AS q) qq ${where} AND ${matchSql}`
   const bind = [...tsq.params, ...params, ...matchParams]
   let inner = `SELECT wd.id, ${pgRankSql('wd.fts', 'qq.q')} AS rank, wd.updated_at ${from}
