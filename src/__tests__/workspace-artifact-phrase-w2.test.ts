@@ -267,3 +267,34 @@ describe('L2 the list search needs every word: a row with one of two words is no
     expect(await countArtifacts({ q: 'l2word l2miss' })).toBe(2)
   })
 })
+
+// L2b (Rick, 21060): a hyphenated word of the list search is a phrase (its parts adjacent), not two independent words. The
+// candidate (every lexeme ANDed) cannot tell the two apart, so the per-word check is the one that must. Rows with the parts
+// apart are no hit; the controls with the parts adjacent are.
+describe('L2b a hyphenated word is a phrase in the list search, on both row sizes, list and count', () => {
+  const total = async (q: string) => (await searchWorkspaceDocsPage(q, { tenantId: 'default', limit: 50 } as never)).total
+
+  it('alpha-beta gamma: the apart row is no hit, the adjacent control is (list and count)', async () => {
+    const apart = await doc({ title: 'L2b apart short', content: 'alpha x beta gamma' })
+    const apartLong = await doc({ title: 'L2b apart long', content: `${filler(16400)} alpha x beta gamma` })
+    const adj = await doc({ title: 'L2b adjacent short', content: 'alpha beta gamma' })
+    const adjLong = await doc({ title: 'L2b adjacent long', content: `${filler(16400)} alpha beta gamma` })
+    const want = [adj.id, adjLong.id].sort()
+    expect(await page('alpha-beta gamma')).toEqual(want)
+    expect(await total('alpha-beta gamma')).toBe(2)
+    expect(want).not.toContain(apart.id)
+    expect(want).not.toContain(apartLong.id)
+  })
+
+  it('alpha-beta !!!: the apart row is no hit, the adjacent control is (list and count)', async () => {
+    const apart = await doc({ title: 'L2b punct apart short', content: 'alpha x beta' })
+    const apartLong = await doc({ title: 'L2b punct apart long', content: `${filler(16400)} alpha x beta` })
+    const adj = await doc({ title: 'L2b punct adjacent short', content: 'alpha beta' })
+    const adjLong = await doc({ title: 'L2b punct adjacent long', content: `${filler(16400)} alpha beta` })
+    const want = [adj.id, adjLong.id].sort()
+    expect(await page('alpha-beta !!!')).toEqual(want)
+    expect(await total('alpha-beta !!!')).toBe(2)
+    expect(want).not.toContain(apart.id)
+    expect(want).not.toContain(apartLong.id)
+  })
+})
