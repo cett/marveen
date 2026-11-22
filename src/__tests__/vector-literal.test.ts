@@ -1,4 +1,4 @@
-// The float32 embedding blob as the pgvector text literal (phase 3, step 6b, c3): a pure helper, no database. The
+// The float32 embedding blob as the pgvector text literal (phase 3, step 6b): a pure helper, no database. The
 // PostgreSQL half of the round trip (text -> pgvector -> text) runs in the PostgreSQL suite; here the decimal text must
 // parse back to exactly the float32 it came from, for every component of every vector.
 import { describe, expect, it } from 'vitest'

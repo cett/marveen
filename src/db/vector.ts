@@ -9,7 +9,7 @@ import { rerank } from '../reranker.js'
 import { stripMarkup } from '../web/import-utils.js'
 import { isBlankContent } from '../blank-content.js'
 import { db, tryLoadVecExtension, vecExtensionLoaded } from './connection.js'
-import { dbx, type SqlOps } from './facade.js'
+import { dbx, dbxDialect, type SqlOps } from './facade.js'
 import { Memory, reRankByRecency, searchAgentMemories } from './memory.js'
 import { Tenant } from './observability.js'
 import { ArtifactPointer } from './sessions.js'
@@ -96,7 +96,33 @@ function vectorRecencyDecay(createdAt: number, nowSec: number): number {
   return Math.exp(-VECTOR_RECENCY_LAMBDA * ageDays)
 }
 
-async function vectorSearch(
+/**
+ * The memory candidates of a vector search on pgvector (phase 3, step 6b, c4). The scope (the agent or shared, and the
+ * tenant) is applied in SQL BEFORE the distance order, so a hit never comes from another scope, and a large tenant does
+ * not crowd a small one out of the top k. `<->` is the L2 distance, the vec0 default. Same recency blend as the ANN path.
+ */
+async function pgVectorCandidates(agentId: string, queryEmbedding: number[], limit: number, tenantId: string | undefined, nowSec: number): Promise<Memory[]> {
+  const literal = blobToVectorLiteral(floatsToBlob(queryEmbedding))
+  const tenantSql = tenantId ? ' AND m.tenant_id = ?' : ''
+  const tenantParams: unknown[] = tenantId ? [tenantId] : []
+  const rows = await dbx.all<Memory & { distance: number }>(`
+    SELECT m.*, e.embedding <-> ?::vector AS distance
+    FROM memory_embeddings e
+    JOIN memories m ON m.id = e.memory_id
+    WHERE (m.agent_id = ? OR m.category = 'shared')${tenantSql}
+    ORDER BY distance, m.id
+    LIMIT ?`, literal, agentId, ...tenantParams, limit * RERANK_FACTOR)
+  const distMap = new Map(rows.map(r => [r.id, Number(r.distance)]))
+  const memories = rows.map(({ distance: _distance, ...m }) => m as Memory)
+  memories.sort((a, b) => {
+    const sA = (1 / (1 + (distMap.get(a.id) ?? Infinity))) * vectorRecencyDecay(a.created_at, nowSec)
+    const sB = (1 / (1 + (distMap.get(b.id) ?? Infinity))) * vectorRecencyDecay(b.created_at, nowSec)
+    return sB - sA
+  })
+  return memories
+}
+
+export async function vectorSearch(
   agentId: string,
   queryEmbedding: number[],
   limit: number = 10,
@@ -111,12 +137,22 @@ async function vectorSearch(
   const tc = (!crossAgent && tenantId) ? ' AND tenant_id = ?' : ''
   const tp = (!crossAgent && tenantId) ? [tenantId] : []
 
+  // PostgreSQL: the pgvector search, filter first. crossAgent (the link-building path) stays on the blob full-scan below,
+  // as on SQLite. A failure (a wrong-length query vector, the table missing) falls back to that full-scan, logged.
+  if (dbxDialect() === 'pg' && !crossAgent) {
+    try {
+      candidates = await pgVectorCandidates(agentId, queryEmbedding, limit, tenantId, nowSec)
+    } catch (err) {
+      logger.debug({ err }, 'pgvector search failed, falling back to BLOB cosine similarity')
+    }
+  }
+
   // crossAgent skips ANN entirely: the vec_memories index may have orphan rows
   // (entries whose backing memories row was deleted or never backfilled), so an
   // ANN hit set is unreliable for cross-fleet searches. BLOB full-scan is the
   // safe path because it reads directly from the source of truth.
   // @sqlite-only: the sqlite-vec `vec0` virtual table (MATCH / k); the PostgreSQL phase moves it to pgvector (D4).
-  if (vecExtensionLoaded && !crossAgent) {
+  if (dbxDialect() === 'sqlite' && vecExtensionLoaded && !crossAgent) {
     try {
       // ANN path: over-fetch by RERANK_FACTOR to give the reranker headroom.
       const queryBlob = floatsToBlob(queryEmbedding)
@@ -605,6 +641,16 @@ export function migrateExistingEmbeddingsToBLOB(): number {
 // transaction aborts the whole of it (25P02) unless it ran in a savepoint that was rolled back. On SQLite the
 // savepoint changes nothing observable; it keeps the swallow safe for the pooled backend.
 export async function syncVecMemoryDelete(id: number): Promise<void> {
+  if (dbxDialect() === 'pg') {
+    // PostgreSQL: the side row goes (a parent delete cascades by itself; this covers a parent that stays, e.g. an import
+    // replacing a stale vector). Best effort: a failure is logged, the memory is kept.
+    try {
+      await dbx.tx(async (tx) => { await tx.run('DELETE FROM memory_embeddings WHERE memory_id = ?', id) })
+    } catch (err) {
+      logger.warn({ err, memoryId: id }, 'memory embedding not removed on PostgreSQL')
+    }
+    return
+  }
   if (!vecExtensionLoaded) return
   try {
     await dbx.tx(async (tx) => { await tx.run('DELETE FROM vec_memories WHERE memory_id = ?', BigInt(id)) })
@@ -613,6 +659,25 @@ export async function syncVecMemoryDelete(id: number): Promise<void> {
 
 // @sqlite-only: see syncVecMemoryDelete.
 export async function syncVecMemoryEmbeddingUpdate(id: number, embeddingBlob: Buffer): Promise<void> {
+  if (dbxDialect() === 'pg') {
+    // PostgreSQL: one embedding per memory; a re-embed replaces the value. Best effort: a wrong-length or non-finite
+    // blob is refused by blobToVectorLiteral, logged, and the memory is saved without an embedding (the save never fails
+    // here; the statement runs in a transaction of its own, or as a savepoint inside an open one, so a failure cannot abort
+    // the enclosing transaction).
+    try {
+      const literal = blobToVectorLiteral(embeddingBlob)
+      await dbx.tx(async (tx) => {
+        await tx.run(
+          'INSERT INTO memory_embeddings (memory_id, embedding) VALUES (?, ?::vector) ON CONFLICT (memory_id) DO UPDATE SET embedding = EXCLUDED.embedding',
+          id,
+          literal,
+        )
+      })
+    } catch (err) {
+      logger.warn({ err, memoryId: id }, 'memory embedding not stored on PostgreSQL: the memory is saved without it')
+    }
+    return
+  }
   if (!vecExtensionLoaded) return
   try {
     // One transaction: two overlapping updates of the same memory cannot interleave their delete and insert, and a
