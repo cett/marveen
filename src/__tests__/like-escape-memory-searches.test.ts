@@ -3,7 +3,7 @@
 // over memory text: the imported-memory search and the diary / memory part of the audit log.
 import { describe, it, expect } from 'vitest'
 import { useTestDb } from './helpers/with-test-db.js'
-import { getDb, insertImportSource, searchImportMemories, queryAuditLog } from '../db.js'
+import { dbx, insertImportSource, searchImportMemories, queryAuditLog } from '../db.js'
 import { likeContains } from '../db/like.js'
 
 useTestDb()
@@ -15,21 +15,30 @@ describe('likeContains', () => {
   })
 })
 
+
 async function importRow(id: string, content: string, keywords = '', fileName = 'f.md'): Promise<void> {
   await insertImportSource({
     id: `s-${id}`, type: 'local', path: `/docs/${id}`, label: id, intervalHours: 4, enabled: true, now: 100,
     tenantId: 't', vaultTokenRef: null, confluenceEmail: null, baseUrl: null,
   })
-  getDb().prepare(
+  await dbx.run(
     `INSERT INTO import_memories (id, source_id, file_path, file_name, content, keywords, content_hash, last_seen_at, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, 1, 100, 100)`,
-  ).run(id, `s-${id}`, `/docs/${id}/${fileName}`, fileName, content, keywords || null, `h-${id}`)
+    id, `s-${id}`, `/docs/${id}/${fileName}`, fileName, content, keywords || null, `h-${id}`,
+  )
 }
 
 async function importSearch(q: string): Promise<{ total: number; ids: string[] }> {
   const r = await searchImportMemories(q, null, 10, 0)
   return { total: r.total, ids: (r.items as Array<{ id: string }>).map((i) => i.id).sort() }
 }
+
+/** One memory row for the diary cells: the content, the two times, and the keywords (null when not given). */
+const insertMemory = (content: string, created: number, accessed: number, keywords: string | null = null): Promise<unknown> =>
+  dbx.run(
+    "INSERT INTO memories (chat_id, content, sector, salience, created_at, accessed_at, agent_id, category, keywords, tenant_id) VALUES ('0', ?, 'semantic', 1.0, ?, ?, 'a', 'warm', ?, 'default')",
+    content, created, accessed, keywords,
+  )
 
 describe('searchImportMemories: the query is literal', () => {
   it('"%" and "_" do not match everything; a literal one does', async () => {
@@ -76,14 +85,10 @@ describe('searchImportMemories: the query is literal', () => {
 
 describe('queryAuditLog (diary): the query is literal', () => {
   it('"%" and "_" do not match every diary entry or memory', async () => {
-    const db = getDb()
-    db.prepare("INSERT INTO daily_logs (agent_id, date, content, created_at) VALUES ('a', '2026-11-04', 'plain entry', 100)").run()
-    db.prepare("INSERT INTO daily_logs (agent_id, date, content, created_at) VALUES ('a', '2026-11-04', 'grew 50% today', 101)").run()
-    const memory = db.prepare(
-      "INSERT INTO memories (chat_id, content, sector, salience, created_at, accessed_at, agent_id, category, keywords, tenant_id) VALUES ('0', ?, 'semantic', 1.0, ?, ?, 'a', 'warm', 'k', 'default')",
-    )
-    memory.run('plain memory', 100, 100)
-    memory.run('snake_case memory', 101, 101)
+    await dbx.run("INSERT INTO daily_logs (agent_id, date, content, created_at) VALUES ('a', '2026-11-04', 'plain entry', 100)")
+    await dbx.run("INSERT INTO daily_logs (agent_id, date, content, created_at) VALUES ('a', '2026-11-04', 'grew 50% today', 101)")
+    await insertMemory('plain memory', 100, 100)
+    await insertMemory('snake_case memory', 101, 101)
     const find = async (q: string) => (await queryAuditLog({ sources: ['diary'], q, limit: 50 })).total
     expect(await find('%')).toBe(1)
     expect(await find('_')).toBe(1)
@@ -93,11 +98,8 @@ describe('queryAuditLog (diary): the query is literal', () => {
   // The text is in the keywords column only (the content does not contain it), and a decoy differs only where a
   // wildcard would match: the keywords clause without its ESCAPE finds nothing, in the entries and in the total.
   it('a memory is found by its keywords alone, literally', async () => {
-    const memory = getDb().prepare(
-      "INSERT INTO memories (chat_id, content, sector, salience, created_at, accessed_at, agent_id, category, keywords, tenant_id) VALUES ('0', ?, 'semantic', 1.0, ?, ?, 'a', 'warm', ?, 'default')",
-    )
-    memory.run('nothing here', 100, 100, 'kw_only')
-    memory.run('nothing here either', 101, 101, 'kwxonly')
+    await insertMemory('nothing here', 100, 100, 'kw_only')
+    await insertMemory('nothing here either', 101, 101, 'kwxonly')
     const r = await queryAuditLog({ sources: ['diary'], q: 'kw_only', limit: 50 })
     expect(r.total).toBe(1)
     expect(r.entries.map((e) => e.content)).toEqual(['nothing here'])

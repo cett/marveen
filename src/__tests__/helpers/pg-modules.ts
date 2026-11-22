@@ -107,14 +107,14 @@ export const PORTED: readonly string[] = [
   'src/__tests__/memory-fts.test.ts',
   'src/__tests__/artifacts-fts.test.ts',
   'src/__tests__/workspace-docs-fts-pg.test.ts',
+  'src/__tests__/db-import-transactions.test.ts',
+  'src/__tests__/import-tx-handle.test.ts',
+  'src/__tests__/like-escape-memory-searches.test.ts',
+  'src/__tests__/tenant-scoped-db.test.ts',
 ]
 
 /** Test files (same form) that do not, each with the reason. */
 export const EXCLUDED: Readonly<Record<string, ExcludeReason>> = {
-  'src/__tests__/db-import-transactions.test.ts': 'vec',
-  'src/__tests__/import-tx-handle.test.ts': 'vec',
-  'src/__tests__/like-escape-memory-searches.test.ts': 'vec',
-  'src/__tests__/tenant-scoped-db.test.ts': 'vec',
   'src/__tests__/vector-memory-facade.test.ts': 'vec',
   'src/__tests__/vector-memory-reads.test.ts': 'vec',
   'src/__tests__/audit-trace-columns.test.ts': 'boot-twin',
@@ -132,7 +132,7 @@ export const EXCLUDED: Readonly<Record<string, ExcludeReason>> = {
 }
 
 /** The number of EXCLUDED files the partition test accepts. It only goes down. */
-export const EXCLUDED_BASELINE = 15
+export const EXCLUDED_BASELINE = 11
 
 /** A file uses useTestDb when it imports the helper AND calls useTestDb( (a file that only imports resetDbTestState or testDbMode does not). */
 const IMPORT = /from\s+['"][^'"]*helpers\/with-test-db(\.js)?['"]/
