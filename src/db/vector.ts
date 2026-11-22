@@ -53,6 +53,99 @@ export function blobToVectorLiteral(blob: Buffer): string {
   return `[${parts.join(',')}]`
 }
 
+/** The PostgreSQL side tables the backfill fills, each from the blob column of its parent (phase 3, step 6b). */
+const BACKFILL_TARGETS = {
+  memory: { source: 'memories', sourceFilter: '', side: 'memory_embeddings', key: 'memory_id', idType: 'bigint', start: 0 },
+  workspace_doc: {
+    source: 'workspace_docs',
+    // a binary document has no embedding on the write path either, so it is not selected
+    sourceFilter: " AND s.content_type <> 'binary'",
+    side: 'workspace_doc_embeddings',
+    key: 'doc_id',
+    idType: 'text',
+    start: '',
+  },
+} as const
+
+/** Rows per write statement: the statements of one batch run in one transaction, without a savepoint per row. */
+const BACKFILL_WRITE_CHUNK = 100
+
+export type VectorBackfillTarget = keyof typeof BACKFILL_TARGETS
+
+export const VECTOR_BACKFILL_BATCH_SIZE = 2000
+
+export interface VectorBackfillResult {
+  /** rows whose side row was written by this run */
+  embedded: number
+  /** rows whose blob is not a valid embedding: counted and passed over (they have no side row, so every run counts them again) */
+  skipped: number
+  /** keyset batches read */
+  batches: number
+}
+
+/**
+ * Fill a PostgreSQL side table from the blob column of its parent (phase 3, step 6b, c7). The rows are read in keyset
+ * batches ordered by id, and only rows that have a blob and no side row are read (NOT EXISTS). That guard is what makes the
+ * run resumable: an interrupted run continues where the side rows stop, and a second run over a complete table embeds
+ * nothing. A row whose blob is not a valid embedding is counted as skipped and the run goes on; it has no side row, so every
+ * run reads and counts it again.
+ * Writes: no savepoints. A batch is one transaction of INSERT ... SELECT statements, WRITE_CHUNK rows each, that join the
+ * parent: a parent deleted meanwhile is simply not inserted, so there is no foreign-key error to catch. Savepoints per row
+ * would be a subtransaction per row (2000 in a batch), which overflows the subtransaction cache and slows every other
+ * session that takes a snapshot while the transaction runs.
+ * ON CONFLICT DO NOTHING only guards a race with the live write seam (a side row written between the read and the insert
+ * keeps its value). The cells run serially and do not cover that race; the NOT EXISTS guard is what they test.
+ * The artifacts are not covered: their table has no blob column on PostgreSQL (the vectors exist on the SQLite side only).
+ */
+export async function backfillPgEmbeddings(
+  target: VectorBackfillTarget,
+  batchSize: number = VECTOR_BACKFILL_BATCH_SIZE,
+): Promise<VectorBackfillResult> {
+  if (dbxDialect() !== 'pg') throw new Error('backfillPgEmbeddings runs on the PostgreSQL backend only')
+  const t = BACKFILL_TARGETS[target]
+  const select = `
+    SELECT s.id, s.embedding_blob FROM ${t.source} s
+    WHERE s.embedding_blob IS NOT NULL${t.sourceFilter}
+      AND s.id > ?
+      AND NOT EXISTS (SELECT 1 FROM ${t.side} e WHERE e.${t.key} = s.id)
+    ORDER BY s.id
+    LIMIT ?`
+  // the parent join: a parent deleted after the read is not inserted, and the foreign key is never hit
+  const insert = `INSERT INTO ${t.side} (${t.key}, embedding)
+    SELECT v.id, v.vec_text::vector FROM unnest(?::${t.idType}[], ?::text[]) AS v(id, vec_text)
+    JOIN ${t.source} p ON p.id = v.id
+    ON CONFLICT (${t.key}) DO NOTHING
+    RETURNING ${t.key}`
+  let cursor: number | string = t.start
+  let embedded = 0
+  let skipped = 0
+  let batches = 0
+  for (;;) {
+    const rows = await dbx.all<{ id: number | string; embedding_blob: Buffer }>(select, cursor, batchSize)
+    if (rows.length === 0) break
+    batches++
+    const pending: { id: number | string; literal: string }[] = []
+    for (const row of rows) {
+      try {
+        pending.push({ id: row.id, literal: blobToVectorLiteral(row.embedding_blob) })
+      } catch (err) {
+        skipped++
+        logger.warn({ err, id: row.id, target }, 'embedding backfill: blob is not a valid embedding, row skipped')
+      }
+    }
+    await dbx.tx(async (tx) => {
+      for (let i = 0; i < pending.length; i += BACKFILL_WRITE_CHUNK) {
+        const chunk = pending.slice(i, i + BACKFILL_WRITE_CHUNK)
+        const inserted = await tx.all(insert, chunk.map((c) => c.id), chunk.map((c) => c.literal))
+        embedded += inserted.length
+      }
+    })
+    cursor = rows[rows.length - 1]!.id
+    if (rows.length < batchSize) break
+  }
+  return { embedded, skipped, batches }
+}
+
 export async function generateEmbedding(text: string): Promise<number[] | null> {
   try {
     const resp = await fetch(`${OLLAMA_URL}/api/embeddings`, {
