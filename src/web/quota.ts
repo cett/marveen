@@ -39,7 +39,9 @@ export interface QuotaSnapshot {
   reason?: 'no-file' | 'unreadable' | 'no-rate-limits'
 }
 
-function readWindow(raw: unknown, nowSec: number): QuotaWindow | null {
+// Exported so the per-plan snapshot reader (plan-usage-source.ts) parses a
+// window with the exact same rules as the dashboard quota strip.
+export function readWindow(raw: unknown, nowSec: number): QuotaWindow | null {
   if (!raw || typeof raw !== 'object') return null
   const w = raw as { used_percentage?: unknown; resets_at?: unknown }
   if (typeof w.used_percentage !== 'number' || !Number.isFinite(w.used_percentage)) return null

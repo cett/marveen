@@ -37,6 +37,7 @@ import { regenSkillFilesFromSQL, importSkillCompanionFilesFromDisk, findSkillFil
 import { isAgentRunning as isAgentSessionRunning } from './web/agent-process-session.js'
 import { applySeedSkillRefreshMarker } from './web/skill-seed-refresh.js'
 import { startChannelPluginMonitor } from './web/channel-monitor.js'
+import { bootPlanRotationMonitor, stopPlanRotationMonitor } from './web/plan-rotation-monitor.js'
 import { startInboundProber } from './web/inbound-probe.js'
 import { startChannelHealthMonitor } from './web/channel-health-monitor.js'
 import { startStuckInputWatcher } from './web/stuck-input-watcher.js'
@@ -556,6 +557,10 @@ export async function startWebServer(port = 3420): Promise<http.Server> {
   const pluginMonitorInterval = webOnly ? undefined : startChannelPluginMonitor()
   if (!webOnly) logger.info('Channel plugin health monitor started (60s poll)')
 
+  // Plan rotation: measures the main agent's plan from the statusLine snapshots and, in act mode only,
+  // moves it. Mode default is observe (logs what it would do); WEB_ONLY / isolated instances never start it.
+  bootPlanRotationMonitor(webOnly)
+
   // Userbot inbound-probe (gold-standard deafness detector). Safe no-op until
   // the prober session file + allowlist are configured. Wrapped so a failure
   // never crashes server startup.
@@ -886,6 +891,7 @@ export async function startWebServer(port = 3420): Promise<http.Server> {
     clearInterval(routerInterval)
     clearInterval(scheduleInterval)
     if (pluginMonitorInterval) clearInterval(pluginMonitorInterval)
+    stopPlanRotationMonitor()
     workerLivenessCancelled = true
     if (workerLivenessInterval) clearInterval(workerLivenessInterval)
     clearInterval(channelHealthInterval)

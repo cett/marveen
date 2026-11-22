@@ -29,6 +29,23 @@ vi.mock('../settings-store.js', () => ({
   },
 }))
 
+// Lets a test make the Nth write of the state side-car fail (the manual-rotation log write), everything else
+// passes through to the real atomic write.
+let stateWritesBeforeFail = -1
+vi.mock('../web/atomic-write.js', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../web/atomic-write.js')>()
+  return {
+    ...real,
+    atomicWriteFileSync: (p: string, d: string | Buffer, o?: Parameters<typeof real.atomicWriteFileSync>[2]) => {
+      if (p.endsWith('claude-plans-state.json') && stateWritesBeforeFail >= 0) {
+        if (stateWritesBeforeFail === 0) throw new Error('disk full')
+        stateWritesBeforeFail--
+      }
+      return real.atomicWriteFileSync(p, d, o)
+    },
+  }
+})
+
 const hardRestartMarveenChannels = vi.fn((): { ok: boolean; error?: string } => ({ ok: true }))
 vi.mock('../web/channel-monitor.js', () => ({ hardRestartMarveenChannels: () => hardRestartMarveenChannels() }))
 
@@ -36,6 +53,11 @@ const restartAgentProcess = vi.fn(
   (_name: string): { ok: boolean; pid?: number; error?: string } => ({ ok: true, pid: 123 }),
 )
 vi.mock('../web/agent-process.js', () => ({ restartAgentProcess: (name: string) => restartAgentProcess(name) }))
+
+// The live view needs the mode reader (db, config). This file tests the route's own behaviour, so the view is a
+// stub; the real view, with the real route, is plan-rotation-live.test.ts.
+const LIVE_STUB = { running: false, mode: { applied: 'observe', stored: null, reason: null } }
+vi.mock('../web/plan-rotation-monitor.js', () => ({ getPlanRotationLive: () => Promise.resolve(LIVE_STUB) }))
 
 const { tryHandleClaudePlans } = await import('../web/routes/claude-plans.js')
 const { CLAUDE_PLANS_PATH } = await import('../web/claude-plans.js')
@@ -157,14 +179,14 @@ describe('tryHandleClaudePlans', () => {
   it('GET .../state reports an empty state when nothing has ever rotated', async () => {
     const { ctx, out } = fakeCtx('GET', '/api/claude-plans/state')
     expect(await tryHandleClaudePlans(ctx)).toBe(true)
-    expect(out.body).toEqual({ activePlanByAgent: {}, plans: {} })
+    expect(out.body).toEqual({ activePlanByAgent: {}, plans: {}, monitor: { live: LIVE_STUB } })
   })
 
   it('a plan literally named "state" cannot shadow the state route', async () => {
     await tryHandleClaudePlans(fakeCtx('POST', '/api/claude-plans', plan({ id: 'state' })).ctx)
     const { ctx, out } = fakeCtx('GET', '/api/claude-plans/state')
     await tryHandleClaudePlans(ctx)
-    expect(out.body).toEqual({ activePlanByAgent: {}, plans: {} })
+    expect(out.body).toEqual({ activePlanByAgent: {}, plans: {}, monitor: { live: LIVE_STUB } })
   })
 })
 
@@ -301,5 +323,71 @@ describe('POST /api/claude-plans/rotate (PR2c)', () => {
     const { ctx, out } = fakeCtx('POST', '/api/claude-plans/rotate', { agentId: 'devy', targetPlanId: 'pro' })
     await tryHandleClaudePlans(ctx)
     expect(out.status).toBe(200)
+  })
+
+  // A person's rotation goes in the monitor's rotation log, tagged manual, so the monitor's cooldown sees it.
+  describe('manual rotation log', () => {
+    const log = async (): Promise<any[]> => {
+      const state = fakeCtx('GET', '/api/claude-plans/state')
+      await tryHandleClaudePlans(state.ctx)
+      return state.out.body.monitor?.rotationLog ?? []
+    }
+
+    beforeEach(() => { stateWritesBeforeFail = -1 })
+
+    it('a successful rotation is logged: source manual, trigger manual, mode act, from null on the first one', async () => {
+      await seedTwoPlans()
+      const before = Date.now()
+      await tryHandleClaudePlans(fakeCtx('POST', '/api/claude-plans/rotate', { targetPlanId: 'team' }).ctx)
+      const entries = await log()
+      expect(entries).toHaveLength(1)
+      expect(entries[0]).toMatchObject({
+        agentId: 'agent-a', from: null, to: 'team', trigger: 'manual', mode: 'act', result: 'rotated', source: 'manual',
+      })
+      expect(entries[0].ts).toBeGreaterThanOrEqual(before)
+    })
+
+    it('the next rotation records the plan it came from', async () => {
+      await seedTwoPlans()
+      await tryHandleClaudePlans(fakeCtx('POST', '/api/claude-plans/rotate', { targetPlanId: 'team' }).ctx)
+      await tryHandleClaudePlans(fakeCtx('POST', '/api/claude-plans/rotate', { targetPlanId: 'pro' }).ctx)
+      const entries = await log()
+      expect(entries.map((e) => [e.from, e.to])).toEqual([[null, 'team'], ['team', 'pro']])
+    })
+
+    it('a sub-agent rotation is logged under that agent', async () => {
+      await seedTwoPlans()
+      mkdirSync(join(agentsDir, 'devy'), { recursive: true })
+      await tryHandleClaudePlans(fakeCtx('POST', '/api/claude-plans/rotate', { agentId: 'devy', targetPlanId: 'team' }).ctx)
+      expect((await log()).map((e) => e.agentId)).toEqual(['devy'])
+    })
+
+    it('a refused or failed rotation logs nothing', async () => {
+      await seedTwoPlans()
+      await tryHandleClaudePlans(fakeCtx('POST', '/api/claude-plans/rotate', { targetPlanId: 'nope' }).ctx) // 400
+      rotationEnabled = '0'
+      await tryHandleClaudePlans(fakeCtx('POST', '/api/claude-plans/rotate', { targetPlanId: 'team' }).ctx) // 409
+      rotationEnabled = '1'
+      hardRestartMarveenChannels.mockReturnValue({ ok: false, error: 'boom' })
+      const { ctx, out } = fakeCtx('POST', '/api/claude-plans/rotate', { targetPlanId: 'team' })
+      await tryHandleClaudePlans(ctx) // 500
+      expect(out.status).toBe(500)
+      expect(await log()).toEqual([])
+    })
+
+    it('a log write that fails does not turn a done rotation into an error', async () => {
+      await seedTwoPlans()
+      stateWritesBeforeFail = 1 // the rotation's own state write passes, the log write after it fails
+      const { ctx, out } = fakeCtx('POST', '/api/claude-plans/rotate', { targetPlanId: 'team' })
+      await tryHandleClaudePlans(ctx)
+      expect(out.status).toBe(200)
+      expect(out.body).toEqual({ ok: true, agentId: 'agent-a', activePlanId: 'team' })
+      expect(hardRestartMarveenChannels).toHaveBeenCalledTimes(1)
+      stateWritesBeforeFail = -1
+      const state = fakeCtx('GET', '/api/claude-plans/state')
+      await tryHandleClaudePlans(state.ctx)
+      expect(state.out.body.activePlanByAgent).toEqual({ 'agent-a': 'team' })
+      expect(await log()).toEqual([])
+    })
   })
 })

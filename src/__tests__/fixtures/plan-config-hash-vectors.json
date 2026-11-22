@@ -1,0 +1,71 @@
+{
+  "home": "/nonexistent-home",
+  "vectors": [
+    {
+      "name": "plain",
+      "input": "/nonexistent-fx/cfg",
+      "canonical": "/nonexistent-fx/cfg",
+      "hash": "cd1a20aa"
+    },
+    {
+      "name": "trailing slash",
+      "input": "/nonexistent-fx/cfg/",
+      "canonical": "/nonexistent-fx/cfg",
+      "hash": "cd1a20aa"
+    },
+    {
+      "name": "double slash",
+      "input": "/nonexistent-fx//cfg",
+      "canonical": "/nonexistent-fx/cfg",
+      "hash": "cd1a20aa"
+    },
+    {
+      "name": "dot segment",
+      "input": "/nonexistent-fx/./cfg",
+      "canonical": "/nonexistent-fx/cfg",
+      "hash": "cd1a20aa"
+    },
+    {
+      "name": "dotdot after missing",
+      "input": "/nonexistent-fx/a/../cfg",
+      "canonical": "/nonexistent-fx/cfg",
+      "hash": "cd1a20aa"
+    },
+    {
+      "name": "tilde alone",
+      "input": "~",
+      "canonical": "/nonexistent-home",
+      "hash": "03c7b717"
+    },
+    {
+      "name": "tilde slash",
+      "input": "~/",
+      "canonical": "/nonexistent-home",
+      "hash": "03c7b717"
+    },
+    {
+      "name": "tilde default dir",
+      "input": "~/.claude",
+      "canonical": "/nonexistent-home/.claude",
+      "hash": "92f3de61"
+    },
+    {
+      "name": "tilde default slash",
+      "input": "~/.claude/",
+      "canonical": "/nonexistent-home/.claude",
+      "hash": "92f3de61"
+    },
+    {
+      "name": "case sensitive",
+      "input": "/nonexistent-fx/Cfg",
+      "canonical": "/nonexistent-fx/Cfg",
+      "hash": "a7884383"
+    },
+    {
+      "name": "nested",
+      "input": "/nonexistent-fx/agents/x/.claude-config",
+      "canonical": "/nonexistent-fx/agents/x/.claude-config",
+      "hash": "6f86157b"
+    }
+  ]
+}

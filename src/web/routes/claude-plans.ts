@@ -14,35 +14,14 @@
 // resolveClaudePlans() uses to parse the file back -- so nothing invalid can
 // reach disk through this route that the read side would then silently drop.
 import { homedir } from 'node:os'
-import { existsSync } from 'node:fs'
 import { readBody, json } from '../http-helpers.js'
 import { logger } from '../../logger.js'
 import { MAIN_AGENT_ID } from '../../config.js'
-import { getEffectiveSettingValue } from '../../settings-store.js'
 import { readClaudePlans, writeClaudePlans, validatePlan } from '../claude-plans.js'
-import { readClaudePlansState, writeClaudePlansState, applyRotation } from '../claude-plans-state.js'
-import { agentDir, writeAgentClaudePlan } from '../agent-config.js'
-import { restartAgentProcess } from '../agent-process.js'
-import { hardRestartMarveenChannels } from '../channel-monitor.js'
-import { activatePlanForAgent } from '../../db.js'
+import { readClaudePlansState, recordRotationEntry } from '../claude-plans-state.js'
+import { performRotation } from '../plan-rotation-apply.js'
+import { getPlanRotationLive } from '../plan-rotation-monitor.js'
 import type { RouteContext } from './types.js'
-
-// Best-effort DB mirror write (#886): a rotation's real effect is the file
-// write above (writeClaudePlansState/applyRotation, which the DB-less
-// main-agent boot path reads) -- the agent_active_plans row is only for the
-// blackboard badge / dashboard / handoff-recovery, so a mirror failure must
-// never fail the rotation itself.
-async function mirrorActivation(agentId: string, planId: string): Promise<void> {
-  try { await activatePlanForAgent(agentId, planId, 'rotation') } catch { /* see comment above */ }
-}
-
-function isRotationEnabled(): boolean {
-  try { return String(getEffectiveSettingValue('CLAUDE_ROTATION_ENABLED')) === '1' } catch { return false }
-}
-
-function isMainAgentIsolated(): boolean {
-  try { return String(getEffectiveSettingValue('MAIN_AGENT_ISOLATED_CONFIG')) === '1' } catch { return false }
-}
 
 export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
@@ -91,8 +70,14 @@ export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> 
   // data yet" instead of treating the endpoint itself as missing. Checked
   // before the :id matcher below so a plan literally named "state" can never
   // shadow this route.
+  //
+  // `monitor.live` is the backend monitor's own view (applied mode + stored + reason, the last measurement and
+  // tick, counters, the S4 class and position). It is a whitelist built in plan-rotation-monitor.ts live(); the
+  // side-car fields next to it (rotationLog, breaker, resetAt, health) are the existing ones. Fleet
+  // infrastructure, not tenant data: the route is listed in rbac.ts as admin only.
   if (path === '/api/claude-plans/state' && method === 'GET') {
-    json(res, readClaudePlansState())
+    const state = readClaudePlansState()
+    json(res, { ...state, monitor: { ...state.monitor, live: await getPlanRotationLive() } })
     return true
   }
 
@@ -122,81 +107,33 @@ export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> 
       return true
     }
 
-    if (!isRotationEnabled()) {
-      json(res, { error: 'disabled', hint: 'Rotation is disabled (CLAUDE_ROTATION_ENABLED=0)' }, 409)
-      return true
-    }
-
-    const plans = readClaudePlans()
-    const target = plans.find((p) => p.id === targetPlanId)
-    if (!target) {
-      json(res, { error: 'not_found', hint: `Unknown target plan id: ${targetPlanId}` }, 400)
-      return true
-    }
-    // Guardrail from design decision #5: a plan not marked channelsAllowed is
-    // not a rotation candidate, whatever the caller asks for.
-    if (!target.channelsAllowed) {
-      json(res, {
-        error: 'invalid_value',
-        hint: `Plan ${targetPlanId} does not allow channels use (channelsAllowed=false)`,
-      }, 400)
-      return true
-    }
-
-    if (agentId === MAIN_AGENT_ID) {
-      // Design 6.2: rotation is only meaningful on the isolated-config path,
-      // and only once 2+ plans exist -- otherwise there is nothing to
-      // resolve a "rotated" configDir against (agent-process.js:
-      // resolveMainAgentRotatedConfigDir has the same gate, so a stale state
-      // entry can never silently take effect if the operator turns isolation
-      // back off or drops to one plan).
-      if (!isMainAgentIsolated() || plans.length < 2) {
-        json(res, {
-          error: 'managed_settings_missing',
-          hint: 'Rotation not applicable: main agent needs MAIN_AGENT_ISOLATED_CONFIG=1 and at least 2 registered plans',
-        }, 409)
-        return true
-      }
-
-      // Record the decision BEFORE restarting: the next launch resolves its
-      // CLAUDE_CONFIG_DIR by reading this file back
-      // (main-agent-isolated-config.mjs -> resolveMainAgentRotatedConfigDir),
-      // so the state has to be on disk before the process that will read it
-      // comes up.
-      writeClaudePlansState(applyRotation(readClaudePlansState(), MAIN_AGENT_ID, targetPlanId))
-      await mirrorActivation(MAIN_AGENT_ID, targetPlanId)
-
-      const result = hardRestartMarveenChannels()
-      if (!result.ok) {
-        json(res, { error: 'internal_error', hint: result.error || 'Main agent restart failed' }, 500)
-        return true
-      }
-      logger.info({ agentId, targetPlanId }, 'Claude plan rotation: main agent restarted')
-      json(res, { ok: true, agentId, activePlanId: targetPlanId })
-      return true
-    }
-
-    // Sub-agent path: point its claudePlan field at the target and restart it
-    // through the same primitive the dashboard's own restart button uses --
-    // no separate sub-agent rotation mechanism to keep in sync.
-    if (!existsSync(agentDir(agentId))) {
-      json(res, { error: 'not_found', hint: `Agent not found: ${agentId}` }, 404)
-      return true
-    }
-    writeClaudePlansState(applyRotation(readClaudePlansState(), agentId, targetPlanId))
-    writeAgentClaudePlan(agentId, targetPlanId)
-    // restartAgentProcess stops the agent first (which drops any
-    // agent_active_plans row via deactivatePlanForAgent, see
-    // agent-process-spawn.ts) -- so the mirror activation MUST happen after
-    // the restart succeeds, not before, or it would be wiped immediately.
-    const result = await restartAgentProcess(agentId)
+    // Every gate, the state write, the restart and the mirror write live in
+    // performRotation (plan-rotation-apply.ts), shared with the backend
+    // rotation monitor. This route only parses and maps the result.
+    const fromPlanId = readClaudePlansState().activePlanByAgent[agentId] ?? null
+    const result = await performRotation({ agentId, targetPlanId })
     if (!result.ok) {
-      json(res, { error: 'internal_error', hint: result.error || `Restart failed for agent ${agentId}` }, 500)
+      json(res, { error: result.error, hint: result.hint }, result.status)
       return true
     }
-    await mirrorActivation(agentId, targetPlanId)
-    logger.info({ agentId, targetPlanId }, 'Claude plan rotation: agent restarted')
-    json(res, { ok: true, agentId, activePlanId: targetPlanId })
+    // A person's rotation goes in the same log the monitor's cooldown reads, tagged manual: it starts the
+    // cooldown (the fleet did move) but does not count toward the breaker or the restart give-up. The
+    // rotation already happened, so a log write failure must not turn the answer into an error.
+    try {
+      recordRotationEntry({
+        ts: Date.now(),
+        agentId: result.agentId,
+        from: fromPlanId,
+        to: result.activePlanId,
+        trigger: 'manual',
+        mode: 'act',
+        result: 'rotated',
+        source: 'manual',
+      })
+    } catch (err) {
+      logger.warn({ err, agentId: result.agentId }, 'Could not log the manual plan rotation')
+    }
+    json(res, { ok: true, agentId: result.agentId, activePlanId: result.activePlanId })
     return true
   }
 

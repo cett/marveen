@@ -876,6 +876,16 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     requiresRestart: false,
   },
   {
+    key: 'CLAUDE_ROTATION_MODE',
+    type: 'string',
+    default: 'observe',
+    valueSet: ['off', 'observe', 'act'],
+    description: 'A háttér plan-rotáció monitor módja. off = nem is mér. observe = mér, osztályoz és naplózza, mit váltana, de a flottához nem nyúl (alapértelmezés). act = a váltást el is végzi, ami a fő agent session újraindításával jár (előfeltétel még a CLAUDE_ROTATION_ENABLED=1). Minden írás csak bejelentkezett, globális admin emberi munkamenetből megy (token, a főágens és az operátor tokenje sem, off-ra és observe-ra váltáshoz sem), az act ráadásul csak bekapcsolt APPROVAL_HUMAN_ONLY_ENFORCE mellett. A monitor csak a system_config sort olvassa, ha a change journal utolsó sora ugyanezt mondja; az env-fájl értéke, a kézzel írt vagy fájlból átemelt sor, az elgépelés és az olvasási hiba mind observe. Ha a megszakító (3 váltás 6 órán belül) lekapcsolt, a mód bármilyen emberi újraírása visszakapcsolja.',
+    module: 'claude-plans',
+    secret: false,
+    requiresRestart: false,
+  },
+  {
     key: 'PLAN_STALE_MIN',
     type: 'int',
     default: 90,

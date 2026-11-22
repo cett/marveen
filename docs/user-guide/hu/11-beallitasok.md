@@ -240,8 +240,30 @@ A kilencedik szekció is szintetikus: a costops-konfigurációban beállított t
 
 | Kulcs | Leírás |
 |-------|--------|
-| `CLAUDE_ROTATION_ENABLED` | Engedélyezi-e a Claude API-kulcsok automatikus körforgását |
+| `CLAUDE_ROTATION_ENABLED` | Engedélyezi-e a Claude API-kulcsok automatikus körforgását (az alábbi `act` mód előfeltétele) |
+| `CLAUDE_ROTATION_MODE` | A háttér plan-rotáció monitor módja: `off`, `observe` (alapértelmezés) vagy `act` |
 | `PLAN_STALE_MIN` | Hány perc elteltével tekinti a rendszer elavultnak a csomag-állapotot |
+
+### Plan-rotáció monitor
+
+Az aktív Claude csomagot maga a dashboard folyamat figyeli. Ez váltja ki azt az ellenőrzést, amelyet a főágens saját sessionje futtat egy heartbeatből (`claude-plan-rotate-check`): ez a kör önmagába záródik, amikor a session a limitnél megfagy. A régi heartbeat az alábbi átállásig változatlanul, működőképesen marad. A monitor abból a rate-limit pillanatképből mér, amelyet a státuszsor már most is kiír minden csomagra. Nem kér tokent, nem olvassa a kulcstartót. A befagyott sessiont a pillanatkép kora jelzi: ha a pillanatkép 10 percnél régebbi, az ablaka még nem állt vissza, és az utolsó érték a nyomás-küszöbön vagy fölötte volt, a nyomás a visszaállásig megmarad. Ha az utolsó érték a küszöb alatt volt, az állapot ismeretlen, és automatikus váltás nincs.
+
+| Mód | Mit csinál a monitor |
+|-----|----------------------|
+| `off` | Egyáltalán nem mér. |
+| `observe` (alapértelmezés) | Mér, osztályoz és naplózza, melyik csomagra váltana. A flottához nem nyúl. |
+| `act` | A váltást el is végzi, ami a főágens session újraindításával jár. Előfeltétele a `CLAUDE_ROTATION_ENABLED=1`. |
+
+- A módot csak bejelentkezett, globális admin emberi munkamenetből lehet átírni. Token nem, a főágens és az operátor tokenje sem, `off`-ra és `observe`-ra váltáshoz sem. Az `act`-hoz ráadásul bekapcsolt `APPROVAL_HUMAN_ONLY_ENFORCE` és emberi jóváhagyás kell.
+- Bármi van eltárolva, az izolált instance legfeljebb `observe` módban működik.
+- A monitor az eltárolt értéket csak akkor hiszi el, ha a változásnapló utolsó sora ugyanezt mondja. Az env-fájl értéke, a kézzel írt vagy átemelt sor, az elgépelés és az olvasási hiba mind `observe`.
+- A megszakító (3 váltás 6 órán belül) lekapcsolja a módot. A mód bármilyen emberi újraírása visszakapcsolja.
+
+**Átállás (egy lépés).** A régi heartbeat és az `act` módú monitor soha nem futhat egyszerre, mert mindkettő váltana. Ezért a bevezetés: telepítés az alapértelmezett `observe` móddal, kb. egy hétig a monitor döntéseinek olvasása, majd egyetlen lépésben egy admin (1) a dashboardon `act` módra állítja a módot és (2) letiltja a `claude-plan-rotate-check` ütemezést (`PUT /api/schedules/claude-plan-rotate-check` `enabled=false` értékkel, vagy az ütemezés oldalon). Az átálláshoz kódváltoztatás nem tartozik. A régi script és modulja eltávolítása ezután, külön változtatás.
+
+A rotációs állapotot, vagyis a `GET /api/claude-plans/state` választ és a `monitor.live` blokkját **csak admin munkamenet látja**. A főágens a saját tokenjével sem olvashatja. Ez SZÁNDÉKOS: a blokk a csomagok mérési és döntési részleteit mutatja, ezért nem tartozik abba, amit egy ágens láthat.
+
+A `monitor.live` fehérlista. Mezői: `running`, `mode` (alkalmazott, tárolt, ok), `lastTick`, `activePlan` (id, címke, mérés ideje), `health` (státusz, ok, sticky, az öt órás és a hétnapos ablak használt százalékkal és visszaállási idővel), `candidates` (id, címke, szabad öt órás és hétnapos százalék, kimerült-e), `unknownTicks`, `pendingFresh` (csomag, mióta, blokkolt-e) és `s4` (a session panel második véleménye: mikor, minta, pozíció, megerősítette-e). A panel szövege soha nem kerül tárolásra vagy naplóba.
 
 ### Costops költségkeretek
 
