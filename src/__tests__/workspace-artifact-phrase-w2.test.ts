@@ -4,7 +4,7 @@
 // cells check only the hit count; durations are not asserted.
 import { describe, expect, it } from 'vitest'
 import { dbx, saveWorkspaceDoc, searchWorkspaceDocs, searchWorkspaceDocsPage, createArtifact, listArtifacts, countArtifacts } from '../db.js'
-import { useTestDb } from './helpers/with-test-db.js'
+import { useTestDb, testDbMode } from './helpers/with-test-db.js'
 
 useTestDb()
 
@@ -297,4 +297,52 @@ describe('L2b a hyphenated word is a phrase in the list search, on both row size
     expect(want).not.toContain(apart.id)
     expect(want).not.toContain(apartLong.id)
   })
+})
+
+// PR 898 (Rick's resource-bound spec): a repeated word is one condition; a word of one lexeme skips the text check (the
+// candidate already requires it); a word of more than one lexeme (a٣a has three) keeps the check. The speed cells are
+// PG-only: they bound the cost against one word.
+const pgOnly = it.skipIf(testDbMode() !== 'pg')
+
+describe('PR 898 the list search: a repeated word, a multi-lexeme word, and the cost bound', () => {
+  const total = async (q: string) => (await searchWorkspaceDocsPage(q, { tenantId: 'default', limit: 50 } as never)).total
+
+  it('a repeated single word finds the row that holds it, short and long, and not the row without it', async () => {
+    const q = 'alpha '.repeat(30).trim()
+    const has = await doc({ title: 'R898 has short', content: 'alpha here' })
+    const hasLong = await doc({ title: 'R898 has long', content: `${filler(16400)} alpha here` })
+    await doc({ title: 'R898 none short', content: 'beta here' })
+    await doc({ title: 'R898 none long', content: `${filler(16400)} beta here` })
+    expect(await page(q)).toEqual([has.id, hasLong.id].sort())
+    expect(await total(q)).toBe(2)
+  })
+
+  it('a word of two lexemes keeps its text check: a٣a finds the adjacent rows, not the rows with the parts apart', async () => {
+    const apart = await doc({ title: 'R898 apart short', content: 'a ٣ x a' })
+    const apartLong = await doc({ title: 'R898 apart long', content: `${filler(16400)} a ٣ x a` })
+    const adj = await doc({ title: 'R898 adjacent short', content: 'a٣a' })
+    const adjLong = await doc({ title: 'R898 adjacent long', content: `${filler(16400)} a٣a` })
+    const want = [adj.id, adjLong.id].sort()
+    expect(await page('a٣a')).toEqual(want)
+    expect(await total('a٣a')).toBe(2)
+    expect(want).not.toContain(apart.id)
+    expect(want).not.toContain(apartLong.id)
+  })
+
+  pgOnly('speed: 30 repeated copies of a word cost less than 5 times the one word (40 rows of about 60 KB holding it)', async () => {
+    for (let i = 0; i < 40; i++) await doc({ title: `R898 speed ${i}`, content: `alpha ${'lorem ipsum dolor '.repeat(3800)}` })
+    const time = async (q: string) => { await page(q); const t0 = Date.now(); await page(q); return Date.now() - t0 }
+    const one = await time('alpha')
+    const many = await time('alpha '.repeat(30).trim())
+    expect(many).toBeLessThan(Math.max(one, 1) * 5)
+  }, 300000)
+
+  pgOnly('speed: 30 distinct one-lexeme words cost less than 5 times one word (the rows hold all of them)', async () => {
+    const words = Array.from({ length: 30 }, (_, i) => `spd${String.fromCharCode(97 + i)}`)
+    for (let i = 0; i < 40; i++) await doc({ title: `R898 dspeed ${i}`, content: `${words.join(' ')} ${'lorem ipsum dolor '.repeat(3800)}` })
+    const time = async (q: string) => { await page(q); const t0 = Date.now(); await page(q); return Date.now() - t0 }
+    const one = await time('spda')
+    const many = await time(words.join(' '))
+    expect(many).toBeLessThan(Math.max(one, 1) * 5)
+  }, 300000)
 })

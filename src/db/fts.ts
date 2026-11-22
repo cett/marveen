@@ -122,7 +122,10 @@ export function pgCandidateTsq(text: string): { sql: string; params: unknown[] }
  * of the guarded conditions, TRUE for no word. A text of no token at all is decided by the candidate (empty), not here.
  */
 export function pgWordsAnd(q: string, cond: (word: string) => { sql: string; params: unknown[] }): { sql: string; params: unknown[] } {
-  const words = q.split(/\s+/).filter((w) => w.length > 0)
+  // one condition per DISTINCT word (the exact string, the order kept): the same condition ANDed twice is the same condition,
+  // so a repeated word costs once. No case folding here: the SQL normalizer stays the only judge of a word.
+  // The cost bound: the route caps q at 200 characters and statement_timeout ends a search that runs too long.
+  const words = [...new Set(q.split(/\s+/).filter((w) => w.length > 0))]
   if (words.length === 0) return { sql: 'TRUE', params: [] }
   const parts = words.map((w) => {
     const c = cond(w)

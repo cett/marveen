@@ -41,7 +41,16 @@ function pgInTitleOrContent(q: string): { sql: string; params: unknown[] } {
  * and does not check adjacency.
  */
 function pgWordsVerify(q: string): { sql: string; params: unknown[] } {
-  return pgWordsAnd(q, (w) => pgInTitleOrContent(w))
+  // A word of one lexeme is already required by the candidate (a one-token phrase is the lexeme itself): the text check
+  // runs only for a word of more than one lexeme (a٣a has three). The numnode test comes first, in a CASE, so the text check
+  // is not evaluated for a one-lexeme word.
+  return pgWordsAnd(q, (w) => {
+    const inner = pgInTitleOrContent(w)
+    return {
+      sql: `(CASE WHEN numnode(plainto_tsquery(${PG_FTS_CONFIG}, public.fts_norm(?))) = 1 THEN TRUE ELSE ${inner.sql} END)`,
+      params: [w, ...inner.params],
+    }
+  })
 }
 
 /** The phrase of the whole text as a tsquery (the tsvector check of a short row). */
