@@ -13,9 +13,8 @@ import {
   revokeApiToken,
   rotateApiToken,
   rotateSharedDashboardToken,
-  getDb,
 } from '../db.js'
-import { useTestDb } from './helpers/with-test-db.js'
+import { useTestDb, testDbMode } from './helpers/with-test-db.js'
 
 useTestDb()
 
@@ -27,7 +26,7 @@ const mint = async (name: string, hash: string, role = 'fleet_agent', createdAt 
   return insertApiToken({ tokenHash: hash, name, role, tenantId, createdAt, expiresAt, agentId: name === 'dashboard' ? null : 'agent-a' })
 }
 
-const count = (): number => (getDb().prepare('SELECT COUNT(*) AS n FROM api_tokens').get() as { n: number }).n
+const count = async (): Promise<number> => Number((await dbx.get<{ n: number }>('SELECT COUNT(*) AS n FROM api_tokens'))?.n)
 const activeHashes = async (name: string): Promise<string[]> => (await listActiveApiTokensByName(name, NOW)).map((r) => r.token_hash).sort()
 
 describe('rotateApiToken', () => {
@@ -44,16 +43,16 @@ describe('rotateApiToken', () => {
     const winner = results.find((r): r is PromiseFulfilledResult<Awaited<ReturnType<typeof rotateApiToken>>> => r.status === 'fulfilled')!
     expect(await activeHashes('t-race')).toEqual([winner.value.token_hash])
     // The loser's replacement was rolled back with its revoke: its hash is nowhere in the table.
-    const hashes = (getDb().prepare('SELECT token_hash FROM api_tokens').all() as { token_hash: string }[]).map((r) => r.token_hash)
+    const hashes = (await dbx.all<{ token_hash: string }>('SELECT token_hash FROM api_tokens')).map((r) => r.token_hash)
     expect(hashes.filter((h) => h.startsWith('new-hash'))).toEqual([winner.value.token_hash])
   })
 
   it('a token that is already revoked is not rotated, and no replacement row is written', async () => {
     const old = await mint('t-revoked', 'old-hash')
     await revokeApiToken(old.id, NOW - 10)
-    const before = count()
+    const before = await count()
     await expect(rotateApiToken(old, 'new-hash', NOW, null)).rejects.toBeInstanceOf(ApiTokenAlreadyRevokedError)
-    expect(count()).toBe(before)
+    expect(await count()).toBe(before)
     // The revoke time is the first one: the failed rotation did not move it.
     expect((await getApiTokenRowById(old.id))?.revoked_at).toBe(NOW - 10)
   })
@@ -82,9 +81,9 @@ describe('rotateApiToken', () => {
   it('a failed insert (the new hash is taken) rolls the revoke back: the old row stays active, no row is added', async () => {
     const old = await mint('t-atomic', 'old-hash')
     await mint('t-taken', 'taken-hash') // UNIQUE(token_hash) fails the insert AFTER the revoke has succeeded
-    const before = count()
+    const before = await count()
     await expect(rotateApiToken(old, 'taken-hash', NOW, null)).rejects.toThrow()
-    expect(count()).toBe(before)
+    expect(await count()).toBe(before)
     expect((await getApiTokenRowById(old.id))?.revoked_at).toBeNull()
     expect(await activeHashes('t-atomic')).toEqual(['old-hash'])
   })
@@ -142,7 +141,8 @@ describe('replaceActiveApiToken', () => {
 
   // One connection serializes the callers already (the facade lock), so only the transaction mode tells that a
   // SECOND process (the CLI) takes the write lock at BEGIN, before it reads the active rows.
-  it('opens its transaction IMMEDIATE (the read of the active rows happens under the write lock)', async () => {
+  // SQLite lock mode (BEGIN IMMEDIATE): PostgreSQL has no such mode, so this cell is SQLite-only.
+  it.runIf(testDbMode() === 'sqlite')('opens its transaction IMMEDIATE (the read of the active rows happens under the write lock)', async () => {
     await mint('t-replace', 'a-hash')
     const original = dbx.tx.bind(dbx)
     const spy = vi.spyOn(dbx, 'tx').mockImplementation((fn, opts) => original(fn, opts))
@@ -194,11 +194,11 @@ describe('rotation nested in a larger transaction', () => {
     await mint('dashboard', 'older-hash', 'admin')
     await mint('dashboard', 'newest-hash', 'admin')
     await mint('t-taken', 'taken-hash')
-    const before = count()
+    const before = await count()
 
     await expect(rotateSharedDashboardToken('taken-hash', NOW)).rejects.toThrow()
 
-    expect(count()).toBe(before)
+    expect(await count()).toBe(before)
     expect(await activeHashes('dashboard')).toEqual(['newest-hash', 'older-hash'])
   })
 
@@ -309,7 +309,7 @@ describe('rotation nested in a larger transaction', () => {
     expect(['rot-1', 'rot-2']).toContain(active[0])
   })
 
-  it('opens its transaction IMMEDIATE (the active rows are read under the write lock)', async () => {
+  it.runIf(testDbMode() === 'sqlite')('opens its transaction IMMEDIATE (the active rows are read under the write lock)', async () => {
     await mint('dashboard', 'start-hash', 'admin')
     const original = dbx.tx.bind(dbx)
     const spy = vi.spyOn(dbx, 'tx').mockImplementation((fn, opts) => original(fn, opts))
@@ -325,7 +325,9 @@ describe('rotation nested in a larger transaction', () => {
 // that is already open joins it as a savepoint and reads the rows under whatever lock that transaction holds. No caller
 // nests it today; these pin what joining means, so the first one that does cannot be surprised.
 describe('a rotation called inside an open transaction joins it', () => {
-  it('rotateSharedDashboardToken: an outer transaction that fails afterwards takes the rotation back with it', async () => {
+  // These join an open transaction without its handle: SQLite joins it by accident (one connection). PostgreSQL refuses that
+  // nested call (the last cell), so the three are SQLite-only.
+  it.runIf(testDbMode() === 'sqlite')('rotateSharedDashboardToken: an outer transaction that fails afterwards takes the rotation back with it', async () => {
     await mint('dashboard', 'start-hash', 'admin')
     await expect(dbx.tx(async () => {
       await rotateSharedDashboardToken('rot-hash', NOW)
@@ -335,7 +337,7 @@ describe('a rotation called inside an open transaction joins it', () => {
     expect(await activeHashes('dashboard')).toEqual(['start-hash'])
   })
 
-  it('rotateSharedDashboardToken: an outer transaction that commits keeps exactly one active row', async () => {
+  it.runIf(testDbMode() === 'sqlite')('rotateSharedDashboardToken: an outer transaction that commits keeps exactly one active row', async () => {
     await mint('dashboard', 'start-hash', 'admin')
     await dbx.tx(async () => {
       await rotateSharedDashboardToken('rot-hash', NOW)
@@ -343,12 +345,20 @@ describe('a rotation called inside an open transaction joins it', () => {
     expect(await activeHashes('dashboard')).toEqual(['rot-hash'])
   })
 
-  it('replaceActiveApiToken: the same, an outer failure takes the replacement back', async () => {
+  it.runIf(testDbMode() === 'sqlite')('replaceActiveApiToken: the same, an outer failure takes the replacement back', async () => {
     await mint('t-replace', 'start-hash')
     await expect(dbx.tx(async () => {
       await replaceActiveApiToken({ fileHash: 'start-hash', tokenHash: 'new-hash', name: 't-replace', role: 'fleet_agent', agentId: 'agent-a', now: NOW })
       throw new Error('outer failed')
     })).rejects.toThrow('outer failed')
     expect(await activeHashes('t-replace')).toEqual(['start-hash'])
+  })
+
+  it.runIf(testDbMode() === 'pg')('a rotation called inside an open transaction is refused by the facade (PostgreSQL does not join it): the nested call fails and changes no row', async () => {
+    await mint('dashboard', 'start-hash', 'admin')
+    await expect(dbx.tx(async () => {
+      await rotateSharedDashboardToken('rot-hash', NOW)
+    })).rejects.toThrow(/use the tx handle inside a transaction body/)
+    expect(await activeHashes('dashboard')).toEqual(['start-hash'])
   })
 })

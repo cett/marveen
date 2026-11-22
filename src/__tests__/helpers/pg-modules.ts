@@ -97,6 +97,13 @@ export const PORTED: readonly string[] = [
   'src/__tests__/misc-concurrency.test.ts',
   'src/__tests__/audit-async-writers.test.ts',
   'src/__tests__/audit-retention-prune.test.ts',
+  'src/__tests__/approval-vault-concurrency.test.ts',
+  'src/__tests__/approval-vault-statements.test.ts',
+  'src/__tests__/auth-session-lane.test.ts',
+  'src/__tests__/db-api-tokens-rotate.test.ts',
+  'src/__tests__/telemetry-facade-overlap.test.ts',
+  'src/__tests__/vault-facade-overlap.test.ts',
+  'src/__tests__/db-agent-state-facade.test.ts',
 ]
 
 /** Test files (same form) that do not, each with the reason. */
@@ -107,12 +114,6 @@ export const EXCLUDED: Readonly<Record<string, ExcludeReason>> = {
   'src/__tests__/tenant-scoped-db.test.ts': 'vec',
   'src/__tests__/vector-memory-facade.test.ts': 'vec',
   'src/__tests__/vector-memory-reads.test.ts': 'vec',
-  'src/__tests__/approval-vault-concurrency.test.ts': 'p2-4-concurrency',
-  'src/__tests__/approval-vault-statements.test.ts': 'p2-4-concurrency',
-  'src/__tests__/auth-session-lane.test.ts': 'p2-4-concurrency',
-  'src/__tests__/db-api-tokens-rotate.test.ts': 'p2-4-concurrency',
-  'src/__tests__/telemetry-facade-overlap.test.ts': 'p2-4-concurrency',
-  'src/__tests__/vault-facade-overlap.test.ts': 'p2-4-concurrency',
   'src/__tests__/audit-trace-columns.test.ts': 'boot-twin',
   'src/__tests__/db-config-cache.test.ts': 'sync-cache',
   'src/__tests__/db-facade-backend.test.ts': 'sqlite-only',
@@ -125,11 +126,10 @@ export const EXCLUDED: Readonly<Record<string, ExcludeReason>> = {
   // on PostgreSQL a tiny test table gets a sequential scan whatever the index says, so the same assertion would need a
   // planner switch (enable_seqscan) and would test the switch, not the filter
   'src/__tests__/audit-log-trace-index.test.ts': 'sqlite-only',
-  'src/__tests__/db-agent-state-facade.test.ts': 'unported-sql',
 }
 
 /** The number of EXCLUDED files the partition test accepts. It only goes down. */
-export const EXCLUDED_BASELINE = 22
+export const EXCLUDED_BASELINE = 15
 
 /** A file uses useTestDb when it imports the helper AND calls useTestDb( (a file that only imports resetDbTestState or testDbMode does not). */
 const IMPORT = /from\s+['"][^'"]*helpers\/with-test-db(\.js)?['"]/

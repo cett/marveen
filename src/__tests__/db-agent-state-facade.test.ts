@@ -4,7 +4,7 @@
 
 import { describe, it, expect } from 'vitest'
 import { getAgentState, setAgentState, getAgentStateSync, setAgentStateSync, importAgentStateFromFile, getDbContextStats } from '../db.js'
-import { useTestDb } from './helpers/with-test-db.js'
+import { useTestDb, testDbMode } from './helpers/with-test-db.js'
 
 useTestDb()
 
@@ -37,7 +37,8 @@ describe('getAgentState / setAgentState (async, through dbx)', () => {
   })
 })
 
-describe('the boot-synchronous twins', () => {
+// The boot-synchronous twins run on the raw SQLite connection (@boot-sync-twin): SQLite-only.
+describe.runIf(testDbMode() === 'sqlite')('the boot-synchronous twins', () => {
   it('read and write the same rows as the async functions', async () => {
     setAgentStateSync('pilot-s', 'kanban_audit_last_audit_at', 1800000000)
     expect((await getAgentState('pilot-s', 'kanban_audit_last_audit_at'))?.state_value).toBe('1800000000')
