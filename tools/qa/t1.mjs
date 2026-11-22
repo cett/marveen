@@ -37,6 +37,7 @@ export const EXCLUDED_STEPS = [
   { job: 'build-checks', name: 'Check API spec for breaking changes', reason: 'downloads the oasdiff binary (network) and needs the PR base sha; out of scope for an offline/local T1 run.' },
   { job: 'test', name: 'Install dependencies', reason: 'see build-checks/"Install dependencies" above.' },
   { job: 'test', name: 'Stub external binaries (claude, tmux) for module-load resolution', reason: 'a CI-runner-only workaround for a missing claude/tmux binary; a worktree has the real ones.' },
+  { job: 'test', name: 'Install zsh (the second shell oracle of the secret-read gate tests)', reason: 'an apt install on the CI runner (no zsh there); a worktree has zsh, and the secret-read gate tests that need it run in the test step itself.' },
 ]
 
 /** The `run:` steps of the checked jobs, as {job, name} pairs, read from the real ci.yml (no guessing). */
