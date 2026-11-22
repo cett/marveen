@@ -15,7 +15,7 @@ import { likeNoCase } from './dialect.js'
 import { likePrefix } from './like.js'
 import { generateEmbedding, floatsToBlob } from './vector.js'
 import { logger } from '../logger.js'
-import { ftsEscape, ftsAllTerms, FTS_MATCH, PG_FTS_CONFIG, PG_PHRASE_VERIFY_CHARS, pgRankSql, pgCandidateTsq, pgPhraseIn } from './fts.js'
+import { ftsEscape, ftsAllTerms, FTS_MATCH, PG_FTS_CONFIG, PG_PHRASE_VERIFY_CHARS, pgRankSql, pgCandidateTsq, pgPhraseIn, pgWordsAnd } from './fts.js'
 
 // -- PostgreSQL search (phase 3, c5; 6a W2) ----------------------------------------------------------------------------
 // The query is a tsquery over the generated index (migration 0006). The candidate is the position-free tsquery of the
@@ -39,11 +39,9 @@ function pgInTitleOrContent(q: string): { sql: string; params: unknown[] } {
  * The list search's check: every word of `q` passes pgInTitleOrContent on its own. A hyphenated word is one phrase (its
  * parts adjacent), as on SQLite; the candidate (pgCandidateTsq) only narrows the rows and does not check adjacency.
  */
+/** The verification of the list search: every word of `q` (the words that count, fts.ts pgWordsAnd) passes the text check. */
 function pgWordsVerify(q: string): { sql: string; params: unknown[] } {
-  const words = q.split(/\s+/).filter((w) => w.length > 0)
-  if (words.length === 0) return { sql: 'TRUE', params: [] }
-  const parts = words.map((w) => pgInTitleOrContent(w))
-  return { sql: parts.map((p) => p.sql).join(' AND '), params: parts.flatMap((p) => p.params) }
+  return pgWordsAnd(q, (w) => pgInTitleOrContent(w))
 }
 
 /** The phrase of the whole text as a tsquery (the tsvector check of a short row). */
@@ -52,10 +50,9 @@ function pgPhraseTsq(text: string): { sql: string; params: unknown[] } {
 }
 
 /** The AND of the phrases of the words of `q` (the tsvector check of a short row, list search). */
+/** The phrase branch of the list search (short rows): every word of `q` that counts is a phrase of the tsvector. */
 function pgWordsPhrase(q: string): { sql: string; params: unknown[] } {
-  const words = q.split(/\s+/).filter((w) => w.length > 0)
-  if (words.length === 0) return { sql: 'TRUE', params: [] }
-  return { sql: words.map(() => `phraseto_tsquery(${PG_FTS_CONFIG}, public.fts_norm(?))`).join(' && '), params: words }
+  return pgWordsAnd(q, (w) => ({ sql: `wd.fts @@ (${pgPhraseTsq(w).sql})`, params: [w] }))
 }
 
 /**
@@ -66,7 +63,7 @@ function pgWordsPhrase(q: string): { sql: string; params: unknown[] } {
 function pgMatch(exact: { sql: string; params: unknown[] }, verify: { sql: string; params: unknown[] }): { sql: string; params: unknown[] } {
   const short = `(length(coalesce(wd.title, '')) + length(coalesce(wd.content, ''))) <= ${PG_PHRASE_VERIFY_CHARS}`
   return {
-    sql: `wd.fts @@ qq.q AND ((${short} AND wd.fts @@ (${exact.sql})) OR (NOT ${short} AND ${verify.sql}))`,
+    sql: `wd.fts @@ qq.q AND ((${short} AND (${exact.sql})) OR (NOT ${short} AND ${verify.sql}))`,
     params: [...exact.params, ...verify.params],
   }
 }
@@ -346,7 +343,8 @@ export async function searchWorkspaceDocs(
     if (!cand) return []
     // the phrase is checked in the title and in the content, each on its own (a phrase never runs from one into the other);
     // a binary content is no text
-    const match = pgMatch(pgPhraseTsq(q), pgInTitleOrContent(q))
+    const phr = pgPhraseTsq(q)
+    const match = pgMatch({ sql: `wd.fts @@ (${phr.sql})`, params: phr.params }, pgInTitleOrContent(q))
     return (await pgWorkspaceSearch(cand, where, params, { limit: opts.limit }, match)) as unknown as WorkspaceDocSearchResult[]
   }
   return dbx.all<WorkspaceDocSearchResult>(`

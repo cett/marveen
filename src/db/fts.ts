@@ -114,6 +114,23 @@ export function pgCandidateTsq(text: string): { sql: string; params: unknown[] }
 }
 
 /**
+ * The words of a text search (the list search, the verification and the phrase branch of the workspace search): ONE source
+ * for which words count. A word is split on whitespace; a word with no token after the normalizer (fts_norm keeps letters
+ * and digits only: `!!!`, `|`, `&`, `-`, `~`) is no word and drops out, as SQLite drops it. The test is the SQL normalizer
+ * itself (`fts_norm(word) = ''`), never a TypeScript copy of it. `cond` is the condition of one word; the result is the AND
+ * of the guarded conditions, TRUE for no word. A text of no token at all is decided by the candidate (empty), not here.
+ */
+export function pgWordsAnd(q: string, cond: (word: string) => { sql: string; params: unknown[] }): { sql: string; params: unknown[] } {
+  const words = q.split(/\s+/).filter((w) => w.length > 0)
+  if (words.length === 0) return { sql: 'TRUE', params: [] }
+  const parts = words.map((w) => {
+    const c = cond(w)
+    return { sql: `(public.fts_norm(?) = '' OR ${c.sql})`, params: [w, ...c.params] }
+  })
+  return { sql: parts.map((p) => p.sql).join(' AND '), params: parts.flatMap((p) => p.params) }
+}
+
+/**
  * The phrase check of one text part: true when the query, normalized the way the index normalizes (fts_norm, then the
  * accent and case fold of the config), is a whole-word run of the normalized text. `textSql` is an SQL expression of the
  * text (a column, or a CASE), checked on its own: the text of two parts is never run into one. The query is a bind

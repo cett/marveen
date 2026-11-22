@@ -202,3 +202,35 @@ describe('W2 artifact phrase search', () => {
     expect((await aids('common words')).length).toBe(20)
   })
 })
+
+// R4 (Boo, Rick): a word with no token (!!!, |, &, -, ~) is no word: it drops out, as on SQLite, on the short and the long
+// rows, on the workspace list search and on the artifact search. A query of punctuation only finds nothing.
+describe('R4 a word without a token drops out of the search, on both searches and both row sizes', () => {
+  const cases: Array<[string, string]> = [
+    ['puncword !!!', 'puncword here'],
+    ['alpha | beta', 'alpha beta here'],
+    ['alpha & beta', 'alpha beta here'],
+    ['rank ~ check', 'rank check here'],
+    ['Q3 - plan', 'Q3 plan here'],
+  ]
+
+  it.each(cases)('the workspace list search finds %s on a short and on a long row', async (q, text) => {
+    const short = await doc({ title: 'R4 short', content: text })
+    const long = await doc({ title: 'R4 long', content: `${filler(16400)}${text}` })
+    expect(await page(q)).toEqual([short.id, long.id].sort())
+  })
+
+  it.each(cases)('the artifact search finds %s on a short and on a long body', async (q, text) => {
+    const short = await art('R4 short', text)
+    const long = await art('R4 long', `${filler(16400)}${text}`)
+    expect(await aids(q)).toEqual([short.id, long.id].sort())
+  })
+
+  it('a query of punctuation only finds nothing (workspace list, workspace phrase, artifact)', async () => {
+    await doc({ title: 'R4 any', content: 'plain words here' })
+    await art('R4 any', 'plain words here')
+    expect(await page('!!! | &')).toEqual([])
+    expect(await phrase('!!! | &')).toEqual([])
+    expect(await aids('!!! | &')).toEqual([])
+  })
+})
