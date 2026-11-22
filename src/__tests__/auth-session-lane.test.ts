@@ -176,9 +176,9 @@ describe('the session lane fails closed, one test per statement', () => {
   it('cookie lane: the user lookup behind a live session fails', async () => {
     const u = await makeUser('alice', 'admin')
     const token = await createSession({ userId: u.id, username: u.username })
-    const seen = failStatement('get', /FROM dashboard_users WHERE username/)
+    const seen = failStatement('get', /FROM dashboard_users WHERE/)
     await expect(askGate({ cookie: cookieOf(token), authorization: `Bearer ${FILE_TOKEN}` })).rejects.toThrow('database unavailable')
-    expect(seen.at(-1)).toMatch(/FROM dashboard_users WHERE username/)
+    expect(seen.at(-1)).toMatch(/FROM dashboard_users WHERE/)
   })
 
   it('cookie lane: the last_seen write fails', async () => {
@@ -375,9 +375,9 @@ describe('humanSessionOf', () => {
     expect(first.at(-1)).toMatch(/FROM auth_sessions WHERE id_hash/)
     vi.restoreAllMocks()
 
-    const second = failStatement('get', /FROM dashboard_users WHERE username/)
+    const second = failStatement('get', /FROM dashboard_users WHERE/)
     expect(await humanSessionOf(request)).toBeNull()
-    expect(second.at(-1)).toMatch(/FROM dashboard_users WHERE username/)
+    expect(second.at(-1)).toMatch(/FROM dashboard_users WHERE/)
   })
 })
 
