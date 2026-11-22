@@ -9,7 +9,7 @@
 // search terms. We also cap the number and length of tokens to bound query
 // cost (the sanitizer previously allowed an arbitrary-length prefix expansion
 // that could make a single request scan the entire index).
-export function buildFtsMatchExpression(query: string): string {
+export function ftsTokens(query: string): string[] {
   const MAX_TOKENS = 20
   const MAX_TOKEN_LEN = 64
   const sanitized = query
@@ -19,13 +19,17 @@ export function buildFtsMatchExpression(query: string): string {
     // fusing into a single unfindable token "rankcheck".
     .replace(/[^\p{L}\p{N}\s]/gu, ' ')
     .trim()
-  if (!sanitized) return ''
-  const tokens = sanitized
+  if (!sanitized) return []
+  return sanitized
     .split(/\s+/)
     .filter((t) => t.length > 0)
     .slice(0, MAX_TOKENS)
-    .map((t) => t.slice(0, MAX_TOKEN_LEN) + '*')
-  return tokens.join(' ')
+    .map((t) => t.slice(0, MAX_TOKEN_LEN))
+}
+
+/** The SQLite MATCH expression: every token prefix-matched; FTS5 ANDs the space-separated terms. */
+export function buildFtsMatchExpression(query: string): string {
+  return ftsTokens(query).map((t) => t + '*').join(' ')
 }
 
 /** Phrase spelling of one user text for FTS5: the whole text is one quoted phrase, a quote is doubled. */
@@ -51,3 +55,24 @@ export const FTS_MATCH = {
   /** workspace_docs_fts, the workspace document search (joined from ftsFrom) */
   workspace: 'workspace_docs_fts MATCH ?',
 } as const
+
+// -- PostgreSQL (phase 3, c3): the same questions on the generated tsvector of migration 0004 --------------------------
+
+/** The regconfig of the full-text search (migration 0003), as SQL text: a constant, never user input. */
+export const PG_FTS_CONFIG = "'public.marveen_fts'"
+
+/**
+ * Multiplier of the PostgreSQL rank: ts_rank is about 0..0.6 where bm25 is larger, so an uncalibrated recency blend would
+ * lean toward recency. ONE constant, calibrated by the recall harness (c9); 1 until then.
+ */
+export const PG_RANK_SCALE = 1
+
+/**
+ * The tsquery text of the builder output (`tok1* tok2*`): every token prefix-matched, the tokens AND-ed. `weight` restricts
+ * the match to one weight (the chat search: content, weight A). The tokens are letters and digits only (the builder
+ * sanitizes them), so no tsquery operator can enter; the text is still passed as a bind parameter. null when no token.
+ */
+export function ftsPgTsQuery(tokens: string[], weight?: 'A'): string | null {
+  if (tokens.length === 0) return null
+  return tokens.map((t) => (weight ? `${t}:${weight}*` : `${t}:*`)).join(' & ')
+}

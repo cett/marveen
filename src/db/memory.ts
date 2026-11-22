@@ -3,10 +3,10 @@
 
 import { ALLOWED_CHAT_ID } from '../config.js'
 import { writeAgentAuditLog } from './audit.js'
-import { dbx } from './facade.js'
+import { dbx, dbxDialect } from './facade.js'
 import { BlankContentError, isBlankContent } from '../blank-content.js'
 import { floatsToBlob, generateEmbedding, linkToNeighbors, syncVecMemoryEmbeddingUpdate } from './vector.js'
-import { buildFtsMatchExpression, FTS_MATCH } from './fts.js'
+import { buildFtsMatchExpression, FTS_MATCH, ftsPgTsQuery, ftsTokens, PG_FTS_CONFIG, PG_RANK_SCALE } from './fts.js'
 
 export interface Memory {
   id: number
@@ -114,6 +114,19 @@ export function withoutRank<T extends { rank: number }>(rows: T[]): Omit<T, 'ran
 export async function searchMemories(query: string, chatId: string, limit = 3, tenantId?: string): Promise<Memory[]> {
   const terms = buildFtsMatchExpression(query)
   if (!terms) return []
+  if (dbxDialect() === 'pg') {
+    // PostgreSQL: the content weight only (the FTS5 content filter), no fallback: an error is an error.
+    const tsq = ftsPgTsQuery(ftsTokens(query), 'A')
+    if (!tsq) return []
+    const tc = tenantId ? ' AND m.tenant_id = ?' : ''
+    const tp = tenantId ? [tenantId] : []
+    const candidates = (await dbx.all(`SELECT m.*, -(ts_rank('{1,1,1,1}', m.fts, to_tsquery(${PG_FTS_CONFIG}, ?)) * ${PG_RANK_SCALE}) AS rank
+         FROM memories m
+         WHERE m.fts @@ to_tsquery(${PG_FTS_CONFIG}, ?) AND m.chat_id = ?${tc}
+         ORDER BY rank
+         LIMIT ?`, tsq, tsq, chatId, ...tp, limit * RECENCY_OVERSAMPLE)) as (Memory & { rank: number })[]
+    return withoutRank(reRankByRecency(candidates, limit)) as Memory[]
+  }
   try {
     const tc = tenantId ? ' AND m.tenant_id = ?' : ''
     const tp = tenantId ? [tenantId] : []
@@ -293,6 +306,18 @@ export async function countAgentMemories(agentId: string, category?: string, ten
 export async function searchAgentMemories(agentId: string, query: string, limit: number = 10, tenantId?: string): Promise<Memory[]> {
   const terms = buildFtsMatchExpression(query)
   if (!terms) return []
+  if (dbxDialect() === 'pg') {
+    // PostgreSQL: both weights (content and keywords), the agent's own rows and the shared ones; no LIKE fallback.
+    const tsq = ftsPgTsQuery(ftsTokens(query))
+    if (!tsq) return []
+    const tc = tenantId ? ' AND m.tenant_id = ?' : ''
+    const tp = tenantId ? [tenantId] : []
+    const candidates = (await dbx.all(`SELECT m.*, -(ts_rank('{1,1,1,1}', m.fts, to_tsquery(${PG_FTS_CONFIG}, ?)) * ${PG_RANK_SCALE}) AS rank
+         FROM memories m
+         WHERE m.fts @@ to_tsquery(${PG_FTS_CONFIG}, ?) AND (m.agent_id = ? OR m.category = 'shared')${tc}
+         ORDER BY rank LIMIT ?`, tsq, tsq, agentId, ...tp, limit * RECENCY_OVERSAMPLE)) as (Memory & { rank: number })[]
+    return withoutRank(reRankByRecency(candidates, limit)) as Memory[]
+  }
   const tc = tenantId ? ' AND m.tenant_id = ?' : ''
   const tp = tenantId ? [tenantId] : []
   try {
