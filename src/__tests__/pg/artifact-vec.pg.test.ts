@@ -49,7 +49,7 @@ async function embeddingCount(id: string): Promise<number> {
 
 /** The stored embedding, read back exactly: a double precision cast keeps the float32 value (the float4 text is a shorter decimal). */
 async function storedEmbedding(id: string): Promise<number[] | null> {
-  const r = await db.pool.query('SELECT embedding::double precision[] AS v FROM artifact_embeddings WHERE artifact_id = $1', [id])
+  const r = await db.pool.query('SELECT embedding::real[]::double precision[] AS v FROM artifact_embeddings WHERE artifact_id = $1', [id])
   return r.rows.length === 0 ? null : (r.rows[0]?.v as number[])
 }
 

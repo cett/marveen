@@ -46,7 +46,7 @@ const QUERY = vec(1)
  * 0.38662058115005493), which JS would parse to another double. Each component equals the float32 that was written.
  */
 async function storedEmbedding(id: number): Promise<number[] | null> {
-  const r = await db.pool.query('SELECT embedding::double precision[] AS v FROM memory_embeddings WHERE memory_id = $1', [id])
+  const r = await db.pool.query('SELECT embedding::real[]::double precision[] AS v FROM memory_embeddings WHERE memory_id = $1', [id])
   return r.rows.length === 0 ? null : (r.rows[0]?.v as number[])
 }
 
