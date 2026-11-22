@@ -12,6 +12,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 <!-- changelog-auto-sha: cd00e7d54aadf38020b01709e16f6102bb1d0451 -->
 
 ### Added
+- **[Ops]** On PostgreSQL a memory search whose query vector is not a valid embedding (wrong length, or a non-finite component) falls back to the scoped blob search, as on SQLite, so it keeps the tenant and agent scope. A document search in that case returns nothing, since it has no fallback.
 - **[Ops]** The memory and workspace document embeddings on PostgreSQL can be backfilled from the blob columns in batches of 2000: a run reads only the rows that have a blob and no embedding yet, so it resumes after an interruption, and a second run embeds nothing. A row with a blob that is not a valid embedding is skipped and counted. The artifacts have no blob column on PostgreSQL and are not covered.
 - **[Ops]** The artifact vector search on PostgreSQL runs on pgvector: the optional tenant scope is applied in SQL before the distance order, so a hit never crosses it. An artifact's embedding is written on save and re-embed (one value per artifact) and removed with the artifact.
 - **[Ops]** The workspace document vector search on PostgreSQL runs on pgvector and filters first: the tenant, the agent and the binary guard are applied in SQL before the distance order, so a hit never crosses a tenant boundary and a binary document has no vector hit. A document's embedding is written on save and re-embed (one value per document) and removed with the document or by the tenant purge.
