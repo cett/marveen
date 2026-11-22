@@ -96,8 +96,9 @@ export function ftsPgTsQuery(tokens: string[], weight?: 'A'): string | null {
 
 /**
  * The size (characters of the title and the content, bytes of an artifact body) up to which the phrase is checked by the
- * tsvector alone (phraseto). A row this short has at most 16000 words (a word and its space take two characters), under
- * the tsvector position ceiling 16383, so the phraseto is exact there. A longer row gets the text check (pgPhraseIn).
+ * tsvector alone (phraseto). A character that is not a token (a separator) counts too: a token takes at most one position
+ * per two characters, separator included, so the threshold allows at most about 16001 positions, under the tsvector
+ * position ceiling 16383, and the phraseto is exact there. A longer row gets the text check (pgPhraseIn).
  * ONE constant: the text check costs linearly in the rows that take it (measured in the 6a report).
  */
 export const PG_PHRASE_VERIFY_CHARS = 32000

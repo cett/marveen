@@ -188,23 +188,6 @@ describe('WA artifact threshold (bytes): phrase at the end of a dense body, foun
   })
 })
 
-describe('WT3 (PG only) the claim behind the threshold: a token needs a character and a separator', () => {
-  pgOnly('no short alphanumeric string gives more than one position per token run (every alnum code point and every 4-char mix of the representatives)', async () => {
-    const maxPos = (s: string) => `(SELECT coalesce(max(p), 0) FROM unnest(to_tsvector('public.marveen_fts', public.fts_norm(${s}))) AS u(lexeme, positions, weights), unnest(u.positions) AS p)`
-    // A: one code point repeated, every alnum code point up to 0x2FFFF
-    const a = (await dbx.all(`SELECT g, mx FROM (SELECT g, ${maxPos('repeat(chr(g), 7)')} AS mx FROM generate_series(1, 196607) g WHERE g NOT BETWEEN 55296 AND 57343 AND chr(g) ~ '^[[:alnum:]]$') t WHERE mx > 1 LIMIT 20`)) as Array<{ g: number; mx: number }>
-    // B: all strings of 4 characters from representatives of the classes (ascii letter, digit, non-ascii letters, scripts, marks, superscripts, fullwidth)
-    const reps = ['a', 'Z', '5', 'é', 'ő', 'Ж', '日', '한', 'ا', '٣', '²', '½', 'ǅ', 'ß', 'İ', 'ｱ', 'ａ', '１', 'ª', 'ⅳ', '①', 'ᾳ', 'ก']
-    const arr = `ARRAY[${reps.map((r) => `'${r}'`).join(',')}]`
-    const b = (await dbx.all(`
-      WITH r AS (SELECT unnest(${arr}) AS c), r4 AS (SELECT unnest((${arr})[1:12]) AS c),
-      s AS (SELECT r1.c || r2.c || r3.c AS s FROM r r1, r r2, r r3 UNION ALL SELECT r1.c || r2.c || r3.c || r4.c FROM r4 r1, r4 r2, r4 r3, r4 r4)
-      SELECT s, mx FROM (SELECT s, ${maxPos('s')} AS mx FROM s WHERE s ~ '^[[:alnum:]]+$') t WHERE mx > 1 LIMIT 20`)) as Array<{ s: string; mx: number }>
-    expect(a).toEqual([])
-    expect(b).toEqual([])
-  }, 600000)
-})
-
 describe('WT4 a row inside the threshold whose tokens are denser than one per two characters (the claim behind 32000)', () => {
   it('dense mixed-script runs: phrase at the end of a row of 31990+ characters is found (list and phrase), as in the SQLite reference', async () => {
     const pats = ['a٣', 'a１', 'a٣a', 'é１a', 'a１a１', 'Z٣a ', 'x٣ay１b']
@@ -239,4 +222,16 @@ describe('WT5 (PG only) token density: positions * 2 <= characters + 1 for every
       SELECT s, len, mx FROM (SELECT s, length(s) AS len, ${maxPos('s')} AS mx FROM s) t WHERE mx * 2 > len + 1 ORDER BY len LIMIT 20`)) as Array<{ s: string; len: number; mx: number }>
     expect(rows).toEqual([])
   }, 900000)
+
+  // The bound behind the threshold: at most one position per two characters, the separator included (a character that is
+  // not a token is a separator). The literals of the spec: 'a٣a' x100 is 300 characters and 101 positions; 'a٣a ' x100 is
+  // 400 characters and 200 positions. Both stay within (length + 1) / 2 with a margin of one.
+  pgOnly('the literals behind the bound: a٣a x100 (300 characters, 101 positions) and a٣a  x100 (400 characters, 200 positions)', async () => {
+    const maxPos = (x: string) => `(SELECT coalesce(max(p), 0) FROM unnest(to_tsvector('public.marveen_fts', public.fts_norm(${x}))) AS u(lexeme, positions, weights), unnest(u.positions) AS p)`
+    const rows = (await dbx.all(`SELECT ${maxPos("repeat('a٣a', 100)")} AS a, ${maxPos("repeat('a٣a ', 100)")} AS b`)) as Array<{ a: number; b: number }>
+    expect(rows[0]!.a).toBe(101)
+    expect(rows[0]!.b).toBe(200)
+    expect(rows[0]!.a * 2 <= 300 + 1).toBe(true)
+    expect(rows[0]!.b * 2 <= 400 + 1).toBe(true)
+  })
 })
