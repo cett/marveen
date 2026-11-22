@@ -109,6 +109,7 @@ export const PORTED: readonly string[] = [
   'src/__tests__/workspace-docs-fts-pg.test.ts',
   'src/__tests__/fts-rank-normalization.test.ts',
   'src/__tests__/workspace-artifact-phrase-w2.test.ts',
+  'src/__tests__/workspace-artifact-phrase-w2c.test.ts',
   'src/__tests__/db-import-transactions.test.ts',
   'src/__tests__/import-tx-handle.test.ts',
   'src/__tests__/like-escape-memory-searches.test.ts',
