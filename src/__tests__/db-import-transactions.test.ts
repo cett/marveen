@@ -13,6 +13,7 @@ vi.mock('../db/vector.js', async (importOriginal) => ({
 import { dbx, getDb, insertImportSource, upsertImportMemory, deleteImportSource, wipeImportMemories } from '../db.js'
 import { testDbMode, useTestDb } from './helpers/with-test-db.js'
 import { refuseWrite } from './helpers/refuse-write.js'
+import { interleave, waitBlockedOnLock } from './helpers/interleave.js'
 
 useTestDb()
 
@@ -154,4 +155,51 @@ describe('deleteImportSource / wipeImportMemories are one transaction', () => {
     expect(await shadowRows()).toBe(0)
     expect([...vec.deleted].sort()).toEqual([...shadowIds].sort())
   })
+})
+
+// PostgreSQL: two first writes of one file. The first holds the per-row advisory lock and is parked after its import-row
+// insert; the second must wait for the lock (the interleave helper sees it as a lock waiter, no timing), then find the row
+// the first one committed. Invariants only: one import row, one shadow row, both calls answered, no key error. Which of the
+// two calls inserts is not asserted.
+function parkBeforeInsert(il: ReturnType<typeof interleave>): { mockRestore(): void } {
+  const real = dbx.tx.bind(dbx) as (fn: (tx: unknown) => Promise<unknown>, opts?: unknown) => Promise<unknown>
+  let parked = false
+  return vi.spyOn(dbx, 'tx').mockImplementation(((fn: (tx: unknown) => Promise<unknown>, opts?: unknown) =>
+    real((tx) => {
+      const target = tx as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>
+      const wrapped = new Proxy(target, {
+        get(obj, key) {
+          if (key === 'get' || key === 'run' || key === 'all') {
+            return async (sql: string, ...params: unknown[]) => {
+              if (!parked && /INSERT INTO import_memories/.test(sql)) {
+                parked = true
+                await il.pass('first-insert')
+              }
+              return Reflect.apply(obj[key], obj, [sql, ...params])
+            }
+          }
+          const value = Reflect.get(obj, key, obj)
+          return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(obj) : value
+        },
+      })
+      return fn(wrapped)
+    }, opts)) as never)
+}
+
+it.runIf(testDbMode() === 'pg')('two first writes of one file: the second waits for the first, one row each, both answered, no key error (PostgreSQL)', async () => {
+  await source()
+  const il = interleave()
+  il.hold('first-insert')
+  const spy = parkBeforeInsert(il)
+  const first = upsert('lock.md', 'lock text')
+  await il.reached('first-insert')
+  const second = upsert('lock.md', 'lock text')
+  await waitBlockedOnLock(dbx, 1, 'pg')
+  il.open('first-insert')
+  const a = await first
+  const b = await second
+  spy.mockRestore()
+  expect([a, b].filter((r) => r === 'added')).toHaveLength(1)
+  expect(await importRows()).toBe(1)
+  expect(await shadowRows()).toBe(1)
 })
