@@ -3,9 +3,10 @@
 
 import { ALLOWED_CHAT_ID } from '../config.js'
 import { writeAgentAuditLog } from './audit.js'
-import { dbx } from './facade.js'
+import { dbx, dbxDialect } from './facade.js'
 import { BlankContentError, isBlankContent } from '../blank-content.js'
 import { floatsToBlob, generateEmbedding, linkToNeighbors, syncVecMemoryEmbeddingUpdate } from './vector.js'
+import { buildFtsMatchExpression, FTS_MATCH, ftsPgTsQuery, ftsTokens, PG_FTS_CONFIG, pgRankSql } from './fts.js'
 
 export interface Memory {
   id: number
@@ -55,31 +56,7 @@ export async function saveMemory(
   await dbx.run('INSERT INTO memories (chat_id, topic_key, content, sector, salience, created_at, accessed_at) VALUES (?, ?, ?, ?, 1.0, ?, ?)', chatId, topicKey ?? null, content, sector, now, now)
 }
 
-// Build a safe FTS5 MATCH expression from a free-form user query.
-//
-// FTS5 treats AND / OR / NOT / NEAR as reserved operators only when uppercase
-// and unquoted -- so we lowercase everything, which turns them into ordinary
-// search terms. We also cap the number and length of tokens to bound query
-// cost (the sanitizer previously allowed an arbitrary-length prefix expansion
-// that could make a single request scan the entire index).
-export function buildFtsMatchExpression(query: string): string {
-  const MAX_TOKENS = 20
-  const MAX_TOKEN_LEN = 64
-  const sanitized = query
-    .toLowerCase()
-    // Replace punctuation with a space (not delete) so "rank-check" / "serper.dev"
-    // tokenize the same way unicode61 indexed them (rank + check), instead of
-    // fusing into a single unfindable token "rankcheck".
-    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
-    .trim()
-  if (!sanitized) return ''
-  const tokens = sanitized
-    .split(/\s+/)
-    .filter((t) => t.length > 0)
-    .slice(0, MAX_TOKENS)
-    .map((t) => t.slice(0, MAX_TOKEN_LEN) + '*')
-  return tokens.join(' ')
-}
+export { buildFtsMatchExpression } from './fts.js'
 
 // -- Recency-weighted retrieval (Roitman 17.4.2) --
 //
@@ -137,12 +114,25 @@ export function withoutRank<T extends { rank: number }>(rows: T[]): Omit<T, 'ran
 export async function searchMemories(query: string, chatId: string, limit = 3, tenantId?: string): Promise<Memory[]> {
   const terms = buildFtsMatchExpression(query)
   if (!terms) return []
+  if (dbxDialect() === 'pg') {
+    // PostgreSQL: the content weight only (the FTS5 content filter), no fallback: an error is an error.
+    const tsq = ftsPgTsQuery(ftsTokens(query), 'A')
+    if (!tsq) return []
+    const tc = tenantId ? ' AND m.tenant_id = ?' : ''
+    const tp = tenantId ? [tenantId] : []
+    const candidates = (await dbx.all(`SELECT m.*, ${pgRankSql('m.fts', `to_tsquery(${PG_FTS_CONFIG}, ?)`)} AS rank
+         FROM memories m
+         WHERE m.fts @@ to_tsquery(${PG_FTS_CONFIG}, ?) AND m.chat_id = ?${tc}
+         ORDER BY rank, m.id
+         LIMIT ?`, tsq, tsq, chatId, ...tp, limit * RECENCY_OVERSAMPLE)) as (Memory & { rank: number })[]
+    return withoutRank(reRankByRecency(candidates, limit)) as Memory[]
+  }
   try {
     const tc = tenantId ? ' AND m.tenant_id = ?' : ''
     const tp = tenantId ? [tenantId] : []
     const candidates = (await dbx.all(`SELECT m.*, f.rank AS rank FROM memories m
          JOIN memories_fts f ON m.id = f.rowid
-         WHERE f.content MATCH ? AND m.chat_id = ?${tc}
+         WHERE ${FTS_MATCH.memoryContent} AND m.chat_id = ?${tc}
          ORDER BY rank
          LIMIT ?`, terms, chatId, ...tp, limit * RECENCY_OVERSAMPLE)) as (Memory & { rank: number })[]
     return withoutRank(reRankByRecency(candidates, limit)) as Memory[]
@@ -316,12 +306,24 @@ export async function countAgentMemories(agentId: string, category?: string, ten
 export async function searchAgentMemories(agentId: string, query: string, limit: number = 10, tenantId?: string): Promise<Memory[]> {
   const terms = buildFtsMatchExpression(query)
   if (!terms) return []
+  if (dbxDialect() === 'pg') {
+    // PostgreSQL: both weights (content and keywords), the agent's own rows and the shared ones; no LIKE fallback.
+    const tsq = ftsPgTsQuery(ftsTokens(query))
+    if (!tsq) return []
+    const tc = tenantId ? ' AND m.tenant_id = ?' : ''
+    const tp = tenantId ? [tenantId] : []
+    const candidates = (await dbx.all(`SELECT m.*, ${pgRankSql('m.fts', `to_tsquery(${PG_FTS_CONFIG}, ?)`)} AS rank
+         FROM memories m
+         WHERE m.fts @@ to_tsquery(${PG_FTS_CONFIG}, ?) AND (m.agent_id = ? OR m.category = 'shared')${tc}
+         ORDER BY rank, m.id LIMIT ?`, tsq, tsq, agentId, ...tp, limit * RECENCY_OVERSAMPLE)) as (Memory & { rank: number })[]
+    return withoutRank(reRankByRecency(candidates, limit)) as Memory[]
+  }
   const tc = tenantId ? ' AND m.tenant_id = ?' : ''
   const tp = tenantId ? [tenantId] : []
   try {
     const candidates = (await dbx.all(`SELECT m.*, f.rank AS rank FROM memories m
        JOIN memories_fts f ON m.id = f.rowid
-       WHERE f.memories_fts MATCH ? AND (m.agent_id = ? OR m.category = 'shared')${tc}
+       WHERE ${FTS_MATCH.memoryAll} AND (m.agent_id = ? OR m.category = 'shared')${tc}
        ORDER BY rank LIMIT ?`, terms, agentId, ...tp, limit * RECENCY_OVERSAMPLE)) as (Memory & { rank: number })[]
     return withoutRank(reRankByRecency(candidates, limit)) as Memory[]
   } catch {

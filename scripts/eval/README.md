@@ -31,5 +31,24 @@ Design points
   text/ids. They live under `store/` (gitignored); only this harness and the synthetic unit tests are
   committed. Never commit a real snapshot.
 
-A PostgreSQL candidate snapshot (Phase 3) writes the same JSON schema (`Snapshot` in
+A PostgreSQL candidate snapshot writes the same JSON schema (`Snapshot` in
 `recall-eval-lib.ts`), with the same query set and embedding cache.
+
+## PostgreSQL side (full-text stage only)
+
+The same prepared eval copy can be loaded into a scratch PostgreSQL database and its full-text stage snapshotted
+through the production search functions (`recall-eval-pg.ts`). The admin URL comes from `MARVEEN_PG_EVAL_URL`
+(never from the command line); the scratch database is named `marveen_eval_<suffix>` and every other name is refused.
+
+```
+MARVEEN_PG_EVAL_URL=postgres://... npx tsx scripts/eval/recall-eval-pg.ts load     --dir store/eval   # scratch DB, migrations, preflight, copy
+MARVEEN_PG_EVAL_URL=postgres://... npx tsx scripts/eval/recall-eval-pg.ts snapshot --dir store/eval --out store/eval/pg-fts.json
+npx tsx scripts/eval/recall-eval-pg.ts compare-fts --base store/eval/baseline-sqlite.json --cand store/eval/pg-fts.json
+```
+
+- The PostgreSQL snapshot has the `fts` stage only (memory, doc, artifact); the vector stages are skipped and named in
+  the snapshot meta until the vector step. `compare-fts` compares the `fts` stage (top-10, top-5, nDCG@10) and exits 3
+  (STOP) when a kind's mean top-10 overlap is below 0.85: that is a ranking question for the architect, not a tuning one.
+- The baseline has no `fts` stage for artifacts, so artifacts are listed as not compared.
+- The copy goes into PostgreSQL through its own columns: a SQLite-only column is reported as dropped, the generated
+  full-text column is left to PostgreSQL, and a text value bound for a bytea column is stored as its UTF-8 bytes.

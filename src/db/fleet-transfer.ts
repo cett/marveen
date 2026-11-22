@@ -142,15 +142,12 @@ export async function listEnabledTenantIds(ops: SqlOps = dbx): Promise<string[]>
 }
 
 /**
- * Rebuild the full-text index of `memories` after a bulk insert. SQLite only: the Postgres schema has no `memories_fts`
- * yet (the full-text tables are a later phase, see the header of the Postgres baseline), so there is no index to bring
- * up to date and the call does nothing there; running the statement would fail and abort the open transaction.
- * Not claimed here: that Postgres memory search works without the index. `searchAgentMemories` falls back to LIKE, but
- * `searchMemories` joins `memories_fts` and returns an empty list when that fails (parked, outside this change).
+ * Rebuild the full-text index of `memories` after a bulk insert. SQLite only, by design: on PostgreSQL the index is the
+ * generated column `memories.fts` (migration 0004), which the server maintains, so a bulk insert is
+ * indexed as it lands and there is nothing to rebuild. The call does nothing there (the FTS5 statement would not exist).
  * `ops` is the transaction handle of a caller that holds one, `dbx` otherwise.
  */
 export async function rebuildMemoriesFts(ops: SqlOps = dbx): Promise<void> {
-  // TODO(fts-phase): remove this guard when memories_fts exists on Postgres, so the rebuild runs there too.
   if (dbxDialect() === 'pg') return
   await ops.run("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')")
 }

@@ -4,7 +4,7 @@
 
 import { createHash } from 'node:crypto'
 import { dbx, type SqlOps } from './facade.js'
-import { likeNoCase } from './dialect.js'
+import { advisoryLockKeyed, likeNoCase } from './dialect.js'
 import { likeContains } from './like.js'
 import { syncVecMemoryDelete } from './vector.js'
 import { isBlankContent } from '../blank-content.js'
@@ -245,7 +245,14 @@ export async function upsertImportMemory(
   // together; a failure half-way leaves no shadow row without its import row. The ANN entry of a shadow row
   // whose text changed is dropped after the commit (vec0 is not on the facade, see dropVecEntries).
   let staleVecId: number | null = null
+  // The row id is a function of the source and the path, so it is known before the transaction and keys its lock. Two first
+  // writes of one file would both find no row and both insert; the second would hit the primary key. The lock is the first
+  // statement of the transaction, so the read below sees the first write once it has committed (PostgreSQL; SQLite has one
+  // connection and no lock).
+  const rowId = createHash('sha256').update(`${sourceId}:${filePath}`).digest('hex').slice(0, 16)
+  const lock = advisoryLockKeyed('import:', rowId)
   const result = await dbx.tx(async (tx): Promise<'added' | 'updated' | 'hash_match'> => {
+    if (lock) await tx.run(lock.sql, ...lock.params)
     const existing = await tx.get<{ id: string; content_hash: string; content: string; keywords: string | null; memory_shadow_id: number | null }>("SELECT id, content_hash, content, keywords, memory_shadow_id FROM import_memories WHERE source_id = ? AND file_path = ?", sourceId, filePath)
 
     if (existing) {
@@ -281,7 +288,7 @@ export async function upsertImportMemory(
       return 'updated'
     }
 
-    const id = createHash('sha256').update(`${sourceId}:${filePath}`).digest('hex').slice(0, 16)
+    const id = rowId
     await tx.run(`
       INSERT INTO import_memories (id, source_id, file_path, file_name, content_hash, content, keywords, last_seen_at, created_at, updated_at, tenant_id)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)

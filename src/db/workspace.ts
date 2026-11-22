@@ -10,11 +10,120 @@
 //   binary ≤ 16 MB
 
 import { randomBytes } from 'node:crypto'
-import { dbx, type Tx } from './facade.js'
+import { dbx, dbxDialect, type Tx } from './facade.js'
 import { likeNoCase } from './dialect.js'
 import { likePrefix } from './like.js'
 import { generateEmbedding, floatsToBlob } from './vector.js'
 import { logger } from '../logger.js'
+import { ftsEscape, ftsAllTerms, FTS_MATCH, PG_FTS_CONFIG, PG_PHRASE_VERIFY_CHARS, pgRankSql, pgCandidateTsq, pgPhraseIn, pgWordsAnd } from './fts.js'
+
+// -- PostgreSQL search (phase 3, c5; 6a W2) ----------------------------------------------------------------------------
+// The query is a tsquery over the generated index (migration 0006). The candidate is the position-free tsquery of the
+// whole text (every lexeme ANDed, pgCandidateTsq); the phrase search then checks the phrase on the normalized text of
+// each candidate (pgPhraseIn), the list search needs no further check. The snippet is computed on the rows of the page
+// only: the search picks the page in an inner query, the headline is added in the outer one. The text of the headline is
+// the normalized text (punctuation becomes spaces).
+
+/**
+ * The phrase check of one text (`q`) on a workspace document: a whole-word run of the title, or of the content (each part on
+ * its own; a binary content is no text). The phrase search uses it with the whole text, the list search with each word.
+ */
+function pgInTitleOrContent(q: string): { sql: string; params: unknown[] } {
+  const content = `CASE WHEN wd.content_type = 'binary' THEN '' ELSE coalesce(wd.content, '') END`
+  const t = pgPhraseIn('wd.title', q)
+  const c = pgPhraseIn(content, q)
+  return { sql: `((${t.sql}) OR (${c.sql}))`, params: [...t.params, ...c.params] }
+}
+
+/**
+ * The verification of the list search: every word of `q` (the words that count, fts.ts pgWordsAnd) passes the text check.
+ * A hyphenated word is one phrase (its parts adjacent), as on SQLite; the candidate (pgCandidateTsq) only narrows the rows
+ * and does not check adjacency.
+ */
+function pgWordsVerify(q: string): { sql: string; params: unknown[] } {
+  // A word of one lexeme is already required by the candidate (a one-token phrase is the lexeme itself): the text check
+  // runs only for a word of more than one lexeme (a٣a has three). The numnode test comes first, in a CASE, so the text check
+  // is not evaluated for a one-lexeme word.
+  return pgWordsAnd(q, (w) => {
+    const inner = pgInTitleOrContent(w)
+    return {
+      sql: `(CASE WHEN numnode(plainto_tsquery(${PG_FTS_CONFIG}, public.fts_norm(?))) = 1 THEN TRUE ELSE ${inner.sql} END)`,
+      params: [w, ...inner.params],
+    }
+  })
+}
+
+/** The phrase of the whole text as a tsquery (the tsvector check of a short row). */
+function pgPhraseTsq(text: string): { sql: string; params: unknown[] } {
+  return { sql: `phraseto_tsquery(${PG_FTS_CONFIG}, public.fts_norm(?))`, params: [text] }
+}
+
+/** The phrase branch of the list search (short rows): every word of `q` that counts is a phrase of the tsvector. */
+function pgWordsPhrase(q: string): { sql: string; params: unknown[] } {
+  return pgWordsAnd(q, (w) => ({ sql: `wd.fts @@ (${pgPhraseTsq(w).sql})`, params: [w] }))
+}
+
+/**
+ * The match of a text search on the workspace documents: the candidate (the LATERAL `qq.q`) is the index condition, and
+ * the exact check is per row: a short row (PG_PHRASE_VERIFY_CHARS) takes the tsvector phrase (`exact`), a long row takes
+ * the text check (`verify`). Both branches are needed for every row, so the candidate keeps the GIN index in use.
+ */
+function pgMatch(exact: { sql: string; params: unknown[] }, verify: { sql: string; params: unknown[] }): { sql: string; params: unknown[] } {
+  const short = `(length(coalesce(wd.title, '')) + length(coalesce(wd.content, ''))) <= ${PG_PHRASE_VERIFY_CHARS}`
+  return {
+    sql: `wd.fts @@ qq.q AND ((${short} AND (${exact.sql})) OR (NOT ${short} AND ${verify.sql}))`,
+    params: [...exact.params, ...verify.params],
+  }
+}
+
+const PG_HEADLINE_OPTS ="'StartSel=[, StopSel=], MaxWords=15, MinWords=1, MaxFragments=1, FragmentDelimiter=...'"
+
+/**
+ * Snippet of one row: the headline of the content when the content holds a hit (a `[` mark), else of the title; NULL for
+ * an empty headline. `q` is the alias of the LATERAL that holds the tsquery.
+ */
+function pgSnippetSql(q: string): string {
+  const content = `public.fts_norm(CASE WHEN wd.content_type = 'binary' THEN '' ELSE coalesce(wd.content, '') END)`
+  const hc = `ts_headline(${PG_FTS_CONFIG}, ${content}, ${q}.q, ${PG_HEADLINE_OPTS})`
+  const ht = `ts_headline(${PG_FTS_CONFIG}, public.fts_norm(wd.title), ${q}.q, ${PG_HEADLINE_OPTS})`
+  return `NULLIF(CASE WHEN position('[' in ${hc}) > 0 THEN ${hc} ELSE ${ht} END, '')`
+}
+
+/**
+ * Runs the search: the FROM and WHERE of the matches, the rank ordering, and (for the page only) the snippet.
+ * `params` are the workspaceDocsWhere binds, in the order their `?` appear in `where`.
+ */
+async function pgWorkspaceSearch(
+  tsq: { sql: string; params: unknown[] },
+  where: string,
+  params: unknown[],
+  page: { limit?: number; offset?: number },
+  rowMatch?: { sql: string; params: unknown[] },
+): Promise<Array<DbRow & { snippet: string | null }>> {
+  // The match is pgMatch (the candidate in `tsq` as the index condition, the exact check per row); without one, the
+  // candidate alone (every lexeme of the text).
+  const matchSql = rowMatch ? rowMatch.sql : 'wd.fts @@ qq.q'
+  const matchParams = rowMatch ? rowMatch.params : []
+  const from = `FROM workspace_docs wd, LATERAL (SELECT ${tsq.sql} AS q) qq ${where} AND ${matchSql}`
+  const bind = [...tsq.params, ...params, ...matchParams]
+  let inner = `SELECT wd.id, ${pgRankSql('wd.fts', 'qq.q')} AS rank, wd.updated_at ${from}
+               ORDER BY rank, wd.updated_at DESC, wd.id`
+  const innerBind = [...bind]
+  if (page.limit && page.limit > 0) {
+    inner += ' LIMIT ?'; innerBind.push(page.limit)
+    if (page.offset && page.offset > 0) { inner += ' OFFSET ?'; innerBind.push(page.offset) }
+  }
+  // The outer ORDER BY is required: the join to the page does not keep the order of the inner query (PostgreSQL does not
+  // guarantee the output order of a join), so the page order comes from p.rank here, not from the join. wd.id is the last
+  // key: two rows with the same rank and update time must not swap between pages (LIMIT/OFFSET needs a total order).
+  const sql = `SELECT wd.id, wd.agent_id, wd.tenant_id, wd.doc_key, wd.title, wd.content_type, wd.type, wd.task_ref,
+                      wd.size_bytes, wd.created_at, wd.updated_at, wd.last_accessed_at, ${pgSnippetSql('qq2')} AS snippet
+               FROM (${inner}) p
+               JOIN workspace_docs wd ON wd.id = p.id, LATERAL (SELECT ${tsq.sql} AS q) qq2
+               ORDER BY p.rank, wd.updated_at DESC, wd.id`
+  // the outer query binds the tsquery once more (qq2), so the tsquery parameters come again before no other binds
+  return dbx.all(sql, ...innerBind, ...tsq.params) as Promise<Array<DbRow & { snippet: string | null }>>
+}
 
 export const WORKSPACE_DOC_SIZE_LIMITS: Record<string, number> = {
   text:   2 * 1024 * 1024,
@@ -203,9 +312,6 @@ export async function getWorkspaceDocBlob(id: string): Promise<Buffer | null> {
 // Escape FTS5 special characters to prevent query-syntax errors on user
 // input. Wraps the term in double quotes so it is treated as a phrase, not
 // as FTS5 operators -- mirrors db/artifacts.ts's ftsEscape.
-function ftsEscape(term: string): string {
-  return `"${term.replace(/"/g, '""')}"`
-}
 
 export interface WorkspaceDocSearchResult {
   id: string
@@ -240,6 +346,15 @@ export async function searchWorkspaceDocs(
   opts: { agentId?: string; tenantId?: string; limit: number },
 ): Promise<WorkspaceDocSearchResult[]> {
   const { where, params } = workspaceDocsWhere({ agentId: opts.agentId, tenantId: opts.tenantId }, 'wd.')
+  if (dbxDialect() === 'pg') {
+    const cand = pgCandidateTsq(q)
+    if (!cand) return []
+    // the phrase is checked in the title and in the content, each on its own (a phrase never runs from one into the other);
+    // a binary content is no text
+    const phr = pgPhraseTsq(q)
+    const match = pgMatch({ sql: `wd.fts @@ (${phr.sql})`, params: phr.params }, pgInTitleOrContent(q))
+    return (await pgWorkspaceSearch(cand, where, params, { limit: opts.limit }, match)) as unknown as WorkspaceDocSearchResult[]
+  }
   return dbx.all<WorkspaceDocSearchResult>(`
     SELECT wd.id, wd.title, wd.agent_id, wd.tenant_id, wd.type,
            wd.task_ref, wd.doc_key, wd.created_at, wd.updated_at,
@@ -253,7 +368,7 @@ export async function searchWorkspaceDocs(
 // The one place that joins the FTS index to workspace_docs (alias wd): `where` is a workspaceDocsWhere(.., 'wd.')
 // clause; the MATCH expression is the last bind parameter.
 function ftsFrom(where: string): string {
-  return `FROM workspace_docs_fts JOIN workspace_docs wd ON wd.rowid = workspace_docs_fts.rowid ${where} AND workspace_docs_fts MATCH ?`
+  return `FROM workspace_docs_fts JOIN workspace_docs wd ON wd.rowid = workspace_docs_fts.rowid ${where} AND ${FTS_MATCH.workspace}`
 }
 
 /**
@@ -385,12 +500,6 @@ function workspaceDocsWhere(filter: ListWorkspaceDocsFilter, alias = ""): { wher
   return { where, params }
 }
 
-// FTS5 MATCH expression for a box of words: every whitespace-separated word, quoted (so FTS operators typed by
-// the user are plain text), all of them required. null when there is no word.
-function ftsAllTerms(q: string): string | null {
-  const terms = q.split(/\s+/).filter(Boolean)
-  return terms.length ? terms.map(ftsEscape).join(' ') : null
-}
 
 export interface WorkspaceDocSearchHit extends WorkspaceDoc {
   /**
@@ -408,6 +517,18 @@ export interface WorkspaceDocSearchHit extends WorkspaceDoc {
  * Rows carry metadata and a snippet, never the body. Binary documents have no text and so no hits.
  */
 export async function searchWorkspaceDocsPage(q: string, filter: ListWorkspaceDocsFilter): Promise<{ items: WorkspaceDocSearchHit[]; total: number }> {
+  if (dbxDialect() === 'pg') {
+    const t = pgCandidateTsq(q)
+    if (!t) return { items: [], total: 0 }
+    const m = pgMatch(pgWordsPhrase(q), pgWordsVerify(q))
+    const { where, params } = workspaceDocsWhere(filter, 'wd.')
+    const total = Number(((await dbx.get(
+      `SELECT COUNT(*) AS n FROM workspace_docs wd, LATERAL (SELECT ${t.sql} AS q) qq ${where} AND ${m.sql}`,
+      ...t.params, ...params, ...m.params,
+    )) as { n: number } | undefined)?.n ?? 0)
+    const rows = await pgWorkspaceSearch(t, where, params, { limit: filter.limit, offset: filter.offset }, m)
+    return { items: rows.map((r) => ({ ...rowToDocMeta(r), snippet: r.snippet })), total }
+  }
   const match = ftsAllTerms(q)
   if (!match) return { items: [], total: 0 }
   const { where, params } = workspaceDocsWhere(filter, 'wd.')

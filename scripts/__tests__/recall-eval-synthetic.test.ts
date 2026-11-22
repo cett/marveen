@@ -84,6 +84,18 @@ describe('recall harness on a synthetic corpus', () => {
     for (const r of runs) expect(Object.keys(r.stages).sort()).toEqual(['final', 'fts', 'vec_exact', 'vec_prod'])
   })
 
+  it('an artifact case carries an fts stage (the artifact full-text filter) next to its vector stages', async () => {
+    const db = getDb()
+    db.prepare(
+      "INSERT INTO artifacts (id, agent_id, title, kind, mime, content, meta, created_at, updated_at, tenant_id) VALUES ('art-synth-1', 'agent-a', 'Kanban riport', 'text', 'text/plain', 'a tabla tartalma', '{}', ?, ?, 'default')",
+    ).run(NOW_SEC, NOW_SEC)
+    const c: QueryCase = { id: 'artifact:001', kind: 'artifact', text: 'riport', style: 'title' }
+    embed(c.text)
+    const [run] = await runCases(db, [c], embeddings, NOW_SEC)
+    expect(run.stages.fts).toEqual(['art-synth-1'])
+    expect(Object.keys(run.stages).sort()).toEqual(['final', 'fts', 'vec_prod'])
+  })
+
   it('is deterministic: two runs over the same data are identical', async () => {
     const a = await runCases(getDb(), cases, embeddings, NOW_SEC)
     const b = await runCases(getDb(), cases, embeddings, NOW_SEC)

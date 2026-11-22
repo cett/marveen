@@ -436,6 +436,18 @@ describe('PG baseline parity: every object of the baseline is held (systematic m
     expect(r.refused).toEqual([])
   }, 120000)
 
+  // The PG-only exception names its objects (PG_ONLY_COLUMNS, PG_ONLY_INDEXES): a full-text-like object that is NOT named
+  // is a difference of its own, not an exception by its look. Both mutants add a PG-only object with no SQLite twin.
+  it('an unnamed PG-only full-text object fails the parity with its own difference', async () => {
+    const mutants: Mutant[] = [
+      { label: 'unnamed fts GIN index', ddl: ['CREATE INDEX zz_fts_gin ON memories USING gin (fts)'], expect: /^indexes: only in PG: zz_fts_gin$/ },
+      { label: 'unnamed fts-like column', ddl: ['ALTER TABLE memories ADD COLUMN zz_fts tsvector'], expect: /^columns of memories: only in PG: zz_fts$/ },
+    ]
+    const r = await runMutants(probe, mutants)
+    expect(r.survivors).toEqual([])
+    expect(r.refused).toEqual([])
+  }, 120000)
+
   it('a column dropped fails', async () => {
     const mutants: Mutant[] = []
     for (const [t, tm] of Object.entries(expected.tables)) {

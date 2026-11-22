@@ -1,6 +1,7 @@
-import { dbx } from './facade.js'
+import { dbx, dbxDialect } from './facade.js'
 import { generateEmbedding } from './vector.js'
 import { logger } from '../logger.js'
+import { ftsEscape, FTS_MATCH, PG_FTS_CONFIG, PG_PHRASE_VERIFY_CHARS, pgCandidateTsq, pgPhraseIn } from './fts.js'
 
 // At this row count the HNSW graph may benefit from a periodic re-index.
 const VEC_REBUILD_THRESHOLD = 10_000
@@ -144,6 +145,31 @@ export async function storeArtifactEmbedding(
   }
 }
 
+/**
+ * The PostgreSQL phrase condition of the artifact search. The candidates come from the index as words ANDed (position-free,
+ * so a phrase past the tsvector position ceiling is still a candidate); the phrase is then verified on the normalized text
+ * of the candidate (title, meta and the body of the textual kinds, as indexed; a binary body is never a hit). No word gives
+ * no row, as an empty phrase did before.
+ */
+function pgArtifactPhrase(q: string): { sql: string; params: unknown[] } {
+  const cand = pgCandidateTsq(q)
+  if (!cand) return { sql: 'FALSE', params: [] }
+  // each part on its own: the index never runs a phrase from one part into the next (the title, the meta, the body)
+  const body = "CASE WHEN a.kind = 'binary' THEN '' ELSE public.fts_bytes_text(a.content) END"
+  const inTitle = pgPhraseIn('a.title', q)
+  const inMeta = pgPhraseIn('a.meta', q)
+  const inBody = pgPhraseIn(body, q)
+  // a short artifact (body bytes, title and meta characters within the limit: fewer than 16383 words) takes the tsvector
+  // phrase, which is exact there; a longer one takes the text check. The body bytes bound its characters from above.
+  const short = `(octet_length(coalesce(a.content, '')) + length(coalesce(a.title, '')) + length(coalesce(a.meta, ''))) <= ${PG_PHRASE_VERIFY_CHARS}`
+  const exactSql = `phraseto_tsquery(${PG_FTS_CONFIG}, public.fts_norm(?))`
+  const verifySql = `((${inTitle.sql}) OR (${inMeta.sql}) OR (${inBody.sql}))`
+  return {
+    sql: `a.fts @@ (${cand.sql}) AND ((${short} AND a.fts @@ (${exactSql})) OR (NOT ${short} AND ${verifySql}))`,
+    params: [...cand.params, q, ...inTitle.params, ...inMeta.params, ...inBody.params],
+  }
+}
+
 export interface ListArtifactsOptions {
   agent?: string
   tenant_id?: string
@@ -162,6 +188,21 @@ export async function listArtifacts(opts: ListArtifactsOptions = {}): Promise<Ar
   const kindBind   = opts.kind && ARTIFACT_KINDS.has(opts.kind as ArtifactKind) ? [opts.kind] : []
   const q = opts.q?.trim()
 
+  if (q && dbxDialect() === 'pg') {
+    // PostgreSQL: one phrase (consecutive words) on the generated index: title, meta, and the body of the textual kinds.
+    const phrase = pgArtifactPhrase(q)
+    const agentCond  = agentBind.length  ? 'AND a.agent_id = ?'   : ''
+    const tenantCond = tenantBind.length ? 'AND a.tenant_id = ?'  : ''
+    const kindCond   = kindBind.length   ? 'AND a.kind = ?'       : ''
+    return dbx.all<ArtifactSummary>(`
+      SELECT a.id, a.agent_id, a.tenant_id, a.title, a.kind, a.mime, a.meta, a.source, a.cloud_url, a.created_at, a.updated_at
+      FROM artifacts a
+      WHERE ${phrase.sql}
+      ${agentCond} ${tenantCond} ${kindCond}
+      ORDER BY a.created_at DESC
+      LIMIT ? OFFSET ?
+    `, ...phrase.params, ...agentBind, ...tenantBind, ...kindBind, limit, offset)
+  }
   if (q) {
     // FTS5 MATCH: searches title, meta JSON, and textual body of non-binary artifacts
     const agentCond  = agentBind.length  ? 'AND a.agent_id = ?'   : ''
@@ -170,7 +211,7 @@ export async function listArtifacts(opts: ListArtifactsOptions = {}): Promise<Ar
     return dbx.all<ArtifactSummary>(`
       SELECT a.id, a.agent_id, a.tenant_id, a.title, a.kind, a.mime, a.meta, a.source, a.cloud_url, a.created_at, a.updated_at
       FROM artifacts a
-      WHERE a.rowid IN (SELECT rowid FROM artifacts_fts WHERE artifacts_fts MATCH ?)
+      WHERE a.rowid IN (SELECT rowid FROM artifacts_fts WHERE ${FTS_MATCH.artifact})
       ${agentCond} ${tenantCond} ${kindCond}
       ORDER BY a.created_at DESC
       LIMIT ? OFFSET ?
@@ -202,6 +243,19 @@ export async function countArtifacts(opts: Omit<ListArtifactsOptions, 'limit' | 
   const kindBind   = opts.kind && ARTIFACT_KINDS.has(opts.kind as ArtifactKind) ? [opts.kind] : []
   const q = opts.q?.trim()
 
+  if (q && dbxDialect() === 'pg') {
+    const agentCond  = agentBind.length  ? 'AND a.agent_id = ?'   : ''
+    const tenantCond = tenantBind.length ? 'AND a.tenant_id = ?'  : ''
+    const kindCond   = kindBind.length   ? 'AND a.kind = ?'       : ''
+    const phrase = pgArtifactPhrase(q)
+    const { c } = (await dbx.get(`
+      SELECT COUNT(*) AS c
+      FROM artifacts a
+      WHERE ${phrase.sql}
+      ${agentCond} ${tenantCond} ${kindCond}
+    `, ...phrase.params, ...agentBind, ...tenantBind, ...kindBind)) as { c: number }
+    return c
+  }
   if (q) {
     const agentCond  = agentBind.length  ? 'AND a.agent_id = ?'   : ''
     const tenantCond = tenantBind.length ? 'AND a.tenant_id = ?'  : ''
@@ -209,7 +263,7 @@ export async function countArtifacts(opts: Omit<ListArtifactsOptions, 'limit' | 
     const { c } = (await dbx.get(`
       SELECT COUNT(*) AS c
       FROM artifacts a
-      WHERE a.rowid IN (SELECT rowid FROM artifacts_fts WHERE artifacts_fts MATCH ?)
+      WHERE a.rowid IN (SELECT rowid FROM artifacts_fts WHERE ${FTS_MATCH.artifact})
       ${agentCond} ${tenantCond} ${kindCond}
     `, ftsEscape(q), ...agentBind, ...tenantBind, ...kindBind)) as { c: number }
     return c
@@ -226,9 +280,6 @@ export async function countArtifacts(opts: Omit<ListArtifactsOptions, 'limit' | 
 
 // Escape FTS5 special characters to prevent query-syntax errors on user input.
 // Wraps the term in double quotes so it is treated as a phrase, not as FTS5 operators.
-function ftsEscape(term: string): string {
-  return `"${term.replace(/"/g, '""')}"`
-}
 
 export async function getArtifact(id: string): Promise<ArtifactRow | undefined> {
   return dbx.get<ArtifactRow>('SELECT * FROM artifacts WHERE id = ?', id)

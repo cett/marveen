@@ -2,7 +2,7 @@
 // parameter and the only thing that decides which rows a call can see or
 // change. (tenant-scope.test.ts covers the same contract through the facade.)
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { getDb } from '../db.js'
+import { dbx } from '../db.js'
 import { useTestDb } from './helpers/with-test-db.js'
 import {
   listTenantKanbanCards,
@@ -26,9 +26,9 @@ vi.mock('../db/vector.js', async (importOriginal) => ({
 }))
 
 useTestDb()
-beforeEach(() => {
+beforeEach(async () => {
   for (const id of ['t-a', 't-b']) {
-    getDb().prepare('INSERT OR IGNORE INTO tenants (id, display_name) VALUES (?, ?)').run(id, id)
+    await dbx.run('INSERT INTO tenants (id, display_name, created_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING', id, id, 0)
   }
 })
 
@@ -45,7 +45,7 @@ describe('kanban cards: the shape and order the board gets from a tenant list', 
   it('orders by the manual sort_order first, newest first within the same order (the admin board order)', async () => {
     for (const [id, order, created] of [['x', 3, 100], ['y', 1, 100], ['z', 1, 200], ['w', 2, 50]] as const) {
       await insertTenantKanbanCard('t-a', id, id)
-      getDb().prepare('UPDATE kanban_cards SET sort_order = ?, created_at = ? WHERE id = ?').run(order, created, id)
+      await dbx.run('UPDATE kanban_cards SET sort_order = ?, created_at = ? WHERE id = ?', order, created, id)
     }
     expect((await listTenantKanbanCards('t-a')).map(c => c.id)).toEqual(['z', 'y', 'w', 'x'])
     expect((await listTenantKanbanCards('t-a', 'planned')).map(c => c.id)).toEqual(['z', 'y', 'w', 'x'])
@@ -76,7 +76,7 @@ describe('kanban cards: the status-filtered list stays inside the tenant', () =>
   it('leaves out the tenant\'s archived cards of that status', async () => {
     await insertTenantKanbanCard('t-a', 'a-live', 'live', 'planned')
     await insertTenantKanbanCard('t-a', 'a-old', 'old', 'planned')
-    getDb().prepare('UPDATE kanban_cards SET archived_at = 1 WHERE id = ?').run('a-old')
+    await dbx.run('UPDATE kanban_cards SET archived_at = 1 WHERE id = ?', 'a-old')
     expect((await listTenantKanbanCards('t-a', 'planned')).map(c => c.id)).toEqual(['a-live'])
   })
 })

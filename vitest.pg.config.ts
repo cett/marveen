@@ -6,7 +6,7 @@ import { defineConfig } from 'vitest/config'
 // skip when no server is there. A missing variable fails here, before any test, instead of skipping.
 export default defineConfig({
   test: {
-    include: ['src/**/*.pg.test.ts'],
+    include: ['src/**/*.pg.test.ts', 'scripts/__tests__/**/*.pg.test.ts'],
     globalSetup: ['./src/__tests__/pg/global-setup.ts'],
     testTimeout: 30000,
     hookTimeout: 60000,

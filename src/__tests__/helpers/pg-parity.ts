@@ -50,6 +50,17 @@ export const OMITTED_TRIGGERS: Readonly<Record<string, string>> = {
 /** The FTS5 virtual tables (and so their shadow tables) the baseline leaves to Phase 3. */
 export const OMITTED_VIRTUAL_TABLES: readonly string[] = ['artifacts_fts', 'memories_fts', 'workspace_docs_fts']
 
+/**
+ * PG-only full-text objects (named exception, phase 3 step 6a): the generated tsvector columns of migrations 0004-0006 have
+ * no SQLite twin, because the SQLite side keeps its FTS5 virtual tables (OMITTED_VIRTUAL_TABLES) and the chain does not
+ * mirror them. Each is removed from the PostgreSQL model in actualFromPg when it is there; a missing one is no exception
+ * (the mutants that rename a table or drop a column need their own difference). Any other PG-only object is still a difference.
+ */
+export const PG_ONLY_COLUMNS: readonly (readonly [string, string])[] = [
+  ['memories', 'fts'], ['artifacts', 'fts'], ['workspace_docs', 'fts'],
+]
+export const PG_ONLY_INDEXES: readonly string[] = ['memories_fts_gin', 'artifacts_fts_gin', 'workspace_docs_fts_gin']
+
 export interface ColumnModel { type: string; notNull: boolean; identity: boolean; default: string | null }
 export interface IndexModel { table: string; unique: boolean; keys: string[]; where: string | null }
 export interface TableModel {
@@ -272,6 +283,17 @@ export async function actualFromPg(c: pg.ClientBase): Promise<SchemaModel> {
   for (const r of ir.rows as { name: string; tbl: string; uniq: boolean; pred: string | null; keys: string[] }[]) {
     // pg_get_indexdef quotes a column named like a type (timestamp); the SQLite side has the bare name
     indexes[r.name] = { table: r.tbl, unique: r.uniq, keys: r.keys.map((k) => k.replace(/"([a-z_][a-z0-9_]*)"/g, '$1')), where: r.pred }
+  }
+
+  // the named PG-only full-text objects leave the model when they are there (see PG_ONLY_COLUMNS). An absent one is no
+  // exception to apply: a mutant that renames or drops the table (or drops the column the generated fts depends on, with
+  // CASCADE) then reports its own difference. The exception cannot hide a difference: an fts object not named here, or
+  // one that moved to another table, stays in the model and fails the comparison.
+  for (const [table, column] of PG_ONLY_COLUMNS) {
+    if (tables[table]?.columns[column]) delete tables[table].columns[column]
+  }
+  for (const name of PG_ONLY_INDEXES) {
+    if (indexes[name]) delete indexes[name]
   }
 
   const tg = await c.query("SELECT t.tgname || '@' || c.relname AS name FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE NOT t.tgisinternal AND n.nspname = 'public' ORDER BY 1")

@@ -60,6 +60,19 @@ describe('recallSearch: the diary part ignores ASCII case', () => {
   })
 })
 
+describe('recallSearch on PostgreSQL: the full-text search (no LIKE fallback), the engine difference is named', () => {
+  it.runIf(testDbMode() === 'pg')('folds accents: a word without accents finds the accented memory', async () => {
+    await memory('agent-a', 'Őra jegyzet')
+    expect(await memTexts('ora', 'agent-a')).toEqual(['Őra jegyzet'])
+  })
+
+  it.runIf(testDbMode() === 'pg')('a % is not a literal in the full-text search: no word, no hit; a word with a letter finds the row', async () => {
+    await memory('agent-a', 'snake_Case body')
+    expect(await memTexts('%', 'agent-a')).toEqual([])
+    expect(await memTexts('snake', 'agent-a')).toEqual(['snake_Case body'])
+  })
+})
+
 describe('recallSearch: the memory part ignores ASCII case', () => {
   it('finds a memory in a different case, both ways, and keeps the agent scope', async () => {
     await memory('agent-a', 'Needle in the Haystack')
@@ -78,7 +91,9 @@ describe('recallSearch: the memory part ignores ASCII case', () => {
     expect(await memTexts('omega')).toEqual(['unrelated body'])
   })
 
-  it('does not fold non-ASCII in the content or in the keywords (LIKE against LIKE, FTS is out of the picture)', async () => {
+  // SQLite only: the LIKE fallback is the SQLite path; PostgreSQL has no fallback and folds accents in its full-text search
+  // (the PostgreSQL cells are in the describe below).
+  it.runIf(testDbMode() === 'sqlite')('does not fold non-ASCII in the content or in the keywords (LIKE against LIKE, FTS is out of the picture)', async () => {
     await memory('agent-a', 'Őra jegyzet')
     await memory('agent-a', 'body two', 'warm', 'Ékezet')
     await forceLikeFallback()
@@ -88,7 +103,7 @@ describe('recallSearch: the memory part ignores ASCII case', () => {
     expect(await memTexts('Ékezet', 'agent-a')).toEqual(['body two'])
   })
 
-  it('a % or _ in the query is a literal in content and keywords: the search text is empty for FTS, so use a term with a letter', async () => {
+  it.runIf(testDbMode() === 'sqlite')('a % or _ in the query is a literal in content and keywords: the search text is empty for FTS, so use a term with a letter', async () => {
     await memory('agent-a', 'snake_Case body')
     await memory('agent-a', 'snakeXcase body')
     await memory('agent-a', 'plain', 'warm', 'key_Word')
