@@ -32,6 +32,7 @@ export async function runCases(
   const { hybridSearch, floatsToBlob, searchArtifactsByVector } = await import('../../src/db/vector.js')
   const { searchAgentMemories } = await import('../../src/db/memory.js')
   const { searchWorkspaceDocs, vectorSearchDocs, hybridSearchDocs } = await import('../../src/db/workspace.js')
+  const { listArtifacts } = await import('../../src/db/artifacts.js')
 
   const decay = (createdAt: number) => Math.exp(-VECTOR_RECENCY_LAMBDA * ((nowSec - createdAt) / 86400))
   const allMem = db
@@ -74,6 +75,8 @@ export async function runCases(
       stages.vec_prod = (await vectorSearchDocs(c.text, o)).map((d) => d.id)
       stages.final = (await hybridSearchDocs(c.text, o)).map((d) => d.id)
     } else {
+      // fts: the artifact full-text filter, the same call the PostgreSQL side makes (recall-eval-pg-io.ts runFtsStagePg)
+      stages.fts = (await listArtifacts({ q: c.text, limit: FINAL_LIMIT })).map((a) => a.id)
       const hits = (await searchArtifactsByVector(c.text, FINAL_LIMIT)).map((a) => a.id)
       stages.vec_prod = hits
       stages.final = hits
