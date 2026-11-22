@@ -60,9 +60,15 @@ async function pgWorkspaceSearch(
   where: string,
   params: unknown[],
   page: { limit?: number; offset?: number },
+  phrase?: { words: { sql: string; params: unknown[] }; verify: { sql: string; params: unknown[] } },
 ): Promise<Array<DbRow & { snippet: string | null }>> {
-  const from = `FROM workspace_docs wd, LATERAL (SELECT ${tsq.sql} AS q) qq ${where} AND wd.fts @@ qq.q`
-  const bind = [...tsq.params, ...params]
+  // A phrase search (searchWorkspaceDocs): the candidates come from the index as words ANDed (position-free, so a
+  // phrase past the tsvector position ceiling is still a candidate), and the verification checks the phrase in the
+  // normalized text of each candidate (a whole-word substring; the same accent and case fold as the index).
+  const matchSql = phrase ? `wd.fts @@ (${phrase.words.sql}) AND ${phrase.verify.sql}` : 'wd.fts @@ qq.q'
+  const matchParams = phrase ? [...phrase.words.params, ...phrase.verify.params] : []
+  const from = `FROM workspace_docs wd, LATERAL (SELECT ${tsq.sql} AS q) qq ${where} AND ${matchSql}`
+  const bind = [...tsq.params, ...params, ...matchParams]
   let inner = `SELECT wd.id, ${pgRankSql('wd.fts', 'qq.q')} AS rank, wd.updated_at ${from}
                ORDER BY rank, wd.updated_at DESC, wd.id`
   const innerBind = [...bind]
@@ -304,7 +310,14 @@ export async function searchWorkspaceDocs(
 ): Promise<WorkspaceDocSearchResult[]> {
   const { where, params } = workspaceDocsWhere({ agentId: opts.agentId, tenantId: opts.tenantId }, 'wd.')
   if (dbxDialect() === 'pg') {
-    return (await pgWorkspaceSearch(pgPhraseTsq(q), where, params, { limit: opts.limit })) as unknown as WorkspaceDocSearchResult[]
+    const words = pgWordsTsq(q)
+    if (!words) return []
+    // the phrase text, normalized the way the index normalizes (fts_norm, then the accent and case fold of the config)
+    const verify = {
+      sql: `strpos(' ' || lower(public.unaccent(trim(public.fts_norm(wd.content)))) || ' ', ' ' || lower(public.unaccent(trim(public.fts_norm(?)))) || ' ') > 0`,
+      params: [q],
+    }
+    return (await pgWorkspaceSearch(pgPhraseTsq(q), where, params, { limit: opts.limit }, { words, verify })) as unknown as WorkspaceDocSearchResult[]
   }
   return dbx.all<WorkspaceDocSearchResult>(`
     SELECT wd.id, wd.title, wd.agent_id, wd.tenant_id, wd.type,

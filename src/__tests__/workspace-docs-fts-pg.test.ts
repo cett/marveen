@@ -212,9 +212,15 @@ describe('QA-adopted cells: scope, count filters, empty query, offset pages, ran
     expect([...full].sort()).toEqual([...all].sort())
   })
 
-  it.runIf(testDbMode() === 'pg')('a phrase past the 16383rd word is not found on PostgreSQL (the tsvector position ceiling; a named divergence, SQLite finds it)', async () => {
+  // the tsvector keeps positions up to the 16383rd word; the phrase is checked on the normalized text of the candidates,
+  // so a phrase past that word is found on both engines (the position ceiling is no longer a divergence)
+  it('a phrase past the 16383rd word is found (both engines): the candidates come from the index as ANDed words, the phrase is verified on the text', async () => {
     const d = await doc({ title: 'Position doc', content: `${'filler '.repeat(16400)} ceilingone ceilingtwo` })
-    expect(await searchWorkspaceDocs('ceilingone ceilingtwo', { tenantId: 'default', limit: 10 })).toEqual([])
-    expect(d.id).toBeTruthy()
+    expect((await searchWorkspaceDocs('ceilingone ceilingtwo', { tenantId: 'default', limit: 10 })).map((x) => x.id)).toEqual([d.id])
+  })
+
+  it('the words of a phrase that are not adjacent are not a phrase hit (both engines): the verification is the phrase test', async () => {
+    await doc({ title: 'Gap doc', content: 'gapalpha between gapbeta' })
+    expect(await searchWorkspaceDocs('gapalpha gapbeta', { tenantId: 'default', limit: 10 })).toEqual([])
   })
 })

@@ -18,6 +18,12 @@ describe('the artifact search on the full-text index', () => {
     expect(await ids('alpha gamma')).toEqual([])
   })
 
+  it('a phrase past the 16383rd word is found (both engines): the index gives the candidates as words, the phrase is verified on the text', async () => {
+    const long = await createArtifact({ agent_id: 'agent-a', title: 'Long', kind: 'text', content: Buffer.from(`${'filler '.repeat(16400)} ceilingone ceilingtwo`) })
+    expect(await ids('ceilingone ceilingtwo')).toEqual([long.id])
+    expect(await countArtifacts({ q: 'ceilingone ceilingtwo' })).toBe(1)
+  })
+
   it('a binary body is not indexed: its words do not match, its title does', async () => {
     const b = await createArtifact({ agent_id: 'agent-a', title: 'Blob', kind: 'binary', content: Buffer.from('secretword inside') })
     expect(await ids('secretword')).toEqual([])

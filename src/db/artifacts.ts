@@ -145,6 +145,26 @@ export async function storeArtifactEmbedding(
   }
 }
 
+/**
+ * The PostgreSQL phrase condition of the artifact search. The candidates come from the index as words ANDed (position-free,
+ * so a phrase past the tsvector position ceiling is still a candidate); the phrase is then verified on the normalized text
+ * of the candidate (title, meta and the body of the textual kinds, as indexed; a binary body is never a hit). No word gives
+ * no row, as an empty phrase did before.
+ */
+function pgArtifactPhrase(q: string): { sql: string; params: unknown[] } {
+  const words = q.split(/\s+/).filter((w) => w.length > 0)
+  if (words.length === 0) return { sql: 'FALSE', params: [] }
+  const wordsSql = words.map(() => `phraseto_tsquery(${PG_FTS_CONFIG}, public.fts_norm(?))`).join(' && ')
+  // each part on its own: the index never runs a phrase from one part into the next (the title, the meta, the body)
+  const body = "CASE WHEN a.kind = 'binary' THEN '' ELSE public.fts_bytes_text(a.content) END"
+  const inPart = (text: string) =>
+    `strpos(' ' || lower(public.unaccent(trim(public.fts_norm(${text})))) || ' ', ' ' || lower(public.unaccent(trim(public.fts_norm(?)))) || ' ') > 0`
+  return {
+    sql: `a.fts @@ (${wordsSql}) AND (${inPart('a.title')} OR ${inPart('a.meta')} OR ${inPart(body)})`,
+    params: [...words, q, q, q],
+  }
+}
+
 export interface ListArtifactsOptions {
   agent?: string
   tenant_id?: string
@@ -165,17 +185,18 @@ export async function listArtifacts(opts: ListArtifactsOptions = {}): Promise<Ar
 
   if (q && dbxDialect() === 'pg') {
     // PostgreSQL: one phrase (consecutive words) on the generated index: title, meta, and the body of the textual kinds.
+    const phrase = pgArtifactPhrase(q)
     const agentCond  = agentBind.length  ? 'AND a.agent_id = ?'   : ''
     const tenantCond = tenantBind.length ? 'AND a.tenant_id = ?'  : ''
     const kindCond   = kindBind.length   ? 'AND a.kind = ?'       : ''
     return dbx.all<ArtifactSummary>(`
       SELECT a.id, a.agent_id, a.tenant_id, a.title, a.kind, a.mime, a.meta, a.source, a.cloud_url, a.created_at, a.updated_at
       FROM artifacts a
-      WHERE a.fts @@ phraseto_tsquery(${PG_FTS_CONFIG}, public.fts_norm(?))
+      WHERE ${phrase.sql}
       ${agentCond} ${tenantCond} ${kindCond}
       ORDER BY a.created_at DESC
       LIMIT ? OFFSET ?
-    `, q, ...agentBind, ...tenantBind, ...kindBind, limit, offset)
+    `, ...phrase.params, ...agentBind, ...tenantBind, ...kindBind, limit, offset)
   }
   if (q) {
     // FTS5 MATCH: searches title, meta JSON, and textual body of non-binary artifacts
@@ -221,12 +242,13 @@ export async function countArtifacts(opts: Omit<ListArtifactsOptions, 'limit' | 
     const agentCond  = agentBind.length  ? 'AND a.agent_id = ?'   : ''
     const tenantCond = tenantBind.length ? 'AND a.tenant_id = ?'  : ''
     const kindCond   = kindBind.length   ? 'AND a.kind = ?'       : ''
+    const phrase = pgArtifactPhrase(q)
     const { c } = (await dbx.get(`
       SELECT COUNT(*) AS c
       FROM artifacts a
-      WHERE a.fts @@ phraseto_tsquery(${PG_FTS_CONFIG}, public.fts_norm(?))
+      WHERE ${phrase.sql}
       ${agentCond} ${tenantCond} ${kindCond}
-    `, q, ...agentBind, ...tenantBind, ...kindBind)) as { c: number }
+    `, ...phrase.params, ...agentBind, ...tenantBind, ...kindBind)) as { c: number }
     return c
   }
   if (q) {
