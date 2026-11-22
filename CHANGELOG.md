@@ -12,6 +12,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 <!-- changelog-auto-sha: cd00e7d54aadf38020b01709e16f6102bb1d0451 -->
 
 ### Added
+- **[Ops]** The workspace document vector search on PostgreSQL runs on pgvector and filters first: the tenant, the agent and the binary guard are applied in SQL before the distance order, so a hit never crosses a tenant boundary and a binary document has no vector hit. A document's embedding is written on save and re-embed (one value per document) and removed with the document or by the tenant purge.
 - **[Ops]** The memory vector search on PostgreSQL runs on pgvector and filters first: the agent or shared scope and the tenant are applied in SQL before the distance order, so a hit never comes from another scope and a large tenant does not crowd out a small one. The memory embedding is written on each save and re-embed (one value per memory) and removed with the memory.
 - **[Tests]** The float32 embedding blob has a pgvector text form (`blobToVectorLiteral`): exactly 768 finite values, refused otherwise, and every component parses back to the same float32. The SQLite encoding is unchanged.
 - **[Ops]** The PostgreSQL schema has the vector embedding tables of migration `0007_vec_embeddings`: one embedding (768 dimensions, the SQLite embedding size) per memory, workspace document and artifact, in a side table that is deleted with its parent. The database preflight refuses a server without the `vector` extension, and the message names the PostgreSQL major and the install steps.

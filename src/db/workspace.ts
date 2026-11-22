@@ -13,7 +13,7 @@ import { randomBytes } from 'node:crypto'
 import { dbx, dbxDialect, type Tx } from './facade.js'
 import { likeNoCase } from './dialect.js'
 import { likePrefix } from './like.js'
-import { generateEmbedding, floatsToBlob } from './vector.js'
+import { blobToVectorLiteral, generateEmbedding, floatsToBlob } from './vector.js'
 import { logger } from '../logger.js'
 import { ftsEscape, ftsAllTerms, FTS_MATCH, PG_FTS_CONFIG, PG_PHRASE_VERIFY_CHARS, pgRankSql, pgCandidateTsq, pgPhraseIn, pgWordsAnd } from './fts.js'
 
@@ -181,6 +181,8 @@ function nanoid12(): string {
 let _vecSupported: boolean | null = null
 
 async function vecEnabled(): Promise<boolean> {
+  // PostgreSQL: the pgvector side table exists by migration 0007 (a server without the extension fails the migration).
+  if (dbxDialect() === 'pg') return true
   if (_vecSupported !== null) return _vecSupported
   try {
     // Probe: if the virtual table exists, the extension is loaded.
@@ -197,6 +199,15 @@ async function vecEnabled(): Promise<boolean> {
 // never leaves the surrounding transaction in an aborted state.
 async function syncVecDelete(tx: Tx, docId: string): Promise<void> {
   if (!(await vecEnabled())) return
+  if (dbxDialect() === 'pg') {
+    // PostgreSQL: the side row (a parent delete cascades by itself; this covers the explicit delete).
+    try {
+      await tx.tx(async (t) => { await t.run('DELETE FROM workspace_doc_embeddings WHERE doc_id = ?', docId) })
+    } catch (err) {
+      logger.warn({ err, docId }, 'workspace document embedding not removed on PostgreSQL')
+    }
+    return
+  }
   try {
     await tx.tx(async (t) => { await t.run('DELETE FROM vec_workspace_docs WHERE doc_id = ?', docId) })
   } catch { /* no-op */ }
@@ -204,6 +215,23 @@ async function syncVecDelete(tx: Tx, docId: string): Promise<void> {
 
 async function syncVecUpsert(tx: Tx, docId: string, agentId: string, tenantId: string, embeddingBlob: Buffer): Promise<void> {
   if (!(await vecEnabled())) return
+  if (dbxDialect() === 'pg') {
+    // PostgreSQL: one embedding per document; a re-embed replaces the value. A wrong-length or non-finite blob is refused
+    // by blobToVectorLiteral inside this try and swallowed, like the SQLite path (the document is saved without it).
+    try {
+      const literal = blobToVectorLiteral(embeddingBlob)
+      await tx.tx(async (t) => {
+        await t.run(
+          'INSERT INTO workspace_doc_embeddings (doc_id, embedding) VALUES (?, ?::vector) ON CONFLICT (doc_id) DO UPDATE SET embedding = EXCLUDED.embedding',
+          docId,
+          literal,
+        )
+      })
+    } catch (err) {
+      logger.warn({ err, docId }, 'workspace document embedding not stored on PostgreSQL: the document is saved without it')
+    }
+    return
+  }
   try {
     await tx.tx(async (t) => {
       await t.run('DELETE FROM vec_workspace_docs WHERE doc_id = ?', docId)
@@ -381,6 +409,40 @@ function ftsFrom(where: string): string {
  * joined back to workspace_docs with the SAME SQL-level tenant/agent WHERE
  * clause, so a vec0 hit can never surface a row outside the caller's scope.
  */
+/**
+ * The vector hits of a query embedding on PostgreSQL (phase 3, step 6b, c5): the tenant, the agent and the binary guard
+ * are applied in SQL before the distance order, so a hit never crosses a tenant boundary and a binary document has no
+ * vector hit. `<->` is the L2 distance; ties fall to the smaller id. Exported so the cells need no embedder.
+ */
+export async function pgVectorDocs(
+  queryEmbedding: number[],
+  opts: { agentId?: string; tenantId?: string; limit: number },
+): Promise<WorkspaceDocSearchResult[]> {
+  try {
+    const literal = blobToVectorLiteral(floatsToBlob(queryEmbedding))
+    const conds: string[] = ["d.content_type <> 'binary'"]
+    const params: unknown[] = [literal]
+    if (opts.tenantId !== undefined) { conds.push('d.tenant_id = ?'); params.push(opts.tenantId) }
+    if (opts.agentId) { conds.push('d.agent_id = ?'); params.push(opts.agentId) }
+    params.push(opts.limit * 2)
+    const rows = (await dbx.all(`
+      SELECT d.id, d.title, d.agent_id, d.tenant_id, d.type, d.task_ref, d.doc_key,
+             d.created_at, d.updated_at, d.content, e.embedding <-> ?::vector AS distance
+      FROM workspace_doc_embeddings e
+      JOIN workspace_docs d ON d.id = e.doc_id
+      WHERE ${conds.join(' AND ')}
+      ORDER BY distance, d.id
+      LIMIT ?
+    `, ...params)) as (WorkspaceDocSearchResult & { content: string | null; distance: number })[]
+    return rows
+      .map(({ content, distance: _distance, ...r }) => ({ ...r, snippet: content ? content.slice(0, 200) : '' }))
+      .slice(0, opts.limit)
+  } catch (err) {
+    logger.debug({ err }, 'pgVectorDocs: pgvector query failed')
+    return []
+  }
+}
+
 export async function vectorSearchDocs(
   q: string,
   opts: { agentId?: string; tenantId?: string; limit: number },
@@ -388,6 +450,7 @@ export async function vectorSearchDocs(
   if (!(await vecEnabled())) return []
   const queryEmbedding = await generateEmbedding(q).catch(() => null)
   if (!queryEmbedding) return []
+  if (dbxDialect() === 'pg') return pgVectorDocs(queryEmbedding, opts)
 
   try {
     const queryBlob = floatsToBlob(queryEmbedding)
@@ -610,6 +673,15 @@ export async function patchWorkspaceDoc(id: string, patch: PatchWorkspaceDocInpu
     const row = (await tx.get('SELECT * FROM workspace_docs WHERE id = ?', id)) as DbRow
     return rowToDoc(row)
   })
+}
+
+/**
+ * The vector side of one document write, on its own transaction. Exported for the PostgreSQL cells
+ * (src/__tests__/pg/workspace-vec.pg.test.ts), which write the side row without an embedder. No production caller yet;
+ * the batched backfill is the intended one.
+ */
+export async function setWorkspaceDocEmbedding(docId: string, agentId: string, tenantId: string, embeddingBlob: Buffer): Promise<void> {
+  await dbx.tx(async (tx) => { await syncVecUpsert(tx, docId, agentId, tenantId, embeddingBlob) })
 }
 
 /**
