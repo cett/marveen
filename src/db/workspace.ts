@@ -36,10 +36,10 @@ function pgInTitleOrContent(q: string): { sql: string; params: unknown[] } {
 }
 
 /**
- * The list search's check: every word of `q` passes pgInTitleOrContent on its own. A hyphenated word is one phrase (its
- * parts adjacent), as on SQLite; the candidate (pgCandidateTsq) only narrows the rows and does not check adjacency.
+ * The verification of the list search: every word of `q` (the words that count, fts.ts pgWordsAnd) passes the text check.
+ * A hyphenated word is one phrase (its parts adjacent), as on SQLite; the candidate (pgCandidateTsq) only narrows the rows
+ * and does not check adjacency.
  */
-/** The verification of the list search: every word of `q` (the words that count, fts.ts pgWordsAnd) passes the text check. */
 function pgWordsVerify(q: string): { sql: string; params: unknown[] } {
   return pgWordsAnd(q, (w) => pgInTitleOrContent(w))
 }
@@ -49,7 +49,6 @@ function pgPhraseTsq(text: string): { sql: string; params: unknown[] } {
   return { sql: `phraseto_tsquery(${PG_FTS_CONFIG}, public.fts_norm(?))`, params: [text] }
 }
 
-/** The AND of the phrases of the words of `q` (the tsvector check of a short row, list search). */
 /** The phrase branch of the list search (short rows): every word of `q` that counts is a phrase of the tsvector. */
 function pgWordsPhrase(q: string): { sql: string; params: unknown[] } {
   return pgWordsAnd(q, (w) => ({ sql: `wd.fts @@ (${pgPhraseTsq(w).sql})`, params: [w] }))
