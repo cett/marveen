@@ -244,9 +244,20 @@ jobs:
           printf '#!/bin/sh\necho stub\n' > "$HOME/bin/tmux"; chmod +x "$HOME/bin/tmux"
           echo "$HOME/bin" >> "$GITHUB_PATH"
 
+      - name: Install zsh (the second shell oracle of the secret-read gate tests)
+        # The runner has no zsh. The gate tests run their cells in bash AND zsh (the Bash tool's shell is zsh), and a cell that only
+        # zsh proves would otherwise have no oracle on Linux.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq zsh
+          zsh --version
+
       - name: Python tests
         # scripts/run-python-tests.sh runs the scripts/__tests__/*.test.py files 4 at a time, the slowest
         # first, and prints them like the serial loop did (one "== file ==" block each, exit 1 on any failure).
+        # REQUIRE_ZSH=1: the secret-read gate tests fail when zsh is missing or when any of their cells is skipped (no silent skip).
+        env:
+          REQUIRE_ZSH: '1'
         run: bash scripts/run-python-tests.sh -j 4
 
       - name: SQLite dialect ratchet
