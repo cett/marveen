@@ -3,7 +3,7 @@
     "AUTOINCREMENT": 0,
     "CASE WHEN ? THEN": 0,
     "COLLATE NOCASE": 0,
-    "FTS5 MATCH": 12,
+    "FTS5 MATCH": 9,
     "GLOB": 0,
     "GROUP_CONCAT": 0,
     "IFNULL()": 0,

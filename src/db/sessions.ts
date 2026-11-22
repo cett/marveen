@@ -7,6 +7,7 @@ import { dbx, type Tx } from './facade.js'
 import { advisoryLockSql, eqNoCase, forUpdate, likeNoCase, orderBytes, orderNoCase } from './dialect.js'
 import { resolveWriteTenant } from './write-tenant.js'
 import { Memory, RECENCY_OVERSAMPLE, buildFtsMatchExpression, reRankByRecency, withoutRank } from './memory.js'
+import { FTS_MATCH } from './fts.js'
 
 /** The advisory key of the first-admin election (see createDashboardUser). */
 export const ELECTION_KEY = 'dashboard-users-election'
@@ -255,8 +256,8 @@ export async function recallSearch(query: string, agentId?: string, limit = 50, 
       // same λ-blend as the other search paths, so a strongly matching older
       // memory can still surface above barely-matching fresh noise.
       const sql = agentId
-        ? `SELECT m.*, f.rank AS rank FROM memories m JOIN memories_fts f ON m.id = f.rowid WHERE f.memories_fts MATCH ? AND (m.agent_id = ? OR m.category = 'shared')${tc} ORDER BY rank LIMIT ?`
-        : `SELECT m.*, f.rank AS rank FROM memories m JOIN memories_fts f ON m.id = f.rowid WHERE f.memories_fts MATCH ?${tc} ORDER BY rank LIMIT ?`
+        ? `SELECT m.*, f.rank AS rank FROM memories m JOIN memories_fts f ON m.id = f.rowid WHERE ${FTS_MATCH.memoryAll} AND (m.agent_id = ? OR m.category = 'shared')${tc} ORDER BY rank LIMIT ?`
+        : `SELECT m.*, f.rank AS rank FROM memories m JOIN memories_fts f ON m.id = f.rowid WHERE ${FTS_MATCH.memoryAll}${tc} ORDER BY rank LIMIT ?`
       const candidates = agentId
         ? (await dbx.all(sql, terms, agentId, ...tp, limit * RECENCY_OVERSAMPLE)) as (Memory & { rank: number })[]
         : (await dbx.all(sql, terms, ...tp, limit * RECENCY_OVERSAMPLE)) as (Memory & { rank: number })[]

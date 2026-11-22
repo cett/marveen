@@ -6,6 +6,7 @@ import { writeAgentAuditLog } from './audit.js'
 import { dbx } from './facade.js'
 import { BlankContentError, isBlankContent } from '../blank-content.js'
 import { floatsToBlob, generateEmbedding, linkToNeighbors, syncVecMemoryEmbeddingUpdate } from './vector.js'
+import { buildFtsMatchExpression, FTS_MATCH } from './fts.js'
 
 export interface Memory {
   id: number
@@ -55,31 +56,7 @@ export async function saveMemory(
   await dbx.run('INSERT INTO memories (chat_id, topic_key, content, sector, salience, created_at, accessed_at) VALUES (?, ?, ?, ?, 1.0, ?, ?)', chatId, topicKey ?? null, content, sector, now, now)
 }
 
-// Build a safe FTS5 MATCH expression from a free-form user query.
-//
-// FTS5 treats AND / OR / NOT / NEAR as reserved operators only when uppercase
-// and unquoted -- so we lowercase everything, which turns them into ordinary
-// search terms. We also cap the number and length of tokens to bound query
-// cost (the sanitizer previously allowed an arbitrary-length prefix expansion
-// that could make a single request scan the entire index).
-export function buildFtsMatchExpression(query: string): string {
-  const MAX_TOKENS = 20
-  const MAX_TOKEN_LEN = 64
-  const sanitized = query
-    .toLowerCase()
-    // Replace punctuation with a space (not delete) so "rank-check" / "serper.dev"
-    // tokenize the same way unicode61 indexed them (rank + check), instead of
-    // fusing into a single unfindable token "rankcheck".
-    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
-    .trim()
-  if (!sanitized) return ''
-  const tokens = sanitized
-    .split(/\s+/)
-    .filter((t) => t.length > 0)
-    .slice(0, MAX_TOKENS)
-    .map((t) => t.slice(0, MAX_TOKEN_LEN) + '*')
-  return tokens.join(' ')
-}
+export { buildFtsMatchExpression } from './fts.js'
 
 // -- Recency-weighted retrieval (Roitman 17.4.2) --
 //
@@ -142,7 +119,7 @@ export async function searchMemories(query: string, chatId: string, limit = 3, t
     const tp = tenantId ? [tenantId] : []
     const candidates = (await dbx.all(`SELECT m.*, f.rank AS rank FROM memories m
          JOIN memories_fts f ON m.id = f.rowid
-         WHERE f.content MATCH ? AND m.chat_id = ?${tc}
+         WHERE ${FTS_MATCH.memoryContent} AND m.chat_id = ?${tc}
          ORDER BY rank
          LIMIT ?`, terms, chatId, ...tp, limit * RECENCY_OVERSAMPLE)) as (Memory & { rank: number })[]
     return withoutRank(reRankByRecency(candidates, limit)) as Memory[]
@@ -321,7 +298,7 @@ export async function searchAgentMemories(agentId: string, query: string, limit:
   try {
     const candidates = (await dbx.all(`SELECT m.*, f.rank AS rank FROM memories m
        JOIN memories_fts f ON m.id = f.rowid
-       WHERE f.memories_fts MATCH ? AND (m.agent_id = ? OR m.category = 'shared')${tc}
+       WHERE ${FTS_MATCH.memoryAll} AND (m.agent_id = ? OR m.category = 'shared')${tc}
        ORDER BY rank LIMIT ?`, terms, agentId, ...tp, limit * RECENCY_OVERSAMPLE)) as (Memory & { rank: number })[]
     return withoutRank(reRankByRecency(candidates, limit)) as Memory[]
   } catch {

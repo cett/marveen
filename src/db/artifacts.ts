@@ -1,6 +1,7 @@
 import { dbx } from './facade.js'
 import { generateEmbedding } from './vector.js'
 import { logger } from '../logger.js'
+import { ftsEscape, FTS_MATCH } from './fts.js'
 
 // At this row count the HNSW graph may benefit from a periodic re-index.
 const VEC_REBUILD_THRESHOLD = 10_000
@@ -170,7 +171,7 @@ export async function listArtifacts(opts: ListArtifactsOptions = {}): Promise<Ar
     return dbx.all<ArtifactSummary>(`
       SELECT a.id, a.agent_id, a.tenant_id, a.title, a.kind, a.mime, a.meta, a.source, a.cloud_url, a.created_at, a.updated_at
       FROM artifacts a
-      WHERE a.rowid IN (SELECT rowid FROM artifacts_fts WHERE artifacts_fts MATCH ?)
+      WHERE a.rowid IN (SELECT rowid FROM artifacts_fts WHERE ${FTS_MATCH.artifact})
       ${agentCond} ${tenantCond} ${kindCond}
       ORDER BY a.created_at DESC
       LIMIT ? OFFSET ?
@@ -209,7 +210,7 @@ export async function countArtifacts(opts: Omit<ListArtifactsOptions, 'limit' | 
     const { c } = (await dbx.get(`
       SELECT COUNT(*) AS c
       FROM artifacts a
-      WHERE a.rowid IN (SELECT rowid FROM artifacts_fts WHERE artifacts_fts MATCH ?)
+      WHERE a.rowid IN (SELECT rowid FROM artifacts_fts WHERE ${FTS_MATCH.artifact})
       ${agentCond} ${tenantCond} ${kindCond}
     `, ftsEscape(q), ...agentBind, ...tenantBind, ...kindBind)) as { c: number }
     return c
@@ -226,9 +227,6 @@ export async function countArtifacts(opts: Omit<ListArtifactsOptions, 'limit' | 
 
 // Escape FTS5 special characters to prevent query-syntax errors on user input.
 // Wraps the term in double quotes so it is treated as a phrase, not as FTS5 operators.
-function ftsEscape(term: string): string {
-  return `"${term.replace(/"/g, '""')}"`
-}
 
 export async function getArtifact(id: string): Promise<ArtifactRow | undefined> {
   return dbx.get<ArtifactRow>('SELECT * FROM artifacts WHERE id = ?', id)

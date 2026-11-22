@@ -15,6 +15,7 @@ import { likeNoCase } from './dialect.js'
 import { likePrefix } from './like.js'
 import { generateEmbedding, floatsToBlob } from './vector.js'
 import { logger } from '../logger.js'
+import { ftsEscape, ftsAllTerms, FTS_MATCH } from './fts.js'
 
 export const WORKSPACE_DOC_SIZE_LIMITS: Record<string, number> = {
   text:   2 * 1024 * 1024,
@@ -203,9 +204,6 @@ export async function getWorkspaceDocBlob(id: string): Promise<Buffer | null> {
 // Escape FTS5 special characters to prevent query-syntax errors on user
 // input. Wraps the term in double quotes so it is treated as a phrase, not
 // as FTS5 operators -- mirrors db/artifacts.ts's ftsEscape.
-function ftsEscape(term: string): string {
-  return `"${term.replace(/"/g, '""')}"`
-}
 
 export interface WorkspaceDocSearchResult {
   id: string
@@ -253,7 +251,7 @@ export async function searchWorkspaceDocs(
 // The one place that joins the FTS index to workspace_docs (alias wd): `where` is a workspaceDocsWhere(.., 'wd.')
 // clause; the MATCH expression is the last bind parameter.
 function ftsFrom(where: string): string {
-  return `FROM workspace_docs_fts JOIN workspace_docs wd ON wd.rowid = workspace_docs_fts.rowid ${where} AND workspace_docs_fts MATCH ?`
+  return `FROM workspace_docs_fts JOIN workspace_docs wd ON wd.rowid = workspace_docs_fts.rowid ${where} AND ${FTS_MATCH.workspace}`
 }
 
 /**
@@ -385,12 +383,6 @@ function workspaceDocsWhere(filter: ListWorkspaceDocsFilter, alias = ""): { wher
   return { where, params }
 }
 
-// FTS5 MATCH expression for a box of words: every whitespace-separated word, quoted (so FTS operators typed by
-// the user are plain text), all of them required. null when there is no word.
-function ftsAllTerms(q: string): string | null {
-  const terms = q.split(/\s+/).filter(Boolean)
-  return terms.length ? terms.map(ftsEscape).join(' ') : null
-}
 
 export interface WorkspaceDocSearchHit extends WorkspaceDoc {
   /**
