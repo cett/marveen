@@ -9,9 +9,9 @@ import { describe, expect, it, beforeEach, afterEach } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { delimiter, join } from 'node:path'
+import { join } from 'node:path'
 // @ts-expect-error -- plain .mjs CI script, no types
-import { evaluate, parseAllowlist, MAX_HORIZON_DAYS, MAX_WINDOW_DAYS, WARN_DAYS } from '../../scripts/ci/npm-audit-gate.mjs'
+import { evaluate, parseAllowlist, AUDIT_MAX_BUFFER, AUDIT_TIMEOUT_MS, MAX_WINDOW_DAYS, WARN_DAYS } from '../../scripts/ci/npm-audit-gate.mjs'
 
 const ROOT = join(__dirname, '..', '..')
 const GATE = join(ROOT, 'scripts', 'ci', 'npm-audit-gate.mjs')
@@ -257,47 +257,6 @@ describe('evaluate: the decision', () => {
       expect(r.failures).toHaveLength(1)
     })
   })
-
-  describe('the ceiling counted from today', () => {
-    const ceilingMessage = 'more than the 45 days ahead of today'
-
-    it('is 45 days', () => {
-      expect(MAX_HORIZON_DAYS).toBe(45)
-    })
-
-    it('an expiry 46 days ahead fails with the ceiling message; 45 days ahead does not trip the ceiling', () => {
-      const over = run(oneHigh(), allow(entry({ added: TODAY, expires: addDays(TODAY, 46) })))
-      expect(over.ok).toBe(false)
-      expect(over.failures.join('\n')).toContain(ceilingMessage)
-      expect(over.failures.join('\n')).toContain('expires in 46 days')
-      // 45 days ahead is exactly on the ceiling: the 30-day window (a stricter rule) is what fails it, not the ceiling.
-      const edge = run(oneHigh(), allow(entry({ added: TODAY, expires: addDays(TODAY, 45) })))
-      expect(edge.failures.join('\n')).not.toContain(ceilingMessage)
-      expect(edge.failures.join('\n')).toContain('more than the 30 allowed')
-    })
-
-    it('counts from today, not from the "added" date: a back-dated "added" does not move it', () => {
-      // added far in the past makes the window huge as well, but the ceiling message is its own line of defence
-      const r = run(oneHigh(), allow(entry({ added: addDays(TODAY, -200), expires: addDays(TODAY, 50) })))
-      expect(r.failures.join('\n')).toContain(ceilingMessage)
-    })
-
-    it('moves with the clock: the same entry is inside the ceiling 2 days later', () => {
-      const e = entry({ added: TODAY, expires: addDays(TODAY, 46) })
-      expect(run(oneHigh(), allow(e), TODAY).failures.join('\n')).toContain(ceilingMessage)
-      expect(run(oneHigh(), allow(e), addDays(TODAY, 2)).failures.join('\n')).not.toContain(ceilingMessage)
-    })
-
-    it('a valid entry (inside the 30-day window) never meets the ceiling, so the gate passes it', () => {
-      const r = run(oneHigh(), allow(entry({ added: TODAY, expires: addDays(TODAY, 30) })))
-      expect(r.ok).toBe(true)
-    })
-
-    it('an entry over the ceiling is reported once', () => {
-      const r = run(oneHigh(), allow(entry({ added: TODAY, expires: addDays(TODAY, 100) })))
-      expect(r.failures).toHaveLength(1)
-    })
-  })
 })
 
 describe('evaluate: input it cannot trust fails closed', () => {
@@ -456,10 +415,10 @@ describe('the CLI', () => {
     expect(r.stdout).toContain('more than the 30 allowed')
   })
 
-  it('exits 1 for an entry that expires far ahead, with the ceiling message', () => {
+  it('exits 1 for an entry that expires far ahead (the 30-day window from "added" catches it)', () => {
     const r = runFile(oneHigh(), allow(liveEntry({ expires: '2999-01-01' })))
     expect(r.status).toBe(1)
-    expect(r.stdout).toContain('days ahead of today that are allowed')
+    expect(r.stdout).toContain('more than the 30 allowed')
   })
 
   it('exits 1 when the audit report is not JSON', () => {
@@ -482,19 +441,28 @@ describe('the CLI', () => {
   // with the code it says, so the cells pin what npm's exit code and output mean to the gate.
   describe('through a fake npm (npm exits 1 whenever it finds anything, so the exit code alone says nothing)', () => {
     function viaFakeNpm(stdout: string, exitCode: number, list: unknown = allow()) {
-      const bin = join(dir, 'bin')
       const out = join(dir, 'fake-out.txt')
       const listPath = join(dir, 'allow.json')
       writeFileSync(out, stdout)
       writeFileSync(listPath, JSON.stringify(list))
+      writeFakeNpm(`process.stdout.write(require('node:fs').readFileSync(${JSON.stringify(out)}, 'utf-8')); process.exit(${exitCode})`)
+      return runGateWithPath(listPath)
+    }
+
+    // The fake npm is a node script with an absolute shebang, so PATH can hold nothing but its directory: the real
+    // npm is out of reach, and no shell tool is needed. It is written in the cell's temp directory, which afterEach removes.
+    function writeFakeNpm(body: string) {
+      const bin = join(dir, 'bin')
       mkdirSync(bin, { recursive: true })
       const fake = join(bin, 'npm')
-      writeFileSync(fake, `#!/bin/sh\ncat "$FAKE_NPM_OUT"\nexit ${exitCode}\n`)
+      writeFileSync(fake, `#!${process.execPath}\n${body}\n`)
       chmodSync(fake, 0o755)
+    }
+    function runGateWithPath(listPath: string, pathValue = join(dir, 'bin')) {
       return spawnSync(process.execPath, [GATE, '--allowlist', listPath], {
         encoding: 'utf-8',
         timeout: 30_000,
-        env: { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, FAKE_NPM_OUT: out },
+        env: { PATH: pathValue, HOME: process.env.HOME ?? '' },
       })
     }
 
@@ -537,25 +505,41 @@ describe('the CLI', () => {
     it('an npm that is not found fails', () => {
       const listPath = join(dir, 'allow.json')
       writeFileSync(listPath, JSON.stringify(allow()))
-      const r = spawnSync(process.execPath, [GATE, '--allowlist', listPath], { encoding: 'utf-8', timeout: 30_000, env: { ...process.env, PATH: dir } })
+      const r = runGateWithPath(listPath, dir) // PATH is a directory that holds no npm
       expect(r.status).toBe(1)
       expect(r.stdout).toContain('npm audit could not run')
     })
 
     it('an npm killed by a signal fails and says so', () => {
-      const bin = join(dir, 'bin')
-      mkdirSync(bin, { recursive: true })
       const listPath = join(dir, 'allow.json')
       writeFileSync(listPath, JSON.stringify(allow()))
-      writeFileSync(join(bin, 'npm'), '#!/bin/sh\nkill -KILL $$\n')
-      chmodSync(join(bin, 'npm'), 0o755)
-      const r = spawnSync(process.execPath, [GATE, '--allowlist', listPath], {
-        encoding: 'utf-8',
-        timeout: 30_000,
-        env: { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH ?? ''}` },
-      })
+      writeFakeNpm("process.kill(process.pid, 'SIGKILL')")
+      const r = runGateWithPath(listPath)
       expect(r.status).toBe(1)
       expect(r.stdout).toContain('killed by SIGKILL')
+    })
+
+    it('a zero exit with text that is not JSON fails through the parse branch, not as a clean report', () => {
+      const r = viaFakeNpm('found 0 vulnerabilities', 0)
+      expect(r.status).toBe(1)
+      expect(r.stdout).toContain('npm audit printed no JSON')
+    })
+
+    it('it runs exactly `npm audit --json` (the fake records its arguments; the real npm is out of reach, PATH holds only the fake)', () => {
+      const listPath = join(dir, 'allow.json')
+      const argvFile = join(dir, 'argv.json')
+      writeFileSync(listPath, JSON.stringify(allow()))
+      writeFakeNpm(`require('node:fs').writeFileSync(${JSON.stringify(argvFile)}, JSON.stringify(process.argv.slice(2))); process.stdout.write(${JSON.stringify(JSON.stringify(clean))})`)
+      const r = runGateWithPath(listPath)
+      expect(r.status).toBe(0)
+      expect(JSON.parse(readFileSync(argvFile, 'utf-8'))).toEqual(['audit', '--json'])
+    })
+
+    it('the audit timeout and buffer are named constants and the spawn uses them (a source pin)', () => {
+      expect(AUDIT_TIMEOUT_MS).toBe(180_000)
+      expect(AUDIT_MAX_BUFFER).toBe(64 * 1024 * 1024)
+      const src = readFileSync(GATE, 'utf-8')
+      expect(src).toContain("spawnSync('npm', ['audit', '--json'], { encoding: 'utf-8', maxBuffer: AUDIT_MAX_BUFFER, timeout: AUDIT_TIMEOUT_MS })")
     })
   })
 })

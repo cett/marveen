@@ -16,8 +16,7 @@
 //     be removed or renewed by a person, it does not silently keep protecting a build). An entry is valid through
 //     its expiry day (UTC) and fails from the next day on;
 //   - an entry whose window (expires minus added) is longer than MAX_WINDOW_DAYS, whose expiry is before its adding
-//     date, or whose adding date lies in the future fails (a future "added" would stretch the window); an expiry
-//     more than MAX_HORIZON_DAYS ahead of TODAY fails too, whatever the "added" date says;
+//     date, or whose adding date lies in the future fails (a future "added" would stretch the window);
 //   - a malformed list, an unreadable or unexpected audit report (registry error, other report version, empty or
 //     non-JSON output, npm killed by a signal) fails;
 //   - a package that npm marks high or critical but whose advisory this script cannot find in the report fails
@@ -43,8 +42,10 @@ const PKG_RE = /^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/
 const DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/
 /** The longest an exception may last, counted from the day it was added. */
 export const MAX_WINDOW_DAYS = 30
-/** The furthest an expiry may lie ahead of today, whatever the "added" date says. */
-export const MAX_HORIZON_DAYS = 45
+/** How long `npm audit --json` may run before the gate gives up and fails (a timeout is an error, never a pass). */
+export const AUDIT_TIMEOUT_MS = 180_000
+/** The most `npm audit --json` may print; more fails the run (spawnSync reports ENOBUFS as an error). */
+export const AUDIT_MAX_BUFFER = 64 * 1024 * 1024
 /** An exception with this many days or fewer left is printed as a warning. */
 export const WARN_DAYS = 7
 
@@ -116,13 +117,8 @@ export function evaluate({ audit, allowlist, today }) {
   // but the failure below fails the gate whatever else happens.
   const badEntry = new Set()
   for (const [key, e] of entries) {
-    // The ceiling is counted from TODAY, not from the "added" date a file author writes: an expiry more than
-    // MAX_HORIZON_DAYS ahead fails whatever the other dates say. (With the checks below it is a second line: a
-    // valid entry already ends within MAX_WINDOW_DAYS of today.)
-    const ahead = daysBetween(today, e.expires)
     const window = daysBetween(e.added, e.expires)
-    if (ahead > MAX_HORIZON_DAYS) { failures.push(`allowlist: ${e.id} on ${e.package} expires in ${plural(ahead)} (${e.expires}), more than the ${MAX_HORIZON_DAYS} days ahead of today that are allowed`); badEntry.add(key) }
-    else if (e.added > today) { failures.push(`allowlist: ${e.id} on ${e.package} has an "added" date in the future (${e.added})`); badEntry.add(key) }
+    if (e.added > today) { failures.push(`allowlist: ${e.id} on ${e.package} has an "added" date in the future (${e.added})`); badEntry.add(key) }
     else if (window < 0) { failures.push(`allowlist: ${e.id} on ${e.package} expires (${e.expires}) before it was added (${e.added})`); badEntry.add(key) }
     else if (window > MAX_WINDOW_DAYS) { failures.push(`allowlist: ${e.id} on ${e.package} lasts ${plural(window)} (${e.added} to ${e.expires}), more than the ${MAX_WINDOW_DAYS} allowed`); badEntry.add(key) }
   }
@@ -213,7 +209,7 @@ function main(argv) {
   } else {
     // npm exits 1 whenever it finds anything, so a non-zero exit alone says nothing: the JSON on stdout does. But
     // a run that was killed, timed out or printed nothing usable is not a report.
-    const r = spawnSync('npm', ['audit', '--json'], { encoding: 'utf-8', maxBuffer: 64 * 1024 * 1024, timeout: 180_000 })
+    const r = spawnSync('npm', ['audit', '--json'], { encoding: 'utf-8', maxBuffer: AUDIT_MAX_BUFFER, timeout: AUDIT_TIMEOUT_MS })
     if (r.error) auditError = `npm audit could not run: ${r.error.message}`
     else if (r.signal) auditError = `npm audit was killed by ${r.signal}`
     else {

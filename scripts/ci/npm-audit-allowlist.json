@@ -6,7 +6,7 @@
       "added": "2026-11-18",
       "expires": "2026-12-18",
       "addedBy": "repository owner (decision recorded in the pull request)",
-      "reason": "picomatch ReDoS: every version is affected and there was no fixed release when this was added. It sits only in the dev chain (vitest, vite, tinyglobby, fdir), never in the shipped runtime, and it is not caused by any one change. The date is when a fix through a Dependabot update is expected. Renew only in a reviewed change."
+      "reason": "picomatch ReDoS. The advisory covers every version up to the latest release (vulnerable <= 4.0.7, first_patched_version is null, the latest on npm is 4.0.7), and there is no open Dependabot pull request for it, so no update can clear it today. It sits only in the dev chain (vitest, vite, tinyglobby, fdir), never in the shipped runtime, and it is not caused by any one change. The expiry is the date to re-evaluate: check for a patched release then, and if there is none, decide again in a reviewed change. It is not an estimate of when a fix arrives."
     }
   ]
 }
