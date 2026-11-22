@@ -124,7 +124,16 @@ describe('W2 workspace phrase search', () => {
     expect((await phrase('common words')).length).toBe(40)
     expect((await page('common words')).length).toBe(40)
   })
+  // 6a threshold (PG_PHRASE_VERIFY_CHARS): a short row takes the tsvector phrase; the hit is the same as on the text check
+  it('WH1 a short row (under the 32000-character limit) finds its phrase, and a gapped phrase is not a hit', async () => {
+    const hit = await doc({ title: 'Short hit', content: `${filler(15000)}shortone shorttwo` })
+    await doc({ title: 'Short gap', content: `${filler(15000)}shortgapone x shortgaptwo` })
+    expect(await phrase('shortone shorttwo')).toEqual([hit.id])
+    expect(await phrase('shortgapone shortgaptwo')).toEqual([])
+    expect(await page('shortone shorttwo')).toEqual([hit.id])
+  })
 })
+
 
 describe('W2 artifact phrase search', () => {
   it('AA1 long body: found past the 16383rd word, count agrees; the false-positive shape is not a hit', async () => {

@@ -95,6 +95,14 @@ export function ftsPgTsQuery(tokens: string[], weight?: 'A'): string | null {
 // -- PostgreSQL phrase and word search (phase 3, 6a W2): the one candidate query and the one phrase check --------------
 
 /**
+ * The size (characters of the title and the content, bytes of an artifact body) up to which the phrase is checked by the
+ * tsvector alone (phraseto). A row this short has at most 16000 words (a word and its space take two characters), under
+ * the tsvector position ceiling 16383, so the phraseto is exact there. A longer row gets the text check (pgPhraseIn).
+ * ONE constant: the text check costs linearly in the rows that take it (measured in the 6a report).
+ */
+export const PG_PHRASE_VERIFY_CHARS = 32000
+
+/**
  * The candidate query of a text search: every lexeme of the normalized text, ANDed, NO positions. It is a superset of
  * the phrase: a phrase match needs all its lexemes, so the index never drops a row the phrase check would accept. A
  * phrase query (phraseto_tsquery) is position-dependent: past the tsvector position ceiling (16383) it never matches, so

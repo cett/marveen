@@ -1,7 +1,7 @@
 import { dbx, dbxDialect } from './facade.js'
 import { generateEmbedding } from './vector.js'
 import { logger } from '../logger.js'
-import { ftsEscape, FTS_MATCH, pgCandidateTsq, pgPhraseIn } from './fts.js'
+import { ftsEscape, FTS_MATCH, PG_FTS_CONFIG, PG_PHRASE_VERIFY_CHARS, pgCandidateTsq, pgPhraseIn } from './fts.js'
 
 // At this row count the HNSW graph may benefit from a periodic re-index.
 const VEC_REBUILD_THRESHOLD = 10_000
@@ -159,9 +159,14 @@ function pgArtifactPhrase(q: string): { sql: string; params: unknown[] } {
   const inTitle = pgPhraseIn('a.title', q)
   const inMeta = pgPhraseIn('a.meta', q)
   const inBody = pgPhraseIn(body, q)
+  // a short artifact (body bytes, title and meta characters within the limit: fewer than 16383 words) takes the tsvector
+  // phrase, which is exact there; a longer one takes the text check. The body bytes bound its characters from above.
+  const short = `(octet_length(coalesce(a.content, '')) + length(coalesce(a.title, '')) + length(coalesce(a.meta, ''))) <= ${PG_PHRASE_VERIFY_CHARS}`
+  const exactSql = `phraseto_tsquery(${PG_FTS_CONFIG}, public.fts_norm(?))`
+  const verifySql = `((${inTitle.sql}) OR (${inMeta.sql}) OR (${inBody.sql}))`
   return {
-    sql: `a.fts @@ (${cand.sql}) AND ((${inTitle.sql}) OR (${inMeta.sql}) OR (${inBody.sql}))`,
-    params: [...cand.params, ...inTitle.params, ...inMeta.params, ...inBody.params],
+    sql: `a.fts @@ (${cand.sql}) AND ((${short} AND a.fts @@ (${exactSql})) OR (NOT ${short} AND ${verifySql}))`,
+    params: [...cand.params, q, ...inTitle.params, ...inMeta.params, ...inBody.params],
   }
 }
 
