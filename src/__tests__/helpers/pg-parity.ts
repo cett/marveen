@@ -61,6 +61,13 @@ export const PG_ONLY_COLUMNS: readonly (readonly [string, string])[] = [
 ]
 export const PG_ONLY_INDEXES: readonly string[] = ['memories_fts_gin', 'artifacts_fts_gin', 'workspace_docs_fts_gin']
 
+/**
+ * PG-only tables (named exception, phase 3 step 6b): the three embedding side tables of migration 0007 have no SQLite twin
+ * (the SQLite side keeps its vec0 tables). Unlike PG_ONLY_COLUMNS this list is strict: a listed table must exist in the
+ * PostgreSQL model, so a missing one is a difference. Any other PG-only table is still a difference.
+ */
+export const PG_ONLY_TABLES: readonly string[] = ['memory_embeddings', 'workspace_doc_embeddings', 'artifact_embeddings']
+
 export interface ColumnModel { type: string; notNull: boolean; identity: boolean; default: string | null }
 export interface IndexModel { table: string; unique: boolean; keys: string[]; where: string | null }
 export interface TableModel {
@@ -310,9 +317,15 @@ function diffLists(label: string, expected: string[], actual: string[], out: str
 /** Every difference between the expected (SQLite chain) and the actual (PostgreSQL baseline) model; empty means parity. */
 export function diffSchemas(expected: SchemaModel, actual: SchemaModel): string[] {
   const out: string[] = []
-  diffLists('tables', Object.keys(expected.tables), Object.keys(actual.tables), out)
+  // the named PG-only tables leave the actual model; a listed one that is missing is itself a difference (strict)
+  const actualTables: Record<string, TableModel> = { ...actual.tables }
+  for (const name of PG_ONLY_TABLES) {
+    if (!actualTables[name]) out.push(`PG-only table listed in PG_ONLY_TABLES is missing in PG: ${name}`)
+    delete actualTables[name]
+  }
+  diffLists('tables', Object.keys(expected.tables), Object.keys(actualTables), out)
   for (const [name, et] of Object.entries(expected.tables)) {
-    const at = actual.tables[name]
+    const at = actualTables[name]
     if (!at) continue
     diffLists(`columns of ${name}`, Object.keys(et.columns), Object.keys(at.columns), out)
     for (const [cn, ec] of Object.entries(et.columns)) {
