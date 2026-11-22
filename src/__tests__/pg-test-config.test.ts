@@ -72,7 +72,7 @@ describe('the PG test files and the two vitest configs', () => {
     expect(pgFiles.length).toBeGreaterThan(0)
   })
 
-  it('the default config excludes every PG test file with ONE explicit glob, and no ordinary test file', async () => {
+  it('the default config excludes every PG test file with the two explicit globs, and no ordinary test file', async () => {
     const { test } = await loadConfig('vitest.config.ts')
     const exclude = test.exclude ?? []
     expect(exclude.filter((g) => g.includes('.pg.test.'))).toEqual(PG_EXCLUDE)

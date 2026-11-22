@@ -55,7 +55,7 @@ export function twinProblems(sqliteNames: string[], pgNames: string[], pgOnly: r
   // the PG-only list cannot hide anything: a listed file must exist (a rename must not pass silently), and none is the baseline
   for (const name of pgOnly) {
     if (!pgNames.includes(name)) problems.push(`PG-only migration ${name} is listed but missing: update PG_ONLY_MIGRATIONS`)
-    if (numberOf(name) <= 1) problems.push(`PG-only migration ${name} is at or below 0002: the baseline and the first twin slot are not PG-only`)
+    if (numberOf(name) <= 1) problems.push(`PG-only migration ${name} is at or below 0001 (the baseline): the baseline and the first twin slot are not PG-only`)
   }
   const pgOnlyNumbers = new Set(pgOnly.map(numberOf))
 
