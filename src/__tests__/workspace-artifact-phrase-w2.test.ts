@@ -345,4 +345,14 @@ describe('PR 898 the list search: a repeated word, a multi-lexeme word, and the 
     const many = await time(words.join(' '))
     expect(many).toBeLessThan(Math.max(one, 1) * 5)
   }, 300000)
+
+  // M1 (dedup removed): a hyphenated word repeated 16 times is one condition, so it costs as one 'alpha-beta' search; without
+  // the dedup the 16 copies would each run the phrase check (about 16 times the cost)
+  pgOnly('speed: a hyphenated word repeated 16 times costs less than 5 times one (40 rows of about 60 KB, each with alpha beta)', async () => {
+    for (let i = 0; i < 40; i++) await doc({ title: `R898 m1 ${i}`, content: `alpha beta ${'lorem ipsum dolor '.repeat(3800)}` })
+    const time = async (q: string) => { await page(q); const t0 = Date.now(); await page(q); return Date.now() - t0 }
+    const one = await time('alpha-beta')
+    const many = await time('alpha-beta '.repeat(16).trim())
+    expect(many).toBeLessThan(Math.max(one, 1) * 5)
+  }, 300000)
 })

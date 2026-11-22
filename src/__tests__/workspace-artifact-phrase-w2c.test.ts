@@ -224,14 +224,15 @@ describe('WT5 (PG only) token density: positions * 2 <= characters + 1 for every
   }, 900000)
 
   // The bound behind the threshold: at most one position per two characters, the separator included (a character that is
-  // not a token is a separator). The literals of the spec: 'a٣a' x100 is 300 characters and 101 positions; 'a٣a ' x100 is
-  // 400 characters and 200 positions. Both stay within (length + 1) / 2 with a margin of one.
-  pgOnly('the literals behind the bound: a٣a x100 (300 characters, 101 positions) and a٣a  x100 (400 characters, 200 positions)', async () => {
+  // not a token is a separator). macOS measured: a٣a x100 (300 characters) gives 101 positions, a٣a  x100 (400 characters) gives 200. The count is locale- and
+  // libc-dependent (on CI's glibc the ٣ is a word character and the count is 1), so the cell pins the inequality, not the number:
+  // the dense packing does not arise on CI, and the local run sees it.
+  pgOnly('the literals behind the bound: a٣a x100 and a٣a  x100 stay within one position per two characters', async () => {
     const maxPos = (x: string) => `(SELECT coalesce(max(p), 0) FROM unnest(to_tsvector('public.marveen_fts', public.fts_norm(${x}))) AS u(lexeme, positions, weights), unnest(u.positions) AS p)`
     const rows = (await dbx.all(`SELECT ${maxPos("repeat('a٣a', 100)")} AS a, ${maxPos("repeat('a٣a ', 100)")} AS b`)) as Array<{ a: number; b: number }>
-    expect(rows[0]!.a).toBe(101)
-    expect(rows[0]!.b).toBe(200)
-    expect(rows[0]!.a * 2 <= 300 + 1).toBe(true)
-    expect(rows[0]!.b * 2 <= 400 + 1).toBe(true)
+    const { a, b } = rows[0]!
+    expect(a * 2 <= 300 + 1).toBe(true)
+    expect(b * 2 <= 400 + 1).toBe(true)
+    expect(a >= 1 && b >= 1).toBe(true)
   })
 })
