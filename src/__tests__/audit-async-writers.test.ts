@@ -4,12 +4,13 @@
 // fail (the failure must reach the caller, an audit row must not vanish silently), and they pin the two
 // behaviour changes of the conversion: the skill-usage dedup is one statement, and the RBAC decision row is
 // written before a refusal goes out.
+// The injection points are the facade (dbx.run, dbx.tx and the statements of a transaction handle), so the same
+// injection reaches the PostgreSQL path as well as the SQLite one.
 //
 // Privacy: neutral fixtures only (agent-a, user-a, tenant-a).
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type http from 'node:http'
-import { db, dbx } from '../db.js'
-import { sqliteOps } from '../db/facade.js'
+import { dbx } from '../db.js'
 import {
   deleteRbacShadowRowsBefore, insertHookAuditLog, insertRbacShadowRow, logConfigChange, logSkillUsage,
   logStoreFileEvent, pruneAuditLogs, pruneHookAuditLog, pruneOtelSpans, pruneTokenUsage,
@@ -28,7 +29,7 @@ afterEach(() => {
 })
 
 const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
-const count = (sql: string): number => (db.prepare(sql).get() as { n: number }).n
+const count = async (sql: string): Promise<number> => Number((await dbx.get<{ n: number | string }>(sql))?.n)
 
 /** The driver answers late: a row is there only when the caller really awaited the statement. */
 function slowDriver() {
@@ -46,14 +47,33 @@ function failingDriver() {
   return vi.spyOn(dbx, 'run').mockRejectedValue(new Error('driver down'))
 }
 
-/** The same late answer one level down: the driver both `dbx.run` and a transaction handle (`tx.run`) end in.
- *  The sweep runs inside a transaction, whose statements do not go through `dbx.run`. */
+/** Every statement of a transaction body goes through `onStatement` first (it may wait, or throw). */
+function interceptTxStatements(onStatement: (sql: string) => Promise<void>) {
+  const real = dbx.tx.bind(dbx) as (fn: (tx: unknown) => Promise<unknown>, opts?: unknown) => Promise<unknown>
+  return vi.spyOn(dbx, 'tx').mockImplementation(((fn: (tx: unknown) => Promise<unknown>, opts?: unknown) =>
+    real((tx) => {
+      const target = tx as Record<string, (...a: unknown[]) => unknown>
+      const wrapped = new Proxy(target, {
+        get(obj, key) {
+          if (key === 'run') {
+            return async (sql: string, ...params: unknown[]) => {
+              await onStatement(sql)
+              return obj.run(sql, ...params)
+            }
+          }
+          const value = Reflect.get(obj, key, obj)
+          return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(obj) : value
+        },
+      })
+      return fn(wrapped)
+    }, opts)) as never)
+}
+
+/** The same late answer one level down: a statement of a transaction (the sweep) and a statement of the facade. */
 function slowDriverBelowFacade() {
-  const real = sqliteOps.run.bind(sqliteOps)
-  return vi.spyOn(sqliteOps, 'run').mockImplementation(async (sql: string, ...params: unknown[]) => {
-    await sleep(15)
-    return real(sql, ...params)
-  })
+  const wait = async () => { await sleep(15) }
+  interceptTxStatements(wait)
+  return slowDriver()
 }
 
 const NOW = Math.floor(Date.now() / 1000)
@@ -102,73 +122,74 @@ const WRITERS: Array<{ name: string; call: () => Promise<unknown>; countSql: str
 
 describe('audit writers: the row exists once the call resolved (slow driver)', () => {
   it.each(WRITERS)('$name', async ({ call, countSql }) => {
-    const before = count(countSql)
+    const before = await count(countSql)
     slowDriver()
     await call()
-    expect(count(countSql) - before).toBe(1)
+    expect((await count(countSql)) - before).toBe(1)
   })
 })
 
 describe('audit writers: a driver failure reaches the caller (an audit row must not vanish silently)', () => {
   it.each(WRITERS)('$name', async ({ call, countSql }) => {
-    const before = count(countSql)
+    const before = await count(countSql)
     failingDriver()
     await expect(call()).rejects.toThrow('driver down')
-    expect(count(countSql)).toBe(before)
+    expect(await count(countSql)).toBe(before)
   })
 })
 
 describe('audit prunes: every statement is awaited (slow driver)', () => {
   it('pruneAuditLogs clears the four audit tables, the hook table and the spans', async () => {
-    db.prepare("INSERT INTO config_change_log (key, old_value, new_value, actor, created_at) VALUES ('k', 'a', 'b', 'u', ?)").run(OLD)
-    db.prepare("INSERT INTO idea_status_log (idea_id, from_status, to_status, actor, created_at) VALUES ('i', NULL, 'new', 'u', ?)").run(OLD)
-    db.prepare("INSERT INTO store_file_audit (rel_path, event_type, is_sensitive, created_at) VALUES ('p', 'create', 0, ?)").run(OLD)
-    db.prepare("INSERT INTO agent_audit_log (agent_id, entity, action, created_at) VALUES ('a', 'agent', 'create', ?)").run(OLD)
-    db.prepare("INSERT INTO hook_audit_log (ts, hook_type, verdict) VALUES (?, 'Stop', 'allow')").run(OLD)
-    db.prepare("INSERT INTO otel_spans (trace_id, span_id, agent_id, operation, start_ms, end_ms, status) VALUES ('t', 's', 'a', 'tool.x', ?, ?, 'ok')").run(OLD * 1000, OLD * 1000 + 5)
+    await dbx.run("INSERT INTO config_change_log (key, old_value, new_value, actor, created_at) VALUES ('k', 'a', 'b', 'u', ?)", OLD)
+    await dbx.run("INSERT INTO idea_status_log (idea_id, from_status, to_status, actor, created_at) VALUES ('i', NULL, 'new', 'u', ?)", OLD)
+    await dbx.run("INSERT INTO store_file_audit (rel_path, event_type, is_sensitive, created_at) VALUES ('p', 'create', 0, ?)", OLD)
+    await dbx.run("INSERT INTO agent_audit_log (agent_id, entity, action, created_at) VALUES ('a', 'agent', 'create', ?)", OLD)
+    await dbx.run("INSERT INTO hook_audit_log (ts, hook_type, verdict) VALUES (?, 'Stop', 'allow')", OLD)
+    await dbx.run("INSERT INTO otel_spans (trace_id, span_id, agent_id, operation, start_ms, end_ms, status) VALUES ('t', 's', 'a', 'tool.x', ?, ?, 'ok')", OLD * 1000, OLD * 1000 + 5)
     slowDriverBelowFacade()
     await pruneAuditLogs()
     for (const table of ['config_change_log', 'idea_status_log', 'store_file_audit', 'hook_audit_log', 'otel_spans']) {
-      expect(count(`SELECT COUNT(*) AS n FROM ${table}`), table).toBe(0)
+      expect(await count(`SELECT COUNT(*) AS n FROM ${table}`), table).toBe(0)
     }
     // The old agent_audit_log row is gone; what is left is the sweep's own journal row, written after the deletes.
-    expect(count('SELECT COUNT(*) AS n FROM agent_audit_log WHERE action = \'create\''), 'old row').toBe(0)
-    expect(count('SELECT COUNT(*) AS n FROM agent_audit_log WHERE action = \'retention_prune\''), 'journal row').toBe(1)
+    expect(await count('SELECT COUNT(*) AS n FROM agent_audit_log WHERE action = \'create\''), 'old row').toBe(0)
+    expect(await count('SELECT COUNT(*) AS n FROM agent_audit_log WHERE action = \'retention_prune\''), 'journal row').toBe(1)
   })
 
   it('pruneHookAuditLog and pruneOtelSpans', async () => {
-    db.prepare("INSERT INTO hook_audit_log (ts, hook_type, verdict) VALUES (?, 'Stop', 'allow')").run(OLD)
-    db.prepare("INSERT INTO otel_spans (trace_id, span_id, agent_id, operation, start_ms, end_ms, status) VALUES ('t', 's', 'a', 'tool.x', ?, ?, 'ok')").run(OLD * 1000, OLD * 1000 + 5)
+    await dbx.run("INSERT INTO hook_audit_log (ts, hook_type, verdict) VALUES (?, 'Stop', 'allow')", OLD)
+    await dbx.run("INSERT INTO otel_spans (trace_id, span_id, agent_id, operation, start_ms, end_ms, status) VALUES ('t', 's', 'a', 'tool.x', ?, ?, 'ok')", OLD * 1000, OLD * 1000 + 5)
     slowDriver()
     await pruneHookAuditLog()
     await pruneOtelSpans()
-    expect(count('SELECT COUNT(*) AS n FROM hook_audit_log')).toBe(0)
-    expect(count('SELECT COUNT(*) AS n FROM otel_spans')).toBe(0)
+    expect(await count('SELECT COUNT(*) AS n FROM hook_audit_log')).toBe(0)
+    expect(await count('SELECT COUNT(*) AS n FROM otel_spans')).toBe(0)
   })
 
+  // The timestamp column is the precondition: the insert below names it, so a missing column fails the cell.
   it('pruneTokenUsage aggregates before it deletes, and every step is awaited', async () => {
-    const cols = (db.prepare('PRAGMA table_info(token_usage)').all() as Array<{ name: string }>).map(c => c.name)
-    expect(cols).toContain('timestamp')
-    db.prepare(
+    await dbx.run(
       "INSERT INTO token_usage (agent, session_id, model, input_tokens, output_tokens, timestamp) VALUES ('agent-a', 'session-a', 'm', 10, 5, ?)",
-    ).run(NOW - 200 * 86400)
+      NOW - 200 * 86400,
+    )
     slowDriver()
     const res = await pruneTokenUsage()
     expect(res.rawDeleted).toBe(1)
-    expect(count('SELECT COUNT(*) AS n FROM token_usage')).toBe(0)
-    expect(count('SELECT COUNT(*) AS n FROM token_usage_daily')).toBe(1)
-    expect(count('SELECT COUNT(*) AS n FROM token_usage_monthly')).toBe(1)
+    expect(await count('SELECT COUNT(*) AS n FROM token_usage')).toBe(0)
+    expect(await count('SELECT COUNT(*) AS n FROM token_usage_daily')).toBe(1)
+    expect(await count('SELECT COUNT(*) AS n FROM token_usage_monthly')).toBe(1)
   })
 
   it('deleteRbacShadowRowsBefore returns the number of removed rows', async () => {
     for (const ts of [OLD, OLD, NOW]) {
-      db.prepare(
+      await dbx.run(
         "INSERT INTO rbac_shadow_log (ts, tenant_id, principal_kind, principal, role, method, route, permission, decision, reason) VALUES (?, 'tenant-a', 'session', 'user-a', 'viewer', 'GET', '/r', 'p', 'permitted', '')",
-      ).run(ts)
+        ts,
+      )
     }
     slowDriver()
     expect(await deleteRbacShadowRowsBefore(NOW - 86400)).toBe(2)
-    expect(count('SELECT COUNT(*) AS n FROM rbac_shadow_log')).toBe(1)
+    expect(await count('SELECT COUNT(*) AS n FROM rbac_shadow_log')).toBe(1)
   })
 })
 
@@ -176,7 +197,7 @@ describe('logSkillUsage: the dedup and the insert are one statement', () => {
   it('five concurrent calls for one invocation write one row and exactly one answers true', async () => {
     const results = await Promise.all(Array.from({ length: 5 }, () => logSkillUsage('agent-a', 'skill-a', 'tool_call', 'session-a')))
     expect(results.filter(Boolean)).toHaveLength(1)
-    expect(count("SELECT COUNT(*) AS n FROM skill_usage WHERE skill_name = 'skill-a'")).toBe(1)
+    expect(await count("SELECT COUNT(*) AS n FROM skill_usage WHERE skill_name = 'skill-a'")).toBe(1)
   })
 
   it('the same holds with a slow driver, and with no session (session_id IS NULL matches NULL)', async () => {
@@ -187,7 +208,7 @@ describe('logSkillUsage: the dedup and the insert are one statement', () => {
       logSkillUsage('agent-a', 'skill-b', 'skill_read', null),
     ])
     expect(results.filter(Boolean)).toHaveLength(1)
-    expect(count("SELECT COUNT(*) AS n FROM skill_usage WHERE skill_name = 'skill-b'")).toBe(1)
+    expect(await count("SELECT COUNT(*) AS n FROM skill_usage WHERE skill_name = 'skill-b'")).toBe(1)
   })
 
   it('a different session, source or skill is a different use', async () => {
@@ -202,17 +223,17 @@ describe('logSkillUsage: the dedup and the insert are one statement', () => {
   })
 
   it('a row older than the window does not swallow a new one; a source-less old row dedups under its derived source', async () => {
-    db.prepare("INSERT INTO skill_usage (agent_id, skill_name, trigger_type, session_id, created_at) VALUES ('agent-a', 'skill-e', 'tool_call', 'session-a', ?)").run(NOW - 3600)
+    await dbx.run("INSERT INTO skill_usage (agent_id, skill_name, trigger_type, session_id, created_at) VALUES ('agent-a', 'skill-e', 'tool_call', 'session-a', ?)", NOW - 3600)
     expect(await logSkillUsage('agent-a', 'skill-e', 'tool_call', 'session-a')).toBe(true)
-    db.prepare("INSERT INTO skill_usage (agent_id, skill_name, trigger_type, session_id, created_at) VALUES ('agent-a', 'skill-f', 'tool_call', 'session-a', ?)").run(NOW)
+    await dbx.run("INSERT INTO skill_usage (agent_id, skill_name, trigger_type, session_id, created_at) VALUES ('agent-a', 'skill-f', 'tool_call', 'session-a', ?)", NOW)
     expect(await logSkillUsage('agent-a', 'skill-f', 'tool_call', 'session-a', 'skill_tool')).toBe(false)
     expect(await logSkillUsage('agent-a', 'skill-f', 'tool_call', 'session-a', 'read_tool')).toBe(true)
   })
 
   it('stamps the resolved tenant on the row', async () => {
     await logSkillUsage('agent-a', 'skill-g', 'tool_call', 'session-a')
-    const row = db.prepare("SELECT tenant_id FROM skill_usage WHERE skill_name = 'skill-g'").get() as { tenant_id: string | null }
-    expect(row.tenant_id).toBe('default')
+    const row = await dbx.get<{ tenant_id: string | null }>("SELECT tenant_id FROM skill_usage WHERE skill_name = 'skill-g'")
+    expect(row?.tenant_id).toBe('default')
   })
 })
 
@@ -243,13 +264,13 @@ describe('runRbacGate: the decision row is written before a refusal goes out, an
   it('shadow: the would-deny row exists when the gate resolves, and the request proceeds', async () => {
     slowDriver()
     expect(await runRbacGate(viewer, 'POST', '/api/kanban/cards', fakeRes([]), 'shadow')).toBe(true)
-    expect(count("SELECT COUNT(*) AS n FROM rbac_shadow_log WHERE decision = 'would-deny'")).toBe(1)
+    expect(await count("SELECT COUNT(*) AS n FROM rbac_shadow_log WHERE decision = 'would-deny'")).toBe(1)
   })
 
   it('a permitted non-admin request: the row exists when the gate resolves', async () => {
     slowDriver()
     expect(await runRbacGate(viewer, 'GET', '/api/memories', fakeRes([]), 'enforce')).toBe(true)
-    expect(count("SELECT COUNT(*) AS n FROM rbac_shadow_log WHERE decision = 'permitted'")).toBe(1)
+    expect(await count("SELECT COUNT(*) AS n FROM rbac_shadow_log WHERE decision = 'permitted'")).toBe(1)
   })
 
   it.each(['enforce', 'shadow'] as const)('%s: an ASYNC write failure keeps the decision and raises no unhandled rejection', async (mode) => {
@@ -273,13 +294,14 @@ describe('runRbacGate: the decision row is written before a refusal goes out, an
   })
 
   it('the opportunistic prune is awaited: the old row is gone when the record resolves (slow driver)', async () => {
-    db.prepare(
+    await dbx.run(
       "INSERT INTO rbac_shadow_log (ts, tenant_id, principal_kind, principal, role, method, route, permission, decision, reason) VALUES (?, 'tenant-a', 'session', 'user-a', 'viewer', 'GET', '/old', 'p', 'permitted', '')",
-    ).run(OLD)
+      OLD,
+    )
     slowDriver()
     expect(await recordRbacDecision(viewer, 'GET', '/api/memories', 'permitted')).toBe(true)
-    expect(count("SELECT COUNT(*) AS n FROM rbac_shadow_log WHERE route = '/old'")).toBe(0)
-    expect(count("SELECT COUNT(*) AS n FROM rbac_shadow_log WHERE route = '/api/memories'")).toBe(1)
+    expect(await count("SELECT COUNT(*) AS n FROM rbac_shadow_log WHERE route = '/old'")).toBe(0)
+    expect(await count("SELECT COUNT(*) AS n FROM rbac_shadow_log WHERE route = '/api/memories'")).toBe(1)
   })
 
   it('a failing prune does not fail the record and raises no unhandled rejection', async () => {
@@ -317,10 +339,10 @@ describe('queryAuditLog: the total of every source is a number (a lost await wou
 
   async function seedOneRowPerSource() {
     await logConfigChange('some.key', 'old', 'new', 'actor-a')
-    db.prepare("INSERT INTO idea_status_log (idea_id, from_status, to_status, actor, created_at) VALUES ('i', NULL, 'new', 'u', ?)").run(NOW)
+    await dbx.run("INSERT INTO idea_status_log (idea_id, from_status, to_status, actor, created_at) VALUES ('i', NULL, 'new', 'u', ?)", NOW)
     await logStoreFileEvent('dir/file.md', 'create', 0, 12, 'agent-a', 'tenant-a')
-    db.prepare("INSERT INTO daily_logs (agent_id, date, content, created_at) VALUES ('agent-a', '2026-10-28', 'c', ?)").run(NOW)
-    db.prepare("INSERT INTO memories (chat_id, agent_id, content, sector, category, keywords, created_at, accessed_at) VALUES ('chat-a', 'agent-a', 'm', 'semantic', 'warm', 'k', ?, ?)").run(NOW, NOW)
+    await dbx.run("INSERT INTO daily_logs (agent_id, date, content, created_at) VALUES ('agent-a', '2026-10-28', 'c', ?)", NOW)
+    await dbx.run("INSERT INTO memories (chat_id, agent_id, content, sector, category, keywords, created_at, accessed_at) VALUES ('chat-a', 'agent-a', 'm', 'semantic', 'warm', 'k', ?, ?)", NOW, NOW)
     await writeAgentAuditLog({ agent_id: 'agent-a', entity: 'agent', action: 'create', entity_id: 'x' })
     await insertHookAuditLog({ agent_id: 'agent-a', hook_type: 'PreToolUse', verdict: 'allow' })
   }
@@ -343,12 +365,14 @@ describe('queryAuditLog: the total of every source is a number (a lost await wou
 })
 
 describe('prune statements: a failure of any one statement reaches the caller', () => {
-  /** The driver fails only the statement that starts with `prefix`; every other statement runs. */
+  /** The driver fails only the statement that starts with `prefix`, in the facade and in a transaction; every other statement runs. */
   function failOnly(prefix: string) {
-    // One level below the facade, so a statement inside a transaction (the sweep) is reached as well.
-    const real = sqliteOps.run.bind(sqliteOps)
-    return vi.spyOn(sqliteOps, 'run').mockImplementation(async (sql: string, ...params: unknown[]) => {
-      if (sql.trimStart().startsWith(prefix)) throw new Error('statement down')
+    const fail = (sql: string): Promise<void> =>
+      sql.trimStart().startsWith(prefix) ? Promise.reject(new Error('statement down')) : Promise.resolve()
+    interceptTxStatements(fail)
+    const real = dbx.run.bind(dbx)
+    return vi.spyOn(dbx, 'run').mockImplementation(async (sql: string, ...params: unknown[]) => {
+      await fail(sql)
       return real(sql, ...params)
     })
   }
