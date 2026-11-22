@@ -1,4 +1,4 @@
--- PostgreSQL vector embeddings (phase 3, step 6b, c2). The embedding of a memory, a workspace document and an artifact lives
+-- PostgreSQL vector embeddings (phase 3, step 6b). The embedding of a memory, a workspace document and an artifact lives
 -- in a side table with a cascading foreign key to its parent, not in a column of the parent row: the main statements of
 -- the three tables stay as they are, and no route can return a 768-float column by accident. One embedding per parent (the
 -- primary key); a delete of the parent removes the embedding. The dimension is the SQLite embedding size (768 float32, the

@@ -1,4 +1,4 @@
-// The vector embedding tables of migration 0007 (phase 3, step 6b, c2): the extension, the 768 dimension, the refusal of a
+// The vector embedding tables of migration 0007 (phase 3, step 6b): the extension, the 768 dimension, the refusal of a
 // NaN component, the cascade from each parent, one embedding per parent, and the preflight refusal of a database without
 // the extension. PostgreSQL only; the parity of the three tables with the SQLite twin is in baseline-parity (PG_ONLY_TABLES).
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
