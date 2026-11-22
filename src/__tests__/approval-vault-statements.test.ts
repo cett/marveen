@@ -20,12 +20,16 @@ import {
   consumeApproval, claimApproval, createApprovalOnce, useUpApproval, adoptReservation, journalConsumeRefusal,
 } from '../db.js'
 import type { Tx } from '../db/facade.js'
-import { useTestDb } from './helpers/with-test-db.js'
+import { useTestDb, testDbMode } from './helpers/with-test-db.js'
+import { interleave } from './helpers/interleave.js'
 
 const FILE_DB = join(mkdtempSync(join(tmpdir(), 'approval-vault-')), 'test.db')
 useTestDb({ path: FILE_DB })
 // The database is a file (a second connection must see it), so the rows of one test are removed before the next.
-beforeEach(() => { db.exec('DELETE FROM approval_events; DELETE FROM approvals') })
+beforeEach(async () => {
+  await dbx.run('DELETE FROM approval_events')
+  await dbx.run('DELETE FROM approvals')
+})
 afterEach(() => { vi.restoreAllMocks() })
 
 const HASH = 'a'.repeat(64)
@@ -42,7 +46,7 @@ async function approved(opts: { agent?: string; hash?: string } = {}): Promise<s
     tenant_id: 'default', human_only: true, content_hash: opts.hash ?? HASH,
   })
   expect(await resolveApproval(id, 'approved', 'human:session:owner', null, 'dashboard_session')).toBe(true)
-  db.prepare('UPDATE approvals SET resolved_at = ? WHERE id = ?').run(NOW - 10, id)
+  await dbx.run('UPDATE approvals SET resolved_at = ? WHERE id = ?', NOW - 10, id)
   return id
 }
 
@@ -72,17 +76,17 @@ function hookTx(hooks: TxHooks): { modes: Array<string | undefined> } {
 
 describe('consume by id and by hash: each condition of the guarded write', () => {
   // One broken condition per row: the control row (nothing broken) is used up, every other one is not.
-  const cases: Array<[string, (id: string) => void, Partial<typeof params> & { id?: string }]> = [
-    ['an unknown id', () => undefined, { id: 'nope' }],
-    ['a request still pending', (id) => { db.prepare("UPDATE approvals SET status = 'pending' WHERE id = ?").run(id) }, {}],
-    ['a rejected request', (id) => { db.prepare("UPDATE approvals SET status = 'rejected' WHERE id = ?").run(id) }, {}],
-    ['a row used up already', (id) => { db.prepare('UPDATE approvals SET consumed_at = 1 WHERE id = ?').run(id) }, {}],
-    ['another hash', () => undefined, { content_hash: OTHER }],
-    ['another tenant', () => undefined, { tenant_id: 'tenant-b' }],
-    ['another agent', () => undefined, { principal: 'agent-b' }],
-    ['a decision older than the window', (id) => { db.prepare('UPDATE approvals SET resolved_at = ? WHERE id = ?').run(NOW - WINDOW - 1, id) }, {}],
-    ['a decision made by a token', (id) => { db.prepare("UPDATE approvals SET resolved_via = 'bearer' WHERE id = ?").run(id) }, {}],
-    ['a decision with no recorded way', (id) => { db.prepare('UPDATE approvals SET resolved_via = NULL WHERE id = ?').run(id) }, {}],
+  const cases: Array<[string, (id: string) => Promise<void>, Partial<typeof params> & { id?: string }]> = [
+    ['an unknown id', () => Promise.resolve(), { id: 'nope' }],
+    ['a request still pending', async (id) => { await dbx.run("UPDATE approvals SET status = 'pending' WHERE id = ?", id) }, {}],
+    ['a rejected request', async (id) => { await dbx.run("UPDATE approvals SET status = 'rejected' WHERE id = ?", id) }, {}],
+    ['a row used up already', async (id) => { await dbx.run('UPDATE approvals SET consumed_at = 1 WHERE id = ?', id) }, {}],
+    ['another hash', () => Promise.resolve(), { content_hash: OTHER }],
+    ['another tenant', () => Promise.resolve(), { tenant_id: 'tenant-b' }],
+    ['another agent', () => Promise.resolve(), { principal: 'agent-b' }],
+    ['a decision older than the window', async (id) => { await dbx.run('UPDATE approvals SET resolved_at = ? WHERE id = ?', NOW - WINDOW - 1, id) }, {}],
+    ['a decision made by a token', async (id) => { await dbx.run("UPDATE approvals SET resolved_via = 'bearer' WHERE id = ?", id) }, {}],
+    ['a decision with no recorded way', async (id) => { await dbx.run('UPDATE approvals SET resolved_via = NULL WHERE id = ?', id) }, {}],
   ]
 
   it('the control row is used up, with who, when and under which ref', async () => {
@@ -93,13 +97,13 @@ describe('consume by id and by hash: each condition of the guarded write', () =>
 
   it('the guarded write has no category list: a row of another category is used up too, a bearer decision only when it is not human-only', async () => {
     const id = await approved()
-    db.prepare("UPDATE approvals SET category = 'other', human_only = 0, resolved_via = 'bearer' WHERE id = ?").run(id)
+    await dbx.run("UPDATE approvals SET category = 'other', human_only = 0, resolved_via = 'bearer' WHERE id = ?", id)
     expect(await useUpApproval(id, params, NOW, 'r-1')).toBe(true)
     const human = await approved()
-    db.prepare("UPDATE approvals SET category = 'other', human_only = 1, resolved_via = 'bearer' WHERE id = ?").run(human)
+    await dbx.run("UPDATE approvals SET category = 'other', human_only = 1, resolved_via = 'bearer' WHERE id = ?", human)
     expect(await useUpApproval(human, params, NOW, 'r-2')).toBe(false)
     const mail = await approved()
-    db.prepare("UPDATE approvals SET human_only = 0, resolved_via = 'bearer' WHERE id = ?").run(mail)
+    await dbx.run("UPDATE approvals SET human_only = 0, resolved_via = 'bearer' WHERE id = ?", mail)
     expect(await useUpApproval(mail, params, NOW, 'r-3')).toBe(false)
   })
 
@@ -111,7 +115,7 @@ describe('consume by id and by hash: each condition of the guarded write', () =>
 
   it.each(cases)('%s: nothing is written', async (_label, breakRow, override) => {
     const id = await approved()
-    breakRow(id)
+    await breakRow(id)
     const before = await getApproval(id)
     expect(await useUpApproval(override.id ?? id, { ...params, ...override }, NOW, 'r-1')).toBe(false)
     expect(await getApproval(id)).toEqual(before)
@@ -121,24 +125,24 @@ describe('consume by id and by hash: each condition of the guarded write', () =>
 describe('the sender adopting the gate reservation: each condition of the adoption write', () => {
   const reserve = async (): Promise<string> => {
     const id = await approved()
-    db.prepare("UPDATE approvals SET consumed_at = ?, consumed_by = 'agent-a', consumed_ref = 'gate-send-1' WHERE id = ?").run(NOW - 5, id)
+    await dbx.run("UPDATE approvals SET consumed_at = ?, consumed_by = 'agent-a', consumed_ref = 'gate-send-1' WHERE id = ?", NOW - 5, id)
     return id
   }
   const adoptParams = { principal: 'agent-a', tenant_id: 'default', content_hash: HASH, category: 'email_send' }
   const since = NOW - 120
 
-  const cases: Array<[string, (id: string) => void, Partial<typeof adoptParams>]> = [
-    ['another category', () => undefined, { category: 'other' }],
-    ['another hash', () => undefined, { content_hash: OTHER }],
-    ['another tenant', () => undefined, { tenant_id: 'tenant-b' }],
-    ['another agent (the row is the sender\'s own reservation)', (id) => { db.prepare("UPDATE approvals SET consumed_by = 'agent-b' WHERE id = ?").run(id) }, { principal: 'agent-b' }],
-    ['a reservation taken by another consumer', (id) => { db.prepare("UPDATE approvals SET consumed_by = 'agent-b' WHERE id = ?").run(id) }, {}],
-    ['a request that is no longer approved', (id) => { db.prepare("UPDATE approvals SET status = 'rejected' WHERE id = ?").run(id) }, {}],
-    ['a decision made by a token', (id) => { db.prepare("UPDATE approvals SET resolved_via = 'bearer' WHERE id = ?").run(id) }, {}],
-    ['a row nobody reserved', (id) => { db.prepare('UPDATE approvals SET consumed_at = NULL WHERE id = ?').run(id) }, {}],
-    ['a reservation older than the adoption window', (id) => { db.prepare('UPDATE approvals SET consumed_at = ? WHERE id = ?').run(since - 1, id) }, {}],
-    ['a reservation by a plain gate ref', (id) => { db.prepare("UPDATE approvals SET consumed_ref = 'gate-1' WHERE id = ?").run(id) }, {}],
-    ['a reservation already sealed', (id) => { db.prepare('UPDATE approvals SET used_at = 1 WHERE id = ?').run(id) }, {}],
+  const cases: Array<[string, (id: string) => Promise<void>, Partial<typeof adoptParams>]> = [
+    ['another category', () => Promise.resolve(), { category: 'other' }],
+    ['another hash', () => Promise.resolve(), { content_hash: OTHER }],
+    ['another tenant', () => Promise.resolve(), { tenant_id: 'tenant-b' }],
+    ['another agent (the row is the sender\'s own reservation)', async (id) => { await dbx.run("UPDATE approvals SET consumed_by = 'agent-b' WHERE id = ?", id) }, { principal: 'agent-b' }],
+    ['a reservation taken by another consumer', async (id) => { await dbx.run("UPDATE approvals SET consumed_by = 'agent-b' WHERE id = ?", id) }, {}],
+    ['a request that is no longer approved', async (id) => { await dbx.run("UPDATE approvals SET status = 'rejected' WHERE id = ?", id) }, {}],
+    ['a decision made by a token', async (id) => { await dbx.run("UPDATE approvals SET resolved_via = 'bearer' WHERE id = ?", id) }, {}],
+    ['a row nobody reserved', async (id) => { await dbx.run('UPDATE approvals SET consumed_at = NULL WHERE id = ?', id) }, {}],
+    ['a reservation older than the adoption window', async (id) => { await dbx.run('UPDATE approvals SET consumed_at = ? WHERE id = ?', since - 1, id) }, {}],
+    ['a reservation by a plain gate ref', async (id) => { await dbx.run("UPDATE approvals SET consumed_ref = 'gate-1' WHERE id = ?", id) }, {}],
+    ['a reservation already sealed', async (id) => { await dbx.run('UPDATE approvals SET used_at = 1 WHERE id = ?', id) }, {}],
   ]
 
   it('the control reservation is adopted and sealed under the sender ref', async () => {
@@ -149,7 +153,7 @@ describe('the sender adopting the gate reservation: each condition of the adopti
 
   it.each(cases)('%s: nothing is written', async (_label, breakRow, override) => {
     const id = await reserve()
-    breakRow(id)
+    await breakRow(id)
     const before = await getApproval(id)
     expect(await adoptReservation(id, { ...adoptParams, ...override }, since, NOW, 'send-1')).toBe(false)
     expect(await getApproval(id)).toEqual(before)
@@ -159,13 +163,13 @@ describe('the sender adopting the gate reservation: each condition of the adopti
 describe('a second writer between the deciding read and the write', () => {
   // The transaction lock keeps other FACADE callers out of the body; it does not stop another connection or
   // process. The WHERE of the write is then the only line: the row the read picked is gone, so the claim answers
-  // refused, not ok. (A raw write on the same connection stands in for the other writer.)
-  const takeRowAway = () => { db.prepare("UPDATE approvals SET consumed_at = 1, consumed_by = 'someone-else', consumed_ref = 'x'").run() }
-
-  it('claim: the usable row is used up after the read -> not ok, nothing of this claim written', async () => {
+  // refused, not ok. On SQLite there is one connection, so the other writer is a raw write inside the open
+  // transaction. On PostgreSQL the claim is parked before its guarded write (it holds no row lock yet), a second
+  // connection writes and commits, and only then does the claim go on.
+  it.runIf(testDbMode() === 'sqlite')('claim: the usable row is used up after the read -> not ok, nothing of this claim written (one connection)', async () => {
     const id = await approved()
     let fired = false
-    hookTx({ afterGet: (sql) => { if (!fired && /status = 'approved' AND consumed_at IS NULL/.test(sql)) { fired = true; takeRowAway() } } })
+    hookTx({ afterGet: (sql) => { if (!fired && /status = 'approved' AND consumed_at IS NULL/.test(sql)) { fired = true; db.prepare("UPDATE approvals SET consumed_at = 1, consumed_by = 'someone-else', consumed_ref = 'x'").run() } } })
     const out = await claimApproval({ ...claim, ref: 'r-1' })
     expect(fired).toBe(true)
     expect(out.ok).toBe(false)
@@ -173,13 +177,71 @@ describe('a second writer between the deciding read and the write', () => {
     expect(await listApprovalEvents(id)).toHaveLength(1) // only the refusal journal row
   })
 
-  it('claim send: the gate reservation is sealed by someone else after the read -> not adopted', async () => {
+  it.runIf(testDbMode() === 'sqlite')('claim send: the gate reservation is sealed by someone else after the read -> not adopted (one connection)', async () => {
     const id = await approved()
     db.prepare("UPDATE approvals SET consumed_at = ?, consumed_by = 'agent-a', consumed_ref = 'gate-send-1' WHERE id = ?").run(NOW - 5, id)
     let fired = false
     hookTx({ afterGet: (sql) => { if (!fired && /consumed_ref LIKE 'gate-send-%' ESCAPE '\\' AND used_at IS NULL/.test(sql)) { fired = true; db.prepare('UPDATE approvals SET used_at = 1, used_ref = ?').run('other-sender') } } })
     const out = await claimApproval({ ...claim, now: NOW, ref: 'send-1', mode: 'send' })
     expect(fired).toBe(true)
+    expect(out.ok && out.adopted).not.toBe(true)
+    expect(await getApproval(id)).toMatchObject({ used_ref: 'other-sender' })
+  })
+
+  // Parks the transaction before its first statement that matches, so the test can run the other writer in between.
+  function parkBefore(match: RegExp, il: ReturnType<typeof interleave>, name: string) {
+    const real = dbx.tx.bind(dbx) as (fn: (tx: unknown) => Promise<unknown>, opts?: unknown) => Promise<unknown>
+    let parked = false
+    return vi.spyOn(dbx, 'tx').mockImplementation(((fn: (tx: unknown) => Promise<unknown>, opts?: unknown) =>
+      real((tx) => {
+        const target = tx as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>
+        const wrapped = new Proxy(target, {
+          get(obj, key) {
+            if (key === 'get' || key === 'run' || key === 'all') {
+              return async (sql: string, ...params: unknown[]) => {
+                if (!parked && match.test(sql)) {
+                  parked = true
+                  await il.pass(name)
+                }
+                return Reflect.apply(obj[key], obj, [sql, ...params])
+              }
+            }
+            const value = Reflect.get(obj, key, obj)
+            return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(obj) : value
+          },
+        })
+        return fn(wrapped)
+      }, opts)) as never)
+  }
+
+  it.runIf(testDbMode() === 'pg')('claim: the usable row is used up by another connection after the read -> not ok, nothing of this claim written (two connections)', async () => {
+    const id = await approved()
+    const il = interleave()
+    il.hold('claim-parked')
+    const spy = parkBefore(/^\s*UPDATE approvals SET consumed_at = \?/, il, 'claim-parked')
+    const claimed = claimApproval({ ...claim, ref: 'r-1' })
+    await il.reached('claim-parked')
+    await dbx.run("UPDATE approvals SET consumed_at = 1, consumed_by = 'someone-else', consumed_ref = 'x'")
+    il.open('claim-parked')
+    const out = await claimed
+    spy.mockRestore()
+    expect(out.ok).toBe(false)
+    expect(await getApproval(id)).toMatchObject({ consumed_by: 'someone-else' })
+    expect(await listApprovalEvents(id)).toHaveLength(1) // only the refusal journal row
+  })
+
+  it.runIf(testDbMode() === 'pg')('claim send: the gate reservation is sealed by another connection after the read -> not adopted (two connections)', async () => {
+    const id = await approved()
+    await dbx.run("UPDATE approvals SET consumed_at = ?, consumed_by = 'agent-a', consumed_ref = 'gate-send-1' WHERE id = ?", NOW - 5, id)
+    const il = interleave()
+    il.hold('send-parked')
+    const spy = parkBefore(/^\s*UPDATE approvals SET used_at = \?, used_ref = \?/, il, 'send-parked')
+    const sending = claimApproval({ ...claim, now: NOW, ref: 'send-1', mode: 'send' })
+    await il.reached('send-parked')
+    await dbx.run('UPDATE approvals SET used_at = 1, used_ref = ?', 'other-sender')
+    il.open('send-parked')
+    const out = await sending
+    spy.mockRestore()
     expect(out.ok && out.adopted).not.toBe(true)
     expect(await getApproval(id)).toMatchObject({ used_ref: 'other-sender' })
   })
@@ -215,7 +277,8 @@ describe('the success and its journal row are one transaction', () => {
   })
 })
 
-describe('the transaction modes are kept', () => {
+// SQLite's lock modes (deferred, BEGIN IMMEDIATE, SQLITE_BUSY): PostgreSQL has no such modes, so these cells stay SQLite-only.
+describe.runIf(testDbMode() === 'sqlite')('the transaction modes are kept', () => {
   it('consume and claim take the default (deferred) mode, open-once the immediate one', async () => {
     const id = await approved()
     const { modes } = hookTx({})
@@ -326,7 +389,7 @@ describe('a database error rejects, it never answers ok', () => {
   })
 })
 
-describe('a raw-connection writer meets an open facade transaction (known limit)', () => {
+describe.runIf(testDbMode() === 'sqlite')('a raw-connection writer meets an open facade transaction (known limit)', () => {
   // The tenant delete still writes `approvals` on the raw connection. On one SQLite connection such a write does
   // not wait for the facade's transaction lock: it runs INSIDE the transaction that is open at that moment, and is
   // rolled back with it. The tenant delete moves onto the facade later; until then this is the behaviour.
