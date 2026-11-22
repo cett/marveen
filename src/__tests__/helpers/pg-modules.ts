@@ -105,6 +105,7 @@ export const PORTED: readonly string[] = [
   'src/__tests__/vault-facade-overlap.test.ts',
   'src/__tests__/db-agent-state-facade.test.ts',
   'src/__tests__/memory-fts.test.ts',
+  'src/__tests__/artifacts-fts.test.ts',
 ]
 
 /** Test files (same form) that do not, each with the reason. */

@@ -1,7 +1,7 @@
-import { dbx } from './facade.js'
+import { dbx, dbxDialect } from './facade.js'
 import { generateEmbedding } from './vector.js'
 import { logger } from '../logger.js'
-import { ftsEscape, FTS_MATCH } from './fts.js'
+import { ftsEscape, FTS_MATCH, PG_FTS_CONFIG } from './fts.js'
 
 // At this row count the HNSW graph may benefit from a periodic re-index.
 const VEC_REBUILD_THRESHOLD = 10_000
@@ -163,6 +163,20 @@ export async function listArtifacts(opts: ListArtifactsOptions = {}): Promise<Ar
   const kindBind   = opts.kind && ARTIFACT_KINDS.has(opts.kind as ArtifactKind) ? [opts.kind] : []
   const q = opts.q?.trim()
 
+  if (q && dbxDialect() === 'pg') {
+    // PostgreSQL: one phrase (consecutive words) on the generated index: title, meta, and the body of the textual kinds.
+    const agentCond  = agentBind.length  ? 'AND a.agent_id = ?'   : ''
+    const tenantCond = tenantBind.length ? 'AND a.tenant_id = ?'  : ''
+    const kindCond   = kindBind.length   ? 'AND a.kind = ?'       : ''
+    return dbx.all<ArtifactSummary>(`
+      SELECT a.id, a.agent_id, a.tenant_id, a.title, a.kind, a.mime, a.meta, a.source, a.cloud_url, a.created_at, a.updated_at
+      FROM artifacts a
+      WHERE a.fts @@ phraseto_tsquery(${PG_FTS_CONFIG}, public.fts_norm(?))
+      ${agentCond} ${tenantCond} ${kindCond}
+      ORDER BY a.created_at DESC
+      LIMIT ? OFFSET ?
+    `, q, ...agentBind, ...tenantBind, ...kindBind, limit, offset)
+  }
   if (q) {
     // FTS5 MATCH: searches title, meta JSON, and textual body of non-binary artifacts
     const agentCond  = agentBind.length  ? 'AND a.agent_id = ?'   : ''
@@ -203,6 +217,18 @@ export async function countArtifacts(opts: Omit<ListArtifactsOptions, 'limit' | 
   const kindBind   = opts.kind && ARTIFACT_KINDS.has(opts.kind as ArtifactKind) ? [opts.kind] : []
   const q = opts.q?.trim()
 
+  if (q && dbxDialect() === 'pg') {
+    const agentCond  = agentBind.length  ? 'AND a.agent_id = ?'   : ''
+    const tenantCond = tenantBind.length ? 'AND a.tenant_id = ?'  : ''
+    const kindCond   = kindBind.length   ? 'AND a.kind = ?'       : ''
+    const { c } = (await dbx.get(`
+      SELECT COUNT(*) AS c
+      FROM artifacts a
+      WHERE a.fts @@ phraseto_tsquery(${PG_FTS_CONFIG}, public.fts_norm(?))
+      ${agentCond} ${tenantCond} ${kindCond}
+    `, q, ...agentBind, ...tenantBind, ...kindBind)) as { c: number }
+    return c
+  }
   if (q) {
     const agentCond  = agentBind.length  ? 'AND a.agent_id = ?'   : ''
     const tenantCond = tenantBind.length ? 'AND a.tenant_id = ?'  : ''

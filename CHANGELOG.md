@@ -12,6 +12,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 <!-- changelog-auto-sha: cd00e7d54aadf38020b01709e16f6102bb1d0451 -->
 
 ### Added
+- **[Ops]** The artifact search has a PostgreSQL form on a generated full-text index of `artifacts` (migration `0005_artifacts_fts`): one phrase over the title, the meta JSON and the body of the textual kinds (a binary body is not indexed, as on SQLite). A body beyond 300000 characters is not searchable on PostgreSQL (SQLite indexes all of it; pinned by a cell). No runtime change on SQLite.
 - **[Ops]** The memory searches (the chat search, the agent search and the recall search) have a PostgreSQL form on a generated full-text index of `memories` (migration `0004_memories_fts`): the chat search matches the content only, the others the content and the keywords, accents are folded, and an error is an error (no LIKE fallback on PostgreSQL). The SQLite statements are unchanged (no runtime change).
 - **[Ops]** The FTS5 query builders (the MATCH sanitizer, the phrase and the every-word spelling) and the MATCH clauses live in one module, `src/db/fts.ts`; the SQLite statements are byte-identical (no runtime change).
 - **[Ops]** The PostgreSQL full-text configuration is in place (migration `0003_fts_config`: the `unaccent` extension, the `marveen_fts` configuration, the normalizer and the bytea text wrapper) with a preflight that refuses a database without `unaccent` or without UTF8 encoding. The production backend does not call it yet (no runtime change); the search itself moves in the next steps.
