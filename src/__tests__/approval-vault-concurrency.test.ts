@@ -2,11 +2,14 @@
 // transaction body run on the tx handle (not on the facade): on a pooled backend a facade statement would run OUTSIDE
 // the transaction, on SQLite it only joins it by accident (one connection).
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { db, dbx, createApproval, resolveApproval, consumeApproval, claimApproval, createApprovalOnce } from '../db.js'
+import { dbx, createApproval, resolveApproval, consumeApproval, claimApproval, createApprovalOnce } from '../db.js'
 import { useTestDb } from './helpers/with-test-db.js'
 
 useTestDb()
-beforeEach(() => { db.exec('DELETE FROM approval_events; DELETE FROM approvals') })
+beforeEach(async () => {
+  await dbx.run('DELETE FROM approval_events')
+  await dbx.run('DELETE FROM approvals')
+})
 
 afterEach(() => { vi.restoreAllMocks() })
 
@@ -19,7 +22,7 @@ async function approved(): Promise<string> {
   const id = `qa-${++seq}`
   await createApproval({ id, agent_id: 'agent-a', category: 'email_send', action_description: 'x', tenant_id: 'default', human_only: true, content_hash: HASH })
   expect(await resolveApproval(id, 'approved', 'human:session:owner', null, 'dashboard_session')).toBe(true)
-  db.prepare('UPDATE approvals SET resolved_at = ? WHERE id = ?').run(NOW - 10, id)
+  await dbx.run('UPDATE approvals SET resolved_at = ? WHERE id = ?', NOW - 10, id)
   return id
 }
 
@@ -32,7 +35,7 @@ describe('concurrent consumption: exactly one winner', () => {
     const out = await Promise.all(Array.from({ length: N }, (_, i) => consumeApproval({ ...p, id, ref: `r-${i}` })))
     expect(out.filter((o) => o.ok && !o.replayed)).toHaveLength(1)
     expect(out.filter((o) => !o.ok)).toHaveLength(N - 1)
-    expect(db.prepare("SELECT COUNT(*) AS n FROM approval_events WHERE event = 'consumed'").get()).toEqual({ n: 1 })
+    expect(await dbx.get("SELECT COUNT(*) AS n FROM approval_events WHERE event = 'consumed'")).toEqual({ n: 1 })
   })
 
   it('consume by id with the SAME ref: one consumed, the rest replayed', async () => {
@@ -40,7 +43,7 @@ describe('concurrent consumption: exactly one winner', () => {
     const out = await Promise.all(Array.from({ length: N }, () => consumeApproval({ ...p, id, ref: 'same' })))
     expect(out.every((o) => o.ok)).toBe(true)
     expect(out.filter((o) => o.ok && !o.replayed)).toHaveLength(1)
-    expect(db.prepare("SELECT COUNT(*) AS n FROM approval_events WHERE event = 'consumed'").get()).toEqual({ n: 1 })
+    expect(await dbx.get("SELECT COUNT(*) AS n FROM approval_events WHERE event = 'consumed'")).toEqual({ n: 1 })
   })
 
   it('claim by hash with distinct refs: one ok', async () => {
@@ -73,7 +76,7 @@ describe('concurrent consumption: exactly one winner', () => {
     expect(gate.ok).toBe(true)
     const out = await Promise.all(Array.from({ length: 6 }, (_, i) => claimApproval({ ...p, category: 'email_send', mode: 'send', ref: `snd-${i}` })))
     expect(out.filter((o) => o.ok && !o.replayed)).toHaveLength(1)
-    expect(db.prepare("SELECT COUNT(*) AS n FROM approvals WHERE used_at IS NOT NULL").get()).toEqual({ n: 1 })
+    expect(await dbx.get('SELECT COUNT(*) AS n FROM approvals WHERE used_at IS NOT NULL')).toEqual({ n: 1 })
   })
 })
 
