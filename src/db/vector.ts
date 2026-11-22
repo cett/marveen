@@ -760,15 +760,56 @@ export function initVecSupport(): void {
 }
 
 /**
+ * The artifact vector hits of a query embedding on PostgreSQL (phase 3, step 6b, c6). The optional tenant scope is applied
+ * in SQL before the distance order, so a hit never crosses it. `<->` is the L2 distance; ties fall to the smaller id.
+ * The score is the SQLite score. Exported so the cells need no embedder.
+ */
+export async function pgVectorArtifacts(
+  queryEmbedding: number[],
+  limit: number,
+  scope?: { tenantId?: string },
+): Promise<ArtifactPointer[]> {
+  try {
+    const literal = blobToVectorLiteral(floatsToBlob(queryEmbedding))
+    const conds: string[] = []
+    const params: unknown[] = [literal]
+    if (scope?.tenantId !== undefined) { conds.push('a.tenant_id = ?'); params.push(scope.tenantId) }
+    params.push(limit)
+    const where = conds.length > 0 ? `WHERE ${conds.join(' AND ')}` : ''
+    const rows = (await dbx.all(`
+      SELECT a.id, a.title, a.kind, a.created_at, e.embedding <-> ?::vector AS distance
+      FROM artifact_embeddings e
+      JOIN artifacts a ON a.id = e.artifact_id
+      ${where}
+      ORDER BY distance, a.id
+      LIMIT ?
+    `, ...params)) as { id: string; title: string; kind: string; created_at: number; distance: number }[]
+    return rows.map(a => ({ id: a.id, title: a.title, kind: a.kind, created_at: a.created_at, score: 1 / (1 + a.distance) }))
+  } catch (err) {
+    logger.debug({ err }, 'pgVectorArtifacts: pgvector query failed')
+    return []
+  }
+}
+
+/**
  * Search artifacts by semantic similarity against their title+meta embeddings.
  * Returns ArtifactPointer list (no content) sorted by similarity score.
- * Returns empty array when sqlite-vec is unavailable or Ollama is unreachable.
+ * Returns empty array when the vector index is unavailable or Ollama is unreachable.
+ * The optional scope.tenantId is applied on PostgreSQL only; the SQLite path has no tenant filter (a known gap, unchanged).
+ * ADR note: there is no caller in src yet. When one is added, scope becomes a required argument (the type changes), so a
+ * caller cannot leave the tenant out.
  */
-// @sqlite-only: vec0 MATCH on vec_artifacts.
+// SQLite branch: vec0 MATCH on vec_artifacts. The PostgreSQL branch is pgVectorArtifacts.
 export async function searchArtifactsByVector(
   query: string,
-  limit = 10
+  limit = 10,
+  scope?: { tenantId?: string },
 ): Promise<ArtifactPointer[]> {
+  if (dbxDialect() === 'pg') {
+    const pgEmbedding = await generateEmbedding(query)
+    if (!pgEmbedding) return []
+    return pgVectorArtifacts(pgEmbedding, limit, scope)
+  }
   if (!vecExtensionLoaded) return []
   const queryEmbedding = await generateEmbedding(query)
   if (!queryEmbedding) return []
