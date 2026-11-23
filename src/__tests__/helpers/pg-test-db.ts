@@ -244,7 +244,7 @@ export async function createPgTestDb(opts: PgTestDbOptions = {}): Promise<PgTest
     name,
     url,
     template,
-    pool,
+    pool: appPool, // DISCOVERY (throwaway, never merged): every test's dbx runs as the app role
     appPool,
     ownerPool,
     appDbx: () => createPgDbx(appPool),
