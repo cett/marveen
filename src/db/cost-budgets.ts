@@ -94,18 +94,8 @@ export async function replaceCostBudgets(tenantId: string, budgets: BudgetEntry[
 // pre-migration default of an empty budgets array. Safe to call on every boot.
 // @boot-sync-twin
 export function migrateCostBudgetsFromFile(): number {
-  const filePath = join(STORE_DIR, 'costops-config.json')
-  if (!existsSync(filePath)) return 0
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(readFileSync(filePath, 'utf-8'))
-  } catch (err) {
-    logger.warn({ err, filePath }, 'cost_budgets migration: failed to parse costops-config.json, skipping')
-    return 0
-  }
-  if (!parsed || typeof parsed !== 'object') return 0
-  const rawBudgets = (parsed as Record<string, unknown>).budgets
-  if (!Array.isArray(rawBudgets)) return 0
+  const entries = readBudgetFileEntries(costopsConfigPath())
+  if (entries === null) return 0
 
   const stmt = db.prepare(
     `INSERT INTO cost_budgets
@@ -114,24 +104,77 @@ export function migrateCostBudgetsFromFile(): number {
      ON CONFLICT DO NOTHING`
   )
   let migrated = 0
-  for (const e of rawBudgets) {
-    const b = e as Record<string, unknown>
-    if (typeof b?.id !== 'string' || !b.id) continue
-    if (typeof b?.amount !== 'number' || !isFinite(b.amount) || b.amount < 0) continue
-    const result = stmt.run({
-      id: b.id,
-      name: typeof b.name === 'string' ? b.name : b.id,
-      scope: typeof b.scope === 'string' ? b.scope : 'global',
-      scope_ref: typeof b.scope_ref === 'string' ? b.scope_ref : null,
-      amount: b.amount,
-      currency: typeof b.currency === 'string' ? b.currency : 'HUF',
-      warning_threshold: typeof b.warning_threshold === 'number' ? b.warning_threshold : 0.8,
-      hard_threshold: typeof b.hard_threshold === 'number' ? b.hard_threshold : 1.0,
-      block_on_hard: b.block_on_hard === true ? 1 : 0,
-    })
+  for (const e of entries) {
+    const row = budgetImportRow(e)
+    if (row === null) continue
+    if (stmt.run(row).changes > 0) migrated++
+  }
+  return migrated
+}
+
+/**
+ * The PostgreSQL counterpart of migrateCostBudgetsFromFile (phase 3, 6c-2): the same file, the same rows, the same
+ * INSERT ... ON CONFLICT DO NOTHING, on the facade. Resolves to the number of rows added. Not a boot-sync twin: it is
+ * awaited by initDatabaseAsync on the PostgreSQL path. `filePath` is the costops-config.json to read (tests pass a
+ * throwaway file; the boot passes the store's own).
+ */
+export async function migrateCostBudgetsFromFileAsync(filePath: string = costopsConfigPath()): Promise<number> {
+  const entries = readBudgetFileEntries(filePath)
+  if (entries === null) return 0
+  // the clock is passed in, as replaceCostBudgets does: unixepoch() is the SQLite spelling of it
+  const now = Math.floor(Date.now() / 1000)
+  let migrated = 0
+  for (const e of entries) {
+    const row = budgetImportRow(e)
+    if (row === null) continue
+    const result = await dbx.run(
+      `INSERT INTO cost_budgets
+         (id, name, scope, scope_ref, amount, currency, warning_threshold, hard_threshold, block_on_hard, tenant_id, created_at, updated_at)
+       VALUES (@id, @name, @scope, @scope_ref, @amount, @currency, @warning_threshold, @hard_threshold, @block_on_hard, 'default', @now, @now)
+       ON CONFLICT DO NOTHING`,
+      { ...row, now },
+    )
     if (result.changes > 0) migrated++
   }
   return migrated
+}
+
+function costopsConfigPath(): string {
+  return join(STORE_DIR, 'costops-config.json')
+}
+
+/** The `budgets[]` entries of the config file, or null when there is no such file or it does not hold the array. */
+function readBudgetFileEntries(filePath: string): Record<string, unknown>[] | null {
+  if (!existsSync(filePath)) return null
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(readFileSync(filePath, 'utf-8'))
+  } catch (err) {
+    logger.warn({ err, filePath }, 'cost_budgets migration: failed to parse costops-config.json, skipping')
+    return null
+  }
+  if (!parsed || typeof parsed !== 'object') return null
+  const rawBudgets = (parsed as Record<string, unknown>).budgets
+  if (!Array.isArray(rawBudgets)) return null
+  return rawBudgets as Record<string, unknown>[]
+}
+
+/** One budgets[] entry as the row the importer writes, or null for an entry it skips (no id, or a bad amount). */
+function budgetImportRow(e: Record<string, unknown>): Record<string, string | number | null> | null {
+  const b = e as Record<string, unknown> | null
+  if (typeof b?.id !== 'string' || !b.id) return null
+  if (typeof b?.amount !== 'number' || !isFinite(b.amount) || b.amount < 0) return null
+  return {
+    id: b.id,
+    name: typeof b.name === 'string' ? b.name : b.id,
+    scope: typeof b.scope === 'string' ? b.scope : 'global',
+    scope_ref: typeof b.scope_ref === 'string' ? b.scope_ref : null,
+    amount: b.amount,
+    currency: typeof b.currency === 'string' ? b.currency : 'HUF',
+    warning_threshold: typeof b.warning_threshold === 'number' ? b.warning_threshold : 0.8,
+    hard_threshold: typeof b.hard_threshold === 'number' ? b.hard_threshold : 1.0,
+    block_on_hard: b.block_on_hard === true ? 1 : 0,
+  }
 }
 
 // Month-to-date token volume for the budget check (token_usage raw rows plus

@@ -57,12 +57,13 @@ import { join } from 'node:path'
 import { STORE_DIR, MAIN_AGENT_ID } from '../config.js'
 import { initDatabase as connectionInitDatabase, db } from './connection.js'
 import { backfillImportShadowRows, initVecSupport, migrateExistingEmbeddingsToBLOB } from './vector.js'
-import { replaceClaudePlanRowsSync, activatePlanForAgentSync, type ClaudePlanType } from './claude-plans.js'
+import { replaceClaudePlanRowsSync, activatePlanForAgentSync, replaceClaudePlanRows, activatePlanForAgent, type ClaudePlanType } from './claude-plans.js'
+import { dbx } from './facade.js'
 import { migrateConfigOverridesToSystemConfig, migrateGroup5StateFromFiles, getSystemConfig, setSystemConfigSync } from './system-config.js'
 import { migrateScheduleLastRunFromFile } from './tasks.js'
 import { importAgentSettingsFromFile, type AgentSettingKey } from './agent-settings.js'
 import { getAgentStateSync, setAgentStateSync, importAgentStateFromFile, type AgentStateKey } from './agent-state.js'
-import { migrateCostBudgetsFromFile } from './cost-budgets.js'
+import { migrateCostBudgetsFromFile, migrateCostBudgetsFromFileAsync } from './cost-budgets.js'
 import { migrateVaultBindingsFromFile } from './vault-bindings.js'
 import { migrateFederationConfigFromFile } from './federation.js'
 import { loadSystemConfigCache } from './config-cache.js'
@@ -84,6 +85,10 @@ export async function initDatabaseAsync(): Promise<'sqlite' | 'pg'> {
     return 'sqlite'
   }
   await bootPgBackend()
+  // The two importers of the sync chain that still matter on PostgreSQL (6c-2). Both are idempotent: the cost budgets
+  // are ON CONFLICT DO NOTHING, the seed leaves a registry that already has rows alone.
+  await migrateCostBudgetsFromFileAsync()
+  await seedClaudePlansRegistryMirrorAsync()
   return 'pg'
 }
 
@@ -420,59 +425,108 @@ function isNonEmptyString(v: unknown): v is string {
   return typeof v === 'string' && v.trim().length > 0
 }
 
+type ClaudePlanSeedRow = Parameters<typeof replaceClaudePlanRowsSync>[0][number]
+
+/**
+ * The registry rows of store/claude-plans.json (undefined when the file is absent or does not hold an array). Throws on
+ * a file that does not parse: the seeds log that and skip the registry.
+ */
+function readClaudePlansSeed(dir: string): ClaudePlanSeedRow[] | undefined {
+  const plansPath = join(dir, 'claude-plans.json')
+  if (!existsSync(plansPath)) return undefined
+  const raw = JSON.parse(readFileSync(plansPath, 'utf-8'))
+  if (!Array.isArray(raw)) return undefined
+  const plans: ClaudePlanSeedRow[] = []
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object') continue
+    const o = entry as Record<string, unknown>
+    if (!isNonEmptyString(o.id) || !isNonEmptyString(o.label) || !isNonEmptyString(o.configDir)) continue
+    if (o.planType !== 'personal' && o.planType !== 'team') continue
+    plans.push({
+      id: o.id, label: o.label, configDir: o.configDir,
+      planType: o.planType as ClaudePlanType,
+      channelsAllowed: o.channelsAllowed === true,
+      expectedOrgType: isNonEmptyString(o.expectedOrgType) ? o.expectedOrgType : undefined,
+      expectedEmail: isNonEmptyString(o.expectedEmail) ? o.expectedEmail : undefined,
+    })
+  }
+  return plans
+}
+
+/**
+ * The [agentId, planId] pairs of store/claude-plans-state.json's activePlanByAgent (none when the file is absent or holds
+ * no map). Throws on a file that does not parse.
+ */
+function readActivePlansSeed(dir: string): [string, string][] {
+  const statePath = join(dir, 'claude-plans-state.json')
+  if (!existsSync(statePath)) return []
+  const raw = JSON.parse(readFileSync(statePath, 'utf-8'))
+  const activePlanByAgent = raw && typeof raw === 'object' ? raw.activePlanByAgent : null
+  if (!activePlanByAgent || typeof activePlanByAgent !== 'object') return []
+  const out: [string, string][] = []
+  for (const [agentId, planId] of Object.entries(activePlanByAgent as Record<string, unknown>)) {
+    if (isNonEmptyString(planId)) out.push([agentId, planId])
+  }
+  return out
+}
+
 function seedClaudePlansRegistryMirror(): void {
   const existingCount = (db.prepare('SELECT COUNT(*) as c FROM claude_plans_registry').get() as { c: number }).c
   if (existingCount === 0) {
-    const plansPath = join(STORE_DIR, 'claude-plans.json')
-    if (existsSync(plansPath)) {
-      try {
-        const raw = JSON.parse(readFileSync(plansPath, 'utf-8'))
-        if (Array.isArray(raw)) {
-          const plans: Parameters<typeof replaceClaudePlanRowsSync>[0] = []
-          for (const entry of raw) {
-            if (!entry || typeof entry !== 'object') continue
-            const o = entry as Record<string, unknown>
-            if (!isNonEmptyString(o.id) || !isNonEmptyString(o.label) || !isNonEmptyString(o.configDir)) continue
-            if (o.planType !== 'personal' && o.planType !== 'team') continue
-            plans.push({
-              id: o.id, label: o.label, configDir: o.configDir,
-              planType: o.planType as ClaudePlanType,
-              channelsAllowed: o.channelsAllowed === true,
-              expectedOrgType: isNonEmptyString(o.expectedOrgType) ? o.expectedOrgType : undefined,
-              expectedEmail: isNonEmptyString(o.expectedEmail) ? o.expectedEmail : undefined,
-            })
-          }
-          replaceClaudePlanRowsSync(plans)
-        }
-      } catch (err) {
-        logger.warn({ err }, 'claude-plans-registry mirror seed: failed to read/parse claude-plans.json, skipping')
-      }
+    try {
+      const plans = readClaudePlansSeed(STORE_DIR)
+      if (plans) replaceClaudePlanRowsSync(plans)
+    } catch (err) {
+      logger.warn({ err }, 'claude-plans-registry mirror seed: failed to read/parse claude-plans.json, skipping')
     }
   }
 
   const activeCount = (db.prepare('SELECT COUNT(*) as c FROM agent_active_plans').get() as { c: number }).c
   if (activeCount === 0) {
-    const statePath = join(STORE_DIR, 'claude-plans-state.json')
-    if (existsSync(statePath)) {
-      try {
-        const raw = JSON.parse(readFileSync(statePath, 'utf-8'))
-        const activePlanByAgent = raw && typeof raw === 'object' ? raw.activePlanByAgent : null
-        if (activePlanByAgent && typeof activePlanByAgent === 'object') {
-          for (const [agentId, planId] of Object.entries(activePlanByAgent as Record<string, unknown>)) {
-            if (!isNonEmptyString(planId)) continue
-            // This connection enforces `PRAGMA foreign_keys` (see
-            // db/claude-plans.ts header) -- a plan id in the state file that
-            // no longer exists in the just-seeded registry (removed from
-            // claude-plans.json since the state file was last written) throws
-            // here. Per-entry try/catch so one stale reference cannot abort
-            // the whole seed (and therefore initDatabase()) on upgrade.
-            try { activatePlanForAgentSync(agentId, planId, 'manual') }
-            catch (err) { logger.warn({ err, agentId, planId }, 'claude-plans-registry mirror seed: skipping stale activePlanByAgent entry') }
-          }
-        }
-      } catch (err) {
-        logger.warn({ err }, 'claude-plans-registry mirror seed: failed to read/parse claude-plans-state.json, skipping')
+    try {
+      for (const [agentId, planId] of readActivePlansSeed(STORE_DIR)) {
+        // This connection enforces `PRAGMA foreign_keys` (see
+        // db/claude-plans.ts header) -- a plan id in the state file that
+        // no longer exists in the just-seeded registry (removed from
+        // claude-plans.json since the state file was last written) throws
+        // here. Per-entry try/catch so one stale reference cannot abort
+        // the whole seed (and therefore initDatabase()) on upgrade.
+        try { activatePlanForAgentSync(agentId, planId, 'manual') }
+        catch (err) { logger.warn({ err, agentId, planId }, 'claude-plans-registry mirror seed: skipping stale activePlanByAgent entry') }
       }
+    } catch (err) {
+      logger.warn({ err }, 'claude-plans-registry mirror seed: failed to read/parse claude-plans-state.json, skipping')
+    }
+  }
+}
+
+/**
+ * The PostgreSQL counterpart of seedClaudePlansRegistryMirror (phase 3, 6c-2): the same two files, the same guards (a
+ * registry or active-plan table that already has rows is left alone), the same per-entry rule for a stale plan id, on the
+ * async functions of db/claude-plans.ts. `dir` is the directory of the two JSON side-cars (tests pass a throwaway one;
+ * the boot passes the store's).
+ */
+export async function seedClaudePlansRegistryMirrorAsync(dir: string = STORE_DIR): Promise<void> {
+  const existingCount = (await dbx.get<{ c: number }>('SELECT COUNT(*) AS c FROM claude_plans_registry'))!.c
+  if (existingCount === 0) {
+    try {
+      const plans = readClaudePlansSeed(dir)
+      if (plans) await replaceClaudePlanRows(plans)
+    } catch (err) {
+      logger.warn({ err }, 'claude-plans-registry mirror seed: failed to read/parse claude-plans.json, skipping')
+    }
+  }
+
+  const activeCount = (await dbx.get<{ c: number }>('SELECT COUNT(*) AS c FROM agent_active_plans'))!.c
+  if (activeCount === 0) {
+    try {
+      for (const [agentId, planId] of readActivePlansSeed(dir)) {
+        // A plan id that is no longer in the registry fails the foreign key: that entry is skipped alone, as in the sync seed.
+        try { await activatePlanForAgent(agentId, planId, 'manual') }
+        catch (err) { logger.warn({ err, agentId, planId }, 'claude-plans-registry mirror seed: skipping stale activePlanByAgent entry') }
+      }
+    } catch (err) {
+      logger.warn({ err }, 'claude-plans-registry mirror seed: failed to read/parse claude-plans-state.json, skipping')
     }
   }
 }
