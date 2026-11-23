@@ -30,7 +30,20 @@ import {
 import { HTML_LIKE_EXTS, stripMarkup } from './import-utils.js'
 import { getSecret } from './vault.js'
 
-import { systemJob } from '../db/background-jobs.js'
+import { systemJob, runAsItemTenant } from '../db/background-jobs.js'
+import { noteTenantUnresolved } from '../db/context.js'
+
+// The tenant of one import source (the per-item block of the row-level-security work). The scheduler reads the due sources in
+// its own `system` context, across tenants. What belongs to ONE source and is a write of its tenant (the import rows and their
+// shadow memories, the source's run stamp) and the read of its vault secret run in a block of the source's tenant, so a wrong
+// stamp would fail instead of writing into another tenant. The audit row of a run (`import_audit_log`) is NOT in the block:
+// its statement names no tenant (the column default stamps it), so inside a tenant block it would be refused as soon as
+// the policies exist, and the global soft-cap read (`sumImportContentSize`) and the link maintenance span tenants. No
+// `runAs.system` is opened inside the block (the escalation counter would show it).
+function inSourceTenant<T>(source: { tenant_id: string }, fn: () => T): T {
+  return runAsItemTenant('import-crawler', source.tenant_id, fn)
+}
+
 // ── Secret-gate patterns ─────────────────────────────────────────────────────
 // Matches API tokens, private keys, passwords and similar credentials that must
 // not be stored in the memory database.
@@ -332,7 +345,7 @@ async function crawlLocalSource(
       const hash = createHash('sha256').update(raw).digest('hex')
       const keywords = extractKeywords(content, basename(filePath))
 
-      const result = await upsertImportMemory(source.id, filePath, basename(filePath), hash, content, keywords, now, source.tenant_id)
+      const result = await inSourceTenant(source, () => upsertImportMemory(source.id, filePath, basename(filePath), hash, content, keywords, now, source.tenant_id))
       if (result === 'added') { counts.added++; totalSize += content.length }
       else if (result === 'updated') { counts.updated++ }
       else if (result === 'skipped_blank') {
@@ -518,7 +531,8 @@ async function crawlConfluenceSource(
   // The token is re-read from the vault on every crawl (never cached across
   // runs, never logged) so a rotated/revoked token takes effect on the very
   // next scheduled crawl without any other change.
-  const token = getSecret(source.vault_token_ref, source.tenant_id)
+  const vaultRef = source.vault_token_ref
+  const token = inSourceTenant(source, () => getSecret(vaultRef, source.tenant_id))
   if (!token) {
     logger.error({ sourceId: source.id }, 'Confluence: vault token missing, skipping')
     return counts
@@ -576,7 +590,7 @@ async function crawlConfluenceSource(
       const fileName = `${detail.title}.html`
       const keywords = `${space.key}, ${detail.title.split(' ').slice(0, 10).join(', ')}`
 
-      const result = await upsertImportMemory(source.id, filePath, fileName, hash, content, keywords, now, source.tenant_id)
+      const result = await inSourceTenant(source, () => upsertImportMemory(source.id, filePath, fileName, hash, content, keywords, now, source.tenant_id))
       if (result === 'added') { counts.added++; totalSize += content.length }
       else if (result === 'updated') { counts.updated++ }
       else if (result === 'skipped_blank') {
@@ -609,6 +623,14 @@ export async function crawlSource(sourceId: string): Promise<void> {
     throw err
   }
   if (!source) { runningScans.delete(sourceId); logger.warn({ sourceId }, 'Import source not found'); return }
+  // A source without a tenant is SKIPPED, it does not run as `default` (fail closed). Nothing is read or written for it: not
+  // even the run stamp, so it stays due and the warning and the counter come back with every scheduler pass.
+  if (typeof source.tenant_id !== 'string' || source.tenant_id.length === 0) {
+    runningScans.delete(sourceId)
+    noteTenantUnresolved('import-crawler')
+    logger.warn({ sourceId }, 'Import source has no tenant, skipped (it does not run as the default tenant)')
+    return
+  }
 
   const runAt = Math.floor(Date.now() / 1000)
   let error: string | undefined
@@ -665,7 +687,7 @@ export async function crawlSource(sourceId: string): Promise<void> {
     await writeAuditLog(source.id, runAt, { scanned: 0, added: 0, updated: 0, skippedHash: 0, skippedSecret: 0, skippedSize: 0, skippedType: 0 }, error)
   } finally {
     runningScans.delete(sourceId)
-    await markImportSourceRun(sourceId, runAt)
+    await inSourceTenant(source, () => markImportSourceRun(sourceId, runAt))
   }
 }
 
