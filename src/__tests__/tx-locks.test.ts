@@ -202,6 +202,37 @@ describe('putSkillFile', () => {
   })
 })
 
+describe('saveWorkspaceDoc', () => {
+  const save = (content: string) => saveWorkspaceDoc({
+    agent_id: 'agent-a', tenant_id: 'default', doc_key: 'notes/new-key', title: 'T', content,
+    content_type: 'text', type: 'notes',
+  })
+
+  it('two saves of a NEW (agent, doc_key) both succeed: the second waits for the first and updates its row (a row lock cannot serialise a create)', async () => {
+    const il = interleave()
+    il.hold('first-insert')
+    // the first save found no row and stops before its INSERT; the second save of the same key is started
+    const spy = parkFirstTxAt(il, 'first-insert', /^\s*INSERT INTO workspace_docs/)
+    let state: 'settled' | 'blocked' | 'queued'
+    try {
+      const first = save('A')
+      await il.reached('first-insert')
+      const second = save('B')
+      state = await untilSettledOrBlocked(second)
+      il.open('first-insert')
+      // without the lock the second one has inserted already and the first one fails on the unique (agent_id, doc_key) index
+      await expect(first).resolves.toMatchObject({ doc_key: 'notes/new-key' })
+      await expect(second).resolves.toMatchObject({ doc_key: 'notes/new-key' })
+    } finally {
+      il.open('first-insert')
+      spy.mockRestore()
+    }
+    expect(state).not.toBe('settled')
+    const rows = await dbx.all<{ content: string }>("SELECT content FROM workspace_docs WHERE agent_id = 'agent-a' AND doc_key = 'notes/new-key'")
+    expect(rows).toEqual([{ content: 'B' }])
+  })
+})
+
 describe('deleteVaultBindingsForSecret', () => {
   it('returns every binding it deleted, also one written while the delete was about to run (DELETE ... RETURNING)', async () => {
     await upsertVaultBinding('default', { vaultSecretId: 'secret-a', envVar: 'KEY_ONE', targets: [] })
