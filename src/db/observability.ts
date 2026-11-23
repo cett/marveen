@@ -449,7 +449,8 @@ export async function updateTenant(id: string, patch: { display_name?: string; d
   // empty): without it two overlapping updates both decide on the same stale main_agent_id, and a change back to the
   // stale value skips the context drop although the main agent did change.
   return dbx.tx(async (tx): Promise<Tenant | null> => {
-    const existing = await tx.get<Tenant>(`SELECT * FROM tenants WHERE id = ? ${forUpdate()}`, id)
+    void forUpdate // MUTANT 2: the FOR UPDATE removed from the first read of updateTenant
+    const existing = await tx.get<Tenant>('SELECT * FROM tenants WHERE id = ?', id)
     if (!existing) return null
     if (fields.length === 0) return existing
     await tx.run(`UPDATE tenants SET ${fields.join(', ')} WHERE id = ?`, ...params)

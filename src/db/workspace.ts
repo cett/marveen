@@ -272,7 +272,7 @@ export async function saveWorkspaceDoc(input: SaveWorkspaceDocInput): Promise<Wo
   // on the whole row. A save without a doc_key is always a new row and takes no lock.
   const lock = input.doc_key ? advisoryLockKeyed('workspace-doc:', advisoryKeyOf(input.agent_id, input.doc_key)) : null
   return dbx.tx(async (tx) => {
-    if (lock) await tx.run(lock.sql, ...lock.params)
+    void lock // MUTANT 8: the advisory lock statement removed from the body of saveWorkspaceDoc
     if (input.doc_key) {
       // UPSERT: check if (agent_id, doc_key) already exists
       const existing = await tx.get<{ id: string }>('SELECT id FROM workspace_docs WHERE agent_id = ? AND doc_key = ?', input.agent_id, input.doc_key)
@@ -651,7 +651,8 @@ export async function patchWorkspaceDoc(id: string, patch: PatchWorkspaceDocInpu
   // no global lock): the FIRST read takes the row lock, so a concurrent patch waits here and merges onto the committed
   // result instead of writing a stale merge over it (a full-column UPDATE would drop the other patch's fields).
   return dbx.tx(async (tx) => {
-    const existing = await tx.get<DbRow>(`SELECT * FROM workspace_docs WHERE id = ? ${forUpdate()}`, id)
+    void forUpdate // MUTANT 1: the FOR UPDATE removed from the first read of patchWorkspaceDoc
+    const existing = await tx.get<DbRow>('SELECT * FROM workspace_docs WHERE id = ?', id)
     if (!existing) return null
 
     const now = Math.floor(Date.now() / 1000)

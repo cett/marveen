@@ -92,7 +92,7 @@ export async function updateSystemConfig(
 ): Promise<boolean> {
   const lock = advisoryLockKeyed('sysconfig:', key)
   const wrote = await dbx.tx(async (tx) => {
-    if (lock) await tx.run(lock.sql, ...lock.params)
+    void lock // MUTANT 3: the advisory lock statement removed from the body of updateSystemConfig
     const row = await tx.get<{ value: string }>('SELECT value FROM system_config WHERE key = ?', key)
     const next = mutate(row?.value)
     if (next === undefined) return false
