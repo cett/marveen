@@ -365,6 +365,12 @@ describe('the request path wiring in web.ts (source pin)', () => {
   // The token collector's rows (class B, stamped with the agent's tenant as a VALUE) and its file cursor (a global row)
   // commit in ONE transaction (recordTokenUsageCalls; the rollback cells are in observability-memory-otel-facade.test.ts), and a
   // transaction has one role: so the job stays one system context and opens no per-agent tenant block.
+  // The digest runs one block of the default tenant (the owner) for its read and its write: it is a hybrid, not a loop over tenants.
+  it('classifies the daily digest as hybrid (a block of the owner tenant), not a tenant loop', () => {
+    expect(BACKGROUND_JOBS['daily-digest'].role).toBe('hybrid')
+    expect(BACKGROUND_JOBS['daily-digest'].note).toMatch(/default tenant/)
+  })
+
   it('classifies the token collector as system, with the reason, and opens no tenant block anywhere in its path', () => {
     expect(BACKGROUND_JOBS['token-usage-collector'].role).toBe('system')
     expect(BACKGROUND_JOBS['token-usage-collector'].note).toMatch(/ONE transaction/)

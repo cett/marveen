@@ -51,10 +51,13 @@ export async function saveMemory(
   chatId: string,
   content: string,
   sector: 'semantic' | 'episodic',
-  topicKey?: string
+  topicKey?: string,
+  tenantId: string = 'default',
 ): Promise<void> {
   const now = Math.floor(Date.now() / 1000)
-  await dbx.run('INSERT INTO memories (chat_id, topic_key, content, sector, salience, created_at, accessed_at) VALUES (?, ?, ?, ?, 1.0, ?, ?)', chatId, topicKey ?? null, content, sector, now, now)
+  // The stamp is an explicit value (as in saveAgentMemory), not the column default, so a write inside a tenant block carries
+  // the tenant of the block under row-level security.
+  await dbx.run('INSERT INTO memories (chat_id, topic_key, content, sector, salience, created_at, accessed_at, tenant_id) VALUES (?, ?, ?, ?, 1.0, ?, ?, ?)', chatId, topicKey ?? null, content, sector, now, now, tenantId)
 }
 
 export { buildFtsMatchExpression } from './fts.js'

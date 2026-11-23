@@ -12,7 +12,7 @@
 //   agent          the job acts for one agent at a time: `runAs.agent(agentId, tenantId)` per agent, the tenant looked up
 //                  once and kept for a while (setAgentTenantResolver; the default is the `default` tenant).
 //   hybrid         a system job that switches to the tenant of the item it handles for the writes (message router, schedule runner).
-//   tenant-loop    a system job today that visits every tenant (import crawler, the daily digest). The row-level
+//   tenant-loop    a system job today that visits every tenant (import crawler). The row-level
 //                  security step turns each visit into its own `runAs.tenant`; until then the loop is one system context.
 //   admin          a global admin session (no tenant): `runAs.admin(name)`, opened by `runAsRequest`.
 //   viewer         any other authenticated session without a tenant: `runAs.viewer(name)`, opened by `runAsRequest`.
@@ -37,7 +37,7 @@ export interface BackgroundJob {
 
 export const BACKGROUND_JOBS = {
   'memory-decay': { file: 'src/main.ts', role: 'system', note: 'daily decay of the memory tiers, once at boot and then every 24 hours' },
-  'daily-digest': { file: 'src/main.ts', role: 'tenant-loop', note: 'daily log at 23:00 from the memories of the owner chat' },
+  'daily-digest': { file: 'src/main.ts', role: 'hybrid', note: 'daily log at 23:00 from the memories of the owner chat; the owner is the default tenant: the read (filtered to it) and the write run in a block of it, the model call between them outside; a digest per tenant is parked' },
   'store-watcher': { file: 'src/store-watcher.ts', role: 'system', note: 'file watcher on the store directory writing the audit trail' },
   'auth-state-sweep': { file: 'src/web.ts', role: 'system', note: 'hourly sweep of expired browser sessions and device keys' },
   'token-usage-collector': { file: 'src/web.ts', role: 'system', note: 'transcript token usage per agent; the rows (each stamped with its agent tenant as a value) and the file cursor (a global row) commit in ONE transaction, so the job stays one system context instead of a tenant block per agent' },

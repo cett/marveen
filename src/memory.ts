@@ -19,6 +19,7 @@ import {
 } from './db.js'
 import { MAIN_AGENT_ID } from './config.js'
 import { runAgent } from './agent.js'
+import { runAsItemTenant } from './db/background-jobs.js'
 import { logger } from './logger.js'
 import { wrapUntrusted, UNTRUSTED_PREAMBLE } from './prompt-safety.js'
 
@@ -177,10 +178,17 @@ export async function runDecaySweep(): Promise<void> {
 
 // --- Daily digest ---
 
+// The digest belongs to the owner, and the owner is the `default` tenant: the owner chat is one global value and is not bound
+// to any other tenant. The read and the write each run in a short block of that tenant, and the read is filtered to it:
+// `saveAgentMemory` files every agent memory under the owner chat with the tenant of its agent, so an unfiltered read of the
+// chat saw the memories of EVERY tenant, summarized them and stored the summary as a `default` memory (a cross-tenant leak).
+// The model call between the two blocks is outside them: it is not a db write of the tenant. A digest per tenant is parked.
+const DIGEST_TENANT = 'default'
+
 export async function runDailyDigest(chatId: string): Promise<string | null> {
   // Collect today's episodic memories (last 24h)
   const oneDayAgo = Math.floor(Date.now() / 1000) - 86400
-  const allRecent = await getMemoriesForChat(chatId, 50)
+  const allRecent = await runAsItemTenant('daily-digest', DIGEST_TENANT, () => getMemoriesForChat(chatId, 50, DIGEST_TENANT))
   const todayMemories = allRecent.filter((m) => m.created_at >= oneDayAgo)
 
   if (todayMemories.length < 2) {
@@ -217,7 +225,7 @@ ${memoryLines}`
 
     const digest = text.trim()
     const today = new Date().toLocaleDateString('hu-HU')
-    await saveMemory(chatId, `[Napi naplo ${today}] ${digest}`, 'episodic')
+    await runAsItemTenant('daily-digest', DIGEST_TENANT, () => saveMemory(chatId, `[Napi naplo ${today}] ${digest}`, 'episodic', undefined, DIGEST_TENANT))
     logger.info({ chatId, digestCwd, digestConfigDir }, `Napi naplo mentve: ${today}`)
     return digest
   } catch (err) {
