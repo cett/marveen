@@ -9,8 +9,8 @@
 /** A PostgreSQL install started without its snapshot: the process refuses (it must not read the SQLite file instead). */
 export class ConfigSnapshotMissingError extends Error {
   constructor() {
-    super('PostgreSQL install but no system_config snapshot: start through dist/index.js (the bootstrap loads it). '
-      + 'The CLIs and scripts are SQLite-only until the cutover.')
+    super('PostgreSQL install but no system_config snapshot: start through dist/index.js (the bootstrap loads it), '
+      + 'or a script through scripts/with-config.ts (the runner loads it).')
     this.name = 'ConfigSnapshotMissingError'
   }
 }
