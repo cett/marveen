@@ -8,7 +8,7 @@ import {
   wrapUntrusted,
   CHANNEL_INBOUND_PREAMBLE,
 } from '../prompt-safety.js'
-import { buildHandoffContent } from '../channel-coordinator.js'
+import { buildHandoffContent } from '../channel-coordinator-main.js'
 import { COORDINATOR_AGENT_ID } from '../channel-coordinator/ingest.js'
 import { tryHandleMessages } from '../web/routes/messages.js'
 import { wrapAgentMessageForDelivery } from '../web/agent-message-wrap.js'

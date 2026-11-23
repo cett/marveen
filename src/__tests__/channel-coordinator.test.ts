@@ -20,7 +20,7 @@ import {
   inNative409Cooldown,
   processBatch,
   reconcilePending,
-} from '../channel-coordinator.js'
+} from '../channel-coordinator-main.js'
 import { decideNativeChannelDown } from '../channel-coordinator/liveness.js'
 
 // ---- mapUpdate (pure normalization) -------------------------------------

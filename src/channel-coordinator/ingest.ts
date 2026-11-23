@@ -20,14 +20,19 @@ import Database from 'better-sqlite3'
 import { join } from 'node:path'
 import { STORE_DIR, DB_FILENAME, MAIN_AGENT_ID } from '../config.js'
 import { applyMigrations } from '../db-migrations.js'
+import { assertSqliteEntryAllowed } from '../db/pg/url.js'
 
 export const COORDINATOR_AGENT_ID = 'telegram-coordinator'
 
 let db: Database.Database | null = null
 
-export function initIngestDb(dbPath = join(STORE_DIR, DB_FILENAME)): Database.Database {
+// The default is the install's SQLite file. On a PostgreSQL install the coordinator must not open that file (the dashboard
+// reads PostgreSQL, so events written there would be lost): the default path is refused when a PostgreSQL URL is set.
+// A caller that names its own file (a test's ':memory:') is not an install entry point and is not refused.
+export function initIngestDb(dbPath?: string): Database.Database {
   if (db) return db
-  const handle = new Database(dbPath)
+  if (dbPath === undefined) assertSqliteEntryAllowed('channel-coordinator (incoming events)')
+  const handle = new Database(dbPath ?? join(STORE_DIR, DB_FILENAME))
   // WAL is persistent per-DB (the dashboard already set it); re-assert is a
   // no-op but harmless. busy_timeout IS per-connection, so set it here.
   handle.pragma('journal_mode = WAL')
