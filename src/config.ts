@@ -9,6 +9,8 @@ import { readEnvFile } from './env.js'
 import { getProviderType, getChannelToken, getChannelChatId, type ChannelProviderType } from './channel-provider.js'
 import { validateEnvConfig } from './config-schema.js'
 import { resolveSecret } from './secret-resolver.js'
+import { resolvePgUrl } from './db/pg/url.js'
+import { getConfigSnapshot, ConfigSnapshotMissingError } from './config-snapshot.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -64,8 +66,18 @@ let systemConfigCache: Record<string, string> | undefined
 // Lazy + cached: the table is read at most once per process (first cfg()
 // call that needs it), not on every cfg() call.
 function readSystemConfigCache(): Record<string, string> {
-  if (!systemConfigCache) systemConfigCache = readSystemConfigTable(join(STORE_DIR, DB_FILENAME))
+  if (!systemConfigCache) systemConfigCache = systemConfigRows()
   return systemConfigCache
+}
+
+// The overrides of this process. A snapshot set by the bootstrap wins. A PostgreSQL install without one refuses: the SQLite
+// file is never read when a PostgreSQL URL is configured (a stale file would be a silent divergence). Only the SQLite path
+// keeps the tolerance of readSystemConfigTable (a missing file or table is no overrides).
+function systemConfigRows(): Record<string, string> {
+  const snap = getConfigSnapshot()
+  if (snap !== undefined) return { ...snap }
+  if (resolvePgUrl() !== undefined) throw new ConfigSnapshotMissingError()
+  return readSystemConfigTable(join(STORE_DIR, DB_FILENAME))
 }
 
 // Pure precedence resolver for cfg(), reporting WHICH layer won alongside the
