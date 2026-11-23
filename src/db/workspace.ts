@@ -11,7 +11,7 @@
 
 import { randomBytes } from 'node:crypto'
 import { dbx, dbxDialect, type Tx } from './facade.js'
-import { likeNoCase } from './dialect.js'
+import { forUpdate, likeNoCase } from './dialect.js'
 import { likePrefix } from './like.js'
 import { blobToVectorLiteral, generateEmbedding, floatsToBlob } from './vector.js'
 import { logger } from '../logger.js'
@@ -640,10 +640,12 @@ export interface PatchWorkspaceDocInput {
 }
 
 export async function patchWorkspaceDoc(id: string, patch: PatchWorkspaceDocInput): Promise<WorkspaceDoc | null> {
-  // Read-modify-write: the merge below depends on the row as read, so the read and the UPDATE share one transaction
-  // and a concurrent patch cannot be silently overwritten with a stale merge.
+  // Read-modify-write: the merge below depends on the row as read, so the read and the UPDATE share one transaction.
+  // SQLite: the facade's transaction lock makes that enough. PostgreSQL (READ COMMITTED, one connection per transaction,
+  // no global lock): the FIRST read takes the row lock, so a concurrent patch waits here and merges onto the committed
+  // result instead of writing a stale merge over it (a full-column UPDATE would drop the other patch's fields).
   return dbx.tx(async (tx) => {
-    const existing = await tx.get<DbRow>('SELECT * FROM workspace_docs WHERE id = ?', id)
+    const existing = await tx.get<DbRow>(`SELECT * FROM workspace_docs WHERE id = ? ${forUpdate()}`, id)
     if (!existing) return null
 
     const now = Math.floor(Date.now() / 1000)
