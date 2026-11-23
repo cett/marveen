@@ -62,6 +62,16 @@ export const PG_ONLY_COLUMNS: readonly (readonly [string, string])[] = [
 export const PG_ONLY_INDEXES: readonly string[] = ['memories_fts_gin', 'artifacts_fts_gin', 'workspace_docs_fts_gin']
 
 /**
+ * Column types that differ on purpose (named exception, phase 3 step 6c-2, migration 0008). The SQLite column is INTEGER
+ * affinity, which holds a REAL value (a budget of 1000.5 is valid input), so the SQLite model maps it to bigint and the
+ * PostgreSQL column is double precision. The exception rewrites the expected type of exactly that column, and only when the
+ * SQLite column still has the type named here: a PostgreSQL column of any other type, or bigint again, is a difference.
+ */
+export const PG_TYPE_EXCEPTIONS: readonly { table: string; column: string; sqlite: string; pg: string }[] = [
+  { table: 'cost_budgets', column: 'amount', sqlite: 'bigint', pg: 'double precision' },
+]
+
+/**
  * PG-only tables (named exception, phase 3 step 6b): the three embedding side tables of migration 0007 have no SQLite twin
  * (the SQLite side keeps its vec0 tables). Each has its own spec here, the PostgreSQL model it must match (columns, primary
  * key, the cascading foreign key to its parent), and the comparison checks every facet of it: nothing about these tables is
@@ -265,6 +275,12 @@ export async function expectedFromSqlite(sdb: Database.Database, probe: pg.Clien
   const trig = (sdb.prepare("SELECT name, tbl_name FROM sqlite_master WHERE type='trigger'").all() as { name: string; tbl_name: string }[])
   for (const name of Object.keys(OMITTED_TRIGGERS)) if (!trig.some((t) => t.name === name)) problems.push(`omitted trigger ${name} no longer exists in SQLite: drop it from OMITTED_TRIGGERS`)
   const triggers = trig.filter((t) => !(t.name in OMITTED_TRIGGERS)).map((t) => `${t.name}@${t.tbl_name}`).sort()
+  for (const ex of PG_TYPE_EXCEPTIONS) {
+    const col = tables[ex.table]?.columns[ex.column]
+    if (!col) problems.push(`PG_TYPE_EXCEPTIONS: ${ex.table}.${ex.column} is not in the SQLite model: drop the exception`)
+    else if (col.type !== ex.sqlite) problems.push(`PG_TYPE_EXCEPTIONS: ${ex.table}.${ex.column} is ${col.type} in SQLite, the exception says ${ex.sqlite}`)
+    else col.type = ex.pg
+  }
   return { model: { tables, indexes, triggers }, problems }
 }
 

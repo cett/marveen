@@ -11,7 +11,8 @@ export const PG_BASELINE_SQLITE_VERSION = 95
 
 /**
  * PostgreSQL migrations with no SQLite twin: the full-text migrations of phase 3 step 6a (the SQLite side keeps its FTS5
- * tables), and the vector embedding tables of step 6b (the SQLite side keeps its vec0 tables). Retired with the SQLite
+ * tables), the vector embedding tables of step 6b (the SQLite side keeps its vec0 tables), and the cost_budgets amount type
+ * of step 6c-2 (SQLite's INTEGER column takes a REAL amount; PostgreSQL needs double precision). Retired with the SQLite
  * chain. A listed name must exist in the PG directory, and a listed number is skipped when the SQLite migrations take
  * their PG slots. Empty for every synthetic cell.
  */
@@ -21,6 +22,7 @@ export const PG_ONLY_MIGRATIONS: readonly string[] = [
   '0005_artifacts_fts.sql',
   '0006_workspace_docs_fts.sql',
   '0007_vec_embeddings.sql',
+  '0008_cost_budgets_amount.sql',
 ]
 
 const FILE = /^(\d{4,})_(.+)\.sql$/

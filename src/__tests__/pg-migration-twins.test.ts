@@ -91,22 +91,22 @@ describe('twinProblems', () => {
   })
 
   it('(iii) a listed PG-only name missing from the directory is reported (the strict check)', () => {
-    const problems = twinProblems(SQLITE, [...PG, ...FTS.slice(0, 4)], FTS)
-    expect(problems).toEqual(['PG-only migration 0007_vec_embeddings.sql is listed but missing: update PG_ONLY_MIGRATIONS'])
+    const problems = twinProblems(SQLITE, [...PG, ...FTS.slice(0, -1)], FTS)
+    expect(problems).toEqual(['PG-only migration 0008_cost_budgets_amount.sql is listed but missing: update PG_ONLY_MIGRATIONS'])
   })
 
-  it('(iv) with the five PG-only files present, a SQLite 0097 without a twin is reported at 0008, and with 0008 it is clean', () => {
+  it('(iv) with the six PG-only files present, a SQLite 0097 without a twin is reported at 0009, and with 0009 it is clean', () => {
     const problems = twinProblems([...SQLITE, '0097_new_thing.sql'], [...PG, ...FTS], FTS)
     expect(problems).toHaveLength(1)
     expect(problems[0]).toContain('0097_new_thing.sql has no PostgreSQL twin')
-    expect(problems[0]).toContain('add src/migrations-pg/0008_new_thing.sql')
-    expect(twinProblems([...SQLITE, '0097_new_thing.sql'], [...PG, ...FTS, '0008_new_thing.sql'], FTS)).toEqual([])
+    expect(problems[0]).toContain('add src/migrations-pg/0009_new_thing.sql')
+    expect(twinProblems([...SQLITE, '0097_new_thing.sql'], [...PG, ...FTS, '0009_new_thing.sql'], FTS)).toEqual([])
   })
 
-  it('(v) the twin of 0097 placed at 0003 (a PG-only slot) is reported, and the 0008 slot is still missing', () => {
+  it('(v) the twin of 0097 placed at 0003 (a PG-only slot) is reported, and the 0009 slot is still missing', () => {
     const problems = twinProblems([...SQLITE, '0097_new_thing.sql'], [...PG, '0003_new_thing.sql', ...FTS.slice(1)], FTS)
     const text = problems.join('\n')
     expect(text).toContain('0003_new_thing.sql has no SQLite twin')
-    expect(text).toContain('add src/migrations-pg/0008_new_thing.sql')
+    expect(text).toContain('add src/migrations-pg/0009_new_thing.sql')
   })
 })

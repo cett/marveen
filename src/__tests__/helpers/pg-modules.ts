@@ -124,6 +124,7 @@ export const PORTED: readonly string[] = [
   'src/__tests__/token-bootstrap.test.ts',
   'src/__tests__/audit-trace-columns.test.ts',
   'src/__tests__/api-token-enroll-race.test.ts',
+  'src/__tests__/db-cost-budgets-fractional-amount.test.ts',
 ]
 
 /** Test files (same form) that do not, each with the reason. */
