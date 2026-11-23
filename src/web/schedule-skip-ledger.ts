@@ -62,7 +62,8 @@ export interface SkipLedgerDeps {
   cronPrevOccurrence: (schedule: string, fromMs: number, toMs: number) => number | null
   /** Agents the occurrence would have fired at (the same set a 'missed' run uses). */
   targets: (task: ScheduledTask) => string[]
-  appendTaskRun: (name: string, agent: string, status: string) => void
+  /** The task rides along: the runner writes the row in a block of that task's tenant. */
+  appendTaskRun: (name: string, agent: string, status: string, task: ScheduledTask) => void
   /**
    * Names of the tasks the DB says are runnable (enabled + live), read ONCE,
    * independently of the tick's own task list, before the tracker's first scan.
@@ -147,7 +148,7 @@ export function createSkipTracker(): SkipTracker {
         else if (kind === 'disabled' && episode.has(task.name)) status = SKIP_STATUS_DISABLED
         if (status === null) continue
         if (deps.cronPrevOccurrence(task.schedule, fromMs, now) == null) continue
-        for (const agent of deps.targets(task)) deps.appendTaskRun(task.name, agent, status)
+        for (const agent of deps.targets(task)) deps.appendTaskRun(task.name, agent, status, task)
         recorded.push(task.name)
       }
 

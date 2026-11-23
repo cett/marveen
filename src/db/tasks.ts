@@ -78,16 +78,35 @@ export interface TaskRunHistoryEntry { ts: number; status: string; tokens_est: n
 
 const TASK_RUN_TTL_MS = 30 * 24 * 60 * 60 * 1000
 
-export async function appendTaskRun(name: string, agent: string, status = 'fired'): Promise<void> {
+/**
+ * Appends one run-log row. INSERT only: the table's TTL prune is a cross-tenant delete and lives in `pruneTaskRuns`.
+ *
+ * `blockTenantId` is the tenant of the caller's per-item block (the schedule runner runs this inside
+ * `runAsItemTenant`). When given, it IS the stamp and the schedule row is not read: under row-level security a stamp that
+ * differs from the block's tenant fails with 42501, so the stamp and the block can never disagree. Without it (the
+ * command-task runner, an ad-hoc caller) a scheduled run belongs to the tenant of its schedule; a name with no schedule row
+ * (an ad-hoc or legacy task) falls back to the tenant the agent is working for.
+ */
+export async function appendTaskRun(name: string, agent: string, status = 'fired', blockTenantId?: string): Promise<void> {
   const now = Date.now()
-  // A scheduled run belongs to the tenant of its schedule; a name with no schedule row (an ad-hoc
-  // or legacy task) falls back to the tenant the agent is working for.
-  const schedule = await dbx.get<{ tenant_id: string | null }>('SELECT tenant_id FROM schedules WHERE id = ?', name)
-  const tenantId = schedule?.tenant_id ?? await resolveWriteTenant(agent)
+  let tenantId: string | null
+  if (blockTenantId !== undefined) {
+    tenantId = blockTenantId
+  } else {
+    const schedule = await dbx.get<{ tenant_id: string | null }>('SELECT tenant_id FROM schedules WHERE id = ?', name)
+    tenantId = schedule?.tenant_id ?? await resolveWriteTenant(agent)
+  }
   await dbx.run('INSERT INTO task_runs (name, agent, ts, status, tenant_id) VALUES (?, ?, ?, ?, ?)', name, agent, now, status, tenantId)
   countScheduleRun(name, status)
-  // Opportunistic TTL prune: cheap indexed DELETE, keeps the table bounded.
-  await dbx.run('DELETE FROM task_runs WHERE ts < ?', now - TASK_RUN_TTL_MS)
+}
+
+/**
+ * TTL prune of the run log (30 days): a GLOBAL delete across every tenant, so it belongs in the job's own `system` context,
+ * never inside a tenant block (there it would only reach that tenant's rows and a tenant that stopped running would never
+ * be pruned). The schedule runner calls it once per interval from the tick. Returns the number of rows removed.
+ */
+export async function pruneTaskRuns(now: number = Date.now()): Promise<number> {
+  return (await dbx.run('DELETE FROM task_runs WHERE ts < ?', now - TASK_RUN_TTL_MS)).changes
 }
 
 export async function listTaskRunHistory(name: string, limit: number): Promise<TaskRunHistoryEntry[]> {

@@ -37,8 +37,8 @@ describe('schedule-runner wiring', () => {
     // Mirrors the pre-check skip: mark the tick as run, log a task-run row.
     const gate = RUNNER_SRC.slice(RUNNER_SRC.indexOf("if (quota.action === 'defer')"))
     const block = gate.slice(0, gate.indexOf('const cronPc'))
-    expect(block).toContain("recordScheduleLastRun(task.name, now, 'skipped_quota')")
-    expect(block).toContain("appendTaskRun(task.name, agentName, 'skipped')")
+    expect(block).toContain("recordScheduleLastRun(task, now, 'skipped_quota')")
+    expect(block).toContain("recordTaskRun(task, agentName, 'skipped')")
   })
 
   it('gates before the pre-check, so a deferred task never spawns its script', () => {

@@ -459,11 +459,11 @@ describe('schedule-runner pre-check integration (source-level)', () => {
     const skipBlock = afterCronPc.slice(afterCronPc.indexOf('if (cronPc.skip)'), afterCronPc.indexOf('for (const agentName of targetAgents) {'))
     expect(skipBlock).toMatch(/cronPc\.skip/)
     expect(skipBlock).toMatch(/recordScheduleLastRun/)
-    // appendTaskRun is inside the targetAgents loop within the skip block
+    // recordTaskRun (appendTaskRun in the task's tenant block) is inside the targetAgents loop within the skip block
     expect(afterCronPc.slice(
       afterCronPc.indexOf('if (cronPc.skip)'),
       afterCronPc.indexOf('if (pendingKeys.has(key))'),
-    )).toMatch(/appendTaskRun/)
+    )).toMatch(/recordTaskRun/)
   })
 
   it('uses fail-open semantics (no SKIP on non-zero exit, no throw on missing file)', () => {

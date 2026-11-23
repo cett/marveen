@@ -12,7 +12,7 @@ vi.mock('../web/vault.js', () => ({ purgeSecretsForTenant: vi.fn().mockReturnVal
 
 import {
   initDatabase, db, createTenant, updateTenant, setTenantAgentAvailability,
-  upsertOtelSpan, appendDailyLog, appendTaskRun, createBackgroundTaskAtomic, logSkillUsage, insertHookAuditLog,
+  runAs, upsertOtelSpan, appendDailyLog, appendTaskRun, pruneTaskRuns, createBackgroundTaskAtomic, logSkillUsage, insertHookAuditLog,
   logStoreFileEvent, writeAgentAuditLog, writeAdminAuditLog, pruneTokenUsage,
   createLabel, listLabels, getMonthlyTokenSpend,
 } from '../db.js'
@@ -212,6 +212,50 @@ describe('the writers stamp the tenant', () => {
     await appendTaskRun('adhoc', 'shared')
     await appendTaskRun('adhoc', 'solo')
     expect(tenantsOf('task_runs')).toEqual(['acme', 'beta', 'acme'])
+  })
+
+  // The schedule runner writes the row inside a block of the task's tenant and hands that tenant down: the stamp IS the block's
+  // tenant, the schedule row and the agent context are not consulted (a stamp that differs from the block fails under RLS).
+  it('task_runs: a block tenant given by the caller is the stamp, whatever the schedule row and the agent say', async () => {
+    db.prepare("INSERT INTO schedules (id, schedule, agent, tenant_id) VALUES ('nightly', '0 3 * * *', 'shared', 'acme')").run()
+    await appendTaskRun('nightly', 'shared', 'fired', 'beta')
+    await appendTaskRun('adhoc', 'solo', 'fired', 'beta')
+    expect(tenantsOf('task_runs')).toEqual(['beta', 'beta'])
+  })
+
+  // The TTL prune is a cross-tenant delete: it is NOT part of the insert any more (inside a tenant block it would only reach
+  // that tenant's rows) but its own call, made once per interval by the runner in its system context.
+  it('task_runs: an insert no longer prunes; pruneTaskRuns removes the expired rows of EVERY tenant and nothing else', async () => {
+    const DAY = 24 * 60 * 60 * 1000
+    const now = Date.now()
+    const ins = db.prepare('INSERT INTO task_runs (name, agent, ts, status, tenant_id) VALUES (?, ?, ?, ?, ?)')
+    ins.run('old-a', 'solo', now - 31 * DAY, 'fired', 'acme')
+    ins.run('old-b', 'shared', now - 31 * DAY, 'fired', 'beta')
+    ins.run('young-a', 'solo', now - 29 * DAY, 'fired', 'acme')
+    await appendTaskRun('fresh', 'solo', 'fired', 'acme')
+    expect(tenantsOf('task_runs', "name IN ('old-a', 'old-b', 'young-a', 'fresh')")).toHaveLength(4) // the insert pruned nothing
+    expect(await pruneTaskRuns(now)).toBe(2)
+    const left = (db.prepare('SELECT name FROM task_runs ORDER BY name').all() as { name: string }[]).map(r => r.name)
+    expect(left).toEqual(['fresh', 'young-a'])
+    expect(await pruneTaskRuns(now)).toBe(0)
+  })
+
+  // The runner writes the row in a block of ONE tenant. Under row-level security a delete inside that block would only reach that
+  // tenant's rows, so a tenant that stopped running would keep its expired rows for ever: the prune must stay a separate call
+  // in the system context. SQLite has no policy to show it, so the cell pins the structure: an insert in the block of one tenant
+  // removes NOTHING, neither the expired rows of another tenant nor the expired rows of its own; only pruneTaskRuns removes them,
+  // for every tenant.
+  it('task_runs: an insert in the block of one tenant leaves the expired rows of every tenant alone; only pruneTaskRuns removes them', async () => {
+    const DAY = 24 * 60 * 60 * 1000
+    const now = Date.now()
+    const ins = db.prepare('INSERT INTO task_runs (name, agent, ts, status, tenant_id) VALUES (?, ?, ?, ?, ?)')
+    ins.run('expired-in-beta', 'shared', now - 31 * DAY, 'fired', 'beta')
+    ins.run('expired-in-acme', 'solo', now - 31 * DAY, 'fired', 'acme')
+    await runAs.tenant('acme', () => appendTaskRun('fresh-in-acme', 'solo', 'fired', 'acme'))
+    const names = (): string[] => (db.prepare('SELECT name FROM task_runs ORDER BY name').all() as { name: string }[]).map(r => r.name)
+    expect(names()).toEqual(['expired-in-acme', 'expired-in-beta', 'fresh-in-acme'])
+    expect(await pruneTaskRuns(now)).toBe(2)
+    expect(names()).toEqual(['fresh-in-acme'])
   })
 
   it('hook_audit_log, store_file_audit, agent_audit_log; an event with no agent is NULL', async () => {
