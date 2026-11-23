@@ -160,8 +160,9 @@ export interface TaskInflightEntry {
   // could run the task a second time); see the lost branch of the sweep.
   restored?: boolean
   // The tenant of the task at injection time (`task.tenantId ?? 'default'`), in memory only like `restored`: the watchdog's
-  // 'lost' branch writes the run-log row and clears the last-run stamp of THIS task in a block of this tenant. Not persisted:
-  // a restored entry never reaches that branch.
+  // 'lost' branch writes the run-log row and clears the last-run stamp of THIS task in a block of this tenant, and the
+  // timeout alert moves the kanban card of THIS tenant. Not persisted: a restored entry never reaches the 'lost' branch,
+  // and the timeout alert moves no card for it (it cannot name the tenant whose card to move; see sendTaskTimeoutAlert).
   tenantId?: string
 }
 
@@ -1237,7 +1238,11 @@ async function attemptFireTask(
     // Mark this agent as active on the shared fleet blackboard before injecting
     // the prompt, so other agents can see the task is in flight. Snapshot the
     // written values so the done write later can verify nothing changed.
-    const _bbTaskRef = (await findActiveKanbanCardByTitle(task.name))?.id ?? null
+    // The card of the task's OWN tenant: a task named like a card of another tenant must not write that card's id into
+    // a blackboard row. The lookup is the task's tenant read, in a block of that tenant (the blackboard write below
+    // is not: see the registry note of this job).
+    const _bbTaskTenantId = taskTenantId(task)
+    const _bbTaskRef = (await inTaskTenant(_bbTaskTenantId, () => findActiveKanbanCardByTitle(task.name, _bbTaskTenantId)))?.id ?? null
     const _bbActiveRow = await withBlackboardLock(agentName, () => upsertBlackboard(agentName, {
       status: 'active',
       summary: task.name,
@@ -1549,12 +1554,20 @@ async function sendPendingRetryAlert(view: PendingRetryView, nowMs: number): Pro
 // sendPendingRetryAlert/sendCatchUpSummary above.
 async function sendTaskTimeoutAlert(entry: TaskInflightEntry, elapsedMs: number): Promise<void> {
   const ageMinutes = Math.floor(elapsedMs / 60000)
-  // If there is an active kanban card whose title matches the task name, move it
+  // If there is an active kanban card OF THE TASK'S TENANT whose title matches the task name, move it
   // to 'waiting' so the board reflects the stuck state. No-op when no matching
   // card exists (the task was never on the board, or has already been archived).
-  const movedCardId = await markScheduledTaskKanbanWaiting(entry.taskName)
-  if (movedCardId) {
-    logger.info({ task: entry.taskName, agent: entry.agentName, cardId: movedCardId }, 'task-timeout: matching kanban card moved to waiting')
+  // An entry read back after a restart carries no tenant (it is not persisted): naming one for it would be a guess, and
+  // the guess (the default tenant) could move a card of that tenant with the same title for a task of another tenant. So
+  // such an entry moves no card, and the alert below goes out as for any other.
+  const entryTenantId = entry.tenantId
+  if (!entryTenantId) {
+    logger.info({ task: entry.taskName, agent: entry.agentName }, 'task-timeout: no kanban card moved, the in-flight entry carries no tenant (restored after a restart)')
+  } else {
+    const movedCardId = await inTaskTenant(entryTenantId, () => markScheduledTaskKanbanWaiting(entry.taskName, entryTenantId))
+    if (movedCardId) {
+      logger.info({ task: entry.taskName, agent: entry.agentName, cardId: movedCardId }, 'task-timeout: matching kanban card moved to waiting')
+    }
   }
 
   // Naming the threshold turns "possible hang" into something the operator can

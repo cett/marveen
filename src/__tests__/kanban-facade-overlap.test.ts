@@ -115,12 +115,12 @@ describe('deleteKanbanCard and its audit', () => {
 describe('markScheduledTaskKanbanWaiting (the fire-timeout watchdog)', () => {
   it('moves the active card with that title to waiting and returns its id', async () => {
     await createKanbanCard({ id: 'c1', title: 'nightly-backup', status: 'in_progress' })
-    expect(await markScheduledTaskKanbanWaiting('nightly-backup')).toBe('c1')
+    expect(await markScheduledTaskKanbanWaiting('nightly-backup', 'default')).toBe('c1')
     expect((await getKanbanCard('c1'))?.status).toBe('waiting')
   })
 
   it('returns null when no active card has that title', async () => {
-    expect(await markScheduledTaskKanbanWaiting('nope')).toBeNull()
+    expect(await markScheduledTaskKanbanWaiting('nope', 'default')).toBeNull()
   })
 
   it('does not drag a card back into waiting when it left its status meanwhile (compare-and-set)', async () => {
@@ -131,7 +131,7 @@ describe('markScheduledTaskKanbanWaiting (the fire-timeout watchdog)', () => {
     expect((await getKanbanCard('c1'))?.status).toBe('done')
     // Overlapping with a move to done, the watchdog either runs first (the done move wins afterwards) or loses the CAS.
     await createKanbanCard({ id: 'c2', title: 'other-task', status: 'in_progress' })
-    await Promise.all([moveKanbanCard('c2', 'done', 0, 'owner'), markScheduledTaskKanbanWaiting('other-task')])
+    await Promise.all([moveKanbanCard('c2', 'done', 0, 'owner'), markScheduledTaskKanbanWaiting('other-task', 'default')])
     expect((await getKanbanCard('c2'))?.status).toBe('done')
   })
 })

@@ -29,7 +29,7 @@ describe('the running number (#N) of a kanban card', () => {
     expect((await getKanbanCard(c))?.seq).toBe(3)
     expect(typeof (await getKanbanCard(b))?.seq).toBe('number')
     expect((await listKanbanCards()).map((k) => [k.id, k.seq]).sort()).toEqual([[a, 1], [b, 2], [c, 3]])
-    expect((await findActiveKanbanCardByTitle('card-b'))?.seq).toBe(2)
+    expect((await findActiveKanbanCardByTitle('card-b', 'default'))?.seq).toBe(2)
     expect((await getTenantKanbanCard('default', c))?.seq).toBe(3)
     expect((await listTenantKanbanCards('default')).map((k) => k.seq).sort()).toEqual([1, 2, 3])
     expect((await listTenantKanbanCards('default', 'planned', 1)).map((k) => k.seq)).toHaveLength(1)

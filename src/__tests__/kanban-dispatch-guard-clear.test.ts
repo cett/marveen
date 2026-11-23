@@ -143,7 +143,7 @@ describe('moveKanbanCard clears the stamp when the card leaves in_progress', () 
 
   it('markScheduledTaskKanbanWaiting (the scheduler parks the card) clears it too', async () => {
     await inProgressStamped()
-    expect(await markScheduledTaskKanbanWaiting('Card one')).toBe(CARD)
+    expect(await markScheduledTaskKanbanWaiting('Card one', 'default')).toBe(CARD)
     expect(status(CARD)).toBe('waiting')
     expect(stamp(CARD)).toBeNull()
   })
@@ -318,7 +318,7 @@ describe('the route: leave and come back wakes the assignee again, once per stay
 
   it('a card the scheduler parked in waiting is dispatched again when it returns', async () => {
     await move(CARD, { status: 'in_progress', actor: 'agent-a' })
-    await markScheduledTaskKanbanWaiting('Card one')
+    await markScheduledTaskKanbanWaiting('Card one', 'default')
     await move(CARD, { status: 'in_progress', actor: 'agent-a' })
     expect(sentMessages()).toBe(2)
   })
