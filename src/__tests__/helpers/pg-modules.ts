@@ -114,6 +114,7 @@ export const PORTED: readonly string[] = [
   'src/__tests__/import-tx-handle.test.ts',
   'src/__tests__/like-escape-memory-searches.test.ts',
   'src/__tests__/tenant-scoped-db.test.ts',
+  'src/__tests__/vector-recency-boost.test.ts',
 ]
 
 /** Test files (same form) that do not, each with the reason. */

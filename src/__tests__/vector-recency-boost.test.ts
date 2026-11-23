@@ -2,10 +2,12 @@
  * Tests for recency-boosted scoring in vectorSearch().
  *
  * Verifies the decay formula, half-life, score bounds, and that the pipeline
- * (ANN/cosine -> recency boost -> rerank) produces valid output.
+ * (ANN/cosine -> recency boost -> rerank) produces valid output. The formula cells need no database; the pipeline
+ * cells run on both engines (MARVEEN_TEST_DB=pg runs them on PostgreSQL).
  * The reranker is mocked; real ONNX model is not downloaded in CI.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { useTestDb } from './helpers/with-test-db.js'
 
 const { mockRerank } = vi.hoisted(() => ({
   mockRerank: vi.fn().mockResolvedValue([]),
@@ -20,12 +22,13 @@ vi.mock('../logger.js', () => ({
   logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }))
 
-import { initDatabase, saveAgentMemory, hybridSearch } from '../db.js'
+import { dbx, saveAgentMemory, hybridSearch, vectorSearch, syncVecMemoryEmbeddingUpdate, floatsToBlob, EMBEDDING_DIM } from '../db.js'
+
+useTestDb()
 
 beforeEach(() => {
   mockRerank.mockClear()
   mockRerank.mockResolvedValue([])
-  initDatabase(':memory:')
 })
 
 describe('recency decay formula', () => {
@@ -59,6 +62,24 @@ describe('recency decay formula', () => {
   })
 })
 
+/** The query vector and the stored vector of the twins: identical, so only the recency decay can order them. */
+const twinVec = floatsToBlob(Array.from({ length: EMBEDDING_DIM }, (_, i) => Math.sin(i)))
+const twinQuery = Array.from({ length: EMBEDDING_DIM }, (_, i) => Math.sin(i))
+const DAY = 86400
+
+/** A memory of agent-a with a given creation time and the embedding of the twins (the blob and the vector index). */
+async function twinMemory(content: string, createdAt: number): Promise<number> {
+  const row = await dbx.get<{ id: number }>(
+    `INSERT INTO memories (chat_id, content, sector, salience, category, agent_id, auto_generated, created_at, accessed_at, updated_at, tenant_id)
+     VALUES ('chat-r', ?, 'semantic', 1, 'warm', 'agent-a', 0, ?, ?, ?, 'default') RETURNING id`,
+    content, createdAt, createdAt, createdAt,
+  )
+  const id = Number(row!.id)
+  await dbx.run('UPDATE memories SET embedding_blob = ? WHERE id = ?', twinVec, id)
+  await syncVecMemoryEmbeddingUpdate(id, twinVec)
+  return id
+}
+
 describe('vectorSearch recency + rerank pipeline', () => {
   it('returns FTS results (hybridSearch) when no embeddings are set', async () => {
     await saveAgentMemory('agent-a', 'recency pipeline test memory', 'warm', 'recency pipeline')
@@ -79,5 +100,13 @@ describe('vectorSearch recency + rerank pipeline', () => {
     mockRerank.mockRejectedValueOnce(new Error('onnx runtime error'))
     const results = await hybridSearch('agent-a', 'resilience', 5)
     expect(Array.isArray(results)).toBe(true)
+  })
+
+  it('a fresh memory outranks an old one with the same vector: the decay orders them (the old one has the smaller id)', async () => {
+    const now = Math.floor(Date.now() / 1000)
+    const old = await twinMemory('recency twin old', now - 180 * DAY)
+    const fresh = await twinMemory('recency twin fresh', now)
+    const ids = (await vectorSearch('agent-a', twinQuery, 2)).map((m) => m.id)
+    expect(ids).toEqual([fresh, old])
   })
 })
