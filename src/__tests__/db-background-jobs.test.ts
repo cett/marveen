@@ -141,11 +141,30 @@ describe('runAsAgentJob', () => {
     expect(seen).toEqual(['context-guard'])
   })
 
-  it('falls back to the default tenant when the lookup fails, and does not cache the failure', async () => {
+  it('is fail closed when the lookup fails: the body is not run, the failure is warned about and counted, nothing is cached, the next tick retries', async () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined)
     let calls = 0
     setAgentTenantResolver(() => { calls += 1; return calls === 1 ? Promise.reject(new Error('db down')) : Promise.resolve('acme') })
-    expect(await runAsAgentJob('background-task', 'a3', () => currentDbContext()?.tenantId)).toBe('default')
-    expect(await runAsAgentJob('background-task', 'a3', () => currentDbContext()?.tenantId)).toBe('acme')
+    const body = vi.fn(() => currentDbContext()?.tenantId)
+    expect(await runAsAgentJob('background-task', 'agent-a', body)).toBeUndefined()
+    expect(body).not.toHaveBeenCalled() // never as `default`
+    expect(getDbContextStats().tenantUnresolved).toEqual({ 'background-task': 1 })
+    const logged = warn.mock.calls.find((c) => String(c[1] ?? '').includes('could not be resolved'))
+    expect(logged?.[0]).toMatchObject({ job: 'background-task', agentId: 'agent-a' })
+    expect(JSON.stringify(logged?.[0])).not.toContain('tenantId')
+    // the failure was not cached: the next tick looks the tenant up again and runs
+    expect(await runAsAgentJob('background-task', 'agent-a', body)).toBe('acme')
+    expect(body).toHaveBeenCalledTimes(1)
+    expect(calls).toBe(2)
+    expect(getDbContextStats().tenantUnresolved).toEqual({ 'background-task': 1 })
+  })
+
+  it('a binding whose status is `default` is a real answer: the body runs as the default tenant and nothing is counted', async () => {
+    setAgentTenantResolver(() => Promise.resolve('default'))
+    const body = vi.fn(() => currentDbContext())
+    expect(await runAsAgentJob('auto-restart', 'agent-b', body)).toEqual({ role: 'agent', agentId: 'agent-b', tenantId: 'default' })
+    expect(body).toHaveBeenCalledTimes(1)
+    expect(getDbContextStats().tenantUnresolved).toEqual({})
   })
 
   it('returns what the function returns and lets its rejection through', async () => {

@@ -128,8 +128,18 @@ function pollUntilDone(id: string, agentId: string): void {
   }
 }
 
-function scheduleFinalize(id: string, agentId: string): void {
-  setTimeout(() => { void runAsAgentJob('background-task', agentId, () => checkAndFinalize(id)) }, TIMEOUT_MS)
+/** How long a timeout check waits before it tries again when the tenant of its agent could not be resolved. */
+const FINALIZE_RETRY_MS = 60 * 1000
+
+function scheduleFinalize(id: string, agentId: string, delayMs: number = TIMEOUT_MS): void {
+  setTimeout(() => {
+    // runAsAgentJob does not run the body when the tenant of the agent cannot be resolved (fail closed): a one-shot check
+    // must not be lost with it, or the task would stay 'running' past its limit. `ran` tells a skipped check from a
+    // finished one (both resolve undefined); a skipped one is tried again.
+    let ran = false
+    void runAsAgentJob('background-task', agentId, () => { ran = true; return checkAndFinalize(id) })
+      .then(() => { if (!ran) scheduleFinalize(id, agentId, FINALIZE_RETRY_MS) })
+  }, delayMs)
 }
 
 async function checkAndFinalize(id: string): Promise<void> {

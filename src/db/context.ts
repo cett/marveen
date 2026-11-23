@@ -227,6 +227,7 @@ let anonymousCalls = 0
 let tenantMismatches = 0
 const callSites = new Map<string, { count: number; boot: boolean }>()
 const jobCalls = new Map<string, number>()
+const tenantUnresolvedByJob = new Map<string, number>()
 const roleCalls: Record<DbRole, number> = { system: 0, tenant: 0, agent: 0, admin: 0, viewer: 0, public: 0 }
 
 export interface DbContextSite {
@@ -251,6 +252,8 @@ export interface DbContextStats {
   anonymous: number
   /** A route resolved a tenant other than the one its request context carries (see `noteTenantResolved`). */
   tenantMismatches: number
+  /** Agent job ticks skipped because the tenant of the agent could not be resolved (fail closed), by job name. */
+  tenantUnresolved: Record<string, number>
   /** When the process started and when the boot phase ended (ms since the epoch): a measurement window is the difference of two snapshots. */
   startedAt: number
   bootEndedAt: number | null
@@ -330,6 +333,14 @@ export function noteTenantResolved(tenantId: string | null): string | null {
   return tenantId
 }
 
+/**
+ * An agent job could not resolve the tenant of its agent and was skipped (fail closed: it does not run as `default`).
+ * Counted by job name, so a resolver that keeps failing shows up in the measurement view instead of only in the log.
+ */
+export function noteTenantUnresolved(job: string): void {
+  bump(tenantUnresolvedByJob, job, MAX_JOBS)
+}
+
 export function getDbContextStats(): DbContextStats {
   const sites = [...callSites.entries()]
     .map(([key, v]) => ({ site: v.boot ? key.slice('boot|'.length) : key, count: v.count, boot: v.boot }))
@@ -341,6 +352,7 @@ export function getDbContextStats(): DbContextStats {
     unexpected: withoutContext - duringBoot,
     anonymous: anonymousCalls,
     tenantMismatches,
+    tenantUnresolved: Object.fromEntries(tenantUnresolvedByJob),
     startedAt,
     bootEndedAt,
     byRole: { ...roleCalls },
@@ -363,6 +375,7 @@ export function resetDbContextStats(): void {
   tenantMismatches = 0
   callSites.clear()
   jobCalls.clear()
+  tenantUnresolvedByJob.clear()
   for (const role of DB_ROLES) roleCalls[role] = 0
   booting = false
 }

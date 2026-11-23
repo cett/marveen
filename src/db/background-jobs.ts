@@ -19,7 +19,8 @@
 // of src (the recipe is in docs/db-facade.md), never reach a facade call. The counter confirms it in operation: such a
 // file showing up in `getDbContextStats().sites` is a classification bug.
 
-import { runAs, withTrace, withUserId, type DbTrace, type RunAsOptions } from './context.js'
+import { runAs, withTrace, withUserId, noteTenantUnresolved, type DbTrace, type RunAsOptions } from './context.js'
+import { logger } from '../logger.js'
 
 export type JobRole = 'system' | 'agent' | 'hybrid' | 'tenant-loop' | 'admin' | 'viewer' | 'public'
 
@@ -159,15 +160,25 @@ async function tenantOf(job: BackgroundJobName, agentId: string): Promise<string
 }
 
 /**
- * Runs `fn` as `runAs.agent(agentId, tenant)` for a job whose work belongs to one agent. A failed tenant lookup does not
- * stop the job: it runs under the `default` tenant and the failure is not cached.
+ * Runs `fn` as `runAs.agent(agentId, tenant)` for a job whose work belongs to one agent.
+ *
+ * A failed tenant lookup is FAIL CLOSED: `fn` is NOT run, a warning names the job and the agent (never a tenant: none was
+ * resolved), the failure is counted (`tenantUnresolved`, by job) and the call resolves `undefined`. It does not run as the
+ * `default` tenant: under row-level security that would let an unresolved agent write into the wrong tenant. The failure
+ * is not cached, so the next tick of the job looks the tenant up again. A binding whose status is `default` is a real
+ * answer of the resolver and still resolves to the `default` tenant.
+ *
+ * `undefined` therefore means "skipped" (or a `fn` that returns nothing): a caller that has to tell the two apart sets a
+ * flag inside `fn`. Every caller today ignores the value and treats a skipped tick as a tick that did nothing.
  */
-export async function runAsAgentJob<T>(job: AgentJobName, agentId: string, fn: () => T | Promise<T>): Promise<T> {
+export async function runAsAgentJob<T>(job: AgentJobName, agentId: string, fn: () => T | Promise<T>): Promise<T | undefined> {
   let tenantId: string
   try {
     tenantId = await tenantOf(job, agentId)
-  } catch {
-    tenantId = 'default'
+  } catch (err) {
+    noteTenantUnresolved(job)
+    logger.warn({ err, job, agentId }, 'agent job skipped: the tenant of the agent could not be resolved')
+    return undefined
   }
   return runAs.agent(agentId, tenantId, async () => fn(), JOB_CONTEXT)
 }
