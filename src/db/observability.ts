@@ -638,7 +638,8 @@ export async function deleteTenant(tenantId: string): Promise<TenantDeleteResult
 
     // 12. Drop workspace_docs -- vec_workspace_docs has no trigger, sync manually before main delete.
     // @sqlite-only: the sqlite-vec `vec0` table (the PostgreSQL phase moves it to pgvector).
-    if (vecExtensionLoaded) {
+    // On PostgreSQL the embeddings of these documents go with the DELETE below (workspace_doc_embeddings cascades).
+    if (dbxDialect() === 'sqlite' && vecExtensionLoaded) {
       // A savepoint (a nested tx on the handle), like the workspace vec helpers: the failure is swallowed, and on
       // PostgreSQL a failed statement in a transaction aborts it (25P02) unless it ran in a savepoint that is rolled back.
       try { await tx.tx(async (t) => { await t.run('DELETE FROM vec_workspace_docs WHERE tenant_id = ?', tenantId) }) } catch { /* vec0 unavailable */ }

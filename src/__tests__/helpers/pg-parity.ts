@@ -61,6 +61,46 @@ export const PG_ONLY_COLUMNS: readonly (readonly [string, string])[] = [
 ]
 export const PG_ONLY_INDEXES: readonly string[] = ['memories_fts_gin', 'artifacts_fts_gin', 'workspace_docs_fts_gin']
 
+/**
+ * PG-only tables (named exception, phase 3 step 6b): the three embedding side tables of migration 0007 have no SQLite twin
+ * (the SQLite side keeps its vec0 tables). Each has its own spec here, the PostgreSQL model it must match (columns, primary
+ * key, the cascading foreign key to its parent), and the comparison checks every facet of it: nothing about these tables is
+ * skipped. The list is strict: a listed table missing from PostgreSQL is a difference. Any other PG-only table is still a
+ * difference.
+ */
+export const PG_ONLY_TABLE_MODELS: Readonly<Record<string, TableModel>> = {
+  memory_embeddings: {
+    columns: {
+      memory_id: { type: 'bigint', notNull: true, identity: false, default: null },
+      embedding: { type: 'vector(768)', notNull: true, identity: false, default: null },
+    },
+    pk: ['memory_id'],
+    uniques: [],
+    fks: ['memory_id -> memories(id) ON DELETE CASCADE'],
+    checks: [],
+  },
+  workspace_doc_embeddings: {
+    columns: {
+      doc_id: { type: 'text', notNull: true, identity: false, default: null },
+      embedding: { type: 'vector(768)', notNull: true, identity: false, default: null },
+    },
+    pk: ['doc_id'],
+    uniques: [],
+    fks: ['doc_id -> workspace_docs(id) ON DELETE CASCADE'],
+    checks: [],
+  },
+  artifact_embeddings: {
+    columns: {
+      artifact_id: { type: 'text', notNull: true, identity: false, default: null },
+      embedding: { type: 'vector(768)', notNull: true, identity: false, default: null },
+    },
+    pk: ['artifact_id'],
+    uniques: [],
+    fks: ['artifact_id -> artifacts(id) ON DELETE CASCADE'],
+    checks: [],
+  },
+}
+
 export interface ColumnModel { type: string; notNull: boolean; identity: boolean; default: string | null }
 export interface IndexModel { table: string; unique: boolean; keys: string[]; where: string | null }
 export interface TableModel {
@@ -307,26 +347,42 @@ function diffLists(label: string, expected: string[], actual: string[], out: str
   for (const x of a) if (!e.includes(x)) out.push(`${label}: only in PG: ${x}`)
 }
 
+/**
+ * One table of the expected model against the same table of the PostgreSQL model: columns (type, NOT NULL, identity,
+ * default), the primary key, and the UNIQUE, FOREIGN KEY and CHECK constraints. Every facet is compared, for the SQLite
+ * twin tables and for the PG-only tables alike.
+ */
+function diffTable(name: string, et: TableModel, at: TableModel, out: string[]): void {
+  diffLists(`columns of ${name}`, Object.keys(et.columns), Object.keys(at.columns), out)
+  for (const [cn, ec] of Object.entries(et.columns)) {
+    const ac = at.columns[cn]
+    if (!ac) continue
+    if (ec.type !== ac.type) out.push(`column ${name}.${cn}: type ${ec.type} expected, ${ac.type} in PG`)
+    if (ec.notNull !== ac.notNull) out.push(`column ${name}.${cn}: NOT NULL ${ec.notNull} expected, ${ac.notNull} in PG`)
+    if (ec.identity !== ac.identity) out.push(`column ${name}.${cn}: identity ${ec.identity} expected, ${ac.identity} in PG`)
+    if (ec.default !== ac.default) out.push(`column ${name}.${cn}: default ${String(ec.default)} expected, ${String(ac.default)} in PG`)
+  }
+  if (et.pk.join(',') !== at.pk.join(',')) out.push(`primary key of ${name}: (${et.pk.join(',')}) expected, (${at.pk.join(',')}) in PG`)
+  diffLists(`UNIQUE of ${name}`, et.uniques, at.uniques, out)
+  diffLists(`FOREIGN KEY of ${name}`, et.fks, at.fks, out)
+  diffLists(`CHECK of ${name}`, et.checks, at.checks, out)
+}
+
 /** Every difference between the expected (SQLite chain) and the actual (PostgreSQL baseline) model; empty means parity. */
 export function diffSchemas(expected: SchemaModel, actual: SchemaModel): string[] {
   const out: string[] = []
-  diffLists('tables', Object.keys(expected.tables), Object.keys(actual.tables), out)
-  for (const [name, et] of Object.entries(expected.tables)) {
-    const at = actual.tables[name]
-    if (!at) continue
-    diffLists(`columns of ${name}`, Object.keys(et.columns), Object.keys(at.columns), out)
-    for (const [cn, ec] of Object.entries(et.columns)) {
-      const ac = at.columns[cn]
-      if (!ac) continue
-      if (ec.type !== ac.type) out.push(`column ${name}.${cn}: type ${ec.type} expected, ${ac.type} in PG`)
-      if (ec.notNull !== ac.notNull) out.push(`column ${name}.${cn}: NOT NULL ${ec.notNull} expected, ${ac.notNull} in PG`)
-      if (ec.identity !== ac.identity) out.push(`column ${name}.${cn}: identity ${ec.identity} expected, ${ac.identity} in PG`)
-      if (ec.default !== ac.default) out.push(`column ${name}.${cn}: default ${String(ec.default)} expected, ${String(ac.default)} in PG`)
-    }
-    if (et.pk.join(',') !== at.pk.join(',')) out.push(`primary key of ${name}: (${et.pk.join(',')}) expected, (${at.pk.join(',')}) in PG`)
-    diffLists(`UNIQUE of ${name}`, et.uniques, at.uniques, out)
-    diffLists(`FOREIGN KEY of ${name}`, et.fks, at.fks, out)
-    diffLists(`CHECK of ${name}`, et.checks, at.checks, out)
+  // A listed PG-only table present in PG is compared against its literal spec (PG_ONLY_TABLE_MODELS), every facet and
+  // nothing skipped. A listed one missing from PG is itself a difference (strict). An unlisted extra table is a difference.
+  const actualTables: Record<string, TableModel> = actual.tables
+  const expectedTables: Record<string, TableModel> = { ...expected.tables }
+  for (const [name, spec] of Object.entries(PG_ONLY_TABLE_MODELS)) {
+    if (actualTables[name]) expectedTables[name] = spec
+    else out.push(`PG-only table listed in PG_ONLY_TABLE_MODELS is missing in PG: ${name}`)
+  }
+  diffLists('tables', Object.keys(expectedTables), Object.keys(actualTables), out)
+  for (const [name, et] of Object.entries(expectedTables)) {
+    const at = actualTables[name]
+    if (at) diffTable(name, et, at, out)
   }
   diffLists('indexes', Object.keys(expected.indexes), Object.keys(actual.indexes), out)
   for (const [name, ei] of Object.entries(expected.indexes)) {

@@ -1,5 +1,5 @@
 import { dbx, dbxDialect } from './facade.js'
-import { generateEmbedding } from './vector.js'
+import { blobToVectorLiteral, floatsToBlob, generateEmbedding } from './vector.js'
 import { logger } from '../logger.js'
 import { ftsEscape, FTS_MATCH, PG_FTS_CONFIG, PG_PHRASE_VERIFY_CHARS, pgCandidateTsq, pgPhraseIn } from './fts.js'
 
@@ -120,6 +120,9 @@ export async function storeArtifactEmbedding(
   const embedding = await generateEmbedding(text).catch(() => null)
   if (!embedding) return
 
+  // PostgreSQL: the side table, keyed by the artifact id (there is no rowid to look up).
+  if (dbxDialect() === 'pg') return setArtifactEmbedding(id, floatsToBlob(embedding))
+
   const rowRow = await dbx.get<{ rowid: number }>('SELECT rowid FROM artifacts WHERE id = ?', id)
   if (!rowRow) return
 
@@ -142,6 +145,27 @@ export async function storeArtifactEmbedding(
     }
   } catch {
     // vec_artifacts is absent when sqlite-vec extension is unavailable -- graceful no-op
+  }
+}
+
+/**
+ * The PostgreSQL vector side of one artifact (phase 3, step 6b, c6): one embedding per artifact in the side table, a
+ * re-embed replaces the value. A wrong-length or non-finite blob is refused by blobToVectorLiteral inside the try and
+ * logged: the artifact is saved without an embedding, as on SQLite. Only the PostgreSQL dialect writes here.
+ */
+export async function setArtifactEmbedding(id: string, embeddingBlob: Buffer): Promise<void> {
+  if (dbxDialect() !== 'pg') return
+  try {
+    const literal = blobToVectorLiteral(embeddingBlob)
+    await dbx.tx(async (tx) => {
+      await tx.run(
+        'INSERT INTO artifact_embeddings (artifact_id, embedding) VALUES (?, ?::vector) ON CONFLICT (artifact_id) DO UPDATE SET embedding = EXCLUDED.embedding',
+        id,
+        literal,
+      )
+    })
+  } catch (err) {
+    logger.warn({ err, id }, 'artifact embedding not stored on PostgreSQL: the artifact is saved without it')
   }
 }
 

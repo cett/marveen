@@ -23,7 +23,8 @@ export class PgPreflightError extends Error {
 
 /**
  * Checks, in this order: the server encoding is UTF8 (the text functions assume it); the unaccent extension is installed
- * (the search configuration needs it, and the migration creates it). Locale C or POSIX is a warning, not a refusal: the
+ * (the search configuration needs it, and the migration creates it); the vector extension is installed (the embedding
+ * tables of migration 0007 need it, and the migration creates it). Locale C or POSIX is a warning, not a refusal: the
  * normalizer's character class is then ASCII-only, which the search tests pin as a known difference.
  */
 export async function pgPreflight(q: PgPreflightQueryable): Promise<PgPreflightReport> {
@@ -34,6 +35,15 @@ export async function pgPreflight(q: PgPreflightQueryable): Promise<PgPreflightR
   const ext = await q.query("SELECT 1 AS present FROM pg_extension WHERE extname = 'unaccent'")
   if (ext.rows.length === 0) {
     throw new PgPreflightError('the unaccent extension is not installed (CREATE EXTENSION unaccent needs to run first)')
+  }
+  const vec = await q.query("SELECT 1 AS present FROM pg_extension WHERE extname = 'vector'")
+  if (vec.rows.length === 0) {
+    // server_version_num is e.g. '160015' for 16.15: the major is the number divided by 10000
+    const num = Number((await q.query('SHOW server_version_num')).rows[0]?.['server_version_num'] ?? 0)
+    const major = Math.floor(num / 10000)
+    throw new PgPreflightError(
+      `the vector extension is not installed (PostgreSQL ${major}: install pgvector for this major, see docs/local-pgvector.md, then CREATE EXTENSION vector)`,
+    )
   }
   const warnings: string[] = []
   const ctype = (await q.query('SELECT datctype FROM pg_database WHERE datname = current_database()')).rows[0]?.['datctype']

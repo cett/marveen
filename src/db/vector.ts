@@ -9,7 +9,7 @@ import { rerank } from '../reranker.js'
 import { stripMarkup } from '../web/import-utils.js'
 import { isBlankContent } from '../blank-content.js'
 import { db, tryLoadVecExtension, vecExtensionLoaded } from './connection.js'
-import { dbx, type SqlOps } from './facade.js'
+import { dbx, dbxDialect, type SqlOps } from './facade.js'
 import { Memory, reRankByRecency, searchAgentMemories } from './memory.js'
 import { Tenant } from './observability.js'
 import { ArtifactPointer } from './sessions.js'
@@ -29,6 +29,121 @@ function blobToFloats(blob: Buffer): number[] {
   const out = new Array<number>(count)
   for (let i = 0; i < count; i++) out[i] = blob.readFloatLE(i * 4)
   return out
+}
+
+/** The embedding size the vector column holds (migration 0007, vector(768)): the SQLite embedding size too. */
+export const EMBEDDING_DIM = 768
+
+/**
+ * The float32 embedding blob as the text literal pgvector reads ('[v1,v2,...]'). Refuses a blob that is not exactly
+ * EMBEDDING_DIM float32 values, and a non-finite component (NaN, Infinity), so a failing embedder cannot reach the column.
+ * Each value is printed as its double (the shortest decimal that parses back to the same double), and that double is the
+ * float32 it came from: pgvector reads the decimal as the nearest float32, which is the original value.
+ */
+export function blobToVectorLiteral(blob: Buffer): string {
+  if (blob.byteLength !== EMBEDDING_DIM * 4) {
+    throw new Error(`embedding blob is ${blob.byteLength} bytes, expected ${EMBEDDING_DIM * 4} (${EMBEDDING_DIM} float32 values)`)
+  }
+  const parts = new Array<string>(EMBEDDING_DIM)
+  for (let i = 0; i < EMBEDDING_DIM; i++) {
+    const v = blob.readFloatLE(i * 4)
+    if (!Number.isFinite(v)) throw new Error(`embedding component ${i} is ${v}, not a finite value`)
+    parts[i] = String(v)
+  }
+  return `[${parts.join(',')}]`
+}
+
+/** The PostgreSQL side tables the backfill fills, each from the blob column of its parent (phase 3, step 6b). */
+const BACKFILL_TARGETS = {
+  memory: { source: 'memories', sourceFilter: '', side: 'memory_embeddings', key: 'memory_id', idType: 'bigint', start: 0 },
+  workspace_doc: {
+    source: 'workspace_docs',
+    // a binary document has no embedding on the write path either, so it is not selected
+    sourceFilter: " AND s.content_type <> 'binary'",
+    side: 'workspace_doc_embeddings',
+    key: 'doc_id',
+    idType: 'text',
+    start: '',
+  },
+} as const
+
+/** Rows per write statement: the statements of one batch run in one transaction, without a savepoint per row. */
+const BACKFILL_WRITE_CHUNK = 100
+
+export type VectorBackfillTarget = keyof typeof BACKFILL_TARGETS
+
+export const VECTOR_BACKFILL_BATCH_SIZE = 2000
+
+export interface VectorBackfillResult {
+  /** rows whose side row was written by this run */
+  embedded: number
+  /** rows whose blob is not a valid embedding: counted and passed over (they have no side row, so every run counts them again) */
+  skipped: number
+  /** keyset batches read */
+  batches: number
+}
+
+/**
+ * Fill a PostgreSQL side table from the blob column of its parent (phase 3, step 6b, c7). The rows are read in keyset
+ * batches ordered by id, and only rows that have a blob and no side row are read (NOT EXISTS). That guard is what makes the
+ * run resumable: an interrupted run continues where the side rows stop, and a second run over a complete table embeds
+ * nothing. A row whose blob is not a valid embedding is counted as skipped and the run goes on; it has no side row, so every
+ * run reads and counts it again.
+ * Writes: no savepoints. A batch is one transaction of INSERT ... SELECT statements, WRITE_CHUNK rows each, that join the
+ * parent: a parent deleted meanwhile is simply not inserted, so there is no foreign-key error to catch. Savepoints per row
+ * would be a subtransaction per row (2000 in a batch), which overflows the subtransaction cache and slows every other
+ * session that takes a snapshot while the transaction runs.
+ * ON CONFLICT DO NOTHING only guards a race with the live write seam (a side row written between the read and the insert
+ * keeps its value). The cells run serially and do not cover that race; the NOT EXISTS guard is what they test.
+ * The artifacts are not covered: their table has no blob column on PostgreSQL (the vectors exist on the SQLite side only).
+ */
+export async function backfillPgEmbeddings(
+  target: VectorBackfillTarget,
+  batchSize: number = VECTOR_BACKFILL_BATCH_SIZE,
+): Promise<VectorBackfillResult> {
+  if (dbxDialect() !== 'pg') throw new Error('backfillPgEmbeddings runs on the PostgreSQL backend only')
+  const t = BACKFILL_TARGETS[target]
+  const select = `
+    SELECT s.id, s.embedding_blob FROM ${t.source} s
+    WHERE s.embedding_blob IS NOT NULL${t.sourceFilter}
+      AND s.id > ?
+      AND NOT EXISTS (SELECT 1 FROM ${t.side} e WHERE e.${t.key} = s.id)
+    ORDER BY s.id
+    LIMIT ?`
+  // the parent join: a parent deleted after the read is not inserted, and the foreign key is never hit
+  const insert = `INSERT INTO ${t.side} (${t.key}, embedding)
+    SELECT v.id, v.vec_text::vector FROM unnest(?::${t.idType}[], ?::text[]) AS v(id, vec_text)
+    JOIN ${t.source} p ON p.id = v.id
+    ON CONFLICT (${t.key}) DO NOTHING
+    RETURNING ${t.key}`
+  let cursor: number | string = t.start
+  let embedded = 0
+  let skipped = 0
+  let batches = 0
+  for (;;) {
+    const rows = await dbx.all<{ id: number | string; embedding_blob: Buffer }>(select, cursor, batchSize)
+    if (rows.length === 0) break
+    batches++
+    const pending: { id: number | string; literal: string }[] = []
+    for (const row of rows) {
+      try {
+        pending.push({ id: row.id, literal: blobToVectorLiteral(row.embedding_blob) })
+      } catch (err) {
+        skipped++
+        logger.warn({ err, id: row.id, target }, 'embedding backfill: blob is not a valid embedding, row skipped')
+      }
+    }
+    await dbx.tx(async (tx) => {
+      for (let i = 0; i < pending.length; i += BACKFILL_WRITE_CHUNK) {
+        const chunk = pending.slice(i, i + BACKFILL_WRITE_CHUNK)
+        const inserted = await tx.all(insert, chunk.map((c) => c.id), chunk.map((c) => c.literal))
+        embedded += inserted.length
+      }
+    })
+    cursor = rows[rows.length - 1]!.id
+    if (rows.length < batchSize) break
+  }
+  return { embedded, skipped, batches }
 }
 
 export async function generateEmbedding(text: string): Promise<number[] | null> {
@@ -74,7 +189,33 @@ function vectorRecencyDecay(createdAt: number, nowSec: number): number {
   return Math.exp(-VECTOR_RECENCY_LAMBDA * ageDays)
 }
 
-async function vectorSearch(
+/**
+ * The memory candidates of a vector search on pgvector (phase 3, step 6b, c4). The scope (the agent or shared, and the
+ * tenant) is applied in SQL BEFORE the distance order, so a hit never comes from another scope, and a large tenant does
+ * not crowd a small one out of the top k. `<->` is the L2 distance, the vec0 default. Same recency blend as the ANN path.
+ */
+async function pgVectorCandidates(agentId: string, queryEmbedding: number[], limit: number, tenantId: string | undefined, nowSec: number): Promise<Memory[]> {
+  const literal = blobToVectorLiteral(floatsToBlob(queryEmbedding))
+  const tenantSql = tenantId ? ' AND m.tenant_id = ?' : ''
+  const tenantParams: unknown[] = tenantId ? [tenantId] : []
+  const rows = await dbx.all<Memory & { distance: number }>(`
+    SELECT m.*, e.embedding <-> ?::vector AS distance
+    FROM memory_embeddings e
+    JOIN memories m ON m.id = e.memory_id
+    WHERE (m.agent_id = ? OR m.category = 'shared')${tenantSql}
+    ORDER BY distance, m.id
+    LIMIT ?`, literal, agentId, ...tenantParams, limit * RERANK_FACTOR)
+  const distMap = new Map(rows.map(r => [r.id, Number(r.distance)]))
+  const memories = rows.map(({ distance: _distance, ...m }) => m as Memory)
+  memories.sort((a, b) => {
+    const sA = (1 / (1 + (distMap.get(a.id) ?? Infinity))) * vectorRecencyDecay(a.created_at, nowSec)
+    const sB = (1 / (1 + (distMap.get(b.id) ?? Infinity))) * vectorRecencyDecay(b.created_at, nowSec)
+    return sB - sA
+  })
+  return memories
+}
+
+export async function vectorSearch(
   agentId: string,
   queryEmbedding: number[],
   limit: number = 10,
@@ -89,12 +230,22 @@ async function vectorSearch(
   const tc = (!crossAgent && tenantId) ? ' AND tenant_id = ?' : ''
   const tp = (!crossAgent && tenantId) ? [tenantId] : []
 
+  // PostgreSQL: the pgvector search, filter first. crossAgent (the link-building path) stays on the blob full-scan below,
+  // as on SQLite. A failure (a wrong-length query vector, the table missing) falls back to that full-scan, logged.
+  if (dbxDialect() === 'pg' && !crossAgent) {
+    try {
+      candidates = await pgVectorCandidates(agentId, queryEmbedding, limit, tenantId, nowSec)
+    } catch (err) {
+      logger.debug({ err }, 'pgvector search failed, falling back to BLOB cosine similarity')
+    }
+  }
+
   // crossAgent skips ANN entirely: the vec_memories index may have orphan rows
   // (entries whose backing memories row was deleted or never backfilled), so an
   // ANN hit set is unreliable for cross-fleet searches. BLOB full-scan is the
   // safe path because it reads directly from the source of truth.
   // @sqlite-only: the sqlite-vec `vec0` virtual table (MATCH / k); the PostgreSQL phase moves it to pgvector (D4).
-  if (vecExtensionLoaded && !crossAgent) {
+  if (dbxDialect() === 'sqlite' && vecExtensionLoaded && !crossAgent) {
     try {
       // ANN path: over-fetch by RERANK_FACTOR to give the reranker headroom.
       const queryBlob = floatsToBlob(queryEmbedding)
@@ -583,6 +734,16 @@ export function migrateExistingEmbeddingsToBLOB(): number {
 // transaction aborts the whole of it (25P02) unless it ran in a savepoint that was rolled back. On SQLite the
 // savepoint changes nothing observable; it keeps the swallow safe for the pooled backend.
 export async function syncVecMemoryDelete(id: number): Promise<void> {
+  if (dbxDialect() === 'pg') {
+    // PostgreSQL: the side row goes (a parent delete cascades by itself; this covers a parent that stays, e.g. an import
+    // replacing a stale vector). Best effort: a failure is logged, the memory is kept.
+    try {
+      await dbx.tx(async (tx) => { await tx.run('DELETE FROM memory_embeddings WHERE memory_id = ?', id) })
+    } catch (err) {
+      logger.warn({ err, memoryId: id }, 'memory embedding not removed on PostgreSQL')
+    }
+    return
+  }
   if (!vecExtensionLoaded) return
   try {
     await dbx.tx(async (tx) => { await tx.run('DELETE FROM vec_memories WHERE memory_id = ?', BigInt(id)) })
@@ -591,6 +752,25 @@ export async function syncVecMemoryDelete(id: number): Promise<void> {
 
 // @sqlite-only: see syncVecMemoryDelete.
 export async function syncVecMemoryEmbeddingUpdate(id: number, embeddingBlob: Buffer): Promise<void> {
+  if (dbxDialect() === 'pg') {
+    // PostgreSQL: one embedding per memory; a re-embed replaces the value. Best effort: a wrong-length or non-finite
+    // blob is refused by blobToVectorLiteral, logged, and the memory is saved without an embedding (the save never fails
+    // here; the statement runs in a transaction of its own, or as a savepoint inside an open one, so a failure cannot abort
+    // the enclosing transaction).
+    try {
+      const literal = blobToVectorLiteral(embeddingBlob)
+      await dbx.tx(async (tx) => {
+        await tx.run(
+          'INSERT INTO memory_embeddings (memory_id, embedding) VALUES (?, ?::vector) ON CONFLICT (memory_id) DO UPDATE SET embedding = EXCLUDED.embedding',
+          id,
+          literal,
+        )
+      })
+    } catch (err) {
+      logger.warn({ err, memoryId: id }, 'memory embedding not stored on PostgreSQL: the memory is saved without it')
+    }
+    return
+  }
   if (!vecExtensionLoaded) return
   try {
     // One transaction: two overlapping updates of the same memory cannot interleave their delete and insert, and a
@@ -673,15 +853,56 @@ export function initVecSupport(): void {
 }
 
 /**
+ * The artifact vector hits of a query embedding on PostgreSQL (phase 3, step 6b, c6). The optional tenant scope is applied
+ * in SQL before the distance order, so a hit never crosses it. `<->` is the L2 distance; ties fall to the smaller id.
+ * The score is the SQLite score. Exported so the cells need no embedder.
+ */
+export async function pgVectorArtifacts(
+  queryEmbedding: number[],
+  limit: number,
+  scope?: { tenantId?: string },
+): Promise<ArtifactPointer[]> {
+  try {
+    const literal = blobToVectorLiteral(floatsToBlob(queryEmbedding))
+    const conds: string[] = []
+    const params: unknown[] = [literal]
+    if (scope?.tenantId !== undefined) { conds.push('a.tenant_id = ?'); params.push(scope.tenantId) }
+    params.push(limit)
+    const where = conds.length > 0 ? `WHERE ${conds.join(' AND ')}` : ''
+    const rows = (await dbx.all(`
+      SELECT a.id, a.title, a.kind, a.created_at, e.embedding <-> ?::vector AS distance
+      FROM artifact_embeddings e
+      JOIN artifacts a ON a.id = e.artifact_id
+      ${where}
+      ORDER BY distance, a.id
+      LIMIT ?
+    `, ...params)) as { id: string; title: string; kind: string; created_at: number; distance: number }[]
+    return rows.map(a => ({ id: a.id, title: a.title, kind: a.kind, created_at: a.created_at, score: 1 / (1 + a.distance) }))
+  } catch (err) {
+    logger.debug({ err }, 'pgVectorArtifacts: pgvector query failed')
+    return []
+  }
+}
+
+/**
  * Search artifacts by semantic similarity against their title+meta embeddings.
  * Returns ArtifactPointer list (no content) sorted by similarity score.
- * Returns empty array when sqlite-vec is unavailable or Ollama is unreachable.
+ * Returns empty array when the vector index is unavailable or Ollama is unreachable.
+ * The optional scope.tenantId is applied on PostgreSQL only; the SQLite path has no tenant filter (a known gap, unchanged).
+ * ADR note: there is no caller in src yet. When one is added, scope becomes a required argument (the type changes), so a
+ * caller cannot leave the tenant out.
  */
-// @sqlite-only: vec0 MATCH on vec_artifacts.
+// SQLite branch: vec0 MATCH on vec_artifacts. The PostgreSQL branch is pgVectorArtifacts.
 export async function searchArtifactsByVector(
   query: string,
-  limit = 10
+  limit = 10,
+  scope?: { tenantId?: string },
 ): Promise<ArtifactPointer[]> {
+  if (dbxDialect() === 'pg') {
+    const pgEmbedding = await generateEmbedding(query)
+    if (!pgEmbedding) return []
+    return pgVectorArtifacts(pgEmbedding, limit, scope)
+  }
   if (!vecExtensionLoaded) return []
   const queryEmbedding = await generateEmbedding(query)
   if (!queryEmbedding) return []

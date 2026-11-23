@@ -3,22 +3,24 @@
 // The PG baseline (src/migrations-pg/0001) is the SQLite end state at version 95. From there every new SQLite migration
 // has to come with a PG twin, or the PG schema silently falls behind the one the application runs on. The PG numbers
 // are assigned by ORDER: the SQLite migrations above 95, sorted, take the PG slots 0002, 0003, ... in turn, skipping the
-// numbers of the PG-only migrations (below). Today 0096 <-> 0002; the next SQLite migration (0097) <-> 0007 once the four
+// numbers of the PG-only migrations (below). Today 0096 <-> 0002; the next SQLite migration (0097) <-> 0008 once the five
 // PG-only numbers are taken.
 
 /** The SQLite version the PG baseline was cut at. */
 export const PG_BASELINE_SQLITE_VERSION = 95
 
 /**
- * PostgreSQL full-text migrations with no SQLite twin (phase 3 step 6a): the SQLite side keeps its FTS5 tables, so these
- * files have no SQLite number. Retired with the SQLite chain. A listed name must exist in the PG directory, and a listed
- * number is skipped when the SQLite migrations take their PG slots. Empty for every synthetic cell.
+ * PostgreSQL migrations with no SQLite twin: the full-text migrations of phase 3 step 6a (the SQLite side keeps its FTS5
+ * tables), and the vector embedding tables of step 6b (the SQLite side keeps its vec0 tables). Retired with the SQLite
+ * chain. A listed name must exist in the PG directory, and a listed number is skipped when the SQLite migrations take
+ * their PG slots. Empty for every synthetic cell.
  */
 export const PG_ONLY_MIGRATIONS: readonly string[] = [
   '0003_fts_config.sql',
   '0004_memories_fts.sql',
   '0005_artifacts_fts.sql',
   '0006_workspace_docs_fts.sql',
+  '0007_vec_embeddings.sql',
 ]
 
 const FILE = /^(\d{4,})_(.+)\.sql$/
