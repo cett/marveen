@@ -37,7 +37,7 @@ beforeAll(async () => {
     { id: 'boot-plan', label: 'Boot plan', configDir: 'config-boot', planType: 'personal', channelsAllowed: false },
   ]))
   db = await createPgTestDb()
-  process.env.MARVEEN_PG_URL = db.url
+  process.env.MARVEEN_PG_URL = db.appUrl
 }, 60000)
 
 afterAll(async () => {

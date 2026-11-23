@@ -8,9 +8,18 @@
 //
 // The steps, in this order, each one a named failure (PgBootStep):
 //   url        the value is a postgres:// or postgresql:// URL (the value is never echoed: it carries a password)
-//   pool       a pool is made and one connection is proven (SELECT 1)
-//   migrate    src/migrations-pg/ is applied (db-migrations-pg.ts). Before the preflight on purpose: the files create
-//              the unaccent and vector extensions that the preflight then insists on, so a fresh database passes it
+//   pool       the SERVING pool is made (the app role) and one connection is proven (SELECT 1)
+//   role       the SERVING role is one that row-level security binds (db/pg/preflight.ts pgRolePreflight): not a superuser, no
+//              BYPASSRLS, owns no table in the database (any non-system schema). Unconditional, no override: a database served through such a role has
+//              no tenant isolation. Judged TWICE: before the schema step (nothing is migrated or read on a refused role) and
+//              again right after it (an empty database showed no owned table the first time, and a migration run by the
+//              serving role itself makes it the owner). The migration pool (the owner) is not judged by it: it is a
+//              different pool, ended before anything is served
+//   schema     the schema is brought to, or checked against, src/migrations-pg/ (db-migrations-pg.ts). WITH a migration URL
+//              (MARVEEN_PG_MIGRATE_URL, the owner of the objects) a pool of ONE connection on it applies the files and is
+//              ENDED before anything is served: the serving pool never holds DDL rights. WITHOUT one the boot only reads
+//              schema_version through the serving pool and refuses when a shipped file is not applied. Before the preflight
+//              on purpose: a migration may create the extensions the preflight then insists on
 //   preflight  encoding and extensions (db/pg/preflight.ts), fail closed
 //   caches     the backend is switched on (useDbxBackend) and the three synchronous caches are loaded for it. A failure
 //              here puts the backend back to SQLite and ends the pool, so a refused boot leaves nothing half-wired
@@ -20,17 +29,17 @@
 // install. The ones that still matter on PostgreSQL (the claude-plans seed, the cost-budgets importer, the dashboard
 // token enrolment) are ported in 6c-2. config.ts still reads its boot values from SQLite until 6c-3.
 import { logger } from '../logger.js'
-import { applyPgMigrations, type PgMigrationResult } from '../db-migrations-pg.js'
+import { applyPgMigrations, assertPgSchemaCurrent, type PgMigrationResult } from '../db-migrations-pg.js'
 import { loadSystemConfigCacheAsync } from './config-cache.js'
 import { loadModelProfileMapCacheAsync } from './model-profile-map-cache.js'
 import { loadAgentSettingsCacheAsync } from './agent-settings-cache.js'
 import { useDbxBackend } from './facade.js'
 import type { PgPoolSettings } from './pg/pool.js'
-import { pgPreflight } from './pg/preflight.js'
-import { PG_URL_KEY, resolvePgUrl } from './pg/url.js'
+import { pgPreflight, pgRolePreflight } from './pg/preflight.js'
+import { PG_MIGRATE_URL_KEY, PG_URL_KEY, resolvePgMigrateUrl, resolvePgUrl } from './pg/url.js'
 import type pg from 'pg'
 
-export type PgBootStep = 'url' | 'pool' | 'migrate' | 'preflight' | 'caches'
+export type PgBootStep = 'url' | 'pool' | 'role' | 'schema' | 'preflight' | 'caches'
 
 /** A PostgreSQL boot step failed: the process must not go on. `step` names where; the message never holds the URL. */
 export class PgBootError extends Error {
@@ -45,6 +54,11 @@ export class PgBootError extends Error {
 export interface PgBootOptions {
   /** The URL to boot on (default: the configured MARVEEN_PG_URL). Tests pass a throwaway database. */
   url?: string
+  /**
+   * The URL the schema step migrates with (default: the configured MARVEEN_PG_MIGRATE_URL). An empty string means none,
+   * whatever the environment says: the boot then only checks that the schema is current.
+   */
+  migrateUrl?: string
   /** A migrations directory other than the shipped one (tests: a failing file, an extension-less set). */
   migrationsDir?: string
   /** Pool limits (default: the DB_PG_* environment variables, then the adapter defaults). */
@@ -85,30 +99,50 @@ export function redactUrl(text: string, url: string): string {
  * as the `cause` of the boot error: the logger serialises the whole cause chain, and a driver error can quote the
  * connection string (an unparsable URL, a failing connect).
  */
-export function sanitizeError(err: unknown, url: string): Error {
+export function sanitizeError(err: unknown, url: string, ...more: string[]): Error {
   const source = err instanceof Error ? err : new Error(String(err))
-  const copy = new Error(redactUrl(source.message, url))
+  const redact = (text: string): string => [url, ...more].reduce((acc, u) => redactUrl(acc, u), text)
+  const copy = new Error(redact(source.message))
   copy.name = source.name
-  if (source.stack) copy.stack = redactUrl(source.stack, url)
+  if (source.stack) copy.stack = redact(source.stack)
   const code = (source as { code?: unknown }).code
   if (typeof code === 'string') (copy as { code?: string }).code = code
   return copy
 }
 
-function detailOf(err: unknown, url: string): string {
+// `more` are the other URLs of the boot (the migration URL carries a password too): every text that leaves is redacted for all of them
+function detailOf(err: unknown, url: string, ...more: string[]): string {
   const raw = err instanceof Error ? err.message : String(err)
-  return redactUrl(raw || (err instanceof Error ? err.name : 'unknown error'), url)
+  return [url, ...more].reduce((acc, u) => redactUrl(acc, u), raw || (err instanceof Error ? err.name : 'unknown error'))
 }
 
-function checkUrl(url: string): void {
+function checkUrl(url: string, key: string = PG_URL_KEY, step: PgBootStep = 'url'): void {
   let parsed: URL
   try {
     parsed = new URL(url)
   } catch {
-    throw new PgBootError('url', `${PG_URL_KEY} is not a valid URL`)
+    throw new PgBootError(step, `${key} is not a valid URL`)
   }
   if (parsed.protocol !== 'postgres:' && parsed.protocol !== 'postgresql:') {
-    throw new PgBootError('url', `${PG_URL_KEY} must start with postgres:// or postgresql://`)
+    throw new PgBootError(step, `${key} must start with postgres:// or postgresql://`)
+  }
+}
+
+/**
+ * Applies the migrations on a pool of ONE connection built from the migration URL, and ENDS that pool before it returns, on
+ * success and on failure alike: the connection that holds DDL rights is gone before the serving pool serves anything.
+ */
+async function migrateOnItsOwnPool(
+  driver: typeof import('pg').default,
+  poolConfig: typeof import('./pg/pool.js').pgPoolConfig,
+  migrateUrl: string,
+  dirOpts: { dir?: string },
+): Promise<PgMigrationResult> {
+  const migratePool = new driver.Pool(poolConfig(migrateUrl, { max: 1 }))
+  try {
+    return await applyPgMigrations(migratePool, dirOpts)
+  } finally {
+    await migratePool.end().catch(() => undefined)
   }
 }
 
@@ -150,11 +184,14 @@ export async function bootPgBackend(opts: PgBootOptions = {}): Promise<PgBootRes
     // a driver that cannot even take the URL (or an invalid pool setting): refused like any other pool failure
     throw new PgBootError('pool', detailOf(err, url), sanitizeError(err, url))
   }
+  // the migration URL: configured or passed, empty = none. It carries a password too, so every refusal redacts it as well.
+  const migrateUrl = (opts.migrateUrl === undefined ? resolvePgMigrateUrl() ?? '' : opts.migrateUrl).trim() || undefined
+  const others = migrateUrl === undefined ? [] : [migrateUrl]
   let switched = false
   const refuse = async (step: PgBootStep, err: unknown): Promise<never> => {
     if (switched) useDbxBackend(null)
     await pool.end().catch(() => undefined)
-    throw new PgBootError(step, detailOf(err, url), sanitizeError(err, url))
+    throw new PgBootError(step, detailOf(err, url, ...others), sanitizeError(err, url, ...others))
   }
 
   try {
@@ -163,11 +200,34 @@ export async function bootPgBackend(opts: PgBootOptions = {}): Promise<PgBootRes
     return refuse('pool', err)
   }
 
+  try {
+    await pgRolePreflight(pool)
+  } catch (err) {
+    return refuse('role', err)
+  }
+
   let migrations: PgMigrationResult
   try {
-    migrations = await applyPgMigrations(pool, opts.migrationsDir === undefined ? {} : { dir: opts.migrationsDir })
+    const dirOpts = opts.migrationsDir === undefined ? {} : { dir: opts.migrationsDir }
+    if (migrateUrl === undefined) {
+      // no migration URL: the serving role only READS schema_version; a schema that is behind is refused, never fixed here
+      migrations = await assertPgSchemaCurrent(pool, dirOpts)
+    } else {
+      checkUrl(migrateUrl, PG_MIGRATE_URL_KEY, 'schema')
+      migrations = await migrateOnItsOwnPool(pgDriver, pgPoolConfig, migrateUrl, dirOpts)
+    }
   } catch (err) {
-    return refuse('migrate', err)
+    return refuse('schema', err)
+  }
+
+  // The role is judged a SECOND time, now that the schema exists: the first call (before the schema step) refuses a role that
+  // is already an owner and keeps a refused role from migrating anything, but on an empty database it sees no table, and a
+  // migration run by the very role that serves (url = migrateUrl, one role for both) makes that role the owner of every
+  // table. Without this call the first boot of such an install would pass and only the second would be refused.
+  try {
+    await pgRolePreflight(pool)
+  } catch (err) {
+    return refuse('role', err)
   }
 
   let warnings: string[]

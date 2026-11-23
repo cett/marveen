@@ -16,19 +16,35 @@ import { resolveSecret } from '../../secret-resolver.js'
 
 export const PG_URL_KEY = 'MARVEEN_PG_URL'
 
-/** The configured PostgreSQL URL, or undefined when the install runs on SQLite. Never logs, never validates. */
-export function resolvePgUrl(): string | undefined {
+/**
+ * The second URL of the boot split: the connection the schema step migrates with (the owner of the objects), used for
+ * that one step and then ended. The serving pool is never built from it. Resolved through the same three layers as
+ * `MARVEEN_PG_URL`; absent = the boot only checks that the schema is current and never changes it.
+ */
+export const PG_MIGRATE_URL_KEY = 'MARVEEN_PG_MIGRATE_URL'
+
+function resolveKey(key: string): string | undefined {
   // lazy: the .env file is read only when the two layers above it said nothing
   const layers: Array<() => string | undefined> = [
-    () => resolveSecret(PG_URL_KEY),
-    () => process.env[PG_URL_KEY],
-    () => readEnvFile([PG_URL_KEY])[PG_URL_KEY],
+    () => resolveSecret(key),
+    () => process.env[key],
+    () => readEnvFile([key])[key],
   ]
   for (const layer of layers) {
     const value = layer()?.trim()
     if (value) return value
   }
   return undefined
+}
+
+/** The configured PostgreSQL URL, or undefined when the install runs on SQLite. Never logs, never validates. */
+export function resolvePgUrl(): string | undefined {
+  return resolveKey(PG_URL_KEY)
+}
+
+/** The configured migration URL, or undefined (the boot then checks the schema and does not migrate). Never logs, never validates. */
+export function resolvePgMigrateUrl(): string | undefined {
+  return resolveKey(PG_MIGRATE_URL_KEY)
 }
 
 /** Thrown by a SQLite-only entry point when the install is configured for PostgreSQL. */

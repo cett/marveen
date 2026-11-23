@@ -1,0 +1,73 @@
+// G3 cell 5, the static one: the tenant context is set in ONE place and in ONE shape. The dbx header says "never put
+// set_config in the same statement as the work (a CTE)"; this cell enforces it instead of leaving it written. It reads the
+// source, not a server (the order on a server is the cells of pg/rls-context-order.pg.test.ts).
+import { readdirSync, readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import path from 'node:path'
+import { describe, expect, it } from 'vitest'
+import { PG_CONTEXT_SETTINGS, PG_SET_CONTEXT_SQL } from '../db/pg/dbx.js'
+
+const SRC = fileURLToPath(new URL('..', import.meta.url))
+
+/** Every non-test .ts file under src, as [path relative to src, text]. */
+function sourceFiles(dir: string = SRC): Array<[string, string]> {
+  const out: Array<[string, string]> = []
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, e.name)
+    if (e.isDirectory()) {
+      if (e.name === '__tests__') continue
+      out.push(...sourceFiles(full))
+    } else if (e.name.endsWith('.ts')) {
+      out.push([path.relative(SRC, full), readFileSync(full, 'utf8')])
+    }
+  }
+  return out
+}
+
+/** The code lines of a file with the comments taken out (a header may talk about set_config). */
+const code = (text: string): string => text.split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n')
+
+const CONTEXT_FILE = path.join('db', 'pg', 'dbx.ts')
+const MIGRATOR_FILE = 'db-migrations-pg.ts'
+
+describe('set_config in the source', () => {
+  const files = sourceFiles()
+
+  it('is called in exactly two files: the facade (the context) and the migration runner (its own timeouts)', () => {
+    const callers = files.filter(([, text]) => /\bset_config\s*\(/.test(code(text))).map(([f]) => f).sort()
+    expect(callers).toEqual([MIGRATOR_FILE, CONTEXT_FILE].sort())
+  })
+
+  it('names an app.* setting only in the facade, and the migration runner only sets its own timeouts', () => {
+    const names = (text: string): string[] => [...code(text).matchAll(/set_config\(\s*'([^']+)'/g)].map((m) => m[1]!)
+    const byFile = new Map(files.map(([f, text]) => [f, names(text)]))
+    expect(byFile.get(CONTEXT_FILE)!.every((n) => n.startsWith('app.'))).toBe(true)
+    expect([...new Set(byFile.get(MIGRATOR_FILE)!)].sort()).toEqual(['lock_timeout', 'statement_timeout'])
+    for (const [f, n] of byFile) {
+      if (f !== CONTEXT_FILE) expect(n.filter((x) => x.startsWith('app.')), f).toEqual([])
+    }
+  })
+
+  it('PG_SET_CONTEXT_SQL is the one statement that sets the five settings: transaction-local, in order, and nothing else', () => {
+    const calls = [...PG_SET_CONTEXT_SQL.matchAll(/set_config\('([^']+)', \$(\d), (true|false)\)/g)]
+    expect(calls.map((m) => m[1])).toEqual([...PG_CONTEXT_SETTINGS])
+    expect(calls.map((m) => m[2])).toEqual(['1', '2', '3', '4', '5'])
+    expect(calls.every((m) => m[3] === 'true')).toBe(true) // true = transaction-local: it cannot stay on a pooled connection
+    // a bare SELECT of the five calls: no second statement, no FROM, no CTE, no work
+    expect(PG_SET_CONTEXT_SQL).toMatch(/^SELECT set_config\(/)
+    expect(PG_SET_CONTEXT_SQL).not.toMatch(/;|\bFROM\b|\bWITH\b|\bINSERT\b|\bUPDATE\b|\bDELETE\b|\bSELECT\b.*\bSELECT\b/i)
+    expect(PG_SET_CONTEXT_SQL.replace(/set_config\('[^']+', \$\d, true\)/g, '').replace(/^SELECT[\s,]*$/, '')).toBe('')
+  })
+
+  it('PG_SET_CONTEXT_SQL is only ever sent as a statement of its own, never combined with other text', () => {
+    for (const [f, text] of files) {
+      for (const line of code(text).split('\n')) {
+        if (!line.includes('PG_SET_CONTEXT_SQL')) continue
+        if (f === CONTEXT_FILE && /^export const PG_SET_CONTEXT_SQL =\s*$/.test(line)) continue // the definition
+        if (/^export \{[^}]*\bPG_SET_CONTEXT_SQL\b[^}]*\} from /.test(line)) continue // a re-export names it, it does not use it
+        // a use is `{ text: PG_SET_CONTEXT_SQL, values: ... }`: the constant alone as the text
+        expect(line, `${f}: ${line.trim()}`).toMatch(/\btext:\s*PG_SET_CONTEXT_SQL\s*,\s*values:/)
+      }
+    }
+  })
+})
