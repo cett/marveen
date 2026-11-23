@@ -152,7 +152,7 @@ describe('what a boot error exposes to the logger', () => {
   // and the serialised boot error (cause chain included, as the logger writes it) must carry neither the password nor the
   // user. Mutant: `cause: err` in refuse() instead of sanitizeError(err, url) fails every row (the raw error keeps `input`).
   // The earlier steps are stubbed to pass, so each row reaches exactly the step it names.
-  it.each(['pool', 'schema', 'preflight', 'caches'] as const)(
+  it.each(['pool', 'role', 'schema', 'preflight', 'caches'] as const)(
     'a driver error that quotes the connection string at step "%s" does not reach the serialised boot error, cause chain included',
     async (step) => {
       const quoting = () => Object.assign(new Error(`cannot connect to ${DEAD_URL}`), { input: DEAD_URL })
@@ -170,6 +170,7 @@ describe('what a boot error exposes to the logger', () => {
         assertPgSchemaCurrent: () => (step === 'schema' ? Promise.reject(quoting()) : Promise.resolve({ applied: [], alreadyApplied: 0 })),
       }))
       vi.doMock('../db/pg/preflight.js', () => ({
+        pgRolePreflight: () => (step === 'role' ? Promise.reject(quoting()) : Promise.resolve()),
         pgPreflight: () => (step === 'preflight' ? Promise.reject(quoting()) : Promise.resolve({ warnings: [] })),
       }))
       vi.doMock('../db/pg/dbx.js', () => ({ createPgDbx: () => ({}) }))
@@ -206,6 +207,8 @@ describe('what a boot error exposes to the logger', () => {
       }
       return { default: { Pool, types: { setTypeParser: () => undefined, builtins: {} } }, Pool }
     })
+    // the role step is judged on a server in pg-boot.pg.test.ts; here it is stubbed to pass so the cell reaches the schema step
+    vi.doMock('../db/pg/preflight.js', () => ({ pgRolePreflight: () => Promise.resolve(), pgPreflight: () => Promise.resolve({ warnings: [] }) }))
     vi.doMock('../db-migrations-pg.js', () => ({
       applyPgMigrations: () => Promise.reject(quotingMigrate()),
       assertPgSchemaCurrent: () => Promise.resolve({ applied: [], alreadyApplied: 0 }),
@@ -231,6 +234,7 @@ describe('what a boot error exposes to the logger', () => {
       }
       return { default: { Pool, types: { setTypeParser: () => undefined, builtins: {} } }, Pool }
     })
+    vi.doMock('../db/pg/preflight.js', () => ({ pgRolePreflight: () => Promise.resolve(), pgPreflight: () => Promise.resolve({ warnings: [] }) }))
     const { boot } = await load()
     const bad = 'mysql://user-m:secret-m@127.0.0.1:1/db-m'
     const err = await boot.bootPgBackend({ url: DEAD_URL, migrateUrl: bad }).then(() => null, (e: unknown) => e as InstanceType<typeof boot.PgBootError>)
@@ -238,6 +242,92 @@ describe('what a boot error exposes to the logger', () => {
     expect(err!.message).toContain('MARVEEN_PG_MIGRATE_URL')
     expect(err!.message).not.toContain('secret-m')
     expect(err!.message).not.toContain('user-m')
+  })
+})
+
+// The role preflight on a server that answers oddly (no server needed: a fake queryable). The verdict of a role that cannot be
+// read is a refusal, never an acceptance (fail closed). The three real conditions are judged on a live server in pg/pg-boot.pg.test.ts.
+describe('pgRolePreflight: what it cannot read it refuses', () => {
+  // the query answers one row per judged name: current_user and session_user (the same row for both unless a cell says otherwise)
+  // (`null` for the session row = no row for the login role; an omitted argument = the same row as current_user)
+  const answering = (row: Record<string, unknown> | undefined, session: Record<string, unknown> | null | undefined = row) => ({
+    query: () => Promise.resolve({
+      rows: [row === undefined ? null : { which: 'current', ...row }, session === undefined || session === null ? null : { which: 'session', ...session }].filter((r) => r !== null),
+    }),
+  })
+  const GOOD = { rolsuper: false, rolbypassrls: false, owned: 0, member_of_privileged: 0, rolcreaterole: false, member_of_server_reach: 0 }
+
+  it('accepts exactly the clean row', async () => {
+    const { pgRolePreflight } = await import('../db/pg/preflight.js')
+    await expect(pgRolePreflight(answering(GOOD))).resolves.toBeUndefined()
+  })
+
+  it.each([
+    ['no row for the role (not visible in pg_roles)', undefined, /not visible in pg_roles/],
+    ['rolsuper true', { ...GOOD, rolsuper: true }, /superuser/],
+    ['rolsuper null (not exactly false)', { ...GOOD, rolsuper: null }, /superuser/],
+    ['rolbypassrls true', { ...GOOD, rolbypassrls: true }, /BYPASSRLS/],
+    ['rolbypassrls missing (not exactly false)', { rolsuper: false, owned: 0 }, /BYPASSRLS/],
+    ['one owned table', { ...GOOD, owned: 1 }, /owns a table/],
+    ['an owned count that is not a number', { ...GOOD, owned: 'many' }, /owns a table/],
+    ['an owned count that is missing', { rolsuper: false, rolbypassrls: false, member_of_privileged: 0 }, /owns a table/],
+    ['one membership of a privileged role', { ...GOOD, member_of_privileged: 1 }, /member of a role that is a superuser or has BYPASSRLS/],
+    ['a membership count that is not a number', { ...GOOD, member_of_privileged: 'some' }, /member of a role that is a superuser/],
+    ['a membership count that is missing', { rolsuper: false, rolbypassrls: false, owned: 0 }, /member of a role that is a superuser/],
+    ['rolcreaterole true', { ...GOOD, rolcreaterole: true }, /has CREATEROLE/],
+    ['rolcreaterole null (not exactly false)', { ...GOOD, rolcreaterole: null }, /has CREATEROLE/],
+    ['rolcreaterole missing', { rolsuper: false, rolbypassrls: false, owned: 0, member_of_privileged: 0, member_of_server_reach: 0 }, /has CREATEROLE/],
+    ['one membership of a host-reaching built-in role', { ...GOOD, member_of_server_reach: 1 }, /reaches the server host/],
+    ['a host-reach count that is not a number', { ...GOOD, member_of_server_reach: 'some' }, /reaches the server host/],
+    ['a host-reach count that is missing', { rolsuper: false, rolbypassrls: false, owned: 0, member_of_privileged: 0, rolcreaterole: false }, /reaches the server host/],
+  ] as const)('refuses on %s', async (_name, row, message) => {
+    const { pgRolePreflight } = await import('../db/pg/preflight.js')
+    await expect(pgRolePreflight(answering(row))).rejects.toThrow(message)
+  })
+
+  // the LOGIN role (session_user) is judged with the same conditions, after current_user, and says so in the message
+  it.each([
+    ['the login role is a superuser', { ...GOOD, rolsuper: true }, /login role of the session is a superuser/],
+    ['the login role has BYPASSRLS', { ...GOOD, rolbypassrls: true }, /login role of the session has BYPASSRLS/],
+    ['the login role owns a table', { ...GOOD, owned: 1 }, /login role of the session owns a table/],
+    ['the login role is a member of a privileged role', { ...GOOD, member_of_privileged: 1 }, /login role of the session is a member of a role that is a superuser/],
+    ['the login role has CREATEROLE', { ...GOOD, rolcreaterole: true }, /login role of the session has CREATEROLE/],
+    ['the login role reaches the server host', { ...GOOD, member_of_server_reach: 1 }, /login role of the session is a member of a built-in role that reaches the server host/],
+    ['the login role row is missing', null, /login role of the session is not visible in pg_roles/],
+  ] as const)('with a clean current_user, refuses when %s', async (_name, session, message) => {
+    const { pgRolePreflight } = await import('../db/pg/preflight.js')
+    await expect(pgRolePreflight(answering(GOOD, session))).rejects.toThrow(message)
+  })
+
+  it('current_user is judged first: both roles bad, the message is the connected role\'s', async () => {
+    const { pgRolePreflight } = await import('../db/pg/preflight.js')
+    await expect(pgRolePreflight(answering({ ...GOOD, rolsuper: true }, { ...GOOD, rolsuper: true }))).rejects.toThrow(/^the connected role is a superuser/)
+  })
+
+  it('a refused role never reaches the schema step: the migration functions are not called', async () => {
+    const migrate = vi.fn(() => Promise.resolve({ applied: [], alreadyApplied: 0 }))
+    const assertCurrent = vi.fn(() => Promise.resolve({ applied: [], alreadyApplied: 0 }))
+    vi.doMock('pg', () => {
+      class Pool {
+        on() { return this }
+        query() { return Promise.resolve({ rows: [] }) }
+        end() { return Promise.resolve() }
+      }
+      return { default: { Pool, types: { setTypeParser: () => undefined, builtins: {} } }, Pool }
+    })
+    vi.doMock('../db-migrations-pg.js', () => ({ applyPgMigrations: migrate, assertPgSchemaCurrent: assertCurrent }))
+    vi.doMock('../db/pg/preflight.js', () => ({
+      pgRolePreflight: () => Promise.reject(new Error('the connected role is a superuser')),
+      pgPreflight: () => Promise.resolve({ warnings: [] }),
+    }))
+    const { boot, facade } = await load()
+    for (const migrateUrl of ['', MIGRATE_URL]) {
+      const err = await boot.bootPgBackend({ url: DEAD_URL, migrateUrl }).then(() => null, (e: unknown) => e as InstanceType<typeof boot.PgBootError>)
+      expect(err!.step).toBe('role')
+    }
+    expect(migrate).not.toHaveBeenCalled()
+    expect(assertCurrent).not.toHaveBeenCalled()
+    expect(facade.dbxDialect()).toBe('sqlite')
   })
 })
 

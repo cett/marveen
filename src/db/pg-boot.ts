@@ -9,6 +9,12 @@
 // The steps, in this order, each one a named failure (PgBootStep):
 //   url        the value is a postgres:// or postgresql:// URL (the value is never echoed: it carries a password)
 //   pool       the SERVING pool is made (the app role) and one connection is proven (SELECT 1)
+//   role       the SERVING role is one that row-level security binds (db/pg/preflight.ts pgRolePreflight): not a superuser, no
+//              BYPASSRLS, owns no table in the database (any non-system schema). Unconditional, no override: a database served through such a role has
+//              no tenant isolation. Judged TWICE: before the schema step (nothing is migrated or read on a refused role) and
+//              again right after it (an empty database showed no owned table the first time, and a migration run by the
+//              serving role itself makes it the owner). The migration pool (the owner) is not judged by it: it is a
+//              different pool, ended before anything is served
 //   schema     the schema is brought to, or checked against, src/migrations-pg/ (db-migrations-pg.ts). WITH a migration URL
 //              (MARVEEN_PG_MIGRATE_URL, the owner of the objects) a pool of ONE connection on it applies the files and is
 //              ENDED before anything is served: the serving pool never holds DDL rights. WITHOUT one the boot only reads
@@ -29,11 +35,11 @@ import { loadModelProfileMapCacheAsync } from './model-profile-map-cache.js'
 import { loadAgentSettingsCacheAsync } from './agent-settings-cache.js'
 import { useDbxBackend } from './facade.js'
 import type { PgPoolSettings } from './pg/pool.js'
-import { pgPreflight } from './pg/preflight.js'
+import { pgPreflight, pgRolePreflight } from './pg/preflight.js'
 import { PG_MIGRATE_URL_KEY, PG_URL_KEY, resolvePgMigrateUrl, resolvePgUrl } from './pg/url.js'
 import type pg from 'pg'
 
-export type PgBootStep = 'url' | 'pool' | 'schema' | 'preflight' | 'caches'
+export type PgBootStep = 'url' | 'pool' | 'role' | 'schema' | 'preflight' | 'caches'
 
 /** A PostgreSQL boot step failed: the process must not go on. `step` names where; the message never holds the URL. */
 export class PgBootError extends Error {
@@ -194,6 +200,12 @@ export async function bootPgBackend(opts: PgBootOptions = {}): Promise<PgBootRes
     return refuse('pool', err)
   }
 
+  try {
+    await pgRolePreflight(pool)
+  } catch (err) {
+    return refuse('role', err)
+  }
+
   let migrations: PgMigrationResult
   try {
     const dirOpts = opts.migrationsDir === undefined ? {} : { dir: opts.migrationsDir }
@@ -206,6 +218,16 @@ export async function bootPgBackend(opts: PgBootOptions = {}): Promise<PgBootRes
     }
   } catch (err) {
     return refuse('schema', err)
+  }
+
+  // The role is judged a SECOND time, now that the schema exists: the first call (before the schema step) refuses a role that
+  // is already an owner and keeps a refused role from migrating anything, but on an empty database it sees no table, and a
+  // migration run by the very role that serves (url = migrateUrl, one role for both) makes that role the owner of every
+  // table. Without this call the first boot of such an install would pass and only the second would be refused.
+  try {
+    await pgRolePreflight(pool)
+  } catch (err) {
+    return refuse('role', err)
   }
 
   let warnings: string[]
