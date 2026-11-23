@@ -56,7 +56,7 @@ describe('the store file audit is unattributed on purpose', () => {
   const FS_WRITER = /\b(writeFileSync|writeFile|appendFile|appendFileSync|atomicWriteFile|atomicWriteFileSync|renameSync|rename|copyFile|copyFileSync|createWriteStream|mkdirSync|openSync|symlinkSync|truncateSync|unlinkSync|rmSync)\s*\(/
 
   // The one file-system writer in these modules is the boot-time retirement of the old side-car files
-  // (a rename to .deprecated, called from src/index.ts), at the end of system-config.ts. It is not on
+  // (a rename to .deprecated, called from src/main.ts), at the end of system-config.ts. It is not on
   // the path of a request: the pin cuts it off and checks that nothing else follows it.
   const BOOT_TAIL_MARKER = 'export function retireGroup5StateFiles'
   const BOOT_TAIL_FUNCTIONS = ['retireConfigOverridesFile', 'retireGroup5StateFiles']

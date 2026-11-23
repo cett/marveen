@@ -210,11 +210,11 @@ describe('the boot scan', () => {
 })
 
 describe('the boot wiring (source pin)', () => {
-  const index = readFileSync(new URL('../index.ts', import.meta.url), 'utf-8')
+  const index = readFileSync(new URL('../main.ts', import.meta.url), 'utf-8')
 
   it('starts the scan after the database is up, without awaiting it, with a catch', () => {
     const call = index.match(/^(.*runBootImportLeftoverScan\(\).*)$/m)
-    expect(call, 'the boot scan is called from index.ts').not.toBeNull()
+    expect(call, 'the boot scan is called from main.ts').not.toBeNull()
     expect(call![1]).not.toMatch(/await/)
     expect(call![1]).toContain('.catch(')
     expect(index.indexOf('runBootImportLeftoverScan()')).toBeGreaterThan(index.indexOf('  initDatabase()'))

@@ -19,6 +19,9 @@ let storeDir: string
 /** A fresh module graph: SECRET_MOUNT_DIR, CLAUDECLAW_ENV_DIR and MARVEEN_STORE_DIR are read when the modules load. */
 async function load() {
   vi.resetModules()
+  // the bootstrap (src/index.ts) sets the snapshot before config.ts is read; these cells load the modules directly, so they set
+  // the same empty snapshot first (config.ts refuses a PostgreSQL URL without one)
+  ;(await import('../config-snapshot.js')).setConfigSnapshot({})
   const url = await import('../db/pg/url.js')
   const db = await import('../db.js')
   const conn = await import('../db/connection.js')

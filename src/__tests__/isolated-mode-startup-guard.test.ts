@@ -12,14 +12,14 @@ import { join } from 'node:path'
 // reliable than a full integration test that boots a real HTTP server.
 
 const ROOT = join(__dirname, '..', '..')
-const INDEX_SRC = readFileSync(join(ROOT, 'src/index.ts'), 'utf-8')
+const INDEX_SRC = readFileSync(join(ROOT, 'src/main.ts'), 'utf-8')
 const WEB_SRC = readFileSync(join(ROOT, 'src/web.ts'), 'utf-8')
 
-describe('ISOLATED-MODE-GUARD: index.ts sets WEB_ONLY before startWebServer in isolated mode', () => {
+describe('ISOLATED-MODE-GUARD: main.ts sets WEB_ONLY before startWebServer in isolated mode', () => {
   it('IS_ISOLATED_MODE block sets process.env WEB_ONLY = true', () => {
     // Locate the IS_ISOLATED_MODE block
     const isolatedBlock = INDEX_SRC.match(/if\s*\(IS_ISOLATED_MODE\)\s*\{([^}]+(?:\{[^}]*\}[^}]*)*)\}/s)
-    expect(isolatedBlock, 'IS_ISOLATED_MODE block not found in index.ts').toBeTruthy()
+    expect(isolatedBlock, 'IS_ISOLATED_MODE block not found in main.ts').toBeTruthy()
     const block = isolatedBlock![1]
     expect(block).toContain("process.env['WEB_ONLY'] = 'true'")
   })

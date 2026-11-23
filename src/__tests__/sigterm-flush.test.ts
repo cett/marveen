@@ -151,8 +151,8 @@ describe('shutdown wiring (source pin)', () => {
   const read = (rel: string): string => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf-8')
   const stripComments = (s: string): string => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')
 
-  it('index.ts closes the database only inside finish(), after the awaited SIGTERM flushes', () => {
-    const src = stripComments(read('../index.ts'))
+  it('main.ts closes the database only inside finish(), after the awaited SIGTERM flushes', () => {
+    const src = stripComments(read('../main.ts'))
     expect(src.match(/closeDatabase\(\)/g)).toHaveLength(1)
     const finishStart = src.indexOf('const finish = (): void => {')
     const closeAt = src.indexOf('closeDatabase()')
@@ -163,14 +163,14 @@ describe('shutdown wiring (source pin)', () => {
     expect(src).toMatch(/if \(signal === 'SIGTERM'\) \{[\s\S]*?runSigtermFlushes[\s\S]*?\} else \{\s*finish\(\)\s*\}/)
   })
 
-  it('index.ts hands the signal name to shutdown(): the listener is the function itself, not a wrapper', () => {
-    const src = stripComments(read('../index.ts'))
+  it('main.ts hands the signal name to shutdown(): the listener is the function itself, not a wrapper', () => {
+    const src = stripComments(read('../main.ts'))
     expect(src).toContain("process.on('SIGTERM', shutdown)")
     expect(src).toMatch(/const shutdown = \(signal\?: string\): void =>/)
   })
 
   it('the flush budget fits inside the process-lock takeover grace and the hard-kill timer', () => {
-    const src = stripComments(read('../index.ts'))
+    const src = stripComments(read('../main.ts'))
     const budget = Number(/const SIGTERM_FLUSH_BUDGET_MS = (\d+)/.exec(src)?.[1])
     const hardKill = Number(/const SHUTDOWN_HARD_KILL_MS = (\d+)/.exec(src)?.[1])
     expect(budget).toBeGreaterThan(0)

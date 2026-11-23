@@ -174,9 +174,9 @@ describe('the shutdown-marker flush', () => {
     expect(seen).toEqual(['marker-missing'])
   })
 
-  it('src/index.ts records the boot (and so registers the marker) before it starts the web server', () => {
+  it('src/main.ts records the boot (and so registers the marker) before it starts the web server', () => {
     const here = dirname(fileURLToPath(import.meta.url))
-    const src = readFileSync(join(here, '..', 'index.ts'), 'utf8')
+    const src = readFileSync(join(here, '..', 'main.ts'), 'utf8')
     const marker = src.indexOf('await startBootMarker()')
     const web = src.indexOf('startWebServer(WEB_PORT)')
     expect(marker).toBeGreaterThan(-1)
@@ -184,9 +184,9 @@ describe('the shutdown-marker flush', () => {
     expect(marker).toBeLessThan(web)
   })
 
-  it('src/index.ts still flushes only on SIGTERM (a SIGINT leaves no marker: unclean is the correct reading)', () => {
+  it('src/main.ts still flushes only on SIGTERM (a SIGINT leaves no marker: unclean is the correct reading)', () => {
     const here = dirname(fileURLToPath(import.meta.url))
-    const src = readFileSync(join(here, '..', 'index.ts'), 'utf8')
+    const src = readFileSync(join(here, '..', 'main.ts'), 'utf8')
     expect(src).toContain("if (signal === 'SIGTERM') {")
   })
 })
