@@ -167,7 +167,7 @@ export function advisoryLockSql(key: string, dialect: DbxDialect = dbxDialect())
  * lock on their own ids (one module, one prefix) cannot collide with each other. The list is checked: a prefix that is not
  * on it is refused, so no caller can invent a key space by accident.
  */
-export const ADVISORY_PREFIXES = ['bgtask:', 'approval:', 'channel:', 'skill-usage:', 'apitoken:', 'import:'] as const
+export const ADVISORY_PREFIXES = ['bgtask:', 'approval:', 'channel:', 'skill-usage:', 'apitoken:', 'import:', 'sysconfig:'] as const
 export type AdvisoryPrefix = (typeof ADVISORY_PREFIXES)[number]
 
 /**

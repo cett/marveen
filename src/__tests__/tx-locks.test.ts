@@ -11,6 +11,7 @@ import { interleave } from './helpers/interleave.js'
 import { parkFirstTxAt, untilSettledOrBlocked } from './helpers/tx-park.js'
 import { saveWorkspaceDoc, patchWorkspaceDoc, getWorkspaceDoc } from '../db/workspace.js'
 import { createTenant, getTenant, updateTenant } from '../db/observability.js'
+import { updateSystemConfig } from '../db/system-config.js'
 import { dbx } from '../db.js'
 
 useTestDb()
@@ -77,5 +78,42 @@ describe('updateTenant', () => {
     expect((await getTenant('tenant-x'))?.main_agent_id).toBe('agent-b')
     expect((await getTenant('tenant-x'))?.display_name).toBe('Tenant X1')
     expect(await dbx.get("SELECT 1 AS present FROM agent_tenant_context WHERE tenant_id = 'tenant-x'")).toBeUndefined()
+  })
+})
+
+describe('updateSystemConfig', () => {
+  // Two read-modify-write calls of one key: each appends its token to the list it read. The first one is parked right before
+  // its write, the second one is started. A lost update leaves only one token.
+  const appendTwo = async (key: string): Promise<'settled' | 'blocked' | 'queued'> => {
+    const il = interleave()
+    il.hold('first-write')
+    const spy = parkFirstTxAt(il, 'first-write', /^\s*INSERT INTO system_config/)
+    let state: 'settled' | 'blocked' | 'queued'
+    try {
+      const first = updateSystemConfig(key, (cur) => (cur ? `${cur},x` : 'x'))
+      await il.reached('first-write')
+      const second = updateSystemConfig(key, (cur) => (cur ? `${cur},y` : 'y'))
+      state = await untilSettledOrBlocked(second)
+      il.open('first-write')
+      expect(await first).toBe(true)
+      expect(await second).toBe(true)
+    } finally {
+      il.open('first-write')
+      spy.mockRestore()
+    }
+    return state
+  }
+
+  it('two overlapping calls on a key that has no row yet both land (a row lock cannot serialise them: the advisory lock does)', async () => {
+    const state = await appendTwo('sweep.absent')
+    expect(state).not.toBe('settled')
+    expect(await dbx.get<{ value: string }>("SELECT value FROM system_config WHERE key = 'sweep.absent'")).toEqual({ value: 'x,y' })
+  })
+
+  it('two overlapping calls on a key that has a row both land, and the second one sees what the first wrote', async () => {
+    await dbx.run("INSERT INTO system_config (key, value, updated_at, source) VALUES ('sweep.present', 'a', 1, 'db')")
+    const state = await appendTwo('sweep.present')
+    expect(state).not.toBe('settled')
+    expect(await dbx.get<{ value: string }>("SELECT value FROM system_config WHERE key = 'sweep.present'")).toEqual({ value: 'a,x,y' })
   })
 })
