@@ -8,11 +8,11 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { useTestDb } from './helpers/with-test-db.js'
 import { interleave } from './helpers/interleave.js'
-import { parkFirstTxAt, untilSettledOrBlocked } from './helpers/tx-park.js'
+import { parkFirstStatementAt, parkFirstTxAt, untilSettledOrBlocked } from './helpers/tx-park.js'
 import { saveWorkspaceDoc, patchWorkspaceDoc, getWorkspaceDoc } from '../db/workspace.js'
 import { createTenant, getTenant, updateTenant } from '../db/observability.js'
 import { updateSystemConfig } from '../db/system-config.js'
-import { dbx } from '../db.js'
+import { dbx, deleteVaultBindingsForSecret, upsertVaultBinding } from '../db.js'
 
 useTestDb()
 afterEach(() => { vi.restoreAllMocks() })
@@ -115,5 +115,30 @@ describe('updateSystemConfig', () => {
     const state = await appendTwo('sweep.present')
     expect(state).not.toBe('settled')
     expect(await dbx.get<{ value: string }>("SELECT value FROM system_config WHERE key = 'sweep.present'")).toEqual({ value: 'a,x,y' })
+  })
+})
+
+describe('deleteVaultBindingsForSecret', () => {
+  it('returns every binding it deleted, also one written while the delete was about to run (DELETE ... RETURNING)', async () => {
+    await upsertVaultBinding('default', { vaultSecretId: 'secret-a', envVar: 'KEY_ONE', targets: [] })
+    const il = interleave()
+    il.hold('before-delete')
+    // The delete is parked right before it is sent (a SELECT-then-DELETE shape would be parked between its halves, with the
+    // rows already read). A second binding of the same secret is written meanwhile; it is deleted by the same delete, so it
+    // has to be among the returned rows: the caller strips the env var from the target file of each returned binding.
+    const spy = parkFirstStatementAt(il, 'before-delete', /^\s*DELETE FROM vault_bindings\b/)
+    let deleted: Awaited<ReturnType<typeof deleteVaultBindingsForSecret>>
+    try {
+      const first = deleteVaultBindingsForSecret('default', 'secret-a')
+      await il.reached('before-delete')
+      await upsertVaultBinding('default', { vaultSecretId: 'secret-a', envVar: 'KEY_TWO', targets: [] })
+      il.open('before-delete')
+      deleted = await first
+    } finally {
+      il.open('before-delete')
+      spy.mockRestore()
+    }
+    expect(deleted.map((b) => b.envVar).sort()).toEqual(['KEY_ONE', 'KEY_TWO'])
+    expect(await dbx.get("SELECT 1 AS present FROM vault_bindings WHERE vault_secret_id = 'secret-a'")).toBeUndefined()
   })
 })

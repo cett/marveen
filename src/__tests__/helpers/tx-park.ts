@@ -72,3 +72,25 @@ export async function untilSettledOrBlocked(second: Promise<unknown>): Promise<'
     await new Promise((resolve) => setTimeout(resolve, 5))
   }
 }
+
+/**
+ * Like `parkFirstTxAt`, but the statement may also be sent on `dbx` itself (a function that is ONE statement and opens no
+ * transaction): the first statement matching `pattern`, inside a transaction body or outside one, stops at `il.pass(name)`
+ * before it is sent. Used for the sites where the fix is to make the read-then-write a single statement: the cell parks
+ * before that statement, and the same cell would park a read-then-write shape between its two halves.
+ */
+export function parkFirstStatementAt(il: Interleave, name: string, pattern: RegExp): { mockRestore(): void } {
+  const txSpy = parkFirstTxAt(il, name, pattern)
+  let parked = false
+  const spies = (['get', 'all', 'run'] as const).map((method) => {
+    const real = dbx[method].bind(dbx) as (sql: string, ...params: unknown[]) => Promise<unknown>
+    return vi.spyOn(dbx, method).mockImplementation((async (sql: string, ...params: unknown[]) => {
+      if (!parked && pattern.test(sql)) {
+        parked = true
+        await il.pass(name)
+      }
+      return real(sql, ...params)
+    }) as never)
+  })
+  return { mockRestore: () => { for (const s of spies) s.mockRestore(); txSpy.mockRestore() } }
+}
