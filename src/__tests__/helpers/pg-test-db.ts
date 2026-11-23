@@ -217,6 +217,37 @@ async function buildTemplate(adminUrl: string, template: string, files: string[]
   try { await rename.query(`ALTER DATABASE ${quote(building)} RENAME TO ${quote(template)}`) } finally { await rename.end() }
 }
 
+// DISCOVERY2 (throwaway, never merged): the pool every test sees is the APP role for work, with scratch DDL on the OWNER
+// pool (so the default privileges give the app role DML and sequence rights), and extension / database DDL on the ADMIN
+// (a superuser-owned extension). Routed by statement text, on pool.query and on the query of a checked-out client.
+function routeOf(text: string): 'admin' | 'owner' | 'app' {
+  if (/^\s*(CREATE|DROP|ALTER)\s+(EXTENSION|DATABASE)\b/i.test(text)) return 'admin'
+  if (/^\s*CREATE\s+(TEMP|TEMPORARY)\b/i.test(text)) return 'app'
+  if (/^\s*(CREATE|ALTER|DROP|TRUNCATE|COMMENT)\b/i.test(text)) return 'owner'
+  return 'app'
+}
+const textOf = (arg: unknown): string => (typeof arg === 'string' ? arg : String((arg as { text?: string } | undefined)?.text ?? ''))
+function discoveryPool(admin: pg.Pool, app: pg.Pool, owner: pg.Pool): pg.Pool {
+  const pick = (text: string): pg.Pool => { const r = routeOf(text); return r === 'admin' ? admin : r === 'owner' ? owner : app }
+  const wrapClient = (client: pg.PoolClient): pg.PoolClient => new Proxy(client, {
+    get(target, prop, recv) {
+      if (prop !== 'query') return Reflect.get(target, prop, recv) as unknown
+      return (...args: unknown[]) => {
+        const where = routeOf(textOf(args[0]))
+        if (where === 'app') return (target.query as (...a: unknown[]) => unknown)(...args)
+        return (pick(textOf(args[0])).query as (...a: unknown[]) => unknown)(...args)
+      }
+    },
+  })
+  return new Proxy(app, {
+    get(target, prop, recv) {
+      if (prop === 'query') return (...args: unknown[]) => (pick(textOf(args[0])).query as (...a: unknown[]) => unknown)(...args)
+      if (prop === 'connect') return async (...a: unknown[]) => wrapClient(await (target.connect as (...x: unknown[]) => Promise<pg.PoolClient>)(...a))
+      return Reflect.get(target, prop, recv) as unknown
+    },
+  })
+}
+
 /** A fresh database cloned from the baseline template (built first when it does not exist yet). */
 export async function createPgTestDb(opts: PgTestDbOptions = {}): Promise<PgTestDb> {
   const adminUrl = opts.url ?? pgTestUrl()
@@ -252,7 +283,7 @@ export async function createPgTestDb(opts: PgTestDbOptions = {}): Promise<PgTest
     appUrl,
     ownerUrl,
     template,
-    pool,
+    pool: discoveryPool(pool, appPool, ownerPool), // DISCOVERY2 (throwaway, never merged)
     appPool,
     ownerPool,
     appDbx: () => createPgDbx(appPool),

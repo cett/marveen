@@ -467,6 +467,7 @@ jobs:
         run: npm ci
 
       - name: PostgreSQL tests (baseline parity, harness)
+        continue-on-error: true # DISCOVERY2 throwaway only: the modules step must run after a red test:pg
         run: npm run test:pg
 
       - name: PostgreSQL module run (the useTestDb files of the ported list, MARVEEN_TEST_DB=pg)
