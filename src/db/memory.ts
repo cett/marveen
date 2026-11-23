@@ -4,6 +4,7 @@
 import { ALLOWED_CHAT_ID } from '../config.js'
 import { writeAgentAuditLog } from './audit.js'
 import { dbx, dbxDialect } from './facade.js'
+import { forUpdate } from './dialect.js'
 import { BlankContentError, isBlankContent } from '../blank-content.js'
 import { floatsToBlob, generateEmbedding, linkToNeighbors, syncVecMemoryEmbeddingUpdate } from './vector.js'
 import { buildFtsMatchExpression, FTS_MATCH, ftsPgTsQuery, ftsTokens, PG_FTS_CONFIG, pgRankSql } from './fts.js'
@@ -149,7 +150,8 @@ export async function recentMemories(chatId: string, limit = 5, tenantId?: strin
 
 export async function touchMemory(id: number): Promise<void> {
   const now = Math.floor(Date.now() / 1000)
-  await dbx.run('UPDATE memories SET accessed_at = ?, salience = MIN(salience + 0.1, 5.0) WHERE id = ?', now, id)
+  // CASE, not the scalar MIN / MAX: PostgreSQL has no two-argument MIN / MAX (it has LEAST / GREATEST)
+  await dbx.run('UPDATE memories SET accessed_at = ?, salience = CASE WHEN salience + 0.1 > 5.0 THEN 5.0 ELSE salience + 0.1 END WHERE id = ?', now, id)
 }
 
 // Mark a batch of memories as just-recalled (bumps accessed_at only). Used by
@@ -169,7 +171,7 @@ export async function decayMemories(): Promise<void> {
   const oneWeekAgo = Math.floor(Date.now() / 1000) - 7 * 86400
   // Gentler decay: 0.5% per day, only for memories older than 1 week
   // Never delete -- salience just goes lower but memories persist
-  await dbx.run('UPDATE memories SET salience = MAX(salience * 0.995, 0.01) WHERE created_at < ?', oneWeekAgo)
+  await dbx.run('UPDATE memories SET salience = CASE WHEN salience * 0.995 < 0.01 THEN 0.01 ELSE salience * 0.995 END WHERE created_at < ?', oneWeekAgo)
 }
 
 export async function getMemoriesForChat(chatId: string, limit = 10, tenantId?: string, category?: string, offset = 0): Promise<Memory[]> {
@@ -377,7 +379,9 @@ export async function updateMemory(
     // parameter is optional and means "reassign to this agent", so it is absent
     // on the ordinary edit -- it cannot be used to decide whose cache went
     // stale. Only the row itself knows that.
-    const before = await tx.get<{ agent_id: string | null; category: string | null }>('SELECT agent_id, category FROM memories WHERE id = ?', id)
+    // FOR UPDATE on the first read: a concurrent edit of the same row waits here, so the reads below and the version record
+    // see the committed state the edit replaces (READ COMMITTED would let two edits read the same old content). SQLite: no-op.
+    const before = await tx.get<{ agent_id: string | null; category: string | null }>(`SELECT agent_id, category FROM memories WHERE id = ? ${forUpdate()}`, id)
 
     // Capture old state before the update so we can write a version record with
     // the correct changed_by (modifiedBy or agentId) without touching agent_id.

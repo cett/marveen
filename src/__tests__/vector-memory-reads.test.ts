@@ -1,16 +1,18 @@
-// The read paths and the multi-statement writes of the vector and memory modules after the facade conversion.
-// Real in-memory database; the one stub is the embedding endpoint (fetch). Written for the survivors of the
-// per-await mutation sweep: each test fails when the await of the statement it names is dropped.
+// The read paths and the multi-statement writes of the vector and memory modules after the facade conversion, on both
+// engines (MARVEEN_TEST_DB=pg runs the same cells on PostgreSQL). Real database; the one stub is the embedding endpoint
+// (fetch). Written for the survivors of the per-await mutation sweep: each test fails when the await of the statement it
+// names is dropped. The cells that inject a failure with a trigger are per engine: SQLite RAISE(ABORT), PostgreSQL a
+// RAISE EXCEPTION trigger function; both prove the same product behaviour (a failed write leaves nothing behind).
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { useTestDb } from './helpers/with-test-db.js'
+import { useTestDb, testDbMode } from './helpers/with-test-db.js'
 import {
-  db, searchMemories, getAgentMemories, countAgentMemories, searchAgentMemories, getMemoryStats, updateMemory,
+  searchMemories, getAgentMemories, countAgentMemories, searchAgentMemories, getMemoryStats, updateMemory,
   hybridSearch, runLinkMaintenance, searchArtifactsByVector, clearMemoryCache, insertImportSource, touchMemory,
   searchMemoriesLike, searchMemoriesLikeForAgent, likeContains, dbx,
-  touchMemoriesAccessed, decayMemories,
+  touchMemoriesAccessed, decayMemories, createArtifact, storeArtifactEmbedding, syncVecMemoryEmbeddingUpdate,
 } from '../db.js'
-import { syncVecMemoryEmbeddingUpdate } from '../db/vector.js'
 import { vecExtensionLoaded } from '../db/connection.js'
+import { interleave, type Interleave } from './helpers/interleave.js'
 
 useTestDb()
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); clearMemoryCache() })
@@ -29,29 +31,107 @@ function stubEmbeddings(floats: number[]): void {
   vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve({ embedding: floats }) })))
 }
 
-function addMemory(content: string, o: { agent?: string; category?: string; tenant?: string; chat?: string; keywords?: string } = {}): number {
-  return (db.prepare(
+async function addMemory(content: string, o: { agent?: string; category?: string; tenant?: string; chat?: string; keywords?: string } = {}): Promise<number> {
+  const now = Math.floor(Date.now() / 1000)
+  const row = await dbx.get<{ id: number }>(
     `INSERT INTO memories (chat_id, content, sector, salience, category, agent_id, auto_generated, created_at, accessed_at, updated_at, tenant_id, keywords)
-     VALUES (?, ?, 'semantic', 1, ?, ?, 0, unixepoch(), unixepoch(), unixepoch(), ?, ?) RETURNING id`,
-  ).get(o.chat ?? 'chat-1', content, o.category ?? 'warm', o.agent ?? 'agent-r', o.tenant ?? 'default', o.keywords ?? null) as { id: number }).id
+     VALUES (?, ?, 'semantic', 1, ?, ?, 0, ?, ?, ?, ?, ?) RETURNING id`,
+    o.chat ?? 'chat-1', content, o.category ?? 'warm', o.agent ?? 'agent-r', now, now, now, o.tenant ?? 'default', o.keywords ?? null,
+  )
+  return Number(row!.id)
 }
-const vecExists = (id: number): boolean => db.prepare('SELECT 1 FROM vec_memories WHERE memory_id = ?').get(BigInt(id)) !== undefined
+
+const memoryExists = async (id: number): Promise<boolean> =>
+  (await dbx.get('SELECT 1 AS one FROM memories WHERE id = ?', id)) !== undefined
+
+/** The vector entry of a memory: the vec0 row on SQLite, the side row on PostgreSQL. */
+async function vecCount(id: number): Promise<number> {
+  const sql = testDbMode() === 'pg'
+    ? 'SELECT COUNT(*) AS n FROM memory_embeddings WHERE memory_id = ?'
+    : 'SELECT COUNT(*) AS n FROM vec_memories WHERE memory_id = ?'
+  const row = await dbx.get<{ n: number | string }>(sql, testDbMode() === 'pg' ? id : BigInt(id))
+  return Number(row!.n)
+}
+
+/**
+ * Makes every UPDATE (or DELETE) of one table fail with a message. SQLite: a RAISE(ABORT) trigger; PostgreSQL: a
+ * trigger function that raises an exception. Both abort the statement, so the surrounding transaction rolls back.
+ */
+async function blockWrites(table: string, op: 'UPDATE' | 'DELETE', name: string): Promise<void> {
+  if (testDbMode() === 'pg') {
+    await dbx.exec(`CREATE FUNCTION ${name}_fn() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'blocked'; END $$`)
+    await dbx.exec(`CREATE TRIGGER ${name} BEFORE ${op} ON ${table} FOR EACH ROW EXECUTE FUNCTION ${name}_fn()`)
+    return
+  }
+  await dbx.exec(`CREATE TRIGGER ${name} BEFORE ${op} ON ${table} BEGIN SELECT RAISE(ABORT, 'blocked'); END`)
+}
+
+/**
+ * Parks the first updateMemory transaction at its UPDATE statement: after its reads and its version record, with the row
+ * as the first read left it. The point is held by the test (`il.hold('first-edit')`).
+ */
+function parkFirstEdit(il: Interleave): { mockRestore(): void } {
+  const real = dbx.tx.bind(dbx) as (fn: (tx: unknown) => Promise<unknown>, opts?: unknown) => Promise<unknown>
+  let parked = false
+  return vi.spyOn(dbx, 'tx').mockImplementation(((fn: (tx: unknown) => Promise<unknown>, opts?: unknown) =>
+    real((tx) => {
+      const target = tx as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>
+      const wrapped = new Proxy(target, {
+        get(obj, key) {
+          if (key === 'get' || key === 'run' || key === 'all') {
+            return async (sql: string, ...params: unknown[]) => {
+              if (!parked && /^UPDATE memories SET /.test(sql)) {
+                parked = true
+                await il.pass('first-edit')
+              }
+              return Reflect.apply(obj[key], obj, [sql, ...params])
+            }
+          }
+          const value = Reflect.get(obj, key, obj)
+          return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(obj) : value
+        },
+      })
+      return fn(wrapped)
+    }, opts)) as never)
+}
+
+/**
+ * Resolves once the second edit has finished or is blocked on a row lock (PostgreSQL), so the first edit can go on at a
+ * known point. A condition on the database state, not a sleep: it polls pg_stat_activity for a lock waiter, and it stops
+ * as soon as the second edit settles. SQLite: the second edit queues in the connection lock; nothing to wait for.
+ */
+async function untilSecondEditFinishesOrBlocks(second: Promise<unknown>): Promise<void> {
+  if (testDbMode() !== 'pg') return
+  let finished = false
+  void second.then(() => { finished = true }, () => { finished = true })
+  const deadline = Date.now() + 10_000
+  for (;;) {
+    if (finished) return
+    const row = await dbx.get<{ c: number | string }>(
+      "SELECT COUNT(*) AS c FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'",
+    )
+    if (Number(row?.c ?? 0) >= 1) return
+    if (Date.now() > deadline) throw new Error('neither edit finished nor blocked within 10 s')
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+}
 
 describe('the memory listings and searches', () => {
   it('searchMemories finds the matching memory of the chat and keeps other chats and tenants out', async () => {
-    const mine = addMemory('the zebra crossing is closed')
-    addMemory('the zebra is elsewhere', { chat: 'chat-2' })
-    addMemory('the zebra of another tenant', { tenant: 'acme' })
-    expect((await searchMemories('zebra', 'chat-1')).map((m) => m.id).sort()).toEqual([mine, mine + 2].sort())
+    const mine = await addMemory('the zebra crossing is closed')
+    await addMemory('the zebra is elsewhere', { chat: 'chat-2' })
+    const acme = await addMemory('the zebra of another tenant', { tenant: 'acme' })
+    // no tenant given: the other tenant's row is found too (the chat filter is what keeps chat-2 out)
+    expect((await searchMemories('zebra', 'chat-1')).map((m) => m.id).sort()).toEqual([mine, acme].sort())
     expect((await searchMemories('zebra', 'chat-1', 3, 'default')).map((m) => m.id)).toEqual([mine])
   })
 
   it('getAgentMemories lists the agent\'s and the shared rows, narrowed by category and tenant', async () => {
-    const a1 = addMemory('a1', { category: 'warm' })
-    const a2 = addMemory('a2', { category: 'hot' })
-    const sh = addMemory('sh', { agent: 'agent-other', category: 'shared' })
-    addMemory('foreign', { agent: 'agent-other', category: 'warm' })
-    const t = addMemory('tenant row', { tenant: 'acme' })
+    const a1 = await addMemory('a1', { category: 'warm' })
+    const a2 = await addMemory('a2', { category: 'hot' })
+    const sh = await addMemory('sh', { agent: 'agent-other', category: 'shared' })
+    await addMemory('foreign', { agent: 'agent-other', category: 'warm' })
+    const t = await addMemory('tenant row', { tenant: 'acme' })
     expect((await getAgentMemories('agent-r', 20)).map((m) => m.id).sort()).toEqual([a1, a2, sh, t].sort())
     expect((await getAgentMemories('agent-r', 20, 'hot')).map((m) => m.id)).toEqual([a2])
     expect((await getAgentMemories('agent-r', 20, undefined, 'default')).map((m) => m.id).sort()).toEqual([a1, a2, sh].sort())
@@ -59,33 +139,33 @@ describe('the memory listings and searches', () => {
   })
 
   it('countAgentMemories counts the same rows, with and without a category', async () => {
-    addMemory('a1', { category: 'warm' })
-    addMemory('a2', { category: 'hot' })
-    addMemory('sh', { agent: 'agent-other', category: 'shared' })
+    await addMemory('a1', { category: 'warm' })
+    await addMemory('a2', { category: 'hot' })
+    await addMemory('sh', { agent: 'agent-other', category: 'shared' })
     expect(await countAgentMemories('agent-r')).toBe(3)
     expect(await countAgentMemories('agent-r', 'hot')).toBe(1)
     expect(await countAgentMemories('agent-r', 'shared', 'default')).toBe(1)
   })
 
   it('searchAgentMemories answers the full-text hits of the agent and the shared tier', async () => {
-    const own = addMemory('quartz geode inventory')
-    const shared = addMemory('quartz in the shared pool', { agent: 'agent-other', category: 'shared' })
-    addMemory('quartz of a stranger', { agent: 'agent-other' })
+    const own = await addMemory('quartz geode inventory')
+    const shared = await addMemory('quartz in the shared pool', { agent: 'agent-other', category: 'shared' })
+    await addMemory('quartz of a stranger', { agent: 'agent-other' })
     expect((await searchAgentMemories('agent-r', 'quartz')).map((m) => m.id).sort()).toEqual([own, shared].sort())
   })
 
   it('getMemoryStats counts rows, embeddings, agents, tiers and the import rows', async () => {
-    const a = addMemory('a', { category: 'warm' })
-    addMemory('b', { agent: 'agent-other', category: 'hot' })
-    db.prepare('UPDATE memories SET embedding_blob = ? WHERE id = ?').run(blobOf(embedding(0)), a)
+    const a = await addMemory('a', { category: 'warm' })
+    await addMemory('b', { agent: 'agent-other', category: 'hot' })
+    await dbx.run('UPDATE memories SET embedding_blob = ? WHERE id = ?', blobOf(embedding(0)), a)
     await insertImportSource({
       id: 's1', type: 'local', path: '/docs/s1', label: 's1', intervalHours: 4, enabled: true, now: 100,
       tenantId: 'default', vaultTokenRef: null, confluenceEmail: null, baseUrl: null,
     })
-    db.prepare(
+    await dbx.run(
       `INSERT INTO import_memories (id, source_id, file_path, file_name, content_hash, content, last_seen_at, created_at, updated_at)
        VALUES ('i1', 's1', '/docs/i1.md', 'i1.md', 'h-i1', 'text', 1, 1, 1)`,
-    ).run()
+    )
     expect(await getMemoryStats()).toEqual({
       total: 2, byAgent: { 'agent-r': 1, 'agent-other': 1 }, byTier: { warm: 1, hot: 1 }, withEmbedding: 1, importCount: 1,
     })
@@ -93,94 +173,136 @@ describe('the memory listings and searches', () => {
 })
 
 describe('updateMemory', () => {
-  const versions = (id: number): string[] =>
-    (db.prepare('SELECT content FROM memory_versions WHERE memory_id = ? ORDER BY id').all(id) as { content: string }[]).map((r) => r.content)
+  const versions = async (id: number): Promise<string[]> =>
+    (await dbx.all<{ content: string }>('SELECT content FROM memory_versions WHERE memory_id = ? ORDER BY id', id)).map((r) => r.content)
+  const contentOf = async (id: number): Promise<string> =>
+    (await dbx.get<{ content: string }>('SELECT content FROM memories WHERE id = ?', id))!.content
 
   it('writes one version record of the old content and updates the row', async () => {
-    const id = addMemory('A')
+    const id = await addMemory('A')
     expect(await updateMemory(id, 'B')).toBe(true)
-    expect(versions(id)).toEqual(['A'])
-    expect((db.prepare('SELECT content FROM memories WHERE id = ?').get(id) as { content: string }).content).toBe('B')
+    expect(await versions(id)).toEqual(['A'])
+    expect(await contentOf(id)).toBe('B')
   })
 
-  it('two overlapping edits chain their version records (the second one records the first one\'s content)', async () => {
-    const id = addMemory('A')
-    await Promise.all([updateMemory(id, 'B'), updateMemory(id, 'C')])
-    const final = (db.prepare('SELECT content FROM memories WHERE id = ?').get(id) as { content: string }).content
-    expect(versions(id)).toEqual(['A', final === 'C' ? 'B' : 'C'])
+  it('two overlapping edits: the second waits for the first (FOR UPDATE on the first read), and the version records chain', async () => {
+    const id = await addMemory('A')
+    const il = interleave()
+    il.hold('first-edit')
+    const spy = parkFirstEdit(il)
+    try {
+      // the first edit has read 'A' and stops before its UPDATE; the second edit must not read 'A' again while it is open
+      const first = updateMemory(id, 'B')
+      await il.reached('first-edit')
+      const second = updateMemory(id, 'C')
+      await untilSecondEditFinishesOrBlocks(second)
+      il.open('first-edit')
+      expect(await first).toBe(true)
+      expect(await second).toBe(true)
+    } finally {
+      il.open('first-edit')
+      spy.mockRestore()
+    }
+    // the first record keeps the starting content, the second keeps the result of the first edit
+    expect(await versions(id)).toEqual(['A', 'B'])
+    expect(await contentOf(id)).toBe('C')
   })
 
   it('a failing update leaves no version record (one transaction)', async () => {
-    const id = addMemory('A')
-    db.exec("CREATE TRIGGER memory_update_blocked BEFORE UPDATE ON memories BEGIN SELECT RAISE(ABORT, 'blocked'); END")
+    const id = await addMemory('A')
+    await blockWrites('memories', 'UPDATE', 'memory_update_blocked')
     await expect(updateMemory(id, 'B')).rejects.toThrow(/blocked/)
-    expect(versions(id)).toEqual([])
+    expect(await versions(id)).toEqual([])
   })
 
   it('a missing row is false and writes nothing', async () => {
     expect(await updateMemory(99999, 'x')).toBe(false)
-    expect(db.prepare('SELECT COUNT(*) AS n FROM memory_versions').get()).toEqual({ n: 0 })
+    expect(Number((await dbx.get<{ n: number | string }>('SELECT COUNT(*) AS n FROM memory_versions'))!.n)).toBe(0)
   })
 })
 
 describe('the writes of touch and decay', () => {
-  it('touchMemory raises the salience and the access time, touchMemoriesAccessed the access time, decay lowers old salience', async () => {
-    const id = addMemory('t')
-    db.prepare('UPDATE memories SET accessed_at = 1, created_at = 1 WHERE id = ?').run(id)
-    await touchMemory(id)
-    const row = db.prepare('SELECT salience, accessed_at FROM memories WHERE id = ?').get(id) as { salience: number; accessed_at: number }
-    expect(row.salience).toBeCloseTo(1.1)
-    expect(row.accessed_at).toBeGreaterThan(1)
-    db.prepare('UPDATE memories SET accessed_at = 1 WHERE id = ?').run(id)
+  it('touchMemoriesAccessed moves the access time only, and leaves the salience alone', async () => {
+    const id = await addMemory('t')
+    await dbx.run('UPDATE memories SET accessed_at = 1, salience = 1 WHERE id = ?', id)
     await touchMemoriesAccessed([id])
-    expect((db.prepare('SELECT accessed_at FROM memories WHERE id = ?').get(id) as { accessed_at: number }).accessed_at).toBeGreaterThan(1)
+    const row = (await dbx.get<{ salience: number; accessed_at: number }>('SELECT salience, accessed_at FROM memories WHERE id = ?', id))!
+    expect(Number(row.accessed_at)).toBeGreaterThan(1)
+    expect(Number(row.salience)).toBeCloseTo(1)
+  })
+
+  it('touchMemory raises the salience and the access time, decay lowers old salience', async () => {
+    const id = await addMemory('t')
+    await dbx.run('UPDATE memories SET accessed_at = 1, created_at = 1 WHERE id = ?', id)
+    await touchMemory(id)
+    const row = (await dbx.get<{ salience: number; accessed_at: number }>('SELECT salience, accessed_at FROM memories WHERE id = ?', id))!
+    expect(row.salience).toBeCloseTo(1.1)
+    expect(Number(row.accessed_at)).toBeGreaterThan(1)
     await decayMemories()
-    expect((db.prepare('SELECT salience FROM memories WHERE id = ?').get(id) as { salience: number }).salience).toBeCloseTo(1.1 * 0.995)
+    expect((await dbx.get<{ salience: number }>('SELECT salience FROM memories WHERE id = ?', id))!.salience).toBeCloseTo(1.1 * 0.995)
+  })
+
+  // the cap and the floor of the two statements (the CASE form of memory.ts keeps them on both engines)
+  it('touchMemory stops at the salience cap of 5: 4.95 + 0.1 is 5, not 5.05', async () => {
+    const id = await addMemory('cap')
+    await dbx.run('UPDATE memories SET salience = 4.95 WHERE id = ?', id)
+    await touchMemory(id)
+    expect((await dbx.get<{ salience: number }>('SELECT salience FROM memories WHERE id = ?', id))!.salience).toBeCloseTo(5, 9)
+  })
+
+  // 0.005 * 0.995 = 0.004975, below the floor. (0.0101 * 0.995 = 0.01005, which is above it: no floor test there.)
+  it('decayMemories stops at the floor of 0.01 for an old memory of salience 0.005', async () => {
+    const id = await addMemory('floor')
+    await dbx.run('UPDATE memories SET salience = 0.005, created_at = 1 WHERE id = ?', id)
+    await decayMemories()
+    expect((await dbx.get<{ salience: number }>('SELECT salience FROM memories WHERE id = ?', id))!.salience).toBeCloseTo(0.01, 9)
   })
 })
 
 describe('the vector paths', () => {
   it('syncVecMemoryEmbeddingUpdate replaces the entry, and two overlapping calls leave exactly one', async (ctx) => {
-    if (!vecExtensionLoaded) ctx.skip()
-    const id = addMemory('v')
+    if (!vecExtensionLoaded && testDbMode() === 'sqlite') ctx.skip()
+    const id = await addMemory('v')
     await Promise.all([syncVecMemoryEmbeddingUpdate(id, blobOf(embedding(0.1))), syncVecMemoryEmbeddingUpdate(id, blobOf(embedding(0.2)))])
-    expect(db.prepare('SELECT COUNT(*) AS n FROM vec_memories WHERE memory_id = ?').get(BigInt(id))).toEqual({ n: 1 })
+    expect(await vecCount(id)).toBe(1)
   })
 
   it('hybridSearch answers a memory that only the ANN index knows (no blob, no full-text hit)', async (ctx) => {
-    if (!vecExtensionLoaded) ctx.skip()
-    const id = addMemory('unrelated words only')
-    db.prepare('INSERT INTO vec_memories(memory_id, embedding) VALUES(?, ?)').run(BigInt(id), blobOf(embedding(0.1)))
+    if (!vecExtensionLoaded && testDbMode() === 'sqlite') ctx.skip()
+    const id = await addMemory('unrelated words only')
+    await syncVecMemoryEmbeddingUpdate(id, blobOf(embedding(0.1)))
     stubEmbeddings(embedding(0))
     expect((await hybridSearch('agent-r', 'zzzzqueryzzzz', 5)).map((m) => m.id)).toEqual([id])
   })
 
   it('runLinkMaintenance embeds a memory that has none, indexes it, and reports numeric prune and orphan counts', async (ctx) => {
-    if (!vecExtensionLoaded) ctx.skip()
-    const id = addMemory('needs an embedding')
+    if (!vecExtensionLoaded && testDbMode() === 'sqlite') ctx.skip()
+    const id = await addMemory('needs an embedding')
     stubEmbeddings(embedding(0.3))
     const result = await runLinkMaintenance()
     expect(result.reembedded).toBe(1)
     expect(result.linksPruned).toBe(0)
     expect(result.orphans).toBe(1)
-    expect((db.prepare('SELECT embedding_blob FROM memories WHERE id = ?').get(id) as { embedding_blob: Buffer }).embedding_blob.byteLength).toBe(DIM * 4)
-    expect(vecExists(id)).toBe(true)
+    const row = (await dbx.get<{ embedding_blob: Buffer }>('SELECT embedding_blob FROM memories WHERE id = ?', id))!
+    expect(row.embedding_blob.byteLength).toBe(DIM * 4)
+    expect(await vecCount(id)).toBe(1)
   })
 
   it('searchArtifactsByVector answers the pointer of the artifact the ANN index finds', async (ctx) => {
-    if (!vecExtensionLoaded) ctx.skip()
-    const row = db.prepare(
-      "INSERT INTO artifacts (agent_id, tenant_id, title, kind, mime, content, meta) VALUES ('agent-r', 'default', 'Quarterly plan', 'text', 'text/plain', X'61', '{}') RETURNING rowid AS rid, id",
-    ).get() as { rid: number; id: string }
-    db.prepare('INSERT INTO vec_artifacts(artifact_rowid, embedding) VALUES(?, ?)').run(BigInt(row.rid), blobOf(embedding(0.1)))
+    if (!vecExtensionLoaded && testDbMode() === 'sqlite') ctx.skip()
+    // the artifact is created without an embedding (the endpoint answers nothing), then its title embedding is stored
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: false, json: () => Promise.resolve({}) })))
+    const created = await createArtifact({ agent_id: 'agent-r', title: 'Quarterly plan', kind: 'text', mime: 'text/plain', content: Buffer.from('a') })
+    stubEmbeddings(embedding(0.1))
+    await storeArtifactEmbedding(created.id, 'Quarterly plan', '{}')
     stubEmbeddings(embedding(0))
     const found = await searchArtifactsByVector('plan')
-    expect(found.map((a) => [a.id, a.title])).toEqual([[row.id, 'Quarterly plan']])
+    expect(found.map((a) => [a.id, a.title])).toEqual([[created.id, 'Quarterly plan']])
     expect(found[0].score).toBeGreaterThan(0)
   })
 
   it('the embedding endpoint answer is read: no embedding means FTS only, and nothing is thrown', async () => {
-    const id = addMemory('walrus colony')
+    const id = await addMemory('walrus colony')
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve({}) })))
     expect((await hybridSearch('agent-r', 'walrus', 5)).map((m) => m.id)).toEqual([id])
   })
@@ -198,21 +320,27 @@ describe('the LIKE fallbacks take the user\'s text literally', () => {
     ['100%', '100% sure', '100X sure'],
     ['snake_case', 'snake_case name', 'snakeXcase name'],
     ['a\\b', 'path a\\b here', 'path aXb here'],
-  ])('a query of %s matches only the memory that contains it, in all three fallbacks', async (query, hit, miss) => {
-    const h = addMemory(hit)
-    addMemory(miss)
+  ])('a query of %s matches only the memory that contains it, in the LIKE fallbacks (both engines); a failed full-text search falls back to LIKE on SQLite and surfaces its error on PostgreSQL', async (query, hit, miss) => {
+    const h = await addMemory(hit)
+    await addMemory(miss)
     expect(ids(await searchMemoriesLikeForAgent('agent-r', query, 10))).toEqual([h])
     expect(ids(await searchMemoriesLike(query, 10))).toEqual([h])
-    // searchAgentMemories falls back to LIKE when the full-text query fails
-    const realAll = dbx.all.bind(dbx)
-    vi.spyOn(dbx, 'all').mockImplementationOnce(() => Promise.reject(new Error('fts failed')))
-    expect(ids(await searchAgentMemories('agent-r', query, 10))).toEqual([h])
-    vi.mocked(dbx.all).mockImplementation(realAll)
+    // the full-text query fails (the first statement of the search is refused): SQLite falls back to LIKE and answers
+    // the hit; PostgreSQL has no LIKE fallback and surfaces the error (the decision F4: a failed search is not an
+    // empty answer)
+    const spy = vi.spyOn(dbx, 'all').mockImplementationOnce(() => Promise.reject(new Error('fts failed')))
+    try {
+      const found = searchAgentMemories('agent-r', query, 10)
+      if (testDbMode() === 'sqlite') expect(ids(await found)).toEqual([h])
+      else await expect(found).rejects.toThrow(/^fts failed$/)
+    } finally {
+      spy.mockRestore()
+    }
   })
 
   it('the keywords column is matched literally too', async () => {
-    const h = addMemory('x', { keywords: 'tier_1 100%' })
-    addMemory('y', { keywords: 'tierX1 100' })
+    const h = await addMemory('x', { keywords: 'tier_1 100%' })
+    await addMemory('y', { keywords: 'tierX1 100' })
     expect(ids(await searchMemoriesLikeForAgent('agent-r', 'tier_1', 10))).toEqual([h])
   })
 })
