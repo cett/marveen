@@ -12,7 +12,7 @@ import { parkFirstStatementAt, parkFirstTxAt, untilSettledOrBlocked } from './he
 import { saveWorkspaceDoc, patchWorkspaceDoc, getWorkspaceDoc } from '../db/workspace.js'
 import { createTenant, getTenant, updateTenant } from '../db/observability.js'
 import { updateSystemConfig } from '../db/system-config.js'
-import { createSkill, dbx, deleteVaultBindingsForSecret, getSkill, setSkillContent, upsertVaultBinding } from '../db.js'
+import { createSkill, dbx, deleteVaultBindingsForSecret, getSkill, setSkillContent, updateSkill, upsertVaultBinding } from '../db.js'
 
 useTestDb()
 afterEach(() => { vi.restoreAllMocks() })
@@ -149,6 +149,30 @@ describe('setSkillContent', () => {
     }
     expect(state).not.toBe('settled')
     expect((await getSkill('global/a'))?.content).toBe(UNPRIVILEGED)
+  })
+})
+
+describe('updateSkill', () => {
+  it('a gated patch judged against the old row cannot bring a removed privilege back (the second writer waits on the skill row lock)', async () => {
+    await createSkill({ id: 'global/b', name: 'global/b', description: 'd', content: PRIVILEGED, tenant_id: 'fleet', is_global: true }, HUMAN)
+    const il = interleave()
+    il.hold('first-write')
+    const spy = parkFirstTxAt(il, 'first-write', /^\s*UPDATE skills SET /)
+    let state: 'settled' | 'blocked' | 'queued'
+    try {
+      const first = updateSkill('global/b', { content: `${PRIVILEGED} one` }, HUMAN, {}, { gatePrivilege: true })
+      await il.reached('first-write')
+      const second = updateSkill('global/b', { content: UNPRIVILEGED }, HUMAN, {}, {})
+      state = await untilSettledOrBlocked(second)
+      il.open('first-write')
+      expect((await first).outcome).toBe('updated')
+      expect((await second).outcome).toBe('updated')
+    } finally {
+      il.open('first-write')
+      spy.mockRestore()
+    }
+    expect(state).not.toBe('settled')
+    expect((await getSkill('global/b'))?.content).toBe(UNPRIVILEGED)
   })
 })
 

@@ -697,6 +697,10 @@ export async function updateSkill(
   if (patch.is_global !== undefined)   { sets.push('is_global = ?');   vals.push(patch.is_global ? 1 : 0) }
   vals.push(id)
   return dbx.tx(async (tx) => {
+    // The row lock comes FIRST: the status and privilege decisions below are made on `before`, so a concurrent writer of
+    // the same skill has to have committed before the row is read (PostgreSQL: one connection per transaction, READ
+    // COMMITTED). SQLite: the transaction lock already does this, the statement is empty there.
+    await lockSkillForRevision(tx, id)
     // Decided first: a refused write must not leave a baseline row behind either.
     const before = await tx.get<SkillRow>('SELECT * FROM skills WHERE id = ?', id)
     if (!before || (guard.requireLive && before.status !== 'live')) return { outcome: 'not_found' }
