@@ -22,6 +22,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import pg from 'pg'
 import { applyPgMigrations } from '../../db-migrations-pg.js'
+import { createPgDbx, type PgDbx } from '../../db/pg/dbx.js'
 import { parseInt8Safe, pgTypes } from '../../db/pg/types.js'
 
 export const PG_TEST_URL_ENV = 'MARVEEN_PG_TEST_URL'
@@ -130,6 +131,8 @@ export interface PgTestDb {
   appPool: pg.Pool
   /** A pool connected as the owner role (marveen_owner): only for the DDL a cell needs (a test-local table and policy). */
   ownerPool: pg.Pool
+  /** The facade over the app pool: `createPgDbx(appPool)`, a new facade per call over the one pool. */
+  appDbx(): PgDbx
   /** Ends the pool and drops the database. */
   close(): Promise<void>
 }
@@ -244,6 +247,7 @@ export async function createPgTestDb(opts: PgTestDbOptions = {}): Promise<PgTest
     pool,
     appPool,
     ownerPool,
+    appDbx: () => createPgDbx(appPool),
     async close() {
       await appPool.end()
       await ownerPool.end()
