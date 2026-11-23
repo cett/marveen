@@ -932,6 +932,10 @@ export async function putSkillFile(
   const now = Math.floor(Date.now() / 1000)
   const sanitizedMode = sanitizeSkillFileMode(mode)
   return dbx.tx(async (tx) => {
+    // The row lock comes FIRST: the privilege decision below compares the new file with the files and the SKILL.md it reads,
+    // so a concurrent writer of the same skill has to have committed before they are read (PostgreSQL: one connection per
+    // transaction, READ COMMITTED). SQLite: the transaction lock already does this, the statement is empty there.
+    await lockSkillForRevision(tx, skillId)
     await ensureSkillBaseline(tx, skillId)
     const skill = await tx.get<SkillRow>('SELECT * FROM skills WHERE id = ?', skillId)
 

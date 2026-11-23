@@ -12,7 +12,7 @@ import { parkFirstStatementAt, parkFirstTxAt, untilSettledOrBlocked } from './he
 import { saveWorkspaceDoc, patchWorkspaceDoc, getWorkspaceDoc } from '../db/workspace.js'
 import { createTenant, getTenant, updateTenant } from '../db/observability.js'
 import { updateSystemConfig } from '../db/system-config.js'
-import { createSkill, dbx, deleteVaultBindingsForSecret, getSkill, setSkillContent, updateSkill, upsertVaultBinding } from '../db.js'
+import { createSkill, dbx, deleteVaultBindingsForSecret, getSkill, getSkillFile, putSkillFile, setSkillContent, updateSkill, upsertVaultBinding } from '../db.js'
 
 useTestDb()
 afterEach(() => { vi.restoreAllMocks() })
@@ -173,6 +173,32 @@ describe('updateSkill', () => {
     }
     expect(state).not.toBe('settled')
     expect((await getSkill('global/b'))?.content).toBe(UNPRIVILEGED)
+  })
+})
+
+describe('putSkillFile', () => {
+  it('a gated put of the file as the old row has it cannot bring a replaced runnable file back (the second writer waits on the skill row lock)', async () => {
+    await createSkill({ id: 'global/c', name: 'global/c', description: 'd', content: UNPRIVILEGED, tenant_id: 'fleet', is_global: true }, HUMAN)
+    await putSkillFile('global/c', 'scripts/run.sh', Buffer.from('v1'), undefined, HUMAN)
+    const il = interleave()
+    il.hold('first-write')
+    const spy = parkFirstTxAt(il, 'first-write', /^\s*INSERT INTO skill_files/)
+    let state: 'settled' | 'blocked' | 'queued'
+    try {
+      // the very same runnable file as the live row has: no change, so no approval, written straight through (parked first)
+      const first = putSkillFile('global/c', 'scripts/run.sh', Buffer.from('v1'), undefined, HUMAN, {}, { gatePrivilege: true })
+      await il.reached('first-write')
+      const second = putSkillFile('global/c', 'scripts/run.sh', Buffer.from('v2'), undefined, HUMAN, {}, {})
+      state = await untilSettledOrBlocked(second)
+      il.open('first-write')
+      expect((await first).outcome).toBe('written')
+      expect((await second).outcome).toBe('written')
+    } finally {
+      il.open('first-write')
+      spy.mockRestore()
+    }
+    expect(state).not.toBe('settled')
+    expect((await getSkillFile('global/c', 'scripts/run.sh'))?.content.toString()).toBe('v2')
   })
 })
 
