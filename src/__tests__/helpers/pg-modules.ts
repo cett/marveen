@@ -121,13 +121,13 @@ export const PORTED: readonly string[] = [
   'src/__tests__/db-cost-budgets-file-import.test.ts',
   'src/__tests__/db-claude-plans-seed.test.ts',
   'src/__tests__/token-bootstrap.test.ts',
+  'src/__tests__/audit-trace-columns.test.ts',
   'src/__tests__/api-token-enroll-race.test.ts',
 ]
 
 /** Test files (same form) that do not, each with the reason. */
 export const EXCLUDED: Readonly<Record<string, ExcludeReason>> = {
   'src/__tests__/vector-memory-facade.test.ts': 'vec',
-  'src/__tests__/audit-trace-columns.test.ts': 'boot-twin',
   'src/__tests__/db-facade-backend.test.ts': 'sqlite-only',
   'src/__tests__/db-facade-tx.test.ts': 'sqlite-only',
   'src/__tests__/db-facade.test.ts': 'sqlite-only',
@@ -139,7 +139,7 @@ export const EXCLUDED: Readonly<Record<string, ExcludeReason>> = {
 }
 
 /** The number of EXCLUDED files the partition test accepts. It only goes down. */
-export const EXCLUDED_BASELINE = 7
+export const EXCLUDED_BASELINE = 6
 
 /** A file uses useTestDb when it imports the helper AND calls useTestDb( (a file that only imports resetDbTestState or testDbMode does not). */
 const IMPORT = /from\s+['"][^'"]*helpers\/with-test-db(\.js)?['"]/

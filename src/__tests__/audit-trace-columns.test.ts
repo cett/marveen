@@ -1,12 +1,12 @@
-// Migration 0088 and the central audit writers: every journal row carries the trace of the context it was written in
-// (NULL outside any traced context), and the value is the server's own (the context), never an argument.
+// The central audit writers: every journal row carries the trace of the context it was written in (NULL outside any traced
+// context), and the value is the server's own (the context), never an argument. These cells run on both engines
+// (useTestDb). The migration cells of migration 0088 (the ADD COLUMN statements, the column shape, the half-applied re-run)
+// are SQLite's and live in audit-trace-columns-migration.test.ts.
 //
 // Privacy: neutral fixtures only (agent-a, user-a, card-a, task-a).
 
 import { describe, it, expect } from 'vitest'
-import Database from 'better-sqlite3'
 import { readFileSync } from 'node:fs'
-import { applyMigrations } from '../db-migrations.js'
 import {
   dbx, writeAgentAuditLog, writeAdminAuditLog, insertHookAuditLog, logConfigChange, insertRbacShadowRow,
   recordApprovalEvent, insertBlackboardHistory, createKanbanCard, moveKanbanCard, propagateStatus,
@@ -81,44 +81,8 @@ const WRITERS: Array<{ table: Table; name: string; write: () => Promise<unknown>
   },
 ]
 
-const newest = (table: Table) => dbx.get<{ trace_id: string | null; span_id: string | null }>(`SELECT trace_id, span_id FROM ${table} ORDER BY rowid DESC LIMIT 1`)
-
-describe('migration 0088', () => {
-  it('adds a nullable trace_id and span_id to the seven journal tables, with no default', async () => {
-    for (const table of TABLES) {
-      const cols = (await dbx.all(`PRAGMA table_info(${table})`)) as Array<{ name: string; type: string; notnull: number; dflt_value: unknown }>
-      for (const name of ['trace_id', 'span_id']) {
-        const c = cols.find((x) => x.name === name)
-        expect(c, `${table}.${name}`).toBeDefined()
-        expect(c).toMatchObject({ type: 'TEXT', notnull: 0, dflt_value: null })
-      }
-    }
-  })
-
-  it('is nothing but plain ADD COLUMN statements (the runner tolerates a half-applied run only for those)', () => {
-    const sql = readFileSync(new URL('../migrations/0088_audit_trace_columns.sql', import.meta.url), 'utf8')
-    const statements = sql.split('\n').filter((l) => !l.trim().startsWith('--')).join('\n').split(';').map((s) => s.trim()).filter(Boolean)
-    expect(statements).toHaveLength(14)
-    for (const s of statements) expect(s).toMatch(/^ALTER TABLE [a-z_]+ ADD COLUMN (trace_id|span_id) TEXT$/)
-    // every table of the list, both columns, once
-    expect(new Set(statements).size).toBe(14)
-    for (const t of TABLES) for (const c of ['trace_id', 'span_id']) expect(statements).toContain(`ALTER TABLE ${t} ADD COLUMN ${c} TEXT`)
-  })
-
-  it('runs again over a half-applied database without an error and keeps the old rows NULL', () => {
-    const db = new Database(':memory:')
-    try {
-      applyMigrations(db)
-      db.prepare("INSERT INTO config_change_log (key, old_value, new_value, actor, created_at) VALUES ('k', 'a', 'b', 'user-a', 1)").run()
-      db.prepare('DELETE FROM schema_version WHERE version = 88').run()
-      expect(() => applyMigrations(db)).not.toThrow()
-      expect(db.prepare('SELECT 1 FROM schema_version WHERE version = 88').get()).toBeTruthy()
-      expect(db.prepare('SELECT trace_id, span_id FROM config_change_log').get()).toEqual({ trace_id: null, span_id: null })
-    } finally {
-      db.close()
-    }
-  })
-})
+// The newest row by its identity column (every journal table has `id`, on both engines; SQLite's rowid is not portable).
+const newest = (table: Table) => dbx.get<{ trace_id: string | null; span_id: string | null }>(`SELECT trace_id, span_id FROM ${table} ORDER BY id DESC LIMIT 1`)
 
 describe('the central writers fill the trace columns from the context', () => {
   for (const { table, name, write } of WRITERS) {
