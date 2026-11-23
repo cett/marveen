@@ -118,6 +118,8 @@ export const PORTED: readonly string[] = [
   'src/__tests__/tenant-scoped-db.test.ts',
   'src/__tests__/vector-recency-boost.test.ts',
   'src/__tests__/vector-memory-reads.test.ts',
+  'src/__tests__/db-cost-budgets-file-import.test.ts',
+  'src/__tests__/db-claude-plans-seed.test.ts',
 ]
 
 /** Test files (same form) that do not, each with the reason. */
