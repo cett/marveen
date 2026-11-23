@@ -202,9 +202,11 @@ describe('the session lane fails closed, one test per statement', () => {
 
   it('a failed session insert leaves no cache entry and no row', async () => {
     const u = await makeUser('alice', 'admin')
-    const seen = failStatement('run', /INSERT INTO auth_sessions/)
+    // the insert is the gateway function call on PostgreSQL (db/sessions.ts insertAuthSession), the table INSERT on SQLite
+    const INSERT_SESSION = /INSERT INTO auth_sessions|^SELECT app\.auth_session_create/
+    const seen = failStatement('run', INSERT_SESSION)
     await expect(createSession({ userId: u.id, username: u.username })).rejects.toThrow('database unavailable')
-    expect(seen.at(-1)).toMatch(/INSERT INTO auth_sessions/)
+    expect(seen.at(-1)).toMatch(INSERT_SESSION)
     expect(_cacheForTest.size).toBe(0)
     vi.restoreAllMocks()
     expect(await dbx.get('SELECT 1 AS one FROM auth_sessions')).toBeUndefined()
@@ -283,7 +285,8 @@ describe('a revoke and a concurrent lookup of the same session', () => {
     const token = await createSession({ userId: u.id, username: u.username })
     _clearSessionCacheForTest()
     const [read] = holdAfter('get', /FROM auth_sessions WHERE id_hash/)
-    const [del] = holdAfter('run', /^DELETE FROM auth_sessions/)
+    // revokeSession deletes through the gateway function on PostgreSQL (db/sessions.ts), the bulk revokes by a table DELETE
+    const [del] = holdAfter('run', /^DELETE FROM auth_sessions|^SELECT app\.auth_session_revoke/)
     const pendingLookup = resolveSession(token)
     await read.reached
     const pendingRevoke = revoke(token, u.id)

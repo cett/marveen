@@ -86,6 +86,28 @@ export async function getDashboardUser(username: string): Promise<DashboardUser 
   return dbx.get<DashboardUser>(`SELECT * FROM dashboard_users WHERE ${eqNoCase('username', '?')}`, username)
 }
 
+/** The four columns the login needs, nothing else (no role, tenant, e-mail): what the login lookup returns. */
+export interface LoginUser {
+  id: number
+  username: string
+  password_hash: string
+  disabled: number
+}
+
+/**
+ * The login lookup of a caller who has no session yet. On PostgreSQL it goes through the gateway function
+ * `app.auth_login_user` (migration 0009): the `public` context reads nothing of dashboard_users, and the function hands out
+ * exactly these four columns for one case-folded name (an unknown name, `%` or the empty string: no row). On SQLite the same
+ * four columns by the same case-insensitive match. The authenticated routes keep `getDashboardUser` (own row or privileged).
+ */
+export async function getLoginUser(username: string): Promise<LoginUser | undefined> {
+  if (dbxDialect() === 'pg') {
+    return dbx.get<LoginUser>('SELECT id, username, password_hash, disabled FROM app.auth_login_user(?)', username)
+  }
+  return dbx.get<LoginUser>(
+    `SELECT id, username, password_hash, disabled FROM dashboard_users WHERE ${eqNoCase('username', '?')}`, username)
+}
+
 export async function listDashboardUsers(): Promise<DashboardUserPublic[]> {
   // Ties after the case fold (not possible while username is unique ignoring case, but the order must not depend on it)
   // are broken in byte order, then by id: the same order on both engines.
@@ -107,6 +129,13 @@ export async function countTenantlessWriteRoleUsers(): Promise<number> {
 
 // enabled-only count feeds `login_available`; total count feeds `setup_required`.
 export async function countDashboardUsers(includeDisabled = false): Promise<number> {
+  if (dbxDialect() === 'pg') {
+    // Through the gateway on every context: a direct COUNT would answer per the caller's row visibility (a tenant would count
+    // only the users of its own tenant, and a public caller zero, so the status route would say "setup required" on a database
+    // that has users). Same numbers for every caller.
+    const r = (await dbx.get<{ c: number | string }>(`SELECT ${includeDisabled ? 'total' : 'enabled'} AS c FROM app.auth_user_counts()`))!
+    return Number(r.c)
+  }
   const sql = includeDisabled
     ? 'SELECT COUNT(*) AS c FROM dashboard_users'
     : 'SELECT COUNT(*) AS c FROM dashboard_users WHERE disabled = 0'
@@ -339,6 +368,11 @@ export async function insertAuthSession(
   userAgent: string | null,
   remoteNote: string | null,
 ): Promise<void> {
+  if (dbxDialect() === 'pg') {
+    // The login of an unauthenticated or another user's cookie context: the gateway function is the one write it may do.
+    await dbx.run('SELECT app.auth_session_create(?, ?, ?, ?, ?, ?)', idHash, userId, username, now, userAgent, remoteNote)
+    return
+  }
   await dbx.run(
     'INSERT INTO auth_sessions (id_hash, user_id, username, created_at, last_seen_at, user_agent, remote_note) VALUES (?, ?, ?, ?, ?, ?, ?)',
     idHash, userId, username, now, now, userAgent, remoteNote,
@@ -346,6 +380,10 @@ export async function insertAuthSession(
 }
 
 export async function deleteAuthSessionByHash(idHash: string): Promise<void> {
+  if (dbxDialect() === 'pg') {
+    await dbx.run('SELECT app.auth_session_revoke(?)', idHash)
+    return
+  }
   await dbx.run('DELETE FROM auth_sessions WHERE id_hash = ?', idHash)
 }
 
