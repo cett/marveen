@@ -13,6 +13,7 @@ import { existsSync, readFileSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
 import { db } from './connection.js'
 import { dbx, dbxDialect, type Dbx, type SqlOps, type Tx } from './facade.js'
+import { advisoryLockKeyed } from './dialect.js'
 import { cacheAfterWrite, cacheAfterWriteAsync, cachedSystemConfig, cachedSystemConfigList, refreshSystemConfigCacheIfLive } from './config-cache.js'
 import { STORE_DIR } from '../config.js'
 import { logger } from '../logger.js'
@@ -75,6 +76,12 @@ export function setSystemConfigSync(key: string, value: string, source: string =
  * `mutate` turns it into the next value, and the write is part of the same transaction. Two overlapping calls
  * therefore both land: the second sees what the first wrote. The cache follows the commit.
  *
+ * SQLite: the connection's transaction lock is what serialises the calls (`mode: 'immediate'` is the lock taken up
+ * front). PostgreSQL has no such lock (one connection per transaction, READ COMMITTED, `immediate` is ignored), and a
+ * row lock cannot do it either, because the key may have no row yet: the first statement of the body is a
+ * transaction-scoped advisory lock on the key, so a second call for the same key waits for the first to commit and
+ * reads what it wrote. (Only the callers of this function are serialised: a plain `setSystemConfig` is a blind upsert.)
+ *
  * `mutate` runs under the connection's transaction lock: pure code only, no I/O, no awaits. Returning `undefined`
  * leaves the row alone (no write, no `updated_at` bump). Resolves to whether a write happened.
  */
@@ -83,7 +90,9 @@ export async function updateSystemConfig(
   mutate: (current: string | undefined) => string | undefined,
   source: string = 'db',
 ): Promise<boolean> {
+  const lock = advisoryLockKeyed('sysconfig:', key)
   const wrote = await dbx.tx(async (tx) => {
+    if (lock) await tx.run(lock.sql, ...lock.params)
     const row = await tx.get<{ value: string }>('SELECT value FROM system_config WHERE key = ?', key)
     const next = mutate(row?.value)
     if (next === undefined) return false

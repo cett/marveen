@@ -8,8 +8,6 @@
 import { describe, it, expect } from 'vitest'
 import {
   dbx,
-  upsertVaultBinding,
-  deleteVaultBindingsForSecret,
   replaceSecretAcl,
   adoptChannelCredential,
   clearChannelAdoption,
@@ -35,11 +33,8 @@ interface Case {
 }
 
 const CASES: Case[] = [
-  {
-    name: 'deleteVaultBindingsForSecret (select the rows, then delete them)',
-    seed: () => upsertVaultBinding('default', { vaultSecretId: 'secret-a', envVar: 'API_KEY', targets: [] }),
-    run: () => deleteVaultBindingsForSecret('default', 'secret-a'),
-  },
+  // deleteVaultBindingsForSecret is not in this table any more: it is ONE statement (DELETE ... RETURNING), so there is no
+  // read half to share a transaction with; tx-locks.test.ts proves it behaviourally (a binding written meanwhile is returned).
   {
     name: 'replaceSecretAcl (delete the grantee list, then insert the new one)',
     seed: () => replaceSecretAcl('default', 'secret-a', ['agent:agent-a']),

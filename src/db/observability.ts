@@ -3,7 +3,7 @@
 
 import { vecExtensionLoaded } from './connection.js'
 import { dbx, dbxDialect, type SqlOps } from './facade.js'
-import { groupConcatDistinct, orderBytes, orderNoCase } from './dialect.js'
+import { forUpdate, groupConcatDistinct, orderBytes, orderNoCase } from './dialect.js'
 import { likeContains } from './like.js'
 import { Memory, MemoryVersion } from './memory.js'
 import { DashboardUser, DashboardUserPublic, lockAdminRows } from './sessions.js'
@@ -445,8 +445,11 @@ export async function updateTenant(id: string, patch: { display_name?: string; d
   // The read of the old row, the update and the context drop are ONE transaction: a crash or a failure between the
   // last two would leave a disabled tenant (or one with a new main agent) with the use-time context of its old
   // state, which the skill gate trusts, and the "main agent changed" decision must see the row it overwrites.
+  // The first read takes the row lock (PostgreSQL: one connection per transaction, READ COMMITTED, no global lock; SQLite:
+  // empty): without it two overlapping updates both decide on the same stale main_agent_id, and a change back to the
+  // stale value skips the context drop although the main agent did change.
   return dbx.tx(async (tx): Promise<Tenant | null> => {
-    const existing = await tx.get<Tenant>('SELECT * FROM tenants WHERE id = ?', id)
+    const existing = await tx.get<Tenant>(`SELECT * FROM tenants WHERE id = ? ${forUpdate()}`, id)
     if (!existing) return null
     if (fields.length === 0) return existing
     await tx.run(`UPDATE tenants SET ${fields.join(', ')} WHERE id = ?`, ...params)

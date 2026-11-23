@@ -17,8 +17,12 @@ import { forUpdate } from './dialect.js'
  * insert) and the idempotence and parent reads see the state the other writers of the same skill have committed. Two writers
  * on one skill otherwise read the same MAX and one of them fails on UNIQUE(skill_id, seq) (a 500). A lock taken outside a
  * transaction is released at once, so every caller passes its transaction handle.
+ *
+ * Exported for the skill writers that DECIDE something from the skill row before they write (the privilege gate of
+ * setSkillContent, updateSkill and putSkillFile in db/tasks.ts): they take it as the FIRST statement of their transaction,
+ * so the decision is made on the row the previous writer committed, not on a snapshot it is about to replace.
  */
-async function lockSkillForRevision(tx: SqlOps, skillId: string): Promise<number> {
+export async function lockSkillForRevision(tx: SqlOps, skillId: string): Promise<number> {
   return (await tx.all(`SELECT id FROM skills WHERE id = ? ${forUpdate()}`, skillId)).length
 }
 

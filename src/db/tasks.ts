@@ -5,7 +5,7 @@ import { AgentMessage } from './agents.js'
 import { db } from './connection.js'
 import { dbx, type Dbx, type SqlOps, type Tx } from './facade.js'
 import { likePrefix } from './like.js'
-import { ensureSkillBaseline, writeSkillRevision, submitPendingRevision, type ProposedFile, type SkillActor, type SkillRevisionRow, type SkillWriteMeta } from './skill-revisions.js'
+import { ensureSkillBaseline, lockSkillForRevision, writeSkillRevision, submitPendingRevision, type ProposedFile, type SkillActor, type SkillRevisionRow, type SkillWriteMeta } from './skill-revisions.js'
 import { resolveWriteTenant } from './write-tenant.js'
 import { countScheduleRun } from '../otel-signals.js'
 import { stripGeneratedHeader } from '../skill-header.js'
@@ -602,6 +602,10 @@ export async function setSkillContent(
   skillId: string, content: string, now: number, actor: SkillActor, meta: SkillWriteMeta = {}, guard: SkillWriteGuard = {},
 ): Promise<SetSkillContentResult> {
   return dbx.tx(async (tx) => {
+    // The privilege decision below is made on `before`: the row lock comes FIRST, so a concurrent writer of the same skill
+    // has committed (PostgreSQL: one connection per transaction, READ COMMITTED) before the row is read, and the gate does
+    // not judge a change against a state that is about to be replaced. SQLite: the transaction lock already does this.
+    await lockSkillForRevision(tx, skillId)
     const before = await tx.get<SkillRow>('SELECT * FROM skills WHERE id = ?', skillId)
     if (!before) return { outcome: 'not_found' }
     await ensureSkillBaseline(tx, skillId)
@@ -693,6 +697,10 @@ export async function updateSkill(
   if (patch.is_global !== undefined)   { sets.push('is_global = ?');   vals.push(patch.is_global ? 1 : 0) }
   vals.push(id)
   return dbx.tx(async (tx) => {
+    // The row lock comes FIRST: the status and privilege decisions below are made on `before`, so a concurrent writer of
+    // the same skill has to have committed before the row is read (PostgreSQL: one connection per transaction, READ
+    // COMMITTED). SQLite: the transaction lock already does this, the statement is empty there.
+    await lockSkillForRevision(tx, id)
     // Decided first: a refused write must not leave a baseline row behind either.
     const before = await tx.get<SkillRow>('SELECT * FROM skills WHERE id = ?', id)
     if (!before || (guard.requireLive && before.status !== 'live')) return { outcome: 'not_found' }
@@ -924,6 +932,10 @@ export async function putSkillFile(
   const now = Math.floor(Date.now() / 1000)
   const sanitizedMode = sanitizeSkillFileMode(mode)
   return dbx.tx(async (tx) => {
+    // The row lock comes FIRST: the privilege decision below compares the new file with the files and the SKILL.md it reads,
+    // so a concurrent writer of the same skill has to have committed before they are read (PostgreSQL: one connection per
+    // transaction, READ COMMITTED). SQLite: the transaction lock already does this, the statement is empty there.
+    await lockSkillForRevision(tx, skillId)
     await ensureSkillBaseline(tx, skillId)
     const skill = await tx.get<SkillRow>('SELECT * FROM skills WHERE id = ?', skillId)
 

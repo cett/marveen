@@ -75,17 +75,16 @@ export async function deleteVaultBinding(tenantId: string, vaultSecretId: string
 
 // Returns the bindings that were deleted (their targets are still needed by
 // the caller -- removeBindingsForSecret() -- to strip the env var from each
-// target MCP file before the row itself disappears). The select-then-delete
-// is one dbx.tx so no other writer can slip a change in between the two.
+// target MCP file before the row itself disappears). ONE statement: DELETE ... RETURNING hands back exactly the rows it
+// deleted. A SELECT followed by a DELETE in one transaction was enough on SQLite (the facade's transaction lock), but
+// on PostgreSQL (READ COMMITTED, no global lock) a binding written between the two was deleted without being returned,
+// and its target MCP file kept the env var of a secret that no longer exists.
 export async function deleteVaultBindingsForSecret(tenantId: string, vaultSecretId: string): Promise<VaultBinding[]> {
-  return dbx.tx(async (tx) => {
-    const rows = await tx.all<VaultBindingRow>(
-      'SELECT vault_secret_id, env_var, targets, tenant_id FROM vault_bindings WHERE vault_secret_id = ? AND tenant_id = ?',
-      vaultSecretId, tenantId,
-    )
-    await tx.run('DELETE FROM vault_bindings WHERE vault_secret_id = ? AND tenant_id = ?', vaultSecretId, tenantId)
-    return rows.map(rowToBinding)
-  })
+  const rows = await dbx.all<VaultBindingRow>(
+    'DELETE FROM vault_bindings WHERE vault_secret_id = ? AND tenant_id = ? RETURNING vault_secret_id, env_var, targets, tenant_id',
+    vaultSecretId, tenantId,
+  )
+  return rows.map(rowToBinding)
 }
 
 // Whole-value replace within a transaction: used by fleet-transfer import

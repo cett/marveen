@@ -228,14 +228,17 @@ describe('the other PG writer paths read their keys back (the cache starts with 
     await loadAll()
     tables.system_config = [{ ...CFG, value: 'v-new' }]
     let seen: string | undefined
+    // The body's first statement is the advisory lock of the key (a statement, not a write of the table): it is not counted.
+    const writes = (): string[] => runs.filter((sql) => !sql.includes('pg_advisory_xact_lock'))
     expect(await updateSystemConfig('k1', (current) => { seen = current; return 'v-new' })).toBe(true)
     expect(seen).toBe('v-new') // the transaction read the backend row, not the cache
-    expect(runs.length).toBe(1)
+    expect(runs.some((sql) => sql.includes('pg_advisory_xact_lock'))).toBe(true)
+    expect(writes().length).toBe(1)
     expect(cachedSystemConfig('k1')?.value).toBe('v-new')
     // the positive pair: nothing to write, so no read-back (the cache keeps what it had, although the table moved)
     tables.system_config = [{ ...CFG, value: 'moved-again' }]
     expect(await updateSystemConfig('k1', () => undefined)).toBe(false)
-    expect(runs.length).toBe(1)
+    expect(writes().length).toBe(1)
     expect(cachedSystemConfig('k1')?.value).toBe('v-new')
   })
 

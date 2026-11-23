@@ -11,7 +11,7 @@
 
 import { randomBytes } from 'node:crypto'
 import { dbx, dbxDialect, type Tx } from './facade.js'
-import { likeNoCase } from './dialect.js'
+import { advisoryKeyOf, advisoryLockKeyed, forUpdate, likeNoCase } from './dialect.js'
 import { likePrefix } from './like.js'
 import { blobToVectorLiteral, generateEmbedding, floatsToBlob } from './vector.js'
 import { logger } from '../logger.js'
@@ -264,9 +264,15 @@ export async function saveWorkspaceDoc(input: SaveWorkspaceDocInput): Promise<Wo
     : (contentBlob ? contentBlob.byteLength : 0)
 
   // The embedding arrives precomputed (input.embedding_blob), so nothing slow runs inside the transaction. The
-  // lookup, the write and the vec sync are one unit: a concurrent save of the same (agent_id, doc_key) cannot
-  // interleave between the existence check and the UPDATE/INSERT.
+  // lookup, the write and the vec sync are one unit. What keeps a concurrent save of the same (agent_id, doc_key) from
+  // interleaving between the existence check and the UPDATE/INSERT is, on SQLite, the facade's transaction lock. On
+  // PostgreSQL (one connection per transaction, READ COMMITTED, no global lock) it is a transaction-scoped advisory lock
+  // on (agent_id, doc_key), taken first: a row lock cannot do it, because the row may not exist yet. Without it two
+  // creates of a new key both found nothing and the second hit the unique index, and two updates were last-writer-wins
+  // on the whole row. A save without a doc_key is always a new row and takes no lock.
+  const lock = input.doc_key ? advisoryLockKeyed('workspace-doc:', advisoryKeyOf(input.agent_id, input.doc_key)) : null
   return dbx.tx(async (tx) => {
+    if (lock) await tx.run(lock.sql, ...lock.params)
     if (input.doc_key) {
       // UPSERT: check if (agent_id, doc_key) already exists
       const existing = await tx.get<{ id: string }>('SELECT id FROM workspace_docs WHERE agent_id = ? AND doc_key = ?', input.agent_id, input.doc_key)
@@ -640,10 +646,12 @@ export interface PatchWorkspaceDocInput {
 }
 
 export async function patchWorkspaceDoc(id: string, patch: PatchWorkspaceDocInput): Promise<WorkspaceDoc | null> {
-  // Read-modify-write: the merge below depends on the row as read, so the read and the UPDATE share one transaction
-  // and a concurrent patch cannot be silently overwritten with a stale merge.
+  // Read-modify-write: the merge below depends on the row as read, so the read and the UPDATE share one transaction.
+  // SQLite: the facade's transaction lock makes that enough. PostgreSQL (READ COMMITTED, one connection per transaction,
+  // no global lock): the FIRST read takes the row lock, so a concurrent patch waits here and merges onto the committed
+  // result instead of writing a stale merge over it (a full-column UPDATE would drop the other patch's fields).
   return dbx.tx(async (tx) => {
-    const existing = await tx.get<DbRow>('SELECT * FROM workspace_docs WHERE id = ?', id)
+    const existing = await tx.get<DbRow>(`SELECT * FROM workspace_docs WHERE id = ? ${forUpdate()}`, id)
     if (!existing) return null
 
     const now = Math.floor(Date.now() / 1000)
