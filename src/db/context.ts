@@ -5,6 +5,9 @@
 //   runAs.system('heartbeat', () => ...)          a job of the dashboard itself
 //   runAs.tenant('acme', () => ...)               a request of a tenant
 //   runAs.agent('agent-a', 'acme', () => ...)        a request of an agent token
+//   runAs.admin('http-admin', () => ...)          a global admin session (no tenant)
+//   runAs.viewer('http-global-viewer', () => ...) any other authenticated session without a tenant
+//   runAs.public('http-public', () => ...)        a route served without a credential
 //
 // For now the carrier only RECORDS and COUNTS: a call without a context is not refused and nothing is
 // filtered by it (that comes with the PostgreSQL step). Every facade call reads the context; a call without one bumps a counter
@@ -26,14 +29,27 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { logger } from '../logger.js'
 import { captureOrigin } from './tx-lock.js'
 
-export type DbRole = 'system' | 'tenant' | 'agent'
+/**
+ * The vocabulary of `app.role` (the row-level-security policies read it): `system` is a job of the dashboard itself,
+ * `tenant` and `agent` carry a tenant, `admin` is a global admin session, `viewer` any other authenticated session
+ * without a tenant, `public` a caller without a credential. The last three carry a name like `system` does.
+ */
+export type DbRole = 'system' | 'tenant' | 'agent' | 'admin' | 'viewer' | 'public'
+
+/** Every role, for the code that has to account for each of them (the counters). */
+export const DB_ROLES: readonly DbRole[] = ['system', 'tenant', 'agent', 'admin', 'viewer', 'public']
 
 export interface DbContext {
   role: DbRole
-  /** system: the name of the job. */
+  /** system, admin, viewer, public: the name of the job or of the request kind (`http-admin`). */
   name?: string
   tenantId?: string
   agentId?: string
+  /**
+   * The id of the dashboard user of a session-authenticated request (`app.user_id`): what lets a tenant-less viewer reach
+   * its OWN user and session rows. Absent for a token, a job and a request without a session.
+   */
+  userId?: string
   /** The trace of the unit of work (a request, an inter-agent message), set by `withTrace`; see its comment. */
   traceId?: string
   spanId?: string
@@ -77,6 +93,15 @@ export const runAs = {
   system<T>(name: string, fn: () => T, opts?: RunAsOptions): T {
     return store.run(withInheritedTrace({ role: 'system', name: requireId('system', name) }, opts), fn)
   },
+  admin<T>(name: string, fn: () => T, opts?: RunAsOptions): T {
+    return store.run(withInheritedTrace({ role: 'admin', name: requireId('admin', name) }, opts), fn)
+  },
+  viewer<T>(name: string, fn: () => T, opts?: RunAsOptions): T {
+    return store.run(withInheritedTrace({ role: 'viewer', name: requireId('viewer', name) }, opts), fn)
+  },
+  public<T>(name: string, fn: () => T, opts?: RunAsOptions): T {
+    return store.run(withInheritedTrace({ role: 'public', name: requireId('public', name) }, opts), fn)
+  },
   tenant<T>(tenantId: string, fn: () => T, opts?: RunAsOptions): T {
     return store.run(withInheritedTrace({ role: 'tenant', tenantId: requireId('tenant', tenantId) }, opts), fn)
   },
@@ -105,6 +130,17 @@ export function withTrace<T>(trace: DbTrace, fn: () => T): T {
   const spanId = requireId('trace', trace.spanId)
   const current = store.getStore()
   return current === undefined ? fn() : store.run({ ...current, traceId, spanId }, fn)
+}
+
+/**
+ * Runs `fn` in the running context plus the id of the session user (`app.user_id`). Called by `runAsRequest` right after it
+ * opens the context of a session-authenticated request; a nested `runAs` replaces the identity and does NOT carry the user
+ * along (it is another identity). Without a running context there is nothing to attach it to: `fn` runs as it is.
+ */
+export function withUserId<T>(userId: string, fn: () => T): T {
+  const id = requireId('userId', userId)
+  const current = store.getStore()
+  return current === undefined ? fn() : store.run({ ...current, userId: id }, fn)
 }
 
 /** The trace of the running call, or undefined when it carries none (no context, or a context without a trace). */
@@ -191,7 +227,8 @@ let anonymousCalls = 0
 let tenantMismatches = 0
 const callSites = new Map<string, { count: number; boot: boolean }>()
 const jobCalls = new Map<string, number>()
-const roleCalls: Record<DbRole, number> = { system: 0, tenant: 0, agent: 0 }
+const tenantUnresolvedByJob = new Map<string, number>()
+const roleCalls: Record<DbRole, number> = { system: 0, tenant: 0, agent: 0, admin: 0, viewer: 0, public: 0 }
 
 export interface DbContextSite {
   /** The first stack frame outside src/db. */
@@ -215,12 +252,14 @@ export interface DbContextStats {
   anonymous: number
   /** A route resolved a tenant other than the one its request context carries (see `noteTenantResolved`). */
   tenantMismatches: number
+  /** Agent job ticks skipped because the tenant of the agent could not be resolved (fail closed), by job name. */
+  tenantUnresolved: Record<string, number>
   /** When the process started and when the boot phase ended (ms since the epoch): a measurement window is the difference of two snapshots. */
   startedAt: number
   bootEndedAt: number | null
   /** Calls with a context, by role. */
   byRole: Record<DbRole, number>
-  /** Calls of `runAs.system(name)`, by job name: shows which classified jobs actually touch the db. */
+  /** Calls of `runAs.system|admin|viewer|public(name)`, by name: shows which classified jobs actually touch the db. */
   byJob: Record<string, number>
   /** Where calls without a context came from, most frequent first. Sampled (see SAMPLE_*), so the counts are lower bounds. */
   sites: DbContextSite[]
@@ -248,7 +287,7 @@ export function noteDbCall(): void {
   const ctx = store.getStore()
   if (ctx !== undefined) {
     roleCalls[ctx.role] += 1
-    if (ctx.role === 'system' && ctx.name) {
+    if (ctx.name) {
       bump(jobCalls, ctx.name, MAX_JOBS)
       if (ctx.name === ANONYMOUS_JOB) anonymousCalls += 1
     }
@@ -294,6 +333,14 @@ export function noteTenantResolved(tenantId: string | null): string | null {
   return tenantId
 }
 
+/**
+ * An agent job could not resolve the tenant of its agent and was skipped (fail closed: it does not run as `default`).
+ * Counted by job name, so a resolver that keeps failing shows up in the measurement view instead of only in the log.
+ */
+export function noteTenantUnresolved(job: string): void {
+  bump(tenantUnresolvedByJob, job, MAX_JOBS)
+}
+
 export function getDbContextStats(): DbContextStats {
   const sites = [...callSites.entries()]
     .map(([key, v]) => ({ site: v.boot ? key.slice('boot|'.length) : key, count: v.count, boot: v.boot }))
@@ -305,6 +352,7 @@ export function getDbContextStats(): DbContextStats {
     unexpected: withoutContext - duringBoot,
     anonymous: anonymousCalls,
     tenantMismatches,
+    tenantUnresolved: Object.fromEntries(tenantUnresolvedByJob),
     startedAt,
     bootEndedAt,
     byRole: { ...roleCalls },
@@ -327,9 +375,8 @@ export function resetDbContextStats(): void {
   tenantMismatches = 0
   callSites.clear()
   jobCalls.clear()
-  roleCalls.system = 0
-  roleCalls.tenant = 0
-  roleCalls.agent = 0
+  tenantUnresolvedByJob.clear()
+  for (const role of DB_ROLES) roleCalls[role] = 0
   booting = false
 }
 

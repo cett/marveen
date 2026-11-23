@@ -120,7 +120,8 @@ describe('the session lane over HTTP', () => {
     const token = await createSession({ userId: u.id, username: u.username })
     const res = await get('/api/memories', { cookie: cookieOf(token) })
     expect(res.status).toBe(200)
-    expect(JSON.parse(res.body)).toEqual({ kind: 'session', user: 'alice', role: 'viewer', tenantId: 'tenant-b' })
+    // userId: the dashboard_users id of the session, what the db context carries as app.user_id
+    expect(JSON.parse(res.body)).toEqual({ kind: 'session', user: 'alice', userId: u.id, role: 'viewer', tenantId: 'tenant-b' })
   })
 
   it('the same session over a cold cache (a restart) still gets in', async () => {

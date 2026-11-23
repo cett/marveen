@@ -62,7 +62,7 @@ describe('the registry against the source tree', () => {
   it('every job is bound in its own file under its own name', () => {
     for (const [name, job] of Object.entries(BACKGROUND_JOBS)) {
       const text = code(files.find((f) => f.path === job.file)!.text)
-      const bound = new RegExp(`(?:systemJob|runAsAgentJob|runAs\\.system)\\(\\s*(?:[^,()]+,\\s*)?'${name}'|runAs\\.system\\('${name}'`)
+      const bound = new RegExp(`(?:systemJob|runAsAgentJob|runAs\\.(?:system|admin|viewer|public))\\(\\s*(?:[^,()]+,\\s*)?'${name}'|runAs\\.(?:system|admin|viewer|public)\\('${name}'`)
       expect(bound.test(text), `${name} in ${job.file}`).toBe(true)
     }
   })
@@ -71,7 +71,7 @@ describe('the registry against the source tree', () => {
     const known = new Set(Object.keys(BACKGROUND_JOBS))
     const unknown: string[] = []
     for (const f of files) {
-      for (const m of code(f.text).matchAll(/runAs\.system\(\s*'([^']+)'/g)) if (!known.has(m[1]!)) unknown.push(`${f.path}: ${m[1]}`)
+      for (const m of code(f.text).matchAll(/runAs\.(?:system|admin|viewer|public)\(\s*'([^']+)'/g)) if (!known.has(m[1]!)) unknown.push(`${f.path}: ${m[1]}`)
     }
     expect(unknown).toEqual([])
   })
@@ -141,11 +141,30 @@ describe('runAsAgentJob', () => {
     expect(seen).toEqual(['context-guard'])
   })
 
-  it('falls back to the default tenant when the lookup fails, and does not cache the failure', async () => {
+  it('is fail closed when the lookup fails: the body is not run, the failure is warned about and counted, nothing is cached, the next tick retries', async () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined)
     let calls = 0
     setAgentTenantResolver(() => { calls += 1; return calls === 1 ? Promise.reject(new Error('db down')) : Promise.resolve('acme') })
-    expect(await runAsAgentJob('background-task', 'a3', () => currentDbContext()?.tenantId)).toBe('default')
-    expect(await runAsAgentJob('background-task', 'a3', () => currentDbContext()?.tenantId)).toBe('acme')
+    const body = vi.fn(() => currentDbContext()?.tenantId)
+    expect(await runAsAgentJob('background-task', 'agent-a', body)).toBeUndefined()
+    expect(body).not.toHaveBeenCalled() // never as `default`
+    expect(getDbContextStats().tenantUnresolved).toEqual({ 'background-task': 1 })
+    const logged = warn.mock.calls.find((c) => String(c[1] ?? '').includes('could not be resolved'))
+    expect(logged?.[0]).toMatchObject({ job: 'background-task', agentId: 'agent-a' })
+    expect(JSON.stringify(logged?.[0])).not.toContain('tenantId')
+    // the failure was not cached: the next tick looks the tenant up again and runs
+    expect(await runAsAgentJob('background-task', 'agent-a', body)).toBe('acme')
+    expect(body).toHaveBeenCalledTimes(1)
+    expect(calls).toBe(2)
+    expect(getDbContextStats().tenantUnresolved).toEqual({ 'background-task': 1 })
+  })
+
+  it('a binding whose status is `default` is a real answer: the body runs as the default tenant and nothing is counted', async () => {
+    setAgentTenantResolver(() => Promise.resolve('default'))
+    const body = vi.fn(() => currentDbContext())
+    expect(await runAsAgentJob('auto-restart', 'agent-b', body)).toEqual({ role: 'agent', agentId: 'agent-b', tenantId: 'default' })
+    expect(body).toHaveBeenCalledTimes(1)
+    expect(getDbContextStats().tenantUnresolved).toEqual({})
   })
 
   it('returns what the function returns and lets its rejection through', async () => {
@@ -155,16 +174,60 @@ describe('runAsAgentJob', () => {
 })
 
 describe('runAsRequest', () => {
+  // who x branch: every way a request can arrive, and the context the branch opens (R3: the three http contexts are no
+  // longer all `system`). `http-gate` and `http-metrics` are not request branches: they stay `system`.
+  it.each([
+    ['no credential', { authenticated: false, role: undefined, tenantId: null }, { role: 'public', name: 'http-public' }],
+    ['no credential, default tenant', { authenticated: false, role: undefined, tenantId: 'default' }, { role: 'public', name: 'http-public' }],
+    ['admin session without a tenant', { authenticated: true, role: 'admin', tenantId: null }, { role: 'admin', name: 'http-admin' }],
+    ['viewer session without a tenant', { authenticated: true, role: 'viewer', tenantId: null }, { role: 'viewer', name: 'http-global-viewer' }],
+    ['agent-role session without a tenant', { authenticated: true, role: 'agent', tenantId: null }, { role: 'viewer', name: 'http-global-viewer' }],
+    ['session without a role and without a tenant', { authenticated: true, role: undefined, tenantId: null }, { role: 'viewer', name: 'http-global-viewer' }],
+    ['admin session in a tenant', { authenticated: true, role: 'admin', tenantId: 'acme' }, { role: 'tenant', tenantId: 'acme' }],
+    ['viewer session in a tenant', { authenticated: true, role: 'viewer', tenantId: 'acme' }, { role: 'tenant', tenantId: 'acme' }],
+    ['agent token in a tenant', { authenticated: true, role: 'fleet_agent', agentId: 'agent-a', tenantId: 'acme' }, { role: 'agent', agentId: 'agent-a', tenantId: 'acme' }],
+    ['agent token without a tenant', { authenticated: true, role: 'fleet_agent', agentId: 'agent-a', tenantId: null }, { role: 'agent', agentId: 'agent-a', tenantId: 'default' }],
+  ] as const)('opens the right role for: %s', (_label, who, expected) => {
+    expect(runAsRequest(who, () => currentDbContext())).toEqual(expected)
+  })
+
+  it('a session user id rides in the context of a session request, whatever branch opens it; a token or no id carries none', () => {
+    const ctxOf = (who: Parameters<typeof runAsRequest>[0]) => runAsRequest(who, () => currentDbContext())
+    expect(ctxOf({ authenticated: true, role: 'viewer', tenantId: null, userId: '7' })).toEqual({ role: 'viewer', name: 'http-global-viewer', userId: '7' })
+    expect(ctxOf({ authenticated: true, role: 'admin', tenantId: null, userId: '7' })).toEqual({ role: 'admin', name: 'http-admin', userId: '7' })
+    expect(ctxOf({ authenticated: true, role: 'viewer', tenantId: 'acme', userId: '7' })).toEqual({ role: 'tenant', tenantId: 'acme', userId: '7' })
+    expect(ctxOf({ authenticated: true, role: 'viewer', tenantId: null })?.userId).toBeUndefined()
+    expect(ctxOf({ authenticated: true, role: 'fleet_agent', agentId: 'agent-a', tenantId: 'acme' })?.userId).toBeUndefined()
+    expect(ctxOf({ authenticated: false, role: undefined, tenantId: null })?.userId).toBeUndefined()
+    // the trace and the user ride together
+    const trace = { traceId: 't'.repeat(32), spanId: 's'.repeat(16) }
+    expect(ctxOf({ authenticated: true, role: 'viewer', tenantId: null, userId: '7', trace })).toEqual({ role: 'viewer', name: 'http-global-viewer', userId: '7', ...trace })
+  })
+
+  it('only a session-authenticated request hands its user id to runAsRequest (src/web.ts)', () => {
+    const web = readFileSync(join(SRC, 'web.ts'), 'utf8')
+    expect(web).toMatch(/userId: auth\.kind === 'session' && auth\.userId !== undefined \? String\(auth\.userId\) : undefined/)
+  })
+
+  it('the three request entries of the registry carry the role their context opens', () => {
+    expect(BACKGROUND_JOBS['http-public'].role).toBe('public')
+    expect(BACKGROUND_JOBS['http-admin'].role).toBe('admin')
+    expect(BACKGROUND_JOBS['http-global-viewer'].role).toBe('viewer')
+    // the gate and the metrics callback keep the system role: the gate resolves the principal before any tenant is known
+    expect(BACKGROUND_JOBS['http-gate'].role).toBe('system')
+    expect(BACKGROUND_JOBS['http-metrics'].role).toBe('system')
+  })
+
   it('maps the caller to a context', () => {
-    expect(runAsRequest({ authenticated: false, role: undefined, tenantId: 'default' }, () => currentDbContext())).toEqual({ role: 'system', name: 'http-public' })
-    expect(runAsRequest({ authenticated: true, role: 'admin', tenantId: null }, () => currentDbContext())).toEqual({ role: 'system', name: 'http-admin' })
+    expect(runAsRequest({ authenticated: false, role: undefined, tenantId: 'default' }, () => currentDbContext())).toEqual({ role: 'public', name: 'http-public' })
+    expect(runAsRequest({ authenticated: true, role: 'admin', tenantId: null }, () => currentDbContext())).toEqual({ role: 'admin', name: 'http-admin' })
     expect(runAsRequest({ authenticated: true, role: 'viewer', tenantId: 'acme' }, () => currentDbContext())).toEqual({ role: 'tenant', tenantId: 'acme' })
     expect(runAsRequest({ authenticated: true, role: 'fleet_agent', agentId: 'a1', tenantId: 'acme' }, () => currentDbContext())).toEqual({ role: 'agent', agentId: 'a1', tenantId: 'acme' })
   })
 
   it('gives the unrestricted http-admin context to the admin role only, a global non-admin is http-global-viewer', () => {
     for (const role of ['viewer', 'agent', 'operator', undefined]) {
-      expect(runAsRequest({ authenticated: true, role, tenantId: null }, () => currentDbContext()), String(role)).toEqual({ role: 'system', name: 'http-global-viewer' })
+      expect(runAsRequest({ authenticated: true, role, tenantId: null }, () => currentDbContext()), String(role)).toEqual({ role: 'viewer', name: 'http-global-viewer' })
     }
     expect(runAsRequest({ authenticated: true, role: 'admin', tenantId: 'acme' }, () => currentDbContext())).toEqual({ role: 'tenant', tenantId: 'acme' })
   })

@@ -5,8 +5,8 @@
 import { EventEmitter } from 'node:events'
 import type pg from 'pg'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { resetDbContextForTest, runAs } from '../db/context.js'
-import { createPgDbx, PG_SET_CONTEXT_SQL, STRICT_OUTSIDE_CALL_MESSAGE, type PgPoolLike } from '../db/pg/dbx.js'
+import { resetDbContextForTest, runAs, withUserId } from '../db/context.js'
+import { createPgDbx, pgContextValues, PG_SET_CONTEXT_SQL, STRICT_OUTSIDE_CALL_MESSAGE, type PgPoolLike } from '../db/pg/dbx.js'
 import { pgTypes } from '../db/pg/types.js'
 import { PARENT_HANDLE_MESSAGE } from '../db/tx-lock.js'
 import { logger } from '../logger.js'
@@ -77,10 +77,10 @@ describe('a statement outside a transaction', () => {
     expect(f.state.connects).toBe(1)
   })
 
-  it('the context statement sets all four settings, transaction-locally, and nothing else rides on it', () => {
-    expect(PG_SET_CONTEXT_SQL.match(/set_config\(/g)).toHaveLength(4)
-    expect(PG_SET_CONTEXT_SQL.match(/, true\)/g)).toHaveLength(4)
-    for (const g of ['app.tenant_id', 'app.role', 'app.agent_id', 'app.job']) expect(PG_SET_CONTEXT_SQL).toContain(`'${g}'`)
+  it('the context statement sets all five settings, transaction-locally, and nothing else rides on it', () => {
+    expect(PG_SET_CONTEXT_SQL.match(/set_config\(/g)).toHaveLength(5)
+    expect(PG_SET_CONTEXT_SQL.match(/, true\)/g)).toHaveLength(5)
+    for (const g of ['app.tenant_id', 'app.role', 'app.agent_id', 'app.job', 'app.user_id']) expect(PG_SET_CONTEXT_SQL).toContain(`'${g}'`)
     expect(PG_SET_CONTEXT_SQL).not.toMatch(/\bWITH\b|\bFROM\b/i)
   })
 
@@ -92,17 +92,54 @@ describe('a statement outside a transaction', () => {
     expect(work[0]).toMatchObject({ text: 'UPDATE t SET a = $1' })
   })
 
-  it('takes the four values from the context of the call: tenant, agent, system job, and none', async () => {
+  it('takes the five values from the context of the call: tenant, agent, system job, and none', async () => {
     const f = fakePool()
     const dbx = createPgDbx(f.pool)
     await runAs.tenant('tenant-a', () => dbx.get('SELECT 1'))
     await runAs.agent('agent-a', 'tenant-b', () => dbx.get('SELECT 1'))
     await runAs.system('job-x', () => dbx.get('SELECT 1'))
     await dbx.get('SELECT 1')
-    expect(f.context(1)).toEqual(['tenant-a', 'tenant', '', ''])
-    expect(f.context(2)).toEqual(['tenant-b', 'agent', 'agent-a', ''])
-    expect(f.context(3)).toEqual(['', 'system', '', 'job-x'])
-    expect(f.context(4)).toEqual(['', '', '', '']) // no context: empty, never a default tenant
+    expect(f.context(1)).toEqual(['tenant-a', 'tenant', '', '', ''])
+    expect(f.context(2)).toEqual(['tenant-b', 'agent', 'agent-a', '', ''])
+    expect(f.context(3)).toEqual(['', 'system', '', 'job-x', ''])
+    expect(f.context(4)).toEqual(['', '', '', '', '']) // no context: empty, never a default tenant
+  })
+
+  it('app.user_id is the session user of the context, and is empty for a token, a job and no context', async () => {
+    const f = fakePool()
+    const dbx = createPgDbx(f.pool)
+    await runAs.viewer('http-global-viewer', () => withUserId('7', () => dbx.get('SELECT 1')))
+    await runAs.tenant('tenant-a', () => withUserId('8', () => dbx.get('SELECT 1')))
+    await runAs.agent('agent-a', 'tenant-a', () => dbx.get('SELECT 1'))
+    await runAs.system('job-x', () => dbx.get('SELECT 1'))
+    expect(f.context(1)).toEqual(['', 'viewer', '', 'http-global-viewer', '7'])
+    expect(f.context(2)).toEqual(['tenant-a', 'tenant', '', '', '8'])
+    expect(f.context(3)).toEqual(['tenant-a', 'agent', 'agent-a', '', ''])
+    expect(f.context(4)).toEqual(['', 'system', '', 'job-x', ''])
+    // a nested runAs is another identity: the user does not ride along
+    await runAs.tenant('tenant-a', () => withUserId('9', () => runAs.tenant('tenant-b', () => dbx.get('SELECT 1'))))
+    expect(f.context(5)).toEqual(['tenant-b', 'tenant', '', '', ''])
+  })
+
+  it('app.role is the role as it is and app.job is the name of every named role: system, admin, viewer, public (not tenant, not agent)', async () => {
+    const f = fakePool()
+    const dbx = createPgDbx(f.pool)
+    await runAs.admin('http-admin', () => dbx.get('SELECT 1'))
+    await runAs.viewer('http-global-viewer', () => dbx.get('SELECT 1'))
+    await runAs.public('http-public', () => dbx.get('SELECT 1'))
+    await runAs.system('http-gate', () => dbx.get('SELECT 1'))
+    expect(f.context(1)).toEqual(['', 'admin', '', 'http-admin', ''])
+    expect(f.context(2)).toEqual(['', 'viewer', '', 'http-global-viewer', ''])
+    expect(f.context(3)).toEqual(['', 'public', '', 'http-public', ''])
+    expect(f.context(4)).toEqual(['', 'system', '', 'http-gate', ''])
+  })
+
+  it('pgContextValues: a name never rides on a tenant or an agent context, and no context is five empty strings', () => {
+    expect(pgContextValues(undefined)).toEqual(['', '', '', '', ''])
+    expect(pgContextValues({ role: 'tenant', tenantId: 'tenant-a', name: 'stray' })).toEqual(['tenant-a', 'tenant', '', '', ''])
+    expect(pgContextValues({ role: 'agent', tenantId: 'tenant-a', agentId: 'agent-a', name: 'stray' })).toEqual(['tenant-a', 'agent', 'agent-a', '', ''])
+    expect(pgContextValues({ role: 'viewer' })).toEqual(['', 'viewer', '', '', ''])
+    expect(pgContextValues({ role: 'viewer', userId: '7' })).toEqual(['', 'viewer', '', '', '7'])
   })
 
   it('a failing statement is rolled back, the connection goes back only after that, and the same error comes out', async () => {
@@ -224,7 +261,7 @@ describe('a transaction', () => {
       }),
     )
     expect(f.log.filter((e) => e.kind === 'q' && e.text === PG_SET_CONTEXT_SQL)).toHaveLength(1)
-    expect(f.context(1)).toEqual(['tenant-a', 'tenant', '', ''])
+    expect(f.context(1)).toEqual(['tenant-a', 'tenant', '', '', ''])
   })
 
   it('mode: immediate means nothing on PostgreSQL: the same plain BEGIN', async () => {

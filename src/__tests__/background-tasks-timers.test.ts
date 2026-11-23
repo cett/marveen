@@ -68,6 +68,26 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
+describe('the 30-minute timeout check when the tenant of the agent cannot be resolved', () => {
+  it('is skipped (fail closed) and tried again a minute later, so the task cannot outlive its limit', async () => {
+    const { setAgentTenantResolver, resetAgentTenantResolver } = await import('../db/background-jobs.js')
+    let failing = true
+    setAgentTenantResolver(() => (failing ? Promise.reject(new Error('lookup down')) : Promise.resolve('default')))
+    try {
+      await sweepOrphanedBackgroundTasks()
+      // the timeout fires with the lookup down: the check is skipped, nothing is finished
+      await vi.advanceTimersByTimeAsync(TIMEOUT_MS)
+      expect(mocks.finishBackgroundTask).not.toHaveBeenCalledWith(TASK.id, 'timeout', expect.anything())
+      // the lookup is back: the retry a minute later finishes the task as timed out
+      failing = false
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(mocks.finishBackgroundTask).toHaveBeenCalledWith(TASK.id, 'timeout', expect.anything())
+    } finally {
+      resetAgentTenantResolver()
+    }
+  })
+})
+
 describe('poll interval tick', () => {
   it('finishes a task whose pane shows the done marker, kills the session and reports it', async () => {
     pane = 'result text\n___BG_DONE___\n'

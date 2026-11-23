@@ -26,8 +26,10 @@ configuration caches, the `vec0` helpers, the OTel gauge reads). This page says 
    0 turns it off) is logged with the line that opened it. A transaction inside a transaction is a `SAVEPOINT`;
    `dbx.tx(fn, { mode: 'immediate' })` is `BEGIN IMMEDIATE`; the `mode` of a nested transaction is ignored,
    because a savepoint joins the transaction that is already open.
-6. **Run inside a context.** `runAs.system('job-name', fn)`, `runAs.tenant(tenantId, fn)` or
-   `runAs.agent(agentId, tenantId, fn)` around the work that touches the database. For now a call without one
+6. **Run inside a context.** `runAs.system('job-name', fn)`, `runAs.tenant(tenantId, fn)`,
+   `runAs.agent(agentId, tenantId, fn)` or, for the request kinds without a tenant, `runAs.admin(name, fn)`,
+   `runAs.viewer(name, fn)` and `runAs.public(name, fn)` (six roles in all: `system`, `tenant`, `agent`, `admin`, `viewer`,
+   `public`) around the work that touches the database. For now a call without one
    is counted and warned about (`getDbContextStats()`), not refused. A timer created before `runAs` does not
    inherit it: a tick that touches the database opens its own `runAs` (see "Background jobs and the request context").
 7. **No database write per request for a counter.** The facade has no write buffer yet; a per-request counter
@@ -47,7 +49,7 @@ the context only records, and the counter shows what still runs without one.
 - **Helpers.** `systemJob(name, fn)` wraps a timer callback; `runAsAgentJob(job, agentId, fn)` runs one agent's turn of an
   agent job as that agent in its tenant (the tenant comes from the resolver set at boot, kept five minutes; the default
   tenant when the lookup fails); `runAsRequest(who, fn)` binds the route dispatch after the auth gate (an agent token as the
-  agent, a tenant caller as the tenant, a global session as `http-admin` only when its role is admin, any other authenticated session without a tenant as `http-global-viewer`, an agent token without a tenant as the agent in the `default` tenant, a caller without a credential as `http-public`).
+  agent, a tenant caller as the tenant, a global session as the `admin` role (`http-admin`) only when its role is admin, any other authenticated session without a tenant as the `viewer` role (`http-global-viewer`), an agent token without a tenant as the agent in the `default` tenant, a caller without a credential as the `public` role (`http-public`).
   The gate itself (auth lookups, RBAC, shadow counters) runs as `http-gate`.
 - **Event callbacks do not carry the context.** A request `end` or a response `close` handler runs outside the context of
   the code that registered it. `readBody` takes the context of its caller and hands it to the body observer
@@ -305,7 +307,7 @@ better behavior wins where they differ.
 
 These are behaviours of the code today, listed so that nobody mistakes them for a promise:
 
-- **The tenant of a request context is a fallback, not the final rule.** A token without a tenant runs as its agent in the `default` tenant (`resolveTenantId`), and a global viewer is the separate job `http-global-viewer`. Which tenants either may read under row-level security is decided in Phase 2 (E6/E7); until then the context only records.
+- **The tenant of a request context is a fallback, not the final rule.** A token without a tenant runs as its agent in the `default` tenant (`resolveTenantId`), and a global viewer is the separate `viewer` role (`http-global-viewer`). Which tenants either may read under row-level security is decided in Phase 2 (E6/E7); until then the context only records.
 - **The fleet import cannot undo a failure after its commit.** Every database write is in the one transaction and a
   failure before it leaves nothing applied (see "The fleet import is two-phase"). What remains: a process killed
   between the commit and the last rename leaves the database applied and some files not; a file that could not be
@@ -508,9 +510,9 @@ comes with the first module that is ported to the PostgreSQL dialect. What is di
 | A fraction into an `INTEGER` column | stored as a REAL, silently | `22P02` (invalid input syntax for type bigint): the caller rounds before binding (`Math.trunc`, `Math.floor`). PostgreSQL failing loudly is the safe direction |
 | An older build on a newer database | the SQLite runner applies what is above the highest recorded version and does not look back | the PG runner is strict: an applied version whose file is gone is an error, so a build older than the database refuses to start (the rollback of a bad release is a database restore). Tolerating newer versions is a decision of the backend switch, with expand-only migrations across a release |
 
-**The tenant context.** Every transaction starts with one statement that sets four transaction-local settings from
-`currentDbContext()`: `app.tenant_id`, `app.role`, `app.agent_id` and `app.job` (the job name of a `runAs.system`). A
-policy reads them with `current_setting('app.tenant_id', true)`. Without a context all four are the empty string, never a
+**The tenant context.** Every transaction starts with one statement that sets five transaction-local settings from
+`currentDbContext()`: `app.tenant_id`, `app.role` (the role as it is: `system`, `tenant`, `agent`, `admin`, `viewer` or `public`), `app.agent_id`, `app.job` (the name of every named role: `system`, `admin`, `viewer`, `public`; empty for `tenant` and `agent`) and `app.user_id` (the id of the dashboard user of a session-authenticated request, put there by `runAsRequest`; empty for a token, a job and a request without a session, and not carried into a nested `runAs`). A
+policy reads them with `current_setting('app.tenant_id', true)`. Without a context all five are the empty string, never a
 default tenant, so a policy that compares with them finds nothing. The values are taken once, when the transaction
 opens; a `runAs` inside the body does not change them. They are transaction-local on purpose: they end with the
 transaction, so a connection that goes back to the pool carries nothing. The adapter gives a connection back only after

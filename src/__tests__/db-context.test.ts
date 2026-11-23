@@ -21,6 +21,14 @@ describe('runAs', () => {
     expect(runAs.tenant('acme', () => currentDbContext())).toEqual({ role: 'tenant', tenantId: 'acme' })
     expect(runAs.agent('agent-a', 'acme', () => currentDbContext())).toEqual({ role: 'agent', agentId: 'agent-a', tenantId: 'acme' })
     expect(runAs.system('x', () => 42)).toBe(42)
+    // the three request roles: a role and a name, no tenant, no agent
+    expect(runAs.admin('http-admin', () => currentDbContext())).toEqual({ role: 'admin', name: 'http-admin' })
+    expect(runAs.viewer('http-global-viewer', () => currentDbContext())).toEqual({ role: 'viewer', name: 'http-global-viewer' })
+    expect(runAs.public('http-public', () => currentDbContext())).toEqual({ role: 'public', name: 'http-public' })
+    expect(runAs.admin('x', () => 42)).toBe(42)
+    for (const opener of [runAs.admin, runAs.viewer, runAs.public]) {
+      expect(() => opener('', () => 1)).toThrow(TypeError)
+    }
     expect(currentDbContext()).toBeUndefined()
   })
 
@@ -186,8 +194,19 @@ describe('the measurement view of the counter', () => {
     await runAs.tenant('acme', async () => { await dbx.get('SELECT 4') })
     await runAs.agent('agent-a', 'acme', async () => { await dbx.get('SELECT 5') })
     const stats = getDbContextStats()
-    expect(stats.byRole).toEqual({ system: 3, tenant: 1, agent: 1 })
+    expect(stats.byRole).toEqual({ system: 3, tenant: 1, agent: 1, admin: 0, viewer: 0, public: 0 })
     expect(stats.byJob).toEqual({ sweeper: 2, router: 1 })
+    expect(stats.unexpected).toBe(0)
+  })
+
+  it('counts the admin, viewer and public roles apart, and their names as jobs', async () => {
+    await runAs.admin('http-admin', async () => { await dbx.get('SELECT 1') })
+    await runAs.viewer('http-global-viewer', async () => { await dbx.get('SELECT 2'); await dbx.get('SELECT 3') })
+    await runAs.public('http-public', async () => { await dbx.get('SELECT 4') })
+    const stats = getDbContextStats()
+    expect(stats.byRole).toEqual({ system: 0, tenant: 0, agent: 0, admin: 1, viewer: 2, public: 1 })
+    expect(stats.byJob).toEqual({ 'http-admin': 1, 'http-global-viewer': 2, 'http-public': 1 })
+    expect(stats.anonymous).toBe(1)
     expect(stats.unexpected).toBe(0)
   })
 

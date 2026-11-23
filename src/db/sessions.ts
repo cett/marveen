@@ -6,6 +6,7 @@ import { db } from './connection.js'
 import { dbx, dbxDialect, type Tx } from './facade.js'
 import { advisoryLockSql, eqNoCase, forUpdate, likeNoCase, orderBytes, orderNoCase } from './dialect.js'
 import { resolveWriteTenant } from './write-tenant.js'
+import { TENANTLESS_ROLES_SQL_LIST, isBlankTenant } from './user-tenant-rule.js'
 import { Memory, RECENCY_OVERSAMPLE, buildFtsMatchExpression, reRankByRecency, withoutRank } from './memory.js'
 import { FTS_MATCH, ftsPgTsQuery, ftsTokens, PG_FTS_CONFIG, pgRankSql } from './fts.js'
 
@@ -90,6 +91,18 @@ export async function listDashboardUsers(): Promise<DashboardUserPublic[]> {
   // are broken in byte order, then by id: the same order on both engines.
   return dbx.all<DashboardUserPublic>(
     `SELECT id, username, role, tenant_id, created_at, updated_at, disabled FROM dashboard_users ORDER BY ${orderNoCase('username')}, ${orderBytes('username')}, id`)
+}
+
+/**
+ * How many stored users have no tenant and a role that needs one (user-tenant-rule.ts): rows from before the rule, which
+ * nothing changes. Disabled users are counted too, an admin can enable them again. A count only, never a name.
+ */
+export async function countTenantlessWriteRoleUsers(): Promise<number> {
+  // The rows whose role needs a tenant are read and the blank judgment is made here (isBlankTenant): the table of
+  // dashboard users is small, and a SQL TRIM would not read a tab, a newline or a no-break space as blank.
+  const rows = await dbx.all<{ tenant_id: string | null }>(
+    `SELECT tenant_id FROM dashboard_users WHERE role NOT IN (${TENANTLESS_ROLES_SQL_LIST})`)
+  return rows.filter((r) => isBlankTenant(r.tenant_id)).length
 }
 
 // enabled-only count feeds `login_available`; total count feeds `setup_required`.

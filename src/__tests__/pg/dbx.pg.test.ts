@@ -5,7 +5,7 @@
 // The mutants for these cells are in the PR description (a table of text patches, each with the cell that goes red).
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import pg from 'pg'
-import { runAs } from '../../db/context.js'
+import { runAs, withUserId } from '../../db/context.js'
 import { createPgDbx, type PgDbx } from '../../db/pg/dbx.js'
 import { PARENT_HANDLE_MESSAGE } from '../../db/tx-lock.js'
 import { isPgUniqueViolation, pgErrorCode } from '../../db/pg/errors.js'
@@ -339,6 +339,25 @@ describe('the tenant context on the server', () => {
     expect(await dbx.tx(read)).toEqual({ t: '', r: '', a: '', j: '' })
   })
 
+  it('app.user_id reaches the server for a session context and is empty for a token, a job and no context', async () => {
+    const dbx = plainDbx(2)
+    const read = (tx: { get<T>(sql: string): Promise<T | undefined> }) =>
+      tx.get<{ u: string }>("SELECT current_setting('app.user_id', true) AS u")
+    expect(await runAs.viewer('http-global-viewer', () => withUserId('7', () => dbx.tx(read)))).toEqual({ u: '7' })
+    expect(await runAs.tenant('tenant-a', () => withUserId('8', () => dbx.tx(read)))).toEqual({ u: '8' })
+    expect(await runAs.agent('agent-a', 'tenant-a', () => dbx.tx(read))).toEqual({ u: '' })
+    expect(await runAs.system('job-x', () => dbx.tx(read))).toEqual({ u: '' })
+    expect(await dbx.tx(read)).toEqual({ u: '' })
+  })
+
+  it('the three request roles reach the server as they are: admin, viewer and public, each with its name as app.job', async () => {
+    const dbx = plainDbx(2)
+    const read = (tx: { get<T>(sql: string): Promise<T | undefined> }) => tx.get<{ t: string; r: string; a: string; j: string }>(GUCS)
+    expect(await runAs.admin('http-admin', () => dbx.tx(read))).toEqual({ t: '', r: 'admin', a: '', j: 'http-admin' })
+    expect(await runAs.viewer('http-global-viewer', () => dbx.tx(read))).toEqual({ t: '', r: 'viewer', a: '', j: 'http-global-viewer' })
+    expect(await runAs.public('http-public', () => dbx.tx(read))).toEqual({ t: '', r: 'public', a: '', j: 'http-public' })
+  })
+
   it('a statement outside a transaction sees it too, and a savepoint body keeps it', async () => {
     const dbx = plainDbx(2)
     expect(await runAs.tenant('tenant-a', () => dbx.get<{ t: string }>(GUCS))).toMatchObject({ t: 'tenant-a', r: 'tenant' })
@@ -358,15 +377,21 @@ describe('the tenant context on the server', () => {
     const dbx = createPgDbx(p)
     const pidOf = async (): Promise<number> => (await dbx.tx((tx) => tx.get<{ pid: number }>('SELECT pg_backend_pid() AS pid')))!.pid
     const home = await pidOf()
-    const nextBorrower = async (): Promise<{ pid: number; t: string | null; r: string | null }> =>
-      (await p.query<{ pid: number; t: string | null; r: string | null }>(
-        "SELECT pg_backend_pid() AS pid, current_setting('app.tenant_id', true) AS t, current_setting('app.role', true) AS r",
+    const nextBorrower = async (): Promise<{ pid: number; t: string | null; r: string | null; u: string | null }> =>
+      (await p.query<{ pid: number; t: string | null; r: string | null; u: string | null }>(
+        "SELECT pg_backend_pid() AS pid, current_setting('app.tenant_id', true) AS t, current_setting('app.role', true) AS r, current_setting('app.user_id', true) AS u",
       )).rows[0]!
 
     await runAs.tenant('tenant-a', () => dbx.tx((tx) => tx.get('SELECT 1')))
     let after = await nextBorrower()
     expect(after.pid).toBe(home) // the same connection: the cell means something
     expect(noValue(after.t) && noValue(after.r)).toBe(true)
+
+    // the session user id (app.user_id) is transaction-local like the rest: it does not outlive a session request either
+    await runAs.viewer('http-global-viewer', () => withUserId('7', () => dbx.tx((tx) => tx.get('SELECT 1'))))
+    after = await nextBorrower()
+    expect(after.pid).toBe(home)
+    expect(noValue(after.t) && noValue(after.r) && noValue(after.u)).toBe(true)
 
     await runAs.tenant('tenant-b', () => dbx.tx((tx) => tx.get('SELECT 1/0'))).catch(() => undefined)
     after = await nextBorrower()
