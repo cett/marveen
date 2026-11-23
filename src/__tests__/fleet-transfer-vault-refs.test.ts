@@ -43,6 +43,7 @@ vi.mock('../web/agent-config.js', () => ({
 }))
 vi.mock('../web/dashboard-settings.js', () => ({ getExternalProjectPaths: () => [] }))
 vi.mock('../web/scheduled-tasks-io.js', () => ({ SCHEDULED_TASKS_DIR: TASKS }))
+vi.mock('../paths.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../paths.js')>()), STORE_DIR: STORE }))
 vi.mock('../config.js', () => ({
   PROJECT_ROOT: PROJECT,
   STORE_DIR: STORE,

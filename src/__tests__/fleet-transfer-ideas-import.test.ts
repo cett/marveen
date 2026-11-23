@@ -28,6 +28,7 @@ vi.mock('../logger.js', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: 
 vi.mock('../web/agent-config.js', () => ({ AGENTS_BASE_DIR: '/mock/agents', listAgentNames: () => [] }))
 vi.mock('../web/atomic-write.js', () => ({ atomicWriteFileSync: vi.fn() }))
 vi.mock('../web/scheduled-tasks-io.js', () => ({ SCHEDULED_TASKS_DIR: TASKS_DIR }))
+vi.mock('../paths.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../paths.js')>()), STORE_DIR: STORE_DIR }))
 vi.mock('../config.js', () => ({
   PROJECT_ROOT: TMP_ROOT,
   STORE_DIR,

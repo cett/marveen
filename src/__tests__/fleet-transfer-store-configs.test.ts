@@ -63,6 +63,7 @@ vi.mock('../web/atomic-write.js', async (importOriginal) => {
   }
 })
 vi.mock('../web/scheduled-tasks-io.js', () => ({ SCHEDULED_TASKS_DIR: TASKS_DIR }))
+vi.mock('../paths.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../paths.js')>()), STORE_DIR: STORE_DIR }))
 vi.mock('../config.js', () => ({
   PROJECT_ROOT: TMP_ROOT,
   STORE_DIR,

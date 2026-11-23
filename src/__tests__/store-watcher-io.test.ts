@@ -25,6 +25,7 @@ vi.mock('node:fs', () => ({
   readdirSync: mockReaddirSync,
 }))
 
+vi.mock('../paths.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../paths.js')>()), STORE_DIR: '/store' }))
 vi.mock('../config.js', () => ({ STORE_DIR: '/store' }))
 
 vi.mock('../db.js', () => ({

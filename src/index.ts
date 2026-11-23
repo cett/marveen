@@ -6,13 +6,7 @@
 // Keep it that way: a static import of config.ts here would evaluate it before the snapshot is set.
 //
 // A failed snapshot read throws here, before main.ts is imported: the process exits non-zero and nothing else starts.
-import { resolvePgUrl } from './db/pg/url.js'
-import { setConfigSnapshot } from './config-snapshot.js'
-import { loadSystemConfigSnapshot } from './config-snapshot-loader.js'
+import { ensureConfigSnapshot } from './config-bootstrap.js'
 
-const pgUrl = resolvePgUrl()
-if (pgUrl !== undefined) {
-  setConfigSnapshot(await loadSystemConfigSnapshot(pgUrl))
-}
-
+await ensureConfigSnapshot()
 await import('./main.js')

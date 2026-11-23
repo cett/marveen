@@ -20,6 +20,7 @@ const {
 
 vi.mock('node:child_process', () => ({ spawn: spawnMock }))
 vi.mock('node:fs', () => ({ readFileSync: readFileSyncMock }))
+vi.mock('../paths.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../paths.js')>()), STORE_DIR: '/tmp/command-task-otel-test' }))
 vi.mock('../config.js', () => ({
   STORE_DIR: '/tmp/command-task-otel-test',
   TELEGRAM_BOT_TOKEN: 'bot-token',

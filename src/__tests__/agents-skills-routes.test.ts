@@ -27,6 +27,7 @@ vi.mock('node:os', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:os')>()
   return { ...actual, homedir: () => FAKE_HOME }
 })
+vi.mock('../paths.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../paths.js')>()), STORE_DIR: join(FAKE_HOME, 'store') }))
 vi.mock('../config.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../config.js')>()
   // SKILL_SQL_REGEN: true matches the live server (Phase 1-3 of the

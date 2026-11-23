@@ -45,6 +45,7 @@ vi.mock('../db.js', () => ({
 vi.mock('../web/kanban-ref-normalize.js', () => ({
   normalizeKanbanRefs: vi.fn().mockImplementation((s: string) => Promise.resolve(s)),
 }))
+vi.mock('../paths.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../paths.js')>()), STORE_DIR: '/tmp/store' }))
 vi.mock('../config.js', () => ({
   OWNER_NAME: 'Jonas',
   BOT_NAME: 'marveen',

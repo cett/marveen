@@ -21,6 +21,7 @@ vi.mock('node:os', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:os')>()
   return { ...actual, homedir: () => FAKE_HOME }
 })
+vi.mock('../paths.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../paths.js')>()), STORE_DIR: join(FAKE_HOME, 'store') }))
 vi.mock('../config.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../config.js')>()
   return { ...actual, PROJECT_ROOT: FAKE_PROJECT, MAIN_AGENT_ID: 'main-a', SKILL_SQL_REGEN: true, TENANT_SKILL_FILES: 'single', STORE_DIR: join(FAKE_HOME, 'store') }

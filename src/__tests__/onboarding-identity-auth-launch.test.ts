@@ -38,6 +38,7 @@ const mocks = vi.hoisted(() => ({
   homedir: vi.fn().mockReturnValue('/tmp/onboarding-full-test-no-such-home'),
 }))
 
+vi.mock('../paths.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../paths.js')>()), STORE_DIR: SANDBOX }))
 vi.mock('../config.js', () => ({
   PROJECT_ROOT: SANDBOX,
   STORE_DIR: SANDBOX,

@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os'
 
 const tmpRoot = mkdtempSync(join(tmpdir(), 'marveen-autonomy-test-'))
 
+vi.mock('../paths.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../paths.js')>()), STORE_DIR: tmpRoot }))
 vi.mock('../config.js', () => ({
   PROJECT_ROOT: tmpRoot,
   STORE_DIR: tmpRoot,

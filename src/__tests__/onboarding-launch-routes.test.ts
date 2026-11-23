@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => ({
   homedir: vi.fn().mockReturnValue('/tmp/no-creds-home'),
 }))
 
+vi.mock('../paths.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../paths.js')>()), STORE_DIR: '/tmp/no-creds-home' }))
 vi.mock('../config.js', () => ({
   PROJECT_ROOT: '/tmp/no-creds-home',
   STORE_DIR: '/tmp/no-creds-home',

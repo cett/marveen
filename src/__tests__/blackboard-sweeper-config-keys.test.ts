@@ -11,6 +11,7 @@ import { describe, it, expect, vi } from 'vitest'
 vi.mock('../logger.js', () => ({
   logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() },
 }))
+vi.mock('../paths.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../paths.js')>()), STORE_DIR: '/tmp/bb-keycheck-' + process.pid }))
 vi.mock('../config.js', () => ({
   PROJECT_ROOT: '/tmp/bb-keycheck-' + process.pid,
   STORE_DIR: '/tmp/bb-keycheck-' + process.pid,

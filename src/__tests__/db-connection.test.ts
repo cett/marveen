@@ -21,6 +21,7 @@ const { TMP_ROOT } = vi.hoisted(() => {
   return { TMP_ROOT: mkdtempSync(join(tmpdir(), 'db-connection-test-')) }
 })
 
+vi.mock('../paths.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../paths.js')>()), STORE_DIR: TMP_ROOT }))
 vi.mock('../config.js', () => ({ STORE_DIR: TMP_ROOT, DB_FILENAME: 'test.db' }))
 vi.mock('../logger.js', () => ({
   logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() },

@@ -15,6 +15,7 @@ import type { RouteContext } from '../web/routes/types.js'
 
 // ── Shared mock setup ─────────────────────────────────────────────────────────
 
+vi.mock('../paths.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../paths.js')>()), STORE_DIR: '/tmp/store' }))
 vi.mock('../config.js', () => ({
   PROJECT_ROOT: '/tmp',
   STORE_DIR: '/tmp/store',

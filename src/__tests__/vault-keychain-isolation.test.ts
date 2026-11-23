@@ -48,6 +48,7 @@ vi.mock('node:child_process', async (importOriginal) => {
   }
 })
 
+vi.mock('../paths.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../paths.js')>()), STORE_DIR: `${h.tmpRoot}/store` }))
 vi.mock('../config.js', () => ({ PROJECT_ROOT: h.tmpRoot, STORE_DIR: `${h.tmpRoot}/store`, MAIN_AGENT_ID: 'main-a' }))
 
 const storeDir = join(h.tmpRoot, 'store')

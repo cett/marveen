@@ -7,6 +7,7 @@ const { mockResolveApproval, mockGetApproval } = vi.hoisted(() => ({
   mockGetApproval: vi.fn().mockResolvedValue(null),
 }))
 
+vi.mock('../paths.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../paths.js')>()), STORE_DIR: '/tmp/approvals-ext-test/store' }))
 vi.mock('../config.js', () => ({
   PROJECT_ROOT: '/tmp/approvals-ext-test',
   STORE_DIR: '/tmp/approvals-ext-test/store',

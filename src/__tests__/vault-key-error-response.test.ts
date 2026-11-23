@@ -27,6 +27,7 @@ const keychainMock = vi.hoisted(() => ({
 
 const loggerMock = vi.hoisted(() => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }))
 
+vi.mock('../paths.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../paths.js')>()), STORE_DIR: `${tmpRoot}/store` }))
 vi.mock('../config.js', () => ({ PROJECT_ROOT: tmpRoot, STORE_DIR: `${tmpRoot}/store` }))
 vi.mock('../logger.js', () => ({ logger: loggerMock }))
 vi.mock('../web/keychain.js', () => ({

@@ -32,6 +32,7 @@ vi.mock('../web/atomic-write.js', async () => {
   return { atomicWriteFileSync: (path: string, content: string) => writeFileSync(path, content, 'utf-8') }
 })
 vi.mock('../web/scheduled-tasks-io.js', () => ({ SCHEDULED_TASKS_DIR: TASKS_DIR }))
+vi.mock('../paths.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../paths.js')>()), STORE_DIR: STORE_DIR }))
 vi.mock('../config.js', () => ({
   PROJECT_ROOT: TMP_ROOT, STORE_DIR, MAIN_AGENT_ID: 'agent-a', BOT_NAME: 'TestBot', BRAND_NAME: 'TestBot', OWNER_NAME: 'test', CHANNEL_PROVIDER: 'telegram',
 }))

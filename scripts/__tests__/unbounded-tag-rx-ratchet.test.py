@@ -45,7 +45,7 @@ ALLOWED = [
     ("src/pane-state.ts", "flat.match(/<channel\\s+source=\"plugin:",
      "bounded: the text is the live input box of a `tmux capture-pane -p` snapshot, the visible screen "
      "only (rows x columns), about 1 ms for a full screen of openers"),
-    ("src/channel-coordinator.ts", "text.replace(/<\\s*\\/?\\s*channel\\b[^>]*>/gi",
+    ("src/channel-coordinator-main.ts", "text.replace(/<\\s*\\/?\\s*channel\\b[^>]*>/gi",
      "bounded: one chat message of a channel event (Telegram 4096 characters, about 1 ms for a message of "
      "openers); measured 0.1 s at 40 000 characters"),
     ("src/security/secret-gate.ts", "export const WRAPPER_TAG",

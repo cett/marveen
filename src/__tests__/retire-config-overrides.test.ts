@@ -20,6 +20,7 @@ vi.mock('node:fs', async (importOriginal) => {
   return { ...real, existsSync: mockExistsSync, renameSync: mockRenameSync }
 })
 
+vi.mock('../paths.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../paths.js')>()), STORE_DIR: '/mock/store' }))
 vi.mock('../config.js', () => ({ STORE_DIR: '/mock/store' }))
 
 vi.mock('../logger.js', () => ({

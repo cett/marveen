@@ -43,6 +43,7 @@ afterAll(() => {
   if (FAKE_WEB_DIR) rmSync(FAKE_WEB_DIR, { recursive: true, force: true })
 })
 
+vi.mock('../paths.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../paths.js')>()), STORE_DIR: '/fake/project/store' }))
 vi.mock('../config.js', () => ({
   PROJECT_ROOT: '/fake/project',
   STORE_DIR: '/fake/project/store',

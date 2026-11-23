@@ -19,6 +19,7 @@ const dirs = vi.hoisted(() => {
   return { root, project: path.join(root, 'project'), agents: path.join(root, 'agents'), externals: [] as string[] }
 })
 
+vi.mock('../paths.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../paths.js')>()), STORE_DIR: dirs.root }))
 vi.mock('../config.js', () => ({ PROJECT_ROOT: dirs.project, STORE_DIR: dirs.root }))
 vi.mock('../web/agent-config.js', () => ({
   listAgentNames: vi.fn().mockReturnValue([]),

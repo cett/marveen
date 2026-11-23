@@ -35,6 +35,7 @@ vi.mock('../web/keychain.js', () => ({
   keychainRetrieve: vi.fn().mockReturnValue(null),
 }))
 
+vi.mock('../paths.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../paths.js')>()), STORE_DIR: STORE_DIR }))
 vi.mock('../config.js', () => ({
   PROJECT_ROOT: PROJECT_DIR,
   STORE_DIR,

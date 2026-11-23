@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
 import { randomBytes, createCipheriv, createDecipheriv, scryptSync } from 'node:crypto'
-import { STORE_DIR } from '../config.js'
+import { STORE_DIR } from '../paths.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { isKeychainAvailable, keychainStore, keychainRetrieveStatus } from './keychain.js'
 import { logger } from '../logger.js'

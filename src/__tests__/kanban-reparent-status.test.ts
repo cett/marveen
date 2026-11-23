@@ -48,6 +48,7 @@ vi.mock('../db.js', () => ({
 
 vi.mock('../logger.js', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }))
 vi.mock('../web/agent-config.js', () => ({ listAgentNames: vi.fn().mockReturnValue([]), readAgentDisplayName: vi.fn().mockReturnValue('') }))
+vi.mock('../paths.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../paths.js')>()), STORE_DIR: '/tmp' }))
 vi.mock('../config.js', () => ({
   OWNER_NAME: 'owner',
   BOT_NAME: 'bot',

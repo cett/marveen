@@ -140,6 +140,7 @@ vi.mock('../web/scheduled-tasks-io.js', () => ({
   SCHEDULED_TASKS_DIR: '/mock/tasks',
 }))
 
+vi.mock('../paths.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../paths.js')>()), STORE_DIR: '/mock/store' }))
 vi.mock('../config.js', () => ({
   PROJECT_ROOT: '/mock/project',
   STORE_DIR: '/mock/store',

@@ -15,6 +15,7 @@ const { TMP_ROOT, AGENTS_BASE_DIR } = vi.hoisted(() => {
   return { TMP_ROOT: root, AGENTS_BASE_DIR: agentsDir }
 })
 
+vi.mock('../paths.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../paths.js')>()), STORE_DIR: join(TMP_ROOT, 'store') }))
 vi.mock('../config.js', () => ({
   PROJECT_ROOT: TMP_ROOT,
   STORE_DIR: join(TMP_ROOT, 'store'),
