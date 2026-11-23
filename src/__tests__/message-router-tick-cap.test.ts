@@ -86,6 +86,7 @@ function makePending(count: number) {
     from_agent: 'orin',
     to_agent: 'dex', // SUB-agent, not MAIN_AGENT_ID -> takes the tmux-inject path
     content: 'ping',
+    tenant_id: 'tenant-a',
     created_at: nowSec, // fresh -> well inside the abandon window
   }))
 }

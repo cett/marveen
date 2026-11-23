@@ -204,9 +204,14 @@ export async function markImportSourceRun(sourceId: string, runAt: number): Prom
   await dbx.run("UPDATE import_sources SET last_run_at = ? WHERE id = ?", runAt, sourceId)
 }
 
-/** Throws on failure: the crawler wraps it so an audit write never escapes. */
+/**
+ * Throws on failure: the crawler wraps it so an audit write never escapes. The row is stamped with the tenant of the source
+ * it belongs to (a run is scoped to its source); without it the column default would stamp `default` on the audit row of
+ * every other tenant's source.
+ */
 export async function insertImportAuditLog(
   sourceId: string,
+  tenantId: string,
   runAt: number,
   counts: {
     scanned: number; added: number; updated: number
@@ -217,12 +222,12 @@ export async function insertImportAuditLog(
   await dbx.run(`
       INSERT INTO import_audit_log
         (source_id, run_at, files_scanned, files_added, files_updated,
-         files_skipped_hash, files_skipped_secret, files_skipped_size, files_skipped_type, error)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         files_skipped_hash, files_skipped_secret, files_skipped_size, files_skipped_type, error, tenant_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, sourceId, runAt,
     counts.scanned, counts.added, counts.updated,
     counts.skippedHash, counts.skippedSecret, counts.skippedSize, counts.skippedType,
-    error ?? null,
+    error ?? null, tenantId,
   )
 }
 

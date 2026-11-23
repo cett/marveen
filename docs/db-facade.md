@@ -43,7 +43,7 @@ the context only records, and the counter shows what still runs without one.
 - **A job** (timer, file watcher, boot task) opens its own context, because a callback created outside a `runAs`
   does not inherit one. `src/db/background-jobs.ts` is the classification: `BACKGROUND_JOBS` names each job, its file and its
   role (`system`, `agent`, plus `hybrid` and `tenant-loop`, which are one system context until the PostgreSQL step splits
-  them per item). `NOT_DB_TIMER_FILES` lists the files that own an interval or a watcher and never reach a facade call.
+  them per item; a job whose tenant writes and global write share one transaction, the token usage collector, stays `system`). `NOT_DB_TIMER_FILES` lists the files that own an interval or a watcher and never reach a facade call.
   `src/__tests__/db-background-jobs.test.ts` fails when a file with an interval or a watcher is in neither list, when a
   job is not bound under its name in its file, or when a source uses a system job name the registry does not know.
 - **Helpers.** `systemJob(name, fn)` wraps a timer callback; `runAsAgentJob(job, agentId, fn)` runs one agent's turn of an

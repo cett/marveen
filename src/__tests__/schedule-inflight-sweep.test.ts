@@ -9,9 +9,13 @@ import type { TaskInflightEntry } from '../web/schedule-runner.js'
 const fakeConfig = new Map<string, string>()
 let failWrites = false
 
-const mockAppendTaskRun = vi.fn(() => Promise.resolve())
-const mockClearLastRun = vi.fn(() => Promise.resolve())
-const mockInsertPending = vi.fn(() => Promise.resolve())
+// What the db context was at each write the lost branch makes: the runner's own module graph owns the AsyncLocalStorage of
+// the context (the test resets the modules), so the reader is taken from that graph in `freshRunner`.
+let mockCtx: () => unknown = () => undefined
+const mockSeen: Array<{ fn: string; ctx: unknown }> = []
+const mockAppendTaskRun = vi.fn((..._a: unknown[]) => { mockSeen.push({ fn: 'appendTaskRun', ctx: mockCtx() }); return Promise.resolve() })
+const mockClearLastRun = vi.fn((..._a: unknown[]) => { mockSeen.push({ fn: 'clearLastRun', ctx: mockCtx() }); return Promise.resolve() })
+const mockInsertPending = vi.fn((..._a: unknown[]) => { mockSeen.push({ fn: 'insertPending', ctx: mockCtx() }); return Promise.resolve() })
 const mockUpsertBlackboard = vi.fn(() => Promise.resolve({ status: 'done', summary: '', task_ref: null }))
 const mockFindBlackboardRow = vi.fn(() => Promise.resolve(undefined as { status: string; summary: string; task_ref: string | null } | undefined))
 const mockKanbanWaiting = vi.fn(() => Promise.resolve(null))
@@ -51,6 +55,7 @@ vi.mock('../db.js', () => ({
     return Promise.resolve()
   },
   updateSystemConfig: (key: string, mutate: (current: string | undefined) => string | undefined) => {
+    mockSeen.push({ fn: 'updateSystemConfig', ctx: mockCtx() })
     if (failWrites) return Promise.reject(new Error('db write failed'))
     const next = mutate(fakeConfig.get(key))
     if (next === undefined) return Promise.resolve(false)
@@ -104,7 +109,9 @@ type Runner = typeof import('../web/schedule-runner.js')
 
 async function freshRunner(): Promise<Runner> {
   vi.resetModules()
-  return import('../web/schedule-runner.js')
+  const runner = await import('../web/schedule-runner.js')
+  mockCtx = (await import('../db/context.js')).currentDbContext
+  return runner
 }
 
 function liveEntry(over: Partial<TaskInflightEntry> = {}): TaskInflightEntry {
@@ -132,6 +139,7 @@ function storedAll(): Record<string, Record<string, unknown>> {
 beforeEach(() => {
   vi.clearAllMocks()
   fakeConfig.clear()
+  mockSeen.length = 0
   failWrites = false
   mockCapturePane.mockReturnValue('idle')
   mockTranscriptMtime.mockReturnValue(null)
@@ -175,11 +183,37 @@ describe('tracking is mirrored to the durable copy', () => {
     const r = await freshRunner()
     await r.trackInflight(liveEntry())
     await r.sweepInflightTasks(NOW)
-    expect(mockAppendTaskRun).toHaveBeenCalledWith('task-a', 'agent-a', 'lost')
+    expect(mockAppendTaskRun).toHaveBeenCalledWith('task-a', 'agent-a', 'lost', 'default')
     expect(mockClearLastRun).toHaveBeenCalledWith('task-a', NOW - 120_000)
     expect(mockInsertPending).toHaveBeenCalledWith('task-a', 'agent-a', NOW, 'lost-injection')
     expect(mockAudit).not.toHaveBeenCalled()
     expect(storedAll()).toEqual({})
+  })
+
+  // The per-item block (row-level security): the two writes that belong to ONE task (its run-log row and the last-run stamp)
+  // run in a block of the tenant the injection was fired under; the retry row and the in-flight store do not.
+  it('a lost injection writes the run row and clears the stamp in the tenant block of its entry, the rest outside it', async () => {
+    const r = await freshRunner()
+    await r.trackInflight(liveEntry({ tenantId: 'tenant-a' }))
+    mockSeen.length = 0
+    await r.sweepInflightTasks(NOW)
+    expect(mockAppendTaskRun).toHaveBeenCalledWith('task-a', 'agent-a', 'lost', 'tenant-a')
+    const inBlock = { role: 'tenant', tenantId: 'tenant-a' }
+    expect(mockSeen.find((x) => x.fn === 'appendTaskRun')?.ctx).toEqual(inBlock)
+    expect(mockSeen.find((x) => x.fn === 'clearLastRun')?.ctx).toEqual(inBlock)
+    // the retry insert and the in-flight store (a system_config key) are global writes: never inside the block
+    expect(mockSeen.find((x) => x.fn === 'insertPending')?.ctx).toBeUndefined()
+    expect(mockSeen.filter((x) => x.fn === 'updateSystemConfig').map((x) => x.ctx)).toEqual([undefined])
+  })
+
+  it('a lost injection whose entry carries no tenant is the default tenant, the existing fallback (pinned)', async () => {
+    const r = await freshRunner()
+    await r.trackInflight(liveEntry())
+    mockSeen.length = 0
+    await r.sweepInflightTasks(NOW)
+    expect(mockAppendTaskRun).toHaveBeenCalledWith('task-a', 'agent-a', 'lost', 'default')
+    expect(mockSeen.find((x) => x.fn === 'appendTaskRun')?.ctx).toEqual({ role: 'tenant', tenantId: 'default' })
+    expect(mockSeen.find((x) => x.fn === 'clearLastRun')?.ctx).toEqual({ role: 'tenant', tenantId: 'default' })
   })
 
   it('a pane that turns busy persists sawTurn; the entry stays tracked', async () => {

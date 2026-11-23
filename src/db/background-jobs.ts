@@ -6,10 +6,13 @@
 // really bound in its file and that no file with an interval or a watcher is missing from here).
 //
 //   system         the job is the dashboard itself: sweepers, pollers, monitors, the file watchers. `runAs.system(name)`.
+//                  It is also where a job stays whose tenant writes and global write share ONE transaction (the token usage
+//                  collector: the rows and the cursor commit together or not at all, so splitting it per tenant would trade a
+//                  policy nicety for double counting after a crash).
 //   agent          the job acts for one agent at a time: `runAs.agent(agentId, tenantId)` per agent, the tenant looked up
 //                  once and kept for a while (setAgentTenantResolver; the default is the `default` tenant).
 //   hybrid         a system job that switches to the tenant of the item it handles for the writes (message router, schedule runner).
-//   tenant-loop    a system job today that visits every tenant (token usage, import crawler, the daily digest). The row-level
+//   tenant-loop    a system job today that visits every tenant (import crawler). The row-level
 //                  security step turns each visit into its own `runAs.tenant`; until then the loop is one system context.
 //   admin          a global admin session (no tenant): `runAs.admin(name)`, opened by `runAsRequest`.
 //   viewer         any other authenticated session without a tenant: `runAs.viewer(name)`, opened by `runAsRequest`.
@@ -34,10 +37,10 @@ export interface BackgroundJob {
 
 export const BACKGROUND_JOBS = {
   'memory-decay': { file: 'src/main.ts', role: 'system', note: 'daily decay of the memory tiers, once at boot and then every 24 hours' },
-  'daily-digest': { file: 'src/main.ts', role: 'tenant-loop', note: 'daily log at 23:00 from the memories of the owner chat' },
+  'daily-digest': { file: 'src/main.ts', role: 'hybrid', note: 'daily log at 23:00 from the memories of the owner chat; the owner is the default tenant: the read (filtered to it) and the write run in a block of it, the model call between them outside; a digest per tenant is parked' },
   'store-watcher': { file: 'src/store-watcher.ts', role: 'system', note: 'file watcher on the store directory writing the audit trail' },
   'auth-state-sweep': { file: 'src/web.ts', role: 'system', note: 'hourly sweep of expired browser sessions and device keys' },
-  'token-usage-collector': { file: 'src/web.ts', role: 'tenant-loop', note: 'transcript token usage per agent, each agent written under its tenant' },
+  'token-usage-collector': { file: 'src/web.ts', role: 'system', note: 'transcript token usage per agent; the rows (each stamped with its agent tenant as a value) and the file cursor (a global row) commit in ONE transaction, so the job stays one system context instead of a tenant block per agent' },
   'approval-timeout-sweeper': { file: 'src/web/routes/approvals.ts', role: 'system', note: 'expires pending approvals every minute' },
   'blackboard-stale-sweeper': { file: 'src/web/blackboard-stale-sweeper.ts', role: 'system', note: 'marks stale blackboard rows and plan bindings' },
   'channel-credential-drift': { file: 'src/web/channel-credentials.ts', role: 'system', note: 'compares channel credentials with their stored baseline' },
@@ -157,6 +160,23 @@ async function tenantOf(job: BackgroundJobName, agentId: string): Promise<string
   const tenantId = await runAs.system(job, () => resolveTenant(agentId), JOB_CONTEXT)
   tenantCache.set(agentId, { tenantId, at: Date.now() })
   return tenantId
+}
+
+/**
+ * The per-item tenant block of a job that reads across tenants in its `system` context (the pending queue, the due sources,
+ * the due tasks): the writes that belong to ONE item run in `runAs.tenant(<the item's tenant>)`, and the block returns its
+ * result. Under row-level security a wrong stamp then fails instead of writing into another tenant.
+ *
+ * The block carries no trace (a job is not part of the request that created its timer), and an empty tenant id throws: the
+ * job decides what to do with such an item (skip it and count it, never run it as `default`). A global write of the job
+ * (`scheduled_tasks`, `system_config`, `token_usage_cursors`) belongs OUTSIDE the block, in the job's own `system` context:
+ * a `runAs.system` opened inside the block counts as an escalation (`getDbContextStats().escalations`).
+ */
+export function runAsItemTenant<T>(job: BackgroundJobName, tenantId: string, fn: () => T): T {
+  if (typeof tenantId !== 'string' || tenantId.length === 0) {
+    throw new TypeError(`runAsItemTenant(${job}): a non-empty tenant id is required`)
+  }
+  return runAs.tenant(tenantId, fn, JOB_CONTEXT)
 }
 
 /**

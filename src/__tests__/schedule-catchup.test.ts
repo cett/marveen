@@ -167,7 +167,7 @@ describe('the runner wires the policy in', () => {
     const idx = SRC.indexOf("if (decision === 'stale')")
     expect(idx).toBeGreaterThan(0)
     const branch = SRC.slice(idx, idx + 900)
-    expect(branch).toMatch(/appendTaskRun\(task\.name, agentName, 'missed'\)/)
+    expect(branch).toMatch(/recordTaskRun\(task, agentName, 'missed'\)/)
     expect(branch).toMatch(/staleThisTick\.push/)
   })
 

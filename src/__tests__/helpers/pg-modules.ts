@@ -69,6 +69,8 @@ export const PORTED: readonly string[] = [
   'src/__tests__/db-overview.test.ts',
   'src/__tests__/import-crawler-run-due.test.ts',
   'src/__tests__/import-crawler-tenant.test.ts',
+  'src/__tests__/import-crawler-tenant-block.test.ts',
+  'src/__tests__/daily-digest-tenant.test.ts',
   'src/__tests__/kanban-tx-handle-audit.test.ts',
   'src/__tests__/memories-content-not-blank.test.ts',
   'src/__tests__/tenant-gate-status-route.test.ts',

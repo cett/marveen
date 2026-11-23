@@ -66,7 +66,7 @@ import { runAs, currentTrace } from '../db/context.js'
 
 const nowSec = () => Math.floor(Date.now() / 1000)
 const row = (id: number, trace: { trace_id: string | null; span_id: string | null }) => ({
-  id, from_agent: 'agent-a', to_agent: 'agent-b', content: 'ping', created_at: nowSec(), ...trace,
+  id, from_agent: 'agent-a', to_agent: 'agent-b', content: 'ping', tenant_id: 'tenant-a', created_at: nowSec(), ...trace,
 })
 // The dashboard starts the router tick in its own system context (systemJob('message-router')); so does the test.
 const tick = () => runAs.system('message-router', () => runMessageRouterTick())

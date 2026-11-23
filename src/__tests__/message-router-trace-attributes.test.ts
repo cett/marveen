@@ -82,6 +82,7 @@ function makePending() {
     from_agent: 'orin',
     to_agent: 'dex',
     content: 'ping',
+    tenant_id: 'tenant-a',
     created_at: nowSec,
     trace_id: null,
     span_id: null,
@@ -116,7 +117,7 @@ describe('message-router: inter-agent span attributes', () => {
 
   it('the span stamped on one message becomes the parent of the next message of the chain', async () => {
     const nowSec = Math.floor(Date.now() / 1000)
-    const link = (id: number, from: string, to: string) => ({ id, from_agent: from, to_agent: to, content: 'x', created_at: nowSec, trace_id: null, span_id: null })
+    const link = (id: number, from: string, to: string) => ({ id, from_agent: from, to_agent: to, content: 'x', tenant_id: 'tenant-a', created_at: nowSec, trace_id: null, span_id: null })
     mockGetPendingMessages.mockReturnValue([link(51, 'orin', 'dex'), link(52, 'dex', 'cat')])
 
     await runMessageRouterTick()
