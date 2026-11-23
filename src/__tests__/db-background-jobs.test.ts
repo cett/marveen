@@ -362,6 +362,19 @@ describe('the request path wiring in web.ts (source pin)', () => {
     expect(web.match(/dispatcher\.dispatch\(/g)?.length).toBe(1)
   })
 
+  // The token collector's rows (class B, stamped with the agent's tenant as a VALUE) and its file cursor (a global row)
+  // commit in ONE transaction (recordTokenUsageCalls; the rollback cells are in observability-memory-otel-facade.test.ts), and a
+  // transaction has one role: so the job stays one system context and opens no per-agent tenant block.
+  it('classifies the token collector as system, with the reason, and opens no tenant block anywhere in its path', () => {
+    expect(BACKGROUND_JOBS['token-usage-collector'].role).toBe('system')
+    expect(BACKGROUND_JOBS['token-usage-collector'].note).toMatch(/ONE transaction/)
+    expect(BACKGROUND_JOBS['token-usage-collector'].note).toMatch(/cursor/)
+    for (const file of ['web/token-usage.ts', 'db/observability.ts']) {
+      const src = readFileSync(join(SRC, file), 'utf8')
+      expect(src, file).not.toMatch(/runAsItemTenant|runAs\.tenant|runAs\.system|runAs\.admin/)
+    }
+  })
+
   it('binds the token collector and the auth sweep timers, the startup collection and the shutdown flush', () => {
     expect(web).toContain("systemJob('token-usage-collector', () => {")
     expect(web).toContain("runAs.system('token-usage-collector', () => collectTokenUsage())")
