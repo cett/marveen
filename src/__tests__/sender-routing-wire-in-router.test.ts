@@ -59,7 +59,7 @@ import { runMessageRouterTick } from '../web/message-router.js'
 import { isSessionReadyForPrompt } from '../web/agent-process.js'
 
 const nowSec = () => Math.floor(Date.now() / 1000)
-const msg = (id: number, to: string, ageSec = 0) => ({ id, from_agent: 'orin', to_agent: to, content: 'ping', created_at: nowSec() - ageSec })
+const msg = (id: number, to: string, ageSec = 0) => ({ id, from_agent: 'orin', to_agent: to, content: 'ping', tenant_id: 'tenant-a', created_at: nowSec() - ageSec })
 
 describe('the router passes what it delivers through the sender routing gate', () => {
   beforeEach(() => {

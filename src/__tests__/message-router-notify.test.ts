@@ -99,7 +99,7 @@ function makeMsg(overrides: Partial<AgentMessage> = {}): AgentMessage {
     trace_id: null,
     span_id: null,
     parent_span_id: null,
-    tenant_id: null,
+    tenant_id: 'tenant-a',
     refused_reason: null,
     no_session_at: null,
     ...overrides,

@@ -52,7 +52,7 @@ import { runMessageRouterTick } from '../web/message-router.js'
 import { runAs } from '../db/context.js'
 
 const nowSec = () => Math.floor(Date.now() / 1000)
-const row = (id: number) => ({ id, from_agent: 'agent-a', to_agent: 'agent-b', content: 'ping', created_at: nowSec(), trace_id: null, span_id: null })
+const row = (id: number) => ({ id, from_agent: 'agent-a', to_agent: 'agent-b', content: 'ping', tenant_id: 'tenant-a', created_at: nowSec(), trace_id: null, span_id: null })
 const tick = () => runAs.system('message-router', () => runMessageRouterTick())
 
 // A fresh id per test: the router keeps its failure counters per message id in module state, so a reused id

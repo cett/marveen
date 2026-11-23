@@ -91,6 +91,7 @@ function pendingVoiceMessage() {
     from_agent: 'channel-user',
     to_agent: 'agent-a',
     content: VOICE_BLOCK,
+    tenant_id: 'tenant-a',
     created_at: Math.floor(Date.now() / 1000),
   }]
 }
