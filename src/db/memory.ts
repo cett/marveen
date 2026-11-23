@@ -4,6 +4,7 @@
 import { ALLOWED_CHAT_ID } from '../config.js'
 import { writeAgentAuditLog } from './audit.js'
 import { dbx, dbxDialect } from './facade.js'
+import { forUpdate } from './dialect.js'
 import { BlankContentError, isBlankContent } from '../blank-content.js'
 import { floatsToBlob, generateEmbedding, linkToNeighbors, syncVecMemoryEmbeddingUpdate } from './vector.js'
 import { buildFtsMatchExpression, FTS_MATCH, ftsPgTsQuery, ftsTokens, PG_FTS_CONFIG, pgRankSql } from './fts.js'
@@ -378,7 +379,9 @@ export async function updateMemory(
     // parameter is optional and means "reassign to this agent", so it is absent
     // on the ordinary edit -- it cannot be used to decide whose cache went
     // stale. Only the row itself knows that.
-    const before = await tx.get<{ agent_id: string | null; category: string | null }>('SELECT agent_id, category FROM memories WHERE id = ?', id)
+    // FOR UPDATE on the first read: a concurrent edit of the same row waits here, so the reads below and the version record
+    // see the committed state the edit replaces (READ COMMITTED would let two edits read the same old content). SQLite: no-op.
+    const before = await tx.get<{ agent_id: string | null; category: string | null }>(`SELECT agent_id, category FROM memories WHERE id = ? ${forUpdate()}`, id)
 
     // Capture old state before the update so we can write a version record with
     // the correct changed_by (modifiedBy or agentId) without touching agent_id.
