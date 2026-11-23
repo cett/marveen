@@ -10,6 +10,8 @@ import { useTestDb } from './helpers/with-test-db.js'
 import { interleave } from './helpers/interleave.js'
 import { parkFirstTxAt, untilSettledOrBlocked } from './helpers/tx-park.js'
 import { saveWorkspaceDoc, patchWorkspaceDoc, getWorkspaceDoc } from '../db/workspace.js'
+import { createTenant, getTenant, updateTenant } from '../db/observability.js'
+import { dbx } from '../db.js'
 
 useTestDb()
 afterEach(() => { vi.restoreAllMocks() })
@@ -43,5 +45,37 @@ describe('patchWorkspaceDoc', () => {
     const after = await getWorkspaceDoc(doc.id)
     expect(after?.title).toBe('T1')
     expect(after?.content).toBe('C2')
+  })
+})
+
+describe('updateTenant', () => {
+  it('the "main agent changed" decision of the second update sees the row the first one wrote (it waits on the row lock)', async () => {
+    await createTenant('tenant-x', 'Tenant X')
+    await updateTenant('tenant-x', { main_agent_id: 'agent-a' })
+    await dbx.run("INSERT INTO agent_tenant_context (agent_id, tenant_id, status) VALUES ('agent-b', 'tenant-x', 'bound')")
+    const il = interleave()
+    il.hold('first-update')
+    // the first update sets the main agent to the value it already has: it read 'agent-a', decides "no change" and stops
+    // before its UPDATE. The second update then sets 'agent-b' as the main agent.
+    const spy = parkFirstTxAt(il, 'first-update', /^\s*UPDATE tenants\s+SET /)
+    let state: 'settled' | 'blocked' | 'queued'
+    try {
+      const first = updateTenant('tenant-x', { main_agent_id: 'agent-a', display_name: 'Tenant X1' })
+      await il.reached('first-update')
+      const second = updateTenant('tenant-x', { main_agent_id: 'agent-b' })
+      state = await untilSettledOrBlocked(second)
+      il.open('first-update')
+      await first
+      await second
+    } finally {
+      il.open('first-update')
+      spy.mockRestore()
+    }
+    // the second update must not have run to its end while the first one was open (a stale read would let it)
+    expect(state).not.toBe('settled')
+    // first, then second: the main agent is 'agent-b', and the second update dropped the context of the old main agent state
+    expect((await getTenant('tenant-x'))?.main_agent_id).toBe('agent-b')
+    expect((await getTenant('tenant-x'))?.display_name).toBe('Tenant X1')
+    expect(await dbx.get("SELECT 1 AS present FROM agent_tenant_context WHERE tenant_id = 'tenant-x'")).toBeUndefined()
   })
 })
