@@ -117,6 +117,10 @@ export interface PgTestDb {
   name: string
   /** The admin URL of this database. */
   url: string
+  /** The URL of this database as the app role (what the app pool is connected with): for a cell that needs a pool of its own. */
+  appUrl: string
+  /** The URL of this database as the owner role (a migration run, the boot's schema step). */
+  ownerUrl: string
   /** The template this database was cloned from. */
   template: string
   /**
@@ -238,11 +242,15 @@ export async function createPgTestDb(opts: PgTestDbOptions = {}): Promise<PgTest
 
   const url = withDatabase(adminUrl, name)
   const pool = new pg.Pool({ connectionString: url, types: pgTypes, max: 4 })
-  const appPool = new pg.Pool({ connectionString: pgTestRoleUrl(adminUrl, name, PG_TEST_APP_ROLE), types: pgTypes, max: 4 })
-  const ownerPool = new pg.Pool({ connectionString: pgTestRoleUrl(adminUrl, name, PG_TEST_OWNER_ROLE), types: pgTypes, max: 2 })
+  const appUrl = pgTestRoleUrl(adminUrl, name, PG_TEST_APP_ROLE)
+  const ownerUrl = pgTestRoleUrl(adminUrl, name, PG_TEST_OWNER_ROLE)
+  const appPool = new pg.Pool({ connectionString: appUrl, types: pgTypes, max: 4 })
+  const ownerPool = new pg.Pool({ connectionString: ownerUrl, types: pgTypes, max: 2 })
   return {
     name,
     url,
+    appUrl,
+    ownerUrl,
     template,
     pool,
     appPool,
