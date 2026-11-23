@@ -1,8 +1,10 @@
 // syncVecMemoryDelete: the vec entry delete is best effort (its failure is swallowed), so it runs in a nested
-// transaction, a SAVEPOINT inside a dbx.tx body. On SQLite a failed statement leaves the transaction usable anyway, so
-// the savepoint is invisible in the result; on PostgreSQL the swallowed failure would abort the whole transaction
-// without it. The tests therefore watch the statements the facade issues (the transaction-handle spy pattern) next to
-// the observable behaviour: the entry goes away, a rollback of the surrounding transaction brings it back.
+// transaction, a SAVEPOINT inside a dbx.tx body. The subject of this file is the SQLite SQL text of that savepoint:
+// the exec spy records the SAVEPOINT / RELEASE / ROLLBACK TO statements (the dbx_sp_ name regex), and the vec0 delete
+// is failed through a prepare spy on the raw handle. It is not in the PORTED or the EXCLUDED list because it does not
+// use useTestDb. The PostgreSQL behaviour the savepoint exists for (a refused write inside an open transaction does not
+// abort it) is covered by the PG seam cell "a refused side-row write inside an open transaction is a savepoint" in
+// vector-memory.pg.test.ts. The observable part here (the entry goes away, a rollback brings it back) stays too.
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest'
 import { initDatabase, getDb } from '../db.js'
 import { dbx } from '../db/facade.js'

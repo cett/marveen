@@ -178,6 +178,22 @@ describe('the writes of touch and decay', () => {
     await decayMemories()
     expect((await dbx.get<{ salience: number }>('SELECT salience FROM memories WHERE id = ?', id))!.salience).toBeCloseTo(1.1 * 0.995)
   })
+
+  // the cap and the floor of the two statements: the SQLite scalar MIN / MAX keep them, and a CASE rewrite could drop them
+  it.runIf(testDbMode() === 'sqlite')('touchMemory stops at the salience cap of 5: 4.95 + 0.1 is 5, not 5.05', async () => {
+    const id = await addMemory('cap')
+    await dbx.run('UPDATE memories SET salience = 4.95 WHERE id = ?', id)
+    await touchMemory(id)
+    expect((await dbx.get<{ salience: number }>('SELECT salience FROM memories WHERE id = ?', id))!.salience).toBeCloseTo(5, 9)
+  })
+
+  // 0.005 * 0.995 = 0.004975, below the floor. (0.0101 * 0.995 = 0.01005, which is above it: no floor test there.)
+  it.runIf(testDbMode() === 'sqlite')('decayMemories stops at the floor of 0.01 for an old memory of salience 0.005', async () => {
+    const id = await addMemory('floor')
+    await dbx.run('UPDATE memories SET salience = 0.005, created_at = 1 WHERE id = ?', id)
+    await decayMemories()
+    expect((await dbx.get<{ salience: number }>('SELECT salience FROM memories WHERE id = ?', id))!.salience).toBeCloseTo(0.01, 9)
+  })
 })
 
 describe('the vector paths', () => {
