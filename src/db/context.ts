@@ -45,6 +45,11 @@ export interface DbContext {
   name?: string
   tenantId?: string
   agentId?: string
+  /**
+   * The id of the dashboard user of a session-authenticated request (`app.user_id`): what lets a tenant-less viewer reach
+   * its OWN user and session rows. Absent for a token, a job and a request without a session.
+   */
+  userId?: string
   /** The trace of the unit of work (a request, an inter-agent message), set by `withTrace`; see its comment. */
   traceId?: string
   spanId?: string
@@ -125,6 +130,17 @@ export function withTrace<T>(trace: DbTrace, fn: () => T): T {
   const spanId = requireId('trace', trace.spanId)
   const current = store.getStore()
   return current === undefined ? fn() : store.run({ ...current, traceId, spanId }, fn)
+}
+
+/**
+ * Runs `fn` in the running context plus the id of the session user (`app.user_id`). Called by `runAsRequest` right after it
+ * opens the context of a session-authenticated request; a nested `runAs` replaces the identity and does NOT carry the user
+ * along (it is another identity). Without a running context there is nothing to attach it to: `fn` runs as it is.
+ */
+export function withUserId<T>(userId: string, fn: () => T): T {
+  const id = requireId('userId', userId)
+  const current = store.getStore()
+  return current === undefined ? fn() : store.run({ ...current, userId: id }, fn)
 }
 
 /** The trace of the running call, or undefined when it carries none (no context, or a context without a trace). */

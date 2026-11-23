@@ -384,7 +384,7 @@ export async function startWebServer(port = 3420): Promise<http.Server> {
       }
 
       // From here the route works for the caller: its tenant, or its agent in that tenant.
-      const dispatched = await runAsRequest({ authenticated: auth.kind !== 'none', role, agentId: role === 'fleet_agent' ? tokenAgentId : undefined, tenantId: tenantId ?? null, trace: requestTrace }, () => dispatcher.dispatch(routeCtx))
+      const dispatched = await runAsRequest({ authenticated: auth.kind !== 'none', role, agentId: role === 'fleet_agent' ? tokenAgentId : undefined, tenantId: tenantId ?? null, userId: auth.kind === 'session' && auth.userId !== undefined ? String(auth.userId) : undefined, trace: requestTrace }, () => dispatcher.dispatch(routeCtx))
       if (dispatched) return
 
       res.writeHead(404)

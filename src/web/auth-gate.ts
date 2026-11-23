@@ -40,7 +40,8 @@ export type AuthResult =
   | { kind: 'token'; role?: Role; tenantId?: string; tokenName?: string; agentId?: string; tenantContextMissing?: boolean; tenantInvalid?: boolean }
   | { kind: 'device'; device: string; deviceId: number }
   | { kind: 'federation'; peer: string }
-  | { kind: 'session'; user: string; role?: Role; tenantId?: string | null }
+  // userId: the dashboard_users id the session belongs to (auth_sessions.user_id); the db context carries it as app.user_id
+  | { kind: 'session'; user: string; userId?: number; role?: Role; tenantId?: string | null }
   | { kind: 'none' }
 
 // ── api_tokens DB lookup ─────────────────────────────────────────────────────
@@ -209,10 +210,10 @@ export async function resolveAuth(
       if (dbLookups) {
         const userRow = await getDashboardUserAuthRow(session.username)
         if (userRow) {
-          return { kind: 'session', user: session.username, role: userRow.role as Role, tenantId: userRow.tenant_id }
+          return { kind: 'session', user: session.username, userId: session.userId, role: userRow.role as Role, tenantId: userRow.tenant_id }
         }
       }
-      return { kind: 'session', user: session.username }
+      return { kind: 'session', user: session.username, userId: session.userId }
     }
   }
 

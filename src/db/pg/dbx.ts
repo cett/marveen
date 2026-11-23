@@ -49,21 +49,22 @@ import { translatePlaceholders } from './translate.js'
 import { pgTypes } from './types.js'
 
 /** The settings a statement's policy can read with `current_setting('app.tenant_id', true)` and its siblings. */
-export const PG_CONTEXT_SETTINGS = ['app.tenant_id', 'app.role', 'app.agent_id', 'app.job'] as const
+export const PG_CONTEXT_SETTINGS = ['app.tenant_id', 'app.role', 'app.agent_id', 'app.job', 'app.user_id'] as const
 
-/** One statement, one round trip, four settings, transaction-local (the `true`). */
+/** One statement, one round trip, five settings, transaction-local (the `true`). Never a second statement, never a CTE. */
 export const PG_SET_CONTEXT_SQL =
-  "SELECT set_config('app.tenant_id', $1, true), set_config('app.role', $2, true), set_config('app.agent_id', $3, true), set_config('app.job', $4, true)"
+  "SELECT set_config('app.tenant_id', $1, true), set_config('app.role', $2, true), set_config('app.agent_id', $3, true), set_config('app.job', $4, true), set_config('app.user_id', $5, true)"
 
 /**
- * The values of the four settings for a context; no context is four empty strings (never a default tenant). `app.role` is
+ * The values of the five settings for a context; no context is five empty strings (never a default tenant). `app.role` is
  * the role as it is (the six of DbRole). `app.job` is the name of every role that carries one (system, admin, viewer,
- * public) and empty for tenant and agent, which are not named.
+ * public) and empty for tenant and agent, which are not named. `app.user_id` is the session user of a request, empty for a
+ * token, a job and a request without a session.
  */
-export function pgContextValues(ctx: DbContext | undefined): [string, string, string, string] {
-  if (!ctx) return ['', '', '', '']
+export function pgContextValues(ctx: DbContext | undefined): [string, string, string, string, string] {
+  if (!ctx) return ['', '', '', '', '']
   const named = ctx.role !== 'tenant' && ctx.role !== 'agent'
-  return [ctx.tenantId ?? '', ctx.role, ctx.agentId ?? '', named ? (ctx.name ?? '') : '']
+  return [ctx.tenantId ?? '', ctx.role, ctx.agentId ?? '', named ? (ctx.name ?? '') : '', ctx.userId ?? '']
 }
 
 export interface PgTxOptions extends TxOptions {

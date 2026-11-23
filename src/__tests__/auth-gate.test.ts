@@ -114,7 +114,7 @@ describe('SSE pane-stream ?token= lane', () => {
     const u = await createDashboardUser('sse-user', '$scrypt$ln=16,r=8,p=1$c2FsdA==$a2V5')
     const cookie = await createSession({ userId: u.id, username: u.username })
     const r = await resolveAuth(mkReq({ cookie: `${SESSION_COOKIE_NAME}=${cookie}` }), mkUrl(path), path, 'GET', TOKEN, false)
-    expect(r).toEqual({ kind: 'session', user: 'sse-user' })
+    expect(r).toEqual({ kind: 'session', user: 'sse-user', userId: u.id })
   })
 })
 
@@ -123,7 +123,7 @@ describe('session cookie lane', () => {
     const u = await createDashboardUser('alice', '$scrypt$ln=16,r=8,p=1$c2FsdA==$a2V5')
     const cookie = await createSession({ userId: u.id, username: u.username })
     const r = await resolveAuth(mkReq({ cookie: `${SESSION_COOKIE_NAME}=${cookie}` }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN, false)
-    expect(r).toEqual({ kind: 'session', user: 'alice' })
+    expect(r).toEqual({ kind: 'session', user: 'alice', userId: u.id })
   })
 
   // Session cookie now takes precedence over the legacy file-token when both are
@@ -141,7 +141,7 @@ describe('session cookie lane', () => {
       TOKEN,
       false,
     )
-    expect(r).toEqual({ kind: 'session', user: 'bob' })
+    expect(r).toEqual({ kind: 'session', user: 'bob', userId: u.id })
   })
 
   it('rejects an unknown/garbage cookie value -> none', async () => {
@@ -209,7 +209,7 @@ describe('SSE pane-stream ?token= and device-key unaffected by session-priority'
       TOKEN,
       false,
     )
-    expect(r).toEqual({ kind: 'session', user: 'sse-session-user' })
+    expect(r).toEqual({ kind: 'session', user: 'sse-session-user', userId: u.id })
   })
 })
 
@@ -252,7 +252,7 @@ describe('DB-backed lookups (dbLookups = true)', () => {
     await adminPatchDashboardUser(u.id, { role: 'agent', tenant_id: null })
     const cookie = await createSession({ userId: u.id, username: u.username })
     const r = await resolveAuth(mkReq({ cookie: `${SESSION_COOKIE_NAME}=${cookie}` }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN, true)
-    expect(r).toEqual({ kind: 'session', user: 'lookup-user', role: 'agent', tenantId: null })
+    expect(r).toEqual({ kind: 'session', user: 'lookup-user', userId: u.id, role: 'agent', tenantId: null })
   })
 
   it('a disabled user keeps the session identity but gets no role', async () => {
@@ -260,7 +260,7 @@ describe('DB-backed lookups (dbLookups = true)', () => {
     await adminPatchDashboardUser(u.id, { disabled: true })
     const cookie = await createSession({ userId: u.id, username: u.username })
     const r = await resolveAuth(mkReq({ cookie: `${SESSION_COOKIE_NAME}=${cookie}` }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN, true)
-    expect(r).toEqual({ kind: 'session', user: 'disabled-user' })
+    expect(r).toEqual({ kind: 'session', user: 'disabled-user', userId: u.id })
   })
 
   it('a registered API token resolves with its own role and tenant', async () => {

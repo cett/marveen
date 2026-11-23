@@ -172,6 +172,24 @@ describe('runAsRequest', () => {
     expect(runAsRequest(who, () => currentDbContext())).toEqual(expected)
   })
 
+  it('a session user id rides in the context of a session request, whatever branch opens it; a token or no id carries none', () => {
+    const ctxOf = (who: Parameters<typeof runAsRequest>[0]) => runAsRequest(who, () => currentDbContext())
+    expect(ctxOf({ authenticated: true, role: 'viewer', tenantId: null, userId: '7' })).toEqual({ role: 'viewer', name: 'http-global-viewer', userId: '7' })
+    expect(ctxOf({ authenticated: true, role: 'admin', tenantId: null, userId: '7' })).toEqual({ role: 'admin', name: 'http-admin', userId: '7' })
+    expect(ctxOf({ authenticated: true, role: 'viewer', tenantId: 'acme', userId: '7' })).toEqual({ role: 'tenant', tenantId: 'acme', userId: '7' })
+    expect(ctxOf({ authenticated: true, role: 'viewer', tenantId: null })?.userId).toBeUndefined()
+    expect(ctxOf({ authenticated: true, role: 'fleet_agent', agentId: 'agent-a', tenantId: 'acme' })?.userId).toBeUndefined()
+    expect(ctxOf({ authenticated: false, role: undefined, tenantId: null })?.userId).toBeUndefined()
+    // the trace and the user ride together
+    const trace = { traceId: 't'.repeat(32), spanId: 's'.repeat(16) }
+    expect(ctxOf({ authenticated: true, role: 'viewer', tenantId: null, userId: '7', trace })).toEqual({ role: 'viewer', name: 'http-global-viewer', userId: '7', ...trace })
+  })
+
+  it('only a session-authenticated request hands its user id to runAsRequest (src/web.ts)', () => {
+    const web = readFileSync(join(SRC, 'web.ts'), 'utf8')
+    expect(web).toMatch(/userId: auth\.kind === 'session' && auth\.userId !== undefined \? String\(auth\.userId\) : undefined/)
+  })
+
   it('the three request entries of the registry carry the role their context opens', () => {
     expect(BACKGROUND_JOBS['http-public'].role).toBe('public')
     expect(BACKGROUND_JOBS['http-admin'].role).toBe('admin')

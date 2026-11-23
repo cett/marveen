@@ -510,9 +510,9 @@ comes with the first module that is ported to the PostgreSQL dialect. What is di
 | A fraction into an `INTEGER` column | stored as a REAL, silently | `22P02` (invalid input syntax for type bigint): the caller rounds before binding (`Math.trunc`, `Math.floor`). PostgreSQL failing loudly is the safe direction |
 | An older build on a newer database | the SQLite runner applies what is above the highest recorded version and does not look back | the PG runner is strict: an applied version whose file is gone is an error, so a build older than the database refuses to start (the rollback of a bad release is a database restore). Tolerating newer versions is a decision of the backend switch, with expand-only migrations across a release |
 
-**The tenant context.** Every transaction starts with one statement that sets four transaction-local settings from
-`currentDbContext()`: `app.tenant_id`, `app.role` (the role as it is: `system`, `tenant`, `agent`, `admin`, `viewer` or `public`), `app.agent_id` and `app.job` (the name of every named role: `system`, `admin`, `viewer`, `public`; empty for `tenant` and `agent`). A
-policy reads them with `current_setting('app.tenant_id', true)`. Without a context all four are the empty string, never a
+**The tenant context.** Every transaction starts with one statement that sets five transaction-local settings from
+`currentDbContext()`: `app.tenant_id`, `app.role` (the role as it is: `system`, `tenant`, `agent`, `admin`, `viewer` or `public`), `app.agent_id`, `app.job` (the name of every named role: `system`, `admin`, `viewer`, `public`; empty for `tenant` and `agent`) and `app.user_id` (the id of the dashboard user of a session-authenticated request, put there by `runAsRequest`; empty for a token, a job and a request without a session, and not carried into a nested `runAs`). A
+policy reads them with `current_setting('app.tenant_id', true)`. Without a context all five are the empty string, never a
 default tenant, so a policy that compares with them finds nothing. The values are taken once, when the transaction
 opens; a `runAs` inside the body does not change them. They are transaction-local on purpose: they end with the
 transaction, so a connection that goes back to the pool carries nothing. The adapter gives a connection back only after

@@ -19,7 +19,7 @@
 // of src (the recipe is in docs/db-facade.md), never reach a facade call. The counter confirms it in operation: such a
 // file showing up in `getDbContextStats().sites` is a classification bug.
 
-import { runAs, withTrace, type DbTrace, type RunAsOptions } from './context.js'
+import { runAs, withTrace, withUserId, type DbTrace, type RunAsOptions } from './context.js'
 
 export type JobRole = 'system' | 'agent' | 'hybrid' | 'tenant-loop' | 'admin' | 'viewer' | 'public'
 
@@ -107,10 +107,13 @@ const JOB_CONTEXT: RunAsOptions = { inheritTrace: false }
  * unexpected count stays clean and row-level security can give it its own, restricted answer: no tenant rows (R4).
  * The gate that resolves the principal before any of this runs stays `system` (`http-gate`).
  */
-export function runAsRequest<T>(who: { authenticated: boolean; role: string | undefined; agentId?: string; tenantId: string | null; trace?: DbTrace }, work: () => T): T {
-  // The request's trace rides in the context the branch below opens, for every principal alike.
-  const { trace } = who
-  const fn = trace ? () => withTrace(trace, work) : work
+export function runAsRequest<T>(who: { authenticated: boolean; role: string | undefined; agentId?: string; tenantId: string | null; trace?: DbTrace; userId?: string }, work: () => T): T {
+  // The request's trace rides in the context the branch below opens, for every principal alike. The session user id
+  // (`app.user_id`, only a session-authenticated request has one: never a token, never a job) is attached the same way,
+  // so a tenant-less viewer can reach its own user and session rows under row-level security.
+  const { trace, userId } = who
+  const traced = trace ? () => withTrace(trace, work) : work
+  const fn = userId ? () => withUserId(userId, traced) : traced
   if (!who.authenticated) return runAs.public('http-public', fn)
   // An agent token without a tenant runs as the agent in the `default` tenant, the fallback of `resolveTenantId`. That is
   // today's rule, not the final one (Phase 2 decides it).
