@@ -50,6 +50,7 @@ import { autoCreateStarterPack, createStarterPack, describeStarterPack, markStar
 import { logger } from '../../logger.js'
 import { denyUnlessHumanSession } from '../session-only-guard.js'
 import { isUniqueViolationOn } from '../unique-violation.js'
+import { TenantlessRoleError } from '../../db/user-tenant-rule.js'
 import type { RouteContext } from './types.js'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -275,6 +276,10 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
       if (isUniqueViolationOn(err, 'dashboard_users.username')) {
         json(res, { error: 'conflict', field: 'username', hint: 'Username already exists' }, 409); return true
       }
+      // The data layer's own rule (user-tenant-rule.ts); the fast-path check above answers first, so this is the net below it.
+      if (err instanceof TenantlessRoleError) {
+        json(res, { error: 'forbidden', field: 'tenant_id', hint: 'Non-admin requests must specify a tenant' }, 403); return true
+      }
       throw err
     }
     await auditAdmin(ctx, 'admin.user.create', user.id, { username, role, tenant_id: finalTenantId })
@@ -374,6 +379,8 @@ export async function tryHandleAdminB2b(ctx: RouteContext): Promise<boolean> {
     // (compare-and-set), for the role change as well as the disabled flag.
     const outcome = await adminPatchDashboardUser(userId, patch)
     if (outcome.status === 'last_admin') { json(res, { error: 'forbidden', hint: 'Cannot remove the last administrator' }, 403); return true }
+    // Only reachable when the stored row changed between the fast-path check above and the UPDATE (the answer is the one of that check).
+    if (outcome.status === 'tenantless_role') { json(res, { error: 'forbidden', field: 'tenant_id', hint: 'Non-admin requests must specify a tenant' }, 403); return true }
     if (outcome.status === 'not_found') { json(res, { error: 'not_found', field: 'userId', hint: 'User not found' }, 404); return true }
     const updated = outcome.user
     await auditAdmin(ctx, 'admin.user.update', userId, { username: existing.username, ...patch, password_hash: patch.password_hash ? '[redacted]' : undefined })

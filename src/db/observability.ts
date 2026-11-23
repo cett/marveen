@@ -9,6 +9,7 @@ import { Memory, MemoryVersion } from './memory.js'
 import { DashboardUser, DashboardUserPublic, lockAdminRows } from './sessions.js'
 import { syncVecMemoryDelete } from './vector.js'
 import { resolveWriteTenant } from './write-tenant.js'
+import { assertTenantForRole, isBlankTenant, roleNeedsTenant, TENANTLESS_ROLES_SQL_LIST } from './user-tenant-rule.js'
 import { loadAgentSettingsCacheAsync } from './agent-settings-cache.js'
 import { logger } from '../logger.js'
 import { purgeSecretsForTenant } from '../web/vault.js'
@@ -720,6 +721,8 @@ export async function provisionDashboardUser(
   email?: string | null,
   displayName?: string | null,
 ): Promise<DashboardUser> {
+  // A tenant-less user may only be admin, viewer or read_only (user-tenant-rule.ts); refused before any write.
+  assertTenantForRole(role, tenantId)
   const now = Math.floor(Date.now() / 1000)
   const { id } = (await dbx.get('INSERT INTO dashboard_users (username, password_hash, role, tenant_id, email, display_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id', username, passwordHash, role, tenantId, email ?? null, displayName ?? null, now, now)) as { id: number }
   return { id, username, password_hash: passwordHash, role, tenant_id: tenantId, email: email ?? null, display_name: displayName ?? null, created_at: now, updated_at: now, disabled: 0 }
@@ -762,6 +765,8 @@ export interface AdminUserPatch {
 export type AdminPatchOutcome =
   | { status: 'updated'; user: DashboardUser }
   | { status: 'last_admin' }
+  // the final (role, tenant) would be a tenant-less user with a role that needs a tenant (user-tenant-rule.ts)
+  | { status: 'tenantless_role' }
   | { status: 'not_found' }
 
 /**
@@ -791,13 +796,46 @@ export async function adminPatchDashboardUser(id: number, patch: AdminUserPatch)
   if ('display_name' in patch) { fields.push('display_name = ?'); params.push(patch.display_name ?? null) }
   params.push(id)
   const guarded = patchLeavesAdmin(patch)
+  // The final-state rule of user-tenant-rule.ts: a tenant-less user keeps to the tenant-less roles, and "tenant-less" is
+  // isBlankTenant everywhere (null, empty or whitespace, judged in JavaScript, no SQL TRIM). The pair is known from the
+  // patch alone when it sets both fields. When only the role is raised, the stored tenant is READ and judged here, and the
+  // UPDATE is optimistic on exactly that value (AND tenant_id = ?): a tenant changed in between is not written over, the
+  // write finds no row, and the decision is made again on the fresh value.
+  const tenantPatched = 'tenant_id' in patch
+  const patchedTenantless = tenantPatched && isBlankTenant(patch.tenant_id)
+  const raisesRole = patch.role !== undefined && roleNeedsTenant(patch.role)
+  if (raisesRole && patchedTenantless) return { status: 'tenantless_role' }
+  const needsStoredTenant = raisesRole && !tenantPatched
+  // A tenant removed while the role stays: the stored role must be one that needs none (a role, so no blank reading)
+  const roleRule = patch.role === undefined && patchedTenantless ? ` AND role IN (${TENANTLESS_ROLES_SQL_LIST})` : ''
   const write = async (ops: SqlOps): Promise<AdminPatchOutcome> => {
-    const guard = guarded
-      ? " AND NOT (role = 'admin' AND disabled = 0 AND (SELECT COUNT(*) FROM dashboard_users WHERE role = 'admin' AND disabled = 0) <= 1)"
-      : ''
-    const user = await ops.get<DashboardUser>(`UPDATE dashboard_users SET ${fields.join(', ')} WHERE id = ?${guard} RETURNING *`, ...params)
-    if (user) return { status: 'updated', user }
-    return (await ops.get('SELECT 1 AS present FROM dashboard_users WHERE id = ?', id)) ? { status: 'last_admin' } : { status: 'not_found' }
+    for (let attempt = 0; attempt < 3; attempt++) {
+      let seenTenant: string | null = null
+      let guard = (guarded
+        ? " AND NOT (role = 'admin' AND disabled = 0 AND (SELECT COUNT(*) FROM dashboard_users WHERE role = 'admin' AND disabled = 0) <= 1)"
+        : '') + roleRule
+      const writeParams = [...params]
+      if (needsStoredTenant) {
+        const row = await ops.get<{ tenant_id: string | null }>('SELECT tenant_id FROM dashboard_users WHERE id = ?', id)
+        if (!row) return { status: 'not_found' }
+        if (isBlankTenant(row.tenant_id)) return { status: 'tenantless_role' }
+        seenTenant = row.tenant_id
+        guard += ' AND tenant_id = ?'
+        writeParams.push(seenTenant)
+      }
+      const user = await ops.get<DashboardUser>(`UPDATE dashboard_users SET ${fields.join(', ')} WHERE id = ?${guard} RETURNING *`, ...writeParams)
+      if (user) return { status: 'updated', user }
+      // No row written: absent, refused by the tenant rule, or refused by the last-admin condition. Told apart by a read
+      // AFTER the refused write; only the answer depends on it.
+      const stored = await ops.get<{ role: string; tenant_id: string | null }>('SELECT role, tenant_id FROM dashboard_users WHERE id = ?', id)
+      if (!stored) return { status: 'not_found' }
+      if (needsStoredTenant && stored.tenant_id !== seenTenant) continue // the tenant changed between the read and the write: decide again
+      const finalTenantless = tenantPatched ? patchedTenantless : isBlankTenant(stored.tenant_id)
+      if (finalTenantless && roleNeedsTenant(patch.role ?? stored.role)) return { status: 'tenantless_role' }
+      return { status: 'last_admin' }
+    }
+    // The row changed under every attempt: nothing was written, and no answer is guessed
+    throw new Error('adminPatchDashboardUser: the stored tenant kept changing, nothing was written')
   }
   // A patch that cannot take an admin out of the active set needs no admin lock: its UPDATE locks only its own row.
   if (!guarded) return write(dbx)

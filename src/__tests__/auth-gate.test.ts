@@ -249,7 +249,9 @@ describe('DB-backed lookups (dbLookups = true)', () => {
 
   it('a session resolves its role and tenant from dashboard_users', async () => {
     const u = await createDashboardUser('lookup-user', '$scrypt$ln=16,r=8,p=1$c2FsdA==$a2V5')
-    await adminPatchDashboardUser(u.id, { role: 'agent', tenant_id: null })
+    // A tenant-less agent is a row from before the tenant-less rule (adminPatchDashboardUser refuses to write one now), so the
+    // fixture writes it directly: the lookup must still resolve what is stored.
+    await dbx.run("UPDATE dashboard_users SET role = 'agent' WHERE id = ?", u.id)
     const cookie = await createSession({ userId: u.id, username: u.username })
     const r = await resolveAuth(mkReq({ cookie: `${SESSION_COOKIE_NAME}=${cookie}` }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN, true)
     expect(r).toEqual({ kind: 'session', user: 'lookup-user', userId: u.id, role: 'agent', tenantId: null })

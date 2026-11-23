@@ -27,6 +27,7 @@ import { refuseProcessOnPg } from './db/pg-boot.js'
 import { startWebServer } from './web.js'
 import { loadRbacMode, startRbacModeRefresh } from './web/rbac-mode.js'
 import { runBootImportLeftoverScan } from './web/fleet-import-leftovers.js'
+import { warnTenantlessWriteRoleUsers } from './web/tenantless-user-check.js'
 import { logger } from './logger.js'
 import { startInviteMonitor, stopInviteMonitor } from './web/channel-invites.js'
 import { ensureDiscordChannelGroup } from './web/discord-group-bootstrap.js'
@@ -588,6 +589,9 @@ async function main(): Promise<void> {
   // An interrupted fleet import leaves staged files and backups behind. Report them (never delete): asynchronous and
   // bounded in depth, count and time, so the boot does not wait for it, and a failure only logs.
   runAs.system('boot-sequence', () => runBootImportLeftoverScan()).catch((err) => logger.warn({ err: err?.message }, 'Fleet import leftover scan failed'))
+
+  // One warning with the COUNT of tenant-less users whose role needs a tenant (a row from before the rule). Report only.
+  await runAs.system('boot-sequence', () => warnTenantlessWriteRoleUsers())
 
   // Turns the ledger hooks spooled while the dashboard was down.
   await runAs.system('boot-sequence', () => flushLedgerSpool())
