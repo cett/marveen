@@ -12,6 +12,7 @@ import {
   touchMemoriesAccessed, decayMemories, createArtifact, storeArtifactEmbedding, syncVecMemoryEmbeddingUpdate,
 } from '../db.js'
 import { vecExtensionLoaded } from '../db/connection.js'
+import { interleave, type Interleave } from './helpers/interleave.js'
 
 useTestDb()
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); clearMemoryCache() })
@@ -63,6 +64,56 @@ async function blockWrites(table: string, op: 'UPDATE' | 'DELETE', name: string)
     return
   }
   await dbx.exec(`CREATE TRIGGER ${name} BEFORE ${op} ON ${table} BEGIN SELECT RAISE(ABORT, 'blocked'); END`)
+}
+
+/**
+ * Parks the first updateMemory transaction at its UPDATE statement: after its reads and its version record, with the row
+ * as the first read left it. The point is held by the test (`il.hold('first-edit')`).
+ */
+function parkFirstEdit(il: Interleave): { mockRestore(): void } {
+  const real = dbx.tx.bind(dbx) as (fn: (tx: unknown) => Promise<unknown>, opts?: unknown) => Promise<unknown>
+  let parked = false
+  return vi.spyOn(dbx, 'tx').mockImplementation(((fn: (tx: unknown) => Promise<unknown>, opts?: unknown) =>
+    real((tx) => {
+      const target = tx as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>
+      const wrapped = new Proxy(target, {
+        get(obj, key) {
+          if (key === 'get' || key === 'run' || key === 'all') {
+            return async (sql: string, ...params: unknown[]) => {
+              if (!parked && /^UPDATE memories SET /.test(sql)) {
+                parked = true
+                await il.pass('first-edit')
+              }
+              return Reflect.apply(obj[key], obj, [sql, ...params])
+            }
+          }
+          const value = Reflect.get(obj, key, obj)
+          return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(obj) : value
+        },
+      })
+      return fn(wrapped)
+    }, opts)) as never)
+}
+
+/**
+ * Resolves once the second edit has finished or is blocked on a row lock (PostgreSQL), so the first edit can go on at a
+ * known point. A condition on the database state, not a sleep: it polls pg_stat_activity for a lock waiter, and it stops
+ * as soon as the second edit settles. SQLite: the second edit queues in the connection lock; nothing to wait for.
+ */
+async function untilSecondEditFinishesOrBlocks(second: Promise<unknown>): Promise<void> {
+  if (testDbMode() !== 'pg') return
+  let finished = false
+  void second.then(() => { finished = true }, () => { finished = true })
+  const deadline = Date.now() + 10_000
+  for (;;) {
+    if (finished) return
+    const row = await dbx.get<{ c: number | string }>(
+      "SELECT COUNT(*) AS c FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'",
+    )
+    if (Number(row?.c ?? 0) >= 1) return
+    if (Date.now() > deadline) throw new Error('neither edit finished nor blocked within 10 s')
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
 }
 
 describe('the memory listings and searches', () => {
@@ -134,11 +185,27 @@ describe('updateMemory', () => {
     expect(await contentOf(id)).toBe('B')
   })
 
-  it('two overlapping edits chain their version records (the second one records the first one\'s content)', async () => {
+  it('two overlapping edits: the second waits for the first (FOR UPDATE on the first read), and the version records chain', async () => {
     const id = await addMemory('A')
-    await Promise.all([updateMemory(id, 'B'), updateMemory(id, 'C')])
-    const final = await contentOf(id)
-    expect(await versions(id)).toEqual(['A', final === 'C' ? 'B' : 'C'])
+    const il = interleave()
+    il.hold('first-edit')
+    const spy = parkFirstEdit(il)
+    try {
+      // the first edit has read 'A' and stops before its UPDATE; the second edit must not read 'A' again while it is open
+      const first = updateMemory(id, 'B')
+      await il.reached('first-edit')
+      const second = updateMemory(id, 'C')
+      await untilSecondEditFinishesOrBlocks(second)
+      il.open('first-edit')
+      expect(await first).toBe(true)
+      expect(await second).toBe(true)
+    } finally {
+      il.open('first-edit')
+      spy.mockRestore()
+    }
+    // the first record keeps the starting content, the second keeps the result of the first edit
+    expect(await versions(id)).toEqual(['A', 'B'])
+    expect(await contentOf(id)).toBe('C')
   })
 
   it('a failing update leaves no version record (one transaction)', async () => {
