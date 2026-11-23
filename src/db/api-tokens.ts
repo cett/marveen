@@ -45,13 +45,11 @@ export interface ValidApiTokenRow {
  */
 export async function enrollDashboardApiToken(tokenHash: string, now: number): Promise<number> {
   return dbx.tx(async (tx) => {
-    await lockApiTokenName(tx, 'dashboard')
+    
     const inserted = (await tx.run(`INSERT INTO api_tokens
            (token_hash, name, role, created_at)
          VALUES (?, 'dashboard', 'admin', ?)
          ON CONFLICT DO NOTHING`, tokenHash, now)).changes
-    await tx.run(`UPDATE api_tokens SET revoked_at = ?
-       WHERE name = 'dashboard' AND token_hash != ? AND revoked_at IS NULL`, now, tokenHash)
     return inserted
   })
 }

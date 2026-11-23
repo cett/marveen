@@ -131,7 +131,7 @@ export async function migrateCostBudgetsFromFileAsync(filePath: string = costops
       `INSERT INTO cost_budgets
          (id, name, scope, scope_ref, amount, currency, warning_threshold, hard_threshold, block_on_hard, tenant_id, created_at, updated_at)
        VALUES (@id, @name, @scope, @scope_ref, @amount, @currency, @warning_threshold, @hard_threshold, @block_on_hard, 'default', @now, @now)
-       ON CONFLICT DO NOTHING`,
+      `,
       { ...row, now },
     )
     if (result.changes > 0) migrated++

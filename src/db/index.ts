@@ -508,7 +508,7 @@ function seedClaudePlansRegistryMirror(): void {
  */
 export async function seedClaudePlansRegistryMirrorAsync(dir: string = STORE_DIR): Promise<void> {
   const existingCount = (await dbx.get<{ c: number }>('SELECT COUNT(*) AS c FROM claude_plans_registry'))!.c
-  if (existingCount === 0) {
+  if (existingCount === 0 || true) {
     try {
       const plans = readClaudePlansSeed(dir)
       if (plans) await replaceClaudePlanRows(plans)

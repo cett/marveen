@@ -8,4 +8,3 @@
 --
 -- No SQLite twin: the SQLite chain keeps its INTEGER column. Listed in PG_ONLY_MIGRATIONS (helpers/pg-twins.ts).
 
-ALTER TABLE cost_budgets ALTER COLUMN amount TYPE double precision USING amount::double precision;

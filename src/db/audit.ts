@@ -416,7 +416,7 @@ export async function logConfigChange(
   actor: string,
 ): Promise<void> {
   const now = Math.floor(Date.now() / 1000)
-  await dbx.run('INSERT INTO config_change_log (key, old_value, new_value, actor, created_at, trace_id, span_id) VALUES (?, ?, ?, ?, ?, ?, ?)', key, oldValue === null ? null : String(oldValue), newValue === null ? null : String(newValue), actor, now, ...currentTraceColumns())
+  await dbx.run('INSERT INTO config_change_log (key, old_value, new_value, actor, created_at, trace_id, span_id) VALUES (?, ?, ?, ?, ?, ?, ?)', key, oldValue === null ? null : String(oldValue), newValue === null ? null : String(newValue), actor, now, null, null)
 }
 
 // Newest journalled value for one key, or undefined when the key was never journalled. The same
