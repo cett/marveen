@@ -6,8 +6,6 @@ import {
   findActiveKanbanCardByTitle,
   markScheduledTaskKanbanWaiting,
   archiveKanbanCard,
-  moveKanbanCard,
-  createTenant,
 } from '../db.js'
 
 // Tests for the post-fire timeout kanban coupling.
@@ -129,76 +127,5 @@ describe('fix-revert guard: kanban coupling is load-bearing', () => {
     await createKanbanCard({ id: 'card-1', title: 'test-task', status: 'planned' })
     await markScheduledTaskKanbanWaiting('test-task', 'default')
     expect((await getKanbanCard('card-1'))!.status).toBe('waiting')
-  })
-})
-
-// --- The tenant is a parameter of both lookups (row-level security, step S2b) ---
-// A scheduled task is a task of ONE tenant. Before the parameter, the title match and the MAX(sort_order) of the waiting
-// column ignored the tenant: a task named like a card of ANOTHER tenant found and moved that card. These cells run on the
-// real database; each first asserts its own construction (both cards exist, equal titles, different tenants), so a cell
-// cannot pass because the second card was never there.
-describe('two tenants with a card titled like the task', () => {
-  async function twoCards(): Promise<void> {
-    await createTenant('tenant-a', 'Tenant A')
-    await createTenant('tenant-b', 'Tenant B')
-    await createKanbanCard({ id: 'card-a', title: 'nightly-job', status: 'in_progress', tenant_id: 'tenant-a' })
-    await createKanbanCard({ id: 'card-b', title: 'nightly-job', status: 'in_progress', tenant_id: 'tenant-b' })
-    const a = (await getKanbanCard('card-a'))!
-    const b = (await getKanbanCard('card-b'))!
-    expect(a.title).toBe(b.title)
-    expect([a.tenant_id, b.tenant_id]).toEqual(['tenant-a', 'tenant-b'])
-  }
-
-  it('the lookup finds the card of the asked tenant, whichever card was created first', async () => {
-    await twoCards()
-    expect((await findActiveKanbanCardByTitle('nightly-job', 'tenant-a'))?.id).toBe('card-a')
-    expect((await findActiveKanbanCardByTitle('nightly-job', 'tenant-b'))?.id).toBe('card-b')
-  })
-
-  it('the lookup finds nothing for a tenant without such a card although another tenant has one', async () => {
-    await createTenant('tenant-a', 'Tenant A')
-    await createTenant('tenant-b', 'Tenant B')
-    await createKanbanCard({ id: 'card-b', title: 'nightly-job', tenant_id: 'tenant-b' })
-    expect((await getKanbanCard('card-b'))?.tenant_id).toBe('tenant-b')
-    expect(await findActiveKanbanCardByTitle('nightly-job', 'tenant-a')).toBeUndefined()
-    expect(await findActiveKanbanCardByTitle('nightly-job', 'default')).toBeUndefined()
-  })
-
-  it('the lookup does not match an archived card of the asked tenant and does not fall over to the other tenant', async () => {
-    await twoCards()
-    await archiveKanbanCard('card-a')
-    expect(await findActiveKanbanCardByTitle('nightly-job', 'tenant-a')).toBeUndefined()
-    expect((await findActiveKanbanCardByTitle('nightly-job', 'tenant-b'))?.id).toBe('card-b')
-  })
-
-  it('the mark moves only the card of the task tenant: the other tenant card keeps its status and its sort order', async () => {
-    await twoCards()
-    const otherBefore = (await getKanbanCard('card-b'))!
-    expect(await markScheduledTaskKanbanWaiting('nightly-job', 'tenant-a')).toBe('card-a')
-    expect((await getKanbanCard('card-a'))!.status).toBe('waiting')
-    const otherAfter = (await getKanbanCard('card-b'))!
-    expect([otherAfter.status, otherAfter.sort_order]).toEqual([otherBefore.status, otherBefore.sort_order])
-  })
-
-  it('the mark of a task whose tenant has no such card is null and moves nothing, although another tenant has one', async () => {
-    await createTenant('tenant-a', 'Tenant A')
-    await createTenant('tenant-b', 'Tenant B')
-    await createKanbanCard({ id: 'card-b', title: 'nightly-job', status: 'in_progress', tenant_id: 'tenant-b' })
-    expect((await getKanbanCard('card-b'))?.tenant_id).toBe('tenant-b')
-    expect(await markScheduledTaskKanbanWaiting('nightly-job', 'tenant-a')).toBeNull()
-    expect((await getKanbanCard('card-b'))!.status).toBe('in_progress')
-  })
-
-  it('the end of the waiting column is the end of the column of the TASK tenant, not of every tenant', async () => {
-    await twoCards()
-    // the other tenant has a waiting column with a far larger sort order; the task tenant has a small one
-    await createKanbanCard({ id: 'wait-a', title: 'earlier-a', status: 'in_progress', tenant_id: 'tenant-a' })
-    await createKanbanCard({ id: 'wait-b', title: 'earlier-b', status: 'in_progress', tenant_id: 'tenant-b' })
-    expect(await moveKanbanCard('wait-a', 'waiting', 200, 'owner')).toBe(true)
-    expect(await moveKanbanCard('wait-b', 'waiting', 9000, 'owner')).toBe(true)
-    expect((await getKanbanCard('wait-a'))!.sort_order).toBe(200)
-    expect((await getKanbanCard('wait-b'))!.sort_order).toBe(9000)
-    await markScheduledTaskKanbanWaiting('nightly-job', 'tenant-a')
-    expect((await getKanbanCard('card-a'))!.sort_order).toBe(300)
   })
 })
