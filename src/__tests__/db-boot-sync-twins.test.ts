@@ -26,9 +26,6 @@ const BOOT_SYNC_TWINS: Readonly<Record<string, readonly string[]>> = {
   // migrateFederationConfigFromFile (the other twin) writes its row through setSystemConfigSync.
   setSystemConfigSync: ['db/system-config.ts', 'db/federation.ts', 'db/index.ts'],
   migrateFederationConfigFromFile: ['db/federation.ts', 'db/index.ts'],
-  // startWebServer enrolls the file token before it listens and cannot await: the bootstrap helper it calls is
-  // the one caller, outside db/index.ts.
-  enrollDashboardApiTokenSync: ['db/api-tokens.ts', 'web/token-bootstrap.ts'],
   replaceClaudePlanRowsSync: ['db/claude-plans.ts', 'db/index.ts'],
   activatePlanForAgentSync: ['db/claude-plans.ts', 'db/index.ts'],
   // Boot-only, on the raw handle (no facade call before initDatabase returns); it has no asynchronous counterpart.
@@ -93,6 +90,13 @@ describe('boot-synchronous twins stay inside the boot chain', () => {
     // Exact equality, not "subset": an allowed file that no longer mentions the twin means the row is stale
     // and would silently permit a future caller there.
     expect(filesMentioning(twin, SOURCES)).toEqual([...allowed].sort())
+  })
+
+  // A twin that was removed (its module went async, so the boot chain no longer needs it) stays removed: a call of it
+  // or a new declaration under the same name fails here, because the table above only knows the twins that exist.
+  const REMOVED_TWINS = ['enrollDashboardApiTokenSync'] as const
+  it.each(REMOVED_TWINS)('%s is removed: no source file mentions it (outside a comment)', (twin) => {
+    expect(filesMentioning(twin, SOURCES)).toEqual([])
   })
 
   // The table is checked against an independent source: a twin carries a `// @boot-sync-twin` line above its

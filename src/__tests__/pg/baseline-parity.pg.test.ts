@@ -57,6 +57,18 @@ describe('PG baseline parity with the SQLite chain', () => {
     expect(problems).toEqual([])
   })
 
+  // The one column type that differs on purpose (PG_TYPE_EXCEPTIONS, migration 0008): the SQLite column is INTEGER affinity, the
+  // PostgreSQL column holds a REAL amount. Both sides are asserted, so the exception cannot quietly move to another column.
+  it('the one type exception is cost_budgets.amount: double precision on PostgreSQL, bigint in the SQLite model it is compared with', () => {
+    expect(actual.tables.cost_budgets.columns.amount.type).toBe('double precision')
+    expect(expected.tables.cost_budgets.columns.amount.type).toBe('double precision')
+    const typeDiffs = Object.entries(expected.tables).flatMap(([t, m]) =>
+      Object.entries(m.columns)
+        .filter(([c, col]) => actual.tables[t]?.columns[c]?.type !== col.type)
+        .map(([c]) => `${t}.${c}`))
+    expect(typeDiffs).toEqual([])
+  })
+
   it('the PostgreSQL baseline equals the SQLite end state, apart from the documented exceptions', () => {
     expect(diffSchemas(expected, actual)).toEqual([])
   })
