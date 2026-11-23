@@ -164,11 +164,7 @@ describe('the writes of touch and decay', () => {
     expect(Number(row.salience)).toBeCloseTo(1)
   })
 
-  // touchMemory and decayMemories use the SQLite scalar MIN / MAX (MIN(salience + 0.1, 5.0)). PostgreSQL has only the
-  // aggregate MIN/MAX and the scalar LEAST/GREATEST, so the two statements fail there ("function min(double precision,
-  // numeric) does not exist"). Until the statements are made dialect-neutral (a product change, not a test change), the
-  // cell runs on SQLite only.
-  it.runIf(testDbMode() === 'sqlite')('touchMemory raises the salience and the access time, decay lowers old salience', async () => {
+  it('touchMemory raises the salience and the access time, decay lowers old salience', async () => {
     const id = await addMemory('t')
     await dbx.run('UPDATE memories SET accessed_at = 1, created_at = 1 WHERE id = ?', id)
     await touchMemory(id)
@@ -179,8 +175,8 @@ describe('the writes of touch and decay', () => {
     expect((await dbx.get<{ salience: number }>('SELECT salience FROM memories WHERE id = ?', id))!.salience).toBeCloseTo(1.1 * 0.995)
   })
 
-  // the cap and the floor of the two statements: the SQLite scalar MIN / MAX keep them, and a CASE rewrite could drop them
-  it.runIf(testDbMode() === 'sqlite')('touchMemory stops at the salience cap of 5: 4.95 + 0.1 is 5, not 5.05', async () => {
+  // the cap and the floor of the two statements (the CASE form of memory.ts keeps them on both engines)
+  it('touchMemory stops at the salience cap of 5: 4.95 + 0.1 is 5, not 5.05', async () => {
     const id = await addMemory('cap')
     await dbx.run('UPDATE memories SET salience = 4.95 WHERE id = ?', id)
     await touchMemory(id)
@@ -188,7 +184,7 @@ describe('the writes of touch and decay', () => {
   })
 
   // 0.005 * 0.995 = 0.004975, below the floor. (0.0101 * 0.995 = 0.01005, which is above it: no floor test there.)
-  it.runIf(testDbMode() === 'sqlite')('decayMemories stops at the floor of 0.01 for an old memory of salience 0.005', async () => {
+  it('decayMemories stops at the floor of 0.01 for an old memory of salience 0.005', async () => {
     const id = await addMemory('floor')
     await dbx.run('UPDATE memories SET salience = 0.005, created_at = 1 WHERE id = ?', id)
     await decayMemories()
