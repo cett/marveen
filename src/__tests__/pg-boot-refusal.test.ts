@@ -1,6 +1,6 @@
 // The PostgreSQL boot (db/pg-boot.ts, db/index.ts initDatabaseAsync): the cells that need no server. A URL that is not
 // a PostgreSQL URL, a server that cannot be reached, and the URL-absent path that must stay exactly as it was. The
-// steps that need a live server (migrate, preflight, caches, the success path) are in pg/pg-boot.pg.test.ts.
+// steps that need a live server (schema, preflight, caches, the success path) are in pg/pg-boot.pg.test.ts.
 //
 // Privacy: neutral fixtures only (host-a, user-a, secret-a, db-a).
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
@@ -10,6 +10,7 @@ import { join } from 'node:path'
 
 // nothing listens on port 1: the connection is refused at once, with no server involved
 const DEAD_URL = 'postgresql://user-a:secret-a@127.0.0.1:1/db-a'
+const MIGRATE_URL = 'postgresql://user-m:secret-m@127.0.0.1:1/db-a'
 
 let root: string
 let storeDir: string
@@ -34,6 +35,7 @@ beforeEach(() => {
   vi.stubEnv('SECRET_MOUNT_DIR', join(root, 'secrets'))
   vi.stubEnv('MARVEEN_STORE_DIR', storeDir)
   vi.stubEnv('MARVEEN_PG_URL', '')
+  vi.stubEnv('MARVEEN_PG_MIGRATE_URL', '')
   pgLoaded = false
 })
 
@@ -150,7 +152,7 @@ describe('what a boot error exposes to the logger', () => {
   // and the serialised boot error (cause chain included, as the logger writes it) must carry neither the password nor the
   // user. Mutant: `cause: err` in refuse() instead of sanitizeError(err, url) fails every row (the raw error keeps `input`).
   // The earlier steps are stubbed to pass, so each row reaches exactly the step it names.
-  it.each(['pool', 'migrate', 'preflight', 'caches'] as const)(
+  it.each(['pool', 'schema', 'preflight', 'caches'] as const)(
     'a driver error that quotes the connection string at step "%s" does not reach the serialised boot error, cause chain included',
     async (step) => {
       const quoting = () => Object.assign(new Error(`cannot connect to ${DEAD_URL}`), { input: DEAD_URL })
@@ -162,8 +164,10 @@ describe('what a boot error exposes to the logger', () => {
         }
         return { default: { Pool, types: { setTypeParser: () => undefined, builtins: {} } }, Pool }
       })
+      // no migration URL here: the schema step is the read-only check of the serving pool
       vi.doMock('../db-migrations-pg.js', () => ({
-        applyPgMigrations: () => (step === 'migrate' ? Promise.reject(quoting()) : Promise.resolve({ applied: [], alreadyApplied: 0 })),
+        applyPgMigrations: () => Promise.resolve({ applied: [], alreadyApplied: 0 }),
+        assertPgSchemaCurrent: () => (step === 'schema' ? Promise.reject(quoting()) : Promise.resolve({ applied: [], alreadyApplied: 0 })),
       }))
       vi.doMock('../db/pg/preflight.js', () => ({
         pgPreflight: () => (step === 'preflight' ? Promise.reject(quoting()) : Promise.resolve({ warnings: [] })),
@@ -189,6 +193,52 @@ describe('what a boot error exposes to the logger', () => {
       expect(facade.dbxDialect()).toBe('sqlite')
     },
   )
+
+  // The migration URL carries a password of its own (the owner role's). A failure of the schema step that quotes IT must
+  // not reach the serialised boot error either. Mutant: refuse() redacting only the serving URL fails this cell.
+  it('a driver error that quotes the MIGRATION url at the schema step does not reach the serialised boot error', async () => {
+    const quotingMigrate = () => Object.assign(new Error(`cannot connect to ${MIGRATE_URL}`), { input: MIGRATE_URL })
+    vi.doMock('pg', () => {
+      class Pool {
+        on() { return this }
+        query() { return Promise.resolve({ rows: [] }) }
+        end() { return Promise.resolve() }
+      }
+      return { default: { Pool, types: { setTypeParser: () => undefined, builtins: {} } }, Pool }
+    })
+    vi.doMock('../db-migrations-pg.js', () => ({
+      applyPgMigrations: () => Promise.reject(quotingMigrate()),
+      assertPgSchemaCurrent: () => Promise.resolve({ applied: [], alreadyApplied: 0 }),
+    }))
+    const { boot, facade } = await load()
+    const err = await boot.bootPgBackend({ url: DEAD_URL, migrateUrl: MIGRATE_URL }).then(() => null, (e: unknown) => e as InstanceType<typeof boot.PgBootError>)
+    expect(err).toBeInstanceOf(boot.PgBootError)
+    expect(err!.step).toBe('schema')
+    for (const text of [err!.message, await serialized(err)]) {
+      expect(text).not.toContain('secret-m')
+      expect(text).not.toContain('user-m')
+      expect(text).not.toContain('secret-a')
+    }
+    expect(facade.dbxDialect()).toBe('sqlite')
+  })
+
+  it('a migration URL that is not a postgres URL refuses at the schema step, and the message names the key, not the value', async () => {
+    vi.doMock('pg', () => {
+      class Pool {
+        on() { return this }
+        query() { return Promise.resolve({ rows: [] }) }
+        end() { return Promise.resolve() }
+      }
+      return { default: { Pool, types: { setTypeParser: () => undefined, builtins: {} } }, Pool }
+    })
+    const { boot } = await load()
+    const bad = 'mysql://user-m:secret-m@127.0.0.1:1/db-m'
+    const err = await boot.bootPgBackend({ url: DEAD_URL, migrateUrl: bad }).then(() => null, (e: unknown) => e as InstanceType<typeof boot.PgBootError>)
+    expect(err!.step).toBe('schema')
+    expect(err!.message).toContain('MARVEEN_PG_MIGRATE_URL')
+    expect(err!.message).not.toContain('secret-m')
+    expect(err!.message).not.toContain('user-m')
+  })
 })
 
 describe('initDatabaseAsync', () => {
