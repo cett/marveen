@@ -37,7 +37,6 @@ vi.mock('../logger.js', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: 
 vi.mock('../web/agent-config.js', () => ({
   AGENTS_BASE_DIR: AGENTS,
   listAgentNames: () => [],
-  invalidateModelProfileMapCache: () => {},
   readFileOr: (p: string, fallback: string) => {
     try { return require('node:fs').readFileSync(p, 'utf-8') } catch { return fallback }
   },

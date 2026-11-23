@@ -35,7 +35,7 @@ const FIXTURES: Record<string, Record<string, unknown>> = {
 
 let readAgentModel: typeof import('../web/agent-config.js').readAgentModel;
 let resolveAgentModelDetailed: typeof import('../web/agent-config.js').resolveAgentModelDetailed;
-let invalidateModelProfileMapCache: typeof import('../web/agent-config.js').invalidateModelProfileMapCache;
+let reloadModelProfileMapCache: typeof import('../db.js').reloadModelProfileMapCache;
 let AGENTS_BASE_DIR: string;
 let storeDir: string;
 
@@ -44,14 +44,15 @@ beforeAll(async () => {
   process.env['MARVEEN_STORE_DIR'] = storeDir;
 
   const dbMod = await import('../db.js');
+  reloadModelProfileMapCache = dbMod.reloadModelProfileMapCache;
   dbMod.initDatabase(':memory:');
   for (const [profileId, modelId] of Object.entries(MAP)) {
     await dbMod.upsertModelProfileMapEntry({ profile_id: profileId, model_id: modelId, updated_by: 'test' });
   }
 
   const agentConfigMod = await import('../web/agent-config.js');
-  ({ readAgentModel, resolveAgentModelDetailed, invalidateModelProfileMapCache, AGENTS_BASE_DIR } = agentConfigMod);
-  invalidateModelProfileMapCache();
+  ({ readAgentModel, resolveAgentModelDetailed, AGENTS_BASE_DIR } = agentConfigMod);
+  reloadModelProfileMapCache();
 
   for (const [name, cfg] of Object.entries(FIXTURES)) {
     mkdirSync(join(AGENTS_BASE_DIR, name), { recursive: true });
@@ -64,7 +65,7 @@ afterAll(() => {
   for (const name of Object.keys(FIXTURES)) rmSync(join(AGENTS_BASE_DIR, name), { recursive: true, force: true });
   delete process.env['MARVEEN_STORE_DIR'];
   rmSync(storeDir, { recursive: true, force: true });
-  invalidateModelProfileMapCache();
+  reloadModelProfileMapCache();
 });
 
 describe('additive over the existing selector', () => {
@@ -105,7 +106,7 @@ describe('fail-safe: DB miss never silently changes an agent already on an expli
   it('an empty model_profile_map table resolves to null (not an error, not a crash)', async () => {
     const { db } = await import('../db/connection.js');
     db.exec('DELETE FROM model_profile_map');
-    invalidateModelProfileMapCache();
+    reloadModelProfileMapCache();
     try {
       expect(readAgentModel('mp-legacy-explicit')).toBe('claude-sonnet-5');
       const r = resolveAgentModelDetailed('mp-profile-only');
@@ -116,7 +117,7 @@ describe('fail-safe: DB miss never silently changes an agent already on an expli
       for (const [profileId, modelId] of Object.entries(MAP)) {
         await dbMod.upsertModelProfileMapEntry({ profile_id: profileId, model_id: modelId, updated_by: 'test' });
       }
-      invalidateModelProfileMapCache();
+      reloadModelProfileMapCache();
     }
   });
 });

@@ -14,7 +14,6 @@ import {
   type ModelResolution,
 } from '../model-profiles.js'
 import { listModelProfileMap } from '../db/model-profile-map.js'
-import { reloadModelProfileMapCache } from '../db/model-profile-map-cache.js'
 import { getFallbackOverride } from './model-fallback-state.js'
 
 export const AGENTS_BASE_DIR = join(PROJECT_ROOT, 'agents')
@@ -142,14 +141,6 @@ export function readModelProfileMap(): ModelProfileMapState | null {
   } catch {
     return { ok: false, error: 'profile_map_read_error' }
   }
-}
-
-// Forces the db-layer cache to re-read the table. Needed only when something wrote the table directly,
-// bypassing setModelProfileMapEntry/upsertModelProfileMapEntry's own write-through (a test's raw db.exec(),
-// or belt-and-suspenders after the route/import writers below, which are already write-through and so no
-// longer strictly need it).
-export function invalidateModelProfileMapCache(): void {
-  reloadModelProfileMapCache()
 }
 
 // Full resolution result, for callers that need to show or log WHY an agent is

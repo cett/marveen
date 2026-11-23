@@ -146,7 +146,7 @@ describe('deleteTenant: agent-keyed rows', () => {
   })
 
   // agent_settings is read through a synchronous write-through cache, and deleteTenant writes the table on
-  // the raw connection. The cache only learns of the delete and the re-tag from reloadAgentSettingsCache(),
+  // the raw connection. The cache only learns of the delete and the re-tag from loadAgentSettingsCacheAsync(),
   // so the tests above (which read the table) cannot see it missing. This one reads what a caller reads, and
   // primes the cache with write-through writes first: a row seeded by raw SQL would not be in the cache
   // before the delete, and a stale-cache bug would pass unnoticed.
