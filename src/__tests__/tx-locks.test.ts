@@ -12,7 +12,7 @@ import { parkFirstStatementAt, parkFirstTxAt, untilSettledOrBlocked } from './he
 import { saveWorkspaceDoc, patchWorkspaceDoc, getWorkspaceDoc } from '../db/workspace.js'
 import { createTenant, getTenant, updateTenant } from '../db/observability.js'
 import { updateSystemConfig } from '../db/system-config.js'
-import { dbx, deleteVaultBindingsForSecret, upsertVaultBinding } from '../db.js'
+import { createSkill, dbx, deleteVaultBindingsForSecret, getSkill, setSkillContent, upsertVaultBinding } from '../db.js'
 
 useTestDb()
 afterEach(() => { vi.restoreAllMocks() })
@@ -115,6 +115,40 @@ describe('updateSystemConfig', () => {
     const state = await appendTwo('sweep.present')
     expect(state).not.toBe('settled')
     expect(await dbx.get<{ value: string }>("SELECT value FROM system_config WHERE key = 'sweep.present'")).toEqual({ value: 'a,x,y' })
+  })
+})
+
+// The privilege gate of the skill writers decides from the skill row it read. A skill whose privilege block (allowed-tools)
+// an admin has just removed must not get it back from a concurrent gated write that was judged against the OLD row:
+// "same privilege as the live row" was true of the snapshot, not of the row it overwrites. The first transaction (gated,
+// privilege equal to the old row) is parked right before its write, the second one (ungated, privilege removed) is started;
+// with the row lock taken first the second one waits, so the end state is first-then-second: the privilege stays removed.
+const HUMAN = { kind: 'human', id: 'user-a' } as const
+const PRIVILEGED = '---\nname: a\ndescription: d\nallowed-tools: Bash\n---\nbody'
+const UNPRIVILEGED = '---\nname: a\ndescription: d\n---\nbody'
+
+describe('setSkillContent', () => {
+  it('a gated write judged against the old row cannot bring a removed privilege back (the second writer waits on the skill row lock)', async () => {
+    await createSkill({ id: 'global/a', name: 'global/a', description: 'd', content: PRIVILEGED, tenant_id: 'fleet', is_global: true }, HUMAN)
+    const il = interleave()
+    il.hold('first-write')
+    const spy = parkFirstTxAt(il, 'first-write', /^\s*UPDATE skills SET content = /)
+    let state: 'settled' | 'blocked' | 'queued'
+    try {
+      // same privilege block as the live row: not privileged, written straight through (after it has been parked)
+      const first = setSkillContent('global/a', `${PRIVILEGED} one`, 1, HUMAN, {}, { gatePrivilege: true })
+      await il.reached('first-write')
+      const second = setSkillContent('global/a', UNPRIVILEGED, 2, HUMAN, {}, {})
+      state = await untilSettledOrBlocked(second)
+      il.open('first-write')
+      expect((await first).outcome).toBe('updated')
+      expect((await second).outcome).toBe('updated')
+    } finally {
+      il.open('first-write')
+      spy.mockRestore()
+    }
+    expect(state).not.toBe('settled')
+    expect((await getSkill('global/a'))?.content).toBe(UNPRIVILEGED)
   })
 })
 
