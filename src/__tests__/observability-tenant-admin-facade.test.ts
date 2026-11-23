@@ -193,7 +193,12 @@ describe('deleteTenant: one transaction on the tx handle', () => {
     seedTenantRows('gone')
     const seen = spyFacade()
     await deleteTenant('gone')
-    expect(seen.filter((s) => !/^DELETE FROM vec_memories WHERE memory_id = \?$/.test(s))).toEqual([])
+    // The one statement outside the transaction is the agent_settings cache load, awaited AFTER the commit (database
+    // first, then the cache): exactly once, and last. Anything else on the facade is a statement that escaped the tx handle.
+    const CACHE_LOAD = 'SELECT agent_id, setting_key, setting_value, tenant_id, updated_at FROM agent_settings'
+    expect(seen.filter((s) => !/^DELETE FROM vec_memories WHERE memory_id = \?$/.test(s) && s !== CACHE_LOAD)).toEqual([])
+    expect(seen.filter((s) => s === CACHE_LOAD)).toHaveLength(1)
+    expect(seen[seen.length - 1]).toBe(CACHE_LOAD)
     expect(rows('dashboard_users', 'tenant_id', 'gone')).toBe(0)
   })
 

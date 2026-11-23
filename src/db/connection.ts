@@ -8,6 +8,7 @@ import { load as loadSqliteVec } from 'sqlite-vec'
 import { DB_FILENAME, STORE_DIR } from '../config.js'
 import { logger } from '../logger.js'
 import { applyMigrations } from '../db-migrations.js'
+import { assertSqliteEntryAllowed } from './pg/url.js'
 
 export let db: Database.Database
 export let vecExtensionLoaded = false
@@ -45,6 +46,10 @@ function tightenDbPermissions(dbPath: string): void {
 // STORE_DIR mkdir stays prod-only; a temp-file override owns its own directory.
 export function initDatabase(dbPathOverride?: string): void {
   const useOverride = dbPathOverride !== undefined
+  // An install entry point (no database named by the caller) must not open the SQLite file of an install that is
+  // configured for PostgreSQL: it would read and write stale data without a word. A caller that names its own
+  // database (a test, a throwaway file) is not such an entry point.
+  if (!useOverride) assertSqliteEntryAllowed('initDatabase()')
   const isMemory = dbPathOverride === ':memory:'
   if (!useOverride) mkdirSync(STORE_DIR, { recursive: true })
   // Idempotent re-init: close a previous handle before opening a new one

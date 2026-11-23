@@ -49,6 +49,8 @@ export * from './vector.js'
 export * from './workspace.js'
 export * from './federation.js'
 export * from './import.js'
+export { PgBootError, closePgBackend, type PgBootStep } from './pg-boot.js'
+export { PG_URL_KEY, resolvePgUrl, SqliteEntryRefusedError } from './pg/url.js'
 
 import { existsSync, readFileSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
@@ -67,7 +69,23 @@ import { loadSystemConfigCache } from './config-cache.js'
 import { loadModelProfileMapCache } from './model-profile-map-cache.js'
 import { loadAgentSettingsCache } from './agent-settings-cache.js'
 import { resolveAgentOwningTenantIdSync } from './agents.js'
+import { bootPgBackend } from './pg-boot.js'
+import { resolvePgUrl } from './pg/url.js'
 import { logger } from '../logger.js'
+
+/**
+ * The boot of a real process: the PostgreSQL path when MARVEEN_PG_URL is configured (pool, migrations, preflight, the
+ * three caches; any failing step refuses the boot, there is no SQLite fallback), the unchanged synchronous SQLite chain
+ * otherwise. Resolves to the backend that was booted. See db/pg-boot.ts for the steps and what the PG path skips.
+ */
+export async function initDatabaseAsync(): Promise<'sqlite' | 'pg'> {
+  if (resolvePgUrl() === undefined) {
+    initDatabase()
+    return 'sqlite'
+  }
+  await bootPgBackend()
+  return 'pg'
+}
 
 export function initDatabase(dbPathOverride?: string): void {
   connectionInitDatabase(dbPathOverride)

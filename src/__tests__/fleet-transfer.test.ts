@@ -115,7 +115,6 @@ vi.mock('../db/agent-settings-cache.js', () => ({ loadAgentSettingsCacheAsync: v
 vi.mock('../web/agent-config.js', () => ({
   AGENTS_BASE_DIR: '/mock/agents',
   listAgentNames: () => [],
-  invalidateModelProfileMapCache: vi.fn(),
 }))
 
 vi.mock('node:fs', async (importOriginal) => {

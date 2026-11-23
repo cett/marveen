@@ -614,11 +614,11 @@ job); `MARVEEN_PG_MODULES_ALL=1` runs every file instead, to re-measure what is 
 | `vec` | 1 | needs sqlite-vec: Phase 3 |
 | `sqlite-only` | 5 | the subject is the SQLite facade, handle or migration chain itself, or the file asserts the SQLite query planner (an EXPLAIN QUERY PLAN cell) |
 | `unported-sql` | 0 | SQL that has no common text for both dialects yet |
-| `sync-cache` | 2 | the synchronous cache and its loader (they move with the async cache load) |
+| `sync-cache` | 0 | the synchronous cache and its loader (they move with the async cache load) |
 | `boot-twin` | 1 | the synchronous boot chain |
 | `fts` | 0 | needs FTS5: Phase 3 |
 
-Eighty-four files are ported, 10 are excluded. The numbers are a snapshot of the lists, the lists are the authority.
+Eighty-six files are ported, 8 are excluded. The numbers are a snapshot of the lists, the lists are the authority.
 
 ### Moving a test onto the facade
 

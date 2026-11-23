@@ -55,6 +55,8 @@ export const PORTED: readonly string[] = [
   'src/__tests__/token-shadow-totals.test.ts',
   'src/__tests__/task-run-history-tokens.test.ts',
   'src/__tests__/api-tokens-tx-handle.test.ts',
+  'src/__tests__/db-config-cache.test.ts',
+  'src/__tests__/db-model-profile-map-cache.test.ts',
   'src/__tests__/db-context.test.ts',
   'src/__tests__/db-read-then-write-transactions.test.ts',
   'src/__tests__/retention-sweep-tx-handle.test.ts',
@@ -122,11 +124,9 @@ export const PORTED: readonly string[] = [
 export const EXCLUDED: Readonly<Record<string, ExcludeReason>> = {
   'src/__tests__/vector-memory-facade.test.ts': 'vec',
   'src/__tests__/audit-trace-columns.test.ts': 'boot-twin',
-  'src/__tests__/db-config-cache.test.ts': 'sync-cache',
   'src/__tests__/db-facade-backend.test.ts': 'sqlite-only',
   'src/__tests__/db-facade-tx.test.ts': 'sqlite-only',
   'src/__tests__/db-facade.test.ts': 'sqlite-only',
-  'src/__tests__/db-model-profile-map-cache.test.ts': 'sync-cache',
   'src/__tests__/with-test-db.test.ts': 'sqlite-only',
   'src/__tests__/db-api-tokens-enroll-twin.test.ts': 'raw-db',
   // two cells assert the SQLite planner (EXPLAIN QUERY PLAN) and the SQLite catalog (sqlite_master) of the trace indexes;
@@ -136,7 +136,7 @@ export const EXCLUDED: Readonly<Record<string, ExcludeReason>> = {
 }
 
 /** The number of EXCLUDED files the partition test accepts. It only goes down. */
-export const EXCLUDED_BASELINE = 10
+export const EXCLUDED_BASELINE = 8
 
 /** A file uses useTestDb when it imports the helper AND calls useTestDb( (a file that only imports resetDbTestState or testDbMode does not). */
 const IMPORT = /from\s+['"][^'"]*helpers\/with-test-db(\.js)?['"]/

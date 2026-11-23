@@ -1,28 +1,32 @@
-// The synchronous write-through cache of model_profile_map, mirroring db-config-cache.test.ts:
-// reads come from memory (no statement is prepared), an (async) write is visible at once, a re-initialisation
-// is picked up, and a direct table write is picked up only after an explicit reload.
-
-import { describe, it, expect, vi } from 'vitest'
+// The synchronous write-through cache of model_profile_map, on BOTH engines (useTestDb), mirroring db-config-cache.test.ts:
+// reads come from memory (no statement goes through the facade), an (async) write is visible at once, a table written
+// behind the cache is seen after the ASYNCHRONOUS load. The SQLite-handle cells are in
+// db-model-profile-map-cache-sqlite-handle.test.ts; the PostgreSQL owner (the backend epoch) is in pg/pg-boot.pg.test.ts.
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import {
-  initDatabase, db,
+  dbx, dbxDialect,
   listModelProfileMap, getModelProfileMapEntry, setModelProfileMapEntry, upsertModelProfileMapEntry,
-  reloadModelProfileMapCache, clearModelProfileMapCache,
+  clearModelProfileMapCache,
 } from '../db.js'
-import { initDatabase as connectionInitDatabase } from '../db/connection.js'
+import { loadModelProfileMapCacheAsync } from '../db/model-profile-map-cache.js'
 import { useTestDb } from './helpers/with-test-db.js'
 
 useTestDb()
 
+afterEach(() => {
+  vi.restoreAllMocks()
+})
+
 const dbRow = (profileId: string) =>
-  db.prepare('SELECT profile_id, model_id, updated_at, updated_by FROM model_profile_map WHERE profile_id = ?').get(profileId)
+  dbx.get('SELECT profile_id, model_id, updated_at, updated_by FROM model_profile_map WHERE profile_id = ?', profileId)
 
 describe('reads come from the cache', () => {
-  it('listModelProfileMap and getModelProfileMapEntry prepare no statement', () => {
-    const prepare = vi.spyOn(db, 'prepare')
+  it('listModelProfileMap and getModelProfileMapEntry send no statement through the facade', () => {
+    const spies = (['get', 'all', 'run'] as const).map((m) => vi.spyOn(dbx, m))
     expect(getModelProfileMapEntry('build_strong')?.model_id).toBe('claude-sonnet-5')
     expect(getModelProfileMapEntry('nope')).toBeUndefined()
     expect(listModelProfileMap()).toHaveLength(4)
-    expect(prepare).not.toHaveBeenCalled()
+    for (const s of spies) expect(s).not.toHaveBeenCalled()
   })
 
   it('a returned row is a copy: changing it does not change the cache', () => {
@@ -38,16 +42,16 @@ describe('write-through', () => {
   it('a write is visible at once, and is in the database with the same row', async () => {
     await setModelProfileMapEntry('build_strong', 'model-v1', 'dashboard')
     expect(getModelProfileMapEntry('build_strong')?.model_id).toBe('model-v1')
-    expect(getModelProfileMapEntry('build_strong')).toEqual(dbRow('build_strong'))
+    expect(getModelProfileMapEntry('build_strong')).toEqual(await dbRow('build_strong'))
     await setModelProfileMapEntry('build_strong', 'model-v2', 'dashboard')
     expect(getModelProfileMapEntry('build_strong')?.model_id).toBe('model-v2')
-    expect(getModelProfileMapEntry('build_strong')).toEqual(dbRow('build_strong'))
+    expect(getModelProfileMapEntry('build_strong')).toEqual(await dbRow('build_strong'))
   })
 
   it('upsertModelProfileMapEntry is write-through too', async () => {
     await upsertModelProfileMapEntry({ profile_id: 'routine_lowcost', model_id: 'model-a', updated_by: 'test' })
     expect(getModelProfileMapEntry('routine_lowcost')?.model_id).toBe('model-a')
-    expect(getModelProfileMapEntry('routine_lowcost')).toEqual(dbRow('routine_lowcost'))
+    expect(getModelProfileMapEntry('routine_lowcost')).toEqual(await dbRow('routine_lowcost'))
   })
 
   it('the database is written before the cache: a failing write leaves the cache untouched', async () => {
@@ -58,32 +62,25 @@ describe('write-through', () => {
   })
 })
 
-describe('initDatabase and the connection', () => {
-  it('initDatabase again gives a fresh cache for the fresh database', () => {
-    initDatabase(':memory:')
-    expect(listModelProfileMap()).toHaveLength(4) // migration 0054 re-seeds the fresh handle
-    expect(getModelProfileMapEntry('build_strong')?.updated_by).toBe('seed_migration')
-  })
-
-  it('a row written straight into the table is seen after reloadModelProfileMapCache()', () => {
-    db.exec("UPDATE model_profile_map SET model_id = 'raw-write', updated_by = 'raw' WHERE profile_id = 'build_strong'")
+describe('the table written behind the cache', () => {
+  it('a row written straight into the table is seen after loadModelProfileMapCacheAsync(), not before', async () => {
+    await dbx.run("UPDATE model_profile_map SET model_id = 'raw-write', updated_by = 'raw' WHERE profile_id = 'build_strong'")
     expect(getModelProfileMapEntry('build_strong')?.model_id).not.toBe('raw-write') // stale on purpose
-    reloadModelProfileMapCache()
+    await loadModelProfileMapCacheAsync()
     expect(getModelProfileMapEntry('build_strong')?.model_id).toBe('raw-write')
   })
 
-  it('without a loaded cache the reads go to the table, as before', () => {
-    db.exec("UPDATE model_profile_map SET model_id = 'uncached-write' WHERE profile_id = 'build_strong'")
+  it('a cleared cache: SQLite reads the table as before, PostgreSQL refuses and names the loader', async () => {
+    await dbx.run("UPDATE model_profile_map SET model_id = 'uncached-write' WHERE profile_id = 'build_strong'")
     clearModelProfileMapCache()
+    if (dbxDialect() === 'pg') {
+      expect(() => getModelProfileMapEntry('build_strong')).toThrow(/cache not loaded in PG mode: call loadModelProfileMapCacheAsync\(\)/)
+      expect(() => listModelProfileMap()).toThrow(/loadModelProfileMapCacheAsync/)
+    } else {
+      expect(getModelProfileMapEntry('build_strong')?.model_id).toBe('uncached-write')
+      expect(listModelProfileMap().some((r) => r.model_id === 'uncached-write')).toBe(true)
+    }
+    await loadModelProfileMapCacheAsync()
     expect(getModelProfileMapEntry('build_strong')?.model_id).toBe('uncached-write')
-    expect(listModelProfileMap().some((r) => r.model_id === 'uncached-write')).toBe(true)
-  })
-
-  it('a cache loaded for a closed connection is never served: the table of the new handle is read', async () => {
-    await setModelProfileMapEntry('build_strong', 'old-handle-value', 'dashboard')
-    // the connection initialiser alone (no cache load) hands out a fresh database, migrated and re-seeded
-    // (migration 0054 runs as part of it) but with none of the writes made against the old handle.
-    connectionInitDatabase(':memory:')
-    expect(getModelProfileMapEntry('build_strong')?.model_id).toBe('claude-sonnet-5')
   })
 })

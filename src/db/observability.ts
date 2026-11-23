@@ -9,7 +9,7 @@ import { Memory, MemoryVersion } from './memory.js'
 import { DashboardUser, DashboardUserPublic, lockAdminRows } from './sessions.js'
 import { syncVecMemoryDelete } from './vector.js'
 import { resolveWriteTenant } from './write-tenant.js'
-import { reloadAgentSettingsCache } from './agent-settings-cache.js'
+import { loadAgentSettingsCacheAsync } from './agent-settings-cache.js'
 import { logger } from '../logger.js'
 import { purgeSecretsForTenant } from '../web/vault.js'
 import { GENAI_TOKEN_BUCKET_BOUNDS } from '../otel-genai.js'
@@ -686,10 +686,11 @@ export async function deleteTenant(tenantId: string): Promise<TenantDeleteResult
   })
 
   // agent_settings is one of TENANT_PURGE_AGENT_KEYED_TABLES above, written in the transaction,
-  // bypassing the synchronous write-through cache (agent-settings-cache.ts). Reload it now the
+  // bypassing the synchronous write-through cache (agent-settings-cache.ts). Load it again now the
   // transaction has committed -- database first, then the cache, same rule as every other writer of
-  // that table. No await between the commit and the reload except the promise hop of dbx.tx itself.
-  reloadAgentSettingsCache()
+  // that table. Through the facade and awaited: the synchronous reload read the raw SQLite handle, which
+  // on the PostgreSQL backend is the wrong database (or none), and left the cache of the purged tenant's agents.
+  await loadAgentSettingsCacheAsync()
 
   // The one non-SQL step, after the commit (see the header): the vault.json entries of the tenant.
   let secretsDeleted: number
