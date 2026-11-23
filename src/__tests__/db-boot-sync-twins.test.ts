@@ -92,6 +92,13 @@ describe('boot-synchronous twins stay inside the boot chain', () => {
     expect(filesMentioning(twin, SOURCES)).toEqual([...allowed].sort())
   })
 
+  // A twin that was removed (its module went async, so the boot chain no longer needs it) stays removed: a call of it
+  // or a new declaration under the same name fails here, because the table above only knows the twins that exist.
+  const REMOVED_TWINS = ['enrollDashboardApiTokenSync'] as const
+  it.each(REMOVED_TWINS)('%s is removed: no source file mentions it (outside a comment)', (twin) => {
+    expect(filesMentioning(twin, SOURCES)).toEqual([])
+  })
+
   // The table is checked against an independent source: a twin carries a `// @boot-sync-twin` line above its
   // declaration. Deleting a row (which would make a twin unguarded and fail nothing above) or adding a twin
   // without a row both fail here.
