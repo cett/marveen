@@ -273,7 +273,7 @@ describe('the boot report', () => {
   })
 
   it('the boot sequence calls it after the database is up', () => {
-    const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'index.ts'), 'utf8')
+    const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'main.ts'), 'utf8')
     const up = src.indexOf('await initDatabaseAsync()')
     const call = src.indexOf("runAs.system('boot-sequence', () => warnTenantlessWriteRoleUsers())")
     expect(up).toBeGreaterThan(-1)

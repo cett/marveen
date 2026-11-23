@@ -45,7 +45,7 @@ describe('fail-closed', () => {
   });
 
   it('a clean, readable set passes', () => {
-    const r = runGate([f('src/index.ts', 'export const x = 1;\n')]);
+    const r = runGate([f('src/main.ts', 'export const x = 1;\n')]);
     expect(r.ok).toBe(true);
     expect(r.scannedCount).toBe(1);
   });

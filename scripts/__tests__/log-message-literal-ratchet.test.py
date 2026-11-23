@@ -126,7 +126,7 @@ class TestCli(unittest.TestCase):
             counts = json.load(fh)['counts']
         # (obj, msg) => logger.warn(obj, msg) adapters of an injected log interface, and a throttling helper whose
         # seven callers each pass a literal. A new entry here needs a reason in the pull request.
-        self.assertEqual(counts, {'index.ts': 4, 'web/token-shadow.ts': 1})
+        self.assertEqual(counts, {'main.ts': 4, 'web/token-shadow.ts': 1})
 
 
 if __name__ == '__main__':

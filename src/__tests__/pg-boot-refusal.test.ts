@@ -17,6 +17,9 @@ let pgLoaded: boolean
 
 async function load() {
   vi.resetModules()
+  // the bootstrap (src/index.ts) sets the snapshot before anything reads config.ts; these cells boot without it, so they set
+  // the same empty snapshot first (config.ts refuses a PostgreSQL URL without one)
+  ;(await import('../config-snapshot.js')).setConfigSnapshot({})
   const boot = await import('../db/pg-boot.js')
   const db = await import('../db.js')
   const facade = await import('../db/facade.js')
@@ -237,8 +240,8 @@ describe('refuseProcessOnPg', () => {
   })
 })
 
-describe('the process boot (src/index.ts)', () => {
-  const src = readFileSync(new URL('../index.ts', import.meta.url), 'utf-8')
+describe('the process boot (src/main.ts)', () => {
+  const src = readFileSync(new URL('../main.ts', import.meta.url), 'utf-8')
 
   it('awaits initDatabaseAsync before anything that listens, and a rejection there ends the process through main().catch', () => {
     const boot = src.indexOf('await initDatabaseAsync()')

@@ -16,7 +16,7 @@
 // closes). SIGINT (dev only) and SIGKILL / a crash leave no marker and read as `unclean` next time. That is the
 // correct reading, not a gap: those cases cannot be told apart from a crash, and index.ts's shutdown() is unchanged.
 //
-// Called from src/index.ts at the real process boot, NOT from initDatabase(): that also runs from every test
+// Called from src/main.ts at the real process boot, NOT from initDatabase(): that also runs from every test
 // against the shared store (see retireConfigOverridesFile in index.ts).
 
 import { randomUUID } from 'node:crypto'
@@ -97,7 +97,7 @@ export function registerShutdownMarker(bootId: string): () => void {
 }
 
 /**
- * Boot step for src/index.ts: record the boot, then register the marker. Never throws: a boot marker is
+ * Boot step for src/main.ts: record the boot, then register the marker. Never throws: a boot marker is
  * diagnostics, and a failure here must not stop the process from starting. Without a recorded boot there is no
  * boot_id to stamp, so no marker is registered (the next boot then reads `unknown` or `unclean`, which is honest).
  */

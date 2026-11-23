@@ -16,7 +16,7 @@ const touch = (p: string, body = '// x\n') => { mkdirSync(dirname(p), { recursiv
 const git = (...a: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', ...a], { cwd: root, stdio: 'pipe' })
 const FILES = [
   'scripts/self-pace-gate.mjs', 'scripts/email-send-gate.mjs', 'scripts/doctor.sh', 'scripts/agent-api.sh', 'scripts/hooks/egress-gate.mjs', 'scripts/lib/homoglyph.py',
-  'scripts/other-tool.sh', 'src/web/hook-registration-guard.ts', 'src/security/secret-gate.ts', 'src/index.ts', '.claude/settings.json',
+  'scripts/other-tool.sh', 'src/web/hook-registration-guard.ts', 'src/security/secret-gate.ts', 'src/main.ts', '.claude/settings.json',
 ]
 const check = () => checkProtectedIntegrity({ scriptsDir: join(root, 'scripts'), storeDir: join(root, 'store') })
 
@@ -63,7 +63,7 @@ describe('C3: the protected set equals HEAD', () => {
     expect(check().ok).toBe(true)
   })
   it('a change to a file outside the protected set, the settings files included, does not trip', () => {
-    touch(join(root, 'src/index.ts'), 'changed\n')
+    touch(join(root, 'src/main.ts'), 'changed\n')
     touch(join(root, 'scripts/other-tool.sh'), 'changed\n')
     touch(join(root, '.claude/settings.json'), '{"changed":true}\n')
     expect(check()).toEqual({ ok: true, modified: [], untracked: [], hidden: [], more: 0, error: null })

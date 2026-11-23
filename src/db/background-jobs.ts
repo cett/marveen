@@ -33,8 +33,8 @@ export interface BackgroundJob {
 }
 
 export const BACKGROUND_JOBS = {
-  'memory-decay': { file: 'src/index.ts', role: 'system', note: 'daily decay of the memory tiers, once at boot and then every 24 hours' },
-  'daily-digest': { file: 'src/index.ts', role: 'tenant-loop', note: 'daily log at 23:00 from the memories of the owner chat' },
+  'memory-decay': { file: 'src/main.ts', role: 'system', note: 'daily decay of the memory tiers, once at boot and then every 24 hours' },
+  'daily-digest': { file: 'src/main.ts', role: 'tenant-loop', note: 'daily log at 23:00 from the memories of the owner chat' },
   'store-watcher': { file: 'src/store-watcher.ts', role: 'system', note: 'file watcher on the store directory writing the audit trail' },
   'auth-state-sweep': { file: 'src/web.ts', role: 'system', note: 'hourly sweep of expired browser sessions and device keys' },
   'token-usage-collector': { file: 'src/web.ts', role: 'tenant-loop', note: 'transcript token usage per agent, each agent written under its tenant' },
@@ -62,7 +62,7 @@ export const BACKGROUND_JOBS = {
   'context-guard': { file: 'src/web/context-guard-runner.ts', role: 'agent', note: 'context saturation guard of one agent' },
   'context-restart-gate': { file: 'src/web/context-restart-gate-runner.ts', role: 'agent', note: 'context restart gate of one agent' },
   'background-task': { file: 'src/web/routes/background-tasks.ts', role: 'agent', note: 'poll and timeout of one background task of an agent' },
-  'boot-sequence': { file: 'src/index.ts', role: 'system', note: 'the fire-and-forget backfills and passes started while the dashboard boots' },
+  'boot-sequence': { file: 'src/main.ts', role: 'system', note: 'the fire-and-forget backfills and passes started while the dashboard boots' },
   'http-gate': { file: 'src/web.ts', role: 'system', note: 'the request before a principal is known: the auth lookups, the RBAC gate and the shadow counters' },
   'http-public': { file: 'src/db/background-jobs.ts', role: 'public', note: 'a route served without a credential: login, auth status, avatars, the static files' },
   'http-admin': { file: 'src/db/background-jobs.ts', role: 'admin', note: 'a global admin session (role admin, no tenant)' },
@@ -76,7 +76,7 @@ export type AgentJobName = { [K in BackgroundJobName]: (typeof BACKGROUND_JOBS)[
 
 /** Files that own an interval or a watcher and never reach a facade call (static pass, confirmed by the counter in operation). */
 export const NOT_DB_TIMER_FILES: Record<string, string> = {
-  'src/heartbeat.ts': 'legacy native heartbeat: initHeartbeat is imported but never started (src/index.ts)',
+  'src/heartbeat.ts': 'legacy native heartbeat: initHeartbeat is imported but never started (src/main.ts)',
   'src/web/agent-process-identity.ts': 'tmux polling',
   'src/web/channel-health-monitor.ts': 'tmux pane checks',
   'src/web/channel-invites.ts': 'invite files',

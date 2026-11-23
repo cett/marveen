@@ -318,8 +318,8 @@ describe('the request path wiring in web.ts (source pin)', () => {
     expect(web).toContain("runAs.system('shutdown-flush'")
   })
 
-  it('ends the boot phase after the dashboard listens, in both start branches of index.ts', () => {
-    const index = code(files.find((f) => f.path === 'src/index.ts')!.text)
+  it('ends the boot phase after the dashboard listens, in both start branches of main.ts', () => {
+    const index = code(files.find((f) => f.path === 'src/main.ts')!.text)
     expect(index.match(/endDbBootPhase\(\)/g)?.length).toBe(2)
     expect(index).toContain('setAgentTenantResolver(')
   })

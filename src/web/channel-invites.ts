@@ -7,7 +7,7 @@
 //    actually issue codes for unknown senders during the validity window.
 // 2. The invitee opens the deep-link (Telegram: t.me/<bot>?start=invite-TOKEN, Slack: CLI pair),
 //    the plugin creates a pending entry in access.json (standard pairing behaviour).
-// 3. This monitor (started in src/index.ts) polls both files every few seconds.
+// 3. This monitor (started in src/main.ts) polls both files every few seconds.
 //    When it sees a pending entry in access.json while at least one non-used,
 //    non-expired invite token exists in invites.json, it auto-approves the entry:
 //    marks the token used (in invites.json), moves the senderId into allowFrom
