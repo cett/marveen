@@ -812,21 +812,22 @@ export async function getKanbanSeqByIdPrefix(prefix: string): Promise<number | n
   return rows[0].seq
 }
 
-// Find an active (non-archived) kanban card by exact title match, or
-// undefined when none exists.
-export async function findActiveKanbanCardByTitle(title: string): Promise<KanbanCard | undefined> {
-  return dbx.get<KanbanCard>(`SELECT ${kanbanSelectList()} FROM kanban_cards WHERE title = ? AND archived_at IS NULL LIMIT 1`, title)
+// Find an active (non-archived) kanban card of ONE tenant by exact title match, or undefined when that tenant has none.
+// The tenant is a REQUIRED parameter and a clause of the query (not the ambient tenant of a block, which a session can
+// change): a scheduled task named like a card of another tenant must never find that card.
+export async function findActiveKanbanCardByTitle(title: string, tenantId: string): Promise<KanbanCard | undefined> {
+  return dbx.get<KanbanCard>(`SELECT ${kanbanSelectList()} FROM kanban_cards WHERE title = ? AND tenant_id = ? AND archived_at IS NULL LIMIT 1`, title, tenantId)
 }
 
-// Move the first active kanban card whose title equals `taskName` to the
-// 'waiting' status, appending it at the end of the waiting column.
+// Move the first active kanban card of the tenant whose title equals `taskName` to the
+// 'waiting' status, appending it at the end of the waiting column OF THAT TENANT.
 // Returns the card id when a match was found and updated, null otherwise.
 // Used by the scheduled-task fire-timeout watchdog when alerting about a
-// potentially stuck task.
-export async function markScheduledTaskKanbanWaiting(taskName: string): Promise<string | null> {
-  const card = await findActiveKanbanCardByTitle(taskName)
+// potentially stuck task; `tenantId` is the tenant of the task.
+export async function markScheduledTaskKanbanWaiting(taskName: string, tenantId: string): Promise<string | null> {
+  const card = await findActiveKanbanCardByTitle(taskName, tenantId)
   if (!card) return null
-  const maxResult = (await dbx.get("SELECT MAX(sort_order) as m FROM kanban_cards WHERE status = 'waiting' AND archived_at IS NULL")) as { m: number | null }
+  const maxResult = (await dbx.get("SELECT MAX(sort_order) as m FROM kanban_cards WHERE status = 'waiting' AND tenant_id = ? AND archived_at IS NULL", tenantId)) as { m: number | null }
   const sortOrder = (maxResult.m ?? 0) + 100
   // Compare-and-set on the status that was read: a card the owner moved (to done, say) while the sort order was
   // computed is not dragged back into waiting by the watchdog; the mark then reports "no card".

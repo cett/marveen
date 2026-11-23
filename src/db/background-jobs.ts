@@ -60,7 +60,7 @@ export const BACKGROUND_JOBS = {
   'workspace-docs-ttl-sweeper': { file: 'src/web/workspace-docs-ttl-sweeper.ts', role: 'system', note: 'deletes expired workspace documents' },
   'import-crawler': { file: 'src/web/import-crawler.ts', role: 'tenant-loop', note: 'due import sources of every tenant' },
   'message-router': { file: 'src/web/message-router.ts', role: 'hybrid', note: 'delivers the pending agent messages; the writes of one message use the tenant of that message' },
-  'schedule-runner': { file: 'src/web/schedule-runner.ts', role: 'hybrid', note: 'runs the due scheduled tasks; the writes of one run use the tenant of that task' },
+  'schedule-runner': { file: 'src/web/schedule-runner.ts', role: 'hybrid', note: 'runs the due scheduled tasks; the writes of one run use the tenant of that task. The D2 writes of the tick (pending_task_retries: no tenant column, privileged only) and the blackboard write (the stamp is derived inside the writer from the agent availability, which needs the cross-tenant read) stay system by class' },
   'auto-restart': { file: 'src/web/auto-restart-runner.ts', role: 'agent', note: 'scheduled restart of one agent session' },
   'context-guard': { file: 'src/web/context-guard-runner.ts', role: 'agent', note: 'context saturation guard of one agent' },
   'context-restart-gate': { file: 'src/web/context-restart-gate-runner.ts', role: 'agent', note: 'context restart gate of one agent' },

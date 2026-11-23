@@ -24,7 +24,7 @@ beforeEach(() => {
 describe('findActiveKanbanCardByTitle', () => {
   it('finds an active card by exact title match', async () => {
     await createKanbanCard({ id: 'card-1', title: 'reggeli-napindito' })
-    const found = await findActiveKanbanCardByTitle('reggeli-napindito')
+    const found = await findActiveKanbanCardByTitle('reggeli-napindito', 'default')
     expect(found).toBeDefined()
     expect(found!.id).toBe('card-1')
     expect(found!.title).toBe('reggeli-napindito')
@@ -32,19 +32,19 @@ describe('findActiveKanbanCardByTitle', () => {
 
   it('returns undefined when no card matches the title', async () => {
     await createKanbanCard({ id: 'card-1', title: 'something-else' })
-    expect(await findActiveKanbanCardByTitle('reggeli-napindito')).toBeUndefined()
+    expect(await findActiveKanbanCardByTitle('reggeli-napindito', 'default')).toBeUndefined()
   })
 
   it('does not match archived cards', async () => {
     await createKanbanCard({ id: 'card-1', title: 'reggeli-napindito' })
     await archiveKanbanCard('card-1')
-    expect(await findActiveKanbanCardByTitle('reggeli-napindito')).toBeUndefined()
+    expect(await findActiveKanbanCardByTitle('reggeli-napindito', 'default')).toBeUndefined()
   })
 
   it('does not do partial or case-insensitive matching', async () => {
     await createKanbanCard({ id: 'card-1', title: 'reggeli-napindito-full' })
-    expect(await findActiveKanbanCardByTitle('reggeli-napindito')).toBeUndefined()
-    expect(await findActiveKanbanCardByTitle('REGGELI-NAPINDITO-FULL')).toBeUndefined()
+    expect(await findActiveKanbanCardByTitle('reggeli-napindito', 'default')).toBeUndefined()
+    expect(await findActiveKanbanCardByTitle('REGGELI-NAPINDITO-FULL', 'default')).toBeUndefined()
   })
 })
 
@@ -52,7 +52,7 @@ describe('markScheduledTaskKanbanWaiting', () => {
   it('moves the matching active card to waiting and returns its id', async () => {
     await createKanbanCard({ id: 'card-1', title: 'daily-digest', status: 'in_progress' })
 
-    const result = await markScheduledTaskKanbanWaiting('daily-digest')
+    const result = await markScheduledTaskKanbanWaiting('daily-digest', 'default')
 
     expect(result).toBe('card-1')
     const card = await getKanbanCard('card-1')
@@ -62,7 +62,7 @@ describe('markScheduledTaskKanbanWaiting', () => {
   it('returns null and makes no changes when no card matches', async () => {
     await createKanbanCard({ id: 'card-1', title: 'unrelated-task', status: 'planned' })
 
-    const result = await markScheduledTaskKanbanWaiting('missing-task')
+    const result = await markScheduledTaskKanbanWaiting('missing-task', 'default')
 
     expect(result).toBeNull()
     // Unrelated card is untouched
@@ -75,24 +75,24 @@ describe('markScheduledTaskKanbanWaiting', () => {
     // materialize kanban cards. If it did, the board would fill with
     // auto-generated entries for every stuck task that was never manually
     // tracked. The fix-revert guard below locks this in place.
-    const result = await markScheduledTaskKanbanWaiting('task-without-board-entry')
+    const result = await markScheduledTaskKanbanWaiting('task-without-board-entry', 'default')
 
     expect(result).toBeNull()
-    expect(await findActiveKanbanCardByTitle('task-without-board-entry')).toBeUndefined()
+    expect(await findActiveKanbanCardByTitle('task-without-board-entry', 'default')).toBeUndefined()
   })
 
   it('is a no-op for archived cards (does not revive them)', async () => {
     await createKanbanCard({ id: 'card-1', title: 'daily-digest', status: 'done' })
     await archiveKanbanCard('card-1')
 
-    const result = await markScheduledTaskKanbanWaiting('daily-digest')
+    const result = await markScheduledTaskKanbanWaiting('daily-digest', 'default')
 
     expect(result).toBeNull()
   })
 
   it('records a status-transition event for auditing', async () => {
     await createKanbanCard({ id: 'card-1', title: 'daily-digest', status: 'in_progress' })
-    await markScheduledTaskKanbanWaiting('daily-digest')
+    await markScheduledTaskKanbanWaiting('daily-digest', 'default')
 
     // Verify the card status changed (the audit event is written inside
     // moveKanbanCard; the functional signal is the status itself).
@@ -103,7 +103,7 @@ describe('markScheduledTaskKanbanWaiting', () => {
     await createKanbanCard({ id: 'wait-1', title: 'earlier-task', status: 'waiting' })
     await createKanbanCard({ id: 'card-1', title: 'daily-digest', status: 'in_progress' })
 
-    await markScheduledTaskKanbanWaiting('daily-digest')
+    await markScheduledTaskKanbanWaiting('daily-digest', 'default')
 
     const moved = (await getKanbanCard('card-1'))!
     const existing = (await getKanbanCard('wait-1'))!
@@ -118,14 +118,14 @@ describe('markScheduledTaskKanbanWaiting', () => {
 describe('fix-revert guard: kanban coupling is load-bearing', () => {
   it('returns the card id (not null) when a matching active card exists', async () => {
     await createKanbanCard({ id: 'card-1', title: 'test-task', status: 'planned' })
-    const result = await markScheduledTaskKanbanWaiting('test-task')
+    const result = await markScheduledTaskKanbanWaiting('test-task', 'default')
     expect(result).not.toBeNull()
     expect(result).toBe('card-1')
   })
 
   it('actually changes the card status (not just returns an id)', async () => {
     await createKanbanCard({ id: 'card-1', title: 'test-task', status: 'planned' })
-    await markScheduledTaskKanbanWaiting('test-task')
+    await markScheduledTaskKanbanWaiting('test-task', 'default')
     expect((await getKanbanCard('card-1'))!.status).toBe('waiting')
   })
 })

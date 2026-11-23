@@ -237,7 +237,7 @@ describe('tracking is mirrored to the durable copy', () => {
 
   it('a timeout alert persists alerted, and a second sweep does not alert again', async () => {
     const r = await freshRunner()
-    await r.trackInflight(liveEntry({ injectedAt: NOW - 400_000, sawTurn: true }))
+    await r.trackInflight(liveEntry({ injectedAt: NOW - 400_000, sawTurn: true, tenantId: 'tenant-a' }))
     mockCapturePane.mockReturnValue('busy')
     await r.sweepInflightTasks(NOW)
     expect(mockKanbanWaiting).toHaveBeenCalledTimes(1)
@@ -289,7 +289,7 @@ describe('a failing persist never breaks the runner', () => {
 
   it('an alert and a flag update survive a failing mirror', async () => {
     const r = await freshRunner()
-    await r.trackInflight(liveEntry({ injectedAt: NOW - 400_000, sawTurn: true }))
+    await r.trackInflight(liveEntry({ injectedAt: NOW - 400_000, sawTurn: true, tenantId: 'tenant-a' }))
     failWrites = true
     mockCapturePane.mockReturnValue('busy')
     await expect(r.sweepInflightTasks(NOW)).resolves.toBeUndefined()
@@ -347,7 +347,10 @@ describe('restart: restore from the durable copy', () => {
     mockCapturePane.mockReturnValue('busy')
     await r.sweepInflightTasks(NOW)
     await r.sweepInflightTasks(NOW + 15_000)
-    expect(mockKanbanWaiting).toHaveBeenCalledTimes(1)
+    // A restored entry carries no tenant (it is not persisted), so the alert moves no card; it is still sent, once.
+    expect(mockKanbanWaiting).not.toHaveBeenCalled()
+    const alerts = vi.mocked(logger.info).mock.calls.filter((c) => typeof c[1] === 'string' && c[1].includes('task-timeout alert'))
+    expect(alerts).toHaveLength(1)
     expect(storedAll()[KEY]!['alerted']).toBe(true)
   })
 
