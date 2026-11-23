@@ -8,10 +8,10 @@ import { join, relative } from 'node:path'
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import {
-  BACKGROUND_JOBS, NOT_DB_TIMER_FILES, systemJob, runAsAgentJob, runAsRequest,
+  BACKGROUND_JOBS, NOT_DB_TIMER_FILES, systemJob, runAsAgentJob, runAsItemTenant, runAsRequest,
   setAgentTenantResolver, resetAgentTenantResolver,
 } from '../db/background-jobs.js'
-import { currentDbContext, getDbContextStats, resetDbContextForTest, noteTenantResolved, runAs } from '../db/context.js'
+import { currentDbContext, getDbContextStats, resetDbContextForTest, noteTenantResolved, runAs, withTrace } from '../db/context.js'
 import { readBody, setRequestBodyObserver } from '../web/http-helpers.js'
 import { startDbContextReport, DB_CONTEXT_REPORT_INTERVAL_MS } from '../web/db-context-report.js'
 import { logger } from '../logger.js'
@@ -120,6 +120,57 @@ describe('systemJob', () => {
     await vi.advanceTimersByTimeAsync(25)
     clearInterval(timer)
     expect(seen).toEqual(['rbac-mode-refresh', 'rbac-mode-refresh'])
+  })
+})
+
+describe('runAsItemTenant', () => {
+  it('opens a tenant context with no trace inherited, even inside a request that carries one', () => {
+    const trace = { traceId: 'a'.repeat(32), spanId: 'b'.repeat(16) }
+    const inRequest = runAs.tenant('tenant-z', () => withTrace(trace, () => ({ // trace attaches to the running context
+      carried: currentDbContext(),
+      block: runAsItemTenant('message-router', 'tenant-a', () => currentDbContext()),
+    })))
+    expect(inRequest.carried?.traceId).toBe(trace.traceId)
+    expect(inRequest.block).toEqual({ role: 'tenant', tenantId: 'tenant-a' })
+    expect(runAsItemTenant('import-crawler', 'tenant-a', () => currentDbContext())).toEqual({ role: 'tenant', tenantId: 'tenant-a' })
+  })
+
+  it('returns the result of the block, sync and async, and restores the outer context', async () => {
+    expect(runAsItemTenant('message-router', 'tenant-a', () => 42)).toBe(42)
+    const outer = await runAs.system('message-router', async () => {
+      const inside = await runAsItemTenant('message-router', 'tenant-a', async () => {
+        await Promise.resolve()
+        return currentDbContext()?.tenantId
+      })
+      return { inside, after: currentDbContext() }
+    }, { inheritTrace: false })
+    expect(outer.inside).toBe('tenant-a')
+    expect(outer.after).toEqual({ role: 'system', name: 'message-router' })
+  })
+
+  it('throws on an empty or a non-string tenant id, naming the job, and runs nothing', () => {
+    const body = vi.fn(() => 1)
+    expect(() => runAsItemTenant('message-router', '', body)).toThrow(/message-router/)
+    expect(() => runAsItemTenant('import-crawler', undefined as unknown as string, body)).toThrow(TypeError)
+    expect(() => runAsItemTenant('import-crawler', null as unknown as string, body)).toThrow(TypeError)
+    expect(body).not.toHaveBeenCalled()
+  })
+
+  it('a block opened from a system job is not an escalation, a system opened INSIDE the block is', () => {
+    runAs.system('message-router', () => {
+      runAsItemTenant('message-router', 'tenant-a', () => 1)
+      runAs.system('message-router', () => 1)
+    }, { inheritTrace: false })
+    expect(getDbContextStats().escalations).toBe(0)
+    runAs.system('message-router', () => {
+      runAsItemTenant('message-router', 'tenant-a', () => runAs.system('message-router', () => 1))
+    }, { inheritTrace: false })
+    expect(getDbContextStats().escalations).toBe(1)
+  })
+
+  it('two items of two tenants each see their own tenant', () => {
+    const seen = ['tenant-a', 'tenant-b'].map((t) => runAsItemTenant('import-crawler', t, () => currentDbContext()?.tenantId))
+    expect(seen).toEqual(['tenant-a', 'tenant-b'])
   })
 })
 

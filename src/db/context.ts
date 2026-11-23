@@ -63,6 +63,18 @@ export interface DbTrace {
 
 const store = new AsyncLocalStorage<DbContext>()
 
+// Escalations: a `runAs.system|admin` opened while the running context is a `tenant` or an `agent` one. Under row-level
+// security a transaction has ONE role, and a tenant context that climbs to system or admin is the pattern the policies exist
+// to forbid. For now it is only COUNTED, never refused (enforcement comes with the policies). Declared next to the store so
+// it exists before any opener can run.
+let escalations = 0
+
+/** Counts an escalation when the running context is a tenant or an agent one; every other outer context (none, system, admin, viewer, public) is not one. */
+function noteEscalation(): void {
+  const outer = store.getStore()?.role
+  if (outer === 'tenant' || outer === 'agent') escalations += 1
+}
+
 function requireId(kind: string, value: string): string {
   if (typeof value !== 'string' || value.length === 0) throw new TypeError(`runAs.${kind}: a non-empty id is required`)
   return value
@@ -91,10 +103,14 @@ function withInheritedTrace(ctx: DbContext, opts?: RunAsOptions): DbContext {
 
 export const runAs = {
   system<T>(name: string, fn: () => T, opts?: RunAsOptions): T {
-    return store.run(withInheritedTrace({ role: 'system', name: requireId('system', name) }, opts), fn)
+    const ctx = withInheritedTrace({ role: 'system', name: requireId('system', name) }, opts)
+    noteEscalation()
+    return store.run(ctx, fn)
   },
   admin<T>(name: string, fn: () => T, opts?: RunAsOptions): T {
-    return store.run(withInheritedTrace({ role: 'admin', name: requireId('admin', name) }, opts), fn)
+    const ctx = withInheritedTrace({ role: 'admin', name: requireId('admin', name) }, opts)
+    noteEscalation()
+    return store.run(ctx, fn)
   },
   viewer<T>(name: string, fn: () => T, opts?: RunAsOptions): T {
     return store.run(withInheritedTrace({ role: 'viewer', name: requireId('viewer', name) }, opts), fn)
@@ -254,6 +270,11 @@ export interface DbContextStats {
   tenantMismatches: number
   /** Agent job ticks skipped because the tenant of the agent could not be resolved (fail closed), by job name. */
   tenantUnresolved: Record<string, number>
+  /**
+   * `runAs.system|admin` opened while the running context was a `tenant` or an `agent` one (a tenant block that climbs to a
+   * wider role). Counted, never refused: enforcement is the policies' job. A job that follows the per-item rule keeps it at 0.
+   */
+  escalations: number
   /** When the process started and when the boot phase ended (ms since the epoch): a measurement window is the difference of two snapshots. */
   startedAt: number
   bootEndedAt: number | null
@@ -353,6 +374,7 @@ export function getDbContextStats(): DbContextStats {
     anonymous: anonymousCalls,
     tenantMismatches,
     tenantUnresolved: Object.fromEntries(tenantUnresolvedByJob),
+    escalations,
     startedAt,
     bootEndedAt,
     byRole: { ...roleCalls },
@@ -373,6 +395,7 @@ export function resetDbContextStats(): void {
   sampledSeen = 0
   anonymousCalls = 0
   tenantMismatches = 0
+  escalations = 0
   callSites.clear()
   jobCalls.clear()
   tenantUnresolvedByJob.clear()

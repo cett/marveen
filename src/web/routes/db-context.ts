@@ -32,6 +32,7 @@ export function tryHandleDbContext(ctx: RouteContext): Promise<boolean> {
       duringBoot: stats.duringBoot,
     },
     tenantMismatches: stats.tenantMismatches,
+    escalations: stats.escalations,
     byRole: stats.byRole,
     byJob: stats.byJob,
     sites: stats.sites.slice(0, DB_CONTEXT_TOP_SITES),

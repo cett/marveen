@@ -43,6 +43,13 @@ describe('GET /api/admin/db-context', () => {
     expect(r.body.bootEndedAt === null || typeof r.body.bootEndedAt === 'number').toBe(true)
     expect(typeof r.body.startedAt).toBe('number')
     expect(r.body.registeredJobs).toBeGreaterThan(20)
+    expect(r.body.escalations).toBe(0)
+  })
+
+  it('exposes the escalation counter next to the other counters', async () => {
+    runAs.tenant('tenant-a', () => runAs.system('rbac-mode-refresh', () => 1))
+    const r = await call('GET', '/api/admin/db-context')
+    expect(r.body.escalations).toBe(1)
   })
 
   it('refuses a caller that is not an admin even when the gate let it through (shadow mode)', async () => {

@@ -2,7 +2,7 @@
 // The first group pins the AsyncLocalStorage traps the migration waves rely on.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { initDatabase, dbx, runAs, currentDbContext, getDbContextStats, resetDbContextStats, endDbBootPhase } from '../db.js'
+import { initDatabase, dbx, runAs, currentDbContext, getDbContextStats, resetDbContextStats, endDbBootPhase, withTrace, withUserId } from '../db.js'
 import { logger } from '../logger.js'
 import { ambientInTx, testDbMode, useTestDb } from './helpers/with-test-db.js'
 
@@ -111,6 +111,26 @@ describe('AsyncLocalStorage traps', () => {
     expect(trail).toEqual(['outer', 'inner', 'outer', undefined])
   })
 
+  it('a nested runAs keeps the outer trace and does NOT carry the session user id', () => {
+    const trace = { traceId: 'a'.repeat(32), spanId: 'b'.repeat(16) }
+    // withTrace and withUserId attach to a RUNNING context, so they go inside the opener (as runAsRequest does)
+    const seen = runAs.tenant('tenant-a', () => withTrace(trace, () => withUserId('user-a', () => ({
+      outer: currentDbContext(),
+      nestedTenant: runAs.tenant('tenant-b', () => currentDbContext()),
+      nestedSystem: runAs.system('job-a', () => currentDbContext()),
+      nestedAdmin: runAs.admin('adm-a', () => currentDbContext()),
+      nestedAgent: runAs.agent('agent-a', 'tenant-b', () => currentDbContext()),
+    }))))
+    // the outer context holds the user id; every nested one is another identity, with the trace and without the user
+    expect(seen.outer?.userId).toBe('user-a')
+    for (const nested of [seen.nestedTenant, seen.nestedSystem, seen.nestedAdmin, seen.nestedAgent]) {
+      expect(nested?.traceId).toBe(trace.traceId)
+      expect(nested?.spanId).toBe(trace.spanId)
+      expect(nested).not.toHaveProperty('userId')
+    }
+    expect(seen.nestedTenant).toEqual({ role: 'tenant', tenantId: 'tenant-b', ...trace })
+  })
+
   it('two concurrent runAs do not see each other', async () => {
     const [a, b] = await Promise.all([
       runAs.tenant('a', async () => { await sleep(5); return currentDbContext()?.tenantId }),
@@ -208,6 +228,71 @@ describe('the measurement view of the counter', () => {
     expect(stats.byJob).toEqual({ 'http-admin': 1, 'http-global-viewer': 2, 'http-public': 1 })
     expect(stats.anonymous).toBe(1)
     expect(stats.unexpected).toBe(0)
+  })
+
+  describe('escalations: a runAs.system|admin opened inside a tenant or an agent context', () => {
+    it('counts a system and an admin opened inside a tenant, and inside an agent, and does not refuse them', () => {
+      expect(getDbContextStats().escalations).toBe(0)
+      const inTenant = runAs.tenant('tenant-a', () => runAs.system('job-a', () => currentDbContext()))
+      expect(inTenant).toEqual({ role: 'system', name: 'job-a' })
+      expect(getDbContextStats().escalations).toBe(1)
+      runAs.tenant('tenant-a', () => runAs.admin('adm-a', () => 1))
+      expect(getDbContextStats().escalations).toBe(2)
+      runAs.agent('agent-a', 'tenant-a', () => runAs.system('job-a', () => 1))
+      runAs.agent('agent-a', 'tenant-a', () => runAs.admin('adm-a', () => 1))
+      expect(getDbContextStats().escalations).toBe(4)
+    })
+
+    it('does not count a system opened outside a context, inside system, admin, viewer or public, or after a tenant block returned', () => {
+      runAs.system('job-a', () => 1)
+      runAs.admin('adm-a', () => 1)
+      runAs.system('job-a', () => runAs.system('job-b', () => 1))
+      runAs.system('job-a', () => runAs.admin('adm-a', () => 1))
+      runAs.admin('adm-a', () => runAs.system('job-a', () => 1))
+      runAs.viewer('viewer-a', () => runAs.system('job-a', () => 1))
+      runAs.public('public-a', () => runAs.admin('adm-a', () => 1))
+      // the block returned: a system opened AFTER it (the global write of the job) is not an escalation
+      runAs.system('job-a', () => {
+        runAs.tenant('tenant-a', () => 1)
+        runAs.system('job-a-global', () => 1)
+      })
+      expect(getDbContextStats().escalations).toBe(0)
+    })
+
+    it('does not count the opening of a tenant, an agent, a viewer or a public context inside a tenant (only system and admin climb)', () => {
+      runAs.tenant('tenant-a', () => runAs.tenant('tenant-b', () => 1))
+      runAs.tenant('tenant-a', () => runAs.agent('agent-a', 'tenant-a', () => 1))
+      runAs.tenant('tenant-a', () => runAs.viewer('viewer-a', () => 1))
+      runAs.tenant('tenant-a', () => runAs.public('public-a', () => 1))
+      expect(getDbContextStats().escalations).toBe(0)
+    })
+
+    it('follows the await: a system opened after an await inside the tenant block still counts', async () => {
+      await runAs.tenant('tenant-a', async () => {
+        await sleep(1)
+        runAs.system('job-a', () => 1)
+      })
+      expect(getDbContextStats().escalations).toBe(1)
+    })
+
+    it('a reset zeroes it', () => {
+      runAs.tenant('tenant-a', () => runAs.system('job-a', () => 1))
+      expect(getDbContextStats().escalations).toBe(1)
+      resetDbContextStats()
+      expect(getDbContextStats().escalations).toBe(0)
+    })
+  })
+
+  it('a reset zeroes EVERY role counter, admin, viewer and public included', async () => {
+    await runAs.system('sweeper', async () => { await dbx.get('SELECT 1') })
+    await runAs.tenant('tenant-a', async () => { await dbx.get('SELECT 2') })
+    await runAs.agent('agent-a', 'tenant-a', async () => { await dbx.get('SELECT 3') })
+    await runAs.admin('http-admin', async () => { await dbx.get('SELECT 4') })
+    await runAs.viewer('http-global-viewer', async () => { await dbx.get('SELECT 5') })
+    await runAs.public('http-public', async () => { await dbx.get('SELECT 6') })
+    expect(getDbContextStats().byRole).toEqual({ system: 1, tenant: 1, agent: 1, admin: 1, viewer: 1, public: 1 })
+    resetDbContextStats()
+    expect(getDbContextStats().byRole).toEqual({ system: 0, tenant: 0, agent: 0, admin: 0, viewer: 0, public: 0 })
   })
 
   it('keeps the calls made before the boot phase ended apart from the unexpected ones', async () => {

@@ -160,6 +160,23 @@ async function tenantOf(job: BackgroundJobName, agentId: string): Promise<string
 }
 
 /**
+ * The per-item tenant block of a job that reads across tenants in its `system` context (the pending queue, the due sources,
+ * the due tasks): the writes that belong to ONE item run in `runAs.tenant(<the item's tenant>)`, and the block returns its
+ * result. Under row-level security a wrong stamp then fails instead of writing into another tenant.
+ *
+ * The block carries no trace (a job is not part of the request that created its timer), and an empty tenant id throws: the
+ * job decides what to do with such an item (skip it and count it, never run it as `default`). A global write of the job
+ * (`scheduled_tasks`, `system_config`, `token_usage_cursors`) belongs OUTSIDE the block, in the job's own `system` context:
+ * a `runAs.system` opened inside the block counts as an escalation (`getDbContextStats().escalations`).
+ */
+export function runAsItemTenant<T>(job: BackgroundJobName, tenantId: string, fn: () => T): T {
+  if (typeof tenantId !== 'string' || tenantId.length === 0) {
+    throw new TypeError(`runAsItemTenant(${job}): a non-empty tenant id is required`)
+  }
+  return runAs.tenant(tenantId, fn, JOB_CONTEXT)
+}
+
+/**
  * Runs `fn` as `runAs.agent(agentId, tenant)` for a job whose work belongs to one agent.
  *
  * A failed tenant lookup is FAIL CLOSED: `fn` is NOT run, a warning names the job and the agent (never a tenant: none was
