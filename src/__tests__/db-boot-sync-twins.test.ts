@@ -26,9 +26,6 @@ const BOOT_SYNC_TWINS: Readonly<Record<string, readonly string[]>> = {
   // migrateFederationConfigFromFile (the other twin) writes its row through setSystemConfigSync.
   setSystemConfigSync: ['db/system-config.ts', 'db/federation.ts', 'db/index.ts'],
   migrateFederationConfigFromFile: ['db/federation.ts', 'db/index.ts'],
-  // startWebServer enrolls the file token before it listens and cannot await: the bootstrap helper it calls is
-  // the one caller, outside db/index.ts.
-  enrollDashboardApiTokenSync: ['db/api-tokens.ts', 'web/token-bootstrap.ts'],
   replaceClaudePlanRowsSync: ['db/claude-plans.ts', 'db/index.ts'],
   activatePlanForAgentSync: ['db/claude-plans.ts', 'db/index.ts'],
   // Boot-only, on the raw handle (no facade call before initDatabase returns); it has no asynchronous counterpart.

@@ -121,6 +121,8 @@ export const PORTED: readonly string[] = [
   'src/__tests__/vector-memory-reads.test.ts',
   'src/__tests__/db-cost-budgets-file-import.test.ts',
   'src/__tests__/db-claude-plans-seed.test.ts',
+  'src/__tests__/token-bootstrap.test.ts',
+  'src/__tests__/api-token-enroll-race.test.ts',
 ]
 
 /** Test files (same form) that do not, each with the reason. */
@@ -131,7 +133,6 @@ export const EXCLUDED: Readonly<Record<string, ExcludeReason>> = {
   'src/__tests__/db-facade-tx.test.ts': 'sqlite-only',
   'src/__tests__/db-facade.test.ts': 'sqlite-only',
   'src/__tests__/with-test-db.test.ts': 'sqlite-only',
-  'src/__tests__/db-api-tokens-enroll-twin.test.ts': 'raw-db',
   // two cells assert the SQLite planner (EXPLAIN QUERY PLAN) and the SQLite catalog (sqlite_master) of the trace indexes;
   // on PostgreSQL a tiny test table gets a sequential scan whatever the index says, so the same assertion would need a
   // planner switch (enable_seqscan) and would test the switch, not the filter
@@ -139,7 +140,7 @@ export const EXCLUDED: Readonly<Record<string, ExcludeReason>> = {
 }
 
 /** The number of EXCLUDED files the partition test accepts. It only goes down. */
-export const EXCLUDED_BASELINE = 8
+export const EXCLUDED_BASELINE = 7
 
 /** A file uses useTestDb when it imports the helper AND calls useTestDb( (a file that only imports resetDbTestState or testDbMode does not). */
 const IMPORT = /from\s+['"][^'"]*helpers\/with-test-db(\.js)?['"]/

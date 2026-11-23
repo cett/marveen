@@ -37,9 +37,15 @@ export interface ValidApiTokenRow {
  * enrolled is never touched, so a row revoked on purpose stays revoked, and so does the old token of an
  * A -> B -> A restore of the token file (rotate by deleting the file, which draws a fresh token; recover a
  * locked-out file token with the rollback in web/token-bootstrap.ts).
+ *
+ * Two processes can enrol at once (the old dashboard is still alive while the new one boots). The insert and the sweep
+ * are two statements, and on PostgreSQL they do not serialise on their own: the per-name lock of the rotation paths
+ * (lockApiTokenName, key `dashboard`) is taken FIRST, so a second enrolment waits for the first one's sweep and then
+ * revokes the row the first one inserted. Without it the two sweeps can each miss the other's row.
  */
 export async function enrollDashboardApiToken(tokenHash: string, now: number): Promise<number> {
   return dbx.tx(async (tx) => {
+    await lockApiTokenName(tx, 'dashboard')
     const inserted = (await tx.run(`INSERT INTO api_tokens
            (token_hash, name, role, created_at)
          VALUES (?, 'dashboard', 'admin', ?)
@@ -48,30 +54,6 @@ export async function enrollDashboardApiToken(tokenHash: string, now: number): P
        WHERE name = 'dashboard' AND token_hash != ? AND revoked_at IS NULL`, now, tokenHash)
     return inserted
   })
-}
-
-/**
- * The boot-synchronous twin of enrollDashboardApiToken, on the raw connection: startWebServer enrolls the file
- * token before it listens and returns an http.Server, so it cannot await. Same two statements, same rules, same
- * return value -- keep the two in step. Only web/token-bootstrap.ts calls it (db-boot-sync-twins.test.ts pins that).
- */
-// @boot-sync-twin
-export function enrollDashboardApiTokenSync(tokenHash: string, now: number): number {
-  return db.transaction(() => {
-    const inserted = db
-      .prepare(
-        `INSERT INTO api_tokens
-           (token_hash, name, role, created_at)
-         VALUES (?, 'dashboard', 'admin', ?)
-         ON CONFLICT DO NOTHING`,
-      )
-      .run(tokenHash, now).changes
-    db.prepare(
-      `UPDATE api_tokens SET revoked_at = ?
-       WHERE name = 'dashboard' AND token_hash != ? AND revoked_at IS NULL`,
-    ).run(now, tokenHash)
-    return inserted
-  })()
 }
 
 /** The token row when it is neither revoked nor expired at `now`. */
