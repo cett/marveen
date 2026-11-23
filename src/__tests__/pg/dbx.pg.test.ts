@@ -339,6 +339,14 @@ describe('the tenant context on the server', () => {
     expect(await dbx.tx(read)).toEqual({ t: '', r: '', a: '', j: '' })
   })
 
+  it('the three request roles reach the server as they are: admin, viewer and public, each with its name as app.job', async () => {
+    const dbx = plainDbx(2)
+    const read = (tx: { get<T>(sql: string): Promise<T | undefined> }) => tx.get<{ t: string; r: string; a: string; j: string }>(GUCS)
+    expect(await runAs.admin('http-admin', () => dbx.tx(read))).toEqual({ t: '', r: 'admin', a: '', j: 'http-admin' })
+    expect(await runAs.viewer('http-global-viewer', () => dbx.tx(read))).toEqual({ t: '', r: 'viewer', a: '', j: 'http-global-viewer' })
+    expect(await runAs.public('http-public', () => dbx.tx(read))).toEqual({ t: '', r: 'public', a: '', j: 'http-public' })
+  })
+
   it('a statement outside a transaction sees it too, and a savepoint body keeps it', async () => {
     const dbx = plainDbx(2)
     expect(await runAs.tenant('tenant-a', () => dbx.get<{ t: string }>(GUCS))).toMatchObject({ t: 'tenant-a', r: 'tenant' })

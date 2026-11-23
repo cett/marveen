@@ -55,10 +55,15 @@ export const PG_CONTEXT_SETTINGS = ['app.tenant_id', 'app.role', 'app.agent_id',
 export const PG_SET_CONTEXT_SQL =
   "SELECT set_config('app.tenant_id', $1, true), set_config('app.role', $2, true), set_config('app.agent_id', $3, true), set_config('app.job', $4, true)"
 
-/** The values of the four settings for a context; no context is four empty strings (never a default tenant). */
+/**
+ * The values of the four settings for a context; no context is four empty strings (never a default tenant). `app.role` is
+ * the role as it is (the six of DbRole). `app.job` is the name of every role that carries one (system, admin, viewer,
+ * public) and empty for tenant and agent, which are not named.
+ */
 export function pgContextValues(ctx: DbContext | undefined): [string, string, string, string] {
   if (!ctx) return ['', '', '', '']
-  return [ctx.tenantId ?? '', ctx.role, ctx.agentId ?? '', ctx.role === 'system' ? (ctx.name ?? '') : '']
+  const named = ctx.role !== 'tenant' && ctx.role !== 'agent'
+  return [ctx.tenantId ?? '', ctx.role, ctx.agentId ?? '', named ? (ctx.name ?? '') : '']
 }
 
 export interface PgTxOptions extends TxOptions {

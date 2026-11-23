@@ -32,7 +32,7 @@ function call(method: string, path: string): Promise<{ handled: boolean; status:
 describe('GET /api/admin/db-context', () => {
   it('splits the calls into expected, unexpected and anonymous and lists the sites without a context', async () => {
     await runAs.system('rbac-mode-refresh', async () => { await dbx.get('SELECT 1') })
-    await runAs.system('http-public', async () => { await dbx.get('SELECT 2') })
+    await runAs.public('http-public', async () => { await dbx.get('SELECT 2') })
     await dbx.get('SELECT 3')
     const r = await call('GET', '/api/admin/db-context')
     expect(r.handled).toBe(true)

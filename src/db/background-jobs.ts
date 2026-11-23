@@ -11,6 +11,9 @@
 //   hybrid         a system job that switches to the tenant of the item it handles for the writes (message router, schedule runner).
 //   tenant-loop    a system job today that visits every tenant (token usage, import crawler, the daily digest). The row-level
 //                  security step turns each visit into its own `runAs.tenant`; until then the loop is one system context.
+//   admin          a global admin session (no tenant): `runAs.admin(name)`, opened by `runAsRequest`.
+//   viewer         any other authenticated session without a tenant: `runAs.viewer(name)`, opened by `runAsRequest`.
+//   public         a route served without a credential: `runAs.public(name)`, opened by `runAsRequest`.
 //
 // `NOT_DB_TIMER_FILES` are the files that own an interval or a watcher and, by a static call-graph pass over the whole
 // of src (the recipe is in docs/db-facade.md), never reach a facade call. The counter confirms it in operation: such a
@@ -18,7 +21,7 @@
 
 import { runAs, withTrace, type DbTrace, type RunAsOptions } from './context.js'
 
-export type JobRole = 'system' | 'agent' | 'hybrid' | 'tenant-loop'
+export type JobRole = 'system' | 'agent' | 'hybrid' | 'tenant-loop' | 'admin' | 'viewer' | 'public'
 
 export interface BackgroundJob {
   /** The file that starts the job. */
@@ -60,9 +63,9 @@ export const BACKGROUND_JOBS = {
   'background-task': { file: 'src/web/routes/background-tasks.ts', role: 'agent', note: 'poll and timeout of one background task of an agent' },
   'boot-sequence': { file: 'src/index.ts', role: 'system', note: 'the fire-and-forget backfills and passes started while the dashboard boots' },
   'http-gate': { file: 'src/web.ts', role: 'system', note: 'the request before a principal is known: the auth lookups, the RBAC gate and the shadow counters' },
-  'http-public': { file: 'src/db/background-jobs.ts', role: 'system', note: 'a route served without a credential: login, auth status, avatars, the static files' },
-  'http-admin': { file: 'src/db/background-jobs.ts', role: 'system', note: 'a global admin session (role admin, no tenant)' },
-  'http-global-viewer': { file: 'src/db/background-jobs.ts', role: 'system', note: 'an authenticated caller of any other role without a tenant (a global viewer); what it may see under row-level security is a PostgreSQL-step decision' },
+  'http-public': { file: 'src/db/background-jobs.ts', role: 'public', note: 'a route served without a credential: login, auth status, avatars, the static files' },
+  'http-admin': { file: 'src/db/background-jobs.ts', role: 'admin', note: 'a global admin session (role admin, no tenant)' },
+  'http-global-viewer': { file: 'src/db/background-jobs.ts', role: 'viewer', note: 'an authenticated caller of any other role without a tenant (a global viewer); under row-level security it sees no tenant rows' },
   'http-metrics': { file: 'src/otel-http.ts', role: 'system', note: 'the request counters written when a response is done (an event callback does not carry the request context)' },
   'shutdown-flush': { file: 'src/web.ts', role: 'system', note: 'flushes the running state on SIGTERM' },
 } as const satisfies Record<string, BackgroundJob>
@@ -97,22 +100,23 @@ const JOB_CONTEXT: RunAsOptions = { inheritTrace: false }
 
 /**
  * The context of a request, from what the auth gate resolved: an agent token runs as that agent in its tenant, a
- * tenant caller as the tenant, and a caller without a credential as the named system job `http-public`.
+ * tenant caller as the tenant, and a caller without a credential as the `public` role (name `http-public`).
  *
- * A caller without a tenant (a global session) gets the unrestricted `http-admin` context ONLY when its role is `admin`.
- * Any other authenticated session role without a tenant is the separate, expected job `http-global-viewer`, so the unexpected count
- * stays clean and the PostgreSQL step can give it its own, restricted role. What it may read across tenants is decided there.
+ * A caller without a tenant (a global session) gets the unrestricted `admin` role (name `http-admin`) ONLY when its role is
+ * `admin`. Any other authenticated session role without a tenant is the `viewer` role (name `http-global-viewer`), so the
+ * unexpected count stays clean and row-level security can give it its own, restricted answer: no tenant rows (R4).
+ * The gate that resolves the principal before any of this runs stays `system` (`http-gate`).
  */
 export function runAsRequest<T>(who: { authenticated: boolean; role: string | undefined; agentId?: string; tenantId: string | null; trace?: DbTrace }, work: () => T): T {
   // The request's trace rides in the context the branch below opens, for every principal alike.
   const { trace } = who
   const fn = trace ? () => withTrace(trace, work) : work
-  if (!who.authenticated) return runAs.system('http-public', fn)
+  if (!who.authenticated) return runAs.public('http-public', fn)
   // An agent token without a tenant runs as the agent in the `default` tenant, the fallback of `resolveTenantId`. That is
   // today's rule, not the final one (Phase 2 decides it).
   if (who.agentId) return runAs.agent(who.agentId, who.tenantId ?? 'default', fn)
-  if (who.tenantId === null && who.role === 'admin') return runAs.system('http-admin', fn)
-  if (who.tenantId === null) return runAs.system('http-global-viewer', fn)
+  if (who.tenantId === null && who.role === 'admin') return runAs.admin('http-admin', fn)
+  if (who.tenantId === null) return runAs.viewer('http-global-viewer', fn)
   return runAs.tenant(who.tenantId, fn)
 }
 

@@ -6,7 +6,7 @@ import { EventEmitter } from 'node:events'
 import type pg from 'pg'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { resetDbContextForTest, runAs } from '../db/context.js'
-import { createPgDbx, PG_SET_CONTEXT_SQL, STRICT_OUTSIDE_CALL_MESSAGE, type PgPoolLike } from '../db/pg/dbx.js'
+import { createPgDbx, pgContextValues, PG_SET_CONTEXT_SQL, STRICT_OUTSIDE_CALL_MESSAGE, type PgPoolLike } from '../db/pg/dbx.js'
 import { pgTypes } from '../db/pg/types.js'
 import { PARENT_HANDLE_MESSAGE } from '../db/tx-lock.js'
 import { logger } from '../logger.js'
@@ -103,6 +103,26 @@ describe('a statement outside a transaction', () => {
     expect(f.context(2)).toEqual(['tenant-b', 'agent', 'agent-a', ''])
     expect(f.context(3)).toEqual(['', 'system', '', 'job-x'])
     expect(f.context(4)).toEqual(['', '', '', '']) // no context: empty, never a default tenant
+  })
+
+  it('app.role is the role as it is and app.job is the name of every named role: system, admin, viewer, public (not tenant, not agent)', async () => {
+    const f = fakePool()
+    const dbx = createPgDbx(f.pool)
+    await runAs.admin('http-admin', () => dbx.get('SELECT 1'))
+    await runAs.viewer('http-global-viewer', () => dbx.get('SELECT 1'))
+    await runAs.public('http-public', () => dbx.get('SELECT 1'))
+    await runAs.system('http-gate', () => dbx.get('SELECT 1'))
+    expect(f.context(1)).toEqual(['', 'admin', '', 'http-admin'])
+    expect(f.context(2)).toEqual(['', 'viewer', '', 'http-global-viewer'])
+    expect(f.context(3)).toEqual(['', 'public', '', 'http-public'])
+    expect(f.context(4)).toEqual(['', 'system', '', 'http-gate'])
+  })
+
+  it('pgContextValues: a name never rides on a tenant or an agent context, and no context is four empty strings', () => {
+    expect(pgContextValues(undefined)).toEqual(['', '', '', ''])
+    expect(pgContextValues({ role: 'tenant', tenantId: 'tenant-a', name: 'stray' })).toEqual(['tenant-a', 'tenant', '', ''])
+    expect(pgContextValues({ role: 'agent', tenantId: 'tenant-a', agentId: 'agent-a', name: 'stray' })).toEqual(['tenant-a', 'agent', 'agent-a', ''])
+    expect(pgContextValues({ role: 'viewer' })).toEqual(['', 'viewer', '', ''])
   })
 
   it('a failing statement is rolled back, the connection goes back only after that, and the same error comes out', async () => {

@@ -5,6 +5,9 @@
 //   runAs.system('heartbeat', () => ...)          a job of the dashboard itself
 //   runAs.tenant('acme', () => ...)               a request of a tenant
 //   runAs.agent('agent-a', 'acme', () => ...)        a request of an agent token
+//   runAs.admin('http-admin', () => ...)          a global admin session (no tenant)
+//   runAs.viewer('http-global-viewer', () => ...) any other authenticated session without a tenant
+//   runAs.public('http-public', () => ...)        a route served without a credential
 //
 // For now the carrier only RECORDS and COUNTS: a call without a context is not refused and nothing is
 // filtered by it (that comes with the PostgreSQL step). Every facade call reads the context; a call without one bumps a counter
@@ -26,11 +29,19 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { logger } from '../logger.js'
 import { captureOrigin } from './tx-lock.js'
 
-export type DbRole = 'system' | 'tenant' | 'agent'
+/**
+ * The vocabulary of `app.role` (the row-level-security policies read it): `system` is a job of the dashboard itself,
+ * `tenant` and `agent` carry a tenant, `admin` is a global admin session, `viewer` any other authenticated session
+ * without a tenant, `public` a caller without a credential. The last three carry a name like `system` does.
+ */
+export type DbRole = 'system' | 'tenant' | 'agent' | 'admin' | 'viewer' | 'public'
+
+/** Every role, for the code that has to account for each of them (the counters). */
+export const DB_ROLES: readonly DbRole[] = ['system', 'tenant', 'agent', 'admin', 'viewer', 'public']
 
 export interface DbContext {
   role: DbRole
-  /** system: the name of the job. */
+  /** system, admin, viewer, public: the name of the job or of the request kind (`http-admin`). */
   name?: string
   tenantId?: string
   agentId?: string
@@ -76,6 +87,15 @@ function withInheritedTrace(ctx: DbContext, opts?: RunAsOptions): DbContext {
 export const runAs = {
   system<T>(name: string, fn: () => T, opts?: RunAsOptions): T {
     return store.run(withInheritedTrace({ role: 'system', name: requireId('system', name) }, opts), fn)
+  },
+  admin<T>(name: string, fn: () => T, opts?: RunAsOptions): T {
+    return store.run(withInheritedTrace({ role: 'admin', name: requireId('admin', name) }, opts), fn)
+  },
+  viewer<T>(name: string, fn: () => T, opts?: RunAsOptions): T {
+    return store.run(withInheritedTrace({ role: 'viewer', name: requireId('viewer', name) }, opts), fn)
+  },
+  public<T>(name: string, fn: () => T, opts?: RunAsOptions): T {
+    return store.run(withInheritedTrace({ role: 'public', name: requireId('public', name) }, opts), fn)
   },
   tenant<T>(tenantId: string, fn: () => T, opts?: RunAsOptions): T {
     return store.run(withInheritedTrace({ role: 'tenant', tenantId: requireId('tenant', tenantId) }, opts), fn)
@@ -191,7 +211,7 @@ let anonymousCalls = 0
 let tenantMismatches = 0
 const callSites = new Map<string, { count: number; boot: boolean }>()
 const jobCalls = new Map<string, number>()
-const roleCalls: Record<DbRole, number> = { system: 0, tenant: 0, agent: 0 }
+const roleCalls: Record<DbRole, number> = { system: 0, tenant: 0, agent: 0, admin: 0, viewer: 0, public: 0 }
 
 export interface DbContextSite {
   /** The first stack frame outside src/db. */
@@ -220,7 +240,7 @@ export interface DbContextStats {
   bootEndedAt: number | null
   /** Calls with a context, by role. */
   byRole: Record<DbRole, number>
-  /** Calls of `runAs.system(name)`, by job name: shows which classified jobs actually touch the db. */
+  /** Calls of `runAs.system|admin|viewer|public(name)`, by name: shows which classified jobs actually touch the db. */
   byJob: Record<string, number>
   /** Where calls without a context came from, most frequent first. Sampled (see SAMPLE_*), so the counts are lower bounds. */
   sites: DbContextSite[]
@@ -248,7 +268,7 @@ export function noteDbCall(): void {
   const ctx = store.getStore()
   if (ctx !== undefined) {
     roleCalls[ctx.role] += 1
-    if (ctx.role === 'system' && ctx.name) {
+    if (ctx.name) {
       bump(jobCalls, ctx.name, MAX_JOBS)
       if (ctx.name === ANONYMOUS_JOB) anonymousCalls += 1
     }
@@ -327,9 +347,7 @@ export function resetDbContextStats(): void {
   tenantMismatches = 0
   callSites.clear()
   jobCalls.clear()
-  roleCalls.system = 0
-  roleCalls.tenant = 0
-  roleCalls.agent = 0
+  for (const role of DB_ROLES) roleCalls[role] = 0
   booting = false
 }
 
