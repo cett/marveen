@@ -10,6 +10,9 @@
 // pinned here so a later broad row cannot widen them unnoticed.
 
 import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { dirname, join } from 'node:path'
 import { checkPermission } from '../web/authz.js'
 import { resolveRequiredPermission } from '../web/rbac.js'
 import type { AuthResult } from '../web/auth-gate.js'
@@ -76,19 +79,19 @@ describe('federation config routes need admin:all', () => {
   }
 })
 
-describe('the explicit rows are the reason, not the fallback', () => {
-  // The routes with an explicit row resolve to a NAMED admin:all, not to null (the unmapped
-  // fallback): removing a row would then widen it to the prefix row's federation:write, and this
-  // cell is red. The PUT/PATCH/DELETE routes are the ones that rely on the fallback, pinned above.
-  const EXPLICIT: ReadonlyArray<readonly [string, string]> = CONFIG_ROUTES.filter(([m, s]) => !(
-    (m === 'PUT' && s === '/peers') || (m === 'PATCH' && s === '/peers/peer-a') || (m === 'DELETE' && s === '/peers/peer-a')
-  ))
+describe('fail closed: the POST prefix is admin:all, only the inbox is named', () => {
   for (const prefix of PREFIXES) {
-    for (const [method, suffix] of EXPLICIT) {
-      it(`${method} ${prefix}${suffix} has its own admin:all row`, () => {
-        expect(resolveRequiredPermission(method, `${prefix}${suffix}`)).toBe('admin:all')
-      })
-    }
+    it(`a POST route nobody named under ${prefix}/ resolves to admin:all`, () => {
+      for (const suffix of ['/some-future-config-route', '/peers/peer-a/some-future-action', '/inbox/', '/inboxx', '/inbox/extra']) {
+        expect(resolveRequiredPermission('POST', `${prefix}${suffix}`)).toBe('admin:all')
+        expect(checkPermission(TENANT_AGENT_SESSION, 'POST', `${prefix}${suffix}`).allowed).toBe(false)
+        expect(checkPermission(DEVICE, 'POST', `${prefix}${suffix}`).allowed).toBe(false)
+      }
+    })
+
+    it(`the inbox under ${prefix} is the only POST that stays federation:write (exact match)`, () => {
+      expect(resolveRequiredPermission('POST', `${prefix}/inbox`)).toBe('federation:write')
+    })
   }
 
   it('PUT, PATCH and DELETE on the peers routes are unmapped (fallback admin:all)', () => {
@@ -96,6 +99,42 @@ describe('the explicit rows are the reason, not the fallback', () => {
       expect(resolveRequiredPermission('PUT', `${prefix}/peers`)).toBeNull()
       expect(resolveRequiredPermission('PATCH', `${prefix}/peers/peer-a`)).toBeNull()
       expect(resolveRequiredPermission('DELETE', `${prefix}/peers/peer-a`)).toBeNull()
+    }
+  })
+})
+
+// The table measured against the routes: every POST route that routes/federation.ts answers is read from its path
+// literals, and each must resolve to admin:all except the inbox. A route added later in a form this cell does not read
+// makes the count below differ, so the cell has to be updated on purpose instead of silently not covering it.
+describe('every POST route of routes/federation.ts resolves to the table', () => {
+  const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'web', 'routes', 'federation.ts'), 'utf8')
+  // `path === '/api/federation/x' && method === 'POST'`
+  const literals = [...src.matchAll(/path === '(\/api\/federation\/[^']+)' && method === 'POST'/g)].map((m) => m[1])
+  // `<name>Match && method === 'POST'` with `<name>Match = path.match(/^\/api\/federation\/...$/)`: the variable-segment routes
+  const matched = [...src.matchAll(/const (\w+) = path\.match\(\/\^\\\/api\\\/federation\\\/([^/]*(?:\/[^/]*)*?)\$\/\)\n\s+if \(\1 && method === 'POST'\)/g)]
+  const postCount = (src.match(/method === 'POST'/g) ?? []).length
+
+  it('reads a plausible set of literals and every POST occurrence is one of the two forms', () => {
+    expect(literals).toContain('/api/federation/inbox')
+    expect(literals).toContain('/api/federation/apply')
+    expect(literals.length).toBeGreaterThanOrEqual(7)
+    expect(literals.length + matched.length).toBe(postCount)
+  })
+
+  for (const prefix of PREFIXES) {
+    it(`under ${prefix}: each literal POST route is admin:all, the inbox excepted`, () => {
+      for (const lit of literals) {
+        const path = lit.replace('/api/federation', prefix)
+        const want = lit === '/api/federation/inbox' ? 'federation:write' : 'admin:all'
+        expect(resolveRequiredPermission('POST', path), `POST ${path}`).toBe(want)
+      }
+    })
+  }
+
+  it('the per-peer POST route (rotate) is admin:all', () => {
+    expect(matched.length).toBe(1)
+    for (const prefix of PREFIXES) {
+      expect(resolveRequiredPermission('POST', `${prefix}/peers/peer-a/rotate-inbound-token`)).toBe('admin:all')
     }
   })
 })

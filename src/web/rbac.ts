@@ -208,34 +208,23 @@ export const ENDPOINT_PERMISSION_TABLE: readonly EndpointPermissionEntry[] = [
   // fallback is also admin:all, so a later broad /api/* entry cannot widen it by accident.
   { method: '*', pathPattern: '/api/rbac/', prefix: true, permission: 'admin:all' },
 
-  // Federation CONFIG writes are admin-only: the master switch, the routing mode, adding a peer
-  // (which mints an inbound token), applying the config (restarts the main agent's channels
-  // session), the removal of the whole federation, and the manual poll round (an outbound call to
-  // every peer). They are listed here, BEFORE the POST prefix rows below, because the first match
-  // wins and the prefix rows are federation:write, which the tenant 'agent' role holds. The per-peer
-  // routes (reveal and rotate an inbound token) have a variable segment and sit in the regex table.
-  // PUT /api/federation/peers, PATCH and DELETE /api/federation/peers/:id have no row on purpose:
-  // the unmapped fallback is admin:all and a cell pins that (federation-config-rbac.test.ts).
-  // Left on federation:write: POST /api/federation/inbox, the wire endpoint a peer (role agent)
-  // posts a message to; a config route must never be added to that class.
-  { method: 'POST', pathPattern: '/api/federation/enabled', prefix: false, permission: 'admin:all' },
-  { method: 'POST', pathPattern: '/api/federation/routing-mode', prefix: false, permission: 'admin:all' },
-  { method: 'POST', pathPattern: '/api/federation/peers', prefix: false, permission: 'admin:all' },
-  { method: 'POST', pathPattern: '/api/federation/refresh', prefix: false, permission: 'admin:all' },
-  { method: 'POST', pathPattern: '/api/federation/apply', prefix: false, permission: 'admin:all' },
-  { method: 'POST', pathPattern: '/api/federation/remove', prefix: false, permission: 'admin:all' },
-  { method: 'POST', pathPattern: '/api/v1/federation/enabled', prefix: false, permission: 'admin:all' },
-  { method: 'POST', pathPattern: '/api/v1/federation/routing-mode', prefix: false, permission: 'admin:all' },
-  { method: 'POST', pathPattern: '/api/v1/federation/peers', prefix: false, permission: 'admin:all' },
-  { method: 'POST', pathPattern: '/api/v1/federation/refresh', prefix: false, permission: 'admin:all' },
-  { method: 'POST', pathPattern: '/api/v1/federation/apply', prefix: false, permission: 'admin:all' },
-  { method: 'POST', pathPattern: '/api/v1/federation/remove', prefix: false, permission: 'admin:all' },
-
-  // Federation wire endpoints.
+  // Federation: every POST is admin-only EXCEPT the wire endpoint. The default for a POST under the
+  // federation prefix is admin:all (fail closed), so a config route added later is admin-only until
+  // someone names it here on purpose. The tenant 'agent' role holds federation:write, which is what
+  // the prefix row used to grant to every POST: the master switch, the routing mode, adding a peer
+  // (which mints an inbound token), apply (restarts the main agent's channels session), remove and the
+  // manual poll round were all open to it. The one exception is the inbox, which a peer (role agent)
+  // posts a message to; it is matched exactly and listed BEFORE the prefix rows (first match wins).
+  // The per-peer routes with a variable segment (reveal and rotate an inbound token) sit in the regex
+  // table. PUT /api/federation/peers, PATCH and DELETE /api/federation/peers/:id have no row: the
+  // unmapped fallback is admin:all, and a cell pins it (federation-config-rbac.test.ts, which also
+  // measures every POST route of routes/federation.ts against this table).
+  { method: 'POST', pathPattern: '/api/federation/inbox', prefix: false, permission: 'federation:write' },
+  { method: 'POST', pathPattern: '/api/v1/federation/inbox', prefix: false, permission: 'federation:write' },
   { method: 'GET', pathPattern: '/api/federation/', prefix: true, permission: 'federation:read' },
-  { method: 'POST', pathPattern: '/api/federation/', prefix: true, permission: 'federation:write' },
+  { method: 'POST', pathPattern: '/api/federation/', prefix: true, permission: 'admin:all' },
   { method: 'GET', pathPattern: '/api/v1/federation/', prefix: true, permission: 'federation:read' },
-  { method: 'POST', pathPattern: '/api/v1/federation/', prefix: true, permission: 'federation:write' },
+  { method: 'POST', pathPattern: '/api/v1/federation/', prefix: true, permission: 'admin:all' },
 
   // Approvals -- tenant users can read and resolve their own tenant's requests (IDOR-guarded in route).
   { method: 'GET', pathPattern: '/api/approvals', prefix: true, permission: 'approvals:read' },
