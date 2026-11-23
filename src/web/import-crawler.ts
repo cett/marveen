@@ -35,11 +35,10 @@ import { noteTenantUnresolved } from '../db/context.js'
 
 // The tenant of one import source (the per-item block of the row-level-security work). The scheduler reads the due sources in
 // its own `system` context, across tenants. What belongs to ONE source and is a write of its tenant (the import rows and their
-// shadow memories, the source's run stamp) and the read of its vault secret run in a block of the source's tenant, so a wrong
-// stamp would fail instead of writing into another tenant. The audit row of a run (`import_audit_log`) is NOT in the block:
-// its statement names no tenant (the column default stamps it), so inside a tenant block it would be refused as soon as
-// the policies exist, and the global soft-cap read (`sumImportContentSize`) and the link maintenance span tenants. No
-// `runAs.system` is opened inside the block (the escalation counter would show it).
+// shadow memories, the source's run stamp, the audit row of the run: it names the source's tenant) and the read of its vault
+// secret run in a block of the source's tenant, so a wrong stamp would fail instead of writing into another tenant. The global
+// soft-cap read (`sumImportContentSize`) and the link maintenance span tenants and stay outside. No `runAs.system` is opened
+// inside the block (the escalation counter would show it).
 function inSourceTenant<T>(source: { tenant_id: string }, fn: () => T): T {
   return runAsItemTenant('import-crawler', source.tenant_id, fn)
 }
@@ -217,6 +216,7 @@ async function getEnabledSources(): Promise<ImportSource[]> {
 // silently vanishing, and can never get misrouted into the crawl-error path.
 async function writeAuditLog(
   sourceId: string,
+  tenantId: string,
   runAt: number,
   counts: {
     scanned: number; added: number; updated: number
@@ -225,7 +225,8 @@ async function writeAuditLog(
   error?: string,
 ): Promise<void> {
   try {
-    await insertImportAuditLog(sourceId, runAt, counts, error)
+    // The row carries the tenant of its source, so it is a write of that tenant: it runs in the source's block.
+    await runAsItemTenant('import-crawler', tenantId, () => insertImportAuditLog(sourceId, tenantId, runAt, counts, error))
   } catch (err) {
     logger.error({ sourceId, runAt, err }, 'Import crawl: failed to persist audit log row')
   }
@@ -651,7 +652,7 @@ export async function crawlSource(sourceId: string): Promise<void> {
       throw new Error(`Unknown source type: ${source.type}`)
     }
 
-    await writeAuditLog(source.id, runAt, {
+    await writeAuditLog(source.id, source.tenant_id, runAt, {
       scanned: counts.scanned,
       added: counts.added,
       updated: counts.updated,
@@ -684,7 +685,7 @@ export async function crawlSource(sourceId: string): Promise<void> {
   } catch (err) {
     error = err instanceof Error ? err.message : String(err)
     logger.error({ sourceId, err }, 'Import crawl error')
-    await writeAuditLog(source.id, runAt, { scanned: 0, added: 0, updated: 0, skippedHash: 0, skippedSecret: 0, skippedSize: 0, skippedType: 0 }, error)
+    await writeAuditLog(source.id, source.tenant_id, runAt, { scanned: 0, added: 0, updated: 0, skippedHash: 0, skippedSecret: 0, skippedSize: 0, skippedType: 0 }, error)
   } finally {
     runningScans.delete(sourceId)
     await inSourceTenant(source, () => markImportSourceRun(sourceId, runAt))

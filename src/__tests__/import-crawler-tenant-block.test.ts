@@ -92,8 +92,10 @@ describe('import crawler: the writes of a source run in the tenant of that sourc
     // by source: the first argument is the source id
     expect(Object.fromEntries(upserts.map((s) => [s.first, where(s)]))).toEqual({ 'src-a': 'tenant:tenant-a', 'src-b': 'tenant:tenant-b' })
     expect(Object.fromEntries(writers('markImportSourceRun').map((s) => [s.first, where(s)]))).toEqual({ 'src-a': 'tenant:tenant-a', 'src-b': 'tenant:tenant-b' })
-    // the scheduler read, the source lookup, the global size read and the audit row stay in the job's own context
-    for (const fn of ['listEnabledImportSources', 'getImportSource', 'sumImportContentSize', 'insertImportAuditLog']) {
+    // the audit row names the tenant of its source, so it is a write of that tenant: it runs in the source's block
+    expect(Object.fromEntries(writers('insertImportAuditLog').map((s) => [s.first, where(s)]))).toEqual({ 'src-a': 'tenant:tenant-a', 'src-b': 'tenant:tenant-b' })
+    // the scheduler read, the source lookup and the global size read stay in the job's own context
+    for (const fn of ['listEnabledImportSources', 'getImportSource', 'sumImportContentSize']) {
       expect(writers(fn).length, fn).toBeGreaterThan(0)
       for (const s of writers(fn)) expect([where(s), s.name], fn).toEqual(['system:-', 'import-crawler'])
     }
@@ -149,6 +151,34 @@ describe('import crawler: the writes of a source run in the tenant of that sourc
     expect(writers('getSecret').map(where)).toEqual(['tenant:tenant-a'])
     expect(writers('upsertImportMemory').map((s) => [s.first, where(s)])).toEqual([['conf-a', 'tenant:tenant-a']])
     expect(getDbContextStats().escalations).toBe(0)
+  })
+
+  it('the audit row of a run carries the tenant of its source (the column default would stamp `default`)', async () => {
+    await createSource('src-a', 'tenant-a', dirA)
+    await createSource('src-b', 'tenant-b', dirB)
+    await job(() => crawlSource('src-a'))
+    await job(() => crawlSource('src-b'))
+    const rows = await dbx.all<{ source_id: string; tenant_id: string }>('SELECT source_id, tenant_id FROM import_audit_log ORDER BY source_id')
+    expect(rows).toEqual([{ source_id: 'src-a', tenant_id: 'tenant-a' }, { source_id: 'src-b', tenant_id: 'tenant-b' }])
+  })
+
+  // The error branch of crawlSource writes its own audit row (the catch): a failing crawl of tenant-b must leave a row with
+  // tenant-b, written in the block of tenant-b, not a row the column default stamps `default`.
+  it('the audit row of a FAILING crawl carries the tenant of its source and is written in its block', async () => {
+    // a confluence source whose server is unreachable: the crawl throws and the catch branch writes the row
+    vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new Error('connection refused'))))
+    try {
+      secretState.value = 'token-value'
+      await createSource('err-b', 'tenant-b', 'SPACE', { type: 'confluence', baseUrl: 'https://wiki.example.invalid', ref: 'vault-ref-b', email: 'user@example.invalid' })
+      await job(() => crawlSource('err-b'))
+    } finally {
+      vi.unstubAllGlobals()
+    }
+    const rows = await dbx.all<{ source_id: string; tenant_id: string; error: string | null }>('SELECT source_id, tenant_id, error FROM import_audit_log')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ source_id: 'err-b', tenant_id: 'tenant-b' })
+    expect(rows[0]!.error).toBeTruthy()
+    expect(writers('insertImportAuditLog').map((s) => [s.first, where(s)])).toEqual([['err-b', 'tenant:tenant-b']])
   })
 
   it('a source without a tenant is skipped and counted: no read of its content, no write, no run stamp, and the other source still crawls', async () => {
