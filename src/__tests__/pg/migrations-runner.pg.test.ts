@@ -1,6 +1,6 @@
 // The PostgreSQL migration runner against a real server (MARVEEN_PG_TEST_URL, `npm run test:pg`). Every database here
 // is a fresh empty one: the runner, not the harness, builds the schema. The mutants are listed in the PR description.
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -9,7 +9,7 @@ import Database from 'better-sqlite3'
 import { applyMigrations } from '../../db-migrations.js'
 import { applyPgMigrations, loadPgMigrationFiles } from '../../db-migrations-pg.js'
 import { actualFromPg, diffSchemas, expectedFromSqlite } from '../helpers/pg-parity.js'
-import { pgTestUrl } from '../helpers/pg-test-db.js'
+import { ensurePgTestRoles, pgTestUrl } from '../helpers/pg-test-db.js'
 
 const q = (ident: string): string => `"${ident.replace(/"/g, '""')}"`
 const withDatabase = (database: string): string => { const u = new URL(pgTestUrl()); u.pathname = `/${database}`; return u.toString() }
@@ -30,6 +30,9 @@ const versions = async (p: pg.Pool = pool): Promise<number[]> =>
   (await p.query<{ version: string }>('SELECT version FROM schema_version ORDER BY version')).rows.map((r) => Number(r.version))
 const tableExists = async (name: string): Promise<boolean> =>
   (await pool.query("SELECT to_regclass($1)::text AS t", [`public.${name}`])).rows[0].t !== null
+
+// the real files include 0009, which refuses to run without the serving role: provisioning creates it, here the harness does
+beforeAll(async () => { await ensurePgTestRoles() })
 
 beforeEach(async () => {
   dbName = `marveen_runner_${process.pid}_${Math.random().toString(16).slice(2, 10)}`

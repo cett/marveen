@@ -4,6 +4,8 @@
 // says anything about row-level security except which role is connected.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { createPgTestDb, PG_TEST_APP_ROLE, PG_TEST_OWNER_ROLE, type PgTestDb } from '../helpers/pg-test-db.js'
+import { runAs } from '../../db/context.js'
+import { PG_SET_CONTEXT_SQL, pgContextValues } from '../../db/pg/dbx.js'
 
 let db: PgTestDb
 beforeAll(async () => { db = await createPgTestDb() })
@@ -26,7 +28,16 @@ describe('the pools of the harness', () => {
   })
 
   it('a row the app role writes is seen by the admin pool, the oracle (the three pools are one database)', async () => {
-    await db.appPool.query("INSERT INTO task_runs (name, agent, ts) VALUES ('pool-cell', 'agent-a', 1)")
+    // under row-level security the write needs a context: the system one, set the way the facade sets it
+    const c = await db.appPool.connect()
+    try {
+      await c.query('BEGIN')
+      await c.query({ text: PG_SET_CONTEXT_SQL, values: pgContextValues({ role: 'system', name: 'pool-cell' }) })
+      await c.query("INSERT INTO task_runs (name, agent, ts) VALUES ('pool-cell', 'agent-a', 1)")
+      await c.query('COMMIT')
+    } finally {
+      c.release()
+    }
     const seen = await db.pool.query<{ n: number }>("SELECT count(*)::int AS n FROM task_runs WHERE name = 'pool-cell'")
     expect(seen.rows[0].n).toBe(1)
   })
@@ -46,10 +57,10 @@ describe('appDbx()', () => {
 
   it('runs a transaction body as the app role, and the work of the body is the app role writing', async () => {
     const dbx = db.appDbx()
-    const u = await dbx.tx(async (tx) => {
+    const u = await runAs.system('app-pool-cell', () => dbx.tx(async (tx) => {
       await tx.run("INSERT INTO task_runs (name, agent, ts) VALUES ('dbx-cell', 'agent-a', 2)")
       return (await tx.get<{ u: string }>('SELECT current_user AS u'))!.u
-    })
+    }))
     expect(u).toBe(PG_TEST_APP_ROLE)
     const seen = await db.pool.query<{ n: number }>("SELECT count(*)::int AS n FROM task_runs WHERE name = 'dbx-cell'")
     expect(seen.rows[0].n).toBe(1)

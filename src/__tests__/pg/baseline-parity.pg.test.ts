@@ -31,6 +31,14 @@ beforeAll(async () => {
   db = await createPgTestDb()
   probe = new pg.Client({ connectionString: db.url })
   await probe.connect()
+  // This file is about the schema objects of the baseline against the SQLite chain. The row-level-security policies of 0009
+  // are not part of that comparison, and PostgreSQL refuses a type change of any column a policy names (84 mutants), which
+  // would turn the judged mutants into refused ones. They are dropped in this throwaway clone; the policies have their own
+  // catalog and shape cells (rls-catalog.pg.test.ts).
+  await probe.query(`DO $$ DECLARE r record; BEGIN
+    FOR r IN SELECT policyname, tablename FROM pg_policies WHERE schemaname = 'public' LOOP
+      EXECUTE format('DROP POLICY %I ON %I', r.policyname, r.tablename);
+    END LOOP; END $$`)
   sqlite = new Database(':memory:')
   applyMigrations(sqlite)
   const e = await expectedFromSqlite(sqlite, probe)

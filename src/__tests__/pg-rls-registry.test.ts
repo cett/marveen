@@ -71,7 +71,7 @@ describe('the registry against itself', () => {
   it(`the total is pinned at ${TABLE_COUNT}, and so is every class (a new table is a visible edit)`, () => {
     expect(RLS_REGISTRY).toHaveLength(TABLE_COUNT)
     const counts = Object.fromEntries(RLS_CLASSES.map((c) => [c, byClass(c).length]))
-    expect(counts).toEqual({ A: 37, B: 13, C: 13, D1: 6, D2: 16, D3: 1, E: 1, F: 1 })
+    expect(counts).toEqual({ A: 36, B: 13, C: 13, D1: 6, D2: 16, D3: 1, E: 1, F: 2 })
   })
 
   it('a class C entry names a parent and its columns; no other class does', () => {
@@ -133,10 +133,14 @@ describe('the registry against the CREATE TABLE text of the migration files', ()
 
   it('A is exactly the tenant tables whose tenant_id is NOT NULL, B the ones where it is nullable, and no other table has the column', () => {
     const want = (kind: 'not-null' | 'nullable'): string[] => [...sql.values()].filter((t) => tenantColumn(t.body) === kind).map((t) => t.name).sort()
-    expect(byClass('A').map((e) => e.table).sort()).toEqual(want('not-null'))
+    // The one table with a tenant column that is class F on purpose: its tenant_id is the grantee, not the writer, so the tenant
+    // shape would let a tenant grant itself another tenant's skill. The list is pinned, not open-ended.
+    const F_WITH_TENANT_COLUMN = ['skill_tenant_access']
+    for (const t of F_WITH_TENANT_COLUMN) expect(rlsEntryFor(t)?.class, t).toBe('F')
+    expect([...byClass('A').map((e) => e.table), ...F_WITH_TENANT_COLUMN].sort()).toEqual(want('not-null'))
     expect(byClass('B').map((e) => e.table).sort()).toEqual(want('nullable'))
     const tenantless = [...sql.values()].filter((t) => tenantColumn(t.body) === 'absent').map((t) => t.name).sort()
-    expect(RLS_REGISTRY.filter((e) => e.class !== 'A' && e.class !== 'B').map((e) => e.table).sort()).toEqual(tenantless)
+    expect(RLS_REGISTRY.filter((e) => e.class !== 'A' && e.class !== 'B' && !F_WITH_TENANT_COLUMN.includes(e.table)).map((e) => e.table).sort()).toEqual(tenantless)
   })
 
   it('the columns a child is checked through exist in the child\'s CREATE TABLE', () => {
@@ -178,6 +182,7 @@ describe('the decisive classifications, pinned by name (a flip is a visible edit
     expect(byClass('D3').map((e) => e.table)).toEqual(['homoglyph_findings'])
     expect(where('auth_sessions')).toBe('E')
     expect(where('tenants')).toBe('F')
+    expect(where('skill_tenant_access')).toBe('F') // not A: under the tenant shape a tenant could grant itself another tenant's skill
     expect(where('skills')).toBe('A+F')
     expect(where('dashboard_users')).toBe('B+E')
   })

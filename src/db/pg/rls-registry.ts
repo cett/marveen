@@ -3,8 +3,9 @@
 // Migration 0009 ENABLEs and FORCEs row-level security on each of these tables and writes the policy of its class. This
 // file is the list the migration, the catalog cells and the policy cells are checked against, so a table that nobody
 // classified is a failing cell, never a silent default: there is no default class here on purpose, `rlsEntryFor`
-// returns undefined for a table it does not know. (Until the migration exists, the static cells of
-// src/__tests__/pg-rls-registry.test.ts hold this list against the CREATE TABLE text of the migration files.)
+// returns undefined for a table it does not know. (The static cells of src/__tests__/pg-rls-registry.test.ts hold this
+// list against the CREATE TABLE text of the migration files; the catalog cells of src/__tests__/pg/rls-catalog.pg.test.ts
+// hold it against migration 0009 on a real server.)
 //
 // Classes
 //   A   tenant row, `tenant_id` NOT NULL in the catalog:        tenant_id = context tenant, or a privileged role
@@ -73,7 +74,6 @@ export const RLS_REGISTRY: readonly RlsEntry[] = [
   { table: 'partner_senders', class: 'A' },
   { table: 'schedules', class: 'A' },
   { table: 'skill_revisions', class: 'A' },
-  { table: 'skill_tenant_access', class: 'A' },
   { table: 'skills', class: 'A', extension: 'F', reason: 'also visible when the skill is global or a skill_tenant_access row grants it, writable for the own tenant only' },
   { table: 'tenant_agent_availability', class: 'A' },
   { table: 'tenant_channel_bindings', class: 'A' },
@@ -143,6 +143,7 @@ export const RLS_REGISTRY: readonly RlsEntry[] = [
   { table: 'auth_sessions', class: 'E', reason: 'a session user reaches the own sessions by user id; creating and revoking a session at login goes through a gateway function, the public context touches nothing' },
   // F: tenants and grants
   { table: 'tenants', class: 'F', reason: 'a tenant sees its own row, privileged roles see all, only privileged roles write' },
+  { table: 'skill_tenant_access', class: 'F', reason: 'cross-tenant skill grants: the grantee sees its own rows, only privileged roles grant or revoke (a tenant must not grant itself another tenant\'s skill)' },
 ]
 
 const BY_TABLE: ReadonlyMap<string, RlsEntry> = new Map(RLS_REGISTRY.map((e) => [e.table, e]))

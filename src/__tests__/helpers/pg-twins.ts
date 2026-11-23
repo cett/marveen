@@ -3,8 +3,8 @@
 // The PG baseline (src/migrations-pg/0001) is the SQLite end state at version 95. From there every new SQLite migration
 // has to come with a PG twin, or the PG schema silently falls behind the one the application runs on. The PG numbers
 // are assigned by ORDER: the SQLite migrations above 95, sorted, take the PG slots 0002, 0003, ... in turn, skipping the
-// numbers of the PG-only migrations (below). Today 0096 <-> 0002; the next SQLite migration (0097) <-> 0008 once the five
-// PG-only numbers are taken.
+// numbers of the PG-only migrations (below). Today 0096 <-> 0002; the next SQLite migration (0097) <-> 0010 once the PG-only
+// numbers 0003 to 0009 are taken.
 
 /** The SQLite version the PG baseline was cut at. */
 export const PG_BASELINE_SQLITE_VERSION = 95
@@ -23,6 +23,7 @@ export const PG_ONLY_MIGRATIONS: readonly string[] = [
   '0006_workspace_docs_fts.sql',
   '0007_vec_embeddings.sql',
   '0008_cost_budgets_amount.sql',
+  '0009_row_level_security.sql',
 ]
 
 const FILE = /^(\d{4,})_(.+)\.sql$/

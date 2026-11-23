@@ -13,6 +13,7 @@ import { createPgTestDb, pgTestUrl, PG_TEST_APP_ROLE, PG_TEST_OWNER_ROLE, type P
 import { bootPgBackend, closePgBackend, PgBootError, PgProcessNotSupportedError, refuseProcessOnPg } from '../../db/pg-boot.js'
 import { pgRolePreflight } from '../../db/pg/preflight.js'
 import { dbxDialect, useDbxBackend } from '../../db/facade.js'
+import { runAs } from '../../db/context.js'
 import { createPgDbx } from '../../db/pg/dbx.js'
 import { loadSystemConfigCacheAsync } from '../../db/config-cache.js'
 import { dbx, listSystemConfig, getSystemConfig, setSystemConfig } from '../../db.js'
@@ -86,9 +87,12 @@ describe('bootPgBackend: success', () => {
     // a synchronous cache reader answers (it throws "cache not loaded in PG mode" when nothing was loaded for this backend)
     expect(Array.isArray(listSystemConfig())).toBe(true)
     // and the write goes to the server, then the cache
-    await setSystemConfig('pg_boot_probe', 'v1')
-    expect(getSystemConfig('pg_boot_probe')?.value).toBe('v1')
-    expect((await dbx.get<{ value: string }>('SELECT value FROM system_config WHERE key = ?', 'pg_boot_probe'))?.value).toBe('v1')
+    // system_config is privileged-only under row-level security: the write and the read-back run as the system context
+    await runAs.system('pg-boot-cell', async () => {
+      await setSystemConfig('pg_boot_probe', 'v1')
+      expect(getSystemConfig('pg_boot_probe')?.value).toBe('v1')
+      expect((await dbx.get<{ value: string }>('SELECT value FROM system_config WHERE key = ?', 'pg_boot_probe'))?.value).toBe('v1')
+    })
   })
 
   it('migrates a fresh database BEFORE the preflight: the migrations create the extensions the preflight demands', async () => {

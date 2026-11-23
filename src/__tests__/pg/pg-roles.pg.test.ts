@@ -10,6 +10,7 @@ import pg from 'pg'
 import {
   createPgTestDb, dropPgTemplate, pgTestUrl, PG_TEST_APP_ROLE, PG_TEST_BACKUP_ROLE, PG_TEST_OWNER_ROLE, type PgTestDb,
 } from '../helpers/pg-test-db.js'
+import { PG_SET_CONTEXT_SQL, pgContextValues } from '../../db/pg/dbx.js'
 
 let db: PgTestDb
 beforeAll(async () => { db = await createPgTestDb() })
@@ -94,10 +95,16 @@ describe('the app role', () => {
   it('has the four DML grants on every baseline table and USAGE+SELECT on every sequence', async () => {
     const tables = await db.pool.query<{ relname: string }>(
       `SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-        WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p')
+        WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p') AND c.relname <> 'schema_version'
           AND NOT (has_table_privilege($1, c.oid, 'SELECT') AND has_table_privilege($1, c.oid, 'INSERT')
                AND has_table_privilege($1, c.oid, 'UPDATE') AND has_table_privilege($1, c.oid, 'DELETE'))`, [PG_TEST_APP_ROLE])
     expect(tables.rows).toEqual([])
+    // schema_version is the one table the serving role only reads (the runner writes it as the owner)
+    const sv = await db.pool.query<{ r: boolean; w: boolean }>(
+      `SELECT has_table_privilege($1, 'schema_version', 'SELECT') AS r,
+              (has_table_privilege($1, 'schema_version', 'INSERT') OR has_table_privilege($1, 'schema_version', 'UPDATE')
+               OR has_table_privilege($1, 'schema_version', 'DELETE')) AS w`, [PG_TEST_APP_ROLE])
+    expect(sv.rows[0]).toEqual({ r: true, w: false })
     const seqs = await db.pool.query<{ relname: string }>(
       `SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
         WHERE n.nspname = 'public' AND c.relkind = 'S'
@@ -118,12 +125,21 @@ describe('the app role', () => {
     expect(Number(n.rows[0].v)).toBeGreaterThan(0)
   })
 
-  it('writes and reads a baseline table through its own pool (DML works without owning anything)', async () => {
-    await db.appPool.query("INSERT INTO task_runs (name, agent, ts) VALUES ('role-cell', 'agent-a', 1)")
-    const r = await db.appPool.query<{ n: number }>("SELECT count(*)::int AS n FROM task_runs WHERE name = 'role-cell'")
-    expect(r.rows[0].n).toBe(1)
-    await db.appPool.query("UPDATE task_runs SET agent = 'agent-b' WHERE name = 'role-cell'")
-    await db.appPool.query("DELETE FROM task_runs WHERE name = 'role-cell'")
+  it('writes and reads a baseline table through its own pool in the system context (DML without owning anything), and is refused without a context', async () => {
+    // row-level security binds the app role: the DML grant alone is not access, the context is
+    await expect(db.appPool.query("INSERT INTO task_runs (name, agent, ts) VALUES ('role-cell', 'agent-a', 1)")).rejects.toMatchObject({ code: '42501' })
+    const c = await db.appPool.connect()
+    try {
+      await c.query('BEGIN')
+      await c.query({ text: PG_SET_CONTEXT_SQL, values: pgContextValues({ role: 'system', name: 'roles-cell' }) })
+      await c.query("INSERT INTO task_runs (name, agent, ts) VALUES ('role-cell', 'agent-a', 1)")
+      expect((await c.query<{ n: number }>("SELECT count(*)::int AS n FROM task_runs WHERE name = 'role-cell'")).rows[0].n).toBe(1)
+      await c.query("UPDATE task_runs SET agent = 'agent-b' WHERE name = 'role-cell'")
+      await c.query("DELETE FROM task_runs WHERE name = 'role-cell'")
+      await c.query('COMMIT')
+    } finally {
+      c.release()
+    }
   })
 
   it('cannot create an object, truncate a table or drop one (no DDL rights)', async () => {
