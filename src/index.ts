@@ -15,7 +15,7 @@ import type { Server as HttpServer } from 'node:http'
 import { PROJECT_ROOT, STORE_DIR, IS_ISOLATED_MODE, PID_FILENAME, WEB_PORT, ALLOWED_CHAT_ID, MAIN_AGENT_ID, RESPAWN_ENABLED, HEARTBEAT_AGENT_ENABLED } from './config.js'
 import { runSigtermFlushes } from './web/sigterm-flush.js'
 import { startBootMarker } from './web/boot-marker.js'
-import { initDatabase, resolveAgentTenant, backfillEmbeddings, closeDatabase, retireConfigOverridesFile, retireScheduleStateFiles, retireAgentSettingsFiles, retireAgentStateFiles, retireKanbanAuditStateFile, retireVaultBindingsFile, retireFederationConfigFile, retireGroup5StateFiles } from './db.js'
+import { initDatabaseAsync, closePgBackend, resolveAgentTenant, backfillEmbeddings, closeDatabase, retireConfigOverridesFile, retireScheduleStateFiles, retireAgentSettingsFiles, retireAgentStateFiles, retireKanbanAuditStateFile, retireVaultBindingsFile, retireFederationConfigFile, retireGroup5StateFiles } from './db.js'
 import { flushLedgerSpool } from './conversation-ledger-spool.js'
 import { backfillWorkspaceDocs } from './db/workspace.js'
 import { runDecaySweep, runDailyDigest } from './memory.js'
@@ -23,6 +23,7 @@ import { initHeartbeat, stopHeartbeat } from './heartbeat.js'
 import { ensureHeartbeatAgent, shouldBootHeartbeatAgent, HEARTBEAT_AGENT_NAME } from './web/heartbeat-agent-scaffold.js'
 import { startAgentProcess } from './web/agent-process.js'
 import { renameSharedCredentialsIfSafe, fleetTokenBootPass } from './web/claude-credentials-guard.js'
+import { refuseProcessOnPg } from './db/pg-boot.js'
 import { startWebServer } from './web.js'
 import { loadRbacMode, startRbacModeRefresh } from './web/rbac-mode.js'
 import { runBootImportLeftoverScan } from './web/fleet-import-leftovers.js'
@@ -455,6 +456,8 @@ const shutdown = (signal?: string): void => {
     const finish = (): void => {
       try {
         try { closeDatabase() } catch (err) { logger.warn({ err }, 'closeDatabase threw during shutdown') }
+        // fire and forget: the process exits right below; the pool end only lets the server see an orderly goodbye
+        void closePgBackend().catch(() => undefined)
 
         if (webServer) {
           try { webServer.closeIdleConnections?.() } catch { /* older node */ }
@@ -493,6 +496,12 @@ const shutdown = (signal?: string): void => {
 async function main(): Promise<void> {
   console.log(BANNER)
 
+  // The process cannot run on PostgreSQL yet (the SQLite handle stays unset, and config.ts still reads its boot values from
+  // the SQLite file). Refuse HERE, before the port takeover below (a refused process must not SIGTERM the running dashboard)
+  // and before any database work (no pool is ever opened for it). The step that lifts this (config bootstrap, then the
+  // cutover) deletes this line.
+  refuseProcessOnPg()
+
   // Install signal handlers EARLIEST so we can respond cleanly to SIGTERM
   // during init. Required to close the fresh-startup race: a concurrent
   // startup will SIGTERM this process via acquirePortLock's binary-pattern
@@ -517,9 +526,10 @@ async function main(): Promise<void> {
     logger.info('Isolated mode (MARVEEN_STORE_DIR): skipping port takeover and lock acquisition')
   }
 
-  // Database
-  initDatabase()
-  logger.info('Adatbazis inicializalva')
+  // Database: SQLite unless MARVEEN_PG_URL is set; with a URL a failing PostgreSQL step throws and main().catch ends the
+  // process (no SQLite fallback), so the boot never reaches listen on a half-wired backend.
+  const dbBackend = await initDatabaseAsync()
+  logger.info({ backend: dbBackend }, 'Adatbazis inicializalva')
   // The agent jobs (auto-restart, context guard, restart gate, background tasks) run as the agent in its tenant.
   setAgentTenantResolver((agentId) => resolveAgentTenant(agentId))
 
