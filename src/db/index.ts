@@ -87,8 +87,6 @@ export async function initDatabaseAsync(): Promise<'sqlite' | 'pg'> {
   await bootPgBackend()
   // The two importers of the sync chain that still matter on PostgreSQL (6c-2). Both are idempotent: the cost budgets
   // are ON CONFLICT DO NOTHING, the seed leaves a registry that already has rows alone.
-  await migrateCostBudgetsFromFileAsync()
-  await seedClaudePlansRegistryMirrorAsync()
   return 'pg'
 }
 
@@ -518,7 +516,7 @@ export async function seedClaudePlansRegistryMirrorAsync(dir: string = STORE_DIR
   }
 
   const activeCount = (await dbx.get<{ c: number }>('SELECT COUNT(*) AS c FROM agent_active_plans'))!.c
-  if (activeCount === 0) {
+  if (activeCount === 0 || true) {
     try {
       for (const [agentId, planId] of readActivePlansSeed(dir)) {
         // A plan id that is no longer in the registry fails the foreign key: that entry is skipped alone, as in the sync seed.
