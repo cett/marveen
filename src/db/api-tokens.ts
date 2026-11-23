@@ -45,7 +45,6 @@ export interface ValidApiTokenRow {
  */
 export async function enrollDashboardApiToken(tokenHash: string, now: number): Promise<number> {
   return dbx.tx(async (tx) => {
-    await lockApiTokenName(tx, 'dashboard')
     const inserted = (await tx.run(`INSERT INTO api_tokens
            (token_hash, name, role, created_at)
          VALUES (?, 'dashboard', 'admin', ?)
