@@ -651,8 +651,16 @@ class TestLinearTime(unittest.TestCase):
 
     SIZE = 250000
     CPU_WALL_GUARD_SEC = 120.0  # wall cut-off of the CPU-timed inputs: a catastrophe guard, see _timed
+    # The ceiling of the inputs that run INTO the gate's budgets (the unterminated substitutions). It cannot be the
+    # linear-vs-quadratic 4 s of the other inputs: that equals INSPECT_SECONDS, the gate's own deadline, so on a runner
+    # slow enough to reach the deadline the gate runs INSPECT_SECONDS plus one check granularity (0.27-0.34 s measured)
+    # and `CPU < INSPECT_SECONDS` is false by construction. Derived from the hook, so a changed budget moves it too.
+    BUDGET_CUT_MARGIN_SEC = 3.0
+    BUDGET_CUT_CEILING_SEC = hook.INSPECT_SECONDS + BUDGET_CUT_MARGIN_SEC
+    # Interpreter start, stdin read and the block notification, on top of the budget-cut run, inside the hook timeout.
+    HOOK_STARTUP_MARGIN_SEC = 2.0
 
-    def _timed(self, cmd, cpu=False):
+    def _timed(self, cmd, cpu=False, ceiling=None):
         """cpu=True measures CPU time (timing_budget.best_of): these inputs run into the gate's own budgets (the body
         and character caps, the INSPECT_SECONDS deadline), so on a busy machine the wall time of one call reaches the
         wall cut-off although the work is the same. The wall cut-off is then much wider, as a catastrophe guard."""
@@ -668,7 +676,9 @@ class TestLinearTime(unittest.TestCase):
         # Per call and only here: the shared best_of default stays as it is for the other tests.
         cutoff = self.CPU_WALL_GUARD_SEC if cpu else CUTOFF_SEC
         t = best_of(run, cutoff=cutoff, cpu=cpu)
-        self.assertLess(t, LINEAR_CEILING_SEC * 2, describe(t, cutoff))
+        # `ceiling` is only for the inputs that run into the gate's budgets (BUDGET_CUT_CEILING_SEC); every other input
+        # keeps the linear-vs-quadratic ceiling.
+        self.assertLess(t, LINEAR_CEILING_SEC * 2 if ceiling is None else ceiling, describe(t, cutoff))
 
     def test_env_scan(self):
         self._timed("a=" * (self.SIZE // 2), cpu=True)
@@ -685,7 +695,7 @@ class TestLinearTime(unittest.TestCase):
 
     def test_unterminated_substitutions_are_cut_off_by_the_budgets(self):
         for cmd in ("$(" * (self.SIZE // 2), '"$(' * (self.SIZE // 3), "`a" * (self.SIZE // 2)):
-            self._timed(cmd, cpu=True)
+            self._timed(cmd, cpu=True, ceiling=self.BUDGET_CUT_CEILING_SEC)
             # The property is that a budget CUT the scan (the gate refuses what it cannot follow), not how fast
             # that happened: a gate that returned without blocking would be a fail-open.
             with self.subTest(cmd=cmd[:8]):
@@ -695,6 +705,29 @@ class TestLinearTime(unittest.TestCase):
 
     def test_many_bodies(self):
         self._timed('echo "$(a)" ' * (self.SIZE // 12), cpu=True)
+
+    def test_budget_cut_ceiling_fits_in_the_hook_timeout(self):
+        """The constraint the budget-cut ceiling stands for: the gate must return and block with its own message before the
+        harness timeout, with margin to spare (a gate that needs the whole timeout is no protection). Read from the
+        registration, not assumed: a changed timeout or a raised INSPECT_SECONDS is noticed here, with the reason."""
+        settings_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), ".claude", "settings.json")
+        with open(settings_path, encoding="utf-8") as fh:
+            settings = json.load(fh)
+        timeouts = [
+            h.get("timeout")
+            for entry in settings["hooks"]["PreToolUse"] if entry.get("matcher") == "Bash"
+            for h in entry["hooks"] if "destructive-gate.py" in h.get("command", "")
+        ]
+        # a source pin: exactly one registration of the gate for Bash, and it has a timeout, else this cell has nothing to
+        # read (a registration without one fails here, with this message, not with a KeyError)
+        self.assertEqual(len(timeouts), 1, "expected exactly one Bash registration of destructive-gate.py in .claude/settings.json")
+        self.assertIsNotNone(timeouts[0], "the Bash registration of destructive-gate.py in .claude/settings.json has no timeout")
+        needed = self.BUDGET_CUT_CEILING_SEC + self.HOOK_STARTUP_MARGIN_SEC
+        self.assertLess(
+            needed, timeouts[0],
+            "INSPECT_SECONDS %.1f + margin %.1f + startup %.1f = %.1f s must stay below the hook timeout %s s"
+            % (hook.INSPECT_SECONDS, self.BUDGET_CUT_MARGIN_SEC, self.HOOK_STARTUP_MARGIN_SEC, needed, timeouts[0]))
 
 
 if __name__ == "__main__":
