@@ -106,7 +106,7 @@ export function loadPgMigrationFiles(dir: string = DEFAULT_PG_MIGRATIONS_DIR): P
 
 interface AppliedRow { version: number; checksum: string | null }
 
-async function readApplied(client: pg.PoolClient): Promise<Map<number, AppliedRow>> {
+async function readApplied(client: Pick<pg.PoolClient, 'query'>): Promise<Map<number, AppliedRow>> {
   // unqualified on purpose: the table is looked up on the search_path, exactly as the SELECT below and the files read
   // it, so a database whose schema is not `public` is not taken for an empty one
   const have = await client.query<{ t: string | null }>("SELECT to_regclass('schema_version')::text AS t")
@@ -132,6 +132,27 @@ function checkAgainstFiles(files: PgMigrationFile[], applied: Map<number, Applie
       throw new Error(`PG migration ${f.version} (${f.path}) is not applied but ${highestApplied} is: out-of-order migrations are refused`)
     }
   }
+}
+
+/**
+ * The check of a boot that has NO migration URL: reads `schema_version` (a SELECT, so the serving role can do it) and
+ * throws unless every shipped file is applied and the applied rows still agree with the files (the same rules as the
+ * runner). It never writes and never takes the migration lock: a serving role holds no DDL rights, and a schema that is
+ * behind is a deployment that has to run the migrations first, not something this boot may fix. The message says how
+ * many files are missing, never where the database is.
+ */
+export async function assertPgSchemaCurrent(pool: Pick<pg.Pool, 'query'>, opts: { dir?: string } = {}): Promise<PgMigrationResult> {
+  const files = loadPgMigrationFiles(opts.dir)
+  const applied = await readApplied(pool)
+  checkAgainstFiles(files, applied)
+  const missing = files.filter((f) => !applied.has(f.version))
+  if (missing.length > 0) {
+    throw new Error(
+      `the schema is behind: ${missing.length} migration file(s) are not applied (the next is ${missing[0]!.version}), ` +
+        'and this boot has no migration URL to apply them with: run the migrations with the owner role first',
+    )
+  }
+  return { applied: [], alreadyApplied: applied.size }
 }
 
 const ENSURE_SCHEMA_VERSION = `CREATE TABLE IF NOT EXISTS schema_version (
