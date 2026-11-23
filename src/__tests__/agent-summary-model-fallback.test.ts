@@ -14,6 +14,7 @@ const store = vi.hoisted(() => {
   const { tmpdir } = require('node:os')
   return { dir: mkdtempSync(join(tmpdir(), 'summary-fallback-')) as string }
 })
+vi.mock('../paths.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../paths.js')>()), STORE_DIR: store.dir }))
 vi.mock('../config.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../config.js')>()
   return { ...actual, STORE_DIR: store.dir }

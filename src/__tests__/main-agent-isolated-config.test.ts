@@ -36,6 +36,7 @@ vi.mock('../settings-store.js', async (orig) => {
       key === 'MAIN_AGENT_ISOLATED_CONFIG' ? SETTING : actual.getEffectiveSettingValue(key),
   }
 })
+vi.mock('../paths.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../paths.js')>()), STORE_DIR: STORE }))
 vi.mock('../config.js', async (orig) => {
   const actual = await orig<typeof import('../config.js')>()
   return { ...actual, PROJECT_ROOT: PROJECT, STORE_DIR: STORE }

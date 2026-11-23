@@ -12,6 +12,7 @@ import { join } from 'node:path'
 
 const { atomicWriteFileSyncMock } = vi.hoisted(() => ({ atomicWriteFileSyncMock: vi.fn() }))
 
+vi.mock('../paths.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../paths.js')>()), STORE_DIR: '/tmp/command-task-real-test' }))
 vi.mock('../config.js', () => ({
   STORE_DIR: '/tmp/command-task-real-test', TELEGRAM_BOT_TOKEN: '', ALLOWED_CHAT_ID: '',
 }))

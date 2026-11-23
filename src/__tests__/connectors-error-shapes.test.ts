@@ -34,6 +34,7 @@ vi.mock('../logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }))
 
+vi.mock('../paths.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../paths.js')>()), STORE_DIR: '/tmp/mock-store' }))
 vi.mock('../config.js', () => ({
   PROJECT_ROOT: '/tmp/mock-root',
   STORE_DIR: '/tmp/mock-store',

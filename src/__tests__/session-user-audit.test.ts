@@ -98,6 +98,7 @@ vi.mock('../db.js', () => ({
   writeAgentAuditLog: vi.fn(),
 }))
 
+vi.mock('../paths.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../paths.js')>()), STORE_DIR: '/tmp/store' }))
 vi.mock('../config.js', () => ({
   MAIN_AGENT_ID: 'marveen',
   ALLOWED_CHAT_ID: 'default',

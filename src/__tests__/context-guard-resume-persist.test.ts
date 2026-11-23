@@ -26,6 +26,7 @@ const ROOT = mkdtempSync(join(homedir(), '.cgresume-test-'))
 const STORE = join(ROOT, 'store')
 const PENDING = join(STORE, 'context-guard-pending-resume.json')
 
+vi.mock('../paths.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../paths.js')>()), STORE_DIR: STORE }))
 vi.mock('../config.js', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
   MAIN_AGENT_ID: 'marveen',

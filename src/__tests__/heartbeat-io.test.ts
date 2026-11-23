@@ -82,6 +82,7 @@ vi.mock('../settings-store.js', () => ({
   getEffectiveSettingValue: mockGetEffectiveSettingValue,
 }))
 
+vi.mock('../paths.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../paths.js')>()), STORE_DIR: '/store' }))
 vi.mock('../config.js', () => ({
   HEARTBEAT_CALENDAR_ID: 'primary',
   STORE_DIR: '/store',

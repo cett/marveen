@@ -18,14 +18,19 @@ import { tmpdir } from 'node:os'
 
 const flags = vi.hoisted(() => ({ isolated: false, storeDir: '' }))
 
+// one throwaway store for both mocks: the vault (paths.ts) and the config read the same directory
+const shared = vi.hoisted(() => {
+  const { mkdtempSync, mkdirSync } = require('node:fs')
+  const { join } = require('node:path')
+  const { tmpdir } = require('node:os')
+  const store = join(mkdtempSync(join(tmpdir(), 'plan-rotation-live-test-')), 'store') as string
+  mkdirSync(store, { recursive: true })
+  return { store }
+})
+vi.mock('../paths.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../paths.js')>()), STORE_DIR: shared.store }))
 vi.mock('../config.js', async (importOriginal) => {
-  const { mkdtempSync: mk, mkdirSync: mkd } = await import('node:fs')
-  const { join: j } = await import('node:path')
-  const { tmpdir: td } = await import('node:os')
   const orig = await importOriginal<typeof import('../config.js')>()
-  const root = mk(j(td(), 'plan-rotation-live-test-'))
-  const store = j(root, 'store')
-  mkd(store, { recursive: true })
+  const store = shared.store
   flags.storeDir = store
   return {
     ...orig,

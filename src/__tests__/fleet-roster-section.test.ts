@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 // Create a temp dir that acts as the project root for the test.
 const tmpRoot = mkdtempSync(join(tmpdir(), 'marveen-roster-test-'))
 
+vi.mock('../paths.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../paths.js')>()), STORE_DIR: tmpRoot }))
 vi.mock('../config.js', () => ({
   PROJECT_ROOT: tmpRoot,
   STORE_DIR: tmpRoot,

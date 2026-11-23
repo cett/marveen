@@ -27,6 +27,7 @@ const keychainMock = vi.hoisted(() => ({
   storeThrows: false,
 }))
 
+vi.mock('../paths.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../paths.js')>()), STORE_DIR: `${tmpRoot}/store` }))
 vi.mock('../config.js', () => ({ PROJECT_ROOT: tmpRoot, STORE_DIR: `${tmpRoot}/store` }))
 vi.mock('../web/keychain.js', () => ({
   isKeychainAvailable: () => keychainMock.available,

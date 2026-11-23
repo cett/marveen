@@ -4,6 +4,7 @@ import { initDatabase, getDb, getAgentTier, getActiveBlackboardAgentIds, markBla
 vi.mock('../logger.js', () => ({
   logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() },
 }))
+vi.mock('../paths.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../paths.js')>()), STORE_DIR: '/tmp/bb-sweeper-test-' + process.pid }))
 vi.mock('../config.js', () => ({
   PROJECT_ROOT: '/tmp/bb-sweeper-test-' + process.pid,
   STORE_DIR: '/tmp/bb-sweeper-test-' + process.pid,

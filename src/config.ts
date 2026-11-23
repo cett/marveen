@@ -3,19 +3,17 @@ import { CronExpressionParser } from 'cron-parser'
 import Database from 'better-sqlite3'
 import { hostname } from 'node:os'
 import { existsSync } from 'node:fs'
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { join } from 'node:path'
 import { readEnvFile } from './env.js'
+import { PROJECT_ROOT, STORE_DIR } from './paths.js'
 import { getProviderType, getChannelToken, getChannelChatId, type ChannelProviderType } from './channel-provider.js'
 import { validateEnvConfig } from './config-schema.js'
 import { resolveSecret } from './secret-resolver.js'
 import { resolvePgUrl } from './db/pg/url.js'
 import { getConfigSnapshot, ConfigSnapshotMissingError } from './config-snapshot.js'
 
-const __dirname = dirname(fileURLToPath(import.meta.url))
-
-export const PROJECT_ROOT = join(__dirname, '..')
-export const STORE_DIR = process.env['MARVEEN_STORE_DIR'] ?? join(PROJECT_ROOT, 'store')
+// The path roots live in paths.ts (a leaf, see there); re-exported so every existing importer keeps its import.
+export { PROJECT_ROOT, STORE_DIR }
 // When vitest runs from a git worktree under /tmp, PROJECT_ROOT resolves to
 // /tmp/wt-*/ which isUnsafeHookCommand() (agent-scaffold-hooks.ts) blocks as a
 // volatile tmpfs path. MARVEEN_SCRIPTS_DIR lets the test environment point

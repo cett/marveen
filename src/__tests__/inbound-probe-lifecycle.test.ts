@@ -34,6 +34,7 @@ vi.mock('../logger.js', () => ({ logger: loggerMock }))
 
 const FAKE_PROJECT_ROOT = '/fake/project'
 const FAKE_STORE_DIR = '/fake/project/store'
+vi.mock('../paths.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../paths.js')>()), STORE_DIR: FAKE_STORE_DIR }))
 vi.mock('../config.js', () => ({ PROJECT_ROOT: FAKE_PROJECT_ROOT, STORE_DIR: FAKE_STORE_DIR }))
 
 const readEnvFileMock = vi.hoisted(() => vi.fn())

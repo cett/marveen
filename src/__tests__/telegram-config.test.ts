@@ -40,6 +40,7 @@ vi.mock('node:os', async (importOriginal) => {
   return { ...actual, homedir: vi.fn().mockReturnValue(FAKE_HOME) }
 })
 
+vi.mock('../paths.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../paths.js')>()), STORE_DIR: FAKE_HOME }))
 vi.mock('../config.js', () => ({
   PROJECT_ROOT: FAKE_HOME,
   STORE_DIR: FAKE_HOME,

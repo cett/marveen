@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os'
 const tmpRoot = mkdtempSync(join(tmpdir(), 'marveen-claude-plans-write-test-'))
 const storeDir = join(tmpRoot, 'store')
 
+vi.mock('../paths.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../paths.js')>()), STORE_DIR: storeDir }))
 vi.mock('../config.js', () => ({
   PROJECT_ROOT: tmpRoot,
   STORE_DIR: storeDir,

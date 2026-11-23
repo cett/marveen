@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { EventEmitter } from 'node:events'
 import type { RouteContext } from '../web/routes/types.js'
 
+vi.mock('../paths.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../paths.js')>()), STORE_DIR: '/tmp/marveen-test/store' }))
 vi.mock('../config.js', async (importOriginal) => {
   const actual = await importOriginal<any>()
   return {

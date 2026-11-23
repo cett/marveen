@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url'
 
 const tmpRoot = mkdtempSync(join(tmpdir(), 'marveen-checkpoint-test-'))
 
+vi.mock('../paths.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../paths.js')>()), STORE_DIR: tmpRoot }))
 vi.mock('../config.js', () => ({
   PROJECT_ROOT: tmpRoot,
   STORE_DIR: tmpRoot,

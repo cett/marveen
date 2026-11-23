@@ -24,6 +24,7 @@ vi.mock('../web/keychain.js', () => ({
   keychainRetrieveStatus: vi.fn().mockReturnValue({ status: 'empty', value: null }),
 }))
 // An isolated instance: STORE_DIR is somewhere else than PROJECT_ROOT/store.
+vi.mock('../paths.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../paths.js')>()), STORE_DIR: ISOLATED_STORE }))
 vi.mock('../config.js', () => ({ PROJECT_ROOT, STORE_DIR: ISOLATED_STORE, MAIN_AGENT_ID: 'main' }))
 
 import { setSecret, getSecret, deleteSecret } from '../web/vault.js'
@@ -59,6 +60,7 @@ describe('config STORE_DIR default', () => {
     try {
       vi.resetModules()
       vi.doUnmock('../config.js')
+      vi.doUnmock('../paths.js')
       delete process.env['MARVEEN_STORE_DIR']
       const plain = await import('../config.js')
       expect(plain.STORE_DIR).toBe(join(plain.PROJECT_ROOT, 'store'))

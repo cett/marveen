@@ -23,6 +23,7 @@ const { ROOT, STORE } = vi.hoisted(() => {
   return { ROOT: root, STORE: j(root, 'store') }
 })
 
+vi.mock('../paths.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../paths.js')>()), STORE_DIR: STORE }))
 vi.mock('../config.js', async (importOriginal) => ({ ...(await importOriginal<object>()), PROJECT_ROOT: ROOT, STORE_DIR: STORE }))
 
 import { useTestDb } from './helpers/with-test-db.js'

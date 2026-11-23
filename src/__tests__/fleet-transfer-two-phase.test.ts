@@ -63,6 +63,7 @@ afterAll(() => {
 vi.mock('../logger.js', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }))
 vi.mock('../web/agent-config.js', () => ({ AGENTS_BASE_DIR: AGENTS, listAgentNames: () => [] }))
 vi.mock('../web/scheduled-tasks-io.js', () => ({ SCHEDULED_TASKS_DIR: TASKS }))
+vi.mock('../paths.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../paths.js')>()), STORE_DIR: STORE }))
 vi.mock('../config.js', () => ({
   PROJECT_ROOT: PROJECT,
   STORE_DIR: STORE,

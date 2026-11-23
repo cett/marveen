@@ -23,6 +23,7 @@ vi.mock('../web/agent-config.js', () => ({
   readAgentCapabilities: vi.fn().mockReturnValue([]),
 }))
 vi.mock('../web/routes/connectors-mcp.js', () => ({ tryHandleMcpConnectors: vi.fn().mockResolvedValue(false) }))
+vi.mock('../paths.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../paths.js')>()), STORE_DIR: '/tmp' }))
 vi.mock('../config.js', () => ({
   PROJECT_ROOT: '/tmp',
   STORE_DIR: '/tmp',

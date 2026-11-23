@@ -19,6 +19,7 @@ const { TMP_ROOT, STORE_DIR } = vi.hoisted(() => {
   return { TMP_ROOT: root, STORE_DIR: dir }
 })
 
+vi.mock('../paths.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../paths.js')>()), STORE_DIR: STORE_DIR }))
 vi.mock('../config.js', () => ({ PROJECT_ROOT: TMP_ROOT, STORE_DIR }))
 
 // Also stub out the DB call so the watcher can run without a real DB.

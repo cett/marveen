@@ -31,6 +31,7 @@ vi.mock('node:child_process', () => ({
 }))
 vi.mock('../logger.js', () => ({ logger: { info: h.info, warn: h.warn, error: vi.fn(), debug: vi.fn() } }))
 vi.mock('../platform.js', () => ({ resolveFromPath: () => '/usr/bin/tmux' }))
+vi.mock('../paths.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../paths.js')>()), STORE_DIR: '/nonexistent-store-dir' }))
 vi.mock('../config.js', () => ({ PROJECT_ROOT: '/nonexistent-project-root', STORE_DIR: '/nonexistent-store-dir' }))
 vi.mock('../web/agent-process.js', () => ({ capturePane: () => h.pane }))
 vi.mock('../web/main-agent.js', () => ({ MAIN_CHANNELS_SESSION: 'main-test' }))
