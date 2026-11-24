@@ -227,10 +227,32 @@ class TestSegmentsAmpersand(unittest.TestCase):
 
 
 class TestHostileInputIsLinear(unittest.TestCase):
-    """CPU time, not wall clock (the machine may be loaded): each hostile 250 KB shape well under the 4 s
-    inspection budget, and far under the 10 s hook timeout."""
+    """CPU time, not wall clock (the machine may be loaded). Two checks per hostile shape, both on the best measurement
+    seen so far on each side:
+
+    - the ceiling: the best time for the 250 KB input is under LIMIT. LIMIT is the 4 s inspection budget of the gate
+      (inside a 10 s hook timeout) minus 1 s of margin for a slow shared runner: 3.0 s.
+    - the doubling: the best time for 2n input is at most DOUBLING_FACTOR times the best time for n, plus SLACK for
+      timer noise. Linear gives about 2x, a quadratic pattern about 4x; the factor 3.0 sits between them.
+
+    The measurements are adaptive: each round times the big and the small input once, and the shape passes as soon as
+    both checks hold on the best times so far. A quiet machine passes in one round. A shape fails only after MAX_ROUNDS
+    rounds, so a noisy runner cannot fail a shape on one unlucky sample, while a real regression stays over the line
+    in every round.
+    """
 
     LIMIT = 3.0
+    DOUBLING_FACTOR = 3.0
+    SLACK = 0.05
+    MAX_ROUNDS = 5
+
+    # shape name -> (builder of an input of n units, n for the 2n check)
+    SHAPES = {
+        'continuations': (lambda n: 'r\\\n' * n, 40000),
+        'ampersands': (lambda n: 'a & ' * n, 30000),
+        'keyword_segments': (lambda n: '; then ' * n, 17500),
+        'case_patterns': (lambda n: 'case x in a) ' * n, 9000),
+    }
 
     def _cpu(self, cmd):
         self.assertLessEqual(len(cmd), hook.MAX_CMD_CHARS)
@@ -238,17 +260,33 @@ class TestHostileInputIsLinear(unittest.TestCase):
         verdict(cmd)
         return time.process_time() - t0
 
+    def _check_shape(self, name):
+        build, n = self.SHAPES[name]
+        big_input = build(2 * n)
+        small_input = build(n)
+        self.assertLessEqual(len(big_input), hook.MAX_CMD_CHARS)
+        best_big = float('inf')
+        best_small = float('inf')
+        for _ in range(self.MAX_ROUNDS):
+            best_big = min(best_big, self._cpu(big_input))
+            best_small = min(best_small, self._cpu(small_input))
+            if best_big < self.LIMIT and best_big <= self.DOUBLING_FACTOR * best_small + self.SLACK:
+                return
+        self.fail(f'{name} after {self.MAX_ROUNDS} rounds: 2n best {best_big:.3f}s (ceiling {self.LIMIT}s), '
+                  f'n best {best_small:.3f}s, ratio {best_big / best_small:.2f} '
+                  f'(limit {self.DOUBLING_FACTOR}x + {self.SLACK}s)')
+
     def test_many_continuations(self):
-        self.assertLess(self._cpu('r\\\n' * 80000), self.LIMIT)
+        self._check_shape('continuations')
 
     def test_many_ampersands(self):
-        self.assertLess(self._cpu('a & ' * 60000), self.LIMIT)
+        self._check_shape('ampersands')
 
     def test_many_keyword_segments(self):
-        self.assertLess(self._cpu('; then ' * 35000), self.LIMIT)
+        self._check_shape('keyword_segments')
 
     def test_many_case_patterns(self):
-        self.assertLess(self._cpu('case x in a) ' * 18000), self.LIMIT)
+        self._check_shape('case_patterns')
 
 
 if __name__ == '__main__':

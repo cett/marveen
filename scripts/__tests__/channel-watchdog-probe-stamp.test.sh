@@ -183,6 +183,9 @@ make_installer() {
   printf 'SERVICE_ID=testbot\n' > "$root/.env"
   if [ "$mode" = "writes-stamp" ]; then
     printf '#!/bin/sh\ncase "$1" in load) date +%%s > "%s/store/.channel-keepalive-probe" ;; esac\nexit 0\n' "$root" > "$root/bin/launchctl"
+  elif [ "$mode" = "stamp-then-next-second" ]; then
+    # the probe stamps during the load, and the load returns only after the clock has moved on to the next second
+    printf '#!/bin/sh\ncase "$1" in load) t=$(date +%%s); echo "$t" > "%s/store/.channel-keepalive-probe"; while [ "$(date +%%s)" = "$t" ]; do sleep 0.1; done ;; esac\nexit 0\n' "$root" > "$root/bin/launchctl"
   else
     printf '#!/bin/sh\nexit 0\n' > "$root/bin/launchctl"
   fi
@@ -192,6 +195,8 @@ make_installer() {
 }
 make_installer inst-ok writes-stamp
 case "$INST_OUT" in *"OK: the probe ran"*) pass "(g) a fresh stamp after the load: OK line" ;; *) fail "(g) no OK line: $INST_OUT" ;; esac
+make_installer inst-edge stamp-then-next-second
+case "$INST_OUT" in *"OK: the probe ran"*) pass "(g) a stamp in the load's own second, the load returning a second later: OK line" ;; *) fail "(g) a second-boundary stamp read as not run: $INST_OUT" ;; esac
 make_installer inst-none silent
 case "$INST_OUT" in *"WARNING: the probe has not run within 5s"*"gui domain"*"launchctl bootstrap gui/"*) pass "(g) no stamp: the warning names the gui domain and the bootstrap command" ;; *) fail "(g) no warning: $INST_OUT" ;; esac
 assert_eq "(g) a missing stamp does not fail the installer" "0" "$INST_RC"

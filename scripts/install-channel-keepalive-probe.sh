@@ -90,6 +90,10 @@ echo "Wrote launchd unit: $PLIST"
 
 if [ "$LOAD" = "1" ]; then
   launchctl unload "$PLIST" 2>/dev/null || true
+  # Taken after the unload and BEFORE the load: RunAtLoad can stamp within the same second as the load, and a start
+  # time read after it would then be one second newer than that stamp, so a probe that did run was reported as not
+  # running. Before the unload, the old agent could still write a stamp that would pass for the new one.
+  INSTALLED_AT="$(date +%s)"
   launchctl load "$PLIST"
   echo "Loaded $LABEL (every 180s + at load). It only ever TOUCHES store/.channel-keepalive after proving the telegram poller alive from the process tree -- a dead native is never masked."
   # Loading a LaunchAgent is not running it: the agent lives in the user's gui domain, which exists only while that
@@ -99,7 +103,6 @@ if [ "$LOAD" = "1" ]; then
   # wait for a stamp newer than this install and say so when it does not come.
   STAMP="$PROJECT_DIR/store/.channel-keepalive-probe"
   WAIT_SECONDS="${KEEPALIVE_PROBE_WAIT_SECONDS:-240}"
-  INSTALLED_AT="$(date +%s)"
   waited=0
   seen=0
   while :; do
