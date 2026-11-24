@@ -27,7 +27,7 @@
 // What this boot deliberately does NOT run (the importers and their helpers, db/index.ts initDatabase()): a PostgreSQL
 // database only ever receives data from a SQLite database that already ran them (the phase 5 import) or is a fresh
 // install. The ones that still matter on PostgreSQL (the claude-plans seed, the cost-budgets importer, the dashboard
-// token enrolment) are ported in 6c-2. config.ts still reads its boot values from SQLite until 6c-3.
+// token enrolment) are ported in 6c-2.
 import { logger } from '../logger.js'
 import { applyPgMigrations, assertPgSchemaCurrent, loadPgMigrationFiles, type PgMigrationResult } from '../db-migrations-pg.js'
 import { loadSystemConfigCacheAsync } from './config-cache.js'
@@ -310,30 +310,3 @@ export async function bootPgBackend(opts: PgBootOptions = {}): Promise<PgBootRes
   return { migrations, warnings }
 }
 
-/**
- * The process cannot run on PostgreSQL yet. Not a PgBootError: nothing about the database is wrong, and no database was
- * touched to find out (the refusal comes before the port takeover and before any pool exists).
- */
-export class PgProcessNotSupportedError extends Error {
-  constructor() {
-    super(
-      `${PG_URL_KEY} is set, but the dashboard process cannot run on PostgreSQL yet: ` +
-        'the rest of the boot (config.ts, the file retirements, the embedding backfill, the raw SQLite statements) still uses the ' +
-        `synchronous SQLite handle, which a PostgreSQL boot never opens. Unset ${PG_URL_KEY} to run on SQLite. ` +
-        'This refusal is lifted by the config bootstrap step and the cutover.',
-    )
-    this.name = 'PgProcessNotSupportedError'
-  }
-}
-
-/**
- * THE ONE place that keeps the process off PostgreSQL until it can run there. src/index.ts calls it FIRST in main(), before
- * the port takeover (acquireLock) and before any database work: a refused process must not SIGTERM the running dashboard
- * and must not open a pool it would only have to end. The decision is the configuration alone (resolvePgUrl), so it needs
- * no pool and never reads or echoes the URL. The step that lifts it (config bootstrap, 6c-3, then the cutover) deletes the
- * call in src/index.ts; bootPgBackend and initDatabaseAsync are unaffected (the PG tests call them directly). No override
- * flag, on purpose.
- */
-export function refuseProcessOnPg(): void {
-  if (resolvePgUrl() !== undefined) throw new PgProcessNotSupportedError()
-}

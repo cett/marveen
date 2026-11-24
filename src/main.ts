@@ -24,7 +24,6 @@ import { initHeartbeat, stopHeartbeat } from './heartbeat.js'
 import { ensureHeartbeatAgent, shouldBootHeartbeatAgent, HEARTBEAT_AGENT_NAME } from './web/heartbeat-agent-scaffold.js'
 import { startAgentProcess } from './web/agent-process.js'
 import { renameSharedCredentialsIfSafe, fleetTokenBootPass } from './web/claude-credentials-guard.js'
-import { refuseProcessOnPg } from './db/pg-boot.js'
 import { startWebServer } from './web.js'
 import { startRbacModeRefresh } from './web/rbac-mode.js'
 import { runBootImportLeftoverScan } from './web/fleet-import-leftovers.js'
@@ -497,12 +496,6 @@ const shutdown = (signal?: string): void => {
 
 async function main(): Promise<void> {
   console.log(BANNER)
-
-  // The process cannot run on PostgreSQL yet (the SQLite handle stays unset, and config.ts still reads its boot values from
-  // the SQLite file). Refuse HERE, before the port takeover below (a refused process must not SIGTERM the running dashboard)
-  // and before any database work (no pool is ever opened for it). The step that lifts this (config bootstrap, then the
-  // cutover) deletes this line.
-  refuseProcessOnPg()
 
   // Install signal handlers EARLIEST so we can respond cleanly to SIGTERM
   // during init. Required to close the fresh-startup race: a concurrent
