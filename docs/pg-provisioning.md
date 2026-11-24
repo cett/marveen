@@ -120,3 +120,5 @@ The override `MARVEEN_PG_ALLOW_NEWER_DATABASE=1` lets the process start on a dat
 ## Open items
 
 - The owner URL stays in the module memory for the life of the process after the schema step. It is the same exposure as before the scrub. A later change can drop it after the step.
+
+<!-- throwaway CI cell: a docs-only change, pg-parity must be skipped and test green -->
