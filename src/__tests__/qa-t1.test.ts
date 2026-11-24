@@ -40,7 +40,7 @@ beforeEach(() => {
 })
 afterEach(() => { rmSync(tmp, { recursive: true, force: true }) })
 
-function fakeCiRoot(extraStep?: { job: 'build-checks' | 'test'; name: string }) {
+function fakeCiRoot(extraStep?: { job: 'build-checks' | 'gates'; name: string }) {
   mkdirSync(path.join(tmp, '.github', 'workflows'), { recursive: true })
   const extra = extraStep ? `\n      - name: ${extraStep.name}\n        run: echo hi\n` : ''
   const target = extraStep?.job ?? 'build-checks'
@@ -60,22 +60,22 @@ jobs:
         run: npm ci
       - name: Type check
         run: npm run typecheck${target === 'build-checks' ? extra : ''}
-  test:
+  gates:
     steps:
       - name: SQLite dialect ratchet
-        run: python3 scripts/sqlite-dialect-ratchet.py${target === 'test' ? extra : ''}
+        run: python3 scripts/sqlite-dialect-ratchet.py${target === 'gates' ? extra : ''}
 `
   writeFileSync(path.join(tmp, '.github', 'workflows', 'ci.yml'), yaml)
   return tmp
 }
 
 describe('ci.yml parity', () => {
-  it('holds against the REAL ci.yml: every run: step of build-checks/test is covered by a t1 row or excluded', () => {
+  it('holds against the REAL ci.yml: every run: step of build-checks/vitest/gates/test is covered by a t1 row or excluded', () => {
     expect(uncoveredCiSteps(REPO_ROOT, allSteps(true))).toEqual([])
   })
 
   it('CHECKED_JOBS deliberately leaves out security (network/advisory) and qa-scanners (already automated elsewhere)', () => {
-    expect(CHECKED_JOBS).toEqual(['build-checks', 'test'])
+    expect(CHECKED_JOBS).toEqual(['build-checks', 'vitest', 'gates', 'test'])
     expect(CHECKED_JOBS).not.toContain('security')
     expect(CHECKED_JOBS).not.toContain('qa-scanners')
   })
@@ -95,6 +95,17 @@ describe('ci.yml parity', () => {
     expect(uncovered).toEqual([{ job: 'build-checks', name: 'Some brand new check nobody wrote a t1 row for' }])
   })
 
+  it('MUTANT: the same for a step added to the `gates` job (the half that holds the ratchets and the lints)', () => {
+    const root = fakeCiRoot({ job: 'gates', name: 'A new gate nobody wrote a t1 row for' })
+    expect(uncoveredCiSteps(root, allSteps(true))).toEqual([{ job: 'gates', name: 'A new gate nobody wrote a t1 row for' }])
+  })
+
+  it('the REAL ci.yml: every job named by a row or an exclusion exists, and the aggregate step is excluded with a reason', () => {
+    const real = loadCiSteps(REPO_ROOT)
+    for (const job of CHECKED_JOBS) expect(real.some((s: { job: string }) => s.job === job), `no run: step in job ${job}`).toBe(true)
+    expect(EXCLUDED_STEPS.find((e: { job: string; name: string }) => e.job === 'test' && e.name === 'Both halves succeeded')).toBeDefined()
+  })
+
   it('a fixture that only repeats steps the rows already cover (and the excluded "Install dependencies") stays green', () => {
     const root = fakeCiRoot()
     expect(uncoveredCiSteps(root, allSteps(true))).toEqual([])
@@ -103,7 +114,7 @@ describe('ci.yml parity', () => {
   it('MUTANT: dropping a row\'s own coverage (a ratchet "forgotten") turns parity red for that ci.yml step', () => {
     const steps = allSteps(true).filter((s: StepDef) => s.id !== 'sqlite-dialect-ratchet')
     const uncovered = uncoveredCiSteps(REPO_ROOT, steps)
-    expect(uncovered).toEqual([{ job: 'test', name: 'SQLite dialect ratchet' }])
+    expect(uncovered).toEqual([{ job: 'gates', name: 'SQLite dialect ratchet' }])
   })
 })
 
