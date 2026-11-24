@@ -28,6 +28,8 @@ function isSqliteUniqueOn(err: Error, code: unknown, column: string): boolean {
  */
 export const PG_UNIQUE_CONSTRAINTS: Readonly<Record<string, { table: string; constraint: string }>> = {
   'dashboard_users.username': { table: 'dashboard_users', constraint: 'dashboard_users_username_key' },
+  // No production caller asks about this column today: the entry is exercised by the tests only (the app-role cell and the
+  // catalog cell). It stays as the second, plain-UNIQUE example next to the expression index above; drop it if that changes.
   'device_keys.key_hash': { table: 'device_keys', constraint: 'device_keys_key_hash_key' },
 }
 
