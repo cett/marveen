@@ -195,7 +195,12 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install dependencies
-        run: npm ci
+        # The classic TypeScript API (6.0) of the isolated tools/eslint toolchain, which TypeScript 7 does not ship: the
+        # QA delta-class tests count the awaits a delta adds through it (tools/qa/lib/common.mjs loadTypeScript). Without
+        # it `awaitsAdded` is null and those tests fail; the `gates` job installs the same toolchain for its lints.
+        run: |
+          npm ci
+          npm ci --prefix tools/eslint --ignore-scripts
       - name: Stub external binaries (claude, tmux) for module-load resolution
         run: |
           mkdir -p "$HOME/bin"
