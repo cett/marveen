@@ -278,8 +278,19 @@ jobs:
         id: paths
         env:
           BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          EVENT: ${{ github.event_name }}
           HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-        run: echo "scripts=$(bash scripts/ci-changed-paths.sh "$BASE_SHA" "$HEAD_SHA" scripts)" >> "$GITHUB_OUTPUT"
+        run: |
+          # The decider comes from the BASE, never from the pull request's own checkout: a PR that rewrites the script
+          # to answer false must not decide its own gates. A push never asks the script (true here). No base copy
+          # (the base has no script yet) means true.
+          if [ "$EVENT" = "push" ]; then
+            echo "scripts=true" >> "$GITHUB_OUTPUT"
+          elif git show "$BASE_SHA:scripts/ci-changed-paths.sh" > "$RUNNER_TEMP/ci-changed-paths.sh" 2>/dev/null; then
+            echo "scripts=$(bash "$RUNNER_TEMP/ci-changed-paths.sh" "$BASE_SHA" "$HEAD_SHA" scripts)" >> "$GITHUB_OUTPUT"
+          else
+            echo "scripts=true" >> "$GITHUB_OUTPUT"
+          fi
       - name: Python tests
         if: steps.paths.outputs.scripts == 'true'
         # scripts/run-python-tests.sh runs the scripts/__tests__/*.test.py files 4 at a time, the slowest
@@ -446,7 +457,42 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  pg-decide:
+    # Decides whether pg-parity runs (scripts/ci-changed-paths.sh, group pg): on a pull request when the changed files
+    # touch the PostgreSQL layer or the PG harness, or when the PR carries the label ci-full; always on a push to develop.
+    # Fail-safe: the answer is true whenever it cannot be computed. pg-parity is not a required context.
+    runs-on: ubuntu-latest
+    outputs:
+      pg: ${{ steps.decide.outputs.pg }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Decide
+        id: decide
+        env:
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          EVENT: ${{ github.event_name }}
+          HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          CI_FULL_LABEL: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci-full') && '1' || '0' }}
+        run: |
+          # The decider comes from the BASE, never from the pull request's own checkout: a PR that rewrites the script
+          # to answer false must not decide its own gates. A push never asks the script (true here). No base copy
+          # (the base has no script yet) means true.
+          if [ "$EVENT" = "push" ]; then
+            echo "pg=true" >> "$GITHUB_OUTPUT"
+          elif git show "$BASE_SHA:scripts/ci-changed-paths.sh" > "$RUNNER_TEMP/ci-changed-paths.sh" 2>/dev/null; then
+            echo "pg=$(bash "$RUNNER_TEMP/ci-changed-paths.sh" "$BASE_SHA" "$HEAD_SHA" pg)" >> "$GITHUB_OUTPUT"
+          else
+            echo "pg=true" >> "$GITHUB_OUTPUT"
+          fi
+
   pg-parity:
+    needs: pg-decide
+    if: needs.pg-decide.outputs.pg == 'true'
     # The PostgreSQL tests (src/**/*.pg.test.ts, `npm run test:pg`): the baseline in src/migrations-pg/ against the
     # SQLite migration chain, its mutants, and the PG test harness. They need a server, so they live outside the
     # default vitest run; this job gives them a throwaway PostgreSQL 16 service container.
