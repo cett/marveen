@@ -1,4 +1,5 @@
 import { dbx, dbxDialect } from './facade.js'
+import { runAs } from './context.js'
 import { blobToVectorLiteral, floatsToBlob, generateEmbedding } from './vector.js'
 import { logger } from '../logger.js'
 import { ftsEscape, FTS_MATCH, PG_FTS_CONFIG, PG_PHRASE_VERIFY_CHARS, pgCandidateTsq, pgPhraseIn } from './fts.js'
@@ -106,6 +107,14 @@ export async function createArtifact(params: CreateArtifactParams): Promise<{ id
 }
 
 /**
+ * The text an artifact is embedded from: its title and its meta, the non-blank ones joined by one space. Every write of an
+ * artifact embedding goes through this rule (the live write path and the PostgreSQL re-embed), so the two cannot drift.
+ */
+export function artifactEmbeddingText(title: string, meta: string): string {
+  return [title, meta].filter(s => s?.trim()).join(' ')
+}
+
+/**
  * Generate and store a title+meta embedding for an artifact in vec_artifacts.
  * No-op when Ollama is unavailable or sqlite-vec extension is not loaded.
  */
@@ -114,14 +123,17 @@ export async function storeArtifactEmbedding(
   title: string,
   meta: string
 ): Promise<void> {
-  const text = [title, meta].filter(s => s?.trim()).join(' ')
+  const text = artifactEmbeddingText(title, meta)
   if (!text.trim()) return
 
   const embedding = await generateEmbedding(text).catch(() => null)
   if (!embedding) return
 
   // PostgreSQL: the side table, keyed by the artifact id (there is no rowid to look up).
-  if (dbxDialect() === 'pg') return setArtifactEmbedding(id, floatsToBlob(embedding))
+  if (dbxDialect() === 'pg') {
+    await setArtifactEmbedding(id, floatsToBlob(embedding))
+    return
+  }
 
   const rowRow = await dbx.get<{ rowid: number }>('SELECT rowid FROM artifacts WHERE id = ?', id)
   if (!rowRow) return
@@ -152,9 +164,10 @@ export async function storeArtifactEmbedding(
  * The PostgreSQL vector side of one artifact (phase 3, step 6b, c6): one embedding per artifact in the side table, a
  * re-embed replaces the value. A wrong-length or non-finite blob is refused by blobToVectorLiteral inside the try and
  * logged: the artifact is saved without an embedding, as on SQLite. Only the PostgreSQL dialect writes here.
+ * Resolves true when the side row is written, false when it is not (the re-embed counts that as pending).
  */
-export async function setArtifactEmbedding(id: string, embeddingBlob: Buffer): Promise<void> {
-  if (dbxDialect() !== 'pg') return
+export async function setArtifactEmbedding(id: string, embeddingBlob: Buffer): Promise<boolean> {
+  if (dbxDialect() !== 'pg') return false
   try {
     const literal = blobToVectorLiteral(embeddingBlob)
     await dbx.tx(async (tx) => {
@@ -164,9 +177,82 @@ export async function setArtifactEmbedding(id: string, embeddingBlob: Buffer): P
         literal,
       )
     })
+    return true
   } catch (err) {
     logger.warn({ err, id }, 'artifact embedding not stored on PostgreSQL: the artifact is saved without it')
+    return false
   }
+}
+
+/** Rows per keyset batch of the artifact re-embed. The embedder is the slow part, so the batch only bounds the read. */
+export const ARTIFACT_REEMBED_BATCH_SIZE = 200
+
+export interface ArtifactReembedResult {
+  /** artifacts whose side row was written by this run */
+  embedded: number
+  /** artifacts the embedder did not answer for, or whose answer the write refused: no side row, the next run tries again */
+  pending: number
+  /** artifacts with no text to embed (a blank title and a blank meta): no side row, so every run counts them again */
+  skipped: number
+  /** keyset batches read */
+  batches: number
+}
+
+interface ReembedRow {
+  id: string
+  title: string
+  meta: string
+}
+
+/**
+ * Embed, on PostgreSQL, every artifact that has no side row (P-G4). The SQLite vectors do not travel with the data: the
+ * PostgreSQL `artifacts` table has no blob column, so the cutover re-embeds the artifacts here, from the same title + meta
+ * text as the live write path (artifactEmbeddingText). Resumable by design: the NOT EXISTS guard reads only the rows
+ * without a side row, so an interrupted run continues where the side rows stop, and a second run over a complete table
+ * embeds nothing. Serial (one embedding at a time), so a slow or absent Ollama costs time, not a burst of requests.
+ * The job runs in `runAs.system('artifact-reembed')`: a job of the dashboard itself, not of a tenant.
+ */
+export function reembedArtifacts(batchSize: number = ARTIFACT_REEMBED_BATCH_SIZE): Promise<ArtifactReembedResult> {
+  return runAs.system('artifact-reembed', () => reembedArtifactsRows(batchSize))
+}
+
+async function reembedArtifactsRows(batchSize: number): Promise<ArtifactReembedResult> {
+  if (dbxDialect() !== 'pg') throw new Error('reembedArtifacts runs on the PostgreSQL backend only')
+  let cursor = ''
+  let embedded = 0
+  let pending = 0
+  let skipped = 0
+  let batches = 0
+  for (;;) {
+    const rows = await dbx.all<ReembedRow>(
+      `SELECT a.id, a.title, a.meta FROM artifacts a
+       WHERE a.id > ?
+         AND NOT EXISTS (SELECT 1 FROM artifact_embeddings e WHERE e.artifact_id = a.id)
+       ORDER BY a.id
+       LIMIT ?`,
+      cursor,
+      batchSize,
+    )
+    if (rows.length === 0) break
+    batches++
+    for (const row of rows) {
+      const text = artifactEmbeddingText(row.title, row.meta)
+      if (!text.trim()) {
+        skipped++
+        continue
+      }
+      const embedding = await generateEmbedding(text)
+      if (!embedding) {
+        pending++
+        continue
+      }
+      if (await setArtifactEmbedding(row.id, floatsToBlob(embedding))) embedded++
+      else pending++
+    }
+    cursor = rows[rows.length - 1]!.id
+    if (rows.length < batchSize) break
+  }
+  return { embedded, pending, skipped, batches }
 }
 
 /**
