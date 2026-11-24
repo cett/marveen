@@ -16,7 +16,8 @@ Measured on PostgreSQL 16 with the real policies of migration `0009` (the plan c
   cost is 5 to 10 times higher with many tenants).
 - **A child table read in bulk scans its parent once per statement** (class C, for example the similarity query over
   `memory_embeddings`): the policy `EXISTS (SELECT 1 FROM memories ...)` is planned as a hashed SubPlan over the whole parent. About
-  +9 ms at 20 000 memories and +58 ms at 200 000 (one tenant, p50). The same shape applies to `artifact_embeddings` and
+  +9 ms at 20 000 memories and +58 ms at 200 000 (one tenant, p50), and about +1.1 to +1.5 ms at 2 000 memories (today's size; with
+  20 tenants +0.2 ms). The same shape applies to `artifact_embeddings` and
   `workspace_doc_embeddings`.
 - `conversation_log` listed by tenant alone scans the table with or without the policy (no index leads with `tenant_id`). No production
   read does that: every read is agent first, the rest is the prune. It is pinned in a cell and left as it is.
