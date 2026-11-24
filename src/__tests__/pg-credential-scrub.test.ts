@@ -3,7 +3,8 @@
 //
 // Privacy: neutral fixtures only (host-a.invalid, user-a, placeholder-a).
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -32,6 +33,8 @@ beforeEach(() => {
   vi.stubEnv('SECRET_MOUNT_DIR', secretDir)
   vi.stubEnv('MARVEEN_PG_URL', '')
   vi.stubEnv('MARVEEN_PG_MIGRATE_URL', '')
+  // the marker is set by the capture: stubbed so the teardown restores the environment of the worker
+  vi.stubEnv('MARVEEN_PG_CONFIGURED', '')
 })
 
 afterEach(() => {
@@ -114,5 +117,102 @@ describe('capturePgCredentials', () => {
     url.capturePgCredentials()
     url.resetPgCredentialCaptureForTests()
     expect(url.resolvePgUrl()).toBeUndefined()
+  })
+})
+
+/** The environment keys a real child process sees (node -e prints them; no shell, no tmux). */
+const childEnvKeys = (env?: NodeJS.ProcessEnv): string[] =>
+  spawnSync(process.execPath, ['-e', 'process.stdout.write(Object.keys(process.env).join("\\n"))'], {
+    env,
+    encoding: 'utf-8',
+  })
+    .stdout.split('\n')
+    .filter(Boolean)
+
+describe('a child process does not inherit the URLs', () => {
+  it('control: without the capture, a child sees the key (so the cells below are not vacuous)', () => {
+    vi.stubEnv('MARVEEN_PG_URL', URL_ENV)
+    expect(childEnvKeys()).toContain('MARVEEN_PG_URL')
+  })
+
+  it('a spawn with the default environment sees neither key, and the resolver still returns the URL', async () => {
+    vi.stubEnv('MARVEEN_PG_URL', URL_ENV)
+    vi.stubEnv('MARVEEN_PG_MIGRATE_URL', URL_MIGRATE)
+    const url = await load()
+    url.capturePgCredentials()
+    const keys = childEnvKeys()
+    expect(keys).toContain('PATH')
+    expect(keys).not.toContain('MARVEEN_PG_URL')
+    expect(keys).not.toContain('MARVEEN_PG_MIGRATE_URL')
+    expect(url.resolvePgUrl()).toBe(URL_ENV)
+    expect(url.resolvePgMigrateUrl()).toBe(URL_MIGRATE)
+  })
+
+  it('a spawn with an explicit copy of process.env (the agent-side pattern) sees neither key', async () => {
+    vi.stubEnv('MARVEEN_PG_URL', URL_ENV)
+    vi.stubEnv('MARVEEN_PG_MIGRATE_URL', URL_MIGRATE)
+    const url = await load()
+    url.capturePgCredentials()
+    const keys = childEnvKeys({ ...process.env, EXTRA_FLAG: '1' })
+    expect(keys).toContain('EXTRA_FLAG')
+    expect(keys).not.toContain('MARVEEN_PG_URL')
+    expect(keys).not.toContain('MARVEEN_PG_MIGRATE_URL')
+  })
+
+  it('the tmux wrapper the agent launch uses (runTmux) runs tmux with neither key in its environment', async () => {
+    const fakeTmux = join(root, 'fake-tmux')
+    const seenEnv = join(root, 'tmux-env.txt')
+    writeFileSync(fakeTmux, '#!/bin/sh\nenv > "$STUB_OUT"\n')
+    chmodSync(fakeTmux, 0o755)
+    vi.stubEnv('TMUX_BIN', fakeTmux)
+    vi.stubEnv('STUB_OUT', seenEnv)
+    vi.stubEnv('MARVEEN_PG_URL', URL_ENV)
+    vi.stubEnv('MARVEEN_PG_MIGRATE_URL', URL_MIGRATE)
+    const url = await load()
+    url.capturePgCredentials()
+    // config.ts refuses a PostgreSQL URL without a snapshot; the wrapper module loads config.ts, so set the same empty one
+    ;(await import('../config-snapshot.js')).setConfigSnapshot({})
+    const { runTmux } = await import('../web/agent-process-session.js')
+    runTmux(null, ['list-sessions'])
+    const names = readFileSync(seenEnv, 'utf-8')
+      .split('\n')
+      .map((line) => line.split('=')[0])
+    expect(names).toContain('STUB_OUT')
+    expect(names).not.toContain('MARVEEN_PG_URL')
+    expect(names).not.toContain('MARVEEN_PG_MIGRATE_URL')
+  })
+})
+
+describe('the marker for the SQLite entry guard', () => {
+  it('the capture sets the non-secret marker when a serving URL was captured', async () => {
+    vi.stubEnv('MARVEEN_PG_URL', URL_ENV)
+    const url = await load()
+    url.capturePgCredentials()
+    expect(process.env.MARVEEN_PG_CONFIGURED).toBe('1')
+  })
+
+  it('the capture does not set the marker when no serving URL was captured', async () => {
+    const url = await load()
+    url.capturePgCredentials()
+    expect(process.env.MARVEEN_PG_CONFIGURED).toBeFalsy()
+  })
+
+  it('a child-like process with the marker and no readable URL refuses the SQLite entry, and says where the URL goes', async () => {
+    vi.stubEnv('MARVEEN_PG_CONFIGURED', '1')
+    const url = await load()
+    expect(() => url.assertSqliteEntryAllowed('scheduled-task')).toThrow(/cannot read MARVEEN_PG_URL/)
+    expect(() => url.assertSqliteEntryAllowed('scheduled-task')).toThrow(/0600 \.env file/)
+  })
+
+  it('no marker and no URL: the SQLite entry is allowed (a SQLite install)', async () => {
+    const url = await load()
+    expect(() => url.assertSqliteEntryAllowed('scheduled-task')).not.toThrow()
+  })
+
+  it('the marker with a URL in the .env file: the standard refusal', async () => {
+    writeEnvFile(`MARVEEN_PG_URL=${URL_FILE}`)
+    vi.stubEnv('MARVEEN_PG_CONFIGURED', '1')
+    const url = await load()
+    expect(() => url.assertSqliteEntryAllowed('scheduled-task')).toThrow(/MARVEEN_PG_URL is set/)
   })
 })

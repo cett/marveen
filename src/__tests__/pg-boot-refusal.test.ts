@@ -35,6 +35,8 @@ beforeEach(() => {
   vi.stubEnv('SECRET_MOUNT_DIR', join(root, 'secrets'))
   vi.stubEnv('MARVEEN_STORE_DIR', storeDir)
   vi.stubEnv('MARVEEN_PG_URL', '')
+  // the marker is inherited from a PostgreSQL-configured parent: stubbed empty so these cells see the unmarked install
+  vi.stubEnv('MARVEEN_PG_CONFIGURED', '')
   vi.stubEnv('MARVEEN_PG_MIGRATE_URL', '')
   pgLoaded = false
 })
