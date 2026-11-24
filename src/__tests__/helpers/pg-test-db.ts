@@ -154,21 +154,6 @@ function withDatabase(adminUrl: string, database: string): string {
   return u.toString()
 }
 
-/**
- * Grants to the app role what production will give it. HARNESS CODE FOR NOW: S3 moves these statements into migration
- * 0009 (they are part of the migration there), and then this block is DELETED, not duplicated. No TRUNCATE, REFERENCES,
- * TRIGGER or CREATE: the serving role does DML only. Run by the owner, so the default privileges are the owner's.
- */
-async function grantAppRole(owner: pg.Pool): Promise<void> {
-  const app = quote(PG_TEST_APP_ROLE)
-  const me = quote(PG_TEST_OWNER_ROLE)
-  await owner.query(`GRANT USAGE ON SCHEMA public TO ${app}`)
-  await owner.query(`GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ${app}`)
-  await owner.query(`GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO ${app}`)
-  await owner.query(`ALTER DEFAULT PRIVILEGES FOR ROLE ${me} IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO ${app}`)
-  await owner.query(`ALTER DEFAULT PRIVILEGES FOR ROLE ${me} IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO ${app}`)
-}
-
 async function dropBuilding(adminUrl: string, building: string): Promise<void> {
   const cleanup = new pg.Client({ connectionString: adminUrl })
   await cleanup.connect()
@@ -205,7 +190,6 @@ async function buildTemplate(adminUrl: string, template: string, files: string[]
   const builder = new pg.Pool({ connectionString: pgTestRoleUrl(adminUrl, building, PG_TEST_OWNER_ROLE), max: 1 })
   try {
     if (files.length > 0) await applyPgMigrations(builder, { dir }) // no file = an empty template
-    await grantAppRole(builder)
   } catch (err) {
     await builder.end()
     await dropBuilding(adminUrl, building)
@@ -215,6 +199,22 @@ async function buildTemplate(adminUrl: string, template: string, files: string[]
   const rename = new pg.Client({ connectionString: adminUrl })
   await rename.connect()
   try { await rename.query(`ALTER DATABASE ${quote(building)} RENAME TO ${quote(template)}`) } finally { await rename.end() }
+}
+
+/**
+ * Makes sure the three cluster roles exist with the right attributes, under the same lock the template build takes. Migration
+ * 0009 refuses to run without the serving role (provisioning creates the roles, never a migration), so a test that applies
+ * the real files itself, on a database it made, calls this first.
+ */
+export async function ensurePgTestRoles(adminUrl: string = pgTestUrl()): Promise<void> {
+  const admin = new pg.Client({ connectionString: adminUrl })
+  await admin.connect()
+  try {
+    await admin.query('SELECT pg_advisory_lock(hashtext($1))', [LOCK_KEY])
+    try { await ensureRoles(admin) } finally { await admin.query('SELECT pg_advisory_unlock(hashtext($1))', [LOCK_KEY]) }
+  } finally {
+    await admin.end()
+  }
 }
 
 /** A fresh database cloned from the baseline template (built first when it does not exist yet). */

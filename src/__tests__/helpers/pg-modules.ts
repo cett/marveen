@@ -30,6 +30,7 @@ export const PORTED: readonly string[] = [
   'src/__tests__/db-context-route.test.ts',
   'src/__tests__/db-cost-budgets-month.test.ts',
   'src/__tests__/db-dashboard-user-delete-case.test.ts',
+  'src/__tests__/db-login-gateway.test.ts',
   'src/__tests__/db-like-case-vault.test.ts',
   'src/__tests__/db-like-case-sessions.test.ts',
   'src/__tests__/db-like-case-agents.test.ts',
@@ -128,6 +129,7 @@ export const PORTED: readonly string[] = [
   'src/__tests__/api-token-enroll-race.test.ts',
   'src/__tests__/db-cost-budgets-fractional-amount.test.ts',
   'src/__tests__/kanban-title-lookup-tenant.test.ts',
+  'src/__tests__/kanban-create-sort-tenant.test.ts',
 ]
 
 /** Test files (same form) that do not, each with the reason. */

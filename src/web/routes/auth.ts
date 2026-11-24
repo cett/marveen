@@ -51,6 +51,7 @@ import { removeBridgeSshAccess, sshDirOverride } from '../../remote-enroll-fs.js
 import {
   createDashboardUser,
   getDashboardUser,
+  getLoginUser,
   listDashboardUsers,
   countDashboardUsers,
   updateDashboardUserPassword,
@@ -181,7 +182,7 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
       return true
     }
 
-    const user = username ? await getDashboardUser(username) : undefined
+    const user = username ? await getLoginUser(username) : undefined
     let ok = false
     if (user && !user.disabled && password) {
       ok = await verifyPassword(password, user.password_hash)

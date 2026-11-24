@@ -59,12 +59,29 @@ describe('set_config in the source', () => {
     expect(PG_SET_CONTEXT_SQL.replace(/set_config\('[^']+', \$\d, true\)/g, '').replace(/^SELECT[\s,]*$/, '')).toBe('')
   })
 
+  it('the migration runner sets the system context right after BEGIN, before the file body and the version row', () => {
+    const lines = code(files.find(([f]) => f === MIGRATOR_FILE)![1]).split('\n')
+    const at = (re: RegExp): number => lines.findIndex((l) => re.test(l))
+    const begin = at(/client\.query\('BEGIN'\)/)
+    const context = at(/text:\s*PG_SET_CONTEXT_SQL\s*,\s*values:.*role:\s*'system'/)
+    const body = at(/client\.query\(file\.sql\)/)
+    const version = at(/INSERT INTO schema_version/)
+    expect(begin).toBeGreaterThan(-1)
+    expect(context).toBeGreaterThan(begin)
+    expect(body).toBeGreaterThan(context)
+    expect(version).toBeGreaterThan(body)
+    // nothing between BEGIN and the context but the try that guards it: no statement of the runner's own comes first
+    expect(lines.slice(begin + 1, context).filter((l) => /client\.query\(/.test(l))).toEqual([])
+  })
+
   it('PG_SET_CONTEXT_SQL is only ever sent as a statement of its own, never combined with other text', () => {
     for (const [f, text] of files) {
       for (const line of code(text).split('\n')) {
         if (!line.includes('PG_SET_CONTEXT_SQL')) continue
         if (f === CONTEXT_FILE && /^export const PG_SET_CONTEXT_SQL =\s*$/.test(line)) continue // the definition
         if (/^export \{[^}]*\bPG_SET_CONTEXT_SQL\b[^}]*\} from /.test(line)) continue // a re-export names it, it does not use it
+        // the runner's lazy load names it too (the facade module pulls the driver in, see applyOne); the USE line is checked below
+        if (/^\s*const \{[^}]*\bPG_SET_CONTEXT_SQL\b[^}]*\} = await import\('\.\/db\/pg\/dbx\.js'\)$/.test(line) && f === MIGRATOR_FILE) continue
         // a use is `{ text: PG_SET_CONTEXT_SQL, values: ... }`: the constant alone as the text
         expect(line, `${f}: ${line.trim()}`).toMatch(/\btext:\s*PG_SET_CONTEXT_SQL\s*,\s*values:/)
       }

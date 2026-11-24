@@ -35,6 +35,7 @@ import { listAllSkills, getSkill, listSkillAccess, getEnabledAgentsForTenant, ge
 import { MAX_SKILL_FILE_BYTES, MAX_SKILL_FILES_PER_SKILL, normalizeSkillRelPath, sanitizeSkillFileMode } from '../skill-files.js'
 import { addGeneratedHeader, stripGeneratedHeader, readGeneratedHeader } from '../skill-header.js'
 import { createKeyedSerializer } from './keyed-serializer.js'
+import { runAs, SKILL_REGEN_JOB } from '../db/context.js'
 
 // Every function that writes or removes skill files runs one at a time. Each of them reads the skill rows (and the
 // companion files) first and writes files from what it read, across awaits: with an async db a bulk regen that read
@@ -43,8 +44,17 @@ import { createKeyedSerializer } from './keyed-serializer.js'
 // holds the newest rows. In-process only; none of these calls another one of them (the agent-change entry point
 // below calls regenTenantSkillFiles one tenant after the other, outside the queue).
 const skillFileWrites = createKeyedSerializer()
+// They also run as the `system` db context, whoever called: the regen reads ACROSS tenants (every grantee of a skill, every
+// tenant an agent serves, every enabled agent of each) and a tenant or agent context would see only its own rows under
+// row-level security, so a skill edited by one tenant and granted to another would be regenerated for the editor's agents
+// only, without any error.
 function serialized<A extends unknown[], R>(fn: (...args: A) => Promise<R>): (...args: A) => Promise<R> {
-  return (...args) => skillFileWrites.run('skill-files', () => fn(...args))
+  return (...args) => skillFileWrites.run('skill-files', () => runAs.system(SKILL_REGEN_JOB, () => fn(...args)))
+}
+// The read-only and import entry points are not in the queue (they write no generated file) but read across tenants all the
+// same: the same system context, without the serialization.
+function asRegenSystem<A extends unknown[], R>(fn: (...args: A) => Promise<R>): (...args: A) => Promise<R> {
+  return (...args) => runAs.system(SKILL_REGEN_JOB, () => fn(...args))
 }
 
 export interface RegenResult {
@@ -556,7 +566,7 @@ export interface CompanionImportResult { seeded: number; skipped: number; errors
  * in `skillDir`. Insert-if-absent: a file the DB already has is never
  * overwritten. Symlinks, tool caches and over-limit files are not imported.
  */
-export async function importCompanionFilesOfDir(
+async function importCompanionFilesOfDirImpl(
   skillId: string, skillDir: string, actor: SkillActor, dryRun = false, meta: SkillWriteMeta = {},
 ): Promise<CompanionImportResult> {
   const out: CompanionImportResult = { seeded: 0, skipped: 0, errors: 0 }
@@ -593,7 +603,7 @@ export async function importCompanionFilesOfDir(
  * importCompanionFilesOfDir) and only matters until the DB holds them all. Runs
  * BEFORE the regen, which would otherwise never know about these files.
  */
-export async function importSkillCompanionFilesFromDisk(dryRun = false): Promise<CompanionImportResult> {
+async function importSkillCompanionFilesFromDiskImpl(dryRun = false): Promise<CompanionImportResult> {
   const total: CompanionImportResult = { seeded: 0, skipped: 0, errors: 0 }
   let rows: SkillRow[]
   try { rows = (await liveSkills()).filter(r => r.tenant_id === 'fleet') } catch (err) {
@@ -603,7 +613,7 @@ export async function importSkillCompanionFilesFromDisk(dryRun = false): Promise
   for (const row of rows) {
     const skillMd = resolveSkillPath(row.id)
     if (!skillMd || !existsSync(skillMd)) continue
-    const r = await importCompanionFilesOfDir(row.id, dirOfSkillMd(skillMd), { kind: 'system', id: null }, dryRun, { sourceRef: 'boot-companion-import' })
+    const r = await importCompanionFilesOfDirImpl(row.id, dirOfSkillMd(skillMd), { kind: 'system', id: null }, dryRun, { sourceRef: 'boot-companion-import' })
     total.seeded += r.seeded
     total.skipped += r.skipped
     total.errors += r.errors
@@ -891,13 +901,16 @@ async function regenTenantSkillFilesLocked(tenantId: string, forceEnabled = fals
  * serves now, not just the changed one.
  */
 export async function regenTenantSkillFilesForAgentChange(agentId: string, tenantId: string, forceEnabled = false): Promise<{ written: number; removed: number; errors: number }> {
-  const total = { written: 0, removed: 0, errors: 0 }
-  const tenants = new Set<string>([tenantId, ...await getTenantsForAgent(agentId)])
-  for (const t of tenants) {
-    const r = await regenTenantSkillFiles(t, forceEnabled)
-    total.written += r.written; total.removed += r.removed; total.errors += r.errors
-  }
-  return total
+  // The tenants an agent serves are read across tenants: system context (see `serialized`), not the caller's.
+  return runAs.system(SKILL_REGEN_JOB, async () => {
+    const total = { written: 0, removed: 0, errors: 0 }
+    const tenants = new Set<string>([tenantId, ...await getTenantsForAgent(agentId)])
+    for (const t of tenants) {
+      const r = await regenTenantSkillFiles(t, forceEnabled)
+      total.written += r.written; total.removed += r.removed; total.errors += r.errors
+    }
+    return total
+  })
 }
 
 /**
@@ -905,7 +918,7 @@ export async function regenTenantSkillFilesForAgentChange(agentId: string, tenan
  * Used for the proof step (guardrail 5) before enabling the kill-switch.
  * Returns a list of IDs that are missing from disk.
  */
-export async function findMissingSkillFiles(): Promise<string[]> {
+async function findMissingSkillFilesImpl(): Promise<string[]> {
   const missing: string[] = []
   let rows
   try {
@@ -935,7 +948,7 @@ export interface SkillFileGaps {
  * state right after a restore, or with SKILL_SQL_REGEN off). Content drift is
  * not reported here; the regen restores it with a warning.
  */
-export async function findSkillFileGaps(): Promise<SkillFileGaps> {
+async function findSkillFileGapsImpl(): Promise<SkillFileGaps> {
   const gaps: SkillFileGaps = { skillFiles: [], companionFiles: [], tenantCopies: [] }
   let rows: SkillRow[]
   try { rows = await liveSkills() } catch { return gaps }
@@ -970,6 +983,12 @@ export async function findSkillFileGaps(): Promise<SkillFileGaps> {
 export function listKnownSkillAgents(): string[] {
   return [MAIN_AGENT_ID, ...listAgentNames()]
 }
+
+// The import and the two gap checks: the system context (see `asRegenSystem`), not queued.
+export const importCompanionFilesOfDir = asRegenSystem(importCompanionFilesOfDirImpl)
+export const importSkillCompanionFilesFromDisk = asRegenSystem(importSkillCompanionFilesFromDiskImpl)
+export const findMissingSkillFiles = asRegenSystem(findMissingSkillFilesImpl)
+export const findSkillFileGaps = asRegenSystem(findSkillFileGapsImpl)
 
 // The exported entry points: the Locked functions above, one at a time.
 export const regenSkillFilesFromSQL = serialized(regenSkillFilesFromSQLLocked)

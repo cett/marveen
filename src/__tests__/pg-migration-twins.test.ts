@@ -11,7 +11,8 @@ const pgDir = fileURLToPath(new URL('../migrations-pg', import.meta.url))
 // the chains as they are today: the baseline (SQLite 1..95 collapsed into PG 0001) and one twin pair
 const SQLITE = ['0001_baseline.sql', '0094_skill_revision_review.sql', '0095_skill_revision_prev_state.sql', '0096_schedules_author.sql']
 const PG = ['0001_baseline.sql', '0002_schedules_author.sql']
-// the PG-only migrations: four full-text ones (phase 3 step 6a) and the vector embedding one (step 6b)
+// the PG-only migrations: four full-text ones (phase 3 step 6a), the vector embedding one (step 6b), the cost_budgets amount
+// type (step 6c-2) and row-level security (step S3): seven files, so the first free twin slot is 0010
 const FTS = PG_ONLY_MIGRATIONS
 
 describe('the real migration directories', () => {
@@ -92,21 +93,21 @@ describe('twinProblems', () => {
 
   it('(iii) a listed PG-only name missing from the directory is reported (the strict check)', () => {
     const problems = twinProblems(SQLITE, [...PG, ...FTS.slice(0, -1)], FTS)
-    expect(problems).toEqual(['PG-only migration 0008_cost_budgets_amount.sql is listed but missing: update PG_ONLY_MIGRATIONS'])
+    expect(problems).toEqual(['PG-only migration 0009_row_level_security.sql is listed but missing: update PG_ONLY_MIGRATIONS'])
   })
 
-  it('(iv) with the six PG-only files present, a SQLite 0097 without a twin is reported at 0009, and with 0009 it is clean', () => {
+  it('(iv) with the seven PG-only files present, a SQLite 0097 without a twin is reported at 0010, and with 0010 it is clean', () => {
     const problems = twinProblems([...SQLITE, '0097_new_thing.sql'], [...PG, ...FTS], FTS)
     expect(problems).toHaveLength(1)
     expect(problems[0]).toContain('0097_new_thing.sql has no PostgreSQL twin')
-    expect(problems[0]).toContain('add src/migrations-pg/0009_new_thing.sql')
-    expect(twinProblems([...SQLITE, '0097_new_thing.sql'], [...PG, ...FTS, '0009_new_thing.sql'], FTS)).toEqual([])
+    expect(problems[0]).toContain('add src/migrations-pg/0010_new_thing.sql')
+    expect(twinProblems([...SQLITE, '0097_new_thing.sql'], [...PG, ...FTS, '0010_new_thing.sql'], FTS)).toEqual([])
   })
 
-  it('(v) the twin of 0097 placed at 0003 (a PG-only slot) is reported, and the 0009 slot is still missing', () => {
+  it('(v) the twin of 0097 placed at 0003 (a PG-only slot) is reported, and the 0010 slot is still missing', () => {
     const problems = twinProblems([...SQLITE, '0097_new_thing.sql'], [...PG, '0003_new_thing.sql', ...FTS.slice(1)], FTS)
     const text = problems.join('\n')
     expect(text).toContain('0003_new_thing.sql has no SQLite twin')
-    expect(text).toContain('add src/migrations-pg/0009_new_thing.sql')
+    expect(text).toContain('add src/migrations-pg/0010_new_thing.sql')
   })
 })

@@ -43,9 +43,16 @@ vi.mock('../db.js', () => ({
   listSkillAccess: vi.fn((id: string) => Promise.resolve((grants.get(id) ?? []).map(t => ({ skill_id: id, tenant_id: t })))),
   getEnabledAgentsForTenant: vi.fn((t: string) => Promise.resolve(avail.get(t) ?? [])),
   getTenantsForAgent: vi.fn((a: string) => Promise.resolve([...avail.entries()].filter(([, agents]) => agents.includes(a)).map(([t]) => t))),
+  listSkillFiles: vi.fn(() => Promise.resolve([])),
+  seedSkillFileIfAbsent: vi.fn(() => Promise.resolve(true)),
 }))
 
-import { regenSingleSkillFile, regenSkillFilesFromSQL, regenTenantSkillFiles, removeGeneratedSkillFile, tenantSkillDirName } from '../web/skill-regen.js'
+import {
+  findMissingSkillFiles, findSkillFileGaps, importCompanionFilesOfDir, importSkillCompanionFilesFromDisk,
+  regenSingleSkillFile, regenSkillFilesFromSQL, regenTenantSkillFiles, regenTenantSkillFilesForAgentChange, removeGeneratedSkillFile, tenantSkillDirName,
+} from '../web/skill-regen.js'
+import { getEnabledAgentsForTenant, getTenantsForAgent, listAllSkills, listSkillAccess, listSkillFiles, seedSkillFileIfAbsent } from '../db.js'
+import { currentDbContext, runAs } from '../db/context.js'
 
 afterAll(() => { rmSync(FAKE_HOME, { recursive: true, force: true }) })
 
@@ -215,5 +222,82 @@ describe('delete and bulk regen', () => {
     writeFileSync(agentSkill('bob', 'fleetish'), f)
     await regenSkillFilesFromSQL()
     expect(readFileSync(agentSkill('bob', 'fleetish'), 'utf-8')).toBe(f)
+  })
+})
+
+// Under row-level security a tenant or agent context sees only its own tenant's rows. The regen reads across tenants (every
+// grantee of a skill, the tenants an agent serves, the enabled agents of each), so it has to run as the system context
+// whoever called it, or a skill edited by one tenant and granted to another is regenerated for the editor's agents only.
+describe('the regen reads across tenants as the system context', () => {
+  it('every db read of the regen sees the system role when the caller is a tenant or an agent, and the grantee tenant\'s agent gets the update', async () => {
+    const seen: string[] = []
+    const rec = (): void => { seen.push(currentDbContext()?.role ?? 'none') }
+    const origAccess = vi.mocked(listSkillAccess).getMockImplementation()!
+    const origAvail = vi.mocked(getEnabledAgentsForTenant).getMockImplementation()!
+    const origTenants = vi.mocked(getTenantsForAgent).getMockImplementation()!
+    vi.mocked(listSkillAccess).mockImplementation((id: string) => { rec(); return origAccess(id) })
+    vi.mocked(getEnabledAgentsForTenant).mockImplementation((t: string) => { rec(); return origAvail(t) })
+    vi.mocked(getTenantsForAgent).mockImplementation((a: string) => { rec(); return origTenants(a) })
+    try {
+      row(ID, 'tenant-a')
+      grants.set(ID, ['tenant-b'])
+      avail.set('tenant-a', ['ann'])
+      avail.set('tenant-b', ['bob'])
+      await runAs.tenant('tenant-a', () => regenSingleSkillFile(ID, true)) // edited from tenant A, granted to tenant B
+      expect(existsSync(agentSkill('bob', tenantSkillDirName(ID)!))).toBe(true) // the grantee's agent got it
+      await runAs.agent('agent-a', 'tenant-a', () => regenTenantSkillFilesForAgentChange('bob', 'tenant-b', true))
+      await runAs.tenant('tenant-a', () => regenTenantSkillFiles('tenant-b', true))
+      expect(seen.length).toBeGreaterThan(3)
+      expect(new Set(seen)).toEqual(new Set(['system']))
+    } finally {
+      vi.mocked(listSkillAccess).mockImplementation(origAccess)
+      vi.mocked(getEnabledAgentsForTenant).mockImplementation(origAvail)
+      vi.mocked(getTenantsForAgent).mockImplementation(origTenants)
+    }
+  })
+
+  // The import and the two gap checks write no generated file, but they read skills across tenants (findSkillFileGaps walks
+  // the recipients of every tenant skill): the same system context as the regen, whoever calls them.
+  it('the companion import and the gap checks read as the system role from a tenant or an agent caller', async () => {
+    const seen: Array<[string, string]> = []
+    const wrap = <A extends unknown[], R>(fn: (...a: A) => R, label: string) => (...a: A): R => {
+      seen.push([label, currentDbContext()?.role ?? 'none'])
+      return fn(...a)
+    }
+    const origAll = vi.mocked(listAllSkills).getMockImplementation()!
+    const origAccess = vi.mocked(listSkillAccess).getMockImplementation()!
+    const origAvail = vi.mocked(getEnabledAgentsForTenant).getMockImplementation()!
+    const origFiles = vi.mocked(listSkillFiles).getMockImplementation()!
+    const origSeed = vi.mocked(seedSkillFileIfAbsent).getMockImplementation()!
+    vi.mocked(listAllSkills).mockImplementation(wrap(origAll, 'listAllSkills'))
+    vi.mocked(listSkillAccess).mockImplementation(wrap(origAccess, 'listSkillAccess'))
+    vi.mocked(getEnabledAgentsForTenant).mockImplementation(wrap(origAvail, 'getEnabledAgentsForTenant'))
+    vi.mocked(listSkillFiles).mockImplementation(wrap(origFiles, 'listSkillFiles'))
+    vi.mocked(seedSkillFileIfAbsent).mockImplementation(wrap(origSeed, 'seedSkillFileIfAbsent'))
+    try {
+      row(ID, 'tenant-a'); avail.set('tenant-a', ['ann']); grants.set(ID, ['tenant-b'])
+      const dir = join(FAKE_HOME, 'companion-dir')
+      mkdirSync(join(dir, 'references'), { recursive: true })
+      writeFileSync(join(dir, 'references', 'a.md'), 'x')
+      const callers: Array<() => Promise<unknown>> = [
+        () => findMissingSkillFiles(),
+        () => findSkillFileGaps(),
+        () => importSkillCompanionFilesFromDisk(true),
+        () => importCompanionFilesOfDir('global/x', dir, { kind: 'system', id: null }),
+      ]
+      for (const run of [(f: () => Promise<unknown>) => runAs.tenant('tenant-a', f), (f: () => Promise<unknown>) => runAs.agent('agent-a', 'tenant-a', f)]) {
+        for (const call of callers) await run(call)
+      }
+      const reads = new Set(seen.map(([label]) => label))
+      // every read the four make is covered: the skill list, the recipients of a tenant skill, the companion files, the seed
+      expect([...reads].sort()).toEqual(['getEnabledAgentsForTenant', 'listAllSkills', 'listSkillAccess', 'listSkillFiles', 'seedSkillFileIfAbsent'])
+      expect(new Set(seen.map(([, role]) => role))).toEqual(new Set(['system']))
+    } finally {
+      vi.mocked(listAllSkills).mockImplementation(origAll)
+      vi.mocked(listSkillAccess).mockImplementation(origAccess)
+      vi.mocked(getEnabledAgentsForTenant).mockImplementation(origAvail)
+      vi.mocked(listSkillFiles).mockImplementation(origFiles)
+      vi.mocked(seedSkillFileIfAbsent).mockImplementation(origSeed)
+    }
   })
 })

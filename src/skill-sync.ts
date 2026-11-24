@@ -2,6 +2,7 @@ import {
   agentHasEnabledAvailability, countSkillFiles, getSkill, getSkillFile, insertFleetSkillFromFile, listSkillAccess,
   putSkillFile, setSkillContent,
 } from './db/tasks.js'
+import { runAs, SKILL_GRANTS_JOB } from './db/context.js'
 import type { SkillActor } from './db/skill-revisions.js'
 import { MAX_SKILL_FILE_BYTES, MAX_SKILL_FILES_PER_SKILL, normalizeSkillRelPath } from './skill-files.js'
 import { stripGeneratedHeader } from './skill-header.js'
@@ -34,10 +35,17 @@ const ignored = (message: string): SkillSyncResult => ({ ok: true, ignored: true
 const pending = (message: string): SkillSyncResult => ({ ok: true, pending: true, message })
 
 /** True when the agent has an enabled availability row for the skill's owning
- *  tenant or for a tenant it is granted to (the recipients regen writes to). */
-async function agentQualifies(skillId: string, ownerTenant: string, agentId: string): Promise<boolean> {
-  const tenants = [...new Set([ownerTenant, ...(await listSkillAccess(skillId)).map(g => g.tenant_id)])].sort()
-  return agentHasEnabledAvailability(agentId, tenants)
+ *  tenant or for a tenant it is granted to (the recipients regen writes to).
+ *
+ *  Both reads span tenants (every grantee of the skill, the tenants the agent serves), and the caller is an agent context
+ *  that sees its own tenant's rows only (a shared agent runs under the `_multi_` sentinel and sees none). So the check runs
+ *  as the narrow system context and hands back ONE boolean: the grantee list never leaves it, and the policies of
+ *  `skill_tenant_access` and `tenant_agent_availability` are not widened for anybody. */
+export async function agentQualifies(skillId: string, ownerTenant: string, agentId: string): Promise<boolean> {
+  return runAs.system(SKILL_GRANTS_JOB, async () => {
+    const tenants = [...new Set([ownerTenant, ...(await listSkillAccess(skillId)).map(g => g.tenant_id)])].sort()
+    return agentHasEnabledAvailability(agentId, tenants)
+  })
 }
 
 /** Every write-back is traced as the calling agent, from the hook endpoint. */

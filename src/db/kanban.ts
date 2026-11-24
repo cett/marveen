@@ -153,7 +153,10 @@ export async function insertKanbanCardRows(card: NewKanbanCard, ops: Dbx | Tx = 
     if (depth > 2) throw new Error('Cannot create card: exceeds max depth of 3 levels')
   }
 
-  const maxRow = (await ops.get('SELECT MAX(sort_order) as m FROM kanban_cards WHERE status = ? AND archived_at IS NULL', status)) as { m: number | null }
+  // The end of the column is the end of the column OF THE CARD'S TENANT: the tenant is the card's own value (a required
+  // one, not the ambient context), or a tenant that opens a card would be placed after another tenant's far larger order.
+  const tenantId = card.tenant_id ?? 'default'
+  const maxRow = (await ops.get('SELECT MAX(sort_order) as m FROM kanban_cards WHERE status = ? AND archived_at IS NULL AND tenant_id = ?', status, tenantId)) as { m: number | null }
   const sortOrder = (maxRow?.m ?? -1) + 1
 
   await ops.tx(async (tx) => {
@@ -161,7 +164,7 @@ export async function insertKanbanCardRows(card: NewKanbanCard, ops: Dbx | Tx = 
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, card.id, card.title, card.description ?? null, status,
       card.assignee ?? null, card.priority ?? 'normal',
       card.project ?? null, card.parent_id ?? null, depth, dueDate, sortOrder, now, now,
-      card.tenant_id ?? 'default',
+      tenantId,
     )
     // A card BORN in a status other than 'planned' gets its opening event row
     // here, because nothing else will ever write one for it: kanban_card_events

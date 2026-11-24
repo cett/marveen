@@ -33,6 +33,12 @@ import { logger } from './logger.js'
 // The pool's statement_timeout does not apply to the file section (a backfill may run for minutes): the runner turns it
 // off for the transaction only, with a transaction-local setting, so it is back on the connection once the file is done.
 //
+// Under row-level security the owner role is bound by the policies too (FORCE, so a mistaken owner connection elsewhere
+// is not a bypass). The runner therefore opens each file's transaction in the `system` context, with the one context
+// statement of the facade (never a second statement that sets an `app.*` value): the file's own writes (a backfill)
+// and the schema_version row, which only a privileged context may write, run as the dashboard itself. The settings are
+// transaction-local, so they go with the COMMIT or ROLLBACK and never stay on a pooled connection.
+//
 // schema_version is the table the baseline (0001) creates, with the shape of the SQLite one (version, applied_at,
 // description, checksum): the schema parity test holds the two together, so the runner does not invent a second
 // shape. It is read before 0001 ran (no table yet means nothing applied) and the runner's own CREATE TABLE IF NOT
@@ -50,6 +56,9 @@ export const PG_MIGRATIONS_LOCK_KEY = 'marveen-pg-migrations'
 export const DEFAULT_PG_MIGRATION_LOCK_TIMEOUT_MS = 60_000
 
 const LOCK_NOT_AVAILABLE = '55P03'
+
+/** The `app.job` of the runner's transactions: the migration step, run on the owner connection in the `system` context. */
+export const PG_MIGRATION_JOB = 'pg-migration'
 
 const FILE_PATTERN = /^(\d{4,})_(.+)\.sql$/
 
@@ -173,8 +182,15 @@ async function currentTxid(client: pg.PoolClient): Promise<string> {
 }
 
 async function applyOne(client: pg.PoolClient, file: PgMigrationFile): Promise<void> {
+  // Loaded here and not at the top of the module: the facade module pulls in the pg driver, and a SQLite boot imports this
+  // file without ever using it (pg-boot-refusal pins that the driver stays unloaded). A runner call has a pool, so the
+  // driver is there anyway. Before BEGIN, so a failed load is not a rolled-back file.
+  const { PG_SET_CONTEXT_SQL, pgContextValues } = await import('./db/pg/dbx.js')
   await client.query('BEGIN')
   try {
+    // First statement of the transaction: the context (see the header). It comes before the file, the version row and
+    // the table guard, all of which may be policy-bound.
+    await client.query({ text: PG_SET_CONTEXT_SQL, values: pgContextValues({ role: 'system', name: PG_MIGRATION_JOB }) })
     // A file may run longer than the pool's statement_timeout (an index build, a backfill). The setting is local to this
     // transaction, so it goes with the COMMIT or ROLLBACK and never stays on the connection.
     await client.query("SELECT set_config('statement_timeout', '0', true)")

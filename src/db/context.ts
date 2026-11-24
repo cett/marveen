@@ -69,8 +69,25 @@ const store = new AsyncLocalStorage<DbContext>()
 // it exists before any opener can run.
 let escalations = 0
 
+/** The one sanctioned system context of a request path: the skill regen. `src/web/skill-regen.ts` imports the name; nothing else spells it. */
+export const SKILL_REGEN_JOB = 'skill-regen'
+
+/** The write-back qualification of `src/skill-sync.ts`: does this agent serve the owner tenant or a grantee tenant of a skill. It answers ONE boolean; the grantee list never leaves the context. */
+export const SKILL_GRANTS_JOB = 'skill-grants'
+
+/**
+ * System contexts that are SUPPOSED to be opened from a tenant or an agent request, by name: the work reads across tenants by
+ * nature, so the count would only be noise. `skill-regen`: every grantee of a skill, the tenants an agent serves. Each entry
+ * is a decision of its own; a new name here needs a reason next to it. The sanction is for `runAs.system` ONLY: an ADMIN
+ * context that carries the same name is still counted, or a label alone would defeat the detector.
+ */
+const SANCTIONED_ESCALATIONS: ReadonlySet<string> = new Set([SKILL_REGEN_JOB, SKILL_GRANTS_JOB])
+// `skill-grants` is sanctioned for the same reason as `skill-regen`: the write-back qualification reads every grantee of a
+// skill and the tenants an agent serves, and answers one boolean (`agentQualifies` in src/skill-sync.ts).
+
 /** Counts an escalation when the running context is a tenant or an agent one; every other outer context (none, system, admin, viewer, public) is not one. */
-function noteEscalation(): void {
+function noteEscalation(kind: 'system' | 'admin', name: string): void {
+  if (kind === 'system' && SANCTIONED_ESCALATIONS.has(name)) return
   const outer = store.getStore()?.role
   if (outer === 'tenant' || outer === 'agent') escalations += 1
 }
@@ -104,12 +121,12 @@ function withInheritedTrace(ctx: DbContext, opts?: RunAsOptions): DbContext {
 export const runAs = {
   system<T>(name: string, fn: () => T, opts?: RunAsOptions): T {
     const ctx = withInheritedTrace({ role: 'system', name: requireId('system', name) }, opts)
-    noteEscalation()
+    noteEscalation('system', name)
     return store.run(ctx, fn)
   },
   admin<T>(name: string, fn: () => T, opts?: RunAsOptions): T {
     const ctx = withInheritedTrace({ role: 'admin', name: requireId('admin', name) }, opts)
-    noteEscalation()
+    noteEscalation('admin', name)
     return store.run(ctx, fn)
   },
   viewer<T>(name: string, fn: () => T, opts?: RunAsOptions): T {

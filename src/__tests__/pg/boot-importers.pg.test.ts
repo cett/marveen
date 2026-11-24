@@ -23,6 +23,7 @@ const { STORE } = vi.hoisted(() => {
 vi.mock('../../config.js', async (importOriginal) => ({ ...(await importOriginal<object>()), STORE_DIR: STORE }))
 
 import { createPgTestDb, type PgTestDb } from '../helpers/pg-test-db.js'
+import { runAs } from '../../db/context.js'
 import { initDatabaseAsync, closePgBackend } from '../../db.js'
 import { listCostBudgets } from '../../db/cost-budgets.js'
 import { listClaudePlanRows } from '../../db/claude-plans.js'
@@ -49,8 +50,11 @@ afterAll(async () => {
 
 describe('initDatabaseAsync on PostgreSQL runs the importers that still matter there', () => {
   it('the boot imports the cost budget of the file and seeds the plan of claude-plans.json into the database', async () => {
-    expect(await initDatabaseAsync()).toBe('pg')
-    expect((await listCostBudgets('default')).map((b) => b.id)).toContain('boot-budget')
-    expect((await listClaudePlanRows()).map((p) => p.id)).toContain('boot-plan')
+    // the boot of the dashboard is a system job (the boot sequence); under row-level security the importers need that context
+    await runAs.system('boot-sequence', async () => {
+      expect(await initDatabaseAsync()).toBe('pg')
+      expect((await listCostBudgets('default')).map((b) => b.id)).toContain('boot-budget')
+      expect((await listClaudePlanRows()).map((p) => p.id)).toContain('boot-plan')
+    })
   })
 })

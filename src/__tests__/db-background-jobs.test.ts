@@ -11,7 +11,7 @@ import {
   BACKGROUND_JOBS, NOT_DB_TIMER_FILES, systemJob, runAsAgentJob, runAsItemTenant, runAsRequest,
   setAgentTenantResolver, resetAgentTenantResolver,
 } from '../db/background-jobs.js'
-import { currentDbContext, getDbContextStats, resetDbContextForTest, noteTenantResolved, runAs, withTrace } from '../db/context.js'
+import { currentDbContext, getDbContextStats, resetDbContextForTest, noteTenantResolved, runAs, SKILL_GRANTS_JOB, SKILL_REGEN_JOB, withTrace } from '../db/context.js'
 import { readBody, setRequestBodyObserver } from '../web/http-helpers.js'
 import { startDbContextReport, DB_CONTEXT_REPORT_INTERVAL_MS } from '../web/db-context-report.js'
 import { logger } from '../logger.js'
@@ -165,6 +165,35 @@ describe('runAsItemTenant', () => {
     runAs.system('message-router', () => {
       runAsItemTenant('message-router', 'tenant-a', () => runAs.system('message-router', () => 1))
     }, { inheritTrace: false })
+    expect(getDbContextStats().escalations).toBe(1)
+  })
+
+  it('the sanctioned SYSTEM name (skill-regen) opened from a tenant or an agent context is not counted; any other name still is', () => {
+    runAs.tenant('tenant-a', () => runAs.system(SKILL_REGEN_JOB, () => 1))
+    runAs.agent('agent-a', 'tenant-a', () => runAs.system(SKILL_REGEN_JOB, () => 1))
+    expect(getDbContextStats().escalations).toBe(0)
+    runAs.tenant('tenant-a', () => runAs.system('skill-regen-other', () => 1))
+    runAs.agent('agent-a', 'tenant-a', () => runAs.system('something-else', () => 1))
+    expect(getDbContextStats().escalations).toBe(2)
+  })
+
+  it('an ADMIN context carrying the sanctioned name is still an escalation (a label does not defeat the detector)', () => {
+    runAs.tenant('tenant-a', () => runAs.admin(SKILL_REGEN_JOB, () => 1))
+    expect(getDbContextStats().escalations).toBe(1)
+    runAs.agent('agent-a', 'tenant-a', () => runAs.admin(SKILL_REGEN_JOB, () => 1))
+    expect(getDbContextStats().escalations).toBe(2)
+  })
+
+  it('the sanctioned name is exported from one place and is the one the regen opens', () => {
+    expect(SKILL_REGEN_JOB).toBe('skill-regen')
+  })
+
+  it('the write-back qualification (skill-grants) is sanctioned for the SYSTEM kind only, like the regen', () => {
+    expect(SKILL_GRANTS_JOB).toBe('skill-grants')
+    runAs.tenant('tenant-a', () => runAs.system(SKILL_GRANTS_JOB, () => 1))
+    runAs.agent('agent-a', 'tenant-a', () => runAs.system(SKILL_GRANTS_JOB, () => 1))
+    expect(getDbContextStats().escalations).toBe(0)
+    runAs.agent('agent-a', 'tenant-a', () => runAs.admin(SKILL_GRANTS_JOB, () => 1))
     expect(getDbContextStats().escalations).toBe(1)
   })
 
