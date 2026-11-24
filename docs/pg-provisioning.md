@@ -109,7 +109,9 @@ ALTER DEFAULT PRIVILEGES FOR ROLE marveen_owner IN SCHEMA public GRANT SELECT ON
 
 ## Deploy note
 
-The tmux server that runs the agent sessions keeps the environment of whichever process started it. After the first deploy with the URL scrub, restart the tmux server once (restart the agent sessions), or the old server keeps passing the keys to new sessions. The marker `MARVEEN_PG_CONFIGURED` is inherited the same way: if you later switch the install back to SQLite (the URL removed), a long-lived tmux server still passes the marker, so new sessions refuse to open SQLite until the tmux server is restarted.
+The tmux server that runs the agent sessions keeps the environment of whichever process started it. After the first deploy with the URL scrub, restart the tmux server once (restart the agent sessions), or the old server keeps passing the keys to new sessions.
+
+The override `MARVEEN_PG_ALLOW_NEWER_DATABASE=1` lets the process start on a database that is newer than the build (after a rollback). It is read from the process environment only, never from the `.env` file or the secret mount. With it on, nothing is migrated and every boot logs a warning; the state is shown at the admin endpoint `GET /api/admin/pg-runtime-status`. Turn it off again once the build matches the database. The marker `MARVEEN_PG_CONFIGURED` is inherited the same way: if you later switch the install back to SQLite (the URL removed), a long-lived tmux server still passes the marker, so new sessions refuse to open SQLite until the tmux server is restarted.
 
 ## Open items
 

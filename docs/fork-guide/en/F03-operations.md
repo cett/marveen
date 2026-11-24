@@ -560,6 +560,8 @@ that the app sets at start) the SQLite database is not the live data, so the bac
 - `restore-drill.sh` answers `NOT APPLICABLE` with exit 3 before it looks at any archive. The weekly task alerts on the
   non-zero exit, so the operator is told until the task is disabled (the cutover runbook disables it on purpose).
 - The 24-hour return source is the last archive taken before the URL was set: keep it aside by name before the switch.
+  The planned rollback window is 24 hours. The archive stays in the rotation only while the newest `BACKUP_KEEP` archives are
+  kept (default 30, one a night, so about 30 days), and then it is pruned: copy it aside, do not rely on the rotation.
 
-The detection rules are in `scripts/pg-configured.sh`; the same function is inlined in `backup.sh` and `restore-drill.sh`,
-and a test pins the copies identical. A `.env` that cannot be read while the marker is set counts as PostgreSQL.
+The detection rules are in `scripts/pg-configured.sh`, which `backup.sh` and `restore-drill.sh` source: one copy of the
+function, so the scripts cannot drift apart. A `.env` that cannot be read while the marker is set counts as PostgreSQL.
