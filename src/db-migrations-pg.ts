@@ -71,6 +71,11 @@ export interface PgMigrationFile {
 }
 
 export interface PgMigrationResult {
+  /** the schema state the check found (absent on the paths that do not classify) */
+  state?: PgSchemaState
+  /** a NEWER database: the highest applied version and the highest version this build ships */
+  newer?: { appliedMax: number; shippedMax: number }
+
   /** The versions this run applied, in order. */
   applied: number[]
   /** How many files were already applied (and unchanged) when the run started. */
@@ -194,10 +199,15 @@ export function classifyPgSchema(files: PgMigrationFile[], applied: Map<number, 
   return { ...base, state: missing.length > 0 ? 'BEHIND' : 'CURRENT' }
 }
 
-/** Throws unless the applied rows and the files agree. BEHIND is not a throw here: the runner applies the missing files. */
-function checkAgainstFiles(files: PgMigrationFile[], applied: Map<number, AppliedRow>): void {
-  const c = classifyPgSchema(files, applied)
-  if (c.state === 'DIVERGED' || c.state === 'NEWER') throw new Error(c.problem)
+
+/** The result of a NEWER database that the override lets through: nothing applied, the versions named. */
+function newerResult(c: PgSchemaClassification, applied: Map<number, AppliedRow>): PgMigrationResult {
+  return {
+    applied: [],
+    alreadyApplied: applied.size,
+    state: 'NEWER',
+    newer: { appliedMax: c.appliedMax, shippedMax: c.shippedMax },
+  }
 }
 
 /**
@@ -207,10 +217,18 @@ function checkAgainstFiles(files: PgMigrationFile[], applied: Map<number, Applie
  * behind is a deployment that has to run the migrations first, not something this boot may fix. The message says how
  * many files are missing, never where the database is.
  */
-export async function assertPgSchemaCurrent(pool: Pick<pg.Pool, 'query'>, opts: { dir?: string } = {}): Promise<PgMigrationResult> {
+export async function assertPgSchemaCurrent(
+  pool: Pick<pg.Pool, 'query'>,
+  opts: { dir?: string; allowNewer?: boolean } = {},
+): Promise<PgMigrationResult> {
   const files = loadPgMigrationFiles(opts.dir)
   const applied = await readApplied(pool)
-  checkAgainstFiles(files, applied)
+  const c = classifyPgSchema(files, applied)
+  if (c.state === 'DIVERGED') throw new Error(c.problem)
+  if (c.state === 'NEWER') {
+    if (!opts.allowNewer) throw new Error(c.problem)
+    return newerResult(c, applied)
+  }
   const missing = files.filter((f) => !applied.has(f.version))
   if (missing.length > 0) {
     throw new Error(
@@ -276,7 +294,10 @@ async function applyOne(client: pg.PoolClient, file: PgMigrationFile): Promise<v
  * Brings the database behind `pool` up to the newest file of `dir`. Takes one connection for the whole run (the
  * advisory lock belongs to the session), and gives it back whatever happens.
  */
-export async function applyPgMigrations(pool: PgMigrationPool, opts: { dir?: string; lockTimeoutMs?: number } = {}): Promise<PgMigrationResult> {
+export async function applyPgMigrations(
+  pool: PgMigrationPool,
+  opts: { dir?: string; lockTimeoutMs?: number; allowNewer?: boolean } = {},
+): Promise<PgMigrationResult> {
   const files = loadPgMigrationFiles(opts.dir)
   const lockTimeoutMs = opts.lockTimeoutMs ?? DEFAULT_PG_MIGRATION_LOCK_TIMEOUT_MS
   if (!Number.isInteger(lockTimeoutMs) || lockTimeoutMs < 0) {
@@ -302,7 +323,13 @@ export async function applyPgMigrations(pool: PgMigrationPool, opts: { dir?: str
     try {
       await client.query("SELECT set_config('lock_timeout', $1, false)", [previous])
       const applied = await readApplied(client)
-      checkAgainstFiles(files, applied)
+      const c = classifyPgSchema(files, applied)
+      if (c.state === 'DIVERGED') throw new Error(c.problem)
+      if (c.state === 'NEWER') {
+        // an override that is on starts the process on a newer database WITHOUT running anything: no file, no DDL
+        if (!opts.allowNewer) throw new Error(c.problem)
+        return newerResult(c, applied)
+      }
       const done: number[] = []
       for (const file of files) {
         if (applied.has(file.version)) continue
