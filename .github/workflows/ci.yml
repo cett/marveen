@@ -384,9 +384,12 @@ jobs:
           exit $fail
 
   test:
-    # The required context. It fails unless both needed jobs succeeded: a skipped or cancelled job is a failure,
-    # a step skipped inside a job is still a success of that job.
-    needs: [vitest, gates]
+    # The required context. It fails unless vitest and gates succeeded AND the PostgreSQL parity job is accounted for:
+    # a skipped or cancelled job is a failure, a step skipped inside a job is still a success of that job.
+    # pg-parity may be skipped only when pg-decide succeeded and answered false (nothing in the change touches the PG
+    # layer). A pg-parity skipped because pg-decide died proves nothing, so that is red. The ruleset keeps its four
+    # required names: pg-parity is not a fifth required check (a skipped required check counts as passing on GitHub).
+    needs: [vitest, gates, pg-decide, pg-parity]
     if: always()
     runs-on: ubuntu-latest
 
@@ -395,12 +398,28 @@ jobs:
         env:
           VITEST_RESULT: ${{ needs.vitest.result }}
           GATES_RESULT: ${{ needs.gates.result }}
+          PG_DECIDE_RESULT: ${{ needs.pg-decide.result }}
+          PG_DECIDE_OUTPUT: ${{ needs.pg-decide.outputs.pg }}
+          PG_PARITY_RESULT: ${{ needs.pg-parity.result }}
         run: |
-          echo "vitest: $VITEST_RESULT, gates: $GATES_RESULT"
+          echo "vitest: $VITEST_RESULT, gates: $GATES_RESULT, pg-decide: $PG_DECIDE_RESULT (pg=$PG_DECIDE_OUTPUT), pg-parity: $PG_PARITY_RESULT"
           if [ "$VITEST_RESULT" != "success" ] || [ "$GATES_RESULT" != "success" ]; then
-            echo "a needed job did not succeed" >&2
+            echo "a needed job did not succeed (vitest or gates)" >&2
             exit 1
           fi
+          # Exact string comparison, anything not listed is red (an empty output included).
+          if [ "$PG_DECIDE_RESULT" != "success" ]; then
+            echo "pg-decide did not succeed: whether pg-parity had to run is unknown" >&2
+            exit 1
+          fi
+          if [ "$PG_DECIDE_OUTPUT" = "true" ] && [ "$PG_PARITY_RESULT" = "success" ]; then
+            exit 0
+          fi
+          if [ "$PG_DECIDE_OUTPUT" = "false" ] && [ "$PG_PARITY_RESULT" = "skipped" ]; then
+            exit 0
+          fi
+          echo "pg-parity is not accounted for: pg-decide answered '$PG_DECIDE_OUTPUT', pg-parity result '$PG_PARITY_RESULT'" >&2
+          exit 1
 
   qa-scanners:
     # The two QA scanners of tools/qa on the lines a pull request adds (tools/qa/README.md). The QA review reads the
@@ -465,7 +484,8 @@ jobs:
   pg-decide:
     # Decides whether pg-parity runs (scripts/ci-changed-paths.sh, group pg): on a pull request when the changed files
     # touch the PostgreSQL layer or the PG harness, or when the PR carries the label ci-full; always on a push to develop.
-    # Fail-safe: the answer is true whenever it cannot be computed. pg-parity is not a required context.
+    # Fail-safe: the answer is true whenever it cannot be computed. pg-parity is not a required context of its own,
+    # but the required context `test` aggregates it (it needs pg-decide and pg-parity, see the `test` job).
     runs-on: ubuntu-latest
     outputs:
       pg: ${{ steps.decide.outputs.pg }}
@@ -501,7 +521,8 @@ jobs:
     # The PostgreSQL tests (src/**/*.pg.test.ts, `npm run test:pg`): the baseline in src/migrations-pg/ against the
     # SQLite migration chain, its mutants, and the PG test harness. They need a server, so they live outside the
     # default vitest run; this job gives them a throwaway PostgreSQL 16 service container.
-    # A missing or unreachable server fails the job, it never skips the tests. The other jobs do not depend on it.
+    # A missing or unreachable server fails the job, it never skips the tests. No other job depends on it, but the
+    # required context `test` aggregates it: a red pg-parity is a red `test`, a flaky service container is a re-run.
     runs-on: ubuntu-latest
     timeout-minutes: 25
     permissions:
