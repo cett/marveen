@@ -268,6 +268,8 @@ export async function listPendingTaskRetries(): Promise<PendingTaskRetryRow[]> {
  * caller's own tenant, or the admin's `?tenant=` filter); the join to `schedules` filters on it in SQL, so the system context
  * the table needs (D2) never shows a row of another tenant. A row whose schedule is gone matches no tenant. The unscoped
  * listPendingTaskRetries above is for a system or an admin caller only (the schedule runner tick, an admin without a filter).
+ * `s.tenant_id = ?` needs no NULL-as-default rule: the column is NOT NULL (migration 0066 backfilled the old NULLs), so the
+ * old route filter that read a stored NULL as the default tenant is equivalent.
  */
 export async function listPendingTaskRetriesForTenant(tenantId: string): Promise<PendingTaskRetryRow[]> {
   return runAs.system(D2_JOBS.listPendingTaskRetriesForTenant, () => dbx.all<PendingTaskRetryRow>(`

@@ -315,6 +315,8 @@ describe('GET /api/schedules/pending', () => {
       last_reason: 'busy', alert_sent_at: null,
     } as never])
     // The default-tenant caller makeCtx() builds is read through the tenant-scoped list, with its own tenant as the scope.
+    // The db function is a mock here, so this test pins the route (which function, which scope) and NOT the SQL tenant filter:
+    // the cross-tenant cells of src/__tests__/pg/rls-d2-request-callers.pg.test.ts are the proof of the filter.
     const { ctx, out } = makeCtx('GET', '/api/schedules/pending')
     await tryHandleSchedules(ctx)
     expect(mockListPendingTaskRetriesForTenant).toHaveBeenCalledWith('default')

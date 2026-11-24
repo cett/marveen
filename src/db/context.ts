@@ -93,6 +93,8 @@ export const D2_JOBS = {
   deactivatePlanForAgent: 'deactivate-plan-for-agent',
   listPendingChannelRequests: 'list-pending-channel-requests',
   recordTokenShadow: 'record-token-shadow',
+  // system_config: the durable mirror of one in-flight scheduled task, written from a run-now in the tenant context of its caller
+  persistScheduleInflight: 'persist-schedule-inflight',
 } as const
 
 /**

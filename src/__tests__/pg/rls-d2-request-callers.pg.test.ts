@@ -23,6 +23,7 @@ import { activatePlanForAgent, deactivatePlanForAgent, getActivePlanForAgent, li
 import { listPendingChannelRequests } from '../../db/misc.js'
 import { recordTokenShadow, resetTokenShadowForTests } from '../../web/token-shadow.js'
 import { tryHandleSchedules } from '../../web/routes/schedules.js'
+import { inflightKey, persistInflightUpsert, SCHEDULED_INFLIGHT_KEY } from '../../web/schedule-inflight-store.js'
 import { tryHandleOverview } from '../../web/routes/overview.js'
 import type { RouteContext } from '../../web/routes/types.js'
 
@@ -84,6 +85,38 @@ describe('U1: run-now inserts a pending retry as a tenant caller', () => {
     const db = await bootedDb()
     expect(await runAs.agent('agent-t1', 'tenant-t1', () => insertPendingTaskRetryIfNew('task-new', 'agent-t1', 9, 'starting'))).toBe(true)
     expect(await retryNames(db)).toContain('task-new')
+  })
+})
+
+describe('U10: the durable in-flight mirror of a run-now by a tenant caller', () => {
+  it('the entry lands in system_config when a tenant context persists it (refused without the named job, the mirror is lost)', async () => {
+    const db = await bootedDb()
+    const entry = { taskName: 'task-t1', agentName: 'agent-t1', session: 's', host: null, injectedAt: 5, alerted: false, sawTurn: false, timeoutMs: 1000, blackboardSnapshot: undefined }
+    await runAs.tenant('tenant-t1', () => persistInflightUpsert(entry))
+    const row = (await db.pool.query('SELECT value FROM system_config WHERE key = $1', [SCHEDULED_INFLIGHT_KEY])).rows[0]
+    expect(Object.keys(JSON.parse(row.value as string))).toEqual([inflightKey('task-t1', 'agent-t1')])
+  })
+})
+
+describe('run-now ownership: a tenant never runs the schedule of another tenant', () => {
+  const runNow = (role: 'agent', tenant: string, name: string): { ctx: RouteContext; out: { status: number; body: unknown } } => routeCtx('POST', `/api/schedules/${name}/run`, role, tenant)
+  it('as the app role the other tenant schedule is not even visible: 404 and no retry row, no in-flight mirror (end to end)', async () => {
+    const db = await bootedDb()
+    const { ctx, out } = runNow('agent', 'tenant-t1', 'task-t2')
+    await asRequest('agent', 'tenant-t1', () => tryHandleSchedules(ctx))
+    expect(out.status).toBe(404)
+    expect(await retryNames(db)).toEqual(['task-t1', 'task-t2', 'task-gone'])
+    expect((await db.pool.query('SELECT 1 FROM system_config WHERE key = $1', [SCHEDULED_INFLIGHT_KEY])).rowCount).toBe(0)
+  })
+  it('the route guard itself, with the row visible (a system context, as on a backend without row-level security): 404 and no retry row', async () => {
+    // Under the app role the row-level policy hides the foreign schedule before the guard is reached, so the guard
+    // (crossTenantBlocked in routes/schedules.ts) is pinned here with the row VISIBLE: it alone must answer 404, and the
+    // pending retry row that the system insert of run-now would write must not appear.
+    const db = await bootedDb()
+    const { ctx, out } = runNow('agent', 'tenant-t1', 'task-t2')
+    await runAs.system('probe', () => tryHandleSchedules(ctx))
+    expect(out.status).toBe(404)
+    expect(await retryNames(db)).toEqual(['task-t1', 'task-t2', 'task-gone'])
   })
 })
 

@@ -23,6 +23,7 @@
 
 import { logger } from '../logger.js'
 import { updateSystemConfig, setSystemConfig, deleteSystemConfig } from '../db.js'
+import { D2_JOBS, runAs } from '../db/context.js'
 
 export const SCHEDULED_INFLIGHT_KEY = 'scheduled_inflight'
 
@@ -81,11 +82,14 @@ function parseStoredObject(current: string | undefined): Record<string, unknown>
 export async function persistInflightUpsert(entry: PersistedInflight): Promise<void> {
   const key = inflightKey(entry.taskName, entry.agentName)
   try {
-    await updateSystemConfig(SCHEDULED_INFLIGHT_KEY, (current) => {
+    // system_config is a D2 table (privileged only). A run-now by a tenant user reaches this write in its own tenant context
+    // (the route has already checked that the schedule is the caller's, before attemptFireTask), so the upsert of ONE entry,
+    // named by the schedule and the agent, runs as a named system job. The tick-side remove and flag writes are system already.
+    await runAs.system(D2_JOBS.persistScheduleInflight, () => updateSystemConfig(SCHEDULED_INFLIGHT_KEY, (current) => {
       const all = parseStoredObject(current)
       all[key] = toPersisted(entry)
       return JSON.stringify(all)
-    })
+    }))
   } catch (err) {
     logger.warn({ err, key }, 'schedule-runner: failed to persist in-flight entry')
   }
