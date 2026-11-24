@@ -105,3 +105,5 @@ export function assertSqliteEntryAllowed(entry: string): void {
   if (resolvePgUrl() !== undefined) throw new SqliteEntryRefusedError(entry)
   if (process.env[PG_CONFIGURED_KEY] === '1') throw new SqliteEntryRefusedError(entry, true)
 }
+
+// CI injection B5 (throwaway branch, never merged): a database-layer comment
