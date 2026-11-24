@@ -4,7 +4,7 @@
 // that pin a PostgreSQL behaviour (no fallback, a missing index is an error, the salience write leaves the index equal).
 import { describe, expect, it } from 'vitest'
 import { dbx, recallSearch, searchAgentMemories, searchMemories } from '../db.js'
-import { useTestDb, testDbMode } from './helpers/with-test-db.js'
+import { useTestDb, testDbMode, testDdl } from './helpers/with-test-db.js'
 import { rebuildMemoriesFts } from '../db/fleet-transfer.js'
 
 useTestDb()
@@ -108,7 +108,7 @@ describe('PostgreSQL only: the index is a generated column, its absence is an er
 
   it.runIf(testDbMode() === 'pg')('without the fts column the search rejects (SQLite answers an empty list: the engine difference)', async () => {
     await mem({ content: 'anything here' })
-    await dbx.run('ALTER TABLE memories DROP COLUMN fts')
+    await testDdl(dbx, 'ALTER TABLE memories DROP COLUMN fts')
     await expect(searchMemories('anything', 'chat-1', 10)).rejects.toThrow()
   })
 })

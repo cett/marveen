@@ -536,3 +536,10 @@ jobs:
       - name: PostgreSQL module run (the useTestDb files of the ported list, MARVEEN_TEST_DB=pg)
         # the same files also run on SQLite in the default suite; the list is src/__tests__/helpers/pg-modules.ts
         run: npm run test:pg-modules
+
+      - name: PostgreSQL module run as the app role (MARVEEN_TEST_PG_ROLE=app, row-level security applies)
+        # the same ported list as the step above, but every statement runs as marveen_app (DML rights only, FORCE row-level
+        # security): a module that works for the superuser and fails on a right, a DML grant or an ownership assumption as
+        # the dashboard's role is red here. A call with no db context gets the SYSTEM context in this run, so the silent-empty
+        # class (a context-less call that sees no row) is NOT caught here: that is the job of the bare cells in src/__tests__/pg/
+        run: npm run test:pg-modules-app

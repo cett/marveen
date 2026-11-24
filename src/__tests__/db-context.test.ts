@@ -4,7 +4,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { initDatabase, dbx, runAs, currentDbContext, getDbContextStats, resetDbContextStats, endDbBootPhase, withTrace, withUserId } from '../db.js'
 import { logger } from '../logger.js'
-import { ambientInTx, testDbMode, useTestDb } from './helpers/with-test-db.js'
+import { ambientInTx, testDbMode, testDdl, useTestDb } from './helpers/with-test-db.js'
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 
@@ -141,7 +141,7 @@ describe('AsyncLocalStorage traps', () => {
 
   // (4) independent of the transaction scope
   it('the context and the transaction scope are independent of each other', async () => {
-    await dbx.exec('CREATE TABLE ctx_t (name TEXT)')
+    await testDdl(dbx, 'CREATE TABLE ctx_t (name TEXT)', { tables: ['ctx_t'] })
     await runAs.tenant('acme', async () => {
       await dbx.tx(async (tx) => {
         expect(currentDbContext()?.tenantId).toBe('acme')
@@ -162,7 +162,7 @@ describe('AsyncLocalStorage traps', () => {
 
 describe('calls without a context', () => {
   it('counts every facade call and the ones without a context', async () => {
-    await dbx.exec('CREATE TABLE ctx_t (name TEXT)')
+    await testDdl(dbx, 'CREATE TABLE ctx_t (name TEXT)', { tables: ['ctx_t'] })
     await runAs.system('job', async () => {
       await dbx.run('INSERT INTO ctx_t (name) VALUES (?)', 'a')
       await dbx.get('SELECT * FROM ctx_t')

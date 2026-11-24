@@ -4,7 +4,7 @@
 // names is dropped. The cells that inject a failure with a trigger are per engine: SQLite RAISE(ABORT), PostgreSQL a
 // RAISE EXCEPTION trigger function; both prove the same product behaviour (a failed write leaves nothing behind).
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { useTestDb, testDbMode } from './helpers/with-test-db.js'
+import { useTestDb, testDbMode, testDdl } from './helpers/with-test-db.js'
 import {
   searchMemories, getAgentMemories, countAgentMemories, searchAgentMemories, getMemoryStats, updateMemory,
   hybridSearch, runLinkMaintenance, searchArtifactsByVector, clearMemoryCache, insertImportSource, touchMemory,
@@ -59,11 +59,11 @@ async function vecCount(id: number): Promise<number> {
  */
 async function blockWrites(table: string, op: 'UPDATE' | 'DELETE', name: string): Promise<void> {
   if (testDbMode() === 'pg') {
-    await dbx.exec(`CREATE FUNCTION ${name}_fn() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'blocked'; END $$`)
-    await dbx.exec(`CREATE TRIGGER ${name} BEFORE ${op} ON ${table} FOR EACH ROW EXECUTE FUNCTION ${name}_fn()`)
+    await testDdl(dbx, `CREATE FUNCTION ${name}_fn() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'blocked'; END $$`)
+    await testDdl(dbx, `CREATE TRIGGER ${name} BEFORE ${op} ON ${table} FOR EACH ROW EXECUTE FUNCTION ${name}_fn()`)
     return
   }
-  await dbx.exec(`CREATE TRIGGER ${name} BEFORE ${op} ON ${table} BEGIN SELECT RAISE(ABORT, 'blocked'); END`)
+  await testDdl(dbx, `CREATE TRIGGER ${name} BEFORE ${op} ON ${table} BEGIN SELECT RAISE(ABORT, 'blocked'); END`)
 }
 
 /**

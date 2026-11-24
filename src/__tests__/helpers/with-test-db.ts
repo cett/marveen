@@ -31,8 +31,10 @@ import { loadSystemConfigCacheAsync } from '../../db/config-cache.js'
 import { loadModelProfileMapCacheAsync } from '../../db/model-profile-map-cache.js'
 import { loadAgentSettingsCacheAsync } from '../../db/agent-settings-cache.js'
 import { resetTxLockState } from '../../db/tx-lock.js'
-import { resetDbContextForTest } from '../../db/context.js'
+import { noteDbCall, resetDbContextForTest } from '../../db/context.js'
 import type { PgTestDb } from './pg-test-db.js'
+import { testPgRole, withDefaultSystemContext } from './pg-app-role.js'
+import { PG_TEST_APP_ROLE } from './pg-app-role.js'
 
 export interface UseTestDbOptions {
   /** A database file instead of `:memory:` (a test of file permissions or of a second connection). Ignored in PG mode. */
@@ -86,6 +88,37 @@ export function useTestDb(opts: UseTestDbOptions = {}): { dbx: Dbx } {
   return { dbx }
 }
 
+// The admin (superuser) view of the same test database, for seeding rows the app role could not write.
+let seedAdminDbx: Dbx | undefined
+
+/**
+ * The Dbx a test SEEDS a row through when the row is one the policies would refuse to the context of the call, on
+ * purpose: an orphan child (a log row whose parent never existed, to test a retention sweep or a search on the log
+ * alone). In the app-role run (pg-app-role.ts) it is the superuser's view, which no policy applies to; everywhere else
+ * it is the test's own `dbx`, unchanged. The code under test still runs as the app role; only the fixture bypasses.
+ */
+export function seedDbx(dbx: Dbx): Dbx {
+  return seedAdminDbx && testPgRole() === 'app' ? seedAdminDbx : dbx
+}
+
+// The pool a test's own DDL runs on in the app-role run (a trigger, a function, ALTER TABLE: the app role owns nothing).
+let ownerDdlPool: { query(sql: string): Promise<unknown> } | undefined
+
+/**
+ * DDL a test runs for its own setup (a failure-injection trigger, a dropped column). In the app-role run (see
+ * pg-app-role.ts) it goes through the OWNER pool, because the app role cannot create or alter anything; the trigger or
+ * the change then applies to the app role's statements all the same. Everywhere else it is `dbx.exec`, as before.
+ */
+export async function testDdl(dbx: Dbx, sql: string, opts: { tables?: string[] } = {}): Promise<void> {
+  if (ownerDdlPool && testPgRole() === 'app') {
+    // a table the owner creates carries no right for the app role: `tables` names the ones the test then reads and writes
+    const grants = (opts.tables ?? []).map((t) => `; GRANT SELECT, INSERT, UPDATE, DELETE ON ${t} TO ${PG_TEST_APP_ROLE}`).join('')
+    // the statement is not a facade call here, but the one it replaces was: a test that counts the calls (db-context) sees the same number
+    noteDbCall()
+    await ownerDdlPool.query(sql + grants)
+  } else await dbx.exec(sql)
+}
+
 function usePgTestDb(): { dbx: Dbx } {
   let current: PgTestDb | undefined
   beforeEach(async () => {
@@ -93,7 +126,10 @@ function usePgTestDb(): { dbx: Dbx } {
     // loaded here, not at the top: the default suite imports this helper too and must not pull the PG harness in
     const { createPgTestDb } = await import('./pg-test-db.js')
     current = await createPgTestDb()
-    useDbxBackend(createPgDbx(current.pool), 'pg')
+    // MARVEEN_TEST_PG_ROLE=app: the same tests as the role the dashboard runs as (pg-app-role.ts), the admin pool otherwise
+    useDbxBackend(createPgDbx(testPgRole() === 'app' ? withDefaultSystemContext(current.appPool) : current.pool), 'pg')
+    ownerDdlPool = current.ownerPool
+    seedAdminDbx = createPgDbx(current.pool) as unknown as Dbx
     // outside any transaction, after the clone: the three synchronous caches are filled for THIS backend (the epoch
     // the switch above just started), the counterpart of the cache loads at the end of initDatabase()
     await loadSystemConfigCacheAsync()
@@ -108,6 +144,8 @@ function usePgTestDb(): { dbx: Dbx } {
     try { db?.close() } catch { /* never opened, or closed by the test */ }
     const toClose = current
     current = undefined
+    ownerDdlPool = undefined
+    seedAdminDbx = undefined
     await toClose?.close()
   })
   return { dbx }

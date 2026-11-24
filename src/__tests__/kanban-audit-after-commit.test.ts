@@ -3,7 +3,7 @@
 // entry second. Real in-memory database, no mocks. Each test names the line it protects in src/db/kanban.ts.
 // (Kept under its old file name; the delete/breakdown/promote atomicity is pinned in kanban-facade-overlap.test.ts.)
 import { describe, it, expect } from 'vitest'
-import { useTestDb, testDbMode } from './helpers/with-test-db.js'
+import { useTestDb, testDbMode, testDdl } from './helpers/with-test-db.js'
 import { refuseWrite } from './helpers/refuse-write.js'
 import { interleave, waitBlockedOnLock } from './helpers/interleave.js'
 import { dbx, createKanbanCard, deleteKanbanCard, getKanbanCard } from '../db.js'
@@ -19,10 +19,10 @@ const blockAuditWrites = () => refuseWrite(dbx, { name: 'kanban_audit_blocked', 
 // A delete that removes nothing and leaves the row: SQLite RAISE(IGNORE); PostgreSQL a BEFORE trigger that returns NULL.
 const keepCard = async (): Promise<void> => {
   if (testDbMode() === 'pg') {
-    await dbx.exec('CREATE FUNCTION keep_card_fn() RETURNS trigger LANGUAGE plpgsql AS $fn$ BEGIN RETURN NULL; END $fn$')
-    await dbx.exec('CREATE TRIGGER keep_card BEFORE DELETE ON kanban_cards FOR EACH ROW EXECUTE FUNCTION keep_card_fn()')
+    await testDdl(dbx, 'CREATE FUNCTION keep_card_fn() RETURNS trigger LANGUAGE plpgsql AS $fn$ BEGIN RETURN NULL; END $fn$')
+    await testDdl(dbx, 'CREATE TRIGGER keep_card BEFORE DELETE ON kanban_cards FOR EACH ROW EXECUTE FUNCTION keep_card_fn()')
   } else {
-    await dbx.exec("CREATE TRIGGER keep_card BEFORE DELETE ON kanban_cards BEGIN SELECT RAISE(IGNORE); END")
+    await testDdl(dbx, "CREATE TRIGGER keep_card BEFORE DELETE ON kanban_cards BEGIN SELECT RAISE(IGNORE); END")
   }
 }
 

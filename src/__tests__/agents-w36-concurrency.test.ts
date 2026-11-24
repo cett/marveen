@@ -10,7 +10,7 @@ import {
 import { dbxDialect } from '../db/facade.js'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { useTestDb, testDbMode } from './helpers/with-test-db.js'
+import { useTestDb, testDbMode, testDdl } from './helpers/with-test-db.js'
 import { refuseWrite } from './helpers/refuse-write.js'
 import { interleave, waitBlockedOnLock } from './helpers/interleave.js'
 
@@ -25,7 +25,7 @@ afterEach(() => { vi.restoreAllMocks() })
 
 // A failure injection is dropped by its own name: PostgreSQL names the table too.
 const dropRefuse = (name: string, table: string): Promise<unknown> =>
-  dbx.run(dbxDialect() === 'pg' ? `DROP TRIGGER ${name} ON ${table}` : `DROP TRIGGER ${name}`)
+  testDdl(dbx, dbxDialect() === 'pg' ? `DROP TRIGGER ${name} ON ${table}` : `DROP TRIGGER ${name}`)
 
 function spyFacade(): string[] {
   const seen: string[] = []
