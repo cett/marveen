@@ -8,6 +8,7 @@
 // write behaves exactly as before and the trail is the addition.
 import { createHash } from 'node:crypto'
 import { dbx, type SqlOps } from './facade.js'
+import { runAs } from './context.js'
 import { writeAgentAuditLog } from './audit.js'
 import { logger } from '../logger.js'
 import { forUpdate } from './dialect.js'
@@ -639,7 +640,13 @@ export interface BaselineResult {
  * a skill that already has a revision is left alone, so a second run writes nothing. A skill that fails is logged and
  * skipped; the others still get theirs and the boot goes on.
  */
-export async function backfillSkillBaselines(): Promise<BaselineResult> {
+export function backfillSkillBaselines(): Promise<BaselineResult> {
+  // A boot step with no request around it: it opens its own system job. An empty context sees no skill under row-level
+  // security, so the listing below would be empty and no skill would ever get its first revision, without an error.
+  return runAs.system('boot-sequence', backfillSkillBaselinesImpl)
+}
+
+async function backfillSkillBaselinesImpl(): Promise<BaselineResult> {
   const out: BaselineResult = { written: 0, errors: 0 }
   const missing = await dbx.all<{ id: string; tenant_id: string }>(
     'SELECT s.id, s.tenant_id FROM skills s WHERE NOT EXISTS (SELECT 1 FROM skill_revisions r WHERE r.skill_id = s.id) ORDER BY s.id')

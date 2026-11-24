@@ -91,6 +91,7 @@ import { withBlackboardLock } from './blackboard-lock.js'
 import { wasPromptRefused } from './send-result.js'
 
 import { systemJob, runAsItemTenant } from '../db/background-jobs.js'
+import { runAs } from '../db/context.js'
 // How many bare-Enter attempts the post-send resubmit tries before escalating
 // to a clear + re-inject, and the hard cap after which it gives up.
 const RESUBMIT_BARE_ENTER_ATTEMPTS = 2
@@ -1716,7 +1717,8 @@ export function restoreInflightFromStore(now: number = Date.now()): number {
   }
   if (restored > 0) logger.info({ restored }, 'schedule-runner: resumed tracking of in-flight scheduled injections after restart')
   // Rewrite / delete the stored value when it carried something invalid (fire and forget: it never throws).
-  void persistInflightCleanup(result)
+  // The restore runs at the start of the runner, outside any context; the write must be allowed under row-level security.
+  void runAs.system('schedule-runner', () => persistInflightCleanup(result))
   return restored
 }
 
