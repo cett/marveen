@@ -23,7 +23,7 @@ INSTALL_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 mkrepo() {
   local r="$TMPDIR_BASE/$1"
   mkdir -p "$r/scripts" "$r/store" "$r/home"
-  cp "$INSTALL_DIR/scripts/backup.sh" "$INSTALL_DIR/scripts/verify-restore.sh" "$INSTALL_DIR/scripts/restore-drill.sh" "$r/scripts/"
+  cp "$INSTALL_DIR/scripts/backup.sh" "$INSTALL_DIR/scripts/verify-restore.sh" "$INSTALL_DIR/scripts/restore-drill.sh" "$INSTALL_DIR/scripts/pg-configured.sh" "$r/scripts/"
   sqlite3 "$r/store/claudeclaw.db" 'PRAGMA journal_mode=WAL; CREATE TABLE a(x); CREATE TABLE b(x); CREATE TABLE c(x); INSERT INTO a VALUES (1),(2),(3);' >/dev/null
   chmod 600 "$r/store/claudeclaw.db"
   echo "$r"

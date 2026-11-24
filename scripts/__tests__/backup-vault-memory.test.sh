@@ -23,7 +23,7 @@ mode_of() { stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1"; }  # GNU first:
 new_repo() {
   local r="$TMPDIR_BASE/$1"
   mkdir -p "$r/scripts" "$r/store" "$TMPDIR_BASE/home-$1"
-  cp "$INSTALL_DIR/scripts/backup.sh" "$INSTALL_DIR/scripts/verify-restore.sh" "$r/scripts/"
+  cp "$INSTALL_DIR/scripts/backup.sh" "$INSTALL_DIR/scripts/verify-restore.sh" "$INSTALL_DIR/scripts/pg-configured.sh" "$r/scripts/"
   echo '[{"id":"x","encrypted":"ZW5jcnlwdGVk"}]' > "$r/store/vault.json"; chmod 600 "$r/store/vault.json"
   if command -v sqlite3 >/dev/null 2>&1; then sqlite3 "$r/store/claudeclaw.db" 'CREATE TABLE t(x);'; fi
   # Token files of every kind exist in the install; none of them may reach the archive.

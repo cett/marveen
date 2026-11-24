@@ -34,6 +34,7 @@ mkrepo() {
   mkdir -p "$r/scripts" "$r/store" "$r/home"
   # BACKUP_SH: another copy of the script (how a mutant is run against these checks)
   cp "${BACKUP_SH:-$INSTALL_DIR/scripts/backup.sh}" "$r/scripts/backup.sh"
+  cp "$INSTALL_DIR/scripts/pg-configured.sh" "$r/scripts/"
   sqlite3 "$r/store/claudeclaw.db" 'CREATE TABLE a(x); INSERT INTO a VALUES (1),(2);' >/dev/null
   chmod 600 "$r/store/claudeclaw.db"
   echo '{}' > "$r/store/vault.json"

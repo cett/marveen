@@ -21,6 +21,16 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BACKUP_DIR="${BACKUP_DIR:-${REPO_ROOT}/backups}"
 MAX_AGE_MIN="${DRILL_MAX_AGE_MIN:-2160}"
 
+# A PostgreSQL install: the archive has no database in it (backup.sh), so a drill of it says nothing about the live data.
+# This is checked before any archive is looked at: a perfect fresh SQLite archive must not turn the drill green.
+# Exit 3 is deliberate: the weekly task alerts on a non-zero exit, so the operator is told until the task is disabled.
+# shellcheck source=scripts/pg-configured.sh
+. "${REPO_ROOT}/scripts/pg-configured.sh"
+if pg_configured "${REPO_ROOT}"; then
+  echo "restore-drill: NOT APPLICABLE -- this install is configured for PostgreSQL; a drill of the SQLite archive says nothing about the live data"
+  exit 3
+fi
+
 NEWEST="$(ls -1t "${BACKUP_DIR}"/claudeclaw-*.tar.gz 2>/dev/null | head -1 || true)"
 if [[ -z "${NEWEST}" ]]; then
   echo "restore-drill: FAIL -- no backup archive in ${BACKUP_DIR}" >&2
