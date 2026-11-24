@@ -95,6 +95,10 @@ The boot runs in these steps, in this order. A failure names the step:
 
 A refused step ends the process. It never continues on SQLite, because a silent fallback would open the old file instead of the database the install is configured for.
 
+## Moving the data from SQLite
+
+The data itself comes from the SQLite file, through the copy tool (`check`, `copy`, then the `embeddings` stage). The operator steps, their order and the reports are in `docs/pg-copy.md`. The copy runs against an empty target, before `MARVEEN_PG_URL` is set on the install.
+
 ## After the migration run
 
 Run this as the owner (or a superuser) once the tables exist. The migrations grant the backup role nothing. `pg_dump` reads the sequence values as well as the tables, so both get `SELECT`:
