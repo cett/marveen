@@ -36,6 +36,7 @@ import { isGlobalAdmin } from '../web/routes/global-admin.js'
 import { tryHandleDbContext } from '../web/routes/db-context.js'
 import { tryHandleRerankStats } from '../web/routes/rerank-stats.js'
 import { tryHandleOtelExportStatus } from '../web/routes/otel-export-status.js'
+import { tryHandlePgRuntimeStatus } from '../web/routes/pg-runtime-status.js'
 import { tryHandleTenantGateStatus } from '../web/routes/tenant-gate-status.js'
 import { tryHandleBrowserEnroll } from '../web/routes/browser-enroll.js'
 import type { RouteContext, RouteHandler } from '../web/routes/types.js'
@@ -106,6 +107,7 @@ const ENDPOINTS: Array<{ name: string; handler: RouteHandler; segment: string; p
   { name: 'db-context', handler: tryHandleDbContext, segment: 'db-context', payloadKey: 'sites' },
   { name: 'rerank-stats', handler: tryHandleRerankStats, segment: 'rerank-stats', payloadKey: 'calls' },
   { name: 'otel-export-status', handler: tryHandleOtelExportStatus, segment: 'otel-export-status', payloadKey: 'now' },
+  { name: 'pg-runtime-status', handler: tryHandlePgRuntimeStatus, segment: 'pg-runtime-status', payloadKey: 'backend' },
   { name: 'tenant-gate-status', handler: tryHandleTenantGateStatus, segment: 'tenant-gate-status', payloadKey: 'migrations' },
 ]
 const PREFIXES = ['/api/admin', '/api/v1/admin']
