@@ -90,6 +90,23 @@ describe('isUniqueViolationOn', () => {
     expect(isUniqueViolationOn(pgError('23505', { table: base.table, detail: 'Key (lower(username))=(x) already exists.' }), 'dashboard_users.username')).toBe(false)
   })
 
+  it('PostgreSQL under row-level security: the detail is withheld, the named constraint decides (and only for its own table and column)', () => {
+    const withheld = pgError('23505', { table: 'device_keys', constraint: 'device_keys_key_hash_key' })
+    expect(isUniqueViolationOn(withheld, 'device_keys.key_hash')).toBe(true)
+    expect(isUniqueViolationOn(withheld, 'device_keys.name')).toBe(false) // another column
+    expect(isUniqueViolationOn(withheld, 'dashboard_users.username')).toBe(false) // another column
+    expect(isUniqueViolationOn(pgError('23505', { table: 'device_keys', constraint: 'device_keys_pkey' }), 'device_keys.key_hash')).toBe(false) // another constraint
+    expect(isUniqueViolationOn(pgError('23505', { table: 'other_table', constraint: 'device_keys_key_hash_key' }), 'device_keys.key_hash')).toBe(false) // another table
+    expect(isUniqueViolationOn(pgError('23503', { table: 'device_keys', constraint: 'device_keys_key_hash_key' }), 'device_keys.key_hash')).toBe(false) // a foreign key
+  })
+
+  it('PostgreSQL: the username index is on lower(username), its detail never names the column, the constraint does', () => {
+    const e = pgError('23505', { table: 'dashboard_users', constraint: 'dashboard_users_username_key', detail: 'Key (lower(username))=(user-a) already exists.' })
+    expect(isUniqueViolationOn(e, 'dashboard_users.username')).toBe(true)
+    expect(isUniqueViolationOn(pgError('23505', { table: 'dashboard_users', constraint: 'dashboard_users_username_key' }), 'dashboard_users.username')).toBe(true)
+    expect(isUniqueViolationOn(e, 'dashboard_users.email')).toBe(false)
+  })
+
   it('anything that is not an Error is never a match', () => {
     for (const v of [undefined, null, 'UNIQUE constraint failed: a.b', { code: '23505', table: 'a', detail: 'Key (b)=(c) already exists.' }]) {
       expect(isUniqueViolationOn(v, 'a.b')).toBe(false)
