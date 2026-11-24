@@ -22,6 +22,7 @@
 import { randomUUID } from 'node:crypto'
 import { logger } from '../logger.js'
 import { getSystemConfig, setSystemConfig, setSystemConfigMany, writeAgentAuditLog } from '../db.js'
+import { systemJob } from '../db/background-jobs.js'
 import { registerSigtermFlush } from './sigterm-flush.js'
 
 export const LAST_BOOT_KEY = 'last_boot'
@@ -102,12 +103,15 @@ export function registerShutdownMarker(bootId: string): () => void {
  * boot_id to stamp, so no marker is registered (the next boot then reads `unknown` or `unclean`, which is honest).
  */
 export async function startBootMarker(): Promise<LastBoot | null> {
-  try {
-    const record = await recordBoot()
-    registerShutdownMarker(record.boot_id)
-    return record
-  } catch (err) {
-    logger.warn({ err }, 'boot-marker: could not record this boot')
-    return null
-  }
+  // The function's own system context (the last_boot row is in system_config, privileged-only; the boot caller has none).
+  return systemJob('boot-marker', async (): Promise<LastBoot | null> => {
+    try {
+      const record = await recordBoot()
+      registerShutdownMarker(record.boot_id)
+      return record
+    } catch (err) {
+      logger.warn({ err }, 'boot-marker: could not record this boot')
+      return null
+    }
+  })()
 }

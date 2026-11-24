@@ -50,9 +50,10 @@ afterAll(async () => {
 
 describe('initDatabaseAsync on PostgreSQL runs the importers that still matter there', () => {
   it('the boot imports the cost budget of the file and seeds the plan of claude-plans.json into the database', async () => {
-    // the boot of the dashboard is a system job (the boot sequence); under row-level security the importers need that context
+    // NO context around the boot call, as in src/main.ts: the importers open their own system context (job boot-importers).
+    // Under row-level security an empty context is refused the cost budget insert, so a wrapper here would hide that gap.
+    expect(await initDatabaseAsync()).toBe('pg')
     await runAs.system('boot-sequence', async () => {
-      expect(await initDatabaseAsync()).toBe('pg')
       expect((await listCostBudgets('default')).map((b) => b.id)).toContain('boot-budget')
       expect((await listClaudePlanRows()).map((p) => p.id)).toContain('boot-plan')
     })

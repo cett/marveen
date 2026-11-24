@@ -34,6 +34,7 @@ import { loadSystemConfigCacheAsync } from './config-cache.js'
 import { loadModelProfileMapCacheAsync } from './model-profile-map-cache.js'
 import { loadAgentSettingsCacheAsync } from './agent-settings-cache.js'
 import { useDbxBackend } from './facade.js'
+import { systemJob } from './background-jobs.js'
 import type { PgPoolSettings } from './pg/pool.js'
 import { pgPreflight, pgRolePreflight } from './pg/preflight.js'
 import { PG_MIGRATE_URL_KEY, PG_URL_KEY, resolvePgMigrateUrl, resolvePgUrl } from './pg/url.js'
@@ -274,9 +275,14 @@ export async function bootPgBackend(opts: PgBootOptions = {}): Promise<PgBootRes
     useDbxBackend(createPgDbx(pool), 'pg')
     switched = true
     // after the switch: a cache belongs to the epoch the switch started
-    await loadSystemConfigCacheAsync()
-    await loadModelProfileMapCacheAsync()
-    await loadAgentSettingsCacheAsync()
+    // The caches hold every tenant's rows (system_config is privileged-only, agent_settings is a tenant table): read them
+    // in the function's OWN system context, never in whatever context the caller has. An empty context sees zero rows
+    // under row-level security and the caches would boot empty without an error (the RBAC mode would fall back to its default).
+    await systemJob('pg-boot-caches', async () => {
+      await loadSystemConfigCacheAsync()
+      await loadModelProfileMapCacheAsync()
+      await loadAgentSettingsCacheAsync()
+    })()
   } catch (err) {
     return refuse('caches', err)
   }

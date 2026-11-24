@@ -166,18 +166,22 @@ export async function refreshRbacMode(envMode: RbacMode | undefined = RBAC_MODE_
  * mode. An existing row is never overwritten, so a second boot changes nothing.
  */
 export async function loadRbacMode(envMode: RbacMode | undefined = RBAC_MODE_ENV): Promise<RbacMode> {
-  try {
-    const value: RbacMode = envMode ?? 'enforce'
-    if (await insertSystemConfigIfAbsent(RBAC_MODE_KEY, value, 'migrated_from_env')) {
-      await logConfigChange(RBAC_MODE_KEY, envMode ?? null, value, 'system:migration')
-      safely(() => logger.info({ value }, 'RBAC_MODE seeded into system_config from the environment'))
-    } else if (envMode === 'shadow') {
-      safely(() => logger.warn('env RBAC_MODE=shadow ignored, use the Settings page'))
+  // The function's own system context (system_config and config_change_log are privileged-only): the caller (the boot) has
+  // none, and an empty context would read no row, so the stored mode would never be applied and the seed would be refused.
+  return systemJob('rbac-mode-load', async (): Promise<RbacMode> => {
+    try {
+      const value: RbacMode = envMode ?? 'enforce'
+      if (await insertSystemConfigIfAbsent(RBAC_MODE_KEY, value, 'migrated_from_env')) {
+        await logConfigChange(RBAC_MODE_KEY, envMode ?? null, value, 'system:migration')
+        safely(() => logger.info({ value }, 'RBAC_MODE seeded into system_config from the environment'))
+      } else if (envMode === 'shadow') {
+        safely(() => logger.warn('env RBAC_MODE=shadow ignored, use the Settings page'))
+      }
+    } catch (err) {
+      safely(() => logger.warn({ err }, 'RBAC_MODE seed into system_config failed'))
     }
-  } catch (err) {
-    safely(() => logger.warn({ err }, 'RBAC_MODE seed into system_config failed'))
-  }
-  return refreshRbacMode(envMode)
+    return refreshRbacMode(envMode)
+  })()
 }
 
 /** Start the periodic re-read. The timer is unref'd, so it never keeps the process alive. */
