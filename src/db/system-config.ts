@@ -18,6 +18,7 @@ import { cacheAfterWrite, cacheAfterWriteAsync, cachedSystemConfig, cachedSystem
 import { STORE_DIR } from '../config.js'
 import { logger } from '../logger.js'
 import { skipRetireOnPg } from './retire-guard.js'
+import { skipOnPg } from './sqlite-only-guard.js'
 
 export interface SystemConfigRow {
   key: string
@@ -67,6 +68,7 @@ export async function setSystemConfig(key: string, value: string, source: string
 // schedule tick stamp with one write. Only db/index.ts calls it (db-boot-sync-twins.test.ts).
 // @boot-sync-twin
 export function setSystemConfigSync(key: string, value: string, source: string = 'db'): void {
+  if (skipOnPg('setSystemConfigSync')) return
   db.prepare(UPSERT_SQL).run(key, value, source)
   cacheAfterWrite(key) // database first, then the cache
 }
@@ -168,6 +170,7 @@ export async function deleteSystemConfig(key: string): Promise<void> {
 // sitting in the file -- reading a file that will usually not exist post-S8B
 // is a harmless no-op via the existsSync check below.
 export function migrateConfigOverridesToSystemConfig(): number {
+  if (skipOnPg('migrateConfigOverridesToSystemConfig')) return 0
   const overridesPath = join(STORE_DIR, 'config-overrides.json')
   if (!existsSync(overridesPath)) return 0
 
@@ -255,6 +258,7 @@ function migrateOneGroup5File(filename: string, extract: (parsed: unknown) => Ar
 }
 
 export function migrateGroup5StateFromFiles(): number {
+  if (skipOnPg('migrateGroup5StateFromFiles')) return 0
   let migrated = 0
   migrated += migrateOneGroup5File('model-fallback.json', (parsed) => {
     if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return []

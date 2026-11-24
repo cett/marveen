@@ -29,6 +29,7 @@
 
 import { dbx, dbxDialect, type SqlOps } from './facade.js'
 import { db } from './connection.js'
+import { skipOnPg } from './sqlite-only-guard.js'
 import { cachedAgentSetting, cachedAgentSettingsByKey, cacheAfterAgentSettingWrite, cacheAfterAgentSettingWriteAsync } from './agent-settings-cache.js'
 
 export type AgentSettingKey = 'context_guard' | 'auto_restart' | 'context_restart_gate'
@@ -89,6 +90,7 @@ export function importAgentSettingsFromFile(
   entries: Record<string, unknown>,
   resolveTenantId: (agentId: string) => string,
 ): number {
+  if (skipOnPg('importAgentSettingsFromFile')) return 0
   let migrated = 0
   const stmt = db.prepare(`
     INSERT INTO agent_settings (agent_id, setting_key, setting_value, tenant_id, updated_at)

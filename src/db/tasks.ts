@@ -4,6 +4,7 @@
 import { AgentMessage } from './agents.js'
 import { db } from './connection.js'
 import { D2_JOBS, runAs } from './context.js'
+import { skipOnPg } from './sqlite-only-guard.js'
 import { dbx, type Dbx, type SqlOps, type Tx } from './facade.js'
 import { likePrefix } from './like.js'
 import { ensureSkillBaseline, lockSkillForRevision, writeSkillRevision, submitPendingRevision, type ProposedFile, type SkillActor, type SkillRevisionRow, type SkillWriteMeta } from './skill-revisions.js'
@@ -520,6 +521,7 @@ export async function clearScheduleLastRunIfMatches(id: string, expectedLastRunA
 // have no other content.
 // @boot-sync-twin
 export function migrateScheduleLastRunFromFile(entries: Record<string, unknown>): number {
+  if (skipOnPg('migrateScheduleLastRunFromFile')) return 0
   let migrated = 0
   const stmt = db.prepare('UPDATE schedules SET last_run_at = ? WHERE id = ? AND last_run_at IS NULL')
   for (const [id, ts] of Object.entries(entries)) {

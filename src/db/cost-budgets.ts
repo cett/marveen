@@ -16,6 +16,7 @@ import { dbx, type Dbx, type Tx } from './facade.js'
 import { epochLocalMonth } from './dialect.js'
 import { STORE_DIR } from '../config.js'
 import { logger } from '../logger.js'
+import { skipOnPg } from './sqlite-only-guard.js'
 import type { BudgetEntry } from '../costops/config.js'
 
 interface CostBudgetRow {
@@ -94,6 +95,7 @@ export async function replaceCostBudgets(tenantId: string, budgets: BudgetEntry[
 // pre-migration default of an empty budgets array. Safe to call on every boot.
 // @boot-sync-twin
 export function migrateCostBudgetsFromFile(): number {
+  if (skipOnPg('migrateCostBudgetsFromFile')) return 0
   const entries = readBudgetFileEntries(costopsConfigPath())
   if (entries === null) return 0
 

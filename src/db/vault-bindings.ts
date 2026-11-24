@@ -18,6 +18,7 @@ import { db } from './connection.js'
 import { dbx } from './facade.js'
 import { STORE_DIR } from '../config.js'
 import { logger } from '../logger.js'
+import { skipOnPg } from './sqlite-only-guard.js'
 
 export interface VaultBindingTarget {
   mcpFilePath: string
@@ -118,6 +119,7 @@ export async function replaceVaultBindings(tenantId: string, bindings: VaultBind
 // list. Safe to call on every boot.
 // @boot-sync-twin
 export function migrateVaultBindingsFromFile(): number {
+  if (skipOnPg('migrateVaultBindingsFromFile')) return 0
   const filePath = join(STORE_DIR, 'vault-bindings.json')
   if (!existsSync(filePath)) return 0
   let parsed: unknown

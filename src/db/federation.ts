@@ -25,6 +25,7 @@ import { getSystemConfig, setSystemConfig, setSystemConfigSync, updateSystemConf
 import type { SqlOps } from './facade.js'
 import { STORE_DIR } from '../config.js'
 import { logger } from '../logger.js'
+import { skipOnPg } from './sqlite-only-guard.js'
 
 export const FEDERATION_CONFIG_KEY = 'federation_config_json'
 
@@ -65,6 +66,7 @@ export async function deleteFederationConfigRaw(): Promise<void> {
 // setFederationConfigRaw. Only db/index.ts calls it (db-boot-sync-twins.test.ts).
 // @boot-sync-twin
 export function migrateFederationConfigFromFile(): boolean {
+  if (skipOnPg('migrateFederationConfigFromFile')) return false
   if (getSystemConfig(FEDERATION_CONFIG_KEY) !== undefined) return false
   const filePath = join(STORE_DIR, 'federation.json')
   if (!existsSync(filePath)) return false

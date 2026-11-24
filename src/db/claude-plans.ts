@@ -23,6 +23,7 @@
 import { db } from './connection.js'
 import { D2_JOBS, runAs } from './context.js'
 import { dbx } from './facade.js'
+import { skipOnPg } from './sqlite-only-guard.js'
 
 export type ClaudePlanType = 'personal' | 'team'
 export type ActivePlanSource = 'manual' | 'rotation' | 'handoff-recovery'
@@ -128,6 +129,7 @@ export async function replaceClaudePlanRows(plans: ClaudePlanInput[]): Promise<v
  */
 // @boot-sync-twin
 export function replaceClaudePlanRowsSync(plans: ClaudePlanInput[]): void {
+  if (skipOnPg('replaceClaudePlanRowsSync')) return
   db.transaction(() => {
     const incomingIds = new Set(plans.map((p) => p.id))
     const existingIds = (db.prepare('SELECT id FROM claude_plans_registry').all() as { id: string }[]).map((r) => r.id)
@@ -182,6 +184,7 @@ export async function activatePlanForAgent(agentId: string, planId: string, sour
 /** Boot-synchronous twin of activatePlanForAgent (the mirror seed of initDatabase() cannot await); only db/index.ts calls it. */
 // @boot-sync-twin
 export function activatePlanForAgentSync(agentId: string, planId: string, source: ActivePlanSource): void {
+  if (skipOnPg('activatePlanForAgentSync')) return
   db.prepare(ACTIVATE_PLAN_SQL).run(agentId, planId, source)
 }
 

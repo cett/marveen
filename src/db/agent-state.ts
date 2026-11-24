@@ -7,6 +7,7 @@
 // just stores what it's told.
 
 import { db } from './connection.js'
+import { skipOnPg } from './sqlite-only-guard.js'
 import { dbx } from './facade.js'
 
 export const AGENT_STATE_KEYS = [
@@ -58,11 +59,13 @@ export async function setAgentState(agentId: string, key: AgentStateKey, value: 
 // may call them (a test pins this). Once initDatabase() is asynchronous the twins go away.
 // @boot-sync-twin
 export function getAgentStateSync(agentId: string, key: AgentStateKey): AgentStateRow | undefined {
+  if (skipOnPg('getAgentStateSync')) return undefined
   return db.prepare(SELECT_ONE).get(agentId, key) as AgentStateRow | undefined
 }
 
 // @boot-sync-twin
 export function setAgentStateSync(agentId: string, key: AgentStateKey, value: unknown, tenantId = 'default'): void {
+  if (skipOnPg('setAgentStateSync')) return
   db.prepare(UPSERT).run(agentId, key, JSON.stringify(value), tenantId)
 }
 
@@ -74,6 +77,7 @@ export function setAgentStateSync(agentId: string, key: AgentStateKey, value: un
  */
 // @boot-sync-twin
 export function importAgentStateFromFile(key: AgentStateKey, entries: Record<string, unknown>): number {
+  if (skipOnPg('importAgentStateFromFile')) return 0
   let migrated = 0
   const stmt = db.prepare(`
     INSERT INTO agent_state (agent_id, state_key, state_value, tenant_id, updated_at)

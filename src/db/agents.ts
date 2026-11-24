@@ -3,6 +3,7 @@
 
 import { randomUUID } from 'node:crypto'
 import { writeAgentAuditLog } from './audit.js'
+import { skipOnPg } from './sqlite-only-guard.js'
 import { deactivatePlanForAgent } from './claude-plans.js'
 import { db } from './connection.js'
 import { dbx, type SqlOps } from './facade.js'
@@ -848,6 +849,8 @@ export async function resolveAgentOwningTenantId(agentId: string): Promise<strin
  *  imported row is stamped with the tenant the asynchronous resolver would pick -- keep the two in step. */
 // @boot-sync-twin
 export function resolveAgentOwningTenantIdSync(agentId: string): string {
+  // Not a silent skip: a default tenant here would stamp the imported rows with the wrong owner. Refuse loudly instead.
+  if (skipOnPg('resolveAgentOwningTenantIdSync')) throw new Error('resolveAgentOwningTenantIdSync is SQLite-only: use the async resolver on PostgreSQL')
   const main = db.prepare('SELECT id FROM tenants WHERE main_agent_id = ? AND disabled_at IS NULL').get(agentId) as { id: string } | undefined
   if (main) return main.id
   const row = db.prepare('SELECT tenant_id FROM tenant_agent_availability WHERE agent_id = ? AND enabled = 1').get(agentId) as { tenant_id: string } | undefined
