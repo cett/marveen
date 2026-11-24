@@ -274,9 +274,12 @@ describe('the boot report', () => {
 
   it('the boot sequence calls it after the database is up', () => {
     const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'main.ts'), 'utf8')
-    const up = src.indexOf('await initDatabaseAsync()')
+    // the database boot (which awaits initDatabaseAsync) is bootProcessDatabase, src/process-db-boot.ts, called from main()
+    const up = src.indexOf('await bootProcessDatabase()')
     const call = src.indexOf("runAs.system('boot-sequence', () => warnTenantlessWriteRoleUsers())")
     expect(up).toBeGreaterThan(-1)
     expect(call).toBeGreaterThan(up)
+    const dbBoot = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'process-db-boot.ts'), 'utf8')
+    expect(dbBoot).toContain('await initDatabaseAsync()')
   })
 })

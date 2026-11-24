@@ -386,9 +386,12 @@ describe('the process boot (src/main.ts)', () => {
   const src = readFileSync(new URL('../main.ts', import.meta.url), 'utf-8')
 
   it('awaits initDatabaseAsync before anything that listens, and a rejection there ends the process through main().catch', () => {
-    const boot = src.indexOf('await initDatabaseAsync()')
+    // the database boot lives in bootProcessDatabase (src/process-db-boot.ts), which awaits initDatabaseAsync; main() awaits it
+    const boot = src.indexOf('await bootProcessDatabase()')
     expect(boot).toBeGreaterThan(0)
     expect(boot).toBeLessThan(src.indexOf('startWebServer(WEB_PORT)'))
+    const procBoot = readFileSync(new URL('../process-db-boot.ts', import.meta.url), 'utf-8')
+    expect(procBoot).toMatch(/await initDatabaseAsync\(\)/)
     expect(src.indexOf('startWebServer(WEB_PORT)')).toBeGreaterThan(0)
     expect(src).toMatch(/main\(\)\.catch\(\(err\) => \{[\s\S]*shutdown\(\)/)
   })
@@ -407,7 +410,7 @@ describe('the process boot (src/main.ts)', () => {
     expect(refuse).toBeGreaterThan(mainStart)
     expect(takeover).toBeGreaterThan(mainStart)
     expect(refuse).toBeLessThan(takeover)
-    expect(refuse).toBeLessThan(src.indexOf('await initDatabaseAsync()'))
+    expect(refuse).toBeLessThan(src.indexOf('await bootProcessDatabase()'))
     expect(src.match(/refuseProcessOnPg\(/g)).toHaveLength(1)
   })
 

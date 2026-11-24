@@ -15,7 +15,8 @@ import type { Server as HttpServer } from 'node:http'
 import { PROJECT_ROOT, STORE_DIR, IS_ISOLATED_MODE, PID_FILENAME, WEB_PORT, ALLOWED_CHAT_ID, MAIN_AGENT_ID, RESPAWN_ENABLED, HEARTBEAT_AGENT_ENABLED } from './config.js'
 import { runSigtermFlushes } from './web/sigterm-flush.js'
 import { startBootMarker } from './web/boot-marker.js'
-import { initDatabaseAsync, closePgBackend, resolveAgentTenant, backfillEmbeddings, closeDatabase, retireConfigOverridesFile, retireScheduleStateFiles, retireAgentSettingsFiles, retireAgentStateFiles, retireKanbanAuditStateFile, retireVaultBindingsFile, retireFederationConfigFile, retireGroup5StateFiles } from './db.js'
+import { closePgBackend, backfillEmbeddings, closeDatabase } from './db.js'
+import { bootProcessDatabase } from './process-db-boot.js'
 import { flushLedgerSpool } from './conversation-ledger-spool.js'
 import { backfillWorkspaceDocs } from './db/workspace.js'
 import { runDecaySweep, runDailyDigest } from './memory.js'
@@ -25,7 +26,7 @@ import { startAgentProcess } from './web/agent-process.js'
 import { renameSharedCredentialsIfSafe, fleetTokenBootPass } from './web/claude-credentials-guard.js'
 import { refuseProcessOnPg } from './db/pg-boot.js'
 import { startWebServer } from './web.js'
-import { loadRbacMode, startRbacModeRefresh } from './web/rbac-mode.js'
+import { startRbacModeRefresh } from './web/rbac-mode.js'
 import { runBootImportLeftoverScan } from './web/fleet-import-leftovers.js'
 import { warnTenantlessWriteRoleUsers } from './web/tenantless-user-check.js'
 import { logger } from './logger.js'
@@ -45,7 +46,7 @@ import {
 } from './process-lock.js'
 
 import { runAs, endDbBootPhase } from './db/context.js'
-import { systemJob, setAgentTenantResolver } from './db/background-jobs.js'
+import { systemJob } from './db/background-jobs.js'
 const BANNER = `
  ██████╗██╗      █████╗ ██╗   ██╗██████╗ ███████╗
 ██╔════╝██║     ██╔══██╗██║   ██║██╔══██╗██╔════╝
@@ -527,58 +528,10 @@ async function main(): Promise<void> {
     logger.info('Isolated mode (MARVEEN_STORE_DIR): skipping port takeover and lock acquisition')
   }
 
-  // Database: SQLite unless MARVEEN_PG_URL is set; with a URL a failing PostgreSQL step throws and main().catch ends the
-  // process (no SQLite fallback), so the boot never reaches listen on a half-wired backend.
-  const dbBackend = await initDatabaseAsync()
-  logger.info({ backend: dbBackend }, 'Adatbazis inicializalva')
-  // The agent jobs (auto-restart, context guard, restart gate, background tasks) run as the agent in its tenant.
-  setAgentTenantResolver((agentId) => resolveAgentTenant(agentId))
-
-  // RBAC_MODE: seed the system_config row from the env once (idempotent), read the live mode and keep
-  // it fresh. Called here, not from initDatabase(): that also runs from every test against the shared store.
-  await loadRbacMode()
+  // Database (SQLite unless MARVEEN_PG_URL is set), tenant resolver, RBAC mode and file retirements: bootProcessDatabase
+  // (src/process-db-boot.ts). A failing PostgreSQL step throws here and main().catch ends the process.
+  await bootProcessDatabase()
   startRbacModeRefresh()
-
-  // S8B: retire store/config-overrides.json (rename to .deprecated) now that
-  // initDatabase() above has guaranteed every key it held is a system_config
-  // row. Deliberately called HERE (real process boot) rather than from
-  // db/index.ts's initDatabase() itself: that function also runs from every
-  // test file's beforeEach against the same real, shared worktree store/
-  // dir, and a rename there would race other concurrently-running test
-  // files touching the same physical path. This call site only ever runs
-  // once, for a real dashboard process.
-  retireConfigOverridesFile()
-
-  // Same reasoning as retireConfigOverridesFile() above, for migration 0057
-  // (#985 group 2/8): only ever called here (real process boot), never from
-  // db/index.ts's initDatabase() itself, which also runs from every test
-  // file's beforeEach against the same real, shared worktree store/ dir.
-  retireScheduleStateFiles()
-
-  // Same reasoning as retireScheduleStateFiles() above, for migration 0058
-  // (#985 group 3/8).
-  retireAgentSettingsFiles()
-
-  // Same reasoning as retireAgentSettingsFiles() above, for migration 0060
-  // (#985 group 4/8, part 1).
-  retireAgentStateFiles()
-
-  // Same reasoning as retireAgentStateFiles() above, for #985 group 4/8,
-  // part 2 (item 2A: kanban-audit-state.json).
-  retireKanbanAuditStateFile()
-
-  // Same reasoning as retireKanbanAuditStateFile() above, for #985 group
-  // 7/8 (vault-bindings.json).
-  retireVaultBindingsFile()
-
-  // Same reasoning as retireVaultBindingsFile() above, for #985 group 5/8's
-  // deferred part (federation.json).
-  retireFederationConfigFile()
-
-  // Same reasoning as retireFederationConfigFile() above, for group
-  // 5/8's other three files (model-fallback.json, agents-desired.json,
-  // terminal-input.json) -- previously migrated but never retired.
-  retireGroup5StateFiles()
 
   // Boot marker: record this boot (last_boot, with whether the previous process stopped cleanly) and register the
   // `shutdown-marker` SIGTERM flush. Registered HERE, before startWebServer (which registers the desired run-state

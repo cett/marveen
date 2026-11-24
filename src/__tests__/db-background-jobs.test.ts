@@ -420,7 +420,9 @@ describe('the request path wiring in web.ts (source pin)', () => {
   it('ends the boot phase after the dashboard listens, in both start branches of main.ts', () => {
     const index = code(files.find((f) => f.path === 'src/main.ts')!.text)
     expect(index.match(/endDbBootPhase\(\)/g)?.length).toBe(2)
-    expect(index).toContain('setAgentTenantResolver(')
+    // the tenant resolver is set in the database boot (src/process-db-boot.ts, extracted from main() in fd6639c5d)
+    const dbBoot = code(files.find((f) => f.path === 'src/process-db-boot.ts')!.text)
+    expect(dbBoot).toContain('setAgentTenantResolver(')
   })
 })
 
