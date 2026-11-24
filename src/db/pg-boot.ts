@@ -29,7 +29,7 @@
 // install. The ones that still matter on PostgreSQL (the claude-plans seed, the cost-budgets importer, the dashboard
 // token enrolment) are ported in 6c-2. config.ts still reads its boot values from SQLite until 6c-3.
 import { logger } from '../logger.js'
-import { applyPgMigrations, assertPgSchemaCurrent, type PgMigrationResult } from '../db-migrations-pg.js'
+import { applyPgMigrations, assertPgSchemaCurrent, loadPgMigrationFiles, type PgMigrationResult } from '../db-migrations-pg.js'
 import { loadSystemConfigCacheAsync } from './config-cache.js'
 import { loadModelProfileMapCacheAsync } from './model-profile-map-cache.js'
 import { loadAgentSettingsCacheAsync } from './agent-settings-cache.js'
@@ -51,6 +51,35 @@ export class PgBootError extends Error {
   }
 }
 
+/**
+ * The override for a NEWER database (the build is older than the schema, after a rollback): the boot continues, nothing
+ * is migrated, and the state is logged and reported on every boot. Read from the process environment only, so it is
+ * never a hidden persistent switch in a mount or an .env file. Only the value `1` turns it on.
+ */
+export const PG_ALLOW_NEWER_KEY = 'MARVEEN_PG_ALLOW_NEWER_DATABASE'
+
+export function allowNewerFromEnv(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env[PG_ALLOW_NEWER_KEY] === '1'
+}
+
+/** The schema state of the last boot, for the status surface: null on SQLite and before the first boot. */
+export interface PgRuntimeStatus {
+  backend: 'pg'
+  /** true when the boot ran on a NEWER database under the override */
+  runningOnNewerDatabase: boolean
+  /** the highest migration the database has applied (null when it has none) */
+  databaseHighest: number | null
+  /** the highest migration this build ships (null when it ships none) */
+  shippedHighest: number | null
+}
+
+let runtimeStatus: PgRuntimeStatus | null = null
+
+/** The state of the last successful PostgreSQL boot; null on SQLite and before the first boot. Set by bootPgBackend. */
+export function pgRuntimeStatus(): PgRuntimeStatus | null {
+  return runtimeStatus ? { ...runtimeStatus } : null
+}
+
 export interface PgBootOptions {
   /** The URL to boot on (default: the configured MARVEEN_PG_URL). Tests pass a throwaway database. */
   url?: string
@@ -61,6 +90,8 @@ export interface PgBootOptions {
   migrateUrl?: string
   /** A migrations directory other than the shipped one (tests: a failing file, an extension-less set). */
   migrationsDir?: string
+  /** Start on a NEWER database without migrating (default: the MARVEEN_PG_ALLOW_NEWER_DATABASE value `1`). */
+  allowNewer?: boolean
   /** Pool limits (default: the DB_PG_* environment variables, then the adapter defaults). */
   pool?: PgPoolSettings
 }
@@ -207,8 +238,10 @@ export async function bootPgBackend(opts: PgBootOptions = {}): Promise<PgBootRes
   }
 
   let migrations: PgMigrationResult
+  const dirOptsForStatus = opts.migrationsDir === undefined ? undefined : opts.migrationsDir
   try {
-    const dirOpts = opts.migrationsDir === undefined ? {} : { dir: opts.migrationsDir }
+    const allowNewer = opts.allowNewer ?? allowNewerFromEnv()
+    const dirOpts = { ...(opts.migrationsDir === undefined ? {} : { dir: opts.migrationsDir }), allowNewer }
     if (migrateUrl === undefined) {
       // no migration URL: the serving role only READS schema_version; a schema that is behind is refused, never fixed here
       migrations = await assertPgSchemaCurrent(pool, dirOpts)
@@ -248,6 +281,23 @@ export async function bootPgBackend(opts: PgBootOptions = {}): Promise<PgBootRes
     return refuse('caches', err)
   }
 
+  const shippedHighest = Math.max(0, ...loadPgMigrationFiles(dirOptsForStatus).map((f) => f.version))
+  if (migrations.state === 'NEWER' && migrations.newer) {
+    const { appliedMax, shippedMax } = migrations.newer
+    const warning = `running on a newer database: migration ${appliedMax} is applied, this build ships up to ${shippedMax}; ` +
+      `nothing was migrated (${PG_ALLOW_NEWER_KEY}=1)`
+    warnings = [...warnings, warning]
+    logger.warn({ appliedMax, shippedMax }, 'PostgreSQL running on a newer database under the override')
+    runtimeStatus = { backend: 'pg', runningOnNewerDatabase: true, databaseHighest: appliedMax, shippedHighest: shippedMax }
+  } else {
+    // a boot that passed the check has applied exactly the shipped files: the database's highest is the shipped one
+    runtimeStatus = {
+      backend: 'pg',
+      runningOnNewerDatabase: false,
+      databaseHighest: shippedHighest || null,
+      shippedHighest: shippedHighest || null,
+    }
+  }
   activePool = pool
   for (const warning of warnings) logger.warn({ warning }, 'PostgreSQL preflight warning')
   logger.info({ applied: migrations.applied.length, alreadyApplied: migrations.alreadyApplied }, 'PostgreSQL backend ready')

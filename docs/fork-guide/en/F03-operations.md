@@ -546,3 +546,22 @@ Each machine running Marveen is an independent installation — there is no dist
 
 *Previous: [F02 Configuration](F02-configuration.md)*
 *Next: F04 Channel configuration (coming soon)*
+
+## Backup and restore on a PostgreSQL install
+
+With a PostgreSQL URL configured (the mount, the environment, the `.env` file, or the marker `MARVEEN_PG_CONFIGURED=1`
+that the app sets at start) the SQLite database is not the live data, so the backup guard changes what the tools say:
+
+- `backup.sh` writes the archive without the stale `store/claudeclaw.db`. Everything else is archived as before. The
+  `MANIFEST.txt` gets the line `database: not included (PostgreSQL install)` and stderr gets a NOTICE: back the
+  PostgreSQL data up separately, that is the operator's duty.
+- `verify-restore.sh` checks the archive for everything except the database and says so (`[SKIP] database not in this
+  archive`). With `--drill` it ends `NOT APPLICABLE` with exit 3, never OK.
+- `restore-drill.sh` answers `NOT APPLICABLE` with exit 3 before it looks at any archive. The weekly task alerts on the
+  non-zero exit, so the operator is told until the task is disabled (the cutover runbook disables it on purpose).
+- The 24-hour return source is the last archive taken before the URL was set: keep it aside by name before the switch.
+  The planned rollback window is 24 hours. The archive stays in the rotation only while the newest `BACKUP_KEEP` archives are
+  kept (default 30, one a night, so about 30 days), and then it is pruned: copy it aside, do not rely on the rotation.
+
+The detection rules are in `scripts/pg-configured.sh`, which `backup.sh` and `restore-drill.sh` source: one copy of the
+function, so the scripts cannot drift apart. A `.env` that cannot be read while the marker is set counts as PostgreSQL.

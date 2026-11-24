@@ -106,6 +106,13 @@ fi
 # grep -q exits on the first hit, the writer gets SIGPIPE, and under pipefail the
 # pipeline reads as "no match" once the listing outgrows the pipe buffer (~64 KB).
 ARCHIVE_LISTING="$(tar -tzf "${ARCHIVE}" 2>/dev/null || true)"
+# An archive taken on a PostgreSQL install says so in MANIFEST.txt (backup.sh): the database is not in it, so the
+# database checks are skipped (said so on screen), and a drill of it is NOT APPLICABLE, never OK.
+MANIFEST_TEXT="$(tar -xzOf "${ARCHIVE}" MANIFEST.txt 2>/dev/null || true)"
+PG_ARCHIVE=0
+if grep -qxF "database: not included (PostgreSQL install)" <<<"${MANIFEST_TEXT}"; then
+  PG_ARCHIVE=1
+fi
 
 # 4. Sentinel files
 echo "[4] Required files present..."
@@ -113,6 +120,10 @@ REQUIRED=(
   "MANIFEST.txt"
   "repo/store/claudeclaw.db"
 )
+if [[ ${PG_ARCHIVE} -eq 1 ]]; then
+  REQUIRED=("MANIFEST.txt")
+  echo "  [SKIP] database not in this archive (PostgreSQL install)"
+fi
 for sentinel in "${REQUIRED[@]}"; do
   if grep -qF "${sentinel}" <<<"${ARCHIVE_LISTING}"; then
     check_pass "${sentinel} present"
@@ -149,6 +160,9 @@ fi
 
 # 5. DB integrity_check
 echo "[5] DB integrity check..."
+if [[ ${PG_ARCHIVE} -eq 1 ]]; then
+  echo "  [SKIP] database not in this archive (PostgreSQL install)"
+else
 TMPDIR_EXTRACT="$(mktemp -d -t verify-restore.XXXXXX)"
 trap 'rm -rf "${TMPDIR_EXTRACT}"' EXIT
 
@@ -183,6 +197,7 @@ else
   check_fail "Could not extract DB from archive"
   INTEGRITY_OK=0
 fi
+fi
 
 # 5a. Row counts. "The database opens and passes integrity_check" is also true of an empty one: a file with no
 # tables, or with every table empty, passes. backup.sh records the row count of every ordinary table in
@@ -196,7 +211,9 @@ db_rowcounts() {
   sqlite3 "${db}" "${sql}"
 }
 echo "[5a] Table and row counts against MANIFEST.txt..."
-if [[ -n "${EXTRACTED_DB:-}" && -f "${EXTRACTED_DB}" ]] && command -v sqlite3 >/dev/null 2>&1; then
+if [[ ${PG_ARCHIVE} -eq 1 ]]; then
+  echo "  [SKIP] database not in this archive (PostgreSQL install)"
+elif [[ -n "${EXTRACTED_DB:-}" && -f "${EXTRACTED_DB}" ]] && command -v sqlite3 >/dev/null 2>&1; then
   ACTUAL_FILE="${TMPDIR_EXTRACT}/actual-rowcounts.tsv"
   MANIFEST_FILE="${TMPDIR_EXTRACT}/manifest-rowcounts.tsv"
   db_rowcounts "${EXTRACTED_DB}" > "${ACTUAL_FILE}" 2>/dev/null || true
@@ -265,7 +282,10 @@ esac
 
 # --- Summary ---
 echo ""
-if [[ ${FAIL} -eq 0 ]]; then
+if [[ ${FAIL} -eq 0 && ${PG_ARCHIVE} -eq 1 && ${DRILL} -eq 1 ]]; then
+  echo "verify-restore: NOT APPLICABLE -- this archive has no database (PostgreSQL install); a drill of it proves nothing about the live data"
+  EXIT_CODE=3
+elif [[ ${FAIL} -eq 0 ]]; then
   echo "verify-restore: ALL CHECKS PASSED -- archive appears healthy"
   EXIT_CODE=0
 else

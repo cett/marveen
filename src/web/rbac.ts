@@ -262,6 +262,9 @@ export const ENDPOINT_PERMISSION_TABLE: readonly EndpointPermissionEntry[] = [
   // The OTLP exporter status (src/web/routes/otel-export-status.ts), named for the same reason.
   { method: 'GET', pathPattern: '/api/admin/otel-export-status', prefix: false, permission: 'admin:all' },
   { method: 'GET', pathPattern: '/api/v1/admin/otel-export-status', prefix: false, permission: 'admin:all' },
+  // The database backend and the schema state (src/web/routes/pg-runtime-status.ts), named for the same reason.
+  { method: 'GET', pathPattern: '/api/admin/pg-runtime-status', prefix: false, permission: 'admin:all' },
+  { method: 'GET', pathPattern: '/api/v1/admin/pg-runtime-status', prefix: false, permission: 'admin:all' },
   // The sender routing audit counter (src/web/routes/sender-route-audit.ts), named for the same reason.
   { method: 'GET', pathPattern: '/api/admin/sender-route-audit', prefix: false, permission: 'admin:all' },
   { method: 'GET', pathPattern: '/api/v1/admin/sender-route-audit', prefix: false, permission: 'admin:all' },

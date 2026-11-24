@@ -389,6 +389,19 @@ if [ -n "$MEM" ]; then
 else
   fail "Database: the dashboard could not read the memory count"
 fi
+# A PostgreSQL install started under MARVEEN_PG_ALLOW_NEWER_DATABASE=1 on a schema newer than its build: the running
+# dashboard is the truth (the override is read from its process environment only), so the doctor asks its API. No
+# answer (an older dashboard, or one that is down) adds no line: the checks above already report a dashboard that is
+# down. Versions only, never a URL.
+PG_NEWER=$(api_get /api/admin/pg-runtime-status | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+if d.get('backend') == 'pg' and d.get('runningOnNewerDatabase') is True:
+    print('database %s, this build ships %s' % (d.get('databaseHighest'), d.get('shippedHighest')))
+" 2>/dev/null)
+if [ -n "$PG_NEWER" ]; then
+  warn "Database: running on a newer database ($PG_NEWER); MARVEEN_PG_ALLOW_NEWER_DATABASE is on"
+fi
 
 # --- Scheduled tasks ---
 echo -e "\n${BOLD}Scheduled tasks${RESET}"

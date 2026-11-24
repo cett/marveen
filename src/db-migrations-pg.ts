@@ -71,6 +71,11 @@ export interface PgMigrationFile {
 }
 
 export interface PgMigrationResult {
+  /** the schema state the check found (absent on the paths that do not classify) */
+  state?: PgSchemaState
+  /** a NEWER database: the highest applied version and the highest version this build ships */
+  newer?: { appliedMax: number; shippedMax: number }
+
   /** The versions this run applied, in order. */
   applied: number[]
   /** How many files were already applied (and unchanged) when the run started. */
@@ -113,7 +118,7 @@ export function loadPgMigrationFiles(dir: string = DEFAULT_PG_MIGRATIONS_DIR): P
   return files
 }
 
-interface AppliedRow { version: number; checksum: string | null }
+export interface AppliedRow { version: number; checksum: string | null }
 
 async function readApplied(client: Pick<pg.PoolClient, 'query'>): Promise<Map<number, AppliedRow>> {
   // unqualified on purpose: the table is looked up on the search_path, exactly as the SELECT below and the files read
@@ -125,21 +130,83 @@ async function readApplied(client: Pick<pg.PoolClient, 'query'>): Promise<Map<nu
   return new Map(res.rows.map((r) => [Number(r.version), { version: Number(r.version), checksum: r.checksum }]))
 }
 
-/** Throws unless the applied rows and the files agree (see the rules above). */
-function checkAgainstFiles(files: PgMigrationFile[], applied: Map<number, AppliedRow>): void {
+/**
+ * The four outcomes of the schema check (decided 11-24, the cutover plan's G3):
+ * - CURRENT: every shipped file is applied, nothing else is.
+ * - BEHIND: shipped files are not applied yet, and the database has nothing this build does not ship.
+ * - NEWER: every shipped file is applied, and the database has applied migrations this build does not ship (a rollback
+ *   of the build after a newer migration ran).
+ * - DIVERGED: anything else: a checksum changed, a shipped file is missing below an applied one, or the database has
+ *   unknown migrations AND misses shipped ones. Never overridable.
+ */
+export type PgSchemaState = 'CURRENT' | 'BEHIND' | 'NEWER' | 'DIVERGED'
+
+export interface PgSchemaClassification {
+  state: PgSchemaState
+  /** the refusal text for DIVERGED, and for NEWER (the default refusal) */
+  problem?: string
+  /** applied versions this build does not ship */
+  orphans: number[]
+  /** shipped versions that are not applied */
+  missing: number[]
+  shippedMax: number
+  appliedMax: number
+}
+
+/** Classifies the applied rows against the shipped files. Pure: no database, no throw. */
+export function classifyPgSchema(files: PgMigrationFile[], applied: Map<number, AppliedRow>): PgSchemaClassification {
   const byVersion = new Map(files.map((f) => [f.version, f]))
+  const orphans = [...applied.keys()].filter((v) => !byVersion.has(v)).sort((a, b) => a - b)
+  const missing = files.filter((f) => !applied.has(f.version)).map((f) => f.version)
+  const shippedMax = Math.max(0, ...files.map((f) => f.version))
+  const appliedMax = Math.max(0, ...applied.keys())
+  const base = { orphans, missing, shippedMax, appliedMax }
   for (const row of applied.values()) {
     const file = byVersion.get(row.version)
-    if (!file) throw new Error(`PG migration ${row.version} is applied but its file is gone`)
-    if (row.checksum !== file.checksum) {
-      throw new Error(`PG migration ${row.version} (${file.path}) changed after it was applied: a migration is immutable, add a new file instead`)
+    if (file && row.checksum !== file.checksum) {
+      return {
+        ...base,
+        state: 'DIVERGED',
+        problem: `PG migration ${row.version} (${file.path}) changed after it was applied: a migration is immutable, add a new file instead`,
+      }
     }
   }
-  const highestApplied = Math.max(0, ...applied.keys())
-  for (const f of files) {
-    if (!applied.has(f.version) && f.version < highestApplied) {
-      throw new Error(`PG migration ${f.version} (${f.path}) is not applied but ${highestApplied} is: out-of-order migrations are refused`)
+  if (orphans.length > 0 && missing.length > 0) {
+    return {
+      ...base,
+      state: 'DIVERGED',
+      problem: `PG migration ${orphans[orphans.length - 1]} is applied but its file is gone, and shipped migration ${missing[0]} is not applied: ` +
+        'the database and this build disagree; no override applies to that',
     }
+  }
+  const outOfOrder = missing.find((v) => v < appliedMax)
+  if (outOfOrder !== undefined) {
+    const f = byVersion.get(outOfOrder)!
+    return {
+      ...base,
+      state: 'DIVERGED',
+      problem: `PG migration ${outOfOrder} (${f.path}) is not applied but ${appliedMax} is: out-of-order migrations are refused`,
+    }
+  }
+  if (orphans.length > 0) {
+    return {
+      ...base,
+      state: 'NEWER',
+      problem: `PG migration ${orphans[orphans.length - 1]} is applied but its file is gone: the database is at migration ${appliedMax}, ` +
+        `this build ships up to ${shippedMax}; run the build that matches the database`,
+    }
+  }
+  return { ...base, state: missing.length > 0 ? 'BEHIND' : 'CURRENT' }
+}
+
+
+/** The result of a NEWER database that the override lets through: nothing applied, the versions named. */
+function newerResult(c: PgSchemaClassification, applied: Map<number, AppliedRow>): PgMigrationResult {
+  return {
+    applied: [],
+    alreadyApplied: applied.size,
+    state: 'NEWER',
+    newer: { appliedMax: c.appliedMax, shippedMax: c.shippedMax },
   }
 }
 
@@ -150,10 +217,18 @@ function checkAgainstFiles(files: PgMigrationFile[], applied: Map<number, Applie
  * behind is a deployment that has to run the migrations first, not something this boot may fix. The message says how
  * many files are missing, never where the database is.
  */
-export async function assertPgSchemaCurrent(pool: Pick<pg.Pool, 'query'>, opts: { dir?: string } = {}): Promise<PgMigrationResult> {
+export async function assertPgSchemaCurrent(
+  pool: Pick<pg.Pool, 'query'>,
+  opts: { dir?: string; allowNewer?: boolean } = {},
+): Promise<PgMigrationResult> {
   const files = loadPgMigrationFiles(opts.dir)
   const applied = await readApplied(pool)
-  checkAgainstFiles(files, applied)
+  const c = classifyPgSchema(files, applied)
+  if (c.state === 'DIVERGED') throw new Error(c.problem)
+  if (c.state === 'NEWER') {
+    if (!opts.allowNewer) throw new Error(c.problem)
+    return newerResult(c, applied)
+  }
   const missing = files.filter((f) => !applied.has(f.version))
   if (missing.length > 0) {
     throw new Error(
@@ -219,7 +294,10 @@ async function applyOne(client: pg.PoolClient, file: PgMigrationFile): Promise<v
  * Brings the database behind `pool` up to the newest file of `dir`. Takes one connection for the whole run (the
  * advisory lock belongs to the session), and gives it back whatever happens.
  */
-export async function applyPgMigrations(pool: PgMigrationPool, opts: { dir?: string; lockTimeoutMs?: number } = {}): Promise<PgMigrationResult> {
+export async function applyPgMigrations(
+  pool: PgMigrationPool,
+  opts: { dir?: string; lockTimeoutMs?: number; allowNewer?: boolean } = {},
+): Promise<PgMigrationResult> {
   const files = loadPgMigrationFiles(opts.dir)
   const lockTimeoutMs = opts.lockTimeoutMs ?? DEFAULT_PG_MIGRATION_LOCK_TIMEOUT_MS
   if (!Number.isInteger(lockTimeoutMs) || lockTimeoutMs < 0) {
@@ -245,7 +323,13 @@ export async function applyPgMigrations(pool: PgMigrationPool, opts: { dir?: str
     try {
       await client.query("SELECT set_config('lock_timeout', $1, false)", [previous])
       const applied = await readApplied(client)
-      checkAgainstFiles(files, applied)
+      const c = classifyPgSchema(files, applied)
+      if (c.state === 'DIVERGED') throw new Error(c.problem)
+      if (c.state === 'NEWER') {
+        // an override that is on starts the process on a newer database WITHOUT running anything: no file, no DDL
+        if (!opts.allowNewer) throw new Error(c.problem)
+        return newerResult(c, applied)
+      }
       const done: number[] = []
       for (const file of files) {
         if (applied.has(file.version)) continue

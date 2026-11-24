@@ -518,6 +518,19 @@ cat store/update.log
 cat store/update.last-result  # JSON: status, phase, old/new verzió
 ```
 
+## PostgreSQL-telepítés: mentés és visszaállítás
+
+Ha az adatbázis PostgreSQL (a `MARVEEN_PG_URL` megvan a secret mountban, a környezetben, a `.env`-ben, vagy a `MARVEEN_PG_CONFIGURED=1` jelölő be van állítva), az SQLite-fájl már nem az élő adat. Ezért a mentő és az ellenőrző eszközök ennek megfelelően viselkednek:
+
+- A `backup.sh` nem archiválja a régi `store/claudeclaw.db`-t. Minden más (titkok, vault, skill-ek, ütemezett feladatok, ágens-fájlok) bekerül, ahogy eddig. A `MANIFEST.txt` tartalmazza a `database: not included (PostgreSQL install)` sort, a stderr pedig figyelmeztetést ír: a PostgreSQL-adatokról külön kell biztonsági mentést készíteni, ez az üzemeltető feladata.
+- A `verify-restore.sh` az archívumot mindenre ellenőrzi, az adatbázist kivéve, és ezt kiírja (`[SKIP] database not in this archive`). A `--drill` módban az eredmény `NOT APPLICABLE`, kilépési kód 3, soha nem OK.
+- A `restore-drill.sh` az archívum vizsgálata előtt `NOT APPLICABLE`-t ad, kilépési kód 3. A heti feladat a nem nulla kilépésre riaszt, így az üzemeltető addig értesül, amíg a feladatot ki nem kapcsolják (a PostgreSQL-átállás runbookja szándékosan kikapcsolja).
+- A 24 órás visszatérési forrás az utolsó, az URL beállítása előtt készült archívum: átállás előtt névvel félre kell tenni.
+  A tervezett visszaállási ablak 24 óra. Az archívum addig marad a forgásban, amíg a legfrissebb `BACKUP_KEEP` archívum
+  megmarad (alapértelmezés 30, éjszakánként egy, nagyjából 30 nap), utána törlődik: ezért névvel félre kell tenni, ne a forgásra bízni.
+
+A felismerési szabály a `scripts/pg-configured.sh`-ban van; a `backup.sh` és a `restore-drill.sh` ezt a fájlt sourceolja, így egyetlen másolat van, és nem tud eltérni. Az olvashatatlan `.env` a jelölővel együtt PostgreSQL-nek számít.
+
 ## Lemezterület-védelem
 
 A `scripts/disk-space-guard.sh` szintén futhat timer-ként: ha a szabad lemezterület küszöb alá esik, értesítést küld és opcionálisan leállítja az adatbázis-írásokat. A küszöb az `.env`-ben vagy a dashboard beállításaiban konfigurálható.

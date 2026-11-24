@@ -62,6 +62,14 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# A PostgreSQL install: the stale SQLite database is NOT archived (a restore must not bring old data back). Everything
+# else is archived as before, and the archive says so (MANIFEST.txt, stderr). See scripts/pg-configured.sh.
+# shellcheck source=scripts/pg-configured.sh
+. "${REPO_ROOT}/scripts/pg-configured.sh"
+PG_CONFIGURED=0
+if pg_configured "${REPO_ROOT}"; then
+  PG_CONFIGURED=1
+fi
 BACKUP_DIR="${REPO_ROOT}/backups"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 ARCHIVE="${BACKUP_DIR}/claudeclaw-${STAMP}.tar.gz"
@@ -81,7 +89,7 @@ cd "${REPO_ROOT}"
 
 # Checkpoint WAL into the main DB file so the snapshot is self-contained.
 # Tolerate a missing sqlite3 CLI -- just fall back to copying the files as-is.
-if [[ -f store/claudeclaw.db ]] && command -v sqlite3 >/dev/null 2>&1; then
+if [[ "${PG_CONFIGURED}" -eq 0 && -f store/claudeclaw.db ]] && command -v sqlite3 >/dev/null 2>&1; then
   sqlite3 store/claudeclaw.db 'PRAGMA wal_checkpoint(TRUNCATE);' >/dev/null || true
   # Verify the artifacts table survived the checkpoint (absent on fresh installs is OK).
   if ! sqlite3 store/claudeclaw.db "SELECT 1 FROM sqlite_master WHERE name='artifacts'" 2>/dev/null | grep -q 1; then
@@ -120,7 +128,7 @@ db_rowcounts() {
   sqlite3 "${db}" "${sql}"
 }
 SNAPSHOT_COUNTS=""
-if [[ -f store/claudeclaw.db ]]; then
+if [[ "${PG_CONFIGURED}" -eq 0 && -f store/claudeclaw.db ]]; then
   if ! command -v sqlite3 >/dev/null 2>&1; then
     echo "backup: ABORT -- the sqlite3 CLI is missing, so no consistent database snapshot and no row counts can be taken" >&2
     exit 2
@@ -158,11 +166,13 @@ add_if() {
 }
 
 # repo/ group (relative to REPO_ROOT)
-add_if "${REPOLIST}" "${REPO_ROOT}" store/claudeclaw.db
-# The snapshot above is already one self-contained file: the live -shm/-wal are not archived next to it.
-if [[ -z "${SNAPSHOT_COUNTS}" ]]; then
-  add_if "${REPOLIST}" "${REPO_ROOT}" store/claudeclaw.db-shm
-  add_if "${REPOLIST}" "${REPO_ROOT}" store/claudeclaw.db-wal
+if [[ "${PG_CONFIGURED}" -eq 0 ]]; then
+  add_if "${REPOLIST}" "${REPO_ROOT}" store/claudeclaw.db
+  # The snapshot above is already one self-contained file: the live -shm/-wal are not archived next to it.
+  if [[ -z "${SNAPSHOT_COUNTS}" ]]; then
+    add_if "${REPOLIST}" "${REPO_ROOT}" store/claudeclaw.db-shm
+    add_if "${REPOLIST}" "${REPO_ROOT}" store/claudeclaw.db-wal
+  fi
 fi
 add_if "${REPOLIST}" "${REPO_ROOT}" store/vault.json
 add_if "${REPOLIST}" "${REPO_ROOT}" .env
@@ -297,6 +307,10 @@ fi
     echo "--- db-rowcounts (table<TAB>rows, counted on the archived snapshot) ---"
     printf '%s\n' "${SNAPSHOT_COUNTS}"
   fi
+  if [[ "${PG_CONFIGURED}" -eq 1 ]]; then
+    # Read by scripts/verify-restore.sh: an archive with this line is checked for everything except the database.
+    echo "database: not included (PostgreSQL install)"
+  fi
 } > "${MANIFEST}"
 
 # --- Assemble the archive via a staging dir, then one plain tar. -----------
@@ -356,6 +370,9 @@ fi
 ( umask 077; echo "${CHECKSUM}  $(basename "${ARCHIVE}")" > "${ARCHIVE%.tar.gz}.sha256" )
 echo "backup: wrote ${ARCHIVE} (${ARCHIVE_BYTES} bytes)"
 echo "backup: sha256 ${CHECKSUM}"
+if [[ "${PG_CONFIGURED}" -eq 1 ]]; then
+  echo "backup: NOTICE -- this install is configured for PostgreSQL. The database is NOT in this archive. Back the PostgreSQL data up separately (operator's duty)." >&2
+fi
 
 # The archive contains sensitive tokens (dashboard bearer, channel bot tokens,
 # project .env secrets). Do not auto-sync ${BACKUP_DIR} to iCloud, Dropbox,
