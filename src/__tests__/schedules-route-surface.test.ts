@@ -60,7 +60,9 @@ const mockGetScheduleFromDb = vi.fn()
 
 vi.mock('../db.js', () => ({
   listPendingTaskRetries: vi.fn().mockResolvedValue([]),
+  listPendingTaskRetriesForTenant: vi.fn().mockResolvedValue([]),
   deletePendingTaskRetryById: vi.fn().mockResolvedValue(true),
+  deletePendingTaskRetryByIdForTenant: vi.fn().mockResolvedValue(true),
   listTaskRunHistory: vi.fn().mockResolvedValue([]),
   countSchedules: (...a: unknown[]) => mockCountSchedules(...a),
   getScheduleFromDb: (...a: unknown[]) => mockGetScheduleFromDb(...a),
@@ -119,7 +121,7 @@ import { existsSync } from 'node:fs'
 import { runAgent } from '../agent.js'
 import { listAgentNames, readFileOr } from '../web/agent-config.js'
 import { listScheduledTasksFromFiles, writeScheduledTask } from '../web/scheduled-tasks-io.js'
-import { listPendingTaskRetries, listTaskRunHistory } from '../db.js'
+import { listPendingTaskRetries, listPendingTaskRetriesForTenant, listTaskRunHistory } from '../db.js'
 import { isValidCronShape } from '../web/cron.js'
 
 const mockExistsSync = vi.mocked(existsSync)
@@ -129,6 +131,7 @@ const mockReadFileOr = vi.mocked(readFileOr)
 const mockListFromFiles = vi.mocked(listScheduledTasksFromFiles)
 const mockWriteScheduledTask = vi.mocked(writeScheduledTask)
 const mockListPendingTaskRetries = vi.mocked(listPendingTaskRetries)
+const mockListPendingTaskRetriesForTenant = vi.mocked(listPendingTaskRetriesForTenant)
 const mockListTaskRunHistory = vi.mocked(listTaskRunHistory)
 const mockIsValidCron = vi.mocked(isValidCronShape)
 
@@ -306,15 +309,18 @@ describe('POST /api/schedules/:name/run -- success', () => {
 
 describe('GET /api/schedules/pending', () => {
   it('maps DB rows through toPendingRetryView', async () => {
-    mockListPendingTaskRetries.mockResolvedValue([{
+    mockListPendingTaskRetriesForTenant.mockResolvedValue([{
       id: 1, task_name: 'my-task', agent_name: 'jarvis',
       first_attempt: 1000, last_attempt: 1000, attempt_count: 1,
       last_reason: 'busy', alert_sent_at: null,
     } as never])
-    // The default-tenant caller makeCtx() builds only sees retries of its own tenant's tasks.
-    mockGetScheduleFromDb.mockResolvedValue({ id: 'my-task', tenant_id: 'default' })
+    // The default-tenant caller makeCtx() builds is read through the tenant-scoped list, with its own tenant as the scope.
+    // The db function is a mock here, so this test pins the route (which function, which scope) and NOT the SQL tenant filter:
+    // the cross-tenant cells of src/__tests__/pg/rls-d2-request-callers.pg.test.ts are the proof of the filter.
     const { ctx, out } = makeCtx('GET', '/api/schedules/pending')
     await tryHandleSchedules(ctx)
+    expect(mockListPendingTaskRetriesForTenant).toHaveBeenCalledWith('default')
+    expect(mockListPendingTaskRetries).not.toHaveBeenCalled()
     expect(out.status).toBe(200)
     const rows = out.body as unknown as Array<Record<string, unknown>>
     expect(rows).toHaveLength(1)

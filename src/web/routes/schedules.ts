@@ -1,7 +1,7 @@
 import { existsSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import {
-  listPendingTaskRetries, deletePendingTaskRetryById, listTaskRunHistory,
+  listPendingTaskRetries, deletePendingTaskRetryById, listPendingTaskRetriesForTenant, deletePendingTaskRetryByIdForTenant, listTaskRunHistory,
   getScheduleFromDb, listSchedulesFromDb, deleteSchedule, setScheduleEnabled, countSchedules,
   activateSchedule, getTenant, listDeadLetterTaskRuns,
 } from '../../db.js'
@@ -174,10 +174,10 @@ export async function tryHandleSchedules(ctx: RouteContext): Promise<boolean> {
     const now = Date.now()
     // One row more than the limit, so truncation is known without a second query.
     const runs = await listDeadLetterTaskRuns(now - params.days * 86_400_000, scope, params.limit + 1)
-    const pending = await listPendingTaskRetries()
-    // the schedule row is read per retry, so the tenant check settles before the filter (an async predicate would be always truthy)
-    const visible = await Promise.all(pending.map(async r => scope === null || scheduleTenantMatches(scope, await getScheduleFromDb(r.task_name))))
-    json(res, buildDeadLetterResponse(params, runs, pending.filter((_, i) => visible[i])))
+    // The scope is decided here and goes into the SQL: no filter after the read (the table is D2, privileged only, so a tenant
+    // caller reads it through the tenant-scoped function, which joins the retry rows to the schedules of that tenant).
+    const pending = scope === null ? await listPendingTaskRetries() : await listPendingTaskRetriesForTenant(scope)
+    json(res, buildDeadLetterResponse(params, runs, pending))
     return true
   }
 
@@ -756,12 +756,9 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     // A retry belongs to the tenant of its schedule; one whose schedule is gone, or in
     // another tenant, is not a tenant caller's to see.
     const scope = effectiveTenant(ctx)
-    const pending = await listPendingTaskRetries()
-    // the schedule row is read per retry, so the tenant check settles before the filter (an async predicate would be always truthy)
-    const visible = await Promise.all(pending.map(async r => scope === null || scheduleTenantMatches(scope, await getScheduleFromDb(r.task_name))))
-    const rows = pending
-      .filter((_, i) => visible[i])
-      .map(r => toPendingRetryView(r, now))
+    // Scope in the SQL, as in the dead-letter list (see there): admin without a filter reads all, everyone else one tenant.
+    const pending = scope === null ? await listPendingTaskRetries() : await listPendingTaskRetriesForTenant(scope)
+    const rows = pending.map(r => toPendingRetryView(r, now))
     json(res, rows)
     return true
   }
@@ -786,12 +783,11 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
   if (pendingCancelMatch && method === 'DELETE') {
     const id = parseInt(pendingCancelMatch[1], 10)
     if (!Number.isFinite(id)) { json(res, { error: 'invalid_value', field: 'id', hint: 'Invalid id' }, 400); return true }
-    const pending = (await listPendingTaskRetries()).find(r => r.id === id)
-    if (pending && ctx.role !== 'admin' && !scheduleTenantMatches(effectiveTenant(ctx), await getScheduleFromDb(pending.task_name))) {
-      json(res, { error: 'not_found', hint: 'Pending retry not found' }, 404)
-      return true
-    }
-    const removed = await deletePendingTaskRetryById(id)
+    // An admin cancels any row; every other caller only a row of a schedule of its own tenant (id AND tenant in the SQL, so a
+    // row of another tenant, a missing row and a row whose schedule is gone all answer the same 404).
+    const removed = ctx.role === 'admin'
+      ? await deletePendingTaskRetryById(id)
+      : await deletePendingTaskRetryByIdForTenant(id, effectiveTenant(ctx) ?? 'default')
     if (!removed) { json(res, { error: 'not_found', hint: 'Pending retry not found' }, 404); return true }
     logger.info({ id }, 'Pending scheduled-task retry cancelled via API')
     json(res, { ok: true })

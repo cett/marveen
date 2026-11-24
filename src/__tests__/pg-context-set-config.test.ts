@@ -29,13 +29,29 @@ const code = (text: string): string => text.split('\n').filter((l) => !/^\s*(\/\
 
 const CONTEXT_FILE = path.join('db', 'pg', 'dbx.ts')
 const MIGRATOR_FILE = 'db-migrations-pg.ts'
+// The SQLite to PostgreSQL copy tool opens its own transaction as the system context and sets ONE timeout of its own in it
+// (the copy: statement_timeout off for the bulk load; the trigger step: lock_timeout). Exactly these two files, exactly these
+// two settings: the allowance is not a pattern, a third file or an app.* setting is still a failure.
+const COPY_TIMEOUT_FILES: Readonly<Record<string, string>> = {
+  [path.join('db', 'pg-copy', 'copy.ts')]: 'statement_timeout',
+  [path.join('db', 'pg-copy', 'triggers.ts')]: 'lock_timeout',
+}
 
 describe('set_config in the source', () => {
   const files = sourceFiles()
 
-  it('is called in exactly two files: the facade (the context) and the migration runner (its own timeouts)', () => {
+  it('is called in exactly four files: the facade (the context), the migration runner and the two copy tool files (their own timeouts)', () => {
     const callers = files.filter(([, text]) => /\bset_config\s*\(/.test(code(text))).map(([f]) => f).sort()
-    expect(callers).toEqual([MIGRATOR_FILE, CONTEXT_FILE].sort())
+    expect(callers).toEqual([MIGRATOR_FILE, CONTEXT_FILE, ...Object.keys(COPY_TIMEOUT_FILES)].sort())
+  })
+
+  it('each copy tool file sets only its own timeout, transaction-local', () => {
+    for (const [file, setting] of Object.entries(COPY_TIMEOUT_FILES)) {
+      const text = code(files.find(([f]) => f === file)![1])
+      const calls = [...text.matchAll(/set_config\(\s*'([^']+)'\s*,[^)]*,\s*(true|false)\s*\)/g)]
+      expect(calls.map((m) => m[1]), file).toEqual([setting])
+      expect(calls.every((m) => m[2] === 'true'), `${file}: transaction-local`).toBe(true)
+    }
   })
 
   it('names an app.* setting only in the facade, and the migration runner only sets its own timeouts', () => {
@@ -82,6 +98,8 @@ describe('set_config in the source', () => {
         if (/^export \{[^}]*\bPG_SET_CONTEXT_SQL\b[^}]*\} from /.test(line)) continue // a re-export names it, it does not use it
         // the runner's lazy load names it too (the facade module pulls the driver in, see applyOne); the USE line is checked below
         if (/^\s*const \{[^}]*\bPG_SET_CONTEXT_SQL\b[^}]*\} = await import\('\.\/db\/pg\/dbx\.js'\)$/.test(line) && f === MIGRATOR_FILE) continue
+        // the copy tool names it in a plain import of the facade module; the USE line is checked below. Two files only.
+        if (/^import \{[^}]*\bPG_SET_CONTEXT_SQL\b[^}]*\} from '\.\.\/pg\/dbx\.js'$/.test(line) && (f === path.join('db', 'pg-copy', 'copy.ts') || f === path.join('db', 'pg-copy', 'check.ts'))) continue
         // a use is `{ text: PG_SET_CONTEXT_SQL, values: ... }`: the constant alone as the text
         expect(line, `${f}: ${line.trim()}`).toMatch(/\btext:\s*PG_SET_CONTEXT_SQL\s*,\s*values:/)
       }

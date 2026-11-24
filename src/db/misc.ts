@@ -1,6 +1,7 @@
 // Split from the former monolithic src/db.ts (see db/index.ts for the
 // re-export surface and boot orchestration).
 
+import { D2_JOBS, runAs } from './context.js'
 import { dbx, type Dbx, type SqlOps, type Tx } from './facade.js'
 import { resolveWriteTenant } from './write-tenant.js'
 import { advisoryLockKeyed } from './dialect.js'
@@ -108,8 +109,11 @@ export async function upsertChannelRequest(agent: string, channelId: string, use
   return info.changes > 0
 }
 
+// pending_channel_requests is a D2 table (privileged only). The list is reached from GET /api/agents/:name/channel-requests by
+// any role that reads agents; the front door (routes/agent-tenant-guard.ts) has already answered 404 for an agent the caller's
+// tenant does not serve, so the agent name is the scope and the SELECT, run as a named system job, answers for that one agent.
 export async function listPendingChannelRequests(agent: string): Promise<PendingChannelRequest[]> {
-  return dbx.all<PendingChannelRequest>("SELECT * FROM pending_channel_requests WHERE agent = ? AND status = 'pending' ORDER BY requested_at DESC", agent)
+  return runAs.system(D2_JOBS.listPendingChannelRequests, () => dbx.all<PendingChannelRequest>("SELECT * FROM pending_channel_requests WHERE agent = ? AND status = 'pending' ORDER BY requested_at DESC", agent))
 }
 
 export async function updateChannelRequestStatus(id: number, status: 'approved' | 'denied'): Promise<boolean> {

@@ -3,6 +3,7 @@
 
 import { AgentMessage } from './agents.js'
 import { db } from './connection.js'
+import { D2_JOBS, runAs } from './context.js'
 import { dbx, type Dbx, type SqlOps, type Tx } from './facade.js'
 import { likePrefix } from './like.js'
 import { ensureSkillBaseline, lockSkillForRevision, writeSkillRevision, submitPendingRevision, type ProposedFile, type SkillActor, type SkillRevisionRow, type SkillWriteMeta } from './skill-revisions.js'
@@ -206,12 +207,15 @@ export async function insertPendingTaskRetryIfNew(
   now: number,
   reason: string,
 ): Promise<boolean> {
-  return (await dbx.run(`
+  // pending_task_retries is a D2 table (privileged only). A run-now by a tenant user reaches this insert in its own tenant
+  // context, so the INSERT, and only the insert, runs as the named system job. Whether the caller may run this schedule is
+  // decided by the route BEFORE it gets here (ownership check in routes/schedules.ts); this function trusts its arguments.
+  return runAs.system(D2_JOBS.insertPendingTaskRetry, async () => (await dbx.run(`
     INSERT INTO pending_task_retries
       (task_name, agent_name, first_attempt, last_attempt, attempt_count, last_reason)
     VALUES (?, ?, ?, ?, 1, ?)
     ON CONFLICT DO NOTHING
-  `, taskName, agentName, now, now, reason)).changes > 0
+  `, taskName, agentName, now, now, reason)).changes > 0)
 }
 
 /**
@@ -257,6 +261,35 @@ export async function clearPendingTaskRetryAlert(taskName: string, agentName: st
 
 export async function listPendingTaskRetries(): Promise<PendingTaskRetryRow[]> {
   return dbx.all<PendingTaskRetryRow>('SELECT * FROM pending_task_retries ORDER BY first_attempt ASC')
+}
+
+/**
+ * The retry rows of ONE tenant: a row belongs to the tenant of its schedule. The tenant is the scope the route decided (the
+ * caller's own tenant, or the admin's `?tenant=` filter); the join to `schedules` filters on it in SQL, so the system context
+ * the table needs (D2) never shows a row of another tenant. A row whose schedule is gone matches no tenant. The unscoped
+ * listPendingTaskRetries above is for a system or an admin caller only (the schedule runner tick, an admin without a filter).
+ * `s.tenant_id = ?` needs no NULL-as-default rule: the column is NOT NULL (migration 0066 backfilled the old NULLs), so the
+ * old route filter that read a stored NULL as the default tenant is equivalent.
+ */
+export async function listPendingTaskRetriesForTenant(tenantId: string): Promise<PendingTaskRetryRow[]> {
+  return runAs.system(D2_JOBS.listPendingTaskRetriesForTenant, () => dbx.all<PendingTaskRetryRow>(`
+    SELECT p.* FROM pending_task_retries p
+      JOIN schedules s ON s.id = p.task_name
+     WHERE s.tenant_id = ?
+     ORDER BY p.first_attempt ASC
+  `, tenantId))
+}
+
+/**
+ * Cancels one retry row by id, only when its schedule belongs to `tenantId` (id AND tenant in the SQL). False when there is no
+ * such row, or the row is another tenant's, or its schedule is gone: the route answers all three the same way (404). The
+ * unscoped deletePendingTaskRetryById is for an admin caller only.
+ */
+export async function deletePendingTaskRetryByIdForTenant(id: number, tenantId: string): Promise<boolean> {
+  return runAs.system(D2_JOBS.deletePendingTaskRetryForTenant, async () => (await dbx.run(`
+    DELETE FROM pending_task_retries
+     WHERE id = ? AND task_name IN (SELECT id FROM schedules WHERE tenant_id = ?)
+  `, id, tenantId)).changes > 0)
 }
 
 export async function getPendingTaskRetry(taskName: string, agentName: string): Promise<PendingTaskRetryRow | undefined> {
