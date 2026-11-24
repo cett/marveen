@@ -230,6 +230,20 @@ for key in MAIN_AGENT_ID BOT_NAME TELEGRAM_BOT_TOKEN ALLOWED_CHAT_ID; do
   val=$(grep -E "^${key}=" .env 2>/dev/null | head -1 | cut -d= -f2-)
   if [ -n "$val" ]; then ok "$key: present"; else fail "$key: MISSING"; fi
 done
+# PostgreSQL URLs in .env (serving and owner). Both are credentials: a .env that carries either must be readable by
+# its owner only. Key names and the file mode are printed, never the values. No PostgreSQL key in .env: silent.
+if grep -qE '^MARVEEN_PG_(MIGRATE_)?URL=[^[:space:]]' .env 2>/dev/null; then
+  if [ "$(uname -s)" = "Darwin" ]; then pg_mode=$(stat -L -f '%Lp' .env 2>/dev/null); else pg_mode=$(stat -L -c '%a' .env 2>/dev/null); fi
+  pg_keys=$(grep -oE '^MARVEEN_PG_(MIGRATE_)?URL=[^[:space:]]+' .env | cut -d= -f1 | tr '\n' ' ')
+  if [ -n "$pg_mode" ] && [ $(( 8#$pg_mode & 0177 )) -eq 0 ]; then
+    ok ".env holds ${pg_keys}(mode $pg_mode): owner-only"
+  else
+    fail ".env holds ${pg_keys}with mode ${pg_mode:-unknown}: must be 0600 (chmod 600 .env)"
+  fi
+  if grep -qE '^MARVEEN_PG_MIGRATE_URL=[^[:space:]]' .env 2>/dev/null; then
+    warn "MARVEEN_PG_MIGRATE_URL is in .env: the owner credentials sit next to the serving process; use it for a migration run, then remove it"
+  fi
+fi
 # Auth: mirrors claudeAuthPresent() in src/web/routes/onboarding.ts -- there are
 # five legs, and only the first two live in .env. Checking .env alone reported a
 # perfectly authenticated macOS install (Keychain leg) as broken.
