@@ -232,7 +232,7 @@ export async function startWebServer(port = 3420): Promise<http.Server> {
   warnAboutSystemSenders()
 
   const DASHBOARD_TOKEN = loadOrCreateDashboardToken()
-  await bootstrapDashboardToken(DASHBOARD_TOKEN)
+  await runAs.system('dashboard-token-bootstrap', () => bootstrapDashboardToken(DASHBOARD_TOKEN))
   // The key the approval claim answers are signed with: made here when missing so the first claim does not
   // have to. A failure is not fatal for the dashboard; the claim routes answer 503 until it is fixed.
   try { loadOrCreateClaimSigningKey() } catch { logger.error('claim signing key: cannot be loaded or created, approval claims will answer 503') }
