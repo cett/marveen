@@ -7,15 +7,23 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-const state = vi.hoisted(() => ({ loads: 0, urls: [] as string[], throws: false }))
+const state = vi.hoisted(() => ({
+  loads: 0,
+  urls: [] as string[],
+  throws: false,
+  // the two PostgreSQL keys as the loader sees them in process.env, at the moment it runs
+  envAtLoad: [] as Array<Array<string | undefined>>,
+}))
 
 const PG_URL = 'postgres://user:placeholder-password@db.invalid:5432/marveen'
+const PG_MIGRATE_URL = 'postgres://owner:placeholder-owner@db.invalid:5432/marveen'
 let envDir = ''
 
 beforeEach(() => {
   state.loads = 0
   state.urls = []
   state.throws = false
+  state.envAtLoad = []
   // an empty .env directory: the URL can come from the process environment only
   envDir = mkdtempSync(join(tmpdir(), 'carl-config-bootstrap-'))
   vi.stubEnv('CLAUDECLAW_ENV_DIR', envDir)
@@ -25,6 +33,7 @@ beforeEach(() => {
     loadSystemConfigSnapshot: (url: string) => {
       state.loads++
       state.urls.push(url)
+      state.envAtLoad.push([process.env.MARVEEN_PG_URL, process.env.MARVEEN_PG_MIGRATE_URL])
       if (state.throws) throw new Error('system_config snapshot could not be read (no error code)')
       return { SCHEDULER_TZ: 'Asia/Tokyo' }
     },
@@ -53,6 +62,19 @@ describe('ensureConfigSnapshot', () => {
     expect(state.loads).toBe(1)
     expect(state.urls).toEqual([PG_URL])
     expect(snapshot.getConfigSnapshot()).toEqual({ SCHEDULER_TZ: 'Asia/Tokyo' })
+  })
+
+  it('the keys are scrubbed from process.env before the loader runs, and the loader still gets the URL', async () => {
+    vi.stubEnv('MARVEEN_PG_URL', PG_URL)
+    vi.stubEnv('MARVEEN_PG_MIGRATE_URL', PG_MIGRATE_URL)
+    const { ensureConfigSnapshot } = await import('../config-bootstrap.js')
+    await ensureConfigSnapshot()
+    // the loader body sees neither key in the environment (the mock records them at call time)
+    expect(state.envAtLoad).toEqual([[undefined, undefined]])
+    // ...but the value still reaches the loader through the captured map
+    expect(state.urls).toEqual([PG_URL])
+    expect(process.env.MARVEEN_PG_URL).toBeUndefined()
+    expect(process.env.MARVEEN_PG_MIGRATE_URL).toBeUndefined()
   })
 
   it('called twice: the snapshot is loaded once, and the second call waits for the same load', async () => {

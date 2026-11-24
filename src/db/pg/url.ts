@@ -4,7 +4,7 @@
 // It is read BEFORE config.ts needs it and never from `system_config` (a database setting cannot name the database
 // that holds it). Precedence, the same shape as config.ts's cfg() without its database layer, FIRST NON-EMPTY wins:
 //   1. the secret mount (/run/secrets/MARVEEN_PG_URL), so the password stays out of .env,
-//   2. process.env,
+//   2. process.env (moved out of it at process start by capturePgCredentials(), so children never inherit the URL),
 //   3. the .env file of the install.
 // An empty or whitespace-only value counts as absent and falls through to the next layer (as cfg() does): a half-edited
 // .env line must not switch the backend, and an unset URL and an empty one are the same answer.
@@ -23,11 +23,43 @@ export const PG_URL_KEY = 'MARVEEN_PG_URL'
  */
 export const PG_MIGRATE_URL_KEY = 'MARVEEN_PG_MIGRATE_URL'
 
+/** Set to '1' at process start when a serving URL was captured: a non-secret marker for the children (see capturePgCredentials). */
+export const PG_CONFIGURED_KEY = 'MARVEEN_PG_CONFIGURED'
+
+/**
+ * The values of the two keys, taken out of `process.env` by `capturePgCredentials()`. A process that spawns children
+ * (the agent sessions, tmux, the helpers) passes its environment on, so the keys stay out of it once the snapshot is
+ * loaded; this map keeps them for the resolvers that run later in the same process.
+ */
+const captured = new Map<string, string>()
+
+/**
+ * Moves the two PostgreSQL keys out of `process.env` into this module. Call it once, first thing at process start,
+ * before anything spawns a child. Synchronous and idempotent. A value is kept only when non-empty after trimming; the
+ * key is removed either way, so an empty one does not reach a child either. Never logs a value.
+ */
+export function capturePgCredentials(): void {
+  for (const key of [PG_URL_KEY, PG_MIGRATE_URL_KEY]) {
+    const value = process.env[key]?.trim()
+    if (value) captured.set(key, value)
+    delete process.env[key]
+  }
+  // A child process cannot read the URL from its environment any more. The marker is not a secret: it says only that
+  // this install is configured for PostgreSQL, so a SQLite-only entry point in the child refuses instead of opening
+  // the stale SQLite file.
+  if (captured.has(PG_URL_KEY)) process.env[PG_CONFIGURED_KEY] = '1'
+}
+
+/** Test-only: forgets the captured values, so a cell starts from an empty capture. */
+export function resetPgCredentialCaptureForTests(): void {
+  captured.clear()
+}
+
 function resolveKey(key: string): string | undefined {
   // lazy: the .env file is read only when the two layers above it said nothing
   const layers: Array<() => string | undefined> = [
     () => resolveSecret(key),
-    () => process.env[key],
+    () => captured.get(key) ?? process.env[key],
     () => readEnvFile([key])[key],
   ]
   for (const layer of layers) {
@@ -49,11 +81,16 @@ export function resolvePgMigrateUrl(): string | undefined {
 
 /** Thrown by a SQLite-only entry point when the install is configured for PostgreSQL. */
 export class SqliteEntryRefusedError extends Error {
-  constructor(entry: string) {
+  /** `unreadable`: the marker says PostgreSQL, but this process cannot read the URL (a child of the scrubbed process). */
+  constructor(entry: string, unreadable = false) {
     super(
-      `${entry}: ${PG_URL_KEY} is set, and this entry point is SQLite-only until the PostgreSQL cutover. ` +
-        'It would open the stale SQLite file instead of the database the install is configured for. ' +
-        `Unset ${PG_URL_KEY} to run it on SQLite.`,
+      unreadable
+        ? `${entry}: the install is configured for PostgreSQL (${PG_CONFIGURED_KEY}=1), but this process cannot read ${PG_URL_KEY}. ` +
+          'It would open the stale SQLite file instead of the database the install is configured for. ' +
+          'Put the URL in the secret mount or in the 0600 .env file of the install (see docs/pg-provisioning.md, "Where the URLs live").'
+        : `${entry}: ${PG_URL_KEY} is set, and this entry point is SQLite-only until the PostgreSQL cutover. ` +
+          'It would open the stale SQLite file instead of the database the install is configured for. ' +
+          `Unset ${PG_URL_KEY} to run it on SQLite.`,
     )
     this.name = 'SqliteEntryRefusedError'
   }
@@ -66,4 +103,5 @@ export class SqliteEntryRefusedError extends Error {
  */
 export function assertSqliteEntryAllowed(entry: string): void {
   if (resolvePgUrl() !== undefined) throw new SqliteEntryRefusedError(entry)
+  if (process.env[PG_CONFIGURED_KEY] === '1') throw new SqliteEntryRefusedError(entry, true)
 }

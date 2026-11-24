@@ -7,14 +7,18 @@
 //
 // On an install on SQLite there is no PostgreSQL URL and the call does nothing. The load runs once per process; a failed load
 // rejects with the same error on every call, so a caller cannot continue past it by calling again.
-import { resolvePgUrl } from './db/pg/url.js'
+import { capturePgCredentials, resolvePgUrl } from './db/pg/url.js'
 import { setConfigSnapshot } from './config-snapshot.js'
 import { loadSystemConfigSnapshot } from './config-snapshot-loader.js'
 
 let pending: Promise<void> | undefined
 
-/** Loads and sets the snapshot when a PostgreSQL URL is configured. Idempotent: the first call decides for the process. */
+/**
+ * Loads and sets the snapshot when a PostgreSQL URL is configured. Idempotent: the first call decides for the process.
+ * The first step takes the PostgreSQL URLs out of process.env, so nothing spawned after this call inherits them.
+ */
 export function ensureConfigSnapshot(): Promise<void> {
+  capturePgCredentials()
   if (pending === undefined) pending = loadOnce()
   return pending
 }
