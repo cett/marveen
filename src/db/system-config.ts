@@ -17,6 +17,7 @@ import { advisoryLockKeyed } from './dialect.js'
 import { cacheAfterWrite, cacheAfterWriteAsync, cachedSystemConfig, cachedSystemConfigList, refreshSystemConfigCacheIfLive } from './config-cache.js'
 import { STORE_DIR } from '../config.js'
 import { logger } from '../logger.js'
+import { skipRetireOnPg } from './retire-guard.js'
 
 export interface SystemConfigRow {
   key: string
@@ -289,6 +290,7 @@ export function migrateGroup5StateFromFiles(): number {
 // same shared-worktree-store/-dir test-race reason as retireConfigOverridesFile()
 // above -- called once from src/index.ts's real process boot instead.
 export function retireGroup5StateFiles(): void {
+  if (skipRetireOnPg('retireGroup5StateFiles')) return
   for (const name of ['model-fallback.json', 'agents-desired.json', 'terminal-input.json']) {
     const p = join(STORE_DIR, name)
     if (!existsSync(p)) continue
@@ -302,6 +304,7 @@ export function retireGroup5StateFiles(): void {
 }
 
 export function retireConfigOverridesFile(): void {
+  if (skipRetireOnPg('retireConfigOverridesFile')) return
   const overridesPath = join(STORE_DIR, 'config-overrides.json')
   if (!existsSync(overridesPath)) return
   try {

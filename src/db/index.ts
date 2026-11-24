@@ -59,6 +59,7 @@ import { initDatabase as connectionInitDatabase, db } from './connection.js'
 import { backfillImportShadowRows, initVecSupport, migrateExistingEmbeddingsToBLOB } from './vector.js'
 import { replaceClaudePlanRowsSync, activatePlanForAgentSync, replaceClaudePlanRows, activatePlanForAgent, type ClaudePlanType } from './claude-plans.js'
 import { dbx } from './facade.js'
+import { skipRetireOnPg } from './retire-guard.js'
 import { systemJob } from './background-jobs.js'
 import { migrateConfigOverridesToSystemConfig, migrateGroup5StateFromFiles, getSystemConfig, setSystemConfigSync } from './system-config.js'
 import { migrateScheduleLastRunFromFile } from './tasks.js'
@@ -228,6 +229,7 @@ export function initDatabase(dbPathOverride?: string): void {
 // (via initDatabase()) has guaranteed every value either file held is already
 // imported.
 export function retireScheduleStateFiles(): void {
+  if (skipRetireOnPg('retireScheduleStateFiles')) return
   for (const name of ['schedule-last-run.json', 'schedule-tick-state.json']) {
     const p = join(STORE_DIR, name)
     if (!existsSync(p)) continue
@@ -247,6 +249,7 @@ export function retireScheduleStateFiles(): void {
 // right after migrateAgentSettingsFromFiles() (via initDatabase()) has
 // guaranteed every value all three files held is already imported.
 export function retireAgentSettingsFiles(): void {
+  if (skipRetireOnPg('retireAgentSettingsFiles')) return
   for (const name of ['context-guard.json', 'auto-restart.json', 'context-restart-gate.json']) {
     const p = join(STORE_DIR, name)
     if (!existsSync(p)) continue
@@ -288,6 +291,7 @@ function migrateAgentSettingsFromFiles(): void {
 // migrateAgentStateFromFiles() (via initDatabase()) has guaranteed every
 // value the file held is already imported.
 export function retireAgentStateFiles(): void {
+  if (skipRetireOnPg('retireAgentStateFiles')) return
   const p = join(STORE_DIR, 'context-restart-gate-state.json')
   if (!existsSync(p)) return
   try {
@@ -322,6 +326,7 @@ function migrateAgentStateFromFiles(): void {
 // src/index.ts's real process boot, right after migrateKanbanAuditStateFromFile()
 // (via initDatabase()) has guaranteed the file's value is already imported.
 export function retireKanbanAuditStateFile(): void {
+  if (skipRetireOnPg('retireKanbanAuditStateFile')) return
   const p = join(STORE_DIR, 'kanban-audit-state.json')
   if (!existsSync(p)) return
   try {
@@ -341,6 +346,7 @@ export function retireKanbanAuditStateFile(): void {
 // (nothing else lived in vault-bindings.json), so it is fully retired here
 // rather than left in place with one field routed elsewhere.
 export function retireVaultBindingsFile(): void {
+  if (skipRetireOnPg('retireVaultBindingsFile')) return
   const p = join(STORE_DIR, 'vault-bindings.json')
   if (!existsSync(p)) return
   try {
@@ -360,6 +366,7 @@ export function retireVaultBindingsFile(): void {
 // fully retired here rather than left in place with one field routed
 // elsewhere.
 export function retireFederationConfigFile(): void {
+  if (skipRetireOnPg('retireFederationConfigFile')) return
   const p = join(STORE_DIR, 'federation.json')
   if (!existsSync(p)) return
   try {
