@@ -311,7 +311,16 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq zsh
           zsh --version
+      - name: Changed paths (scripts group)
+        # scripts/ci-changed-paths.sh answers true or false; true whenever it cannot tell (fail-safe). A skipped
+        # step leaves the job a success: the required context `test` is decided by the job results, not by this step.
+        id: paths
+        env:
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: echo "scripts=$(bash scripts/ci-changed-paths.sh "$BASE_SHA" "$HEAD_SHA" scripts)" >> "$GITHUB_OUTPUT"
       - name: Python tests
+        if: steps.paths.outputs.scripts == 'true'
         # scripts/run-python-tests.sh runs the scripts/__tests__/*.test.py files 4 at a time, the slowest
         # first, and prints them like the serial loop did (one "== file ==" block each, exit 1 on any failure).
         # REQUIRE_ZSH=1: the secret-read gate tests fail when zsh is missing or when any of their cells is skipped (no silent skip).
@@ -384,6 +393,7 @@ jobs:
           node tools/eslint/tests-ratchet.mjs "$RUNNER_TEMP/eslint-async-tests.json"
 
       - name: Shell tests
+        if: steps.paths.outputs.scripts == 'true'
         # #813: scripts/__tests__/*.test.sh (channels.sh / vault-inject /
         # vault-file-materializer / channels-mcp-unlock / channels-auth-probe,
         # etc.) previously only ran manually/locally -- this loop is the exact
