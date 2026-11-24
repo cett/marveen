@@ -10,7 +10,7 @@
     "INSERT OR IGNORE": 3,
     "INSERT OR REPLACE": 0,
     "IS [NOT] <param>": 0,
-    "PRAGMA": 10,
+    "PRAGMA": 13,
     "datetime()": 0,
     "instr()": 1,
     "json_extract/json_each": 0,
@@ -18,9 +18,9 @@
     "param IS [NOT] NULL": 0,
     "randomblob()/hex()": 0,
     "raw LIKE": 42,
-    "rowid": 23,
+    "rowid": 48,
     "strftime()": 0,
     "unixepoch()": 44,
-    "vec0/sqlite-vec": 8
+    "vec0/sqlite-vec": 10
   }
 }
