@@ -13,6 +13,7 @@
     "scripts/materialize-skills.ts",
     "scripts/migrate-legacy-store-docs.ts",
     "scripts/migrate-schedules-to-db.ts",
+    "scripts/migrate-sqlite-to-pg.ts",
     "scripts/regen-skills.ts"
   ],
   "exclude": ["node_modules", "dist"]
