@@ -21,6 +21,7 @@
 // create/update/delete a plan (src/web/routes/claude-plans.ts) write the
 // file first (unchanged) and best-effort mirror the same write here.
 import { db } from './connection.js'
+import { D2_JOBS, runAs } from './context.js'
 import { dbx } from './facade.js'
 
 export type ClaudePlanType = 'personal' | 'team'
@@ -171,8 +172,11 @@ const ACTIVATE_PLAN_SQL = `
       source         = excluded.source
   `
 
+// agent_active_plans is a D2 table (privileged only), and its writers and readers below are reached from a tenant request
+// (the blackboard routes), an agent job (the context guard restart) and the agent process start / stop, none of them
+// privileged. Each runs as its own named system job; the one agent id the caller names is the whole scope of the SQL.
 export async function activatePlanForAgent(agentId: string, planId: string, source: ActivePlanSource): Promise<void> {
-  await dbx.run(ACTIVATE_PLAN_SQL, agentId, planId, source)
+  await runAs.system(D2_JOBS.activatePlanForAgent, () => dbx.run(ACTIVATE_PLAN_SQL, agentId, planId, source))
 }
 
 /** Boot-synchronous twin of activatePlanForAgent (the mirror seed of initDatabase() cannot await); only db/index.ts calls it. */
@@ -187,7 +191,7 @@ export function activatePlanForAgentSync(agentId: string, planId: string, source
 // trigger, so each caller stays independently unit-testable (design section
 // 3A). Safe no-op when the agent has no active binding.
 export async function deactivatePlanForAgent(agentId: string): Promise<void> {
-  await dbx.run('DELETE FROM agent_active_plans WHERE agent_id = ?', agentId)
+  await runAs.system(D2_JOBS.deactivatePlanForAgent, () => dbx.run('DELETE FROM agent_active_plans WHERE agent_id = ?', agentId))
 }
 
 // Refresh last_heartbeat without touching source/activated_at -- called by a
@@ -215,13 +219,13 @@ function toActivePlan(row: {
 }
 
 export async function getActivePlanForAgent(agentId: string): Promise<ActivePlanForAgent | null> {
-  const row = await dbx.get<Parameters<typeof toActivePlan>[0]>(`
+  const row = await runAs.system(D2_JOBS.getActivePlanForAgent, () => dbx.get<Parameters<typeof toActivePlan>[0]>(`
     SELECT aap.plan_id, aap.activated_at, aap.last_heartbeat, aap.source,
            r.label AS reg_label, r.plan_type AS reg_plan_type, r.channels_allowed AS reg_channels_allowed
       FROM agent_active_plans aap
       LEFT JOIN claude_plans_registry r ON r.id = aap.plan_id
      WHERE aap.agent_id = ?
-  `, agentId)
+  `, agentId))
   return row ? toActivePlan(row) : null
 }
 
@@ -231,13 +235,14 @@ export async function listActivePlansForAgents(agentIds: string[]): Promise<Map<
   const map = new Map<string, ActivePlanForAgent>()
   if (agentIds.length === 0) return map
   const placeholders = agentIds.map(() => '?').join(',')
-  const rows = (await dbx.all(`
+  // The id list is the scope the route decided (the blackboard rows the caller may see); the SQL answers for those agents only.
+  const rows = (await runAs.system(D2_JOBS.listActivePlansForAgents, () => dbx.all(`
     SELECT aap.agent_id, aap.plan_id, aap.activated_at, aap.last_heartbeat, aap.source,
            r.label AS reg_label, r.plan_type AS reg_plan_type, r.channels_allowed AS reg_channels_allowed
       FROM agent_active_plans aap
       LEFT JOIN claude_plans_registry r ON r.id = aap.plan_id
      WHERE aap.agent_id IN (${placeholders})
-  `, ...agentIds)) as ({ agent_id: string } & Parameters<typeof toActivePlan>[0])[]
+  `, ...agentIds))) as ({ agent_id: string } & Parameters<typeof toActivePlan>[0])[]
   for (const row of rows) map.set(row.agent_id, toActivePlan(row))
   return map
 }

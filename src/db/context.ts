@@ -76,12 +76,32 @@ export const SKILL_REGEN_JOB = 'skill-regen'
 export const SKILL_GRANTS_JOB = 'skill-grants'
 
 /**
+ * The narrow system contexts that a request or an agent job opens to reach a D2 table (global, privileged only: the policy
+ * gives a tenant, an agent or a viewer context ZERO rows and refuses every write). One name per db function, opened INSIDE the
+ * function, and the function takes the scope the caller decided as a parameter and filters on it in SQL: the system context
+ * only lifts the table policy for that one statement, it never widens what the caller may see. Each is sanctioned for the same
+ * reason as the two above, a table that no tenant context can read by design, so the escalation count would only be noise.
+ * A new name here needs its own reason and its own cell (src/__tests__/pg/rls-d2-request-callers.pg.test.ts).
+ */
+export const D2_JOBS = {
+  insertPendingTaskRetry: 'insert-pending-task-retry',
+  listPendingTaskRetriesForTenant: 'list-pending-task-retries-for-tenant',
+  deletePendingTaskRetryForTenant: 'delete-pending-task-retry-for-tenant',
+  listActivePlansForAgents: 'list-active-plans-for-agents',
+  getActivePlanForAgent: 'get-active-plan-for-agent',
+  activatePlanForAgent: 'activate-plan-for-agent',
+  deactivatePlanForAgent: 'deactivate-plan-for-agent',
+  listPendingChannelRequests: 'list-pending-channel-requests',
+  recordTokenShadow: 'record-token-shadow',
+} as const
+
+/**
  * System contexts that are SUPPOSED to be opened from a tenant or an agent request, by name: the work reads across tenants by
  * nature, so the count would only be noise. `skill-regen`: every grantee of a skill, the tenants an agent serves. Each entry
  * is a decision of its own; a new name here needs a reason next to it. The sanction is for `runAs.system` ONLY: an ADMIN
  * context that carries the same name is still counted, or a label alone would defeat the detector.
  */
-const SANCTIONED_ESCALATIONS: ReadonlySet<string> = new Set([SKILL_REGEN_JOB, SKILL_GRANTS_JOB])
+const SANCTIONED_ESCALATIONS: ReadonlySet<string> = new Set([SKILL_REGEN_JOB, SKILL_GRANTS_JOB, ...Object.values(D2_JOBS)])
 // `skill-grants` is sanctioned for the same reason as `skill-regen`: the write-back qualification reads every grantee of a
 // skill and the tenants an agent serves, and answers one boolean (`agentQualifies` in src/skill-sync.ts).
 

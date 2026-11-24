@@ -189,11 +189,15 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
     // this up against the live `schedules` table's actual stuck/watchdog state
     // (tracked in-memory by src/web/schedule-runner.ts, not a static column) is
     // a separate, larger piece of work than this ticket's tenant-reactivity fix.
+    // scheduled_tasks is a D2 table (privileged only), so only a global admin context can count it: every other caller gets an
+    // explicit 0 without a query (a tenant context would read zero rows anyway, silently, and the figure is fleet-level by nature).
     let stuckTasks = 0
-    try {
-      const tenMinAgo = Math.floor((nowMs - 10 * 60 * 1000) / 1000)
-      stuckTasks = await countOverviewStuckScheduledTasks(tenMinAgo)
-    } catch { /* ignore */ }
+    if (isAdmin && !ctx.tenantId) {
+      try {
+        const tenMinAgo = Math.floor((nowMs - 10 * 60 * 1000) / 1000)
+        stuckTasks = await countOverviewStuckScheduledTasks(tenMinAgo)
+      } catch { /* ignore */ }
+    }
 
     // Activity feed: last 4h, include agent_id for frontend filtering
     const activity: Array<{ icon: string; text: string; at: number; agent: string }> = []

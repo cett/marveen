@@ -76,7 +76,7 @@ import { resolveWriteTenant } from '../db/write-tenant.js'
 import { resolveAgentIdHeader, type AuthResult } from './auth-gate.js'
 import { json, readBody, RequestBodyTooLargeError, SCHEDULE_BODY_MAX_BYTES, setRequestBodyObserver } from './http-helpers.js'
 
-import { runAs } from '../db/context.js'
+import { D2_JOBS, runAs } from '../db/context.js'
 export const TOKEN_SHADOW_CATEGORIES = [
   'shared_token_use',
   'agent_id_mismatch',
@@ -464,8 +464,19 @@ function warnThrottled(err: unknown, msg: string): void {
 
 interface Base { method: string; route: string; client: string; caller: string; callerSource: TokenShadowCallerSource }
 
-/** Adds one to the counter of this shape. Never throws. `nowSec` is injectable for tests. */
-export async function recordTokenShadow(base: Base, hit: ShadowHit, nowSec: number = Math.floor(Date.now() / 1000)): Promise<boolean> {
+/**
+ * Adds one to the counter of this shape. Never throws. `nowSec` is injectable for tests.
+ *
+ * token_usage_shadow is a D2 table (privileged only) and this is called from the route handlers of a fleet agent (a rejected
+ * sender, a denied skill write) as well as from the request gate, so the whole write path (the day's row count and key lookup
+ * that decide the row, then the bump and the prune) runs as one named system job. It takes no caller scope: it writes a
+ * counter and reads nothing back to anyone, the table has no tenant column, and its only reader is the admin report.
+ */
+export function recordTokenShadow(base: Base, hit: ShadowHit, nowSec: number = Math.floor(Date.now() / 1000)): Promise<boolean> {
+  return runAs.system(D2_JOBS.recordTokenShadow, () => recordTokenShadowRow(base, hit, nowSec))
+}
+
+async function recordTokenShadowRow(base: Base, hit: ShadowHit, nowSec: number): Promise<boolean> {
   try {
     const day = utcDay(nowSec)
     if (dayState.day !== day) dayState = { day, known: new Set(), rows: await countTokenShadowRowsForDay(day) }
