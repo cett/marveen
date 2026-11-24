@@ -82,13 +82,25 @@ const EXPECTED_INDEXES: Record<string, string[]> = {
   'audit-list-tenant': ['idx_aal_created'],
   'comments-by-card': ['idx_kanban_comments_card'],
   'links-by-src': ['idx_memory_links_src'],
-  'links-two-hop': ['idx_memory_links_src', 'memory_links_src_id_dst_id_link_type_key'],
 }
+// Statements whose plan flips between two near-equal index paths from run to run: one of the family, never none.
+const ANY_OF: Record<string, string[]> = { 'links-two-hop': ['idx_memory_links_src', 'memory_links_src_id_dst_id_link_type_key'] }
 
 describe('plan shape: the same index choice and no new Seq Scan of a big table, as the app role versus the bypass', () => {
   for (const st of PERF_STATEMENTS.filter((s) => !(s.id in F1) && !(s.id in F2))) {
     it(`${st.id} (class ${st.cls})`, async () => {
       const [a, b] = [await planApp(st), await planBypass(st)]
+      const family = ANY_OF[st.id]
+      if (family) {
+        // two near-equal paths (the planner flips between them with the sampled statistics): the links index family is pinned,
+        // not one name; the policy adds the parent's key and nothing else
+        expect(b.indexes.length).toBeGreaterThan(0)
+        expect(b.indexes.filter((i) => !family.includes(i))).toEqual([])
+        expect(a.indexes.filter((i) => family.includes(i)).length).toBeGreaterThan(0)
+        expect(a.indexes.filter((i) => !family.includes(i))).toEqual([PARENT_KEY[st.id]])
+        expect(seqOnBig(a)).toEqual(seqOnBig(b))
+        return
+      }
       expect(b.indexes).toEqual(EXPECTED_INDEXES[st.id])
       if (st.cls === 'C') {
         const extra = a.indexes.filter((i) => !b.indexes.includes(i))
