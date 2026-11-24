@@ -106,6 +106,14 @@ export async function createArtifact(params: CreateArtifactParams): Promise<{ id
 }
 
 /**
+ * The text an artifact is embedded from: its title and its meta, the non-blank ones joined by one space. Every write of an
+ * artifact embedding goes through this rule (the live write path and the PostgreSQL re-embed), so the two cannot drift.
+ */
+export function artifactEmbeddingText(title: string, meta: string): string {
+  return [title, meta].filter(s => s?.trim()).join(' ')
+}
+
+/**
  * Generate and store a title+meta embedding for an artifact in vec_artifacts.
  * No-op when Ollama is unavailable or sqlite-vec extension is not loaded.
  */
@@ -114,7 +122,7 @@ export async function storeArtifactEmbedding(
   title: string,
   meta: string
 ): Promise<void> {
-  const text = [title, meta].filter(s => s?.trim()).join(' ')
+  const text = artifactEmbeddingText(title, meta)
   if (!text.trim()) return
 
   const embedding = await generateEmbedding(text).catch(() => null)
