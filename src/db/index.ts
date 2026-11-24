@@ -59,6 +59,7 @@ import { initDatabase as connectionInitDatabase, db } from './connection.js'
 import { backfillImportShadowRows, initVecSupport, migrateExistingEmbeddingsToBLOB } from './vector.js'
 import { replaceClaudePlanRowsSync, activatePlanForAgentSync, replaceClaudePlanRows, activatePlanForAgent, type ClaudePlanType } from './claude-plans.js'
 import { dbx } from './facade.js'
+import { systemJob } from './background-jobs.js'
 import { migrateConfigOverridesToSystemConfig, migrateGroup5StateFromFiles, getSystemConfig, setSystemConfigSync } from './system-config.js'
 import { migrateScheduleLastRunFromFile } from './tasks.js'
 import { importAgentSettingsFromFile, type AgentSettingKey } from './agent-settings.js'
@@ -87,8 +88,12 @@ export async function initDatabaseAsync(): Promise<'sqlite' | 'pg'> {
   await bootPgBackend()
   // The two importers of the sync chain that still matter on PostgreSQL (6c-2). Both are idempotent: the cost budgets
   // are ON CONFLICT DO NOTHING, the seed leaves a registry that already has rows alone.
-  await migrateCostBudgetsFromFileAsync()
-  await seedClaudePlansRegistryMirrorAsync()
+  // The function's own system context: the cost budgets are inserted for the default tenant and the plans seed reads
+  // agent_active_plans (privileged-only); in an empty context the first is refused and the second skips its seed in silence.
+  await systemJob('boot-importers', async () => {
+    await migrateCostBudgetsFromFileAsync()
+    await seedClaudePlansRegistryMirrorAsync()
+  })()
   return 'pg'
 }
 

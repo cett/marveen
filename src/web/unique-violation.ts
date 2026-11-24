@@ -18,9 +18,26 @@ function isSqliteUniqueOn(err: Error, code: unknown, column: string): boolean {
   return err.message.includes(`UNIQUE constraint failed: ${column}`)
 }
 
+/**
+ * The columns this module is asked about, with the PostgreSQL constraint (or unique index) that guards each one.
+ * Two reasons it exists: (1) PostgreSQL WITHHOLDS the `detail` of a unique violation from a role that row-level security
+ * applies to (the app role), `table` and `constraint` stay; (2) a unique index on an expression (dashboard_users.username is
+ * UNIQUE on lower(username)) never has the column in its detail. The name is the contract: a rename of the constraint must
+ * fail loudly, and the catalog cell of src/__tests__/pg/rls-unique-violation.pg.test.ts checks that every entry exists on
+ * a real server under exactly this name. A column that is not here is matched on its `detail` only, as before.
+ */
+export const PG_UNIQUE_CONSTRAINTS: Readonly<Record<string, { table: string; constraint: string }>> = {
+  'dashboard_users.username': { table: 'dashboard_users', constraint: 'dashboard_users_username_key' },
+  // No production caller asks about this column today: the entry is exercised by the tests only (the app-role cell and the
+  // catalog cell). It stays as the second, plain-UNIQUE example next to the expression index above; drop it if that changes.
+  'device_keys.key_hash': { table: 'device_keys', constraint: 'device_keys_key_hash_key' },
+}
+
 function isPgUniqueOn(err: Error, code: unknown, column: string): boolean {
   if (code !== PG_UNIQUE_VIOLATION) return false
-  const { table, detail } = err as Error & { table?: unknown; detail?: unknown }
+  const { table, detail, constraint } = err as Error & { table?: unknown; detail?: unknown; constraint?: unknown }
+  const named = PG_UNIQUE_CONSTRAINTS[column]
+  if (named !== undefined && table === named.table && constraint === named.constraint) return true
   if (typeof table !== 'string' || table === '' || typeof detail !== 'string') return false
   const m = PG_KEY_DETAIL.exec(detail)
   if (!m) return false
