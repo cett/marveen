@@ -75,7 +75,7 @@ describe('the artifact embedding is one value per artifact, in the side table', 
 
   it('a wrong-length blob is refused: the artifact is kept without an embedding, and the call does not throw', async () => {
     const id = await artifact('default')
-    await expect(setArtifactEmbedding(id, floatsToBlob([1, 2, 3]))).resolves.toBeUndefined()
+    await expect(setArtifactEmbedding(id, floatsToBlob([1, 2, 3]))).resolves.toBe(false)
     expect(await embeddingCount(id)).toBe(0)
     const r = await db.pool.query('SELECT count(*)::int AS n FROM artifacts WHERE id = $1', [id])
     expect(Number(r.rows[0]?.n)).toBe(1)
