@@ -67,10 +67,29 @@ const GAPS: Record<string, { table: string; reason: string }> = {
   'conversation-list-tenant': { table: 'conversation_log', reason: 'no index leads with tenant_id (idx_convlog_agent is agent_id first): a listing by tenant alone scans the table, policy or not' },
 }
 
+// The indexes the bypassed plan of each remaining statement must use. Equality of the two plans alone would stay green when an
+// index is dropped (both plans degrade alike): the name is pinned too, so a missing index is a red cell, not a silent Seq Scan.
+// The conversation log by tenant is the known gap (no index at all, pinned in its own cell below).
+const EXPECTED_INDEXES: Record<string, string[]> = {
+  'kanban-pk': ['kanban_cards_pkey'],
+  'kanban-list': ['idx_kanban_status_sort'],
+  'memories-list-agent': ['idx_memories_tenant'],
+  'workspace-list': ['idx_workspace_docs_tenant_created'],
+  'conversation-list-agent': ['idx_convlog_agent'],
+  'conversation-list-tenant': [],
+  'audit-list-agent': ['idx_aal_created'],
+  'audit-list-recent': ['idx_aal_created'],
+  'audit-list-tenant': ['idx_aal_created'],
+  'comments-by-card': ['idx_kanban_comments_card'],
+  'links-by-src': ['idx_memory_links_src'],
+  'links-two-hop': ['idx_memory_links_src', 'memory_links_src_id_dst_id_link_type_key'],
+}
+
 describe('plan shape: the same index choice and no new Seq Scan of a big table, as the app role versus the bypass', () => {
   for (const st of PERF_STATEMENTS.filter((s) => !(s.id in F1) && !(s.id in F2))) {
     it(`${st.id} (class ${st.cls})`, async () => {
       const [a, b] = [await planApp(st), await planBypass(st)]
+      expect(b.indexes).toEqual(EXPECTED_INDEXES[st.id])
       if (st.cls === 'C') {
         const extra = a.indexes.filter((i) => !b.indexes.includes(i))
         expect(a.indexes).toEqual(expect.arrayContaining(b.indexes))
