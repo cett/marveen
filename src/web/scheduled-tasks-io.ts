@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } fr
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { MAIN_AGENT_ID } from '../config.js'
+import { runAs } from '../db/context.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { sanitizeScheduleName, safeJoin } from './sanitize.js'
 import { withScheduleLock } from './schedule-lock.js'
@@ -234,7 +235,13 @@ export function parseRequires(raw: { mcp_servers?: unknown } | undefined): Sched
 // Uses INSERT OR IGNORE so re-running at startup never overwrites a row that
 // was hand-edited in the DB since the last boot.
 // Returns the number of newly inserted rows (0 on a warm boot with seeded DB).
-export async function seedSchedulesFromFilesIfEmpty(): Promise<number> {
+// A boot step: it runs with no request around it, so it opens its own system job. Under row-level security an empty context
+// sees an empty schedules table (the count below would be 0 on a full one and the files would be re-seeded) and may not write.
+export function seedSchedulesFromFilesIfEmpty(): Promise<number> {
+  return runAs.system('boot-sequence', seedSchedulesFromFilesIfEmptyImpl)
+}
+
+async function seedSchedulesFromFilesIfEmptyImpl(): Promise<number> {
   if (await countSchedules() > 0) return 0
   const fileTasks = listScheduledTasksFromFiles()
   let inserted = 0

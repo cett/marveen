@@ -9,7 +9,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { createVaultSshKey, createVaultSshServer, dbx, deleteVaultSshKey, getVaultSshServer, updateVaultSshServer } from '../db.js'
-import { useTestDb, testDbMode } from './helpers/with-test-db.js'
+import { useTestDb, testDbMode, testDdl } from './helpers/with-test-db.js'
 import { interleave, waitBlockedOnLock } from './helpers/interleave.js'
 
 useTestDb()
@@ -54,10 +54,10 @@ describe('deleteVaultSshKey under a race: two overlapping deletes of one key', (
     await updateVaultSshServer('srv-3', { ssh_key_id: 'key-2' })
     // a trigger that refuses the key delete: the statement before it (the unassign) must roll back with it
     if (testDbMode() === 'pg') {
-      await dbx.run("CREATE OR REPLACE FUNCTION vault_test_block_delete() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'blocked'; END $$ LANGUAGE plpgsql")
-      await dbx.run('CREATE TRIGGER vault_key_delete_blocked BEFORE DELETE ON vault_ssh_keys FOR EACH ROW EXECUTE FUNCTION vault_test_block_delete()')
+      await testDdl(dbx, "CREATE OR REPLACE FUNCTION vault_test_block_delete() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'blocked'; END $$ LANGUAGE plpgsql")
+      await testDdl(dbx, 'CREATE TRIGGER vault_key_delete_blocked BEFORE DELETE ON vault_ssh_keys FOR EACH ROW EXECUTE FUNCTION vault_test_block_delete()')
     } else {
-      await dbx.run("CREATE TRIGGER vault_key_delete_blocked BEFORE DELETE ON vault_ssh_keys BEGIN SELECT RAISE(ABORT, 'blocked'); END")
+      await testDdl(dbx, "CREATE TRIGGER vault_key_delete_blocked BEFORE DELETE ON vault_ssh_keys BEGIN SELECT RAISE(ABORT, 'blocked'); END")
     }
     await expect(deleteVaultSshKey('key-2')).rejects.toThrow(/blocked/)
     expect((await getVaultSshServer('srv-3'))?.ssh_key_id).toBe('key-2')

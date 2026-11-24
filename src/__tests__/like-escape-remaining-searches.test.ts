@@ -7,7 +7,7 @@
 // the row do not contain it) and a decoy row differs only where a wildcard would match. A column whose ESCAPE clause is
 // missing finds nothing (the backslash stays in the pattern); a column whose pattern is not escaped also finds the decoy.
 import { describe, it, expect } from 'vitest'
-import { useTestDb } from './helpers/with-test-db.js'
+import { seedDbx, useTestDb } from './helpers/with-test-db.js'
 import {
   createKanbanCard, searchKanbanCards, createApproval, listApprovals, countApprovals, saveWorkspaceDoc, listWorkspaceDocs, countWorkspaceDocs, getTokenDetails, correlateWithKanban, queryAuditLog, createTenant, createSkill, listAgentOwnedSkills, dbx,
 } from '../db.js'
@@ -240,7 +240,7 @@ describe('queryAuditLog: every source searches the query literally, per column',
 
   const IDEA = ['idea_id', 'to_status', 'note', 'actor']
   it.each(IDEA)('idea_status_log.%s', async (column) => {
-    const insert = async (v: string) => dbx.run('INSERT INTO idea_status_log (idea_id, to_status, note, actor, created_at) VALUES (?, ?, ?, ?, ?)', ...(['idea_id', 'to_status', 'note', 'actor'].map((c) => (c === column ? v : 'n'))), NOW)
+    const insert = async (v: string) => seedDbx(dbx).run('INSERT INTO idea_status_log (idea_id, to_status, note, actor, created_at) VALUES (?, ?, ?, ?, ?)', ...(['idea_id', 'to_status', 'note', 'actor'].map((c) => (c === column ? v : 'n'))), NOW)
     await insert(HIT); await insert(DECOY)
     const r = await q('idea', Q)
     expect(r.total).toBe(1)

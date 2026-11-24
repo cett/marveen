@@ -6,7 +6,7 @@ import { EventEmitter } from 'node:events'
 import { createTenant, setTenantAgentAvailability, setChannelBinding, getTenantGateStatus, dbx } from '../db.js'
 import { tryHandleTenantGateStatus } from '../web/routes/tenant-gate-status.js'
 import type { RouteContext } from '../web/routes/types.js'
-import { testDbMode, useTestDb } from './helpers/with-test-db.js'
+import { seedDbx, testDbMode, testDdl, useTestDb } from './helpers/with-test-db.js'
 
 useTestDb()
 
@@ -21,8 +21,8 @@ async function gateRows(): Promise<number[]> {
   return ((await dbx.all('SELECT version FROM schema_version WHERE version IN (64, 65) ORDER BY version')) as { version: number }[]).map((r) => r.version)
 }
 async function markApplied(version: number, on: boolean): Promise<void> {
-  if (on) await dbx.run("INSERT INTO schema_version (version, applied_at, description) VALUES (?, 1, 'test') ON CONFLICT (version) DO NOTHING", version)
-  else await dbx.run('DELETE FROM schema_version WHERE version = ?', version)
+  if (on) await seedDbx(dbx).run("INSERT INTO schema_version (version, applied_at, description) VALUES (?, 1, 'test') ON CONFLICT (version) DO NOTHING", version)
+  else await seedDbx(dbx).run('DELETE FROM schema_version WHERE version = ?', version)
 }
 
 beforeEach(async () => {
@@ -101,7 +101,7 @@ describe('GET /api/admin/tenant-gate-status', () => {
 
   it('reports a missing gate table rather than failing', async () => {
     await markApplied(64, true)
-    await dbx.exec('DROP TABLE agent_tenant_context')
+    await testDdl(dbx, 'DROP TABLE agent_tenant_context')
     await markApplied(65, false)
     const m = (await getTenantGateStatus()).migrations
     expect(m[1]).toEqual({ version: 65, table: 'agent_tenant_context', applied: false, table_exists: false })

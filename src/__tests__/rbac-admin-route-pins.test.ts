@@ -54,6 +54,7 @@ async function gate(auth: AuthResult, method: string, path: string): Promise<{ p
 // [method, path]: the routes with no table row, both the legacy alias and the canonical prefix where the route answers both.
 const ROUTE_FILE_FACTS = {
   agentDelete: read('web/routes/agents-crud.ts'),
+  agentStop: read('web/routes/agents-process.ts'),
   terminalInput: read('web/routes/agent-terminal.ts'),
   gateStatus: read('web/routes/tenant-gate-status.ts'),
 }
@@ -62,6 +63,7 @@ describe('the three admin-only routes: the agent delete, the terminal-input togg
   // The route files are read, so a renamed path makes the cell fail instead of pinning a path nobody serves.
   it('the paths below are the ones the route files serve', () => {
     expect(ROUTE_FILE_FACTS.agentDelete).toMatch(/agentMatch && method === 'DELETE'/)
+    expect(ROUTE_FILE_FACTS.agentStop).toContain('/^\\/api\\/agents\\/([^/]+)\\/stop$/')
     expect(ROUTE_FILE_FACTS.terminalInput).toContain("path === '/api/terminal-input'")
     expect(ROUTE_FILE_FACTS.gateStatus).toContain("'/api/admin/tenant-gate-status'")
   })
@@ -69,6 +71,10 @@ describe('the three admin-only routes: the agent delete, the terminal-input togg
   const ROUTES: ReadonlyArray<readonly [string, string]> = [
     ['DELETE', '/api/agents/agent-a'],
     ['DELETE', '/api/v1/agents/agent-a'],
+    // The second caller of the desired-state removal (the first is the delete above): under row-level security the
+    // removal is a write on a global table, so a tenant caller must not reach it.
+    ['POST', '/api/agents/agent-a/stop'],
+    ['POST', '/api/v1/agents/agent-a/stop'],
     ['POST', '/api/terminal-input'],
     ['POST', '/api/v1/terminal-input'],
     ['GET', '/api/admin/tenant-gate-status'],

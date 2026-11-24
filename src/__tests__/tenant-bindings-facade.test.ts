@@ -3,7 +3,7 @@
 // "no tenant" instead of guessing. Real in-memory database, no mocks.
 // Each test names the line it protects: take that line out of src/db/tenant-channel-bindings.ts and the test fails.
 import { describe, it, expect, beforeEach } from 'vitest'
-import { useTestDb, testDbMode } from './helpers/with-test-db.js'
+import { useTestDb, testDbMode, testDdl } from './helpers/with-test-db.js'
 import { refuseWrite } from './helpers/refuse-write.js'
 import { interleave, waitBlockedOnLock } from './helpers/interleave.js'
 import {
@@ -141,14 +141,14 @@ describe('the serving-tenant resolvers fail closed', () => {
     await dbx.run('INSERT INTO tenant_agent_availability (tenant_id, agent_id, enabled) VALUES (?, ?, 1)', 'acme', 'agent-a')
     await seedContext('agent-a', 'acme')
     expect(await getServingTenant('agent-a')).toBe('acme')
-    await dbx.run('DROP TABLE agent_tenant_context')
+    await testDdl(dbx, 'DROP TABLE agent_tenant_context')
     expect(await getServingTenant('agent-a')).toBeNull()
     expect(await explainServingTenantMiss('agent-a')).toBe('error')
   })
 
   it('an availability table that cannot be read cannot turn a bound context into an answer', async () => {
     await seedContext('agent-a', 'acme')
-    await dbx.run('DROP TABLE tenant_agent_availability')
+    await testDdl(dbx, 'DROP TABLE tenant_agent_availability')
     expect(await getServingTenant('agent-a')).toBeNull()
     expect(await explainServingTenantMiss('agent-a')).toBe('error')
   })

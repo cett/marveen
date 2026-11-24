@@ -19,6 +19,7 @@
     "test:guarded": "python3 scripts/vitest-guard.py -- run",
     "test:pg": "vitest run --config vitest.pg.config.ts",
     "test:pg-modules": "vitest run --config vitest.pg-modules.config.ts",
+    "test:pg-modules-app": "MARVEEN_TEST_PG_ROLE=app vitest run --config vitest.pg-modules.config.ts",
     "coverage": "vitest run --coverage",
     "typecheck": "tsc --noEmit",
     "generate:error-schema": "node scripts/generate-error-schema.mjs",

@@ -16,6 +16,7 @@ import { existsSync, readFileSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { logger } from '../logger.js'
 import { STORE_DIR } from '../config.js'
+import { runAs } from '../db/context.js'
 import { getSkill, updateSkill, seedSkillIfAbsent } from '../db.js'
 import { stripGeneratedHeader } from '../skill-header.js'
 import { resolveSkillPath } from './skill-regen.js'
@@ -49,7 +50,12 @@ function frontmatterField(content: string, field: string): string {
  * global/<name> row equal to the refreshed file on disk. Removes the marker
  * when every entry was handled; keeps it (for the next start) when one failed.
  */
-export async function applySeedSkillRefreshMarker(markerPath = join(STORE_DIR, SEED_REFRESH_MARKER)): Promise<SeedRefreshResult> {
+export function applySeedSkillRefreshMarker(...args: Parameters<typeof applySeedSkillRefreshMarkerImpl>): Promise<SeedRefreshResult> {
+  // A boot step with no request around it: it opens its own system job (the skill reads and writes need a context).
+  return runAs.system('boot-sequence', () => applySeedSkillRefreshMarkerImpl(...args))
+}
+
+async function applySeedSkillRefreshMarkerImpl(markerPath = join(STORE_DIR, SEED_REFRESH_MARKER)): Promise<SeedRefreshResult> {
   const out: SeedRefreshResult = { applied: 0, unchanged: 0, errors: 0 }
   if (!existsSync(markerPath)) return out
 

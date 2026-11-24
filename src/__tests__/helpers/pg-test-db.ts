@@ -23,6 +23,7 @@ import { fileURLToPath } from 'node:url'
 import pg from 'pg'
 import { applyPgMigrations } from '../../db-migrations-pg.js'
 import { createPgDbx, type PgDbx } from '../../db/pg/dbx.js'
+import { PG_TEST_APP_ROLE } from './pg-app-role.js'
 import { parseInt8Safe, pgTypes } from '../../db/pg/types.js'
 
 export const PG_TEST_URL_ENV = 'MARVEEN_PG_TEST_URL'
@@ -56,7 +57,7 @@ const TEMPLATE_BUILD_SALT = 'runner-v2-roles'
 // and only for the test server (a CREATE ROLE here is cluster-level and survives a dropped database); they are not
 // credentials of anything.
 export const PG_TEST_OWNER_ROLE = 'marveen_owner'
-export const PG_TEST_APP_ROLE = 'marveen_app'
+export { PG_TEST_APP_ROLE }
 export const PG_TEST_BACKUP_ROLE = 'marveen_backup'
 const TEST_ROLE_PASSWORD: Record<string, string> = {
   [PG_TEST_OWNER_ROLE]: 'harness-only-owner',

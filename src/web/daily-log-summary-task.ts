@@ -2,6 +2,7 @@ import { existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { MAIN_AGENT_ID, PROJECT_ROOT, STORE_DIR, WEB_PORT } from '../config.js'
 import { seedScheduleIfAbsent } from '../db.js'
+import { runAs } from '../db/context.js'
 import { logger } from '../logger.js'
 
 // The evening daily-log summary of the install: a seeded `daily-log-summary` command task that runs
@@ -20,7 +21,12 @@ export function dailyLogSummaryCommand(installDir: string, webPort: number, agen
 }
 
 /** Seeds the task once. Returns true when a row was inserted. */
-export async function ensureDailyLogSummaryTask(
+// A boot step with no request around it: it opens its own system job (the seed insert is refused to an empty context).
+export function ensureDailyLogSummaryTask(...args: Parameters<typeof ensureDailyLogSummaryTaskImpl>): Promise<boolean> {
+  return runAs.system('boot-sequence', () => ensureDailyLogSummaryTaskImpl(...args))
+}
+
+async function ensureDailyLogSummaryTaskImpl(
   storeDir: string = STORE_DIR,
   projectRoot: string = PROJECT_ROOT,
   agent: string = MAIN_AGENT_ID,

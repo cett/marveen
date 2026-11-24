@@ -7,7 +7,7 @@
 
 import { describe, it, expect, beforeEach } from 'vitest'
 import { dbx, getModelDistribution, getToolStats } from '../db.js'
-import { useTestDb } from './helpers/with-test-db.js'
+import { useTestDb, testDdl } from './helpers/with-test-db.js'
 
 useTestDb()
 
@@ -106,7 +106,7 @@ describe('getModelDistribution', () => {
 
   it('a token_usage that has no model column (an install that predates it) answers an empty list instead of failing', async () => {
     expect((await getModelDistribution()).length).toBeGreaterThan(0)
-    await dbx.exec('ALTER TABLE token_usage DROP COLUMN model')
+    await testDdl(dbx, 'ALTER TABLE token_usage DROP COLUMN model')
     expect(await getModelDistribution()).toEqual([])
   })
 

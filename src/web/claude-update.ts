@@ -2,6 +2,7 @@ import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { MAIN_AGENT_ID, PROJECT_ROOT, STORE_DIR } from '../config.js'
 import { seedScheduleIfAbsent } from '../db.js'
+import { runAs } from '../db/context.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { logger } from '../logger.js'
 
@@ -245,7 +246,12 @@ export async function rolloutStep(deps: RolloutDeps, p: ClaudeUpdatePaths = defa
  * who deleted the row on purpose does not get it back at the next boot. Returns
  * true when a row was inserted.
  */
-export async function ensureClaudeUpdateTask(storeDir: string = STORE_DIR, projectRoot: string = PROJECT_ROOT, agent: string = MAIN_AGENT_ID): Promise<boolean> {
+// A boot step with no request around it: it opens its own system job (the seed insert is refused to an empty context).
+export function ensureClaudeUpdateTask(...args: Parameters<typeof ensureClaudeUpdateTaskImpl>): Promise<boolean> {
+  return runAs.system('boot-sequence', () => ensureClaudeUpdateTaskImpl(...args))
+}
+
+async function ensureClaudeUpdateTaskImpl(storeDir: string = STORE_DIR, projectRoot: string = PROJECT_ROOT, agent: string = MAIN_AGENT_ID): Promise<boolean> {
   const marker = join(storeDir, SEEDED_MARKER)
   if (existsSync(marker)) return false
   const inserted = await seedScheduleIfAbsent(CLAUDE_UPDATE_TASK, {

@@ -1,5 +1,6 @@
 import { PROJECT_ROOT, WEB_PORT } from '../config.js'
 import { getScheduleFromDb, patchSchedule } from '../db.js'
+import { runAs } from '../db/context.js'
 import { logger } from '../logger.js'
 
 // The nightly `memory-maintenance` command task used to be an inline `curl | grep -q '"ok":true'` chain. It now runs
@@ -40,7 +41,13 @@ export function isStockInlineMemoryMaintenanceCommand(command: string, installDi
 }
 
 /** Moves a stock-command memory-maintenance row to the script. Returns true when the row was changed. */
-export async function ensureMemoryMaintenanceCommand(installDir: string = PROJECT_ROOT, webPort: number = WEB_PORT): Promise<boolean> {
+// A boot step with no request around it: it opens its own system job (an empty context would see no schedule row and
+// leave the stock inline command in place without a word).
+export function ensureMemoryMaintenanceCommand(...args: Parameters<typeof ensureMemoryMaintenanceCommandImpl>): Promise<boolean> {
+  return runAs.system('boot-sequence', () => ensureMemoryMaintenanceCommandImpl(...args))
+}
+
+async function ensureMemoryMaintenanceCommandImpl(installDir: string = PROJECT_ROOT, webPort: number = WEB_PORT): Promise<boolean> {
   const row = await getScheduleFromDb(MEMORY_MAINTENANCE_TASK)
   if (!row || row.type !== 'command' || !row.command) return false
   if (!new RegExp(`^${AGENT_ID}$`).test(row.agent)) return false

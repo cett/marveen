@@ -22,11 +22,12 @@ import { parseArgs, resolveRoot, emit } from './lib/common.mjs'
 
 // -- CI step inventory ------------------------------------------------------
 //
-// Only these two ci.yml jobs are checked for parity: `security` (npm/pip-audit, semgrep -- needs network, is
+// Only these four ci.yml jobs are checked for parity (`vitest` and `gates` are the two halves the required `test` context
+// aggregates; `test` itself holds only that aggregate step): `security` (npm/pip-audit, semgrep -- needs network, is
 // advisory/report-only, never part of what a QA agent reruns by hand) and `qa-scanners` (the promise-misuse
 // and vacuous-notThrow scanners, already automated on their own CI job since the 10-29 plan/qa-speedup-cost
 // work -- see tools/qa/check-scanners.mjs) are deliberately out of scope for this tool.
-export const CHECKED_JOBS = ['build-checks', 'test']
+export const CHECKED_JOBS = ['build-checks', 'vitest', 'gates', 'test']
 
 // A `run:` step of a checked job that t1 does not cover, and why. Checked by name, not by exact command text
 // (ci.yml reformats whitespace harmlessly); a renamed or deleted step is simply gone from ci.yml's own list,
@@ -35,9 +36,13 @@ export const EXCLUDED_STEPS = [
   { job: 'build-checks', name: 'Install dependencies', reason: 'npm ci: the worktree already has its dependencies (node_modules is a symlink to the main checkout); t1 assumes a built environment, like a QA agent\'s manual run.' },
   { job: 'build-checks', name: 'Check SDK is up to date', reason: 'writes src/generated/api.ts and diffs it: mutates the working tree. Run "npm run generate:sdk" by hand if that is in question.' },
   { job: 'build-checks', name: 'Check API spec for breaking changes', reason: 'downloads the oasdiff binary (network) and needs the PR base sha; out of scope for an offline/local T1 run.' },
-  { job: 'test', name: 'Install dependencies', reason: 'see build-checks/"Install dependencies" above.' },
-  { job: 'test', name: 'Stub external binaries (claude, tmux) for module-load resolution', reason: 'a CI-runner-only workaround for a missing claude/tmux binary; a worktree has the real ones.' },
-  { job: 'test', name: 'Install zsh (the second shell oracle of the secret-read gate tests)', reason: 'an apt install on the CI runner (no zsh there); a worktree has zsh, and the secret-read gate tests that need it run in the test step itself.' },
+  { job: 'vitest', name: 'Install dependencies', reason: 'see build-checks/"Install dependencies" above.' },
+  { job: 'vitest', name: 'Stub external binaries (claude, tmux) for module-load resolution', reason: 'a CI-runner-only workaround for a missing claude/tmux binary; a worktree has the real ones.' },
+  { job: 'gates', name: 'Install dependencies', reason: 'see build-checks/"Install dependencies" above.' },
+  { job: 'gates', name: 'Stub external binaries (claude, tmux) for module-load resolution', reason: 'a CI-runner-only workaround for a missing claude/tmux binary; a worktree has the real ones.' },
+  { job: 'gates', name: 'Install zsh (the second shell oracle of the secret-read gate tests)', reason: 'an apt install on the CI runner (no zsh there); a worktree has zsh, and the secret-read gate tests that need it run in the vitest step itself.' },
+  { job: 'gates', name: 'Changed paths (scripts group)', reason: 'decides on the CI runner whether the Python and shell tests run for this change (a skip optimisation, true whenever it cannot tell); t1 always runs them, so there is nothing to repeat.' },
+  { job: 'test', name: 'Both halves succeeded', reason: 'the aggregate of the required context: it only reads the results of the needed jobs `vitest` and `gates` (needs.<job>.result), it runs no check of its own, so there is nothing for a t1 row to repeat.' },
 ]
 
 /** The `run:` steps of the checked jobs, as {job, name} pairs, read from the real ci.yml (no guessing). */
@@ -239,15 +244,15 @@ function vitestStep(ctx) {
 const DEFAULT_PROFILE = [
   { id: 'typecheck', label: 'tsc --noEmit', covers: [{ job: 'build-checks', name: 'Type check' }], run: (ctx) => run('npm', ['run', 'typecheck'], { root: ctx.root }) },
   { id: 'readme-fork-diff', label: 'README fork-diff status', covers: [{ job: 'build-checks', name: 'Check README fork-diff status is fresh' }], run: pyStep('scripts/readme-fork-diff-check.py') },
-  { id: 'sqlite-dialect-ratchet', label: 'SQLite dialect ratchet', covers: [{ job: 'test', name: 'SQLite dialect ratchet' }], run: pyStep('scripts/sqlite-dialect-ratchet.py') },
-  { id: 'non-ts-db-access-ratchet', label: 'Non-TS direct DB access ratchet', covers: [{ job: 'test', name: 'Non-TS direct DB access ratchet' }], run: pyStep('scripts/non-ts-db-access-ratchet.py') },
-  { id: 'db-outside-sql-ratchet', label: 'Raw SQL outside the db layer ratchet', covers: [{ job: 'test', name: 'Raw SQL outside the db layer ratchet' }], run: pyStep('scripts/db-outside-sql-ratchet.py') },
-  { id: 'log-message-literal-ratchet', label: 'Log message literal ratchet', covers: [{ job: 'test', name: 'Log message literal ratchet' }], run: pyStep('scripts/log-message-literal-ratchet.py') },
-  { id: 'gmail-send-route-ratchet', label: 'Gmail send route ratchet', covers: [{ job: 'test', name: 'Gmail send route ratchet' }], run: pyStep('scripts/gmail-send-route-ratchet.py') },
-  { id: 'async-lint-src', label: 'Async lint (src, error mode)', covers: [{ job: 'test', name: 'Async lint (no-floating-promises, no-misused-promises, await-thenable, require-await; FAILS the build)' }], run: (ctx) => eslintStep(ctx, { testsMode: false }) },
-  { id: 'test-lint', label: 'Async lint (tests, warning mode)', covers: [{ job: 'test', name: 'Async lint ratchet for the tests (FAILS the build on a new finding)' }], run: (ctx) => { const r = eslintStep(ctx, { testsMode: true }); ctx._testsReportPath = r.reportPath; return r } },
-  { id: 'tests-ratchet', label: 'Async lint ratchet for the tests', covers: [{ job: 'test', name: 'Async lint ratchet for the tests (FAILS the build on a new finding)' }], run: (ctx) => ratchetStep(ctx, ctx._testsReportPath) },
-  { id: 'vitest', label: 'Vitest (full suite, unless --vitest says otherwise)', covers: [{ job: 'test', name: 'Vitest on the changed files' }, { job: 'test', name: 'Coverage' }], run: vitestStep },
+  { id: 'sqlite-dialect-ratchet', label: 'SQLite dialect ratchet', covers: [{ job: 'gates', name: 'SQLite dialect ratchet' }], run: pyStep('scripts/sqlite-dialect-ratchet.py') },
+  { id: 'non-ts-db-access-ratchet', label: 'Non-TS direct DB access ratchet', covers: [{ job: 'gates', name: 'Non-TS direct DB access ratchet' }], run: pyStep('scripts/non-ts-db-access-ratchet.py') },
+  { id: 'db-outside-sql-ratchet', label: 'Raw SQL outside the db layer ratchet', covers: [{ job: 'gates', name: 'Raw SQL outside the db layer ratchet' }], run: pyStep('scripts/db-outside-sql-ratchet.py') },
+  { id: 'log-message-literal-ratchet', label: 'Log message literal ratchet', covers: [{ job: 'gates', name: 'Log message literal ratchet' }], run: pyStep('scripts/log-message-literal-ratchet.py') },
+  { id: 'gmail-send-route-ratchet', label: 'Gmail send route ratchet', covers: [{ job: 'gates', name: 'Gmail send route ratchet' }], run: pyStep('scripts/gmail-send-route-ratchet.py') },
+  { id: 'async-lint-src', label: 'Async lint (src, error mode)', covers: [{ job: 'gates', name: 'Async lint (no-floating-promises, no-misused-promises, await-thenable, require-await; FAILS the build)' }], run: (ctx) => eslintStep(ctx, { testsMode: false }) },
+  { id: 'test-lint', label: 'Async lint (tests, warning mode)', covers: [{ job: 'gates', name: 'Async lint ratchet for the tests (FAILS the build on a new finding)' }], run: (ctx) => { const r = eslintStep(ctx, { testsMode: true }); ctx._testsReportPath = r.reportPath; return r } },
+  { id: 'tests-ratchet', label: 'Async lint ratchet for the tests', covers: [{ job: 'gates', name: 'Async lint ratchet for the tests (FAILS the build on a new finding)' }], run: (ctx) => ratchetStep(ctx, ctx._testsReportPath) },
+  { id: 'vitest', label: 'Vitest (full suite, unless --vitest says otherwise)', covers: [{ job: 'vitest', name: 'Vitest on the changed files' }, { job: 'vitest', name: 'Coverage' }], run: vitestStep },
 ]
 
 const CI_PROFILE = [
@@ -255,10 +260,10 @@ const CI_PROFILE = [
   { id: 'build', label: 'npm run build', covers: [{ job: 'build-checks', name: 'Build' }], run: (ctx) => ctx.build ? run('npm', ['run', 'build'], { root: ctx.root }) : { rc: 0, seconds: 0, firstErrorLine: null, note: 'skipped (pass --build to run it)' } },
   { id: 'check-commit-subjects', label: 'Commit subjects/bodies (kanban-rowid leak)', covers: [{ job: 'build-checks', name: 'Check commit subjects/bodies for internal kanban-rowid leaks' }], run: (ctx) => ctx.baseSha ? run('python3', [path.join(ctx.root, 'scripts/check_commit_subjects.py')], { root: ctx.root, env: { ...process.env, BASE_SHA: ctx.baseSha } }) : { rc: 0, seconds: 0, firstErrorLine: null, note: 'skipped (needs --base-sha; CI runs it on a PR only)' } },
   { id: 'changelog-check', label: 'CHANGELOG updated for API changes', covers: [{ job: 'build-checks', name: 'Check CHANGELOG updated for API changes' }], run: (ctx) => ctx.baseSha ? run('bash', ['-c', ciChangelogCheckScript], { root: ctx.root, env: { ...process.env, BASE_SHA: ctx.baseSha } }) : { rc: 0, seconds: 0, firstErrorLine: null, note: 'skipped (needs --base-sha; CI runs it on a PR only)' } },
-  { id: 'eslint-fixture-selftest', label: 'Async lint fixture self-test', covers: [{ job: 'test', name: 'Async lint self-test (fixture, FAILS the build)' }], run: (ctx) => { const a = run('node', [path.join(ctx.root, 'tools/eslint/check-fixture.mjs')], { root: ctx.root }); if (a.rc !== 0) return a; return run('node', [path.join(ctx.root, 'tools/eslint/tests-ratchet-selftest.mjs')], { root: ctx.root }) } },
-  { id: 'codemod-selftest', label: 'Db codemod self-test', covers: [{ job: 'test', name: 'Db codemod self-test (fixture, FAILS the build)' }], run: (ctx) => run('node', [path.join(ctx.root, 'tools/codemod/selftest.mjs')], { root: ctx.root }) },
-  { id: 'shell-tests', label: 'Shell tests', covers: [{ job: 'test', name: 'Shell tests' }], run: (ctx) => run('bash', ['-c', shellTestsScript], { root: ctx.root }) },
-  { id: 'python-tests', label: 'Python tests', covers: [{ job: 'test', name: 'Python tests' }], run: bashStep('scripts/run-python-tests.sh', ['-j', '4']) },
+  { id: 'eslint-fixture-selftest', label: 'Async lint fixture self-test', covers: [{ job: 'gates', name: 'Async lint self-test (fixture, FAILS the build)' }], run: (ctx) => { const a = run('node', [path.join(ctx.root, 'tools/eslint/check-fixture.mjs')], { root: ctx.root }); if (a.rc !== 0) return a; return run('node', [path.join(ctx.root, 'tools/eslint/tests-ratchet-selftest.mjs')], { root: ctx.root }) } },
+  { id: 'codemod-selftest', label: 'Db codemod self-test', covers: [{ job: 'gates', name: 'Db codemod self-test (fixture, FAILS the build)' }], run: (ctx) => run('node', [path.join(ctx.root, 'tools/codemod/selftest.mjs')], { root: ctx.root }) },
+  { id: 'shell-tests', label: 'Shell tests', covers: [{ job: 'gates', name: 'Shell tests' }], run: (ctx) => run('bash', ['-c', shellTestsScript], { root: ctx.root }) },
+  { id: 'python-tests', label: 'Python tests', covers: [{ job: 'gates', name: 'Python tests' }], run: bashStep('scripts/run-python-tests.sh', ['-j', '4']) },
 ]
 
 // The two multi-line ci.yml `run:` blocks reproduced verbatim where a single execFileSync call does not fit the

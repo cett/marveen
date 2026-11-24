@@ -11,7 +11,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { useTestDb } from './helpers/with-test-db.js'
+import { seedDbx, useTestDb } from './helpers/with-test-db.js'
 import { refuseWrite } from './helpers/refuse-write.js'
 import { getKanbanCardEvents, pruneAuditLogs, setSystemConfig, dbx } from '../db.js'
 import { getSettingDefinition, validateSettingValue } from '../config-registry.js'
@@ -37,7 +37,7 @@ async function insertApproval(createdAt: number): Promise<number> {
   return Number(row?.id)
 }
 async function insertKanban(createdAt: number): Promise<number> {
-  const row = await dbx.get<{ id: number }>("INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at) VALUES ('card-a', NULL, 'planned', 'agent-a', ?) RETURNING id", createdAt)
+  const row = await seedDbx(dbx).get<{ id: number }>("INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at) VALUES ('card-a', NULL, 'planned', 'agent-a', ?) RETURNING id", createdAt)
   return Number(row?.id)
 }
 async function insertSource(): Promise<void> {

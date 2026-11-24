@@ -14,6 +14,7 @@ import {
 import { runAs, withTrace } from '../db/context.js'
 import { systemJob, runAsAgentJob } from '../db/background-jobs.js'
 import { useTestDb } from './helpers/with-test-db.js'
+import { testPgRole } from './helpers/pg-app-role.js'
 
 useTestDb()
 
@@ -100,7 +101,7 @@ describe('the central writers fill the trace columns from the context', () => {
 
   it('a nested runAs (another identity) inside a traced request writes the same trace', async () => {
     const w = WRITERS.find((x) => x.name === 'writeAgentAuditLog')!
-    await runAs.system('job-a', () => withTrace(T1, () => runAs.tenant('tenant-a', w.write)))
+    await runAs.system('job-a', () => withTrace(T1, () => runAs.tenant('default', w.write)))
     expect(await newest('agent_audit_log')).toEqual({ trace_id: T1.traceId, span_id: T1.spanId })
   })
 
@@ -116,13 +117,24 @@ describe('the central writers fill the trace columns from the context', () => {
   })
 
   it('the real openers (systemJob, runAsAgentJob) write NULL from a traced request context, on every journal table that has a writer', async () => {
+    // Two journals are written by a privileged context only (an admin audit row, a config change): under the app role an
+    // AGENT job is refused them by the row-level policy, so the agent-job leg cannot run for them. The refusal is pinned
+    // below, not skipped silently: a writer that starts to pass for an agent, or a new one that does not, fails the list.
+    const refusedToAnAgent: string[] = []
     for (const { table, name, write } of WRITERS) {
-      await runAs.tenant('tenant-a', () => withTrace(T1, async () => { await systemJob('message-router', write)() }))
+      await runAs.tenant('default', () => withTrace(T1, async () => { await systemJob('message-router', write)() }))
       expect(await newest(table), `${name} via systemJob`).toEqual({ trace_id: null, span_id: null })
 
-      await runAs.tenant('tenant-a', () => withTrace(T1, () => runAsAgentJob('auto-restart', 'agent-a', write)))
+      try {
+        await runAs.tenant('tenant-a', () => withTrace(T1, () => runAsAgentJob('auto-restart', 'agent-a', write)))
+      } catch (err) {
+        if (testPgRole() !== 'app') throw err
+        refusedToAnAgent.push(name)
+        continue
+      }
       expect(await newest(table), `${name} via runAsAgentJob`).toEqual({ trace_id: null, span_id: null })
     }
+    expect(refusedToAnAgent).toEqual(testPgRole() === 'app' ? ['writeAdminAuditLog', 'logConfigChange'] : [])
   })
 
   it('a write after an await inside the traced context still carries the trace', async () => {

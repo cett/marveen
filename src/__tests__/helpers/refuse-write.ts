@@ -10,6 +10,7 @@
 // trigger lives and dies with the test database (an in-memory database, or the clone of the baseline).
 import type { Dbx } from '../../db.js'
 import { dbxDialect } from '../../db/facade.js'
+import { testDdl } from './with-test-db.js'
 
 export interface RefuseWriteOptions {
   /** Trigger name (and, on PostgreSQL, the name of its function): lowercase letters, digits, underscore. */
@@ -53,5 +54,5 @@ CREATE TRIGGER ${o.name} BEFORE ${event} ON ${o.table} FOR EACH ROW${cond ? ` WH
 }
 
 export async function refuseWrite(dbx: Dbx, o: RefuseWriteOptions): Promise<void> {
-  await dbx.exec(refuseWriteSql(dbxDialect(), o))
+  await testDdl(dbx, refuseWriteSql(dbxDialect(), o))
 }

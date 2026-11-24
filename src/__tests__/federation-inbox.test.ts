@@ -141,6 +141,21 @@ describe('tryHandleFederation -- inbox endpoint (HTTP + DB)', () => {
     expect(row?.content).toBe(content)
   })
 
+  // Row-level security stamps and filters on tenant_id: a message a remote system writes belongs to the default tenant,
+  // whoever the sender claims to be (a qualified name is not a local agent, so no delegation tenant is inherited).
+  it('stamps the default tenant on a peer message and on a dashboard-token message', async () => {
+    await writeEnabledConfigFile()
+    for (const fedPeer of ['teodor', null]) {
+      const payload = JSON.stringify({ from: 'teodor/teodor', to: MAIN_AGENT_ID, content: `tenant stamp ${fedPeer}`, ref: `ts-${fedPeer}` })
+      const { ctx, res } = fakeCtx('POST', '/api/federation/inbox', payload, fedPeer)
+      expect(await tryHandleFederation(ctx)).toBe(true)
+      expect(res.statusCode).toBe(202)
+      const { id } = JSON.parse(res.body)
+      const row = (await getPendingMessages(MAIN_AGENT_ID)).find((m) => m.id === id)
+      expect(row?.tenant_id, `fedPeer ${fedPeer}`).toBe('default')
+    }
+  })
+
   it('refuses a peer text that starts a line with a server-only marker: 400 reserved_marker, nothing stored, ref not remembered', async () => {
     await writeEnabledConfigFile()
     const before = (await getPendingMessages(MAIN_AGENT_ID)).length

@@ -9,7 +9,7 @@ import { dbx, writeAgentAuditLog, insertHookAuditLog, logConfigChange, queryAudi
 import { runAs, withTrace } from '../db/context.js'
 import { tryHandleAuditLog } from '../web/routes/audit-log.js'
 import type { RouteContext } from '../web/routes/types.js'
-import { useTestDb } from './helpers/with-test-db.js'
+import { seedDbx, useTestDb } from './helpers/with-test-db.js'
 
 useTestDb()
 
@@ -73,7 +73,7 @@ describe('queryAuditLog with a trace_id', () => {
 
   it('the idea source keeps no trace: it never answers a trace lookup, alone or with the others (and does answer without one)', async () => {
     await seed()
-    await dbx.run("INSERT INTO idea_status_log (idea_id, to_status, actor, created_at) VALUES ('idea-a', 'open', 'user-a', 1)")
+    await seedDbx(dbx).run("INSERT INTO idea_status_log (idea_id, to_status, actor, created_at) VALUES ('idea-a', 'open', 'user-a', 1)")
     expect((await queryAuditLog({ sources: ['idea'], limit: 50 })).total).toBe(1) // the control: the row is there
     for (const sources of [['idea'], ['store', 'diary', 'idea']] as const) {
       const r = await queryAuditLog({ sources: [...sources], trace_id: TA.traceId, limit: 50 })

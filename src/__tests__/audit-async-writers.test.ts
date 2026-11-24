@@ -19,7 +19,7 @@ import {
 import { logger } from '../logger.js'
 import { recordRbacDecision, resetPruneThrottleForTests, runRbacGate } from '../web/rbac-shadow-log.js'
 import type { AuthResult } from '../web/auth-gate.js'
-import { useTestDb } from './helpers/with-test-db.js'
+import { seedDbx, useTestDb } from './helpers/with-test-db.js'
 
 useTestDb()
 
@@ -141,7 +141,7 @@ describe('audit writers: a driver failure reaches the caller (an audit row must 
 describe('audit prunes: every statement is awaited (slow driver)', () => {
   it('pruneAuditLogs clears the four audit tables, the hook table and the spans', async () => {
     await dbx.run("INSERT INTO config_change_log (key, old_value, new_value, actor, created_at) VALUES ('k', 'a', 'b', 'u', ?)", OLD)
-    await dbx.run("INSERT INTO idea_status_log (idea_id, from_status, to_status, actor, created_at) VALUES ('i', NULL, 'new', 'u', ?)", OLD)
+    await seedDbx(dbx).run("INSERT INTO idea_status_log (idea_id, from_status, to_status, actor, created_at) VALUES ('i', NULL, 'new', 'u', ?)", OLD)
     await dbx.run("INSERT INTO store_file_audit (rel_path, event_type, is_sensitive, created_at) VALUES ('p', 'create', 0, ?)", OLD)
     await dbx.run("INSERT INTO agent_audit_log (agent_id, entity, action, created_at) VALUES ('a', 'agent', 'create', ?)", OLD)
     await dbx.run("INSERT INTO hook_audit_log (ts, hook_type, verdict) VALUES (?, 'Stop', 'allow')", OLD)
@@ -339,7 +339,7 @@ describe('queryAuditLog: the total of every source is a number (a lost await wou
 
   async function seedOneRowPerSource() {
     await logConfigChange('some.key', 'old', 'new', 'actor-a')
-    await dbx.run("INSERT INTO idea_status_log (idea_id, from_status, to_status, actor, created_at) VALUES ('i', NULL, 'new', 'u', ?)", NOW)
+    await seedDbx(dbx).run("INSERT INTO idea_status_log (idea_id, from_status, to_status, actor, created_at) VALUES ('i', NULL, 'new', 'u', ?)", NOW)
     await logStoreFileEvent('dir/file.md', 'create', 0, 12, 'agent-a', 'tenant-a')
     await dbx.run("INSERT INTO daily_logs (agent_id, date, content, created_at) VALUES ('agent-a', '2026-10-28', 'c', ?)", NOW)
     await dbx.run("INSERT INTO memories (chat_id, agent_id, content, sector, category, keywords, created_at, accessed_at) VALUES ('chat-a', 'agent-a', 'm', 'semantic', 'warm', 'k', ?, ?)", NOW, NOW)
