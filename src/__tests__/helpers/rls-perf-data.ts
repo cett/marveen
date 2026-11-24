@@ -26,6 +26,15 @@ export function uniformScale(tenants: number, rows: number): PerfScale {
   return { tenants, rows: Object.fromEntries(PERF_TABLES.map((t) => [t, rows])) as Record<PerfTable, number> }
 }
 
+/**
+ * The size of the live installation scaled the way the measurement brief asks: max(live rows x 10, 20 000), capped at 200 000.
+ * Live row counts, read-only (kanban_cards 1306, memories 1861, conversation_log 10072, agent_audit_log 33649, artifacts 15,
+ * workspace_docs 707): the conversation log lands at 100 720 rows, the audit log at the 200 000 cap, the rest at the 20 000 floor.
+ */
+export function liveScale(tenants: number): PerfScale {
+  return { tenants, rows: { kanban_cards: 20000, memories: 20000, conversation_log: 100720, agent_audit_log: 200000, artifacts: 20000, workspace_docs: 20000 } }
+}
+
 // the text of row g: a few filler words, `alpha` every 10th row, `omega` every 1000th
 const WORDS = (g: string): string =>
   `'row ' || ${g} || ' filler words of a neutral text' || CASE WHEN ${g} % 10 = 0 THEN ' alpha' ELSE '' END || CASE WHEN ${g} % 1000 = 0 THEN ' omega' ELSE '' END`

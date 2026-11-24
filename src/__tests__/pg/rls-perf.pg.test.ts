@@ -14,7 +14,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import pg from 'pg'
 import { createPgTestDb, pgTypes, type PgTestDb } from '../helpers/pg-test-db.js'
-import { explainAs, inlineLiterals, PERF_CONTEXTS, PERF_SMALL, PERF_STATEMENTS, PERF_WRITES, seedPerf, tenantName, uniformScale, type PerfFacts, type PerfStatement, type PlanFacts } from '../helpers/rls-perf-data.js'
+import { explainAs, inlineLiterals, PERF_CONTEXTS, PERF_SMALL, PERF_STATEMENTS, PERF_WRITES, liveScale, seedPerf, tenantName, uniformScale, type PerfFacts, type PerfStatement, type PlanFacts } from '../helpers/rls-perf-data.js'
 import { withDbContext, type DbContext } from '../../db/context.js'
 import { createPgDbx } from '../../db/pg/dbx.js'
 
@@ -152,12 +152,12 @@ describe('the policy filter is ONE InitPlan, not a per-row call of app.tenant()'
 // printed when the median per-run P1/P0 p95 ratio is over 1.15 AND the absolute difference is at least 0.15 ms (below that
 // the shared runner is noise), and when P1 is over twice T and more than 1 ms slower.
 //   PG_RLS_PERF_QUERIES  queries per measurement (default 500; a search statement runs a tenth, at least 20)
-//   PG_RLS_PERF_ROWS     rows per big table (default 20000)
+//   PG_RLS_PERF_ROWS     rows per big table (default 20000), or "live": max(live rows x 10, 20000) per table, capped at 200000
 //   PG_RLS_PERF_TENANTS  the scenarios, comma separated tenant counts (default "1,20": one tenant holds everything / twenty)
 // =====================================================================================================================
 const PERF = process.env['PG_RLS_PERF'] === '1'
 const QUERIES = Number(process.env['PG_RLS_PERF_QUERIES'] ?? 500)
-const PERF_ROWS = Number(process.env['PG_RLS_PERF_ROWS'] ?? 20000)
+const PERF_ROWS = process.env['PG_RLS_PERF_ROWS'] ?? '20000'
 const SCENARIOS = (process.env['PG_RLS_PERF_TENANTS'] ?? '1,20').split(',').map(Number)
 const RUNS = 3
 const POOLS = [1, 4, 10]
@@ -187,7 +187,7 @@ describe.skipIf(!PERF)('timing (report only)', () => {
       let p0: PgTestDb
       let tf: PerfFacts
       beforeAll(async () => {
-        const scale = uniformScale(tenants, PERF_ROWS)
+        const scale = PERF_ROWS === 'live' ? liveScale(tenants) : uniformScale(tenants, Number(PERF_ROWS))
         p1 = await createPgTestDb()
         p0 = await createPgTestDb()
         const seeded = await seedPerf(p1.pool, scale)
@@ -196,7 +196,7 @@ describe.skipIf(!PERF)('timing (report only)', () => {
           for (let i = 1; i <= tenants; i++) await d.pool.query('INSERT INTO tenants (id, display_name, created_at) VALUES ($1, $1, 1) ON CONFLICT DO NOTHING', [tenantName(i)])
         }
         for (const t of P0_TABLES) await p0.ownerPool.query(`ALTER TABLE ${t} DISABLE ROW LEVEL SECURITY`)
-        tf = { ...seeded, tenant: tenantName(1), tenants, rows: PERF_ROWS, uid: `perf${tenants}` }
+        tf = { ...seeded, tenant: tenantName(1), tenants, rows: scale.rows.kanban_cards, uid: `perf${tenants}` }
       }, 1800000)
       afterAll(async () => { await Promise.all([p1?.close(), p0?.close()]) })
 
