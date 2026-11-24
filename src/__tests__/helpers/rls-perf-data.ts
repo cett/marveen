@@ -62,11 +62,13 @@ export async function seedPerf(admin: pg.Pool, scale: PerfScale): Promise<{ memL
   const cards = Math.min(1000, r.kanban_cards)
   await admin.query(`INSERT INTO kanban_comments (card_id, author, content, created_at)
     SELECT 'card-' || c, 'agent-a', 'comment ' || k, 1700000000 + k FROM generate_series(1, ${cards}) c, generate_series(1, 10) k`)
-  const mems = Math.min(5000, r.memories)
+  // a multiple of the tenant count, and a link goes T rows ahead: both ends of a link belong to ONE tenant (a link across
+  // tenants is invisible to everyone, and a fixture where nearly every link is invisible would measure an empty result)
+  const mems = Math.floor(Math.min(5000, r.memories) / T) * T
   const ids = await admin.query<{ min: number }>('SELECT min(id)::int AS min FROM memories')
   const lo = ids.rows[0]!.min
   await admin.query(`INSERT INTO memory_links (src_id, dst_id, link_type, weight, created_at)
-    SELECT ${lo} + g - 1, ${lo} + (g % ${mems}), 'semantic', 1.0, 1700000000 FROM generate_series(1, ${mems}) g`)
+    SELECT ${lo} + g - 1, ${lo} + ((g - 1 + ${T}) % ${mems}), 'semantic', 1.0, 1700000000 FROM generate_series(1, ${mems}) g`)
   await admin.query(`INSERT INTO memory_embeddings (memory_id, embedding)
     SELECT ${lo} + g - 1, ('[' || array_to_string(ARRAY(SELECT round(((g * 31 + d * 17) % 100)::numeric / 100, 3) FROM generate_series(1, 768) d), ',') || ']')::vector
     FROM generate_series(1, ${mems}) g`)
@@ -94,6 +96,8 @@ export interface PerfFacts {
   memLo: number
   memCount: number
   tenant: string
+  /** How many tenants share the rows. */
+  tenants: number
   /** Rows per big table. */
   rows: number
   /** Unique prefix of one measurement: the ids of a write must not repeat. */
@@ -154,25 +158,28 @@ const NO_TENANT: Record<string, { sql: string; params: PerfParams }> = {
   'embedding-similarity': { sql: "SELECT m.id, e.embedding <-> ?::vector AS distance FROM memory_embeddings e JOIN memories m ON m.id = e.memory_id WHERE (m.agent_id = ? OR m.category = 'shared') ORDER BY distance, m.id LIMIT 10", params: () => [PERF_QUERY_VECTOR, 'agent-a'] },
 }
 for (const st of PERF_STATEMENTS) if (NO_TENANT[st.id]) st.noTenant = NO_TENANT[st.id]
+// Row g belongs to tenant 1 + g % T, so every multiple of T is a row of tenant-t1: a read or write that varies its row hits a
+// row the measured context may see, in the T variant and under the policy alike (the same work, not an empty result).
+export const ownRow = (f: PerfFacts, i: number, cap: number): number => f.tenants * (1 + (Math.abs(i) % Math.max(1, Math.floor(cap / f.tenants))))
 const VARY: Record<string, PerfParams> = {
-  'kanban-pk': (f, i) => [`card-${1 + ((i * 37) % f.rows)}`],
-  'comments-by-card': (f, i) => [`card-${1 + (i % Math.min(1000, f.rows))}`],
-  'links-by-src': (f, i) => [f.memLo + (i % f.memCount)],
-  'links-two-hop': (f, i) => [f.memLo + (i % f.memCount)],
+  'kanban-pk': (f, i) => [`card-${ownRow(f, i, f.rows)}`],
+  'comments-by-card': (f, i) => [`card-${ownRow(f, i, Math.min(1000, f.rows))}`],
+  'links-by-src': (f, i) => [f.memLo + ownRow(f, i, f.memCount) - 1],
+  'links-two-hop': (f, i) => [f.memLo + ownRow(f, i, f.memCount) - 1],
 }
 for (const st of PERF_STATEMENTS) if (VARY[st.id]) st.params = VARY[st.id]!
 
 // Writes. Every id carries the unique prefix of the measurement and the call number. The Cyrillic look-alike title fires the
 // homoglyph trigger (one extra insert into homoglyph_findings, a class D3 table).
-const CYR = 'а' // Cyrillic small a, a look-alike of the Latin one
+const CYR = String.fromCharCode(0x430) // Cyrillic small a, a look-alike of the Latin one
 const CARD_INSERT = 'INSERT INTO kanban_cards (id, title, status, priority, sort_order, created_at, updated_at, tenant_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
 export const PERF_WRITES: PerfStatement[] = [
   { id: 'kanban-insert', cls: 'A', op: 'insert', sql: CARD_INSERT, params: (f, i) => [`${f.uid}-c${i}`, 'perf card', 'planned', 'normal', i, 1800000000 + i, 1800000000 + i, f.tenant] },
   { id: 'kanban-insert-homoglyph', cls: 'A', op: 'insert', sql: CARD_INSERT, params: (f, i) => [`${f.uid}-h${i}`, `p${CYR}rf card`, 'planned', 'normal', i, 1800000000 + i, 1800000000 + i, f.tenant] },
-  { id: 'kanban-update', cls: 'A', op: 'update', sql: 'UPDATE kanban_cards SET title = ?, updated_at = ? WHERE id = ?', params: (f, i) => [`card title ${i}`, 1800000000 + i, `card-${1 + ((i * 37) % f.rows)}`] },
+  { id: 'kanban-update', cls: 'A', op: 'update', sql: 'UPDATE kanban_cards SET title = ?, updated_at = ? WHERE id = ?', params: (f, i) => [`card title ${i}`, 1800000000 + i, `card-${ownRow(f, i, f.rows)}`] },
   { id: 'conversation-append', cls: 'B', op: 'insert', sql: 'INSERT INTO conversation_log (agent_id, chat_id, direction, message_id, text, ts, created_at, tenant_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', params: (f, i) => ['agent-a', 'chat-1', 'in', `${f.uid}-m${i}`, 'perf message', 1800000000 + i, 1800000000 + i, f.tenant] },
   { id: 'audit-append', cls: 'B', op: 'insert', sql: 'INSERT INTO agent_audit_log (agent_id, entity, action, entity_id, detail, created_at, tenant_id) VALUES (?, ?, ?, ?, ?, ?, ?)', params: (f, i) => ['agent-a', 'message', 'create', `${f.uid}-a${i}`, '{}', 1800000000 + i, f.tenant] },
-  { id: 'comment-insert', cls: 'C', op: 'insert', sql: 'INSERT INTO kanban_comments (card_id, author, content, created_at) VALUES (?, ?, ?, ?)', params: (f, i) => [`card-${1 + (i % Math.min(1000, f.rows))}`, 'agent-a', 'perf comment', 1800000000 + i] },
+  { id: 'comment-insert', cls: 'C', op: 'insert', sql: 'INSERT INTO kanban_comments (card_id, author, content, created_at) VALUES (?, ?, ?, ?)', params: (f, i) => [`card-${ownRow(f, i, Math.min(1000, f.rows))}`, 'agent-a', 'perf comment', 1800000000 + i] },
 ]
 
 // The small tables (classes D1, D2, E, F). Their live size is a handful of rows, so the cost is the policy expression alone.

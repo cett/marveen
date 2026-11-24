@@ -31,7 +31,7 @@ const seqOnBig = (p: PlanFacts): string[] => p.seqScans.filter((t) => bigTables.
 beforeAll(async () => {
   db = await createPgTestDb()
   const s = await seedPerf(db.pool, uniformScale(3, ROWS))
-  facts = { ...s, tenant: tenantName(1), rows: ROWS, uid: 'plan' }
+  facts = { ...s, tenant: tenantName(1), tenants: 3, rows: ROWS, uid: 'plan' }
   const r = await db.pool.query<{ relname: string }>(`SELECT relname FROM pg_class WHERE relkind = 'r' AND reltuples > ${BIG}`)
   bigTables = new Set(r.rows.map((x) => x.relname))
 }, 300000)
@@ -167,7 +167,13 @@ const P0_TABLES = ['kanban_cards', 'memories', 'artifacts', 'workspace_docs', 'c
 
 type Variant = 'T' | 'P0' | 'P1' | 'P2'
 const VARIANTS: Variant[] = ['T', 'P0', 'P1', 'P2']
-interface Sample { p50: number; p95: number; p99: number; qps: number }
+/** `rows`: what the probe call (call number 0) returned: a variant that does different work (an empty result) is not comparable. */
+interface Sample { p50: number; p95: number; p99: number; qps: number; rows: number }
+const rowsOf = (r: unknown): number => {
+  if (Array.isArray(r)) return r.length // dbx.all
+  const x = r as { rows?: unknown[]; rowCount?: number | null; changes?: number }
+  return x.changes ?? ((x.rows?.length ?? 0) || (x.rowCount ?? 0)) // dbx.run / pool.query
+}
 
 const toPg = (sql: string): string => { let n = 0; return sql.replace(/\?/g, () => `$${++n}`) }
 const pct = (sorted: number[], p: number): number => sorted[Math.min(sorted.length - 1, Math.floor((p / 100) * sorted.length))]!
@@ -190,7 +196,7 @@ describe.skipIf(!PERF)('timing (report only)', () => {
           for (let i = 1; i <= tenants; i++) await d.pool.query('INSERT INTO tenants (id, display_name, created_at) VALUES ($1, $1, 1) ON CONFLICT DO NOTHING', [tenantName(i)])
         }
         for (const t of P0_TABLES) await p0.ownerPool.query(`ALTER TABLE ${t} DISABLE ROW LEVEL SECURITY`)
-        tf = { ...seeded, tenant: tenantName(1), rows: PERF_ROWS, uid: `perf${tenants}` }
+        tf = { ...seeded, tenant: tenantName(1), tenants, rows: PERF_ROWS, uid: `perf${tenants}` }
       }, 1800000)
       afterAll(async () => { await Promise.all([p1?.close(), p0?.close()]) })
 
@@ -218,6 +224,7 @@ describe.skipIf(!PERF)('timing (report only)', () => {
         try {
           // warm up the connections and the plans outside the measurement
           await Promise.all(Array.from({ length: poolSize }, (_, k) => call(1000000 + k)))
+          const rows = rowsOf(await call(2000000))
           const lat: number[] = []
           let next = 0
           const t0 = process.hrtime.bigint()
@@ -232,8 +239,8 @@ describe.skipIf(!PERF)('timing (report only)', () => {
           await Promise.all(Array.from({ length: poolSize }, () => worker()))
           const total = Number(process.hrtime.bigint() - t0) / 1e6
           lat.sort((a, b) => a - b)
-          const sample = { p50: pct(lat, 50), p95: pct(lat, 95), p99: pct(lat, 99), qps: Math.round((n / total) * 1000) }
-          console.log(`RLSPERF tenants=${tenants} rows=${PERF_ROWS} stmt=${st.id} class=${st.cls} op=${st.op} ctx=${ctxName} variant=${variant} pool=${poolSize} run=${run} n=${n} p50=${f3(sample.p50)}ms p95=${f3(sample.p95)}ms p99=${f3(sample.p99)}ms qps=${sample.qps}`)
+          const sample = { p50: pct(lat, 50), p95: pct(lat, 95), p99: pct(lat, 99), qps: Math.round((n / total) * 1000), rows }
+          console.log(`RLSPERF tenants=${tenants} rows=${PERF_ROWS} stmt=${st.id} class=${st.cls} op=${st.op} ctx=${ctxName} variant=${variant} pool=${poolSize} run=${run} n=${n} p50=${f3(sample.p50)}ms p95=${f3(sample.p95)}ms p99=${f3(sample.p99)}ms qps=${sample.qps} rows=${rows}`)
           return sample
         } finally {
           await pool.end()
@@ -250,6 +257,10 @@ describe.skipIf(!PERF)('timing (report only)', () => {
             for (const v of [...variants.slice(run % variants.length), ...variants.slice(0, run % variants.length)]) {
               (got[v] ??= []).push(await measure(v, st, ctxName, poolSize, run))
             }
+          }
+          // the tenant context must see what the superuser sees, or the variants did different work (viewer: zero is the point)
+          if (ctxName !== 'viewer' && ctxName !== 'admin' && st.ctxs?.[0] !== 'admin' && got['T']![0]!.rows !== got['P1']![0]!.rows) {
+            console.log(`RLSPERF-WARN rows differ stmt=${st.id} ctx=${ctxName} pool=${poolSize}: T=${got['T']![0]!.rows} P1=${got['P1']![0]!.rows}`)
           }
           const ratios = got['P1']!.map((s, k) => s.p95 / got['P0']![k]!.p95)
           const diffs = got['P1']!.map((s, k) => s.p95 - got['P0']![k]!.p95)
