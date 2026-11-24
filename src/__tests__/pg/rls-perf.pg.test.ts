@@ -52,11 +52,13 @@ const F1: Record<string, { gin: string; reason: string }> = {
   'workspace-fts-tenant': { gin: 'workspace_docs_fts_gin', reason: 'the same on workspace_docs (no tenant-leading index fits the statement, so a Seq Scan)' },
   'workspace-fts-notenant': { gin: 'workspace_docs_fts_gin', reason: 'the same on workspace_docs, no tenant filter' },
 }
-// F2: the similarity query joins memory_embeddings to memories; the policy filter on the memories side changes the join order
-// to a Seq Scan of memories. The distance calculation over the embeddings is an exact scan either way: the timing cells say
-// whether the plan change costs anything.
+// F2: a class C child read in bulk. The policy of memory_embeddings is `EXISTS (SELECT 1 FROM memories p WHERE p.id =
+// memory_id)`; when the statement reads many child rows the planner runs it as a HASHED SubPlan: one Seq Scan of the whole
+// parent per statement (its own policy filter `tenant_id = tenant OR privileged` cannot use an index), then a hash probe per
+// child row. A statement that reads a few children by key keeps a primary-key lookup (see PARENT_KEY). The cost grows with the
+// parent, not with the result: the timing cells put a number on it.
 const F2: Record<string, { seq: string; reason: string }> = {
-  'embedding-similarity': { seq: 'memories', reason: 'the policy filter on the parent changes the join: Seq Scan of memories instead of a primary-key lookup per embedding' },
+  'embedding-similarity': { seq: 'memories', reason: 'the child policy is a hashed SubPlan: one Seq Scan of the whole parent (memories) per statement' },
 }
 // the parent's primary key, the one index class C adds on purpose
 const PARENT_KEY: Record<string, string> = { 'comments-by-card': 'kanban_cards_pkey', 'links-by-src': 'memories_pkey', 'links-two-hop': 'memories_pkey' }
