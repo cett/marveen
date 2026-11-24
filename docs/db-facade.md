@@ -472,6 +472,25 @@ The approval transactions keep the modes of the synchronous transactions they re
 the line that decides when another connection or process writes between the read and the write; the lock only
 keeps other facade callers out of the body.
 
+## Row-level security on PostgreSQL: the registry rule
+
+Migration `0009_row_level_security.sql` turns row-level security on, with FORCE, for every table of the schema, and gives
+each table one class in `src/db/pg/rls-registry.ts`: a tenant row (A, or B when the tenant column is nullable), a child
+that follows its parent (C), a shared table that every context reads (D1), a privileged-only table (D2), an append-only
+table (D3), the auth tables (E), and the tenant and skill tables (F). The context a call runs in (`runAs`) decides which
+rows a policy shows; the serving role only ever holds DML rights and is bound by every policy.
+
+**A PostgreSQL migration that creates a table adds, in the same file, its `ENABLE` and `FORCE ROW LEVEL SECURITY` and its
+policy, and, in the same change, its entry in `src/db/pg/rls-registry.ts`.** The completeness cell (`rls-catalog.pg.test.ts`) compares the catalog with the registry in
+both directions and fails on a table with no entry, on a table with no policy, and on a policy that is not permissive. A
+table is never left to a default class: the class is a decision about who may read it. The policy shapes of one table per
+class are pinned through the app role in `rls-policy-shape.pg.test.ts`.
+
+Code that must read across tenants (the skill regen, the write-back qualification of the skill sync) opens a named system
+context for that one read and hands back only what the caller is allowed to know; a policy is never widened for it. A
+name that may be opened from a tenant or agent request without being counted as an escalation is listed in
+`SANCTIONED_ESCALATIONS` (`src/db/context.ts`) with the reason next to it, for the `system` kind only.
+
 ## PostgreSQL test harness
 
 The tests that need a PostgreSQL server are the `src/**/*.pg.test.ts` files. The default `vitest run` excludes them
