@@ -76,18 +76,18 @@ function nowSec(): number {
 }
 
 // Queue depth and the age of its oldest entry, read when an export happens.
-defineGauge('marveen.agent_messages.pending', '{message}', () => [{ value: countPendingAgentMessages() }])
-defineGauge('marveen.agent_messages.oldest_pending_age', 's', () => {
-  const oldest = oldestPendingAgentMessageAt()
+defineGauge('marveen.agent_messages.pending', '{message}', async () => [{ value: await countPendingAgentMessages() }])
+defineGauge('marveen.agent_messages.oldest_pending_age', 's', async () => {
+  const oldest = await oldestPendingAgentMessageAt()
   return oldest == null ? [] : [{ value: Math.max(0, nowSec() - oldest) }]
 })
 
 // ── Telegram channel (incoming_events): counts per status and the age of the oldest unhandled event ──
-defineGauge('marveen.channel.events', '{event}', () => {
-  return countIncomingEventsBySourceStatus().map((r) => ({ attrs: { channel: r.source, status: r.status }, value: r.n }))
+defineGauge('marveen.channel.events', '{event}', async () => {
+  return (await countIncomingEventsBySourceStatus()).map((r) => ({ attrs: { channel: r.source, status: r.status }, value: r.n }))
 }, ['channel', 'status'])
-defineGauge('marveen.channel.handoff.oldest_pending_age', 's', () => {
-  return oldestPendingIncomingEventBySource().filter((r) => r.oldest != null).map((r) => ({ attrs: { channel: r.source }, value: Math.max(0, nowSec() - (r.oldest as number)) }))
+defineGauge('marveen.channel.handoff.oldest_pending_age', 's', async () => {
+  return (await oldestPendingIncomingEventBySource()).filter((r) => r.oldest != null).map((r) => ({ attrs: { channel: r.source }, value: Math.max(0, nowSec() - (r.oldest as number)) }))
 }, ['channel'])
 
 // ── PreToolUse gate verdicts (scripts/hooks/gate_audit_lib.py writes gate_decision_counts) ──
