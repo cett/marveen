@@ -89,16 +89,30 @@ export const PERF_CONTEXTS = {
 // literals and the timing cells send them through the real facade. The shapes follow src/db/*; where the app builds a longer
 // text (the phrase verification of a full-text search), the cell keeps the part that decides the plan (the `@@` on `fts`).
 // ---------------------------------------------------------------------------------------------------------------------
-export type PerfClass = 'A' | 'B' | 'C'
-export interface PerfFacts { memLo: number; memCount: number; tenant: string }
+export type PerfClass = 'A' | 'B' | 'C' | 'D1' | 'D2' | 'F'
+export interface PerfFacts {
+  memLo: number
+  memCount: number
+  tenant: string
+  /** Rows per big table. */
+  rows: number
+  /** Unique prefix of one measurement: the ids of a write must not repeat. */
+  uid: string
+}
+type PerfParams = (f: PerfFacts, i: number) => unknown[]
 export interface PerfStatement {
   id: string
   cls: PerfClass
-  op: 'select' | 'list' | 'search'
+  op: 'select' | 'list' | 'search' | 'insert' | 'update'
   sql: string
-  params: (f: PerfFacts) => unknown[]
+  /** `i` is the running number of the call: it varies the row a read hits and makes the ids of a write unique. */
+  params: PerfParams
   /** True when the statement has no explicit tenant filter (what a forgotten filter costs: the policy alone filters). */
   noTenantFilter?: boolean
+  /** The same statement without its explicit tenant filter (the P2 variant: the policy alone filters). */
+  noTenant?: { sql: string; params: PerfParams }
+  /** The contexts the timing cells run it as (default: tenant). */
+  ctxs?: ReadonlyArray<keyof typeof PERF_CONTEXTS>
 }
 
 const FTS = "'public.marveen_fts'"
@@ -123,6 +137,50 @@ export const PERF_STATEMENTS: PerfStatement[] = [
   { id: 'links-by-src', cls: 'C', op: 'select', sql: 'SELECT * FROM memory_links WHERE src_id = ?', params: (f) => [f.memLo + 10] },
   { id: 'links-two-hop', cls: 'C', op: 'select', sql: 'SELECT l2.dst_id FROM memory_links l1 JOIN memory_links l2 ON l2.src_id = l1.dst_id WHERE l1.src_id = ?', params: (f) => [f.memLo + 10] },
   { id: 'embedding-similarity', cls: 'C', op: 'search', sql: "SELECT m.id, e.embedding <-> ?::vector AS distance FROM memory_embeddings e JOIN memories m ON m.id = e.memory_id WHERE (m.agent_id = ? OR m.category = 'shared') AND m.tenant_id = ? ORDER BY distance, m.id LIMIT 10", params: (f) => [PERF_QUERY_VECTOR, 'agent-a', f.tenant] },
+]
+
+// The P2 variants (no explicit tenant filter: the policy alone filters) and the reads that vary their row per call.
+const sqlOf = (id: string): string => PERF_STATEMENTS.find((s) => s.id === id)!.sql
+const paramsOf = (id: string): PerfParams => PERF_STATEMENTS.find((s) => s.id === id)!.params
+const NO_TENANT: Record<string, { sql: string; params: PerfParams }> = {
+  'kanban-list': { sql: "SELECT * FROM kanban_cards WHERE status = 'in_progress' AND archived_at IS NULL ORDER BY sort_order LIMIT 50", params: () => [] },
+  'memories-list-agent': { sql: 'SELECT * FROM memories WHERE agent_id = ? ORDER BY created_at DESC LIMIT 50', params: () => ['agent-a'] },
+  'memories-fts-tenant': { sql: sqlOf('memories-fts-notenant'), params: paramsOf('memories-fts-notenant') },
+  'artifacts-fts-tenant': { sql: sqlOf('artifacts-fts-notenant'), params: paramsOf('artifacts-fts-notenant') },
+  'workspace-fts-tenant': { sql: sqlOf('workspace-fts-notenant'), params: paramsOf('workspace-fts-notenant') },
+  'workspace-list': { sql: 'SELECT id, title FROM workspace_docs ORDER BY created_at DESC LIMIT 50', params: () => [] },
+  'conversation-list-tenant': { sql: 'SELECT * FROM conversation_log ORDER BY created_at DESC LIMIT 50', params: () => [] },
+  'audit-list-tenant': { sql: sqlOf('audit-list-recent'), params: () => [] },
+  'embedding-similarity': { sql: "SELECT m.id, e.embedding <-> ?::vector AS distance FROM memory_embeddings e JOIN memories m ON m.id = e.memory_id WHERE (m.agent_id = ? OR m.category = 'shared') ORDER BY distance, m.id LIMIT 10", params: () => [PERF_QUERY_VECTOR, 'agent-a'] },
+}
+for (const st of PERF_STATEMENTS) if (NO_TENANT[st.id]) st.noTenant = NO_TENANT[st.id]
+const VARY: Record<string, PerfParams> = {
+  'kanban-pk': (f, i) => [`card-${1 + ((i * 37) % f.rows)}`],
+  'comments-by-card': (f, i) => [`card-${1 + (i % Math.min(1000, f.rows))}`],
+  'links-by-src': (f, i) => [f.memLo + (i % f.memCount)],
+  'links-two-hop': (f, i) => [f.memLo + (i % f.memCount)],
+}
+for (const st of PERF_STATEMENTS) if (VARY[st.id]) st.params = VARY[st.id]!
+
+// Writes. Every id carries the unique prefix of the measurement and the call number. The Cyrillic look-alike title fires the
+// homoglyph trigger (one extra insert into homoglyph_findings, a class D3 table).
+const CYR = 'а' // Cyrillic small a, a look-alike of the Latin one
+const CARD_INSERT = 'INSERT INTO kanban_cards (id, title, status, priority, sort_order, created_at, updated_at, tenant_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+export const PERF_WRITES: PerfStatement[] = [
+  { id: 'kanban-insert', cls: 'A', op: 'insert', sql: CARD_INSERT, params: (f, i) => [`${f.uid}-c${i}`, 'perf card', 'planned', 'normal', i, 1800000000 + i, 1800000000 + i, f.tenant] },
+  { id: 'kanban-insert-homoglyph', cls: 'A', op: 'insert', sql: CARD_INSERT, params: (f, i) => [`${f.uid}-h${i}`, `p${CYR}rf card`, 'planned', 'normal', i, 1800000000 + i, 1800000000 + i, f.tenant] },
+  { id: 'kanban-update', cls: 'A', op: 'update', sql: 'UPDATE kanban_cards SET title = ?, updated_at = ? WHERE id = ?', params: (f, i) => [`card title ${i}`, 1800000000 + i, `card-${1 + ((i * 37) % f.rows)}`] },
+  { id: 'conversation-append', cls: 'B', op: 'insert', sql: 'INSERT INTO conversation_log (agent_id, chat_id, direction, message_id, text, ts, created_at, tenant_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', params: (f, i) => ['agent-a', 'chat-1', 'in', `${f.uid}-m${i}`, 'perf message', 1800000000 + i, 1800000000 + i, f.tenant] },
+  { id: 'audit-append', cls: 'B', op: 'insert', sql: 'INSERT INTO agent_audit_log (agent_id, entity, action, entity_id, detail, created_at, tenant_id) VALUES (?, ?, ?, ?, ?, ?, ?)', params: (f, i) => ['agent-a', 'message', 'create', `${f.uid}-a${i}`, '{}', 1800000000 + i, f.tenant] },
+  { id: 'comment-insert', cls: 'C', op: 'insert', sql: 'INSERT INTO kanban_comments (card_id, author, content, created_at) VALUES (?, ?, ?, ?)', params: (f, i) => [`card-${1 + (i % Math.min(1000, f.rows))}`, 'agent-a', 'perf comment', 1800000000 + i] },
+]
+
+// The small tables (classes D1, D2, E, F). Their live size is a handful of rows, so the cost is the policy expression alone.
+export const PERF_SMALL: PerfStatement[] = [
+  { id: 'autonomy-read', cls: 'D1', op: 'select', sql: 'SELECT * FROM autonomy_categories', params: () => [], ctxs: ['tenant'] },
+  { id: 'system-config-read', cls: 'D2', op: 'select', sql: 'SELECT * FROM system_config', params: () => [], ctxs: ['admin', 'tenant'] },
+  { id: 'tenants-own-row', cls: 'F', op: 'select', sql: 'SELECT * FROM tenants WHERE id = ?', params: (f) => [f.tenant], ctxs: ['tenant'] },
+  { id: 'skills-list', cls: 'F', op: 'list', sql: 'SELECT * FROM skills ORDER BY id LIMIT 50', params: () => [], ctxs: ['tenant'] },
 ]
 
 /** Inlines `?` placeholders as SQL literals (strings quoted, numbers as they are): only for EXPLAIN text, never for a live call. */

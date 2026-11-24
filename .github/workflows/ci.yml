@@ -548,3 +548,16 @@ jobs:
         # the dashboard's role is red here. A call with no db context gets the SYSTEM context in this run, so the silent-empty
         # class (a context-less call that sees no row) is NOT caught here: that is the job of the bare cells in src/__tests__/pg/
         run: npm run test:pg-modules-app
+
+      - name: PostgreSQL RLS overhead (report only)
+        # The cost of the row-level-security policies of migration 0009 on this runner: per statement and policy class, the
+        # context alone (policies off) against the policies on, against today's superuser call. One RLSPERF line per
+        # measurement in the log (grep "RLSPERF"); it asserts nothing and never fails the job. Its own timeout, so it can
+        # not eat the 25 minutes of the job. The always-on plan cells of the same file already ran in the first step.
+        continue-on-error: true
+        timeout-minutes: 10
+        env:
+          PG_RLS_PERF: '1'
+          PG_RLS_PERF_QUERIES: '200'
+          PG_RLS_PERF_ROWS: '20000'
+        run: npx vitest run --config vitest.pg.config.ts --silent=false src/__tests__/pg/rls-perf.pg.test.ts -t timing

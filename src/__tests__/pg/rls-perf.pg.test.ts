@@ -12,9 +12,11 @@
 //
 // The fixtures are synthetic and neutral; the data is VACUUMed so the GIN pending list does not distort the cost estimate.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { createPgTestDb, type PgTestDb } from '../helpers/pg-test-db.js'
-import { explainAs, inlineLiterals, PERF_CONTEXTS, PERF_STATEMENTS, seedPerf, tenantName, uniformScale, type PerfFacts, type PerfStatement, type PlanFacts } from '../helpers/rls-perf-data.js'
-import type { DbContext } from '../../db/context.js'
+import pg from 'pg'
+import { createPgTestDb, pgTypes, type PgTestDb } from '../helpers/pg-test-db.js'
+import { explainAs, inlineLiterals, PERF_CONTEXTS, PERF_SMALL, PERF_STATEMENTS, PERF_WRITES, seedPerf, tenantName, uniformScale, type PerfFacts, type PerfStatement, type PlanFacts } from '../helpers/rls-perf-data.js'
+import { withDbContext, type DbContext } from '../../db/context.js'
+import { createPgDbx } from '../../db/pg/dbx.js'
 
 const ROWS = 12000
 const BIG = 5000
@@ -29,15 +31,15 @@ const seqOnBig = (p: PlanFacts): string[] => p.seqScans.filter((t) => bigTables.
 beforeAll(async () => {
   db = await createPgTestDb()
   const s = await seedPerf(db.pool, uniformScale(3, ROWS))
-  facts = { ...s, tenant: tenantName(1) }
+  facts = { ...s, tenant: tenantName(1), rows: ROWS, uid: 'plan' }
   const r = await db.pool.query<{ relname: string }>(`SELECT relname FROM pg_class WHERE relkind = 'r' AND reltuples > ${BIG}`)
   bigTables = new Set(r.rows.map((x) => x.relname))
 }, 300000)
 afterAll(async () => { if (db) await db.close() })
 
 const stmt = (id: string): PerfStatement => PERF_STATEMENTS.find((s) => s.id === id)!
-const planApp = (st: PerfStatement, ctx: DbContext = PERF_CONTEXTS.tenant) => explainAs(db.appPool, ctx, inlineLiterals(st.sql, st.params(facts)))
-const planBypass = (st: PerfStatement) => explainAs(db.pool, undefined, inlineLiterals(st.sql, st.params(facts)))
+const planApp = (st: PerfStatement, ctx: DbContext = PERF_CONTEXTS.tenant) => explainAs(db.appPool, ctx, inlineLiterals(st.sql, st.params(facts, 0)))
+const planBypass = (st: PerfStatement) => explainAs(db.pool, undefined, inlineLiterals(st.sql, st.params(facts, 0)))
 
 // --- the allowlists --------------------------------------------------------------------------------------------------
 // F1: a full-text search. `ts_match_vq` is not leakproof, so under row-level security the GIN index is not usable and the
@@ -132,6 +134,151 @@ describe('the policy filter is ONE InitPlan, not a per-row call of app.tenant()'
       expect(a.initPlans).toBeGreaterThanOrEqual(1)
       expect(a.text).not.toMatch(/app\.tenant|app\.privileged|current_setting/)
       expect(a.text).toMatch(/InitPlan/)
+    })
+  }
+})
+
+// =====================================================================================================================
+// Timing cells (report only). OFF unless PG_RLS_PERF=1: they print one `RLSPERF` line per measurement (grep the log for
+// "RLSPERF") and assert nothing but `expect(true)`: a CI runner is too noisy to gate on, the numbers are for the report.
+//
+//   T   today: the superuser connection, no context (what the app does before row-level security)
+//   P0  the app role with the context statement through the real dbx path, policies DISABLED on the tables under test
+//       (a second database with the same data): the cost of the context alone
+//   P1  the same with the policies of migration 0009 enabled and forced: policy cost = P1 against P0, total = P1 against T
+//   P2  informational: P1 without the explicit tenant filter (what a forgotten filter costs: the policy alone filters)
+//
+// Variants are interleaved inside one run (so machine drift hits all four alike), 3 runs, pool 1 / 4 / 10. A finding line is
+// printed when the median per-run P1/P0 p95 ratio is over 1.15 AND the absolute difference is at least 0.15 ms (below that
+// the shared runner is noise), and when P1 is over twice T and more than 1 ms slower.
+//   PG_RLS_PERF_QUERIES  queries per measurement (default 500; a search statement runs a tenth, at least 20)
+//   PG_RLS_PERF_ROWS     rows per big table (default 20000)
+//   PG_RLS_PERF_TENANTS  the scenarios, comma separated tenant counts (default "1,20": one tenant holds everything / twenty)
+// =====================================================================================================================
+const PERF = process.env['PG_RLS_PERF'] === '1'
+const QUERIES = Number(process.env['PG_RLS_PERF_QUERIES'] ?? 500)
+const PERF_ROWS = Number(process.env['PG_RLS_PERF_ROWS'] ?? 20000)
+const SCENARIOS = (process.env['PG_RLS_PERF_TENANTS'] ?? '1,20').split(',').map(Number)
+const RUNS = 3
+const POOLS = [1, 4, 10]
+// the tables the policies are switched off on in the P0 database
+const P0_TABLES = ['kanban_cards', 'memories', 'artifacts', 'workspace_docs', 'conversation_log', 'agent_audit_log', 'kanban_comments', 'memory_links', 'memory_embeddings',
+  'homoglyph_findings', 'autonomy_categories', 'system_config', 'tenants', 'skills']
+
+type Variant = 'T' | 'P0' | 'P1' | 'P2'
+const VARIANTS: Variant[] = ['T', 'P0', 'P1', 'P2']
+interface Sample { p50: number; p95: number; p99: number; qps: number }
+
+const toPg = (sql: string): string => { let n = 0; return sql.replace(/\?/g, () => `$${++n}`) }
+const pct = (sorted: number[], p: number): number => sorted[Math.min(sorted.length - 1, Math.floor((p / 100) * sorted.length))]!
+const median = (xs: number[]): number => { const s = [...xs].sort((a, b) => a - b); return s[Math.floor(s.length / 2)]! }
+const f3 = (x: number): string => x.toFixed(3)
+
+describe.skipIf(!PERF)('timing (report only)', () => {
+  for (const tenants of SCENARIOS) {
+    describe(`${tenants} tenant(s), ${PERF_ROWS} rows per table`, () => {
+      let p1: PgTestDb
+      let p0: PgTestDb
+      let tf: PerfFacts
+      beforeAll(async () => {
+        const scale = uniformScale(tenants, PERF_ROWS)
+        p1 = await createPgTestDb()
+        p0 = await createPgTestDb()
+        const seeded = await seedPerf(p1.pool, scale)
+        await seedPerf(p0.pool, scale)
+        for (const d of [p1, p0]) {
+          for (let i = 1; i <= tenants; i++) await d.pool.query('INSERT INTO tenants (id, display_name, created_at) VALUES ($1, $1, 1) ON CONFLICT DO NOTHING', [tenantName(i)])
+        }
+        for (const t of P0_TABLES) await p0.ownerPool.query(`ALTER TABLE ${t} DISABLE ROW LEVEL SECURITY`)
+        tf = { ...seeded, tenant: tenantName(1), rows: PERF_ROWS, uid: `perf${tenants}` }
+      }, 1800000)
+      afterAll(async () => { await Promise.all([p1?.close(), p0?.close()]) })
+
+      /** One measurement: `n` calls spread over `poolSize` workers. */
+      async function measure(variant: Variant, st: PerfStatement, ctxName: keyof typeof PERF_CONTEXTS, poolSize: number, run: number): Promise<Sample> {
+        const noTenant = variant === 'P2'
+        const sql = noTenant ? st.noTenant!.sql : st.sql
+        const paramsFn = noTenant ? st.noTenant!.params : st.params
+        const ctx: DbContext = PERF_CONTEXTS[ctxName]
+        const n = st.op === 'search' ? Math.max(20, Math.floor(QUERIES / 10)) : QUERIES
+        const facts = { ...tf, uid: `${tf.uid}-${variant}-${run}-${poolSize}` }
+        const isWrite = st.op === 'insert' || st.op === 'update'
+        let call: (i: number) => Promise<unknown>
+        let pool: pg.Pool
+        if (variant === 'T') {
+          pool = new pg.Pool({ connectionString: p1.url, types: pgTypes, max: poolSize })
+          const text = toPg(sql)
+          call = (i) => pool.query(text, paramsFn(facts, i))
+        } else {
+          const db = variant === 'P0' ? p0 : p1
+          pool = new pg.Pool({ connectionString: db.appUrl, types: pgTypes, max: poolSize })
+          const dbx = createPgDbx(pool)
+          call = (i) => withDbContext(ctx, () => (isWrite ? dbx.run(sql, ...paramsFn(facts, i)) : dbx.all(sql, ...paramsFn(facts, i))))
+        }
+        try {
+          // warm up the connections and the plans outside the measurement
+          await Promise.all(Array.from({ length: poolSize }, (_, k) => call(1000000 + k)))
+          const lat: number[] = []
+          let next = 0
+          const t0 = process.hrtime.bigint()
+          const worker = async (): Promise<void> => {
+            while (next < n) {
+              const i = next++
+              const s = process.hrtime.bigint()
+              await call(i)
+              lat.push(Number(process.hrtime.bigint() - s) / 1e6)
+            }
+          }
+          await Promise.all(Array.from({ length: poolSize }, () => worker()))
+          const total = Number(process.hrtime.bigint() - t0) / 1e6
+          lat.sort((a, b) => a - b)
+          const sample = { p50: pct(lat, 50), p95: pct(lat, 95), p99: pct(lat, 99), qps: Math.round((n / total) * 1000) }
+          console.log(`RLSPERF tenants=${tenants} rows=${PERF_ROWS} stmt=${st.id} class=${st.cls} op=${st.op} ctx=${ctxName} variant=${variant} pool=${poolSize} run=${run} n=${n} p50=${f3(sample.p50)}ms p95=${f3(sample.p95)}ms p99=${f3(sample.p99)}ms qps=${sample.qps}`)
+          return sample
+        } finally {
+          await pool.end()
+        }
+      }
+
+      /** All variants, pools and runs of one statement in one context; then the verdict lines. */
+      async function report(st: PerfStatement, ctxName: keyof typeof PERF_CONTEXTS, pools: number[]): Promise<void> {
+        const variants = VARIANTS.filter((v) => v !== 'P2' || st.noTenant)
+        for (const poolSize of pools) {
+          const got: Record<string, Sample[]> = {}
+          for (let run = 1; run <= RUNS; run++) {
+            // rotate the starting variant so none is always first after a pause
+            for (const v of [...variants.slice(run % variants.length), ...variants.slice(0, run % variants.length)]) {
+              (got[v] ??= []).push(await measure(v, st, ctxName, poolSize, run))
+            }
+          }
+          const ratios = got['P1']!.map((s, k) => s.p95 / got['P0']![k]!.p95)
+          const diffs = got['P1']!.map((s, k) => s.p95 - got['P0']![k]!.p95)
+          const ratio = median(ratios)
+          const diff = median(diffs)
+          const t95 = median(got['T']!.map((s) => s.p95))
+          const p195 = median(got['P1']!.map((s) => s.p95))
+          console.log(`RLSPERF-SUMMARY tenants=${tenants} stmt=${st.id} class=${st.cls} op=${st.op} ctx=${ctxName} pool=${poolSize} T=${f3(t95)}ms P0=${f3(median(got['P0']!.map((s) => s.p95)))}ms P1=${f3(p195)}ms${got['P2'] ? ` P2=${f3(median(got['P2']!.map((s) => s.p95)))}ms` : ''} policy-ratio=${ratio.toFixed(2)} policy-diff=${f3(diff)}ms total-ratio=${(p195 / t95).toFixed(2)}`)
+          if (ratio > 1.15 && diff >= 0.15) console.log(`RLSPERF-FINDING policy tenants=${tenants} stmt=${st.id} ctx=${ctxName} pool=${poolSize} P1/P0 p95 ratio=${ratio.toFixed(2)} diff=${f3(diff)}ms`)
+          if (p195 > 2 * t95 && p195 - t95 > 1) console.log(`RLSPERF-FINDING total tenants=${tenants} stmt=${st.id} ctx=${ctxName} pool=${poolSize} P1 ${f3(p195)}ms against T ${f3(t95)}ms`)
+        }
+      }
+
+      // statements the plan cells use, minus the duplicates that only exist as the tenant-less variant of another
+      for (const st of PERF_STATEMENTS.filter((s) => !s.noTenantFilter)) {
+        it(`${st.id}`, async () => { await report(st, 'tenant', POOLS); expect(true).toBe(true) }, 3600000)
+      }
+      for (const st of PERF_WRITES) {
+        it(`${st.id}`, async () => { await report(st, 'tenant', POOLS); expect(true).toBe(true) }, 3600000)
+      }
+      for (const st of PERF_SMALL) {
+        for (const c of st.ctxs ?? ['tenant']) it(`${st.id} as ${c}`, async () => { await report(st, c, [4]); expect(true).toBe(true) }, 3600000)
+      }
+      // the other contexts: the privileged OR branch (admin), an agent, and the tenant-less viewer (zero rows)
+      for (const id of ['kanban-pk', 'kanban-list', 'memories-list-agent']) {
+        for (const c of ['agent', 'admin', 'viewer'] as const) {
+          it(`${id} as ${c}`, async () => { await report(PERF_STATEMENTS.find((s) => s.id === id)!, c, [4]); expect(true).toBe(true) }, 3600000)
+        }
+      }
     })
   }
 })
