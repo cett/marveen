@@ -24,6 +24,7 @@ const SCRIPTS = [
   'materialize-skills',
   'migrate-legacy-store-docs',
   'migrate-schedules-to-db',
+  'migrate-sqlite-to-pg',
   'regen-skills',
   'eval/recall-eval',
   'eval/recall-eval-run',
@@ -39,6 +40,9 @@ if (name === undefined || !(SCRIPTS as readonly string[]).includes(name)) {
 // the script sees its own path as argv[1] and its own arguments from argv[2], as when it is run directly
 process.argv.splice(2, 1)
 process.argv[1] = new URL(`./${name}.ts`, import.meta.url).pathname
+// A command whose stdout is a JSON report sends its log lines to stderr. The logger reads this at import, so it is set here,
+// before the script is imported (nothing on the static import path of this file loads the logger).
+if (name === 'migrate-sqlite-to-pg') process.env['LOG_TO_STDERR'] ??= '1'
 
 await ensureConfigSnapshot()
 await import(`./${name}.ts`)

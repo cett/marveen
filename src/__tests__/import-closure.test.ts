@@ -28,7 +28,8 @@ const RUNNER_SCRIPTS = [
   'scripts/setup.ts', 'scripts/status.ts', 'scripts/remote-access-enroll.ts', 'scripts/dashboard-url.ts',
   'scripts/agent-tokens.ts', 'scripts/install-seed-tenant.ts',
   'scripts/budget-alert-check.ts', 'scripts/claude-plan-rotate-check.ts', 'scripts/materialize-skills.ts',
-  'scripts/migrate-legacy-store-docs.ts', 'scripts/migrate-schedules-to-db.ts', 'scripts/regen-skills.ts',
+  'scripts/migrate-legacy-store-docs.ts', 'scripts/migrate-schedules-to-db.ts', 'scripts/migrate-sqlite-to-pg.ts',
+  'scripts/regen-skills.ts',
   'scripts/eval/recall-eval.ts', 'scripts/eval/recall-eval-run.ts', 'scripts/eval/recall-eval-pg.ts',
 ]
 
