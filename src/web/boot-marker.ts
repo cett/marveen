@@ -92,8 +92,12 @@ export async function recordBoot(now: number = Date.now()): Promise<LastBoot> {
 
 /** SIGTERM flush that stamps this boot's clean shutdown. ONE write, and registered before every other flush. */
 export function registerShutdownMarker(bootId: string): () => void {
+  // The flush runs on SIGTERM, outside the boot: no database context is inherited, and the clean_shutdown row is
+  // privileged-only, so the write runs in the boot-marker system job (the same job as the boot record).
   return registerSigtermFlush('shutdown-marker', () =>
-    setSystemConfig(CLEAN_SHUTDOWN_KEY, JSON.stringify({ boot_id: bootId, at: Date.now() })),
+    systemJob('boot-marker', () =>
+      setSystemConfig(CLEAN_SHUTDOWN_KEY, JSON.stringify({ boot_id: bootId, at: Date.now() })),
+    )(),
   )
 }
 
