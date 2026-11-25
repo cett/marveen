@@ -11,6 +11,7 @@
 // Privacy: neutral fixtures only (no real chat id, user name or agent name).
 import { describe, it, expect } from 'vitest'
 import { useTestDb } from './helpers/with-test-db.js'
+import { useAccessFile } from './helpers/coordinator-access.js'
 import {
   COORDINATOR_AGENT_ID,
   HANDOFF_TENANT,
@@ -27,6 +28,7 @@ import { UNBOUND_SOURCE_TENANT } from '../db/tenant-channel-bindings.js'
 import { MAIN_AGENT_ID } from '../config.js'
 
 const { dbx } = useTestDb()
+useAccessFile()
 
 const event = (update_id: number, chat_id = 1001) => ({
   update_id,
@@ -198,11 +200,12 @@ describe('the coordinator body on the facade (processBatch / reconcilePending)',
     expect(await count('SELECT COUNT(*) AS n FROM agent_messages WHERE from_agent = ?', COORDINATOR_AGENT_ID)).toBe(1)
   })
 
-  it('CURRENT BEHAVIOUR (no sender filter; the filter PR flips this cell): an update from ANY chat is ingested under the default tenant', async () => {
-    await processBatch([rawUpdate(430, 1001, 'from the owner chat'), rawUpdate(431, 2002, 'from a stranger chat')])
+  it('SENDER GATE (flipped from the port\'s CURRENT BEHAVIOUR cell): an update from a chat OUTSIDE the access list is dropped, the owner chat is ingested under the default tenant', async () => {
+    const max = await processBatch([rawUpdate(430, 1001, 'from the owner chat'), rawUpdate(431, 2002, 'from a stranger chat')])
+    expect(max).toBe(431) // the offset still moves past the dropped update
     const rows = await dbx.all<{ chat_id: number; status: string }>('SELECT chat_id, status FROM incoming_events ORDER BY update_id')
-    expect(rows).toEqual([{ chat_id: 1001, status: 'delivered' }, { chat_id: 2002, status: 'delivered' }])
-    expect(await count('SELECT COUNT(*) AS n FROM agent_messages WHERE from_agent = ? AND tenant_id = ?', COORDINATOR_AGENT_ID, 'default')).toBe(2)
+    expect(rows).toEqual([{ chat_id: 1001, status: 'delivered' }])
+    expect(await count('SELECT COUNT(*) AS n FROM agent_messages WHERE from_agent = ? AND tenant_id = ?', COORDINATOR_AGENT_ID, 'default')).toBe(1)
   })
 
   it('the replay re-queues a stranded event as a NEW handoff row with the default tenant, once', async () => {
@@ -216,7 +219,7 @@ describe('the coordinator body on the facade (processBatch / reconcilePending)',
 
   it('a malformed stored meta text does not stop the replay (it falls back to an empty meta)', async () => {
     await dbx.run(
-      "INSERT INTO incoming_events (source, update_id, kind, content, meta, created_at) VALUES ('telegram', 450, 'message', 'x', 'not-json{{', ?)",
+      "INSERT INTO incoming_events (source, update_id, chat_id, user_id, kind, content, meta, created_at) VALUES ('telegram', 450, 1001, 1001, 'message', 'x', 'not-json{{', ?)",
       Math.floor(Date.now() / 1000),
     )
     await expect(reconcilePending()).resolves.toBeUndefined()

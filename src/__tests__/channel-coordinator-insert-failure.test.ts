@@ -31,8 +31,12 @@ vi.mock('../channel-coordinator/ingest.js', async (importOriginal) => {
   }
 })
 
+import { useAccessFile } from './helpers/coordinator-access.js'
 import { closeDatabase, getDb, initProcessDatabase } from '../db/connection.js'
 import { processBatch, resetInsertFailuresForTests, POISON_INSERT_FAILURES, lastBatchStoppedOnFailure, setPoisonMinAgeForTests, insertFailStreakValue } from '../channel-coordinator-main.js'
+
+// the sender gate is default-deny: the owner chat of the fixtures (1001) is on a throwaway access list
+useAccessFile()
 
 const upd = (id: number) => ({ update_id: id, message: { message_id: id, date: 1, text: 't', chat: { id: 1001 }, from: { id: 1001 } } })
 const stored = (): number[] => (getDb().prepare('SELECT update_id FROM incoming_events ORDER BY update_id').all() as { update_id: number }[]).map((r) => r.update_id)

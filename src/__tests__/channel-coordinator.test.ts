@@ -21,6 +21,9 @@ import {
 } from '../channel-coordinator-main.js'
 import { decideNativeChannelDown } from '../channel-coordinator/liveness.js'
 import { initProcessDatabase, closeDatabase, getDb } from '../db/connection.js'
+import { useAccessFile } from './helpers/coordinator-access.js'
+
+useAccessFile()
 
 // ---- mapUpdate (pure normalization) -------------------------------------
 
@@ -277,8 +280,8 @@ describe('reconcilePending', () => {
   it('tolerates malformed stored meta JSON (falls back to {})', async () => {
     const db = getDb()
     db.prepare(`
-      INSERT INTO incoming_events (source, update_id, kind, content, meta, created_at)
-      VALUES ('telegram', 501, 'message', 'x', 'not-json{{', ?)
+      INSERT INTO incoming_events (source, update_id, chat_id, user_id, kind, content, meta, created_at)
+      VALUES ('telegram', 501, 1001, 1001, 'message', 'x', 'not-json{{', ?)
     `).run(Math.floor(Date.now() / 1000))
     await expect(reconcilePending()).resolves.toBeUndefined()
     const ev = db.prepare("SELECT * FROM incoming_events WHERE update_id = 501").get() as any

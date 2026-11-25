@@ -41,12 +41,14 @@ import {
   insertIncomingEvent,
   createHandoffMessage,
   markEventDelivered,
+  markEventFailed,
   getEventsNeedingHandoff,
   getOffset,
   setOffset,
   type InsertResult,
 } from './channel-coordinator/ingest.js'
 import { bootCoordinatorDb, closeCoordinatorDb } from './channel-coordinator/boot.js'
+import { loadSenderAccess, isSenderAllowed } from './channel-coordinator/sender-gate.js'
 
 const SOURCE = 'telegram'
 const LONGPOLL_TIMEOUT_SEC = 30
@@ -266,9 +268,20 @@ export async function processBatch(updates: { update_id: number }[]): Promise<nu
   batchStoppedOnFailure = false
   let maxUpdateId: number | null = null
   const settled = (id: number): void => { maxUpdateId = maxUpdateId == null ? id : Math.max(maxUpdateId, id) }
+  // default-deny: the access list of the native plugin, read once per batch (null = unreadable = nothing passes AND nothing is settled)
+  const access = loadSenderAccess()
+  let dropped = 0
   for (const raw of updates) {
     const ev = mapUpdate(raw as Parameters<typeof mapUpdate>[0])
     if (!ev) { settled(raw.update_id); continue } // unhandled update kind: offset still advances past it
+    // An UNREADABLE list (null: the plugin is rewriting the file, a half-written JSON, no file) is NOT a verdict on this sender, so
+    // the update is not settled: the batch stops here like at a failed insert (the offset stays below the update, the loop waits
+    // with its backoff, the next poll asks for it again) and the owner's message waits for a readable list instead of being lost.
+    // This is no insert failure, so it does not count towards the poison limit: nothing is counted, nothing is given up.
+    if (access === null) { batchStoppedOnFailure = true; break }
+    // a sender outside the list is a verdict: nothing is stored, nothing is handed off, nothing is sent back (no pairing reply),
+    // and the offset still advances past it, so the update is not asked for again
+    if (!isSenderAllowed(access, ev)) { dropped++; settled(raw.update_id); continue }
 
     let ins: InsertResult
     try {
@@ -312,6 +325,8 @@ export async function processBatch(updates: { update_id: number }[]): Promise<nu
   }
   // The backoff counter of the loop: one more for a batch that stopped at a failed insert, back to zero for one that did not.
   insertFailStreak = batchStoppedOnFailure ? insertFailStreak + 1 : 0
+  // the count only: no id, no name, no text of a sender that was not let in
+  if (dropped > 0) logger.warn({ dropped }, 'channel-coordinator: dropped updates from senders outside the access list')
   return maxUpdateId
 }
 
@@ -334,7 +349,20 @@ export async function reconcilePending(): Promise<void> {
     logger.error({ err }, 'channel-coordinator: reconcile query failed')
     return
   }
+  if (events.length === 0) return
+  // The same gate for what is already stored (events ingested before the gate, or a list that changed since). An UNREADABLE list
+  // is not a verdict on the senders: nothing is handed off and nothing is marked, the events wait for a readable list.
+  const access = loadSenderAccess()
+  if (access === null) return
   for (const ev of events) {
+    if (!isSenderAllowed(access, ev)) {
+      try {
+        await markEventFailed(ev.id, 'sender not allowed')
+      } catch (err) {
+        logger.error({ err, eventId: ev.id }, 'channel-coordinator: could not mark a not-allowed stored event; it stays pending')
+      }
+      continue
+    }
     try {
       let parsedMeta: Record<string, unknown> = {}
       try { if (ev.meta) parsedMeta = JSON.parse(ev.meta) as Record<string, unknown> } catch {}

@@ -92,10 +92,26 @@ function displayName(u?: RawUser): string | null {
   return full || String(u.id)
 }
 
-// Normalize a raw Telegram update into the flat shape the ingest layer stores.
-// Returns null for update kinds we do not handle (so the caller still advances
-// the offset past them rather than re-fetching forever).
+/** A NUL (0x00) byte is not storable in a PostgreSQL text value (the INSERT is refused every time, a durable poison update), and
+ * Telegram text is free input: it is removed here, at the boundary between what a sender wrote and what the store gets. */
+export function stripNul<T>(v: T): T {
+  if (typeof v === 'string') return v.replace(/\u0000/g, '') as T
+  if (Array.isArray(v)) return v.map(stripNul) as T
+  if (v !== null && typeof v === 'object') {
+    return Object.fromEntries(Object.entries(v as Record<string, unknown>).map(([k, x]) => [stripNul(k), stripNul(x)])) as T
+  }
+  return v
+}
+
+// Normalize a raw Telegram update into the flat shape the ingest layer stores. Every string of it (content, username, meta) is
+// free of NUL bytes. Returns null for update kinds we do not handle (so the caller still advances the offset past them rather
+// than re-fetching forever).
 export function mapUpdate(u: RawUpdate): NormalizedEvent | null {
+  const ev = mapUpdateUnsafe(u)
+  return ev ? stripNul(ev) : null
+}
+
+function mapUpdateUnsafe(u: RawUpdate): NormalizedEvent | null {
   const msg = u.message ?? u.edited_message ?? u.channel_post
   if (msg) {
     const kind: UpdateKind = u.edited_message
