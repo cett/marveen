@@ -21,6 +21,20 @@ export interface TeamConfig {
   // cross-team collaborator. Unknown names and self-references are stripped
   // at write time (see writeAgentTeam + sanitizeTeamConfig).
   trustFrom?: string[]
+  // One-word job title shown under the avatar in the radial org chart ("fejlesztő"). Display only: nothing routes on it.
+  // Absent = no word is shown (no placeholder). See normalizeTeamTitle for the accepted shape.
+  title?: string
+}
+
+/** A title is ONE word: a letter or digit first, then letters, digits, `.` or `-`, at most 24 characters, no spaces or markup.
+ *  Returns the trimmed title, or null when the value is empty or does not fit (the reader drops it, the PUT route refuses it). */
+export const TEAM_TITLE_MAX = 24
+const TEAM_TITLE_PATTERN = /^[\p{L}\p{N}][\p{L}\p{N}.-]*$/u
+export function normalizeTeamTitle(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const t = value.trim()
+  if (!t || t.length > TEAM_TITLE_MAX || !TEAM_TITLE_PATTERN.test(t)) return null
+  return t
 }
 
 export const DEFAULT_TEAM: TeamConfig = {
@@ -42,7 +56,8 @@ export function readAgentTeam(name: string): TeamConfig {
       const delegatesTo = Array.isArray(raw.delegatesTo) ? raw.delegatesTo.filter((x: unknown) => typeof x === 'string') : []
       const autoDelegation = !!raw.autoDelegation
       const trustFrom = Array.isArray(raw.trustFrom) ? raw.trustFrom.filter((x: unknown) => typeof x === 'string') : []
-      return { role, reportsTo, delegatesTo, autoDelegation, trustFrom }
+      const title = normalizeTeamTitle(raw.title)
+      return { role, reportsTo, delegatesTo, autoDelegation, trustFrom, ...(title ? { title } : {}) }
     }
   } catch { /* fall through */ }
   return { ...DEFAULT_TEAM, trustFrom: [] }
@@ -137,6 +152,7 @@ export function sanitizeTeamConfig(
       delegatesTo: cleanList(team.delegatesTo, 'delegatesTo'),
       autoDelegation: team.autoDelegation,
       trustFrom: cleanList(team.trustFrom ?? [], 'trustFrom'),
+      ...(normalizeTeamTitle(team.title) ? { title: normalizeTeamTitle(team.title) as string } : {}),
     },
     warnings,
   }

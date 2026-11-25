@@ -47,6 +47,8 @@ import {
   sanitizeTeamConfig,
   cleanupTeamReferences,
   reportsToCreatesCycle,
+  normalizeTeamTitle,
+  TEAM_TITLE_MAX,
   type TeamConfig,
 } from '../agent-team.js'
 import { sendAvatarChangeMessage } from '../telegram.js'
@@ -144,6 +146,7 @@ import { listScheduledTasks } from '../scheduled-tasks-io.js'
 import { oneLine } from '../approval-owner-notice.js'
 import { remotePaneCache, agentRunStateCached, getAgentDetail, listAgentSummaries, assertAgentExists, tenantSummaryFields } from './agents-helpers.js'
 import { visibleAgentSet, callerCanSeeAgent, scopeTenantFieldsToCaller, isAdminCaller } from './agent-tenant-scope.js'
+import { buildTenantViews } from './team-tenant-view-data.js'
 
 // A bundle carries the agent's CLAUDE.md/SOUL.md/MCP config and, with
 // ?secrets=1, its vault secrets. Role-wide `agents:read` (which every tenant
@@ -531,6 +534,12 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
     return true
   }
 
+  // The per-tenant, derived view for the radial org chart (the plain graph below stays as it is for the tree view).
+  if (path === '/api/team/graph' && method === 'GET' && new URL(req.url ?? '', 'http://localhost').searchParams.get('view') === 'tenants') {
+    jsonMaybeGzip(req, res, await buildTenantViews(ctx))
+    return true
+  }
+
   if (path === '/api/team/graph' && method === 'GET') {
     const nodes: Array<{
       id: string
@@ -617,6 +626,17 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
     if (!assertAgentExists(name, res)) return true
     const data = await readJsonBody<Record<string, unknown>>(req)
     const current = readAgentTeam(name)
+    // The one-word title (display only): a string sets it, null or '' clears it, a value that is not ONE word is refused so
+    // a typo is not silently dropped; absent leaves it as it is.
+    let title = current.title
+    if ('title' in data) {
+      if (data.title === null || data.title === '') title = undefined
+      else {
+        const normalized = normalizeTeamTitle(data.title)
+        if (!normalized) { json(res, { error: 'invalid_value', field: 'title', hint: `title must be one word of at most ${TEAM_TITLE_MAX} characters (letters, digits, "." or "-")` }, 400); return true }
+        title = normalized
+      }
+    }
     const proposed: TeamConfig = {
       role: data.role === 'leader' ? 'leader' : (data.role === 'member' ? 'member' : current.role),
       reportsTo: typeof data.reportsTo === 'string'
@@ -629,6 +649,7 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
       trustFrom: Array.isArray(data.trustFrom)
         ? data.trustFrom.filter((x: unknown) => typeof x === 'string')
         : (current.trustFrom ?? []),
+      ...(title ? { title } : {}),
     }
     // Reject a reportsTo that would create a reporting cycle (e.g. dragging a
     // manager under its own report in the Team graph). Keep the current parent

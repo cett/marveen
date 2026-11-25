@@ -157,7 +157,13 @@ vi.mock('../web/agent-config.js', async (importOriginal) => {
 vi.mock('../web/model-fallback-state.js', () => ({
   clearFallbackOverride: vi.fn(),
 }))
-vi.mock('../web/agent-team.js', () => ({
+vi.mock('../web/routes/team-tenant-view-data.js', () => ({
+  buildTenantViews: vi.fn().mockResolvedValue({ tenants: [{ id: 'view-marker', name: 'V', rootId: null, nodes: [], edges: [] }], mainAgentId: null }),
+}))
+vi.mock('../web/agent-team.js', async (importOriginal) => ({
+  // the title validation is a pure helper of the real module: the route's 400 and the stored value depend on it
+  normalizeTeamTitle: (await importOriginal<typeof import('../web/agent-team.js')>()).normalizeTeamTitle,
+  TEAM_TITLE_MAX: (await importOriginal<typeof import('../web/agent-team.js')>()).TEAM_TITLE_MAX,
   readAgentTeam: vi.fn().mockReturnValue({ role: 'member', reportsTo: null, delegatesTo: [], autoDelegation: false, trustFrom: [], trustSources: [] }),
   writeAgentTeam: vi.fn(),
   sanitizeTeamConfig: vi.fn().mockImplementation((cfg: any) => cfg),
@@ -453,6 +459,62 @@ describe('agents-crud routes (extended)', () => {
     expect(await tryHandleAgentsCrud(ctx, WEB_DIR)).toBe(true)
     expect(statusCode()).toBe(200)
     expect((responseBody() as any).ok).toBe(true)
+  })
+
+  describe('the one-word title on PUT /api/agents/:name/team', () => {
+    const put = async (body: unknown) => {
+      const { ctx, statusCode, responseBody } = makeCtx({ method: 'PUT', path: '/api/agents/test-agent/team', body: JSON.stringify(body) })
+      expect(await tryHandleAgentsCrud(ctx, WEB_DIR)).toBe(true)
+      return { status: statusCode(), body: responseBody() as any }
+    }
+    const written = async () => {
+      const agentTeam = await import('../web/agent-team.js')
+      return vi.mocked(agentTeam.sanitizeTeamConfig).mock.calls.at(-1)?.[1] as { title?: string }
+    }
+
+    it('a one-word title is stored with the team', async () => {
+      expect((await put({ title: 'fejlesztő' })).status).toBe(200)
+      expect((await written()).title).toBe('fejlesztő')
+    })
+
+    it('a title that is not one word is refused with 400 and nothing is written', async () => {
+      const agentTeam = await import('../web/agent-team.js')
+      vi.mocked(agentTeam.writeAgentTeam).mockClear()
+      for (const bad of ['two words', '<b>x</b>', 'x'.repeat(40), 5]) {
+        const r = await put({ title: bad })
+        expect(r.status).toBe(400)
+        expect(r.body).toMatchObject({ error: 'invalid_value', field: 'title' })
+      }
+      expect(agentTeam.writeAgentTeam).not.toHaveBeenCalled()
+    })
+
+    it('null or an empty string clears it, and a PUT without the key leaves it as it is', async () => {
+      const agentTeam = await import('../web/agent-team.js')
+      vi.mocked(agentTeam.readAgentTeam).mockReturnValue({ role: 'member', reportsTo: null, delegatesTo: [], autoDelegation: false, trustFrom: [], title: 'dev' } as never)
+      try {
+        await put({ role: 'member' })
+        expect((await written()).title).toBe('dev')
+        await put({ title: null })
+        expect('title' in (await written())).toBe(false)
+        await put({ title: '' })
+        expect('title' in (await written())).toBe(false)
+      } finally {
+        vi.mocked(agentTeam.readAgentTeam).mockReturnValue({ role: 'member', reportsTo: null, delegatesTo: [], autoDelegation: false, trustFrom: [], trustSources: [] } as never)
+      }
+    })
+  })
+
+  it('GET /api/team/graph?view=tenants answers with the derived per-tenant view, and the plain graph is untouched', async () => {
+    const { ctx, statusCode, responseBody } = makeCtx({ method: 'GET', path: '/api/team/graph?view=tenants', role: 'admin' })
+    ctx.path = '/api/team/graph'
+    expect(await tryHandleAgentsCrud(ctx, WEB_DIR)).toBe(true)
+    expect(statusCode()).toBe(200)
+    expect((responseBody() as any).tenants[0].id).toBe('view-marker')
+    const plain = makeCtx({ method: 'GET', path: '/api/team/graph', role: 'admin' })
+    expect(await tryHandleAgentsCrud(plain.ctx, WEB_DIR)).toBe(true)
+    const body = plain.responseBody() as any
+    expect(Array.isArray(body.nodes)).toBe(true)
+    expect(body.tenants).toBeUndefined()
   })
 
   it('POST /api/agents creates new agent successfully', async () => {
