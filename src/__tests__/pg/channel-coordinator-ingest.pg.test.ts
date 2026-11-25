@@ -30,6 +30,7 @@ import {
 } from '../../channel-coordinator/ingest.js'
 import { bootCoordinatorDb, closeCoordinatorDb } from '../../channel-coordinator/boot.js'
 import { resetPgCredentialCaptureForTests } from '../../db/pg/url.js'
+import { countIncomingEventsBySourceStatus, oldestPendingIncomingEventBySource } from '../../db/otel-gauges.js'
 
 const made: PgTestDb[] = []
 afterEach(async () => {
@@ -177,3 +178,37 @@ async function emptyMigrationsDir(): Promise<string> {
   const { join } = await import('node:path')
   return mkdtempSync(join(tmpdir(), 'coord-empty-migrations-'))
 }
+
+describe('the OTLP gauges read what the coordinator wrote', () => {
+  // The twin of the SQLite cell in channel-coordinator-process-db.test.ts. incoming_events is a D2 table (privileged only), so the
+  // gauge sees the coordinator's rows only inside a system job (the exporter runs as otel-push-exporter); a tenant context reads an
+  // empty table, and an empty gauge looks exactly like "nothing pending" on a dashboard, so the cell checks both sides.
+  it('a delivered and a stranded event are counted per source and status, and the oldest pending one is its created_at', async () => {
+    const db = await bootedDb()
+    const first = await insertIncomingEvent('telegram', ev(1))
+    await markEventDelivered(first.eventId!, await createHandoffMessage('body'))
+    // the delivered one is the OLDER row: a gauge that forgot the pending filter would report its created_at as the oldest pending
+    await db.pool.query('UPDATE incoming_events SET created_at = created_at - 100 WHERE id = $1', [first.eventId])
+    const stranded = await insertIncomingEvent('telegram', ev(2))
+    const created = Number((await db.pool.query('SELECT created_at FROM incoming_events WHERE id = $1', [stranded.eventId])).rows[0].created_at)
+
+    await runAs.system('otel-push-exporter', async () => {
+      const counts = (await countIncomingEventsBySourceStatus()).map((r) => ({ ...r, n: Number(r.n) }))
+      expect(counts).toEqual(expect.arrayContaining([
+        { source: 'telegram', status: 'delivered', n: 1 },
+        { source: 'telegram', status: 'pending', n: 1 },
+      ]))
+      expect(counts).toHaveLength(2)
+      const oldest = await oldestPendingIncomingEventBySource()
+      expect(oldest).toEqual([{ source: 'telegram', oldest: created }])
+    })
+  })
+
+  it('the same readers in a tenant context see nothing although the rows exist (what a gauge outside the job would report)', async () => {
+    const db = await bootedDb()
+    await insertIncomingEvent('telegram', ev(1))
+    expect(await count(db, 'incoming_events')).toBe(1)
+    expect(await runAs.tenant('tenant-t1', () => countIncomingEventsBySourceStatus())).toEqual([])
+    expect(await runAs.tenant('tenant-t1', () => oldestPendingIncomingEventBySource())).toEqual([])
+  })
+})
