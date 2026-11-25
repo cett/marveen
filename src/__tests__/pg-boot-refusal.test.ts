@@ -353,42 +353,16 @@ describe('initDatabaseAsync', () => {
   })
 })
 
-describe('refuseProcessOnPg', () => {
-  it('lets an install without a PostgreSQL URL through', async () => {
-    const { boot } = await load()
-    expect(() => boot.refuseProcessOnPg()).not.toThrow()
-  })
-
-  it('with a URL configured it throws a clear error that is not a PgBootError, never echoes the URL, and opens no pool', async () => {
-    vi.stubEnv('MARVEEN_PG_URL', DEAD_URL)
-    vi.doMock('pg', () => { pgLoaded = true; return { default: {} } })
-    const { boot, facade } = await load()
-    let err: Error | null = null
-    try { boot.refuseProcessOnPg() } catch (e) { err = e as Error }
-    expect(err).toBeInstanceOf(boot.PgProcessNotSupportedError)
-    expect(err).not.toBeInstanceOf(boot.PgBootError)
-    expect(err!.message).toContain('MARVEEN_PG_URL')
-    expect(err!.message).toMatch(/cannot run on PostgreSQL yet/)
-    expect(err!.message).not.toContain('secret-a')
-    expect(err!.message).not.toContain('user-a')
-    expect(pgLoaded).toBe(false)
-    expect(facade.dbxDialect()).toBe('sqlite')
-  })
-
-  it('an empty or whitespace-only URL is "not configured" (the same rule as the backend switch), so it lets the process through', async () => {
-    vi.stubEnv('MARVEEN_PG_URL', '   ')
-    const { boot } = await load()
-    expect(() => boot.refuseProcessOnPg()).not.toThrow()
-  })
-})
-
 describe('the process boot (src/main.ts)', () => {
   const src = readFileSync(new URL('../main.ts', import.meta.url), 'utf-8')
 
   it('awaits initDatabaseAsync before anything that listens, and a rejection there ends the process through main().catch', () => {
-    const boot = src.indexOf('await initDatabaseAsync()')
+    // the database boot lives in bootProcessDatabase (src/process-db-boot.ts), which awaits initDatabaseAsync; main() awaits it
+    const boot = src.indexOf('await bootProcessDatabase()')
     expect(boot).toBeGreaterThan(0)
     expect(boot).toBeLessThan(src.indexOf('startWebServer(WEB_PORT)'))
+    const procBoot = readFileSync(new URL('../process-db-boot.ts', import.meta.url), 'utf-8')
+    expect(procBoot).toMatch(/await initDatabaseAsync\(\)/)
     expect(src.indexOf('startWebServer(WEB_PORT)')).toBeGreaterThan(0)
     expect(src).toMatch(/main\(\)\.catch\(\(err\) => \{[\s\S]*shutdown\(\)/)
   })
@@ -397,18 +371,11 @@ describe('the process boot (src/main.ts)', () => {
     expect(src).not.toMatch(/^[ \t]*initDatabase\(\)/m)
   })
 
-  it('refuses the process on PostgreSQL FIRST in main(), before the port takeover and before any database work, in ONE place', () => {
-    // a refused process must not SIGTERM the running dashboard (acquireLock) nor open a pool: the call comes before both.
-    // Mutant: the call moved after `await acquireLock()` (or after the database boot) fails the order cells below.
-    const mainStart = src.indexOf('async function main()')
-    const refuse = src.indexOf('  refuseProcessOnPg()\n')
-    const takeover = src.indexOf('await acquireLock()')
-    expect(mainStart).toBeGreaterThan(0)
-    expect(refuse).toBeGreaterThan(mainStart)
-    expect(takeover).toBeGreaterThan(mainStart)
-    expect(refuse).toBeLessThan(takeover)
-    expect(refuse).toBeLessThan(src.indexOf('await initDatabaseAsync()'))
-    expect(src.match(/refuseProcessOnPg\(/g)).toHaveLength(1)
+  it('has no PostgreSQL refusal left: main() does not call refuseProcessOnPg, and pg-boot no longer defines the refusal', () => {
+    // A1 (guard removal, the LAST commit of the PG process PR). Mutant: the refusal call restored in main() turns this red.
+    const bootSrc = readFileSync(new URL('../db/pg-boot.ts', import.meta.url), 'utf-8')
+    expect(src).not.toMatch(/refuseProcessOnPg/)
+    expect(bootSrc).not.toMatch(/refuseProcessOnPg|PgProcessNotSupportedError/)
   })
 
   it('ends the PostgreSQL pool at shutdown', () => {

@@ -66,11 +66,33 @@ describe('loadSystemConfigSnapshot against PostgreSQL', () => {
   })
 
   it('no connection is left open: the count of the database connections is the same before and after a load', async () => {
-    const count = async (): Promise<number> => Number((await probe.query(
-      'SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = current_database()')).rows[0].n)
-    const before = await count()
-    await loadSystemConfigSnapshot(db.url)
-    await loadSystemConfigSnapshot(withPassword(db.url, 'wrong-placeholder-password')).catch(() => undefined)
-    expect(await count()).toBe(before)
+    // a database of this test alone: no other test file shares it, so the count sees only this test's own clients
+    const own = await createPgTestDb()
+    const counter = new pg.Client({ connectionString: own.url })
+    await counter.connect()
+    try {
+      const count = async (): Promise<number> => Number((await counter.query(
+        'SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = current_database()')).rows[0].n)
+      // the server drops a closed client's backend a moment after the client ends: poll until the count holds still
+      // (the same value three times in a row, 100 ms apart, at most 5 s), then compare exactly
+      const settled = async (): Promise<number> => {
+        let last = await count()
+        let same = 1
+        for (let i = 0; i < 50 && same < 3; i++) {
+          await new Promise((r) => setTimeout(r, 100))
+          const now = await count()
+          same = now === last ? same + 1 : 1
+          last = now
+        }
+        return last
+      }
+      const before = await settled()
+      await loadSystemConfigSnapshot(own.url)
+      await loadSystemConfigSnapshot(withPassword(own.url, 'wrong-placeholder-password')).catch(() => undefined)
+      expect(await settled()).toBe(before)
+    } finally {
+      await counter.end()
+      await own.close()
+    }
   })
 })

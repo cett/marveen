@@ -4,13 +4,13 @@
 // and the next boot attempt a fresh one.
 //
 // Privacy: neutral fixtures only.
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import pg from 'pg'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createPgTestDb, pgTestUrl, PG_TEST_APP_ROLE, PG_TEST_OWNER_ROLE, type PgTestDb } from '../helpers/pg-test-db.js'
-import { bootPgBackend, closePgBackend, PgBootError, PgProcessNotSupportedError, refuseProcessOnPg } from '../../db/pg-boot.js'
+import { bootPgBackend, closePgBackend, PgBootError } from '../../db/pg-boot.js'
 import { pgRolePreflight } from '../../db/pg/preflight.js'
 import { dbxDialect, useDbxBackend } from '../../db/facade.js'
 import { runAs } from '../../db/context.js'
@@ -133,18 +133,6 @@ describe('bootPgBackend: success', () => {
       useDbxBackend(null)
       await second.end()
     }
-  })
-
-  it('the process refusal opens no connection: with the URL configured it throws before any pool exists, and the facade stays on SQLite', async () => {
-    const db = await baselineDb()
-    vi.stubEnv('MARVEEN_PG_URL', db.appUrl)
-    try {
-      expect(() => refuseProcessOnPg()).toThrow(PgProcessNotSupportedError)
-    } finally {
-      vi.unstubAllEnvs()
-    }
-    expect(dbxDialect()).toBe('sqlite')
-    expect(await sessionsOn(db)).toBe(0)
   })
 
   it('a second boot while one is active is refused, not stacked', async () => {

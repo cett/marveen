@@ -68,6 +68,7 @@ export const BACKGROUND_JOBS = {
   'boot-sequence': { file: 'src/main.ts', role: 'system', note: 'the fire-and-forget backfills and passes started while the dashboard boots' },
   'pg-boot-caches': { file: 'src/db/pg-boot.ts', role: 'system', note: 'the three process-wide caches (system_config, model_profile_map, agent_settings) read whole at boot: a global read, which an empty context sees as zero rows under row-level security' },
   'boot-importers': { file: 'src/db/index.ts', role: 'system', note: 'the one-time imports of the PostgreSQL boot (cost budgets file, claude plans seed): they write global rows and read D2 tables' },
+  'dashboard-token-bootstrap': { file: 'src/web.ts', role: 'system', note: 'enrolls the dashboard own token into api_tokens at boot, before the listen (a failure falls back to the file token, logged)' },
   'rbac-mode-load': { file: 'src/web/rbac-mode.ts', role: 'system', note: 'the boot read and seed of the RBAC mode row in system_config (the refresh timer is rbac-mode-refresh)' },
   'boot-marker': { file: 'src/web/boot-marker.ts', role: 'system', note: 'records this boot in system_config and the audit log' },
   'http-gate': { file: 'src/web.ts', role: 'system', note: 'the request before a principal is known: the auth lookups, the RBAC gate and the shadow counters' },
