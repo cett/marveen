@@ -1,12 +1,14 @@
 // DB layer for the channel-coordinator.
 //
-// The coordinator is a SEPARATE process from the dashboard, so it cannot share
-// the dashboard's better-sqlite3 singleton (src/db.ts). It opens its OWN handle
-// to the same store/claudeclaw.db file. That is safe because the DB runs in WAL
-// mode (a writer never blocks readers, and two processes can write to a WAL DB
-// as long as each sets busy_timeout). We assert busy_timeout=5000 on our handle
-// because db.ts does not set it -- without it a concurrent dashboard write would
-// surface as SQLITE_BUSY instead of a short wait.
+// The coordinator is a SEPARATE process from the dashboard. Its database access goes through the async db facade (`dbx`), the
+// same seven functions on both backends: on SQLite the facade talks to this process's own connection to store/claudeclaw.db
+// (opened by the coordinator boot, see boot.ts: WAL mode, so two processes can write the file as long as each sets
+// busy_timeout), on PostgreSQL it talks to the pool the boot made with the application role.
+//
+// There is no tenant context in this process: the coordinator is the system. Every function therefore runs as ONE named system
+// job ('channel-coordinator-ingest', in BACKGROUND_JOBS): the two tables it owns are D2 (privileged only: no tenant, no agent and no
+// viewer context sees a row), and the replay read joins agent_messages across tenants. Without the job the same call is refused
+// by row-level security on PostgreSQL.
 //
 // Two tables are owned here (created by migration 0073):
 //   incoming_events -- every inbound Telegram update, deduped on (source,update_id)
@@ -16,46 +18,27 @@
 // message-router (5s tick, tmux injection, wrapUntrusted) -- we just INSERT a
 // pending row from 'telegram-coordinator' to the main agent.
 
-import Database from 'better-sqlite3'
-import { join } from 'node:path'
-import { STORE_DIR, DB_FILENAME, MAIN_AGENT_ID } from '../config.js'
-import { applyMigrations } from '../db-migrations.js'
-import { assertSqliteEntryAllowed } from '../db/pg/url.js'
+import { dbx } from '../db/facade.js'
+import { systemJob } from '../db/background-jobs.js'
+import { UNBOUND_SOURCE_TENANT } from '../db/tenant-channel-bindings.js'
+import { MAIN_AGENT_ID } from '../config.js'
 
 export const COORDINATOR_AGENT_ID = 'telegram-coordinator'
 
-let db: Database.Database | null = null
+/**
+ * Runs an ingest function as the ONE system job of this module. The name is spelled here, once, because the jobs table is
+ * checked against the source text (db-background-jobs.test.ts: every entry is bound in its own file under its own name).
+ */
+const inIngestJob = <A extends unknown[], R>(fn: (...args: A) => R): ((...args: A) => R) =>
+  systemJob('channel-coordinator-ingest', fn)
 
-// The default is the install's SQLite file. On a PostgreSQL install the coordinator must not open that file (the dashboard
-// reads PostgreSQL, so events written there would be lost): the default path is refused when a PostgreSQL URL is set.
-// A caller that names its own file (a test's ':memory:') is not an install entry point and is not refused.
-export function initIngestDb(dbPath?: string): Database.Database {
-  if (db) return db
-  if (dbPath === undefined) assertSqliteEntryAllowed('channel-coordinator (incoming events)')
-  const handle = new Database(dbPath ?? join(STORE_DIR, DB_FILENAME))
-  // WAL is persistent per-DB (the dashboard already set it); re-assert is a
-  // no-op but harmless. busy_timeout IS per-connection, so set it here.
-  handle.pragma('journal_mode = WAL')
-  handle.pragma('busy_timeout = 5000')
-
-  // The coordinator and the dashboard both start at boot (separate launchd
-  // units) and either may win. Both run the SAME migration runner, so the
-  // tables this module uses (incoming_events and poll_offset from migration
-  // 0073, agent_messages from the baseline and its later migrations) have one
-  // source of truth and a coordinator-first boot cannot drift from it. The
-  // runner takes an IMMEDIATE write lock per migration and re-checks
-  // schema_version inside it, so a concurrent dashboard start is safe. The
-  // busy_timeout set above is what makes the loser wait instead of failing.
-  applyMigrations(handle)
-
-  db = handle
-  return db
-}
-
-function requireDb(): Database.Database {
-  if (!db) throw new Error('ingest db not initialized -- call initIngestDb() first')
-  return db
-}
+/**
+ * The tenant of the handoff row. Every update that arrives on this bot belongs to the owner, and the owner is the default
+ * tenant (the owner's decision); incoming_events has no tenant column. Another tenant's user on the same bot is NOT handled by this
+ * process: no sender rule and no per-chat attribution exists here, and this port adds none. Named, not a literal, so the rule
+ * has one definition (the one the tenant-channel bindings call "a source without a binding").
+ */
+export const HANDOFF_TENANT = UNBOUND_SOURCE_TENANT
 
 export interface InsertResult {
   inserted: boolean
@@ -83,9 +66,9 @@ export interface IncomingEventRow {
   delivered_at: number | null
 }
 
-// INSERT OR IGNORE on the unique (source,update_id). Returns inserted=false when
+// Insert on the unique (source,update_id), ON CONFLICT DO NOTHING. Returns inserted=false when
 // the update was already stored (dedup), so the caller skips re-handoff.
-export function insertIncomingEvent(
+export const insertIncomingEvent = inIngestJob(async (
   source: string,
   ev: {
     update_id: number
@@ -98,21 +81,21 @@ export function insertIncomingEvent(
     meta: Record<string, unknown>
     tg_date: number | null
   },
-): InsertResult {
+): Promise<InsertResult> => {
   const now = Math.floor(Date.now() / 1000)
-  const row = requireDb().prepare(`
+  const row = await dbx.get<{ id: number }>(`
     INSERT INTO incoming_events
       (source, update_id, chat_id, user_id, username, message_id, kind, content, meta, tg_date, status, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
     ON CONFLICT DO NOTHING
     RETURNING id
-  `).get(
+  `,
     source, ev.update_id, ev.chat_id, ev.user_id, ev.username, ev.message_id,
     ev.kind, ev.content, JSON.stringify(ev.meta), ev.tg_date, now,
-  ) as { id: number } | undefined
+  )
   // No row back means the (source, update_id) pair was already stored.
   return { inserted: row !== undefined, eventId: row?.id ?? null }
-}
+})
 
 // Create the pending agent_messages row that the dashboard's message-router
 // will pick up and inject into the main agent's tmux session. The router
@@ -122,24 +105,29 @@ export function insertIncomingEvent(
 // inbound message -- while still treating the message body as untrusted user
 // data. (External callers cannot forge this id via /api/messages: a 403 guard
 // rejects it; only this in-process direct DB insert is trusted.)
-export function createHandoffMessage(content: string): number {
+// The tenant is written explicitly (HANDOFF_TENANT), not left to the column default: the row is row-level-security
+// scoped on PostgreSQL, and the stamp is a rule of this module, not an accident of the schema.
+export const createHandoffMessage = inIngestJob(async (content: string): Promise<number> => {
   const now = Math.floor(Date.now() / 1000)
-  const row = requireDb().prepare(
-    'INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at) VALUES (?, ?, ?, ?, ?) RETURNING id'
-  ).get(COORDINATOR_AGENT_ID, MAIN_AGENT_ID, content, 'pending', now) as { id: number }
+  const row = await dbx.get<{ id: number }>(
+    'INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at, tenant_id) VALUES (?, ?, ?, ?, ?, ?) RETURNING id',
+    COORDINATOR_AGENT_ID, MAIN_AGENT_ID, content, 'pending', now, HANDOFF_TENANT,
+  )
+  if (!row) throw new Error('createHandoffMessage: the insert returned no id')
   return row.id
-}
+})
 
-export function markEventDelivered(eventId: number, agentMessageId: number): void {
+export const markEventDelivered = inIngestJob(async (eventId: number, agentMessageId: number): Promise<void> => {
   const now = Math.floor(Date.now() / 1000)
-  requireDb().prepare(
-    "UPDATE incoming_events SET status = 'delivered', agent_message_id = ?, delivered_at = ? WHERE id = ?"
-  ).run(agentMessageId, now, eventId)
-}
+  await dbx.run(
+    "UPDATE incoming_events SET status = 'delivered', agent_message_id = ?, delivered_at = ? WHERE id = ?",
+    agentMessageId, now, eventId,
+  )
+})
 
-export function markEventFailed(eventId: number, error: string): void {
-  requireDb().prepare("UPDATE incoming_events SET status = 'failed', error = ? WHERE id = ?").run(error, eventId)
-}
+export const markEventFailed = inIngestJob(async (eventId: number, error: string): Promise<void> => {
+  await dbx.run("UPDATE incoming_events SET status = 'failed', error = ? WHERE id = ?", error, eventId)
+})
 
 // No-message-loss replay. Returns events that still need to reach the main
 // agent, either because:
@@ -152,8 +140,8 @@ export function markEventFailed(eventId: number, error: string): void {
 // NOT returned, so we never double-deliver a message that is merely waiting.
 // Idempotency against re-handoff is further guaranteed by UNIQUE(source,update_id)
 // on the source row (we re-queue a NEW agent_message, never a duplicate event).
-export function getEventsNeedingHandoff(source: string, limit = 50): IncomingEventRow[] {
-  return requireDb().prepare(`
+export const getEventsNeedingHandoff = inIngestJob(async (source: string, limit = 50): Promise<IncomingEventRow[]> => {
+  return dbx.all<IncomingEventRow>(`
     SELECT ie.* FROM incoming_events ie
     LEFT JOIN agent_messages am ON am.id = ie.agent_message_id
     WHERE ie.source = ?
@@ -165,31 +153,22 @@ export function getEventsNeedingHandoff(source: string, limit = 50): IncomingEve
       )
     ORDER BY ie.id ASC
     LIMIT ?
-  `).all(source, limit) as IncomingEventRow[]
-}
+  `, source, limit)
+})
 
-export function getOffset(source: string): number {
-  const row = requireDb().prepare('SELECT last_update_id FROM poll_offset WHERE source = ?').get(source) as
-    | { last_update_id: number }
-    | undefined
+export const getOffset = inIngestJob(async (source: string): Promise<number> => {
+  const row = await dbx.get<{ last_update_id: number }>('SELECT last_update_id FROM poll_offset WHERE source = ?', source)
   return row?.last_update_id ?? 0
-}
+})
 
 // UPSERT the offset. Called ONLY after a batch is fully processed (handoff +
 // markEventDelivered for every update), so a crash before this leaves the
 // offset behind and Telegram re-delivers the batch -- at-least-once, deduped.
-export function setOffset(source: string, lastUpdateId: number): void {
+export const setOffset = inIngestJob(async (source: string, lastUpdateId: number): Promise<void> => {
   const now = Math.floor(Date.now() / 1000)
-  requireDb().prepare(`
+  await dbx.run(`
     INSERT INTO poll_offset (source, last_update_id, updated_at)
     VALUES (?, ?, ?)
     ON CONFLICT(source) DO UPDATE SET last_update_id = excluded.last_update_id, updated_at = excluded.updated_at
-  `).run(source, lastUpdateId, now)
-}
-
-export function closeIngestDb(): void {
-  if (db) {
-    db.close()
-    db = null
-  }
-}
+  `, source, lastUpdateId, now)
+})

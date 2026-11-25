@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { applyMigrations } from '../db-migrations.js'
-import { initIngestDb, closeIngestDb } from '../channel-coordinator/ingest.js'
+import { initProcessDatabase, closeDatabase, getDb } from '../db/connection.js'
 
 // The channel-coordinator is a separate process that opens the same DB file as
 // the dashboard. Its tables must come from the migration runner (one source),
@@ -28,7 +28,7 @@ function tempDir(): string {
 }
 
 afterEach(() => {
-  closeIngestDb()
+  closeDatabase()
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true })
 })
 
@@ -52,7 +52,8 @@ describe('coordinator tables come from the migrations', () => {
     applyMigrations(dashboard)
 
     const file = join(tempDir(), 'coordinator-first.db')
-    const coordinator = initIngestDb(file)
+    initProcessDatabase(file)
+    const coordinator = getDb()
 
     for (const table of ['agent_messages', 'incoming_events', 'poll_offset']) {
       expect(columns(coordinator, table), table).toEqual(columns(dashboard, table))
@@ -71,13 +72,15 @@ describe('coordinator tables come from the migrations', () => {
     expect(trigger(dashboard)).toBeDefined()
     dashboard.close()
 
-    const coordinator = initIngestDb(join(tempDir(), 'coordinator-first.db'))
+    initProcessDatabase(join(tempDir(), 'coordinator-first.db'))
+    const coordinator = getDb()
     expect(trigger(coordinator)).toBeDefined()
   })
 
   it('the dashboard runner after a coordinator-first boot is a no-op', () => {
     const file = join(tempDir(), 'coordinator-first.db')
-    const coordinator = initIngestDb(file)
+    initProcessDatabase(file)
+    const coordinator = getDb()
     const before = coordinator.prepare('SELECT COUNT(*) AS n FROM schema_version').get() as { n: number }
 
     const second = new Database(file)

@@ -111,6 +111,17 @@ ALTER DEFAULT PRIVILEGES FOR ROLE marveen_owner IN SCHEMA public GRANT SELECT ON
 ALTER DEFAULT PRIVILEGES FOR ROLE marveen_owner IN SCHEMA public GRANT SELECT ON SEQUENCES TO marveen_backup;
 ```
 
+## The channel coordinator
+
+The channel coordinator (`dist/channel-coordinator.js`, its own launchd unit) is a backfill poller for inbound Telegram updates: it polls only while the native channel is down. It runs on the same backend as the dashboard.
+
+- **The URL** is resolved exactly as the dashboard resolves it (the three layers above). The installer does not copy it anywhere: the state directory `.env` of the coordinator holds the bot token and nothing else, and the launchd plist never holds a URL. Put the URL in the secret mount or the `0600` `.env` of the install and the unit finds it.
+- **The role** is the application role (`MARVEEN_PG_URL`), the same as the dashboard, so row-level security applies. The coordinator has no tenant context: every database call it makes runs as one named system job (`channel-coordinator-ingest`).
+- **It never migrates.** On PostgreSQL the coordinator boots with the migration URL switched off, even when `MARVEEN_PG_MIGRATE_URL` (the owner role) is in the `.env`: it only checks that the schema is current. A coordinator that starts before the dashboard on a database that is behind refuses to boot with the step named in the log, and creates no table. The unit's `KeepAlive` starts it again, so it comes up once the dashboard has migrated.
+- **On SQLite** it opens the same file with the same pragmas and the same migration runner as the dashboard, and nothing else (no WAL truncate, no startup passes).
+- **Tenants.** Every row the coordinator writes belongs to the default tenant: all coordinator rows belong to the default tenant; another tenant's user on the same bot is not handled by this process. `incoming_events` and `poll_offset` have no tenant column; the handoff row in `agent_messages` carries the default tenant as an explicit value.
+- **Cutover and rollback.** The unit can stay loaded across the cutover. Check on the rehearsal copy: the unit starts on PostgreSQL and stays up; an injected update is written to `incoming_events` and handed off; the poll offset advances and survives a restart; the otel gauge counts the event. Rolling back to SQLite is the same binary on the SQLite file, there is no schema difference.
+
 ## Deploy note
 
 The tmux server that runs the agent sessions keeps the environment of whichever process started it. After the first deploy with the URL scrub, restart the tmux server once (restart the agent sessions), or the old server keeps passing the keys to new sessions.

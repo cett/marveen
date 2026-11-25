@@ -38,16 +38,15 @@ import { PROJECT_ROOT, MAIN_AGENT_ID, CHANNEL_PROVIDER, BOT_NAME } from './confi
 import { getUpdates, probeHighWater, mapUpdate, TelegramApiError } from './channel-coordinator/telegram-client.js'
 import { probeNativeChannelDown } from './channel-coordinator/liveness.js'
 import {
-  initIngestDb,
   insertIncomingEvent,
   createHandoffMessage,
   markEventDelivered,
   getEventsNeedingHandoff,
   getOffset,
   setOffset,
-  closeIngestDb,
   type InsertResult,
 } from './channel-coordinator/ingest.js'
+import { bootCoordinatorDb, closeCoordinatorDb } from './channel-coordinator/boot.js'
 
 const SOURCE = 'telegram'
 const LONGPOLL_TIMEOUT_SEC = 30
@@ -233,30 +232,86 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 // (if newly inserted) hand off to Marveen. Returns the highest update_id seen
 // so the caller can advance the offset AFTER the whole batch is durable.
 // Exported for tests.
-export function processBatch(updates: { update_id: number }[]): number | null {
+// How many times the insert of the SAME update may fail before it is given up (a transient error clears in one or two polls; the
+// backoff in the loop spaces the attempts), and the state processBatch leaves for the loop. Exported for tests.
+export const POISON_INSERT_FAILURES = 10
+// An update is given up only when it has failed that many times AND for at least this long AND the database answers a read. The
+// count alone is seconds under the capped backoff: a few minutes of database outage would reach it and lose a REAL message.
+const POISON_MIN_AGE_MS_DEFAULT = 10 * 60 * 1000
+let poisonMinAgeMs = POISON_MIN_AGE_MS_DEFAULT
+const insertFailures = new Map<number, number>()
+const firstFailureAt = new Map<number, number>()
+let batchStoppedOnFailure = false
+// Consecutive batches that stopped at a failed insert: the backoff of the loop grows with THIS, not with the poll-error counter
+// (a getUpdates that succeeds resets that one, and a stopped batch always follows a successful getUpdates).
+let insertFailStreak = 0
+/** true when the last processBatch stopped at a failed insert: the loop waits before it asks for the same updates again. */
+export function lastBatchStoppedOnFailure(): boolean { return batchStoppedOnFailure }
+/** the attempt number the loop's backoff uses after a batch that stopped at a failed insert (0 after a batch that did not). */
+export function insertFailStreakValue(): number { return insertFailStreak }
+export function setPoisonMinAgeForTests(ms: number): void { poisonMinAgeMs = ms }
+export function resetInsertFailuresForTests(): void {
+  insertFailures.clear(); firstFailureAt.clear(); batchStoppedOnFailure = false; insertFailStreak = 0; poisonMinAgeMs = POISON_MIN_AGE_MS_DEFAULT
+}
+
+/** true when the database answers a read: a failing insert is then about the DATA, not an outage. */
+async function databaseAnswers(): Promise<boolean> {
+  try { await getOffset(SOURCE); return true } catch { return false }
+}
+
+export async function processBatch(updates: { update_id: number }[]): Promise<number | null> {
+  // The highest update id that is DURABLE: stored, or deduplicated, or one that is not stored on purpose (an unhandled kind). The
+  // caller moves the offset to it, and Telegram never sends an update below the offset again, so an update whose insert FAILED
+  // must stay above it. A handoff failure is different: its event is stored and the replay hands it off.
+  batchStoppedOnFailure = false
   let maxUpdateId: number | null = null
+  const settled = (id: number): void => { maxUpdateId = maxUpdateId == null ? id : Math.max(maxUpdateId, id) }
   for (const raw of updates) {
-    maxUpdateId = maxUpdateId == null ? raw.update_id : Math.max(maxUpdateId, raw.update_id)
     const ev = mapUpdate(raw as Parameters<typeof mapUpdate>[0])
-    if (!ev) continue // unhandled update kind: offset still advances past it
+    if (!ev) { settled(raw.update_id); continue } // unhandled update kind: offset still advances past it
 
     let ins: InsertResult
     try {
-      ins = insertIncomingEvent(SOURCE, ev)
+      ins = await insertIncomingEvent(SOURCE, ev)
     } catch (err) {
-      logger.error({ err, update_id: ev.update_id }, 'channel-coordinator: insertIncomingEvent failed')
-      continue
+      // STOP: the update is not stored, so the offset must not pass it (nor anything after it, the batch is in order). The
+      // next poll asks Telegram for it again, and the dedupe key makes a replay of the ones already stored harmless.
+      const failures = (insertFailures.get(ev.update_id) ?? 0) + 1
+      insertFailures.set(ev.update_id, failures)
+      const now = Date.now()
+      if (!firstFailureAt.has(ev.update_id)) firstFailureAt.set(ev.update_id, now)
+      const failingForMs = now - (firstFailureAt.get(ev.update_id) ?? now)
+      // A failure that does not go away (a value the database refuses, every time) would hold the offset, and every update
+      // behind it, for ever, so it is given up, LOUDLY (an alert, the id in the log), so the queue can move on. Three conditions,
+      // all of them: the count, the age of the first failure (a database outage of a few minutes must not eat a real message),
+      // and a read that SUCCEEDS now (the database answers, so the refusal is about this update's data and not an outage).
+      if (failures >= POISON_INSERT_FAILURES && failingForMs >= poisonMinAgeMs && await databaseAnswers()) {
+        insertFailures.delete(ev.update_id)
+        firstFailureAt.delete(ev.update_id)
+        logger.error({ err, update_id: ev.update_id, failures, failingForMs }, 'channel-coordinator: insertIncomingEvent failed again and again while the database answers; this update is given up so the queue can move on')
+        sendAlert(`${BOT_NAME} channel-coordinator: update ${ev.update_id} could not be stored after ${failures} attempts over ${Math.round(failingForMs / 1000)} s and was given up.`)
+        settled(raw.update_id)
+        continue
+      }
+      logger.error({ err, update_id: ev.update_id, failures, failingForMs }, 'channel-coordinator: insertIncomingEvent failed; the batch stops, the offset stays below this update')
+      batchStoppedOnFailure = true
+      break
     }
+    insertFailures.delete(ev.update_id)
+    firstFailureAt.delete(ev.update_id)
+    settled(raw.update_id)
     if (!ins.inserted || ins.eventId == null) continue // dedup: already handed off
 
     try {
-      const agentMessageId = createHandoffMessage(buildHandoffContent(ev))
-      markEventDelivered(ins.eventId, agentMessageId)
+      const agentMessageId = await createHandoffMessage(buildHandoffContent(ev))
+      await markEventDelivered(ins.eventId, agentMessageId)
       logger.info({ update_id: ev.update_id, chat_id: ev.chat_id, kind: ev.kind, agentMessageId }, 'channel-coordinator: backfilled to main agent')
     } catch (err) {
       logger.error({ err, eventId: ins.eventId }, 'channel-coordinator: handoff failed; event left pending for replay')
     }
   }
+  // The backoff counter of the loop: one more for a batch that stopped at a failed insert, back to zero for one that did not.
+  insertFailStreak = batchStoppedOnFailure ? insertFailStreak + 1 : 0
   return maxUpdateId
 }
 
@@ -271,10 +326,10 @@ export function processBatch(updates: { update_id: number }[]): number | null {
 // excluded by getEventsNeedingHandoff, and a re-handoff creates a fresh
 // agent_message rather than duplicating the source event.
 // Exported for tests.
-export function reconcilePending(): void {
+export async function reconcilePending(): Promise<void> {
   let events
   try {
-    events = getEventsNeedingHandoff(SOURCE)
+    events = await getEventsNeedingHandoff(SOURCE)
   } catch (err) {
     logger.error({ err }, 'channel-coordinator: reconcile query failed')
     return
@@ -283,7 +338,7 @@ export function reconcilePending(): void {
     try {
       let parsedMeta: Record<string, unknown> = {}
       try { if (ev.meta) parsedMeta = JSON.parse(ev.meta) as Record<string, unknown> } catch {}
-      const agentMessageId = createHandoffMessage(buildHandoffContent({
+      const agentMessageId = await createHandoffMessage(buildHandoffContent({
         kind: ev.kind,
         chat_id: ev.chat_id,
         user_id: ev.user_id,
@@ -293,7 +348,7 @@ export function reconcilePending(): void {
         tg_date: ev.tg_date,
         meta: parsedMeta,
       }))
-      markEventDelivered(ev.id, agentMessageId)
+      await markEventDelivered(ev.id, agentMessageId)
       logger.warn({ update_id: ev.update_id, eventId: ev.id, agentMessageId }, 'channel-coordinator: re-queued abandoned/stranded inbound message')
     } catch (err) {
       logger.error({ err, eventId: ev.id }, 'channel-coordinator: reconcile re-handoff failed; will retry next cycle')
@@ -316,7 +371,7 @@ async function runLoop(token: string): Promise<void> {
   let transientAttempt = 0
   while (!stopping) {
     // No-message-loss replay runs every tick, regardless of state.
-    reconcilePending()
+    await reconcilePending()
 
     if (state === 'idle') {
       // Watch the native channel. Debounce DOWN readings so a momentary blip
@@ -331,7 +386,7 @@ async function runLoop(token: string): Promise<void> {
           // messages that arrive DURING the outage; the detection-window
           // backlog (<= hw) is left for the native to deliver on recovery.
           const hw = await probeHighWater(token)
-          if (hw != null) setOffset(SOURCE, hw)
+          if (hw != null) await setOffset(SOURCE, hw)
           state = 'backfilling'
           transientAttempt = 0
           logger.warn({ session: SESSION, seededHighWater: hw }, 'channel-coordinator: native channel DOWN, entering BACKFILLING')
@@ -363,7 +418,7 @@ async function runLoop(token: string): Promise<void> {
 
     let updates: { update_id: number }[]
     try {
-      updates = await getUpdates(token, getOffset(SOURCE) + 1, LONGPOLL_TIMEOUT_SEC, POLL_LIMIT)
+      updates = await getUpdates(token, (await getOffset(SOURCE)) + 1, LONGPOLL_TIMEOUT_SEC, POLL_LIMIT)
       transientAttempt = 0
     } catch (err) {
       if (stopping) break
@@ -400,9 +455,14 @@ async function runLoop(token: string): Promise<void> {
       continue
     }
 
-    const maxUpdateId = processBatch(updates)
+    const maxUpdateId = await processBatch(updates)
     // Persist offset ONLY after the batch is durable + handed off.
-    if (maxUpdateId != null) setOffset(SOURCE, maxUpdateId)
+    if (maxUpdateId != null) await setOffset(SOURCE, maxUpdateId)
+    // A batch that stopped at a failed insert asks Telegram for the same updates on the next poll, which answers at once: wait
+    // first (the same backoff as a transient poll error), or a database that is down becomes a tight loop.
+    // The attempt number is the insert-failure streak, NOT transientAttempt: a successful getUpdates (which precedes every such
+    // batch) resets that one to 0, so it would never grow and the backoff would stay at its first step.
+    if (lastBatchStoppedOnFailure()) await sleep(transientBackoffMs(Math.min(insertFailStreakValue(), 6)))
   }
 }
 
@@ -415,8 +475,10 @@ function installSignalHandlers(): void {
     logger.info({ sig }, 'channel-coordinator: shutting down')
     setTimeout(() => {
       releaseLock()
-      closeIngestDb()
-      process.exit(0)
+      // the pool ends (PostgreSQL) or the file closes (SQLite) before the exit; a failing close must not keep the unit alive
+      void closeCoordinatorDb()
+        .catch((err: unknown) => logger.warn({ err }, 'channel-coordinator: database close failed during shutdown'))
+        .finally(() => process.exit(0))
     }, 3000)
   }
   process.on('SIGTERM', () => onSignal('SIGTERM'))
@@ -426,10 +488,10 @@ function installSignalHandlers(): void {
 export async function main(): Promise<void> {
   const token = readToken()
   acquireSingleInstanceLock()
-  initIngestDb()
+  await bootCoordinatorDb()
   installSignalHandlers()
   logger.info({ stateDir: STATE_DIR, session: SESSION, provider: PROVIDER }, 'channel-coordinator: started in BACKFILL mode (idle while native is up)')
   await runLoop(token)
   releaseLock()
-  closeIngestDb()
+  await closeCoordinatorDb()
 }

@@ -10,7 +10,7 @@
     "INSERT OR IGNORE": 3,
     "INSERT OR REPLACE": 0,
     "IS [NOT] <param>": 0,
-    "PRAGMA": 13,
+    "PRAGMA": 12,
     "datetime()": 0,
     "instr()": 1,
     "json_extract/json_each": 0,

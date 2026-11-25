@@ -213,6 +213,55 @@ function migrateTaskRunsFromJson(): void {
   } catch { /* corrupt file, skip */ }
 }
 
+/**
+ * The SQLite connection of a SECOND process (the channel coordinator): the same file, the same pragmas and the same migration
+ * runner as initDatabase(), and nothing else. initDatabase() also truncates the WAL, folds the federation prefixes of
+ * agent_messages and renames the legacy task-run file; those are the dashboard's boot work and do not belong in a process that
+ * only backfills inbound events. A second connection to the file is safe in WAL mode as long as each sets busy_timeout, which
+ * is why the pragma list is the same (a cell compares the two). initDatabase() is left as it is: the dashboard boot path is
+ * not touched by this function.
+ *
+ * Like initDatabase(), the install entry (no path) is refused when the install is configured for PostgreSQL; a path (a test's
+ * ':memory:' or a throwaway file) is not an install entry point.
+ */
+export function initProcessDatabase(dbPathOverride?: string): void {
+  const useOverride = dbPathOverride !== undefined
+  if (!useOverride) assertSqliteEntryAllowed('initProcessDatabase()')
+  const isMemory = dbPathOverride === ':memory:'
+  if (!useOverride) mkdirSync(STORE_DIR, { recursive: true })
+  if (db) {
+    try { db.close() } catch { /* already closed */ }
+  }
+  vecExtensionLoaded = false
+  vecExtensionAttempted = false
+  const dbPath = useOverride ? dbPathOverride! : join(STORE_DIR, DB_FILENAME)
+  if (!isMemory && !existsSync(dbPath)) {
+    try {
+      closeSync(openSync(dbPath, 'wx', 0o600))
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code !== 'EEXIST') {
+        logger.warn({ err, dbPath }, 'Pre-create of DB file failed, continuing; mode will be tightened post-open')
+      }
+    }
+  }
+  db = new Database(dbPath)
+  // the same values as initDatabase() (a cell compares the two); one loop, the dialect ratchet counts the calls
+  for (const setting of PROCESS_PRAGMAS) db.pragma(isMemory && setting.startsWith('mmap_size') ? 'mmap_size = 0' : setting)
+  if (!isMemory) tightenDbPermissions(dbPath)
+  // before the migrations, for the reason initDatabase() gives (the 2026-08-28 outage: a table rebuild reparses the schema)
+  tryLoadVecExtension()
+  applyMigrations(db)
+}
+
+const PROCESS_PRAGMAS: readonly string[] = [
+  'journal_mode = WAL',
+  'cache_size = -8192',
+  'mmap_size = 67108864',
+  'synchronous = NORMAL',
+  'busy_timeout = 5000',
+  'wal_autocheckpoint = 2000',
+]
+
 export function getDb(): Database.Database {
   return db
 }
