@@ -8,28 +8,34 @@
 // Rules (plan orgchart-radial, section 3.2, and the mockup of the design doc):
 //   - ring index = depth: the centre is ring 0, its direct reports ring 1, their reports ring 2, and so on.
 //   - ring 1 is SYMMETRIC: n nodes 360/n degrees apart, the first one at the top, then clockwise, in the order given.
-//   - below ring 1 a branch is a WEDGE: the children of a node share the wedge of that node, each child a sub-wedge
-//     proportional to its leaf count (a heavier branch gets more room), centred on the sub-wedge. A branch therefore never
-//     crosses another one, and a single child sits on the angle of its parent (a radial spoke).
-//   - one radius PER RING (concentric circles, not per branch). The radius is the larger of a base value (taken from the
-//     mockup) and what the no-overlap rule needs: two neighbours on a ring are at least `minChord` pixels apart (the node
-//     plus its label), so the radius grows when a ring is crowded. The layout follows the REAL tree, it is not balanced.
+//   - below ring 1 a branch is a WEDGE: the children of a node share the wedge of that node, each child an equal sub-wedge
+//     (option `slices: 'leaf'`: proportional to its leaf count, a heavier branch gets more room), centred on the sub-wedge.
+//     A branch therefore never crosses another one, and a single child sits on the angle of its parent (a radial spoke).
+//   - one radius PER RING (concentric circles, not per branch), NO fixed values: the smallest radii that keep (1) neighbours
+//     of a ring at least `minChord` apart (a label box wide), `borderChord` across the border of two branches, (2) two rings
+//     at least `ringGap` apart (a label box high plus a gap); then every pair of label boxes is tested and all radii grow by
+//     `growStep` (5 %) until no two boxes overlap. The layout follows the REAL tree, it is not balanced.
 //   - no centre (rootId null: a tenant role has no global main node): the parentless nodes form ring 1 around an empty centre.
 //   - a node deeper than `maxRings` is not placed: its ring-`maxRings` ancestor carries `hiddenCount` (the renderer shows "+N").
 //   - a node that cannot be reached from the centre (a reporting cycle the server should have refused) goes on a trailing
 //     ring, evenly spaced, flagged `orphan`.
 
 export const DEFAULT_LAYOUT_OPTIONS = Object.freeze({
-  /** base radius of ring 1 .. ring 3 (px), from the mockup (avatar 80 px); further rings add `ringStep` each */
-  ringBase: Object.freeze([240, 520, 700]),
-  /** base radius of ring 1 when it has `smallRing1Limit` nodes or fewer (a small tenant graph) */
-  smallRing1: 200,
-  smallRing1Limit: 4,
-  ringStep: 180,
-  /** least distance between two neighbouring nodes of one ring (node, its ring and the label width) */
+  /** least distance between two neighbouring nodes of one ring and one branch (the width of a label box, 80 px avatar) */
   minChord: 150,
-  /** least gap between two rings */
-  minRingGap: 140,
+  /** least distance between two neighbours of one ring across the border of two branches */
+  borderChord: 148,
+  /** the label box of a node, for the overlap test (the avatar size is a theme token of the renderer, not derived from it) */
+  boxW: 150,
+  boxH: 130,
+  /** least gap between two rings: the box height plus a gap */
+  ringGap: 176,
+  /** every radius grows by this factor (5 %) while two boxes overlap, at most maxGrowSteps times */
+  growStep: 1.05,
+  maxGrowSteps: 60,
+  /** the wedge of a node below ring 1: 'equal' (every child the same share, the default: the real tree is shown as it is)
+   *  or 'leaf' (a share proportional to the leaf count, more compact and visibly lopsided) */
+  slices: 'equal',
   /** rings that are drawn; deeper nodes are folded into `hiddenCount` of the outermost drawn one */
   maxRings: 4,
   /** more nodes than this on one ring: the renderer shortens the labels to the initials (see `crowdedRings`) */
@@ -66,10 +72,12 @@ export function layoutRadial(view, options = {}) {
   // children in the order of the nodes given, one parent per node (the first edge wins)
   const children = new Map(order.map((id) => [id, []]))
   const hasParent = new Set()
+  const parentOf = new Map()
   for (const e of edges) {
     if (!byId.has(e?.from) || !byId.has(e?.to) || e.from === e.to || hasParent.has(e.to)) continue
     children.get(e.from).push(e.to)
     hasParent.add(e.to)
+    parentOf.set(e.to, e.from)
   }
   for (const list of children.values()) list.sort((a, b) => index.get(a) - index.get(b))
 
@@ -106,7 +114,7 @@ export function layoutRadial(view, options = {}) {
     const total = ids.reduce((s, id) => s + countLeaves(id), 0)
     let cursor = from
     for (const id of ids) {
-      const w = (width * countLeaves(id)) / total
+      const w = o.slices === 'leaf' ? (width * countLeaves(id)) / total : width / ids.length
       angle.set(id, cursor + w / 2)
       const kids = children.get(id).filter((c) => depth.get(c) === depth.get(id) + 1)
       if (kids.length) assign(kids, cursor, w)
@@ -147,42 +155,58 @@ export function layoutRadial(view, options = {}) {
   }
   const lastRing = Math.max(0, ringIds.length - 1)
 
-  // one radius per ring: base value, or what the chord rule needs for the two closest neighbours of the ring
-  const radii = [0]
+  // The SMALLEST radii that keep the rules (no fixed values), then a box test that grows them until nothing overlaps:
+  //   1. neighbours of a ring are at least `minChord` apart (the width of a label box), and at least `borderChord` apart
+  //      across the border of two branches (different parents);
+  //   2. two rings are at least `ringGap` apart (the height of a label box plus a gap), the first one from the centre too.
+  const baseRadii = [0]
   for (let k = 1; k <= lastRing; k++) {
-    const ids = ringIds[k] ?? []
-    const base = k === 1 && ids.length <= o.smallRing1Limit
-      ? o.smallRing1
-      : (o.ringBase[k - 1] ?? o.ringBase[o.ringBase.length - 1] + (k - o.ringBase.length) * o.ringStep)
+    const ids = [...(ringIds[k] ?? [])].sort((a, b) => angle.get(a) - angle.get(b))
     let need = 0
-    const angles = ids.map((id) => angle.get(id)).sort((a, b) => a - b)
-    if (angles.length > 1) {
-      let min = Infinity
-      for (let i = 0; i < angles.length; i++) {
-        const d = angularDistance(angles[i], angles[(i + 1) % angles.length])
-        if (d > 1e-9 && d < min) min = d
+    if (ids.length > 1) {
+      for (let i = 0; i < ids.length; i++) {
+        const a = ids[i]
+        const b = ids[(i + 1) % ids.length]
+        const d = angularDistance(angle.get(a), angle.get(b))
+        if (d <= 1e-9) continue
+        need = Math.max(need, radiusForChord(parentOf.get(a) === parentOf.get(b) ? o.minChord : o.borderChord, d))
       }
-      need = Number.isFinite(min) ? radiusForChord(o.minChord, min) : 0
     }
-    radii[k] = Math.max(base, need, (radii[k - 1] ?? 0) + (k === 1 ? 0 : o.minRingGap))
+    baseRadii[k] = Math.max(need, baseRadii[k - 1] + o.ringGap)
   }
 
-  const placed = []
-  const pos = new Map()
-  if (rootId) { placed.push({ id: rootId, ring: 0, angle: 0, x: 0, y: 0, isRoot: true }); pos.set(rootId, { x: 0, y: 0 }) }
-  for (let k = 1; k <= lastRing; k++) {
-    for (const id of ringIds[k] ?? []) {
-      const a = angle.get(id)
-      const x = round(radii[k] * Math.sin(rad(a)))
-      const y = round(-radii[k] * Math.cos(rad(a)))
-      pos.set(id, { x, y })
-      placed.push({
-        id, ring: k, angle: round(a), x, y, isRoot: false,
-        ...(depth.get(id) === orphanRing && orphans.includes(id) ? { orphan: true } : {}),
-        ...(hiddenCount.has(id) ? { hiddenCount: hiddenCount.get(id) } : {}),
-      })
+  const build = (scale) => {
+    const radii = baseRadii.map((r) => r * scale)
+    const placed = []
+    const pos = new Map()
+    if (rootId) { placed.push({ id: rootId, ring: 0, angle: 0, x: 0, y: 0, isRoot: true }); pos.set(rootId, { x: 0, y: 0 }) }
+    for (let k = 1; k <= lastRing; k++) {
+      for (const id of ringIds[k] ?? []) {
+        const a = angle.get(id)
+        const x = round(radii[k] * Math.sin(rad(a)))
+        const y = round(-radii[k] * Math.cos(rad(a)))
+        pos.set(id, { x, y })
+        placed.push({
+          id, ring: k, angle: round(a), x, y, isRoot: false,
+          ...(depth.get(id) === orphanRing && orphans.includes(id) ? { orphan: true } : {}),
+          ...(hiddenCount.has(id) ? { hiddenCount: hiddenCount.get(id) } : {}),
+        })
+      }
     }
+    return { radii, placed, pos }
   }
+  // the box test: every pair of label boxes (boxW x boxH around the node) is checked, and every radius grows by `growStep`
+  // until no two boxes overlap (a bounded number of steps, so a degenerate input cannot loop)
+  const overlaps = (placed) => {
+    for (let i = 0; i < placed.length; i++) for (let j = i + 1; j < placed.length; j++) {
+      if (Math.abs(placed[i].x - placed[j].x) < o.boxW && Math.abs(placed[i].y - placed[j].y) < o.boxH) return true
+    }
+    return false
+  }
+  let scale = 1
+  let built = build(scale)
+  for (let step = 0; step < o.maxGrowSteps && overlaps(built.placed); step++) { scale *= o.growStep; built = build(scale) }
+  const { radii, placed, pos } = built
   // the order of the output is the order of the input (centre first), not the order of the rings
   placed.sort((a, b) => (a.isRoot ? -1 : b.isRoot ? 1 : index.get(a.id) - index.get(b.id)))
 

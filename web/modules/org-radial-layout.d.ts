@@ -1,10 +1,12 @@
 export interface LayoutOptions {
-  ringBase: readonly number[]
-  smallRing1: number
-  smallRing1Limit: number
-  ringStep: number
   minChord: number
-  minRingGap: number
+  borderChord: number
+  boxW: number
+  boxH: number
+  ringGap: number
+  growStep: number
+  maxGrowSteps: number
+  slices: 'equal' | 'leaf'
   maxRings: number
   crowdedLimit: number
   pad: number

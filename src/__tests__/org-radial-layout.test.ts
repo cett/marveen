@@ -49,7 +49,7 @@ describe('ring 1 is symmetric', () => {
   it('one subordinate sits on the top', () => {
     const l = layoutRadial(view('c', [['c', 'a']]))
     expect(at(l, 'a')).toMatchObject({ x: 0, ring: 1 })
-    expect(at(l, 'a').y).toBe(-200)
+    expect(at(l, 'a').y).toBe(-DEFAULT_LAYOUT_OPTIONS.ringGap) // the first ring is a ring gap away from the centre
   })
 
   it('no subordinates: only the centre, no rings', () => {
@@ -61,10 +61,36 @@ describe('ring 1 is symmetric', () => {
 })
 
 describe('the radii', () => {
-  it('follow the mockup: 240 / 520 / 700 for a ring 1 of seven, 200 for a small ring 1', () => {
-    expect(layoutRadial(live()).radii).toEqual([240, 520, 700])
+  it('are the smallest that keep the rules, not constants: a small ring 1 is one ring gap out, a bigger tree is wider', () => {
     const small = layoutRadial(view('c', [['c', 'a'], ['c', 'b'], ['c', 'd'], ['c', 'e']]))
-    expect(small.radii).toEqual([200])
+    expect(small.radii).toEqual([DEFAULT_LAYOUT_OPTIONS.ringGap])
+    const big = layoutRadial(live())
+    expect(big.radii).toHaveLength(3)
+    expect(big.radii[0]).toBeGreaterThan(small.radii[0] as number)
+    for (let k = 1; k < big.radii.length; k++) expect((big.radii[k] as number) - (big.radii[k - 1] as number)).toBeGreaterThanOrEqual(DEFAULT_LAYOUT_OPTIONS.ringGap - 0.01)
+  })
+
+  it('no two label boxes overlap, and when the chord rule alone leaves an overlap the radii grow in 5 % steps until it is gone', () => {
+    // eight nodes on ring 1 keep the chord at 150 px but their boxes (150 x 130) still overlap on the diagonals
+    const edges: [string, string][] = Array.from({ length: 8 }, (_, i) => ['c', `n${i}`])
+    const l = layoutRadial(view('c', edges))
+    const chordOnly = DEFAULT_LAYOUT_OPTIONS.minChord / (2 * Math.sin(Math.PI / 8))
+    expect(l.radii[0]).toBeGreaterThan(chordOnly)
+    // grown from the minimum by whole 5 % steps
+    const steps = Math.log((l.radii[0] as number) / Math.max(chordOnly, DEFAULT_LAYOUT_OPTIONS.ringGap)) / Math.log(DEFAULT_LAYOUT_OPTIONS.growStep)
+    expect(Math.abs(steps - Math.round(steps))).toBeLessThan(0.01)
+    for (let i = 0; i < l.nodes.length; i++) for (let j = i + 1; j < l.nodes.length; j++) {
+      const a = l.nodes[i]!, b = l.nodes[j]!
+      expect(Math.abs(a.x - b.x) >= DEFAULT_LAYOUT_OPTIONS.boxW || Math.abs(a.y - b.y) >= DEFAULT_LAYOUT_OPTIONS.boxH, `${a.id} ${b.id}`).toBe(true)
+    }
+  })
+
+  it('the live-shaped tree has no overlapping boxes either', () => {
+    const l = layoutRadial(live())
+    for (let i = 0; i < l.nodes.length; i++) for (let j = i + 1; j < l.nodes.length; j++) {
+      const a = l.nodes[i]!, b = l.nodes[j]!
+      expect(Math.abs(a.x - b.x) >= DEFAULT_LAYOUT_OPTIONS.boxW || Math.abs(a.y - b.y) >= DEFAULT_LAYOUT_OPTIONS.boxH, `${a.id} ${b.id}`).toBe(true)
+    }
   })
 
   it('a crowded ring grows its radius until its neighbours are a chord apart, and is flagged', () => {
@@ -76,9 +102,24 @@ describe('the radii', () => {
     for (let i = 0; i < ring.length; i++) expect(dist(ring[i]!, ring[(i + 1) % ring.length]!)).toBeGreaterThanOrEqual(DEFAULT_LAYOUT_OPTIONS.minChord - 1)
   })
 
-  it('rings are at least minRingGap apart even when the base values are overridden', () => {
-    const l = layoutRadial(live(), { ringBase: [100, 110, 120] })
-    for (let k = 1; k < l.radii.length; k++) expect((l.radii[k] as number) - (l.radii[k - 1] as number)).toBeGreaterThanOrEqual(DEFAULT_LAYOUT_OPTIONS.minRingGap)
+  it('the ring gap option is honoured', () => {
+    const l = layoutRadial(live(), { ringGap: 300 })
+    expect(l.radii[0]).toBeGreaterThanOrEqual(300)
+    for (let k = 1; k < l.radii.length; k++) expect((l.radii[k] as number) - (l.radii[k - 1] as number)).toBeGreaterThanOrEqual(299.99)
+  })
+
+  it('borderChord governs where two branches meet, minChord inside a branch (the box test switched off to see the rule alone)', () => {
+    const l = layoutRadial(live(), { borderChord: 400, minChord: 100, boxW: 1, boxH: 1, ringGap: 1 })
+    expect(dist(at(l, 'k3'), at(l, 'j1'))).toBeGreaterThanOrEqual(399)
+    const k = layoutRadial(live(), { borderChord: 1, minChord: 400, boxW: 1, boxH: 1, ringGap: 1 })
+    expect(dist(at(k, 'k1'), at(k, 'k2'))).toBeGreaterThanOrEqual(399)
+  })
+
+  it('across the border of two branches the least distance is borderChord (148), within a branch minChord (150)', () => {
+    const l = layoutRadial(live())
+    const d = (a: string, b: string) => dist(at(l, a), at(l, b))
+    expect(d('k1', 'k2')).toBeGreaterThanOrEqual(DEFAULT_LAYOUT_OPTIONS.minChord - 0.5) // same parent
+    expect(d('k3', 'j1')).toBeGreaterThanOrEqual(DEFAULT_LAYOUT_OPTIONS.borderChord - 0.5) // two branches meet
   })
 })
 
@@ -113,9 +154,15 @@ describe('a branch is a wedge', () => {
     expect(at(l, 'a1').x).toBeLessThan(0) // left of the top
   })
 
-  it('a heavier branch gets more of its parent\'s slice (leaf weight), the lighter one less', () => {
-    // under n: a has three leaves, b has one: a's wedge is three times b's
+  it('by default the children share their parent\'s slice EQUALLY, whatever their subtrees weigh (the real tree as it is)', () => {
     const l = layoutRadial(view('c', [['c', 'n'], ['n', 'a'], ['n', 'b'], ['a', 'a1'], ['a', 'a2'], ['a', 'a3']]))
+    expect(at(l, 'a').angle).toBeCloseTo(270, 1) // n's slice is the whole circle from -180: a = -90, b = 90
+    expect(at(l, 'b').angle).toBeCloseTo(90, 1)
+  })
+
+  it('with slices: "leaf" a heavier branch gets more of its parent\'s slice, the lighter one less', () => {
+    // under n: a has three leaves, b has one: a's wedge is three times b's
+    const l = layoutRadial(view('c', [['c', 'n'], ['n', 'a'], ['n', 'b'], ['a', 'a1'], ['a', 'a2'], ['a', 'a3']]), { slices: 'leaf' })
     const a = at(l, 'a').angle
     const b = at(l, 'b').angle
     // n is the only node on ring 1 (angle 0), its slice is the whole circle, from -180: a's wedge is 270 degrees (centre -45,
