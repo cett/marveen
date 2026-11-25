@@ -116,6 +116,16 @@ function runPy(script: string, payload: unknown, env: Record<string, string>): P
 const sqliteEnv = (copy: string): Record<string, string> => hookEnv({ LEDGER_DB_PATH: copy })
 const pgEnv = (): Record<string, string> => hookEnv({ LEDGER_DB_PATH: join(WORK, 'no-such-dir', 'x.db'), MARVEEN_PG_URL: 'postgres://placeholder.invalid/db', DASHBOARD_BASE_URL: baseUrl })
 
+// The "elavult (N mp)" reason computes N as now() - updated_at, live, in each subprocess; the sqlite-mode and the
+// pg-mode run a moment apart (two spawns, not one), so N can differ by a second even though both read the same
+// stored updated_at. Comparing the message with N blanked out keeps the real check (same reason, same shape) without
+// the flake; the parsed numbers are still compared, with a tolerance for that same real gap.
+const STALE_AGE = /elavult \((\d+) mp\)/
+function blankStaleAge(stderr: string): { blanked: string; age: number | null } {
+  const m = STALE_AGE.exec(stderr)
+  return m ? { blanked: stderr.replace(STALE_AGE, 'elavult (N mp)'), age: Number(m[1]) } : { blanked: stderr, age: null }
+}
+
 /** A consistent snapshot of the live test database, for the SQLite mode to read and write. */
 function snapshot(): string {
   const copy = join(WORK, `copy-${++copyN}.db`)
@@ -236,7 +246,10 @@ describe.skipIf(testDbMode() === 'pg')('the Python hooks: SQLite mode and PG mod
       runs.forEach(([sqlite, pg], i) => {
         const label = `${c.name} / ${CALLS[i]![0]} ${JSON.stringify(CALLS[i]![1]).slice(0, 80)}`
         expect(pg.code, label).toBe(sqlite.code)
-        expect(pg.stderr, label).toBe(sqlite.stderr)
+        const sq = blankStaleAge(sqlite.stderr)
+        const pgOut = blankStaleAge(pg.stderr)
+        expect(pgOut.blanked, label).toBe(sq.blanked)
+        if (sq.age !== null && pgOut.age !== null) expect(Math.abs(pgOut.age - sq.age), label).toBeLessThanOrEqual(2)
         if (sqlite.code === 2) blocks++
         else allows++
       })
