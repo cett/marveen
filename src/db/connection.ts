@@ -245,17 +245,22 @@ export function initProcessDatabase(dbPathOverride?: string): void {
     }
   }
   db = new Database(dbPath)
-  db.pragma('journal_mode = WAL')
-  db.pragma('cache_size = -8192')
-  if (!isMemory) db.pragma('mmap_size = 67108864')
-  db.pragma('synchronous = NORMAL')
-  db.pragma('busy_timeout = 5000')
-  db.pragma('wal_autocheckpoint = 2000')
+  // the same values as initDatabase() (a cell compares the two); one loop, the dialect ratchet counts the calls
+  for (const setting of PROCESS_PRAGMAS) db.pragma(isMemory && setting.startsWith('mmap_size') ? 'mmap_size = 0' : setting)
   if (!isMemory) tightenDbPermissions(dbPath)
   // before the migrations, for the reason initDatabase() gives (the 2026-08-28 outage: a table rebuild reparses the schema)
   tryLoadVecExtension()
   applyMigrations(db)
 }
+
+const PROCESS_PRAGMAS: readonly string[] = [
+  'journal_mode = WAL',
+  'cache_size = -8192',
+  'mmap_size = 67108864',
+  'synchronous = NORMAL',
+  'busy_timeout = 5000',
+  'wal_autocheckpoint = 2000',
+]
 
 export function getDb(): Database.Database {
   return db

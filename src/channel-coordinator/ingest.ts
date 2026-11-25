@@ -34,7 +34,7 @@ const inIngestJob = <A extends unknown[], R>(fn: (...args: A) => R): ((...args: 
 
 /**
  * The tenant of the handoff row. Every update that arrives on this bot belongs to the owner, and the owner is the default
- * tenant (Jonas, 11-24); incoming_events has no tenant column. Another tenant's user on the same bot is NOT handled by this
+ * tenant (the owner's decision); incoming_events has no tenant column. Another tenant's user on the same bot is NOT handled by this
  * process: no sender rule and no per-chat attribution exists here, and this port adds none. Named, not a literal, so the rule
  * has one definition (the one the tenant-channel bindings call "a source without a binding").
  */
