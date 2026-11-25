@@ -1,0 +1,171 @@
+// Parity of the hook-side PostgreSQL switch (scripts/hooks/hook_pg_mode.py): the Python function, the app's own rule
+// (resolvePgUrl() or the marker) and the shell reference (scripts/pg-configured.sh) must give the SAME boolean on the
+// same fixture. A hook that read SQLite where the app reads PostgreSQL would decide from a stale file; one that read
+// the route where the app is on SQLite would fail closed for nothing. A divergence is resolved toward the app.
+//
+// Privacy: neutral fixtures only (leakmarker, placeholder-pass).
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { spawnSync } from 'node:child_process'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, chmodSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
+
+const INSTALL = resolve(__dirname, '..', '..')
+const URL = 'postgres://user:placeholder-pass@leakmarker.invalid:5432/db'
+
+interface Fixture {
+  name: string
+  /** the secret mount file content (null: no file) */
+  mount?: string | null
+  /** the MARVEEN_PG_URL environment variable (undefined: not set) */
+  env?: string
+  /** the .env file content (null: no file) */
+  dotenv?: string | null
+  /** the .env is present but cannot be read */
+  unreadableDotenv?: boolean
+  /** the marker MARVEEN_PG_CONFIGURED=1 */
+  marker?: boolean
+}
+
+// The table of src/__tests__/backup-guard-parity.test.ts, row for row (a cell below pins that no row was dropped),
+// plus the rows only the Python parser can get wrong.
+const FIXTURES: Fixture[] = [
+  { name: 'mount with a URL', mount: `${URL}\n` },
+  { name: 'mount blank', mount: '   \n' },
+  { name: 'environment with a URL', env: URL },
+  { name: 'environment whitespace', env: '   ' },
+  { name: '.env with a URL', dotenv: `MARVEEN_PG_URL=${URL}\n` },
+  { name: '.env with a quoted URL', dotenv: `MARVEEN_PG_URL="${URL}"\n` },
+  { name: '.env blank value', dotenv: 'MARVEEN_PG_URL=   \n' },
+  { name: '.env with leading spaces before the key', dotenv: `  MARVEEN_PG_URL=${URL}\n` },
+  { name: '.env with a tab before the key', dotenv: `\tMARVEEN_PG_URL=${URL}\n` },
+  { name: '.env with spaces around the equals sign', dotenv: `MARVEEN_PG_URL = ${URL}\n` },
+  { name: 'marker only', marker: true },
+  { name: 'a readable .env without a URL, and the marker only', dotenv: 'OTHER_KEY=1\n', marker: true },
+  { name: '.env value is an empty double-quoted pair', dotenv: 'MARVEEN_PG_URL=""\n' },
+  { name: '.env value is an empty single-quoted pair', dotenv: "MARVEEN_PG_URL=''\n" },
+  { name: '.env with CRLF line endings', dotenv: `MARVEEN_PG_URL=${URL}\r\n` },
+  { name: '.env with a commented line', dotenv: `# MARVEEN_PG_URL=${URL}\n` },
+  { name: '.env: a URL then a blank value (the last one wins: not PostgreSQL)', dotenv: `MARVEEN_PG_URL=${URL}\nMARVEEN_PG_URL=\n` },
+  { name: '.env: a blank value then a URL (the last one wins: PostgreSQL)', dotenv: `MARVEEN_PG_URL=\nMARVEEN_PG_URL=${URL}\n` },
+  { name: 'all absent', mount: null, dotenv: null },
+  { name: 'unreadable .env with the marker', unreadableDotenv: true, marker: true },
+  { name: 'unreadable .env without the marker', unreadableDotenv: true },
+  { name: 'a URL in the mount and the marker', mount: `${URL}\n`, marker: true },
+  // rows that are specific to the Python parser (not in the shell table)
+  { name: 'py-only: a lone double quote as the value', dotenv: 'MARVEEN_PG_URL="\n' },
+  { name: 'py-only: a value with a space inside the quotes only', dotenv: 'MARVEEN_PG_URL=" "\n' },
+  { name: 'py-only: a line without an equals sign', dotenv: 'MARVEEN_PG_URL\n' },
+  { name: 'py-only: the URL contains an equals sign (split at the first one)', dotenv: 'MARVEEN_PG_URL=a=b\n' },
+  { name: 'py-only: another key that only contains the name', dotenv: `X_MARVEEN_PG_URL=${URL}\n` },
+]
+
+let root: string
+
+beforeEach(() => {
+  root = mkdtempSync(join(tmpdir(), 'hook-pg-parity-'))
+  vi.stubEnv('MARVEEN_PG_URL', '')
+  vi.stubEnv('MARVEEN_PG_CONFIGURED', '')
+  vi.stubEnv('MARVEEN_PG_ALLOW_NEWER_DATABASE', '')
+})
+
+afterEach(() => {
+  vi.unstubAllEnvs()
+  rmSync(root, { recursive: true, force: true })
+})
+
+function materialise(f: Fixture): { mountDir: string; installRoot: string } {
+  const dir = mkdtempSync(join(root, 'case-'))
+  const mountDir = join(dir, 'secrets')
+  mkdirSync(mountDir)
+  if (f.mount !== undefined && f.mount !== null) writeFileSync(join(mountDir, 'MARVEEN_PG_URL'), f.mount)
+  const installRoot = join(dir, 'install')
+  mkdirSync(installRoot)
+  if (f.dotenv !== undefined && f.dotenv !== null) writeFileSync(join(installRoot, '.env'), f.dotenv)
+  if (f.unreadableDotenv) {
+    writeFileSync(join(installRoot, '.env'), `MARVEEN_PG_URL=${URL}\n`)
+    chmodSync(join(installRoot, '.env'), 0o000)
+  }
+  return { mountDir, installRoot }
+}
+
+function childEnv(f: Fixture, mountDir: string): Record<string, string> {
+  const env: Record<string, string> = { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '', SECRET_MOUNT_DIR: mountDir }
+  if (f.env !== undefined) env.MARVEEN_PG_URL = f.env
+  if (f.marker) env.MARVEEN_PG_CONFIGURED = '1'
+  return env
+}
+
+/** The shell reference: scripts/pg-configured.sh. */
+function shellAnswer(f: Fixture, mountDir: string, installRoot: string): string {
+  const text = readFileSync(join(INSTALL, 'scripts', 'pg-configured.sh'), 'utf-8')
+  const script = `${text.slice(text.indexOf('pg_configured() {'))}\npg_configured "${installRoot}" && echo PG || echo SQLite\n`
+  return spawnSync('bash', ['-c', script], { env: childEnv(f, mountDir), encoding: 'utf-8' }).stdout.trim()
+}
+
+function pythonRun(f: Fixture, mountDir: string, installRoot: string, expr: string) {
+  const code = [
+    'import sys',
+    `sys.path.insert(0, ${JSON.stringify(join(INSTALL, 'scripts', 'hooks'))})`,
+    'import hook_pg_mode',
+    `print(${expr.replace('ROOT', JSON.stringify(installRoot))})`,
+  ].join('\n')
+  return spawnSync('python3', ['-I', '-c', code], { env: childEnv(f, mountDir), encoding: 'utf-8' })
+}
+
+/** The hook function, run in its own interpreter with the same environment the shell got. */
+function pythonAnswer(f: Fixture, mountDir: string, installRoot: string): string {
+  const run = pythonRun(f, mountDir, installRoot, '"PG" if hook_pg_mode.pg_mode(ROOT) else "SQLite"')
+  return run.stdout.trim() || `ERROR: ${run.stderr}`
+}
+
+/** The app's answer: a URL resolves through the app's own layers, or the marker. */
+async function appAnswer(f: Fixture, mountDir: string, installRoot: string): Promise<string> {
+  vi.resetModules()
+  process.env.SECRET_MOUNT_DIR = mountDir
+  process.env.CLAUDECLAW_ENV_DIR = installRoot
+  if (f.env !== undefined) process.env.MARVEEN_PG_URL = f.env
+  else delete process.env.MARVEEN_PG_URL
+  if (f.marker) process.env.MARVEEN_PG_CONFIGURED = '1'
+  else delete process.env.MARVEEN_PG_CONFIGURED
+  const url = await import('../db/pg/url.js')
+  const resolved = url.resolvePgUrl() !== undefined
+  const marker = process.env.MARVEEN_PG_CONFIGURED === '1'
+  return resolved || marker ? 'PG' : 'SQLite'
+}
+
+describe('the hook-side PostgreSQL switch: Python, the app and pg-configured.sh agree on every fixture', () => {
+  for (const f of FIXTURES) {
+    it(`fixture "${f.name}"`, async () => {
+      const { mountDir, installRoot } = materialise(f)
+      const app = await appAnswer(f, mountDir, installRoot)
+      expect(pythonAnswer(f, mountDir, installRoot), `python on "${f.name}"`).toBe(app)
+      expect(shellAnswer(f, mountDir, installRoot), `pg-configured.sh on "${f.name}"`).toBe(app)
+    })
+  }
+
+  it('the fixture table is not vacuous: it contains both PostgreSQL and SQLite answers', () => {
+    const answers = new Set<string>()
+    for (const f of FIXTURES) {
+      const { mountDir, installRoot } = materialise(f)
+      answers.add(pythonAnswer(f, mountDir, installRoot))
+    }
+    expect([...answers].sort()).toEqual(['PG', 'SQLite'])
+  })
+
+  it('the table keeps every row of the shell guard parity cell: no row was dropped or renamed', () => {
+    const other = readFileSync(join(INSTALL, 'src', '__tests__', 'backup-guard-parity.test.ts'), 'utf-8')
+    const names = [...other.matchAll(/^\s*\{ name: (['"`])(.*?)\1,/gm)].map((m) => m[2])
+    expect(names.length).toBeGreaterThan(15)
+    const ours = new Set(FIXTURES.map((f) => f.name))
+    for (const n of names) expect(ours.has(n.replace(/\\'/g, "'")), n).toBe(true)
+  })
+
+  it('the function returns a boolean and leaks no part of the URL', () => {
+    const f: Fixture = { name: 'leak', env: URL }
+    const { mountDir, installRoot } = materialise(f)
+    const run = pythonRun(f, mountDir, installRoot, 'repr(hook_pg_mode.pg_mode(ROOT))')
+    expect(run.stdout.trim()).toBe('True')
+    expect(run.stdout + run.stderr).not.toContain('leakmarker')
+  })
+})

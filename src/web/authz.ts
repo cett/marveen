@@ -18,6 +18,7 @@ import { json } from './http-helpers.js'
 import { hasPermission, resolveRequiredPermission } from './rbac.js'
 import type { Role, Permission } from './rbac.js'
 import type { AuthResult } from './auth-gate.js'
+import { isTenantContextBootstrapRoute } from './tenant-context-bootstrap.js'
 
 export type { Role, Permission }
 
@@ -74,7 +75,8 @@ export function checkPermission(
 
   // A fleet agent that serves several tenants and has no fresh tenant context cannot be given a
   // tenant: refuse rather than fall back to a default (fail closed, decided for the agent tokens).
-  if (auth.kind === 'token' && auth.tenantContextMissing) {
+  // Exception: the two hook routes that record that context (tenant-context-bootstrap.ts); they stay under the RBAC table below.
+  if (auth.kind === 'token' && auth.tenantContextMissing && !isTenantContextBootstrapRoute(method, path)) {
     return { allowed: false, status: 403, reason: 'shared agent has no fresh tenant context' }
   }
 

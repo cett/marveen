@@ -16,6 +16,13 @@ Fail closed: no context row, an unknown or conflicting tenant, a stale context (
 TENANT_CONTEXT_MAX_AGE_SECONDS, default 12h), an unreadable database (for a call that needs it)
 or an error in this gate all block the tool call. Contract: exit 0 = allow, exit 2 = block.
 
+Two backends, one policy. On SQLite the gate reads the database file read-only (unchanged). On PostgreSQL
+(hook_pg_mode.pg_mode()) the file is stale and is never read: the gate sends the targets it found (kind, value, casefolded
+value) in ONE call to POST /api/v1/hooks/skill-gate and decides with the same code (usable_context, skill_accessible,
+the same matching) from the answer, which names only the skills a target names, never their content, and no tenant but the
+caller's own. Any error, timeout or non-2xx of that call falls into the generic "the gate itself failed" block: there is no
+fallback to SQLite and no allow. One shared 7.5 s deadline (hook_route.Deadline) keeps the run inside the 10 s hook timeout.
+
 KNOWN LIMITS (owner decision: the shell side is best effort): a Bash command can build a path
 indirectly (variables, globs over the skills root, a symlink the same command creates before it uses it),
 and a path word is followed through symlinks relative to the session cwd only (a command that cd's
@@ -31,6 +38,7 @@ import sqlite3
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import hook_pg_mode  # noqa: E402
 import ledger_lib  # noqa: E402
 import tenant_context_lib as tcl  # noqa: E402
 
@@ -243,6 +251,14 @@ def _note_session(event):
         pass
 
 
+def load_facts_pg(agent_id, targets, session_id=None):
+    """PostgreSQL mode: (skills, ctx, serves) from ONE dashboard call; raises on any failure (the caller blocks)."""
+    import hook_route  # noqa: E402  (only this mode needs the client)
+    answer = hook_route.call("POST", "/api/v1/hooks/skill-gate", tcl.gate_targets_request(targets), agent_id,
+                             hook_route.Deadline(), str(session_id) if session_id else None)
+    return tcl.gate_facts_from_answer(answer)
+
+
 def main():
     try:
         ev = json.loads(sys.stdin.read())
@@ -259,13 +275,16 @@ def main():
         if not targets:
             sys.exit(0)
         agent_id = ledger_lib.agent_id_from_cwd(cwd)
-        con = sqlite3.connect("file:%s?mode=ro" % ledger_lib.db_path(), uri=True, timeout=3)
-        try:
-            skills = tcl.load_tenant_skills(con)
-            ctx = tcl.read_context(con, agent_id)
-            serves = ctx is None or tcl.context_still_serves(con, agent_id, ctx)
-        finally:
-            con.close()
+        if hook_pg_mode.pg_mode():
+            skills, ctx, serves = load_facts_pg(agent_id, targets, ev.get("session_id"))
+        else:
+            con = sqlite3.connect("file:%s?mode=ro" % ledger_lib.db_path(), uri=True, timeout=3)
+            try:
+                skills = tcl.load_tenant_skills(con)
+                ctx = tcl.read_context(con, agent_id)
+                serves = ctx is None or tcl.context_still_serves(con, agent_id, ctx)
+            finally:
+                con.close()
         tenant, why = tcl.usable_context(ctx)
         if tenant is not None and not serves:
             tenant, why = None, "az agens mar nincs engedelyezve a(z) '%s' tenanthez" % ctx["tenant_id"]

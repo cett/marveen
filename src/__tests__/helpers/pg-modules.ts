@@ -134,6 +134,8 @@ export const PORTED: readonly string[] = [
   'src/__tests__/team-tenant-view-data.test.ts',
   'src/__tests__/channel-coordinator-sender-gate.test.ts',
   'src/__tests__/channel-coordinator-nul-and-drop.test.ts',
+  'src/__tests__/hooks-tenant-route.test.ts',
+  'src/__tests__/hooks-tenant-context-bootstrap.test.ts',
 ]
 
 /** Test files (same form) that do not, each with the reason. */
@@ -147,10 +149,13 @@ export const EXCLUDED: Readonly<Record<string, ExcludeReason>> = {
   // on PostgreSQL a tiny test table gets a sequential scan whatever the index says, so the same assertion would need a
   // planner switch (enable_seqscan) and would test the switch, not the filter
   'src/__tests__/audit-log-trace-index.test.ts': 'sqlite-only',
+  // the SQLite side spawns the real Python hook against a real db FILE (what the hook reads in production), on the
+  // same data the PG side asks the route over HTTP; that file dependency is permanent, not a module still to port
+  'src/__tests__/hooks-tenant-python-differential.test.ts': 'sqlite-only',
 }
 
 /** The number of EXCLUDED files the partition test accepts. It only goes down. */
-export const EXCLUDED_BASELINE = 6
+export const EXCLUDED_BASELINE = 7
 
 /** A file uses useTestDb when it imports the helper AND calls useTestDb( (a file that only imports resetDbTestState or testDbMode does not). */
 const IMPORT = /from\s+['"][^'"]*helpers\/with-test-db(\.js)?['"]/

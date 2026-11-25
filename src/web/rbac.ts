@@ -71,6 +71,10 @@ export const FLEET_AGENT_PERMISSIONS = [
   'skills:write',
   'fleet-config:read',
   'approvals:consume',
+  // /api/hooks/*: the facts and the one own-row write of the tenant gates of the hooks in PG mode (hooks-tenant.ts). The route takes the
+  // agent from the token only; a tenant user never holds these.
+  'hook-gate:read',
+  'hook-gate:write',
   // POST /api/voice/tts. Narrower than the others: the route holds a fleet_agent to its own channel
   // and to the chats the owner adopted for it (channel-credentials.ts), so this permission alone is not "speak as anyone".
   'voice:speak',
@@ -291,6 +295,9 @@ export const ENDPOINT_PERMISSION_TABLE: readonly EndpointPermissionEntry[] = [
   { method: 'GET', pathPattern: '/api/daily-log', prefix: true, permission: 'daily-log:read' },
   { method: 'POST', pathPattern: '/api/daily-log', prefix: false, permission: 'daily-log:write' },
   { method: 'POST', pathPattern: '/api/hook-audit', prefix: false, permission: 'telemetry:write' },
+  { method: 'POST', pathPattern: '/api/hooks/tenant-facts', prefix: false, permission: 'hook-gate:read' },
+  { method: 'POST', pathPattern: '/api/hooks/skill-gate', prefix: false, permission: 'hook-gate:read' },
+  { method: 'PUT', pathPattern: '/api/hooks/tenant-context', prefix: false, permission: 'hook-gate:write' },
   { method: 'POST', pathPattern: '/api/spans', prefix: false, permission: 'telemetry:write' },
   { method: 'POST', pathPattern: '/api/skill-usage', prefix: false, permission: 'telemetry:write' },
   { method: 'POST', pathPattern: '/api/tool-log', prefix: false, permission: 'telemetry:write' },

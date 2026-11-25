@@ -17,6 +17,7 @@ or verified is 'unknown'; sources of different tenants in one prompt are 'confli
 "no tenant skills" to the gate, which is the safe direction: a forged extra marker can only
 turn a request into unknown/conflict, never widen it.
 """
+import json
 import os
 import re
 import sqlite3
@@ -209,44 +210,196 @@ def _serves(con, agent_id, tenant_id):
     ) is not None
 
 
-def _tenant_result(con, agent_id, tenant_id, desc):
+class FactsUnavailable(Exception):
+    """A fact the policy asked for is not there (not prefetched, malformed answer, wrong agent). The caller treats it
+    like any other lookup failure: the context is NOT recorded as resolved (fail closed)."""
+
+
+class SqliteFacts:
+    """The lookups of the resolver over a SQLite connection: the SQL is the one the hooks always ran, unchanged.
+    The policy (what a row means) is in resolve_source / _tenant_result below, not here."""
+
+    def __init__(self, con):
+        self.con = con
+
+    def binding(self, agent_id, channel, external_id):
+        return _binding(self.con, agent_id, channel, external_id)
+
+    def serves(self, agent_id, tenant_id):
+        return _serves(self.con, agent_id, tenant_id)
+
+    def message(self, msg_id):
+        """-> (to_agent, from_agent, tenant_id) or None. NOT filtered by recipient: the policy checks it."""
+        row = _one(self.con, "SELECT to_agent, from_agent, tenant_id FROM agent_messages WHERE id=?", (msg_id,))
+        return tuple(row) if row else None
+
+    def schedule(self, agent_id, name):
+        """-> (tenant_id,) of the agent's own task, or None."""
+        row = _one(self.con, "SELECT tenant_id FROM schedules WHERE id=? AND agent=?", (name, agent_id))
+        return (row[0],) if row else None
+
+
+def route_sources(sources):
+    """The sources the dashboard has to be asked about (channel | message | scheduled), de-duplicated, in order.
+    An 'unknown' source is decided locally and needs no fact."""
+    out, seen = [], set()
+    for s in sources:
+        if s["kind"] == "channel":
+            item = {"kind": "channel", "channel": s["channel"], "external_id": s["external_id"]}
+        elif s["kind"] == "message":
+            item = {"kind": "message", "msg_id": s["msg_id"]}
+        elif s["kind"] == "scheduled":
+            item = {"kind": "scheduled", "name": s["name"]}
+        else:
+            continue
+        key = json.dumps(item, sort_keys=True)
+        if key not in seen:
+            seen.add(key)
+            out.append(item)
+    return out
+
+
+class RouteFacts:
+    """The lookups of the resolver answered from ONE prefetched /hooks/tenant-facts response (PostgreSQL mode).
+
+    It holds only what the dashboard returned for THIS agent: a lookup that was not prefetched, a lookup for another
+    agent, or an answer that does not fit the request RAISES FactsUnavailable (the resolver then fails closed). There
+    is no fallback to another source here: a missing fact is never answered from SQLite or from a guess."""
+
+    def __init__(self, agent_id, requested, answer):
+        self.agent_id = agent_id
+        if not isinstance(answer, dict) or not isinstance(answer.get("sources"), list) or not isinstance(answer.get("serves"), dict):
+            raise FactsUnavailable("malformed tenant-facts answer")
+        if len(answer["sources"]) != len(requested):
+            raise FactsUnavailable("tenant-facts answer does not match the request")
+        self._bindings = {}   # (channel, external_id) -> tenant or None
+        self._messages = {}   # msg_id -> (to_agent, from_agent, tenant_id) or None
+        self._schedules = {}  # name -> (tenant_id,) or None
+        self._serves = {}
+        for req, got in zip(requested, answer["sources"]):
+            if not isinstance(got, dict) or got.get("kind") != req["kind"]:
+                raise FactsUnavailable("tenant-facts answer does not match the request")
+            if req["kind"] == "channel":
+                self._bindings[(req["channel"], req["external_id"])] = self._tenant_or_none(got, "binding")
+            elif req["kind"] == "message":
+                msg = got.get("message")
+                if msg is None:
+                    self._messages[req["msg_id"]] = None
+                elif isinstance(msg, dict):
+                    self._messages[req["msg_id"]] = (msg.get("to_agent"), msg.get("from_agent"), msg.get("tenant_id"))
+                    self._bindings[("inter-agent", msg.get("from_agent") or "")] = self._tenant_or_none(got, "inter_agent_binding")
+                else:
+                    raise FactsUnavailable("malformed message fact")
+            else:
+                sched = got.get("schedule")
+                if sched is None:
+                    self._schedules[req["name"]] = None
+                elif isinstance(sched, dict):
+                    self._schedules[req["name"]] = (sched.get("tenant_id"),)
+                else:
+                    raise FactsUnavailable("malformed schedule fact")
+        for tenant, ok in answer["serves"].items():
+            if not isinstance(ok, bool):
+                raise FactsUnavailable("malformed serves fact")
+            self._serves[tenant] = ok
+
+    @staticmethod
+    def _tenant_or_none(got, field):
+        v = got.get(field)
+        if v is None or isinstance(v, str):
+            return v
+        raise FactsUnavailable("malformed %s fact" % field)
+
+    def _own(self, agent_id):
+        if agent_id != self.agent_id:
+            raise FactsUnavailable("a fact for another agent was asked")
+
+    def binding(self, agent_id, channel, external_id):
+        self._own(agent_id)
+        try:
+            return self._bindings[(channel, external_id)]
+        except KeyError:
+            raise FactsUnavailable("binding not prefetched") from None
+
+    def serves(self, agent_id, tenant_id):
+        self._own(agent_id)
+        try:
+            return self._serves[tenant_id]
+        except KeyError:
+            raise FactsUnavailable("serves not prefetched for the tenant") from None
+
+    def message(self, msg_id):
+        try:
+            return self._messages[msg_id]
+        except KeyError:
+            raise FactsUnavailable("message not prefetched") from None
+
+    def schedule(self, agent_id, name):
+        self._own(agent_id)
+        try:
+            return self._schedules[name]
+        except KeyError:
+            raise FactsUnavailable("schedule not prefetched") from None
+
+
+def as_facts(source):
+    """A sqlite3 connection (the historic argument of the resolver) or a facts object -> a facts object."""
+    return source if hasattr(source, "binding") and hasattr(source, "serves") else SqliteFacts(source)
+
+
+def prefetch_facts(agent_id, prompt, fetch):
+    """PostgreSQL mode: the facts of the prompt from ONE call. `fetch(request_sources) -> answer` does the HTTP.
+    A prompt with no source to ask about (no marker at all, or only unidentifiable ones) makes no call: the operator's
+    plain prompt resolves to the default tenant without any database lookup."""
+    requested = route_sources(parse_sources(prompt or ""))
+    if not requested:
+        return RouteFacts(agent_id, [], {"sources": [], "serves": {}})
+    return RouteFacts(agent_id, requested, fetch(requested))
+
+
+def _tenant_result(facts, agent_id, tenant_id, desc):
     if not tenant_id or tenant_id == DEFAULT_TENANT:
         return ("default", DEFAULT_TENANT, desc)
-    if not _serves(con, agent_id, tenant_id):
+    if not facts.serves(agent_id, tenant_id):
         return ("unknown", "", desc + " (agent not enabled for tenant %s)" % tenant_id)
     return ("bound", tenant_id, desc)
 
 
 def resolve_source(con, agent_id, src):
-    """-> (status, tenant_id, description) for one source; status is bound|default|unknown."""
+    """-> (status, tenant_id, description) for one source; status is bound|default|unknown.
+    `con` is a sqlite3 connection or a facts object (SqliteFacts / RouteFacts)."""
+    facts = as_facts(con)
     kind = src["kind"]
     if kind == "channel":
         desc = "channel:%s:%s" % (src["channel"], src["external_id"])
-        return _tenant_result(con, agent_id, _binding(con, agent_id, src["channel"], src["external_id"]), desc)
+        return _tenant_result(facts, agent_id, facts.binding(agent_id, src["channel"], src["external_id"]), desc)
     if kind == "message":
         desc = "message:%d" % src["msg_id"]
-        row = _one(con, "SELECT to_agent, from_agent, tenant_id FROM agent_messages WHERE id=?", (src["msg_id"],))
+        row = facts.message(src["msg_id"])
         if not row or row[0] != agent_id:
             return ("unknown", "", desc + " (not found or not for this agent)")
         stamped = row[2]
         if stamped and stamped != DEFAULT_TENANT:
-            return _tenant_result(con, agent_id, stamped, desc)
-        return _tenant_result(con, agent_id, _binding(con, agent_id, "inter-agent", row[1] or ""), desc)
+            return _tenant_result(facts, agent_id, stamped, desc)
+        return _tenant_result(facts, agent_id, facts.binding(agent_id, "inter-agent", row[1] or ""), desc)
     if kind == "scheduled":
         desc = "scheduled:%s" % src["name"]
-        row = _one(con, "SELECT tenant_id FROM schedules WHERE id=? AND agent=?", (src["name"], agent_id))
+        row = facts.schedule(agent_id, src["name"])
         if not row:
             return ("unknown", "", desc + " (no such task for this agent)")
-        return _tenant_result(con, agent_id, row[0], desc)
+        return _tenant_result(facts, agent_id, row[0], desc)
     return ("unknown", "", src.get("reason", "unidentified source"))
 
 
 def resolve_prompt(con, agent_id, prompt):
-    """-> (status, tenant_id, source_description) for a whole prompt."""
+    """-> (status, tenant_id, source_description) for a whole prompt.
+    `con` is a sqlite3 connection or a facts object. No source marker at all: the local operator, default tenant,
+    and no lookup of any kind."""
     sources = parse_sources(prompt or "")
     if not sources:
         return ("default", DEFAULT_TENANT, "local")
-    results = [resolve_source(con, agent_id, s) for s in sources]
+    facts = as_facts(con)
+    results = [resolve_source(facts, agent_id, s) for s in sources]
     desc = ",".join(r[2] for r in results)[:500]
     if any(r[0] == "unknown" for r in results):
         return ("unknown", "", desc)
@@ -296,6 +449,7 @@ SAFE_SEGMENT = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]*$')
 # case-sensitive volume is the safe side).
 SKILL_DIR_RX = re.compile(r'(?<![\w.-])\.claude(?:-config)?/skills/([^/\s\'"`;|&<>()$*?\[\]{}\\]+)', re.IGNORECASE)
 FRONTMATTER_NAME_RX = re.compile(r'\A---\s*\n(.*?)\n---', re.DOTALL)
+_NAME_LINE_RX = re.compile(r'^name:', re.MULTILINE)
 
 
 def skill_dir_name(skill_id):
@@ -308,8 +462,25 @@ def _frontmatter_name(content):
     m = FRONTMATTER_NAME_RX.match(content or "")
     if not m:
         return None
-    nm = re.search(r'^name:\s*(.+?)\s*$', m.group(1), re.MULTILINE)
-    return nm.group(1).strip().strip('"\'') if nm else None
+    # LINEAR read. This was re.search(r'^name:\s*(.+?)\s*$', block, re.MULTILINE), which is quadratic: `(.+?)\s*$` re-scans a long
+    # whitespace run at every step of the lazy run (a `name: x` line, 40000 spaces, then `y` cost seconds, and a tenant user writes
+    # the skill content). Same result, proven on generated texts against the old expression (TestFrontmatterNameLinear):
+    # the first `name:` line whose value can be read; the value is the rest of that line, stripped.
+    block = m.group(1)
+    n = len(block)
+    for hit in _NAME_LINE_RX.finditer(block):
+        start = hit.end()
+        k = start
+        while k < n and block[k].isspace():  # one whitespace run (it may cross lines, as `\s*` did)
+            k += 1
+        if k < n:
+            end = block.find("\n", k)  # a `.` and a `$` here know the newline only
+            return block[k:(n if end == -1 else end)].strip().strip('"\'')
+        # only whitespace to the end of the block: a non-newline one in it is the character `.+?` could still take
+        for i in range(k - 1, start - 1, -1):
+            if block[i] != "\n":
+                return ""
+    return None
 
 
 def load_tenant_skills(con):
@@ -329,6 +500,41 @@ def load_tenant_skills(con):
         out.append({"id": sid, "tenant_id": tenant, "dir": skill_dir_name(sid), "names": names,
                     "granted": grants.get(sid, set())})
     return out
+
+
+def gate_targets_request(targets):
+    """The /hooks/skill-gate request body for the gate's targets [(kind, value)]: de-duplicated, in order.
+    `folded` is value.casefold() computed HERE: Python's casefold is not JavaScript's toLowerCase (sharp s, long s,
+    ligatures), and the gate's own matching below uses casefold(), so the server must be told the same fold."""
+    out, seen = [], set()
+    for kind, value in targets:
+        if (kind, value) not in seen:
+            seen.add((kind, value))
+            out.append({"kind": kind, "value": value, "folded": value.casefold()})
+    return {"targets": out}
+
+
+def gate_facts_from_answer(answer):
+    """PostgreSQL mode: the /hooks/skill-gate answer -> (skills, ctx, serves), the same shapes load_tenant_skills(),
+    read_context() and context_still_serves() give on SQLite. The answer is minimised by the server (a skill's owner is
+    the caller's own tenant or '*', its grants the caller's own tenant or nothing), which is all skill_accessible()
+    ever compares. Anything malformed raises FactsUnavailable: the gate then blocks."""
+    if not isinstance(answer, dict) or not isinstance(answer.get("skills"), list) or not isinstance(answer.get("serves"), bool):
+        raise FactsUnavailable("malformed skill-gate answer")
+    ctx = answer.get("context")
+    if ctx is not None:
+        if not isinstance(ctx, dict) or not all(k in ctx for k in ("status", "tenant_id", "source", "session_id", "updated_at")):
+            raise FactsUnavailable("malformed context fact")
+        ctx = {k: ctx[k] for k in ("status", "tenant_id", "source", "session_id", "updated_at")}
+    skills = []
+    for s in answer["skills"]:
+        if not isinstance(s, dict) or not isinstance(s.get("tenant_id"), str) or not isinstance(s.get("names"), list) \
+                or not isinstance(s.get("granted"), list) or not (s.get("dir") is None or isinstance(s.get("dir"), str)):
+            raise FactsUnavailable("malformed skill fact")
+        skills.append({"id": s.get("id"), "tenant_id": s["tenant_id"], "dir": s.get("dir"),
+                       "names": {n for n in s["names"] if isinstance(n, str)},
+                       "granted": {g for g in s["granted"] if isinstance(g, str)}})
+    return skills, ctx, answer["serves"]
 
 
 def usable_context(ctx, now=None, max_age=None):
