@@ -232,10 +232,20 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 // (if newly inserted) hand off to Marveen. Returns the highest update_id seen
 // so the caller can advance the offset AFTER the whole batch is durable.
 // Exported for tests.
+// How many times the insert of the SAME update may fail before it is given up (a transient error clears in one or two polls; the
+// backoff in the loop spaces the attempts), and the state processBatch leaves for the loop. Exported for tests.
+export const POISON_INSERT_FAILURES = 10
+const insertFailures = new Map<number, number>()
+let batchStoppedOnFailure = false
+/** true when the last processBatch stopped at a failed insert: the loop waits before it asks for the same updates again. */
+export function lastBatchStoppedOnFailure(): boolean { return batchStoppedOnFailure }
+export function resetInsertFailuresForTests(): void { insertFailures.clear(); batchStoppedOnFailure = false }
+
 export async function processBatch(updates: { update_id: number }[]): Promise<number | null> {
   // The highest update id that is DURABLE: stored, or deduplicated, or one that is not stored on purpose (an unhandled kind). The
   // caller moves the offset to it, and Telegram never sends an update below the offset again, so an update whose insert FAILED
   // must stay above it. A handoff failure is different: its event is stored and the replay hands it off.
+  batchStoppedOnFailure = false
   let maxUpdateId: number | null = null
   const settled = (id: number): void => { maxUpdateId = maxUpdateId == null ? id : Math.max(maxUpdateId, id) }
   for (const raw of updates) {
@@ -248,9 +258,22 @@ export async function processBatch(updates: { update_id: number }[]): Promise<nu
     } catch (err) {
       // STOP: the update is not stored, so the offset must not pass it (nor anything after it, the batch is in order). The
       // next poll asks Telegram for it again, and the dedupe key makes a replay of the ones already stored harmless.
-      logger.error({ err, update_id: ev.update_id }, 'channel-coordinator: insertIncomingEvent failed; the batch stops, the offset stays below this update')
+      const failures = (insertFailures.get(ev.update_id) ?? 0) + 1
+      insertFailures.set(ev.update_id, failures)
+      if (failures >= POISON_INSERT_FAILURES) {
+        // A failure that does not go away (a value the database refuses, every time) would hold the offset, and every update
+        // behind it, for ever. After the limit the update is given up, LOUDLY (an alert, the id in the log), so the queue moves on.
+        insertFailures.delete(ev.update_id)
+        logger.error({ err, update_id: ev.update_id, failures }, 'channel-coordinator: insertIncomingEvent failed again and again; this update is given up so the queue can move on')
+        sendAlert(`${BOT_NAME} channel-coordinator: update ${ev.update_id} could not be stored after ${failures} attempts and was given up.`)
+        settled(raw.update_id)
+        continue
+      }
+      logger.error({ err, update_id: ev.update_id, failures }, 'channel-coordinator: insertIncomingEvent failed; the batch stops, the offset stays below this update')
+      batchStoppedOnFailure = true
       break
     }
+    insertFailures.delete(ev.update_id)
     settled(raw.update_id)
     if (!ins.inserted || ins.eventId == null) continue // dedup: already handed off
 
@@ -408,6 +431,9 @@ async function runLoop(token: string): Promise<void> {
     const maxUpdateId = await processBatch(updates)
     // Persist offset ONLY after the batch is durable + handed off.
     if (maxUpdateId != null) await setOffset(SOURCE, maxUpdateId)
+    // A batch that stopped at a failed insert asks Telegram for the same updates on the next poll, which answers at once: wait
+    // first (the same backoff as a transient poll error), or a database that is down becomes a tight loop.
+    if (lastBatchStoppedOnFailure()) await sleep(transientBackoffMs(Math.min(++transientAttempt, 6)))
   }
 }
 
