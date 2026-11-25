@@ -1,5 +1,6 @@
 import { readBody, json } from '../http-helpers.js'
 import { tenantSkillDirName } from '../skill-regen.js'
+import { frontmatterName } from '../skill-frontmatter-name.js'
 import {
   getHookContext, getHookTenantFacts, listHookTenantSkills, recordHookContext,
   type HookSource,
@@ -71,14 +72,7 @@ function parseSources(raw: unknown): HookSource[] | string {
   return out
 }
 
-// The same two reads as tenant_context_lib._frontmatter_name / skill_dir_name.
-const FRONTMATTER_RX = /^---\s*\n([\s\S]*?)\n---/
-function frontmatterName(content: string | null): string | null {
-  const m = FRONTMATTER_RX.exec(content ?? '')
-  if (!m) return null
-  const nm = /^name:\s*(.+?)\s*$/m.exec(m[1]!)
-  return nm ? nm[1]!.trim().replace(/^["']+|["']+$/g, '') : null
-}
+// The same read as tenant_context_lib._frontmatter_name, in linear time (src/web/skill-frontmatter-name.ts).
 
 interface Target { kind: 'skill' | 'dir'; value: string; folded: string }
 

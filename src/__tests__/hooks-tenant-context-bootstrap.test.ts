@@ -347,6 +347,20 @@ describe('ONE PARSE: the route reads the one JSON object it validated (no second
     expect(await contextRow('agent-shared')).toBeUndefined()
   })
 
+  it('a skill whose content has a long whitespace run in its name line does not stall the route (the name read is linear)', async () => {
+    // `name: x` + 100 000 spaces + `y` took seconds in the regular expression this replaced; the content of a skill has no size limit
+    const evil = `---\nname: x${' '.repeat(100_000)}y\n---\nbody`
+    for (let i = 0; i < 5; i++) {
+      await dbx.run('INSERT INTO skills (id, name, content, tenant_id, created_at, updated_at) VALUES (?, ?, ?, ?, 1, 1)', `tenant-x-evil${i}`, `evil${i}`, evil, 'tenant-x')
+    }
+    await setContext('agent-solo', 'tenant-x', 'bound')
+    const t0 = performance.now()
+    const r = await request('tok-solo', 'POST', GATE, { targets: [{ kind: 'skill', value: 'evil0', folded: 'evil0' }] })
+    expect(r.status).toBe(200)
+    expect(performance.now() - t0).toBeLessThan(1500)
+    expect(r.body).toMatchObject({ skills: [{ id: 'tenant-x-evil0' }] })
+  })
+
   it('the content type is not read: the same body is the same request whatever the header says', async () => {
     // readBody takes the bytes and the route JSON.parses them; no middleware before the route parses it differently
     expect((await request('tok-shared', 'POST', FACTS, { sources: channel('111') })).status).toBe(200)
