@@ -40,6 +40,7 @@
 @import url("features/agent-skills.css")      layer(features);
 @import url("features/agent-messaging.css")   layer(features);
 @import url("features/agent-system.css")      layer(features);
+@import url("features/org-radial.css")        layer(features);
 
 /* Memory */
 @import url("features/memories.css")          layer(features);

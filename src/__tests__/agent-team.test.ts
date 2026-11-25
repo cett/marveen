@@ -47,7 +47,7 @@ import { readAgentSecurityProfile } from '../web/agent-config.js'
 import {
   readAgentTeam, writeAgentTeam, resolveSecurityProfileId, resolveAgentSecurityProfile,
   sanitizeTeamConfig, reportsToCreatesCycle, cleanupTeamReferences,
-  DEFAULT_TEAM,
+  DEFAULT_TEAM, normalizeTeamTitle, TEAM_TITLE_MAX,
 } from '../web/agent-team.js'
 
 function makeAgentDir(name: string): string {
@@ -252,5 +252,51 @@ describe('sanitizeTeamConfig', () => {
     const { team: out, warnings } = sanitizeTeamConfig('alice', team)
     expect(out.reportsTo).toBeNull()
     expect(warnings.droppedUnknown).toContain('ghost-agent')
+  })
+})
+
+// The one-word title (display only, shown under the avatar in the radial org chart).
+describe('team title', () => {
+  const base = { role: 'member' as const, reportsTo: null, delegatesTo: [], autoDelegation: false, trustFrom: [] }
+
+  it('normalizeTeamTitle accepts ONE word of letters, digits, "." and "-" (accents included) and trims it', () => {
+    for (const ok of ['dev', 'fejlesztő', 'egészségügyis', 'qa-2', 'a.b', '  trim  ', 'x'.repeat(TEAM_TITLE_MAX)]) {
+      expect(normalizeTeamTitle(ok)).toBe(ok.trim())
+    }
+  })
+
+  it('normalizeTeamTitle refuses empty, several words, markup, a leading symbol, over-long and non-string values', () => {
+    for (const bad of ['', '   ', 'two words', 'a<b', '<script>', '"quoted"', '-lead', '.lead', 'x'.repeat(TEAM_TITLE_MAX + 1), 'tab\there', 'new\nline', 'a_b', 'a/b']) {
+      expect(normalizeTeamTitle(bad)).toBeNull()
+    }
+    for (const nonString of [null, undefined, 1, true, {}, ['dev']]) expect(normalizeTeamTitle(nonString)).toBeNull()
+  })
+
+  it('a stored title is read back, and a team without one reads without the key (no placeholder)', () => {
+    makeAgentDir('title-set')
+    writeAgentTeam('title-set', { ...base, title: 'fejlesztő' })
+    expect(readAgentTeam('title-set').title).toBe('fejlesztő')
+    makeAgentDir('title-none')
+    writeAgentTeam('title-none', { ...base })
+    expect('title' in readAgentTeam('title-none')).toBe(false)
+  })
+
+  it('a stored title that is not one word is dropped on read (a hand-edited file cannot inject text)', () => {
+    makeAgentDir('title-bad')
+    writeFileSync(join(AGENTS_BASE_DIR, 'title-bad', 'agent-config.json'), JSON.stringify({ team: { title: '<img src=x onerror=1>' } }))
+    expect('title' in readAgentTeam('title-bad')).toBe(false)
+  })
+
+  it('sanitizeTeamConfig keeps a valid title and drops an invalid one', () => {
+    expect(sanitizeTeamConfig('alice', { ...base, title: 'dev' }).team.title).toBe('dev')
+    expect('title' in sanitizeTeamConfig('alice', { ...base, title: 'two words' }).team).toBe(false)
+    expect('title' in sanitizeTeamConfig('alice', { ...base }).team).toBe(false)
+  })
+
+  it('rewriting the team after changing another field keeps the title', () => {
+    makeAgentDir('title-keep')
+    writeFileSync(join(AGENTS_BASE_DIR, 'title-keep', 'agent-config.json'), JSON.stringify({ model: 'm', team: { title: 'dev' } }))
+    writeAgentTeam('title-keep', { ...readAgentTeam('title-keep'), reportsTo: 'alice' })
+    expect(readAgentTeam('title-keep')).toMatchObject({ title: 'dev', reportsTo: 'alice' })
   })
 })

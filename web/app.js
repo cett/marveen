@@ -781,7 +781,7 @@ document.getElementById('deepseekConfigLink')?.addEventListener('click', (e) => 
 // ── Page registration + boot ──────────────────────────────────────────────────
 // Alias: '#team' hash -> 'agents' page, tree view. Must be registered before boot()
 // so the alias is available when routeFromHash() resolves the initial URL.
-registerAlias('team', 'agents', () => setAgentsActiveView('tree'))
+registerAlias('team', 'agents', () => setAgentsActiveView('radial'))
 
 // The Status page (Claude service status) merged into Overview as its
 // "Rendszer" section. 'status' stays as an alias so old #status links still

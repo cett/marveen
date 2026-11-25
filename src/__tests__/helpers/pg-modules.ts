@@ -131,6 +131,7 @@ export const PORTED: readonly string[] = [
   'src/__tests__/kanban-title-lookup-tenant.test.ts',
   'src/__tests__/kanban-create-sort-tenant.test.ts',
   'src/__tests__/channel-coordinator-ingest.test.ts',
+  'src/__tests__/team-tenant-view-data.test.ts',
   'src/__tests__/channel-coordinator-sender-gate.test.ts',
   'src/__tests__/channel-coordinator-nul-and-drop.test.ts',
 ]

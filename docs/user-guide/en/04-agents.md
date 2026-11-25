@@ -24,7 +24,9 @@ The main agent's card always appears first, with a dedicated "Main" badge.
 
 ## View toggle
 
-Switch between the card grid and the org chart (hierarchy tree) using the buttons in the top-right corner.
+Switch between the card grid and the radial org chart using the buttons in the top-right corner. The radial chart replaced the old hierarchy tree.
+
+The radial chart draws one picture per tenant: the main agent in the middle, its direct reports on a ring around it, their reports on the next ring. Each agent is an avatar with a ring (solid green = running, dashed grey = not running), its name and a one-word title. The radii are never fixed: they are the smallest that keep every label box apart, so a bigger team gets a wider picture. An agent that belongs to several tenants appears in each picture, and hovering or focusing it lights up its copy in the others. Click, or Enter / Space on a focused agent, opens its detail page. The chart is display only: who reports to whom is set on the agent's Team tab ("Reports to"), there is no drag-and-drop any more. A manager that would sit under its own report is refused and the card says so.
 
 ---
 
@@ -60,7 +62,7 @@ The list of skill files available to this agent.
 
 ### Team
 
-The agent's place in the fleet hierarchy: role (leader / member), manager, and delegated agents. This tab is hidden for the main agent.
+The agent's place in the fleet hierarchy: role (leader / member), manager, a one-word title (shown under the name on the radial chart, at most 24 characters: letters, digits, dot or hyphen; empty shows nothing), and delegated agents. This tab is hidden for the main agent.
 
 ### Activity
 

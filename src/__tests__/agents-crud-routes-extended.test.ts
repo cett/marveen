@@ -157,7 +157,23 @@ vi.mock('../web/agent-config.js', async (importOriginal) => {
 vi.mock('../web/model-fallback-state.js', () => ({
   clearFallbackOverride: vi.fn(),
 }))
-vi.mock('../web/agent-team.js', () => ({
+vi.mock('../web/routes/team-tenant-view-data.js', () => ({
+  buildTenantViews: vi.fn().mockResolvedValue({ tenants: [{ id: 'view-marker', name: 'V', rootId: null, nodes: [], edges: [] }], mainAgentId: null }),
+}))
+// The tenant-role cell of the per-tenant view runs the REAL buildTenantViews; its three database readers are spies whose
+// default is the real function, so every other cell of this file is unchanged.
+vi.mock('../db/observability.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../db/observability.js')>()
+  return { ...actual, getTenant: vi.fn(actual.getTenant), listTenants: vi.fn(actual.listTenants) }
+})
+vi.mock('../db/agents.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../db/agents.js')>()
+  return { ...actual, listEnabledAgentAvailability: vi.fn(actual.listEnabledAgentAvailability) }
+})
+vi.mock('../web/agent-team.js', async (importOriginal) => ({
+  // the title validation is a pure helper of the real module: the route's 400 and the stored value depend on it
+  normalizeTeamTitle: (await importOriginal<typeof import('../web/agent-team.js')>()).normalizeTeamTitle,
+  TEAM_TITLE_MAX: (await importOriginal<typeof import('../web/agent-team.js')>()).TEAM_TITLE_MAX,
   readAgentTeam: vi.fn().mockReturnValue({ role: 'member', reportsTo: null, delegatesTo: [], autoDelegation: false, trustFrom: [], trustSources: [] }),
   writeAgentTeam: vi.fn(),
   sanitizeTeamConfig: vi.fn().mockImplementation((cfg: any) => cfg),
@@ -453,6 +469,62 @@ describe('agents-crud routes (extended)', () => {
     expect(await tryHandleAgentsCrud(ctx, WEB_DIR)).toBe(true)
     expect(statusCode()).toBe(200)
     expect((responseBody() as any).ok).toBe(true)
+  })
+
+  describe('the one-word title on PUT /api/agents/:name/team', () => {
+    const put = async (body: unknown) => {
+      const { ctx, statusCode, responseBody } = makeCtx({ method: 'PUT', path: '/api/agents/test-agent/team', body: JSON.stringify(body) })
+      expect(await tryHandleAgentsCrud(ctx, WEB_DIR)).toBe(true)
+      return { status: statusCode(), body: responseBody() as any }
+    }
+    const written = async () => {
+      const agentTeam = await import('../web/agent-team.js')
+      return vi.mocked(agentTeam.sanitizeTeamConfig).mock.calls.at(-1)?.[1] as { title?: string }
+    }
+
+    it('a one-word title is stored with the team', async () => {
+      expect((await put({ title: 'fejlesztő' })).status).toBe(200)
+      expect((await written()).title).toBe('fejlesztő')
+    })
+
+    it('a title that is not one word is refused with 400 and nothing is written', async () => {
+      const agentTeam = await import('../web/agent-team.js')
+      vi.mocked(agentTeam.writeAgentTeam).mockClear()
+      for (const bad of ['two words', '<b>x</b>', 'x'.repeat(40), 5]) {
+        const r = await put({ title: bad })
+        expect(r.status).toBe(400)
+        expect(r.body).toMatchObject({ error: 'invalid_value', field: 'title' })
+      }
+      expect(agentTeam.writeAgentTeam).not.toHaveBeenCalled()
+    })
+
+    it('null or an empty string clears it, and a PUT without the key leaves it as it is', async () => {
+      const agentTeam = await import('../web/agent-team.js')
+      vi.mocked(agentTeam.readAgentTeam).mockReturnValue({ role: 'member', reportsTo: null, delegatesTo: [], autoDelegation: false, trustFrom: [], title: 'dev' } as never)
+      try {
+        await put({ role: 'member' })
+        expect((await written()).title).toBe('dev')
+        await put({ title: null })
+        expect('title' in (await written())).toBe(false)
+        await put({ title: '' })
+        expect('title' in (await written())).toBe(false)
+      } finally {
+        vi.mocked(agentTeam.readAgentTeam).mockReturnValue({ role: 'member', reportsTo: null, delegatesTo: [], autoDelegation: false, trustFrom: [], trustSources: [] } as never)
+      }
+    })
+  })
+
+  it('GET /api/team/graph?view=tenants answers with the derived per-tenant view, and the plain graph is untouched', async () => {
+    const { ctx, statusCode, responseBody } = makeCtx({ method: 'GET', path: '/api/team/graph?view=tenants', role: 'admin' })
+    ctx.path = '/api/team/graph'
+    expect(await tryHandleAgentsCrud(ctx, WEB_DIR)).toBe(true)
+    expect(statusCode()).toBe(200)
+    expect((responseBody() as any).tenants[0].id).toBe('view-marker')
+    const plain = makeCtx({ method: 'GET', path: '/api/team/graph', role: 'admin' })
+    expect(await tryHandleAgentsCrud(plain.ctx, WEB_DIR)).toBe(true)
+    const body = plain.responseBody() as any
+    expect(Array.isArray(body.nodes)).toBe(true)
+    expect(body.tenants).toBeUndefined()
   })
 
   it('POST /api/agents creates new agent successfully', async () => {
@@ -839,6 +911,74 @@ describe('agent readers are tenant-scoped like GET /api/agents', async () => {
     expect(statusCode()).toBe(200)
     return responseBody() as { nodes: any[]; edges: { from: string; to: string }[]; mainAgentId: string | null }
   }
+
+  // The route hands its OWN ctx to the per-tenant view. The data module is real here (the file-level mock is switched to it),
+  // so a route that called it with another ctx (an admin one) would show the other tenant.
+  describe('GET /api/team/graph?view=tenants as a tenant role', async () => {
+    const observability = await import('../db/observability.js')
+    const dbAgents = await import('../db/agents.js')
+    const viewData = await import('../web/routes/team-tenant-view-data.js')
+    const actualViewData = await vi.importActual<typeof import('../web/routes/team-tenant-view-data.js')>('../web/routes/team-tenant-view-data.js')
+    const TENANTS = {
+      acme: { id: 'acme', display_name: 'Acme Display', created_at: 1, disabled_at: null, main_agent_id: null },
+      'rival-tenant': { id: 'rival-tenant', display_name: 'Rival Display', created_at: 2, disabled_at: null, main_agent_id: null },
+    }
+
+    function seedView(): void {
+      seed()
+      vi.mocked(viewData.buildTenantViews).mockImplementation((c) => actualViewData.buildTenantViews(c))
+      vi.mocked(observability.getTenant).mockImplementation((id: string) => Promise.resolve((TENANTS as Record<string, typeof TENANTS.acme>)[id]))
+      vi.mocked(observability.listTenants).mockResolvedValue(Object.values(TENANTS))
+      // member-a is shared with the second tenant, hidden-agent belongs to it alone
+      vi.mocked(dbAgents.listEnabledAgentAvailability).mockResolvedValue([
+        { tenant_id: 'acme', agent_id: 'lead-a' }, { tenant_id: 'acme', agent_id: 'member-a' }, { tenant_id: 'acme', agent_id: 'member-b' },
+        { tenant_id: 'rival-tenant', agent_id: 'member-a' }, { tenant_id: 'rival-tenant', agent_id: 'hidden-agent' },
+      ])
+    }
+    function resetView(): void {
+      reset()
+      vi.mocked(viewData.buildTenantViews).mockReset()
+      vi.mocked(viewData.buildTenantViews).mockResolvedValue({ tenants: [{ id: 'view-marker', name: 'V', rootId: null, nodes: [], edges: [] }], mainAgentId: null } as never)
+    }
+    async function tenantViews(role: RouteContext['role'], tenantId?: RouteContext['tenantId']) {
+      const { ctx, statusCode, responseBody } = makeCtx({ method: 'GET', path: '/api/team/graph?view=tenants', role, tenantId })
+      ctx.path = '/api/team/graph'
+      expect(await tryHandleAgentsCrud(ctx, WEB_DIR)).toBe(true)
+      expect(statusCode()).toBe(200)
+      return responseBody() as { tenants: { id: string; name: string; nodes: { id: string }[] }[]; mainAgentId: string | null }
+    }
+
+    it('answers with ONLY the caller\'s tenant: the other tenant\'s id, name and agents are nowhere in the body, and there is no main agent', async () => {
+      seedView()
+      try {
+        const body = await tenantViews('agent', 'acme')
+        expect(body.tenants.map((t) => t.id)).toEqual(['acme'])
+        expect(body.tenants[0]!.name).toBe('Acme Display')
+        expect(body.tenants[0]!.nodes.map((n) => n.id).sort()).toEqual(['lead-a', 'member-a', 'member-b'])
+        expect(body.mainAgentId).toBeNull()
+        const raw = JSON.stringify(body)
+        for (const secret of ['rival-tenant', 'Rival Display', 'hidden-agent']) expect(raw, secret).not.toContain(secret)
+      } finally { resetView() }
+    })
+
+    it('the same seed as an admin shows both tenants (so the cell above is not green for lack of data)', async () => {
+      seedView()
+      try {
+        const body = await tenantViews('admin')
+        expect(body.tenants.map((t) => t.id).sort()).toEqual(['acme', 'rival-tenant'])
+        expect(JSON.stringify(body)).toContain('Rival Display')
+      } finally { resetView() }
+    })
+
+    it('the data module is called with the route\'s own ctx (role and tenant), not an admin one', async () => {
+      seedView()
+      try {
+        await tenantViews('agent', 'acme')
+        const arg = vi.mocked(viewData.buildTenantViews).mock.calls[0]![0]
+        expect(arg).toMatchObject({ role: 'agent', tenantId: 'acme' })
+      } finally { resetView() }
+    })
+  })
 
   describe('GET /api/team/graph', () => {
     it('non-admin sees only the agents enabled for their tenant, and no main node', async () => {

@@ -54,18 +54,6 @@
 .overview-card-head h3 { font-size: 16px; font-weight: 600; }
 .overview-card-meta { font-size: 12px; color: var(--text-muted); }
 
-.overview-team-graph {
-  padding: 12px 0;
-  gap: 14px;
-}
-.overview-team-graph .team-node {
-  min-width: 120px;
-  max-width: 160px;
-  padding: 8px 10px;
-}
-.overview-team-graph .team-node-avatar { width: 40px; height: 40px; }
-.overview-team-graph .team-node-name { font-size: 13px; }
-.overview-team-graph .team-node-meta { font-size: 11px; }
 .overview-agent {
   display: flex;
   align-items: center;

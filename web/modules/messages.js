@@ -1,7 +1,7 @@
 import { escapeHtml, mainAgentId } from './util.js'
 import { showToast } from './toast.js'
 import { t } from './i18n.js'
-import { avatarBust, setFederatedPeerStatus, federatedAgentEntries } from './agents.js'
+import { avatarBust, setFederatedPeerStatus, federatedAgentEntries, currentAgent, loadAgents } from './agents.js'
 import { getErrorMessage } from './error-message.js'
 import { initTenantSelector } from './tenant-selector.js'
 
@@ -591,6 +591,7 @@ document.getElementById('chatRefreshBtn')?.addEventListener('click', () => {
 export function renderTeamEditor(agent, allAgents) {
   const team = agent.team || { role: 'member', reportsTo: null, delegatesTo: [], autoDelegation: false, trustFrom: [] }
   document.getElementById('editTeamRole').value = team.role || 'member'
+  document.getElementById('editTeamTitle').value = team.title || ''
   const reportsSel = document.getElementById('editTeamReportsTo')
   reportsSel.innerHTML = ''
   const emptyOpt = document.createElement('option')
@@ -654,18 +655,32 @@ document.getElementById('saveTeamBtn').addEventListener('click', async () => {
       body: JSON.stringify({
         role,
         reportsTo: reportsToRaw || null,
+        // always sent: an empty field clears the title (the server keeps the old one when the key is missing)
+        title: document.getElementById('editTeamTitle').value.trim() || null,
         delegatesTo: role === 'leader' ? delegates : [],
         trustFrom,
         autoDelegation: role === 'leader' ? autoDelegation : false,
       }),
     })
-    if (!res.ok) throw new Error()
+    if (!res.ok) {
+      // a title that is not one word comes back as invalid_value / field title: say what the rule is, not a generic error
+      const err = await res.json().catch(() => ({}))
+      if (err && err.error === 'invalid_value' && err.field === 'title') {
+        showToast(t('team.title_invalid', { max: 24 }))
+        btn.textContent = originalText
+        btn.disabled = false
+        return
+      }
+      throw new Error()
+    }
     // The server sanitizes the team config (strips self-references and
     // unknown agent ids) and reports what it dropped in `warnings`. Surface
     // that to the operator so a mistyped name isn't silently lost.
     let warningMsg = ''
+    let cycleRejected = false
     try {
       const body = await res.json()
+      cycleRejected = !!(body && body.cycleRejected)
       const w = body && body.warnings
       if (w) {
         const parts = []
@@ -678,7 +693,8 @@ document.getElementById('saveTeamBtn').addEventListener('click', async () => {
         if (parts.length) warningMsg = parts.join(' · ')
       }
     } catch { /* body already consumed or not JSON -- OK, no warnings to show */ }
-    showToast(warningMsg ? t('team.save_warning', { detail: warningMsg }) : t('team.save_ok'))
+    // a manager that would sit under its own report is refused by the server (the old manager stays): say so
+    showToast(cycleRejected ? t('team.cycle_rejected') : warningMsg ? t('team.save_warning', { detail: warningMsg }) : t('team.save_ok'))
     btn.textContent = t('team.save_done')
     setTimeout(() => { btn.textContent = originalText; btn.disabled = false }, 1800)
     loadAgents()
