@@ -24,7 +24,9 @@ A fő ágens kártyája mindig az első helyen jelenik meg, egy külön "Fő" je
 
 ## Nézetváltás
 
-A kártya-rács és a szervezeti ábra (hierarchia-fa) között a jobb felső sarokban lévő gombokkal válthat.
+A kártya-rács, a szervezeti ábra (hierarchia-fa) és a sugaras ábra között a jobb felső sarokban lévő gombokkal válthat.
+
+A sugaras ábra tenantonként egy képet rajzol: középen a fő ágens, körülötte egy gyűrűn a közvetlen beosztottai, a következő gyűrűn az ő beosztottaik. Minden ágens egy avatar gyűrűvel (folytonos zöld = fut, szaggatott szürke = nem fut), a nevével és egy szavas beosztással. A sugarak nem fixek: a legkisebbek, amelyeknél a feliratdobozok még nem érnek egymásba, ezért nagyobb csapathoz szélesebb kép tartozik. A több tenantba tartozó ágens mindegyik képen megjelenik, és ha fölé viszi az egeret vagy a fókusz ráér, a többi képen lévő másolata is kiemelődik. Kattintás, vagy Enter / szóköz a fókuszban lévő ágensen megnyitja a részletlapját. Az ábra csak megjelenítés: a jelentési viszonyok a fa nézetben vagy az ágens Csapat fülén szerkeszthetők.
 
 ---
 
@@ -60,7 +62,7 @@ Az ágenshez elérhető készség-fájlok (skills) listája.
 
 ### Csapat
 
-Az ágens helye a flotta-hierarchiában: szerepkör (vezető / tag), főnök, és delegált ágensek. A fő ágensnél ez a fül nem jelenik meg.
+Az ágens helye a flotta-hierarchiában: szerepkör (vezető / tag), főnök, egy szavas beosztás (a sugaras ábrán a név alatt jelenik meg, legfeljebb 24 karakter: betű, szám, pont vagy kötőjel; üresen nem látszik semmi), és delegált ágensek. A fő ágensnél ez a fül nem jelenik meg.
 
 ### Tevékenység
 

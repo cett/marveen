@@ -72,8 +72,8 @@ describe('the strings', () => {
 
   it('have no em dash', () => {
     for (const key of keys) {
-      expect(valueOf(HU, key)).not.toContain('—')
-      expect(valueOf(EN, key)).not.toContain('—')
+      expect(valueOf(HU, key)).not.toContain('\u2014')
+      expect(valueOf(EN, key)).not.toContain('\u2014')
     }
   })
 })
