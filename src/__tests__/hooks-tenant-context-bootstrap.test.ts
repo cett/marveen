@@ -48,7 +48,6 @@ async function request(rawToken: string | null, method: string, rawPath: string,
   req.method = method
   req.headers = rawToken ? { authorization: `Bearer ${rawToken}` } : {}
   ;(req as unknown as { destroy: () => void }).destroy = () => {}
-  setImmediate(() => { req.emit('data', buf); req.emit('end') })
   const out = { status: 200, body: null as unknown }
   const res = {
     writeHead(s: number) { out.status = s },
@@ -68,6 +67,10 @@ async function request(rawToken: string | null, method: string, rawPath: string,
   const role = resolveRole(auth)
   const tokenAgentId = auth.kind === 'token' ? auth.agentId : undefined
   const ctx = { req, res, path, method, url, role, tenantId: resolveTenantId(auth), tokenAgentId } as unknown as RouteContext
+  // The body is delivered only NOW, when the route is about to read it. Scheduled at the top (as the SQLite-only tests do) the
+  // events are gone before the handler attaches its listeners as soon as an await before it takes a real round trip, which
+  // it does on PostgreSQL (resolveAuth): the handler then waits for a body that never comes and the cell times out.
+  setImmediate(() => { req.emit('data', buf); req.emit('end') })
   if (await tryHandleHooksTenant(ctx)) return out
   out.status = 404
   return out
