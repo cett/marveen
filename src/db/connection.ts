@@ -213,6 +213,50 @@ function migrateTaskRunsFromJson(): void {
   } catch { /* corrupt file, skip */ }
 }
 
+/**
+ * The SQLite connection of a SECOND process (the channel coordinator): the same file, the same pragmas and the same migration
+ * runner as initDatabase(), and nothing else. initDatabase() also truncates the WAL, folds the federation prefixes of
+ * agent_messages and renames the legacy task-run file; those are the dashboard's boot work and do not belong in a process that
+ * only backfills inbound events. A second connection to the file is safe in WAL mode as long as each sets busy_timeout, which
+ * is why the pragma list is the same (a cell compares the two). initDatabase() is left as it is: the dashboard boot path is
+ * not touched by this function.
+ *
+ * Like initDatabase(), the install entry (no path) is refused when the install is configured for PostgreSQL; a path (a test's
+ * ':memory:' or a throwaway file) is not an install entry point.
+ */
+export function initProcessDatabase(dbPathOverride?: string): void {
+  const useOverride = dbPathOverride !== undefined
+  if (!useOverride) assertSqliteEntryAllowed('initProcessDatabase()')
+  const isMemory = dbPathOverride === ':memory:'
+  if (!useOverride) mkdirSync(STORE_DIR, { recursive: true })
+  if (db) {
+    try { db.close() } catch { /* already closed */ }
+  }
+  vecExtensionLoaded = false
+  vecExtensionAttempted = false
+  const dbPath = useOverride ? dbPathOverride! : join(STORE_DIR, DB_FILENAME)
+  if (!isMemory && !existsSync(dbPath)) {
+    try {
+      closeSync(openSync(dbPath, 'wx', 0o600))
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code !== 'EEXIST') {
+        logger.warn({ err, dbPath }, 'Pre-create of DB file failed, continuing; mode will be tightened post-open')
+      }
+    }
+  }
+  db = new Database(dbPath)
+  db.pragma('journal_mode = WAL')
+  db.pragma('cache_size = -8192')
+  if (!isMemory) db.pragma('mmap_size = 67108864')
+  db.pragma('synchronous = NORMAL')
+  db.pragma('busy_timeout = 5000')
+  db.pragma('wal_autocheckpoint = 2000')
+  if (!isMemory) tightenDbPermissions(dbPath)
+  // before the migrations, for the reason initDatabase() gives (the 2026-08-28 outage: a table rebuild reparses the schema)
+  tryLoadVecExtension()
+  applyMigrations(db)
+}
+
 export function getDb(): Database.Database {
   return db
 }
