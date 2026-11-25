@@ -70,7 +70,7 @@ export const BACKGROUND_JOBS = {
   'boot-importers': { file: 'src/db/index.ts', role: 'system', note: 'the one-time imports of the PostgreSQL boot (cost budgets file, claude plans seed): they write global rows and read D2 tables' },
   'dashboard-token-bootstrap': { file: 'src/web.ts', role: 'system', note: 'enrolls the dashboard own token into api_tokens at boot, before the listen (a failure falls back to the file token, logged)' },
   'rbac-mode-load': { file: 'src/web/rbac-mode.ts', role: 'system', note: 'the boot read and seed of the RBAC mode row in system_config (the refresh timer is rbac-mode-refresh)' },
-  'boot-marker': { file: 'src/web/boot-marker.ts', role: 'system', note: 'records this boot in system_config and the audit log' },
+  'boot-marker': { file: 'src/web/boot-marker.ts', role: 'system', note: 'records this boot in system_config and the audit log, and stamps its clean shutdown on SIGTERM' },
   'http-gate': { file: 'src/web.ts', role: 'system', note: 'the request before a principal is known: the auth lookups, the RBAC gate and the shadow counters' },
   'http-public': { file: 'src/db/background-jobs.ts', role: 'public', note: 'a route served without a credential: login, auth status, avatars, the static files' },
   'http-admin': { file: 'src/db/background-jobs.ts', role: 'admin', note: 'a global admin session (role admin, no tenant)' },
