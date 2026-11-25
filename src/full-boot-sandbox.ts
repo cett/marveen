@@ -8,7 +8,7 @@
 // dir), so the boot can only write into that checkout. Refusals are listed, not silently ignored: the caller throws.
 // Isolated mode still skips the port lock and takeover; the sandbox does not turn those back on.
 
-import { isAbsolute, resolve, sep } from 'node:path'
+import { isAbsolute, resolve } from 'node:path'
 
 export const FULL_BOOT_SANDBOX_ENV = 'MARVEEN_SANDBOX_FULL_BOOT'
 // The live dashboard port (the production default of WEB_PORT). The sandbox must never bind it: a second process on it
@@ -29,10 +29,11 @@ export interface FullBootSandboxFacts {
   // RESPAWN_ENABLED set to 0 or false in the env file (not the default). The respawn runners (channel monitor, reauth
   // healer) restart pollers on the bot tokens; with the default on, a sandbox would fight the live fleet for them (409).
   respawnExplicitlyOff: boolean
-  // process.env.TMUX_TMPDIR (undefined when unset) and MARVEEN_STORE_DIR (STORE_DIR). tmux names its sessions per socket,
-  // so a sandbox tmux on the default socket would share agent-<name> sessions with the live fleet.
+  // process.env.TMUX_TMPDIR (undefined when unset) and whether process.env.TMUX is set (the process runs inside a tmux
+  // client). tmux names its sessions per socket: a sandbox tmux on the default socket (the parent dir /tmp or /private/tmp)
+  // would share the agent-<name> sessions with the live fleet.
   tmuxTmpDir: string | undefined
-  storeDir: string
+  tmuxEnvSet: boolean
 }
 
 // The reasons the sandbox must refuse to start. An empty list means the sandbox may start.
@@ -50,16 +51,19 @@ export function fullBootSandboxRefusals(facts: FullBootSandboxFacts): string[] {
   if (!facts.respawnExplicitlyOff) {
     reasons.push('RESPAWN_ENABLED is not explicitly off (0 or false in the env file): the respawn runners would restart the live bot pollers')
   }
-  if (!tmuxDirIsUnderStore(facts.tmuxTmpDir, facts.storeDir)) {
-    reasons.push('TMUX_TMPDIR is unset or not under MARVEEN_STORE_DIR: the sandbox tmux sessions would share the default socket with the live fleet')
+  if (!tmuxDirIsPrivate(facts.tmuxTmpDir, facts.tmuxEnvSet)) {
+    reasons.push('TMUX_TMPDIR is unset, relative or the default socket parent (/tmp, /private/tmp), or TMUX is set: the sandbox tmux would share the live fleet sessions')
   }
   return reasons
 }
 
-// True when TMUX_TMPDIR is set and lies inside the store (both resolved, a path prefix on a separator boundary).
-export function tmuxDirIsUnderStore(tmuxTmpDir: string | undefined, storeDir: string): boolean {
-  if (!tmuxTmpDir || !storeDir || !isAbsolute(tmuxTmpDir) || !isAbsolute(storeDir)) return false
-  const tmux = resolve(tmuxTmpDir)
-  const store = resolve(storeDir)
-  return tmux === store || tmux.startsWith(store + sep)
+// The default tmux socket parents: a TMUX_TMPDIR equal to one of them is the live fleet's socket directory.
+const DEFAULT_TMUX_SOCKET_PARENTS = ['/tmp', '/private/tmp', '/']
+
+// True when TMUX_TMPDIR is an absolute path that is not a default socket parent, and the process is not inside a tmux
+// client (TMUX unset). The short-path requirement of the unix socket is the caller's concern (the probe picks the dir).
+export function tmuxDirIsPrivate(tmuxTmpDir: string | undefined, tmuxEnvSet: boolean): boolean {
+  if (tmuxEnvSet) return false
+  if (!tmuxTmpDir || !isAbsolute(tmuxTmpDir)) return false
+  return !DEFAULT_TMUX_SOCKET_PARENTS.includes(resolve(tmuxTmpDir))
 }

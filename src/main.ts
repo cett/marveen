@@ -528,7 +528,7 @@ async function main(): Promise<void> {
       // Only the env FILE sets RESPAWN_ENABLED (config.ts reads readEnvFile, not process.env): look at the file's value.
       respawnExplicitlyOff: ['0', 'false'].includes((readEnvFile(['RESPAWN_ENABLED'])['RESPAWN_ENABLED'] ?? '').trim().toLowerCase()),
       tmuxTmpDir: process.env['TMUX_TMPDIR'],
-      storeDir: STORE_DIR,
+      tmuxEnvSet: process.env['TMUX'] !== undefined,
     })
     if (refusals.length > 0) {
       throw new Error(`${FULL_BOOT_SANDBOX_ENV}=true refused: ${refusals.join('; ')}`)

@@ -1,20 +1,19 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { FULL_BOOT_SANDBOX_ENV, LIVE_DASHBOARD_PORT, fullBootSandboxRefusals, fullBootSandboxRequested, tmuxDirIsUnderStore } from '../full-boot-sandbox.js'
+import { FULL_BOOT_SANDBOX_ENV, LIVE_DASHBOARD_PORT, fullBootSandboxRefusals, fullBootSandboxRequested, tmuxDirIsPrivate } from '../full-boot-sandbox.js'
 
 // FULL-BOOT-SANDBOX: the opt-in switch that runs the whole boot inside an isolated instance. The decision is a pure
 // function over facts that main.ts reads from its environment; these cells pin the refusals (each one alone is enough
 // to refuse) and the wiring in main.ts (refusal before any side effect, WEB_ONLY only on the non-sandbox branch).
 
-const SAFE_STORE = '/tmp/fbs-fixture/store'
 const SAFE_FACTS = {
   isolated: true,
   webPort: 4421,
   projectRootIsTemporary: true,
   respawnExplicitlyOff: true,
-  tmuxTmpDir: `${SAFE_STORE}/tmux`,
-  storeDir: SAFE_STORE,
+  tmuxTmpDir: '/tmp/c1t',
+  tmuxEnvSet: false,
 }
 
 describe('FULL-BOOT-SANDBOX: the switch is on only for the exact value', () => {
@@ -62,15 +61,23 @@ describe('FULL-BOOT-SANDBOX: refusals', () => {
     expect(reasons[0]).toContain('TMUX_TMPDIR')
   })
 
-  it('R5: refuses when TMUX_TMPDIR is outside the store, including a sibling with the same prefix', () => {
-    expect(fullBootSandboxRefusals({ ...SAFE_FACTS, tmuxTmpDir: '/tmp/fbt' })).toHaveLength(1)
-    expect(fullBootSandboxRefusals({ ...SAFE_FACTS, tmuxTmpDir: `${SAFE_STORE}-other/tmux` })).toHaveLength(1)
+  it('R5: refuses the default socket parents /tmp and /private/tmp, and a relative dir', () => {
+    expect(fullBootSandboxRefusals({ ...SAFE_FACTS, tmuxTmpDir: '/tmp' })).toHaveLength(1)
+    expect(fullBootSandboxRefusals({ ...SAFE_FACTS, tmuxTmpDir: '/tmp/' })).toHaveLength(1)
+    expect(fullBootSandboxRefusals({ ...SAFE_FACTS, tmuxTmpDir: '/private/tmp' })).toHaveLength(1)
+    expect(fullBootSandboxRefusals({ ...SAFE_FACTS, tmuxTmpDir: 'relative/tmux' })).toHaveLength(1)
   })
 
-  it('R5: accepts TMUX_TMPDIR under the store, and the store root itself', () => {
-    expect(tmuxDirIsUnderStore(`${SAFE_STORE}/tmux`, SAFE_STORE)).toBe(true)
-    expect(tmuxDirIsUnderStore(SAFE_STORE, SAFE_STORE)).toBe(true)
-    expect(tmuxDirIsUnderStore('relative/tmux', SAFE_STORE)).toBe(false)
+  it('R5: refuses when the process runs inside a tmux client (TMUX is set)', () => {
+    const reasons = fullBootSandboxRefusals({ ...SAFE_FACTS, tmuxEnvSet: true })
+    expect(reasons).toHaveLength(1)
+    expect(reasons[0]).toContain('TMUX')
+  })
+
+  it('R5: accepts a private dir that is not a default socket parent, with TMUX unset', () => {
+    expect(tmuxDirIsPrivate('/tmp/c1t', false)).toBe(true)
+    expect(tmuxDirIsPrivate('/private/tmp/c1t', false)).toBe(true)
+    expect(tmuxDirIsPrivate('/tmp/c1t', true)).toBe(false)
   })
 
   it('lists every refusal together, so one start shows all the wrong settings', () => {
@@ -80,7 +87,7 @@ describe('FULL-BOOT-SANDBOX: refusals', () => {
       projectRootIsTemporary: false,
       respawnExplicitlyOff: false,
       tmuxTmpDir: undefined,
-      storeDir: '',
+      tmuxEnvSet: true,
     })
     expect(reasons).toHaveLength(5)
   })
@@ -109,11 +116,11 @@ describe('FULL-BOOT-SANDBOX: main.ts wiring', () => {
     expect(MAIN_SRC.split("process.env['WEB_ONLY'] = 'true'").length - 1).toBe(1)
   })
 
-  it('the R4 and R5 inputs come from the env file (RESPAWN_ENABLED) and TMUX_TMPDIR, the store from STORE_DIR', () => {
+  it('the R4 and R5 inputs come from the env file (RESPAWN_ENABLED) and the process env (TMUX_TMPDIR, TMUX)', () => {
     const call = MAIN_SRC.slice(MAIN_SRC.indexOf('fullBootSandboxRefusals({'), MAIN_SRC.indexOf('if (refusals.length > 0)'))
     expect(call).toContain("readEnvFile(['RESPAWN_ENABLED'])")
     expect(call).toContain("tmuxTmpDir: process.env['TMUX_TMPDIR']")
-    expect(call).toContain('storeDir: STORE_DIR')
+    expect(call).toContain("tmuxEnvSet: process.env['TMUX'] !== undefined")
   })
 
   it('the sandbox path does not return early: the normal boot runs after the isolated block', () => {
