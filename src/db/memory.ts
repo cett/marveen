@@ -4,7 +4,7 @@
 import { ALLOWED_CHAT_ID } from '../config.js'
 import { writeAgentAuditLog } from './audit.js'
 import { dbx, dbxDialect } from './facade.js'
-import { forUpdate } from './dialect.js'
+import { forUpdate, likeNoCase } from './dialect.js'
 import { BlankContentError, isBlankContent } from '../blank-content.js'
 import { floatsToBlob, generateEmbedding, linkToNeighbors, syncVecMemoryEmbeddingUpdate } from './vector.js'
 import { buildFtsMatchExpression, FTS_MATCH, ftsPgTsQuery, ftsTokens, PG_FTS_CONFIG, pgRankSql } from './fts.js'
@@ -445,13 +445,13 @@ function memoryTenantFilter(tenantId: string | undefined): { clause: string; par
 // LIKE fallback used when FTS finds nothing for an agent-scoped query.
 export async function searchMemoriesLikeForAgent(agentId: string, query: string, limit: number, tenantId?: string): Promise<Memory[]> {
   const { clause, params } = memoryTenantFilter(tenantId)
-  return dbx.all<Memory>(`SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\')${clause} ORDER BY accessed_at DESC LIMIT ?`, agentId, likeContains(query), likeContains(query), ...params, limit)
+  return dbx.all<Memory>(`SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND (${likeNoCase('content', '?')} OR ${likeNoCase('keywords', '?')})${clause} ORDER BY accessed_at DESC LIMIT ?`, agentId, likeContains(query), likeContains(query), ...params, limit)
 }
 
 // LIKE fallback used when FTS finds nothing for an unscoped-agent query.
 export async function searchMemoriesLike(query: string, limit: number, tenantId?: string): Promise<Memory[]> {
   const { clause, params } = memoryTenantFilter(tenantId)
-  return dbx.all<Memory>(`SELECT * FROM memories WHERE content LIKE ? ESCAPE '\\'${clause} ORDER BY accessed_at DESC LIMIT ?`, likeContains(query), ...params, limit)
+  return dbx.all<Memory>(`SELECT * FROM memories WHERE ${likeNoCase('content', '?')}${clause} ORDER BY accessed_at DESC LIMIT ?`, likeContains(query), ...params, limit)
 }
 
 // Of `ids`, the memories updated after this agent last read them.
