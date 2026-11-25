@@ -449,6 +449,7 @@ SAFE_SEGMENT = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]*$')
 # case-sensitive volume is the safe side).
 SKILL_DIR_RX = re.compile(r'(?<![\w.-])\.claude(?:-config)?/skills/([^/\s\'"`;|&<>()$*?\[\]{}\\]+)', re.IGNORECASE)
 FRONTMATTER_NAME_RX = re.compile(r'\A---\s*\n(.*?)\n---', re.DOTALL)
+_NAME_LINE_RX = re.compile(r'^name:', re.MULTILINE)
 
 
 def skill_dir_name(skill_id):
@@ -461,8 +462,25 @@ def _frontmatter_name(content):
     m = FRONTMATTER_NAME_RX.match(content or "")
     if not m:
         return None
-    nm = re.search(r'^name:\s*(.+?)\s*$', m.group(1), re.MULTILINE)
-    return nm.group(1).strip().strip('"\'') if nm else None
+    # LINEAR read. This was re.search(r'^name:\s*(.+?)\s*$', block, re.MULTILINE), which is quadratic: `(.+?)\s*$` re-scans a long
+    # whitespace run at every step of the lazy run (a `name: x` line, 40000 spaces, then `y` cost seconds, and a tenant user writes
+    # the skill content). Same result, proven on generated texts against the old expression (TestFrontmatterNameLinear):
+    # the first `name:` line whose value can be read; the value is the rest of that line, stripped.
+    block = m.group(1)
+    n = len(block)
+    for hit in _NAME_LINE_RX.finditer(block):
+        start = hit.end()
+        k = start
+        while k < n and block[k].isspace():  # one whitespace run (it may cross lines, as `\s*` did)
+            k += 1
+        if k < n:
+            end = block.find("\n", k)  # a `.` and a `$` here know the newline only
+            return block[k:(n if end == -1 else end)].strip().strip('"\'')
+        # only whitespace to the end of the block: a non-newline one in it is the character `.+?` could still take
+        for i in range(k - 1, start - 1, -1):
+            if block[i] != "\n":
+                return ""
+    return None
 
 
 def load_tenant_skills(con):

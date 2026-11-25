@@ -557,5 +557,50 @@ class TestSkillGatePg(Base):
         self.assertEqual((skills[0]["names"], ctx["tenant_id"], serves), ({"demo", "demo-skill", "tenant-x-demo"}, "tenant-x", True))
 
 
+class TestFrontmatterNameLinear(unittest.TestCase):
+    """_frontmatter_name reads a skill's `name:` in linear time and gives exactly what the regular expression it replaced gave.
+    Mutant: put the old re.search back and the TIME cell is red (seconds)."""
+
+    @staticmethod
+    def legacy(content):
+        m = tcl.FRONTMATTER_NAME_RX.match(content or "")
+        if not m:
+            return None
+        import re
+        nm = re.search(r'^name:\s*(.+?)\s*$', m.group(1), re.MULTILINE)
+        return nm.group(1).strip().strip('"\'') if nm else None
+
+    def test_fixed_cases_equal_the_old_expression(self):
+        for text in ("---\nname: demo\n---\nx", '---\nname: "demo"\n---\n', "---\nname:\tdemo\t\n---\n", "---\nname:\n  demo\n---\n",
+                     "---\nname:   \n---\n", "---\nname:\n---\n", "---\nname:\n\nname: second\n---\n", "---\nname: a\rb\n---\n",
+                     "---\r\nname: demo\r\n---\r\n", "---\nname:  demo \n---\n", "---\n  name: no\n---\n", "no fence", ""):
+            self.assertEqual(tcl._frontmatter_name(text), self.legacy(text), repr(text))
+
+    def test_generated_texts_equal_the_old_expression(self):
+        seed = [0x2545f491]
+
+        def nxt(n):
+            seed[0] = (seed[0] * 1103515245 + 12345) & 0xffffffff
+            return seed[0] % n
+
+        tokens = ["name:", "name:", "name: ", " ", " ", "  ", "\t", "\n", "\n", "\r", "\r\n", " ", " ", '"', "'", "a", "b",
+                  "demo", "---", "\n---", "description:", "x y", ":"]
+        for _ in range(30000):
+            s = "" if nxt(4) == 0 else "---\n"
+            for _ in range(nxt(14)):
+                s += tokens[nxt(len(tokens))]
+            if nxt(3) != 0:
+                s += "\n---\ntail"
+            self.assertEqual(tcl._frontmatter_name(s), self.legacy(s), repr(s))
+
+    def test_the_slow_shape_is_fast(self):
+        n = 200000
+        for text in ("---\nname: x" + " " * n + "y\n---\n", "---\nname: x" + "\t" * n + "y\n---\n", "---\nname:" + " " * n + "\n---\n",
+                     "---\n" + ("name: a" + " " * 50 + "b\n") * 4000 + "---\n", "---\n" + "name:\n" * (n // 6) + "---\n"):
+            t0 = time.monotonic()
+            tcl._frontmatter_name(text)
+            self.assertLess(time.monotonic() - t0, 0.5)
+
+
 if __name__ == "__main__":
     unittest.main()
