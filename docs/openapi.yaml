@@ -5050,7 +5050,9 @@ paths:
         verdict: the policy (what a binding, a message or a schedule means for the tenant gate) stays in the hook. The
         agent is the one the bearer token names (an `agent_id` in the body is ignored); a token that names no agent is a 403.
         A message is returned only when it is addressed to that agent, otherwise it reads as "not found". Fleet-agent or
-        admin token (`hook-gate:read`).
+        admin token (`hook-gate:read`). Exempt from the missing-tenant-context refusal: a shared agent (two or more
+        tenants) with no fresh context may call this route and the context PUT (the hook uses them to record that
+        context); it still returns only the caller's own rows.
       requestBody:
         required: true
         content:
@@ -5126,7 +5128,9 @@ paths:
         The idempotent upsert of the caller's OWN agent_tenant_context row (the agent is the token's; the body names none).
         The new row replaces the old one. `bound` and `default` carry a tenant, `unknown` and `conflict` carry an empty
         one. A `default` row must name the default tenant, and a `bound` row a tenant the caller serves now: anything else
-        is a 403 and nothing is written. Fleet-agent or admin token (`hook-gate:write`).
+        is a 403 and nothing is written. Fleet-agent or admin token (`hook-gate:write`). Exempt from the
+        missing-tenant-context refusal (a shared agent with no fresh context may call it: this is how the context is
+        recorded); `POST /hooks/skill-gate` is not exempt and answers 403 without a context.
       requestBody:
         required: true
         content:

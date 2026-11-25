@@ -496,6 +496,22 @@ class TestSkillGatePg(Base):
             d.close()
             self.dash = None
 
+    def test_the_no_context_403_is_a_deny_for_a_skill_call_and_never_a_block_of_every_tool(self):
+        # The dashboard answers a shared agent with no fresh tenant context 403 on skill-gate (the correct fail-closed answer; only the
+        # two context-recording routes are exempt). The hook must read that as "this call cannot be cleared" for a call that names a
+        # skill, FLEET skill included (the answer that would say it is a fleet skill is the one that did not come), and must not ask,
+        # and so not block, a call that cannot involve a skill.
+        d = self.serve(lambda m, p, b: (403, {"error": "forbidden", "hint": "No fresh tenant context for this shared agent"}, 0))
+        for skill in ("tenant-x-demo", "handoff"):
+            err = self.blocked("Skill", skill=skill)
+            self.assertIn("BLOKKOL", err)
+            self.assertNotIn("No fresh tenant context", err)  # the answer body is never echoed
+        n = len(d.log)
+        self.allowed("Read", file_path=CWD + "/notes.md")
+        self.allowed("Bash", command="ls /tmp")
+        self.allowed("Grep", pattern="x", path=CWD)
+        self.assertEqual(len(d.log), n)  # no further call for the tools that cannot involve a skill
+
     def test_route_down_blocks_and_never_reads_sqlite(self):
         # a file that would ALLOW the call: the gate must not consult it in PG mode
         db = os.path.join(self.tmp.name, "live.db")

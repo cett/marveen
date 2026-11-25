@@ -9,6 +9,7 @@ import { loadOrCreateDashboardToken } from './web/dashboard-auth.js'
 import { loadOrCreateClaimSigningKey } from './web/claim-signature.js'
 import { getRbacMode } from './web/rbac-mode.js'
 import { resolveAuth, requiresAuth, isFederationWireEndpoint, resolveAgentIdHeader, answerInvalidTenantToken, type AuthResult } from './web/auth-gate.js'
+import { isTenantContextBootstrapRoute } from './web/tenant-context-bootstrap.js'
 import { sweepExpiredSessions } from './web/auth-sessions.js'
 import { sweepExpiredDeviceKeys } from './web/auth-device-keys.js'
 import { isBlockedCrossOriginWrite, originMatchesServedHost, buildAllowedHosts, isAllowedHost } from './web/csrf-origin.js'
@@ -326,8 +327,9 @@ export async function startWebServer(port = 3420): Promise<http.Server> {
       return
     }
     // A fleet-agent token of a shared agent with no fresh tenant context: authenticated, but there is
-    // no tenant to act in. Refused here, before the RBAC gate, so it holds in shadow mode too.
-    if (requiresAuth(path, method) && auth.kind === 'token' && auth.tenantContextMissing) {
+    // no tenant to act in. Refused here, before the RBAC gate, so it holds in shadow mode too. The two hook routes that
+    // RECORD that context (tenant-facts, tenant-context PUT) are the one exception: see tenant-context-bootstrap.ts.
+    if (requiresAuth(path, method) && auth.kind === 'token' && auth.tenantContextMissing && !isTenantContextBootstrapRoute(method, path)) {
       logger.warn({ path, method, agent: auth.agentId }, 'fleet agent token refused: no fresh tenant context for a shared agent')
       await recordTenantContextRefusal(req, auth, method, path) // shadow counter: measures only, never throws
       res.writeHead(403, { 'Content-Type': 'application/json' })
