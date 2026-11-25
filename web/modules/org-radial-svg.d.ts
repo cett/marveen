@@ -7,6 +7,7 @@ export const MAX_SCALE: number
 
 export function shortLabel(text: unknown, max?: number): string
 export function monogram(text: unknown): string
+export function guideShape(r: number, angles: number[]): string
 
 export interface TenantViewInput {
   id: string

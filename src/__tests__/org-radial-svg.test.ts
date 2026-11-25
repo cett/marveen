@@ -4,7 +4,7 @@
 // Privacy: neutral fixtures only (agent-a, agent-b ...).
 import { describe, it, expect } from 'vitest'
 import { layoutRadial } from '../../web/modules/org-radial-layout.js'
-import { renderRadialSvg, shortLabel, monogram, AVATAR_SIZE, LABEL_MAX, type TenantViewInput } from '../../web/modules/org-radial-svg.js'
+import { renderRadialSvg, guideShape, shortLabel, monogram, AVATAR_SIZE, LABEL_MAX, type TenantViewInput } from '../../web/modules/org-radial-svg.js'
 
 type Tenant = TenantViewInput & { rootId: string | null; edges: { from: string; to: string }[] }
 
@@ -61,8 +61,56 @@ describe('the picture', () => {
     const l = layoutRadial(t)
     const svg = draw(t)
     expect((svg.match(/class="org-spoke"/g) ?? []).length).toBe(l.spokes.length)
-    expect((svg.match(/class="org-guide"/g) ?? []).length).toBe(l.radii.length)
+    expect((svg.match(/class="org-guide"/g) ?? []).length).toBe(l.radii.length) // one circle or arc per ring
     expect((svg.match(/data-agent="/g) ?? []).length).toBe(l.nodes.length)
+  })
+
+  it('a guide ring that is nearly all around is a full circle, a sparse one is an ARC over its nodes only', () => {
+    // seven on ring 1 (a full ring), one branch on ring 2 and 3 (a sparse ring)
+    const edges: [string, string][] = [
+      ['c', 'n1'], ['c', 'n2'], ['c', 'n3'], ['c', 'n4'], ['c', 'n5'], ['c', 'n6'], ['c', 'n7'], ['n2', 'k1'], ['n2', 'k2'], ['k1', 'g1'],
+    ]
+    const t = tenant({
+      rootId: 'c',
+      nodes: ['c', 'n1', 'n2', 'n3', 'n4', 'n5', 'n6', 'n7', 'k1', 'k2', 'g1'].map((id) => ({ id, label: id, running: true })),
+      edges: edges.map(([from, to]) => ({ from, to })),
+    })
+    const svg = draw(t)
+    const guides = [...svg.matchAll(/<(circle|path) class="org-guide"[^>]*>/g)].map((m) => m[1])
+    expect(guides).toEqual(['circle', 'path', 'path'])
+  })
+
+  it('every guide arc starts and ends INSIDE the viewBox, so no ring is cut by the edge of the picture', () => {
+    const edges: [string, string][] = [
+      ['c', 'n1'], ['c', 'n2'], ['c', 'n3'], ['c', 'n4'], ['c', 'n5'], ['c', 'n6'], ['c', 'n7'], ['n2', 'k1'], ['n2', 'k2'], ['n2', 'k3'], ['n3', 'j1'], ['k1', 'g1'],
+    ]
+    const t = tenant({
+      rootId: 'c',
+      nodes: ['c', 'n1', 'n2', 'n3', 'n4', 'n5', 'n6', 'n7', 'k1', 'k2', 'k3', 'j1', 'g1'].map((id) => ({ id, label: id, running: true })),
+      edges: edges.map(([from, to]) => ({ from, to })),
+    })
+    const l = layoutRadial(t)
+    const svg = renderRadialSvg(t, l, opts)
+    const arcs = [...svg.matchAll(/<path class="org-guide" d="M (-?[\d.]+) (-?[\d.]+) A [^"]*? 1 (-?[\d.]+) (-?[\d.]+)"/g)]
+    expect(arcs.length).toBeGreaterThan(0)
+    for (const m of arcs) {
+      const [x1, y1, x2, y2] = m.slice(1).map(Number) as [number, number, number, number]
+      for (const [x, y] of [[x1, y1], [x2, y2]] as const) {
+        expect(x).toBeGreaterThanOrEqual(l.bounds.minX)
+        expect(x).toBeLessThanOrEqual(l.bounds.maxX)
+        expect(y).toBeGreaterThanOrEqual(l.bounds.minY)
+        expect(y).toBeLessThanOrEqual(l.bounds.maxY)
+      }
+    }
+  })
+
+  it('guideShape: no node is a circle, one node is a short arc through it, the large-arc flag follows the span', () => {
+    expect(guideShape(200, [])).toMatch(/^<circle /)
+    const one = guideShape(200, [90])
+    expect(one).toMatch(/^<path class="org-guide" d="M [\d.-]+ [\d.-]+ A 200 200 0 0 1 /)
+    const wide = guideShape(200, [0, 100, 200])
+    expect(wide).toMatch(/ A 200 200 0 1 1 /) // 200 degrees and the overrun: more than half a circle
+    expect(guideShape(200, [0, 51.4, 102.8, 154.2, 205.6, 257, 308.4])).toMatch(/^<circle /)
   })
 
   it('is deterministic: the same input gives the same string', () => {
@@ -199,7 +247,7 @@ describe('escaping: every server-supplied value is data, never markup', () => {
     expect(svg).toContain('&quot;&gt;')
     // the only elements are the ones the module writes
     const tags = new Set([...svg.matchAll(/<([a-zA-Z]+)/g)].map((m) => m[1]))
-    expect([...tags].sort()).toEqual(['circle', 'clipPath', 'g', 'image', 'line', 'svg', 'text', 'title'])
+    expect([...tags].sort()).toEqual(['circle', 'clipPath', 'g', 'image', 'line', 'path', 'svg', 'text', 'title'])
   })
 
   it('escapes the translated texts of the caller too (a translation with a quote or an angle bracket)', () => {

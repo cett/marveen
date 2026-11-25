@@ -37,6 +37,36 @@ export function monogram(text) {
 
 function num(n) { return Math.round(n * 100) / 100 }
 
+/** how far (px, along the ring) a guide arc reaches past the outermost nodes it serves */
+const GUIDE_OVERRUN = 60
+/** an arc that would cover this many degrees or more is drawn as the whole circle */
+const GUIDE_FULL_DEG = 340
+
+/**
+ * The faint guide of one ring. The bounding box of the layout is tight around the nodes, so a full circle of an outer ring
+ * would be cut by the edge of the picture, which looks like the chart spilling out of its box. Instead the guide is the arc
+ * that covers the nodes of the ring (everything except the largest empty gap) and runs GUIDE_OVERRUN px past the outermost
+ * ones, which stays inside the box; a ring that is nearly all around is a full circle.
+ */
+export function guideShape(r, angles) {
+  if (!angles.length) return `<circle class="org-guide" cx="0" cy="0" r="${num(r)}"/>`
+  const sorted = [...angles].sort((a, b) => a - b)
+  // the largest gap between neighbours on the circle; the arc starts after it and ends before it
+  let gap = -1
+  let startIdx = 0
+  for (let i = 0; i < sorted.length; i++) {
+    const next = i + 1 < sorted.length ? sorted[i + 1] : sorted[0] + 360
+    if (next - sorted[i] > gap) { gap = next - sorted[i]; startIdx = (i + 1) % sorted.length }
+  }
+  const over = ((GUIDE_OVERRUN / r) * 180) / Math.PI
+  const span = 360 - gap
+  if (span + 2 * over >= GUIDE_FULL_DEG) return `<circle class="org-guide" cx="0" cy="0" r="${num(r)}"/>`
+  const from = sorted[startIdx] - over
+  const to = sorted[startIdx] + span + over
+  const pt = (deg) => `${num(r * Math.sin((deg * Math.PI) / 180))} ${num(-r * Math.cos((deg * Math.PI) / 180))}`
+  return `<path class="org-guide" d="M ${pt(from)} A ${num(r)} ${num(r)} 0 ${to - from > 180 ? 1 : 0} 1 ${pt(to)}"/>`
+}
+
 /**
  * @param tenant   {id, name, rootId, nodes:[{id,label,title,running}], edges}  one entry of the tenant view
  * @param layout   the answer of layoutRadial() for that tenant (it must be `clean`, the caller decides what to do if not)
@@ -62,7 +92,7 @@ export function renderRadialSvg(tenant, layout, opts) {
 
   // faint concentric guide circles, one per ring
   out.push('<g class="org-guides" aria-hidden="true">')
-  for (const r of layout.radii) out.push(`<circle class="org-guide" cx="0" cy="0" r="${num(r)}"/>`)
+  layout.radii.forEach((r, i) => out.push(guideShape(r, layout.nodes.filter((n) => n.ring === i + 1).map((n) => n.angle))))
   out.push('</g>')
 
   // spokes (parent to child), under the nodes
