@@ -268,14 +268,19 @@ export async function processBatch(updates: { update_id: number }[]): Promise<nu
   batchStoppedOnFailure = false
   let maxUpdateId: number | null = null
   const settled = (id: number): void => { maxUpdateId = maxUpdateId == null ? id : Math.max(maxUpdateId, id) }
-  // default-deny: the access list of the native plugin, read once per batch (null = unreadable = nothing passes)
+  // default-deny: the access list of the native plugin, read once per batch (null = unreadable = nothing passes AND nothing is settled)
   const access = loadSenderAccess()
   let dropped = 0
   for (const raw of updates) {
     const ev = mapUpdate(raw as Parameters<typeof mapUpdate>[0])
     if (!ev) { settled(raw.update_id); continue } // unhandled update kind: offset still advances past it
-    // a sender outside the list: nothing is stored, nothing is handed off, nothing is sent back (no pairing reply); the offset
-    // still advances past it, so the update is not asked for again
+    // An UNREADABLE list (null: the plugin is rewriting the file, a half-written JSON, no file) is NOT a verdict on this sender, so
+    // the update is not settled: the batch stops here like at a failed insert (the offset stays below the update, the loop waits
+    // with its backoff, the next poll asks for it again) and the owner's message waits for a readable list instead of being lost.
+    // This is no insert failure, so it does not count towards the poison limit: nothing is counted, nothing is given up.
+    if (access === null) { batchStoppedOnFailure = true; break }
+    // a sender outside the list is a verdict: nothing is stored, nothing is handed off, nothing is sent back (no pairing reply),
+    // and the offset still advances past it, so the update is not asked for again
     if (!isSenderAllowed(access, ev)) { dropped++; settled(raw.update_id); continue }
 
     let ins: InsertResult

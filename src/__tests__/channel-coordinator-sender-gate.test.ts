@@ -12,7 +12,7 @@ import { readFileSync, statSync } from 'node:fs'
 import { useTestDb } from './helpers/with-test-db.js'
 import { useAccessFile } from './helpers/coordinator-access.js'
 import { insertIncomingEvent, markEventDelivered, createHandoffMessage } from '../channel-coordinator/ingest.js'
-import { processBatch, reconcilePending } from '../channel-coordinator-main.js'
+import { processBatch, reconcilePending, lastBatchStoppedOnFailure, insertFailStreakValue, resetInsertFailuresForTests, POISON_INSERT_FAILURES } from '../channel-coordinator-main.js'
 import { isSenderAllowed, loadSenderAccess, type SenderAccess } from '../channel-coordinator/sender-gate.js'
 import { logger } from '../logger.js'
 
@@ -120,13 +120,48 @@ describe('FAIL CLOSED: a list that cannot be trusted lets nothing through', () =
     ['an allowFrom key that is absent (nobody is listed)', { dmPolicy: 'allowlist' }],
   ]
   for (const [name, content] of cases) {
-    it(`${name}: the owner chat is dropped too`, async () => {
+    // An unreadable list is no verdict on the sender: nothing is stored or handed off, and the update is NOT settled (the offset
+    // does not move, the batch stops like at a failed insert), so the owner's message is asked for again, not lost.
+    it(`${name}: nothing is stored, the offset does not move, the batch stops`, async () => {
       access.write(content)
-      await processBatch([message(1, 1001)])
+      expect(await processBatch([message(1, 1001)])).toBeNull()
+      expect(lastBatchStoppedOnFailure()).toBe(true)
       expect(await events()).toBe(0)
       expect(await handoffs()).toBe(0)
     })
+
+    it(`${name}: the same batch passes for the owner once the list is readable again`, async () => {
+      access.write(content)
+      await processBatch([message(1, 1001)])
+      access.write({ dmPolicy: 'allowlist', allowFrom: ['1001'] })
+      expect(await processBatch([message(1, 1001)])).toBe(1)
+      expect(lastBatchStoppedOnFailure()).toBe(false)
+      expect(await events()).toBe(1)
+      expect(await handoffs()).toBe(1)
+    })
   }
+
+  it('a stranger in the same batch is not settled either: no verdict is possible without the list', async () => {
+    access.write('{not json')
+    expect(await processBatch([message(1, 2002), message(2, 1001)])).toBeNull()
+  })
+
+  it('an update kind that is not gated (unhandled) before the stop is settled, the ones from the first gated update on are not', async () => {
+    access.write('{not json')
+    expect(await processBatch([upd({ update_id: 1 }), message(2, 1001), message(3, 1001)])).toBe(1)
+  })
+
+  it('it is no insert failure: the poison limit never applies, no matter how long the list stays unreadable', async () => {
+    resetInsertFailuresForTests()
+    access.write('{not json')
+    for (let i = 0; i < POISON_INSERT_FAILURES + 5; i++) expect(await processBatch([message(1, 1001)])).toBeNull()
+    expect(await events()).toBe(0)
+    // the loop's backoff still grows with the stopped batches
+    expect(insertFailStreakValue()).toBe(POISON_INSERT_FAILURES + 5)
+    access.write({ dmPolicy: 'allowlist', allowFrom: ['1001'] })
+    expect(await processBatch([message(1, 1001)])).toBe(1)
+    expect(insertFailStreakValue()).toBe(0)
+  })
 
   it('one log line per distinct failure, not one per batch, and one line when the list is good again', async () => {
     const error = vi.spyOn(logger, 'error')
