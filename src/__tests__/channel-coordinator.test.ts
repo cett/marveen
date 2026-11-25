@@ -3,14 +3,12 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { mapUpdate, getUpdates, TelegramApiError } from '../channel-coordinator/telegram-client.js'
 import {
-  initIngestDb,
   insertIncomingEvent,
   createHandoffMessage,
   markEventDelivered,
   getEventsNeedingHandoff,
   getOffset,
   setOffset,
-  closeIngestDb,
   COORDINATOR_AGENT_ID,
 } from '../channel-coordinator/ingest.js'
 import {
@@ -22,6 +20,7 @@ import {
   reconcilePending,
 } from '../channel-coordinator-main.js'
 import { decideNativeChannelDown } from '../channel-coordinator/liveness.js'
+import { initProcessDatabase, closeDatabase, getDb } from '../db/connection.js'
 
 // ---- mapUpdate (pure normalization) -------------------------------------
 
@@ -87,8 +86,8 @@ describe('mapUpdate', () => {
 // ---- ingest (DB layer, in-memory) ---------------------------------------
 
 describe('ingest', () => {
-  beforeEach(() => { initIngestDb(':memory:') })
-  afterEach(() => { closeIngestDb() })
+  beforeEach(() => { initProcessDatabase(":memory:") })
+  afterEach(() => { closeDatabase() })
 
   const sampleEvent = (update_id: number) => ({
     update_id,
@@ -102,22 +101,22 @@ describe('ingest', () => {
     tg_date: 1700000000,
   })
 
-  it('dedup_unique_update_id', () => {
-    const first = insertIncomingEvent('telegram', sampleEvent(100))
-    const second = insertIncomingEvent('telegram', sampleEvent(100))
+  it('dedup_unique_update_id', async () => {
+    const first = await insertIncomingEvent('telegram', sampleEvent(100))
+    const second = await insertIncomingEvent('telegram', sampleEvent(100))
     expect(first.inserted).toBe(true)
     expect(second.inserted).toBe(false) // INSERT OR IGNORE on UNIQUE(source,update_id)
     expect(second.eventId).toBeNull()
   })
 
-  it('getUpdates_to_agent_message_flow', () => {
-    const ins = insertIncomingEvent('telegram', sampleEvent(200))
+  it('getUpdates_to_agent_message_flow', async () => {
+    const ins = await insertIncomingEvent('telegram', sampleEvent(200))
     expect(ins.inserted).toBe(true)
-    const amId = createHandoffMessage(buildHandoffContent(sampleEvent(200)))
-    markEventDelivered(ins.eventId!, amId)
+    const amId = await createHandoffMessage(buildHandoffContent(sampleEvent(200)))
+    await markEventDelivered(ins.eventId!, amId)
 
     // agent_messages row created for the main agent, pending, from coordinator
-    const db = initIngestDb(':memory:')
+    const db = getDb()
     const am = db.prepare('SELECT * FROM agent_messages WHERE id = ?').get(amId) as any
     expect(am.from_agent).toBe(COORDINATOR_AGENT_ID)
     expect(am.status).toBe('pending')
@@ -128,60 +127,60 @@ describe('ingest', () => {
     expect(ev.agent_message_id).toBe(amId)
   })
 
-  it('offset_persisted_after_processing / restart_resumes_from_persisted_offset', () => {
-    expect(getOffset('telegram')).toBe(0) // fresh: no row -> 0
-    setOffset('telegram', 500)
-    expect(getOffset('telegram')).toBe(500)
-    setOffset('telegram', 512) // UPSERT advances
-    expect(getOffset('telegram')).toBe(512)
+  it('offset_persisted_after_processing / restart_resumes_from_persisted_offset', async () => {
+    expect(await getOffset('telegram')).toBe(0) // fresh: no row -> 0
+    await setOffset('telegram', 500)
+    expect(await getOffset('telegram')).toBe(500)
+    await setOffset('telegram', 512) // UPSERT advances
+    expect(await getOffset('telegram')).toBe(512)
   })
 
   // No-message-loss replay (Marveen decision #2): events whose handoff was
   // abandoned by the router, or that were never handed off, must be re-queued.
-  it('reconcile_returns_event_never_handed_off (crash between insert and handoff)', () => {
-    const ins = insertIncomingEvent('telegram', sampleEvent(300))
+  it('reconcile_returns_event_never_handed_off (crash between insert and handoff)', async () => {
+    const ins = await insertIncomingEvent('telegram', sampleEvent(300))
     // No createHandoffMessage call -> agent_message_id stays NULL, status pending
-    const need = getEventsNeedingHandoff('telegram')
+    const need = await getEventsNeedingHandoff('telegram')
     expect(need.map((e) => e.id)).toContain(ins.eventId)
   })
 
-  it('reconcile_returns_event_with_failed_agent_message (router abandon-window)', () => {
-    const db = initIngestDb(':memory:')
-    const ins = insertIncomingEvent('telegram', sampleEvent(301))
-    const amId = createHandoffMessage(buildHandoffContent(sampleEvent(301)))
-    markEventDelivered(ins.eventId!, amId)
+  it('reconcile_returns_event_with_failed_agent_message (router abandon-window)', async () => {
+    const db = getDb()
+    const ins = await insertIncomingEvent('telegram', sampleEvent(301))
+    const amId = await createHandoffMessage(buildHandoffContent(sampleEvent(301)))
+    await markEventDelivered(ins.eventId!, amId)
     // Router abandoned it after 1h:
     db.prepare("UPDATE agent_messages SET status = 'failed' WHERE id = ?").run(amId)
-    const need = getEventsNeedingHandoff('telegram')
+    const need = await getEventsNeedingHandoff('telegram')
     expect(need.map((e) => e.id)).toContain(ins.eventId)
   })
 
-  it('reconcile_excludes_in_flight_and_delivered (no double-delivery)', () => {
-    const db = initIngestDb(':memory:')
+  it('reconcile_excludes_in_flight_and_delivered (no double-delivery)', async () => {
+    const db = getDb()
     // pending handoff (in-flight) -> excluded
-    const a = insertIncomingEvent('telegram', sampleEvent(302))
-    const amA = createHandoffMessage(buildHandoffContent(sampleEvent(302)))
-    markEventDelivered(a.eventId!, amA) // agent_message still 'pending'
+    const a = await insertIncomingEvent('telegram', sampleEvent(302))
+    const amA = await createHandoffMessage(buildHandoffContent(sampleEvent(302)))
+    await markEventDelivered(a.eventId!, amA) // agent_message still 'pending'
     // delivered handoff (done) -> excluded
-    const b = insertIncomingEvent('telegram', sampleEvent(303))
-    const amB = createHandoffMessage(buildHandoffContent(sampleEvent(303)))
-    markEventDelivered(b.eventId!, amB)
+    const b = await insertIncomingEvent('telegram', sampleEvent(303))
+    const amB = await createHandoffMessage(buildHandoffContent(sampleEvent(303)))
+    await markEventDelivered(b.eventId!, amB)
     db.prepare("UPDATE agent_messages SET status = 'delivered' WHERE id = ?").run(amB)
 
-    const ids = getEventsNeedingHandoff('telegram').map((e) => e.id)
+    const ids = (await getEventsNeedingHandoff('telegram')).map((e) => e.id)
     expect(ids).not.toContain(a.eventId)
     expect(ids).not.toContain(b.eventId)
   })
 
-  it('reconcile re-handoff is idempotent against the source event (dedup still holds)', () => {
-    const db = initIngestDb(':memory:')
-    const ins = insertIncomingEvent('telegram', sampleEvent(304))
-    const amId1 = createHandoffMessage(buildHandoffContent(sampleEvent(304)))
-    markEventDelivered(ins.eventId!, amId1)
+  it('reconcile re-handoff is idempotent against the source event (dedup still holds)', async () => {
+    const db = getDb()
+    const ins = await insertIncomingEvent('telegram', sampleEvent(304))
+    const amId1 = await createHandoffMessage(buildHandoffContent(sampleEvent(304)))
+    await markEventDelivered(ins.eventId!, amId1)
     db.prepare("UPDATE agent_messages SET status = 'failed' WHERE id = ?").run(amId1)
     // Simulate a reconcile re-handoff: new agent_message, re-link.
-    const amId2 = createHandoffMessage(buildHandoffContent(sampleEvent(304)))
-    markEventDelivered(ins.eventId!, amId2)
+    const amId2 = await createHandoffMessage(buildHandoffContent(sampleEvent(304)))
+    await markEventDelivered(ins.eventId!, amId2)
     // Still exactly ONE source event (no duplicate incoming_events row).
     const count = db.prepare("SELECT COUNT(*) c FROM incoming_events WHERE update_id = 304").get() as { c: number }
     expect(count.c).toBe(1)
@@ -194,8 +193,8 @@ describe('ingest', () => {
 // ---- processBatch (real branch logic: dedup + handoff + offset) --------
 
 describe('processBatch', () => {
-  beforeEach(() => { initIngestDb(':memory:') })
-  afterEach(() => { closeIngestDb() })
+  beforeEach(() => { initProcessDatabase(":memory:") })
+  afterEach(() => { closeDatabase() })
 
   const rawMessage = (update_id: number, text: string) => ({
     update_id,
@@ -208,9 +207,9 @@ describe('processBatch', () => {
     },
   })
 
-  it('inserts a new update and hands it off, returning the max update_id', () => {
-    const db = initIngestDb(':memory:')
-    const maxId = processBatch([rawMessage(400, 'szia')])
+  it('inserts a new update and hands it off, returning the max update_id', async () => {
+    const db = getDb()
+    const maxId = await processBatch([rawMessage(400, 'szia')])
     expect(maxId).toBe(400)
     const ev = db.prepare('SELECT * FROM incoming_events WHERE update_id = 400').get() as any
     expect(ev.status).toBe('delivered')
@@ -219,40 +218,40 @@ describe('processBatch', () => {
     expect(am.content).toContain('szia')
   })
 
-  it('advances the offset past an unhandled update kind without inserting a row', () => {
-    const db = initIngestDb(':memory:')
-    const maxId = processBatch([{ update_id: 401 } as any])
+  it('advances the offset past an unhandled update kind without inserting a row', async () => {
+    const db = getDb()
+    const maxId = await processBatch([{ update_id: 401 } as any])
     expect(maxId).toBe(401) // offset still advances past it
     const count = db.prepare('SELECT COUNT(*) c FROM incoming_events').get() as { c: number }
     expect(count.c).toBe(0)
   })
 
-  it('skips re-handoff on a duplicate update_id (dedup) but still advances the offset', () => {
-    const db = initIngestDb(':memory:')
-    processBatch([rawMessage(402, 'first')])
+  it('skips re-handoff on a duplicate update_id (dedup) but still advances the offset', async () => {
+    const db = getDb()
+    await processBatch([rawMessage(402, 'first')])
     const before = db.prepare('SELECT COUNT(*) c FROM agent_messages').get() as { c: number }
-    const maxId = processBatch([rawMessage(402, 'first')])
+    const maxId = await processBatch([rawMessage(402, 'first')])
     const after = db.prepare('SELECT COUNT(*) c FROM agent_messages').get() as { c: number }
     expect(maxId).toBe(402)
     expect(after.c).toBe(before.c) // no second handoff
   })
 
-  it('tracks the highest update_id across a mixed batch (not insertion order)', () => {
-    const maxId = processBatch([rawMessage(410, 'a'), { update_id: 405 } as any, rawMessage(408, 'b')])
+  it('tracks the highest update_id across a mixed batch (not insertion order)', async () => {
+    const maxId = await processBatch([rawMessage(410, 'a'), { update_id: 405 } as any, rawMessage(408, 'b')])
     expect(maxId).toBe(410)
   })
 
-  it('a broken DB (insert throws) is caught per-update; the offset still advances', () => {
-    closeIngestDb() // requireDb() now throws inside insertIncomingEvent
-    expect(() => processBatch([rawMessage(420, 'szia')])).not.toThrow()
+  it('a broken DB (insert throws) is caught per-update; the offset still advances', async () => {
+    closeDatabase() // requireDb() now throws inside insertIncomingEvent
+    await expect(processBatch([rawMessage(420, 'szia')])).resolves.toBe(420)
   })
 })
 
 // ---- reconcilePending (no-message-loss replay, wired through the real fn) --
 
 describe('reconcilePending', () => {
-  beforeEach(() => { initIngestDb(':memory:') })
-  afterEach(() => { closeIngestDb() })
+  beforeEach(() => { initProcessDatabase(":memory:") })
+  afterEach(() => { closeDatabase() })
 
   const sampleEvent = (update_id: number) => ({
     update_id,
@@ -266,42 +265,42 @@ describe('reconcilePending', () => {
     tg_date: 1700000000,
   })
 
-  it('re-hands-off an event that was never handed off (crash between insert and handoff)', () => {
-    const db = initIngestDb(':memory:')
-    const ins = insertIncomingEvent('telegram', sampleEvent(500))
-    reconcilePending()
+  it('re-hands-off an event that was never handed off (crash between insert and handoff)', async () => {
+    const db = getDb()
+    const ins = await insertIncomingEvent('telegram', sampleEvent(500))
+    await reconcilePending()
     const ev = db.prepare('SELECT * FROM incoming_events WHERE id = ?').get(ins.eventId) as any
     expect(ev.status).toBe('delivered')
     expect(ev.agent_message_id).not.toBeNull()
   })
 
-  it('tolerates malformed stored meta JSON (falls back to {})', () => {
-    const db = initIngestDb(':memory:')
+  it('tolerates malformed stored meta JSON (falls back to {})', async () => {
+    const db = getDb()
     db.prepare(`
       INSERT INTO incoming_events (source, update_id, kind, content, meta, created_at)
       VALUES ('telegram', 501, 'message', 'x', 'not-json{{', ?)
     `).run(Math.floor(Date.now() / 1000))
-    expect(() => reconcilePending()).not.toThrow()
+    await expect(reconcilePending()).resolves.toBeUndefined()
     const ev = db.prepare("SELECT * FROM incoming_events WHERE update_id = 501").get() as any
     expect(ev.status).toBe('delivered')
   })
 
-  it('is a no-op when nothing needs handoff', () => {
-    const db = initIngestDb(':memory:')
-    insertIncomingEvent('telegram', sampleEvent(502))
+  it('is a no-op when nothing needs handoff', async () => {
+    const db = getDb()
+    await insertIncomingEvent('telegram', sampleEvent(502))
     const before = db.prepare('SELECT COUNT(*) c FROM agent_messages').get() as { c: number }
-    reconcilePending() // re-queues event 502
-    reconcilePending() // second call: 502 is now in-flight (pending) -- no-op
+    await reconcilePending() // re-queues event 502
+    await reconcilePending() // second call: 502 is now in-flight (pending) -- no-op
     const after1 = db.prepare('SELECT COUNT(*) c FROM agent_messages').get() as { c: number }
-    reconcilePending()
+    await reconcilePending()
     const after2 = db.prepare('SELECT COUNT(*) c FROM agent_messages').get() as { c: number }
     expect(after2.c).toBe(after1.c)
     expect(before.c).toBe(0)
   })
 
-  it('a query failure (DB unavailable) is caught, not thrown', () => {
-    closeIngestDb()
-    expect(() => reconcilePending()).not.toThrow()
+  it('a query failure (DB unavailable) is caught, not thrown', async () => {
+    closeDatabase()
+    await expect(reconcilePending()).resolves.toBeUndefined()
   })
 })
 

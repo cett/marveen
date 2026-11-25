@@ -38,16 +38,15 @@ import { PROJECT_ROOT, MAIN_AGENT_ID, CHANNEL_PROVIDER, BOT_NAME } from './confi
 import { getUpdates, probeHighWater, mapUpdate, TelegramApiError } from './channel-coordinator/telegram-client.js'
 import { probeNativeChannelDown } from './channel-coordinator/liveness.js'
 import {
-  initIngestDb,
   insertIncomingEvent,
   createHandoffMessage,
   markEventDelivered,
   getEventsNeedingHandoff,
   getOffset,
   setOffset,
-  closeIngestDb,
   type InsertResult,
 } from './channel-coordinator/ingest.js'
+import { bootCoordinatorDb, closeCoordinatorDb } from './channel-coordinator/boot.js'
 
 const SOURCE = 'telegram'
 const LONGPOLL_TIMEOUT_SEC = 30
@@ -233,7 +232,7 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 // (if newly inserted) hand off to Marveen. Returns the highest update_id seen
 // so the caller can advance the offset AFTER the whole batch is durable.
 // Exported for tests.
-export function processBatch(updates: { update_id: number }[]): number | null {
+export async function processBatch(updates: { update_id: number }[]): Promise<number | null> {
   let maxUpdateId: number | null = null
   for (const raw of updates) {
     maxUpdateId = maxUpdateId == null ? raw.update_id : Math.max(maxUpdateId, raw.update_id)
@@ -242,7 +241,7 @@ export function processBatch(updates: { update_id: number }[]): number | null {
 
     let ins: InsertResult
     try {
-      ins = insertIncomingEvent(SOURCE, ev)
+      ins = await insertIncomingEvent(SOURCE, ev)
     } catch (err) {
       logger.error({ err, update_id: ev.update_id }, 'channel-coordinator: insertIncomingEvent failed')
       continue
@@ -250,8 +249,8 @@ export function processBatch(updates: { update_id: number }[]): number | null {
     if (!ins.inserted || ins.eventId == null) continue // dedup: already handed off
 
     try {
-      const agentMessageId = createHandoffMessage(buildHandoffContent(ev))
-      markEventDelivered(ins.eventId, agentMessageId)
+      const agentMessageId = await createHandoffMessage(buildHandoffContent(ev))
+      await markEventDelivered(ins.eventId, agentMessageId)
       logger.info({ update_id: ev.update_id, chat_id: ev.chat_id, kind: ev.kind, agentMessageId }, 'channel-coordinator: backfilled to main agent')
     } catch (err) {
       logger.error({ err, eventId: ins.eventId }, 'channel-coordinator: handoff failed; event left pending for replay')
@@ -271,10 +270,10 @@ export function processBatch(updates: { update_id: number }[]): number | null {
 // excluded by getEventsNeedingHandoff, and a re-handoff creates a fresh
 // agent_message rather than duplicating the source event.
 // Exported for tests.
-export function reconcilePending(): void {
+export async function reconcilePending(): Promise<void> {
   let events
   try {
-    events = getEventsNeedingHandoff(SOURCE)
+    events = await getEventsNeedingHandoff(SOURCE)
   } catch (err) {
     logger.error({ err }, 'channel-coordinator: reconcile query failed')
     return
@@ -283,7 +282,7 @@ export function reconcilePending(): void {
     try {
       let parsedMeta: Record<string, unknown> = {}
       try { if (ev.meta) parsedMeta = JSON.parse(ev.meta) as Record<string, unknown> } catch {}
-      const agentMessageId = createHandoffMessage(buildHandoffContent({
+      const agentMessageId = await createHandoffMessage(buildHandoffContent({
         kind: ev.kind,
         chat_id: ev.chat_id,
         user_id: ev.user_id,
@@ -293,7 +292,7 @@ export function reconcilePending(): void {
         tg_date: ev.tg_date,
         meta: parsedMeta,
       }))
-      markEventDelivered(ev.id, agentMessageId)
+      await markEventDelivered(ev.id, agentMessageId)
       logger.warn({ update_id: ev.update_id, eventId: ev.id, agentMessageId }, 'channel-coordinator: re-queued abandoned/stranded inbound message')
     } catch (err) {
       logger.error({ err, eventId: ev.id }, 'channel-coordinator: reconcile re-handoff failed; will retry next cycle')
@@ -316,7 +315,7 @@ async function runLoop(token: string): Promise<void> {
   let transientAttempt = 0
   while (!stopping) {
     // No-message-loss replay runs every tick, regardless of state.
-    reconcilePending()
+    await reconcilePending()
 
     if (state === 'idle') {
       // Watch the native channel. Debounce DOWN readings so a momentary blip
@@ -331,7 +330,7 @@ async function runLoop(token: string): Promise<void> {
           // messages that arrive DURING the outage; the detection-window
           // backlog (<= hw) is left for the native to deliver on recovery.
           const hw = await probeHighWater(token)
-          if (hw != null) setOffset(SOURCE, hw)
+          if (hw != null) await setOffset(SOURCE, hw)
           state = 'backfilling'
           transientAttempt = 0
           logger.warn({ session: SESSION, seededHighWater: hw }, 'channel-coordinator: native channel DOWN, entering BACKFILLING')
@@ -363,7 +362,7 @@ async function runLoop(token: string): Promise<void> {
 
     let updates: { update_id: number }[]
     try {
-      updates = await getUpdates(token, getOffset(SOURCE) + 1, LONGPOLL_TIMEOUT_SEC, POLL_LIMIT)
+      updates = await getUpdates(token, (await getOffset(SOURCE)) + 1, LONGPOLL_TIMEOUT_SEC, POLL_LIMIT)
       transientAttempt = 0
     } catch (err) {
       if (stopping) break
@@ -400,9 +399,9 @@ async function runLoop(token: string): Promise<void> {
       continue
     }
 
-    const maxUpdateId = processBatch(updates)
+    const maxUpdateId = await processBatch(updates)
     // Persist offset ONLY after the batch is durable + handed off.
-    if (maxUpdateId != null) setOffset(SOURCE, maxUpdateId)
+    if (maxUpdateId != null) await setOffset(SOURCE, maxUpdateId)
   }
 }
 
@@ -415,8 +414,10 @@ function installSignalHandlers(): void {
     logger.info({ sig }, 'channel-coordinator: shutting down')
     setTimeout(() => {
       releaseLock()
-      closeIngestDb()
-      process.exit(0)
+      // the pool ends (PostgreSQL) or the file closes (SQLite) before the exit; a failing close must not keep the unit alive
+      void closeCoordinatorDb()
+        .catch((err: unknown) => logger.warn({ err }, 'channel-coordinator: database close failed during shutdown'))
+        .finally(() => process.exit(0))
     }, 3000)
   }
   process.on('SIGTERM', () => onSignal('SIGTERM'))
@@ -426,10 +427,10 @@ function installSignalHandlers(): void {
 export async function main(): Promise<void> {
   const token = readToken()
   acquireSingleInstanceLock()
-  initIngestDb()
+  await bootCoordinatorDb()
   installSignalHandlers()
   logger.info({ stateDir: STATE_DIR, session: SESSION, provider: PROVIDER }, 'channel-coordinator: started in BACKFILL mode (idle while native is up)')
   await runLoop(token)
   releaseLock()
-  closeIngestDb()
+  await closeCoordinatorDb()
 }

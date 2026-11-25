@@ -76,6 +76,7 @@ export const BACKGROUND_JOBS = {
   'http-admin': { file: 'src/db/background-jobs.ts', role: 'admin', note: 'a global admin session (role admin, no tenant)' },
   'http-global-viewer': { file: 'src/db/background-jobs.ts', role: 'viewer', note: 'an authenticated caller of any other role without a tenant (a global viewer); under row-level security it sees no tenant rows' },
   'http-metrics': { file: 'src/otel-http.ts', role: 'system', note: 'the request counters written when a response is done (an event callback does not carry the request context)' },
+  'channel-coordinator-ingest': { file: 'src/channel-coordinator/ingest.ts', role: 'system', note: 'the channel coordinator is its own process and the system: it has no tenant context. Its seven functions read and write the D2 tables incoming_events and poll_offset (privileged only), and the replay read joins agent_messages across tenants; the handoff row it writes carries the owner (default) tenant as an explicit value' },
   'artifact-reembed': { file: 'src/db/artifacts.ts', role: 'system', note: 'PostgreSQL cutover only: embeds the artifacts that have no side row, from their title and meta; resumable (the NOT EXISTS guard), serial, skips blank artifacts' },
   'shutdown-flush': { file: 'src/web.ts', role: 'system', note: 'flushes the running state on SIGTERM' },
   'embeddings-stage': { file: 'src/db/pg-copy/embeddings.ts', role: 'system', note: 'PostgreSQL cutover only: the embeddings stage of the SQLite to PostgreSQL copy reads the memories and workspace documents that need a vector, across tenants' },
