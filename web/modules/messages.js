@@ -1,7 +1,7 @@
 import { escapeHtml, mainAgentId } from './util.js'
 import { showToast } from './toast.js'
 import { t } from './i18n.js'
-import { avatarBust, setFederatedPeerStatus, federatedAgentEntries } from './agents.js'
+import { avatarBust, setFederatedPeerStatus, federatedAgentEntries, currentAgent, loadAgents } from './agents.js'
 import { getErrorMessage } from './error-message.js'
 import { initTenantSelector } from './tenant-selector.js'
 

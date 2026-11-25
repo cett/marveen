@@ -12,6 +12,7 @@ Extract a version for release: `npm run release-notes -- <version>`
 <!-- changelog-auto-sha: cd00e7d54aadf38020b01709e16f6102bb1d0451 -->
 
 ### Fixed
+- **[Fix]** The Save button of the Team tab on an agent card works again: `web/modules/messages.js` used `currentAgent` and `loadAgents` without importing them, so the click threw `ReferenceError: currentAgent is not defined` and nothing (role, manager, delegation, the new one-word title) could be saved from the UI; after the first fix the success toast would still have been replaced by the error toast, because the reload of the agent list threw too. Both are imported from `agents.js`. The cells run the real module against a stub DOM and click the registered handler: the PUT with the trimmed title (an empty field sends `null`), no request without an open agent or for the main agent, the reload after a save with the success toast kept, and a refused title; each missing import is a red cell.
 - **[Fix]** **[PostgreSQL]** On PostgreSQL the SIGTERM clean-shutdown marker is written in the boot-marker system job, so a clean stop is recorded and the next boot reads it as clean.
 
 ### Added
