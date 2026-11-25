@@ -143,6 +143,18 @@ describe('tenant-context (the caller\'s own row)', () => {
     expect((await dbx.all('SELECT 1 FROM agent_tenant_context')).length).toBe(1)
   })
 
+  it('refuses to record a tenant the caller may not assert: default with another tenant, bound for a tenant it does not serve, bound with the default tenant', async () => {
+    for (const b of [
+      { status: 'default', tenant_id: 'tenant-x', source: 's' }, // would read as a served tenant without the serves check
+      { status: 'bound', tenant_id: 'tenant-y', source: 's' }, // agent-a is not enabled for tenant-y
+      { status: 'bound', tenant_id: 'default', source: 's' },
+      { status: 'bound', tenant_id: 'no-such-tenant', source: 's' },
+    ]) expect((await put(b)).status, JSON.stringify(b)).toBe(403)
+    expect(await row()).toBeUndefined()
+    expect((await put({ status: 'default', tenant_id: 'default', source: 's' })).status).toBe(200)
+    expect((await put({ status: 'bound', tenant_id: 'tenant-x', source: 's' })).status).toBe(200)
+  })
+
   it('refuses bound/default without a tenant and unknown/conflict with one, and an unknown status', async () => {
     for (const b of [
       { status: 'bound', tenant_id: '', source: 's' }, { status: 'default', tenant_id: '', source: 's' },
@@ -165,11 +177,16 @@ describe('skill-gate', () => {
   const gate = (targets: unknown[], agent = 'agent-a') => run('POST', '/api/hooks/skill-gate', { targets }, agent)
   const target = (kind: string, value: string) => ({ kind, value, folded: value.toLowerCase() })
 
-  it('returns only the skills a target names, with grants, and never a skill\'s content', async () => {
+  it('returns only the skills a target names, with the grant of the caller\'s tenant, and never a skill\'s content', async () => {
+    await run('PUT', '/api/hooks/tenant-context', { status: 'bound', tenant_id: 'tenant-x', source: 's', session_id: 'q' }, 'agent-a')
     const out = await gate([target('skill', 'front-one'), target('dir', 'skill-two')])
     const b = out.body as { skills: { id: string; tenant_id: string; granted: string[]; names: string[] }[] }
     expect(b.skills.map((s) => s.id).sort()).toEqual(['Skill-Two', 'skill-one'])
     expect(b.skills.find((s) => s.id === 'Skill-Two')!.granted).toEqual(['tenant-x'])
+    expect(b.skills.find((s) => s.id === 'Skill-Two')!.tenant_id).toBe('*')
+    expect(b.skills.find((s) => s.id === 'skill-one')!.tenant_id).toBe('tenant-x')
+    // another tenant's id never leaves the server: neither as the owner of Skill-Two nor as a grantee
+    expect(JSON.stringify(out.body)).not.toContain('tenant-y')
     expect(b.skills.find((s) => s.id === 'skill-one')!.names).toContain('front-one')
     const text = JSON.stringify(out.body)
     expect(text).not.toContain('SECRET-BODY')
@@ -188,13 +205,21 @@ describe('skill-gate', () => {
 
   it('carries the context row and the serves fact of the caller, and nobody else\'s', async () => {
     await run('PUT', '/api/hooks/tenant-context', { status: 'bound', tenant_id: 'tenant-x', source: 's', session_id: 'q' }, 'agent-a')
-    await run('PUT', '/api/hooks/tenant-context', { status: 'bound', tenant_id: 'tenant-y', source: 's', session_id: 'q' }, 'agent-b')
+    await dbx.run("INSERT INTO agent_tenant_context (agent_id, tenant_id, status, source, session_id, updated_at) VALUES ('agent-b', 'tenant-y', 'bound', 's', 'q', 1)")
     const out = await gate([target('skill', 'x')])
     const b = out.body as { context: { status: string; tenant_id: string }; serves: boolean }
     expect(b.context).toMatchObject({ status: 'bound', tenant_id: 'tenant-x' })
     expect(b.serves).toBe(true)
     const other = await gate([target('skill', 'x')], 'agent-b')
     expect((other.body as { serves: boolean }).serves).toBe(false) // agent-b is not enabled for tenant-y
+  })
+
+  it('without a context the answer names no tenant at all (owner masked, grants empty)', async () => {
+    const out = await gate([target('skill', 'front-one'), target('dir', 'skill-two')])
+    const b = out.body as { skills: { tenant_id: string; granted: string[] }[] }
+    expect(b.skills.map((s) => s.tenant_id)).toEqual(['*', '*'])
+    expect(b.skills.map((s) => s.granted)).toEqual([[], []])
+    expect(JSON.stringify(out.body)).not.toMatch(/tenant-[xy]/)
   })
 
   it('no context row: context null (the hook then has no tenant)', async () => {

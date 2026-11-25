@@ -22,6 +22,8 @@ const MAX_FOLDED = 1024
 const MAX_SOURCE_DESC = 500
 const MAX_SESSION = 200
 const STATUSES = new Set(['bound', 'default', 'unknown', 'conflict'])
+// What a skill's owner reads as when it is not the caller's own tenant: not a tenant id, so it equals no context tenant.
+const OTHER_TENANT = '*'
 
 function bad(ctx: RouteContext, field: string, hint: string): true {
   json(ctx.res, { error: 'invalid_value', field, hint }, 400)
@@ -125,7 +127,10 @@ export async function tryHandleHooksTenant(ctx: RouteContext): Promise<boolean> 
     if ((status === 'bound' || status === 'default') !== (tenant !== '')) return bad(ctx, 'tenant_id', 'bound and default need a tenant, unknown and conflict carry none')
     if (typeof source !== 'string' || source.length > MAX_SOURCE_DESC || source.includes('\u0000')) return bad(ctx, 'source', `source must be a string of at most ${MAX_SOURCE_DESC} characters`)
     if (session !== undefined && (typeof session !== 'string' || session.length > MAX_SESSION || session.includes('\u0000'))) return bad(ctx, 'session_id', `session_id must be a string of at most ${MAX_SESSION} characters`)
-    await recordHookContext(agentId, status, tenant, source, typeof session === 'string' ? session : '')
+    if (!(await recordHookContext(agentId, status, tenant, source, typeof session === 'string' ? session : ''))) {
+      json(res, { error: 'forbidden', hint: 'A context can only name the default tenant (status default) or a tenant this agent serves (status bound)' }, 403)
+      return true
+    }
     json(res, { ok: true })
     return true
   }
@@ -146,7 +151,17 @@ export async function tryHandleHooksTenant(ctx: RouteContext): Promise<boolean> 
       const hit = targets.some((t) => t.kind === 'skill'
         ? names.includes(t.value)
         : dir !== null && (dir === t.value || dir.toLowerCase() === t.folded))
-      if (hit) skills.push({ id: s.id, tenant_id: s.tenant_id, dir, names: [...new Set(names)], granted: s.granted })
+      if (!hit) continue
+      // Data minimisation: the gate only ever compares a skill's owner and grants with the caller's CURRENT tenant, so the answer
+      // names that tenant or nothing. Another tenant's id (as owner or as a grantee) never leaves the server.
+      const mine = context && context.tenant_id ? context.tenant_id : null
+      skills.push({
+        id: s.id,
+        tenant_id: mine !== null && s.tenant_id === mine ? mine : OTHER_TENANT,
+        dir,
+        names: [...new Set(names)],
+        granted: mine !== null && s.granted.includes(mine) ? [mine] : [],
+      })
     }
     json(res, { context, serves, skills })
     return true

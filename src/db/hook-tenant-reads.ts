@@ -126,11 +126,18 @@ export const listHookTenantSkills = systemJob('hook-tenant-reads', async (): Pro
  * REPLACES the old one, so an old tenant never survives a newer prompt. `unknown` and `conflict` carry an empty tenant, which a
  * tenant-scoped write would refuse: that is the second reason for the system context.
  */
-export const recordHookContext = systemJob('hook-tenant-reads', async (agentId: string, status: string, tenantId: string, source: string, sessionId: string): Promise<void> => {
+export const recordHookContext = systemJob('hook-tenant-reads', async (agentId: string, status: string, tenantId: string, source: string, sessionId: string): Promise<boolean> => {
+  // The caller cannot assert a tenant it does not serve: a `bound` context needs the agent to be enabled for that tenant now
+  // (the hook only ever writes one after the same check), and a `default` context carries the default tenant and nothing else.
+  // The readers (getServingTenant, the write tenant) take row.tenant_id of a `default` row without a serves check, so the
+  // value of that row must be pinned here.
+  if (status === 'default' && tenantId !== DEFAULT_TENANT) return false
+  if (status === 'bound' && (tenantId === DEFAULT_TENANT || !(await agentServesTenant(agentId, tenantId)))) return false
   await dbx.run(
     `INSERT INTO agent_tenant_context (agent_id, tenant_id, status, source, session_id, updated_at) VALUES (?, ?, ?, ?, ?, ?)
      ON CONFLICT(agent_id) DO UPDATE SET tenant_id = excluded.tenant_id, status = excluded.status, source = excluded.source,
        session_id = excluded.session_id, updated_at = excluded.updated_at`,
     agentId, tenantId, status, source, sessionId, Math.floor(Date.now() / 1000),
   )
+  return true
 })
