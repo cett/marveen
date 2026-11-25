@@ -1,13 +1,21 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { FULL_BOOT_SANDBOX_ENV, LIVE_DASHBOARD_PORT, fullBootSandboxRefusals, fullBootSandboxRequested } from '../full-boot-sandbox.js'
+import { FULL_BOOT_SANDBOX_ENV, LIVE_DASHBOARD_PORT, fullBootSandboxRefusals, fullBootSandboxRequested, tmuxDirIsUnderStore } from '../full-boot-sandbox.js'
 
 // FULL-BOOT-SANDBOX: the opt-in switch that runs the whole boot inside an isolated instance. The decision is a pure
 // function over facts that main.ts reads from its environment; these cells pin the refusals (each one alone is enough
 // to refuse) and the wiring in main.ts (refusal before any side effect, WEB_ONLY only on the non-sandbox branch).
 
-const SAFE_FACTS = { isolated: true, webPort: 4421, projectRootIsTemporary: true }
+const SAFE_STORE = '/tmp/fbs-fixture/store'
+const SAFE_FACTS = {
+  isolated: true,
+  webPort: 4421,
+  projectRootIsTemporary: true,
+  respawnExplicitlyOff: true,
+  tmuxTmpDir: `${SAFE_STORE}/tmux`,
+  storeDir: SAFE_STORE,
+}
 
 describe('FULL-BOOT-SANDBOX: the switch is on only for the exact value', () => {
   it('is on for MARVEEN_SANDBOX_FULL_BOOT=true and off for anything else, including unset', () => {
@@ -42,9 +50,39 @@ describe('FULL-BOOT-SANDBOX: refusals', () => {
     expect(reasons[0]).toContain('PROJECT_ROOT')
   })
 
+  it('R4: refuses unless RESPAWN_ENABLED is explicitly off in the env file (the default is on)', () => {
+    const reasons = fullBootSandboxRefusals({ ...SAFE_FACTS, respawnExplicitlyOff: false })
+    expect(reasons).toHaveLength(1)
+    expect(reasons[0]).toContain('RESPAWN_ENABLED')
+  })
+
+  it('R5: refuses when TMUX_TMPDIR is unset', () => {
+    const reasons = fullBootSandboxRefusals({ ...SAFE_FACTS, tmuxTmpDir: undefined })
+    expect(reasons).toHaveLength(1)
+    expect(reasons[0]).toContain('TMUX_TMPDIR')
+  })
+
+  it('R5: refuses when TMUX_TMPDIR is outside the store, including a sibling with the same prefix', () => {
+    expect(fullBootSandboxRefusals({ ...SAFE_FACTS, tmuxTmpDir: '/tmp/fbt' })).toHaveLength(1)
+    expect(fullBootSandboxRefusals({ ...SAFE_FACTS, tmuxTmpDir: `${SAFE_STORE}-other/tmux` })).toHaveLength(1)
+  })
+
+  it('R5: accepts TMUX_TMPDIR under the store, and the store root itself', () => {
+    expect(tmuxDirIsUnderStore(`${SAFE_STORE}/tmux`, SAFE_STORE)).toBe(true)
+    expect(tmuxDirIsUnderStore(SAFE_STORE, SAFE_STORE)).toBe(true)
+    expect(tmuxDirIsUnderStore('relative/tmux', SAFE_STORE)).toBe(false)
+  })
+
   it('lists every refusal together, so one start shows all the wrong settings', () => {
-    const reasons = fullBootSandboxRefusals({ isolated: false, webPort: LIVE_DASHBOARD_PORT, projectRootIsTemporary: false })
-    expect(reasons).toHaveLength(3)
+    const reasons = fullBootSandboxRefusals({
+      isolated: false,
+      webPort: LIVE_DASHBOARD_PORT,
+      projectRootIsTemporary: false,
+      respawnExplicitlyOff: false,
+      tmuxTmpDir: undefined,
+      storeDir: '',
+    })
+    expect(reasons).toHaveLength(5)
   })
 })
 
@@ -69,6 +107,13 @@ describe('FULL-BOOT-SANDBOX: main.ts wiring', () => {
     expect(guardAt).toBeLessThan(webOnlyAt)
     // The only WEB_ONLY assignment in main.ts is that one.
     expect(MAIN_SRC.split("process.env['WEB_ONLY'] = 'true'").length - 1).toBe(1)
+  })
+
+  it('the R4 and R5 inputs come from the env file (RESPAWN_ENABLED) and TMUX_TMPDIR, the store from STORE_DIR', () => {
+    const call = MAIN_SRC.slice(MAIN_SRC.indexOf('fullBootSandboxRefusals({'), MAIN_SRC.indexOf('if (refusals.length > 0)'))
+    expect(call).toContain("readEnvFile(['RESPAWN_ENABLED'])")
+    expect(call).toContain("tmuxTmpDir: process.env['TMUX_TMPDIR']")
+    expect(call).toContain('storeDir: STORE_DIR')
   })
 
   it('the sandbox path does not return early: the normal boot runs after the isolated block', () => {

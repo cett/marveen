@@ -16,6 +16,7 @@ import type { Server as HttpServer } from 'node:http'
 import { PROJECT_ROOT, STORE_DIR, IS_ISOLATED_MODE, PID_FILENAME, WEB_PORT, ALLOWED_CHAT_ID, MAIN_AGENT_ID, RESPAWN_ENABLED, HEARTBEAT_AGENT_ENABLED } from './config.js'
 import { FULL_BOOT_SANDBOX_ENV, fullBootSandboxRefusals, fullBootSandboxRequested } from './full-boot-sandbox.js'
 import { isTemporaryRoot, isWorktreeRoot } from './web/hook-registration-guard.js'
+import { readEnvFile } from './env.js'
 import { runSigtermFlushes } from './web/sigterm-flush.js'
 import { startBootMarker } from './web/boot-marker.js'
 import { closePgBackend, backfillEmbeddings, closeDatabase } from './db.js'
@@ -524,6 +525,10 @@ async function main(): Promise<void> {
       isolated: IS_ISOLATED_MODE,
       webPort: WEB_PORT,
       projectRootIsTemporary: isWorktreeRoot(PROJECT_ROOT) || isTemporaryRoot(PROJECT_ROOT, { tmpDir: tmpdir() }),
+      // Only the env FILE sets RESPAWN_ENABLED (config.ts reads readEnvFile, not process.env): look at the file's value.
+      respawnExplicitlyOff: ['0', 'false'].includes((readEnvFile(['RESPAWN_ENABLED'])['RESPAWN_ENABLED'] ?? '').trim().toLowerCase()),
+      tmuxTmpDir: process.env['TMUX_TMPDIR'],
+      storeDir: STORE_DIR,
     })
     if (refusals.length > 0) {
       throw new Error(`${FULL_BOOT_SANDBOX_ENV}=true refused: ${refusals.join('; ')}`)
