@@ -131,6 +131,7 @@ export const PORTED: readonly string[] = [
   'src/__tests__/kanban-title-lookup-tenant.test.ts',
   'src/__tests__/kanban-create-sort-tenant.test.ts',
   'src/__tests__/channel-coordinator-ingest.test.ts',
+  'src/__tests__/channel-coordinator-sender-gate.test.ts',
 ]
 
 /** Test files (same form) that do not, each with the reason. */

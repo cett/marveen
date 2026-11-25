@@ -16,6 +16,9 @@ import { closeDatabase, getDb, initDatabase, initProcessDatabase } from '../db/c
 import { insertIncomingEvent, setOffset } from '../channel-coordinator/ingest.js'
 import { processBatch } from '../channel-coordinator-main.js'
 import { countIncomingEventsBySourceStatus } from '../db/otel-gauges.js'
+import { useAccessFile } from './helpers/coordinator-access.js'
+
+useAccessFile()
 
 const ROOT = fileURLToPath(new URL('../..', import.meta.url))
 const dirs: string[] = []
