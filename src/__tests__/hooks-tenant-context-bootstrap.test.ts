@@ -43,7 +43,8 @@ async function mint(raw: string, role: 'fleet_agent' | 'agent' | 'viewer' | 'adm
 
 /** The chain of web.ts for one request. Returns the status and the decoded body. */
 async function request(rawToken: string | null, method: string, rawPath: string, body?: unknown): Promise<{ status: number; body: unknown }> {
-  const buf = body === undefined ? Buffer.alloc(0) : Buffer.from(JSON.stringify(body))
+  // a string body is sent as written (the duplicate-key and __proto__ cells need the raw text), anything else as JSON
+  const buf = body === undefined ? Buffer.alloc(0) : Buffer.from(typeof body === 'string' ? body : JSON.stringify(body))
   const req = new EventEmitter() as unknown as http.IncomingMessage
   req.method = method
   req.headers = rawToken ? { authorization: `Bearer ${rawToken}` } : {}
@@ -268,6 +269,95 @@ describe('OWN ROWS: with no context the facts are still only the caller\'s own',
     const r = await request('tok-shared', 'POST', FACTS, { sources: channel('111') })
     expect(Object.keys(r.body as object).sort()).toEqual(['serves', 'sources'])
     expect(Object.keys((r.body as { sources: object[] }).sources[0]!).sort()).toEqual(['binding', 'kind'])
+  })
+})
+
+describe('SPELLINGS: the gate and the router read the SAME path, so no spelling gets the exception without getting the route', () => {
+  // web.ts hands ONE normalised path (new URL(...).pathname, then normalizePath) to the refusal, to checkPermission and to the router. A
+  // spelling that the URL parser folds onto the exact route (a backslash, a dot segment) is that route for all three. A spelling it
+  // keeps different (an encoded character, a doubled or trailing slash, another case, a path parameter) is neither the exception nor the
+  // route: 403 for the shared agent (the refusal, or the RBAC table for a path it does not list), never a 200.
+  const SPELL: Array<[string, string]> = [
+    ['percent-encoded dash', '/api/hooks/tenant%2Dfacts'],
+    ['percent-encoded slash', '/api/hooks%2Ftenant-facts'],
+    ['percent-encoded first letter', '/api/hooks/%74enant-facts'],
+    ['doubled slash inside', '/api/hooks//tenant-facts'],
+    ['doubled slash in front', '//api/hooks/tenant-facts'],
+    ['upper case', '/API/hooks/tenant-facts'],
+    ['mixed case', '/api/hooks/Tenant-Facts'],
+    ['path parameter', '/api/hooks/tenant-facts;x=1'],
+    ['trailing dot', '/api/hooks/tenant-facts.'],
+    ['alias with a doubled slash', '/api/v1//hooks/tenant-facts'],
+    ['double alias', '/api/v1/v1/hooks/tenant-facts'],
+  ]
+  it.each(SPELL)('%s is not the route: a shared agent with no context gets 403', async (_n, p) => {
+    const r = await request('tok-shared', 'POST', p, { sources: [] })
+    expect(r.status).toBe(403)
+    expect(await contextRow('agent-shared')).toBeUndefined()
+  })
+
+  it('a spelling the URL parser folds onto the exact path IS the route, for the refusal, the RBAC row and the router alike', async () => {
+    for (const p of ['/api\\hooks\\tenant-facts', '/api/x/../hooks/tenant-facts', '/api/./hooks/tenant-facts', '/api/hooks/tenant-facts#frag', '/api/hooks/tenant-facts?x=/../']) {
+      expect((await request('tok-shared', 'POST', p, { sources: [] })).status, p).toBe(200)
+    }
+    // ... and the folded spelling of a route that is NOT exempt stays refused
+    expect((await request('tok-shared', 'POST', '/api/x/../hooks/skill-gate', { targets: [] })).status).toBe(403)
+  })
+
+  it('no method override: the header and the query do not turn another method into the exempt one', async () => {
+    // web.ts reads req.method only (no X-HTTP-Method-Override anywhere); a GET with the override spelled out is still a GET
+    expect((await request('tok-shared', 'GET', `${CONTEXT}?_method=PUT`)).status).toBe(403)
+    expect((await request('tok-shared', 'POST', `${CONTEXT}?_method=PUT`, { status: 'unknown', tenant_id: '', source: 'x' })).status).toBe(403)
+    for (const m of ['HEAD', 'OPTIONS', 'TRACE', 'CONNECT']) expect((await request('tok-shared', m, FACTS, {})).status, m).toBe(403)
+  })
+})
+
+describe('ONE PARSE: the route reads the one JSON object it validated (no second reader of a body field)', () => {
+  it('a duplicated key is read once, last one wins, and what is validated is what is stored', async () => {
+    const dup = '{"status":"bound","tenant_id":"tenant-z","status":"unknown","tenant_id":"","source":"x"}'
+    expect((await request('tok-shared', 'PUT', CONTEXT, dup)).status).toBe(200)
+    expect(await contextRow('agent-shared')).toMatchObject({ status: 'unknown', tenant_id: '' })
+    // the other order: the LAST pair is the not-served tenant, and that is the one refused (the first, served one is not used)
+    const dup2 = '{"status":"bound","tenant_id":"tenant-x","tenant_id":"tenant-z","source":"x"}'
+    expect((await request('tok-shared', 'PUT', CONTEXT, dup2)).status).toBe(403)
+    expect(await contextRow('agent-shared')).toMatchObject({ status: 'unknown' })
+  })
+
+  it('a __proto__ key does not become a field of the request and names no other agent', async () => {
+    const body = '{"__proto__":{"agent_id":"agent-solo","status":"bound","tenant_id":"tenant-x"},"status":"unknown","tenant_id":"","source":"x"}'
+    expect((await request('tok-shared', 'PUT', CONTEXT, body)).status).toBe(200)
+    expect(await contextRow('agent-shared')).toMatchObject({ status: 'unknown', tenant_id: '' })
+    expect(await contextRow('agent-solo')).toBeUndefined()
+    const facts = await request('tok-shared', 'POST', FACTS, '{"__proto__":{"sources":[{"kind":"message","msg_id":10}]},"sources":[]}')
+    expect(facts.status).toBe(200)
+    expect(facts.body).toMatchObject({ sources: [] })
+  })
+
+  it('a value of the wrong JSON type is a 400 and writes nothing', async () => {
+    for (const body of [
+      { status: ['bound'], tenant_id: 'tenant-x', source: 'x' }, { status: 'bound', tenant_id: ['tenant-x'], source: 'x' },
+      { status: 'bound', tenant_id: { id: 'tenant-x' }, source: 'x' }, { status: 'unknown', tenant_id: '', source: ['x'] },
+      { status: 'unknown', tenant_id: '', source: 'x', session_id: 7 }, 'null', '[]', '"bound"', '7', '{"status":',
+    ]) {
+      expect((await request('tok-shared', 'PUT', CONTEXT, body)).status, JSON.stringify(body)).toBe(400)
+    }
+    for (const body of [{ sources: 'x' }, { sources: {} }, { sources: [null] }, { sources: [{ kind: 'message', msg_id: '10' }] }, { sources: [{ kind: 'message', msg_id: 1.5 }] }, 'null', '[]']) {
+      expect((await request('tok-shared', 'POST', FACTS, body)).status, JSON.stringify(body)).toBe(400)
+    }
+    expect(await contextRow('agent-shared')).toBeUndefined()
+  })
+
+  it('the content type is not read: the same body is the same request whatever the header says', async () => {
+    // readBody takes the bytes and the route JSON.parses them; no middleware before the route parses it differently
+    expect((await request('tok-shared', 'POST', FACTS, { sources: channel('111') })).status).toBe(200)
+  })
+
+  it('the agent comes from the token for every spelling of the body field', async () => {
+    for (const key of ['agent_id', 'agentId', 'agent', 'AGENT_ID', 'x-agent-id']) {
+      const r = await request('tok-shared', 'PUT', CONTEXT, { [key]: 'agent-solo', status: 'unknown', tenant_id: '', source: 'x' })
+      expect(r.status, key).toBe(200)
+    }
+    expect(await contextRow('agent-solo')).toBeUndefined()
   })
 })
 
