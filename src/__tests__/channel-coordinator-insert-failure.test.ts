@@ -17,10 +17,13 @@ vi.mock('node:child_process', async (importOriginal) => ({
 }))
 
 const failing = new Set<number>()
+// the read the give-up decision probes the database with: true = the database does not answer
+let probeFails = false
 vi.mock('../channel-coordinator/ingest.js', async (importOriginal) => {
   const real = await importOriginal<typeof import('../channel-coordinator/ingest.js')>()
   return {
     ...real,
+    getOffset: (source: string) => (probeFails ? Promise.reject(new Error('pool: connection terminated')) : real.getOffset(source)),
     insertIncomingEvent: (source: string, ev: Parameters<typeof real.insertIncomingEvent>[1]) => {
       if (failing.has(ev.update_id)) return Promise.reject(new Error('pool: connection terminated'))
       return real.insertIncomingEvent(source, ev)
@@ -29,13 +32,13 @@ vi.mock('../channel-coordinator/ingest.js', async (importOriginal) => {
 })
 
 import { closeDatabase, getDb, initProcessDatabase } from '../db/connection.js'
-import { processBatch, resetInsertFailuresForTests, POISON_INSERT_FAILURES, lastBatchStoppedOnFailure } from '../channel-coordinator-main.js'
+import { processBatch, resetInsertFailuresForTests, POISON_INSERT_FAILURES, lastBatchStoppedOnFailure, setPoisonMinAgeForTests, insertFailStreakValue } from '../channel-coordinator-main.js'
 
 const upd = (id: number) => ({ update_id: id, message: { message_id: id, date: 1, text: 't', chat: { id: 1001 }, from: { id: 1001 } } })
 const stored = (): number[] => (getDb().prepare('SELECT update_id FROM incoming_events ORDER BY update_id').all() as { update_id: number }[]).map((r) => r.update_id)
 
-beforeEach(() => { alerts.length = 0; failing.clear(); resetInsertFailuresForTests(); initProcessDatabase(':memory:') })
-afterEach(() => { closeDatabase() })
+beforeEach(() => { alerts.length = 0; failing.clear(); probeFails = false; resetInsertFailuresForTests(); initProcessDatabase(':memory:') })
+afterEach(() => { closeDatabase(); vi.useRealTimers() })
 
 describe('processBatch and a failed insert', () => {
   it('3 updates, the 2nd insert fails: the batch stops, the 3rd is not stored, the offset stays at the 1st', async () => {
@@ -82,6 +85,7 @@ describe('processBatch and a failed insert', () => {
 })
 
 describe('an insert that keeps failing does not hold the queue for ever', () => {
+  beforeEach(() => { setPoisonMinAgeForTests(0) }) // the count and the probe are under test here; the age has its own cells below
   it('every failure stops the batch and raises the flag the loop waits on; the offset stays below the update', async () => {
     failing.add(2)
     for (let i = 1; i < POISON_INSERT_FAILURES; i++) {
@@ -117,5 +121,81 @@ describe('an insert that keeps failing does not hold the queue for ever', () => 
   it('a batch with no failure leaves the flag down', async () => {
     await processBatch([upd(1)])
     expect(lastBatchStoppedOnFailure()).toBe(false)
+  })
+})
+
+describe('the give-up needs the count AND the age AND a database that answers', () => {
+  const MIN = 60 * 1000
+  const failTimes = async (n: number, ids = [upd(1), upd(2), upd(3)]) => { for (let i = 0; i < n; i++) await processBatch(ids) }
+
+  it('twelve failures within seconds: not given up, no alert, the offset stays below the update (an outage must not eat a message)', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    failing.add(2)
+    await failTimes(POISON_INSERT_FAILURES + 2)
+    expect(await processBatch([upd(1), upd(2), upd(3)])).toBe(1)
+    expect(lastBatchStoppedOnFailure()).toBe(true)
+    expect(stored()).toEqual([1])
+    expect(alerts).toEqual([])
+  })
+
+  it('count and age reached but the database does not answer a read: not given up (it is an outage, not the data)', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    failing.add(2)
+    await failTimes(POISON_INSERT_FAILURES)
+    vi.setSystemTime(Date.now() + 11 * MIN)
+    probeFails = true
+    expect(await processBatch([upd(1), upd(2), upd(3)])).toBe(1)
+    expect(lastBatchStoppedOnFailure()).toBe(true)
+    expect(alerts).toEqual([])
+    // the database comes back, the same update is still failing: now the probe answers and it is given up
+    probeFails = false
+    expect(await processBatch([upd(1), upd(2), upd(3)])).toBe(3)
+    expect(alerts).toHaveLength(1)
+  })
+
+  it('count, age and a database that answers: given up, one alert naming the id, the rest of the batch stored', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    failing.add(2)
+    await failTimes(POISON_INSERT_FAILURES)
+    vi.setSystemTime(Date.now() + 10 * MIN)
+    expect(await processBatch([upd(1), upd(2), upd(3)])).toBe(3)
+    expect(lastBatchStoppedOnFailure()).toBe(false)
+    expect(stored()).toEqual([1, 3])
+    expect(alerts).toHaveLength(1)
+    expect(alerts[0]?.[1]).toContain('update 2 ')
+  })
+
+  it('the age counts from the FIRST failure of that update, and a success in between starts it over', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    failing.add(2)
+    await failTimes(3)
+    vi.setSystemTime(Date.now() + 20 * MIN) // old failures, but then the update goes through ...
+    failing.clear()
+    expect(await processBatch([upd(2)])).toBe(2)
+    failing.add(4)
+    await failTimes(POISON_INSERT_FAILURES, [upd(4)]) // ... and a new one starts a new clock: count reached, age not
+    expect(await processBatch([upd(4)])).toBeNull()
+    expect(alerts).toEqual([])
+  })
+})
+
+describe('the backoff counter of the loop is the insert-failure streak', () => {
+  it('it grows with each batch that stops at a failed insert and drops to zero after a batch that does not', async () => {
+    failing.add(2)
+    expect(insertFailStreakValue()).toBe(0)
+    for (let i = 1; i <= 4; i++) {
+      await processBatch([upd(1), upd(2)])
+      expect(insertFailStreakValue()).toBe(i)
+    }
+    failing.clear()
+    await processBatch([upd(1), upd(2)])
+    expect(insertFailStreakValue()).toBe(0)
+  })
+
+  it('a batch that gave the update up also ends the streak', async () => {
+    setPoisonMinAgeForTests(0)
+    failing.add(2)
+    for (let i = 0; i < POISON_INSERT_FAILURES; i++) await processBatch([upd(2)])
+    expect(insertFailStreakValue()).toBe(0)
   })
 })

@@ -235,11 +235,29 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 // How many times the insert of the SAME update may fail before it is given up (a transient error clears in one or two polls; the
 // backoff in the loop spaces the attempts), and the state processBatch leaves for the loop. Exported for tests.
 export const POISON_INSERT_FAILURES = 10
+// An update is given up only when it has failed that many times AND for at least this long AND the database answers a read. The
+// count alone is seconds under the capped backoff: a few minutes of database outage would reach it and lose a REAL message.
+const POISON_MIN_AGE_MS_DEFAULT = 10 * 60 * 1000
+let poisonMinAgeMs = POISON_MIN_AGE_MS_DEFAULT
 const insertFailures = new Map<number, number>()
+const firstFailureAt = new Map<number, number>()
 let batchStoppedOnFailure = false
+// Consecutive batches that stopped at a failed insert: the backoff of the loop grows with THIS, not with the poll-error counter
+// (a getUpdates that succeeds resets that one, and a stopped batch always follows a successful getUpdates).
+let insertFailStreak = 0
 /** true when the last processBatch stopped at a failed insert: the loop waits before it asks for the same updates again. */
 export function lastBatchStoppedOnFailure(): boolean { return batchStoppedOnFailure }
-export function resetInsertFailuresForTests(): void { insertFailures.clear(); batchStoppedOnFailure = false }
+/** the attempt number the loop's backoff uses after a batch that stopped at a failed insert (0 after a batch that did not). */
+export function insertFailStreakValue(): number { return insertFailStreak }
+export function setPoisonMinAgeForTests(ms: number): void { poisonMinAgeMs = ms }
+export function resetInsertFailuresForTests(): void {
+  insertFailures.clear(); firstFailureAt.clear(); batchStoppedOnFailure = false; insertFailStreak = 0; poisonMinAgeMs = POISON_MIN_AGE_MS_DEFAULT
+}
+
+/** true when the database answers a read: a failing insert is then about the DATA, not an outage. */
+async function databaseAnswers(): Promise<boolean> {
+  try { await getOffset(SOURCE); return true } catch { return false }
+}
 
 export async function processBatch(updates: { update_id: number }[]): Promise<number | null> {
   // The highest update id that is DURABLE: stored, or deduplicated, or one that is not stored on purpose (an unhandled kind). The
@@ -260,20 +278,27 @@ export async function processBatch(updates: { update_id: number }[]): Promise<nu
       // next poll asks Telegram for it again, and the dedupe key makes a replay of the ones already stored harmless.
       const failures = (insertFailures.get(ev.update_id) ?? 0) + 1
       insertFailures.set(ev.update_id, failures)
-      if (failures >= POISON_INSERT_FAILURES) {
-        // A failure that does not go away (a value the database refuses, every time) would hold the offset, and every update
-        // behind it, for ever. After the limit the update is given up, LOUDLY (an alert, the id in the log), so the queue moves on.
+      const now = Date.now()
+      if (!firstFailureAt.has(ev.update_id)) firstFailureAt.set(ev.update_id, now)
+      const failingForMs = now - (firstFailureAt.get(ev.update_id) ?? now)
+      // A failure that does not go away (a value the database refuses, every time) would hold the offset, and every update
+      // behind it, for ever, so it is given up, LOUDLY (an alert, the id in the log), so the queue can move on. Three conditions,
+      // all of them: the count, the age of the first failure (a database outage of a few minutes must not eat a real message),
+      // and a read that SUCCEEDS now (the database answers, so the refusal is about this update's data and not an outage).
+      if (failures >= POISON_INSERT_FAILURES && failingForMs >= poisonMinAgeMs && await databaseAnswers()) {
         insertFailures.delete(ev.update_id)
-        logger.error({ err, update_id: ev.update_id, failures }, 'channel-coordinator: insertIncomingEvent failed again and again; this update is given up so the queue can move on')
-        sendAlert(`${BOT_NAME} channel-coordinator: update ${ev.update_id} could not be stored after ${failures} attempts and was given up.`)
+        firstFailureAt.delete(ev.update_id)
+        logger.error({ err, update_id: ev.update_id, failures, failingForMs }, 'channel-coordinator: insertIncomingEvent failed again and again while the database answers; this update is given up so the queue can move on')
+        sendAlert(`${BOT_NAME} channel-coordinator: update ${ev.update_id} could not be stored after ${failures} attempts over ${Math.round(failingForMs / 1000)} s and was given up.`)
         settled(raw.update_id)
         continue
       }
-      logger.error({ err, update_id: ev.update_id, failures }, 'channel-coordinator: insertIncomingEvent failed; the batch stops, the offset stays below this update')
+      logger.error({ err, update_id: ev.update_id, failures, failingForMs }, 'channel-coordinator: insertIncomingEvent failed; the batch stops, the offset stays below this update')
       batchStoppedOnFailure = true
       break
     }
     insertFailures.delete(ev.update_id)
+    firstFailureAt.delete(ev.update_id)
     settled(raw.update_id)
     if (!ins.inserted || ins.eventId == null) continue // dedup: already handed off
 
@@ -285,6 +310,8 @@ export async function processBatch(updates: { update_id: number }[]): Promise<nu
       logger.error({ err, eventId: ins.eventId }, 'channel-coordinator: handoff failed; event left pending for replay')
     }
   }
+  // The backoff counter of the loop: one more for a batch that stopped at a failed insert, back to zero for one that did not.
+  insertFailStreak = batchStoppedOnFailure ? insertFailStreak + 1 : 0
   return maxUpdateId
 }
 
@@ -433,7 +460,9 @@ async function runLoop(token: string): Promise<void> {
     if (maxUpdateId != null) await setOffset(SOURCE, maxUpdateId)
     // A batch that stopped at a failed insert asks Telegram for the same updates on the next poll, which answers at once: wait
     // first (the same backoff as a transient poll error), or a database that is down becomes a tight loop.
-    if (lastBatchStoppedOnFailure()) await sleep(transientBackoffMs(Math.min(++transientAttempt, 6)))
+    // The attempt number is the insert-failure streak, NOT transientAttempt: a successful getUpdates (which precedes every such
+    // batch) resets that one to 0, so it would never grow and the backoff would stay at its first step.
+    if (lastBatchStoppedOnFailure()) await sleep(transientBackoffMs(Math.min(insertFailStreakValue(), 6)))
   }
 }
 
