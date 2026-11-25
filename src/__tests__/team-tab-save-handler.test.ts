@@ -72,9 +72,9 @@ describe('the Team tab save button', () => {
   beforeEach(() => {
     calls.length = 0
     installDom()
-    vi.stubGlobal('fetch', vi.fn(async (url: string, init: { method?: string; body?: string } = {}) => {
+    vi.stubGlobal('fetch', vi.fn((url: string, init: { method?: string; body?: string } = {}) => {
       calls.push({ url, init })
-      return { ok: true, status: 200, json: async () => ({}) }
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) })
     }))
     el('editTeamRole').value = 'member'
     el('editTeamReportsTo').value = ''
@@ -126,7 +126,7 @@ describe('the Team tab save button', () => {
 
   it('a title the server refuses shows the rule, not a crash and not the generic error', async () => {
     agents.setCurrentAgent({ name: 'agent-a', role: 'member' })
-    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 400, json: async () => ({ error: 'invalid_value', field: 'title' }) })))
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: false, status: 400, json: () => Promise.resolve({ error: 'invalid_value', field: 'title' }) })))
     await expect(click()).resolves.toBeUndefined()
     expect(el('saveTeamBtn').disabled).toBe(false) // the button is usable again
   })
