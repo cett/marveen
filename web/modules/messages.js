@@ -591,6 +591,7 @@ document.getElementById('chatRefreshBtn')?.addEventListener('click', () => {
 export function renderTeamEditor(agent, allAgents) {
   const team = agent.team || { role: 'member', reportsTo: null, delegatesTo: [], autoDelegation: false, trustFrom: [] }
   document.getElementById('editTeamRole').value = team.role || 'member'
+  document.getElementById('editTeamTitle').value = team.title || ''
   const reportsSel = document.getElementById('editTeamReportsTo')
   reportsSel.innerHTML = ''
   const emptyOpt = document.createElement('option')
@@ -654,12 +655,24 @@ document.getElementById('saveTeamBtn').addEventListener('click', async () => {
       body: JSON.stringify({
         role,
         reportsTo: reportsToRaw || null,
+        // always sent: an empty field clears the title (the server keeps the old one when the key is missing)
+        title: document.getElementById('editTeamTitle').value.trim() || null,
         delegatesTo: role === 'leader' ? delegates : [],
         trustFrom,
         autoDelegation: role === 'leader' ? autoDelegation : false,
       }),
     })
-    if (!res.ok) throw new Error()
+    if (!res.ok) {
+      // a title that is not one word comes back as invalid_value / field title: say what the rule is, not a generic error
+      const err = await res.json().catch(() => ({}))
+      if (err && err.error === 'invalid_value' && err.field === 'title') {
+        showToast(t('team.title_invalid', { max: 24 }))
+        btn.textContent = originalText
+        btn.disabled = false
+        return
+      }
+      throw new Error()
+    }
     // The server sanitizes the team config (strips self-references and
     // unknown agent ids) and reports what it dropped in `warnings`. Surface
     // that to the operator so a mistyped name isn't silently lost.

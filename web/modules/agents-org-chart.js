@@ -1,11 +1,14 @@
-// Agents page: grid / org-chart view toggle (split out of agents.js for
-// #773/#776). Page-level view-toggle, not a modal tab.
+// Agents page: grid / tree / radial view toggle (split out of agents.js).
+// Page-level view-toggle, not a modal tab.
 
 import { t } from './i18n.js'
 import { showToast } from './toast.js'
 import { escapeHtml } from './util.js'
 import { agents, avatarBust, setAgentsActiveView, isAdminView } from './agents.js'
 import { openAgentDetail } from './agents-detail.js'
+import { layoutRadial } from './org-radial-layout.js'
+import { renderRadialSvg } from './org-radial-svg.js'
+import { wireRadialEvents } from './org-radial-events.js'
 
 // === Team org-chart (now embedded in Agents page, tree view) ===
 async function loadTeamGraph() {
@@ -220,23 +223,99 @@ function renderTeamGraph(container, data, opts = {}) {
   }
 }
 
-// === Agents page: grid / org-chart view toggle ===
-export function setAgentsView(view) {
-  setAgentsActiveView(view)
-  const gridView = document.getElementById('agentsGridView')
-  const treeView = document.getElementById('agentsTreeView')
-  const gridBtn  = document.getElementById('agentsViewGrid')
-  const treeBtn  = document.getElementById('agentsViewTree')
-  if (!gridView || !treeView) return
-  const showGrid = view === 'grid'
-  gridView.hidden = !showGrid
-  treeView.hidden = showGrid
-  if (gridBtn) gridBtn.classList.toggle('active', showGrid)
-  if (treeBtn) treeBtn.classList.toggle('active', !showGrid)
-  if (!showGrid) loadTeamGraph()
+// === Radial org chart: one SVG per tenant ===
+// Display only (no drag-and-drop): the tree view stays the place to edit the reporting lines. The geometry is
+// org-radial-layout.js, the markup org-radial-svg.js; this part fetches, builds the headers and wires the events.
+let radialMainAgentId = null
+let radialWired = false
+
+async function loadRadialGraph() {
+  const container = document.getElementById('radialGraph')
+  if (!container) return
+  container.innerHTML = '<div class="team-empty">' + t('team.loading') + '</div>'
+  try {
+    const res = await fetch('/api/team/graph?view=tenants')
+    if (!res.ok) throw new Error('HTTP ' + res.status)
+    renderRadialGraph(container, await res.json())
+  } catch (err) {
+    container.innerHTML = `<div class="team-empty">${escapeHtml(t('team.error', { msg: (err && err.message) || err }))}</div>`
+  }
 }
 
-const _agentsViewGridBtn = document.getElementById('agentsViewGrid')
-const _agentsViewTreeBtn = document.getElementById('agentsViewTree')
-if (_agentsViewGridBtn) _agentsViewGridBtn.addEventListener('click', () => setAgentsView('grid'))
-if (_agentsViewTreeBtn) _agentsViewTreeBtn.addEventListener('click', () => setAgentsView('tree'))
+function radialAvatarUrl(id) {
+  return id === radialMainAgentId
+    ? `/api/marveen/avatar${avatarBust()}`
+    : `/api/agents/${encodeURIComponent(id)}/avatar${avatarBust()}`
+}
+
+function renderRadialGraph(container, data) {
+  radialMainAgentId = data.mainAgentId || null
+  container.innerHTML = ''
+  const tenants = (data.tenants || []).filter((tn) => Array.isArray(tn.nodes) && tn.nodes.length > 0)
+  if (!tenants.length) {
+    container.innerHTML = `<div class="team-empty">${escapeHtml(t('team.radial.empty'))}</div>`
+    return
+  }
+  tenants.forEach((tn, index) => {
+    const name = tn.name || tn.id
+    const section = document.createElement('section')
+    section.className = 'org-radial-tenant'
+    const head = document.createElement('div')
+    head.className = 'org-radial-head'
+    const h = document.createElement('h3')
+    h.className = 'org-radial-name'
+    h.textContent = name
+    const count = document.createElement('span')
+    count.className = 'org-radial-count'
+    count.textContent = t('team.radial.count', { n: tn.nodes.length })
+    head.append(h, count)
+    section.appendChild(head)
+    const layout = layoutRadial({ rootId: tn.rootId, nodes: tn.nodes, edges: tn.edges || [] })
+    if (!layout.clean) {
+      // never draw a picture with overlapping boxes: say so instead
+      const warn = document.createElement('div')
+      warn.className = 'team-empty'
+      warn.textContent = t('team.radial.layout_error')
+      section.appendChild(warn)
+    } else {
+      const holder = document.createElement('div')
+      // renderRadialSvg escapes every value it writes
+      holder.innerHTML = renderRadialSvg(tn, layout, {
+        index,
+        avatarUrl: radialAvatarUrl,
+        a11yLabel: ({ label, title, running }) =>
+          [label, title, running ? t('team.radial.state_running') : t('team.radial.state_stopped')].filter(Boolean).join(', '),
+        hiddenLabel: (n) => t('team.radial.hidden', { n }),
+        ariaLabel: t('team.radial.picture', { tenant: name, n: tn.nodes.length }),
+      })
+      section.appendChild(holder)
+    }
+    container.appendChild(section)
+  })
+  if (!radialWired) {
+    radialWired = true // the container survives every reload, so the delegated handlers are added once
+    wireRadialEvents(container, { open: openAgentDetail, isMain: (id) => id === radialMainAgentId })
+  }
+}
+
+// === Agents page: grid / tree / radial view toggle ===
+export function setAgentsView(view) {
+  setAgentsActiveView(view)
+  const views = { grid: 'agentsGridView', tree: 'agentsTreeView', radial: 'agentsRadialView' }
+  const buttons = { grid: 'agentsViewGrid', tree: 'agentsViewTree', radial: 'agentsViewRadial' }
+  const active = views[view] ? view : 'grid'
+  if (!document.getElementById(views.grid) || !document.getElementById(views.tree)) return
+  for (const key of Object.keys(views)) {
+    const el = document.getElementById(views[key])
+    if (el) el.hidden = key !== active
+    const btn = document.getElementById(buttons[key])
+    if (btn) btn.classList.toggle('active', key === active)
+  }
+  if (active === 'tree') loadTeamGraph()
+  if (active === 'radial') loadRadialGraph()
+}
+
+for (const [id, view] of [['agentsViewGrid', 'grid'], ['agentsViewTree', 'tree'], ['agentsViewRadial', 'radial']]) {
+  const btn = document.getElementById(id)
+  if (btn) btn.addEventListener('click', () => setAgentsView(view))
+}

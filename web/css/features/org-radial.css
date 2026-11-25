@@ -1,0 +1,66 @@
+/* Radial org chart (Agents page, third view). Tokens come from the design doc of the radial view (light / dark); every colour
+   of the SVG is one of these, so the theme switch needs no markup change. Two cues for the agent state: the stroke (solid vs
+   dashed) AND the colour. */
+:root {
+  --org-bg:            #F7F8FA;
+  --org-ring-running:  #1F8A4C;
+  --org-ring-stopped:  #7A828E;
+  --org-spoke:         #C9CDD4;
+  --org-guide:         #E9EBEF;
+  --org-text-name:     #20242B;
+  --org-text-role:     #5D6570;
+  --org-center-accent: #4F46E5;
+  --org-focus:         #2563EB;
+  --org-label-halo:    var(--org-bg);
+}
+[data-theme="dark"] {
+  --org-bg:            #20242B;
+  --org-ring-running:  #45D483;
+  --org-ring-stopped:  #98A1AD;
+  --org-spoke:         #434A55;
+  --org-guide:         #2C323B;
+  --org-text-name:     #ECEEF1;
+  --org-text-role:     #A6AEB9;
+  --org-center-accent: #8A93F8;
+  --org-focus:         #6CA8FA;
+}
+
+.org-radial { display: flex; flex-direction: column; gap: 32px; padding: 16px 0; }
+.org-radial-tenant { background: var(--org-bg); border-radius: 12px; padding: 16px 16px 8px; }
+.org-radial-tenant + .org-radial-tenant { border-top: 1px solid var(--org-guide); }
+.org-radial-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 8px; }
+.org-radial-name { margin: 0; font-size: 18px; font-weight: 700; color: var(--org-text-name); }
+.org-radial-count { font-size: 14px; color: var(--org-text-role); }
+
+.org-radial-svg { display: block; width: 100%; height: auto; max-height: 88vh; margin: 0 auto; }
+.org-guide { fill: none; stroke: var(--org-guide); stroke-width: 1; }
+.org-spoke { stroke: var(--org-spoke); stroke-width: 1.5; }
+
+.org-node { outline: none; cursor: pointer; }
+.org-node-centre { cursor: default; }
+.org-state-ring { fill: none; }
+.org-running .org-state-ring { stroke: var(--org-ring-running); stroke-width: 4; }
+.org-stopped .org-state-ring { stroke: var(--org-ring-stopped); stroke-width: 3; }
+.org-centre-halo { fill: none; stroke: var(--org-center-accent); stroke-width: 2; }
+.org-focus-ring { fill: none; stroke: none; stroke-width: 3; }
+.org-node:focus-visible .org-focus-ring { stroke: var(--org-focus); }
+/* the same agent in another tenant's graph, lit while one of them is hovered or focused */
+.org-node.org-linked .org-focus-ring { stroke: var(--org-focus); stroke-dasharray: 3 4; }
+
+.org-name, .org-title {
+  fill: var(--org-text-name);
+  paint-order: stroke;
+  stroke: var(--org-label-halo);
+  stroke-width: 6px;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+.org-name { font-size: 13px; font-weight: 600; }
+.org-title { font-size: 12px; font-weight: 400; fill: var(--org-text-role); }
+
+.org-hidden-badge circle { fill: var(--org-bg); stroke: var(--org-ring-stopped); stroke-width: 2; }
+.org-hidden-badge text { fill: var(--org-text-name); font-size: 12px; font-weight: 600; pointer-events: none; }
+
+@media (prefers-reduced-motion: no-preference) {
+  .org-focus-ring { transition: stroke 120ms ease; }
+}
