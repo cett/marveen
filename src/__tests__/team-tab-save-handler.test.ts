@@ -109,6 +109,17 @@ describe('the Team tab save button', () => {
     expect(el('toast').textContent).toMatch(/save_ok|Team saved|Csapat mentve/)
   })
 
+  it('a manager the server refuses (it would sit under its own report) is announced, not reported as a plain success', async () => {
+    agents.setCurrentAgent({ name: 'agent-a', role: 'member' })
+    vi.stubGlobal('fetch', vi.fn((url: string) => Promise.resolve({
+      ok: true, status: 200,
+      json: () => Promise.resolve(url.endsWith('/team') ? { ok: true, team: {}, warnings: {}, cycleRejected: true } : []),
+    })))
+    await click()
+    expect(el('toast').textContent).toMatch(/cycle_rejected|own subordinate|saját beosztottja/)
+    expect(el('toast').textContent).not.toMatch(/save_ok|Team saved|Csapat mentve/)
+  })
+
   it('an empty title field is sent as null, so the server clears it (the key is never left out)', async () => {
     agents.setCurrentAgent({ name: 'agent-a', role: 'member' })
     el('editTeamTitle').value = '   '

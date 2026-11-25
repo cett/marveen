@@ -677,8 +677,10 @@ document.getElementById('saveTeamBtn').addEventListener('click', async () => {
     // unknown agent ids) and reports what it dropped in `warnings`. Surface
     // that to the operator so a mistyped name isn't silently lost.
     let warningMsg = ''
+    let cycleRejected = false
     try {
       const body = await res.json()
+      cycleRejected = !!(body && body.cycleRejected)
       const w = body && body.warnings
       if (w) {
         const parts = []
@@ -691,7 +693,8 @@ document.getElementById('saveTeamBtn').addEventListener('click', async () => {
         if (parts.length) warningMsg = parts.join(' · ')
       }
     } catch { /* body already consumed or not JSON -- OK, no warnings to show */ }
-    showToast(warningMsg ? t('team.save_warning', { detail: warningMsg }) : t('team.save_ok'))
+    // a manager that would sit under its own report is refused by the server (the old manager stays): say so
+    showToast(cycleRejected ? t('team.cycle_rejected') : warningMsg ? t('team.save_warning', { detail: warningMsg }) : t('team.save_ok'))
     btn.textContent = t('team.save_done')
     setTimeout(() => { btn.textContent = originalText; btn.disabled = false }, 1800)
     loadAgents()

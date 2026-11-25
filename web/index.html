@@ -516,10 +516,6 @@
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
                 Kártyák
               </button>
-              <button class="btn view-toggle-btn" data-variant="secondary" data-size="compact" id="agentsViewTree" data-view="tree" title="Org chart">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="5" r="3"/><path d="M12 8v4"/><circle cx="5" cy="18" r="3"/><circle cx="19" cy="18" r="3"/><path d="M12 12l-7 6M12 12l7 6"/></svg>
-                Org chart
-              </button>
               <button class="btn view-toggle-btn" data-variant="secondary" data-size="compact" id="agentsViewRadial" data-view="radial" title="Radial">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="2.5"/><circle cx="12" cy="3.5" r="1.8"/><circle cx="20.5" cy="12" r="1.8"/><circle cx="12" cy="20.5" r="1.8"/><circle cx="3.5" cy="12" r="1.8"/><path d="M12 9.5V5.3M14.5 12h4.2M12 14.5v4.2M9.5 12H5.3"/></svg>
                 <span data-i18n="team.view.radial">Sugaras</span>
@@ -545,13 +541,6 @@
             <span data-i18n="agents.page.new_btn">Új ügynök</span>
           </button>
         </div>
-      </div>
-      <!-- Tree / org-chart view (merged from separate Team page) -->
-      <div id="agentsTreeView" hidden>
-        <div id="teamGraph" class="team-graph"></div>
-        <p style="color:var(--text-muted);font-size:12px;margin-top:16px">
-          A szerep és a beosztott/vezető kapcsolatok az ügynök részletek &gt; Csapat fülén szerkeszthetők.
-        </p>
       </div>
       <!-- Radial org-chart view: one SVG per tenant -->
       <div id="agentsRadialView" hidden>

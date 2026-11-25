@@ -704,11 +704,8 @@ window._i18n.en = {
   // --- Team ---
   'team.page_title':             'Team',
   'team.page_subtitle':          'Who reports to whom and who delegates to whom',
-  'team.btn.refresh':            'Refresh',
   'team.hint':                   'Drag an agent onto another to make it a subordinate. Roles and finer settings live on the agent detail > Team tab.',
-  'team.drop.saved':             '{child} now reports to {parent}',
-  'team.drop.cycle':             "Can't place a manager under its own subordinate.",
-  'team.drop.error':             'Failed to save the reporting change.',
+  'team.cycle_rejected':             "Can't place a manager under its own subordinate.",
 
   // --- Messages ---
   'messages.page_title':         'Messages',
@@ -1478,15 +1475,9 @@ window._i18n.en = {
   'tasks.run_status.error':			'Error',
   'tasks.run_status.fired':			'OK',
   'tasks.run_status.skipped':			'Skipped',
-  'team.empty':			'No sub-agents created.',
   'team.error':			'Error: {msg}',
   'team.loading':			'Loading...',
   'team.reports_to_empty':			'(main agent)',
-  'team.role.leader':			'team leader',
-  'team.role.main':			'main agent',
-  'team.role.member':			'member',
-  'team.running':			'● Running',
-  'team.stopped':			'○ Stopped',
   'team.save_saving':            'Saving...',
   'team.save_done':              '✓ Saved',
   'team.save_ok':                'Team saved',

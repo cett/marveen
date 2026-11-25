@@ -14,21 +14,22 @@ const MESSAGES = read('web/modules/messages.js')
 const CSS = read('web/css/features/org-radial.css')
 const HU = read('web/lang/hu.js')
 const EN = read('web/lang/en.js')
-const RADIAL = CHART.slice(CHART.indexOf('// === Radial org chart'), CHART.indexOf('// === Agents page: grid / tree / radial'))
+const RADIAL = CHART.slice(CHART.indexOf('// === Radial org chart'), CHART.indexOf('// === Agents page: grid / radial'))
 
 describe('the toggle and the containers', () => {
-  it('has the Grid / Tree / Radial buttons, and a hidden container with the graph holder for the radial view', () => {
-    for (const id of ['agentsViewGrid', 'agentsViewTree', 'agentsViewRadial']) expect(HTML).toContain(`id="${id}"`)
+  it('has the Grid and Radial buttons and the radial container, and NO tree button, container or loader (the radial view replaced it)', () => {
+    for (const id of ['agentsViewGrid', 'agentsViewRadial']) expect(HTML).toContain(`id="${id}"`)
     expect(HTML).toMatch(/<div id="agentsRadialView" hidden>\s*<div id="radialGraph" class="org-radial"><\/div>/)
     expect(HTML).toContain('data-i18n="team.view.radial"')
+    for (const gone of ['agentsViewTree', 'agentsTreeView', 'teamGraph']) {
+      expect(HTML, gone).not.toContain(gone)
+      expect(CHART, gone).not.toContain(gone)
+    }
+    expect(CHART).not.toMatch(/loadTeamGraph|renderTeamGraph|saveTeamReportsTo/)
   })
 
-  it('setAgentsView knows the three views, shows exactly one, and loads a graph only when its view is shown', () => {
-    expect(CHART).toMatch(/grid: 'agentsGridView', tree: 'agentsTreeView', radial: 'agentsRadialView'/)
-    expect(CHART).toMatch(/el\.hidden = key !== active/)
-    expect(CHART).toMatch(/if \(active === 'tree'\) loadTeamGraph\(\)/)
-    expect(CHART).toMatch(/if \(active === 'radial'\) loadRadialGraph\(\)/)
-    expect(CHART).toContain("['agentsViewRadial', 'radial']")
+  it('the #team alias opens the radial view', () => {
+    expect(read('web/app.js')).toContain("registerAlias('team', 'agents', () => setAgentsActiveView('radial'))")
   })
 
   it('the radial view fetches the per-tenant graph, and does not draw a picture the layout calls unclean', () => {
@@ -55,10 +56,14 @@ describe('the toggle and the containers', () => {
 describe('the strings', () => {
   const keys = [
     'team.view.radial', 'team.radial.empty', 'team.radial.count', 'team.radial.picture', 'team.radial.state_running',
-    'team.radial.state_stopped', 'team.radial.hidden', 'team.radial.layout_error', 'team.title_invalid',
+    'team.radial.state_stopped', 'team.radial.hidden', 'team.radial.layout_error', 'team.title_invalid', 'team.cycle_rejected',
     'agents.team.title_label', 'agents.team.title_hint',
   ]
-  const valueOf = (src: string, key: string) => src.match(new RegExp(`'${key.replace(/\./g, '\\.')}':\\s*'([^']*)'`))?.[1]
+  // a value is single- or double-quoted (a string with an apostrophe is double-quoted)
+  const valueOf = (src: string, key: string) => {
+    const m = src.match(new RegExp(`'${key.replace(/\./g, '\\.')}':\\s*(?:'([^']*)'|"([^"]*)")`))
+    return m?.[1] ?? m?.[2]
+  }
 
   it('exist in Hungarian and English, and every {placeholder} of one is in the other', () => {
     for (const key of keys) {
@@ -123,5 +128,37 @@ describe('the title field of the agent card', () => {
   it('answers invalid_value for the title with the rule, not with the generic save error', () => {
     expect(MESSAGES).toMatch(/err\.error === 'invalid_value' && err\.field === 'title'/)
     expect(MESSAGES).toContain("t('team.title_invalid', { max: 24 })")
+  })
+})
+
+describe('the removed tree view leaves nothing behind', () => {
+  const HEADER_CSS = read('web/css/features/header.css')
+  const OVERVIEW_CSS = read('web/css/features/overview.css')
+  it('has no tree-view CSS (the .team-empty message style stays: the radial view uses it)', () => {
+    for (const cls of ['.team-graph', '.team-node', '.team-subtree', '.team-connector', '.team-children', '.team-level', '.team-draggable', '.team-drop-target']) {
+      expect(HEADER_CSS, cls).not.toContain(cls)
+      expect(OVERVIEW_CSS, cls).not.toContain(cls)
+    }
+    expect(OVERVIEW_CSS).not.toContain('.overview-team-graph')
+    expect(HEADER_CSS).toContain('.team-empty {')
+  })
+
+  it('has no tree-only strings in either language, and keeps the ones the card and the radial view use', () => {
+    for (const src of [HU, EN]) {
+      for (const key of ['team.drop.saved', 'team.drop.error', 'team.drop.cycle', 'team.role.main', 'team.role.leader', 'team.role.member', 'team.running', 'team.stopped', 'team.empty', 'team.btn.refresh']) {
+        expect(src, key).not.toContain(`'${key}'`)
+      }
+      for (const key of ['team.loading', 'team.error', 'team.cycle_rejected', 'team.reports_to_empty', 'team.save_ok', 'team.dropped_self']) {
+        expect(src, key).toContain(`'${key}'`)
+      }
+    }
+  })
+})
+
+describe('what the drag-and-drop did is still possible on the card', () => {
+  it('the Team tab keeps the "reports to" select, and a manager the server refuses (a cycle) is no longer silent', () => {
+    expect(HTML).toContain('id="editTeamReportsTo"')
+    expect(MESSAGES).toContain("cycleRejected = !!(body && body.cycleRejected)")
+    expect(MESSAGES).toContain("cycleRejected ? t('team.cycle_rejected')")
   })
 })
