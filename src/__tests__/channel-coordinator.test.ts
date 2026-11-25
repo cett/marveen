@@ -241,9 +241,9 @@ describe('processBatch', () => {
     expect(maxId).toBe(410)
   })
 
-  it('a broken DB (insert throws) is caught per-update; the offset still advances', async () => {
+  it('a broken DB (insert throws) is caught, the batch stops, and the offset does NOT advance past the update that was not stored', async () => {
     closeDatabase() // requireDb() now throws inside insertIncomingEvent
-    await expect(processBatch([rawMessage(420, 'szia')])).resolves.toBe(420)
+    await expect(processBatch([rawMessage(420, 'szia')])).resolves.toBeNull()
   })
 })
 

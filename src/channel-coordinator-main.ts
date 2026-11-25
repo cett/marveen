@@ -233,19 +233,25 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 // so the caller can advance the offset AFTER the whole batch is durable.
 // Exported for tests.
 export async function processBatch(updates: { update_id: number }[]): Promise<number | null> {
+  // The highest update id that is DURABLE: stored, or deduplicated, or one that is not stored on purpose (an unhandled kind). The
+  // caller moves the offset to it, and Telegram never sends an update below the offset again, so an update whose insert FAILED
+  // must stay above it. A handoff failure is different: its event is stored and the replay hands it off.
   let maxUpdateId: number | null = null
+  const settled = (id: number): void => { maxUpdateId = maxUpdateId == null ? id : Math.max(maxUpdateId, id) }
   for (const raw of updates) {
-    maxUpdateId = maxUpdateId == null ? raw.update_id : Math.max(maxUpdateId, raw.update_id)
     const ev = mapUpdate(raw as Parameters<typeof mapUpdate>[0])
-    if (!ev) continue // unhandled update kind: offset still advances past it
+    if (!ev) { settled(raw.update_id); continue } // unhandled update kind: offset still advances past it
 
     let ins: InsertResult
     try {
       ins = await insertIncomingEvent(SOURCE, ev)
     } catch (err) {
-      logger.error({ err, update_id: ev.update_id }, 'channel-coordinator: insertIncomingEvent failed')
-      continue
+      // STOP: the update is not stored, so the offset must not pass it (nor anything after it, the batch is in order). The
+      // next poll asks Telegram for it again, and the dedupe key makes a replay of the ones already stored harmless.
+      logger.error({ err, update_id: ev.update_id }, 'channel-coordinator: insertIncomingEvent failed; the batch stops, the offset stays below this update')
+      break
     }
+    settled(raw.update_id)
     if (!ins.inserted || ins.eventId == null) continue // dedup: already handed off
 
     try {
