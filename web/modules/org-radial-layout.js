@@ -38,8 +38,8 @@ export const DEFAULT_LAYOUT_OPTIONS = Object.freeze({
   maxRings: 4,
   /** more nodes than this on one ring: the renderer shortens the labels to the initials (see `crowdedRings`) */
   crowdedLimit: 24,
-  /** room around the outermost node for its ring and label, added to the bounding box */
-  pad: 100,
+  /** room around the label box of the outermost nodes (their ring, the centre halo, a stroke), added to the bounding box */
+  pad: 32,
 })
 
 const TAU_DEG = 360
@@ -223,7 +223,14 @@ export function layoutRadial(view, options = {}) {
   const crowdedRings = []
   for (let k = 1; k <= lastRing; k++) if ((ringIds[k] ?? []).length > o.crowdedLimit) crowdedRings.push(k)
 
-  const reach = Math.max(0, ...radii) + o.pad
+  // the bounding box is TIGHT around the label boxes of the placed nodes (a lopsided tree leaves the empty side of the
+  // outer rings out, so the picture can be drawn larger); an empty picture is a pad-sized square around the centre
+  const xs = placed.map((n) => n.x)
+  const ys = placed.map((n) => n.y)
+  const minX = Math.min(0, ...xs) - o.boxW / 2 - o.pad
+  const maxX = Math.max(0, ...xs) + o.boxW / 2 + o.pad
+  const minY = Math.min(0, ...ys) - o.boxH / 2 - o.pad
+  const maxY = Math.max(0, ...ys) + o.boxH / 2 + o.pad
   return {
     centre: rootId,
     nodes: placed,
@@ -231,7 +238,7 @@ export function layoutRadial(view, options = {}) {
     spokes,
     radii: radii.slice(1),
     crowdedRings,
-    bounds: { minX: -reach, minY: -reach, maxX: reach, maxY: reach, width: 2 * reach, height: 2 * reach },
+    bounds: { minX: round(minX), minY: round(minY), maxX: round(maxX), maxY: round(maxY), width: round(maxX - minX), height: round(maxY - minY) },
   }
 }
 

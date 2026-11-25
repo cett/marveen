@@ -50,6 +50,12 @@ describe('the picture', () => {
     expect(svg.endsWith('</svg>')).toBe(true)
   })
 
+  it('is drawn at most 1.25 times its own size, so a small tenant is not blown up to the page width', () => {
+    const t = tenant()
+    const l = layoutRadial(t)
+    expect(renderRadialSvg(t, l, opts)).toContain(`style="max-width:${Math.round(l.bounds.width * 1.25)}px"`)
+  })
+
   it('has one spoke per edge, one guide circle per ring, and one node per placed agent', () => {
     const t = tenant()
     const l = layoutRadial(t)

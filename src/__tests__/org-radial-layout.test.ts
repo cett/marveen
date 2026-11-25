@@ -189,13 +189,32 @@ describe('no overlap', () => {
     }
   })
 
-  it('the bounding box holds every node with room for its ring and label', () => {
+  it('the bounding box holds every label box of the placed nodes, with the pad around them', () => {
     const l = layoutRadial(live())
+    const { boxW, boxH, pad } = DEFAULT_LAYOUT_OPTIONS
     for (const n of l.nodes) {
-      expect(n.x).toBeGreaterThan(l.bounds.minX + 50)
-      expect(n.x).toBeLessThan(l.bounds.maxX - 50)
-      expect(n.y).toBeGreaterThan(l.bounds.minY + 50)
-      expect(n.y).toBeLessThan(l.bounds.maxY - 50)
+      expect(n.x - boxW / 2).toBeGreaterThanOrEqual(l.bounds.minX + pad - 0.01)
+      expect(n.x + boxW / 2).toBeLessThanOrEqual(l.bounds.maxX - pad + 0.01)
+      expect(n.y - boxH / 2).toBeGreaterThanOrEqual(l.bounds.minY + pad - 0.01)
+      expect(n.y + boxH / 2).toBeLessThanOrEqual(l.bounds.maxY - pad + 0.01)
+    }
+    expect(l.bounds.width).toBeCloseTo(l.bounds.maxX - l.bounds.minX, 1)
+    expect(l.bounds.height).toBeCloseTo(l.bounds.maxY - l.bounds.minY, 1)
+  })
+
+  it('the bounding box is TIGHT: a tree that fills one side only does not get the empty side of the outer rings', () => {
+    // one long branch up: more room above the centre than below it, and as wide as the widest node plus its box and pad
+    const l = layoutRadial(view('c', [['c', 'a'], ['a', 'b'], ['b', 'd']]))
+    expect(l.bounds.minY).toBeLessThan(-l.bounds.maxY)
+    const widest = Math.max(...l.nodes.map((n) => Math.abs(n.x)))
+    expect(l.bounds.maxX).toBeCloseTo(widest + DEFAULT_LAYOUT_OPTIONS.boxW / 2 + DEFAULT_LAYOUT_OPTIONS.pad, 1)
+  })
+
+  it('a lone centre and an empty view still get a drawable box, never a zero-size one', () => {
+    for (const l of [layoutRadial(view('c', [])), layoutRadial({ rootId: null, nodes: [], edges: [] })]) {
+      expect(l.bounds.width).toBeGreaterThan(0)
+      expect(l.bounds.height).toBeGreaterThan(0)
+      expect(Number.isFinite(l.bounds.minX + l.bounds.maxY)).toBe(true)
     }
   })
 })

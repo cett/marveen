@@ -20,6 +20,8 @@ export const AVATAR_SIZE = Object.freeze({ normal: 80, centre: 112 })
 export const RING_OFFSET = 6
 /** a visible label longer than this is cut with an ellipsis (the tooltip keeps the whole text) */
 export const LABEL_MAX = 14
+/** a small tenant is not blown up to the page width: the picture is drawn at most this much larger than its own units */
+export const MAX_SCALE = 1.25
 
 /** Cut `text` to `max` characters (code points) with an ellipsis; a shorter text is returned as it is. */
 export function shortLabel(text, max = LABEL_MAX) {
@@ -54,6 +56,7 @@ export function renderRadialSvg(tenant, layout, opts) {
   const out = []
   out.push(
     `<svg class="org-radial-svg" xmlns="http://www.w3.org/2000/svg" viewBox="${num(b.minX)} ${num(b.minY)} ${num(b.width)} ${num(b.height)}"` +
+    ` style="max-width:${Math.round(b.width * MAX_SCALE)}px"` +
     ` role="group" aria-label="${escapeHtml(opts.ariaLabel ?? tenant?.name ?? '')}" data-tenant="${escapeHtml(tenant?.id ?? '')}">`,
   )
 
@@ -95,7 +98,7 @@ export function renderRadialSvg(tenant, layout, opts) {
     )
     // the focus ring is drawn by CSS around the state ring (a stroke only, no fill)
     out.push(`<circle class="org-focus-ring" r="${ringR + 4}"/>`)
-    const nameY = ringR + 20
+    const nameY = ringR + (p.isRoot ? 28 : 20) // the centre's halo ring sits 8 px further out
     out.push(`<text class="org-name" y="${nameY}" text-anchor="middle" aria-hidden="true">${escapeHtml(mono ? monogram(label) : shortLabel(label))}</text>`)
     if (title && !mono) out.push(`<text class="org-title" y="${nameY + 17}" text-anchor="middle" aria-hidden="true">${escapeHtml(shortLabel(title))}</text>`)
     if (p.hiddenCount) {

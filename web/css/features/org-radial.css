@@ -32,7 +32,7 @@
 .org-radial-name { margin: 0; font-size: 18px; font-weight: 700; color: var(--org-text-name); }
 .org-radial-count { font-size: 14px; color: var(--org-text-role); }
 
-.org-radial-svg { display: block; width: 100%; height: auto; max-height: 88vh; margin: 0 auto; }
+.org-radial-svg { display: block; width: 100%; height: auto; margin: 0 auto; }
 .org-guide { fill: none; stroke: var(--org-guide); stroke-width: 1; }
 .org-spoke { stroke: var(--org-spoke); stroke-width: 1.5; }
 

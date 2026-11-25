@@ -3,6 +3,7 @@ import type { RadialLayout } from './org-radial-layout.js'
 export const AVATAR_SIZE: Readonly<{ normal: number; centre: number }>
 export const RING_OFFSET: number
 export const LABEL_MAX: number
+export const MAX_SCALE: number
 
 export function shortLabel(text: unknown, max?: number): string
 export function monogram(text: unknown): string
