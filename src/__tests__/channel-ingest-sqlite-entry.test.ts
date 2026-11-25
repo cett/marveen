@@ -12,7 +12,7 @@ const PG_URL = 'postgres://user:placeholder-password-c3f@db.invalid:5432/marveen
 let scratch = ''
 
 beforeEach(() => {
-  scratch = mkdtempSync(join(tmpdir(), 'zack-ingest-entry-'))
+  scratch = mkdtempSync(join(tmpdir(), 'coord-ingest-entry-'))
   mkdirSync(join(scratch, 'store'))
   vi.stubEnv('MARVEEN_STORE_DIR', join(scratch, 'store'))
   vi.stubEnv('CLAUDECLAW_ENV_DIR', join(scratch, 'envdir'))

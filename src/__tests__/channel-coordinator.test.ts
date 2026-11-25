@@ -32,14 +32,14 @@ describe('mapUpdate', () => {
         message_id: 5,
         date: 1700000000,
         text: 'szia',
-        chat: { id: 1268077055 },
-        from: { id: 1268077055, username: 'szabolcs' },
+        chat: { id: 1001 },
+        from: { id: 1001, username: 'user-a' },
       },
     })!
     expect(ev.kind).toBe('message')
-    expect(ev.chat_id).toBe(1268077055)
-    expect(ev.user_id).toBe(1268077055)
-    expect(ev.username).toBe('szabolcs')
+    expect(ev.chat_id).toBe(1001)
+    expect(ev.user_id).toBe(1001)
+    expect(ev.username).toBe('user-a')
     expect(ev.message_id).toBe(5)
     expect(ev.content).toBe('szia')
     expect(ev.tg_date).toBe(1700000000)
@@ -92,9 +92,9 @@ describe('ingest', () => {
   const sampleEvent = (update_id: number) => ({
     update_id,
     kind: 'message',
-    chat_id: 1268077055,
-    user_id: 1268077055,
-    username: 'szabolcs',
+    chat_id: 1001,
+    user_id: 1001,
+    username: 'user-a',
     message_id: update_id,
     content: `msg ${update_id}`,
     meta: {},
@@ -120,7 +120,7 @@ describe('ingest', () => {
     const am = db.prepare('SELECT * FROM agent_messages WHERE id = ?').get(amId) as any
     expect(am.from_agent).toBe(COORDINATOR_AGENT_ID)
     expect(am.status).toBe('pending')
-    expect(am.content).toContain('chat_id="1268077055"')
+    expect(am.content).toContain('chat_id="1001"')
 
     const ev = db.prepare('SELECT * FROM incoming_events WHERE id = ?').get(ins.eventId) as any
     expect(ev.status).toBe('delivered')
@@ -202,8 +202,8 @@ describe('processBatch', () => {
       message_id: update_id,
       date: 1700000000,
       text,
-      chat: { id: 1268077055 },
-      from: { id: 1268077055, username: 'szabolcs' },
+      chat: { id: 1001 },
+      from: { id: 1001, username: 'user-a' },
     },
   })
 
@@ -256,9 +256,9 @@ describe('reconcilePending', () => {
   const sampleEvent = (update_id: number) => ({
     update_id,
     kind: 'message',
-    chat_id: 1268077055,
-    user_id: 1268077055,
-    username: 'szabolcs',
+    chat_id: 1001,
+    user_id: 1001,
+    username: 'user-a',
     message_id: update_id,
     content: `msg ${update_id}`,
     meta: {},
@@ -439,15 +439,15 @@ describe('handoff content safety', () => {
   it('buildHandoffContent frames metadata as channel attributes', () => {
     const content = buildHandoffContent({
       kind: 'message',
-      chat_id: 1268077055,
-      user_id: 1268077055,
-      username: 'szabolcs',
+      chat_id: 1001,
+      user_id: 1001,
+      username: 'user-a',
       message_id: 522,
       content: 'itt vagy?',
       tg_date: 1700000000,
     })
     expect(content).toContain('source="telegram"')
-    expect(content).toContain('chat_id="1268077055"')
+    expect(content).toContain('chat_id="1001"')
     expect(content).toContain('message_id="522"')
     expect(content).toContain('itt vagy?')
   })
