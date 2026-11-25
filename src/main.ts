@@ -9,10 +9,13 @@ import {
   writeSync,
 } from 'node:fs'
 import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 import { runLsof } from './lsof.js'
 import type { Server as HttpServer } from 'node:http'
 import { PROJECT_ROOT, STORE_DIR, IS_ISOLATED_MODE, PID_FILENAME, WEB_PORT, ALLOWED_CHAT_ID, MAIN_AGENT_ID, RESPAWN_ENABLED, HEARTBEAT_AGENT_ENABLED } from './config.js'
+import { FULL_BOOT_SANDBOX_ENV, fullBootSandboxRefusals, fullBootSandboxRequested } from './full-boot-sandbox.js'
+import { isTemporaryRoot, isWorktreeRoot } from './web/hook-registration-guard.js'
 import { runSigtermFlushes } from './web/sigterm-flush.js'
 import { startBootMarker } from './web/boot-marker.js'
 import { closePgBackend, backfillEmbeddings, closeDatabase } from './db.js'
@@ -513,6 +516,20 @@ async function main(): Promise<void> {
     logger.error({ err: reason }, 'unhandledRejection')
   })
 
+  // Full-boot sandbox (opt-in, MARVEEN_SANDBOX_FULL_BOOT=true): refuse before any side effect unless the instance
+  // is isolated, off the live port, and running from a transient checkout. Never on in production.
+  const fullBootSandbox = fullBootSandboxRequested()
+  if (fullBootSandbox) {
+    const refusals = fullBootSandboxRefusals({
+      isolated: IS_ISOLATED_MODE,
+      webPort: WEB_PORT,
+      projectRootIsTemporary: isWorktreeRoot(PROJECT_ROOT) || isTemporaryRoot(PROJECT_ROOT, { tmpDir: tmpdir() }),
+    })
+    if (refusals.length > 0) {
+      throw new Error(`${FULL_BOOT_SANDBOX_ENV}=true refused: ${refusals.join('; ')}`)
+    }
+  }
+
   // In isolated mode (MARVEEN_STORE_DIR override) skip takeover/reaper/reconciliation
   // so this instance cannot SIGTERM the production dashboard running on the default port.
   if (!IS_ISOLATED_MODE) {
@@ -543,15 +560,20 @@ async function main(): Promise<void> {
   await runAs.system('boot-sequence', () => flushLedgerSpool())
 
   if (IS_ISOLATED_MODE) {
-    // Isolated mode: serve the web dashboard only, no background tasks or agent management.
-    // WEB_ONLY=true ensures startWebServer skips all startup project-file writes
-    // (ensureAutonomySection, ensureFederationClaudeMdSection, reconcileAgentsOnStartup,
-    // hook registration) -- isolated instances must never modify shared project files.
-    process.env['WEB_ONLY'] = 'true'
-    webServer = await startWebServer(WEB_PORT)
-    endDbBootPhase()
-    logger.info(`Marveen fut izolalt modban! Dashboard: http://localhost:${WEB_PORT}`)
-    return
+    if (!fullBootSandbox) {
+      // Isolated mode: serve the web dashboard only, no background tasks or agent management.
+      // WEB_ONLY=true ensures startWebServer skips all startup project-file writes
+      // (ensureAutonomySection, ensureFederationClaudeMdSection, reconcileAgentsOnStartup,
+      // hook registration) -- isolated instances must never modify shared project files.
+      process.env['WEB_ONLY'] = 'true'
+      webServer = await startWebServer(WEB_PORT)
+      endDbBootPhase()
+      logger.info(`Marveen fut izolalt modban! Dashboard: http://localhost:${WEB_PORT}`)
+      return
+    }
+    // Full-boot sandbox: WEB_ONLY stays unset, so the runners and startWebServer run in the normal order below.
+    // The sandbox refusals above keep every write inside a temporary checkout and the isolated store.
+    logger.warn({ envVar: FULL_BOOT_SANDBOX_ENV, webPort: WEB_PORT, projectRoot: PROJECT_ROOT }, 'FULL BOOT SANDBOX: the whole boot runs in an isolated instance (runners and background services on, no port lock)')
   }
 
   // Backfill embeddings for memories saved before Ollama was available.
