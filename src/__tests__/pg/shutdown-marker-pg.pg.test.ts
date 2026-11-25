@@ -44,7 +44,7 @@ describe('the shutdown marker lands on PostgreSQL', () => {
     const first = await startBootMarker()
     expect(first, 'the boot is recorded').not.toBeNull()
     await runSigtermFlushes(5000)
-    const row = await runAs.system('shutdown-marker-readback', async () => getSystemConfig(CLEAN_SHUTDOWN_KEY))
+    const row = runAs.system('shutdown-marker-readback', () => getSystemConfig(CLEAN_SHUTDOWN_KEY))
     expect(row, 'clean_shutdown row written by the flush').toBeDefined()
     expect(JSON.parse(row!.value).boot_id).toBe(first!.boot_id)
     const next = await startBootMarker()
