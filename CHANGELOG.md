@@ -11,6 +11,9 @@ Extract a version for release: `npm run release-notes -- <version>`
 
 <!-- changelog-auto-sha: cd00e7d54aadf38020b01709e16f6102bb1d0451 -->
 
+### Fixed
+- **[Fix]** **[PostgreSQL]** On PostgreSQL the SIGTERM clean-shutdown marker is written in the boot-marker system job, so a clean stop is recorded and the next boot reads it as clean.
+
 ### Added
 - **[Ops]** **[PostgreSQL]** With `MARVEEN_PG_URL` set, the dashboard process starts on PostgreSQL and takes over the port; its OTLP gauges read through the database layer, and the file-retirement and SQLite-only import steps are skipped there, each with one log line.
 - **[Tests]** The SQLite to PostgreSQL copy script (`scripts/migrate-sqlite-to-pg.ts`) is on the type-check list of `tsconfig.scripts.json`, where its guard test (`scripts-typecheck-guard.test.ts`) expects every script that imports the database layer: the guard was red on develop since the script was added, and a red full suite on a push to develop is what the aggregate `test` context now reports. The script type-checks clean, so the known-broken list stays empty.
