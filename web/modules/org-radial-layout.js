@@ -8,8 +8,9 @@
 // Rules (plan orgchart-radial, section 3.2, and the mockup of the design doc):
 //   - ring index = depth: the centre is ring 0, its direct reports ring 1, their reports ring 2, and so on.
 //   - ring 1 is SYMMETRIC: n nodes 360/n degrees apart, the first one at the top, then clockwise, in the order given.
-//   - below ring 1 a branch is a WEDGE: the children of a node share the wedge of that node, each child an equal sub-wedge
-//     (option `slices: 'leaf'`: proportional to its leaf count, a heavier branch gets more room), centred on the sub-wedge.
+//   - below ring 1 a branch is a WEDGE: the children of a node share the wedge of that node, each child a sub-wedge
+//     proportional to its leaf count (plan section 11, rule 6: the picture follows the real tree, no balancing, no
+//     weighting switch), centred on the sub-wedge.
 //     A branch therefore never crosses another one, and a single child sits on the angle of its parent (a radial spoke).
 //   - one radius PER RING (concentric circles, not per branch), NO fixed values: the smallest radii that keep (1) neighbours
 //     of a ring at least `minChord` apart (a label box wide), `borderChord` across the border of two branches, (2) two rings
@@ -32,10 +33,7 @@ export const DEFAULT_LAYOUT_OPTIONS = Object.freeze({
   ringGap: 176,
   /** every radius grows by this factor (5 %) while two boxes overlap, at most maxGrowSteps times */
   growStep: 1.05,
-  maxGrowSteps: 60,
-  /** the wedge of a node below ring 1: 'equal' (every child the same share, the default: the real tree is shown as it is)
-   *  or 'leaf' (a share proportional to the leaf count, more compact and visibly lopsided) */
-  slices: 'equal',
+  maxGrowSteps: 40,
   /** rings that are drawn; deeper nodes are folded into `hiddenCount` of the outermost drawn one */
   maxRings: 4,
   /** more nodes than this on one ring: the renderer shortens the labels to the initials (see `crowdedRings`) */
@@ -114,7 +112,7 @@ export function layoutRadial(view, options = {}) {
     const total = ids.reduce((s, id) => s + countLeaves(id), 0)
     let cursor = from
     for (const id of ids) {
-      const w = o.slices === 'leaf' ? (width * countLeaves(id)) / total : width / ids.length
+      const w = (width * countLeaves(id)) / total
       angle.set(id, cursor + w / 2)
       const kids = children.get(id).filter((c) => depth.get(c) === depth.get(id) + 1)
       if (kids.length) assign(kids, cursor, w)
@@ -207,6 +205,8 @@ export function layoutRadial(view, options = {}) {
   let built = build(scale)
   for (let step = 0; step < o.maxGrowSteps && overlaps(built.placed); step++) { scale *= o.growStep; built = build(scale) }
   const { radii, placed, pos } = built
+  // `clean` is false when the step cap ran out with boxes still overlapping: the caller (and the unit test) must not draw that
+  const clean = !overlaps(placed)
   // the order of the output is the order of the input (centre first), not the order of the rings
   placed.sort((a, b) => (a.isRoot ? -1 : b.isRoot ? 1 : index.get(a.id) - index.get(b.id)))
 
@@ -227,6 +227,7 @@ export function layoutRadial(view, options = {}) {
   return {
     centre: rootId,
     nodes: placed,
+    clean,
     spokes,
     radii: radii.slice(1),
     crowdedRings,

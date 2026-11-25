@@ -6,7 +6,6 @@ export interface LayoutOptions {
   ringGap: number
   growStep: number
   maxGrowSteps: number
-  slices: 'equal' | 'leaf'
   maxRings: number
   crowdedLimit: number
   pad: number
@@ -40,6 +39,8 @@ export interface Spoke { from: string; to: string; x1: number; y1: number; x2: n
 export interface RadialLayout {
   centre: string | null
   nodes: PlacedNode[]
+  /** false when the grow cap ran out with two label boxes still overlapping (must never be drawn) */
+  clean: boolean
   spokes: Spoke[]
   /** radius of ring 1, ring 2, ... */
   radii: number[]

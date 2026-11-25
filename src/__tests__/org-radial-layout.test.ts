@@ -2,8 +2,8 @@
 //
 //   - ring 1 is symmetric (360/n apart, the first node on the top, clockwise); a branch is a wedge of its parent's slice and
 //     never crosses another one; a single child sits on its parent's angle;
-//   - one radius per ring, from the mockup (240 / 520 / 700, 200 for a small ring 1), growing when a ring is crowded, so two
-//     neighbours of a ring are never closer than the chord rule;
+//   - one radius per ring, the smallest the geometry rule of the plan (section 11) allows, grown in 5 % steps until no two
+//     label boxes overlap; no fixed radii;
 //   - determinism, a missing centre, a cycle, too many rings, malformed input.
 //
 // Privacy: neutral fixtures only.
@@ -154,21 +154,20 @@ describe('a branch is a wedge', () => {
     expect(at(l, 'a1').x).toBeLessThan(0) // left of the top
   })
 
-  it('by default the children share their parent\'s slice EQUALLY, whatever their subtrees weigh (the real tree as it is)', () => {
+  it('children share their parent\'s slice by LEAF COUNT: a heavier branch gets more, a lighter one less (plan section 11, rule 6)', () => {
+    // under n: a has three leaves, b has one: a's wedge is three times b's
     const l = layoutRadial(view('c', [['c', 'n'], ['n', 'a'], ['n', 'b'], ['a', 'a1'], ['a', 'a2'], ['a', 'a3']]))
-    expect(at(l, 'a').angle).toBeCloseTo(270, 1) // n's slice is the whole circle from -180: a = -90, b = 90
-    expect(at(l, 'b').angle).toBeCloseTo(90, 1)
+    // n is the only node on ring 1 (angle 0), its slice is the whole circle from -180: a's wedge is 270 degrees (centre -45,
+    // that is 315), b's 90 degrees (centre 135)
+    expect(at(l, 'a').angle).toBeCloseTo(315, 1)
+    expect(at(l, 'b').angle).toBeCloseTo(135, 1)
   })
 
-  it('with slices: "leaf" a heavier branch gets more of its parent\'s slice, the lighter one less', () => {
-    // under n: a has three leaves, b has one: a's wedge is three times b's
-    const l = layoutRadial(view('c', [['c', 'n'], ['n', 'a'], ['n', 'b'], ['a', 'a1'], ['a', 'a2'], ['a', 'a3']]), { slices: 'leaf' })
-    const a = at(l, 'a').angle
-    const b = at(l, 'b').angle
-    // n is the only node on ring 1 (angle 0), its slice is the whole circle, from -180: a's wedge is 270 degrees (centre -45,
-    // that is 315), b's 90 degrees (centre 135)
-    expect(a).toBeCloseTo(315, 1)
-    expect(b).toBeCloseTo(135, 1)
+  it('there is no weighting switch any more: an old `slices` option changes nothing', () => {
+    const edges: [string, string][] = [['c', 'n'], ['n', 'a'], ['n', 'b'], ['a', 'a1'], ['a', 'a2'], ['a', 'a3']]
+    const withOption = layoutRadial(view('c', edges), { slices: 'equal' } as never)
+    expect(withOption).toEqual(layoutRadial(view('c', edges)))
+    expect('slices' in DEFAULT_LAYOUT_OPTIONS).toBe(false)
   })
 })
 
@@ -270,5 +269,61 @@ describe('a missing centre, odd shapes and malformed input', () => {
       expect(l.nodes).toEqual([])
       expect(l.spokes).toEqual([])
     }
+  })
+})
+
+// Plan section 11 (the geometry rule): lower bounds of the DEFAULT tenant, 7 on ring 1, one of them with 3 children in a
+// 17.14 degree slice each, one node on ring 3. The box test can only raise them.
+describe('the geometry rule of the plan, section 11', () => {
+  const boxesOverlap = (nodes: { x: number; y: number }[]) => {
+    for (let i = 0; i < nodes.length; i++) for (let j = i + 1; j < nodes.length; j++) {
+      if (Math.abs(nodes[i]!.x - nodes[j]!.x) < DEFAULT_LAYOUT_OPTIONS.boxW && Math.abs(nodes[i]!.y - nodes[j]!.y) < DEFAULT_LAYOUT_OPTIONS.boxH) return true
+    }
+    return false
+  }
+
+  it('the DEFAULT tenant honours the lower bounds: r1 >= 173, r2 >= 503, r3 >= 679, and ends clean', () => {
+    const l = layoutRadial(live())
+    expect(l.clean).toBe(true)
+    expect(l.radii[0]).toBeGreaterThanOrEqual(150 / (2 * Math.sin(Math.PI / 7)) - 0.01) // 173
+    expect(l.radii[1]).toBeGreaterThanOrEqual(150 / (2 * Math.sin((17.142857 / 2) * (Math.PI / 180))) - 0.01) // 503
+    expect(l.radii[2]).toBeGreaterThanOrEqual((l.radii[1] as number) + DEFAULT_LAYOUT_OPTIONS.ringGap - 0.01) // 679
+    expect(l.radii[0]).toBeGreaterThanOrEqual(173)
+    expect(l.radii[1]).toBeGreaterThanOrEqual(503)
+    expect(l.radii[2]).toBeGreaterThanOrEqual(679)
+  })
+
+  it('the numbers of the rule are the defaults: a 150 x 130 box, 150 / 148 / 176 apart, a 5 % step', () => {
+    expect(DEFAULT_LAYOUT_OPTIONS).toMatchObject({ boxW: 150, boxH: 130, minChord: 150, borderChord: 148, ringGap: 176, growStep: 1.05 })
+  })
+
+  it('the fixed radii 150 / 300 / 410 of the retired section 10 are a RED cell: with them the boxes overlap', () => {
+    const l = layoutRadial(live())
+    const fixed = [150, 300, 410]
+    const nodes = l.nodes.filter((n) => !n.isRoot).map((n) => ({
+      x: fixed[n.ring - 1]! * Math.sin((n.angle * Math.PI) / 180),
+      y: -fixed[n.ring - 1]! * Math.cos((n.angle * Math.PI) / 180),
+    }))
+    expect(boxesOverlap(nodes)).toBe(true) // the detector rejects them ...
+    expect(l.radii[0]).not.toBe(150) // ... and the layout does not use them
+    expect(l.radii[1]).not.toBe(300)
+    expect(l.radii[2]).not.toBe(410)
+  })
+
+  it('a 1.6x scale of the fixed set (240 / 480 / 656) is not an input: only the result of the rule may be that big', () => {
+    const l = layoutRadial(live())
+    expect(l.radii).not.toEqual([240, 480, 656])
+  })
+
+  it('when the grow cap runs out with boxes still overlapping the answer says so (clean: false), it is never silently drawn', () => {
+    const edges: [string, string][] = Array.from({ length: 8 }, (_, i) => ['c', `n${i}`])
+    const capped = layoutRadial(view('c', edges), { maxGrowSteps: 0, ringGap: 1, minChord: 1, borderChord: 1 })
+    expect(capped.clean).toBe(false)
+    expect(layoutRadial(view('c', edges)).clean).toBe(true)
+  })
+
+  it('an empty and a one-node picture are clean', () => {
+    expect(layoutRadial({ rootId: null, nodes: [], edges: [] }).clean).toBe(true)
+    expect(layoutRadial(view('c', [['c', 'a']])).clean).toBe(true)
   })
 })
