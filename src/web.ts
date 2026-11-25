@@ -62,6 +62,7 @@ import { tryHandleAgentTerminal } from './web/routes/agent-terminal.js'
 import { tryHandleAgentConversation } from './web/routes/agent-conversation.js'
 import { tryHandleAgentTaskState } from './web/routes/agent-taskstate.js'
 import { tryHandleAgentInflightTurn } from './web/routes/agent-inflight-turn.js'
+import { tryHandleHooksTenant } from './web/routes/hooks-tenant.js'
 import { sweepOrphanTaskStates } from './web/agent-taskstate.js'
 import { tryHandleDailyLog } from './web/routes/daily-log.js'
 import { tryHandleHomoglyphs } from './web/routes/homoglyphs.js'
@@ -176,6 +177,7 @@ const dispatcher = new RouteDispatcher()
   .add(tryHandleAgentConversation)
   .add(tryHandleAgentTaskState)
   .add(tryHandleAgentInflightTurn)
+  .add(tryHandleHooksTenant)
   .add(ctx => tryHandleAgents(ctx, WEB_DIR))
   .add(tryHandleClaudePlans)
   .add(ctx => tryHandleMarveen(ctx, WEB_DIR))

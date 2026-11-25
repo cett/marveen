@@ -19,7 +19,7 @@ const RESOURCES: ReadonlySet<string> = new Set([
   'activity', 'admin', 'agent-availability', 'agents', 'agent-inflight-turn', 'agent-state', 'agent-taskstate', 'approvals', 'artifacts', 'audit',
   'auth', 'autonomy', 'backups', 'blackboard', 'bridge-enroll', 'browser-enroll-codes', 'budgets', 'channel-bindings',
   'claude-auth', 'claude-plans', 'config', 'conversation-ledger', 'daily-log', 'dashboard-users', 'decisions', 'device-keys',
-  'docs', 'egress-allowlist', 'federation', 'fleet', 'github-repos', 'hook-audit', 'identity', 'import', 'kanban', 'labels',
+  'docs', 'egress-allowlist', 'federation', 'fleet', 'github-repos', 'hook-audit', 'hooks', 'identity', 'import', 'kanban', 'labels',
   'memories', 'messages', 'migrate', 'models', 'network-info', 'otel-export', 'overview', 'partner-senders', 'schedules',
   'sessions', 'settings', 'skill-usage', 'skills', 'spans', 'stt', 'team', 'tenants', 'tokens', 'tool-log', 'tool-stats',
   'traces', 'tts', 'users', 'vault', 'watchlist', 'workspace', 'workspace-docs',
