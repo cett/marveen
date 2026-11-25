@@ -42,7 +42,7 @@ export const EXCLUDED_STEPS = [
   { job: 'gates', name: 'Stub external binaries (claude, tmux) for module-load resolution', reason: 'a CI-runner-only workaround for a missing claude/tmux binary; a worktree has the real ones.' },
   { job: 'gates', name: 'Install zsh (the second shell oracle of the secret-read gate tests)', reason: 'an apt install on the CI runner (no zsh there); a worktree has zsh, and the secret-read gate tests that need it run in the vitest step itself.' },
   { job: 'gates', name: 'Changed paths (scripts group)', reason: 'decides on the CI runner whether the Python and shell tests run for this change (a skip optimisation, true whenever it cannot tell); t1 always runs them, so there is nothing to repeat.' },
-  { job: 'test', name: 'Both halves succeeded', reason: 'the aggregate of the required context: it only reads the results of the needed jobs `vitest` and `gates` (needs.<job>.result), it runs no check of its own, so there is nothing for a t1 row to repeat.' },
+  { job: 'test', name: 'Both halves succeeded', reason: 'the aggregate of the required context: it only reads the results of the needed jobs `vitest`, `gates`, `pg-decide` and `pg-parity` (needs.<job>.result, needs.pg-decide.outputs.pg), it runs no check of its own, so there is nothing for a t1 row to repeat.' },
 ]
 
 /** The `run:` steps of the checked jobs, as {job, name} pairs, read from the real ci.yml (no guessing). */
