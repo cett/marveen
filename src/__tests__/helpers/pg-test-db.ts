@@ -268,9 +268,24 @@ export async function createPgTestDb(opts: PgTestDbOptions = {}): Promise<PgTest
   }
 }
 
-/** Drops a template database (a test that built its own baseline cleans it up with this). */
+/**
+ * Drops a template database (a test that built its own baseline cleans it up with this). It takes the same advisory lock as
+ * createPgTestDb: the template name of an EMPTY baseline is the same for every file, so one file's cleanup could otherwise
+ * land between another file's "the template exists" check and its CREATE DATABASE ... TEMPLATE (SQLSTATE 3D000, the
+ * develop pg-parity failure of 2026-11-26). Under the lock a drop waits for a running clone, and the next createPgTestDb
+ * simply builds the template again.
+ */
 export async function dropPgTemplate(template: string, url: string = pgTestUrl()): Promise<void> {
   const a = new pg.Client({ connectionString: url })
   await a.connect()
-  try { await a.query(`DROP DATABASE IF EXISTS ${quote(template)} WITH (FORCE)`) } finally { await a.end() }
+  try {
+    await a.query('SELECT pg_advisory_lock(hashtext($1))', [LOCK_KEY])
+    try {
+      await a.query(`DROP DATABASE IF EXISTS ${quote(template)} WITH (FORCE)`)
+    } finally {
+      await a.query('SELECT pg_advisory_unlock(hashtext($1))', [LOCK_KEY])
+    }
+  } finally {
+    await a.end()
+  }
 }

@@ -161,3 +161,47 @@ describe('createPgTestDb', () => {
     expect((await db.pool.query('select 1 as one')).rows[0].one).toBe(1)
   })
 })
+
+// The develop pg-parity failure of 2026-11-26 ("template database marveen_tpl_... does not exist", 3D000): the template of an
+// EMPTY baseline has the same name in every file, and one file's dropPgTemplate (which took no lock) landed between another
+// file's "the template exists" check and its CREATE DATABASE ... TEMPLATE.
+describe('dropPgTemplate and the template lock', () => {
+  const LOCK_KEY = 'marveen-pg-test-template' // the harness's advisory-lock key
+  const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
+
+  async function templateExists(name: string): Promise<boolean> {
+    return (await databaseNames(name)).length === 1
+  }
+
+  it('a drop waits for whoever holds the template lock, and runs when it is released', async () => {
+    const db = await make({ '0001_x.sql': `create table t (id bigint); -- ${Math.random()}` })
+    const holder = new pg.Client({ connectionString: pgTestUrl() })
+    await holder.connect()
+    let released = false
+    try {
+      await holder.query('SELECT pg_advisory_lock(hashtext($1))', [LOCK_KEY])
+      let finished = false
+      const drop = dropPgTemplate(db.template).then(() => { finished = true })
+      await sleep(400)
+      // the lock is still held: the template must still be there and the drop must not have returned
+      expect(finished).toBe(false)
+      expect(await templateExists(db.template)).toBe(true)
+      await holder.query('SELECT pg_advisory_unlock(hashtext($1))', [LOCK_KEY])
+      released = true
+      await drop
+      expect(finished).toBe(true)
+      expect(await templateExists(db.template)).toBe(false)
+    } finally {
+      if (!released) await holder.query('SELECT pg_advisory_unlock(hashtext($1))', [LOCK_KEY]).catch(() => undefined)
+      await holder.end()
+    }
+  })
+
+  it('a drop of a template that is not there is a no-op and releases the lock', async () => {
+    await dropPgTemplate('marveen_tpl_does_not_exist_0000')
+    // the lock was released: a create right after is not blocked
+    const db = await make({ '0001_x.sql': `create table t (id bigint); -- ${Math.random()}` })
+    expect((await db.pool.query('select 1 as one')).rows[0].one).toBe(1)
+  })
+
+})
