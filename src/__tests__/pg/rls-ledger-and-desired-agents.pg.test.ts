@@ -15,7 +15,7 @@ import { createPgTestDb, type PgTestDb } from '../helpers/pg-test-db.js'
 import { bootPgBackend, closePgBackend } from '../../db/pg-boot.js'
 import { runAs } from '../../db/context.js'
 import { runAsRequest } from '../../db/background-jobs.js'
-import { logLedgerTurn, recentLedgerTurns } from '../../db/conversation-ledger.js'
+import { logLedgerTurn, openLedgerQuestion, recentLedgerTurns } from '../../db/conversation-ledger.js'
 import { tryHandleConversationLedger } from '../../web/routes/conversation-ledger.js'
 import { addDesiredAgent, getDesiredAgents, removeDesiredAgent } from '../../web/agent-desired-state.js'
 import { getSystemConfig } from '../../db/system-config.js'
@@ -83,7 +83,7 @@ describe('ledger write by a fleet agent token (conversation_log)', () => {
     await asAgent('tenant-t2', () => logLedgerTurn(turn({ message_id: 'm2' })))
     expect((await rows(db)).map((r) => r.tenant_id)).toEqual(['tenant-t2', 'tenant-t2'])
   })
-  it('the policy is untouched: a tenant context still reads only the rows of its own tenant (the other tenant and the NULL row stay hidden)', async () => {
+  it('the policy is untouched: a plain tenant-context SELECT still sees only the rows of its own tenant (the other tenant and the NULL row stay hidden)', async () => {
     const db = await bootedDb()
     await bind(db, 'agent-a', '2002', 'tenant-t1')
     await bind(db, 'agent-a', '3003', 'tenant-t2')
@@ -91,7 +91,8 @@ describe('ledger write by a fleet agent token (conversation_log)', () => {
     await asAgent('tenant-t1', () => logLedgerTurn(turn({ chat_id: '3003', message_id: 'foreign' })))
     await asAgent('tenant-t1', () => logLedgerTurn(turn({ chat_id: '4004', message_id: 'unbound' })))
     expect(await rows(db)).toHaveLength(3)
-    const seen = await asAgent('tenant-t1', () => recentLedgerTurns('agent-a'))
+    const { dbx } = await import('../../db/facade.js')
+    const seen = await asAgent('tenant-t1', () => dbx.all<{ chat_id: string }>('SELECT chat_id FROM conversation_log'))
     expect(seen.map((t) => t.chat_id)).toEqual(['2002'])
   })
   it('the lookup is not widened either: a direct INSERT of a foreign tenant row from a tenant context is still refused by the policy', async () => {
@@ -137,6 +138,80 @@ describe('ledger write by a fleet agent token (conversation_log)', () => {
     expect(await runAsRequest({ authenticated: true, role: 'fleet_agent', agentId: 'agent-b', tenantId: 'tenant-t1' }, () => tryHandleConversationLedger(ctx))).toBe(true)
     expect(out.status).toBe(403)
     expect(await rows(db)).toEqual([])
+  })
+})
+
+describe('ledger reads by a fleet agent token (recent, open question)', () => {
+  /** Rows of one agent: an unbound chat (NULL tenant), a chat of tenant-t1 and a chat of tenant-t2; 'in' turns with no answer yet. */
+  async function seeded(shared: boolean): Promise<PgTestDb> {
+    const db = await bootedDb()
+    await db.pool.query("INSERT INTO tenant_agent_availability (tenant_id, agent_id, enabled) VALUES ('tenant-t1', 'agent-a', 1)")
+    if (shared) await db.pool.query("INSERT INTO tenant_agent_availability (tenant_id, agent_id, enabled) VALUES ('tenant-t2', 'agent-a', 1)")
+    await bind(db, 'agent-a', '2002', 'tenant-t1')
+    await bind(db, 'agent-a', '3003', 'tenant-t2')
+    await asAgent('tenant-t1', () => logLedgerTurn(turn({ chat_id: '4004', message_id: 'u', created_at: 1000 })))
+    await asAgent('tenant-t1', () => logLedgerTurn(turn({ chat_id: '2002', message_id: 'a', created_at: 1001 })))
+    await asAgent('tenant-t1', () => logLedgerTurn(turn({ chat_id: '3003', message_id: 'b', created_at: 1002 })))
+    return db
+  }
+  it('a NON-shared agent replays ALL its turns, the NULL-tenant one included (a tenant-context read would return only the own-tenant row)', async () => {
+    await seeded(false)
+    const seen = await asAgent('tenant-t1', () => recentLedgerTurns('agent-a'))
+    expect(seen.map((t) => t.chat_id)).toEqual(['4004', '2002', '3003'])
+  })
+  it('a SHARED agent (serves two tenants) replays nothing, as before', async () => {
+    await seeded(true)
+    expect(await asAgent('tenant-t1', () => recentLedgerTurns('agent-a'))).toEqual([])
+  })
+  it('the replay is of ONE agent: the turns of another agent never come back', async () => {
+    const db = await seeded(false)
+    await db.pool.query("INSERT INTO conversation_log (agent_id, chat_id, direction, message_id, text, created_at, tenant_id) VALUES ('agent-b', '7', 'in', 'z', 't', 1003, NULL)")
+    const seen = await asAgent('tenant-t1', () => recentLedgerTurns('agent-a'))
+    expect(seen.every((t) => t.chat_id !== '7')).toBe(true)
+  })
+  it('open question, NON-shared: the latest unanswered inbound is found even when its chat is unbound (NULL tenant)', async () => {
+    const db = await bootedDb()
+    await asAgent('tenant-t1', () => logLedgerTurn(turn({ chat_id: '4004', message_id: 'u' })))
+    expect((await asAgent('tenant-t1', () => openLedgerQuestion('agent-a')))?.message_id).toBe('u')
+    await asAgent('tenant-t1', () => logLedgerTurn(turn({ chat_id: '4004', message_id: 'o', direction: 'out', created_at: 1001 })))
+    expect(await asAgent('tenant-t1', () => openLedgerQuestion('agent-a'))).toBeNull()
+    expect(await rows(db)).toHaveLength(2)
+  })
+  it('open question, SHARED: answered only from the tenant it serves now; no fresh context means no answer; the NULL and foreign rows are invisible', async () => {
+    const db = await seeded(true)
+    // no agent_tenant_context row: no answer rather than a guess across tenants
+    expect(await asAgent('tenant-t1', () => openLedgerQuestion('agent-a'))).toBeNull()
+    await db.pool.query("INSERT INTO agent_tenant_context (agent_id, tenant_id, status) VALUES ('agent-a', 'tenant-t2', 'bound')")
+    const q = await asAgent('tenant-t1', () => openLedgerQuestion('agent-a'))
+    expect(q?.chat_id).toBe('3003')
+    // serving tenant-t1: its own chat, never the unbound or the tenant-t2 one
+    await db.pool.query("UPDATE agent_tenant_context SET tenant_id = 'tenant-t1' WHERE agent_id = 'agent-a'")
+    expect((await asAgent('tenant-t1', () => openLedgerQuestion('agent-a')))?.chat_id).toBe('2002')
+  })
+  it('GET recent / open-question through the route as the fleet token: 200 with the NULL-tenant turn; the other agent path is a 403', async () => {
+    const db = await bootedDb()
+    await asAgent('tenant-t1', () => logLedgerTurn(turn({ chat_id: '4004', message_id: 'u' })))
+    const get = (agent: string, tokenAgent: string, what: string): { ctx: RouteContext; out: { status: number; body: unknown } } => {
+      const out: { status: number; body: unknown } = { status: 200, body: undefined }
+      const res = {
+        writeHead(s: number) { out.status = s },
+        setHeader() {},
+        end(b?: string | Buffer) { if (b) { try { out.body = JSON.parse(Buffer.isBuffer(b) ? b.toString('utf-8') : b) } catch { /* not json */ } } },
+      } as unknown as RouteContext['res']
+      const url = new URL(`http://localhost:3420/api/conversation-ledger/${agent}/${what}`)
+      return { ctx: { req: {} as RouteContext['req'], res, path: url.pathname, method: 'GET', url, role: 'fleet_agent', tokenAgentId: tokenAgent, tenantId: 'tenant-t1', auth: { kind: 'token' } } as unknown as RouteContext, out }
+    }
+    const recent = get('agent-a', 'agent-a', 'recent')
+    await asAgent('tenant-t1', () => tryHandleConversationLedger(recent.ctx))
+    expect(recent.out.status).toBe(200)
+    expect((recent.out.body as { turns: { chat_id: string }[] }).turns.map((t) => t.chat_id)).toEqual(['4004'])
+    const open = get('agent-a', 'agent-a', 'open-question')
+    await asAgent('tenant-t1', () => tryHandleConversationLedger(open.ctx))
+    expect((open.out.body as { open_question: { message_id: string } }).open_question.message_id).toBe('u')
+    const foreign = get('agent-a', 'agent-b', 'recent')
+    await runAsRequest({ authenticated: true, role: 'fleet_agent', agentId: 'agent-b', tenantId: 'tenant-t1' }, () => tryHandleConversationLedger(foreign.ctx))
+    expect(foreign.out.status).toBe(403)
+    expect(await rows(db)).toHaveLength(1)
   })
 })
 

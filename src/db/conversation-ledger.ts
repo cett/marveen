@@ -4,7 +4,7 @@
 // /api/conversation-ledger, which calls these helpers.
 
 import { dbx } from './facade.js'
-import { runAs, LEDGER_WRITE_JOB } from './context.js'
+import { runAs, LEDGER_WRITE_JOB, LEDGER_READ_JOB } from './context.js'
 import { getServedTenantIds } from './agents.js'
 import { getChannelBindingTenant, getServingTenant } from './tenant-channel-bindings.js'
 
@@ -75,12 +75,18 @@ export async function logLedgerTurn(turn: LedgerTurnInput): Promise<boolean> {
 
 /** The last `limit` turns for the agent, oldest-first. */
 export async function recentLedgerTurns(agentId: string, limit = LEDGER_RECENT_DEFAULT): Promise<LedgerTurn[]> {
-  // Replay runs at SessionStart, when no prompt has set a tenant context yet. A shared agent would
-  // hand one tenant's turns to a session that may serve the other, so it gets nothing.
-  if (await isSharedLedgerAgent(agentId)) return []
-  const rows = await dbx.all<LedgerTurn>(`SELECT direction, chat_id, text, ts FROM conversation_log
+  // The whole read runs as the named ledger-read system job (context.ts): the rows of a NON-shared agent include the ones of an
+  // unbound chat (NULL tenant), which the tenant policy hides from an agent context, and "is this agent shared" needs the
+  // availability rows of every tenant it serves. The route has authorised the agent (registered, own token) before this call, and
+  // the statement stays filtered by agent_id.
+  return runAs.system(LEDGER_READ_JOB, async () => {
+    // Replay runs at SessionStart, when no prompt has set a tenant context yet. A shared agent would
+    // hand one tenant's turns to a session that may serve the other, so it gets nothing.
+    if (await isSharedLedgerAgent(agentId)) return []
+    const rows = await dbx.all<LedgerTurn>(`SELECT direction, chat_id, text, ts FROM conversation_log
        WHERE agent_id = ? ORDER BY created_at DESC, id DESC LIMIT ?`, agentId, limit)
-  return rows.reverse()
+    return rows.reverse()
+  })
 }
 
 /**
@@ -91,6 +97,12 @@ export async function recentLedgerTurns(agentId: string, limit = LEDGER_RECENT_D
  * than a guess across tenants. Rows of other tenants (and unresolved NULL rows) are invisible to it.
  */
 export async function openLedgerQuestion(agentId: string): Promise<LedgerOpenQuestion | null> {
+  // Same named read job as recentLedgerTurns; the shared-agent tenant filter below stays in the SQL, so the context lifts the
+  // policy only, it never widens what a shared agent is answered from.
+  return runAs.system(LEDGER_READ_JOB, () => openLedgerQuestionUnscoped(agentId))
+}
+
+async function openLedgerQuestionUnscoped(agentId: string): Promise<LedgerOpenQuestion | null> {
   let tenantFilter = ''
   const params: (string | number)[] = [agentId]
   if (await isSharedLedgerAgent(agentId)) {

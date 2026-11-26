@@ -109,12 +109,20 @@ export const D2_JOBS = {
 export const LEDGER_WRITE_JOB = 'ledger-write'
 
 /**
+ * The read twin: `recentLedgerTurns` and `openLedgerQuestion`. The same policy hides the NULL-tenant rows (an unbound chat) from an
+ * agent context, so a NON-shared agent would replay nothing after the write is fixed; and whether an agent is shared (it serves two
+ * or more tenants) is only visible across tenants. Opened by the db function after the route's authz (registered agent, own token);
+ * the statements keep their `agent_id` filter, and a shared agent keeps its tenant filter (or gets nothing).
+ */
+export const LEDGER_READ_JOB = 'ledger-read'
+
+/**
  * System contexts that are SUPPOSED to be opened from a tenant or an agent request, by name: the work reads across tenants by
  * nature, so the count would only be noise. `skill-regen`: every grantee of a skill, the tenants an agent serves. Each entry
  * is a decision of its own; a new name here needs a reason next to it. The sanction is for `runAs.system` ONLY: an ADMIN
  * context that carries the same name is still counted, or a label alone would defeat the detector.
  */
-const SANCTIONED_ESCALATIONS: ReadonlySet<string> = new Set([SKILL_REGEN_JOB, SKILL_GRANTS_JOB, LEDGER_WRITE_JOB, ...Object.values(D2_JOBS)])
+const SANCTIONED_ESCALATIONS: ReadonlySet<string> = new Set([SKILL_REGEN_JOB, SKILL_GRANTS_JOB, LEDGER_WRITE_JOB, LEDGER_READ_JOB, ...Object.values(D2_JOBS)])
 // `skill-grants` is sanctioned for the same reason as `skill-regen`: the write-back qualification reads every grantee of a
 // skill and the tenants an agent serves, and answers one boolean (`agentQualifies` in src/skill-sync.ts).
 
