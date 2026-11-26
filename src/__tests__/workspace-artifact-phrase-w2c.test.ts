@@ -43,7 +43,10 @@ describe('WT1 short row vs long row: the same document, the same hits (both bran
       if (cs !== ls.length) mismatch.push(`${q} count ${cs} != list ${ls.length}`)
     }
     expect(mismatch).toEqual([])
-  })
+    // About 40 queries x 6 searches over rows of more than 32000 characters: about 5 s alone, but a pull request's `vitest related`
+    // run can select every test that reaches with-test-db.ts (122 files), and on a loaded runner this one cell went past the
+    // default 15 s (one CI run and one local run under load, 2026-11-26). Only this cell gets the longer limit; nothing it asserts changed.
+  }, 45_000)
 })
 
 describe('WT2 the threshold: title + content length exactly around 32000, dense one-character words', () => {
