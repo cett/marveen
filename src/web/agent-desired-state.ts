@@ -1,5 +1,6 @@
 import { getSystemConfig, setSystemConfig, updateSystemConfig } from '../db/system-config.js'
 import type { SqlOps } from '../db/facade.js'
+import { runAs, D2_JOBS } from '../db/context.js'
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID } from '../config.js'
 
@@ -59,12 +60,15 @@ export function getDesiredAgents(): Set<string> {
 // A failed write is logged and answered with false, never thrown (the callers are start/stop paths).
 async function changeDesired(change: (set: Set<string>) => boolean): Promise<boolean> {
   try {
-    return await updateSystemConfig(KEY, (current) => {
+    // system_config is a D2 table (privileged only). A start/stop request reaches this write in the tenant or agent context of its
+    // caller (the route has already checked the agent is the caller's), so the one fixed key runs as a named system job; the value
+    // is the stored set merged with ONE agent name, so the context widens nothing the caller could name.
+    return await runAs.system(D2_JOBS.changeDesiredAgents, () => updateSystemConfig(KEY, (current) => {
       let set: Set<string>
       try { set = parseDesired(current) } catch { set = new Set() }
       set.delete(MAIN_AGENT_ID)
       return change(set) ? JSON.stringify([...set].sort()) : undefined
-    })
+    }))
   } catch (err) {
     logger.error({ err }, 'Failed to persist agents_desired to system_config')
     return false

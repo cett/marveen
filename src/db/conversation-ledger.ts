@@ -4,6 +4,7 @@
 // /api/conversation-ledger, which calls these helpers.
 
 import { dbx } from './facade.js'
+import { runAs, LEDGER_WRITE_JOB } from './context.js'
 import { getServedTenantIds } from './agents.js'
 import { getChannelBindingTenant, getServingTenant } from './tenant-channel-bindings.js'
 
@@ -58,11 +59,17 @@ export async function logLedgerTurn(turn: LedgerTurnInput): Promise<boolean> {
   // or from agent_tenant_context: the capture hook and the tenant-context hook both run on
   // UserPromptSubmit in no guaranteed order, so the context row may still hold the PREVIOUS prompt's
   // tenant. An unbound chat is NULL (unknown), not 'default'.
-  const tenantId = await getChannelBindingTenant(turn.agent_id, LEDGER_CHANNEL, turn.chat_id)
-  const info = await dbx.run(`INSERT INTO conversation_log
+  // The binding lookup and the INSERT run as the named ledger-write system job (context.ts): the caller is a fleet agent token in
+  // ITS tenant, while the row carries the tenant of the chat (another tenant, or NULL), which the tenant policy refuses to a tenant
+  // context (42501, the turn lost) and whose binding it would not even show. The tenant is derived here; nothing the caller sends
+  // reaches the stamp, and the policy stays as it is.
+  const info = await runAs.system(LEDGER_WRITE_JOB, async () => {
+    const tenantId = await getChannelBindingTenant(turn.agent_id, LEDGER_CHANNEL, turn.chat_id)
+    return dbx.run(`INSERT INTO conversation_log
        (agent_id, chat_id, direction, message_id, text, ts, created_at, tenant_id)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT DO NOTHING`, turn.agent_id, turn.chat_id, turn.direction, turn.message_id ?? null, turn.text ?? null, ts, createdAt, tenantId)
+  })
   return info.changes > 0
 }
 
