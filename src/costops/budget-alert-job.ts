@@ -50,3 +50,17 @@ export async function runBudgetAlertJob(nowMs: number = Date.now()): Promise<Bud
     await closePgBackend()
   }
 }
+
+/**
+ * The whole run of the script: one pass, the failure logged, and the exit code (0 ok, 1 failed). Never throws: a failed run
+ * is a 1 with the error on stderr, so the scheduler sees it.
+ */
+export async function runBudgetAlertCli(nowMs: number = Date.now()): Promise<0 | 1> {
+  try {
+    await runBudgetAlertJob(nowMs)
+    return 0
+  } catch (err) {
+    logger.error({ err }, 'budget-alert-check failed')
+    return 1
+  }
+}

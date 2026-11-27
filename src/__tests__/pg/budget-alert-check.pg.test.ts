@@ -36,12 +36,19 @@ vi.mock('../../db-migrations-pg.js', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../db-migrations-pg.js')>()
   return { ...real, applyPgMigrations: vi.fn(real.applyPgMigrations) }
 })
+// pass-through unless a cell makes one call fail: the evaluation is the step after the boot, so a rejection there is a failure
+// of the job with the boot complete
+vi.mock('../../costops/budget-alert.js', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../../costops/budget-alert.js')>()
+  return { ...real, evaluateBudgets: vi.fn(real.evaluateBudgets) }
+})
 
 import { bootPgBackend, closePgBackend, PgBootError } from '../../db/pg-boot.js'
 import { dbx } from '../../db/facade.js'
 import { runAs } from '../../db/context.js'
 import { runBudgetAlertCheck } from '../../costops/budget-alert-runner.js'
-import { runBudgetAlertJob } from '../../costops/budget-alert-job.js'
+import { runBudgetAlertCli, runBudgetAlertJob } from '../../costops/budget-alert-job.js'
+import { evaluateBudgets } from '../../costops/budget-alert.js'
 import { applyPgMigrations } from '../../db-migrations-pg.js'
 import { resetPgCredentialCaptureForTests } from '../../db/pg/url.js'
 import { logger } from '../../logger.js'
@@ -125,6 +132,8 @@ describe('under the system job (the wrapper of the job): the check sees the data
     // the exact shape, not a subset: the line carries the backend, the count, and per budget only the id, the level and the
     // rounded ratio. A spend, an amount or any other key added to it fails here (no spend and no amount in the line)
     expect(line?.[0]).toEqual({ backend: 'pg', budgets: 1, results: [{ id: 'global-monthly', level: 'warning', ratio: 0.9 }] })
+    // neither the spend (900) nor the budget amount (1000) is anywhere in the line, whatever the key they sit under
+    expect(JSON.stringify(line?.[0])).not.toMatch(/900|1000/)
   })
 })
 
@@ -193,20 +202,46 @@ describe('the entry point: the pool is ended, and a boot failure is a named, URL
     expect(await settlesTo(db, before)).toBe(before)
   })
 
-  it('a job that fails AFTER the boot still ends its pool (the close is on the error path too, not only on success)', async () => {
+  it('a job that fails AFTER the boot still ends its pool: the evaluation throws, the app role is back to zero connections', async () => {
     const db = await seededDb()
     await addBudget(db, { id: 'global-monthly', scope: 'global', amount: 1000 })
     await addRaw(db, 'default', 'agent-a', 600, 0)
-    // the budgets read succeeds, the spend read that follows it fails: the boot is complete when the job throws
-    await db.pool.query('ALTER TABLE token_usage_monthly RENAME TO token_usage_monthly_gone')
-    const before = await appConnections(db)
-
+    // the boot completes (the pool is open), then the evaluation step throws
+    vi.mocked(evaluateBudgets).mockRejectedValueOnce(new Error('evaluation failed on purpose'))
     const err = await runBudgetAlertJob(NOW_MS).then(() => undefined, (e: unknown) => e)
 
     expect(err).toBeInstanceOf(Error)
     expect(err).not.toBeInstanceOf(PgBootError)
-    expect(String((err as Error).message)).toMatch(/token_usage_monthly/)
-    expect(await settlesTo(db, before)).toBe(before)
+    expect(String((err as Error).message)).toBe('evaluation failed on purpose')
+    // the app role holds zero connections after the failed run: the pool the boot opened is closed on this path too
+    expect(await settlesTo(db, 0)).toBe(0)
+    expect(notify).not.toHaveBeenCalled()
+  })
+
+  it('the script run returns 1 when the job fails, and logs the failure', async () => {
+    const db = await seededDb()
+    await addBudget(db, { id: 'global-monthly', scope: 'global', amount: 1000 })
+    await addRaw(db, 'default', 'agent-a', 600, 0)
+    const error = vi.spyOn(logger, 'error')
+    vi.mocked(evaluateBudgets).mockRejectedValueOnce(new Error('evaluation failed on purpose'))
+
+    expect(await runBudgetAlertCli(NOW_MS)).toBe(1)
+    expect(error.mock.calls.some((c) => c[1] === 'budget-alert-check failed')).toBe(true)
+    expect(notify).not.toHaveBeenCalled()
+  })
+
+  it('the script run returns 0 on a clean PostgreSQL run, and a warning in it notifies once', async () => {
+    const db = await seededDb()
+    await addBudget(db, { id: 'global-monthly', scope: 'global', amount: 1000 })
+    await addRaw(db, 'default', 'agent-a', 600, 0)
+    await addRaw(db, 'tenant-t1', 'agent-b', 300, 0) // 900 of 1000: the warning
+
+    const info = vi.spyOn(logger, 'info')
+
+    expect(await runBudgetAlertCli(NOW_MS)).toBe(0)
+    // exit 0 is not enough: the run must have SEEN the budget (a blind run also exits 0), which the info line states
+    const line = info.mock.calls.find((c) => c[1] === 'budget-alert-check: evaluated')
+    expect(line?.[0]).toMatchObject({ backend: 'pg', budgets: 1, results: [{ id: 'global-monthly', level: 'warning' }] })
   })
 
   it('a connection that cannot be made refuses at the pool step, and the error holds no password', async () => {
