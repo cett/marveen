@@ -105,6 +105,7 @@ MAX_COUNT_KEYS = 20       # the route cap of `counts`
 MAX_COUNT_N = 10000       # the route cap of one count's n
 COUNTS_FLUSH_EVERY_S = 60
 COUNTS_MAX_LINES = 2000
+TS_MAX = 2 ** 53  # exclusive upper bound of a spooled deny's ts (see _valid_ts)
 STALE_CLAIM_S = 120       # a claimed file older than this belongs to a process that died; its lines are taken back
 
 
@@ -373,9 +374,18 @@ def _valid_count(e):
     return e.get('reason') == '' if e['decision'] == 'allow' else _member(e.get('reason'), REASONS)
 
 
+def _valid_ts(ts):
+    """A deny's time: a whole number of seconds from 0 up to (not including) 2**53, the largest range JSON carries exactly. The
+    route's rule is Number.isInteger (stricter than it looks: JSON.parse reads 10**400 as Infinity and the WHOLE batch is a 400),
+    so a forged line with a 310-digit ts, valid for a Python int, must be dropped HERE: kept, it would head every batch, make
+    every drain a 400 and fill the spool until every real deny is dropped as spool_full. Pinned against the route by
+    hooks-gate-audit-route.test.ts (parity cell)."""
+    return _is_int(ts) and 0 <= ts < TS_MAX
+
+
 def _valid_deny(e):
     # A line of the spool is only as trustworthy as the file: anything outside the fixed sets is dropped here, and the route checks again.
-    return (_member(e.get('gate'), GATES) and _member(e.get('reason'), REASONS) and _is_int(e.get('ts'))
+    return (_member(e.get('gate'), GATES) and _member(e.get('reason'), REASONS) and _valid_ts(e.get('ts'))
             and (e.get('trace_id') is None or clean_session_id(e.get('trace_id')) is not None) and isinstance(e.get('row'), bool))
 
 
@@ -476,6 +486,9 @@ def _send_pending(agent_id, start, own_deny=None):
     """Send the claimed counts file, and `own_deny` (this call's deny: its count, and its row when it wants one), in ONE call.
     A failure puts the counts back and spools the deny, then re-raises (record() swallows it)."""
     spool, counts_file, stamp = _spool_paths(agent_id)
+    # A counts claim older than STALE_CLAIM_S belongs to a process that died mid-send (the deny spool has had this from the
+    # start; without it an orphaned `.counts.<pid>.flushing` is never read again and the files pile up). Statistics only.
+    _recover_stale_claims(counts_file, COUNTS_MAX_LINES)
     claimed = _claim(counts_file)
     restore, tail, delivered = [], [], False
     try:
@@ -494,9 +507,11 @@ def _send_pending(agent_id, start, own_deny=None):
         delivered = True  # acknowledged: only now does `tail` (more keys than one call carries) go back to wait for the next call
     finally:
         if not delivered:
-            _append_entries(counts_file, restore, COUNTS_MAX_LINES)
+            # The EVIDENCE first: this call's own deny goes to the spool before the statistics are put back, so an alarm
+            # (SIGALRM) landing inside the put-back can cost a count, never the deny itself.
             if own_deny is not None:
                 _spool_denies(spool, [own_deny])
+            _append_entries(counts_file, restore, COUNTS_MAX_LINES)
         if claimed:
             _unlink(claimed)
     if tail:

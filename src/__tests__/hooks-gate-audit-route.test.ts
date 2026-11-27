@@ -356,6 +356,27 @@ describe('parity: the sets and caps are the ones of the Python hook', () => {
     expect([...REASONS].sort()).toEqual(python.reasons)
   })
 
+  it('the ts rule: every ts the hook keeps in its spool is one the route accepts (a ts the route would refuse must be dropped hook-side, or one forged line stops every drain)', async () => {
+    const nowLit = String(now())
+    const literals = ['0', '1', nowLit, String(2 ** 53 - 1), String(2 ** 53), '-1', '1' + '0'.repeat(400)]
+    const hook = JSON.parse(execFileSync('python3', ['-c', [
+      'import json, sys',
+      `sys.path.insert(0, ${JSON.stringify(join(__dirname, '..', '..', 'scripts', 'hooks'))})`,
+      'import gate_audit_lib as l',
+      `print(json.dumps({s: l._valid_ts(int(s)) for s in ${JSON.stringify(literals)}}))`,
+    ].join('\n')], { encoding: 'utf-8' })) as Record<string, boolean>
+    const route: Record<string, number> = {}
+    for (const lit of literals) {
+      const out = await post(`{"denies":[{"gate":"destructive-gate","reason":"denied","ts":${lit}}]}`)
+      route[lit] = out.status
+    }
+    // the rule the hook applies, and the rule it must not exceed
+    expect(hook).toEqual({ '0': true, '1': true, [nowLit]: true, [String(2 ** 53 - 1)]: true, [String(2 ** 53)]: false, '-1': false, ['1' + '0'.repeat(400)]: false })
+    for (const lit of literals) if (hook[lit]) expect(route[lit], `the hook keeps ts=${lit.slice(0, 20)} but the route refuses it`).toBe(200)
+    // and the case that matters: valid for a Python int, Infinity for JSON.parse, the whole batch a 400 (so it must never be sent)
+    expect(route['1' + '0'.repeat(400)]).toBe(400)
+  })
+
   it('the hook never builds a request the route would refuse: its batch and count caps equal the route caps', () => {
     expect(python.drain_batch).toBe(MAX_DENIES)
     expect(python.count_keys).toBe(MAX_COUNTS)

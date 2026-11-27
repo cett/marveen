@@ -278,6 +278,43 @@ class TestFailure(PgModeCase):
         self.deny(deny_row=False)
         self.assertEqual([e["row"] for e in self.lines(self.spool)], [False])
 
+    def test_the_own_deny_is_spooled_before_the_counts_are_put_back(self):
+        # An alarm (SIGALRM) landing inside the put-back must cost a count at most, never this call's own deny: the evidence is
+        # spooled FIRST. The put-back is made to blow up (as the alarm would), and the deny is already in the spool.
+        self.down()
+        lib.record("destructive-gate", "allow", "", agent_id="agent-a")  # a waiting count, so there is something to put back
+        real = lib._append_entries
+
+        def boom(path, entries, cap):
+            if path == self.counts:
+                raise KeyboardInterrupt("the alarm, inside the counts put-back")
+            return real(path, entries, cap)
+
+        lib._append_entries = boom
+        try:
+            with self.assertRaises(BaseException):
+                lib._send_pending("agent-a", time.monotonic(), {"gate": "tenant-skill-gate", "reason": "denied", "ts": int(time.time()), "trace_id": None, "row": True})
+        finally:
+            lib._append_entries = real
+        self.assertEqual([e["gate"] for e in self.lines(self.spool)], ["tenant-skill-gate"])
+
+    def test_an_orphaned_counts_claim_of_a_dead_process_is_taken_back_and_a_fresh_one_is_left_alone(self):
+        stale = self.counts + ".4242.flushing"
+        fresh = self.counts + ".4343.flushing"
+        self.put(stale, [{"gate": "destructive-gate", "decision": "allow", "reason": "", "n": 7}])
+        self.put(fresh, [{"gate": "destructive-gate", "decision": "allow", "reason": "", "n": 100}])
+        old = time.time() - lib.STALE_CLAIM_S - 60
+        os.utime(stale, (old, old))
+        d = self.serve()
+        self.assertTrue(self.deny("tenant-skill-gate"))
+        sent = {}
+        for call in d.log:
+            for c in call["body"]["counts"]:
+                sent[c["decision"]] = sent.get(c["decision"], 0) + c["n"]
+        self.assertEqual(sent, {"allow": 7, "deny": 1})  # the dead claim's 7 are counted once; the live process's 100 are not touched
+        self.assertTrue(os.path.exists(fresh))
+        self.assertFalse(os.path.exists(stale))
+
     def test_an_allow_is_not_spooled_and_the_count_waits_in_the_counts_file(self):
         self.down()
         self.assertFalse(lib.record("destructive-gate", "allow", "", agent_id="agent-a"))
@@ -394,6 +431,42 @@ class TestDrain(PgModeCase):
         self.deny("outgoing-copy-gate")
         drained = d.log[1]["body"]
         self.assertEqual([(r["gate"], r.get("trace_id")) for r in drained["denies"]], [("tenant-skill-gate", "sess-ok")])
+        self.assertEqual(self.lines(self.spool), [])
+
+    @staticmethod
+    def route_like(n, body):
+        """The real route's atomic rule for a ts: JSON.parse reads a 310-digit integer as Infinity, which is not Number.isInteger,
+        and ONE such row makes the WHOLE batch a 400 (nothing written)."""
+        for d in body.get("denies", []):
+            try:
+                if not isinstance(d["ts"], int) or float(d["ts"]) in (float("inf"), float("-inf")):
+                    return 400, {"error": "invalid_value"}, 0
+            except OverflowError:
+                return 400, {"error": "invalid_value"}, 0
+        return 200, {"ok": True, "counts": len(body["counts"]), "denies": len(body["denies"])}, 0
+
+    def test_a_forged_line_with_a_huge_ts_cannot_stop_the_drain_of_the_real_denies(self):
+        # valid for a Python int, Infinity for JSON.parse: kept, it would head every batch, every drain would be a 400 and the
+        # spool would fill until every real deny is dropped as spool_full (the same file, the same OS user, can forge it)
+        good = self.entry("tenant-skill-gate", trace_id="sess-real")
+        forged = [self.entry(ts=10 ** 400), self.entry(ts=-1), self.entry(ts=2 ** 53), self.entry(ts=2 ** 53 + 1)]
+        self.put(self.spool, forged + [good])
+        d = self.serve(self.route_like)
+        self.assertTrue(self.deny("destructive-gate"))
+        self.assertEqual(len(d.log), 2)
+        drained = d.log[1]["body"]
+        self.assertEqual([(r["gate"], r.get("trace_id")) for r in drained["denies"]], [("tenant-skill-gate", "sess-real")])
+        self.assertEqual(self.lines(self.spool), [])  # delivered AND the forged lines are gone, not put back to head the next batch
+
+    def test_the_ts_range_edges_are_kept(self):
+        # 0 and the largest exactly-representable second are valid: the rule is a range, not "positive and small"
+        low = {"gate": "tenant-skill-gate", "reason": "denied", "ts": 0, "trace_id": None, "row": True}
+        high = {"gate": "secret-read-gate", "reason": "denied", "ts": 2 ** 53 - 1, "trace_id": None, "row": True}
+        self.put(self.spool, [low, high])
+        d = self.serve(self.route_like)
+        self.deny("destructive-gate")
+        self.assertEqual(sorted((r["gate"], r["ts"]) for r in d.log[1]["body"]["denies"]),
+                         [("secret-read-gate", 2 ** 53 - 1), ("tenant-skill-gate", 0)])
         self.assertEqual(self.lines(self.spool), [])
 
     def test_the_drain_batch_fits_the_route_caps(self):
