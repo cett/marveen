@@ -129,6 +129,8 @@ BLOCKED = [
     ('interpreter imports the CLI module and calls its entry', 'npx tsx -e "import(\'./src/dashboard-user/cli.ts\').then(m=>m.runDashboardUserCli([\'remove\',\'bob\']))"'),
     ('interpreter names the entry function only', 'node -e "const { runDashboardUserCli } = require(process.env.X); runDashboardUserCli([\'remove\', \'bob\'])"'),
     ('interpreter names the CLI module path only', 'npx tsx -e "import(\'./src/dashboard-user/cli.ts\').then(m=>m.default)"'),
+    ('interpreter names the CLI module path in another case', 'npx tsx -e "import(\'./src/Dashboard-User//cli.ts\').then(m=>m.default)"'),
+    ('interpreter names the CLI module path with a ./ segment', 'npx tsx -e "import(\'./src/dashboard-user/./cli.ts\').then(m=>m.default)"'),
     ('npm run reset-password + --password-stdin', 'echo pw | npm run dashboard-user -- reset-password bob --password-stdin'),
     ('npm run remove', 'npm run dashboard-user -- remove bob'),
     ('npm run sessions:clear', 'npm run dashboard-user -- sessions:clear'),
@@ -1043,6 +1045,7 @@ URL_NAMED_BLOCKED = [
     ('PG URL prefix, isolated store, reset-password', 'MARVEEN_PG_URL=' + PG_URL_VALUE + ' MARVEEN_STORE_DIR={O} npm run dashboard-user -- reset-password bob'),
     ('migrate URL prefix, isolated store, add', 'MARVEEN_PG_MIGRATE_URL=' + PG_URL_VALUE + ' MARVEEN_STORE_DIR={O} npx tsx scripts/dashboard-user.ts add bob --password-stdin'),
     ('PG URL via env form, isolated store, remove', 'env MARVEEN_PG_URL=' + PG_URL_VALUE + ' MARVEEN_STORE_DIR={O} npm run dashboard-user -- remove bob'),
+    ('PG URL exported earlier in the line, isolated store, remove', 'export MARVEEN_PG_URL=' + PG_URL_VALUE + '; MARVEEN_STORE_DIR={O} npm run dashboard-user -- remove bob'),
 ]
 # the mode cannot be read: fail closed, the isolated store does not exempt the command
 FAIL_CLOSED_BLOCKED = [
@@ -1408,13 +1411,16 @@ class TestLexer(unittest.TestCase):
 # MUTATION: break the gate in one spot at a time; the table must notice every time
 # ---------------------------------------------------------------------------------------------
 MUTANTS = [
+    ('CLI module path matched case-sensitively', "(?![\\w-])', re.I)", "(?![\\w-])')"),
+    ('CLI module path check removed', '    if not python and CLI_MODULE_PATH.search(text):', '    if False:'),
+    ('PG variable set earlier in the line ignored', '    texts.extend(str(k) for k in state.vars)', '    pass'),
     # PostgreSQL install: the isolated-store exemption (fixup A1) and the CLI module entry (fixup A2)
     ('PG mode does not void the isolated exemption', ' and not _pg_voids_isolation(seg, words, state)', ''),
     ('PG URL name in the command does not void it', '    if any(_PG_URL_NAME.search(t) for t in texts):\n        return True', '    if False:\n        return True'),
     ('PG mode unreadable fails open', '    except Exception:\n        return True   # fail closed', '    except Exception:\n        return False   # fail open'),
     ('PG mode answer ignored', '        return bool(hook_pg_mode.pg_mode())', '        return False'),
-    ('CLI entry name not a mutator', "|consumeEnrollCode|runDashboardUserCli)\\b'", "|consumeEnrollCode)\\b'"),
-    ('CLI module path not a mutator', '|dashboard-user[/\\\\]cli(?:\\.[jt]s)?(?![\\w-])', ''),
+    ('CLI entry name not a mutator', "|consumeEnrollCode|runDashboardUserCli)\\b|password-hash", "|consumeEnrollCode)\\b|password-hash"),
+    ('CLI module path pattern names another folder', "CLI_MODULE_PATH = re.compile(r'dashboard-user", "CLI_MODULE_PATH = re.compile(r'disabled-mutant"),
     ('npx drops the package flags before the interpreter check', '    inner = [pkg] + _args_after(args, pkg)', '    inner = [pkg] + rest[1:]'),
     ('CLI decision never blocks', 'def _cli_decision(rest, state):\n    if len(rest) == 1', 'def _cli_decision(rest, state):\n    return\n    if len(rest) == 1'),
     ('list exemption widened to anything', "if len(rest) == 1 and rest[0] == 'list':", "if rest and rest[0] == 'list':"),

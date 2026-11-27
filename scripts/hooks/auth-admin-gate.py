@@ -964,9 +964,10 @@ APP_MUTATORS = re.compile(
     r'|securityReset|insertDeviceKey|deleteDeviceKeyByHash|deleteDeviceKeyById|deleteAllDeviceKeys'
     r'|setDeviceKeyTenant|enrollDashboardApiToken|insertApiToken|revokeApiTokensForAgent'
     r'|revokeApiToken|rotateApiToken|revokeAllForUser|revokeAllSessions|issueEnrollCode'
-    r'|consumeEnrollCode|runDashboardUserCli)\b'
-    # the CLI module itself: its exported entry runs every write verb, so naming its path in interpreter code is the same call
-    r'|dashboard-user[/\\]cli(?:\.[jt]s)?(?![\w-])|password-hash(?:\.js)?[\'"]')
+    r'|consumeEnrollCode|runDashboardUserCli)\b|password-hash(?:\.js)?[\'"]')
+# the CLI module itself: its exported entry runs every write verb, so naming its path in interpreter code is the same call.
+# Any case, repeated separators and `./` segments count (a file system may fold case, and `//` or `/./` name the same file).
+CLI_MODULE_PATH = re.compile(r'dashboard-user(?:[/\\]+(?:\.[/\\]+)*)cli(?:\.[jt]s)?(?![\w-])', re.I)
 EXEC_API = re.compile(
     r'subprocess|os\.(?:system|popen|exec\w*|spawn\w*)|child_process|execSync|spawnSync|execFileSync'
     r'|\bPopen\b|\bexecFile|Deno\.(?:run|Command)|Bun\.(?:spawn|\$)|\bsystem\s*\(|\bexec\s*\('
@@ -1085,6 +1086,8 @@ def inspect_code(text, state, python=False):
     if SPOOL_DIR_RE.search(text) and SPOOL_CODE_WRITE_RE.search(text):
         raise Deny('interpreter-kod, ami a gate-audit spool vedett utat nevezi meg es irast/torlest/mozgatast vegez '
                    '(olvasni szabad).')
+    if not python and CLI_MODULE_PATH.search(text):
+        raise Deny('interpreter-kod, ami a dashboard-user CLI modulja (src/dashboard-user/cli) betoltesevel hiv meg.')
     m = None if python else APP_MUTATORS.search(text)
     if m:
         raise Deny('az alkalmazas hitelesitest modosito fuggvenye interpreter-kodbol (%s).'
@@ -1620,6 +1623,9 @@ def _pg_voids_isolation(seg, words, state):
     if seg is not None:
         texts.extend(n for n, _v in seg.assigns)
         texts.extend(v for _n, v in seg.assigns)
+    # a variable set earlier in the same command line (export X=..., X=... ;) that names the URL, either as its name or as its value
+    texts.extend(str(k) for k in state.vars)
+    texts.extend(str(v) for v in state.vars.values())
     if any(_PG_URL_NAME.search(t) for t in texts):
         return True
     try:
