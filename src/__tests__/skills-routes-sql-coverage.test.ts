@@ -60,6 +60,7 @@ vi.mock('../web/multipart.js', () => ({
 vi.mock('../web/skill-regen.js', () => ({
   regenSingleSkillFile: vi.fn(),
   removeGeneratedSkillFile: vi.fn(),
+  resolveSkillPath: vi.fn(() => null),   // the admin list asks it where a row's SKILL.md would be (file_present)
 }))
 
 vi.mock('../logger.js', () => ({

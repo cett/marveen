@@ -4,6 +4,8 @@ import { t } from './i18n.js'
 import { agentApiName } from './agents.js'
 import { getErrorMessage } from './error-message.js'
 import { renderMarkdown } from './docs-research.js'
+import { can } from './rbac-client.js'
+import { mergeSkills, skillFlags, scanFailures, usageKey } from './skills-merge.js'
 
 
 let _openModal = null, _closeModal = null
@@ -280,17 +282,59 @@ function buildUsageTags(usage) {
   return parts.join('')
 }
 
+// user skills first, then plugin; by label inside each (the order the file scan gave)
+function _skillOrder(a, b) {
+  if (a.source !== b.source) return a.source === 'user' ? -1 : b.source === 'user' ? 1 : 0
+  return (a.label || a.name).localeCompare(b.label || b.name)
+}
+
+// the usage summary row of one merged entry (keyed by the folder name the usage hook records, see usageKey), or null
+function _usageOf(entry) {
+  const key = usageKey(entry)
+  return key ? skillUsageMap[key] || null : null
+}
+
+// a row that belongs to a tenant, not to the fleet (the admin sees every tenant's rows, so each one carries its tenant)
+function _isTenantSkill(entry) {
+  return entry.origin === 'sql' && !!entry.tenantId && entry.tenantId !== 'fleet'
+}
+
+function _renderScanWarning(failures) {
+  const el = document.getElementById('skillsScanWarning')
+  if (!el) return
+  el.hidden = failures.length === 0
+  el.textContent = failures.length
+    ? t('skills.scan_failed', { status: failures.map((f) => `${f.path} ${f.status}`).join(', ') })
+    : ''
+}
+
 export async function loadGlobalSkills() {
+  _renderScanWarning([])
   skillsGrid.innerHTML = `<div class="connector-loading"><span class="spinner"></span> ${t('skills.loading')}</div>`
   skillsStats.innerHTML = ''
   try {
-    const [globalRes, localRes, usageSummaryRes] = await Promise.all([
-      fetch('/api/skills'),
-      fetch('/api/skills/local'),
+    // The list of record is the database (GET /api/skills/sql, scoped by the server to what the caller may see). The file scans
+    // are machine-wide: only an admin calls them, and only for what the database does not hold (plugin skills, files that have
+    // no row yet). A skill whose file is gone stays on the screen, with a badge.
+    const isAdmin = await can('admin:all')
+    _skillsIsAdmin = isAdmin
+    const [sqlRes, globalRes, localRes, usageSummaryRes] = await Promise.all([
+      fetch('/api/skills/sql'),
+      isAdmin ? fetch('/api/skills') : Promise.resolve(null),
+      isAdmin ? fetch('/api/skills/local') : Promise.resolve(null),
       fetch('/api/skill-usage/summary'),
     ])
-    globalSkills = await globalRes.json()
-    localAgentSkills = localRes.ok ? await localRes.json() : []
+    if (!sqlRes.ok) throw new Error('GET /api/skills/sql failed: ' + sqlRes.status)
+    const sqlRows = (await sqlRes.json()).skills || []
+    const userScan = globalRes && globalRes.ok ? await globalRes.json() : []
+    const localScan = localRes && localRes.ok ? await localRes.json() : []
+    // an admin scan that did not answer is told, not swallowed: plugin skills and files without a row are missing from the list
+    const failures = scanFailures({ globalRes, localRes })
+    _renderScanWarning(failures)
+    if (failures.length) showToast(t('skills.scan_failed.toast'))
+    const merged = mergeSkills({ sqlRows, userScan, localScan })
+    globalSkills = merged.filter((s) => s.source !== 'agent').sort(_skillOrder)
+    localAgentSkills = merged.filter((s) => s.source === 'agent').sort(_skillOrder)
     const usageRows = usageSummaryRes.ok ? await usageSummaryRes.json() : []
     skillUsageMap = Object.fromEntries(usageRows.map(r => [r.skill_name, r]))
     renderGlobalSkills()
@@ -441,14 +485,14 @@ function renderGlobalSkillsGrid() {
 
   if (skillsActiveSort === 'lru') {
     allFiltered.sort((a, b) => {
-      const ta = skillUsageMap[a.name]?.last_used_at || 0
-      const tb = skillUsageMap[b.name]?.last_used_at || 0
+      const ta = _usageOf(a)?.last_used_at || 0
+      const tb = _usageOf(b)?.last_used_at || 0
       return tb - ta
     })
   } else if (skillsActiveSort === 'usage') {
     allFiltered.sort((a, b) => {
-      const ca = skillUsageMap[a.name]?.count_30d || 0
-      const cb = skillUsageMap[b.name]?.count_30d || 0
+      const ca = _usageOf(a)?.count_30d || 0
+      const cb = _usageOf(b)?.count_30d || 0
       return cb - ca
     })
   }
@@ -482,16 +526,23 @@ function renderGlobalSkillsGrid() {
       : ''
 
     const mtimeStr = skill.mtime ? formatMtime(skill.mtime) : ''
-    const usage = skillUsageMap[skill.name] || null
+    const usage = _usageOf(skill)
     const usageTags = usage ? buildUsageTags(usage) : ''
 
     const displayName = skill.label || skill.name
+    const flags = skillFlags(skill)
+    const stateBadge = flags.badge
+      ? `<span class="connector-source-badge skills-badge--${flags.badge}" title="${escapeHtml(t('skills.badge.' + flags.badge + '.title'))}">${escapeHtml(t('skills.badge.' + flags.badge))}</span>`
+      : ''
+    const tenantBadge = _isTenantSkill(skill)
+      ? `<span class="connector-source-badge skills-badge--tenant" title="${escapeHtml(t('skills.badge.tenant.title'))}">${escapeHtml(t('skills.badge.tenant', { id: skill.tenantId }))}</span>`
+      : ''
     card.innerHTML = `
       <div class="skills-card-header">
         <div class="skills-card-icon">${icon}</div>
         <div class="skills-card-info">
           <div class="skills-card-name">
-            ${escapeHtml(displayName)} ${sourceBadge}
+            ${escapeHtml(displayName)} ${sourceBadge} ${tenantBadge} ${stateBadge}
             <span class="skill-health-dot ${healthClass}" title="${escapeHtml(healthTitle)}"></span>
           </div>
           <div class="skills-card-desc">${escapeHtml(skill.description || t('skills.no_description'))}</div>
@@ -505,7 +556,7 @@ function renderGlobalSkillsGrid() {
         ${mtimeStr ? `<span class="skill-card-mtime" title="${t('skills.mtime.title')}">${escapeHtml(mtimeStr)}</span>` : ''}
       </div>` : ''}
     `
-    card.addEventListener('click', () => openSkillDetail(skill.name, skill.label, skill.agentId || null))
+    card.addEventListener('click', () => openSkillDetail(skill))
     skillsGrid.appendChild(card)
   }
 
@@ -520,6 +571,10 @@ function renderGlobalSkillsGrid() {
 let _skillDetailCurrentName = null
 let _skillDetailCurrentAgentId = null
 let _skillDetailIsPlugin = false
+// the row id when the open skill is a database row (edit and delete go to /api/skills/sql/:id), else null (file or plugin)
+let _skillDetailSqlId = null
+let _skillDetailTenantId = null
+let _skillsIsAdmin = false
 
 function _skillDetailExitEdit() {
   const editor = document.getElementById('skillDetailEditor')
@@ -532,30 +587,46 @@ function _skillDetailExitEdit() {
   editBtn.disabled = false
 }
 
-async function openSkillDetail(skillName, displayLabel, agentId = null) {
+// `entry` is one merged skill (web/modules/skills-merge.js): a database row, a file without a row, or a plugin skill.
+async function openSkillDetail(entry) {
+  const skillName = entry.name
+  const displayLabel = entry.label
+  const agentId = entry.agentId || null
+  const flags = skillFlags(entry)
   _skillDetailCurrentName = skillName
   _skillDetailCurrentAgentId = agentId
+  _skillDetailSqlId = entry.origin === 'sql' ? entry.sqlId : null
+  _skillDetailTenantId = _isTenantSkill(entry) ? entry.tenantId : null
   _skillDetailExitEdit()
 
   document.getElementById('skillDetailTitle').textContent = displayLabel || skillName
 
   const editBtn = document.getElementById('skillDetailEditBtn')
   if (editBtn) {
-    editBtn.hidden = false
+    editBtn.hidden = !flags.canEdit
     editBtn.disabled = false
   }
+  const deleteBtn = document.getElementById('skillDetailDeleteBtn')
+  if (deleteBtn) deleteBtn.hidden = !(flags.canDelete && _skillsIsAdmin)
 
   try {
-    const detailUrl = agentId
-      ? `/api/skills/${encodeURIComponent(skillName)}?agent=${encodeURIComponent(agentId)}`
-      : `/api/skills/${encodeURIComponent(skillName)}`
+    // A database row is read from the row (its content is the truth, whether or not a file exists); a file without a row and a
+    // plugin skill are read from their folder, as before.
+    const detailUrl = _skillDetailSqlId
+      ? `/api/skills/sql/${encodeURIComponent(_skillDetailSqlId)}`
+      : agentId
+        ? `/api/skills/${encodeURIComponent(skillName)}?agent=${encodeURIComponent(agentId)}`
+        : `/api/skills/${encodeURIComponent(skillName)}`
     const res = await fetch(detailUrl)
     if (!res.ok) throw new Error('Failed to fetch skill detail')
     const detail = await res.json()
-    _skillDetailIsPlugin = detail.source === 'plugin'
-
-    // Hide edit button for plugin skills
-    if (editBtn) editBtn.hidden = _skillDetailIsPlugin
+    if (_skillDetailSqlId) {
+      detail.source = 'sql'
+      detail.keywords = entry.keywords
+      detail.agents = entry.agents
+      detail.mtime = detail.updated_at ? detail.updated_at * 1000 : entry.mtime
+    }
+    _skillDetailIsPlugin = entry.origin === 'plugin' || detail.source === 'plugin'
 
     // Description
     const descEl = document.getElementById('skillDetailDesc')
@@ -566,11 +637,13 @@ async function openSkillDetail(skillName, displayLabel, agentId = null) {
     if (metaEl) {
       const sourceLabel = detail.source === 'plugin'
         ? `plugin${detail.pluginPackage ? ' (' + escapeHtml(detail.pluginPackage) + ')' : ''}`
+        : detail.source === 'sql'
+        ? t('skills.source.sql')
         : detail.source === 'user'
         ? t('skills.source.user')
         : t('skills.source.unknown')
       const mtimeStr = detail.mtime ? formatMtime(detail.mtime) : ''
-      const usage = skillUsageMap[skillName]
+      const usage = _usageOf(entry)
       const usageHtml = usage ? `
         <div class="skill-detail-usage">
           <span>${usage.total_count}x ${t('skills.usage.total')}</span>
@@ -581,6 +654,8 @@ async function openSkillDetail(skillName, displayLabel, agentId = null) {
       metaEl.innerHTML = `
         <div class="skill-detail-source">${t('skills.detail.source_label')} <strong>${sourceLabel}</strong>${mtimeStr ? ` &middot; <span title="${escapeHtml(t('skills.mtime.title'))}">${escapeHtml(mtimeStr)}</span>` : ''}</div>
         <div class="skill-detail-note">${t('skills.detail.auto_available')}</div>
+        ${_skillDetailTenantId ? `<div class="skill-detail-note skills-badge--tenant">${escapeHtml(t('skills.detail.tenant', { id: _skillDetailTenantId }))}</div>` : ''}
+        ${flags.badge ? `<div class="skill-detail-note skills-badge--${flags.badge}">${escapeHtml(t('skills.badge.' + flags.badge + '.title'))}</div>` : ''}
         ${usageHtml}
       `
     }
@@ -673,15 +748,43 @@ async function openSkillDetail(skillName, displayLabel, agentId = null) {
     cancelBtn.addEventListener('click', _skillDetailExitEdit)
   }
 
+  // Delete: a database row only (DELETE /api/skills/sql/:id removes the row, its files and, when it is there, the generated
+  // SKILL.md). A file without a row is never deleted from here: that would touch the file only.
+  const deleteBtn = document.getElementById('skillDetailDeleteBtn')
+  if (deleteBtn) {
+    deleteBtn.addEventListener('click', async () => {
+      if (!_skillDetailSqlId) return
+      const confirmText = _skillDetailTenantId
+        ? t('skills.confirm.delete_tenant', { name: _skillDetailCurrentName, id: _skillDetailTenantId })
+        : t('skills.confirm.delete', { name: _skillDetailCurrentName })
+      if (!confirm(confirmText)) return
+      deleteBtn.disabled = true
+      try {
+        const res = await fetch(`/api/skills/sql/${encodeURIComponent(_skillDetailSqlId)}`, { method: 'DELETE' })
+        if (!res.ok) throw new Error('DELETE failed: ' + res.status)
+        showToast(t('skills.toast.deleted'))
+        _closeModal?.(skillDetailOverlay)
+        loadGlobalSkills()
+      } catch (err) {
+        console.error('Skill torles hiba:', err)
+        showToast(t('common.error_delete'))
+      } finally {
+        deleteBtn.disabled = false
+      }
+    })
+  }
+
   if (saveBtn) {
     saveBtn.addEventListener('click', async () => {
       if (!_skillDetailCurrentName || _skillDetailIsPlugin) return
       const newContent = editor.value
       saveBtn.disabled = true
       try {
-        const putUrl = _skillDetailCurrentAgentId
-          ? `/api/skills/${encodeURIComponent(_skillDetailCurrentName)}?agent=${encodeURIComponent(_skillDetailCurrentAgentId)}`
-          : `/api/skills/${encodeURIComponent(_skillDetailCurrentName)}`
+        const putUrl = _skillDetailSqlId
+          ? `/api/skills/sql/${encodeURIComponent(_skillDetailSqlId)}`
+          : _skillDetailCurrentAgentId
+            ? `/api/skills/${encodeURIComponent(_skillDetailCurrentName)}?agent=${encodeURIComponent(_skillDetailCurrentAgentId)}`
+            : `/api/skills/${encodeURIComponent(_skillDetailCurrentName)}`
         const res = await fetch(putUrl, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
