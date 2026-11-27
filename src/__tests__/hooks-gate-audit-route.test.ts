@@ -122,7 +122,7 @@ describe('validation: enforced on the server, a bad entry anywhere writes nothin
   for (const [name, body] of bad) {
     it(`${name}: 400 invalid_value and nothing is written, not even the valid first entry`, async () => {
       const first = { counts: [good], denies: [deny('secret-read-gate')] }
-      const merged = { ...first, ...(body as object) }
+      const merged: { counts: unknown[]; denies: unknown[] } = { ...first, ...(body as object) }
       // the bad part replaces its own list, and a valid sibling entry sits in front of it in the same list
       const b = body as { counts?: unknown[]; denies?: unknown[] }
       if (Array.isArray(b.counts)) merged.counts = [good, ...b.counts]
@@ -169,13 +169,13 @@ describe('what is written', () => {
     expect((await counts()).map((r) => r.count)).toEqual([7])
   })
 
-  it('a deny row has the fixed fields only: the token agent, PreToolUse, deny, the gate, the reason code, tenant NULL, the session id as trace_id', async () => {
+  it('a deny row has the fixed fields only: the token agent, PreToolUse, deny, the gate, the reason code, the tenant the SERVER resolved for the token agent (default for an agent that serves none), the session id as trace_id', async () => {
     const t = now()
     const out = await post({ denies: [{ gate: 'tenant-skill-gate', reason: 'input_too_large', ts: t, trace_id: 'sess-1234.ab_c:d' }] }, 'agent-a')
     expect(out.status).toBe(200)
     expect(await rows()).toEqual([{
       agent_id: 'agent-a', hook_type: 'PreToolUse', verdict: 'deny', tool_name: null, content_hash: null, reason: 'input_too_large',
-      session_id: null, trigger_source: 'tenant-skill-gate', tenant_id: null, trace_id: 'sess-1234.ab_c:d', ts: t,
+      session_id: null, trigger_source: 'tenant-skill-gate', tenant_id: 'default', trace_id: 'sess-1234.ab_c:d', ts: t,
     }])
   })
 

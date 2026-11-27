@@ -121,7 +121,12 @@ con.commit()
     const denies = await dbx.all<DenyRow>('SELECT agent_id, hook_type, verdict, tool_name, content_hash, reason, session_id, trigger_source, tenant_id, trace_id FROM hook_audit_log')
 
     expect(counts.map(sortKey).sort()).toEqual(sqlite.counts.map(sortKey).sort())
-    expect(denies.map(sortKey).sort()).toEqual(sqlite.denies.map(sortKey).sort())
+    // the ONE deliberate difference: the file writer leaves the tenant NULL (a gate process cannot resolve it), the route stamps the
+    // tenant the server resolves for the token's agent (agent-a serves none here: 'default')
+    const sansTenant = (r: DenyRow) => ({ ...r, tenant_id: undefined })
+    expect(denies.map((r) => sortKey(sansTenant(r))).sort()).toEqual(sqlite.denies.map((r) => sortKey(sansTenant(r))).sort())
+    expect(sqlite.denies.every((r) => r.tenant_id === null)).toBe(true)
+    expect(denies.every((r) => r.tenant_id === 'default')).toBe(true)
     // and the comparison is not vacuous: the sequence produced rows on both sides, with the unusable session ids dropped
     expect(sqlite.denies.length).toBeGreaterThan(3)
     expect(counts.length).toBeGreaterThan(5)

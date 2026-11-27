@@ -5,14 +5,15 @@
 // PostgreSQL mode it sends ONE request and this module writes both, in ONE transaction: a deny row never exists without its
 // count, and a partial write is never acknowledged (the same semantic as the file writer).
 //
-// ONE named system job, `hook-gate-audit`. Why a system context: a hook row has no tenant (a gate process cannot resolve it:
-// tenant_id stays NULL, as it always did), and under row-level security a NULL tenant on hook_audit_log is writable by a
+// ONE named system job, `hook-gate-audit`. Why a system context: a gate process cannot resolve a tenant, so the SERVER stamps it
+// from the token's agent (resolveWriteTenant; NULL for a shared agent with no fresh context), and under row-level security a NULL tenant on hook_audit_log is writable by a
 // privileged context only (class B), as is the whole of gate_decision_counts (class D2). The statements are FIXED text with bound
 // parameters, every value was validated by the route, and the agent id is the caller's TOKEN (the route takes it from the
 // token, never from the body).
 import { dbx } from './facade.js'
 import { systemJob } from './background-jobs.js'
 import { callerTraceId, currentTraceColumns } from './context.js'
+import { resolveWriteTenant } from './write-tenant.js'
 
 /** One running-count increment: how often `gate` ended in `decision` for `reason` since the last request. */
 export interface GateCountIncrement {
@@ -36,6 +37,10 @@ export interface GateDenyRow {
  */
 export const recordGateAudit = systemJob('hook-gate-audit', async (agentId: string, counts: GateCountIncrement[], denies: GateDenyRow[]): Promise<{ counts: number; denies: number }> => {
   const now = Math.floor(Date.now() / 1000)
+  // The tenant of a deny row is stamped HERE from the token's agent, never from the body: the agent's serving tenant, the one it serves,
+  // 'default' for a fleet-internal agent, and NULL only when the resolver says so (a shared agent with no fresh tenant context: the row
+  // says "unknown"). Resolved once per request, before the transaction (it reads agent_tenant_context and the availability).
+  const tenantId = denies.length > 0 ? await resolveWriteTenant(agentId) : null
   await dbx.tx(async (tx) => {
     for (const c of counts) {
       await tx.run(
@@ -51,8 +56,8 @@ export const recordGateAudit = systemJob('hook-gate-audit', async (agentId: stri
       const [traceId, spanId] = named ? [named, null] : currentTraceColumns()
       await tx.run(
         'INSERT INTO hook_audit_log (ts, agent_id, hook_type, verdict, tool_name, content_hash, reason, session_id, trigger_source, tenant_id, trace_id, span_id) '
-        + 'VALUES (?, ?, ?, ?, NULL, NULL, ?, NULL, ?, NULL, ?, ?)',
-        d.ts, agentId, 'PreToolUse', 'deny', d.reason, d.gate, traceId, spanId,
+        + 'VALUES (?, ?, ?, ?, NULL, NULL, ?, NULL, ?, ?, ?, ?)',
+        d.ts, agentId, 'PreToolUse', 'deny', d.reason, d.gate, tenantId, traceId, spanId,
       )
     }
   })
