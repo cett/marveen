@@ -7,7 +7,7 @@ import { EventEmitter } from 'node:events'
 // The ledger only belongs to a registered agent: the fixtures below use these names.
 vi.mock('../web/agent-config.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../web/agent-config.js')>()),
-  listAgentNames: () => ['agent-a', 'agent-b'],
+  listAgentNames: () => ['agent-a', 'agent-b', 'Agent-A'],
 }))
 import { mkdtempSync, writeFileSync, existsSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
