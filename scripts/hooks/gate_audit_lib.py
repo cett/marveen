@@ -47,10 +47,14 @@ transaction and takes the agent from the TOKEN (this module presents the token o
 the event's cwd). A process with no trusted agent has no token to present: NOTHING is filed (see Q-H2b-b in the PR).
   * a deny (a row, or only a count) that cannot be delivered goes to the deny SPOOL, store/.gate-audit-spool/<agent>.jsonl:
     bounded (SPOOL_MAX_ENTRIES, a full spool drops the NEW entry and prints one `spool_full` line on stderr), append-only,
-    claimed by rename on drain and put back on any failure. The spool is DELAYED DELIVERY, not evidence of record: any process
-    of the OS user can delete or forge a line there (a forged line can only file a fixed-set deny under the forging agent's
-    OWN id: the route sees to that). It is drained, in batches of DRAIN_BATCH, by the next successful route call of that
-    agent's gates; there is no daemon, an idle agent's spool waits for its next gate call.
+    claimed by rename on drain and put back on any failure. The spool is DELAYED DELIVERY, not evidence of record: every agent's
+    process runs as the same OS user, so any of them can delete a line from ANY agent's spool or forge one. A forged line is
+    filed under the id of the agent WHOSE spool it was written into (the drain presents that agent's token), never under the
+    forger's: a fixed-set deny (gate and reason from fixed sets, ts clamped by the route to the last 7 days, a trace id that
+    passed clean_session_id) can be attributed to another agent. Protecting the directory (the gates' protected-file lists)
+    or binding each line to its writer (an HMAC keyed with the agent's own token) would close it; neither is done here (open
+    question for the architect, see the PR). It is drained, in batches of DRAIN_BATCH, by the next successful route call of
+    that agent's gates; there is no daemon, an idle agent's spool waits for its next gate call.
   * an allow or an error is a STATISTIC, not evidence (decision Q1 A): it is added to a per-agent counts file and sent as ONE
     aggregated request at most once per COUNTS_FLUSH_EVERY_S (and together with any deny call). A failed send puts the counts
     back; a full counts file drops the new line. No per-call POST, so an allow costs a file append and no network.

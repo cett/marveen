@@ -5217,6 +5217,66 @@ paths:
           description: Invalid targets
         "403":
           description: The token names no agent, or the role may not use the hook routes
+  /hooks/gate-audit:
+    post:
+      tags: [hooks]
+      operationId: recordHookGateAudit
+      summary: The audit write of the PreToolUse gates on a PostgreSQL install
+      description: >
+        Used by scripts/hooks/gate_audit_lib.py (stdlib Python, no database driver) on a PostgreSQL install: the decision
+        counts and the deny rows of the seven PreToolUse gates, in ONE request and ONE transaction (a deny row never exists
+        without its count, a partial write is never acknowledged). The agent is the one the bearer token names (an
+        `agent_id` in the body or in an entry is ignored); a token that names no agent is a 403. A row carries the fixed
+        fields only: the gate (a fixed set), the decision, a reason CODE (a fixed set, never free text) and, on a deny row,
+        the session id as the trace id (a `w3c-` value is dropped); there is no field for a command, a path or a recipient.
+        `ts` outside [now - 7 days, now + 60 s] is filed with the server time. The rows carry no tenant (a gate process
+        cannot resolve it), as before. PROTECTION TOUCHED: this route is EXEMPT from the missing-tenant-context refusal
+        (a shared agent with no fresh context may call it), as are tenant-facts and tenant-context; it reads nothing of the
+        tenant and writes only fixed-set audit rows for the caller's own agent id. Fleet-agent or admin token (`hook-gate:write`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                counts:
+                  type: array
+                  maxItems: 20
+                  items:
+                    type: object
+                    required: [gate, decision, reason, n]
+                    properties:
+                      gate: { type: string, enum: [destructive-gate, secret-read-gate, email-approval-gate, outgoing-copy-gate, auth-admin-gate, tenant-skill-gate, shell-rescan-guard] }
+                      decision: { type: string, enum: [allow, deny, error] }
+                      reason: { type: string, description: "Empty for allow; one of denied, gate_error, exit_code, input_too_large for deny and error" }
+                      n: { type: integer, minimum: 1, maximum: 10000 }
+                denies:
+                  type: array
+                  maxItems: 50
+                  items:
+                    type: object
+                    required: [gate, reason, ts]
+                    properties:
+                      gate: { type: string, enum: [destructive-gate, secret-read-gate, email-approval-gate, outgoing-copy-gate, auth-admin-gate, tenant-skill-gate, shell-rescan-guard] }
+                      reason: { type: string, enum: [denied, gate_error, exit_code, input_too_large] }
+                      ts: { type: integer }
+                      trace_id: { type: string, nullable: true }
+      responses:
+        "200":
+          description: Written (counts and rows, one transaction)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  counts: { type: integer }
+                  denies: { type: integer }
+        "400":
+          description: An invalid entry (nothing is written)
+        "403":
+          description: The token names no agent, or the role may not use the hook routes
   /hooks/watchdog-facts:
     post:
       tags: [hooks]
