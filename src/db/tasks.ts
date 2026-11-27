@@ -948,6 +948,40 @@ export async function deleteSkill(id: string, actor: SkillActor, meta: SkillWrit
   }
 }
 
+/** Thrown inside the global delete when a write that must have hit rows hit none or a different number: rolls everything back. */
+export class SkillDeleteWroteNothing extends Error {}
+
+/**
+ * Deletes ONE GLOBAL skill (is_global = 1) in the named system context `D2_JOBS.deleteGlobalSkill`. Only a privileged context may
+ * write or delete a global row, and the revision row of a global skill is refused to every tenant context (migration 0009), so
+ * a caller that runs in a tenant context (the main-agent bearer: role admin, tenant default) cannot use `deleteSkill`: its
+ * revision INSERT is refused (42501) and its DELETEs silently hit 0 rows.
+ *
+ * The DECISION is not made here. The route decided who may delete (a global admin, a `global/<x>` id) and read the row; this
+ * function only lifts the context for that one transaction, and it takes the tenant the row had for the route (`expected`) and
+ * filters on it and on is_global in SQL, so a row that changed between the route's read and here (another tenant, no longer
+ * global, gone) is `false`, never a delete. One transaction, the row locked FIRST; the revision row (carrying the SKILL's tenant,
+ * not the caller's) and the deletes are atomic. A DELETE that hits no row, or fewer files than were there, is an error that
+ * rolls everything back, never a quiet 200 over a row that is still there.
+ */
+export async function deleteGlobalSkill(id: string, actor: SkillActor, expected: { tenant_id: string }, meta: SkillWriteMeta = {}): Promise<boolean> {
+  return runAs.system(D2_JOBS.deleteGlobalSkill, () => dbx.tx(async (tx) => {
+    // The lock comes first (PostgreSQL: FOR UPDATE; SQLite: the transaction lock already does this), so the checks below are made on the committed row.
+    await lockSkillForRevision(tx, id)
+    const skill = await tx.get<SkillRow>('SELECT * FROM skills WHERE id = ? AND is_global = 1 AND tenant_id = ?', id, expected.tenant_id)
+    if (!skill) return false
+    // The delete row keeps the last text and the file-set hash, so it is written while both still exist.
+    await ensureSkillBaseline(tx, id)
+    await writeSkillRevision(tx, { skill, action: 'delete', actor, ...meta })
+    const fileCount = (await tx.all('SELECT rel_path FROM skill_files WHERE skill_id = ?', id)).length
+    const filesDeleted = (await tx.run('DELETE FROM skill_files WHERE skill_id = ?', id)).changes
+    if (filesDeleted !== fileCount) throw new SkillDeleteWroteNothing(`skill_files: ${filesDeleted} of ${fileCount} rows deleted`)
+    const changes = (await tx.run('DELETE FROM skills WHERE id = ? AND is_global = 1 AND tenant_id = ?', id, expected.tenant_id)).changes
+    if (changes !== 1) throw new SkillDeleteWroteNothing(`skills: ${changes} rows deleted, expected 1`)
+    return true
+  }))
+}
+
 // --- skill companion files (migration 0063, rules in src/skill-files.ts) ---
 
 export interface SkillFileRow {
