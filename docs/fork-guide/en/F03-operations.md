@@ -607,8 +607,13 @@ role that are older than 24 hours (the summary line says how many); the details 
 
 The comparison rule (both sides counted through the backup role, which bypasses row-level security; the restored copy is
 restored with `--no-owner --no-acl` and the script grants the backup role SELECT on it, as the drill role, right after the
-restore; the live database is ahead by the hours since the dump): restored rows greater than live FAIL; a restored table with no rows while live has some
-FAIL; live ahead of restored by more than `max(2 rows, 10 percent)` FAIL (`PG_DRILL_TOL_ABS`, `PG_DRILL_TOL_PCT`).
+restore; the live database moves by the hours since the dump, in BOTH directions: it grows, and retention jobs such as the
+workspace-docs TTL sweeper legitimately delete rows): a restored table with no rows while live has some FAIL, and so does a live table
+with no rows while the restored copy has some (a wipe, or the backup role cannot see the rows), whatever the tolerance; the difference
+between live and restored, in either direction, above `max(2 rows, 10 percent of the restored rows)` FAIL (`PG_DRILL_TOL_ABS`,
+`PG_DRILL_TOL_PCT`; "live is ahead of restored by more than ..." or "live shrank: restored R > live L by more than ...").
+A table that differs but stays inside the tolerance is OK and is named in the summary line, live minus restored:
+`-- drift: workspace_docs -7, memories +2`.
 
 Credentials are read from `PGPASSFILE` files, never from a command line: `~/.pgpass-marveen-backup` (the nightly dump's) and
 `~/.pgpass-marveen-drill` (mode 0600, one line `127.0.0.1:5432:*:marveen_drill:<drill-password>`). The one-time database

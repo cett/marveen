@@ -7,8 +7,9 @@
 // no membership in marveen_owner, no grant on the live database (the dump is restored with --no-owner --no-acl). No credential is
 // real: the passwords are the harness-only throwaway values, written into 0600 password files, never into argv.
 //
-// Cells: OK (equal; live ahead inside the tolerance; the fixed default list); FAIL (live ahead beyond the tolerance;
-// restored has more rows than live; restored copy empty while live is not, whatever the tolerance; stale dump; checksum
+// Cells: OK (equal; live ahead OR shrunk inside the tolerance, with the drift named in the summary; the fixed default list);
+// FAIL (live ahead beyond the tolerance; live shrunk beyond the tolerance, the percent arm too;
+// restored copy empty while live is not, whatever the tolerance; stale dump; checksum
 // mismatch or missing sidecar; no dump or only a probe dump; a restore that fails half way; an unknown table); the
 // throwaway database is dropped after every one of them, success or failure; each missing precondition is named and
 // nothing is created; no password in the output and none in the script. Added by the review fixup: the password-file mode
@@ -170,6 +171,12 @@ async function insertMemories(n: number, tag: string): Promise<void> {
   }
 }
 
+/** Back to exactly the rows the seeded dump holds (seed-0 .. seed-4), whatever a cell inserted or deleted. */
+async function resetMemories(): Promise<void> {
+  await live.pool.query('DELETE FROM memories')
+  await insertMemories(5, 'seed')
+}
+
 let dumpEmptyMemories: string
 let dumpSeeded: string
 
@@ -263,10 +270,89 @@ describe('pg-restore-drill.sh', () => {
       const r = runDrill(dumpSeeded)
       expect(r.status).toBe(0)
       expect(lastLine(r.stdout)).toContain('3 of 3 tables match')
+      expect(lastLine(r.stdout)).toMatch(/\) -- drift: memories \+2$/) // inside the tolerance, and the difference is named
     } finally {
       await live.pool.query("DELETE FROM memories WHERE content LIKE 'ahead-%'")
     }
   }, 90000)
+
+  it('OK: the live database SHRUNK by 2 rows (a retention sweeper deleted them since the dump) is inside the tolerance, and the drift is named with its sign', async () => {
+    await live.pool.query("DELETE FROM memories WHERE content IN ('seed-0', 'seed-1')")
+    try {
+      const r = runDrill(dumpSeeded)
+      expect(r.status).toBe(0)
+      expect(r.stderr).toBe('')
+      expect(lastLine(r.stdout)).toMatch(/^pg-restore-drill: OK marveen-20261127-033014\.dump -- 3 of 3 tables match \(restored \d+ rows, live \d+ rows\) -- drift: memories -2$/)
+      expect(await leftovers()).toEqual([])
+    } finally {
+      await resetMemories()
+    }
+  }, 90000)
+
+  it('OK: every drifting table is named, in the order of the list, and an unchanged table is not', async () => {
+    await live.pool.query("DELETE FROM memories WHERE content = 'seed-0'")
+    await live.pool.query("DELETE FROM system_config WHERE key = 'drill-test-key'")
+    try {
+      const r = runDrill(dumpSeeded)
+      expect(r.status).toBe(0)
+      expect(lastLine(r.stdout)).toMatch(/ -- drift: memories -1, system_config -1$/)
+      expect(lastLine(r.stdout)).not.toContain('tenants')
+    } finally {
+      await resetMemories()
+      await live.pool.query("INSERT INTO system_config (key, value) VALUES ('drill-test-key', 'v') ON CONFLICT DO NOTHING")
+    }
+  }, 90000)
+
+  it('FAIL: a live table with no rows while the restored copy has 1 fails at the default tolerance (a wipe, or the backup role cannot see the rows)', async () => {
+    await live.pool.query('DELETE FROM memories')
+    await insertMemories(1, 'lone')
+    const dumpOne = makeDump()
+    await live.pool.query('DELETE FROM memories')
+    try {
+      const r = runDrill(dumpOne) // 1 row of difference is inside max(2, 10 percent): only the mirror rule fails it
+      expect(r.status).toBe(1)
+      expect(r.stdout).toBe('')
+      expect(lastLine(r.stderr)).toContain('memories: live table is empty, restored has 1: a wipe, or the backup role cannot see the rows')
+      expect(await leftovers()).toEqual([])
+    } finally {
+      await resetMemories()
+    }
+  }, 90000)
+
+  it('FAIL: the live database shrank by MORE than the tolerance (3 rows of 5 at the defaults, 2 rows and 10 percent): the table is named', async () => {
+    await live.pool.query("DELETE FROM memories WHERE content IN ('seed-0', 'seed-1', 'seed-2')")
+    try {
+      const r = runDrill(dumpSeeded)
+      expect(r.status).toBe(1)
+      expect(r.stdout).toBe('')
+      expect(lastLine(r.stderr)).toMatch(/^pg-restore-drill: FAIL -- marveen-20261127-033014\.dump: 2 of 3 tables match -- memories: live shrank: restored 5 > live 2 by more than 2$/)
+      expect(await leftovers()).toEqual([])
+    } finally {
+      await resetMemories()
+    }
+  }, 90000)
+
+  it('the percent arm of the tolerance is symmetric too: 20 percent of 5 restored rows allows 1 row either way, not 2', async () => {
+    const strict = { PG_DRILL_TOL_ABS: '0', PG_DRILL_TOL_PCT: '20' }
+    await live.pool.query("DELETE FROM memories WHERE content = 'seed-0'")
+    try {
+      expect(runDrill(dumpSeeded, strict).status).toBe(0) // 1 fewer: inside
+      await live.pool.query("DELETE FROM memories WHERE content = 'seed-1'")
+      const shrunk = runDrill(dumpSeeded, strict)
+      expect(shrunk.status).toBe(1) // 2 fewer: outside
+      expect(lastLine(shrunk.stderr)).toContain('memories: live shrank: restored 5 > live 3 by more than 1')
+      await resetMemories()
+      await insertMemories(1, 'ahead') // 6 live of 5 restored: 1 more, inside
+      expect(runDrill(dumpSeeded, strict).status).toBe(0)
+      await insertMemories(1, 'ahead2') // 7 live: 2 more, outside
+      const grown = runDrill(dumpSeeded, strict)
+      expect(grown.status).toBe(1)
+      expect(lastLine(grown.stderr)).toContain('memories: live 7 is ahead of restored 5 by more than 1')
+      expect(await leftovers()).toEqual([])
+    } finally {
+      await resetMemories()
+    }
+  }, 180000)
 
   it('FAIL: the live database ahead by more than the tolerance (a row missing on the restored side) names the table', async () => {
     await insertMemories(1, 'ahead')
@@ -281,15 +367,15 @@ describe('pg-restore-drill.sh', () => {
     }
   }, 90000)
 
-  it('FAIL: the restored copy holds more rows than the live database (rows lost since the dump)', async () => {
+  it('FAIL: the restored copy holds more rows than the live database and the tolerance is zero (any row lost since the dump)', async () => {
     await live.pool.query("DELETE FROM memories WHERE content = 'seed-0'")
     try {
-      const r = runDrill(dumpSeeded)
+      const r = runDrill(dumpSeeded, { PG_DRILL_TOL_ABS: '0', PG_DRILL_TOL_PCT: '0' })
       expect(r.status).toBe(1)
-      expect(lastLine(r.stderr)).toContain('memories: restored 5 > live 4')
+      expect(lastLine(r.stderr)).toContain('memories: live shrank: restored 5 > live 4 by more than 0')
       expect(await leftovers()).toEqual([])
     } finally {
-      await insertMemories(1, 'seed-restore')
+      await resetMemories()
     }
   }, 90000)
 
