@@ -150,8 +150,12 @@ async function command(argv: string[], io: CliIo, backend: 'sqlite' | 'pg'): Pro
       const pw = await acquirePassword(fromStdin, io)
       const hash = await hashPassword(pw)
       await createDashboardUser(username, hash)
-      await logConfigChange('security.cli_user_add', null, username, 'cli')
-      await notifySecurityEvent(`🆕 Új dashboard-belépés a CLI-ből: "${username}". Ha nem te hoztad létre, a gépen fut valami a nevedben.`)
+      // the alert follows the write even when its audit row fails (the write already happened): try audit, finally alert
+      try {
+        await logConfigChange('security.cli_user_add', null, username, 'cli')
+      } finally {
+        await notifySecurityEvent(`🆕 Új dashboard-belépés a CLI-ből: "${username}". Ha nem te hoztad létre, a gépen fut valami a nevedben.`)
+      }
       io.stdout(`Created dashboard login "${username}".\n`)
       break
     }
@@ -169,8 +173,11 @@ async function command(argv: string[], io: CliIo, backend: 'sqlite' | 'pg'): Pro
       await revokeAllForUser(user.id)
       // Same audit + channel ping as the HTTP break-glass: a password reset
       // that skipped the current-password proof must always leave a trace.
-      await logConfigChange('security.break_glass_password_reset', null, user.username, 'cli')
-      await notifySecurityEvent(`🔑 Jelszó-reset a dashboard CLI-ből (break-glass): "${user.username}". Ha nem te voltál, a gépen fut valami a nevedben.`)
+      try {
+        await logConfigChange('security.break_glass_password_reset', null, user.username, 'cli')
+      } finally {
+        await notifySecurityEvent(`🔑 Jelszó-reset a dashboard CLI-ből (break-glass): "${user.username}". Ha nem te voltál, a gépen fut valami a nevedben.`)
+      }
       io.stdout(`Password reset for "${username}"; all their sessions were revoked.\n`)
       break
     }
@@ -196,15 +203,19 @@ async function command(argv: string[], io: CliIo, backend: 'sqlite' | 'pg'): Pro
       // Neither engine has a foreign key from auth_sessions to dashboard_users, so the delete does not take the sessions
       // with it: a session opened between the two steps would survive. The second revoke closes that window (idempotent).
       await revokeAllForUser(user.id)
-      await logConfigChange('security.cli_user_remove', null, username, 'cli')
-      await notifySecurityEvent(`🗑 Dashboard-belépés törölve a CLI-ből: "${username}". Ha nem te voltál, a gépen fut valami a nevedben.`)
+      try {
+        await logConfigChange('security.cli_user_remove', null, username, 'cli')
+      } finally {
+        await notifySecurityEvent(`🗑 Dashboard-belépés törölve a CLI-ből: "${username}". Ha nem te voltál, a gépen fut valami a nevedben.`)
+      }
       const remaining = (await listDashboardUsers()).length
       io.stdout(`Removed "${username}".${remaining === 0 ? ' No users left -- back to token-only mode.' : ''}\n`)
       break
     }
     case 'security:reset': {
-      const r = await securityReset('cli')
-      await notifySecurityEvent(`🚨 Biztonsági reset futott a dashboard CLI-ből: ${r.deviceKeysRevoked} eszközkulcs visszavonva, ${r.sessionsCleared} böngésző-munkamenet törölve. A hozzáférési token és a jelszavak változatlanok.`)
+      // the alert goes out after the revocations, also when the audit row of the reset fails (securityReset calls it in a finally)
+      const r = await securityReset('cli', (res) =>
+        notifySecurityEvent(`🚨 Biztonsági reset futott a dashboard CLI-ből: ${res.deviceKeysRevoked} eszközkulcs visszavonva, ${res.sessionsCleared} böngésző-munkamenet törölve. A hozzáférési token és a jelszavak változatlanok.`))
       io.stdout(
         `Security reset done: ${r.deviceKeysRevoked} device key(s) revoked, ${r.sessionsCleared} browser session(s) cleared.\n` +
         'Passwords and the dashboard token are untouched. Devices must be re-enrolled with new keys.\n',
@@ -220,15 +231,22 @@ async function command(argv: string[], io: CliIo, backend: 'sqlite' | 'pg'): Pro
           throw new CliExit(1)
         }
         await revokeAllForUser(user.id)
-        await logConfigChange('security.cli_sessions_clear', null, username, 'cli')
-        await notifySecurityEvent(`🔒 Böngésző-munkamenetek törölve a CLI-ből: "${username}". Ha nem te voltál, a gépen fut valami a nevedben.`)
+        try {
+          await logConfigChange('security.cli_sessions_clear', null, username, 'cli')
+        } finally {
+          await notifySecurityEvent(`🔒 Böngésző-munkamenetek törölve a CLI-ből: "${username}". Ha nem te voltál, a gépen fut valami a nevedben.`)
+        }
         io.stdout(`Cleared all sessions for "${username}".\n`)
       } else {
         // Cache and table together: the same call the dashboard's own revocation makes (a raw DELETE would leave the
         // cache of this process out of it, and has no PostgreSQL form).
         await revokeAllSessions()
-        await logConfigChange('security.cli_sessions_clear', null, 'all', 'cli')
-        await notifySecurityEvent('🔒 Minden böngésző-munkamenet törölve a CLI-ből. Ha nem te voltál, a gépen fut valami a nevedben.')
+        // the target of "all sessions" is written in parentheses, so it cannot be read as a user named all
+        try {
+          await logConfigChange('security.cli_sessions_clear', null, '(all)', 'cli')
+        } finally {
+          await notifySecurityEvent('🔒 Minden böngésző-munkamenet törölve a CLI-ből. Ha nem te voltál, a gépen fut valami a nevedben.')
+        }
         io.stdout('Cleared ALL dashboard login sessions.\n')
       }
       break

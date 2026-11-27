@@ -400,7 +400,7 @@ describe('audit rows and channel pings of the write verbs (a successful write on
     expect(await runDashboardUserCli(['sessions:clear'], capture().io)).toBe(0)
     expect(await audit(db, 'security.cli_sessions_clear')).toEqual([
       { new_value: 'user-a', actor: 'cli' },
-      { new_value: 'all', actor: 'cli' },
+      { new_value: '(all)', actor: 'cli' },
     ])
 
     expect(await runDashboardUserCli(['remove', 'user-b'], capture().io)).toBe(0)
@@ -430,6 +430,71 @@ describe('audit rows and channel pings of the write verbs (a successful write on
     expect(await runDashboardUserCli(['add', 'user-a', '--password-stdin'], capture(PASSWORD).io)).toBe(1)
     expect(await audit(db, 'security.cli_user_add')).toEqual([])
     expect(ping).not.toHaveBeenCalled()
+  })
+})
+
+describe('the alert follows the write even when its audit row fails (the exit code is still 1)', () => {
+  // the audit table refuses every insert: a trigger in the test database, made by the owner of the server
+  async function refuseAudit(db: PgTestDb): Promise<void> {
+    await db.pool.query("CREATE FUNCTION refuse_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'audit refused (test)'; END $$")
+    await db.pool.query('CREATE TRIGGER refuse_audit BEFORE INSERT ON config_change_log FOR EACH ROW EXECUTE FUNCTION refuse_audit()')
+  }
+
+  it('add: the login exists, the audit write fails (exit 1), the alert still goes out once', async () => {
+    const db = await freshDb()
+    await refuseAudit(db)
+
+    const out = capture(PASSWORD)
+    expect(await runDashboardUserCli(['add', 'user-a', '--password-stdin'], out.io)).toBe(1)
+    expect(out.stderr()).toContain('audit refused (test)')
+    expect(await countOf(db, "SELECT COUNT(*) AS n FROM dashboard_users WHERE username = 'user-a'")).toBe(1)
+    expect(ping).toHaveBeenCalledTimes(1)
+    expect(ping.mock.calls[0]![0]).toContain('"user-a"')
+  })
+
+  it('reset-password: the hash changed, the audit write fails (exit 1), the alert still goes out once', async () => {
+    const db = await freshDb()
+    await seedUser(db, 'user-a', 'admin')
+    await refuseAudit(db)
+
+    expect(await runDashboardUserCli(['reset-password', 'user-a', '--password-stdin'], capture(NEW_PASSWORD).io)).toBe(1)
+    const stored = (await db.pool.query("SELECT password_hash FROM dashboard_users WHERE username = 'user-a'")).rows[0].password_hash as string
+    expect(await verifyPassword(NEW_PASSWORD, stored)).toBe(true)
+    expect(ping).toHaveBeenCalledTimes(1)
+  })
+
+  it('remove: the login is gone, the audit write fails (exit 1), the alert still goes out once', async () => {
+    const db = await freshDb()
+    await seedUser(db, 'user-a', 'admin')
+    await refuseAudit(db)
+
+    expect(await runDashboardUserCli(['remove', 'user-a'], capture().io)).toBe(1)
+    expect(await countOf(db, 'SELECT COUNT(*) AS n FROM dashboard_users')).toBe(0)
+    expect(ping).toHaveBeenCalledTimes(1)
+  })
+
+  it('sessions:clear with a user: the sessions are gone, the audit write fails (exit 1), the alert still goes out once', async () => {
+    const db = await freshDb()
+    const a = await seedUser(db, 'user-a', 'admin')
+    await seedSessions(db, a, 'user-a', 2)
+    await refuseAudit(db)
+
+    expect(await runDashboardUserCli(['sessions:clear', 'user-a'], capture().io)).toBe(1)
+    expect(await countOf(db, 'SELECT COUNT(*) AS n FROM auth_sessions')).toBe(0)
+    expect(ping).toHaveBeenCalledTimes(1)
+  })
+
+  it('security:reset: the revocations happened, the audit write fails (exit 1), the alert with the counts still goes out once', async () => {
+    const db = await freshDb()
+    const a = await seedUser(db, 'user-a', 'admin')
+    await seedSessions(db, a, 'user-a', 2)
+    await seedDeviceKeys(db, ['device-a', 'device-b'])
+    await refuseAudit(db)
+
+    expect(await runDashboardUserCli(['security:reset'], capture().io)).toBe(1)
+    expect(await countOf(db, 'SELECT COUNT(*) AS n FROM device_keys')).toBe(0)
+    expect(ping).toHaveBeenCalledTimes(1)
+    expect(ping.mock.calls[0]![0]).toContain('2 eszközkulcs visszavonva')
   })
 })
 
