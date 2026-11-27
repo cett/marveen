@@ -964,7 +964,9 @@ APP_MUTATORS = re.compile(
     r'|securityReset|insertDeviceKey|deleteDeviceKeyByHash|deleteDeviceKeyById|deleteAllDeviceKeys'
     r'|setDeviceKeyTenant|enrollDashboardApiToken|insertApiToken|revokeApiTokensForAgent'
     r'|revokeApiToken|rotateApiToken|revokeAllForUser|revokeAllSessions|issueEnrollCode'
-    r'|consumeEnrollCode)\b|password-hash(?:\.js)?[\'"]')
+    r'|consumeEnrollCode|runDashboardUserCli)\b'
+    # the CLI module itself: its exported entry runs every write verb, so naming its path in interpreter code is the same call
+    r'|dashboard-user[/\\]cli(?:\.[jt]s)?(?![\w-])|password-hash(?:\.js)?[\'"]')
 EXEC_API = re.compile(
     r'subprocess|os\.(?:system|popen|exec\w*|spawn\w*)|child_process|execSync|spawnSync|execFileSync'
     r'|\bPopen\b|\bexecFile|Deno\.(?:run|Command)|Bun\.(?:spawn|\$)|\bsystem\s*\(|\bexec\s*\('
@@ -1496,7 +1498,9 @@ def _handle_npm_like(name, args, seg, state, depth):
         _cli_decision(_after_cli(_args_after(args, pkg)), state)
         return
     # npx tsx scripts/dashboard-user.ts ...  -> the package is itself a runner / interpreter
-    inner = [pkg] + rest[1:]
+    # the package's own arguments with their flags: `npx tsx -e "code"` must reach the interpreter check with its `-e` (the
+    # positional list above drops the flag and keeps its value as a plain word, so the code was never looked at)
+    inner = [pkg] + _args_after(args, pkg)
     check_words(inner, seg, state, depth)
 
 
@@ -1601,6 +1605,28 @@ def _handle_ssh(args, seg, state, depth):
         state.dir_changed = True
         for t in _stdin_texts(seg, state):
             check_command(t, state, depth + 1)
+
+
+# The PostgreSQL URL variable names. A command that sets or names one is not a throw-away run, whatever MARVEEN_STORE_DIR says.
+_PG_URL_NAME = re.compile(r'MARVEEN_PG_(?:MIGRATE_)?URL')
+
+
+def _pg_voids_isolation(seg, words, state):
+    """True when the isolated-store exemption must NOT apply. On a PostgreSQL install the CLI reads its database through the
+    install's URL (secret mount, environment or .env), never through the store dir, so a throw-away store dir protects
+    nothing there. A command that sets or names a PostgreSQL URL variable is not a throw-away run either. Fail closed:
+    a PostgreSQL answer that cannot be given counts as PostgreSQL."""
+    texts = [w.text for w in words]
+    if seg is not None:
+        texts.extend(n for n, _v in seg.assigns)
+        texts.extend(v for _n, v in seg.assigns)
+    if any(_PG_URL_NAME.search(t) for t in texts):
+        return True
+    try:
+        import hook_pg_mode
+        return bool(hook_pg_mode.pg_mode())
+    except Exception:
+        return True   # fail closed: the mode could not be read, so it is PostgreSQL
 
 
 def _isolated_store(seg, words, cmdword, state):
@@ -2535,7 +2561,7 @@ def check_words(words, seg, state, depth):
     name, cmdword, args, via = resolve_call(words)
     if name is None:
         return
-    state.isolated_cli = _isolated_store(seg, words, cmdword, state)
+    state.isolated_cli = _isolated_store(seg, words, cmdword, state) and not _pg_voids_isolation(seg, words, state)
     # --password-stdin anywhere (rule 2), whatever the command and wrapper
     if (any(a.text == '--password-stdin' for a in args) and name not in _LOGIN_OK
             and not state.isolated_cli):
