@@ -16,8 +16,9 @@ import { extractSkillArchive, quarantineStagedSkills, removeStage, type ExtractR
 import { MAX_SKILL_FILE_BYTES, MAX_SKILL_FILES_PER_SKILL, normalizeSkillRelPath } from '../../skill-files.js'
 import { skillActorFromRoute } from '../skill-actor.js'
 import type { RouteContext } from './types.js'
+import { isGlobalAdmin } from './global-admin.js'
 import {
-  createSkill, getSkill, updateSkill, deleteSkill, seedSkillIfAbsent,
+  createSkill, getSkill, updateSkill, deleteSkill, deleteGlobalSkill, seedSkillIfAbsent,
   listSkillsForTenant, listAllSkills, listLiveSkills,
   grantSkillAccess, revokeSkillAccess, listSkillAccess,
   listSkillFiles, getSkillFile, putSkillFile, deleteSkillFile, countSkillFiles,
@@ -845,8 +846,16 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     const companionFiles = await listSkillFiles(id)   // read before the delete removes them
     // Same compare-and-set as the PUT: the delete happens only while the row is live (a revoke can commit between the
     // read above and here); refused = the answer for an id that is not there, and no file is touched.
-    const deleted = await deleteSkill(id, actor, {}, { requireLive: !isAdmin })
-    if (!isAdmin && !deleted) { json(res, { error: 'not_found' }, 404); return true }
+    // A GLOBAL skill row (is_global = 1, id global/<x>) is written by a privileged database context only, and the main-agent
+    // bearer (an admin token of the default tenant) runs in a tenant context. Every authz decision above is already made, by the
+    // same code as before; the global admin deleting a global/<x> row goes through the named system job, which only lifts the
+    // database context for that one transaction (and filters on the tenant of the row read above). Everything else, a tenant
+    // admin included, takes the path it always took (a refusal by the database is a 403 at the request handler, never a 500).
+    const viaGlobalJob = isGlobalAdmin(ctx) && id.startsWith('global/') && existing.is_global === 1
+    const deleted = viaGlobalJob
+      ? await deleteGlobalSkill(id, actor, { tenant_id: existing.tenant_id })
+      : await deleteSkill(id, actor, {}, { requireLive: !isAdmin })
+    if ((viaGlobalJob || !isAdmin) && !deleted) { json(res, { error: 'not_found' }, 404); return true }
     // The file is only a generated cache of the row: drop it too, or the loader
     // keeps serving a skill the DB no longer has (a hand-edited file is kept).
     await removeGeneratedSkillFile(id, existing.content, existing.tenant_id, companionFiles)

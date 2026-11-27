@@ -97,6 +97,10 @@ export const D2_JOBS = {
   persistScheduleInflight: 'persist-schedule-inflight',
   // system_config: the stored desired run-state of the sub-agents (key agents_desired), changed by a start/stop request of a tenant or an agent token
   changeDesiredAgents: 'change-desired-agents',
+  // skills + skill_files + skill_revisions of ONE GLOBAL skill (is_global = 1): only a privileged context may write or delete a global
+  // row, and its revision row is refused to any tenant context. The route's authz (a global admin, the id, the row it read) is decided
+  // BEFORE; the db function takes the tenant that row had for the route and filters on it and on is_global in SQL (`deleteGlobalSkill`).
+  deleteGlobalSkill: 'delete-global-skill',
 } as const
 
 /**
