@@ -303,6 +303,22 @@ describe('pg-restore-drill.sh', () => {
     }
   }, 90000)
 
+  it('FAIL: a live table with no rows while the restored copy has 1 fails at the default tolerance (a wipe, or the backup role cannot see the rows)', async () => {
+    await live.pool.query('DELETE FROM memories')
+    await insertMemories(1, 'lone')
+    const dumpOne = makeDump()
+    await live.pool.query('DELETE FROM memories')
+    try {
+      const r = runDrill(dumpOne) // 1 row of difference is inside max(2, 10 percent): only the mirror rule fails it
+      expect(r.status).toBe(1)
+      expect(r.stdout).toBe('')
+      expect(lastLine(r.stderr)).toContain('memories: live table is empty, restored has 1: a wipe, or the backup role cannot see the rows')
+      expect(await leftovers()).toEqual([])
+    } finally {
+      await resetMemories()
+    }
+  }, 90000)
+
   it('FAIL: the live database shrank by MORE than the tolerance (3 rows of 5 at the defaults, 2 rows and 10 percent): the table is named', async () => {
     await live.pool.query("DELETE FROM memories WHERE content IN ('seed-0', 'seed-1', 'seed-2')")
     try {

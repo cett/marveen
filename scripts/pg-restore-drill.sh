@@ -19,6 +19,7 @@
 # the workspace-docs TTL sweeper and the other retention jobs delete rows legitimately, so the tolerance is symmetric):
 #   for every table of the list, restored = rows in the restored copy, live = rows in the live database;
 #     - restored = 0 and live > 0  FAIL  (an empty table after a restore is a failed restore, whatever the tolerance);
+#     - live = 0 and restored > 0  FAIL  (the mirror, also whatever the tolerance: a wipe, or the backup role cannot see the rows);
 #     - |live - restored| > allowed  FAIL, in BOTH directions, with allowed = max(PG_DRILL_TOL_ABS, restored * PG_DRILL_TOL_PCT / 100),
 #                                        defaults 2 rows and 10 percent: "live is ahead of restored by more than ..." when the
 #                                        live database grew past the tolerance, "live shrank: restored R > live L by more than ..."
@@ -321,6 +322,8 @@ for t in ${TABLES}; do
   allowed=$((r * TOL_PCT / 100)); [[ ${allowed} -lt ${TOL_ABS} ]] && allowed=${TOL_ABS}
   if [[ ${r} -eq 0 && ${l} -gt 0 ]]; then
     PROBLEMS="${PROBLEMS}${t}: restored copy is empty, live has ${l}; "
+  elif [[ ${l} -eq 0 && ${r} -gt 0 ]]; then
+    PROBLEMS="${PROBLEMS}${t}: live table is empty, restored has ${r}: a wipe, or the backup role cannot see the rows; "
   elif [[ $((l - r)) -gt ${allowed} ]]; then
     PROBLEMS="${PROBLEMS}${t}: live ${l} is ahead of restored ${r} by more than ${allowed}; "
   elif [[ $((r - l)) -gt ${allowed} ]]; then
