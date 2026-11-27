@@ -377,8 +377,10 @@ class GateProcessCase(unittest.TestCase):
     def test_an_unusable_session_id_leaves_no_trace_but_does_not_change_the_verdict(self):
         bad = {'w3c- value': 'w3c-' + HEX32, 'server id shape': HEX32, 'with a space': 'sess a', 'a number': 42, 'an object': {'a': 1}}
         for gate, event in DENY_EVENTS.items():
-            for name, value in bad.items():
-                db = self.fresh_db('bad-%s-%d' % (gate, abs(hash(name)) % 1000))
+            for index, (name, value) in enumerate(bad.items()):
+                # The index, not hash(name) % 1000: str hashes are randomised per process, two names could land on one
+                # file, and fresh_db would then run the migration twice on it (duplicate column trigger_source on CI).
+                db = self.fresh_db('bad-%s-%d' % (gate, index))
                 self.assertEqual(self.run_gate(gate, dict(event, session_id=value), db), 2, '%s %s' % (gate, name))
                 self.assertEqual(rows(db, 'SELECT trace_id FROM hook_audit_log'), [(None,)], '%s %s' % (gate, name))
 
