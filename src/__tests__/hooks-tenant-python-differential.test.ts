@@ -113,6 +113,107 @@ function runPy(script: string, payload: unknown, env: Record<string, string>): P
   })
 }
 
+// ---- the context watchdog (context-watchdog.py): the same two modes, against POST /api/hooks/watchdog-facts ----------------
+// SQLite mode reads a copy of the file (the hook's own queries); PG mode asks the real route over the live test database. For
+// every fixture both must inject the same HANDOFF text (the header clock aside). The deliberate difference between the modes (the
+// latest blackboard rows are the caller's TENANT's rows only, a row-level-security fact) cannot show on SQLite: it is pinned by
+// src/__tests__/pg/hooks-watchdog-facts.pg.test.ts. One deliberate clip is shown: the route bounds a card title at 300 characters.
+const WATCHDOG = join(HOOKS, 'context-watchdog.py')
+const WATCHDOG_PG = { MARVEEN_PG_URL: 'postgres://placeholder.invalid/db' }
+
+function runWatchdog(envVars: Record<string, string>, transcript: string): Promise<{ code: number; stdout: string; stderr: string }> {
+  return new Promise((done) => {
+    const p = spawn('python3', ['-I', WATCHDOG], { env: envVars })
+    let stdout = ''
+    let stderr = ''
+    p.stdout.on('data', (d) => { stdout += d })
+    p.stderr.on('data', (d) => { stderr += d })
+    p.on('close', (code) => done({ code: code ?? -1, stdout, stderr }))
+    p.stdin.end(JSON.stringify({ session_id: 'sess-1', tool_name: 'Bash', cwd: CWD, transcript_path: transcript }))
+  })
+}
+
+function writeTranscript(inputTokens: number): string {
+  const file = join(WORK, 'transcript.jsonl')
+  writeFileSync(file, JSON.stringify({
+    type: 'assistant', timestamp: '2026-09-08T10:00:00.000Z', sessionId: 'sess-1',
+    message: { id: 'msg_1', model: 'test-model', usage: { input_tokens: inputTokens, output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, content: [{ type: 'text', text: 'hi' }] },
+  }) + '\n')
+  return file
+}
+
+/** The injected HANDOFF text with the header line (it carries the clock) removed, or null when nothing was injected. */
+function injectedText(stdout: string): string | null {
+  if (!stdout.trim()) return null
+  const text = (JSON.parse(stdout) as { hookSpecificOutput: { additionalContext: string } }).hookSpecificOutput.additionalContext
+  return text.split('\n').slice(1).join('\n')
+}
+
+let wdSeq = 0
+const wdBoard = (agent: string, status: string, summary: string, updatedAt: number, taskRef: string | null = null) =>
+  dbx.run('INSERT INTO fleet_blackboard (id, agent_id, task_ref, status, summary, updated_at) VALUES (?, ?, ?, ?, ?, ?)', `bb-${++wdSeq}`, agent, taskRef, status, summary, updatedAt)
+const wdCard = (title: string, status: string, assignee: string | null, updatedAt: number, archivedAt: number | null = null) =>
+  dbx.run('INSERT INTO kanban_cards (id, title, status, assignee, created_at, updated_at, archived_at) VALUES (?, ?, ?, ?, ?, ?, ?)', `kc-${++wdSeq}`, title, status, assignee, updatedAt, updatedAt, archivedAt)
+const wdMsg = (from: string, content: string, createdAt: number) =>
+  dbx.run("INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at) VALUES (?, 'peer', ?, 'done', ?)", from, content, createdAt)
+const wdSetting = (agent: string, value: string) =>
+  dbx.run("INSERT INTO agent_settings (agent_id, setting_key, setting_value, updated_at) VALUES (?, 'context_restart_gate', ?, 1)", agent, value)
+
+interface WatchdogFixture { name: string; tokens: number; seed: () => Promise<void>; expectText: string[] }
+const WATCHDOG_FIXTURES: WatchdogFixture[] = [
+  {
+    name: 'a busy agent: own open row, four rows, three open cards, a last message, a configured threshold',
+    tokens: 200000,
+    seed: async () => {
+      await wdSetting('agent-a', JSON.stringify({ enabled: true, thresholdTokens: 250000 }))
+      await wdBoard('agent-a', 'active', 'building the thing', 100, 'ref-1')
+      await wdBoard('agent-b', 'blocked', 'peer is stuck', 400)
+      await wdBoard('agent-c', 'done', 'peer finished', 300)
+      await wdBoard('agent-d', 'stale', 'peer went quiet', 200)
+      await wdCard('First card', 'in_progress', 'agent-a', 10)
+      await wdCard('Second card', 'waiting', 'agent-a', 20)
+      await wdCard('Third card', 'in_progress', 'agent-a', 30)
+      await wdCard('Not mine', 'in_progress', 'agent-b', 40)
+      await wdCard('Archived', 'in_progress', 'agent-a', 50, 5)
+      await wdMsg('agent-a', 'continue with the plan', 10)
+      await wdMsg('agent-b', 'not mine', 20)
+    },
+    expectText: ['Aktualis feladat (active): building the thing [kanban ref-1]', 'FIGYELEM', 'Blackboard (utolso 3):', 'Nyitott kartyak:', 'Third card', '200,000 / 250,000'],
+  },
+  {
+    name: 'an agent with nothing of its own and no threshold row (the default threshold)',
+    tokens: 250000,
+    seed: async () => { await wdBoard('agent-b', 'active', 'only a peer row', 5) },
+    expectText: ['Blackboard (utolso 3):', '250,000 / 400,000'],
+  },
+  {
+    name: 'a finished own row, no open cards',
+    tokens: 250000,
+    seed: async () => {
+      await wdBoard('agent-a', 'done', 'all closed', 1)
+      await wdCard('Old card', 'done', 'agent-a', 1)
+      await wdMsg('agent-a', 'wrapped up', 1)
+    },
+    expectText: ['Aktualis feladat (done): all closed', 'Kovetkezo lepes (utolso kimeno uzenetbol): wrapped up'],
+  },
+  {
+    name: 'a threshold the hook would not take (zero) falls to the default in both modes',
+    tokens: 250000,
+    seed: async () => { await wdSetting('agent-a', JSON.stringify({ thresholdTokens: 0 })); await wdBoard('agent-a', 'active', 'x', 1) },
+    expectText: ['250,000 / 400,000'],
+  },
+  {
+    name: 'long rows: a 500-character summary, a 300-character title and a message over the 300 clip',
+    tokens: 250000,
+    seed: async () => {
+      await wdBoard('agent-a', 'active', 's'.repeat(500), 1)
+      await wdCard('t'.repeat(300), 'in_progress', 'agent-a', 1)
+      await wdMsg('agent-a', 'm'.repeat(900), 1)
+    },
+    expectText: ['m'.repeat(300)],
+  },
+]
+
 const sqliteEnv = (copy: string): Record<string, string> => hookEnv({ LEDGER_DB_PATH: copy })
 const pgEnv = (): Record<string, string> => hookEnv({ LEDGER_DB_PATH: join(WORK, 'no-such-dir', 'x.db'), MARVEEN_PG_URL: 'postgres://placeholder.invalid/db', DASHBOARD_BASE_URL: baseUrl })
 
@@ -271,4 +372,43 @@ describe.skipIf(testDbMode() === 'pg')('the Python hooks: SQLite mode and PG mod
     expect(text).not.toContain('tenant-z')
     expect(text).not.toContain('body')        // no skill content
   })
+
+  for (const fx of WATCHDOG_FIXTURES) {
+    it(`context-watchdog.py injects the same HANDOFF in both modes: ${fx.name}`, async () => {
+      wdSeq = 0
+      await fx.seed()
+      const transcript = writeTranscript(fx.tokens)
+      const sqliteCopy = snapshot()
+      const pgCopy = snapshot() // the PG mode still writes (token row, spans, audit row) and dedups on SQLite, until the usage route
+      const sqlite = await runWatchdog(sqliteEnv(sqliteCopy), transcript)
+      const pg = await runWatchdog(hookEnv({ LEDGER_DB_PATH: pgCopy, ...WATCHDOG_PG, DASHBOARD_BASE_URL: baseUrl }), transcript)
+      expect(sqlite.code, sqlite.stderr).toBe(0)
+      expect(pg.code, pg.stderr).toBe(0)
+      const want = injectedText(sqlite.stdout)
+      expect(want, 'the SQLite mode injected a HANDOFF (not vacuous)').not.toBeNull()
+      for (const piece of fx.expectText) expect(want, piece).toContain(piece)
+      expect(injectedText(pg.stdout)).toBe(want)
+      expect(requests, 'the PG mode asked the route twice (threshold, facts), not the file').toBe(2)
+    }, 60000)
+  }
+
+  it('the one deliberate clip: the route bounds a card title at 300 characters, the SQLite hook printed it whole', async () => {
+    wdSeq = 0
+    await wdCard('z'.repeat(400), 'in_progress', 'agent-a', 1)
+    const transcript = writeTranscript(250000)
+    const sqlite = await runWatchdog(sqliteEnv(snapshot()), transcript)
+    const pg = await runWatchdog(hookEnv({ LEDGER_DB_PATH: snapshot(), ...WATCHDOG_PG, DASHBOARD_BASE_URL: baseUrl }), transcript)
+    expect(injectedText(sqlite.stdout)).toContain('z'.repeat(400))
+    expect(injectedText(pg.stdout)).toContain('z'.repeat(300))
+    expect(injectedText(pg.stdout)).not.toContain('z'.repeat(301))
+  }, 60000)
+
+  it('a caller the route does not know (no token) leaves the PG mode silent, with no fallback to the SQLite rows', async () => {
+    wdSeq = 0
+    await wdBoard('agent-a', 'active', 'rows only the file has', 1)
+    const transcript = writeTranscript(250000)
+    const pg = await runWatchdog(hookEnv({ LEDGER_DB_PATH: snapshot(), ...WATCHDOG_PG, DASHBOARD_BASE_URL: baseUrl, MARVEEN_AGENT_TOKEN_FILE: join(WORK, 'no-such-token') }), transcript)
+    expect(pg.code).toBe(0)
+    expect(pg.stdout.trim()).toBe('')
+  }, 60000)
 })

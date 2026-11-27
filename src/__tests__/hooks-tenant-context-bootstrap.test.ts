@@ -169,6 +169,22 @@ describe('NEGATIVE: everything else stays refused for a shared agent with no con
     }
   })
 
+  it('watchdog-facts is 403 (a shared agent with no fresh context: the context watchdog then injects nothing, the right fail-silent answer)', async () => {
+    // pins "NOT in the no-context exemption": adding the route to isTenantContextBootstrapRoute turns this red
+    for (const p of ['/api/hooks/watchdog-facts', '/api/v1/hooks/watchdog-facts']) {
+      for (const want of ['threshold', 'handoff']) {
+        const r = await request('tok-shared', 'POST', p, { want })
+        expect(r.status, `${p} ${want}`).toBe(403)
+        expect(r.body).toMatchObject({ hint: expect.stringContaining('tenant context') })
+      }
+    }
+  })
+
+  it('watchdog-facts answers once the context is recorded', async () => {
+    await setContext('agent-shared', 'tenant-x', 'bound')
+    expect((await request('tok-shared', 'POST', '/api/hooks/watchdog-facts', { want: 'threshold' })).status).toBe(200)
+  })
+
   it('an unknown or stale context does not open skill-gate either', async () => {
     await setContext('agent-shared', '', 'unknown')
     expect((await request('tok-shared', 'POST', GATE, { targets: [] })).status).toBe(403)
@@ -382,6 +398,7 @@ describe('one predicate, exact method and path, on the path the gates see', () =
     for (const [m, p] of [
       ['GET', '/api/hooks/tenant-facts'], ['PUT', '/api/hooks/tenant-facts'], ['POST', '/api/hooks/tenant-context'], ['GET', '/api/hooks/tenant-context'],
       ['POST', '/api/hooks/skill-gate'], ['PUT', '/api/hooks/skill-gate'], ['POST', '/api/hooks/tenant-facts/'], ['POST', '/api/hooks/tenant-facts/x'],
+      ['POST', '/api/hooks/watchdog-facts'], ['GET', '/api/hooks/watchdog-facts'],
       ['POST', '/api/hooks/tenant-factsx'], ['POST', '/API/hooks/tenant-facts'], ['POST', '/api/v1/hooks/tenant-facts'], ['post', '/api/hooks/tenant-facts'],
       ['POST', ''], ['PUT', '/api/hooks/tenant-context?x=1'],
     ] as const) {

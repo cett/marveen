@@ -2,7 +2,7 @@ import { readBody, json } from '../http-helpers.js'
 import { tenantSkillDirName } from '../skill-regen.js'
 import { frontmatterName } from '../skill-frontmatter-name.js'
 import {
-  getHookContext, getHookTenantFacts, listHookTenantSkills, recordHookContext,
+  getHookContext, getHookTenantFacts, getWatchdogHandoffFacts, getWatchdogThreshold, listHookTenantSkills, recordHookContext,
   type HookSource,
 } from '../../db/hook-tenant-reads.js'
 import type { RouteContext } from './types.js'
@@ -11,6 +11,7 @@ import type { RouteContext } from './types.js'
 //   POST /api/hooks/tenant-facts   <- tenant-context.py   {sources:[{kind:'channel',channel,external_id}|{kind:'message',msg_id}]}
 //   PUT  /api/hooks/tenant-context <- tenant-context.py   {status, tenant_id, source, session_id}   (the caller's own row)
 //   POST /api/hooks/skill-gate     <- tenant-skill-gate.py {targets:[{kind:'skill'|'dir', value, folded}]}
+//   POST /api/hooks/watchdog-facts <- context-watchdog.py  {want:'threshold'|'handoff'}  (handoff: REQUEST tenant context; threshold: the named system job, fixed agent filter)
 // The route returns FACTS, never a verdict: the policy stays in the hook (tenant_context_lib.py).
 // WHO: the agent is the one the TOKEN names (ctx.tokenAgentId), never a query or body parameter: an `agent_id` in the body is
 // ignored. A caller whose token names no agent (a dashboard session, the operator token, a tenant user) gets a 403.
@@ -93,7 +94,7 @@ function parseTargets(raw: unknown): Target[] | string {
 
 export async function tryHandleHooksTenant(ctx: RouteContext): Promise<boolean> {
   const { res, path, method } = ctx
-  if (path !== '/api/hooks/tenant-facts' && path !== '/api/hooks/tenant-context' && path !== '/api/hooks/skill-gate') return false
+  if (path !== '/api/hooks/tenant-facts' && path !== '/api/hooks/tenant-context' && path !== '/api/hooks/skill-gate' && path !== '/api/hooks/watchdog-facts') return false
 
   if (path === '/api/hooks/tenant-facts' && method === 'POST') {
     const agentId = callerAgent(ctx)
@@ -159,6 +160,25 @@ export async function tryHandleHooksTenant(ctx: RouteContext): Promise<boolean> 
     }
     json(res, { context, serves, skills })
     return true
+  }
+
+  // The context watchdog (a logging hook on EVERY tool call). NOT in the no-context exemption (tenant-context-bootstrap.ts): a
+  // shared agent with no fresh tenant context is refused 403 before this handler, and the watchdog then injects nothing.
+  if (path === '/api/hooks/watchdog-facts' && method === 'POST') {
+    const agentId = callerAgent(ctx)
+    if (!agentId) return true
+    const data = await readObject(ctx)
+    if (!data) return true
+    const want = data['want']
+    if (want === 'threshold') {
+      json(res, { threshold_tokens: await getWatchdogThreshold(agentId) })
+      return true
+    }
+    if (want === 'handoff') {
+      json(res, await getWatchdogHandoffFacts(agentId))
+      return true
+    }
+    return bad(ctx, 'want', 'want must be threshold or handoff')
   }
 
   return false

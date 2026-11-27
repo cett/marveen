@@ -13,6 +13,7 @@
 //
 // The SQL below mirrors the lookups of tenant_context_lib.py one to one (a differential cell runs both on the same fixtures).
 import { dbx } from './facade.js'
+import { kanbanSeqColumn } from './kanban.js'
 import { systemJob } from './background-jobs.js'
 import { agentServesTenant } from './tenant-channel-bindings.js'
 
@@ -141,3 +142,83 @@ export const recordHookContext = systemJob('hook-tenant-reads', async (agentId: 
   )
   return true
 })
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The context watchdog (scripts/hooks/context-watchdog.py) reads, served in PG mode through POST /api/v1/hooks/watchdog-facts.
+//
+// UNLIKE the tenant reads above the HANDOFF facts run in the REQUEST tenant context (no system job): they are not cross-tenant by
+// nature. The caller's own blackboard row, the latest blackboard rows, its open cards and its last outgoing message are read
+// through the row-level policies of the caller's tenant, so another tenant's rows never come back. (The SQLite hook read every
+// blackboard row of the fleet, a cross-tenant read that was never a feature.)
+// The THRESHOLD is the exception: it is the agent's own operating setting, not tenant data, so it is read by the named system job
+// with a fixed filter (agent_id = the token's agent AND setting_key = context_restart_gate). A shared agent in a tenant context
+// then still sees its row stamped for another tenant (no silent fall back to the default), as the SQLite hook did.
+//
+// FACTS only, no text: the HANDOFF wording and every policy (threshold default, what counts as open work) stay in the hook.
+// Fixed SQL, bound parameters, hard LIMITs and string clips here too, so the answer is bounded whatever a row holds.
+
+/** Clips (characters). They equal the hook's own (HANDOFF_SUMMARY_MAX_CHARS, the 300 of the last outgoing message). */
+export const WATCHDOG_SUMMARY_MAX = 600
+export const WATCHDOG_LAST_OUT_MAX = 300
+export const WATCHDOG_TITLE_MAX = 300
+export const WATCHDOG_RECENT_LIMIT = 3
+export const WATCHDOG_CARDS_LIMIT = 5
+
+export interface WatchdogHandoffFacts {
+  /** The caller's own blackboard row, null when it has none. */
+  own: { task_ref: string | null; status: string; summary: string } | null
+  /** The latest rows of the caller's tenant (the caller's own row included), newest first. */
+  recent: Array<{ agent_id: string; status: string; summary: string }>
+  /** The caller's open cards (in_progress, waiting, not archived), newest first. `number` is the number the dashboard shows. */
+  cards: Array<{ number: number; title: string; status: string }>
+  /** The content of the caller's last outgoing message, null when it sent none. */
+  last_outgoing: string | null
+}
+
+const clip = (v: unknown, max: number): string => String(v ?? '').slice(0, max)
+
+/**
+ * thresholdTokens of the caller's context_restart_gate setting: a positive integer, or null when there is no row, the value is
+ * not JSON, or the number is missing or not positive. The hook decides the default for null (never guessed here).
+ */
+export const getWatchdogThreshold = systemJob('hook-tenant-reads', async (agentId: string): Promise<number | null> => {
+  const row = await dbx.get<{ setting_value: string }>(
+    "SELECT setting_value FROM agent_settings WHERE agent_id = ? AND setting_key = 'context_restart_gate'", agentId,
+  )
+  if (!row) return null
+  try {
+    const parsed: unknown = JSON.parse(row.setting_value)
+    const v = parsed !== null && typeof parsed === 'object' ? (parsed as Record<string, unknown>)['thresholdTokens'] : undefined
+    return typeof v === 'number' && Number.isFinite(v) && v > 0 ? Math.trunc(v) : null
+  } catch {
+    return null
+  }
+})
+
+/** The facts the HANDOFF is built from, for ONE agent, in the caller's request tenant context. Pure reads. */
+export async function getWatchdogHandoffFacts(agentId: string): Promise<WatchdogHandoffFacts> {
+  // The number a card carries on the dashboard: the SQLite rowid, or the identity column `seq` in PostgreSQL (kanban.ts).
+  const numberCol = kanbanSeqColumn()
+  const own = await dbx.get<{ task_ref: string | null; status: string; summary: string }>(
+    'SELECT task_ref, status, summary FROM fleet_blackboard WHERE agent_id = ?', agentId,
+  )
+  const recent = await dbx.all<{ agent_id: string; status: string; summary: string }>(
+    'SELECT agent_id, status, summary FROM fleet_blackboard ORDER BY updated_at DESC LIMIT ?', WATCHDOG_RECENT_LIMIT,
+  )
+  const cards = await dbx.all<{ number: number | string; title: string; status: string }>(
+    `SELECT ${numberCol} AS number, title, status FROM kanban_cards
+     WHERE assignee = ? AND status IN ('in_progress', 'waiting') AND archived_at IS NULL
+     ORDER BY updated_at DESC LIMIT ?`,
+    agentId, WATCHDOG_CARDS_LIMIT,
+  )
+  const lastOut = await dbx.get<{ content: string }>(
+    'SELECT content FROM agent_messages WHERE from_agent = ? ORDER BY created_at DESC LIMIT 1', agentId,
+  )
+  return {
+    own: own ? { task_ref: own.task_ref ?? null, status: own.status, summary: clip(own.summary, WATCHDOG_SUMMARY_MAX) } : null,
+    recent: recent.map((r) => ({ agent_id: r.agent_id, status: r.status, summary: clip(r.summary, WATCHDOG_SUMMARY_MAX) })),
+    // a PostgreSQL bigint can come back as a string: the number is an integer in the answer either way
+    cards: cards.map((c) => ({ number: Number(c.number), title: clip(c.title, WATCHDOG_TITLE_MAX), status: c.status })),
+    last_outgoing: lastOut ? clip(lastOut.content, WATCHDOG_LAST_OUT_MAX) : null,
+  }
+}

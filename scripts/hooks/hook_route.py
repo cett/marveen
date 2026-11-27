@@ -46,10 +46,11 @@ def _refused(err):
     return isinstance(reason, ConnectionRefusedError)
 
 
-def call(method, path, body, agent_id, deadline, session_id=None):
-    """One route call under the shared deadline -> the decoded JSON answer, or RouteError."""
+def call(method, path, body, agent_id, deadline, session_id=None, max_attempts=MAX_ATTEMPTS):
+    """One route call under the shared deadline -> the decoded JSON answer, or RouteError. `max_attempts` defaults to the
+    tenant gates' 2; a hook that runs on every tool call (context-watchdog.py) passes 1: no retry."""
     last = "no attempt could start, the deadline is spent"
-    for _ in range(MAX_ATTEMPTS):
+    for _ in range(max_attempts):
         left = deadline.remaining()
         if left < MIN_ATTEMPT_S:
             break

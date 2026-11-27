@@ -1252,6 +1252,12 @@ class TestMainSubprocess(unittest.TestCase):
         env = dict(os.environ)
         env["LEDGER_DB_PATH"] = self.db_path
         env["MAIN_AGENT_ID"] = MAIN_AGENT
+        # These cells pin the SQLite-install behaviour: whatever the machine running them is configured for, the hook
+        # must NOT see PostgreSQL mode (the PG-mode cells are scripts/__tests__/context-watchdog-pg.test.py).
+        env.pop("MARVEEN_PG_URL", None)
+        env.pop("MARVEEN_PG_CONFIGURED", None)
+        env["SECRET_MOUNT_DIR"] = self.tmpdir.name
+        env["CLAUDECLAW_ENV_DIR"] = self.tmpdir.name
         return env
 
     def _run_hook(self, payload, env=None):
