@@ -730,5 +730,40 @@ class TestLinearTime(unittest.TestCase):
             % (hook.INSPECT_SECONDS, self.BUDGET_CUT_MARGIN_SEC, self.HOOK_STARTUP_MARGIN_SEC, needed, timeouts[0]))
 
 
+class TestGateAuditSpoolPath(unittest.TestCase):
+    """The gate-audit deny spool is a protected path: a command that names the directory AND writes it is refused, a read is
+    not, and a command that does not name the directory is exactly as before (no widening of a pattern). A speed bump, not a
+    wall (see the comment at SPOOL_DIR_RE). The mutant that removes the check turns the refusing cells red."""
+
+    SPOOL = "/tmp/agents/store/.gate-audit-spool/agent-a.jsonl"
+    DIR = "/tmp/agents/store/.gate-audit-spool"
+
+    def _exit(self, command):
+        r = subprocess.run([sys.executable, _HOOK_PATH], capture_output=True, text=True, timeout=10,
+                           input=json.dumps({"tool_name": "Bash", "tool_input": {"command": command}, "cwd": "/tmp/agents/agent-a"}))
+        return r.returncode
+
+    def test_a_write_naming_the_spool_is_refused(self):
+        for cmd in ("echo x > %s" % self.SPOOL, ": >> %s" % self.SPOOL, "truncate -s 0 %s" % self.SPOOL,
+                    "echo x | tee %s" % self.SPOOL, "cp /dev/null %s" % self.SPOOL, "sed -i d %s" % self.SPOOL,
+                    "dd if=/dev/null of=%s" % self.SPOOL, "mv %s /tmp/gone" % self.SPOOL, "rm %s" % self.SPOOL,
+                    "rm -rf %s" % self.DIR, "shred %s" % self.SPOOL, "ln -sf /dev/null %s" % self.SPOOL,
+                    "bash -c 'echo x > %s'" % self.SPOOL):
+            with self.subTest(command=cmd):
+                self.assertEqual(self._exit(cmd), 2)
+
+    def test_a_read_of_the_spool_is_allowed(self):
+        for cmd in ("cat %s" % self.SPOOL, "grep -c denied %s" % self.SPOOL, "wc -l %s" % self.SPOOL,
+                    "ls -la %s" % self.DIR, "head -n 5 %s" % self.SPOOL, "tail -f %s" % self.SPOOL):
+            with self.subTest(command=cmd):
+                self.assertEqual(self._exit(cmd), 0)
+
+    def test_a_command_that_does_not_name_the_directory_is_unaffected(self):
+        for cmd in ("echo x > /tmp/other-file.txt", "truncate -s 0 /tmp/other-file.txt", "echo x | tee /tmp/other-file.txt",
+                    "cp /dev/null /tmp/other-file.txt", "ls /tmp/agents/store"):
+            with self.subTest(command=cmd):
+                self.assertEqual(self._exit(cmd), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

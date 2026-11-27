@@ -79,6 +79,15 @@ import shell_subst  # noqa: E402
 BANNED_CMDS = {'rm', 'mv', 'shred', 'sudo', 'mkfs', 'dd'}
 # Path prefixes that hold credential material.
 PROTECTED_RE = re.compile(r'/\.(ssh|aws|gnupg|gmail-mcp)(?=/|\s|$|["\'])')
+# The deny spool of the PreToolUse gate audit (store/.gate-audit-spool/<agent>.jsonl, the counts file lives in the same
+# directory): a spooled deny row is evidence waiting for delivery, and the agent whose deny it is can reach the file.
+# A command that NAMES the directory AND writes (a redirect, tee, truncate, rm/mv/cp/dd/shred/ln, sed -i) is refused; a
+# READ (cat, grep, wc, ls) is not. A speed bump, not a wall: this gate matches command text, every agent shell runs as
+# the same OS user, and a path built at run time passes a text match (the spool stays delayed delivery, not evidence of
+# record). Cost, accepted: any such command whose text contains the name and one of these words is refused.
+SPOOL_DIR_RE = re.compile(r'\.gate-audit-spool')
+SPOOL_WRITE_RE = re.compile(
+    r'>|(?<![\w.-])(?:rm|mv|cp|tee|truncate|shred|dd|ln|unlink|install|rsync)(?![\w.-])|(?<![\w.-])sed\s+(?:-[a-zA-Z]*i|--in-place)')
 # A `.env` file name: `.env` at the start of a word or after `=`/`:`, or at the end of a path
 # (`/x/y/.env`), followed by the end of the text, whitespace or a closing character. The
 # regex this replaces, `(?:^|[\s=:])(?:[^\s"\']*/)?\.env(?=$|[\s"\'`,;)\]}])`, was
@@ -1277,6 +1286,8 @@ def check_bash(cmd, agent_id=None, _depth=0):
         block('Hitelesito adatokat tartalmazo konyvtar: .%s' % m.group(1), agent_id, 'Bash')
     if _env_file_mentioned(text):
         block('.env fajl: hitelesito adatokat tartalmaz.', agent_id, 'Bash')
+    if SPOOL_DIR_RE.search(text) and SPOOL_WRITE_RE.search(text):
+        block('A gate-audit spool vedett ut: irni, torolni, mozgatni nem szabad (olvasni igen).', agent_id, 'Bash')
 
     # A command substitution RUNS, also inside double quotes, where the segment
     # splitter above keeps it as text. Each body is judged as a command of its
