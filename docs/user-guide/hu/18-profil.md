@@ -48,6 +48,8 @@ npm run dashboard-user -- security:reset                 # vészhelyzeti reset (
 
 A `reset-password` nem kéri a régi jelszót -- minden futásáról audit-bejegyzés készül és értesítés megy a csatornán.
 
+A CLI által végzett visszavonás a futó dashboardon legfeljebb kb. egy percen belül érvényesül (a dashboard újraellenőrzi a munkamenet sorát), nem azonnal.
+
 ### `security:reset` -- a pánikgomb
 
 Egy lépésben:

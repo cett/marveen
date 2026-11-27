@@ -22,6 +22,12 @@
 import './lib/log-to-stderr.js'
 import { ensureConfigSnapshot } from '../src/config-bootstrap.js'
 
-await ensureConfigSnapshot()
+try {
+  await ensureConfigSnapshot()
+} catch (err) {
+  // a failed snapshot load is a failed run: one line on stderr, exit 1, no stack for the operator
+  process.stderr.write(`Error: ${err instanceof Error ? err.message : String(err)}\n`)
+  process.exit(1)
+}
 const { runDashboardUserCli } = await import('../src/dashboard-user/cli.js')
 process.exit(await runDashboardUserCli(process.argv.slice(2)))

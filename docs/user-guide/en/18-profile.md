@@ -48,6 +48,8 @@ npm run dashboard-user -- security:reset                 # emergency reset (see 
 
 `reset-password` does not require the old password -- every run produces an audit entry and a channel notification.
 
+A revocation made by the CLI reaches the running dashboard within about a minute (the dashboard re-checks the session row), not instantly.
+
 ### `security:reset` -- the panic button
 
 In one step:
