@@ -40,7 +40,7 @@ export const recordGateAudit = systemJob('hook-gate-audit', async (agentId: stri
     for (const c of counts) {
       await tx.run(
         'INSERT INTO gate_decision_counts (gate, decision, reason, count, first_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) '
-        + 'ON CONFLICT(gate, decision, reason) DO UPDATE SET count = count + excluded.count, updated_at = excluded.updated_at',
+        + 'ON CONFLICT(gate, decision, reason) DO UPDATE SET count = gate_decision_counts.count + excluded.count, updated_at = excluded.updated_at',
         c.gate, c.decision, c.reason, c.n, now, now,
       )
     }

@@ -12,11 +12,11 @@
 //     id is dropped, ts is clamped to [now - 7 days, now + 60 s]
 //   - ONE transaction: a write that fails half way leaves neither the counts nor the rows
 //   - the RBAC row (hook-gate:write, fleet_agent and admin only) and the sets are the Python constants of the hook (parity cell)
-import { describe, it, expect } from 'vitest'
+import { afterEach, describe, it, expect, vi } from 'vitest'
 import { EventEmitter } from 'node:events'
 import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
-import { dbx } from '../db/facade.js'
+import { dbx, type Tx } from '../db/facade.js'
 import { useTestDb } from './helpers/with-test-db.js'
 import {
   DECISIONS, GATES, MAX_AGE_SECS, MAX_COUNTS, MAX_COUNT_N, MAX_DENIES, MAX_FUTURE_SECS, REASONS, clampTs, tryHandleHooksGateAudit,
@@ -223,16 +223,41 @@ describe('what is written', () => {
   })
 })
 
+/** Make every statement of the request that matches `fragment` fail, inside the transaction (the same on both backends). */
+function failStatementsMatching(fragment: string): void {
+  const real = dbx.tx.bind(dbx)
+  vi.spyOn(dbx, 'tx').mockImplementation(((fn: (tx: Tx) => Promise<unknown>, opts?: unknown) =>
+    real((tx: Tx) => fn(Object.assign(Object.create(tx), {
+      run: (sql: string, ...params: unknown[]) => (sql.includes(fragment) ? Promise.reject(new Error('forced statement failure')) : tx.run(sql, ...params)),
+    }) as Tx), opts as never)) as typeof dbx.tx)
+}
+
 describe('one transaction: a write that fails half way leaves neither the counts nor the rows', () => {
+  afterEach(() => { vi.restoreAllMocks() })
+
   it('the counts are written first, then the deny rows: a failing row insert rolls the counts back', async () => {
-    await dbx.exec('DROP TABLE hook_audit_log') // the second statement of the request will fail
+    failStatementsMatching('INTO hook_audit_log')
     const { ctx } = call({ counts: [count('destructive-gate', 'deny', 'denied')], denies: [deny('destructive-gate')] }, 'agent-a')
-    await expect(tryHandleHooksGateAudit(ctx)).rejects.toThrow()
+    await expect(tryHandleHooksGateAudit(ctx)).rejects.toThrow('forced statement failure')
+    vi.restoreAllMocks()
     expect(await counts()).toEqual([]) // red when the counts are committed in a transaction of their own
   })
 
+  it('the second deny failing takes the first deny and the counts with it', async () => {
+    let seen = 0
+    const real = dbx.tx.bind(dbx)
+    vi.spyOn(dbx, 'tx').mockImplementation(((fn: (tx: Tx) => Promise<unknown>, opts?: unknown) =>
+      real((tx: Tx) => fn(Object.assign(Object.create(tx), {
+        run: (sql: string, ...params: unknown[]) => (sql.includes('INTO hook_audit_log') && ++seen === 2 ? Promise.reject(new Error('forced statement failure')) : tx.run(sql, ...params)),
+      }) as Tx), opts as never)) as typeof dbx.tx)
+    const { ctx } = call({ counts: [count('destructive-gate', 'deny', 'denied', 2)], denies: [deny('destructive-gate'), deny('secret-read-gate')] }, 'agent-a')
+    await expect(tryHandleHooksGateAudit(ctx)).rejects.toThrow('forced statement failure')
+    vi.restoreAllMocks()
+    await nothingWritten()
+  })
+
   it('a rejected request is not acknowledged: the answer is never ok:true after a failure', async () => {
-    await dbx.exec('DROP TABLE gate_decision_counts')
+    failStatementsMatching('INTO gate_decision_counts')
     const { ctx, out } = call({ counts: [count('destructive-gate', 'allow', '')] }, 'agent-a')
     await expect(tryHandleHooksGateAudit(ctx)).rejects.toThrow()
     expect(out.body).toBeNull()
