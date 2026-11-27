@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { initDatabase, db } from '../db.js'
 import { tryHandleConversationLedger } from '../web/routes/conversation-ledger.js'
-import { flushLedgerSpool } from '../conversation-ledger-spool.js'
+import { flushLedgerSpool, spoolFileNameFor } from '../conversation-ledger-spool.js'
 import type { RouteContext } from '../web/routes/types.js'
 
 beforeEach(() => {
@@ -155,10 +155,29 @@ describe('flushLedgerSpool', () => {
 
   it('is a no-op for a missing directory and idempotent on replays', async () => {
     expect(await flushLedgerSpool(join(dir, 'missing'))).toBe(0)
-    writeFileSync(join(dir, 'a.jsonl'), JSON.stringify(inbound()) + '\n')
+    writeFileSync(join(dir, 'agent-a.jsonl'), JSON.stringify(inbound()) + '\n')
     expect(await flushLedgerSpool(dir)).toBe(1)
-    writeFileSync(join(dir, 'a.jsonl'), JSON.stringify(inbound()) + '\n')
+    writeFileSync(join(dir, 'agent-a.jsonl'), JSON.stringify(inbound()) + '\n')
     expect(await flushLedgerSpool(dir)).toBe(0)
-    expect(existsSync(join(dir, 'a.jsonl'))).toBe(false)
+    expect(existsSync(join(dir, 'agent-a.jsonl'))).toBe(false)
+  })
+
+  // The flush has no token: the file name is the identity. A line that names another agent than its file is not stored (the route
+  // refuses the same thing for a fleet token), and the file is still consumed so it does not come back at every boot.
+  it('does not store a line that names another agent than its spool file, and keeps storing the lines that match', async () => {
+    writeFileSync(join(dir, 'agent-a.jsonl'), [
+      JSON.stringify(inbound({ message_id: 'own' })),
+      JSON.stringify(inbound({ agent_id: 'agent-b', message_id: 'forged' })),
+    ].join('\n'))
+    expect(await flushLedgerSpool(dir)).toBe(1)
+    expect(readdirSync(dir)).toEqual([])
+    const ids = (db.prepare('SELECT message_id FROM conversation_log ORDER BY id').all() as { message_id: string }[]).map((r) => r.message_id)
+    expect(ids).toEqual(['own'])
+  })
+
+  it('the file name is the hook\'s: every character that is not a letter, a digit, - or _ becomes _ (an agent id with a dot or a space)', () => {
+    expect(spoolFileNameFor('agent-a')).toBe('agent-a.jsonl')
+    expect(spoolFileNameFor('agent.b c')).toBe('agent_b_c.jsonl')
+    expect(spoolFileNameFor('../x')).toBe('___x.jsonl')
   })
 })
