@@ -175,6 +175,18 @@ describe('flushLedgerSpool', () => {
     expect(ids).toEqual(['own'])
   })
 
+  // The hook keeps the letter case of the agent id in the file name (ledger_lib.py `_spool_path`), so the spool file of a mixed-case
+  // agent id is named in that case and its own lines are ACCEPTED and stored. A flush that lower-cased the name it expects would
+  // refuse every turn of such an agent.
+  it('an agent id with capital letters, in the file name the hook writes, is accepted and stored', async () => {
+    expect(spoolFileNameFor('Agent-A')).toBe('Agent-A.jsonl')
+    writeFileSync(join(dir, 'Agent-A.jsonl'), JSON.stringify(inbound({ agent_id: 'Agent-A', message_id: 'mixed-case' })))
+    expect(await flushLedgerSpool(dir)).toBe(1)
+    expect(readdirSync(dir)).toEqual([])
+    const row = db.prepare('SELECT agent_id, message_id FROM conversation_log').get() as { agent_id: string; message_id: string }
+    expect(row).toEqual({ agent_id: 'Agent-A', message_id: 'mixed-case' })
+  })
+
   // The name is compared exactly: a file or a line that differs from the agent only by letter case is a mismatch too (a
   // case-folded comparison would let `Agent-A.jsonl` carry the turns of `agent-a`, or the reverse).
   it('a spool file name that differs from the agent only by letter case does not carry its lines, in either direction', async () => {
