@@ -176,5 +176,14 @@ else
 fi
 if ls "$ROOT/r8/store" 2>/dev/null | grep -q 'residual'; then fail "R8 no stray files" "no residual file in the install" "found"; else pass "R8: nothing is left in the install's store/ directory"; fi
 
+echo "R9: the live file is read only for the two tables (no whole-file copy, one door)"
+BLOCK="$(sed -n '/^RESIDUAL_REL=/,/^if \[\[ "\${PG_CONFIGURED}" -eq 1 \]\]; then$/p' "$INSTALL_DIR/scripts/backup.sh")"
+[[ -n "$BLOCK" ]] || fail "R9 block found" "the residual block" "empty"
+grep -v '^ *#' <<<"$BLOCK" | grep -q '\.backup\|VACUUM INTO' && fail "R9 no whole-file copy" "no .backup / VACUUM INTO" "found" || pass "R9: no .backup or VACUUM INTO of the live file"
+N_SQLITE="$(grep -v '^ *#' <<<"$BLOCK" | grep -c 'sqlite3 ')"
+[[ "$N_SQLITE" == "2" ]] && pass "R9: sqlite3 is called in two places only (the command check and the one helper)" || fail "R9 one door" "2 sqlite3 call sites (command -v + helper)" "$N_SQLITE"
+grep -v '^ *#' <<<"$BLOCK" | grep -E 'SELECT' | grep -vq "sqlite_master WHERE type='table' AND name IN ('hook_audit_log','gate_decision_counts')" \
+  && fail "R9 reads" "only the catalog read of the two names" "another SELECT" || pass "R9: the only SELECT is the catalog read of the two table names"
+
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]

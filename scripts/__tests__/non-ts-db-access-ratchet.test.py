@@ -310,6 +310,32 @@ class MainTest(unittest.TestCase):
             self.assertIn("disposition C", out)
 
 
+class NotesSurviveUpdateTest(unittest.TestCase):
+    """A per-file free-text note in the baseline survives --update while the file has direct access, and goes with the file."""
+
+    def test_note_is_kept_then_dropped_with_its_file(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as root:
+            _write(root, "a.sh", "sqlite3 x.db 'select 1'\nsqlite3 y.db 'select 2'\n")
+            baseline = os.path.join(root, "baseline.json")
+            code, _ = _run_main(root, baseline, ["--update", "--allow-increase", "--classify", "a.sh=C"])
+            self.assertEqual(code, 0)
+            with open(baseline, encoding="utf-8") as f:
+                data = json.load(f)
+            data["notes"] = {"a.sh": "residual, removed with the hook port", "gone.sh": "stale"}
+            with open(baseline, "w", encoding="utf-8") as f:
+                json.dump(data, f)
+            code, _ = _run_main(root, baseline, ["--update"])
+            self.assertEqual(code, 0)
+            with open(baseline, encoding="utf-8") as f:
+                after = json.load(f)
+            self.assertEqual(after.get("notes"), {"a.sh": "residual, removed with the hook port"})
+            os.remove(os.path.join(root, "a.sh"))
+            _run_main(root, baseline, ["--update"])
+            with open(baseline, encoding="utf-8") as f:
+                self.assertNotIn("notes", json.load(f))
+
+
 class RealRepoBaselineTest(unittest.TestCase):
     def test_committed_baseline_is_consistent_with_the_tree(self):
         code = mod.main([])

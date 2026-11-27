@@ -3,8 +3,8 @@
 // The script is run as the operator's command task runs it: a spawned process with its own environment. The "live" database
 // is a harness database (the real baseline schema, row-level security forced), the dump is a real `pg_dump -Fc` taken the
 // way the nightly job takes it (the backup role, which bypasses row-level security, with the provisioning grants of
-// docs/pg-provisioning.md step 5), and the restoring role is a test role with CREATEDB that is a member of marveen_owner
-// (the dump carries `ALTER DEFAULT PRIVILEGES FOR ROLE marveen_owner`, which only a member may restore). No credential is
+// docs/pg-provisioning.md step 5), and the restoring role is a test role of its own with CREATEDB: no superuser, no BYPASSRLS,
+// no membership in marveen_owner, no grant on the live database (the dump is restored with --no-owner --no-acl). No credential is
 // real: the passwords are the harness-only throwaway values, written into 0600 password files, never into argv.
 //
 // Cells: OK (equal; live ahead inside the tolerance; the fixed default list); FAIL (live ahead beyond the tolerance;
@@ -95,10 +95,10 @@ function runDrill(dumpDir: string, over: Record<string, string> = {}): Run {
     PG_DRILL_PORT: port,
     PG_DRILL_DB: live.name,
     PG_DRILL_MAINT_DB: maintDb,
-    PG_DRILL_OWNER_ROLE: OWNER,
+    PG_DRILL_ROLE: OWNER,
     PG_DRILL_BACKUP_ROLE: PG_TEST_BACKUP_ROLE,
     PG_DRILL_TEMPLATE: TEMPLATE,
-    PG_DRILL_OWNER_PASSFILE: ownerPass,
+    PG_DRILL_PASSFILE: ownerPass,
     PG_DRILL_BACKUP_PASSFILE: backupPass,
     PG_DRILL_TABLES: 'memories system_config tenants',
     ...over,
@@ -146,10 +146,9 @@ beforeAll(async () => {
   live = await createPgTestDb() // also makes sure the harness roles exist
   preexisting = new Set(await throwawayDatabases())
 
-  // roles: the restoring role is a member of marveen_owner with CREATEDB (the harness owner has none and the harness keeps it
-  // that way), a second one has no CREATEDB for the precondition cell
+  // roles: the drill role is its own role (CREATEDB, no superuser, no BYPASSRLS, NO membership in marveen_owner, no grant on
+  // the live database); a second one has no CREATEDB for the precondition cell
   await adminSql(`CREATE ROLE ${quote(OWNER)} LOGIN CREATEDB NOSUPERUSER NOBYPASSRLS PASSWORD '${DRILL_OWNER_PASSWORD}'`)
-  await adminSql(`GRANT ${quote(PG_TEST_OWNER_ROLE)} TO ${quote(OWNER)}`)
   await adminSql(`CREATE ROLE ${quote(NOCREATEDB)} LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD '${DRILL_OWNER_PASSWORD}'`)
   // templates: one with both extensions (what the provisioning step creates), one bare (a restore into it must fail)
   for (const [name, withExt] of [[TEMPLATE, true], [BARE_TEMPLATE, false]] as const) {
@@ -275,6 +274,21 @@ describe('pg-restore-drill.sh', () => {
     expect(await leftovers()).toEqual([])
   }, 90000)
 
+  it('OK: a grant to a role that does not exist in the cluster any more is not replayed (--no-acl), forced row-level security does not hide rows', async () => {
+    const ghost = `drilltest_ghost_${suffix}`
+    await adminSql(`CREATE ROLE ${quote(ghost)} NOLOGIN`)
+    await live.pool.query(`GRANT SELECT ON memories TO ${quote(ghost)}`)
+    const dir = makeDump()
+    await live.pool.query(`REVOKE SELECT ON memories FROM ${quote(ghost)}`)
+    await adminSql(`DROP ROLE ${quote(ghost)}`)
+    const r = runDrill(dir)
+    expect(r.stderr).toBe('')
+    expect(r.status).toBe(0)
+    // memories has 5 rows and is under forced row-level security in the restored schema's source: the count saw them all
+    expect(lastLine(r.stdout)).toContain('3 of 3 tables match')
+    expect(lastLine(r.stdout)).not.toContain('(restored 0 rows')
+  }, 90000)
+
   it('FAIL: a dump older than 36 hours; a 30 hour old one passes', async () => {
     const stale = runDrill(makeDump({ ageHours: 40 }))
     expect(stale.status).toBe(1)
@@ -303,7 +317,7 @@ describe('pg-restore-drill.sh', () => {
   }, 120000)
 
   it('FAIL: each missing precondition is named and nothing is created', async () => {
-    const noCreatedb = runDrill(dumpSeeded, { PG_DRILL_OWNER_ROLE: NOCREATEDB, PG_DRILL_OWNER_PASSFILE: nocreatedbPass })
+    const noCreatedb = runDrill(dumpSeeded, { PG_DRILL_ROLE: NOCREATEDB, PG_DRILL_PASSFILE: nocreatedbPass })
     expect(noCreatedb.status).toBe(1)
     expect(lastLine(noCreatedb.stderr)).toContain(`role ${NOCREATEDB} lacks CREATEDB`)
 
@@ -315,22 +329,46 @@ describe('pg-restore-drill.sh', () => {
     expect(notTemplate.status).toBe(1)
     expect(lastLine(notTemplate.stderr)).toContain(`database ${live.name} exists but is not a template`)
 
-    const noRole = runDrill(dumpSeeded, { PG_DRILL_APP_ROLE: `drilltest_norole_${suffix}` })
-    expect(noRole.status).toBe(1)
-    expect(lastLine(noRole.stderr)).toContain('must all exist before a restore')
+    // the drill role must hold no right on the live database: a SELECT grant, a membership of the owner role, BYPASSRLS
+    // and superuser are each refused
+    await live.pool.query(`GRANT SELECT ON memories TO ${quote(OWNER)}`)
+    try {
+      const reads = runDrill(dumpSeeded)
+      expect(reads.status).toBe(1)
+      expect(lastLine(reads.stderr)).toContain(`role ${OWNER} can read`)
+      expect(lastLine(reads.stderr)).toContain('of the live database')
+    } finally {
+      await live.pool.query(`REVOKE SELECT ON memories FROM ${quote(OWNER)}`)
+    }
+    await admin.query(`GRANT ${quote(PG_TEST_OWNER_ROLE)} TO ${quote(OWNER)}`)
+    try {
+      const member = runDrill(dumpSeeded)
+      expect(member.status).toBe(1)
+      expect(lastLine(member.stderr)).toContain(`role ${OWNER} can read`)
+    } finally {
+      await admin.query(`REVOKE ${quote(PG_TEST_OWNER_ROLE)} FROM ${quote(OWNER)}`)
+    }
+    await admin.query(`ALTER ROLE ${quote(OWNER)} BYPASSRLS`)
+    try {
+      const bypass = runDrill(dumpSeeded)
+      expect(bypass.status).toBe(1)
+      expect(lastLine(bypass.stderr)).toContain('is a superuser or has BYPASSRLS')
+    } finally {
+      await admin.query(`ALTER ROLE ${quote(OWNER)} NOBYPASSRLS`)
+    }
 
-    const noFile = runDrill(dumpSeeded, { PG_DRILL_OWNER_PASSFILE: join(work, 'does-not-exist') })
+    const noFile = runDrill(dumpSeeded, { PG_DRILL_PASSFILE: join(work, 'does-not-exist') })
     expect(noFile.status).toBe(1)
-    expect(lastLine(noFile.stderr)).toContain('owner role password file')
+    expect(lastLine(noFile.stderr)).toContain('drill role password file')
     expect(lastLine(noFile.stderr)).toContain('does not exist')
 
     const open = passfile('pgpass-open', OWNER, DRILL_OWNER_PASSWORD, 0o644)
-    const openMode = runDrill(dumpSeeded, { PG_DRILL_OWNER_PASSFILE: open })
+    const openMode = runDrill(dumpSeeded, { PG_DRILL_PASSFILE: open })
     expect(openMode.status).toBe(1)
     expect(lastLine(openMode.stderr)).toContain('must be 0600')
 
     const wrongPassword = passfile('pgpass-wrong', OWNER, 'not-the-password')
-    const badLogin = runDrill(dumpSeeded, { PG_DRILL_OWNER_PASSFILE: wrongPassword })
+    const badLogin = runDrill(dumpSeeded, { PG_DRILL_PASSFILE: wrongPassword })
     expect(badLogin.status).toBe(1)
     expect(lastLine(badLogin.stderr)).toContain(`cannot connect as ${OWNER}`)
     expect(await leftovers()).toEqual([])
@@ -341,8 +379,8 @@ describe('pg-restore-drill.sh', () => {
     const p = spawn('bash', [script], {
       env: {
         PATH: process.env.PATH ?? '', HOME: work, PG_DRILL_DUMP_DIR: dumpSeeded, PG_DRILL_BIN_DIR: '', PG_DRILL_HOST: host,
-        PG_DRILL_PORT: port, PG_DRILL_DB: live.name, PG_DRILL_MAINT_DB: maintDb, PG_DRILL_OWNER_ROLE: OWNER,
-        PG_DRILL_BACKUP_ROLE: PG_TEST_BACKUP_ROLE, PG_DRILL_TEMPLATE: TEMPLATE, PG_DRILL_OWNER_PASSFILE: ownerPass,
+        PG_DRILL_PORT: port, PG_DRILL_DB: live.name, PG_DRILL_MAINT_DB: maintDb, PG_DRILL_ROLE: OWNER,
+        PG_DRILL_BACKUP_ROLE: PG_TEST_BACKUP_ROLE, PG_DRILL_TEMPLATE: TEMPLATE, PG_DRILL_PASSFILE: ownerPass,
         PG_DRILL_BACKUP_PASSFILE: backupPass,
       },
     })
@@ -365,7 +403,7 @@ describe('pg-restore-drill.sh', () => {
   }, 120000)
 
   it('no password appears in any output, and the script holds no URL, PGPASSWORD or -W', () => {
-    const outputs = [runDrill(dumpSeeded), runDrill(dumpSeeded, { PG_DRILL_OWNER_PASSFILE: join(work, 'does-not-exist') })]
+    const outputs = [runDrill(dumpSeeded), runDrill(dumpSeeded, { PG_DRILL_PASSFILE: join(work, 'does-not-exist') })]
     for (const o of outputs) {
       for (const secret of [BACKUP_PASSWORD, DRILL_OWNER_PASSWORD, 'harness-only']) {
         expect(o.stdout + o.stderr).not.toContain(secret)

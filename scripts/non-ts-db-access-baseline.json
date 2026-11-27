@@ -28,12 +28,12 @@
     "scripts/backup.sh": {
       "dialect": {
         "GLOB": 1,
-        "PRAGMA": 7,
+        "PRAGMA": 6,
         "raw LIKE": 2
       },
       "direct": {
         "claudeclaw.db": 10,
-        "sqlite3 CLI": 16
+        "sqlite3 CLI": 10
       }
     },
     "scripts/ensure-native-modules.sh": {
@@ -153,5 +153,8 @@
         "better-sqlite3": 4
       }
     }
+  },
+  "notes": {
+    "scripts/backup.sh": "RESIDUAL, removed with the PostgreSQL port of the gate hooks (hook_audit_log and gate_decision_counts move to PostgreSQL): the block \"PostgreSQL install: the two residual SQLite tables\" reads the live SQLite file for exactly those two tables (one catalog read, one .dump) and the +1 claudeclaw.db / +1 sqlite3 CLI of this baseline are that block. Nothing else is read from the live file."
   }
 }

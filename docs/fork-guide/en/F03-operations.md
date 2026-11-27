@@ -590,7 +590,7 @@ missing file, a missing table or a missing `sqlite3` is a warning, never an abor
 
 `scripts/pg-restore-drill.sh` proves that the newest nightly dump (`~/pg-backups/marveen-<date>-<time>.dump`) restores. It
 fails when there is no dump, when the newest is older than 36 hours or does not match its `.sha256` sidecar, or when
-`pg_restore` cannot read it. Otherwise it creates the throwaway database `marveen_drill_<stamp>_<pid>` as the owner role,
+`pg_restore` cannot read it. Otherwise it creates the throwaway database `marveen_drill_<stamp>_<pid>` as the dedicated `marveen_drill` role (not the owner role),
 restores the dump into it, compares the row counts of nine key tables (`memories`, `kanban_cards`, `workspace_docs`,
 `schedules`, `dashboard_users`, `agent_messages`, `tenants`, `system_config`, `conversation_log`) with the live database
 and drops the throwaway database again, whatever happened. The last line is one summary line, the exit code is 0 or 1.
@@ -601,7 +601,7 @@ ahead by the hours since the dump): restored rows greater than live FAIL; a rest
 FAIL; live ahead of restored by more than `max(2 rows, 10 percent)` FAIL (`PG_DRILL_TOL_ABS`, `PG_DRILL_TOL_PCT`).
 
 Credentials are read from `PGPASSFILE` files, never from a command line: `~/.pgpass-marveen-backup` (the nightly dump's) and
-`~/.pgpass-marveen-owner` (mode 0600, one line `127.0.0.1:5432:*:marveen_owner:<owner-password>`). The one-time database
+`~/.pgpass-marveen-drill` (mode 0600, one line `127.0.0.1:5432:*:marveen_drill:<drill-password>`). The one-time database
 setup is in `docs/pg-provisioning.md` ("The weekly restore drill"); the script checks every item before it creates anything and
 names the missing one.
 

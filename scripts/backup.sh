@@ -166,9 +166,9 @@ fi
 # After the cutover store/claudeclaw.db is still written by the Python gate hooks (scripts/hooks/gate_audit_lib.py),
 # but only these two tables; everything else in the file is frozen at the cutover and is NOT archived (the stale
 # database must not come back on a restore). Those two tables are therefore in no other backup, so they are dumped
-# as SQL text into the archive. The live file is read through SQLite's online backup (a temp copy in the staging
-# tree, which is never archived), and the dump is taken from that copy, so a hook write during the export cannot
-# touch the dump. A missing file, a missing table, a missing sqlite3 or a failing step is a WARNING, never an abort:
+# as SQL text into the archive. Nothing else is read from the live file: one catalog read for the two table names
+# and one .dump of exactly those tables (one read transaction, so a hook write meanwhile cannot touch it; no copy of
+# the whole file is made). A missing file, a missing table, a missing sqlite3 or a failing step is a WARNING, never an abort:
 # the nightly backup must still produce its archive. REMOVE this block when the hooks write to PostgreSQL (the
 # follow-up named in the CHANGELOG); until then it is the only copy of those rows.
 RESIDUAL_REL="store/residual-gate-audit.sql"
@@ -179,47 +179,49 @@ residual_warn() {  # residual_warn <reason>: the warning on stderr and the MANIF
   echo "backup: WARNING -- the residual gate-audit tables are not in this archive: $1" >&2
   RESIDUAL_NOTE="residual-gate-audit: NOT included ($1)"
 }
-residual_cleanup() { rm -f "${STAGE}/residual-snapshot.db" "${STAGE}/residual-snapshot.db-wal" "${STAGE}/residual-snapshot.db-shm"; }
+RESIDUAL_LIVE=store/claudeclaw.db
+# The only door to the live SQLite file in this block: read statements only (the catalog names of the two tables and one
+# .dump of them), nothing is written. Not -readonly on purpose: a read-only open of a WAL file that has no -shm yet fails.
+residual_sql() { sqlite3 -cmd '.timeout 5000' "${RESIDUAL_LIVE}" "$@"; }
 residual_export() {
-  local live=store/claudeclaw.db snap="${STAGE}/residual-snapshot.db" out="${STAGE}/repo/${RESIDUAL_REL}"
-  local t n present="" counts=""
+  local live="${RESIDUAL_LIVE}" out="${STAGE}/repo/${RESIDUAL_REL}"
+  local t n found present="" counts=""
   if [[ ! -f "${live}" ]]; then residual_warn "${live} does not exist"; return 0; fi
   if ! command -v sqlite3 >/dev/null 2>&1; then residual_warn "the sqlite3 CLI is missing"; return 0; fi
-  # .backup only reads the live file; the busy timeout bounds the wait for a hook's write lock.
-  if ! sqlite3 -cmd '.timeout 5000' "${live}" ".backup '${snap}'" >/dev/null 2>&1; then
-    residual_cleanup
-    residual_warn "sqlite3 .backup of ${live} failed"
+  # Which of the two tables exist: a catalog read, no table content. A file that is not a database fails here.
+  if ! found="$(residual_sql "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('hook_audit_log','gate_decision_counts')" 2>/dev/null)"; then
+    residual_warn "cannot read ${live} (not a database, or locked past the 5 s timeout)"
     return 0
   fi
-  # The copy inherits WAL mode, and a -readonly open of a WAL file cannot create its -shm (CANTOPEN): the copy is ours,
-  # so it goes to the rollback journal first and the reads below can stay -readonly.
-  sqlite3 "${snap}" 'PRAGMA journal_mode=DELETE;' >/dev/null 2>&1 || true
   for t in ${RESIDUAL_TABLES}; do
-    if [[ "$(sqlite3 -readonly "${snap}" "SELECT 1 FROM sqlite_master WHERE type='table' AND name='${t}'" 2>/dev/null || true)" == "1" ]]; then
-      n="$(sqlite3 -readonly "${snap}" "SELECT count(*) FROM \"${t}\"" 2>/dev/null || true)"
+    if grep -qx "${t}" <<<"${found}"; then
       present="${present} ${t}"
-      counts="${counts}${counts:+, }${t}=${n:-?}"
     else
       echo "backup: WARNING -- residual table ${t} is missing in ${live}, not archived" >&2
     fi
   done
   if [[ -z "${present}" ]]; then
-    residual_cleanup
     residual_warn "none of ${RESIDUAL_TABLES} exists in ${live}"
     return 0
   fi
   mkdir -p "$(dirname "${out}")"
+  # One .dump of the present tables: it runs in ONE read transaction, so the two tables are one consistent snapshot, and
+  # a hook's write meanwhile (WAL mode: readers do not block it) cannot touch it. Only these tables are read.
   # umask 077: the dump carries audit rows (agent ids, verdicts), so the file is owner-only like the archive.
   # ${present} is word-split on purpose: one argument per table name for .dump.
   # shellcheck disable=SC2086
-  if ! ( umask 077; sqlite3 -readonly "${snap}" ".dump${present}" > "${out}" ) 2>/dev/null; then
+  if ! ( umask 077; residual_sql ".dump${present}" > "${out}" ) 2>/dev/null; then
     rm -f "${out}"
-    residual_cleanup
-    residual_warn "sqlite3 .dump of the snapshot failed"
+    residual_warn "the .dump of the two tables failed"
     return 0
   fi
   chmod 600 "${out}"
-  residual_cleanup
+  # The row counts are those of the dump text itself (one INSERT line per row: the columns hold ids and fixed codes, no
+  # newline), so MANIFEST.txt states what is in the file, not a second read of the live table.
+  for t in ${present}; do
+    n="$(grep -c "^INSERT INTO \"\{0,1\}${t}\"\{0,1\} " "${out}" || true)"
+    counts="${counts}${counts:+, }${t}=${n:-0}"
+  done
   RESIDUAL_NOTE="residual-gate-audit: ${RESIDUAL_REL} (rows: ${counts})"
   REPOLIST_RESIDUAL=1
   echo "backup: residual gate-audit tables dumped (${counts})"
