@@ -113,19 +113,23 @@ as tool-log-capture.py): fail/timeout/crash -> SILENT PASS, exit 0 always.
 This is observability + best-effort continuity, not a gate -- it must never
 block a tool call.
 
-PostgreSQL mode (H1): the SQLite file is not the source of truth after the cutover, so the two READS that feed the
-injected text -- the context_restart_gate threshold and the HANDOFF facts (own blackboard row, latest rows, open
-cards, last outgoing message) -- come ONLY from the dashboard route, in the agent's own tenant context. There is no
-fallback to SQLite after a route error: a wrong state injected at the moment the context is nearly full is worse
-than no injection. Concretely: a failed threshold call skips the HANDOFF path for this tool call; a failed handoff
-call injects nothing and writes NO audit row (a row means "actually emitted"). This hook runs on EVERY tool call, so
-the route calls get a SHORT budget (WATCHDOG_ROUTE_DEADLINE_S in total, ONE attempt, no retry; a refused connection
-returns at once), unlike the tenant gates' 7.5 s. Cost in PG mode: one loopback call per PostToolUse for the
-threshold, plus one more only when the context is past CONTEXT_PCT_THRESHOLD. The hook imports no database driver
-and reads no credential: the route is the point (a DB password must not enter every agent's shell). Still on SQLite
-in PG mode, on purpose, until H2 moves them together: the token_usage/otel_spans writes, record_handoff_audit() and
-the dedup read in should_emit_handoff() -- PG hook_audit_log holds no 'handoff' rows until the writer moves, so a PG
-dedup read would see "no prior row" and emit on every tool call. Exit 0 always.
+PostgreSQL mode (H1 + H2a): the SQLite file is not the source of truth after the cutover, so in PG mode this hook
+NEVER opens it (main_pg() runs before any sqlite3.connect, and resolves no tenant itself): every read and every write
+goes to the dashboard. ONE record call per PostToolUse (POST /api/v1/hooks/watchdog-record) carries the token_usage row,
+the agent.turn / model.call spans and the stale-turn close, and answers the context_restart_gate threshold (always, even
+when a write failed: the writes are best-effort telemetry and must not cost the agent its HANDOFF). Only once the context
+is past CONTEXT_PCT_THRESHOLD, and the call is not a spawned sub-agent's: the dedup read (`want: prior_handoff` on
+/api/v1/hooks/watchdog-facts), the decision, the HANDOFF facts (`want: handoff`, the agent's own tenant context), the
+injection, and the audit row (POST /api/v1/hook-audit). There is no fallback to SQLite after a route error: a wrong
+state injected at the moment the context is nearly full is worse than no injection. A failed record call has no
+threshold, so the HANDOFF path is skipped for this call; a failed dedup read injects NOTHING (it must not fail open to
+"emit on every call": the "no prior row means emit" rule below is for an ANSWER of null only); a failed facts call
+injects nothing and writes NO audit row (a row means "actually emitted"); an audit write that fails AFTER the text was
+injected leaves the row missing and the next call may emit again, accepted and logged as one line on stderr. This hook
+runs on EVERY tool call, so the route calls share a SHORT budget (WATCHDOG_ROUTE_DEADLINE_S in total, ONE attempt, no
+retry; a refused connection returns at once), unlike the tenant gates' 7.5 s. The hook imports no database driver and
+reads no credential: the route is the point (a DB password must not enter every agent's shell). Nothing of the
+SQLite file is carried over (continuity in PG starts at the deploy). Exit 0 always.
 """
 from __future__ import annotations  # `X | None` annotations: python3 can be the macOS system 3.9
 import sys
@@ -162,8 +166,16 @@ HANDOFF_SUMMARY_MAX_CHARS = 600
 # once per prompt): 1.5 s for the whole run (the threshold call and the handoff call share it), ONE attempt, no retry.
 # Absence of an injection beats a slow tool call; the next tool call asks again.
 WATCHDOG_ROUTE_PATH = "/api/v1/hooks/watchdog-facts"
+# H2a: the ONE writes-and-threshold call of every PostToolUse, and the existing audit route the emitted HANDOFF is logged to.
+WATCHDOG_RECORD_PATH = "/api/v1/hooks/watchdog-record"
+HOOK_AUDIT_PATH = "/api/v1/hook-audit"
 WATCHDOG_ROUTE_DEADLINE_S = 1.5
 WATCHDOG_ROUTE_ATTEMPTS = 1
+# The audit row is the other half of the dedup pair (the next call reads it back). When the earlier calls of the run (record,
+# prior_handoff, facts) leave less than this, the audit call gets a fresh budget of this size instead of being skipped: a skipped
+# row means the NEXT call finds no prior HANDOFF and injects again, on every tool call, exactly when the dashboard is slow and
+# the context is full. Worst case for the whole run: WATCHDOG_ROUTE_DEADLINE_S + this.
+WATCHDOG_AUDIT_DEADLINE_S = 0.4
 # An own blackboard row in one of these states is unfinished work the handoff must hand over together
 # with the duty to close it ('stale' is an 'active' row the sweeper gave up on, still open).
 OPEN_BLACKBOARD_STATUSES = ("active", "stale")
@@ -381,12 +393,14 @@ def _execute_tenant_aware(conn, sql, params, legacy_sql, legacy_params) -> None:
         conn.execute(legacy_sql, legacy_params)
 
 
-def write_token_row(conn, agent_id, session_id, ev, tool_name) -> bool:
+def build_usage(session_id, ev, tool_name) -> dict | None:
+    """The token_usage fields of one transcript usage line, shared by the SQLite write (write_token_row) and the PG
+    route payload (main_pg), so the two paths record the same row. None when the line has no usable timestamp."""
     msg = ev.get("message") or {}
     usage = msg.get("usage") or {}
     ts = _parse_ts(ev.get("timestamp"))
     if ts is None:
-        return False
+        return None
 
     content_preview = ""
     content = msg.get("content")
@@ -397,6 +411,24 @@ def write_token_row(conn, agent_id, session_id, ev, tool_name) -> bool:
                 break
     elif isinstance(content, str):
         content_preview = content[:200]
+
+    return {
+        "session_id": session_id,
+        "timestamp": ts,
+        "input_tokens": int(usage.get("input_tokens") or 0),
+        "output_tokens": int(usage.get("output_tokens") or 0),
+        "cache_read_tokens": int(usage.get("cache_read_input_tokens") or 0),
+        "cache_creation_tokens": int(usage.get("cache_creation_input_tokens") or 0),
+        "model": msg.get("model"),
+        "content_preview": content_preview or None,
+        "tool_name": tool_name,
+    }
+
+
+def write_token_row(conn, agent_id, session_id, ev, tool_name) -> bool:
+    row = build_usage(session_id, ev, tool_name)
+    if row is None:
+        return False
 
     tenant_id = resolve_tenant(conn, agent_id)
 
@@ -412,20 +444,20 @@ def write_token_row(conn, agent_id, session_id, ev, tool_name) -> bool:
           tenant_id = excluded.tenant_id
         """,
         (
-            agent_id, session_id, ts,
-            int(usage.get("input_tokens") or 0),
-            int(usage.get("output_tokens") or 0),
-            int(usage.get("cache_read_input_tokens") or 0),
-            int(usage.get("cache_creation_input_tokens") or 0),
+            agent_id, session_id, row["timestamp"],
+            row["input_tokens"],
+            row["output_tokens"],
+            row["cache_read_tokens"],
+            row["cache_creation_tokens"],
             # thinking_tokens: the batch collector estimates this from
             # thinking-block char length (token-usage.ts parseJsonlFile). Left
             # at 0 here -- a later batch pass fills it in via the ON CONFLICT
             # branch above once it processes the same line; this hook's job is
             # freshness for the token COUNT, not full field parity.
             0,
-            msg.get("model"),
-            content_preview or None,
-            tool_name,
+            row["model"],
+            row["content_preview"],
+            row["tool_name"],
             tenant_id,
         ),
     )
@@ -533,45 +565,51 @@ def close_stale_turn_spans(conn, trace_id: str, keep_span_id: str) -> None:
     )
 
 
-def write_agent_turn_span(conn, agent_id: str, session_id: str, turn_ev: dict, latest_ts_ms: int) -> str | None:
-    """Upsert the agent.turn span for the turn currently in progress. Reuses
-    the turn-start event's own transcript uuid as the span_id (stable,
-    already unique) and rolls end_ms forward to the latest processed event
-    on every call, so the span keeps growing until close_stale_turn_spans()
-    closes it on the next turn's first tool call."""
+def build_turn_span(session_id: str, turn_ev: dict, latest_ts_ms: int) -> dict | None:
+    """The agent.turn span of the turn currently in progress (shared by the SQLite write and the PG route payload). Reuses
+    the turn-start event's own transcript uuid as the span_id (stable, already unique) and rolls end_ms forward to the
+    latest processed event on every call."""
     turn_span_id = turn_ev.get("uuid")
     if not turn_span_id:
         return None
     start_ts = _parse_ts(turn_ev.get("timestamp"))
     start_ms = start_ts * 1000 if start_ts is not None else latest_ts_ms
+    return {
+        "operation": "agent.turn",
+        "trace_id": session_id,
+        "span_id": turn_span_id,
+        "parent_span_id": None,
+        "start_ms": start_ms,
+        "end_ms": latest_ts_ms,
+        "status": "running",
+        "attributes": None,
+    }
+
+
+def write_agent_turn_span(conn, agent_id: str, session_id: str, turn_ev: dict, latest_ts_ms: int) -> str | None:
+    """Upsert the agent.turn span for the turn currently in progress, so the span keeps growing until
+    close_stale_turn_spans() closes it on the next turn's first tool call."""
+    span = build_turn_span(session_id, turn_ev, latest_ts_ms)
+    if span is None:
+        return None
     upsert_otel_span(
         conn,
-        trace_id=session_id,
-        span_id=turn_span_id,
-        parent_span_id=None,
+        trace_id=span["trace_id"],
+        span_id=span["span_id"],
+        parent_span_id=span["parent_span_id"],
         agent_id=agent_id,
-        operation="agent.turn",
-        start_ms=start_ms,
-        end_ms=latest_ts_ms,
-        status="running",
-        attributes=None,
+        operation=span["operation"],
+        start_ms=span["start_ms"],
+        end_ms=span["end_ms"],
+        status=span["status"],
+        attributes=span["attributes"],
     )
-    return turn_span_id
+    return span["span_id"]
 
 
-def write_model_call_span(conn, agent_id: str, session_id: str, ev: dict, turn_span_id,
-                          duration_ms=None) -> str | None:
-    """Upsert the model.call span for the latest assistant usage event.
-    span_id = the Anthropic API message id (msg_..., already unique per
-    model call, present on every usage-bearing transcript line) -- so a
-    later PostToolUse call that re-reads the same "latest" line before a
-    newer one exists is a harmless no-op upsert, not a duplicate span.
-
-    `duration_ms` (model_call_duration_ms) moves the span's start back from the
-    response's transcript time; the span is then marked marveen.duration.source=
-    transcript, because the figure is an approximation. Without one (None, or
-    anything that is not a plausible positive duration) the span is as before:
-    start == end, no marker."""
+def build_model_span(session_id: str, ev: dict, turn_span_id, duration_ms=None) -> dict | None:
+    """The model.call span fields of the latest assistant usage event (shared by the SQLite write and the PG route
+    payload); see write_model_call_span for the rules. None without a message id or a usable timestamp."""
     msg = ev.get("message") or {}
     usage = msg.get("usage") or {}
     model_id = msg.get("id")
@@ -590,19 +628,47 @@ def write_model_call_span(conn, agent_id: str, session_id: str, ev: dict, turn_s
     if isinstance(duration_ms, int) and not isinstance(duration_ms, bool) and 0 < duration_ms <= DURATION_MAX_MS:
         start_ms = ts_ms - duration_ms
         attributes["marveen.duration.source"] = "transcript"
+    return {
+        "operation": "model.call",
+        "trace_id": session_id,
+        "span_id": model_id,
+        "parent_span_id": turn_span_id,
+        "start_ms": start_ms,
+        "end_ms": ts_ms,
+        "status": "ok",
+        "attributes": json.dumps(attributes),
+    }
+
+
+def write_model_call_span(conn, agent_id: str, session_id: str, ev: dict, turn_span_id,
+                          duration_ms=None) -> str | None:
+    """Upsert the model.call span for the latest assistant usage event.
+    span_id = the Anthropic API message id (msg_..., already unique per
+    model call, present on every usage-bearing transcript line) -- so a
+    later PostToolUse call that re-reads the same "latest" line before a
+    newer one exists is a harmless no-op upsert, not a duplicate span.
+
+    `duration_ms` (model_call_duration_ms) moves the span's start back from the
+    response's transcript time; the span is then marked marveen.duration.source=
+    transcript, because the figure is an approximation. Without one (None, or
+    anything that is not a plausible positive duration) the span is as before:
+    start == end, no marker."""
+    span = build_model_span(session_id, ev, turn_span_id, duration_ms=duration_ms)
+    if span is None:
+        return None
     upsert_otel_span(
         conn,
-        trace_id=session_id,
-        span_id=model_id,
-        parent_span_id=turn_span_id,
+        trace_id=span["trace_id"],
+        span_id=span["span_id"],
+        parent_span_id=span["parent_span_id"],
         agent_id=agent_id,
-        operation="model.call",
-        start_ms=start_ms,
-        end_ms=ts_ms,
-        status="ok",
-        attributes=json.dumps(attributes),
+        operation=span["operation"],
+        start_ms=span["start_ms"],
+        end_ms=span["end_ms"],
+        status=span["status"],
+        attributes=span["attributes"],
     )
-    return model_id
+    return span["span_id"]
 
 
 def _read_gate_threshold(agent_id: str) -> int:
@@ -685,14 +751,22 @@ def facts_from_sqlite(conn, agent_id: str) -> dict:
     return {"own": own, "recent": recent, "cards": cards, "last_outgoing": last_out[0] if last_out else None}
 
 
-def _route_call(agent_id: str, session_id, want: str, deadline):
-    """One call of the watchdog route under the short shared budget: ONE attempt, no retry. Raises hook_route.RouteError.
+def _route_post(path: str, body: dict, agent_id: str, session_id, deadline):
+    """One POST under the short shared budget: ONE attempt, no retry. Raises hook_route.RouteError.
     Imported here, not at the top, so a SQLite install never pays the import (urllib) on every tool call."""
     import hook_route  # noqa: E402
     return hook_route.call(
-        "POST", WATCHDOG_ROUTE_PATH, {"want": want}, agent_id, deadline,
+        "POST", path, body, agent_id, deadline,
         session_id=session_id, max_attempts=WATCHDOG_ROUTE_ATTEMPTS,
     )
+
+
+def _route_call(agent_id: str, session_id, want: str, deadline, extra=None):
+    """One call of the watchdog facts route (`want: handoff` or `prior_handoff`)."""
+    body = {"want": want}
+    if extra:
+        body.update(extra)
+    return _route_post(WATCHDOG_ROUTE_PATH, body, agent_id, session_id, deadline)
 
 
 def _route_error(what: str):
@@ -706,19 +780,40 @@ def new_route_deadline():
     return hook_route.Deadline(WATCHDOG_ROUTE_DEADLINE_S)
 
 
-def threshold_from_route(agent_id: str, session_id, deadline) -> int:
-    """PG mode: the restart-gate threshold from the route (`want: threshold`). A null answer (no row, no positive
-    number) is DEFAULT_THRESHOLD_TOKENS, the same default the SQLite reader falls back to. Raises
-    hook_route.RouteError on ANY failure or a malformed answer: the caller skips the HANDOFF path, it never guesses."""
-    ans = _route_call(agent_id, session_id, "threshold", deadline)
+def record_via_route(agent_id: str, session_id, usage, spans, close_stale, deadline) -> int:
+    """PG mode: ONE call that carries this PostToolUse's writes (token_usage row, spans, the stale-turn close) and answers
+    the restart-gate threshold. A null threshold (no row, no positive number) is DEFAULT_THRESHOLD_TOKENS, the same default
+    the SQLite reader falls back to. The writes are best-effort on the server (an invalid item is dropped and counted
+    there): this function only needs the threshold. Raises hook_route.RouteError on ANY failure or a malformed answer: the
+    caller skips the HANDOFF path, it never guesses a threshold."""
+    ans = _route_post(
+        WATCHDOG_RECORD_PATH, {"usage": usage, "spans": spans, "close_stale": close_stale},
+        agent_id, session_id, deadline,
+    )
     if not isinstance(ans, dict) or "threshold_tokens" not in ans:
-        raise _route_error("threshold answer has no threshold_tokens")
+        raise _route_error("record answer has no threshold_tokens")
     v = ans["threshold_tokens"]
     if v is None:
         return DEFAULT_THRESHOLD_TOKENS
     if isinstance(v, bool) or not isinstance(v, int) or v <= 0:
         raise _route_error("threshold_tokens is not a positive integer")
     return v
+
+
+def prior_handoff_from_route(agent_id: str, session_id, deadline):
+    """PG mode: the caller's own latest 'handoff' audit row of this session (the dedup baseline), as the (ts, reason,
+    content_hash) tuple should_emit_handoff reads from SQLite, or None when the route ANSWERS that there is none.
+    Raises hook_route.RouteError on ANY failure or a malformed answer: the caller injects nothing. A failed read must
+    NOT be treated as "no prior row": that rule makes the hook emit on every tool call."""
+    ans = _route_call(agent_id, session_id, "prior_handoff", deadline, extra={"session_id": session_id})
+    if ans is None:
+        return None
+    if not isinstance(ans, dict):
+        raise _route_error("prior_handoff answer is not an object or null")
+    ts, reason, content_hash = ans.get("ts"), ans.get("reason"), ans.get("content_hash")
+    if isinstance(ts, bool) or not isinstance(ts, int) or not _is_text(reason, True) or not _is_text(content_hash, True):
+        raise _route_error("prior_handoff row is malformed")
+    return (ts, reason, content_hash)
 
 
 def _is_text(v, nullable=False):
@@ -870,6 +965,51 @@ def record_handoff_audit(conn, agent_id, session_id, tool_name, pct, content_has
         pass
 
 
+def audit_deadline(deadline):
+    """The budget of the audit call: the shared one while it still has WATCHDOG_AUDIT_DEADLINE_S left, else a fresh
+    WATCHDOG_AUDIT_DEADLINE_S of its own (see the constant). Never raises: on any doubt the shared one is returned."""
+    try:
+        if deadline.remaining() >= WATCHDOG_AUDIT_DEADLINE_S:
+            return deadline
+        import hook_route  # noqa: E402
+        return hook_route.Deadline(WATCHDOG_AUDIT_DEADLINE_S)
+    except Exception:
+        return deadline
+
+
+def audit_via_route(agent_id, session_id, tool_name, pct, content_hash, deadline) -> bool:
+    """PG mode: the audit row of an EMITTED HANDOFF, through the existing POST /api/hook-audit (the agent is the token's;
+    the tenant stamp and the trace are the server's). Same row as record_handoff_audit: reason carries the context%, the
+    content hash is the next call's dedup baseline. Returns False on any failure and says so with ONE stderr line: the text
+    was already injected, the row is missing, the next call may emit again -- the cheapest honest outcome, so it is
+    accepted, not retried and not hidden. Never raises."""
+    try:
+        body = {
+            "hook_type": "PostToolUse",
+            "verdict": "handoff",
+            "tool_name": tool_name,
+            "content_hash": content_hash,
+            "reason": f"ctx={pct:.0%}",
+            "session_id": session_id,
+            "trigger_source": "watchdog",
+        }
+        try:
+            from gate_audit_lib import clean_session_id
+            trace_id = clean_session_id(session_id)
+        except Exception:
+            trace_id = None  # no usable session id: the row is written without a trace, as on SQLite
+        if trace_id is not None:
+            body["trace_id"] = trace_id
+        _route_post(HOOK_AUDIT_PATH, body, agent_id, session_id, audit_deadline(deadline))
+        return True
+    except Exception as e:
+        try:
+            sys.stderr.write("context-watchdog: the HANDOFF audit row was not written (%s); the next call may emit again\n" % type(e).__name__)
+        except Exception:
+            pass
+        return False
+
+
 def _hash_handoff_text(text: str) -> str:
     """Stable-content hash of a HANDOFF body for the dedup rule 4 check: sha1
     over the text with the two lines that change on every single call
@@ -934,7 +1074,6 @@ def should_emit_handoff(conn, agent_id, session_id, pct, now_ts, build_text):
     second, redundant build_handoff() call; both are None when the caller
     still needs to build the text itself (the rule 1-3 EMIT paths, and the
     fail-open path)."""
-    cur_band = _pct_band(int(round(pct * 100)))
     prev = _fetchone(
         conn,
         "SELECT ts, reason, content_hash FROM hook_audit_log "
@@ -942,6 +1081,15 @@ def should_emit_handoff(conn, agent_id, session_id, pct, now_ts, build_text):
         "ORDER BY ts DESC, id DESC LIMIT 1",
         (agent_id, session_id),
     )
+    return decide_emit(prev, pct, now_ts, build_text)
+
+
+def decide_emit(prev, pct, now_ts, build_text):
+    """The dedup decision over a prior-row tuple (ts, reason, content_hash) or None, the same rules for both modes:
+    SQLite reads `prev` from hook_audit_log (should_emit_handoff), PG mode from the route's prior_handoff answer.
+    None here means "no prior row" and EMITS: a caller whose read FAILED must not call this with None (PG mode raises
+    before it gets here, see prior_handoff_from_route)."""
+    cur_band = _pct_band(int(round(pct * 100)))
     if prev is None:
         return True, None, None
 
@@ -977,6 +1125,59 @@ def emit_handoff(text: str) -> None:
         }
     }, ensure_ascii=False))
     sys.stdout.flush()
+
+
+def main_pg(agent_id, session_id, transcript_path, tool_name, cc_subagent_uuid, ev, tokens) -> None:
+    """PostgreSQL mode, one PostToolUse call: NO sqlite3, no tenant resolution, no tenant_context_lib. ONE record call
+    (usage row, spans, stale-turn close; answers the threshold), and only past CONTEXT_PCT_THRESHOLD for a top-level
+    session: the dedup read, the decision, the facts, the injection, the audit row. One shared short deadline, one
+    attempt per call, no retry, fail silent. See the module docstring for the failure ladder. Never raises."""
+    try:
+        deadline = new_route_deadline()
+
+        usage = build_usage(session_id, ev, tool_name)
+        spans = []
+        close_stale = None
+        turn_span_id = None
+        ev_ts = _parse_ts(ev.get("timestamp"))
+        if ev_ts is not None:
+            turn_ev = find_turn_start_event(transcript_path, before_ts=ev_ts)
+            if turn_ev is not None:
+                turn_span = build_turn_span(session_id, turn_ev, ev_ts * 1000)
+                if turn_span is not None:
+                    turn_span_id = turn_span["span_id"]
+                    spans.append(turn_span)
+                    close_stale = {"trace_id": session_id, "keep_span_id": turn_span_id}
+        model_span = build_model_span(session_id, ev, turn_span_id, duration_ms=model_call_duration_ms(transcript_path, ev))
+        if model_span is not None:
+            spans.append(model_span)
+
+        try:
+            threshold = record_via_route(agent_id, session_id, usage, spans, close_stale, deadline)
+        except Exception:
+            # no threshold, no pct: skip the HANDOFF path for this call (no default guess, no SQLite).
+            return
+        pct = (tokens / threshold) if threshold > 0 else 0
+        # Token/span bookkeeping above runs unconditionally (a sub-agent's tool calls burn real tokens against the same
+        # account and still count); only the HANDOFF path is fleet-agent-session-only.
+        if pct < CONTEXT_PCT_THRESHOLD or cc_subagent_uuid:
+            return
+        now_ts = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
+        build_text = lambda: render_handoff(facts_from_route(agent_id, session_id, deadline), pct, tokens, threshold)  # noqa: E731
+        # The dedup read must FAIL CLOSED: if the route cannot say what the prior row is, inject nothing. Treating a failed
+        # read as "no prior row" would emit on every tool call (decide_emit's None means an ANSWER of null).
+        prev = prior_handoff_from_route(agent_id, session_id, deadline)
+        should_emit, handoff, content_hash = decide_emit(prev, pct, now_ts, build_text)
+        if not should_emit:
+            return
+        if handoff is None:
+            handoff = build_text()
+        if content_hash is None:
+            content_hash = _hash_handoff_text(handoff)
+        emit_handoff(handoff)
+        audit_via_route(agent_id, session_id, tool_name, pct, content_hash, deadline)
+    except Exception:
+        pass  # logging-category hook: never fail the tool call
 
 
 def main():
@@ -1017,6 +1218,12 @@ def main():
     usage = (ev.get("message") or {}).get("usage") or {}
     tokens = context_tokens(usage)
 
+    # PG mode never reaches the sqlite3.connect below: every read and write is the dashboard's (see main_pg and the
+    # module docstring). Decided FIRST, so a stale SQLite file is not even opened.
+    if hook_pg_mode.pg_mode():
+        main_pg(agent_id, session_id, transcript_path, tool_name, cc_subagent_uuid, ev, tokens)
+        sys.exit(0)
+
     try:
         conn = sqlite3.connect(ledger_lib.db_path(), timeout=5)
         conn.execute("PRAGMA busy_timeout=5000")
@@ -1042,24 +1249,10 @@ def main():
                               duration_ms=model_call_duration_ms(transcript_path, ev))
         conn.commit()
 
-        # PG mode: the threshold and the HANDOFF facts come ONLY from the dashboard route (the SQLite file is stale
-        # there), under one short budget, one attempt, no retry, and NO fallback to SQLite after a failure: see the
-        # module docstring. SQLite mode: the local reads, as ever.
-        pg = hook_pg_mode.pg_mode()
-        deadline = new_route_deadline() if pg else None
-        if pg:
-            try:
-                threshold = threshold_from_route(agent_id, session_id, deadline)
-            except Exception:
-                # no threshold, no pct: skip the HANDOFF path for this call (no default guess, no SQLite). The
-                # bookkeeping above is already committed.
-                sys.exit(0)
-            facts_of = lambda: facts_from_route(agent_id, session_id, deadline)  # noqa: E731
-        else:
-            threshold = _read_gate_threshold(agent_id)
-            facts_of = lambda: facts_from_sqlite(conn, agent_id)  # noqa: E731
+        # SQLite mode: the local reads, as ever (PG mode returned above, main_pg).
+        threshold = _read_gate_threshold(agent_id)
         pct = (tokens / threshold) if threshold > 0 else 0
-        build_text = lambda: render_handoff(facts_of(), pct, tokens, threshold)  # noqa: E731
+        build_text = lambda: render_handoff(facts_from_sqlite(conn, agent_id), pct, tokens, threshold)  # noqa: E731
         # Token/span bookkeeping above runs unconditionally (a sub-agent's
         # tool calls burn real tokens against the same account and should
         # still count toward CostOps budget tracking); only the HANDOFF path
@@ -1067,11 +1260,6 @@ def main():
         # is fleet-agent-session-only.
         if pct >= CONTEXT_PCT_THRESHOLD and not cc_subagent_uuid:
             now_ts = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
-            # The dedup read (the prior 'handoff' row in hook_audit_log) and the audit write below STAY on SQLite
-            # in PG mode until H2 moves them together: PG hook_audit_log has no 'handoff' rows until the writer
-            # moves, so a PG dedup read would see "no prior row" and EMIT ON EVERY TOOL CALL.
-            # A route failure while the text is built (the rule-4 path here, or below) raises: nothing is emitted
-            # and no audit row is written, by the except at the end of this block.
             should_emit, handoff, content_hash = should_emit_handoff(
                 conn, agent_id, session_id, pct, now_ts, build_text,
             )

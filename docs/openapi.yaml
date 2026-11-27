@@ -5223,16 +5223,16 @@ paths:
       operationId: getHookWatchdogFacts
       summary: The facts the context watchdog hook reads on a PostgreSQL install
       description: >
-        Used by scripts/hooks/context-watchdog.py (stdlib Python, no database driver) on a PostgreSQL install, on every
-        PostToolUse (`want: threshold`) and, once the context is past the watchdog percentage, to build the HANDOFF
-        (`want: handoff`). Returns FACTS, never text: the wording and the default threshold stay in the hook. The agent is
-        the one the bearer token names (an `agent_id` in the body is ignored); a token that names no agent is a 403.
-        The HANDOFF facts run in the REQUEST tenant context (row-level security of the caller's tenant), so the
-        latest blackboard rows are the caller's tenant's rows only; the threshold is the agent's own operating setting
-        and is read by a named system job with a fixed filter (the token's agent, the context_restart_gate key), so a
-        shared agent in a tenant context still gets its configured value. NOT exempt from the missing-tenant-context refusal:
-        a shared agent with no fresh context gets a 403 and the watchdog injects nothing. Fleet-agent or admin token
-        (`hook-gate:read`).
+        Used by the context watchdog hook (stdlib Python, no database driver) on a PostgreSQL install, only once the
+        context is past the watchdog percentage: `want: prior_handoff` (the dedup baseline) and `want: handoff` (the
+        facts the HANDOFF is built from). Returns FACTS, never text: the wording stays in the hook. The agent is the one
+        the bearer token names (an `agent_id` in the body is ignored); a token that names no agent is a 403. Both run in
+        the REQUEST tenant context (row-level security of the caller's tenant), so the latest blackboard rows are the
+        caller's tenant's rows only. `prior_handoff` answers the caller's OWN latest 'handoff' audit row of the session
+        (`{ts, reason, content_hash}`) or `null`; it is not GET /hook-audit, which shows other agents' rows and cannot
+        filter by session. NOT exempt from the missing-tenant-context refusal: a shared agent with no fresh context gets
+        a 403 and the watchdog injects nothing. Fleet-agent or admin token (`hook-gate:read`). The threshold is answered
+        by POST /hooks/watchdog-record.
       requestBody:
         required: true
         content:
@@ -5241,16 +5241,20 @@ paths:
               type: object
               required: [want]
               properties:
-                want: { type: string, enum: [threshold, handoff] }
+                want: { type: string, enum: [handoff, prior_handoff] }
+                session_id: { type: string, minLength: 1, maxLength: 200, description: "want prior_handoff: the session whose latest handoff row is wanted" }
       responses:
         "200":
-          description: The threshold, or the facts of the HANDOFF (which of the two follows `want`)
+          description: The facts of the HANDOFF, or the prior handoff row (null when there is none); which of the two follows `want`
           content:
             application/json:
               schema:
                 type: object
+                nullable: true
                 properties:
-                  threshold_tokens: { type: integer, nullable: true, description: "want threshold: thresholdTokens of the context_restart_gate setting, null when there is no usable one" }
+                  ts: { type: integer, description: "want prior_handoff: when the row was written (epoch seconds)" }
+                  reason: { type: string, nullable: true, description: "want prior_handoff: ctx=NN%" }
+                  content_hash: { type: string, nullable: true, description: "want prior_handoff: the stable-content hash of the emitted text" }
                   own:
                     type: object
                     nullable: true
@@ -5280,7 +5284,82 @@ paths:
                         status: { type: string }
                   last_outgoing: { type: string, nullable: true, maxLength: 300 }
         "400":
-          description: Unknown `want`
+          description: Unknown `want` (the retired `threshold` included), or a missing or too long `session_id`
+        "403":
+          description: The token names no agent, the role may not use the hook routes, or a shared agent has no fresh tenant context
+  /hooks/watchdog-record:
+    post:
+      tags: [hooks]
+      operationId: recordHookWatchdog
+      summary: The writes of the context watchdog hook and its threshold, in one request, on a PostgreSQL install
+      description: >
+        Used by the context watchdog hook on every PostToolUse on a PostgreSQL install: the token_usage row, the
+        agent.turn / model.call spans and the stale-turn close of that call, and the restart-gate threshold the hook
+        needs, in ONE round trip (no per-span calls). The agent is the one the bearer token names (any agent or tenant in
+        the body is ignored); a token that names no agent is a 403. The writes run as ONE named system job with fixed
+        statements: the tenant stamps are computed server-side (token_usage with the agent's served-tenant rule, `_multi_`
+        for a shared agent; otel_spans with the write-tenant rule, NULL for a shared agent with no fresh context), never
+        taken from the body. The span upsert refreshes end_ms, status and attributes only, and only for the caller's OWN
+        span (another agent's span id is refused and counted); the stale close touches the caller's own running
+        agent.turn spans of the trace. The threshold is ALWAYS answered (thresholdTokens of the context_restart_gate
+        setting of the caller, read with a fixed agent and key filter): the writes are best-effort telemetry, so an
+        invalid item is dropped and counted (`dropped`) and a failed write is logged at warn, counted and reported as a
+        false flag, never as a failed request. Structural errors (a field of the wrong type, more than four spans) are
+        400. NOT exempt from the missing-tenant-context refusal. Fleet-agent or admin token (`hook-gate:write`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                usage:
+                  type: object
+                  nullable: true
+                  properties:
+                    session_id: { type: string, maxLength: 200 }
+                    timestamp: { type: integer, description: "epoch seconds of the transcript line" }
+                    input_tokens: { type: integer, minimum: 0 }
+                    output_tokens: { type: integer, minimum: 0 }
+                    cache_read_tokens: { type: integer, minimum: 0 }
+                    cache_creation_tokens: { type: integer, minimum: 0 }
+                    model: { type: string, nullable: true, maxLength: 200 }
+                    content_preview: { type: string, nullable: true, maxLength: 200 }
+                    tool_name: { type: string, nullable: true, maxLength: 200 }
+                spans:
+                  type: array
+                  maxItems: 4
+                  items:
+                    type: object
+                    properties:
+                      operation: { type: string, enum: [agent.turn, model.call] }
+                      trace_id: { type: string, maxLength: 200 }
+                      span_id: { type: string, maxLength: 200 }
+                      parent_span_id: { type: string, nullable: true, maxLength: 200 }
+                      start_ms: { type: integer }
+                      end_ms: { type: integer }
+                      status: { type: string, enum: [running, ok, error, timeout] }
+                      attributes: { type: string, nullable: true, maxLength: 4096 }
+                close_stale:
+                  type: object
+                  nullable: true
+                  properties:
+                    trace_id: { type: string, maxLength: 200 }
+                    keep_span_id: { type: string, maxLength: 200 }
+      responses:
+        "200":
+          description: The threshold and what was written
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  threshold_tokens: { type: integer, nullable: true, description: "thresholdTokens of the caller's context_restart_gate setting, null when there is no usable one (the hook decides the default)" }
+                  usage: { type: boolean, description: "the token_usage row was written" }
+                  spans: { type: integer, description: "the spans written" }
+                  dropped: { type: integer, description: "items refused: invalid, a span of another agent, a failed write" }
+        "400":
+          description: A field of the wrong type, or more than four spans
         "403":
           description: The token names no agent, the role may not use the hook routes, or a shared agent has no fresh tenant context
   /workspace/{id}:

@@ -232,6 +232,7 @@ describe('the RBAC rows of /api/hooks/*', () => {
   const rows: [string, string, string][] = [
     ['POST', '/api/hooks/tenant-facts', 'hook-gate:read'], ['POST', '/api/hooks/skill-gate', 'hook-gate:read'], ['PUT', '/api/hooks/tenant-context', 'hook-gate:write'],
     ['POST', '/api/hooks/watchdog-facts', 'hook-gate:read'],
+    ['POST', '/api/hooks/watchdog-record', 'hook-gate:write'],
   ]
   it('are explicit table rows (not the admin:all fallback an agent token does not hold)', () => {
     for (const [m, p, perm] of rows) {

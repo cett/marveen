@@ -177,24 +177,6 @@ export interface WatchdogHandoffFacts {
 
 const clip = (v: unknown, max: number): string => String(v ?? '').slice(0, max)
 
-/**
- * thresholdTokens of the caller's context_restart_gate setting: a positive integer, or null when there is no row, the value is
- * not JSON, or the number is missing or not positive. The hook decides the default for null (never guessed here).
- */
-export const getWatchdogThreshold = systemJob('hook-tenant-reads', async (agentId: string): Promise<number | null> => {
-  const row = await dbx.get<{ setting_value: string }>(
-    "SELECT setting_value FROM agent_settings WHERE agent_id = ? AND setting_key = 'context_restart_gate'", agentId,
-  )
-  if (!row) return null
-  try {
-    const parsed: unknown = JSON.parse(row.setting_value)
-    const v = parsed !== null && typeof parsed === 'object' ? (parsed as Record<string, unknown>)['thresholdTokens'] : undefined
-    return typeof v === 'number' && Number.isFinite(v) && v > 0 ? Math.trunc(v) : null
-  } catch {
-    return null
-  }
-})
-
 /** The facts the HANDOFF is built from, for ONE agent, in the caller's request tenant context. Pure reads. */
 export async function getWatchdogHandoffFacts(agentId: string): Promise<WatchdogHandoffFacts> {
   // The number a card carries on the dashboard: the SQLite rowid, or the identity column `seq` in PostgreSQL (kanban.ts).
