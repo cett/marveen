@@ -134,11 +134,26 @@ ALTER DATABASE marveen_drill_tpl IS_TEMPLATE true;
 
 3. The drill role's password file, outside the repository, owner-only: `~/.pgpass-marveen-drill`, mode `0600`, one line
    `127.0.0.1:5432:*:marveen_drill:<drill-password>` (the database field is `*` because the throwaway name changes every run).
-   The backup role's file (`~/.pgpass-marveen-backup`) is the one the nightly dump already uses.
+   The backup role's file (`~/.pgpass-marveen-backup`) is the one the nightly dump already uses, with ONE requirement: its
+   database field (3rd field) must be `*`, not `marveen`. The script connects as the backup role to the throwaway database,
+   whose name changes every run, and libpq knows only a complete `*` there (no `marveen_drill_*`); the nightly dump works
+   with `*` as well. The script tries the template database with the backup role before it creates anything and names this
+   fix when it fails. Check the field without reading the password: `awk -F: '{print $3}' ~/.pgpass-marveen-backup`.
 The dump is restored with `--no-owner --no-acl` (no owner, grant or default privilege is replayed, so no other role has to
-exist) and without its ROW SECURITY and POLICY entries, so the drill role, which owns the restored copy, counts every row.
-The live side is counted through the read-only backup role only. The script refuses to run when the drill role is a
-superuser, has BYPASSRLS, or can read any table of the live database.
+exist, and the drill role needs no membership in `marveen_owner`: the dump's `ALTER DEFAULT PRIVILEGES FOR ROLE
+marveen_owner` entries are not replayed). Row-level security and policies are restored with the schema. Both sides are counted
+through the read-only backup role (BYPASSRLS): the drill role owns the restored tables, which are under forced row-level
+security, and would count 0. Because `--no-acl` leaves the backup role without a grant on the copy, the script runs one
+`GRANT USAGE ON SCHEMA public` / `GRANT SELECT ON ALL TABLES IN SCHEMA public` to the backup role, as the drill role, right
+after the restore. The script refuses to run when the drill role is a superuser, has BYPASSRLS, or can read any table of the
+live database.
+
+Orphans: the EXIT trap drops the throwaway database on every ending but SIGKILL (the command task's `timeoutMs` may send
+it). So each run starts by dropping databases named `marveen_drill_<14 digit UTC stamp>_<pid>` that the drill role OWNS and
+whose stamp is older than 24 hours; the summary line says how many. A younger one, and one of another owner, is never
+touched. By hand, as a superuser: `SELECT datname FROM pg_database WHERE datname LIKE 'marveen\_drill\_2%'`.
+The drop is a plain `DROP DATABASE` first (PostgreSQL cancels an autovacuum worker the restore woke up), `WITH (FORCE)`
+only as the second try: the drill role is not a superuser and may not terminate an autovacuum worker.
 
 Security note: no existing role is widened. `marveen_owner` keeps its attributes; the new role has one extra attribute
 (CREATEDB) and, on the live database, only what PUBLIC gives every role (CONNECT), which reads nothing.

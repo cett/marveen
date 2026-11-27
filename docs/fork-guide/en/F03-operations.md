@@ -596,8 +596,14 @@ restores the dump into it, compares the row counts of nine key tables (`memories
 and drops the throwaway database again, whatever happened. The last line is one summary line, the exit code is 0 or 1.
 Nothing is restored over the live database, which is only read.
 
-The comparison rule (both sides counted through the backup role, which bypasses row-level security; the live database is
-ahead by the hours since the dump): restored rows greater than live FAIL; a restored table with no rows while live has some
+Before it creates anything the script also checks that the backup role can reach the template database, which only works
+when the database field of `~/.pgpass-marveen-backup` is `*` (the throwaway name changes every run); it says so when not.
+A run that is killed (SIGKILL on a timeout) skips the clean-up, so each run first drops throwaway databases of the drill
+role that are older than 24 hours (the summary line says how many); the details are in `docs/pg-provisioning.md`.
+
+The comparison rule (both sides counted through the backup role, which bypasses row-level security; the restored copy is
+restored with `--no-owner --no-acl` and the script grants the backup role SELECT on it, as the drill role, right after the
+restore; the live database is ahead by the hours since the dump): restored rows greater than live FAIL; a restored table with no rows while live has some
 FAIL; live ahead of restored by more than `max(2 rows, 10 percent)` FAIL (`PG_DRILL_TOL_ABS`, `PG_DRILL_TOL_PCT`).
 
 Credentials are read from `PGPASSFILE` files, never from a command line: `~/.pgpass-marveen-backup` (the nightly dump's) and
