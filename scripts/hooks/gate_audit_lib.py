@@ -51,9 +51,10 @@ the event's cwd). A process with no trusted agent has no token to present: NOTHI
     process runs as the same OS user, so any of them can delete a line from ANY agent's spool or forge one. A forged line is
     filed under the id of the agent WHOSE spool it was written into (the drain presents that agent's token), never under the
     forger's: a fixed-set deny (gate and reason from fixed sets, ts clamped by the route to the last 7 days, a trace id that
-    passed clean_session_id) can be attributed to another agent. Protecting the directory (the gates' protected-file lists)
-    or binding each line to its writer (an HMAC keyed with the agent's own token) would close it; neither is done here (open
-    question for the architect, see the PR). It is drained, in batches of DRAIN_BATCH, by the next successful route call of
+    passed clean_session_id) can be attributed to another agent: the author of a row that arrives from the spool is the OWNER of the file, not
+    necessarily its writer. The spool is delayed delivery, never proof of authorship. Suppressing a real deny is slowed by the
+    gates' protected path (a speed bump, not a wall); an HMAC would protect nothing, because the key (the agent's token) must
+    be readable by the hook, so by every agent shell of the same OS user. It is drained, in batches of DRAIN_BATCH, by the next successful route call of
     that agent's gates; there is no daemon, an idle agent's spool waits for its next gate call.
   * an allow or an error is a STATISTIC, not evidence (decision Q1 A): it is added to a per-agent counts file and sent as ONE
     aggregated request at most once per COUNTS_FLUSH_EVERY_S (and together with any deny call). A failed send puts the counts
