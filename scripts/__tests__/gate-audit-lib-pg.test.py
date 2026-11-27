@@ -298,6 +298,23 @@ class TestFailure(PgModeCase):
             lib._append_entries = real
         self.assertEqual([e["gate"] for e in self.lines(self.spool)], ["tenant-skill-gate"])
 
+    def test_a_recovery_that_blows_up_still_spools_the_own_deny(self):
+        # the stale-claim recovery is statistics maintenance: whatever it raises (the alarm included), this call's own deny
+        # is already on its way to the spool, never lost before anything was written
+        self.down()
+        real = lib._recover_stale_claims
+
+        def boom(path, cap):
+            raise KeyboardInterrupt("the alarm, inside the recovery")
+
+        lib._recover_stale_claims = boom
+        try:
+            with self.assertRaises(BaseException):
+                lib._send_pending("agent-a", time.monotonic(), {"gate": "tenant-skill-gate", "reason": "denied", "ts": int(time.time()), "trace_id": None, "row": True})
+        finally:
+            lib._recover_stale_claims = real
+        self.assertEqual([e["gate"] for e in self.lines(self.spool)], ["tenant-skill-gate"])
+
     def test_an_orphaned_counts_claim_of_a_dead_process_is_taken_back_and_a_fresh_one_is_left_alone(self):
         stale = self.counts + ".4242.flushing"
         fresh = self.counts + ".4343.flushing"

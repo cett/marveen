@@ -486,13 +486,15 @@ def _send_pending(agent_id, start, own_deny=None):
     """Send the claimed counts file, and `own_deny` (this call's deny: its count, and its row when it wants one), in ONE call.
     A failure puts the counts back and spools the deny, then re-raises (record() swallows it)."""
     spool, counts_file, stamp = _spool_paths(agent_id)
-    # A counts claim older than STALE_CLAIM_S belongs to a process that died mid-send (the deny spool has had this from the
-    # start; without it an orphaned `.counts.<pid>.flushing` is never read again and the files pile up). Statistics only.
-    _recover_stale_claims(counts_file, COUNTS_MAX_LINES)
-    claimed = _claim(counts_file)
-    restore, tail, delivered = [], [], False
+    claimed, restore, tail, delivered = None, [], [], False
     try:
-        lines = [(e['gate'], e['decision'], e['reason'], e['n']) for e in (_read_entries(claimed) if claimed else []) if _valid_count(e)]
+        # A counts claim older than STALE_CLAIM_S belongs to a process that died mid-send (the deny spool has had this from the
+        # start; without it an orphaned `.counts.<pid>.flushing` is never read again and the files pile up). Statistics only,
+        # and INSIDE the try on purpose: whatever it raises (an alarm included), the finally below still spools this call's
+        # own deny; outside the try, the deny would be lost before anything had been written.
+        _recover_stale_claims(counts_file, COUNTS_MAX_LINES)
+        claimed = _claim(counts_file)
+        lines =[(e['gate'], e['decision'], e['reason'], e['n']) for e in (_read_entries(claimed) if claimed else []) if _valid_count(e)]
         restore = _aggregate(lines)  # what a failed send puts back: the counts file's own contribution, never this call's deny
         merged = restore
         if own_deny is not None:
