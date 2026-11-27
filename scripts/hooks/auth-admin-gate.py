@@ -1056,13 +1056,17 @@ def inspect_sql(text, live):
 # passes a text match), so the spool stays delayed delivery, never tamper-proof evidence. The whole-command text rule
 # (`sh -c`, redirects, rm/mv/tee...) is destructive-gate.py's. Cost, accepted: such code that merely names the directory
 # next to a write word is refused too.
-SPOOL_DIR_RE = re.compile(r'\.gate-audit-spool')
+# Case-INSENSITIVE: the macOS file system is, so `.GATE-AUDIT-SPOOL` names the same directory.
+SPOOL_DIR_RE = re.compile(r'\.gate-audit-spool', re.I)
 SPOOL_CODE_WRITE_RE = re.compile(
     # every repeat below is BOUNDED: the hook has a 10 s harness timeout and the text is caller-sized (no quadratic backtracking)
     r"""['"][rbtU]{0,3}[wax+][bt+]{0,3}['"]"""                      # a python / ruby open mode: 'w' 'a' 'x' 'wb' 'r+' 'a+' (a read mode 'r' 'rb' has none of w/a/x/+)
     r"""|['"]\s{0,8}(?:\+?>>?|\+<)"""                               # perl open(F, ">path") / ">>path" / '>' / '+<' (a '<' read is not here)
     r"""|O_(?:WRONLY|RDWR|APPEND|TRUNC|CREAT)"""                    # os.open flags
-    r"""|\.(?:write\w*|unlink\w*|rename\w*|truncate\w*|touch|rmdir|rmtree|rm\w*|remove\w*|copy\w*|symlink\w*|link)\s{0,8}\("""
+    r"""|\.(?:write\w*|unlink\w*|rename\w*|truncate\w*|touch|rmdir|rmtree|rm\w*|remove\w*|copy\w*|move\w*|symlink\w*|link)\s{0,8}\("""
+    # ruby, also without parentheses (File.rename a, b); `.replace(` stays out of the list: str.replace is everywhere in a read
+    r"""|File\.(?:unlink|rename|truncate|delete|write)\w*\s{0,8}[^\s(]"""
+    r"""|(?<![\w.])(?:unlink|rename)\s+[^\s=]"""                      # perl / ruby bare call: unlink "path"
     r"""|(?<![\w.])(?:unlink\w*|rename\w*|rmtree|rmdir|rmSync|rm|truncate|ftruncate|writeFile\w*|appendFile\w*|"""
     r"""createWriteStream|copyFile\w*|symlink\w*|system|popen|exec\w*|spawn\w*|Popen|subprocess|child_process|File\.(?:write|delete)|FileUtils|IO\.write)(?![\w])"""
     r"""|os\.(?:replace|link|rename|remove|unlink|truncate|system|popen)""")

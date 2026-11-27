@@ -85,7 +85,7 @@ PROTECTED_RE = re.compile(r'/\.(ssh|aws|gnupg|gmail-mcp)(?=/|\s|$|["\'])')
 # READ (cat, grep, wc, ls) is not. A speed bump, not a wall: this gate matches command text, every agent shell runs as
 # the same OS user, and a path built at run time passes a text match (the spool stays delayed delivery, not evidence of
 # record). Cost, accepted: any such command whose text contains the name and one of these words is refused.
-SPOOL_DIR_RE = re.compile(r'\.gate-audit-spool')
+SPOOL_DIR_RE = re.compile(r'\.gate-audit-spool', re.I)  # case-insensitive: the macOS file system is
 SPOOL_WRITE_RE = re.compile(
     r'>|(?<![\w.-])(?:rm|mv|cp|tee|truncate|shred|dd|ln|unlink|install|rsync)(?![\w.-])|(?<![\w.-])sed\s+(?:-[a-zA-Z]*i|--in-place)')
 # A `.env` file name: `.env` at the start of a word or after `=`/`:`, or at the end of a path

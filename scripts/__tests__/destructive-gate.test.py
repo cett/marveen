@@ -752,6 +752,12 @@ class TestGateAuditSpoolPath(unittest.TestCase):
             with self.subTest(command=cmd):
                 self.assertEqual(self._exit(cmd), 2)
 
+    def test_the_name_in_another_letter_case_is_refused_too(self):
+        # the macOS file system is case-insensitive: the upper-case spelling names the same directory
+        for cmd in ("echo x > /tmp/agents/store/.GATE-AUDIT-SPOOL/agent-a.jsonl", "rm /tmp/agents/store/.Gate-Audit-Spool/agent-a.jsonl"):
+            with self.subTest(command=cmd):
+                self.assertEqual(self._exit(cmd), 2)
+
     def test_a_read_of_the_spool_is_allowed(self):
         for cmd in ("cat %s" % self.SPOOL, "grep -c denied %s" % self.SPOOL, "wc -l %s" % self.SPOOL,
                     "ls -la %s" % self.DIR, "head -n 5 %s" % self.SPOOL, "tail -f %s" % self.SPOOL):

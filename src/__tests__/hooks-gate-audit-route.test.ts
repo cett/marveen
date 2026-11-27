@@ -80,6 +80,15 @@ describe('who the caller is', () => {
     expect(await tryHandleHooksGateAudit(ctx)).toBe(false)
   })
 
+  it('only the EXACT path is the route: a longer path, a sibling and the generic audit route are not served, and nothing is written', async () => {
+    for (const path of ['/api/hooks/gate-audit/extra', '/api/hooks/gate-audit-x', '/api/hooks/gate-audits', '/api/hooks/gate-audit/', '/api/hook-audit', '/api/hooks/watchdog-record']) {
+      const { ctx } = call({ denies: [deny('destructive-gate')] }, 'agent-a')
+      ;(ctx as { path: string }).path = path
+      expect(await tryHandleHooksGateAudit(ctx), path).toBe(false)
+    }
+    await nothingWritten()
+  })
+
   it('a body that is not a JSON object is 400 parse_error', async () => {
     for (const raw of ['not json', '[]', 'null', '"x"', '']) {
       const { ctx, out } = call(raw, 'agent-a')

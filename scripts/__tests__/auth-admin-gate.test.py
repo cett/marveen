@@ -670,6 +670,10 @@ BLOCKED = [
     ('spool: perl unlink', 'perl -e \'unlink "{S}/.gate-audit-spool/agent-a.jsonl"\''),
     ('spool: ruby File.write', 'ruby -e \'File.write("{S}/.gate-audit-spool/agent-a.jsonl", "")\''),
     ('spool: ruby File.delete', 'ruby -e \'File.delete("{S}/.gate-audit-spool/agent-a.jsonl")\''),
+    ('spool: python shutil.move', 'python3 -c "import shutil; shutil.move(\'{S}/.gate-audit-spool/agent-a.jsonl\', \'/tmp/x\')"'),
+    ('spool: ruby File.rename without parentheses', 'ruby -e \'File.rename "{S}/.gate-audit-spool/agent-a.jsonl", "/tmp/x"\''),
+    ('spool: ruby File.unlink without parentheses', 'ruby -e \'File.unlink "{S}/.gate-audit-spool/agent-a.jsonl"\''),
+    ('spool: the name in another letter case (a case-insensitive file system)', 'python3 -c "open(\'{S}/.GATE-Audit-Spool/agent-a.jsonl\', \'w\')"'),
 ]
 
 ALLOWED = [
@@ -988,7 +992,8 @@ ALLOWED = [
     ('spool: node reads a spool file', 'node -e "console.log(require(\'fs\').readFileSync(\'{S}/.gate-audit-spool/agent-a.jsonl\', \'utf8\'))"'),
     ('spool: node lists the directory with an arrow function', 'node -e "require(\'fs\').readdirSync(\'{S}/.gate-audit-spool\').map(f => console.log(f))"'),
     ('spool: perl reads', 'perl -e \'open(F, "<{S}/.gate-audit-spool/agent-a.jsonl"); print <F>\''),
-    ('spool: ruby reads', 'ruby -e \'puts File.read("{S}/.gate-audit-spool/agent-a.jsonl")\''),
+    ('spool: ruby File.open for read without parentheses', 'ruby -e \'File.open "{S}/.gate-audit-spool/agent-a.jsonl"\''),
+    ('spool: ruby reads','ruby -e \'puts File.read("{S}/.gate-audit-spool/agent-a.jsonl")\''),
     ('spool: python write to a file that does not name the directory', 'python3 -c "open(\'{O}/other.txt\', \'w\').write(\'x\')"'),
     ('spool: node unlink of another file', 'node -e "require(\'fs\').unlinkSync(\'{O}/other.txt\')"'),
 ]
@@ -1424,7 +1429,8 @@ MUTANTS = [
     ('SQL .open: full name only', "SQL_DOT_OPEN = re.compile(r'(?m)^\\s*\\.op(?:e(?:n)?)?\\s+", "SQL_DOT_OPEN = re.compile(r'(?m)^\\s*\\.open\\s+"),
     ('SQL .read: full name only', "SQL_DOT_READ = re.compile(r'(?m)^\\s*\\.rea(?:d)?\\s+", "SQL_DOT_READ = re.compile(r'(?m)^\\s*\\.read\\s+"),
     ('gate-audit spool entry removed', "    if SPOOL_DIR_RE.search(text) and SPOOL_CODE_WRITE_RE.search(text):", '    if False:'),
-    ('gate-audit spool: every code naming the directory is refused', "    if SPOOL_DIR_RE.search(text) and SPOOL_CODE_WRITE_RE.search(text):", '    if SPOOL_DIR_RE.search(text):'),
+    ('gate-audit spool: directory name matched case-sensitively', "SPOOL_DIR_RE = re.compile(r'\\.gate-audit-spool', re.I)", "SPOOL_DIR_RE = re.compile(r'\\.gate-audit-spool')"),
+    ('gate-audit spool: every code naming the directory is refused',"    if SPOOL_DIR_RE.search(text) and SPOOL_CODE_WRITE_RE.search(text):", '    if SPOOL_DIR_RE.search(text):'),
 ]
 
 
