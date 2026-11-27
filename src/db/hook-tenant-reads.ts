@@ -146,10 +146,13 @@ export const recordHookContext = systemJob('hook-tenant-reads', async (agentId: 
 // ---------------------------------------------------------------------------------------------------------------------
 // The context watchdog (scripts/hooks/context-watchdog.py) reads, served in PG mode through POST /api/v1/hooks/watchdog-facts.
 //
-// UNLIKE the tenant reads above these run in the REQUEST tenant context (no system job): the facts are not cross-tenant by
+// UNLIKE the tenant reads above the HANDOFF facts run in the REQUEST tenant context (no system job): they are not cross-tenant by
 // nature. The caller's own blackboard row, the latest blackboard rows, its open cards and its last outgoing message are read
 // through the row-level policies of the caller's tenant, so another tenant's rows never come back. (The SQLite hook read every
 // blackboard row of the fleet, a cross-tenant read that was never a feature.)
+// The THRESHOLD is the exception: it is the agent's own operating setting, not tenant data, so it is read by the named system job
+// with a fixed filter (agent_id = the token's agent AND setting_key = context_restart_gate). A shared agent in a tenant context
+// then still sees its row stamped for another tenant (no silent fall back to the default), as the SQLite hook did.
 //
 // FACTS only, no text: the HANDOFF wording and every policy (threshold default, what counts as open work) stay in the hook.
 // Fixed SQL, bound parameters, hard LIMITs and string clips here too, so the answer is bounded whatever a row holds.
@@ -178,7 +181,7 @@ const clip = (v: unknown, max: number): string => String(v ?? '').slice(0, max)
  * thresholdTokens of the caller's context_restart_gate setting: a positive integer, or null when there is no row, the value is
  * not JSON, or the number is missing or not positive. The hook decides the default for null (never guessed here).
  */
-export async function getWatchdogThreshold(agentId: string): Promise<number | null> {
+export const getWatchdogThreshold = systemJob('hook-tenant-reads', async (agentId: string): Promise<number | null> => {
   const row = await dbx.get<{ setting_value: string }>(
     "SELECT setting_value FROM agent_settings WHERE agent_id = ? AND setting_key = 'context_restart_gate'", agentId,
   )
@@ -190,7 +193,7 @@ export async function getWatchdogThreshold(agentId: string): Promise<number | nu
   } catch {
     return null
   }
-}
+})
 
 /** The facts the HANDOFF is built from, for ONE agent, in the caller's request tenant context. Pure reads. */
 export async function getWatchdogHandoffFacts(agentId: string): Promise<WatchdogHandoffFacts> {

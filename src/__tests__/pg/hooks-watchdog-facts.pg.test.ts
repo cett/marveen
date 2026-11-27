@@ -106,11 +106,21 @@ describe('the facts in the request tenant context, as the app role', () => {
     expect(JSON.stringify(h2.body)).not.toContain('t1')
   })
 
-  it('the threshold of another tenant\'s row is not read (null, the hook then takes its default)', async () => {
+  it('the threshold is the agent\'s OWN setting whatever tenant it is stamped for: a shared agent in a tenant context gets its configured value, never the default', async () => {
     const db = await bootedDb()
     await seedTwoTenants(db)
-    // agent-b's only setting row is tenant-t2's: from tenant-t1 it does not exist
-    expect((await ask('threshold', 'agent-b', 'tenant-t1')).body).toEqual({ threshold_tokens: null })
+    // agent-b's only setting row is stamped tenant-t2, the request is tenant-t1: a request-tenant read would see nothing (null,
+    // the silent fall back to the default); the named system job with the fixed agent filter returns the configured value
+    expect((await ask('threshold', 'agent-b', 'tenant-t1')).body).toEqual({ threshold_tokens: 222222 })
+  })
+
+  it('the threshold filter is the token\'s agent: another agent\'s row (another tenant\'s too) is never returned', async () => {
+    const db = await bootedDb()
+    await seedTwoTenants(db)
+    expect((await ask('threshold', 'agent-a', 'tenant-t1')).body).toEqual({ threshold_tokens: 111111 })
+    expect((await ask('threshold', 'agent-a', 'tenant-t2')).body).toEqual({ threshold_tokens: 111111 })
+    // an agent with no row of its own reads null, not a neighbour's value
+    expect((await ask('threshold', 'agent-c', 'tenant-t1')).body).toEqual({ threshold_tokens: null })
   })
 
   it('the ORACLE: under the system context the same reads DO see the other tenant (the isolation cells above are not vacuous)', async () => {

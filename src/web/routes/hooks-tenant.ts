@@ -11,7 +11,7 @@ import type { RouteContext } from './types.js'
 //   POST /api/hooks/tenant-facts   <- tenant-context.py   {sources:[{kind:'channel',channel,external_id}|{kind:'message',msg_id}]}
 //   PUT  /api/hooks/tenant-context <- tenant-context.py   {status, tenant_id, source, session_id}   (the caller's own row)
 //   POST /api/hooks/skill-gate     <- tenant-skill-gate.py {targets:[{kind:'skill'|'dir', value, folded}]}
-//   POST /api/hooks/watchdog-facts <- context-watchdog.py  {want:'threshold'|'handoff'}  (REQUEST tenant context, not a system job)
+//   POST /api/hooks/watchdog-facts <- context-watchdog.py  {want:'threshold'|'handoff'}  (handoff: REQUEST tenant context; threshold: the named system job, fixed agent filter)
 // The route returns FACTS, never a verdict: the policy stays in the hook (tenant_context_lib.py).
 // WHO: the agent is the one the TOKEN names (ctx.tokenAgentId), never a query or body parameter: an `agent_id` in the body is
 // ignored. A caller whose token names no agent (a dashboard session, the operator token, a tenant user) gets a 403.

@@ -5227,8 +5227,10 @@ paths:
         PostToolUse (`want: threshold`) and, once the context is past the watchdog percentage, to build the HANDOFF
         (`want: handoff`). Returns FACTS, never text: the wording and the default threshold stay in the hook. The agent is
         the one the bearer token names (an `agent_id` in the body is ignored); a token that names no agent is a 403.
-        Runs in the REQUEST tenant context (row-level security of the caller's tenant), not as a system job, so the
-        latest blackboard rows are the caller's tenant's rows only. NOT exempt from the missing-tenant-context refusal:
+        The HANDOFF facts run in the REQUEST tenant context (row-level security of the caller's tenant), so the
+        latest blackboard rows are the caller's tenant's rows only; the threshold is the agent's own operating setting
+        and is read by a named system job with a fixed filter (the token's agent, the context_restart_gate key), so a
+        shared agent in a tenant context still gets its configured value. NOT exempt from the missing-tenant-context refusal:
         a shared agent with no fresh context gets a 403 and the watchdog injects nothing. Fleet-agent or admin token
         (`hook-gate:read`).
       requestBody:
