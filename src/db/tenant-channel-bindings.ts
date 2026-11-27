@@ -106,14 +106,23 @@ const DEFAULT_CONTEXT_MAX_AGE_SECONDS = 43200
  * must not guess. Unlike getDelegationTenant this does not fold those cases into 'default'.
  */
 export async function getServingTenant(agentId: string, nowSeconds: number = Math.floor(Date.now() / 1000)): Promise<string | null> {
+  return (await getServingTenantContext(agentId, nowSeconds))?.tenantId ?? null
+}
+
+/**
+ * getServingTenant with the time the context row was written, from the SAME single read of the row (a caller that needs both the
+ * tenant and "since when" must not resolve first and read again: the row could change in between). Null on exactly the cases
+ * getServingTenant answers null for.
+ */
+export async function getServingTenantContext(agentId: string, nowSeconds: number = Math.floor(Date.now() / 1000)): Promise<{ tenantId: string; updatedAt: number } | null> {
   try {
     const row = await dbx.get<{ tenant_id: string | null; status: string; updated_at: number }>('SELECT tenant_id, status, updated_at FROM agent_tenant_context WHERE agent_id = ?', agentId)
     if (!row || (row.status !== 'bound' && row.status !== 'default') || !row.tenant_id) return null
     const parsed = Number.parseInt(process.env['TENANT_CONTEXT_MAX_AGE_SECONDS'] ?? '', 10)
     const maxAge = Number.isFinite(parsed) ? parsed : DEFAULT_CONTEXT_MAX_AGE_SECONDS
     if (maxAge > 0 && nowSeconds - (row.updated_at ?? 0) > maxAge) return null
-    if (row.status === 'default') return row.tenant_id
-    return await agentServesTenant(agentId, row.tenant_id) ? row.tenant_id : null
+    if (row.status === 'default') return { tenantId: row.tenant_id, updatedAt: row.updated_at ?? 0 }
+    return await agentServesTenant(agentId, row.tenant_id) ? { tenantId: row.tenant_id, updatedAt: row.updated_at ?? 0 } : null
   } catch {
     return null
   }

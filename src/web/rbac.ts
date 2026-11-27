@@ -300,6 +300,7 @@ export const ENDPOINT_PERMISSION_TABLE: readonly EndpointPermissionEntry[] = [
   { method: 'POST', pathPattern: '/api/hooks/watchdog-facts', prefix: false, permission: 'hook-gate:read' },
   { method: 'POST', pathPattern: '/api/hooks/watchdog-record', prefix: false, permission: 'hook-gate:write' },
   { method: 'PUT', pathPattern: '/api/hooks/tenant-context', prefix: false, permission: 'hook-gate:write' },
+  { method: 'POST', pathPattern: '/api/hooks/gate-audit', prefix: false, permission: 'hook-gate:write' },
   { method: 'POST', pathPattern: '/api/spans', prefix: false, permission: 'telemetry:write' },
   { method: 'POST', pathPattern: '/api/skill-usage', prefix: false, permission: 'telemetry:write' },
   { method: 'POST', pathPattern: '/api/tool-log', prefix: false, permission: 'telemetry:write' },

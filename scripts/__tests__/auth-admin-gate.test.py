@@ -654,6 +654,33 @@ BLOCKED = [
     ('python setconfig writable schema', 'python3 -c "import sqlite3; c=sqlite3.connect(\'{L}\'); c.setconfig(1011, True)"'),
     ('python writes sqlite_master', 'python3 -c "import sqlite3; c=sqlite3.connect(\'{L}\'); c.execute(\'PRAGMA writable_schema=ON\')"'),
     ('VACUUM INTO after a dot-command line with an apostrophe', 'sqlite3 {O}/a.db ".print it\'s\nvacuum into lower(\'X\')"'),
+    # ---- the gate-audit deny spool: interpreter code that NAMES the directory and writes it ----
+    ('spool: python open for write', 'python3 -c "open(\'{S}/.gate-audit-spool/agent-a.jsonl\', \'w\').write(\'\')"'),
+    ('spool: python open for append', 'python3 -c "open(\'{S}/.gate-audit-spool/agent-a.jsonl\', \'a\').write(\'x\')"'),
+    ('spool: python open mode keyword', 'python3 -c "open(\'{S}/.gate-audit-spool/agent-a.jsonl\', mode=\'w\')"'),
+    ('spool: python os.remove', 'python3 -c "import os; os.remove(\'{S}/.gate-audit-spool/agent-a.jsonl\')"'),
+    ('spool: python pathlib unlink', 'python3 -c "import pathlib; pathlib.Path(\'{S}/.gate-audit-spool/agent-a.jsonl\').unlink()"'),
+    ('spool: python shutil.rmtree of the directory', 'python3 -c "import shutil; shutil.rmtree(\'{S}/.gate-audit-spool\')"'),
+    ('spool: python os.system runs a shell on it', 'python3 -c "import os; os.system(\'rm {S}/.gate-audit-spool/agent-a.jsonl\')"'),
+    ('spool: python heredoc', 'python3 - <<EOF\nopen("{S}/.gate-audit-spool/a.jsonl", "w").close()\nEOF'),
+    ('spool: node writeFileSync', 'node -e "require(\'fs\').writeFileSync(\'{S}/.gate-audit-spool/agent-a.jsonl\', \'\')"'),
+    ('spool: node unlinkSync', 'node -e "require(\'fs\').unlinkSync(\'{S}/.gate-audit-spool/agent-a.jsonl\')"'),
+    ('spool: node rmSync of the directory', 'node -e "require(\'fs\').rmSync(\'{S}/.gate-audit-spool\', {recursive: true})"'),
+    ('spool: perl open for write', 'perl -e \'open(F, ">{S}/.gate-audit-spool/agent-a.jsonl"); close F\''),
+    ('spool: perl unlink', 'perl -e \'unlink "{S}/.gate-audit-spool/agent-a.jsonl"\''),
+    ('spool: ruby File.write', 'ruby -e \'File.write("{S}/.gate-audit-spool/agent-a.jsonl", "")\''),
+    ('spool: ruby File.delete', 'ruby -e \'File.delete("{S}/.gate-audit-spool/agent-a.jsonl")\''),
+    ('spool: python shutil.move', 'python3 -c "import shutil; shutil.move(\'{S}/.gate-audit-spool/agent-a.jsonl\', \'/tmp/x\')"'),
+    ('spool: ruby File.rename without parentheses', 'ruby -e \'File.rename "{S}/.gate-audit-spool/agent-a.jsonl", "/tmp/x"\''),
+    ('spool: ruby File.unlink without parentheses', 'ruby -e \'File.unlink "{S}/.gate-audit-spool/agent-a.jsonl"\''),
+    # rows that ONLY one alternative of SPOOL_CODE_WRITE_RE catches (no .write( and no other write word): a word taken out of the
+    # pattern must turn its own row red
+    ('spool: python json.dump into an append-mode open', 'python3 -c "import json; json.dump({}, open(\'{S}/.gate-audit-spool/agent-a.jsonl\', \'a\'))"'),
+    ('spool: python print(file=) into a write-mode open', 'python3 -c "print(\'x\', file=open(\'{S}/.gate-audit-spool/agent-a.jsonl\', \'w\'))"'),
+    ('spool: python exclusive-create mode x', 'python3 -c "open(\'{S}/.gate-audit-spool/agent-a.jsonl\', \'x\')"'),
+    ('spool: python os.open O_WRONLY', 'python3 -c "import os; os.open(\'{S}/.gate-audit-spool/agent-a.jsonl\', os.O_WRONLY)"'),
+    ('spool: python os.replace onto a spool file', 'python3 -c "import os; os.replace(\'/tmp/x\', \'{S}/.gate-audit-spool/agent-a.jsonl\')"'),
+    ('spool: the name in another letter case (a case-insensitive file system)','python3 -c "open(\'{S}/.GATE-Audit-Spool/agent-a.jsonl\', \'w\')"'),
 ]
 
 ALLOWED = [
@@ -964,6 +991,18 @@ ALLOWED = [
     ('plain VACUUM', 'sqlite3 {O}/a.db "vacuum;"'),
     ('VACUUM INTO words inside a string literal', 'sqlite3 {O}/a.db "select \'a\'\'; vacuum into lower(\'\'X\'\')\'"'),
     ('edit word inside a string', 'sqlite3 {O}/a.db "select \'edit(x)\'"'),
+    # ---- the gate-audit deny spool: READS stay allowed, and code that does not name the directory is unaffected ----
+    ('spool: python reads a spool file', 'python3 -c "print(open(\'{S}/.gate-audit-spool/agent-a.jsonl\').read())"'),
+    ('spool: python reads with an explicit read mode', 'python3 -c "print(len(open(\'{S}/.gate-audit-spool/agent-a.jsonl\', \'r\').readlines()))"'),
+    ('spool: python lists the directory', 'python3 -c "import os; print(os.listdir(\'{S}/.gate-audit-spool\'))"'),
+    ('spool: python json-loads each line', 'python3 -c "import json; [json.loads(l) for l in open(\'{S}/.gate-audit-spool/agent-a.jsonl\')]"'),
+    ('spool: node reads a spool file', 'node -e "console.log(require(\'fs\').readFileSync(\'{S}/.gate-audit-spool/agent-a.jsonl\', \'utf8\'))"'),
+    ('spool: node lists the directory with an arrow function', 'node -e "require(\'fs\').readdirSync(\'{S}/.gate-audit-spool\').map(f => console.log(f))"'),
+    ('spool: perl reads', 'perl -e \'open(F, "<{S}/.gate-audit-spool/agent-a.jsonl"); print <F>\''),
+    ('spool: ruby File.open for read without parentheses', 'ruby -e \'File.open "{S}/.gate-audit-spool/agent-a.jsonl"\''),
+    ('spool: ruby reads','ruby -e \'puts File.read("{S}/.gate-audit-spool/agent-a.jsonl")\''),
+    ('spool: python write to a file that does not name the directory', 'python3 -c "open(\'{O}/other.txt\', \'w\').write(\'x\')"'),
+    ('spool: node unlink of another file', 'node -e "require(\'fs\').unlinkSync(\'{O}/other.txt\')"'),
 ]
 
 
@@ -1131,6 +1170,14 @@ class TestBounds(unittest.TestCase):
 
     def test_command_over_the_size_limit_is_denied(self):
         self.assertTrue(self.deny_or_pass_fast('echo ' + 'a' * (GATE.MAX_CMD_CHARS + 10)))
+
+    def test_the_spool_code_pattern_is_linear_on_hostile_text(self):
+        # a sanity bound for the bounded repeats of SPOOL_CODE_WRITE_RE: many openers and many quote-space runs, with the
+        # directory name present so the pattern really runs. It judges the verdict too (no write word -> allowed).
+        for body in ('open( , ' * 3000, '" ' * 10000, "' " * 10000, 'a.b(' * 5000):
+            cmd = 'python3 -c "x = 1 # .gate-audit-spool ' + body.replace('"', "'") + '"'
+            self.assertLess(len(cmd), GATE.MAX_CMD_CHARS)
+            self.deny_or_pass_fast(cmd)
 
     def test_command_at_a_normal_big_size_passes_fast(self):
         self.assertFalse(self.deny_or_pass_fast('echo ' + 'a' * 30000))
@@ -1388,6 +1435,9 @@ MUTANTS = [
     ('SQL .import / .restore: full names only', "SQL_DOT_WRITE = re.compile(r'(?m)^\\s*\\.(?:im(?:p(?:o(?:r(?:t)?)?)?)?|res(?:t(?:o(?:r(?:e)?)?)?)?)\\b.*$', re.I)", "SQL_DOT_WRITE = re.compile(r'(?m)^\\s*\\.(?:import|restore)\\b.*$', re.I)"),
     ('SQL .open: full name only', "SQL_DOT_OPEN = re.compile(r'(?m)^\\s*\\.op(?:e(?:n)?)?\\s+", "SQL_DOT_OPEN = re.compile(r'(?m)^\\s*\\.open\\s+"),
     ('SQL .read: full name only', "SQL_DOT_READ = re.compile(r'(?m)^\\s*\\.rea(?:d)?\\s+", "SQL_DOT_READ = re.compile(r'(?m)^\\s*\\.read\\s+"),
+    ('gate-audit spool entry removed', "    if SPOOL_DIR_RE.search(text) and SPOOL_CODE_WRITE_RE.search(text):", '    if False:'),
+    ('gate-audit spool: directory name matched case-sensitively', "SPOOL_DIR_RE = re.compile(r'\\.gate-audit-spool', re.I)", "SPOOL_DIR_RE = re.compile(r'\\.gate-audit-spool')"),
+    ('gate-audit spool: every code naming the directory is refused',"    if SPOOL_DIR_RE.search(text) and SPOOL_CODE_WRITE_RE.search(text):", '    if SPOOL_DIR_RE.search(text):'),
 ]
 
 

@@ -1,6 +1,8 @@
-// A shared agent with NO fresh tenant context may call exactly two hook routes (POST /api/hooks/tenant-facts, PUT
-// /api/hooks/tenant-context): they are how the PostgreSQL-mode tenant hook RECORDS the context, and refusing them left the agent
-// unable to ever record its first one (every prompt exit 2). Everything else stays refused (403).
+// A shared agent with NO fresh tenant context may call exactly THREE hook routes (POST /api/hooks/tenant-facts, PUT
+// /api/hooks/tenant-context, POST /api/hooks/gate-audit): the first two are how the PostgreSQL-mode tenant hook RECORDS the context,
+// and refusing them left the agent unable to ever record its first one (every prompt exit 2); the third is the audit write of the
+// PreToolUse gates, needed exactly when a gate denies in this state (a 403 would drop the evidence of that denial). Everything else
+// stays refused (403): the neighbouring routes (skill-gate, watchdog-facts, the generic POST /api/hook-audit) are pinned below.
 //
 // The chain is the pieces web.ts chains, REAL ones, in web.ts's order: normalizePath -> resolveAuth -> the missing-context refusal
 // (its exact condition, with the shared predicate) -> checkPermission (enforce) -> the route. Real in-memory database, no mocks.
@@ -29,6 +31,7 @@ import { checkPermission, resolveRole, resolveTenantId } from '../web/authz.js'
 import { normalizePath } from '../web/routes/versioning.js'
 import { isTenantContextBootstrapRoute } from '../web/tenant-context-bootstrap.js'
 import { tryHandleHooksTenant } from '../web/routes/hooks-tenant.js'
+import { tryHandleHooksGateAudit } from '../web/routes/hooks-gate-audit.js'
 import type { RouteContext } from '../web/routes/types.js'
 
 useTestDb()
@@ -73,6 +76,7 @@ async function request(rawToken: string | null, method: string, rawPath: string,
   // it does on PostgreSQL (resolveAuth): the handler then waits for a body that never comes and the cell times out.
   setImmediate(() => { req.emit('data', buf); req.emit('end') })
   if (await tryHandleHooksTenant(ctx)) return out
+  if (await tryHandleHooksGateAudit(ctx)) return out
   out.status = 404
   return out
 }
@@ -86,6 +90,9 @@ const contextRow = (agent: string) => dbx.get<{ status: string; tenant_id: strin
 const FACTS = '/api/hooks/tenant-facts'
 const CONTEXT = '/api/hooks/tenant-context'
 const GATE = '/api/hooks/skill-gate'
+const GATE_AUDIT = '/api/hooks/gate-audit'
+const auditRows = () => dbx.all<{ agent_id: string | null; reason: string; trigger_source: string; tenant_id: string | null }>(
+  'SELECT agent_id, reason, trigger_source, tenant_id FROM hook_audit_log ORDER BY id')
 const channel = (id: string) => [{ kind: 'channel', channel: 'telegram', external_id: id }]
 
 beforeEach(async () => {
@@ -111,6 +118,43 @@ describe('the premise: without the exception a shared agent with no context is l
   it('has no context row and is refused on an ordinary route', async () => {
     expect(await contextRow('agent-shared')).toBeUndefined()
     expect((await request('tok-shared', 'GET', '/api/memories')).status).toBe(403)
+  })
+})
+
+describe('POSITIVE: the gate-audit write (the third route), exact and for the caller only', () => {
+  const denyBody = { counts: [{ gate: 'tenant-skill-gate', decision: 'deny', reason: 'denied', n: 1 }], denies: [{ gate: 'tenant-skill-gate', reason: 'denied', ts: NOW() }] }
+
+  it('answers 200 without a context, on /api/ and on the /api/v1 alias, and files the row under the TOKEN agent with tenant NULL', async () => {
+    for (const p of [GATE_AUDIT, '/api/v1/hooks/gate-audit']) {
+      const r = await request('tok-shared', 'POST', p, denyBody)
+      expect(r.status, p).toBe(200)
+      expect(r.body).toEqual({ ok: true, counts: 1, denies: 1 })
+    }
+    expect(await auditRows()).toEqual([
+      { agent_id: 'agent-shared', reason: 'denied', trigger_source: 'tenant-skill-gate', tenant_id: null },
+      { agent_id: 'agent-shared', reason: 'denied', trigger_source: 'tenant-skill-gate', tenant_id: null },
+    ])
+  })
+
+  it('the neighbours stay refused for the same agent in the same state: skill-gate, watchdog-facts and the generic hook-audit write', async () => {
+    expect((await request('tok-shared', 'POST', GATE_AUDIT, denyBody)).status).toBe(200)
+    for (const [m, p, b] of [
+      ['POST', GATE, { targets: [] }], ['POST', '/api/hooks/watchdog-facts', { want: 'threshold' }],
+      ['POST', '/api/hook-audit', { hook_type: 'PreToolUse', verdict: 'deny' }], ['GET', '/api/hook-audit', undefined],
+    ] as const) {
+      expect((await request('tok-shared', m, p, b)).status, `${m} ${p}`).toBe(403)
+    }
+  })
+
+  it('a body agent_id writes nothing for another agent (the row is the token agent\'s)', async () => {
+    await request('tok-shared', 'POST', GATE_AUDIT, { ...denyBody, agent_id: 'agent-solo' })
+    expect((await auditRows()).map((r) => r.agent_id)).toEqual(['agent-shared'])
+  })
+
+  it('only the fleet_agent role and an admin get in: a viewer and the shared file token are refused, nothing is written', async () => {
+    expect((await request('tok-viewer', 'POST', GATE_AUDIT, denyBody)).status).toBe(403)
+    expect((await request(FILE_TOKEN, 'POST', GATE_AUDIT, denyBody)).status).toBe(403)
+    expect(await auditRows()).toEqual([])
   })
 })
 
@@ -398,7 +442,12 @@ describe('one predicate, exact method and path, on the path the gates see', () =
   it('the truth table', () => {
     expect(isTenantContextBootstrapRoute('POST', '/api/hooks/tenant-facts')).toBe(true)
     expect(isTenantContextBootstrapRoute('PUT', '/api/hooks/tenant-context')).toBe(true)
+    expect(isTenantContextBootstrapRoute('POST', '/api/hooks/gate-audit')).toBe(true)
     for (const [m, p] of [
+      // the third route: exact method and path, never a prefix, a second route or the generic telemetry write
+      ['GET', '/api/hooks/gate-audit'], ['PUT', '/api/hooks/gate-audit'], ['DELETE', '/api/hooks/gate-audit'], ['POST', '/api/hooks/gate-audit/'],
+      ['POST', '/api/hooks/gate-audit/x'], ['POST', '/api/hooks/gate-auditx'], ['POST', '/api/hooks/gate-audi'], ['POST', '/api/v1/hooks/gate-audit'],
+      ['POST', '/api/hook-audit'], ['POST', '/api/hooks'], ['POST', '/api/hooks/'], ['post', '/api/hooks/gate-audit'], ['POST', '/api/hooks/gate-audit?x=1'],
       ['GET', '/api/hooks/tenant-facts'], ['PUT', '/api/hooks/tenant-facts'], ['POST', '/api/hooks/tenant-context'], ['GET', '/api/hooks/tenant-context'],
       ['POST', '/api/hooks/skill-gate'], ['PUT', '/api/hooks/skill-gate'], ['POST', '/api/hooks/tenant-facts/'], ['POST', '/api/hooks/tenant-facts/x'],
       ['POST', '/api/hooks/watchdog-facts'], ['GET', '/api/hooks/watchdog-facts'], ['POST', '/api/hooks/watchdog-record'], ['GET', '/api/hooks/watchdog-record'],
@@ -417,11 +466,13 @@ describe('one predicate, exact method and path, on the path the gates see', () =
     expect(isTenantContextBootstrapRoute('POST', norm('/api/v1/hooks/skill-gate'))).toBe(false)
   })
 
-  it('checkPermission lets only the two through for a missing-context fleet token (and still asks the RBAC table)', () => {
+  it('checkPermission lets exactly the three through for a missing-context fleet token (and still asks the RBAC table)', () => {
     const shared = { kind: 'token', role: 'fleet_agent', agentId: 'agent-shared', tenantContextMissing: true } as const
     expect(checkPermission(shared, 'POST', '/api/hooks/tenant-facts')).toMatchObject({ allowed: true })
     expect(checkPermission(shared, 'PUT', '/api/hooks/tenant-context')).toMatchObject({ allowed: true })
-    for (const [m, p] of [['POST', '/api/hooks/skill-gate'], ['GET', '/api/hooks/tenant-context'], ['GET', '/api/memories'], ['POST', '/api/hooks/tenant-facts/']] as const) {
+    expect(checkPermission(shared, 'POST', '/api/hooks/gate-audit')).toMatchObject({ allowed: true })
+    for (const [m, p] of [['POST', '/api/hooks/skill-gate'], ['GET', '/api/hooks/tenant-context'], ['GET', '/api/memories'], ['POST', '/api/hooks/tenant-facts/'],
+      ['POST', '/api/hook-audit'], ['GET', '/api/hooks/gate-audit'], ['POST', '/api/hooks/gate-audit/']] as const) {
       expect(checkPermission(shared, m, p), `${m} ${p}`).toMatchObject({ allowed: false, status: 403 })
     }
     // the exception skips ONLY the missing-context refusal: a role the table does not give hook-gate is still denied

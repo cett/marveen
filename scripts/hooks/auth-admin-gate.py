@@ -1049,6 +1049,29 @@ def inspect_sql(text, live):
                    'es jovahagyas allapotat csak a dashboard allitja.' % (hit or '.import / .restore'))
 
 
+# The gate-audit DENY SPOOL (store/.gate-audit-spool/, written by scripts/hooks/gate_audit_lib.py) is evidence waiting for
+# delivery, and the agent whose deny it is can reach the file. Interpreter code that NAMES the directory and carries a write
+# word is refused; a read (open(...).read(), readFileSync, a listing) is not. One entry, the same text-match level as the
+# rest of this gate: a SPEED BUMP, NOT A WALL (every agent shell runs as the same OS user, and a path built at run time
+# passes a text match), so the spool stays delayed delivery, never tamper-proof evidence. The whole-command text rule
+# (`sh -c`, redirects, rm/mv/tee...) is destructive-gate.py's. Cost, accepted: such code that merely names the directory
+# next to a write word is refused too.
+# Case-INSENSITIVE: the macOS file system is, so `.GATE-AUDIT-SPOOL` names the same directory.
+SPOOL_DIR_RE = re.compile(r'\.gate-audit-spool', re.I)
+SPOOL_CODE_WRITE_RE = re.compile(
+    # every repeat below is BOUNDED: the hook has a 10 s harness timeout and the text is caller-sized (no quadratic backtracking)
+    r"""['"][rbtU]{0,3}[wax+][bt+]{0,3}['"]"""                      # a python / ruby open mode: 'w' 'a' 'x' 'wb' 'r+' 'a+' (a read mode 'r' 'rb' has none of w/a/x/+)
+    r"""|['"]\s{0,8}(?:\+?>>?|\+<)"""                               # perl open(F, ">path") / ">>path" / '>' / '+<' (a '<' read is not here)
+    r"""|O_(?:WRONLY|RDWR|APPEND|TRUNC|CREAT)"""                    # os.open flags
+    r"""|\.(?:write\w*|unlink\w*|rename\w*|truncate\w*|touch|rmdir|rmtree|rm\w*|remove\w*|copy\w*|move\w*|symlink\w*|link)\s{0,8}\("""
+    # ruby, also without parentheses (File.rename a, b); `.replace(` stays out of the list: str.replace is everywhere in a read
+    r"""|File\.(?:unlink|rename|truncate|delete|write)\w*\s{0,8}[^\s(]"""
+    r"""|(?<![\w.])(?:unlink|rename)\s+[^\s=]"""                      # perl / ruby bare call: unlink "path"
+    r"""|(?<![\w.])(?:unlink\w*|rename\w*|rmtree|rmdir|rmSync|rm|truncate|ftruncate|writeFile\w*|appendFile\w*|"""
+    r"""createWriteStream|copyFile\w*|symlink\w*|system|popen|exec\w*|spawn\w*|Popen|subprocess|child_process|File\.(?:write|delete)|FileUtils|IO\.write)(?![\w])"""
+    r"""|os\.(?:replace|link|rename|remove|unlink|truncate|system|popen)""")
+
+
 def inspect_code(text, state, python=False):
     """Interpreter code (python -c, node -e, a heredoc to python/node, ...). The path of a
     database is not visible here, so a write to an auth table is blocked wherever it points.
@@ -1057,6 +1080,9 @@ def inspect_code(text, state, python=False):
     hit = _sql_write_summary(text)
     if hit:
         raise Deny('iras a hitelesito tablakra interpreter-kodbol (%s).' % hit)
+    if SPOOL_DIR_RE.search(text) and SPOOL_CODE_WRITE_RE.search(text):
+        raise Deny('interpreter-kod, ami a gate-audit spool vedett utat nevezi meg es irast/torlest/mozgatast vegez '
+                   '(olvasni szabad).')
     m = None if python else APP_MUTATORS.search(text)
     if m:
         raise Deny('az alkalmazas hitelesitest modosito fuggvenye interpreter-kodbol (%s).'
