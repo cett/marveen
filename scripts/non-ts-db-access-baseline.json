@@ -32,8 +32,8 @@
         "raw LIKE": 2
       },
       "direct": {
-        "claudeclaw.db": 10,
-        "sqlite3 CLI": 10
+        "claudeclaw.db": 9,
+        "sqlite3 CLI": 9
       }
     },
     "scripts/ensure-native-modules.sh": {
