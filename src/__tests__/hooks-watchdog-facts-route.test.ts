@@ -337,6 +337,28 @@ describe('record: the writes', () => {
     expect(rows).toEqual([{ span_id: 'done-a', status: 'ok' }, { span_id: 'keep-a', status: 'running' }, { span_id: 'old-a', status: 'ok' }, { span_id: 'old-b', status: 'running' }])
   })
 
+  it('close_stale closes the other running agent.turn spans ONLY: a running model.call of the same trace and agent stays open', async () => {
+    const open = (operation: string, id: string) => recordOk({ spans: [span({ operation, trace_id: 'trace-y', span_id: id, status: 'running' })] }, 'agent-a')
+    await open('agent.turn', 'old-turn')
+    await open('model.call', 'running-model')
+    await open('agent.turn', 'keep-turn')
+    await recordOk({ close_stale: { trace_id: 'trace-y', keep_span_id: 'keep-turn' } }, 'agent-a')
+    const rows = await dbx.all<{ span_id: string; status: string }>('SELECT span_id, status FROM otel_spans ORDER BY span_id')
+    expect(rows).toEqual([{ span_id: 'keep-turn', status: 'running' }, { span_id: 'old-turn', status: 'ok' }, { span_id: 'running-model', status: 'running' }])
+  })
+
+  it('the attribute cap is BYTES, not characters: 2000 three-byte letters (6000 bytes) are dropped and counted, 1360 (4095 bytes) are kept', async () => {
+    const json = (n: number) => JSON.stringify({ t: '€'.repeat(n) }) // the euro sign is 3 bytes in UTF-8
+    const tooBig = json(2000)
+    expect(tooBig.length).toBeLessThan(4096)                         // under the cap as CHARACTERS ...
+    expect(Buffer.byteLength(tooBig, 'utf8')).toBeGreaterThan(4096)  // ... over it as bytes
+    expect(await recordOk({ spans: [span({ span_id: 'wide', attributes: tooBig })] })).toMatchObject({ spans: 0, dropped: 1 })
+    const fits = json(1360)
+    expect(Buffer.byteLength(fits, 'utf8')).toBeLessThanOrEqual(4096)
+    expect(await recordOk({ spans: [span({ span_id: 'narrow', attributes: fits })] })).toMatchObject({ spans: 1, dropped: 0 })
+    expect((await spanRows()).map((r) => r.span_id)).toEqual(['narrow'])
+  })
+
   it('an invalid item is dropped and counted, never poisons the batch, and the threshold is still answered', async () => {
     await setting('agent-a', JSON.stringify({ thresholdTokens: 300000 }))
     const bad = [

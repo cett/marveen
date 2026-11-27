@@ -254,6 +254,29 @@ describe('the record route on PostgreSQL, as the app role', () => {
     expect((await spansOf(db)).map((r) => [r.span_id, r.status])).toEqual([['keep-a', 'running'], ['old-a', 'ok'], ['old-b', 'running']])
   })
 
+  it('close_stale closes the other running agent.turn spans ONLY: a running model.call (or any other operation) of the same trace and agent stays open', async () => {
+    const db = await bootedDb()
+    const open = (operation: string, id: string) => record({ spans: [span({ operation, trace_id: 'trace-y', span_id: id, status: 'running' })] }, 'agent-a', 'tenant-t1')
+    await open('agent.turn', 'old-turn'); await open('model.call', 'running-model'); await open('agent.turn', 'keep-turn')
+    await record({ close_stale: { trace_id: 'trace-y', keep_span_id: 'keep-turn' } }, 'agent-a', 'tenant-t1')
+    expect((await spansOf(db)).map((r) => [r.span_id, r.status])).toEqual([['keep-turn', 'running'], ['old-turn', 'ok'], ['running-model', 'running']])
+  })
+
+  it('the attribute cap is BYTES, not characters: 2000 three-byte letters (6000 bytes) are dropped and counted, 1360 (4095 bytes) are kept', async () => {
+    const db = await bootedDb()
+    const json = (n: number) => JSON.stringify({ t: '€'.repeat(n) }) // the euro sign is 3 bytes in UTF-8
+    const tooBig = json(2000)
+    expect(tooBig.length).toBeLessThan(4096)                    // under the cap as CHARACTERS ...
+    expect(Buffer.byteLength(tooBig, 'utf8')).toBeGreaterThan(4096) // ... over it as bytes
+    const dropped = await record({ spans: [span({ span_id: 'wide', attributes: tooBig })] }, 'agent-a', 'tenant-t1')
+    expect(dropped.body).toMatchObject({ usage: false, spans: 0, dropped: 1 })
+    const fits = json(1360)
+    expect(Buffer.byteLength(fits, 'utf8')).toBeLessThanOrEqual(4096)
+    const kept = await record({ spans: [span({ span_id: 'narrow', attributes: fits })] }, 'agent-a', 'tenant-t1')
+    expect(kept.body).toMatchObject({ usage: false, spans: 1, dropped: 0 })
+    expect((await spansOf(db)).map((r) => r.span_id)).toEqual(['narrow'])
+  })
+
   it('an invalid item is dropped and counted, and a write that fails is a 200 with the flag false: the threshold is answered either way', async () => {
     const db = await bootedDb()
     await seedTwoTenants(db)

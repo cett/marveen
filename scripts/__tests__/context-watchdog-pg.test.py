@@ -553,6 +553,30 @@ class TestParityOfTheAdapters(unittest.TestCase):
         c_text = self.hook.build_handoff(c, "agent-a", 0.62, 248000, 400000)
         self.assertEqual(c_text.split("\n", 1)[1], a.split("\n", 1)[1])
 
+    def test_the_record_answer_threshold_must_be_a_positive_integer_zero_is_not_one(self):
+        # A zero threshold read as a number would make pct 0 and the hook SILENT, which looks like "below the line" from the
+        # outside (the end-to-end cell cannot tell it from a refused answer). So the reader itself is pinned: the route never
+        # answers 0, and an answer of 0 is a malformed answer (RouteError, no HANDOFF path, no guess), exactly like a negative
+        # number, a boolean (True is an int in Python), a string or a float. null is the one accepted non-number: the default.
+        hook = self.hook
+        real = hook._route_post
+        try:
+            for bad in (0, -1, True, False, "400000", 400000.0, [], {}):
+                hook._route_post = lambda *a, _v=bad, **k: {"threshold_tokens": _v}
+                with self.subTest(answer=repr(bad)):
+                    try:
+                        got = hook.record_via_route("agent-a", "sess-1", None, [], None, None)
+                    except Exception as exc:
+                        self.assertEqual(type(exc).__name__, "RouteError")
+                    else:
+                        self.fail("a threshold answer of %r was accepted as %r" % (bad, got))
+            hook._route_post = lambda *a, **k: {"threshold_tokens": None}
+            self.assertEqual(hook.record_via_route("agent-a", "sess-1", None, [], None, None), hook.DEFAULT_THRESHOLD_TOKENS)
+            hook._route_post = lambda *a, **k: {"threshold_tokens": 1}
+            self.assertEqual(hook.record_via_route("agent-a", "sess-1", None, [], None, None), 1)
+        finally:
+            hook._route_post = real
+
     def test_a_missing_fact_is_absent_in_both(self):
         facts = self.hook.facts_from_sqlite(self.conn, "agent-a")
         self.assertEqual(facts, {"own": None, "recent": [], "cards": [], "last_outgoing": None})
