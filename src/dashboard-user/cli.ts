@@ -19,9 +19,10 @@
 //
 // The whole command runs inside the system job `dashboard-user-cli`. This is the machine owner's command, and under
 // row-level security an empty context sees zero dashboard users: a blind run would print "token-only mode" from `list`,
-// "not found" from reset-password, and `add` on a table that looks empty would make the new login the global admin (the
-// first user wins, createDashboardUser). The info line on stderr (backend, command, users seen) tells "ran and saw N users"
-// apart from "ran blind"; it carries no username, no password and no hash.
+// "not found" from reset-password, and `security:reset` would count zero device keys. `add` on a table that looks empty
+// would elect the admin role, but on PostgreSQL the row-level policy refuses that insert (an error, nothing written), so
+// the blind add fails loudly instead of creating an admin. The info line on stderr (backend, command, users seen) tells
+// "ran and saw N users" apart from "ran blind"; it carries no username, no password and no hash.
 //
 // The script loads the config snapshot before it imports this module (config.ts reads it at import). A failure is never
 // thrown to the caller: it is printed, and the exit code says what happened: 0 ok, 1 failed, 2 usage.
@@ -122,13 +123,17 @@ async function acquirePassword(fromStdin: boolean, io: CliIo): Promise<string> {
   return a
 }
 
+const KNOWN_VERBS = ['add', 'reset-password', 'list', 'remove', 'sessions:clear', 'security:reset']
+
 async function command(argv: string[], io: CliIo, backend: 'sqlite' | 'pg'): Promise<void> {
   const [cmd, ...rest] = argv
   const fromStdin = rest.includes('--password-stdin')
   const positional = rest.filter((a) => !a.startsWith('--'))
 
   const seen = (await listDashboardUsers()).length
-  logger.info({ backend, command: cmd, users: seen }, 'dashboard-user: run')
+  // The verb only when it is one of the known ones: a password typed as the first argument must not reach the log.
+  const verb = KNOWN_VERBS.includes(cmd ?? '') ? cmd : 'unknown'
+  logger.info({ backend, command: verb, users: seen }, 'dashboard-user: run')
 
   switch (cmd) {
     case 'add': {
@@ -145,6 +150,7 @@ async function command(argv: string[], io: CliIo, backend: 'sqlite' | 'pg'): Pro
       const pw = await acquirePassword(fromStdin, io)
       const hash = await hashPassword(pw)
       await createDashboardUser(username, hash)
+      await logConfigChange('security.cli_user_add', null, username, 'cli')
       io.stdout(`Created dashboard login "${username}".\n`)
       break
     }
@@ -186,6 +192,10 @@ async function command(argv: string[], io: CliIo, backend: 'sqlite' | 'pg'): Pro
       }
       await revokeAllForUser(user.id)
       await deleteDashboardUser(username)
+      // Neither engine has a foreign key from auth_sessions to dashboard_users, so the delete does not take the sessions
+      // with it: a session opened between the two steps would survive. The second revoke closes that window (idempotent).
+      await revokeAllForUser(user.id)
+      await logConfigChange('security.cli_user_remove', null, username, 'cli')
       const remaining = (await listDashboardUsers()).length
       io.stdout(`Removed "${username}".${remaining === 0 ? ' No users left -- back to token-only mode.' : ''}\n`)
       break
@@ -208,11 +218,13 @@ async function command(argv: string[], io: CliIo, backend: 'sqlite' | 'pg'): Pro
           throw new CliExit(1)
         }
         await revokeAllForUser(user.id)
+        await logConfigChange('security.cli_sessions_clear', null, username, 'cli')
         io.stdout(`Cleared all sessions for "${username}".\n`)
       } else {
         // Cache and table together: the same call the dashboard's own revocation makes (a raw DELETE would leave the
         // cache of this process out of it, and has no PostgreSQL form).
         await revokeAllSessions()
+        await logConfigChange('security.cli_sessions_clear', null, 'all', 'cli')
         io.stdout('Cleared ALL dashboard login sessions.\n')
       }
       break

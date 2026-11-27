@@ -38,6 +38,21 @@ vi.mock('../../paths.js', async (importOriginal) => ({ ...(await importOriginal<
 vi.mock('../../config.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../../config.js')>()), STORE_DIR: TMP_STORE }))
 // the channel ping of the break-glass paths: the call is what the cells pin; the rest of the notifier is untouched
 vi.mock('../../notify.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../../notify.js')>()), notifySecurityEvent: ping }))
+// the second revoke of `remove` is measured with a hook: a session written by another connection between the first revoke and
+// the delete (the cell arms it; the wrapper calls it once, after the real revoke returns)
+const { revokeHook } = vi.hoisted(() => ({ revokeHook: { run: undefined as undefined | (() => Promise<void>) } }))
+vi.mock('../../web/auth-sessions.js', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../../web/auth-sessions.js')>()
+  return {
+    ...real,
+    revokeAllForUser: async (userId: number, exceptCookieValue?: string | null) => {
+      await real.revokeAllForUser(userId, exceptCookieValue)
+      const again = revokeHook.run
+      revokeHook.run = undefined
+      if (again) await again()
+    },
+  }
+})
 vi.mock('../../db-migrations-pg.js', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../db-migrations-pg.js')>()
   return { ...real, applyPgMigrations: vi.fn(real.applyPgMigrations) }
@@ -51,6 +66,7 @@ import { deleteAllDeviceKeys } from '../../db/device-keys.js'
 import { systemJob } from '../../db/background-jobs.js'
 import { applyPgMigrations } from '../../db-migrations-pg.js'
 import { hashPassword, verifyPassword } from '../../web/password-hash.js'
+import { logger } from '../../logger.js'
 
 const PASSWORD = 'a-long-test-password-1'
 const NEW_PASSWORD = 'another-long-password-2'
@@ -65,6 +81,7 @@ afterEach(async () => {
   await closePgBackend()
   vi.unstubAllEnvs()
   resetPgCredentialCaptureForTests()
+  revokeHook.run = undefined
   vi.clearAllMocks()
 })
 
@@ -362,6 +379,86 @@ describe('the entry: exit codes, the pool ended in every case, the boot never mi
 
     expect(await runDashboardUserCli(['list'], capture().io)).toBe(0)
     expect(applyPgMigrations).not.toHaveBeenCalled()
+  })
+})
+
+describe('audit rows of the write verbs (no channel ping for them: that is the owner decision)', () => {
+  const audit = async (db: PgTestDb, key: string) =>
+    (await db.pool.query('SELECT new_value, actor FROM config_change_log WHERE key = $1 ORDER BY id', [key])).rows
+
+  it('add, remove and sessions:clear (with and without a user) each write one audit row with the username or all, actor cli', async () => {
+    const db = await freshDb()
+    const a = await seedUser(db, 'user-a', 'admin')
+    await seedSessions(db, a, 'user-a', 2)
+
+    expect(await runDashboardUserCli(['add', 'user-b', '--password-stdin'], capture(PASSWORD).io)).toBe(0)
+    expect(await audit(db, 'security.cli_user_add')).toEqual([{ new_value: 'user-b', actor: 'cli' }])
+
+    expect(await runDashboardUserCli(['sessions:clear', 'user-a'], capture().io)).toBe(0)
+    expect(await audit(db, 'security.cli_sessions_clear')).toEqual([{ new_value: 'user-a', actor: 'cli' }])
+
+    expect(await runDashboardUserCli(['sessions:clear'], capture().io)).toBe(0)
+    expect(await audit(db, 'security.cli_sessions_clear')).toEqual([
+      { new_value: 'user-a', actor: 'cli' },
+      { new_value: 'all', actor: 'cli' },
+    ])
+
+    expect(await runDashboardUserCli(['remove', 'user-b'], capture().io)).toBe(0)
+    expect(await audit(db, 'security.cli_user_remove')).toEqual([{ new_value: 'user-b', actor: 'cli' }])
+    expect(ping).not.toHaveBeenCalled()
+  })
+
+  it('a failed command (an unknown user) writes no audit row', async () => {
+    const db = await freshDb()
+    await seedUser(db, 'user-a', 'admin')
+
+    expect(await runDashboardUserCli(['remove', 'nobody'], capture().io)).toBe(1)
+    expect(await audit(db, 'security.cli_user_remove')).toEqual([])
+  })
+})
+
+describe('the info line names a known verb only', () => {
+  it('an unknown first argument is logged as unknown, and the text of the argument reaches no log line', async () => {
+    await freshDb()
+    const info = vi.spyOn(logger, 'info')
+    const secret = 'Typed-Secret-Value-42'
+
+    expect(await runDashboardUserCli([secret], capture().io)).toBe(2)
+
+    const runLines = info.mock.calls.filter((c) => c[1] === 'dashboard-user: run')
+    expect(runLines).toHaveLength(1)
+    expect((runLines[0]![0] as { command: string }).command).toBe('unknown')
+    expect(JSON.stringify(info.mock.calls)).not.toContain(secret)
+    info.mockRestore()
+  })
+
+  it('a known verb is logged as itself', async () => {
+    await freshDb()
+    const info = vi.spyOn(logger, 'info')
+
+    expect(await runDashboardUserCli(['list'], capture().io)).toBe(0)
+
+    const runLines = info.mock.calls.filter((c) => c[1] === 'dashboard-user: run')
+    expect((runLines[0]![0] as { command: string }).command).toBe('list')
+    info.mockRestore()
+  })
+})
+
+describe('remove closes the window between its two steps (no cascade from auth_sessions)', () => {
+  it('a session that another connection writes between the first revoke and the delete is gone after remove', async () => {
+    const db = await freshDb()
+    const a = await seedUser(db, 'user-a', 'admin')
+    await seedSessions(db, a, 'user-a', 1)
+    revokeHook.run = () => db.pool.query("INSERT INTO auth_sessions (id_hash, user_id, username, created_at, last_seen_at) VALUES ('hash-between', $1, 'user-a', 1, 1)", [a]).then(() => undefined)
+
+    expect(await runDashboardUserCli(['remove', 'user-a'], capture().io)).toBe(0)
+
+    expect(await countOf(db, "SELECT COUNT(*) AS n FROM auth_sessions WHERE username = 'user-a'")).toBe(0)
+  })
+
+  it('measured: auth_sessions has no foreign key on PostgreSQL (the reason for the second revoke)', async () => {
+    const db = await freshDb()
+    expect(await countOf(db, "SELECT COUNT(*) AS n FROM pg_constraint WHERE conrelid = 'auth_sessions'::regclass AND contype = 'f'")).toBe(0)
   })
 })
 
