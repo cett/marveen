@@ -32,6 +32,16 @@ const MAX_TOKENS = 2_000_000_000
 /** A time before this is not a clock of this fleet (2017-07-14, ms); a time more than a day ahead is a bad clock. */
 const MIN_MS = 1_500_000_000_000
 const FUTURE_SLACK_MS = 86_400_000
+/**
+ * The usage `timestamp` window: the hook sends the time of the transcript line it just read, so it is always recent. A wide
+ * window would let an agent file a token_usage row (for its OWN agent id) into a month that is already rolled up, where the
+ * monthly roll-up would count it again and the budget check and the cost views would read it. A session resumed after a long
+ * pause still sends a recent line, so seven days back is generous; five minutes ahead covers clock skew. The usage VALUES stay
+ * caller-asserted for the agent's own id (the same capability the agent had with the SQLite file); the collector, which reads
+ * the transcripts, stays the authority.
+ */
+export const USAGE_PAST_WINDOW_MS = 7 * 86_400_000
+export const USAGE_FUTURE_SLACK_MS = 5 * 60_000
 const SPAN_OPERATIONS = new Set(['agent.turn', 'model.call'])
 const SPAN_STATUSES = new Set(['running', 'ok', 'error', 'timeout'])
 
@@ -107,7 +117,7 @@ function validUsage(raw: unknown, nowMs: number): WatchdogUsage | null {
   if (!isObj(raw)) return null
   const u = raw
   if (!isId(u['session_id'])) return null
-  if (!isInt(u['timestamp'], MIN_MS / 1000, Math.floor((nowMs + FUTURE_SLACK_MS) / 1000))) return null
+  if (!isInt(u['timestamp'], Math.ceil((nowMs - USAGE_PAST_WINDOW_MS) / 1000), Math.floor((nowMs + USAGE_FUTURE_SLACK_MS) / 1000))) return null
   for (const k of ['input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_creation_tokens']) {
     if (!isInt(u[k], 0, MAX_TOKENS)) return null
   }

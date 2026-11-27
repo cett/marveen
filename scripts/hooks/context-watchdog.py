@@ -171,6 +171,11 @@ WATCHDOG_RECORD_PATH = "/api/v1/hooks/watchdog-record"
 HOOK_AUDIT_PATH = "/api/v1/hook-audit"
 WATCHDOG_ROUTE_DEADLINE_S = 1.5
 WATCHDOG_ROUTE_ATTEMPTS = 1
+# The audit row is the other half of the dedup pair (the next call reads it back). When the earlier calls of the run (record,
+# prior_handoff, facts) leave less than this, the audit call gets a fresh budget of this size instead of being skipped: a skipped
+# row means the NEXT call finds no prior HANDOFF and injects again, on every tool call, exactly when the dashboard is slow and
+# the context is full. Worst case for the whole run: WATCHDOG_ROUTE_DEADLINE_S + this.
+WATCHDOG_AUDIT_DEADLINE_S = 0.4
 # An own blackboard row in one of these states is unfinished work the handoff must hand over together
 # with the duty to close it ('stale' is an 'active' row the sweeper gave up on, still open).
 OPEN_BLACKBOARD_STATUSES = ("active", "stale")
@@ -960,6 +965,18 @@ def record_handoff_audit(conn, agent_id, session_id, tool_name, pct, content_has
         pass
 
 
+def audit_deadline(deadline):
+    """The budget of the audit call: the shared one while it still has WATCHDOG_AUDIT_DEADLINE_S left, else a fresh
+    WATCHDOG_AUDIT_DEADLINE_S of its own (see the constant). Never raises: on any doubt the shared one is returned."""
+    try:
+        if deadline.remaining() >= WATCHDOG_AUDIT_DEADLINE_S:
+            return deadline
+        import hook_route  # noqa: E402
+        return hook_route.Deadline(WATCHDOG_AUDIT_DEADLINE_S)
+    except Exception:
+        return deadline
+
+
 def audit_via_route(agent_id, session_id, tool_name, pct, content_hash, deadline) -> bool:
     """PG mode: the audit row of an EMITTED HANDOFF, through the existing POST /api/hook-audit (the agent is the token's;
     the tenant stamp and the trace are the server's). Same row as record_handoff_audit: reason carries the context%, the
@@ -983,7 +1000,7 @@ def audit_via_route(agent_id, session_id, tool_name, pct, content_hash, deadline
             trace_id = None  # no usable session id: the row is written without a trace, as on SQLite
         if trace_id is not None:
             body["trace_id"] = trace_id
-        _route_post(HOOK_AUDIT_PATH, body, agent_id, session_id, deadline)
+        _route_post(HOOK_AUDIT_PATH, body, agent_id, session_id, audit_deadline(deadline))
         return True
     except Exception as e:
         try:

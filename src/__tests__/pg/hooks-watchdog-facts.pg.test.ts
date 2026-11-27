@@ -274,6 +274,25 @@ describe('the record route on PostgreSQL, as the app role', () => {
     expect((await spansOf(db)).map((r) => r.span_id)).toEqual(['good'])
   })
 
+  it('the usage timestamp window is [now - 7 days, now + 5 minutes]: an old or far-future line is dropped and counted, the threshold is still answered, no row is written', async () => {
+    const db = await bootedDb()
+    await seedTwoTenants(db)
+    const nowS = Math.floor(Date.now() / 1000)
+    // a month that is already rolled up (30 days back), just past the window (8 days), and a bad clock (10 minutes ahead)
+    for (const [i, ts] of [nowS - 30 * 86_400, nowS - 8 * 86_400, nowS + 10 * 60].entries()) {
+      const r = await record({ usage: usage({ session_id: `s-out-${i}`, timestamp: ts }) }, 'agent-a', 'tenant-t1')
+      expect(r.status).toBe(200)
+      expect(r.body).toEqual({ threshold_tokens: 111111, usage: false, spans: 0, dropped: 1 })
+    }
+    expect(await usageOf(db)).toEqual([])
+    // inside the window: a session resumed after six days of pause, and a clock a minute ahead
+    for (const [i, ts] of [nowS - 6 * 86_400, nowS + 60].entries()) {
+      const r = await record({ usage: usage({ session_id: `s-in-${i}`, timestamp: ts }) }, 'agent-a', 'tenant-t1')
+      expect(r.body).toEqual({ threshold_tokens: 111111, usage: true, spans: 0, dropped: 0 })
+    }
+    expect(await usageOf(db)).toHaveLength(2)
+  })
+
   it('the exported job is the sanctioned one: calling it outside a request still reads the caller\'s own threshold only', async () => {
     const db = await bootedDb()
     await seedTwoTenants(db)

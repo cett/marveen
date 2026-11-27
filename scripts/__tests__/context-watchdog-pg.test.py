@@ -369,6 +369,28 @@ class TestDedupPair(Base):
         self.assertIn("a different next step", self.text_of(self.run_hook()))
         self.assertEqual(len(self.script.audit_rows), 2)
 
+    def test_a_slow_facts_call_leaves_the_audit_row_its_own_budget(self):
+        # The facts call answers after 1.25 s of the shared 1.5 s: ~0.25 s is left, under the 0.3 s minimum attempt time, so on
+        # the shared deadline the audit call would be skipped and the NEXT call would find no prior row and inject again. The
+        # audit call has its own 0.4 s: the row is written, the HANDOFF is injected, the next call dedups.
+        d = self.serve()
+        self.script.handoff = (200, STUB_FACTS, 1.25)
+        p = self.run_hook()
+        self.text_of(p)
+        self.assertEqual(d.paths().count(AUDIT), 1)
+        self.assertEqual(len(self.script.audit_rows), 1)
+        self.assertLess(p.wall, 3.0)  # 1.5 s shared + at most 0.4 s of the audit's own + interpreter start
+
+    def test_the_audit_budget_is_small_and_its_own_a_slow_audit_endpoint_costs_at_most_it(self):
+        d = self.serve()
+        self.script.handoff = (200, STUB_FACTS, 1.25)
+        self.script.audit = (200, {"ok": True}, 6)
+        p = self.run_hook()
+        self.text_of(p)  # emit comes first, the slow audit cannot take the injection back
+        self.assertEqual(d.paths().count(AUDIT), 1)
+        self.assertIn("audit row was not written", p.stderr)
+        self.assertLess(p.wall, 3.0)
+
     def test_an_answer_of_null_is_a_first_crossing_and_emits(self):
         d = self.serve()
         self.script.prior = (200, None, 0)
