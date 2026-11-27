@@ -3,7 +3,8 @@
 // Neutral fixtures only (skill-a, agent-a, tenant-a, plugin-a).
 import { describe, it, expect } from 'vitest'
 // @ts-expect-error a browser ES module without type declarations
-import { mergeSkills, skillFlags, classifySkillId, parseKeywords } from '../../web/modules/skills-merge.js'
+import { mergeSkills, skillFlags, classifySkillId, parseKeywords, tenantSkillDirName, scanFailures } from '../../web/modules/skills-merge.js'
+import { tenantSkillDirName as serverTenantSkillDirName } from '../web/skill-regen.js'
 
 const row = (id: string, extra: Record<string, unknown> = {}) => ({
   id, name: id.split('/').pop(), description: `desc ${id}`, content: '---\nname: x\nkeywords: a, b\n---\nbody', tenant_id: 'fleet',
@@ -83,6 +84,85 @@ describe('mergeSkills', () => {
       userScan: [userFile('b'), userFile('only-file'), pluginFile('p')], localScan: [localFile('agent-a', 'c'), localFile('agent-a', 'only-local')],
     })
     expect(out.map((e: any) => e.key).sort()).toEqual(['agent/agent-a/c', 'agent/agent-a/only-local', 'global/a', 'global/b', 'global/only-file', 'plugin:plugin-a/1.0/p'])
+  })
+})
+
+// A tenant skill's SKILL.md is GENERATED into agents/<agent>/.claude/skills/<tenantSkillDirName(id)>/ of every agent that carries it;
+// the local scan lists those as agent-local files. They are copies of a row, not skills of their own (and not "not synced").
+describe('mergeSkills: generated copies of a tenant skill', () => {
+  const tenantRow = (id: string, extra: Record<string, unknown> = {}) => row(id, { tenant_id: 'tenant-a', file_present: null, name: 'Skill T', ...extra })
+
+  it('one tenant row and two agent-local copies are ONE entry; the copies are listed as its agents, no not_synced', () => {
+    const out = mergeSkills({
+      sqlRows: [tenantRow('tenant-a-skill-t')], userScan: [],
+      localScan: [localFile('agent-a', 'tenant-a-skill-t'), localFile('agent-b', 'tenant-a-skill-t')],
+    })
+    expect(out).toHaveLength(1)
+    expect(out[0]).toMatchObject({ origin: 'sql', tenantId: 'tenant-a', agents: ['agent-a', 'agent-b'] })
+    expect(skillFlags(out[0]).badge).toBeNull()
+  })
+
+  it('the folder is the sanitized id (characters outside [A-Za-z0-9._-] become "-"), like the server writes it', () => {
+    const out = mergeSkills({ sqlRows: [tenantRow('tenant-a/skill t')], userScan: [], localScan: [localFile('agent-a', 'tenant-a-skill-t')] })
+    expect(out).toHaveLength(1)
+    expect(out[0].agents).toEqual(['agent-a'])
+  })
+
+  it('the copy of the same agent seen twice is listed once; the newest copy time wins', () => {
+    const out = mergeSkills({
+      sqlRows: [tenantRow('tenant-a-skill-t', { updated_at: 1 })], userScan: [],
+      localScan: [{ ...localFile('agent-a', 'tenant-a-skill-t'), mtime: 9000 }, { ...localFile('agent-a', 'tenant-a-skill-t'), mtime: 5000 }],
+    })
+    expect(out[0].agents).toEqual(['agent-a'])
+    expect(out[0].mtime).toBe(9000)
+  })
+
+  it('an agent-local folder that is NOT the copy of any tenant row stays a not_synced file (nothing is hidden by the rule)', () => {
+    const out = mergeSkills({ sqlRows: [tenantRow('tenant-a-skill-t')], userScan: [], localScan: [localFile('agent-a', 'hand-made')] })
+    expect(out.map((e: any) => e.key).sort()).toEqual(['agent/agent-a/hand-made', 'tenant-a-skill-t'])
+    expect(skillFlags(out.find((e: any) => e.origin === 'file')).badge).toBe('not_synced')
+  })
+
+  it('a FLEET row never absorbs a folder by this rule: a fleet agent-local row matches by its id, a stray folder of a similar name stays', () => {
+    const out = mergeSkills({ sqlRows: [row('global/skill-a')], userScan: [], localScan: [localFile('agent-a', 'global-skill-a')] })
+    expect(out).toHaveLength(2)
+  })
+
+  it('a fleet agent-local row is matched by its own key first (the tenant rule only sees what the key did not match)', () => {
+    const out = mergeSkills({
+      sqlRows: [row('agent/agent-a/skill-d'), tenantRow('skill-d')], userScan: [], localScan: [localFile('agent-a', 'skill-d')],
+    })
+    expect(out).toHaveLength(2)
+    expect(out.find((e: any) => e.sqlId === 'agent/agent-a/skill-d').mtime).toBe(5)
+    expect(out.find((e: any) => e.sqlId === 'skill-d').agents).toEqual([])
+  })
+
+  it('a tenant row whose id has no valid folder name (no copy is ever generated) absorbs nothing', () => {
+    expect(tenantSkillDirName('///')).toBeNull()
+    const out = mergeSkills({ sqlRows: [tenantRow('///')], userScan: [], localScan: [localFile('agent-a', '---')] })
+    expect(out).toHaveLength(2)
+  })
+
+  it('the client folder rule is the server one (a drift would make the copies reappear as not_synced)', () => {
+    for (const id of ['acme-demo', 'a/b c', '.hidden', '--x', 'ünï-code', 'a..b', '///', '']) {
+      expect(tenantSkillDirName(id), id).toBe(serverTenantSkillDirName(id))
+    }
+  })
+})
+
+describe('scanFailures', () => {
+  const res = (ok: boolean, status: number) => ({ ok, status })
+
+  it('lists a scan that answered with an error status, by path', () => {
+    expect(scanFailures({ globalRes: res(false, 500), localRes: res(true, 200) })).toEqual([{ path: '/api/skills', status: 500 }])
+    expect(scanFailures({ globalRes: res(true, 200), localRes: res(false, 403) })).toEqual([{ path: '/api/skills/local', status: 403 }])
+    expect(scanFailures({ globalRes: res(false, 500), localRes: res(false, 502) })).toHaveLength(2)
+  })
+
+  it('is empty when both scans answered, and when the caller did not scan at all (null is not a failure)', () => {
+    expect(scanFailures({ globalRes: res(true, 200), localRes: res(true, 200) })).toEqual([])
+    expect(scanFailures({ globalRes: null, localRes: null })).toEqual([])
+    expect(scanFailures()).toEqual([])
   })
 })
 

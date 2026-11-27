@@ -99,7 +99,7 @@ describe('GET /api/skills/sql: file_present for the admin', () => {
     expect(rows['global/no-file']).toMatchObject({ id: 'global/no-file', status: 'live', content: BODY })
   })
 
-  it('a directory named SKILL.md is not a file', async () => {
+  it('a directory named SKILL.md is not a file', () => {
     mkdirSync(join(home, '.claude', 'skills', 'odd', 'SKILL.md'), { recursive: true })
     expect(skillFilePresent('global/odd')).toBe(false)
   })

@@ -37,10 +37,28 @@ describe('Skills screen contract', () => {
     expect(SOURCE).toContain('openSkillDetail(skill)')
   })
 
+  it('an admin file scan that did not answer is told (notice above the grid + toast), never swallowed into an empty list', () => {
+    expect(load).toContain('scanFailures({ globalRes, localRes })')
+    expect(load).toContain('_renderScanWarning(failures)')
+    expect(load).toMatch(/if \(failures\.length\) showToast\(t\('skills\.scan_failed\.toast'\)\)/)
+    // the notice is cleared at the start of every load, and its element is in the page
+    expect(SOURCE).toMatch(/export async function loadGlobalSkills\(\) \{\n  _renderScanWarning\(\[\]\)/)
+    expect(HTML).toMatch(/id="skillsScanWarning"[^>]*hidden/)
+  })
+
+  it('a tenant row carries its tenant on the card and in the detail, and the delete confirm names it', () => {
+    expect(SOURCE).toMatch(/_isTenantSkill\(entry\) \{\n\s+return entry\.origin === 'sql' && !!entry\.tenantId && entry\.tenantId !== 'fleet'/)
+    expect(SOURCE).toContain("${escapeHtml(displayName)} ${sourceBadge} ${tenantBadge} ${stateBadge}")
+    expect(SOURCE).toContain("t('skills.badge.tenant', { id: skill.tenantId })")
+    expect(SOURCE).toContain("t('skills.detail.tenant', { id: _skillDetailTenantId })")
+    expect(SOURCE).toContain("t('skills.confirm.delete_tenant', { name: _skillDetailCurrentName, id: _skillDetailTenantId })")
+  })
+
   it('delete and edit of a database row go to /api/skills/sql/:id; the delete button is for a row and an admin only', () => {
     expect(SOURCE).toContain("fetch(`/api/skills/sql/${encodeURIComponent(_skillDetailSqlId)}`, { method: 'DELETE' })")
     expect(SOURCE).toContain('deleteBtn.hidden = !(flags.canDelete && _skillsIsAdmin)')
-    expect(SOURCE).toMatch(/if \(!_skillDetailSqlId\) return\n\s+if \(!confirm/)
+    // the guard comes first, then the confirm, then the DELETE
+    expect(SOURCE).toMatch(/if \(!_skillDetailSqlId\) return\n[\s\S]{0,400}if \(!confirm\(confirmText\)\) return/)
     expect(HTML).toMatch(/id="skillDetailDeleteBtn"[^>]*hidden/)
   })
 })

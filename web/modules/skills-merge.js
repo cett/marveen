@@ -28,8 +28,28 @@ export function classifySkillId(id, rowName) {
 }
 
 /**
+ * The folder a tenant skill's generated copy lives in under agents/<agent>/.claude/skills/ (mirror of tenantSkillDirName in
+ * src/web/skill-regen.ts: characters outside [A-Za-z0-9._-] become '-', leading '.' and '-' are dropped). null = no valid folder.
+ */
+export function tenantSkillDirName(id) {
+  const dir = String(id).replace(/[^A-Za-z0-9._-]/g, '-').replace(/^[.-]+/, '')
+  return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(dir) ? dir : null
+}
+
+/**
+ * The admin file scans that did not answer: [{ path, status }]. A scan the caller did not make (null) is not a failure.
+ * The screen shows a notice for these, so plugin skills and files without a row never vanish without a word.
+ */
+export function scanFailures({ globalRes = null, localRes = null } = {}) {
+  const out = []
+  if (globalRes && !globalRes.ok) out.push({ path: '/api/skills', status: globalRes.status })
+  if (localRes && !localRes.ok) out.push({ path: '/api/skills/local', status: localRes.status })
+  return out
+}
+
+/**
  * @param {object} input
- * @param {Array} input.sqlRows   GET /api/skills/sql -> skills (admin rows carry file_present: true | false | null)
+ * @param {Array} input.sqlRows  GET /api/skills/sql -> skills (admin rows carry file_present: true | false | null)
  * @param {Array} input.userScan  GET /api/skills (entries typed source 'user' | 'plugin'); [] when the caller may not scan
  * @param {Array} input.localScan GET /api/skills/local (agent-local files); [] when the caller may not scan
  * @returns {Array} one entry per skill, see the fields below
@@ -37,6 +57,8 @@ export function classifySkillId(id, rowName) {
 export function mergeSkills({ sqlRows = [], userScan = [], localScan = [] }) {
   const entries = []
   const byScanKey = new Map()
+  // tenant rows (no scan key) by the folder their generated copies carry; a copy is not a skill of its own
+  const byTenantDir = new Map()
 
   for (const row of sqlRows) {
     const c = classifySkillId(row.id, row.name)
@@ -59,6 +81,10 @@ export function mergeSkills({ sqlRows = [], userScan = [], localScan = [] }) {
     }
     entries.push(entry)
     if (c.scanKey) byScanKey.set(c.scanKey, entry)
+    else if (row.tenant_id && row.tenant_id !== 'fleet') {
+      const dir = tenantSkillDirName(row.id)
+      if (dir) byTenantDir.set(dir, entry)
+    }
   }
 
   for (const f of userScan) {
@@ -87,6 +113,13 @@ export function mergeSkills({ sqlRows = [], userScan = [], localScan = [] }) {
     const row = byScanKey.get(`agent/${f.agentId}/${f.name}`)
     if (row) {
       if (f.mtime) row.mtime = f.mtime
+      continue
+    }
+    // a generated copy of a tenant skill: the row stays the entry, the copy only says which agent carries it
+    const tenantRow = byTenantDir.get(f.name)
+    if (tenantRow) {
+      if (f.agentId && !tenantRow.agents.includes(f.agentId)) tenantRow.agents.push(f.agentId)
+      if (f.mtime && f.mtime > tenantRow.mtime) tenantRow.mtime = f.mtime
       continue
     }
     entries.push({
