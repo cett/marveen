@@ -71,6 +71,7 @@ const GUARDED: Array<[string, string]> = [
   ['POST', '/api/federation/routing-mode'],
   ['POST', '/api/federation/remove'],
   ['GET', '/api/auth/users'],
+  ['GET', '/api/admin/users'],
 ]
 
 describe('a bearer (admin role, tenant database context) on PostgreSQL', () => {
@@ -86,14 +87,16 @@ describe('a bearer (admin role, tenant database context) on PostgreSQL', () => {
     expect(ADMIN_SESSION_REQUIRED_HINT).not.toMatch(/system_config|dashboard_users|policy|row-level|42501|SELECT|INSERT/i)
   })
 
-  it('the refusal is logged at warn with the route (no id) and counted per route', async () => {
+  it('the refusal is logged at warn with the route (no id) and counted per route, apart from the database refusals', async () => {
     await guard('DELETE', '/api/federation/peers/peer-a', BEARER)
     await guard('DELETE', '/api/federation/peers/peer-b', BEARER)
     expect(loggerMock.warn).toHaveBeenCalledTimes(2)
     const meta = loggerMock.warn.mock.calls[0][0] as Record<string, unknown>
     expect(meta).toMatchObject({ event: 'admin-scope-refusal', route: 'DELETE /api/federation/peers', kind: 'token', dbRole: 'tenant' })
     expect(JSON.stringify(meta)).not.toContain('peer-a')
-    expect(getDbContextStats().rlsRefusals).toMatchObject({ 'DELETE /api/federation/peers': 2 })
+    // its own counter: the database never saw these requests, so the per-route count of DATABASE refusals stays empty
+    expect(getDbContextStats().adminScopeRefusals).toEqual({ 'DELETE /api/federation/peers': 2 })
+    expect(getDbContextStats().rlsRefusals).toEqual({})
   })
 })
 
@@ -128,9 +131,9 @@ describe('the guard grants and removes nothing for anyone else', () => {
     expect(await runAs.system('boot-sequence', () => Promise.resolve(answerAdminScopeRefusal(ctx)))).toBe(false)
   })
 
-  it('the users list: a tenant-admin SESSION is not refused (its own tenant\'s users are a real answer), a tenant-admin bearer is', async () => {
-    expect((await guard('GET', '/api/auth/users', TENANT_ADMIN_SESSION)).refused).toBe(false)
-    expect((await guard('GET', '/api/auth/users', BEARER)).refused).toBe(true)
+  it.each(['/api/auth/users', '/api/admin/users'])('the users list %s: a tenant-admin SESSION is not refused (its own tenant\'s users are a real answer), a tenant-admin bearer is', async (path) => {
+    expect((await guard('GET', path, TENANT_ADMIN_SESSION)).refused).toBe(false)
+    expect((await guard('GET', path, BEARER)).refused).toBe(true)
   })
 
   it('the writers: a tenant-admin SESSION is refused too (the database refuses it anyway, now with the explicit code)', async () => {
@@ -184,6 +187,19 @@ describe('drift: every route file that writes system_config is accounted for', (
   it('the route files that call a writer are exactly the accounted ones', () => {
     const found = readdirSync(routesDir).filter((f) => f.endsWith('.ts') && WRITERS.test(readFileSync(join(routesDir, f), 'utf8'))).sort()
     expect(found).toEqual(Object.keys(ACCOUNTED).sort())
+  })
+
+  // A users list that reads dashboard_users in a tenant context answers 200 with a partial or empty list, not a 42501: it is a guarded
+  // route too. The route files that call a users-list function must be the ones the table covers.
+  it('every route file that lists dashboard users has its list route in the table (bearer only)', () => {
+    const LISTERS = /\b(listDashboardUsers|listDashboardUsersFiltered)\(/
+    const ACCOUNTED_LISTS: Record<string, string> = { 'auth.ts': 'GET /api/auth/users', 'admin-b2b.ts': 'GET /api/admin/users' }
+    const found = readdirSync(routesDir).filter((f) => f.endsWith('.ts') && LISTERS.test(readFileSync(join(routesDir, f), 'utf8'))).sort()
+    expect(found).toEqual(Object.keys(ACCOUNTED_LISTS).sort())
+    for (const w of Object.values(ACCOUNTED_LISTS)) {
+      const [method, path] = w.split(' ')
+      expect(adminScopeRouteFor(method, path)?.bearerOnly, w).toBe(true)
+    }
   })
 
   it('every accounted route file has at least one entry in the table', () => {

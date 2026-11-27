@@ -20,7 +20,7 @@
 //   - a tenant-admin SESSION on the users list (its tenant's users are a real answer, not an empty one; see `bearerOnly`),
 //   - a privileged database context (a global admin session): it passes untouched.
 
-import { currentDbContext, noteRlsRefusal } from '../db/context.js'
+import { currentDbContext, noteAdminScopeRefusal } from '../db/context.js'
 import { dbxDialect } from '../db/facade.js'
 import { logger } from '../logger.js'
 import { json } from './http-helpers.js'
@@ -58,6 +58,7 @@ export const ADMIN_SCOPE_ROUTES: readonly AdminScopeRoute[] = [
   { method: 'POST', path: /^\/api\/federation\/routing-mode$/ },
   { method: 'POST', path: /^\/api\/federation\/remove$/ },
   { method: 'GET', path: /^\/api\/auth\/users$/, bearerOnly: true },
+  { method: 'GET', path: /^\/api\/admin\/users$/, bearerOnly: true },
 ]
 
 /** The guarded entry a request matches, or undefined. */
@@ -76,8 +77,8 @@ function contextIsPrivileged(): boolean {
  * database context is not privileged (PostgreSQL only); returns false, writing nothing, in every other case. It must run INSIDE
  * the request's database context (`runAsRequest`), because the decision reads that context, not the credential.
  *
- * The refusal is logged at warn and counted per route in the db-context view (`rlsRefusals`, the same counter a database refusal
- * uses), so the answer does not hide a caller that keeps trying.
+ * The refusal is logged at warn and counted per route in the db-context view (`adminScopeRefusals`, apart from `rlsRefusals`: the
+ * database never saw this request), so the answer does not hide a caller that keeps trying.
  */
 export function answerAdminScopeRefusal(ctx: RouteContext): boolean {
   if (dbxDialect() !== 'pg') return false
@@ -87,7 +88,7 @@ export function answerAdminScopeRefusal(ctx: RouteContext): boolean {
   if (route.bearerOnly && ctx.auth?.kind !== 'token') return false
   if (contextIsPrivileged()) return false
   const key = refusalRouteKey(ctx.method, ctx.path)
-  noteRlsRefusal(key)
+  noteAdminScopeRefusal(key)
   logger.warn({ event: 'admin-scope-refusal', route: key, kind: ctx.auth?.kind, dbRole: currentDbContext()?.role }, 'admin route refused: the caller runs in a tenant database scope, a global admin session is needed')
   json(ctx.res, { error: 'forbidden', code: ADMIN_SESSION_REQUIRED_CODE, hint: ADMIN_SESSION_REQUIRED_HINT }, 403)
   return true

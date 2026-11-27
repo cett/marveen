@@ -15,6 +15,7 @@ import { answerRlsRefusal } from '../../web/rls-refusal-response.js'
 import { ADMIN_SESSION_REQUIRED_CODE, dispatchBehindAdminScopeGuard } from '../../web/admin-scope-guard.js'
 import type { RouteContext } from '../../web/routes/types.js'
 import { tryHandleAuth } from '../../web/routes/auth.js'
+import { tryHandleAdminB2b } from '../../web/routes/admin-b2b.js'
 import { tryHandleSettings } from '../../web/routes/settings.js'
 import { tryHandleModelFallback } from '../../web/routes/model-fallback.js'
 import { tryHandleAgentTerminal } from '../../web/routes/agent-terminal.js'
@@ -32,7 +33,7 @@ const TENANT_ADMIN_SESSION: Who = { role: 'admin', tenantId: 'tenant-t1', kind: 
 
 /** The chain of route handlers the dispatcher would try, in web.ts order for these files. */
 async function chain(ctx: RouteContext): Promise<boolean> {
-  for (const h of [tryHandleAuth, tryHandleSettings, tryHandleModelFallback, tryHandleAgentTerminal, tryHandleFederation]) {
+  for (const h of [tryHandleAuth, tryHandleAdminB2b, tryHandleSettings, tryHandleModelFallback, tryHandleAgentTerminal, tryHandleFederation]) {
     if (await h(ctx)) return true
   }
   return false
@@ -162,6 +163,38 @@ describe('GET /api/auth/users', () => {
 
   it('a tenant-admin SESSION keeps its own answer: the users of its tenant, not a 403', async () => {
     const r = await call('GET', '/api/auth/users', TENANT_ADMIN_SESSION)
+    expect(r.status).toBe(200)
+    expect(names(r)).toEqual(['user-t1'])
+  })
+})
+
+describe('GET /api/admin/users', () => {
+  const names = (r: { body: Record<string, unknown> }): string[] => (r.body.items as Array<{ username: string }>).map((u) => u.username).sort()
+
+  it('a global admin session sees every user', async () => {
+    const r = await call('GET', '/api/admin/users', GLOBAL_ADMIN_SESSION)
+    expect(r.status).toBe(200)
+    expect(names(r)).toEqual(['user-admin', 'user-default', 'user-t1'])
+    expect(r.body.total).toBe(3)
+  })
+
+  it('the bearer is refused with 403 admin_session_required, not shown a partial list', async () => {
+    const r = await call('GET', '/api/admin/users', MAIN_BEARER)
+    expect(r.status).toBe(403)
+    expect(r.body).toMatchObject({ error: 'forbidden', code: ADMIN_SESSION_REQUIRED_CODE })
+    expect(r.body.items).toBeUndefined()
+  })
+
+  it('without the guard the bearer\'s answer is a FALSE SUCCESS: 200 with a list that hides the admin and the other tenant', async () => {
+    const r = await call('GET', '/api/admin/users', MAIN_BEARER, undefined, { guard: false })
+    expect(r.status).toBe(200)
+    expect(names(r)).not.toContain('user-admin')
+    expect(names(r)).not.toContain('user-t1')
+    expect(names(r).length).toBeLessThan(3)
+  })
+
+  it('a tenant-admin SESSION keeps its own answer: the users of its tenant', async () => {
+    const r = await call('GET', '/api/admin/users', TENANT_ADMIN_SESSION)
     expect(r.status).toBe(200)
     expect(names(r)).toEqual(['user-t1'])
   })
