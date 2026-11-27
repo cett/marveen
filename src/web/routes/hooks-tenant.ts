@@ -2,16 +2,18 @@ import { readBody, json } from '../http-helpers.js'
 import { tenantSkillDirName } from '../skill-regen.js'
 import { frontmatterName } from '../skill-frontmatter-name.js'
 import {
-  getHookContext, getHookTenantFacts, getWatchdogHandoffFacts, getWatchdogThreshold, listHookTenantSkills, recordHookContext,
+  getHookContext, getHookTenantFacts, getWatchdogHandoffFacts, listHookTenantSkills, recordHookContext,
   type HookSource,
 } from '../../db/hook-tenant-reads.js'
+import { getPriorHandoff, recordWatchdogTelemetry, WATCHDOG_MAX_SPANS } from '../../db/hook-watchdog-record.js'
 import type { RouteContext } from './types.js'
 
 // /api/v1/hooks/* - what the tenant gates of the hooks (stdlib Python, no database driver) ask the dashboard in PG mode.
 //   POST /api/hooks/tenant-facts   <- tenant-context.py   {sources:[{kind:'channel',channel,external_id}|{kind:'message',msg_id}]}
 //   PUT  /api/hooks/tenant-context <- tenant-context.py   {status, tenant_id, source, session_id}   (the caller's own row)
 //   POST /api/hooks/skill-gate     <- tenant-skill-gate.py {targets:[{kind:'skill'|'dir', value, folded}]}
-//   POST /api/hooks/watchdog-facts <- context-watchdog.py  {want:'threshold'|'handoff'}  (handoff: REQUEST tenant context; threshold: the named system job, fixed agent filter)
+//   POST /api/hooks/watchdog-facts <- context-watchdog.py  {want:'handoff'|'prior_handoff', session_id?}  (REQUEST tenant context, the caller's own rows)
+//   POST /api/hooks/watchdog-record <- context-watchdog.py {usage, spans, close_stale}  (ONE named system job; always answers the threshold)
 // The route returns FACTS, never a verdict: the policy stays in the hook (tenant_context_lib.py).
 // WHO: the agent is the one the TOKEN names (ctx.tokenAgentId), never a query or body parameter: an `agent_id` in the body is
 // ignored. A caller whose token names no agent (a dashboard session, the operator token, a tenant user) gets a 403.
@@ -94,7 +96,7 @@ function parseTargets(raw: unknown): Target[] | string {
 
 export async function tryHandleHooksTenant(ctx: RouteContext): Promise<boolean> {
   const { res, path, method } = ctx
-  if (path !== '/api/hooks/tenant-facts' && path !== '/api/hooks/tenant-context' && path !== '/api/hooks/skill-gate' && path !== '/api/hooks/watchdog-facts') return false
+  if (path !== '/api/hooks/tenant-facts' && path !== '/api/hooks/tenant-context' && path !== '/api/hooks/skill-gate' && path !== '/api/hooks/watchdog-facts' && path !== '/api/hooks/watchdog-record') return false
 
   if (path === '/api/hooks/tenant-facts' && method === 'POST') {
     const agentId = callerAgent(ctx)
@@ -170,15 +172,36 @@ export async function tryHandleHooksTenant(ctx: RouteContext): Promise<boolean> 
     const data = await readObject(ctx)
     if (!data) return true
     const want = data['want']
-    if (want === 'threshold') {
-      json(res, { threshold_tokens: await getWatchdogThreshold(agentId) })
-      return true
-    }
     if (want === 'handoff') {
       json(res, await getWatchdogHandoffFacts(agentId))
       return true
     }
-    return bad(ctx, 'want', 'want must be threshold or handoff')
+    if (want === 'prior_handoff') {
+      // The dedup baseline: the caller's OWN latest 'handoff' audit row of this session (an answer of null is "no prior row"). It is
+      // not GET /api/hook-audit: that is a telemetry read that shows other agents' rows and cannot filter by session.
+      const session = data['session_id']
+      if (typeof session !== 'string' || session.length < 1 || session.length > MAX_SESSION || session.includes('\u0000')) return bad(ctx, 'session_id', `session_id must be a string of 1 to ${MAX_SESSION} characters`)
+      json(res, await getPriorHandoff(agentId, session))
+      return true
+    }
+    return bad(ctx, 'want', 'want must be handoff or prior_handoff')
+  }
+
+  // The watchdog's writes and its threshold in ONE round trip (the hook runs on every tool call). Structural errors are 400; an invalid
+  // ITEM is dropped and counted in the answer; the threshold is always answered. NOT in the no-context exemption either.
+  if (path === '/api/hooks/watchdog-record' && method === 'POST') {
+    const agentId = callerAgent(ctx)
+    if (!agentId) return true
+    const data = await readObject(ctx)
+    if (!data) return true
+    const usage = data['usage'] ?? null
+    if (usage !== null && (typeof usage !== 'object' || Array.isArray(usage))) return bad(ctx, 'usage', 'usage must be an object or null')
+    const spans = data['spans'] ?? []
+    if (!Array.isArray(spans) || spans.length > WATCHDOG_MAX_SPANS) return bad(ctx, 'spans', `spans must be an array of at most ${WATCHDOG_MAX_SPANS}`)
+    const close = data['close_stale'] ?? null
+    if (close !== null && (typeof close !== 'object' || Array.isArray(close))) return bad(ctx, 'close_stale', 'close_stale must be an object or null')
+    json(res, await recordWatchdogTelemetry(agentId, { usage, spans, close_stale: close }))
+    return true
   }
 
   return false
