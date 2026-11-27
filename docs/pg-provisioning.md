@@ -111,6 +111,39 @@ ALTER DEFAULT PRIVILEGES FOR ROLE marveen_owner IN SCHEMA public GRANT SELECT ON
 ALTER DEFAULT PRIVILEGES FOR ROLE marveen_owner IN SCHEMA public GRANT SELECT ON SEQUENCES TO marveen_backup;
 ```
 
+## The weekly restore drill
+
+`scripts/pg-restore-drill.sh` (see F03, "The weekly restore drill on PostgreSQL") restores the newest nightly dump into a
+throwaway database next to the live one. It needs four things the provisioning above does not create. The script checks each
+one before it creates anything and says which is missing. Run as a superuser:
+
+```sql
+-- 1. the owner creates the throwaway database: a CREATEDB right on the migration role (it cannot touch the live database
+--    any more than before; it already owns it)
+ALTER ROLE marveen_owner CREATEDB;
+
+-- 2. a template that only holds the two extensions: pgvector is not a trusted extension, so the owner cannot create it in
+--    the throwaway database; the restore skips the dump's EXTENSION entries and the clone already has them
+CREATE DATABASE marveen_drill_tpl;
+\c marveen_drill_tpl
+CREATE EXTENSION vector;
+CREATE EXTENSION unaccent;
+\c postgres
+ALTER DATABASE marveen_drill_tpl IS_TEMPLATE true;
+```
+
+3. The owner's password file, outside the repository, owner-only: `~/.pgpass-marveen-owner`, mode `0600`, one line
+   `127.0.0.1:5432:*:marveen_owner:<owner-password>` (the database field is `*` because the throwaway name changes every run).
+   The backup role's file (`~/.pgpass-marveen-backup`) is the one the nightly dump already uses.
+4. The three roles must exist (the dump's grants name them): the drill refuses to start otherwise.
+
+Security note: step 1 widens `marveen_owner` by one cluster-level attribute (CREATEDB). It stays `NOSUPERUSER` and
+`NOBYPASSRLS`, the serving role is untouched, and the drill reads the live database only through the read-only backup role.
+If that is too much for the owner role, use a dedicated login role instead: `CREATEDB` and a member of `marveen_owner` (the
+membership is what lets it restore the dump's `ALTER DEFAULT PRIVILEGES FOR ROLE marveen_owner`). It inherits the owner's
+rights, so this separates the attribute and the password, not the data access. Point `PG_DRILL_OWNER_ROLE` and
+`PG_DRILL_OWNER_PASSFILE` at it.
+
 ## The channel coordinator
 
 The channel coordinator (`dist/channel-coordinator.js`, its own launchd unit) is a backfill poller for inbound Telegram updates: it polls only while the native channel is down. It runs on the same backend as the dashboard.

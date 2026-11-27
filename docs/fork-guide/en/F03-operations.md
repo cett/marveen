@@ -575,3 +575,51 @@ that the app sets at start) the SQLite database is not the live data, so the bac
 
 The detection rules are in `scripts/pg-configured.sh`, which `backup.sh` and `restore-drill.sh` source: one copy of the
 function, so the scripts cannot drift apart. A `.env` that cannot be read while the marker is set counts as PostgreSQL.
+
+### The residual SQLite tables in the archive
+
+After the cutover the gate hooks still write two tables into `store/claudeclaw.db`: `hook_audit_log` and
+`gate_decision_counts`. The archive of a PostgreSQL install leaves that file out, so `backup.sh` dumps those two tables
+as SQL text into `repo/store/residual-gate-audit.sql` (mode 600, listed in `MANIFEST.txt` with its row counts). The dump
+is taken from a copy of the live file made with `sqlite3 .backup`, so a hook write during the export cannot touch it. A
+missing file, a missing table or a missing `sqlite3` is a warning, never an abort: the nightly archive is still written, and
+`MANIFEST.txt` says `residual-gate-audit: NOT included (<reason>)`. To read it back: `sqlite3 new.db < residual-gate-audit.sql`.
+`verify-restore.sh` passes an archive with and without this file. The block goes away when the hooks write to PostgreSQL.
+
+### The weekly restore drill on PostgreSQL
+
+`scripts/pg-restore-drill.sh` proves that the newest nightly dump (`~/pg-backups/marveen-<date>-<time>.dump`) restores. It
+fails when there is no dump, when the newest is older than 36 hours or does not match its `.sha256` sidecar, or when
+`pg_restore` cannot read it. Otherwise it creates the throwaway database `marveen_drill_<stamp>_<pid>` as the owner role,
+restores the dump into it, compares the row counts of nine key tables (`memories`, `kanban_cards`, `workspace_docs`,
+`schedules`, `dashboard_users`, `agent_messages`, `tenants`, `system_config`, `conversation_log`) with the live database
+and drops the throwaway database again, whatever happened. The last line is one summary line, the exit code is 0 or 1.
+Nothing is restored over the live database, which is only read.
+
+The comparison rule (both sides counted through the backup role, which bypasses row-level security; the live database is
+ahead by the hours since the dump): restored rows greater than live FAIL; a restored table with no rows while live has some
+FAIL; live ahead of restored by more than `max(2 rows, 10 percent)` FAIL (`PG_DRILL_TOL_ABS`, `PG_DRILL_TOL_PCT`).
+
+Credentials are read from `PGPASSFILE` files, never from a command line: `~/.pgpass-marveen-backup` (the nightly dump's) and
+`~/.pgpass-marveen-owner` (mode 0600, one line `127.0.0.1:5432:*:marveen_owner:<owner-password>`). The one-time database
+setup is in `docs/pg-provisioning.md` ("The weekly restore drill"); the script checks every item before it creates anything and
+names the missing one.
+
+Schedule (a command task, Sunday 03:45, 15 minutes after the old SQLite drill's slot): create it through the dashboard
+(`PUT /api/schedules/weekly-pg-restore-drill`, see the `dashboard-schedule-crud` recipe), not in the table:
+
+```json
+{
+  "type": "command",
+  "schedule": "45 3 * * 0",
+  "agent": "<main-agent-id>",
+  "enabled": true,
+  "command": "bash '/path/to/marveen/scripts/pg-restore-drill.sh'",
+  "timeoutMs": 900000,
+  "failThreshold": 1,
+  "description": "Weekly PostgreSQL restore drill, Sunday 03:45 (no LLM): restores the newest nightly dump into a throwaway database, compares nine key tables with the live database, drops it again. Non-zero exit alerts."
+}
+```
+
+The SQLite `weekly-restore-drill` task stays disabled: on a PostgreSQL install `restore-drill.sh` answers `NOT APPLICABLE`
+(exit 3) on purpose, and the new task replaces it. Run it by hand first: `bash scripts/pg-restore-drill.sh`.
