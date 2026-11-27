@@ -51,6 +51,25 @@ let work: string
 // transaction_timeout, which a 16 server rejects; the dump is also taken by the matching pg_dump.
 let toolPath = process.env.PATH ?? ''
 
+/** The major version a client tool on `path` reports (`pg_dump --version`), or undefined when it is not there. */
+function toolMajor(tool: string, path: string): number | undefined {
+  const r = spawnSync(tool, ['--version'], { encoding: 'utf8', env: { PATH: path } })
+  const m = r.status === 0 ? /\) (\d+)/.exec(r.stdout) : null
+  return m ? Number(m[1]) : undefined
+}
+
+/**
+ * The PATH every spawned tool uses: the PATH itself when its pg_dump, pg_restore and psql are all of the server's major
+ * (one bin directory for the dump and for the drill), else the bin directory of that major. No match is an ERROR, never a skip.
+ */
+function resolveToolPath(major: number): string {
+  const base = process.env.PATH ?? ''
+  if (['pg_dump', 'pg_restore', 'psql'].every((t) => toolMajor(t, base) === major)) return base
+  const bin = matchingBinDir(major)
+  if (bin) return `${bin}:${base}`
+  throw new Error(`no PostgreSQL ${major} client tools (pg_dump, pg_restore, psql) on PATH, in /usr/lib/postgresql/${major}/bin or Homebrew: install postgresql-client-${major} (or set PG_TEST_BIN_DIR)`)
+}
+
 /** The bin directory of PostgreSQL <major> clients (Debian/Ubuntu, Homebrew), or undefined when none is installed there. */
 function matchingBinDir(major: number): string | undefined {
   const candidates = [
@@ -163,8 +182,7 @@ beforeAll(async () => {
   admin = new pg.Client({ connectionString: pgTestUrl() })
   await admin.connect()
   const serverMajor = Math.floor(Number((await admin.query('SHOW server_version_num')).rows[0].server_version_num) / 10000)
-  const bin = matchingBinDir(serverMajor)
-  if (bin) toolPath = `${bin}:${process.env.PATH ?? ''}`
+  toolPath = resolveToolPath(serverMajor)
   live = await createPgTestDb() // also makes sure the harness roles exist
   preexisting = new Set(await throwawayDatabases())
 
@@ -560,8 +578,9 @@ describe('pg-restore-drill.sh', () => {
     expect(await leftovers()).toEqual([])
   }, 120000)
 
-  it('FAIL: a pg_restore newer than the server is refused with the fix named, before anything is created; an older one and an unreadable version are handled', async () => {
-    // a pg_restore shim whose --version says what SHIM_PG_RESTORE_VERSION says; everything else goes to the real pg_restore
+  it('FAIL: a pg_restore of another major than the server, a dump header newer than the server and an unreadable version are refused with the fix named, and no throwaway database is created', async () => {
+    // a pg_restore shim: --version says SHIM_PG_RESTORE_VERSION; -l (the listing) rewrites the "Dumped by pg_dump version" header
+    // to SHIM_DUMP_MAJOR when that is set (a simulated newer dump); everything else goes to the real pg_restore
     const dir = mkdtempSync(join(work, 'restoreshim-'))
     const real = spawnSync('sh', ['-c', 'command -v pg_restore'], { encoding: 'utf8', env: { PATH: toolPath } }).stdout.trim()
     expect(real).not.toBe('')
@@ -569,25 +588,46 @@ describe('pg-restore-drill.sh', () => {
     writeFileSync(shim, [
       '#!/bin/sh',
       'if [ "$1" = "--version" ]; then echo "${SHIM_PG_RESTORE_VERSION}"; exit 0; fi',
+      'if [ "$1" = "-l" ] && [ -n "${SHIM_DUMP_MAJOR}" ]; then',
+      '  "${REAL_PG_RESTORE}" "$@" | sed "s/Dumped by pg_dump version: [0-9][0-9]*/Dumped by pg_dump version: ${SHIM_DUMP_MAJOR}/"',
+      '  exit 0',
+      'fi',
       'exec "${REAL_PG_RESTORE}" "$@"',
       '',
     ].join('\n'))
     chmodSync(shim, 0o755)
-    const withShim = (version: string): Record<string, string> => ({ PATH: `${dir}:${toolPath}`, REAL_PG_RESTORE: real, SHIM_PG_RESTORE_VERSION: version })
+    const serverMajor = toolMajor('pg_restore', toolPath) as number
+    const withShim = (extra: Record<string, string>): Record<string, string> => ({
+      PATH: `${dir}:${toolPath}`, REAL_PG_RESTORE: real, SHIM_PG_RESTORE_VERSION: `pg_restore (PostgreSQL) ${serverMajor}.0`, SHIM_DUMP_MAJOR: '', ...extra,
+    })
 
-    const newer = runDrill(dumpSeeded, withShim('pg_restore (PostgreSQL) 99.1'))
+    // the client is newer than the server (the 17 client against a 16 server of the CI runner)
+    const newer = runDrill(dumpSeeded, withShim({ SHIM_PG_RESTORE_VERSION: `pg_restore (PostgreSQL) ${serverMajor + 1}.1` }))
     expect(newer.status).toBe(1)
-    expect(lastLine(newer.stderr)).toContain('is PostgreSQL 99, newer than the server')
+    expect(lastLine(newer.stderr)).toContain(`is PostgreSQL ${serverMajor + 1}, not the server's major (${serverMajor})`)
     expect(lastLine(newer.stderr)).toContain('PG_DRILL_BIN_DIR')
     expect(await leftovers()).toEqual([])
 
-    const garbage = runDrill(dumpSeeded, withShim('something else entirely'))
-    expect(garbage.status).toBe(1)
-    expect(lastLine(garbage.stderr)).toContain('cannot determine the server version')
+    // the client is older than the server: not the same major either
+    const older = runDrill(dumpSeeded, withShim({ SHIM_PG_RESTORE_VERSION: `pg_restore (PostgreSQL) ${serverMajor - 1}.9` }))
+    expect(older.status).toBe(1)
+    expect(lastLine(older.stderr)).toContain(`is PostgreSQL ${serverMajor - 1}, not the server's major (${serverMajor})`)
     expect(await leftovers()).toEqual([])
 
-    // an older (or the same) major is fine: the restore itself is the real one here
-    const older = runDrill(dumpSeeded, withShim('pg_restore (PostgreSQL) 12.0'))
-    expect(older.status, older.stderr).toBe(0)
-  }, 120000)
+    // the dump was made by a newer pg_dump than the server (the header of the listing says so)
+    const newerDump = runDrill(dumpSeeded, withShim({ SHIM_DUMP_MAJOR: String(serverMajor + 1) }))
+    expect(newerDump.status).toBe(1)
+    expect(lastLine(newerDump.stderr)).toContain(`was made by pg_dump ${serverMajor + 1}, newer than the server (${serverMajor})`)
+    expect(await leftovers()).toEqual([])
+
+    // an unreadable client version fails closed
+    const garbage = runDrill(dumpSeeded, withShim({ SHIM_PG_RESTORE_VERSION: 'something else entirely' }))
+    expect(garbage.status).toBe(1)
+    expect(lastLine(garbage.stderr)).toContain('cannot determine the versions')
+    expect(await leftovers()).toEqual([])
+
+    // an OLDER dump header (dumped by pg_dump of an older major) is fine: the same-major client restores it
+    const olderDump = runDrill(dumpSeeded, withShim({ SHIM_DUMP_MAJOR: String(serverMajor - 1) }))
+    expect(olderDump.status, olderDump.stderr).toBe(0)
+  }, 180000)
 })

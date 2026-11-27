@@ -148,10 +148,10 @@ security, and would count 0. Because `--no-acl` leaves the backup role without a
 after the restore. The script refuses to run when the drill role is a superuser, has BYPASSRLS, or can read any table of the
 live database.
 
-Client version: the `pg_restore` the script uses must not be a NEWER major than the server (a 17 client sets
-`transaction_timeout`, which a 16 server rejects, so every restore fails). The script checks it before it creates anything and
-says so; it looks in `PG_DRILL_BIN_DIR` (default `/opt/homebrew/opt/postgresql@16/bin`) first, then on `PATH`. A client of the
-same or an older major is fine.
+Client version: the `pg_restore` the script uses must be the SAME major as the server (a 17 client sets
+`transaction_timeout`, which a 16 server rejects, so every restore fails), and the dump's header ("Dumped by pg_dump version")
+must not name a newer major than the server. The script checks both before it creates anything and names the fix; it looks in
+`PG_DRILL_BIN_DIR` (default `/opt/homebrew/opt/postgresql@16/bin`) first, then on `PATH`.
 
 Orphans: the EXIT trap drops the throwaway database on every ending but SIGKILL (the command task's `timeoutMs` may send
 it). So each run starts by dropping databases named `marveen_drill_<14 digit UTC stamp>_<pid>` that the drill role OWNS and

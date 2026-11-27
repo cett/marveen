@@ -216,18 +216,24 @@ DRILL_CREATEDB="${DRILL_FACTS%%,*}"; REST="${DRILL_FACTS#*,}"
 DRILL_PRIVILEGED="${REST%%,*}"; TEMPLATE_STATE="${REST#*,}"
 [[ "${DRILL_CREATEDB}" == "true" ]] || fail "role ${DRILL_ROLE} lacks CREATEDB (one-time setup: ALTER ROLE ${DRILL_ROLE} CREATEDB)"
 [[ "${DRILL_PRIVILEGED}" == "false" ]] || fail "role ${DRILL_ROLE} is a superuser or has BYPASSRLS: the drill role must be neither"
-# The pg_restore client must not be NEWER (major) than the server it restores into: a newer client sends session settings an
+# The pg_restore client must be the SAME major as the server it restores into: a newer client sends session settings an
 # older server does not know (PostgreSQL 17 sets transaction_timeout, which a 16 server rejects: "unrecognized configuration
-# parameter", every restore fails). A client of the same or an older major is fine. Named here, with the fix, instead of as an
-# opaque pg_restore error; a live host can have a newer client than its server (a package upgrade, a second install).
+# parameter", every restore fails), and an older one cannot be trusted with a newer server's dump. Named here, with the fix,
+# instead of as an opaque pg_restore error; a live host can have another client than its server (a package upgrade, a second
+# install).
 SERVER_NUM="$(psql_as "${DRILL_PASSFILE}" "${DRILL_ROLE}" "${MAINT_DB}" "SHOW server_version_num" 2>/dev/null | tr -d '[:space:]')"
 CLIENT_MAJOR="$("${PG_RESTORE}" --version 2>/dev/null | sed -n 's/^pg_restore (PostgreSQL) \([0-9][0-9]*\).*/\1/p' | head -1)"
-if [[ "${SERVER_NUM}" =~ ^[0-9]{5,6}$ && "${CLIENT_MAJOR}" =~ ^[0-9]+$ ]]; then
+# The dump's own header ("Dumped by pg_dump version: N") is checked as well: a dump made by a newer pg_dump than the server
+# is not restorable into it either.
+DUMP_MAJOR="$(sed -n 's/^;[[:space:]]*Dumped by pg_dump version:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "${WORK}/toc.list" | head -1)"
+if [[ "${SERVER_NUM}" =~ ^[0-9]{5,6}$ && "${CLIENT_MAJOR}" =~ ^[0-9]+$ && "${DUMP_MAJOR}" =~ ^[0-9]+$ ]]; then
   SERVER_MAJOR=$((SERVER_NUM / 10000))
-  [[ ${CLIENT_MAJOR} -le ${SERVER_MAJOR} ]] \
-    || fail "${PG_RESTORE} is PostgreSQL ${CLIENT_MAJOR}, newer than the server (${SERVER_MAJOR}): its restore sets parameters the server does not know, so every restore would fail. Point PG_DRILL_BIN_DIR at the bin directory of PostgreSQL ${SERVER_MAJOR}"
+  [[ ${DUMP_MAJOR} -le ${SERVER_MAJOR} ]] \
+    || fail "${DUMP_NAME} was made by pg_dump ${DUMP_MAJOR}, newer than the server (${SERVER_MAJOR}): it cannot be restored into it. Dump with the pg_dump of PostgreSQL ${SERVER_MAJOR}"
+  [[ ${CLIENT_MAJOR} -eq ${SERVER_MAJOR} ]] \
+    || fail "${PG_RESTORE} is PostgreSQL ${CLIENT_MAJOR}, not the server's major (${SERVER_MAJOR}): a newer client sets parameters the server does not know (transaction_timeout), so every restore would fail. Point PG_DRILL_BIN_DIR at the bin directory of PostgreSQL ${SERVER_MAJOR}"
 else
-  fail "cannot determine the server version (got '${SERVER_NUM}') or the pg_restore version (got '${CLIENT_MAJOR}')"
+  fail "cannot determine the versions (server '${SERVER_NUM}', pg_restore '${CLIENT_MAJOR}', dump header '${DUMP_MAJOR}')"
 fi
 # The drill role must hold NO right on the live database: a role that can read the live tables is not the isolated role this
 # drill is built around. A failed connect to the live database counts as "no rights" (CONNECT withdrawn).
