@@ -5,7 +5,13 @@
 // the REAL route handlers inside `runAsRequest` behind `dispatchBehindAdminScopeGuard` (the composition web.ts runs) and answer a
 // thrown error the way the request handler does, then read the result through the admin pool, the oracle. Fixtures are neutral.
 import { Readable } from 'node:stream'
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+
+// The federation route imports channel-monitor, which looks up the `claude` and `tmux` binaries at module load and throws when they are
+// not on PATH (a CI runner has neither). The cells never restart a channel session, so the module is replaced, as the other federation tests do.
+vi.mock('../../web/channel-monitor.js', () => ({
+  hardRestartMarveenChannels: vi.fn().mockReturnValue({ ok: true }),
+}))
 import { useDbxBackend as setBackend } from '../../db/facade.js'
 import { runAsRequest } from '../../db/background-jobs.js'
 import { runAs } from '../../db/context.js'
