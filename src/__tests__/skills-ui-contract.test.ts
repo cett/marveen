@@ -46,6 +46,15 @@ describe('Skills screen contract', () => {
     expect(HTML).toMatch(/id="skillsScanWarning"[^>]*hidden/)
   })
 
+  it('usage is looked up through usageKey(entry) everywhere (card, detail, both sorts), never by the display name', () => {
+    expect(SOURCE).toContain('const key = usageKey(entry)')
+    expect(SOURCE).toContain('const usage = _usageOf(skill)')
+    expect(SOURCE).toContain('const usage = _usageOf(entry)')
+    expect((SOURCE.match(/_usageOf\(/g) ?? []).length).toBe(7) // definition + card + detail + 2 sorts x 2 sides
+    // the only direct reads of the map are the load that fills it and the one lookup in _usageOf
+    expect(SOURCE.match(/skillUsageMap\[/g) ?? []).toHaveLength(1)
+  })
+
   it('a tenant row carries its tenant on the card and in the detail, and the delete confirm names it', () => {
     expect(SOURCE).toMatch(/_isTenantSkill\(entry\) \{\n\s+return entry\.origin === 'sql' && !!entry\.tenantId && entry\.tenantId !== 'fleet'/)
     expect(SOURCE).toContain("${escapeHtml(displayName)} ${sourceBadge} ${tenantBadge} ${stateBadge}")

@@ -5,7 +5,7 @@ import { agentApiName } from './agents.js'
 import { getErrorMessage } from './error-message.js'
 import { renderMarkdown } from './docs-research.js'
 import { can } from './rbac-client.js'
-import { mergeSkills, skillFlags, scanFailures } from './skills-merge.js'
+import { mergeSkills, skillFlags, scanFailures, usageKey } from './skills-merge.js'
 
 
 let _openModal = null, _closeModal = null
@@ -288,6 +288,12 @@ function _skillOrder(a, b) {
   return (a.label || a.name).localeCompare(b.label || b.name)
 }
 
+// the usage summary row of one merged entry (keyed by the folder name the usage hook records, see usageKey), or null
+function _usageOf(entry) {
+  const key = usageKey(entry)
+  return key ? skillUsageMap[key] || null : null
+}
+
 // a row that belongs to a tenant, not to the fleet (the admin sees every tenant's rows, so each one carries its tenant)
 function _isTenantSkill(entry) {
   return entry.origin === 'sql' && !!entry.tenantId && entry.tenantId !== 'fleet'
@@ -479,14 +485,14 @@ function renderGlobalSkillsGrid() {
 
   if (skillsActiveSort === 'lru') {
     allFiltered.sort((a, b) => {
-      const ta = skillUsageMap[a.name]?.last_used_at || 0
-      const tb = skillUsageMap[b.name]?.last_used_at || 0
+      const ta = _usageOf(a)?.last_used_at || 0
+      const tb = _usageOf(b)?.last_used_at || 0
       return tb - ta
     })
   } else if (skillsActiveSort === 'usage') {
     allFiltered.sort((a, b) => {
-      const ca = skillUsageMap[a.name]?.count_30d || 0
-      const cb = skillUsageMap[b.name]?.count_30d || 0
+      const ca = _usageOf(a)?.count_30d || 0
+      const cb = _usageOf(b)?.count_30d || 0
       return cb - ca
     })
   }
@@ -520,7 +526,7 @@ function renderGlobalSkillsGrid() {
       : ''
 
     const mtimeStr = skill.mtime ? formatMtime(skill.mtime) : ''
-    const usage = skillUsageMap[skill.name] || null
+    const usage = _usageOf(skill)
     const usageTags = usage ? buildUsageTags(usage) : ''
 
     const displayName = skill.label || skill.name
@@ -637,7 +643,7 @@ async function openSkillDetail(entry) {
         ? t('skills.source.user')
         : t('skills.source.unknown')
       const mtimeStr = detail.mtime ? formatMtime(detail.mtime) : ''
-      const usage = skillUsageMap[skillName]
+      const usage = _usageOf(entry)
       const usageHtml = usage ? `
         <div class="skill-detail-usage">
           <span>${usage.total_count}x ${t('skills.usage.total')}</span>

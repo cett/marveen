@@ -37,6 +37,16 @@ export function tenantSkillDirName(id) {
 }
 
 /**
+ * The key of an entry in the skill-usage summary. The usage hook records the skill FOLDER name, so a fleet or file entry is looked
+ * up by its name (the folder), and a tenant row by the folder its generated copies carry (tenantSkillDirName(id)), never by its
+ * display name: that would show the counts of a fleet skill of the same name, or nothing. null = nothing can be recorded for it.
+ */
+export function usageKey(entry) {
+  if (entry.origin === 'sql' && entry.tenantId && entry.tenantId !== 'fleet') return tenantSkillDirName(entry.sqlId)
+  return entry.name
+}
+
+/**
  * The admin file scans that did not answer: [{ path, status }]. A scan the caller did not make (null) is not a failure.
  * The screen shows a notice for these, so plugin skills and files without a row never vanish without a word.
  */

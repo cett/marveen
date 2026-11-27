@@ -3,7 +3,7 @@
 // Neutral fixtures only (skill-a, agent-a, tenant-a, plugin-a).
 import { describe, it, expect } from 'vitest'
 // @ts-expect-error a browser ES module without type declarations
-import { mergeSkills, skillFlags, classifySkillId, parseKeywords, tenantSkillDirName, scanFailures } from '../../web/modules/skills-merge.js'
+import { mergeSkills, skillFlags, classifySkillId, parseKeywords, tenantSkillDirName, scanFailures, usageKey } from '../../web/modules/skills-merge.js'
 import { tenantSkillDirName as serverTenantSkillDirName } from '../web/skill-regen.js'
 
 const row = (id: string, extra: Record<string, unknown> = {}) => ({
@@ -147,6 +147,41 @@ describe('mergeSkills: generated copies of a tenant skill', () => {
     for (const id of ['acme-demo', 'a/b c', '.hidden', '--x', 'ünï-code', 'a..b', '///', '']) {
       expect(tenantSkillDirName(id), id).toBe(serverTenantSkillDirName(id))
     }
+  })
+})
+
+// The usage hook records the skill FOLDER name. A fleet skill's folder is its name; a tenant skill's copies live in
+// tenantSkillDirName(id), so its usage is under that, and a fleet skill of the same display name is another skill.
+describe('usageKey', () => {
+  const fleetFoo = row('global/foo')
+  const tenantFoo = row('tenant-a-foo', { tenant_id: 'tenant-a', file_present: null, name: 'foo' })
+  // the summary as the hook fills it: the fleet skill foo used 7 times, the tenant skill's folder 2 times
+  const usage: Record<string, { count_30d: number }> = { foo: { count_30d: 7 }, 'tenant-a-foo': { count_30d: 2 } }
+  const lookup = (e: any) => { const k = usageKey(e); return k ? usage[k] ?? null : null }
+
+  it('a tenant skill and a fleet skill of the same display name each get their OWN counts', () => {
+    const out = mergeSkills({ sqlRows: [fleetFoo, tenantFoo], userScan: [], localScan: [] })
+    const f = out.find((e: any) => e.tenantId === 'fleet')
+    const t = out.find((e: any) => e.tenantId === 'tenant-a')
+    expect(lookup(f)).toEqual({ count_30d: 7 })
+    expect(lookup(t)).toEqual({ count_30d: 2 })
+  })
+
+  it('a tenant skill with no use recorded shows none, it does not borrow the count of the fleet skill of that name', () => {
+    const [t] = mergeSkills({ sqlRows: [tenantFoo], userScan: [], localScan: [] })
+    expect(usageKey(t)).toBe('tenant-a-foo')
+    const lone: Record<string, unknown> = { foo: { count_30d: 7 } }
+    expect(lone[usageKey(t) as string] ?? null).toBeNull()
+  })
+
+  it('a folder-unsafe tenant id has no key (nothing is ever recorded for it): no lookup, not a lookup by name', () => {
+    const [t] = mergeSkills({ sqlRows: [row('///', { tenant_id: 'tenant-a', file_present: null, name: 'foo' })], userScan: [], localScan: [] })
+    expect(usageKey(t)).toBeNull()
+  })
+
+  it('a fleet row, a file without a row and a plugin entry keep the name key (as before)', () => {
+    const out = mergeSkills({ sqlRows: [row('global/skill-a'), row('agent/agent-a/skill-d')], userScan: [userFile('only-file'), pluginFile('p')], localScan: [] })
+    expect(out.map(usageKey).sort()).toEqual(['only-file', 'plugin-a/1.0/p', 'skill-a', 'skill-d'])
   })
 })
 
