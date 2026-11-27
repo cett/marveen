@@ -302,6 +302,7 @@ let tenantMismatches = 0
 const callSites = new Map<string, { count: number; boot: boolean }>()
 const jobCalls = new Map<string, number>()
 const tenantUnresolvedByJob = new Map<string, number>()
+const rlsRefusalsByRoute = new Map<string, number>()
 const roleCalls: Record<DbRole, number> = { system: 0, tenant: 0, agent: 0, admin: 0, viewer: 0, public: 0 }
 
 export interface DbContextSite {
@@ -328,6 +329,12 @@ export interface DbContextStats {
   tenantMismatches: number
   /** Agent job ticks skipped because the tenant of the agent could not be resolved (fail closed), by job name. */
   tenantUnresolved: Record<string, number>
+  /**
+   * Requests the database refused with SQLSTATE 42501 (a row-level policy or a missing privilege) that no route handled and
+   * the request handler answered as 403 instead of 500, by route (`METHOD /api/<area>/<sub>`). A refusal that is answered
+   * is still a defect somewhere (a caller in a context too narrow for its write): this keeps it countable, not hidden.
+   */
+  rlsRefusals: Record<string, number>
   /**
    * `runAs.system|admin` opened while the running context was a `tenant` or an `agent` one (a tenant block that climbs to a
    * wider role). Counted, never refused: enforcement is the policies' job. A job that follows the per-item rule keeps it at 0.
@@ -420,6 +427,11 @@ export function noteTenantUnresolved(job: string): void {
   bump(tenantUnresolvedByJob, job, MAX_JOBS)
 }
 
+/** A request the database refused with 42501 was answered as 403 (see `DbContextStats.rlsRefusals`). `route` is already coarse, never an id. */
+export function noteRlsRefusal(route: string): void {
+  bump(rlsRefusalsByRoute, route, MAX_JOBS)
+}
+
 export function getDbContextStats(): DbContextStats {
   const sites = [...callSites.entries()]
     .map(([key, v]) => ({ site: v.boot ? key.slice('boot|'.length) : key, count: v.count, boot: v.boot }))
@@ -432,6 +444,7 @@ export function getDbContextStats(): DbContextStats {
     anonymous: anonymousCalls,
     tenantMismatches,
     tenantUnresolved: Object.fromEntries(tenantUnresolvedByJob),
+    rlsRefusals: Object.fromEntries(rlsRefusalsByRoute),
     escalations,
     startedAt,
     bootEndedAt,
@@ -457,6 +470,7 @@ export function resetDbContextStats(): void {
   callSites.clear()
   jobCalls.clear()
   tenantUnresolvedByJob.clear()
+  rlsRefusalsByRoute.clear()
   for (const role of DB_ROLES) roleCalls[role] = 0
   booting = false
 }
