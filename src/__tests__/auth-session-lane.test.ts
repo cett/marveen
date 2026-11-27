@@ -407,7 +407,7 @@ describe('the call sites await', () => {
     ['../web/routes/me.ts', ['listUserSessions']],
     ['../web/security-reset.ts', ['revokeAllSessions']],
     ['../web.ts', ['sweepExpiredSessions']],
-    ['../../scripts/dashboard-user.ts', ['revokeAllForUser']],
+    ['../dashboard-user/cli.ts', ['revokeAllForUser']],
   ]
 
   it.each(sites.flatMap(([file, fns]) => fns.map((fn) => [file, fn] as const)))('%s: every call of %s is awaited', (file, fn) => {

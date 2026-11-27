@@ -110,6 +110,12 @@ BLOCKED = [
     # ---- the CLI itself, every verb ----
     ('npm run, -- add', 'npm run dashboard-user -- add bob'),
     ('npm run, no --', 'npm run dashboard-user add bob'),
+    # the PostgreSQL install: the same verbs with the application URL in front of the command are the same command
+    ('PG URL prefix, npm run reset-password', 'MARVEEN_PG_URL=postgres://marveen_app@127.0.0.1:5432/marveen npm run dashboard-user -- reset-password bob'),
+    ('PG URL prefix, npm run add', 'MARVEEN_PG_URL=postgres://marveen_app@127.0.0.1:5432/marveen npm run dashboard-user -- add bob --password-stdin'),
+    ('PG URL prefix, tsx security:reset', 'MARVEEN_PG_URL=postgres://marveen_app@127.0.0.1:5432/marveen tsx scripts/dashboard-user.ts security:reset'),
+    ('PG URL prefix, npx tsx sessions:clear', 'MARVEEN_PG_URL=postgres://marveen_app@127.0.0.1:5432/marveen npx tsx scripts/dashboard-user.ts sessions:clear bob'),
+    ('PG URL prefix, npm run remove', 'MARVEEN_PG_URL=postgres://marveen_app@127.0.0.1:5432/marveen npm run dashboard-user -- remove bob'),
     ('npm run reset-password + --password-stdin', 'echo pw | npm run dashboard-user -- reset-password bob --password-stdin'),
     ('npm run remove', 'npm run dashboard-user -- remove bob'),
     ('npm run sessions:clear', 'npm run dashboard-user -- sessions:clear'),
@@ -686,6 +692,7 @@ BLOCKED = [
 ALLOWED = [
     # ---- the read-only CLI form ----
     ('npm run list', 'npm run dashboard-user -- list'),
+    ('PG URL prefix, npm run list', 'MARVEEN_PG_URL=postgres://marveen_app@127.0.0.1:5432/marveen npm run dashboard-user -- list'),
     ('writable_schema on a copy elsewhere', 'sqlite3 {O}/a.db "PRAGMA writable_schema=ON; UPDATE sqlite_master SET sql=1"'),
     ('reading sqlite_master on the live DB', 'sqlite3 {L} "select name from sqlite_master"'),
     ('npm run list no --', 'npm run dashboard-user list'),

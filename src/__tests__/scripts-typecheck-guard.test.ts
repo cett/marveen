@@ -46,7 +46,7 @@ function typecheckErrorFiles(): string[] {
 describe('scripts that import the database layer are type-checked', () => {
   it('the detector sees the real scripts (a guard over zero files passes vacuously)', () => {
     expect(scriptsImportingTheDb().length).toBeGreaterThan(4)
-    expect(scriptsImportingTheDb()).toContain('scripts/dashboard-user.ts')
+    expect(scriptsImportingTheDb()).toContain('scripts/agent-tokens.ts')
   })
 
   it('tsconfig.scripts.json lists every script that imports src/db, and nothing else', () => {
