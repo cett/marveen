@@ -281,6 +281,22 @@ describe('the record route on PostgreSQL, as the app role', () => {
     expect(out).toEqual({ threshold_tokens: 222222, usage: false, spans: 0, dropped: 0 })
   })
 
+  it('the emit pair: the audit row lands through POST /api/hook-audit and the next call reads it back with prior_handoff (a one-tenant agent, and a shared agent with a fresh context)', async () => {
+    const db = await bootedDb()
+    const { tryHandleHookAudit } = await import('../../web/routes/hook-audit.js')
+    await db.pool.query("INSERT INTO agent_tenant_context (agent_id, tenant_id, status, source, session_id, updated_at) VALUES ('agent-a', 'tenant-t1', 'bound', 'test', 's', $1)", [Math.floor(Date.now() / 1000)])
+    for (const [agent, tenant] of [['agent-b', 'tenant-t1'], ['agent-a', 'tenant-t1']] as const) {
+      const body = { hook_type: 'PostToolUse', verdict: 'handoff', tool_name: 'Bash', content_hash: `hash-${agent}`, reason: 'ctx=62%', session_id: 's-pair', trigger_source: 'watchdog', trace_id: 's-pair' }
+      const { ctx, out } = routeCtx(body, agent, tenant, '/api/hook-audit')
+      await runAsRequest({ authenticated: true, role: 'fleet_agent', agentId: agent, tenantId: tenant }, () => tryHandleHookAudit(ctx))
+      expect(out.status, agent).toBe(200)
+      const back = await ask('prior_handoff', agent, tenant, { session_id: 's-pair' })
+      expect(back.body, agent).toMatchObject({ reason: 'ctx=62%', content_hash: `hash-${agent}` })
+    }
+    const rows = (await db.pool.query("SELECT agent_id, tenant_id, trace_id FROM hook_audit_log WHERE verdict = 'handoff' ORDER BY agent_id")).rows
+    expect(rows).toEqual([{ agent_id: 'agent-a', tenant_id: 'tenant-t1', trace_id: 's-pair' }, { agent_id: 'agent-b', tenant_id: 'tenant-t1', trace_id: 's-pair' }])
+  })
+
   it('prior_handoff: the caller\'s own latest handoff row of the session, in the request tenant context (a row of another agent or another tenant is not returned)', async () => {
     const db = await bootedDb()
     const audit = (tenant: string, agent: string, ts: number, hash: string) => db.pool.query(
