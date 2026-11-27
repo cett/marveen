@@ -79,6 +79,18 @@ describe('the write as the app role under row-level security', () => {
     expect((await auditRows(db)).map((r) => r.tenant_id)).toEqual([null])
   })
 
+  it('a shared agent WITH a fresh context: a deny decided at or after the context row is stamped with its tenant, one decided before it is NULL (the stamp is written as the app role by the job)', async () => {
+    const db = await bootedDb()
+    const since = now() - 600
+    await db.pool.query("INSERT INTO agent_tenant_context (agent_id, tenant_id, status, updated_at) VALUES ('agent-a', 'tenant-t2', 'bound', $1)", [since])
+    await ask({ denies: [
+      { gate: 'secret-read-gate', reason: 'denied', ts: since - 1 },
+      { gate: 'secret-read-gate', reason: 'denied', ts: since },
+      { gate: 'secret-read-gate', reason: 'denied', ts: since + 100 },
+    ] }, 'agent-a', 'tenant-t1')
+    expect((await auditRows(db)).map((r) => r.tenant_id)).toEqual([null, 'tenant-t2', 'tenant-t2'])
+  })
+
   it('the ORACLE: a tenant-scoped context cannot write these rows (the NULL tenant and the D2 counts), so the system job is what makes the write work', async () => {
     await bootedDb()
     const scoped = runAs.tenant('tenant-t1', () => dbx.run(

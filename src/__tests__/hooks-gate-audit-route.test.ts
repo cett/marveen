@@ -232,6 +232,60 @@ function failStatementsMatching(fragment: string): void {
     }) as Tx), opts as never)) as typeof dbx.tx)
 }
 
+describe('the tenant of a DELAYED deny row (a spool-drained row was decided before it is written)', () => {
+  const seedTenants = async () => {
+    await dbx.run("INSERT INTO tenants (id, display_name, created_at) VALUES ('tenant-t1', 'Tenant 1', 0), ('tenant-t2', 'Tenant 2', 0)")
+  }
+  const serve = (agent: string, ...tenants: string[]) =>
+    Promise.all(tenants.map((t) => dbx.run('INSERT INTO tenant_agent_availability (tenant_id, agent_id, enabled) VALUES (?, ?, 1)', t, agent)))
+  const context = (agent: string, tenant: string, updatedAt: number) =>
+    dbx.run("INSERT INTO agent_tenant_context (agent_id, tenant_id, status, updated_at) VALUES (?, ?, 'bound', ?)", agent, tenant, updatedAt)
+  const tenantsOf = async () => (await rows()).map((r) => r.tenant_id)
+
+  it('a shared agent: a deny decided AT or AFTER the context row is stamped with its tenant, one decided BEFORE it is NULL (unknown)', async () => {
+    await seedTenants()
+    await serve('agent-a', 'tenant-t1', 'tenant-t2')
+    const since = now() - 600
+    await context('agent-a', 'tenant-t2', since)
+    await post({ denies: [
+      { gate: 'destructive-gate', reason: 'denied', ts: since - 1 },       // decided under the earlier request: unknown
+      { gate: 'destructive-gate', reason: 'denied', ts: since },           // equality stamps
+      { gate: 'destructive-gate', reason: 'denied', ts: since + 300 },
+    ] }, 'agent-a')
+    expect(await tenantsOf()).toEqual([null, 'tenant-t2', 'tenant-t2'])
+  })
+
+  it('an agent serving ONE tenant keeps the resolver answer with no time condition, an old ts included', async () => {
+    await seedTenants()
+    await serve('agent-a', 'tenant-t1')
+    await context('agent-a', 'tenant-t1', now() - 60)
+    await post({ denies: [{ gate: 'destructive-gate', reason: 'denied', ts: now() - 3600 }] }, 'agent-a')
+    expect(await tenantsOf()).toEqual(['tenant-t1'])
+  })
+
+  it('an agent serving no tenant is still default for an old ts (nothing to guess)', async () => {
+    await post({ denies: [{ gate: 'destructive-gate', reason: 'denied', ts: now() - 3600 }] }, 'agent-a')
+    expect(await tenantsOf()).toEqual(['default'])
+  })
+
+  it('a shared agent with NO fresh context is NULL whatever the ts (unchanged)', async () => {
+    await seedTenants()
+    await serve('agent-a', 'tenant-t1', 'tenant-t2')
+    await post({ denies: [{ gate: 'destructive-gate', reason: 'denied', ts: now() }, { gate: 'destructive-gate', reason: 'denied', ts: now() - 3600 }] }, 'agent-a')
+    expect(await tenantsOf()).toEqual([null, null])
+  })
+
+  it('the context row is the token agent\'s: another shared agent\'s newer context does not stamp or unstamp this one', async () => {
+    await seedTenants()
+    await serve('agent-a', 'tenant-t1', 'tenant-t2')
+    await serve('agent-b', 'tenant-t1', 'tenant-t2')
+    await context('agent-a', 'tenant-t1', now() - 7200)
+    await context('agent-b', 'tenant-t2', now() - 10)
+    await post({ denies: [{ gate: 'destructive-gate', reason: 'denied', ts: now() - 3600 }] }, 'agent-a')
+    expect(await tenantsOf()).toEqual(['tenant-t1'])
+  })
+})
+
 describe('one transaction: a write that fails half way leaves neither the counts nor the rows', () => {
   afterEach(() => { vi.restoreAllMocks() })
 

@@ -13,7 +13,7 @@
 import { dbx } from './facade.js'
 import { systemJob } from './background-jobs.js'
 import { callerTraceId, currentTraceColumns } from './context.js'
-import { resolveWriteTenant } from './write-tenant.js'
+import { resolveWriteTenantAt } from './write-tenant.js'
 
 /** One running-count increment: how often `gate` ended in `decision` for `reason` since the last request. */
 export interface GateCountIncrement {
@@ -40,7 +40,15 @@ export const recordGateAudit = systemJob('hook-gate-audit', async (agentId: stri
   // The tenant of a deny row is stamped HERE from the token's agent, never from the body: the agent's serving tenant, the one it serves,
   // 'default' for a fleet-internal agent, and NULL only when the resolver says so (a shared agent with no fresh tenant context: the row
   // says "unknown"). Resolved once per request, before the transaction (it reads agent_tenant_context and the availability).
-  const tenantId = denies.length > 0 ? await resolveWriteTenant(agentId) : null
+  //
+  // A deny row may be DELAYED (drained from the spool, decided earlier than it is written), and the resolver answers "now". For an
+  // agent serving 2+ tenants whose tenant comes from the fresh context row, that tenant holds from the context row's updated_at on:
+  // a deny decided BEFORE it (ts < updated_at) is stamped NULL ("unknown"), never with the tenant of a later request (cross-tenant
+  // misattribution of audit evidence). Equality stamps. An agent serving one tenant or none keeps the resolver's answer with no time
+  // condition. The route clamps a ts outside [now - 7 d, now + 60 s] to now, and a ts a minute ahead beats the context row's time exactly as a current one does, so a future ts wins nothing a present one would not.
+  const resolved = denies.length > 0 ? await resolveWriteTenantAt(agentId) : { tenantId: null, sharedContextSince: null }
+  const tenantOf = (ts: number): string | null =>
+    resolved.sharedContextSince !== null && ts < resolved.sharedContextSince ? null : resolved.tenantId
   await dbx.tx(async (tx) => {
     for (const c of counts) {
       await tx.run(
@@ -57,7 +65,7 @@ export const recordGateAudit = systemJob('hook-gate-audit', async (agentId: stri
       await tx.run(
         'INSERT INTO hook_audit_log (ts, agent_id, hook_type, verdict, tool_name, content_hash, reason, session_id, trigger_source, tenant_id, trace_id, span_id) '
         + 'VALUES (?, ?, ?, ?, NULL, NULL, ?, NULL, ?, ?, ?, ?)',
-        d.ts, agentId, 'PreToolUse', 'deny', d.reason, d.gate, tenantId, traceId, spanId,
+        d.ts, agentId, 'PreToolUse', 'deny', d.reason, d.gate, tenantOf(d.ts), traceId, spanId,
       )
     }
   })
