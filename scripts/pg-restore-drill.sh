@@ -15,14 +15,17 @@
 #   4. prints ONE summary line as the very last line and exits 0 (OK) or 1 (FAIL). Nothing is restored over the live
 #      database: the live database is only read, and only through the BACKUP role.
 #
-# THE COMPARISON RULE (the live database keeps growing for the hours between the dump and the drill):
+# THE COMPARISON RULE (the live database keeps growing for the hours between the dump and the drill, and it also SHRINKS:
+# the workspace-docs TTL sweeper and the other retention jobs delete rows legitimately, so the tolerance is symmetric):
 #   for every table of the list, restored = rows in the restored copy, live = rows in the live database;
-#     - restored > live            FAIL  (the dump holds rows the live database lacks: rows were lost, or this is another
-#                                         database's dump);
 #     - restored = 0 and live > 0  FAIL  (an empty table after a restore is a failed restore, whatever the tolerance);
-#     - live - restored > allowed  FAIL  with allowed = max(PG_DRILL_TOL_ABS, restored * PG_DRILL_TOL_PCT / 100),
-#                                        defaults 2 rows and 10 percent;
-#     - otherwise OK. A table that cannot be counted on either side (missing in the restored copy) is a FAIL.
+#     - |live - restored| > allowed  FAIL, in BOTH directions, with allowed = max(PG_DRILL_TOL_ABS, restored * PG_DRILL_TOL_PCT / 100),
+#                                        defaults 2 rows and 10 percent: "live is ahead of restored by more than ..." when the
+#                                        live database grew past the tolerance, "live shrank: restored R > live L by more than ..."
+#                                        when it lost more rows than the tolerance (rows lost, or another database's dump);
+#     - otherwise OK, and every OK table whose counts differ is NAMED in the summary line as drift (live minus restored):
+#       "-- drift: workspace_docs -7, memories +2". The difference stays visible, it just does not fail the drill.
+#     A table that cannot be counted on either side (missing in the restored copy) is a FAIL.
 #   BOTH sides are counted through the read-only BACKUP role (it bypasses row-level security): the restored tables are under
 #   forced row-level security, so the drill role that owns them would be bound by it and count 0. Because the restore uses
 #   --no-acl, the backup role holds no grant on the restored copy; the script gives it SELECT right after the restore, as
@@ -307,7 +310,7 @@ fi
 count_rows() {  # count_rows <passfile> <role> <database> <table>: prints the count, or nothing when it cannot be counted
   psql_as "$1" "$2" "$3" "SELECT count(*) FROM public.\"$4\"" 2>/dev/null | tr -d '[:space:]'
 }
-TOTAL=0; MATCHED=0; SUM_RESTORED=0; SUM_LIVE=0; PROBLEMS=""
+TOTAL=0; MATCHED=0; SUM_RESTORED=0; SUM_LIVE=0; PROBLEMS=""; DRIFT=""
 for t in ${TABLES}; do
   TOTAL=$((TOTAL + 1))
   r="$(count_rows "${BACKUP_PASSFILE}" "${BACKUP_ROLE}" "${DRILL_DB}" "${t}")"  # the restored copy: the backup role (bypasses RLS), granted above
@@ -316,20 +319,25 @@ for t in ${TABLES}; do
   if ! [[ "${l}" =~ ^[0-9]+$ ]]; then PROBLEMS="${PROBLEMS}${t}: cannot be counted in the live database; "; continue; fi
   SUM_RESTORED=$((SUM_RESTORED + r)); SUM_LIVE=$((SUM_LIVE + l))
   allowed=$((r * TOL_PCT / 100)); [[ ${allowed} -lt ${TOL_ABS} ]] && allowed=${TOL_ABS}
-  if [[ ${r} -gt ${l} ]]; then
-    PROBLEMS="${PROBLEMS}${t}: restored ${r} > live ${l}; "
-  elif [[ ${r} -eq 0 && ${l} -gt 0 ]]; then
+  if [[ ${r} -eq 0 && ${l} -gt 0 ]]; then
     PROBLEMS="${PROBLEMS}${t}: restored copy is empty, live has ${l}; "
   elif [[ $((l - r)) -gt ${allowed} ]]; then
     PROBLEMS="${PROBLEMS}${t}: live ${l} is ahead of restored ${r} by more than ${allowed}; "
+  elif [[ $((r - l)) -gt ${allowed} ]]; then
+    PROBLEMS="${PROBLEMS}${t}: live shrank: restored ${r} > live ${l} by more than ${allowed}; "
   else
     MATCHED=$((MATCHED + 1))
+    # inside the tolerance but not equal: name the table with the signed difference (live minus restored)
+    if [[ ${l} -gt ${r} ]]; then DRIFT="${DRIFT}, ${t} +$((l - r))"
+    elif [[ ${l} -lt ${r} ]]; then DRIFT="${DRIFT}, ${t} -$((r - l))"; fi
   fi
 done
+DRIFT_NOTE=""
+[[ -z "${DRIFT}" ]] || DRIFT_NOTE=" -- drift: ${DRIFT#, }"
 
 if [[ -n "${PROBLEMS}" ]]; then
   fail "${DUMP_NAME}: ${MATCHED} of ${TOTAL} tables match -- ${PROBLEMS%; }${SWEEP_NOTE}"
 fi
-SUMMARY="pg-restore-drill: OK ${DUMP_NAME} -- ${MATCHED} of ${TOTAL} tables match (restored ${SUM_RESTORED} rows, live ${SUM_LIVE} rows)${SWEEP_NOTE}"
+SUMMARY="pg-restore-drill: OK ${DUMP_NAME} -- ${MATCHED} of ${TOTAL} tables match (restored ${SUM_RESTORED} rows, live ${SUM_LIVE} rows)${DRIFT_NOTE}${SWEEP_NOTE}"
 RC=0
 exit 0
