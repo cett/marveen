@@ -134,12 +134,19 @@ function runWatchdog(envVars: Record<string, string>, transcript: string): Promi
   })
 }
 
+const TRANSCRIPT_LOADED_AT = Date.now()
+const TRANSCRIPT_TURN_AT = new Date(TRANSCRIPT_LOADED_AT - 61_000).toISOString()
+const TRANSCRIPT_USAGE_AT = new Date(TRANSCRIPT_LOADED_AT - 60_000).toISOString()
+
 function writeTranscript(inputTokens: number): string {
   const file = join(WORK, 'transcript.jsonl')
   // a real user-turn start, then the assistant line with the usage: the hook records an agent.turn and a model.call span
-  const turn = { type: 'user', timestamp: '2026-09-08T09:59:00.000Z', uuid: 'turn-uuid-1', sessionId: 'sess-1', message: { role: 'user', content: 'hi' } }
+  // The times are RELATIVE to the moment this module loaded (one value for every call, so both modes read the same lines):
+  // the record route accepts a usage timestamp only inside [now - 7 days, now + 5 minutes], so a fixed calendar date would
+  // turn this cell red once it is a week old.
+  const turn = { type: 'user', timestamp: TRANSCRIPT_TURN_AT, uuid: 'turn-uuid-1', sessionId: 'sess-1', message: { role: 'user', content: 'hi' } }
   writeFileSync(file, JSON.stringify(turn) + '\n' + JSON.stringify({
-    type: 'assistant', timestamp: '2026-09-08T10:00:00.000Z', sessionId: 'sess-1',
+    type: 'assistant', timestamp: TRANSCRIPT_USAGE_AT, sessionId: 'sess-1',
     message: { id: 'msg_1', model: 'test-model', usage: { input_tokens: inputTokens, output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, content: [{ type: 'text', text: 'hi' }] },
   }) + '\n')
   return file
