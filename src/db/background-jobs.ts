@@ -81,6 +81,7 @@ export const BACKGROUND_JOBS = {
   'shutdown-flush': { file: 'src/web.ts', role: 'system', note: 'flushes the running state on SIGTERM' },
   'embeddings-stage': { file: 'src/db/pg-copy/embeddings.ts', role: 'system', note: 'PostgreSQL cutover only: the embeddings stage of the SQLite to PostgreSQL copy reads the memories and workspace documents that need a vector, across tenants' },
   'hook-tenant-reads': { file: 'src/db/hook-tenant-reads.ts', role: 'system', note: 'the tenant gates of the hooks (stdlib Python, no database driver) ask the dashboard for the facts of a prompt (messages, bindings, tasks, grants, the agent context) and for one upsert of the caller\'s own agent_tenant_context row. Cross-tenant by nature: a message stamped with another tenant, a skill grant, an unknown context row with an empty tenant. Fixed queries with bound parameters; the agent id is the caller\'s token and a message counts only when it is addressed to that agent (checked in the route and in the query result)' },
+  'budget-alert-check': { file: 'src/costops/budget-alert-job.ts', role: 'system', note: 'the one-shot budget check: reads the default tenant cost budgets and sums token_usage / token_usage_monthly across agents and tenants, writes nothing to the db (the cooldown is a file)' },
 } as const satisfies Record<string, BackgroundJob>
 
 export type BackgroundJobName = keyof typeof BACKGROUND_JOBS

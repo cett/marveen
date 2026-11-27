@@ -64,10 +64,11 @@ function formatMessage(status: BudgetStatus): string {
 /**
  * Run one budget-alert check: evaluate all budgets, notify for any at
  * warning/hard level whose cooldown has elapsed, persist updated cooldowns.
+ * Resolves to the statuses it evaluated (empty when no budget is configured).
  */
-export async function runBudgetAlertCheck(nowMs: number = Date.now()): Promise<void> {
+export async function runBudgetAlertCheck(nowMs: number = Date.now()): Promise<BudgetStatus[]> {
   const { config } = await loadCostopsConfig()
-  if (config.budgets.length === 0) return
+  if (config.budgets.length === 0) return []
 
   const statuses = await evaluateBudgets(config, nowMs)
   const state = loadState()
@@ -88,4 +89,5 @@ export async function runBudgetAlertCheck(nowMs: number = Date.now()): Promise<v
   }
 
   if (stateChanged) saveState(state)
+  return statuses
 }
