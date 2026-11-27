@@ -4,7 +4,7 @@
 // /api/conversation-ledger, which calls these helpers.
 
 import { dbx } from './facade.js'
-import { runAs, LEDGER_WRITE_JOB, LEDGER_READ_JOB } from './context.js'
+import { runAs, D2_JOBS } from './context.js'
 import { getServedTenantIds } from './agents.js'
 import { getChannelBindingTenant, getServingTenant } from './tenant-channel-bindings.js'
 
@@ -63,7 +63,7 @@ export async function logLedgerTurn(turn: LedgerTurnInput): Promise<boolean> {
   // ITS tenant, while the row carries the tenant of the chat (another tenant, or NULL), which the tenant policy refuses to a tenant
   // context (42501, the turn lost) and whose binding it would not even show. The tenant is derived here; nothing the caller sends
   // reaches the stamp, and the policy stays as it is.
-  const info = await runAs.system(LEDGER_WRITE_JOB, async () => {
+  const info = await runAs.system(D2_JOBS.ledgerWrite, async () => {
     const tenantId = await getChannelBindingTenant(turn.agent_id, LEDGER_CHANNEL, turn.chat_id)
     return dbx.run(`INSERT INTO conversation_log
        (agent_id, chat_id, direction, message_id, text, ts, created_at, tenant_id)
@@ -79,7 +79,7 @@ export async function recentLedgerTurns(agentId: string, limit = LEDGER_RECENT_D
   // unbound chat (NULL tenant), which the tenant policy hides from an agent context, and "is this agent shared" needs the
   // availability rows of every tenant it serves. The route has authorised the agent (registered, own token) before this call, and
   // the statement stays filtered by agent_id.
-  return runAs.system(LEDGER_READ_JOB, async () => {
+  return runAs.system(D2_JOBS.ledgerRead, async () => {
     // Replay runs at SessionStart, when no prompt has set a tenant context yet. A shared agent would
     // hand one tenant's turns to a session that may serve the other, so it gets nothing.
     if (await isSharedLedgerAgent(agentId)) return []
@@ -99,7 +99,7 @@ export async function recentLedgerTurns(agentId: string, limit = LEDGER_RECENT_D
 export async function openLedgerQuestion(agentId: string): Promise<LedgerOpenQuestion | null> {
   // Same named read job as recentLedgerTurns; the shared-agent tenant filter below stays in the SQL, so the context lifts the
   // policy only, it never widens what a shared agent is answered from.
-  return runAs.system(LEDGER_READ_JOB, () => openLedgerQuestionUnscoped(agentId))
+  return runAs.system(D2_JOBS.ledgerRead, () => openLedgerQuestionUnscoped(agentId))
 }
 
 async function openLedgerQuestionUnscoped(agentId: string): Promise<LedgerOpenQuestion | null> {

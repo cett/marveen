@@ -101,24 +101,16 @@ export const D2_JOBS = {
   // row, and its revision row is refused to any tenant context. The route's authz (a global admin, the id, the row it read) is decided
   // BEFORE; the db function takes the tenant that row had for the route and filters on it and on is_global in SQL (`deleteGlobalSkill`).
   deleteGlobalSkill: 'delete-global-skill',
+  // conversation_log, write (`logLedgerTurn`): the row's tenant is NOT the caller's but the tenant of the chat's channel binding, resolved
+  // server-side (NULL for a chat with no binding). A fleet agent token runs in its own tenant context, so a chat bound to another tenant,
+  // or to none, was refused (42501) and the turn was lost. The tenant is derived inside the writer, never taken from the caller, and the
+  // policy is untouched: only the lookup and the one INSERT run in this context.
+  ledgerWrite: 'ledger-write',
+  // conversation_log, read (`recentLedgerTurns`, `openLedgerQuestion`): the policy hides the NULL-tenant rows (an unbound chat) from an agent
+  // context, and whether an agent is shared (serves two or more tenants) is only visible across tenants. Opened by the db function after the
+  // route's authz (registered agent, own token); the statements keep their `agent_id` filter, see conversation-ledger.ts.
+  ledgerRead: 'ledger-read',
 } as const
-
-/**
- * The one sanctioned system context of the conversation ledger write (`logLedgerTurn`). conversation_log is a tenant table (its
- * WITH CHECK is `tenant_id = app.tenant()`), but the row's tenant is NOT the caller's: it is the tenant of the chat's channel
- * binding, resolved server-side, and NULL for a chat with no binding. A fleet agent token runs in its own tenant context, so a chat
- * bound to another tenant, or bound to none, was refused (42501) and the turn was lost. The tenant value is derived inside the
- * writer, never taken from the caller, and the policy itself is untouched: only the lookup and the one INSERT run in this context.
- */
-export const LEDGER_WRITE_JOB = 'ledger-write'
-
-/**
- * The read twin: `recentLedgerTurns` and `openLedgerQuestion`. The same policy hides the NULL-tenant rows (an unbound chat) from an
- * agent context, so a NON-shared agent would replay nothing after the write is fixed; and whether an agent is shared (it serves two
- * or more tenants) is only visible across tenants. Opened by the db function after the route's authz (registered agent, own token);
- * the statements keep their `agent_id` filter, and a shared agent keeps its tenant filter (or gets nothing).
- */
-export const LEDGER_READ_JOB = 'ledger-read'
 
 /**
  * System contexts that are SUPPOSED to be opened from a tenant or an agent request, by name: the work reads across tenants by
@@ -126,7 +118,7 @@ export const LEDGER_READ_JOB = 'ledger-read'
  * is a decision of its own; a new name here needs a reason next to it. The sanction is for `runAs.system` ONLY: an ADMIN
  * context that carries the same name is still counted, or a label alone would defeat the detector.
  */
-const SANCTIONED_ESCALATIONS: ReadonlySet<string> = new Set([SKILL_REGEN_JOB, SKILL_GRANTS_JOB, LEDGER_WRITE_JOB, LEDGER_READ_JOB, ...Object.values(D2_JOBS)])
+const SANCTIONED_ESCALATIONS: ReadonlySet<string> = new Set([SKILL_REGEN_JOB, SKILL_GRANTS_JOB, ...Object.values(D2_JOBS)])
 // `skill-grants` is sanctioned for the same reason as `skill-regen`: the write-back qualification reads every grantee of a
 // skill and the tenants an agent serves, and answers one boolean (`agentQualifies` in src/skill-sync.ts).
 
