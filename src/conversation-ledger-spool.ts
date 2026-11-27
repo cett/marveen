@@ -45,7 +45,10 @@ export async function flushLedgerSpool(dir = ledgerSpoolDir()): Promise<number> 
         if (typeof turn === 'string') continue
         // The flush has no token to tell whose turn a line is, so the file is the identity: the hook writes the turns of ONE agent to
         // <that agent>.jsonl. A line naming another agent is not written. The route refuses the same thing (a fleet token may only
-        // act as its own agent); without this, anything that can write into the spool directory could store a turn for any agent.
+        // act as its own agent). What this closes is a name/content MISMATCH (a line in the wrong file), nothing more: the spool is
+        // delayed delivery, not evidence of who wrote a line. The file name is not authenticated either (every agent shell runs as the
+        // same OS user, and the directory is private to that user), so the identity of a flushed turn is only as good as the write
+        // access to the spool directory.
         if (spoolFileNameFor(turn.agent_id) !== name) {
           foreign++
           continue
