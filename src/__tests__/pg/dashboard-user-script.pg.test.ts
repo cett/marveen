@@ -30,9 +30,9 @@ afterAll(async () => {
 })
 
 /** One run of the real script; the environment carries the application URL, never the owner URL. */
-function cli(args: string[], stdin = '') {
+function cli(args: string[], stdin = '', pgUrl: string = db.appUrl) {
   return new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve) => {
-    const env: NodeJS.ProcessEnv = { ...process.env, MARVEEN_STORE_DIR: storeDir, MARVEEN_PG_URL: db.appUrl }
+    const env: NodeJS.ProcessEnv = { ...process.env, MARVEEN_STORE_DIR: storeDir, MARVEEN_PG_URL: pgUrl }
     delete env['MARVEEN_PG_MIGRATE_URL']
     const p = spawn(TSX, ['scripts/dashboard-user.ts', ...args], { cwd: ROOT, env })
     let stdout = ''
@@ -67,6 +67,14 @@ describe('npm run dashboard-user on PostgreSQL (the real script, a child process
     const stored = (await db.pool.query("SELECT password_hash FROM dashboard_users WHERE username = 'person-a'")).rows[0].password_hash as string
     expect(await verifyPassword(NEW_PASSWORD, stored)).toBe(true)
     expect(await verifyPassword(PASSWORD, stored)).toBe(false)
+  }, 180_000)
+
+  it('a failed config snapshot load is one Error line on stderr and exit 1, with no stack trace', async () => {
+    // nothing listens on port 1: the snapshot load fails before the body is imported
+    const out = await cli(['list'], '', 'postgres://marveen_app@127.0.0.1:1/marveen')
+    expect(out.status).toBe(1)
+    expect(out.stderr).toMatch(/^Error: /m)
+    expect(out.stderr).not.toMatch(/^\s+at /m)
   }, 180_000)
 
   it('a usage error exits 2 and prints the usage on stderr', async () => {
