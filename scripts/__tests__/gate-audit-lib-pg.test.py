@@ -278,6 +278,24 @@ class TestFailure(PgModeCase):
         self.deny(deny_row=False)
         self.assertEqual([e["row"] for e in self.lines(self.spool)], [False])
 
+    def test_a_forged_allow_count_with_a_reason_cannot_stop_the_counts_from_being_delivered(self):
+        # The route refuses a count whose decision is allow and whose reason is not empty, and ONE such entry makes the WHOLE
+        # request a 400. A forged counts line is as possible as a forged spool line (same file, same OS user), so the hook
+        # drops it (_valid_count) and the real counts go through. The stub applies the route's rule.
+        def route_like(n, body):
+            if any(c["decision"] == "allow" and c["reason"] != "" for c in body["counts"]):
+                return 400, {"error": "invalid_value"}, 0
+            return 200, {"ok": True, "counts": len(body["counts"]), "denies": len(body["denies"])}, 0
+
+        self.put(self.counts, [{"gate": "destructive-gate", "decision": "allow", "reason": "denied", "n": 5},
+                               {"gate": "destructive-gate", "decision": "allow", "reason": "", "n": 3},
+                               {"gate": "secret-read-gate", "decision": "deny", "reason": "", "n": 2}])  # deny with no reason: also invalid
+        d = self.serve(route_like)
+        self.assertTrue(self.deny("tenant-skill-gate"))  # acknowledged: no forged entry reached the route
+        sent = sorted((c["gate"], c["decision"], c["reason"], c["n"]) for call in d.log for c in call["body"]["counts"])
+        self.assertEqual(sent, [("destructive-gate", "allow", "", 3), ("tenant-skill-gate", "deny", "denied", 1)])
+        self.assertEqual(self.lines(self.counts), [])
+
     def test_the_own_deny_is_spooled_before_the_counts_are_put_back(self):
         # An alarm (SIGALRM) landing inside the put-back must cost a count at most, never this call's own deny: the evidence is
         # spooled FIRST. The put-back is made to blow up (as the alarm would), and the deny is already in the spool.
@@ -580,6 +598,32 @@ class TestWho(PgModeCase):
             self.assertEqual(set(e), {"gate", "reason", "ts", "trace_id", "row"})
         for e in self.lines(self.counts):
             self.assertEqual(set(e), {"gate", "decision", "reason", "n"})
+
+
+class TestSpoolNameParity(unittest.TestCase):
+    """The spool directory name is a literal in three places: SPOOL_DIR_NAME here and the SPOOL_DIR_RE of the two gates. If the
+    library renames the directory, both gates would silently stop protecting it while their own tests (written with their own
+    literal) stay green. This cell ties them: the path the library builds is matched by BOTH gates' patterns."""
+
+    @staticmethod
+    def load(filename, name):
+        spec = importlib.util.spec_from_file_location(name, os.path.join(HOOKS, filename))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def test_both_gates_match_the_directory_the_library_writes(self):
+        path = os.path.join("/x", "store", lib.SPOOL_DIR_NAME, "agent-a.jsonl")
+        for filename, name in (("destructive-gate.py", "destructive_gate_parity"), ("auth-admin-gate.py", "auth_admin_gate_parity")):
+            with self.subTest(gate=filename):
+                self.assertIsNotNone(self.load(filename, name).SPOOL_DIR_RE.search(path), "%s does not match %s" % (filename, path))
+
+    def test_a_directory_with_another_name_is_not_matched(self):
+        # the cell above is not vacuous: the patterns do discriminate
+        other = os.path.join("/x", "store", ".ledger-spool", "agent-a.jsonl")
+        for filename, name in (("destructive-gate.py", "destructive_gate_parity2"), ("auth-admin-gate.py", "auth_admin_gate_parity2")):
+            with self.subTest(gate=filename):
+                self.assertIsNone(self.load(filename, name).SPOOL_DIR_RE.search(other))
 
 
 class TestMode(PgModeCase):

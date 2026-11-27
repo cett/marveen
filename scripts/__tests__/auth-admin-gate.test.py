@@ -673,7 +673,14 @@ BLOCKED = [
     ('spool: python shutil.move', 'python3 -c "import shutil; shutil.move(\'{S}/.gate-audit-spool/agent-a.jsonl\', \'/tmp/x\')"'),
     ('spool: ruby File.rename without parentheses', 'ruby -e \'File.rename "{S}/.gate-audit-spool/agent-a.jsonl", "/tmp/x"\''),
     ('spool: ruby File.unlink without parentheses', 'ruby -e \'File.unlink "{S}/.gate-audit-spool/agent-a.jsonl"\''),
-    ('spool: the name in another letter case (a case-insensitive file system)', 'python3 -c "open(\'{S}/.GATE-Audit-Spool/agent-a.jsonl\', \'w\')"'),
+    # rows that ONLY one alternative of SPOOL_CODE_WRITE_RE catches (no .write( and no other write word): a word taken out of the
+    # pattern must turn its own row red
+    ('spool: python json.dump into an append-mode open', 'python3 -c "import json; json.dump({}, open(\'{S}/.gate-audit-spool/agent-a.jsonl\', \'a\'))"'),
+    ('spool: python print(file=) into a write-mode open', 'python3 -c "print(\'x\', file=open(\'{S}/.gate-audit-spool/agent-a.jsonl\', \'w\'))"'),
+    ('spool: python exclusive-create mode x', 'python3 -c "open(\'{S}/.gate-audit-spool/agent-a.jsonl\', \'x\')"'),
+    ('spool: python os.open O_WRONLY', 'python3 -c "import os; os.open(\'{S}/.gate-audit-spool/agent-a.jsonl\', os.O_WRONLY)"'),
+    ('spool: python os.replace onto a spool file', 'python3 -c "import os; os.replace(\'/tmp/x\', \'{S}/.gate-audit-spool/agent-a.jsonl\')"'),
+    ('spool: the name in another letter case (a case-insensitive file system)','python3 -c "open(\'{S}/.GATE-Audit-Spool/agent-a.jsonl\', \'w\')"'),
 ]
 
 ALLOWED = [

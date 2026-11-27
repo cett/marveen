@@ -752,6 +752,20 @@ class TestGateAuditSpoolPath(unittest.TestCase):
             with self.subTest(command=cmd):
                 self.assertEqual(self._exit(cmd), 2)
 
+    def test_every_write_word_of_the_protected_path_has_its_own_refusing_row(self):
+        # one row per word that ONLY SPOOL_WRITE_RE catches (rm, mv, dd and shred are also in BANNED_CMDS, so a mutant that drops
+        # them is equivalent): a word taken out of the pattern must turn its own row red
+        for word, cmd in (("sed --in-place", "sed --in-place d %s" % self.SPOOL), ("unlink", "unlink %s" % self.SPOOL),
+                          ("install", "install /dev/null %s" % self.SPOOL), ("rsync", "rsync /dev/null %s" % self.SPOOL)):
+            with self.subTest(word=word):
+                self.assertEqual(self._exit(cmd), 2)
+
+    def test_a_write_word_is_a_word_not_a_substring(self):
+        # `ls -ln` carries the letters `ln` but is a listing: the word-boundary lookbehind of the pattern keeps it allowed
+        for cmd in ("ls -ln %s" % self.DIR, "ls -ln %s" % self.SPOOL, "ls -lin %s" % self.DIR):
+            with self.subTest(command=cmd):
+                self.assertEqual(self._exit(cmd), 0)
+
     def test_the_name_in_another_letter_case_is_refused_too(self):
         # the macOS file system is case-insensitive: the upper-case spelling names the same directory
         for cmd in ("echo x > /tmp/agents/store/.GATE-AUDIT-SPOOL/agent-a.jsonl", "rm /tmp/agents/store/.Gate-Audit-Spool/agent-a.jsonl"):
