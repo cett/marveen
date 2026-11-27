@@ -5,7 +5,7 @@
 // the named script, which sees its own name and its arguments as if it had been run directly.
 //
 // The name must be one of the scripts below: the runner is not a general loader. The database access of each script is
-// unchanged by this runner (SQLite until the cutover).
+// its own, not this runner's: a script boots the backend it needs (budget-alert-check boots PostgreSQL when MARVEEN_PG_URL is set).
 //
 // dashboard-user is NOT here, on purpose: it is an admin command, and the auth-admin gate of the hooks matches the command
 // line that names the script directly. Routing it through this runner would let the gate pass a command it refuses. It keeps

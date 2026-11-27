@@ -4,12 +4,10 @@
 //
 //   npm run budget-alert-check
 //
-// Opens the real DB, runs one evaluation+notify pass, exits. All logic lives
-// in src/costops/budget-alert*.ts (unit-tested); this file is deliberately
-// thin.
+// Boots the database this install runs on (PostgreSQL when MARVEEN_PG_URL is set, SQLite otherwise), runs one
+// evaluation+notify pass inside the system job `budget-alert-check`, ends the pool and exits. The logic lives in
+// src/costops/budget-alert*.ts (unit-tested) and the boot, the job and the exit code in src/costops/budget-alert-job.ts.
 import './lib/log-to-stderr.js'
-import { initDatabase } from '../src/db.js'
-import { runBudgetAlertCheck } from '../src/costops/budget-alert-runner.js'
+import { runBudgetAlertCli } from '../src/costops/budget-alert-job.js'
 
-initDatabase()
-await runBudgetAlertCheck()
+process.exitCode = await runBudgetAlertCli()
