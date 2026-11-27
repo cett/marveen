@@ -17,6 +17,9 @@
 #     reports a missing or stale one.
 #     store/vault.json         (ENCRYPTED secret vault; the key is NOT in this archive)
 #     .env                     (project root secrets)
+#     store/residual-gate-audit.sql  (PostgreSQL install only: SQL dump of the two tables the gate hooks still write
+#       into the SQLite file, hook_audit_log and gate_decision_counts; absent, with a warning, when the file or a
+#       table is missing. See the block "PostgreSQL install: the two residual SQLite tables".)
 #     scheduled-tasks.json     (legacy, if present)
 #     assets/meetings/**       (meeting transcripts/memos)
 #     agents/*/CLAUDE.md, SOUL.md, .mcp.json
@@ -159,6 +162,72 @@ if [[ "${PG_CONFIGURED}" -eq 0 && -f store/claudeclaw.db ]]; then
   fi
 fi
 
+# --- PostgreSQL install: the two residual SQLite tables. -------------------------------------------------------
+# After the cutover store/claudeclaw.db is still written by the Python gate hooks (scripts/hooks/gate_audit_lib.py),
+# but only these two tables; everything else in the file is frozen at the cutover and is NOT archived (the stale
+# database must not come back on a restore). Those two tables are therefore in no other backup, so they are dumped
+# as SQL text into the archive. The live file is read through SQLite's online backup (a temp copy in the staging
+# tree, which is never archived), and the dump is taken from that copy, so a hook write during the export cannot
+# touch the dump. A missing file, a missing table, a missing sqlite3 or a failing step is a WARNING, never an abort:
+# the nightly backup must still produce its archive. REMOVE this block when the hooks write to PostgreSQL (the
+# follow-up named in the CHANGELOG); until then it is the only copy of those rows.
+RESIDUAL_REL="store/residual-gate-audit.sql"
+RESIDUAL_TABLES="hook_audit_log gate_decision_counts"
+RESIDUAL_NOTE=""   # the MANIFEST.txt line, set only on a PostgreSQL install
+REPOLIST_RESIDUAL=0
+residual_warn() {  # residual_warn <reason>: the warning on stderr and the MANIFEST line
+  echo "backup: WARNING -- the residual gate-audit tables are not in this archive: $1" >&2
+  RESIDUAL_NOTE="residual-gate-audit: NOT included ($1)"
+}
+residual_cleanup() { rm -f "${STAGE}/residual-snapshot.db" "${STAGE}/residual-snapshot.db-wal" "${STAGE}/residual-snapshot.db-shm"; }
+residual_export() {
+  local live=store/claudeclaw.db snap="${STAGE}/residual-snapshot.db" out="${STAGE}/repo/${RESIDUAL_REL}"
+  local t n present="" counts=""
+  if [[ ! -f "${live}" ]]; then residual_warn "${live} does not exist"; return 0; fi
+  if ! command -v sqlite3 >/dev/null 2>&1; then residual_warn "the sqlite3 CLI is missing"; return 0; fi
+  # .backup only reads the live file; the busy timeout bounds the wait for a hook's write lock.
+  if ! sqlite3 -cmd '.timeout 5000' "${live}" ".backup '${snap}'" >/dev/null 2>&1; then
+    residual_cleanup
+    residual_warn "sqlite3 .backup of ${live} failed"
+    return 0
+  fi
+  # The copy inherits WAL mode, and a -readonly open of a WAL file cannot create its -shm (CANTOPEN): the copy is ours,
+  # so it goes to the rollback journal first and the reads below can stay -readonly.
+  sqlite3 "${snap}" 'PRAGMA journal_mode=DELETE;' >/dev/null 2>&1 || true
+  for t in ${RESIDUAL_TABLES}; do
+    if [[ "$(sqlite3 -readonly "${snap}" "SELECT 1 FROM sqlite_master WHERE type='table' AND name='${t}'" 2>/dev/null || true)" == "1" ]]; then
+      n="$(sqlite3 -readonly "${snap}" "SELECT count(*) FROM \"${t}\"" 2>/dev/null || true)"
+      present="${present} ${t}"
+      counts="${counts}${counts:+, }${t}=${n:-?}"
+    else
+      echo "backup: WARNING -- residual table ${t} is missing in ${live}, not archived" >&2
+    fi
+  done
+  if [[ -z "${present}" ]]; then
+    residual_cleanup
+    residual_warn "none of ${RESIDUAL_TABLES} exists in ${live}"
+    return 0
+  fi
+  mkdir -p "$(dirname "${out}")"
+  # umask 077: the dump carries audit rows (agent ids, verdicts), so the file is owner-only like the archive.
+  # ${present} is word-split on purpose: one argument per table name for .dump.
+  # shellcheck disable=SC2086
+  if ! ( umask 077; sqlite3 -readonly "${snap}" ".dump${present}" > "${out}" ) 2>/dev/null; then
+    rm -f "${out}"
+    residual_cleanup
+    residual_warn "sqlite3 .dump of the snapshot failed"
+    return 0
+  fi
+  chmod 600 "${out}"
+  residual_cleanup
+  RESIDUAL_NOTE="residual-gate-audit: ${RESIDUAL_REL} (rows: ${counts})"
+  REPOLIST_RESIDUAL=1
+  echo "backup: residual gate-audit tables dumped (${counts})"
+}
+if [[ "${PG_CONFIGURED}" -eq 1 ]]; then
+  residual_export
+fi
+
 # add_if <listfile> <base> <relpath>  -- append relpath when <base>/<relpath> exists.
 add_if() {
   local list="$1" base="$2" rel="$3"
@@ -174,6 +243,8 @@ if [[ "${PG_CONFIGURED}" -eq 0 ]]; then
     add_if "${REPOLIST}" "${REPO_ROOT}" store/claudeclaw.db-wal
   fi
 fi
+# The residual dump above is already staged (stage_group never copies over a staged file); it only needs its line.
+if [[ "${REPOLIST_RESIDUAL}" -eq 1 ]]; then echo "${RESIDUAL_REL}" >> "${REPOLIST}"; fi
 add_if "${REPOLIST}" "${REPO_ROOT}" store/vault.json
 add_if "${REPOLIST}" "${REPO_ROOT}" .env
 add_if "${REPOLIST}" "${REPO_ROOT}" scheduled-tasks.json
@@ -310,6 +381,7 @@ fi
   if [[ "${PG_CONFIGURED}" -eq 1 ]]; then
     # Read by scripts/verify-restore.sh: an archive with this line is checked for everything except the database.
     echo "database: not included (PostgreSQL install)"
+    [[ -z "${RESIDUAL_NOTE}" ]] || echo "${RESIDUAL_NOTE}"
   fi
 } > "${MANIFEST}"
 
