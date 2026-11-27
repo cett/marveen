@@ -382,7 +382,7 @@ describe('the entry: exit codes, the pool ended in every case, the boot never mi
   })
 })
 
-describe('audit rows of the write verbs (no channel ping for them: that is the owner decision)', () => {
+describe('audit rows and channel pings of the write verbs (a successful write only)', () => {
   const audit = async (db: PgTestDb, key: string) =>
     (await db.pool.query('SELECT new_value, actor FROM config_change_log WHERE key = $1 ORDER BY id', [key])).rows
 
@@ -405,15 +405,31 @@ describe('audit rows of the write verbs (no channel ping for them: that is the o
 
     expect(await runDashboardUserCli(['remove', 'user-b'], capture().io)).toBe(0)
     expect(await audit(db, 'security.cli_user_remove')).toEqual([{ new_value: 'user-b', actor: 'cli' }])
-    expect(ping).not.toHaveBeenCalled()
+
+    // each successful write pings once, after its audit row (the ping text names the user, or all sessions)
+    expect(ping).toHaveBeenCalledTimes(4)
+    expect(ping.mock.calls[0]![0]).toContain('"user-b"')
+    expect(ping.mock.calls[1]![0]).toContain('"user-a"')
+    expect(ping.mock.calls[2]![0]).toContain('CLI-ből')
+    expect(ping.mock.calls[3]![0]).toContain('"user-b"')
   })
 
-  it('a failed command (an unknown user) writes no audit row', async () => {
+  it('a failed command (an unknown user) writes no audit row and sends no ping', async () => {
     const db = await freshDb()
     await seedUser(db, 'user-a', 'admin')
 
     expect(await runDashboardUserCli(['remove', 'nobody'], capture().io)).toBe(1)
     expect(await audit(db, 'security.cli_user_remove')).toEqual([])
+    expect(ping).not.toHaveBeenCalled()
+  })
+
+  it('a failed add (a name taken) sends no ping', async () => {
+    const db = await freshDb()
+    await seedUser(db, 'user-a', 'admin')
+
+    expect(await runDashboardUserCli(['add', 'user-a', '--password-stdin'], capture(PASSWORD).io)).toBe(1)
+    expect(await audit(db, 'security.cli_user_add')).toEqual([])
+    expect(ping).not.toHaveBeenCalled()
   })
 })
 

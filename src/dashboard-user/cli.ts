@@ -151,6 +151,7 @@ async function command(argv: string[], io: CliIo, backend: 'sqlite' | 'pg'): Pro
       const hash = await hashPassword(pw)
       await createDashboardUser(username, hash)
       await logConfigChange('security.cli_user_add', null, username, 'cli')
+      await notifySecurityEvent(`🆕 Új dashboard-belépés a CLI-ből: "${username}". Ha nem te hoztad létre, a gépen fut valami a nevedben.`)
       io.stdout(`Created dashboard login "${username}".\n`)
       break
     }
@@ -196,6 +197,7 @@ async function command(argv: string[], io: CliIo, backend: 'sqlite' | 'pg'): Pro
       // with it: a session opened between the two steps would survive. The second revoke closes that window (idempotent).
       await revokeAllForUser(user.id)
       await logConfigChange('security.cli_user_remove', null, username, 'cli')
+      await notifySecurityEvent(`🗑 Dashboard-belépés törölve a CLI-ből: "${username}". Ha nem te voltál, a gépen fut valami a nevedben.`)
       const remaining = (await listDashboardUsers()).length
       io.stdout(`Removed "${username}".${remaining === 0 ? ' No users left -- back to token-only mode.' : ''}\n`)
       break
@@ -219,12 +221,14 @@ async function command(argv: string[], io: CliIo, backend: 'sqlite' | 'pg'): Pro
         }
         await revokeAllForUser(user.id)
         await logConfigChange('security.cli_sessions_clear', null, username, 'cli')
+        await notifySecurityEvent(`🔒 Böngésző-munkamenetek törölve a CLI-ből: "${username}". Ha nem te voltál, a gépen fut valami a nevedben.`)
         io.stdout(`Cleared all sessions for "${username}".\n`)
       } else {
         // Cache and table together: the same call the dashboard's own revocation makes (a raw DELETE would leave the
         // cache of this process out of it, and has no PostgreSQL form).
         await revokeAllSessions()
         await logConfigChange('security.cli_sessions_clear', null, 'all', 'cli')
+        await notifySecurityEvent('🔒 Minden böngésző-munkamenet törölve a CLI-ből. Ha nem te voltál, a gépen fut valami a nevedben.')
         io.stdout('Cleared ALL dashboard login sessions.\n')
       }
       break
