@@ -18,6 +18,7 @@ import { runRbacGate } from './web/rbac-shadow-log.js'
 import { json, isInvalidJsonBodyError } from './web/http-helpers.js'
 import { answerVaultKeyError } from './web/vault-error-response.js'
 import { answerRlsRefusal } from './web/rls-refusal-response.js'
+import { dispatchBehindAdminScopeGuard } from './web/admin-scope-guard.js'
 import { detectLanIp } from './web/network-info.js'
 import { normalizePath, applyDeprecationHeaders } from './web/routes/versioning.js'
 import { instrumentHttpRequest, assignRequestTrace, type HttpTrust } from './otel-http.js'
@@ -391,7 +392,7 @@ export async function startWebServer(port = 3420): Promise<http.Server> {
       }
 
       // From here the route works for the caller: its tenant, or its agent in that tenant.
-      const dispatched = await runAsRequest({ authenticated: auth.kind !== 'none', role, agentId: role === 'fleet_agent' ? tokenAgentId : undefined, tenantId: tenantId ?? null, userId: auth.kind === 'session' && auth.userId !== undefined ? String(auth.userId) : undefined, trace: requestTrace }, () => dispatcher.dispatch(routeCtx))
+      const dispatched = await runAsRequest({ authenticated: auth.kind !== 'none', role, agentId: role === 'fleet_agent' ? tokenAgentId : undefined, tenantId: tenantId ?? null, userId: auth.kind === 'session' && auth.userId !== undefined ? String(auth.userId) : undefined, trace: requestTrace }, () => dispatchBehindAdminScopeGuard(routeCtx, () => dispatcher.dispatch(routeCtx)))
       if (dispatched) return
 
       res.writeHead(404)

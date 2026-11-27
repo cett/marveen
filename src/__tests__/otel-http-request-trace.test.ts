@@ -136,6 +136,6 @@ describe('the request trace: one trace for the route and the http.server span', 
     const { readFileSync } = await import('node:fs')
     const src = readFileSync(new URL('../web.ts', import.meta.url), 'utf8')
     expect(src).toMatch(/httpTrust\.authenticated = auth\.kind !== 'none'[^\n]*\n\s+const requestTrace = assignRequestTrace\(req, httpTrust\)/)
-    expect(src).toMatch(/runAsRequest\(\{[^\n]*trace: requestTrace \}, \(\) => dispatcher\.dispatch\(routeCtx\)\)/)
+    expect(src).toMatch(/runAsRequest\(\{[^\n]*trace: requestTrace \}, \(\) => dispatchBehindAdminScopeGuard\(routeCtx, \(\) => dispatcher\.dispatch\(routeCtx\)\)\)/)
   })
 })

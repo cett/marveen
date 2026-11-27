@@ -307,6 +307,7 @@ const callSites = new Map<string, { count: number; boot: boolean }>()
 const jobCalls = new Map<string, number>()
 const tenantUnresolvedByJob = new Map<string, number>()
 const rlsRefusalsByRoute = new Map<string, number>()
+const adminScopeRefusalsByRoute = new Map<string, number>()
 const roleCalls: Record<DbRole, number> = { system: 0, tenant: 0, agent: 0, admin: 0, viewer: 0, public: 0 }
 
 export interface DbContextSite {
@@ -339,6 +340,12 @@ export interface DbContextStats {
    * is still a defect somewhere (a caller in a context too narrow for its write): this keeps it countable, not hidden.
    */
   rlsRefusals: Record<string, number>
+  /**
+   * Requests the admin-scope guard refused BEFORE the route ran (an admin-role caller in a tenant database context on a route that reaches
+   * a privileged-only table, answered 403 admin_session_required), by route. Kept apart from `rlsRefusals`: those are refusals BY the
+   * database, these are refusals the database never saw, and a caller that keeps trying is a caller to fix, not a policy to widen.
+   */
+  adminScopeRefusals: Record<string, number>
   /**
    * `runAs.system|admin` opened while the running context was a `tenant` or an `agent` one (a tenant block that climbs to a
    * wider role). Counted, never refused: enforcement is the policies' job. A job that follows the per-item rule keeps it at 0.
@@ -436,6 +443,11 @@ export function noteRlsRefusal(route: string): void {
   bump(rlsRefusalsByRoute, route, MAX_JOBS)
 }
 
+/** The admin-scope guard answered 403 admin_session_required (see `DbContextStats.adminScopeRefusals`). `route` is already coarse, never an id. */
+export function noteAdminScopeRefusal(route: string): void {
+  bump(adminScopeRefusalsByRoute, route, MAX_JOBS)
+}
+
 export function getDbContextStats(): DbContextStats {
   const sites = [...callSites.entries()]
     .map(([key, v]) => ({ site: v.boot ? key.slice('boot|'.length) : key, count: v.count, boot: v.boot }))
@@ -449,6 +461,7 @@ export function getDbContextStats(): DbContextStats {
     tenantMismatches,
     tenantUnresolved: Object.fromEntries(tenantUnresolvedByJob),
     rlsRefusals: Object.fromEntries(rlsRefusalsByRoute),
+    adminScopeRefusals: Object.fromEntries(adminScopeRefusalsByRoute),
     escalations,
     startedAt,
     bootEndedAt,
@@ -475,6 +488,7 @@ export function resetDbContextStats(): void {
   jobCalls.clear()
   tenantUnresolvedByJob.clear()
   rlsRefusalsByRoute.clear()
+  adminScopeRefusalsByRoute.clear()
   for (const role of DB_ROLES) roleCalls[role] = 0
   booting = false
 }

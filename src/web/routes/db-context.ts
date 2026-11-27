@@ -33,6 +33,7 @@ export function tryHandleDbContext(ctx: RouteContext): Promise<boolean> {
     },
     tenantMismatches: stats.tenantMismatches,
     rlsRefusals: stats.rlsRefusals,
+    adminScopeRefusals: stats.adminScopeRefusals,
     escalations: stats.escalations,
     byRole: stats.byRole,
     byJob: stats.byJob,
