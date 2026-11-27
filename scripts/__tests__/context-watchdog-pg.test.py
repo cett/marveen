@@ -1,25 +1,30 @@
 #!/usr/bin/env python3
-"""Tests for the PostgreSQL mode of scripts/hooks/context-watchdog.py (the READS that feed the threshold and the HANDOFF).
+"""Tests for the PostgreSQL mode of scripts/hooks/context-watchdog.py (H1 reads + H2a writes).
 
-In PG mode the hook never reads the stale SQLite file for the threshold or the HANDOFF facts: it asks the dashboard
-(POST /api/v1/hooks/watchdog-facts, want threshold|handoff) under a short budget, ONE attempt, no retry, no fallback. A
-stub HTTP server plays the dashboard; the SQLite fixture deliberately CONTRADICTS the stub so a read from the wrong
-place shows. The differential against the REAL TypeScript route is src/__tests__/hooks-tenant-python-differential.test.ts (the context-watchdog cells).
+In PG mode the hook never opens the SQLite file. ONE record call per PostToolUse (POST /api/v1/hooks/watchdog-record)
+carries the token_usage row, the spans and the stale-turn close and answers the threshold; only past the watchdog
+percentage, for a top-level session: the dedup read (`want: prior_handoff` on /api/v1/hooks/watchdog-facts), the facts
+(`want: handoff`), the injection and the audit row (POST /api/v1/hook-audit). All under a short budget, ONE attempt per
+call, no retry, no fallback. A stub HTTP server plays the dashboard; the SQLite fixture deliberately CONTRADICTS the stub
+and a `sitecustomize` poison makes any sqlite3.connect fail loudly and leave a marker, so a touch of the wrong place shows.
+The differential against the REAL TypeScript routes is src/__tests__/hooks-tenant-python-differential.test.ts.
 
 Each cell has a red a removed guard would give (the mutants are listed in the PR text and run by the QA gates):
+  - sqlite3.connect still reached in PG mode            -> test_pg_mode_never_opens_the_sqlite_file
   - the route adapter is not selected in PG mode        -> test_pg_mode_text_comes_from_the_route_not_the_stale_sqlite
-  - a SQLite fallback after a route error               -> test_every_threshold_failure_injects_nothing_and_never_falls_back,
-                                                           test_every_handoff_failure_injects_nothing_and_writes_no_audit_row
-  - the dedup read moved to the route / dropped         -> test_the_dedup_still_reads_the_sqlite_row_the_same_hook_wrote
-  - the shared deadline becomes per-call                -> test_the_two_calls_share_one_short_deadline
+  - a failed dedup read treated as "no prior row"       -> test_every_prior_handoff_failure_injects_nothing_it_never_fails_open
+  - the threshold withheld/guessed after a record error -> test_every_record_failure_injects_nothing_and_never_falls_back
+  - per-span calls instead of one record call           -> test_one_record_call_carries_usage_spans_and_the_stale_close
+  - the audit row not written / not read back           -> test_the_emit_audit_pair_dedups_the_next_call
+  - the shared deadline becomes per-call                -> test_the_calls_share_one_short_deadline
   - a retry after a 5xx                                 -> test_a_5xx_is_asked_once
 Neutral fixtures only (agent-a, agent-b).
 """
+import hashlib
 import importlib.util
 import json
 import os
 import socket
-import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -32,7 +37,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 HOOK = os.path.join(ROOT, "scripts", "hooks", "context-watchdog.py")
 CWD = os.path.join(ROOT, "agents", "agent-a")
-ROUTE = "/api/v1/hooks/watchdog-facts"
+FACTS = "/api/v1/hooks/watchdog-facts"
+RECORD = "/api/v1/hooks/watchdog-record"
+AUDIT = "/api/v1/hook-audit"
 TOKEN = "test-token-agent-a"
 
 # The SQLite fixture helpers of the SQLite-mode cells (same schema the hook reads).
@@ -50,9 +57,52 @@ STUB_FACTS = {
 HIGH = 250000
 LOW = 1000
 
+# sqlite3.connect raises and leaves a marker: in PG mode the hook must never reach it.
+POISON = """
+import os, sqlite3
+def _boom(*a, **k):
+    with open(os.environ["POISON_MARK"], "w") as f:
+        f.write("sqlite3.connect")
+    raise RuntimeError("sqlite3.connect reached in PG mode")
+sqlite3.connect = _boom
+"""
+
+
+class Script:
+    """The dashboard's behaviour: answers the three routes, keeps the audit rows it was sent (so the dedup pair is real).
+    Each route can be overridden with (status, json-able or raw bytes, delay_seconds)."""
+
+    def __init__(self, threshold=400000, facts=None):
+        self.threshold = threshold
+        self.facts = STUB_FACTS if facts is None else facts
+        self.record = None
+        self.prior = None
+        self.handoff = None
+        self.audit = None
+        self.audit_rows = []
+
+    def __call__(self, path, body):
+        body = body or {}
+        if path == RECORD:
+            return self.record or (200, {"threshold_tokens": self.threshold, "usage": True, "spans": len(body.get("spans") or []), "dropped": 0}, 0)
+        if path == FACTS and body.get("want") == "prior_handoff":
+            if self.prior:
+                return self.prior
+            rows = [r for r in self.audit_rows if r["session_id"] == body.get("session_id")]
+            return 200, (rows[-1]["answer"] if rows else None), 0
+        if path == FACTS and body.get("want") == "handoff":
+            return self.handoff or (200, self.facts, 0)
+        if path == AUDIT:
+            if self.audit:
+                return self.audit
+            self.audit_rows.append({"session_id": body.get("session_id"), "body": body,
+                                    "answer": {"ts": int(time.time()), "reason": body.get("reason"), "content_hash": body.get("content_hash")}})
+            return 200, {"ok": True}, 0
+        return 400, {"error": "invalid_value"}, 0
+
 
 class Dashboard:
-    """A stub of the dashboard. `script(body)` -> (status, json-able or raw bytes, delay_seconds). Every request is logged."""
+    """A stub of the dashboard. `script(path, body)` -> (status, json-able or raw bytes, delay_seconds). Every request is logged."""
 
     def __init__(self, script):
         self.script = script
@@ -69,7 +119,7 @@ class Dashboard:
                 body = json.loads(raw) if raw else None
                 outer.log.append({"path": self.path, "body": body, "auth": self.headers.get("Authorization"),
                                   "agent": self.headers.get("X-Agent-Id")})
-                status, obj, delay = outer.script(body)
+                status, obj, delay = outer.script(self.path, body)
                 if delay:
                     time.sleep(delay)
                 data = obj if isinstance(obj, bytes) else json.dumps(obj).encode()
@@ -91,8 +141,12 @@ class Dashboard:
         self.httpd.shutdown()
         self.httpd.server_close()
 
-    def wants(self):
-        return [c["body"].get("want") for c in self.log]
+    def calls(self):
+        """(path, want) per request, in order: the record call has no want."""
+        return [(c["path"], (c["body"] or {}).get("want")) for c in self.log]
+
+    def paths(self):
+        return [c["path"] for c in self.log]
 
 
 def closed_port_url():
@@ -103,21 +157,9 @@ def closed_port_url():
     return "http://127.0.0.1:%d" % port
 
 
-def answering(threshold=None, facts=None, threshold_status=200, handoff_status=200, threshold_delay=0, handoff_delay=0,
-              threshold_raw=None, handoff_raw=None):
-    """A dashboard script: `want: threshold` -> {threshold_tokens}, `want: handoff` -> the facts (or a raw / failing answer)."""
-    def script(body):
-        want = (body or {}).get("want")
-        if want == "threshold":
-            if threshold_raw is not None:
-                return threshold_status, threshold_raw, threshold_delay
-            return threshold_status, {"threshold_tokens": threshold}, threshold_delay
-        if want == "handoff":
-            if handoff_raw is not None:
-                return handoff_status, handoff_raw, handoff_delay
-            return handoff_status, STUB_FACTS if facts is None else facts, handoff_delay
-        return 400, {"error": "invalid_value"}, 0
-    return script
+def sha(path):
+    with open(path, "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()
 
 
 class Base(unittest.TestCase):
@@ -138,13 +180,21 @@ class Base(unittest.TestCase):
                      "VALUES ('agent-a', 'agent-b', 'stale next step', 100)")
         conn.commit()
         conn.close()
+        self.db_hash = sha(self.db_path)
+        self.db_mtime = os.stat(self.db_path).st_mtime_ns
         self.transcript = os.path.join(self.tmp.name, "transcript.jsonl")
         self.token_file = os.path.join(self.tmp.name, "token")
         with open(self.token_file, "w") as f:
             f.write(TOKEN)
         self.empty = os.path.join(self.tmp.name, "empty")
         os.mkdir(self.empty)
+        self.poison_dir = os.path.join(self.tmp.name, "poison")
+        os.mkdir(self.poison_dir)
+        with open(os.path.join(self.poison_dir, "sitecustomize.py"), "w") as f:
+            f.write(POISON)
+        self.poison_mark = os.path.join(self.tmp.name, "poison.mark")
         self.dash = None
+        self.script = None
 
     def tearDown(self):
         if self.dash:
@@ -157,16 +207,25 @@ class Base(unittest.TestCase):
                    LEDGER_DB_PATH=self.db_path)
         if pg:
             env["MARVEEN_PG_URL"] = "postgres://placeholder.invalid/db"
+            # the poison is for PG mode only: SQLite mode has to connect
+            env["PYTHONPATH"] = self.poison_dir
+            env["POISON_MARK"] = self.poison_mark
         if url:
             env["DASHBOARD_BASE_URL"] = url
         return env
 
-    def serve(self, script):
-        self.dash = Dashboard(script)
+    def serve(self, script=None):
+        self.script = script or Script()
+        self.dash = Dashboard(self.script)
         return self.dash
 
-    def run_hook(self, tokens=HIGH, url=None, pg=True, session="sess-1", **payload_extra):
-        sqlite_cells._write_jsonl(self.transcript, [sqlite_cells._usage_event(input_tokens=tokens)])
+    def reserve(self, script):
+        """Replace the stub (a second call of the hook against a different behaviour) keeping nothing of the first."""
+        self.dash.close()
+        return self.serve(script)
+
+    def run_hook(self, tokens=HIGH, url=None, pg=True, session="sess-1", events=None, **payload_extra):
+        sqlite_cells._write_jsonl(self.transcript, events or [sqlite_cells._user_event(), sqlite_cells._usage_event(input_tokens=tokens)])
         payload = {"session_id": session, "tool_name": "Bash", "cwd": CWD, "transcript_path": self.transcript}
         payload.update(payload_extra)
         t0 = time.monotonic()
@@ -175,184 +234,253 @@ class Base(unittest.TestCase):
         p.wall = time.monotonic() - t0
         return p
 
-    def handoff_rows(self):
-        conn = sqlite3.connect(self.db_path)
-        try:
-            return conn.execute("SELECT COUNT(*) FROM hook_audit_log WHERE verdict = 'handoff'").fetchone()[0]
-        finally:
-            conn.close()
+    def assertNoSqliteTouch(self):
+        self.assertFalse(os.path.exists(self.poison_mark), "sqlite3.connect was reached in PG mode")
+        self.assertEqual(sha(self.db_path), self.db_hash)
+        self.assertEqual(os.stat(self.db_path).st_mtime_ns, self.db_mtime)
 
     def text_of(self, proc):
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertTrue(proc.stdout.strip(), "the hook injected nothing")
+        self.assertTrue(proc.stdout.strip(), "the hook injected nothing: " + proc.stderr)
         return json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"]
 
+    def assertSilent(self, p, calls):
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(p.stdout.strip(), "")
+        self.assertEqual(self.dash.calls() if self.dash else [], calls)
+        self.assertLess(p.wall, 4.0)  # interpreter start + the 1.5 s budget, far under the 10 s harness timeout
+        self.assertNoSqliteTouch()
 
-class TestPgModeReads(Base):
+
+class TestPgModeWrites(Base):
+    def test_pg_mode_never_opens_the_sqlite_file(self):
+        # the whole path: record, prior_handoff, facts, emit, audit. The stale file is untouched and sqlite3.connect never ran.
+        self.serve()
+        self.text_of(self.run_hook())
+        self.assertNoSqliteTouch()
+
+    def test_one_record_call_carries_usage_spans_and_the_stale_close(self):
+        d = self.serve()
+        p = self.run_hook(tokens=LOW)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(p.stdout.strip(), "")
+        self.assertEqual(d.paths(), [RECORD])  # ONE call below the line, not one per span
+        body = d.log[0]["body"]
+        self.assertEqual(d.log[0]["auth"], "Bearer " + TOKEN)
+        self.assertEqual(set(body), {"usage", "spans", "close_stale"})
+        u = body["usage"]
+        self.assertEqual((u["session_id"], u["input_tokens"], u["output_tokens"], u["model"], u["tool_name"]),
+                         ("sess-1", LOW, 50, "claude-test-model", "Bash"))
+        ops = [(s["operation"], s["span_id"], s["parent_span_id"], s["trace_id"], s["status"]) for s in body["spans"]]
+        self.assertEqual(ops, [("agent.turn", "turn-uuid-1", None, "sess-1", "running"), ("model.call", "msg_1", "turn-uuid-1", "sess-1", "ok")])
+        self.assertEqual(body["close_stale"], {"trace_id": "sess-1", "keep_span_id": "turn-uuid-1"})
+        self.assertNotIn("tenant_id", json.dumps(body))  # the tenants are the server's, never sent
+        self.assertNoSqliteTouch()
+
+    def test_a_transcript_without_a_turn_start_sends_the_model_span_alone_and_no_close(self):
+        d = self.serve()
+        self.run_hook(tokens=LOW, events=[sqlite_cells._usage_event(input_tokens=LOW)])
+        body = d.log[0]["body"]
+        self.assertEqual([s["operation"] for s in body["spans"]], ["model.call"])
+        self.assertIsNone(body["spans"][0]["parent_span_id"])
+        self.assertIsNone(body["close_stale"])
+
+    def test_the_sqlite_and_the_route_payloads_are_the_same_row(self):
+        # the shared builders: the row the SQLite writer inserts is the row the route payload names
+        d = self.serve()
+        self.run_hook(tokens=LOW)
+        sent = d.log[0]["body"]["usage"]
+        hook = sqlite_cells.hook
+        ev = sqlite_cells._usage_event(input_tokens=LOW)
+        self.assertEqual(hook.build_usage("sess-1", ev, "Bash"), sent)
+
     def test_pg_mode_text_comes_from_the_route_not_the_stale_sqlite(self):
-        d = self.serve(answering(threshold=400000))
+        d = self.serve()
         text = self.text_of(self.run_hook())
-        for fact in ("stub work item", "[kanban card-stub]", "agent-stub [active]: stub recent line", "#7 [in_progress]: Stub card",
-                     "stub next step"):
+        for fact in ("stub work item", "[kanban card-stub]", "agent-stub [active]: stub recent line", "#7 [in_progress]: Stub card", "stub next step"):
             self.assertIn(fact, text)
         for stale in ("stale sqlite work", "stale peer line", "Stale card", "stale next step", "card-stale"):
             self.assertNotIn(stale, text)
-        self.assertEqual(d.wants(), ["threshold", "handoff"])
+        self.assertEqual(d.calls(), [(RECORD, None), (FACTS, "prior_handoff"), (FACTS, "handoff"), (AUDIT, None)])
 
-    def test_the_threshold_comes_from_the_route(self):
-        self.serve(answering(threshold=200000))
-        text = self.text_of(self.run_hook(tokens=HIGH))
-        self.assertIn("250,000 / 200,000", text)  # not the 123456 the stale SQLite row holds
+    def test_the_threshold_comes_from_the_record_answer(self):
+        self.serve(Script(threshold=200000))
+        self.assertIn("250,000 / 200,000", self.text_of(self.run_hook()))  # not the 123456 the stale SQLite row holds
 
     def test_a_null_threshold_is_the_default_not_the_stale_sqlite_row(self):
-        self.serve(answering(threshold=None))
-        text = self.text_of(self.run_hook(tokens=HIGH))
-        self.assertIn("250,000 / 400,000", text)
+        self.serve(Script(threshold=None))
+        self.assertIn("250,000 / 400,000", self.text_of(self.run_hook()))
 
-    def test_the_requests_carry_the_agents_own_token_and_only_the_want(self):
-        d = self.serve(answering(threshold=400000))
-        self.text_of(self.run_hook())
-        self.assertEqual({c["path"] for c in d.log}, {ROUTE})
-        self.assertTrue(all(c["auth"] == "Bearer " + TOKEN for c in d.log))
-        self.assertEqual([c["body"] for c in d.log], [{"want": "threshold"}, {"want": "handoff"}])
-
-    def test_below_the_line_only_the_threshold_is_asked(self):
-        d = self.serve(answering(threshold=400000))
+    def test_below_the_line_only_the_record_call_is_made(self):
+        d = self.serve()
         p = self.run_hook(tokens=LOW)
-        self.assertEqual(p.returncode, 0)
         self.assertEqual(p.stdout.strip(), "")
-        self.assertEqual(d.wants(), ["threshold"])
+        self.assertEqual(d.calls(), [(RECORD, None)])
 
-    def test_a_spawned_sub_agent_never_asks_for_the_handoff(self):
-        d = self.serve(answering(threshold=400000))
+    def test_a_spawned_sub_agent_records_tokens_and_spans_but_never_injects(self):
+        d = self.serve()
         p = self.run_hook(agent_id="sub-uuid")
         self.assertEqual(p.stdout.strip(), "")
-        self.assertEqual(d.wants(), ["threshold"])
-        self.assertEqual(self.handoff_rows(), 0)
+        self.assertEqual(d.calls(), [(RECORD, None)])  # no dedup read, no facts, no audit row
+        self.assertEqual(len(d.log[0]["body"]["spans"]), 2)
+        self.assertEqual(self.script.audit_rows, [])
+        self.assertNoSqliteTouch()
 
-    def test_without_pg_mode_the_dashboard_is_not_asked_and_sqlite_is_read(self):
-        d = self.serve(answering(threshold=200000))
+    def test_the_requests_carry_the_agents_own_token(self):
+        d = self.serve()
+        self.text_of(self.run_hook())
+        self.assertEqual({c["path"] for c in d.log}, {RECORD, FACTS, AUDIT})
+        self.assertTrue(all(c["auth"] == "Bearer " + TOKEN for c in d.log))
+
+    def test_without_pg_mode_the_dashboard_is_not_asked_and_sqlite_is_read_and_written(self):
+        d = self.serve(Script(threshold=200000))
         text = self.text_of(self.run_hook(pg=False))
         self.assertEqual(d.log, [])
         self.assertIn("stale sqlite work", text)
         self.assertIn("250,000 / 123,456", text)
+        self.assertNotEqual(sha(self.db_path), self.db_hash)  # the SQLite path still writes its rows
 
-    def test_the_bookkeeping_still_goes_to_sqlite_in_pg_mode(self):
-        # token_usage / spans / the audit row stay on SQLite until H2: the hook still writes them (and the next cell relies on it)
-        self.serve(answering(threshold=400000))
+
+class TestDedupPair(Base):
+    def test_the_emit_audit_pair_dedups_the_next_call(self):
+        # the audit row lands (through the dashboard), the next call reads it back and emits nothing
+        d = self.serve()
         self.text_of(self.run_hook())
-        conn = sqlite3.connect(self.db_path)
-        try:
-            self.assertEqual(conn.execute("SELECT COUNT(*) FROM token_usage").fetchone()[0], 1)
-        finally:
-            conn.close()
-        self.assertEqual(self.handoff_rows(), 1)
-
-
-class TestDedupCoupling(Base):
-    def test_the_dedup_still_reads_the_sqlite_row_the_same_hook_wrote(self):
-        # Two consecutive qualifying calls, unchanged state: the first emits and writes the audit row (SQLite), the
-        # second must emit NOTHING. If the dedup read moved to a PG hook_audit_log that holds no 'handoff' row, the
-        # second call would see "no prior row" and emit again, on every tool call.
-        d = self.serve(answering(threshold=400000))
-        first = self.run_hook(tokens=HIGH)
-        self.text_of(first)
-        self.assertEqual(self.handoff_rows(), 1)
-        second = self.run_hook(tokens=HIGH)
+        self.assertEqual(len(self.script.audit_rows), 1)
+        row = self.script.audit_rows[0]["body"]
+        self.assertEqual((row["hook_type"], row["verdict"], row["trigger_source"], row["session_id"], row["tool_name"]),
+                         ("PostToolUse", "handoff", "watchdog", "sess-1", "Bash"))
+        self.assertRegex(row["reason"], r"^ctx=\d+%$")
+        self.assertTrue(row["content_hash"])
+        self.assertNotIn("agent_id", row)  # the agent is the token's
+        n = len(d.log)
+        second = self.run_hook()
         self.assertEqual(second.returncode, 0)
         self.assertEqual(second.stdout.strip(), "")
-        self.assertEqual(self.handoff_rows(), 1)
-        # the second call still asked the threshold and (rule 4) built the text once to compare it: at most one handoff call
-        self.assertEqual(d.wants(), ["threshold", "handoff", "threshold", "handoff"])
+        self.assertEqual(len(self.script.audit_rows), 1)
+        # record, the dedup read, then (rule 4) the facts to compare the content: unchanged -> nothing emitted, no audit row
+        self.assertEqual(d.calls()[n:], [(RECORD, None), (FACTS, "prior_handoff"), (FACTS, "handoff")])
 
     def test_a_changed_fact_emits_again_once_the_gap_has_passed(self):
-        self.serve(answering(threshold=400000))
-        self.text_of(self.run_hook(tokens=HIGH))
-        conn = sqlite3.connect(self.db_path)
-        conn.execute("UPDATE hook_audit_log SET ts = ts - 1000 WHERE verdict = 'handoff'")
-        conn.commit()
-        conn.close()
-        changed = dict(STUB_FACTS, last_outgoing="a different next step")
-        self.dash.close()
-        self.serve(answering(threshold=400000, facts=changed))
-        self.assertIn("a different next step", self.text_of(self.run_hook(tokens=HIGH)))
-        self.assertEqual(self.handoff_rows(), 2)
+        self.serve()
+        self.text_of(self.run_hook())
+        self.script.audit_rows[0]["answer"]["ts"] -= 1000
+        self.script.facts = dict(STUB_FACTS, last_outgoing="a different next step")
+        self.assertIn("a different next step", self.text_of(self.run_hook()))
+        self.assertEqual(len(self.script.audit_rows), 2)
+
+    def test_an_answer_of_null_is_a_first_crossing_and_emits(self):
+        d = self.serve()
+        self.script.prior = (200, None, 0)
+        self.text_of(self.run_hook())
+        self.assertEqual(d.calls()[-1], (AUDIT, None))
+
+    def test_a_failed_audit_write_after_the_emit_is_one_stderr_line_and_the_text_is_still_injected(self):
+        d = self.serve()
+        self.script.audit = (500, {"error": "x"}, 0)
+        p = self.run_hook()
+        self.assertIn("stub work item", self.text_of(p))
+        self.assertEqual(p.stderr.count("\n"), 1, p.stderr)
+        self.assertIn("audit row was not written", p.stderr)
+        self.assertEqual([c for c in d.paths() if c == AUDIT], [AUDIT])  # once, no retry
+        self.assertNoSqliteTouch()
 
 
 class TestRouteFailures(Base):
-    """A route that does not answer usably: injection absent, exit 0, no audit row, no SQLite read, inside the short budget."""
+    """A route that does not answer usably: injection absent, exit 0, no audit row, no SQLite touch, inside the short budget."""
 
-    def assertSilent(self, p, d, wants):
-        self.assertEqual(p.returncode, 0, p.stderr)
-        self.assertEqual(p.stdout.strip(), "")
-        self.assertEqual(self.handoff_rows(), 0)
-        self.assertEqual(d.wants() if d else [], wants)
-        self.assertLess(p.wall, 4.0)  # interpreter start + the 1.5 s budget, far under the 10 s harness timeout
-
-    def test_every_threshold_failure_injects_nothing_and_never_falls_back(self):
+    def test_every_record_failure_injects_nothing_and_never_falls_back(self):
         cases = {
-            "5xx": dict(threshold_status=503, threshold_raw={"error": "x"}),
-            "403": dict(threshold_status=403, threshold_raw={"error": "forbidden"}),
-            "not json": dict(threshold_raw=b"<html>"),
-            "missing key": dict(threshold_raw={"other": 1}),
-            "string": dict(threshold_raw={"threshold_tokens": "400000"}),
-            "negative": dict(threshold_raw={"threshold_tokens": -5}),
-            "boolean": dict(threshold_raw={"threshold_tokens": True}),
-            "timeout": dict(threshold_delay=6),
+            "5xx": (503, {"error": "x"}, 0),
+            "403": (403, {"error": "forbidden"}, 0),
+            "not json": (200, b"<html>", 0),
+            "missing key": (200, {"other": 1}, 0),
+            "string": (200, {"threshold_tokens": "400000"}, 0),
+            "negative": (200, {"threshold_tokens": -5}, 0),
+            "boolean": (200, {"threshold_tokens": True}, 0),
+            "timeout": (200, {"threshold_tokens": 400000}, 6),
         }
-        for name, kw in cases.items():
+        for name, answer in cases.items():
             with self.subTest(name):
-                d = self.serve(answering(**kw))
-                p = self.run_hook(tokens=HIGH)
-                # one threshold call, no retry, and no handoff call: no threshold means no pct and no HANDOFF
-                self.assertSilent(p, d, ["threshold"])
+                self.serve()
+                self.script.record = answer
+                p = self.run_hook()
+                # one record call, no retry, and nothing after it: no threshold means no pct and no HANDOFF
+                self.assertSilent(p, [(RECORD, None)])
                 self.dash.close()
 
     def test_a_refused_connection_returns_at_once_and_injects_nothing(self):
-        p = self.run_hook(tokens=HIGH, url=closed_port_url())
+        p = self.run_hook(url=closed_port_url())
         self.assertEqual(p.returncode, 0)
         self.assertEqual(p.stdout.strip(), "")
-        self.assertEqual(self.handoff_rows(), 0)
         self.assertLess(p.wall, 2.5)
+        self.assertNoSqliteTouch()
+
+    def test_every_prior_handoff_failure_injects_nothing_it_never_fails_open(self):
+        # a failed dedup read must NOT read as "no prior row" (that rule is for an ANSWER of null): else the hook would
+        # emit on every tool call. No facts call, no injection, no audit row.
+        cases = {
+            "5xx": (500, {"error": "x"}, 0),
+            "403": (403, {"error": "forbidden"}, 0),
+            "not json": (200, b"{oops", 0),
+            "not an object": (200, [1, 2], 0),
+            "ts not an integer": (200, {"ts": "100", "reason": "ctx=61%", "content_hash": "h"}, 0),
+            "reason not text": (200, {"ts": 100, "reason": 5, "content_hash": "h"}, 0),
+            "timeout": (200, None, 6),
+        }
+        for name, answer in cases.items():
+            with self.subTest(name):
+                self.serve()
+                self.script.prior = answer
+                p = self.run_hook()
+                self.assertSilent(p, [(RECORD, None), (FACTS, "prior_handoff")])
+                self.assertEqual(self.script.audit_rows, [])
+                self.dash.close()
 
     def test_every_handoff_failure_injects_nothing_and_writes_no_audit_row(self):
         bad_facts = {
-            "5xx": dict(handoff_status=500, handoff_raw={"error": "x"}),
-            "403": dict(handoff_status=403, handoff_raw={"error": "forbidden"}),
-            "not json": dict(handoff_raw=b"{oops"),
-            "not an object": dict(handoff_raw=[1, 2]),
-            "own malformed": dict(facts=dict(STUB_FACTS, own={"status": 1})),
-            "too many recent rows": dict(facts=dict(STUB_FACTS, recent=STUB_FACTS["recent"] * 4)),
-            "card number not an integer": dict(facts=dict(STUB_FACTS, cards=[{"number": "7", "title": "t", "status": "waiting"}])),
-            "last_outgoing not text": dict(facts=dict(STUB_FACTS, last_outgoing=5)),
-            "timeout": dict(handoff_delay=6),
+            "5xx": (500, {"error": "x"}, 0),
+            "403": (403, {"error": "forbidden"}, 0),
+            "not json": (200, b"{oops", 0),
+            "not an object": (200, [1, 2], 0),
+            "own malformed": (200, dict(STUB_FACTS, own={"status": 1}), 0),
+            "too many recent rows": (200, dict(STUB_FACTS, recent=STUB_FACTS["recent"] * 4), 0),
+            "card number not an integer": (200, dict(STUB_FACTS, cards=[{"number": "7", "title": "t", "status": "waiting"}]), 0),
+            "last_outgoing not text": (200, dict(STUB_FACTS, last_outgoing=5), 0),
+            "timeout": (200, STUB_FACTS, 6),
         }
-        for name, kw in bad_facts.items():
+        for name, answer in bad_facts.items():
             with self.subTest(name):
-                d = self.serve(answering(threshold=400000, **kw))
-                p = self.run_hook(tokens=HIGH)
-                self.assertSilent(p, d, ["threshold", "handoff"])
+                self.serve()
+                self.script.handoff = answer
+                p = self.run_hook()
+                self.assertSilent(p, [(RECORD, None), (FACTS, "prior_handoff"), (FACTS, "handoff")])
+                self.assertEqual(self.script.audit_rows, [])
                 self.dash.close()
 
     def test_a_5xx_is_asked_once(self):
-        d = self.serve(answering(threshold_status=500, threshold_raw={"error": "x"}))
-        self.run_hook(tokens=HIGH)
+        d = self.serve()
+        self.script.record = (500, {"error": "x"}, 0)
+        self.run_hook()
         self.assertEqual(len(d.log), 1)
 
     def test_a_slow_dashboard_costs_at_most_the_short_deadline(self):
-        d = self.serve(answering(threshold=400000, threshold_delay=6))
-        p = self.run_hook(tokens=HIGH)
+        d = self.serve()
+        self.script.record = (200, {"threshold_tokens": 400000}, 6)
+        p = self.run_hook()
         self.assertEqual(p.stdout.strip(), "")
         self.assertLess(p.wall, 3.5)
         self.assertEqual(len(d.log), 1)
 
-    def test_the_two_calls_share_one_short_deadline(self):
-        # the threshold answers after 1.0 s, the handoff would take 6 s: ~0.5 s is left for it, so the run ends near 1.5 s in
-        # total, NOT 1.0 + 1.5 (a per-call budget). The pre-read work of the hook (interpreter, transcript) is a few ms.
-        self.serve(answering(threshold=400000, threshold_delay=1.0, handoff_delay=6))
-        p = self.run_hook(tokens=HIGH)
+    def test_the_calls_share_one_short_deadline(self):
+        # the record call answers after 1.0 s, the dedup read would take 6 s: ~0.5 s is left for it, so the run ends near 1.5 s
+        # in total, NOT 1.0 + 1.5 (a per-call budget). The pre-read work of the hook (interpreter, transcript) is a few ms.
+        self.serve()
+        self.script.record = (200, {"threshold_tokens": 400000}, 1.0)
+        self.script.prior = (200, None, 6)
+        p = self.run_hook()
         self.assertEqual(p.stdout.strip(), "")
-        self.assertEqual(self.handoff_rows(), 0)
+        self.assertEqual(self.script.audit_rows, [])
         self.assertLess(p.wall, 2.3)
 
 
@@ -382,11 +510,9 @@ class TestParityOfTheAdapters(unittest.TestCase):
         self.assertEqual(facts["own"]["task_ref"], "ref-1")
 
         # what the route would answer for the same rows: the same dict, through JSON
-        class Stub:
-            pass
         calls = []
 
-        def fake(agent_id, session_id, want, deadline):
+        def fake(agent_id, session_id, want, deadline, extra=None):
             calls.append(want)
             return json.loads(json.dumps(facts))
         original = self.hook._route_call
@@ -412,6 +538,19 @@ class TestParityOfTheAdapters(unittest.TestCase):
         self.assertNotIn("Aktualis feladat", text)
         self.assertNotIn("Nyitott kartyak", text)
         self.assertNotIn("Kovetkezo lepes", text)
+
+    def test_the_dedup_decision_is_the_same_over_a_sqlite_row_and_a_route_answer(self):
+        # decide_emit(prev, ...) is the one rule: SQLite feeds it the row tuple, PG mode the route's answer as the same tuple
+        hook = self.hook
+        now = 10_000
+        row = (now - 10, "ctx=62%", "h-same")
+        self.assertEqual(hook.decide_emit(None, 0.62, now, lambda: "t")[0], True)  # no prior row: first crossing
+        self.assertEqual(hook.decide_emit(row, 0.72, now, lambda: "t")[0], True)  # band changed
+        # same band, changed content, but inside the 300 s gap: nothing (rule 4 needs the gap too)
+        self.assertEqual(hook.decide_emit(row, 0.62, now, lambda: "changed")[0], False)
+        text = "stable"
+        same = (now - 1000, "ctx=62%", hook._hash_handoff_text(text))
+        self.assertEqual(hook.decide_emit(same, 0.62, now, lambda: text), (False, None, None))
 
 
 if __name__ == "__main__":

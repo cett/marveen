@@ -11,13 +11,14 @@ import { describe, it, expect, beforeEach, afterEach, afterAll, beforeAll } from
 import { spawn } from 'node:child_process'
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3'
 import { db, dbx } from '../db.js'
 import { testDbMode, useTestDb } from './helpers/with-test-db.js'
 import { tryHandleHooksTenant } from '../web/routes/hooks-tenant.js'
+import { tryHandleHookAudit } from '../web/routes/hook-audit.js'
 import type { RouteContext } from '../web/routes/types.js'
 
 const INSTALL = resolve(__dirname, '..', '..')
@@ -135,7 +136,9 @@ function runWatchdog(envVars: Record<string, string>, transcript: string): Promi
 
 function writeTranscript(inputTokens: number): string {
   const file = join(WORK, 'transcript.jsonl')
-  writeFileSync(file, JSON.stringify({
+  // a real user-turn start, then the assistant line with the usage: the hook records an agent.turn and a model.call span
+  const turn = { type: 'user', timestamp: '2026-09-08T09:59:00.000Z', uuid: 'turn-uuid-1', sessionId: 'sess-1', message: { role: 'user', content: 'hi' } }
+  writeFileSync(file, JSON.stringify(turn) + '\n' + JSON.stringify({
     type: 'assistant', timestamp: '2026-09-08T10:00:00.000Z', sessionId: 'sess-1',
     message: { id: 'msg_1', model: 'test-model', usage: { input_tokens: inputTokens, output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, content: [{ type: 'text', text: 'hi' }] },
   }) + '\n')
@@ -296,7 +299,9 @@ describe.skipIf(testDbMode() === 'pg')('the Python hooks: SQLite mode and PG mod
         req, res, path: url.pathname.replace('/api/v1/', '/api/'), method: req.method ?? 'GET', url, role: 'fleet_agent',
         tokenAgentId: bearer === TOKEN ? 'agent-a' : undefined, tenantId: null,
       } as unknown as RouteContext
-      tryHandleHooksTenant(ctx).then((handled) => { if (!handled) { res.writeHead(404); res.end('{}') } })
+      // the watchdog's audit row goes through the existing hook-audit route (the same server, the same live database)
+      const handle = ctx.path === '/api/hook-audit' ? tryHandleHookAudit : tryHandleHooksTenant
+      handle(ctx).then((handled) => { if (!handled) { res.writeHead(404); res.end('{}') } })
         .catch(() => { res.writeHead(500); res.end('{}') })
     })
     await new Promise<void>((ok) => server.listen(0, '127.0.0.1', ok))
@@ -379,7 +384,8 @@ describe.skipIf(testDbMode() === 'pg')('the Python hooks: SQLite mode and PG mod
       await fx.seed()
       const transcript = writeTranscript(fx.tokens)
       const sqliteCopy = snapshot()
-      const pgCopy = snapshot() // the PG mode still writes (token row, spans, audit row) and dedups on SQLite, until the usage route
+      // the PG mode never opens a SQLite file: its path names a file that must still not exist afterwards
+      const pgCopy = join(WORK, 'must-not-exist.db')
       const sqlite = await runWatchdog(sqliteEnv(sqliteCopy), transcript)
       const pg = await runWatchdog(hookEnv({ LEDGER_DB_PATH: pgCopy, ...WATCHDOG_PG, DASHBOARD_BASE_URL: baseUrl }), transcript)
       expect(sqlite.code, sqlite.stderr).toBe(0)
@@ -388,9 +394,40 @@ describe.skipIf(testDbMode() === 'pg')('the Python hooks: SQLite mode and PG mod
       expect(want, 'the SQLite mode injected a HANDOFF (not vacuous)').not.toBeNull()
       for (const piece of fx.expectText) expect(want, piece).toContain(piece)
       expect(injectedText(pg.stdout)).toBe(want)
-      expect(requests, 'the PG mode asked the route twice (threshold, facts), not the file').toBe(2)
+      expect(existsSync(pgCopy), 'the PG mode did not create or open a SQLite file').toBe(false)
+      expect(requests, 'the PG mode made four calls (record, dedup read, facts, audit row), not one per span').toBe(4)
     }, 60000)
   }
+
+  it('the writes: one transcript through the SQLite hook and through hook + routes gives the same token_usage row, the same spans and the same audit row', async () => {
+    wdSeq = 0
+    await wdBoard('agent-a', 'active', 'writing the rows', 1)
+    const transcript = writeTranscript(250000)
+    const copy = snapshot()
+    const noFile = join(WORK, 'must-not-exist.db')
+    const sqlite = await runWatchdog(sqliteEnv(copy), transcript)
+    const pg = await runWatchdog(hookEnv({ LEDGER_DB_PATH: noFile, ...WATCHDOG_PG, DASHBOARD_BASE_URL: baseUrl }), transcript)
+    expect(sqlite.code, sqlite.stderr).toBe(0)
+    expect(pg.code, pg.stderr).toBe(0)
+    expect(existsSync(noFile)).toBe(false)
+    const queries = {
+      usage: 'SELECT agent, session_id, timestamp, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, thinking_tokens, model, content_preview, tool_name, tenant_id FROM token_usage ORDER BY id',
+      spans: 'SELECT trace_id, span_id, parent_span_id, agent_id, operation, start_ms, end_ms, status, attributes, tenant_id FROM otel_spans ORDER BY span_id',
+      audit: "SELECT hook_type, verdict, tool_name, content_hash, reason, session_id, trigger_source, tenant_id, trace_id FROM hook_audit_log WHERE verdict = 'handoff'",
+    }
+    const file = new Database(copy, { readonly: true })
+    try {
+      for (const [what, sql] of Object.entries(queries)) {
+        const want = file.prepare(sql).all()
+        const got = await dbx.all(sql)
+        expect(want.length, `${what}: the SQLite hook wrote it (not vacuous)`).toBeGreaterThan(0)
+        expect(got, what).toEqual(want)
+      }
+      expect(file.prepare(queries.spans).all().map((r) => (r as { operation: string }).operation).sort()).toEqual(['agent.turn', 'model.call'])
+    } finally {
+      file.close()
+    }
+  }, 60000)
 
   it('the one deliberate clip: the route bounds a card title at 300 characters, the SQLite hook printed it whole', async () => {
     wdSeq = 0
