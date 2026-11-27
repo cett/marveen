@@ -248,6 +248,11 @@ esac
 # the live database must answer to the backup role before anything is created
 psql_as "${BACKUP_PASSFILE}" "${BACKUP_ROLE}" "${LIVE_DB}" "SELECT 1" >/dev/null 2>"${WORK}/live.err" \
   || fail "cannot connect as ${BACKUP_ROLE} to the live database ${LIVE_DB}: $(head -c 200 "${WORK}/live.err" | tr '\n' ' ')"
+# Both sides are counted as the backup role, and the tables are under forced row-level security: a backup role that does NOT
+# bypass it would see 0 rows on both sides, and 0 = 0 would be a false OK. Superuser or BYPASSRLS is required, checked here.
+BACKUP_BYPASS="$(psql_as "${BACKUP_PASSFILE}" "${BACKUP_ROLE}" "${LIVE_DB}" \
+  "SELECT (rolsuper OR rolbypassrls)::text FROM pg_roles WHERE rolname = current_user" 2>/dev/null | tr -d '[:space:]')"
+[[ "${BACKUP_BYPASS}" == "true" ]] || fail "role ${BACKUP_ROLE} neither bypasses row-level security (BYPASSRLS) nor is a superuser (got '${BACKUP_BYPASS}'): the row counts would be 0 on both sides and the drill would pass without proving anything"
 
 # The restored copy is counted as the backup role, so the backup role must reach a database that is NOT the live one: its
 # password file needs * in the database field (the throwaway name changes every run; libpq has no partial match). Tried

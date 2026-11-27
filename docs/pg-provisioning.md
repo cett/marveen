@@ -153,6 +153,10 @@ Client version: the `pg_restore` the script uses must be the SAME major as the s
 must not name a newer major than the server. The script checks both before it creates anything and names the fix; it looks in
 `PG_DRILL_BIN_DIR` (default `/opt/homebrew/opt/postgresql@16/bin`) first, then on `PATH`.
 
+For about 15 seconds per run the throwaway database holds a COPY of the production data, and the drill role owns it; it is
+dropped at the end of the run (and by the orphan sweep after a killed one). The backup role must bypass row-level security
+(BYPASSRLS): the script refuses to run otherwise, because both sides would count 0 rows.
+
 Orphans: the EXIT trap drops the throwaway database on every ending but SIGKILL (the command task's `timeoutMs` may send
 it). So each run starts by dropping databases named `marveen_drill_<14 digit UTC stamp>_<pid>` that the drill role OWNS and
 whose stamp is older than 24 hours; the summary line says how many. A younger one, and one of another owner, is never

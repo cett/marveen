@@ -518,6 +518,20 @@ describe('pg-restore-drill.sh', () => {
     }
   }, 60000)
 
+  it('FAIL: a backup role that does not bypass row-level security is refused (both sides would count 0 and 0 = 0 would pass), nothing is created', async () => {
+    const weak = `drilltest_nobypass_${suffix}`
+    await adminSql(`CREATE ROLE ${quote(weak)} LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD 'harness-only-weak'`)
+    try {
+      const weakPass = passfile('pgpass-weak', weak, 'harness-only-weak')
+      const r = runDrill(dumpSeeded, { PG_DRILL_BACKUP_ROLE: weak, PG_DRILL_BACKUP_PASSFILE: weakPass })
+      expect(r.status).toBe(1)
+      expect(lastLine(r.stderr)).toContain(`role ${weak} neither bypasses row-level security`)
+      expect(await leftovers()).toEqual([])
+    } finally {
+      await admin.query(`DROP ROLE IF EXISTS ${quote(weak)}`).catch(() => undefined)
+    }
+  }, 90000)
+
   it('FAIL: a backup password file whose database field names only the live database is refused in the preflight, with the fix, and nothing is created', async () => {
     const liveOnly = passfile('pgpass-backup-live-only', PG_TEST_BACKUP_ROLE, BACKUP_PASSWORD, 0o600, live.name)
     const r = runDrill(dumpSeeded, { PG_DRILL_BACKUP_PASSFILE: liveOnly })
