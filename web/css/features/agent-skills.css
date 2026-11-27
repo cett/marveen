@@ -293,6 +293,8 @@
   border-color: var(--warning);
   box-shadow: 0 4px 12px color-mix(in srgb, var(--warning) 20%, transparent);
 }
+/* state badges of the Skills screen (web/modules/skills-merge.js skillFlags) */
+.skills-badge--file_missing, .skills-badge--not_synced, .skills-badge--not_live { background: var(--warning-bg, rgba(245, 158, 11, 0.15)); color: var(--warning, #f59e0b); }
 .skills-tag--agent {
   background: color-mix(in srgb, var(--warning) 15%, transparent);
   color: var(--warning);

@@ -11,7 +11,7 @@ import { parseMultipart } from '../multipart.js'
 import { readBody, json, parseObjectBody, requireStringFields, requireBooleanFields, RequestBodyTooLargeError } from '../http-helpers.js'
 import { recordFleetSkillWriteDenied } from '../token-shadow.js'
 import { sanitizeSkillName, shellEscape } from '../sanitize.js'
-import { regenSingleSkillFile, removeGeneratedSkillFile, removeGeneratedCompanionFile } from '../skill-regen.js'
+import { regenSingleSkillFile, removeGeneratedSkillFile, removeGeneratedCompanionFile, resolveSkillPath } from '../skill-regen.js'
 import { extractSkillArchive, quarantineStagedSkills, removeStage, type ExtractResult } from '../skill-import-quarantine.js'
 import { MAX_SKILL_FILE_BYTES, MAX_SKILL_FILES_PER_SKILL, normalizeSkillRelPath } from '../../skill-files.js'
 import { skillActorFromRoute } from '../skill-actor.js'
@@ -52,6 +52,13 @@ function fileBackedSkillSpec(id: string): { name: string; isGlobal: boolean } | 
     return { name: parts[2], isGlobal: false }
   }
   return null
+}
+
+/** Is the canonical SKILL.md of this skill id on disk? null when the id has no single canonical file (see resolveSkillPath). */
+export function skillFilePresent(id: string): boolean | null {
+  const p = resolveSkillPath(id)
+  if (p === null) return null
+  try { return statSync(p).isFile() } catch { return false }
 }
 
 function parseSkillDescription(content: string): string {
@@ -701,6 +708,14 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     if (fleetAgent) {
       const have = new Set(rows.map(r => r.id))
       rows = [...rows, ...(await listLiveSkills()).filter(r => fleetReadable(r.id, r.tenant_id) && !have.has(r.id))]
+    }
+    // The Skills screen lists from here (the rows are the source of truth, the files are the loader's cache). For the ADMIN each
+    // row says whether its canonical SKILL.md is on disk, so the screen can badge "file missing" instead of hiding the row:
+    // true / false for the global/<name> and agent/<agent>/<name> ids, null for an id that has no single canonical file (a tenant
+    // skill is generated per agent). Machine facts: nobody else gets the field.
+    if (isAdmin) {
+      json(res, { skills: rows.map(r => ({ ...r, file_present: skillFilePresent(r.id) })) })
+      return true
     }
     json(res, { skills: rows })
     return true
