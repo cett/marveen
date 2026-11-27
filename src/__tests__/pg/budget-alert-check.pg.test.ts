@@ -122,9 +122,9 @@ describe('under the system job (the wrapper of the job): the check sees the data
     expect(out.statuses[0]).toMatchObject({ level: 'warning', spent: 900 })
     expect(notify).toHaveBeenCalledTimes(1)
     const line = info.mock.calls.find((c) => c[1] === 'budget-alert-check: evaluated')
-    expect(line?.[0]).toMatchObject({ backend: 'pg', budgets: 1, results: [{ id: 'global-monthly', level: 'warning', ratio: 0.9 }] })
-    // the line carries no spend and no amount: only the id, the level and the rounded ratio
-    expect(JSON.stringify(line?.[0])).not.toContain('900')
+    // the exact shape, not a subset: the line carries the backend, the count, and per budget only the id, the level and the
+    // rounded ratio. A spend, an amount or any other key added to it fails here (no spend and no amount in the line)
+    expect(line?.[0]).toEqual({ backend: 'pg', budgets: 1, results: [{ id: 'global-monthly', level: 'warning', ratio: 0.9 }] })
   })
 })
 
@@ -162,26 +162,51 @@ describe('the agent and the tenant scopes read their own slice, the raw table an
   })
 })
 
+/** The connections the app role holds on the test database right now. */
+async function appConnections(db: PgTestDb): Promise<number> {
+  return Number((await db.pool.query(
+    'SELECT COUNT(*) AS n FROM pg_stat_activity WHERE usename = $1 AND datname = current_database()',
+    [PG_TEST_APP_ROLE],
+  )).rows[0].n)
+}
+
+/** Waits (up to 3 s) until the app role is back to `before` connections: a closed pool leaves at once, an open one stays for the idle timeout. */
+async function settlesTo(db: PgTestDb, before: number): Promise<number> {
+  const deadline = Date.now() + 3000
+  let now = await appConnections(db)
+  while (now > before && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    now = await appConnections(db)
+  }
+  return now
+}
+
 describe('the entry point: the pool is ended, and a boot failure is a named, URL-free error', () => {
   it('the app role holds no connection after the run (a job that keeps its pool would hold one for the idle timeout)', async () => {
     const db = await seededDb()
     await addBudget(db, { id: 'global-monthly', scope: 'global', amount: 1000 })
     await addRaw(db, 'default', 'agent-a', 600, 0)
-    const appConnections = async (): Promise<number> => Number((await db.pool.query(
-      'SELECT COUNT(*) AS n FROM pg_stat_activity WHERE usename = $1 AND datname = current_database()',
-      [PG_TEST_APP_ROLE],
-    )).rows[0].n)
-    const before = await appConnections()
+    const before = await appConnections(db)
 
     await runBudgetAlertJob(NOW_MS)
 
-    const deadline = Date.now() + 3000
-    let now = await appConnections()
-    while (now > before && Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, 100))
-      now = await appConnections()
-    }
-    expect(now).toBe(before)
+    expect(await settlesTo(db, before)).toBe(before)
+  })
+
+  it('a job that fails AFTER the boot still ends its pool (the close is on the error path too, not only on success)', async () => {
+    const db = await seededDb()
+    await addBudget(db, { id: 'global-monthly', scope: 'global', amount: 1000 })
+    await addRaw(db, 'default', 'agent-a', 600, 0)
+    // the budgets read succeeds, the spend read that follows it fails: the boot is complete when the job throws
+    await db.pool.query('ALTER TABLE token_usage_monthly RENAME TO token_usage_monthly_gone')
+    const before = await appConnections(db)
+
+    const err = await runBudgetAlertJob(NOW_MS).then(() => undefined, (e: unknown) => e)
+
+    expect(err).toBeInstanceOf(Error)
+    expect(err).not.toBeInstanceOf(PgBootError)
+    expect(String((err as Error).message)).toMatch(/token_usage_monthly/)
+    expect(await settlesTo(db, before)).toBe(before)
   })
 
   it('a connection that cannot be made refuses at the pool step, and the error holds no password', async () => {
