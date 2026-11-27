@@ -17,13 +17,16 @@ this phase made redundant; that heartbeat was retired in phase 4, see below),
 emit a rolling HANDOFF summary via the
 hook's `hookSpecificOutput.additionalContext` -- the same injection channel
 scripts/hooks/ledger-replay.py and taskstate-replay.py already use, just for
-PostToolUse instead of SessionStart. The summary is built entirely from
-local SQLite reads (fleet_blackboard, kanban_cards, agent_messages) -- no
-HTTP call to the dashboard API, so a stopped/overloaded dashboard process
+PostToolUse instead of SessionStart. On a SQLite install the summary is built
+entirely from local SQLite reads (fleet_blackboard, kanban_cards, agent_messages)
+-- no HTTP call to the dashboard API, so a stopped/overloaded dashboard process
 never adds latency or a failure mode to this hook (the design report this
 phase is based on flagged an API call from inside a fail-closed hook as the
 main risk: "the watchdog must be an ultra-simple script -- no network, no DB
-writes beyond the essentials"). A HANDOFF only actually fires (and only then logs a row) when
+writes beyond the essentials"). On a PostgreSQL install (hook_pg_mode.pg_mode())
+the SQLite file is stale, so the READS that feed the threshold and the HANDOFF
+come only from POST /api/v1/hooks/watchdog-facts (see the PG-mode paragraph
+below). A HANDOFF only actually fires (and only then logs a row) when
 should_emit_handoff()'s dedup gate says so -- first crossing, a pct-band
 change, a same-band pct drop (compact/reset), or a real content change once
 enough time has passed. No new persistent state: the gate reads its own
@@ -108,7 +111,21 @@ still count.
 Logging-category hook (CLAUDE.md "Hook fail-closed policy" exception, same
 as tool-log-capture.py): fail/timeout/crash -> SILENT PASS, exit 0 always.
 This is observability + best-effort continuity, not a gate -- it must never
-block a tool call. No network calls anywhere in this script.
+block a tool call.
+
+PostgreSQL mode (H1): the SQLite file is not the source of truth after the cutover, so the two READS that feed the
+injected text -- the context_restart_gate threshold and the HANDOFF facts (own blackboard row, latest rows, open
+cards, last outgoing message) -- come ONLY from the dashboard route, in the agent's own tenant context. There is no
+fallback to SQLite after a route error: a wrong state injected at the moment the context is nearly full is worse
+than no injection. Concretely: a failed threshold call skips the HANDOFF path for this tool call; a failed handoff
+call injects nothing and writes NO audit row (a row means "actually emitted"). This hook runs on EVERY tool call, so
+the route calls get a SHORT budget (WATCHDOG_ROUTE_DEADLINE_S in total, ONE attempt, no retry; a refused connection
+returns at once), unlike the tenant gates' 7.5 s. Cost in PG mode: one loopback call per PostToolUse for the
+threshold, plus one more only when the context is past CONTEXT_PCT_THRESHOLD. The hook imports no database driver
+and reads no credential: the route is the point (a DB password must not enter every agent's shell). Still on SQLite
+in PG mode, on purpose, until H2 moves them together: the token_usage/otel_spans writes, record_handoff_audit() and
+the dedup read in should_emit_handoff() -- PG hook_audit_log holds no 'handoff' rows until the writer moves, so a PG
+dedup read would see "no prior row" and emit on every tool call. Exit 0 always.
 """
 from __future__ import annotations  # `X | None` annotations: python3 can be the macOS system 3.9
 import sys
@@ -120,6 +137,7 @@ import hashlib
 import re
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import hook_pg_mode  # noqa: E402
 import ledger_lib  # noqa: E402
 import tenant_context_lib  # noqa: E402
 
@@ -138,6 +156,14 @@ DEFAULT_THRESHOLD_TOKENS = 400_000
 # unbounded amount of context (mirrors ledger-replay.py's own byte cap).
 MAX_HANDOFF_CHARS = 2000
 HANDOFF_SUMMARY_MAX_CHARS = 600
+
+# PG mode: the dashboard route the threshold and the HANDOFF facts come from, and its budget. This hook runs on EVERY
+# PostToolUse, so the budget is far below hook_route's 7.5 s / 2 attempts (made for the tenant gates, which may wait
+# once per prompt): 1.5 s for the whole run (the threshold call and the handoff call share it), ONE attempt, no retry.
+# Absence of an injection beats a slow tool call; the next tool call asks again.
+WATCHDOG_ROUTE_PATH = "/api/v1/hooks/watchdog-facts"
+WATCHDOG_ROUTE_DEADLINE_S = 1.5
+WATCHDOG_ROUTE_ATTEMPTS = 1
 # An own blackboard row in one of these states is unfinished work the handoff must hand over together
 # with the duty to close it ('stale' is an 'active' row the sweeper gave up on, still open).
 OPEN_BLACKBOARD_STATUSES = ("active", "stale")
@@ -619,36 +645,26 @@ def _fetchall(conn, sql, params=()):
         return []
 
 
-def build_handoff(conn, agent_id: str, pct: float, tokens: int, threshold: int) -> str:
-    """Rolling HANDOFF summary per the phase-3 design report: current task,
-    last blackboard lines, open kanban cards, best-guess
-    next step, context%. Every read is local SQLite -- see module docstring."""
-    now_ts = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
-    lines = [f"[CONTEXT-WATCHDOG HANDOFF -- {datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds')}]"]
-
+def facts_from_sqlite(conn, agent_id: str) -> dict:
+    """The facts the HANDOFF is built from, read from the local SQLite file (a SQLite install). The queries are the
+    ones build_handoff always ran; each read fails soft (an unreadable table is an absent fact). The dict is the
+    shape facts_from_route() also returns, so render_handoff() cannot tell the two apart:
+      {"own": {task_ref,status,summary}|None, "recent": [{agent_id,status,summary}],
+       "cards": [{number,title,status}], "last_outgoing": str|None}"""
+    own = None
     own_bb = _fetchone(
         conn,
         "SELECT task_ref, status, summary FROM fleet_blackboard WHERE agent_id = ?",
         (agent_id,),
     )
     if own_bb:
-        task_ref, status, summary = own_bb
-        # The API caps a summary at 500 characters; the clip only matters for a row written another way,
-        # and keeps the close-the-row note below inside MAX_HANDOFF_CHARS.
-        lines.append(f"Aktualis feladat ({status}): {str(summary)[:HANDOFF_SUMMARY_MAX_CHARS]}" + (f" [kanban {task_ref}]" if task_ref else ""))
-        # A restart or a fresh session never closes the row: it stays open (and the stale sweeper
-        # marks it stale) until the agent that finishes the work says so. Tell that agent.
-        if status in OPEN_BLACKBOARD_STATUSES:
-            lines.append(HANDOFF_CLOSE_ROW_NOTE)
+        own = {"task_ref": own_bb[0], "status": own_bb[1], "summary": own_bb[2]}
 
     bb_rows = _fetchall(
         conn,
         "SELECT agent_id, status, summary FROM fleet_blackboard ORDER BY updated_at DESC LIMIT 3",
     )
-    if bb_rows:
-        lines.append("Blackboard (utolso 3):")
-        for a, status, summary in bb_rows:
-            lines.append(f"  - {a} [{status}]: {summary}")
+    recent = [{"agent_id": a, "status": s, "summary": m} for a, s, m in bb_rows]
 
     open_cards = _fetchall(
         conn,
@@ -659,18 +675,119 @@ def build_handoff(conn, agent_id: str, pct: float, tokens: int, threshold: int) 
         """,
         (agent_id,),
     )
-    if open_cards:
-        lines.append("Nyitott kartyak:")
-        for rowid, title, status in open_cards:
-            lines.append(f"  - #{rowid} [{status}]: {title}")
+    cards = [{"number": n, "title": t, "status": s} for n, t, s in open_cards]
 
     last_out = _fetchone(
         conn,
         "SELECT content FROM agent_messages WHERE from_agent = ? ORDER BY created_at DESC LIMIT 1",
         (agent_id,),
     )
-    if last_out:
-        lines.append(f"Kovetkezo lepes (utolso kimeno uzenetbol): {str(last_out[0])[:300]}")
+    return {"own": own, "recent": recent, "cards": cards, "last_outgoing": last_out[0] if last_out else None}
+
+
+def _route_call(agent_id: str, session_id, want: str, deadline):
+    """One call of the watchdog route under the short shared budget: ONE attempt, no retry. Raises hook_route.RouteError.
+    Imported here, not at the top, so a SQLite install never pays the import (urllib) on every tool call."""
+    import hook_route  # noqa: E402
+    return hook_route.call(
+        "POST", WATCHDOG_ROUTE_PATH, {"want": want}, agent_id, deadline,
+        session_id=session_id, max_attempts=WATCHDOG_ROUTE_ATTEMPTS,
+    )
+
+
+def _route_error(what: str):
+    import hook_route  # noqa: E402
+    return hook_route.RouteError("watchdog-facts: " + what)
+
+
+def new_route_deadline():
+    """The ONE budget a hook run spends on the route (the threshold call and the handoff call share it)."""
+    import hook_route  # noqa: E402
+    return hook_route.Deadline(WATCHDOG_ROUTE_DEADLINE_S)
+
+
+def threshold_from_route(agent_id: str, session_id, deadline) -> int:
+    """PG mode: the restart-gate threshold from the route (`want: threshold`). A null answer (no row, no positive
+    number) is DEFAULT_THRESHOLD_TOKENS, the same default the SQLite reader falls back to. Raises
+    hook_route.RouteError on ANY failure or a malformed answer: the caller skips the HANDOFF path, it never guesses."""
+    ans = _route_call(agent_id, session_id, "threshold", deadline)
+    if not isinstance(ans, dict) or "threshold_tokens" not in ans:
+        raise _route_error("threshold answer has no threshold_tokens")
+    v = ans["threshold_tokens"]
+    if v is None:
+        return DEFAULT_THRESHOLD_TOKENS
+    if isinstance(v, bool) or not isinstance(v, int) or v <= 0:
+        raise _route_error("threshold_tokens is not a positive integer")
+    return v
+
+
+def _is_text(v, nullable=False):
+    return (v is None and nullable) or isinstance(v, str)
+
+
+def facts_from_route(agent_id: str, session_id, deadline) -> dict:
+    """PG mode: the HANDOFF facts from the route (`want: handoff`), checked against the shape facts_from_sqlite() makes.
+    Raises hook_route.RouteError on ANY failure or a malformed answer (the caller injects nothing and writes no
+    audit row). The checks keep a garbled answer out of the text the agent reads as a system message."""
+    ans = _route_call(agent_id, session_id, "handoff", deadline)
+    if not isinstance(ans, dict):
+        raise _route_error("handoff answer is not an object")
+    own, recent, cards, last_out = ans.get("own"), ans.get("recent"), ans.get("cards"), ans.get("last_outgoing")
+    if own is not None and not (isinstance(own, dict) and _is_text(own.get("task_ref"), True)
+                                and _is_text(own.get("status")) and _is_text(own.get("summary"))):
+        raise _route_error("handoff own row is malformed")
+    if not isinstance(recent, list) or len(recent) > 3 or not all(
+            isinstance(r, dict) and _is_text(r.get("agent_id")) and _is_text(r.get("status")) and _is_text(r.get("summary"))
+            for r in recent):
+        raise _route_error("handoff recent rows are malformed")
+    if not isinstance(cards, list) or len(cards) > 5 or not all(
+            isinstance(c, dict) and isinstance(c.get("number"), int) and not isinstance(c.get("number"), bool)
+            and _is_text(c.get("title")) and _is_text(c.get("status"))
+            for c in cards):
+        raise _route_error("handoff cards are malformed")
+    if not _is_text(last_out, True):
+        raise _route_error("handoff last_outgoing is malformed")
+    return {
+        "own": ({"task_ref": own["task_ref"], "status": own["status"], "summary": own["summary"]} if own else None),
+        "recent": [{"agent_id": r["agent_id"], "status": r["status"], "summary": r["summary"]} for r in recent],
+        "cards": [{"number": c["number"], "title": c["title"], "status": c["status"]} for c in cards],
+        "last_outgoing": last_out,
+    }
+
+
+def render_handoff(facts: dict, pct: float, tokens: int, threshold: int, now=None) -> str:
+    """Rolling HANDOFF summary per the phase-3 design report: current task, last blackboard lines, open kanban
+    cards, best-guess next step, context%. A PURE function over `facts` (see facts_from_sqlite): identical facts
+    give identical text whichever adapter produced them. `now` is a seam for the parity cells."""
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    lines = [f"[CONTEXT-WATCHDOG HANDOFF -- {now.isoformat(timespec='seconds')}]"]
+
+    own_bb = facts.get("own")
+    if own_bb:
+        task_ref, status, summary = own_bb["task_ref"], own_bb["status"], own_bb["summary"]
+        # The API caps a summary at 500 characters; the clip only matters for a row written another way,
+        # and keeps the close-the-row note below inside MAX_HANDOFF_CHARS.
+        lines.append(f"Aktualis feladat ({status}): {str(summary)[:HANDOFF_SUMMARY_MAX_CHARS]}" + (f" [kanban {task_ref}]" if task_ref else ""))
+        # A restart or a fresh session never closes the row: it stays open (and the stale sweeper
+        # marks it stale) until the agent that finishes the work says so. Tell that agent.
+        if status in OPEN_BLACKBOARD_STATUSES:
+            lines.append(HANDOFF_CLOSE_ROW_NOTE)
+
+    bb_rows = facts.get("recent") or []
+    if bb_rows:
+        lines.append("Blackboard (utolso 3):")
+        for r in bb_rows:
+            lines.append(f"  - {r['agent_id']} [{r['status']}]: {r['summary']}")
+
+    open_cards = facts.get("cards") or []
+    if open_cards:
+        lines.append("Nyitott kartyak:")
+        for c in open_cards:
+            lines.append(f"  - #{c['number']} [{c['status']}]: {c['title']}")
+
+    last_out = facts.get("last_outgoing")
+    if last_out is not None:
+        lines.append(f"Kovetkezo lepes (utolso kimeno uzenetbol): {str(last_out)[:300]}")
 
     lines.append(f"Context hasznalat: {tokens:,} / {threshold:,} tokens ({pct:.0%})")
     lines.append("[/CONTEXT-WATCHDOG HANDOFF]")
@@ -679,6 +796,12 @@ def build_handoff(conn, agent_id: str, pct: float, tokens: int, threshold: int) 
     if len(text) > MAX_HANDOFF_CHARS:
         text = text[:MAX_HANDOFF_CHARS] + "\n... [truncated]\n[/CONTEXT-WATCHDOG HANDOFF]"
     return text
+
+
+def build_handoff(conn, agent_id: str, pct: float, tokens: int, threshold: int) -> str:
+    """The SQLite-install HANDOFF: facts_from_sqlite + render_handoff (the call every SQLite-mode caller and test
+    makes). PG mode never reaches this: main() builds the text from facts_from_route()."""
+    return render_handoff(facts_from_sqlite(conn, agent_id), pct, tokens, threshold)
 
 
 def record_handoff_audit(conn, agent_id, session_id, tool_name, pct, content_hash=None) -> None:
@@ -919,8 +1042,24 @@ def main():
                               duration_ms=model_call_duration_ms(transcript_path, ev))
         conn.commit()
 
-        threshold = _read_gate_threshold(agent_id)
+        # PG mode: the threshold and the HANDOFF facts come ONLY from the dashboard route (the SQLite file is stale
+        # there), under one short budget, one attempt, no retry, and NO fallback to SQLite after a failure: see the
+        # module docstring. SQLite mode: the local reads, as ever.
+        pg = hook_pg_mode.pg_mode()
+        deadline = new_route_deadline() if pg else None
+        if pg:
+            try:
+                threshold = threshold_from_route(agent_id, session_id, deadline)
+            except Exception:
+                # no threshold, no pct: skip the HANDOFF path for this call (no default guess, no SQLite). The
+                # bookkeeping above is already committed.
+                sys.exit(0)
+            facts_of = lambda: facts_from_route(agent_id, session_id, deadline)  # noqa: E731
+        else:
+            threshold = _read_gate_threshold(agent_id)
+            facts_of = lambda: facts_from_sqlite(conn, agent_id)  # noqa: E731
         pct = (tokens / threshold) if threshold > 0 else 0
+        build_text = lambda: render_handoff(facts_of(), pct, tokens, threshold)  # noqa: E731
         # Token/span bookkeeping above runs unconditionally (a sub-agent's
         # tool calls burn real tokens against the same account and should
         # still count toward CostOps budget tracking); only the HANDOFF path
@@ -928,13 +1067,17 @@ def main():
         # is fleet-agent-session-only.
         if pct >= CONTEXT_PCT_THRESHOLD and not cc_subagent_uuid:
             now_ts = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
+            # The dedup read (the prior 'handoff' row in hook_audit_log) and the audit write below STAY on SQLite
+            # in PG mode until H2 moves them together: PG hook_audit_log has no 'handoff' rows until the writer
+            # moves, so a PG dedup read would see "no prior row" and EMIT ON EVERY TOOL CALL.
+            # A route failure while the text is built (the rule-4 path here, or below) raises: nothing is emitted
+            # and no audit row is written, by the except at the end of this block.
             should_emit, handoff, content_hash = should_emit_handoff(
-                conn, agent_id, session_id, pct, now_ts,
-                lambda: build_handoff(conn, agent_id, pct, tokens, threshold),
+                conn, agent_id, session_id, pct, now_ts, build_text,
             )
             if should_emit:
                 if handoff is None:
-                    handoff = build_handoff(conn, agent_id, pct, tokens, threshold)
+                    handoff = build_text()
                 if content_hash is None:
                     content_hash = _hash_handoff_text(handoff)
                 emit_handoff(handoff)

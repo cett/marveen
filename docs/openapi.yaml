@@ -5217,6 +5217,70 @@ paths:
           description: Invalid targets
         "403":
           description: The token names no agent, or the role may not use the hook routes
+  /hooks/watchdog-facts:
+    post:
+      tags: [hooks]
+      operationId: getHookWatchdogFacts
+      summary: The facts the context watchdog hook reads on a PostgreSQL install
+      description: >
+        Used by scripts/hooks/context-watchdog.py (stdlib Python, no database driver) on a PostgreSQL install, on every
+        PostToolUse (`want: threshold`) and, once the context is past the watchdog percentage, to build the HANDOFF
+        (`want: handoff`). Returns FACTS, never text: the wording and the default threshold stay in the hook. The agent is
+        the one the bearer token names (an `agent_id` in the body is ignored); a token that names no agent is a 403.
+        Runs in the REQUEST tenant context (row-level security of the caller's tenant), not as a system job, so the
+        latest blackboard rows are the caller's tenant's rows only. NOT exempt from the missing-tenant-context refusal:
+        a shared agent with no fresh context gets a 403 and the watchdog injects nothing. Fleet-agent or admin token
+        (`hook-gate:read`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [want]
+              properties:
+                want: { type: string, enum: [threshold, handoff] }
+      responses:
+        "200":
+          description: The threshold, or the facts of the HANDOFF (which of the two follows `want`)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  threshold_tokens: { type: integer, nullable: true, description: "want threshold: thresholdTokens of the context_restart_gate setting, null when there is no usable one" }
+                  own:
+                    type: object
+                    nullable: true
+                    description: "want handoff: the caller's own blackboard row"
+                    properties:
+                      task_ref: { type: string, nullable: true }
+                      status: { type: string }
+                      summary: { type: string, maxLength: 600 }
+                  recent:
+                    type: array
+                    maxItems: 3
+                    items:
+                      type: object
+                      properties:
+                        agent_id: { type: string }
+                        status: { type: string }
+                        summary: { type: string, maxLength: 600 }
+                  cards:
+                    type: array
+                    maxItems: 5
+                    description: "The caller's open cards (in_progress, waiting, not archived); `number` is the number the dashboard shows"
+                    items:
+                      type: object
+                      properties:
+                        number: { type: integer }
+                        title: { type: string, maxLength: 300 }
+                        status: { type: string }
+                  last_outgoing: { type: string, nullable: true, maxLength: 300 }
+        "400":
+          description: Unknown `want`
+        "403":
+          description: The token names no agent, the role may not use the hook routes, or a shared agent has no fresh tenant context
   /workspace/{id}:
     get:
       tags: [workspace]

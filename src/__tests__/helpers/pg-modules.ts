@@ -136,6 +136,7 @@ export const PORTED: readonly string[] = [
   'src/__tests__/channel-coordinator-nul-and-drop.test.ts',
   'src/__tests__/hooks-tenant-route.test.ts',
   'src/__tests__/hooks-tenant-context-bootstrap.test.ts',
+  'src/__tests__/hooks-watchdog-facts-route.test.ts',
 ]
 
 /** Test files (same form) that do not, each with the reason. */

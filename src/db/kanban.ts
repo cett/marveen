@@ -18,6 +18,10 @@ import { currentTraceColumns } from './context.js'
  * number is the rowid (insertion order, never reused); in PostgreSQL the table has no rowid and the number is the
  * identity column `seq`, which `*` already returns. `alias` qualifies the columns when the table has one.
  */
+export function kanbanSeqColumn(): 'seq' | 'rowid' {
+  return dbxDialect() === 'pg' ? 'seq' : 'rowid'
+}
+
 export function kanbanSelectList(alias?: string): string {
   const q = alias ? `${alias}.` : ''
   return dbxDialect() === 'pg' ? `${q}*` : `${q}rowid AS seq, ${q}*`
@@ -655,7 +659,7 @@ export async function searchKanbanCards(opts: {
   // the running number as text ("#2abc" is not card 2); 4+ characters starting with a hex digit -> an id prefix.
   const seqText = /^#[0-9]/.test(q) ? q.slice(1) : null
   const idPrefix = [...q].length >= 4 && /^[0-9a-fA-F]/.test(q) ? likePrefix(q) : null
-  const seqCol = dbxDialect() === 'pg' ? 'seq' : 'rowid'
+  const seqCol = kanbanSeqColumn()
   let sql = `
     SELECT ${kanbanSelectList()}
     FROM kanban_cards
@@ -809,7 +813,7 @@ export async function listOtherCardIdsWithProgressEvents(cardId: string, assigne
 // untouched rather than guess). Case-insensitive: breakdown subtask ids are
 // uppercased while createKanbanCard ids stay lowercase.
 export async function getKanbanSeqByIdPrefix(prefix: string): Promise<number | null> {
-  const seqCol = dbxDialect() === 'pg' ? 'seq' : 'rowid'
+  const seqCol = kanbanSeqColumn()
   const rows = (await dbx.all(`SELECT ${seqCol} AS seq FROM kanban_cards WHERE ${eqNoCase('id', '?')} LIMIT 2`, prefix)) as { seq: number }[]
   if (rows.length !== 1) return null
   return rows[0].seq
