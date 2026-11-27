@@ -579,7 +579,7 @@ that the app sets at start) the SQLite database is not the live data, so the bac
   The planned rollback window is 24 hours. The archive stays in the rotation only while the newest `BACKUP_KEEP` archives are
   kept (default 30, one a night, so about 30 days), and then it is pruned: copy it aside, do not rely on the rotation.
 
-The detection rules are in `scripts/pg-configured.sh`, which `backup.sh` and `restore-drill.sh` source: one copy of the
+The detection rules are in `scripts/pg-configured.sh`, which `backup.sh`, `verify-restore.sh`, `restore-drill.sh`, `pre-modify-backup.sh` and `migrate-main-agent-id.sh` source: one copy of the
 function, so the scripts cannot drift apart. A `.env` that cannot be read while the marker is set counts as PostgreSQL.
 
 On a PostgreSQL install `backup.sh` does not open `store/claudeclaw.db` at all: the file is frozen, and the database is in the nightly PostgreSQL dump.

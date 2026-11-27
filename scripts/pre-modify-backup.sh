@@ -38,7 +38,9 @@ mkdir -p "$DEST"
 
 # PostgreSQL install: the database is NOT captured here. No pg_dump from this helper (no credential handling in a
 # snapshot script): the restore point is the newest nightly dump, named below with its age.
+ON_PG=0
 if pg_configured "$REPO"; then
+  ON_PG=1
   echo "  db: NOT captured (PostgreSQL install): the database is in PostgreSQL; the newest nightly dump is the restore point"
   PG_DUMP_DIR="${PG_DRILL_DUMP_DIR:-$HOME/pg-backups}"
   # Same pattern as scripts/pg-restore-drill.sh: marveen-<date>-<time>.dump only, never a probe dump.
@@ -136,4 +138,9 @@ if [ -d "$BKDIR" ]; then
 fi
 
 SIZE="$(du -sh "$DEST" 2>/dev/null | cut -f1)"
-echo "backup ok: $DEST ($SIZE, retain newest $KEEP)"
+# The last line is the one an operator reads: on PostgreSQL it must not say "ok" about a snapshot with no database.
+if [ "$ON_PG" -eq 1 ]; then
+  echo "backup ok: $DEST ($SIZE, retain newest $KEEP) -- DATABASE NOT INCLUDED (PostgreSQL install)"
+else
+  echo "backup ok: $DEST ($SIZE, retain newest $KEEP)"
+fi

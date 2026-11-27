@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# pg_configured: is this install configured for PostgreSQL? Sourced by backup.sh, verify-restore.sh and restore-drill.sh.
+# pg_configured: is this install configured for PostgreSQL? Sourced by backup.sh, verify-restore.sh, restore-drill.sh, pre-modify-backup.sh and migrate-main-agent-id.sh.
 #
 # TRUE when ANY layer says PostgreSQL, with the rules of the app (src/db/pg/url.ts, src/env.ts):
 #   1. the secret mount file ${SECRET_MOUNT_DIR:-/run/secrets}/MARVEEN_PG_URL, non-blank after trimming;

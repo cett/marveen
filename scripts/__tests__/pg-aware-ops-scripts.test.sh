@@ -105,6 +105,7 @@ for layer in env file marker; do
   [[ -n "$SNAP" && ! -e "$SNAP/claudeclaw.db" ]] && pass "P1 $layer: no database in the snapshot" || fail "P1 $layer snapshot" "a snapshot dir without claudeclaw.db" "${SNAP:-none}"
   if ! grep -q 'consistent snapshot ok' <<<"$OUT"; then pass "P1 $layer: no 'consistent snapshot ok'"; else fail "P1 $layer false green" "no 'consistent snapshot ok'" "present"; fi
   if grep -qF 'db: NOT captured (PostgreSQL install): the database is in PostgreSQL; the newest nightly dump is the restore point' <<<"$OUT"; then pass "P1 $layer: the NOT captured line"; else fail "P1 $layer NOT captured" "the line" "absent"; fi
+  if [[ "$(tail -n 1 <<<"$OUT")" == *'-- DATABASE NOT INCLUDED (PostgreSQL install)' ]]; then pass "P1 $layer: the LAST line says DATABASE NOT INCLUDED"; else fail "P1 $layer last line" "ends with -- DATABASE NOT INCLUDED (PostgreSQL install)" "$(tail -n 1 <<<"$OUT")"; fi
   [[ "$(shim_calls sqlite3)" == "0" ]] && pass "P1 $layer: zero sqlite3 calls" || fail "P1 $layer sqlite3 calls" "0" "$(shim_calls sqlite3)"
   [[ "$(sha_of "$R/store/claudeclaw.db")" == "$FROZEN_BEFORE" ]] && pass "P1 $layer: the frozen file is unchanged" || fail "P1 $layer frozen file" "same sha" "changed"
   no_leak "P1 $layer"
@@ -131,6 +132,7 @@ SNAP="$(ls -1d "$R"/store/backups/*-p2 2>/dev/null | head -1)"
 [[ $RC -eq 0 && -f "$SNAP/claudeclaw.db" ]] && pass "P2: SQLite install: the database snapshot is there, exit 0" || fail "P2 snapshot" "claudeclaw.db in the snapshot" "exit $RC"
 grep -q 'db: consistent snapshot ok' <<<"$OUT" && pass "P2: SQLite install: says 'consistent snapshot ok'" || fail "P2 line" "consistent snapshot ok" "absent"
 if ! grep -q 'NOT captured' <<<"$OUT"; then pass "P2: SQLite install: no NOT captured line"; else fail "P2 NOT captured" "absent" "present"; fi
+if [[ "$(tail -n 1 <<<"$OUT")" == backup\ ok:* && "$(tail -n 1 <<<"$OUT")" != *'NOT INCLUDED'* ]]; then pass "P2: SQLite install: the last line is the plain 'backup ok' line"; else fail "P2 last line" "backup ok: ... without NOT INCLUDED" "$(tail -n 1 <<<"$OUT")"; fi
 
 # P3: the helper is missing: refuse loudly, before any snapshot directory exists, never take the SQLite branch
 R="$(mk_install p3 nohelper)"; reset_log; BOT=""
