@@ -7,7 +7,6 @@
   },
   "include": [
     "scripts/agent-tokens.ts",
-    "scripts/dashboard-user.ts",
     "scripts/install-seed-tenant.ts",
     "scripts/materialize-skills.ts",
     "scripts/migrate-legacy-store-docs.ts",

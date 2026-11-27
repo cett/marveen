@@ -1,8 +1,5 @@
 {
   "files": {
-    "scripts/dashboard-user.ts": {
-      "getDb": 1
-    },
     "scripts/eval/recall-eval-pg-io.ts": {
       "prepare": 2
     },
@@ -29,7 +26,6 @@
     }
   },
   "notes": {
-    "scripts/dashboard-user.ts": "operator CLI that opens the database directly (dashboard stopped)",
     "scripts/eval/recall-eval-pg-io.ts": "offline recall evaluation harness over an isolated copy of the database (loads the SQLite eval copy into PostgreSQL)",
     "scripts/eval/recall-eval-run.ts": "offline recall evaluation harness over an isolated copy of the database",
     "scripts/eval/recall-eval.ts": "offline recall evaluation harness over an isolated copy of the database",

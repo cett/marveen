@@ -9,7 +9,7 @@
 //
 // dashboard-user is NOT here, on purpose: it is an admin command, and the auth-admin gate of the hooks matches the command
 // line that names the script directly. Routing it through this runner would let the gate pass a command it refuses. It keeps
-// its direct npm script and refuses on a PostgreSQL install until the cutover.
+// its direct npm script and loads the snapshot itself, before its body is imported (the same two calls as this runner).
 import { ensureConfigSnapshot } from '../src/config-bootstrap.js'
 
 const SCRIPTS = [

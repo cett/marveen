@@ -22,10 +22,20 @@ export interface SecurityResetResult {
   sessionsCleared: number
 }
 
-export async function securityReset(actor: string): Promise<SecurityResetResult> {
+/**
+ * `onDone`, when given, runs once the revocations have happened, in a finally: after the audit row, or after its failure
+ * (the revocation is not undone by a failed audit write, so the caller's alert must still go out). It is not called when a
+ * revocation itself fails (nothing was revoked that the alert could describe).
+ */
+export async function securityReset(actor: string, onDone?: (result: SecurityResetResult) => Promise<void>): Promise<SecurityResetResult> {
   const deviceKeysRevoked = await revokeAllDeviceKeys()
   const sessionsCleared = await revokeAllSessions()
-  // Counts only -- never credential material -- into the audit trail.
-  await logConfigChange('security.reset', null, `device_keys=${deviceKeysRevoked} sessions=${sessionsCleared}`, actor)
-  return { deviceKeysRevoked, sessionsCleared }
+  const result = { deviceKeysRevoked, sessionsCleared }
+  try {
+    // Counts only -- never credential material -- into the audit trail.
+    await logConfigChange('security.reset', null, `device_keys=${deviceKeysRevoked} sessions=${sessionsCleared}`, actor)
+  } finally {
+    if (onDone) await onDone(result)
+  }
+  return result
 }

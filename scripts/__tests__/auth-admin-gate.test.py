@@ -13,6 +13,7 @@ Layers:
 Run:  python3 scripts/__tests__/auth-admin-gate.test.py
 Privacy: neutral fixture data only (usernames bob / x, no real agent names, tokens or chat IDs).
 """
+import contextlib
 import importlib.util
 import json
 import os
@@ -35,6 +36,8 @@ _CANDIDATES = [
 ]
 GATE_PATH = next(p for p in _CANDIDATES if p and os.path.exists(p))
 GATE_SRC = open(GATE_PATH, encoding='utf-8').read()
+# the gate imports the PostgreSQL mode helper of its own folder (scripts/hooks/hook_pg_mode.py), as the other hooks do
+sys.path.insert(0, os.path.dirname(os.path.abspath(GATE_PATH)))
 
 os.environ['AUTH_ADMIN_GATE_NO_AUDIT'] = '1'
 
@@ -90,7 +93,10 @@ class Fixture(object):
         open(os.path.join(self.root, 'bad.sql'), 'w').write("UPDATE dashboard_users SET role='admin';\n")
         open(os.path.join(self.root, 'ok.sql'), 'w').write('SELECT count(*) FROM dashboard_users;\n')
         open(os.path.join(self.root, 'readbad.sql'), 'w').write('.read bad.sql\n')
-        self.env = {'CLAUDE_PROJECT_DIR': self.root, 'MARVEEN_STORE_DIR': self.store}
+        # the PostgreSQL mode is read from the install's .env and the secret mount: both are pinned to empty places here,
+        # so the SQLite rows stay SQLite whatever the machine running the suite has (no .env, no mount, no PG variable)
+        self.env = {'CLAUDE_PROJECT_DIR': self.root, 'MARVEEN_STORE_DIR': self.store,
+                    'CLAUDECLAW_ENV_DIR': self.root, 'SECRET_MOUNT_DIR': os.path.join(self.tmp, 'no-secrets')}
 
     def sub(self, cmd):
         return (cmd.replace('{S}', self.store).replace('{R}', self.root)
@@ -101,6 +107,9 @@ class Fixture(object):
 
 FX = Fixture()
 os.environ.update(FX.env)
+# the rows below are SQLite rows unless a context says otherwise: no PostgreSQL URL or mode marker from the machine running this
+for _k in ('MARVEEN_PG_URL', 'MARVEEN_PG_MIGRATE_URL', 'MARVEEN_PG_CONFIGURED'):
+    os.environ.pop(_k, None)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -110,6 +119,18 @@ BLOCKED = [
     # ---- the CLI itself, every verb ----
     ('npm run, -- add', 'npm run dashboard-user -- add bob'),
     ('npm run, no --', 'npm run dashboard-user add bob'),
+    # the PostgreSQL install: the same verbs with the application URL in front of the command are the same command
+    ('PG URL prefix, npm run reset-password', 'MARVEEN_PG_URL=postgres://marveen_app@127.0.0.1:5432/marveen npm run dashboard-user -- reset-password bob'),
+    ('PG URL prefix, npm run add', 'MARVEEN_PG_URL=postgres://marveen_app@127.0.0.1:5432/marveen npm run dashboard-user -- add bob --password-stdin'),
+    ('PG URL prefix, tsx security:reset', 'MARVEEN_PG_URL=postgres://marveen_app@127.0.0.1:5432/marveen tsx scripts/dashboard-user.ts security:reset'),
+    ('PG URL prefix, npx tsx sessions:clear', 'MARVEEN_PG_URL=postgres://marveen_app@127.0.0.1:5432/marveen npx tsx scripts/dashboard-user.ts sessions:clear bob'),
+    ('PG URL prefix, npm run remove', 'MARVEEN_PG_URL=postgres://marveen_app@127.0.0.1:5432/marveen npm run dashboard-user -- remove bob'),
+    # the CLI module of the app is an entry to every write verb: named in interpreter code it is the same call (path or name)
+    ('interpreter imports the CLI module and calls its entry', 'npx tsx -e "import(\'./src/dashboard-user/cli.ts\').then(m=>m.runDashboardUserCli([\'remove\',\'bob\']))"'),
+    ('interpreter names the entry function only', 'node -e "const { runDashboardUserCli } = require(process.env.X); runDashboardUserCli([\'remove\', \'bob\'])"'),
+    ('interpreter names the CLI module path only', 'npx tsx -e "import(\'./src/dashboard-user/cli.ts\').then(m=>m.default)"'),
+    ('interpreter names the CLI module path in another case', 'npx tsx -e "import(\'./src/Dashboard-User//cli.ts\').then(m=>m.default)"'),
+    ('interpreter names the CLI module path with a ./ segment', 'npx tsx -e "import(\'./src/dashboard-user/./cli.ts\').then(m=>m.default)"'),
     ('npm run reset-password + --password-stdin', 'echo pw | npm run dashboard-user -- reset-password bob --password-stdin'),
     ('npm run remove', 'npm run dashboard-user -- remove bob'),
     ('npm run sessions:clear', 'npm run dashboard-user -- sessions:clear'),
@@ -686,6 +707,10 @@ BLOCKED = [
 ALLOWED = [
     # ---- the read-only CLI form ----
     ('npm run list', 'npm run dashboard-user -- list'),
+    ('PG URL prefix, npm run list', 'MARVEEN_PG_URL=postgres://marveen_app@127.0.0.1:5432/marveen npm run dashboard-user -- list'),
+    # reads of the CLI module are not interpreter code: the source can be read, grepped and reviewed
+    ('cat of the CLI module', 'cat src/dashboard-user/cli.ts'),
+    ('grep of the entry in the CLI module', 'grep -n runDashboardUserCli src/dashboard-user/cli.ts'),
     ('writable_schema on a copy elsewhere', 'sqlite3 {O}/a.db "PRAGMA writable_schema=ON; UPDATE sqlite_master SET sql=1"'),
     ('reading sqlite_master on the live DB', 'sqlite3 {L} "select name from sqlite_master"'),
     ('npm run list no --', 'npm run dashboard-user list'),
@@ -1006,10 +1031,62 @@ ALLOWED = [
 ]
 
 
+# PostgreSQL install: the isolated-store exemption is void there (the CLI reads the install's URL, not the store dir).
+PG_URL_VALUE = 'postgres://marveen_app@127.0.0.1:5432/marveen'
+PG_ENV_BLOCKED = [
+    ('PG env, isolated store, reset-password', 'MARVEEN_STORE_DIR={O} npm run dashboard-user -- reset-password bob'),
+    ('PG env, isolated store, add with stdin', 'echo pw | MARVEEN_STORE_DIR={O} npx tsx scripts/dashboard-user.ts add bob --password-stdin'),
+    ('PG env, isolated store, remove', 'MARVEEN_STORE_DIR={O} npm run dashboard-user -- remove bob'),
+    ('PG env, isolated store, sessions:clear', 'MARVEEN_STORE_DIR={O} npm run dashboard-user -- sessions:clear'),
+    ('PG env, isolated store, security:reset', 'MARVEEN_STORE_DIR={O} npx tsx scripts/dashboard-user.ts security:reset'),
+]
+# a PostgreSQL URL variable named in the command itself: refused on a SQLite-mode gate too (the store dir is not the database)
+URL_NAMED_BLOCKED = [
+    ('PG URL prefix, isolated store, reset-password', 'MARVEEN_PG_URL=' + PG_URL_VALUE + ' MARVEEN_STORE_DIR={O} npm run dashboard-user -- reset-password bob'),
+    ('migrate URL prefix, isolated store, add', 'MARVEEN_PG_MIGRATE_URL=' + PG_URL_VALUE + ' MARVEEN_STORE_DIR={O} npx tsx scripts/dashboard-user.ts add bob --password-stdin'),
+    ('PG URL via env form, isolated store, remove', 'env MARVEEN_PG_URL=' + PG_URL_VALUE + ' MARVEEN_STORE_DIR={O} npm run dashboard-user -- remove bob'),
+    ('PG URL exported earlier in the line, isolated store, remove', 'export MARVEEN_PG_URL=' + PG_URL_VALUE + '; MARVEEN_STORE_DIR={O} npm run dashboard-user -- remove bob'),
+]
+# the mode cannot be read: fail closed, the isolated store does not exempt the command
+FAIL_CLOSED_BLOCKED = [
+    ('mode unreadable, isolated store, reset-password', 'MARVEEN_STORE_DIR={O} npm run dashboard-user -- reset-password bob'),
+]
+
+
+@contextlib.contextmanager
+def _pg_mode_on():
+    old = os.environ.get('MARVEEN_PG_URL')
+    os.environ['MARVEEN_PG_URL'] = PG_URL_VALUE
+    try:
+        yield
+    finally:
+        if old is None:
+            os.environ.pop('MARVEEN_PG_URL', None)
+        else:
+            os.environ['MARVEEN_PG_URL'] = old
+
+
+@contextlib.contextmanager
+def _pg_mode_unreadable():
+    class _Unreadable(object):
+        @staticmethod
+        def pg_mode(*_a, **_k):
+            raise OSError('the PostgreSQL mode cannot be read (test)')
+    old = sys.modules.get('hook_pg_mode')
+    sys.modules['hook_pg_mode'] = _Unreadable
+    try:
+        yield
+    finally:
+        if old is None:
+            sys.modules.pop('hook_pg_mode', None)
+        else:
+            sys.modules['hook_pg_mode'] = old
+
+
 def table_failures(mod):
     """Run both tables against a gate module; return a list of failure descriptions."""
     fails = []
-    for label, cmd in BLOCKED:
+    for label, cmd in BLOCKED + URL_NAMED_BLOCKED:
         c = FX.sub(cmd)
         try:
             mod.inspect(c, FX.root)
@@ -1018,6 +1095,24 @@ def table_failures(mod):
             pass
         except Exception as exc:   # an internal error is fail-closed in main(), but is a bug here
             fails.append('CRASH %s: %s :: %s' % (type(exc).__name__, exc, label))
+    with _pg_mode_on():
+        for label, cmd in PG_ENV_BLOCKED:
+            try:
+                mod.inspect(FX.sub(cmd), FX.root)
+                fails.append('NOT BLOCKED (PG mode): %s :: %s' % (label, cmd[:100]))
+            except (mod.Deny, mod.InspectionLimit, mod.Opaque):
+                pass
+            except Exception as exc:
+                fails.append('CRASH %s: %s :: %s' % (type(exc).__name__, exc, label))
+    with _pg_mode_unreadable():
+        for label, cmd in FAIL_CLOSED_BLOCKED:
+            try:
+                mod.inspect(FX.sub(cmd), FX.root)
+                fails.append('NOT BLOCKED (mode unreadable): %s :: %s' % (label, cmd[:100]))
+            except (mod.Deny, mod.InspectionLimit, mod.Opaque):
+                pass
+            except Exception as exc:
+                fails.append('CRASH %s: %s :: %s' % (type(exc).__name__, exc, label))
     for label, cmd in ALLOWED:
         c = FX.sub(cmd)
         try:
@@ -1316,6 +1411,17 @@ class TestLexer(unittest.TestCase):
 # MUTATION: break the gate in one spot at a time; the table must notice every time
 # ---------------------------------------------------------------------------------------------
 MUTANTS = [
+    ('CLI module path matched case-sensitively', "(?![\\w-])', re.I)", "(?![\\w-])')"),
+    ('CLI module path check removed', '    if not python and CLI_MODULE_PATH.search(text):', '    if False:'),
+    ('PG variable set earlier in the line ignored', '    texts.extend(str(k) for k in state.vars)', '    pass'),
+    # PostgreSQL install: the isolated-store exemption (fixup A1) and the CLI module entry (fixup A2)
+    ('PG mode does not void the isolated exemption', ' and not _pg_voids_isolation(seg, words, state)', ''),
+    ('PG URL name in the command does not void it', '    if any(_PG_URL_NAME.search(t) for t in texts):\n        return True', '    if False:\n        return True'),
+    ('PG mode unreadable fails open', '    except Exception:\n        return True   # fail closed', '    except Exception:\n        return False   # fail open'),
+    ('PG mode answer ignored', '        return bool(hook_pg_mode.pg_mode())', '        return False'),
+    ('CLI entry name not a mutator', "|consumeEnrollCode|runDashboardUserCli)\\b|password-hash", "|consumeEnrollCode)\\b|password-hash"),
+    ('CLI module path pattern names another folder', "CLI_MODULE_PATH = re.compile(r'dashboard-user", "CLI_MODULE_PATH = re.compile(r'disabled-mutant"),
+    ('npx drops the package flags before the interpreter check', '    inner = [pkg] + _args_after(args, pkg)', '    inner = [pkg] + rest[1:]'),
     ('CLI decision never blocks', 'def _cli_decision(rest, state):\n    if len(rest) == 1', 'def _cli_decision(rest, state):\n    return\n    if len(rest) == 1'),
     ('list exemption widened to anything', "if len(rest) == 1 and rest[0] == 'list':", "if rest and rest[0] == 'list':"),
     ('list exemption removed', "if len(rest) == 1 and rest[0] == 'list':\n        return", "if False:\n        return"),
