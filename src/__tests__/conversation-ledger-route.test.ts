@@ -7,14 +7,14 @@ import { EventEmitter } from 'node:events'
 // The ledger only belongs to a registered agent: the fixtures below use these names.
 vi.mock('../web/agent-config.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../web/agent-config.js')>()),
-  listAgentNames: () => ['agent-a', 'agent-b'],
+  listAgentNames: () => ['agent-a', 'agent-b', 'Agent-A'],
 }))
 import { mkdtempSync, writeFileSync, existsSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { initDatabase, db } from '../db.js'
 import { tryHandleConversationLedger } from '../web/routes/conversation-ledger.js'
-import { flushLedgerSpool } from '../conversation-ledger-spool.js'
+import { flushLedgerSpool, spoolFileNameFor } from '../conversation-ledger-spool.js'
 import type { RouteContext } from '../web/routes/types.js'
 
 beforeEach(() => {
@@ -155,10 +155,58 @@ describe('flushLedgerSpool', () => {
 
   it('is a no-op for a missing directory and idempotent on replays', async () => {
     expect(await flushLedgerSpool(join(dir, 'missing'))).toBe(0)
-    writeFileSync(join(dir, 'a.jsonl'), JSON.stringify(inbound()) + '\n')
+    writeFileSync(join(dir, 'agent-a.jsonl'), JSON.stringify(inbound()) + '\n')
     expect(await flushLedgerSpool(dir)).toBe(1)
-    writeFileSync(join(dir, 'a.jsonl'), JSON.stringify(inbound()) + '\n')
+    writeFileSync(join(dir, 'agent-a.jsonl'), JSON.stringify(inbound()) + '\n')
     expect(await flushLedgerSpool(dir)).toBe(0)
-    expect(existsSync(join(dir, 'a.jsonl'))).toBe(false)
+    expect(existsSync(join(dir, 'agent-a.jsonl'))).toBe(false)
+  })
+
+  // The flush has no token: the file name is the identity. A line that names another agent than its file is not stored (the route
+  // refuses the same thing for a fleet token), and the file is still consumed so it does not come back at every boot.
+  it('does not store a line that names another agent than its spool file, and keeps storing the lines that match', async () => {
+    writeFileSync(join(dir, 'agent-a.jsonl'), [
+      JSON.stringify(inbound({ message_id: 'own' })),
+      JSON.stringify(inbound({ agent_id: 'agent-b', message_id: 'forged' })),
+    ].join('\n'))
+    expect(await flushLedgerSpool(dir)).toBe(1)
+    expect(readdirSync(dir)).toEqual([])
+    const ids = (db.prepare('SELECT message_id FROM conversation_log ORDER BY id').all() as { message_id: string }[]).map((r) => r.message_id)
+    expect(ids).toEqual(['own'])
+  })
+
+  // The hook keeps the letter case of the agent id in the file name (ledger_lib.py `_spool_path`), so the spool file of a mixed-case
+  // agent id is named in that case and its own lines are ACCEPTED and stored. A flush that lower-cased the name it expects would
+  // refuse every turn of such an agent.
+  it('an agent id with capital letters, in the file name the hook writes, is accepted and stored', async () => {
+    expect(spoolFileNameFor('Agent-A')).toBe('Agent-A.jsonl')
+    writeFileSync(join(dir, 'Agent-A.jsonl'), JSON.stringify(inbound({ agent_id: 'Agent-A', message_id: 'mixed-case' })))
+    expect(await flushLedgerSpool(dir)).toBe(1)
+    expect(readdirSync(dir)).toEqual([])
+    const row = db.prepare('SELECT agent_id, message_id FROM conversation_log').get() as { agent_id: string; message_id: string }
+    expect(row).toEqual({ agent_id: 'Agent-A', message_id: 'mixed-case' })
+  })
+
+  // The name is compared exactly: a file or a line that differs from the agent only by letter case is a mismatch too (a
+  // case-folded comparison would let `Agent-A.jsonl` carry the turns of `agent-a`, or the reverse).
+  it('a spool file name that differs from the agent only by letter case does not carry its lines, in either direction', async () => {
+    // one flush per file: a case-insensitive file system (the default on macOS) would make the two names ONE file
+    writeFileSync(join(dir, 'Agent-A.jsonl'), JSON.stringify(inbound({ message_id: 'upper-file' })))
+    expect(await flushLedgerSpool(dir)).toBe(0)
+    writeFileSync(join(dir, 'agent-a.jsonl'), [
+      JSON.stringify(inbound({ message_id: 'own' })),
+      JSON.stringify(inbound({ agent_id: 'Agent-A', message_id: 'upper-line' })),
+    ].join('\n'))
+    expect(await flushLedgerSpool(dir)).toBe(1)
+    expect(readdirSync(dir)).toEqual([])
+    const ids = (db.prepare('SELECT message_id FROM conversation_log ORDER BY id').all() as { message_id: string }[]).map((r) => r.message_id)
+    expect(ids).toEqual(['own'])
+    expect(spoolFileNameFor('Agent-A')).toBe('Agent-A.jsonl')
+  })
+
+  it('the file name is the hook\'s: every character that is not a letter, a digit, - or _ becomes _ (an agent id with a dot or a space)', () => {
+    expect(spoolFileNameFor('agent-a')).toBe('agent-a.jsonl')
+    expect(spoolFileNameFor('agent.b c')).toBe('agent_b_c.jsonl')
+    expect(spoolFileNameFor('../x')).toBe('___x.jsonl')
   })
 })

@@ -15,12 +15,18 @@ export function ledgerSpoolDir(): string {
   return join(STORE_DIR, '.ledger-spool')
 }
 
+/** The spool file of an agent: the same name the hook writes (scripts/hooks/ledger_lib.py `_spool_path`: every character that is not a letter, a digit, `-` or `_` becomes `_`). */
+export function spoolFileNameFor(agentId: string): string {
+  return `${agentId.replace(/[^\p{L}\p{N}_-]/gu, '_')}.jsonl`
+}
+
 /** Insert every spooled turn (idempotent) and delete the files. Returns the
  *  number of rows inserted. A file is claimed by renaming it first, so a hook
  *  appending at the same moment starts a fresh file instead of losing lines. */
 export async function flushLedgerSpool(dir = ledgerSpoolDir()): Promise<number> {
   if (!existsSync(dir)) return 0
   let inserted = 0
+  let foreign = 0
   for (const name of readdirSync(dir)) {
     if (!name.endsWith('.jsonl')) continue
     const claimed = join(dir, `${name}.flushing`)
@@ -37,6 +43,16 @@ export async function flushLedgerSpool(dir = ledgerSpoolDir()): Promise<number> 
         try { raw = JSON.parse(t) } catch { continue }
         const turn = parseLedgerEntry(raw)
         if (typeof turn === 'string') continue
+        // The flush has no token to tell whose turn a line is, so the file is the identity: the hook writes the turns of ONE agent to
+        // <that agent>.jsonl. A line naming another agent is not written. The route refuses the same thing (a fleet token may only
+        // act as its own agent). What this closes is a name/content MISMATCH (a line in the wrong file), nothing more: the spool is
+        // delayed delivery, not evidence of who wrote a line. The file name is not authenticated either (every agent shell runs as the
+        // same OS user, and the directory is private to that user), so the identity of a flushed turn is only as good as the write
+        // access to the spool directory.
+        if (spoolFileNameFor(turn.agent_id) !== name) {
+          foreign++
+          continue
+        }
         if (await logLedgerTurn(turn)) inserted++
       }
       unlinkSync(claimed)
@@ -44,6 +60,7 @@ export async function flushLedgerSpool(dir = ledgerSpoolDir()): Promise<number> 
       logger.warn({ err, file: name }, 'ledger spool flush failed, file kept for the next boot')
     }
   }
+  if (foreign > 0) logger.warn({ foreign }, 'Ledger spool: lines that name another agent than their file were not stored')
   if (inserted > 0) logger.info({ inserted }, 'Ledger spool beolvasva')
   return inserted
 }

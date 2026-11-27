@@ -154,10 +154,43 @@ describe('ledger reads by a fleet agent token (recent, open question)', () => {
     await asAgent('tenant-t1', () => logLedgerTurn(turn({ chat_id: '3003', message_id: 'b', created_at: 1002 })))
     return db
   }
-  it('a NON-shared agent replays ALL its turns, the NULL-tenant one included (a tenant-context read would return only the own-tenant row)', async () => {
+  it('a NON-shared agent replays its unbound turn (NULL tenant) and the turns of the tenant it serves, and NOT a turn stamped with a tenant it does not serve', async () => {
     await seeded(false)
     const seen = await asAgent('tenant-t1', () => recentLedgerTurns('agent-a'))
-    expect(seen.map((t) => t.chat_id)).toEqual(['4004', '2002', '3003'])
+    // 4004 unbound (a tenant-context read would hide it), 2002 the served tenant; 3003 is tenant-t2's and is not replayed to a tenant-t1-only agent
+    expect(seen.map((t) => t.chat_id)).toEqual(['4004', '2002'])
+  })
+  it('an agent that serves NO tenant replays its unbound turns only (an empty served list never reads as every tenant)', async () => {
+    const db = await bootedDb()
+    await bind(db, 'agent-a', '2002', 'tenant-t1')
+    await asAgent('tenant-t1', () => logLedgerTurn(turn({ chat_id: '4004', message_id: 'u', created_at: 1000 })))
+    await asAgent('tenant-t1', () => logLedgerTurn(turn({ chat_id: '2002', message_id: 'a', created_at: 1001 })))
+    expect((await asAgent('tenant-t1', () => recentLedgerTurns('agent-a'))).map((t) => t.chat_id)).toEqual(['4004'])
+  })
+  it('open question, NON-shared: a newer inbound of a tenant it does not serve does not answer; the latest visible one does', async () => {
+    await seeded(false)
+    // the newest inbound (3003, created 1002) is tenant-t2's: it must not be returned to a tenant-t1-only agent
+    const q = await asAgent('tenant-t1', () => openLedgerQuestion('agent-a'))
+    expect(q?.chat_id).toBe('2002')
+  })
+  it('open question, NON-shared: a later outbound of a tenant it does not serve does not CLOSE the question (the later-outbound read is filtered too)', async () => {
+    const db = await seeded(false)
+    await db.pool.query("INSERT INTO conversation_log (agent_id, chat_id, direction, message_id, text, created_at, tenant_id) VALUES ('agent-a', '3003', 'out', 'foreign-out', 't', 1100, 'tenant-t2')")
+    // the unanswered inbound of the served tenant stays open; the foreign reply is not its answer
+    expect((await asAgent('tenant-t1', () => openLedgerQuestion('agent-a')))?.chat_id).toBe('2002')
+    // the same reply stamped with the SERVED tenant (or unbound) does close it
+    await db.pool.query("INSERT INTO conversation_log (agent_id, chat_id, direction, message_id, text, created_at, tenant_id) VALUES ('agent-a', '2002', 'out', 'own-out', 't', 1101, 'tenant-t1')")
+    expect(await asAgent('tenant-t1', () => openLedgerQuestion('agent-a'))).toBeNull()
+  })
+  it('called WITHOUT the route (a second caller), the read stays bounded: only the named agent\'s rows, never another agent\'s, never a tenant it does not serve', async () => {
+    const db = await seeded(false)
+    await db.pool.query("INSERT INTO conversation_log (agent_id, chat_id, direction, message_id, text, created_at, tenant_id) VALUES ('agent-b', '7', 'in', 'z', 't', 1003, 'tenant-t2'), ('agent-b', '8', 'in', 'y', 't', 1004, NULL)")
+    // agent-b serves no tenant: its unbound row only, not its tenant-t2 row, and none of agent-a's
+    expect((await asAgent('tenant-t1', () => recentLedgerTurns('agent-b'))).map((t) => t.chat_id)).toEqual(['8'])
+    expect((await asAgent('tenant-t1', () => openLedgerQuestion('agent-b')))?.chat_id).toBe('8')
+    // and a shared agent is nothing here, whoever asks
+    await db.pool.query("INSERT INTO tenant_agent_availability (tenant_id, agent_id, enabled) VALUES ('tenant-t2', 'agent-a', 1)")
+    expect(await asAgent('tenant-t1', () => recentLedgerTurns('agent-a'))).toEqual([])
   })
   it('a SHARED agent (serves two tenants) replays nothing, as before', async () => {
     await seeded(true)

@@ -165,6 +165,38 @@ describe('read rules', () => {
     expect((await recentLedgerTurns('solo')).map(t => t.text)).toEqual(['one', 'two'])
   })
 
+  // The same SQL runs on both engines (on PostgreSQL the ledger-read system context lifts the tenant policy, on SQLite there is none), so
+  // the narrowing of a NON-shared agent is pinned here as well as in pg/rls-ledger-and-desired-agents.pg.test.ts.
+  async function seedSoloAcrossTenants() {
+    await setChannelBinding('solo', 'telegram', 'B', 'beta', 'test') // solo serves acme only; chat B is bound to beta
+    await setChannelBinding('solo', 'telegram', 'A', 'acme', 'test')
+    await logLedgerTurn(turn({ agent_id: 'solo', chat_id: 'U', message_id: 'u1', text: 'unbound question', created_at: 1000 }))
+    await logLedgerTurn(turn({ agent_id: 'solo', chat_id: 'A', message_id: 'a1', text: 'acme question', created_at: 1001 }))
+    await logLedgerTurn(turn({ agent_id: 'solo', chat_id: 'B', message_id: 'b1', text: 'beta question', created_at: 1002 }))
+  }
+
+  it('replay of a not-shared agent has its unbound and served-tenant turns, not the turns of a tenant it does not serve', async () => {
+    await seedSoloAcrossTenants()
+    expect((await recentLedgerTurns('solo')).map(t => t.text)).toEqual(['unbound question', 'acme question'])
+  })
+
+  it('open question of a not-shared agent: a newer inbound of another tenant does not answer, and a later outbound of it does not close', async () => {
+    await seedSoloAcrossTenants()
+    expect((await openLedgerQuestion('solo'))?.text).toBe('acme question')
+    await logLedgerTurn(turn({ agent_id: 'solo', chat_id: 'B', message_id: 'b2', direction: 'out', text: 'beta answer', created_at: 1100 }))
+    expect((await openLedgerQuestion('solo'))?.text).toBe('acme question')
+    await logLedgerTurn(turn({ agent_id: 'solo', chat_id: 'A', message_id: 'a2', direction: 'out', text: 'acme answer', created_at: 1101 }))
+    expect(await openLedgerQuestion('solo')).toBeNull()
+  })
+
+  it('an agent that serves no tenant reads its unbound chats only', async () => {
+    await setChannelBinding('nobody', 'telegram', 'A', 'acme', 'test')
+    await logLedgerTurn(turn({ agent_id: 'nobody', chat_id: 'U', message_id: 'n1', text: 'unbound', created_at: 1000 }))
+    await logLedgerTurn(turn({ agent_id: 'nobody', chat_id: 'A', message_id: 'n2', text: 'stamped', created_at: 1001 }))
+    expect((await recentLedgerTurns('nobody')).map(t => t.text)).toEqual(['unbound'])
+    expect((await openLedgerQuestion('nobody'))?.text).toBe('unbound')
+  })
+
   it('open question of a shared agent comes only from the tenant it is serving now', async () => {
     await seedBothTenants()
     setContext('acme')
