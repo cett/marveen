@@ -175,6 +175,23 @@ describe('flushLedgerSpool', () => {
     expect(ids).toEqual(['own'])
   })
 
+  // The name is compared exactly: a file or a line that differs from the agent only by letter case is a mismatch too (a
+  // case-folded comparison would let `Agent-A.jsonl` carry the turns of `agent-a`, or the reverse).
+  it('a spool file name that differs from the agent only by letter case does not carry its lines, in either direction', async () => {
+    // one flush per file: a case-insensitive file system (the default on macOS) would make the two names ONE file
+    writeFileSync(join(dir, 'Agent-A.jsonl'), JSON.stringify(inbound({ message_id: 'upper-file' })))
+    expect(await flushLedgerSpool(dir)).toBe(0)
+    writeFileSync(join(dir, 'agent-a.jsonl'), [
+      JSON.stringify(inbound({ message_id: 'own' })),
+      JSON.stringify(inbound({ agent_id: 'Agent-A', message_id: 'upper-line' })),
+    ].join('\n'))
+    expect(await flushLedgerSpool(dir)).toBe(1)
+    expect(readdirSync(dir)).toEqual([])
+    const ids = (db.prepare('SELECT message_id FROM conversation_log ORDER BY id').all() as { message_id: string }[]).map((r) => r.message_id)
+    expect(ids).toEqual(['own'])
+    expect(spoolFileNameFor('Agent-A')).toBe('Agent-A.jsonl')
+  })
+
   it('the file name is the hook\'s: every character that is not a letter, a digit, - or _ becomes _ (an agent id with a dot or a space)', () => {
     expect(spoolFileNameFor('agent-a')).toBe('agent-a.jsonl')
     expect(spoolFileNameFor('agent.b c')).toBe('agent_b_c.jsonl')
