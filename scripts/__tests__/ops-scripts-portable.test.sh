@@ -92,6 +92,7 @@ echo ""
 echo "(d) pre-modify-backup uses its own location"
 CASE="$TMPDIR_BASE/backup"; mkdir -p "$CASE/scripts/lib" "$CASE/store"
 cp "$INSTALL_DIR/scripts/pre-modify-backup.sh" "$CASE/scripts/"
+cp "$INSTALL_DIR/scripts/pg-configured.sh" "$CASE/scripts/"
 cp "$INSTALL_DIR/scripts/lib/portable.sh" "$CASE/scripts/lib/"
 echo "sentinel" > "$CASE/store/.dashboard-token"
 (cd "$CASE" && bash scripts/pre-modify-backup.sh testlabel >/dev/null 2>&1)
