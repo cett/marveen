@@ -13,6 +13,10 @@
 #   R7 nothing else of the SQLite file reaches the archive (a marker row of another table is absent), and the
 #      PostgreSQL URL never appears in the output or the archive
 #   R8 a row written to the live file AFTER the export started cannot corrupt the dump (the dump replays cleanly)
+#   R9 the live file has one door and is read for the two tables only (no whole-file copy)
+#   R10 a crashed hook's leftover -wal: the export leaves the main file (SHA-256) and the -wal (size) as they were, and the
+#       dump still has the rows that live only in the WAL (without no_ckpt_on_close the close checkpoints into the file)
+#   R11 an sqlite3 CLI that rejects .dbconfig: the backup carries on and the dump is complete
 # Run: bash scripts/__tests__/backup-residual-tables.test.sh
 
 set -u
@@ -185,6 +189,59 @@ N_SQLITE="$(grep -v '^ *#' <<<"$BLOCK" | grep -c 'sqlite3 ')"
 [[ "$N_SQLITE" == "2" ]] && pass "R9: sqlite3 is called in two places only (the command check and the one helper)" || fail "R9 one door" "2 sqlite3 call sites (command -v + helper)" "$N_SQLITE"
 grep -v '^ *#' <<<"$BLOCK" | grep -E 'SELECT' | grep -vq "sqlite_master WHERE type='table' AND name IN ('hook_audit_log','gate_decision_counts')" \
   && fail "R9 reads" "only the catalog read of the two names" "another SELECT" || pass "R9: the only SELECT is the catalog read of the two table names"
+
+echo "R10: a live file with a leftover -wal (a crashed hook): the export changes neither the main file nor the WAL"
+# crash_wal <db>: one more committed row that lives ONLY in the -wal, then the process dies with no close (no checkpoint)
+crash_wal() {
+  python3 -I - "$1" <<'PY'
+import sqlite3, os, sys
+c = sqlite3.connect(sys.argv[1], isolation_level=None)
+c.execute("PRAGMA wal_autocheckpoint=0")
+c.execute("INSERT INTO hook_audit_log (ts, agent_id, hook_type, verdict) VALUES (1700000099, 'agent-wal', 'egress', 'deny')")
+os._exit(0)
+PY
+}
+sha() { shasum -a 256 "$1" 2>/dev/null | cut -d' ' -f1; }
+R="$(mkrepo r10)"; crash_wal "$R/store/claudeclaw.db"
+DB="$R/store/claudeclaw.db"
+if [[ ! -s "$DB-wal" ]]; then
+  fail "R10 fixture" "a non-empty -wal left by the crashed writer" "no -wal"
+else
+  SHA0="$(sha "$DB")"; WAL0="$(wc -c < "$DB-wal")"
+  OUT="$(run_backup "$R" pg)"; RC=$?
+  A="$(newest "$R")"; X="$ROOT/r10-x"; mkdir -p "$X"; tar -xzf "$A" -C "$X" 2>/dev/null
+  [[ "$(sha "$DB")" == "$SHA0" ]] && pass "R10: the main database file is byte-identical after the export (SHA-256)" \
+    || fail "R10 main file" "same SHA-256 before and after" "changed (the export checkpointed the WAL into it)"
+  [[ -f "$DB-wal" && "$(wc -c < "$DB-wal")" == "$WAL0" ]] && pass "R10: the -wal keeps its size ($WAL0 bytes)" \
+    || fail "R10 wal" "-wal of $WAL0 bytes" "$(wc -c < "$DB-wal" 2>/dev/null || echo missing)"
+  [[ $RC -eq 0 ]] && grep -q "agent-wal" "$X/repo/store/residual-gate-audit.sql" 2>/dev/null \
+    && pass "R10: the dump still carries the row that lives only in the WAL" \
+    || fail "R10 WAL row" "exit 0 and the WAL-only row in the dump" "exit $RC: $OUT"
+fi
+
+echo "R11: an sqlite3 CLI that does not know .dbconfig: the backup still runs and the dump is complete (only the guard is lost)"
+# a stand-in for an old CLI: it rejects the .dbconfig command with an error and carries on, like the real one does
+SHIM="$ROOT/oldcli"; mkdir -p "$SHIM"
+REAL_SQLITE="$(command -v sqlite3)"
+cat > "$SHIM/sqlite3" <<SH
+#!/bin/bash
+args=()
+while [ \$# -gt 0 ]; do
+  if [ "\$1" = "-cmd" ] && [[ "\${2:-}" == .dbconfig* ]]; then echo "Error: unknown command or invalid arguments: \"dbconfig\"" >&2; shift 2; continue; fi
+  args+=("\$1"); shift
+done
+exec "$REAL_SQLITE" "\${args[@]}"
+SH
+chmod +x "$SHIM/sqlite3"
+R="$(mkrepo r11)"
+OUT="$(PATH="$SHIM:$PATH" run_backup "$R" pg)"; RC=$?
+A="$(newest "$R")"; X="$ROOT/r11-x"; mkdir -p "$X"; tar -xzf "$A" -C "$X" 2>/dev/null
+if [[ $RC -eq 0 ]] && grep -q "'agent-a'" "$X/repo/store/residual-gate-audit.sql" 2>/dev/null && ! grep -q "residual" <<<"$(grep -E 'WARNING|NOT included' <<<"$OUT")" \
+   && ! grep -q 'NOT included' "$X/MANIFEST.txt" 2>/dev/null; then
+  pass "R11: exit 0, the dump has its rows, no residual warning, MANIFEST does not say NOT included"
+else
+  fail "R11 old CLI" "exit 0, dump with rows, no residual warning" "exit $RC: $OUT"
+fi
 
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]

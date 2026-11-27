@@ -155,6 +155,6 @@
     }
   },
   "notes": {
-    "scripts/backup.sh": "RESIDUAL, removed with the PostgreSQL port of the gate hooks (hook_audit_log and gate_decision_counts move to PostgreSQL): the block \"PostgreSQL install: the two residual SQLite tables\" reads the live SQLite file for exactly those two tables (one catalog read, one .dump) and the +1 claudeclaw.db / +1 sqlite3 CLI of this baseline (9 to 10 each) are that block: the RESIDUAL_LIVE assignment and the sqlite3 call of the residual_sql helper. Removing the block takes both back to 9 in the same change. Nothing else is read from the live file."
+    "scripts/backup.sh": "RESIDUAL, removed with the PostgreSQL port of the gate hooks (hook_audit_log and gate_decision_counts move to PostgreSQL): the block \"PostgreSQL install: the two residual SQLite tables\" reads the live SQLite file for exactly those two tables (one catalog read, one .dump) and the +1 claudeclaw.db / +1 sqlite3 CLI of this baseline (9 to 10 each) are that block: the RESIDUAL_LIVE assignment and the sqlite3 call of the residual_sql helper. Removing the block takes both back to 9 in the same change. Nothing else is read from the live file, and nothing is written to the database file or the WAL (the -shm index is shared memory and may be touched): the helper opens read-write with .dbconfig no_ckpt_on_close on, so a leftover -wal is not checkpointed into the live file."
   }
 }

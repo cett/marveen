@@ -181,8 +181,18 @@ residual_warn() {  # residual_warn <reason>: the warning on stderr and the MANIF
 }
 RESIDUAL_LIVE=store/claudeclaw.db
 # The only door to the live SQLite file in this block: read statements only (the catalog names of the two tables and one
-# .dump of them), nothing is written. Not -readonly on purpose: a read-only open of a WAL file that has no -shm yet fails.
-residual_sql() { sqlite3 -cmd '.timeout 5000' "${RESIDUAL_LIVE}" "$@"; }
+# .dump of them), and no write to the database file or the WAL (the -shm index is shared memory and may be touched).
+# Not -readonly on purpose: a read-only open of a WAL file that has no -shm yet fails (CANTOPEN); not immutable=1 either:
+# that ignores the WAL, so the rows still in it would be missing from the dump.
+# The open is read-write, and the last connection to close would checkpoint the WAL into the main file: a live file with a
+# leftover -wal (a crashed hook) would be changed by the backup. .dbconfig no_ckpt_on_close on keeps the close from doing that
+# (the main file stays byte-identical, the dump still carries the WAL rows). .dbconfig echoes the setting it just made to
+# stdout ("no_ckpt_on_close on"), which would land in the dump file and break its replay, so that one command runs with the
+# output sent to /dev/null. An sqlite3 CLI too old to know .dbconfig prints an error for it and carries on (stderr is
+# discarded by the callers), so only the guard is lost there, never the backup.
+residual_sql() {
+  sqlite3 -cmd '.timeout 5000' -cmd '.output /dev/null' -cmd '.dbconfig no_ckpt_on_close on' -cmd '.output stdout' "${RESIDUAL_LIVE}" "$@"
+}
 residual_export() {
   local live="${RESIDUAL_LIVE}" out="${STAGE}/repo/${RESIDUAL_REL}"
   local t n found present="" counts=""
