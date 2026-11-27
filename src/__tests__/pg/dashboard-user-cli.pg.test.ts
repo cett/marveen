@@ -484,6 +484,18 @@ describe('the alert follows the write even when its audit row fails (the exit co
     expect(ping).toHaveBeenCalledTimes(1)
   })
 
+  it('sessions:clear without a user: the sessions are gone, the audit write fails (exit 1), the alert still goes out once', async () => {
+    const db = await freshDb()
+    const a = await seedUser(db, 'user-a', 'admin')
+    await seedSessions(db, a, 'user-a', 2)
+    await refuseAudit(db)
+
+    expect(await runDashboardUserCli(['sessions:clear'], capture().io)).toBe(1)
+    expect(await countOf(db, 'SELECT COUNT(*) AS n FROM auth_sessions')).toBe(0)
+    expect(ping).toHaveBeenCalledTimes(1)
+    expect(ping.mock.calls[0]![0]).toContain('Minden böngésző-munkamenet')
+  })
+
   it('security:reset: the revocations happened, the audit write fails (exit 1), the alert with the counts still goes out once', async () => {
     const db = await freshDb()
     const a = await seedUser(db, 'user-a', 'admin')
