@@ -111,6 +111,62 @@ ALTER DEFAULT PRIVILEGES FOR ROLE marveen_owner IN SCHEMA public GRANT SELECT ON
 ALTER DEFAULT PRIVILEGES FOR ROLE marveen_owner IN SCHEMA public GRANT SELECT ON SEQUENCES TO marveen_backup;
 ```
 
+## The weekly restore drill
+
+`scripts/pg-restore-drill.sh` (see F03, "The weekly restore drill on PostgreSQL") restores the newest nightly dump into a
+throwaway database next to the live one. It needs a role and a template the provisioning above does not create. The script checks each
+one before it creates anything and says which is missing. Run as a superuser:
+
+```sql
+-- 1. the drill's own role: it creates and drops the throwaway database and nothing else. It is NOT marveen_owner, owns
+--    nothing of the live database and holds no grant and no membership that reaches it
+CREATE ROLE marveen_drill LOGIN CREATEDB NOSUPERUSER NOBYPASSRLS PASSWORD '<drill-password>';
+
+-- 2. a template that only holds the two extensions: pgvector is not a trusted extension, so the drill role cannot create it
+--    in the throwaway database; the restore skips the dump's EXTENSION entries and the clone already has them
+CREATE DATABASE marveen_drill_tpl;
+\c marveen_drill_tpl
+CREATE EXTENSION vector;
+CREATE EXTENSION unaccent;
+\c postgres
+ALTER DATABASE marveen_drill_tpl IS_TEMPLATE true;
+```
+
+3. The drill role's password file, outside the repository, owner-only: `~/.pgpass-marveen-drill`, mode `0600`, one line
+   `127.0.0.1:5432:*:marveen_drill:<drill-password>` (the database field is `*` because the throwaway name changes every run).
+   The backup role's file (`~/.pgpass-marveen-backup`) is the one the nightly dump already uses, with ONE requirement: its
+   database field (3rd field) must be `*`, not `marveen`. The script connects as the backup role to the throwaway database,
+   whose name changes every run, and libpq knows only a complete `*` there (no `marveen_drill_*`); the nightly dump works
+   with `*` as well. The script tries the template database with the backup role before it creates anything and names this
+   fix when it fails. Check the field without reading the password: `awk -F: '{print $3}' ~/.pgpass-marveen-backup`.
+The dump is restored with `--no-owner --no-acl` (no owner, grant or default privilege is replayed, so no other role has to
+exist, and the drill role needs no membership in `marveen_owner`: the dump's `ALTER DEFAULT PRIVILEGES FOR ROLE
+marveen_owner` entries are not replayed). Row-level security and policies are restored with the schema. Both sides are counted
+through the read-only backup role (BYPASSRLS): the drill role owns the restored tables, which are under forced row-level
+security, and would count 0. Because `--no-acl` leaves the backup role without a grant on the copy, the script runs one
+`GRANT USAGE ON SCHEMA public` / `GRANT SELECT ON ALL TABLES IN SCHEMA public` to the backup role, as the drill role, right
+after the restore. The script refuses to run when the drill role is a superuser, has BYPASSRLS, or can read any table of the
+live database.
+
+Client version: the `pg_restore` the script uses must be the SAME major as the server (a 17 client sets
+`transaction_timeout`, which a 16 server rejects, so every restore fails), and the dump's header ("Dumped by pg_dump version")
+must not name a newer major than the server. The script checks both before it creates anything and names the fix; it looks in
+`PG_DRILL_BIN_DIR` (default `/opt/homebrew/opt/postgresql@16/bin`) first, then on `PATH`.
+
+For about 15 seconds per run the throwaway database holds a COPY of the production data, and the drill role owns it; it is
+dropped at the end of the run (and by the orphan sweep after a killed one). The backup role must bypass row-level security
+(BYPASSRLS): the script refuses to run otherwise, because both sides would count 0 rows.
+
+Orphans: the EXIT trap drops the throwaway database on every ending but SIGKILL (the command task's `timeoutMs` may send
+it). So each run starts by dropping databases named `marveen_drill_<14 digit UTC stamp>_<pid>` that the drill role OWNS and
+whose stamp is older than 24 hours; the summary line says how many. A younger one, and one of another owner, is never
+touched. By hand, as a superuser: `SELECT datname FROM pg_database WHERE datname LIKE 'marveen\_drill\_2%'`.
+The drop is a plain `DROP DATABASE` first (PostgreSQL cancels an autovacuum worker the restore woke up), `WITH (FORCE)`
+only as the second try: the drill role is not a superuser and may not terminate an autovacuum worker.
+
+Security note: no existing role is widened. `marveen_owner` keeps its attributes; the new role has one extra attribute
+(CREATEDB) and, on the live database, only what PUBLIC gives every role (CONNECT), which reads nothing.
+
 ## The channel coordinator
 
 The channel coordinator (`dist/channel-coordinator.js`, its own launchd unit) is a backfill poller for inbound Telegram updates: it polls only while the native channel is down. It runs on the same backend as the dashboard.

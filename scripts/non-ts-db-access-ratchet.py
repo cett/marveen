@@ -185,8 +185,19 @@ def load_baseline(path=None):
 
 def write_baseline(files, dispositions, path=None):
     keep = {rel: d for rel, d in dispositions.items() if rel in files}
+    # Free-text notes per file (why a count is what it is, when it goes): carried over for files that still have direct
+    # access, dropped with the file like its disposition. The check never reads them.
+    notes = {}
+    try:
+        with open(path or BASELINE_PATH, encoding="utf-8") as old:
+            notes = {rel: n for rel, n in json.load(old).get("notes", {}).items() if rel in files}
+    except (OSError, ValueError):
+        pass
+    out = {"dispositions": keep, "files": files}
+    if notes:
+        out["notes"] = notes
     with open(path or BASELINE_PATH, "w", encoding="utf-8") as f:
-        json.dump({"dispositions": keep, "files": files}, f, indent=2, sort_keys=True)
+        json.dump(out, f, indent=2, sort_keys=True)
         f.write("\n")
 
 

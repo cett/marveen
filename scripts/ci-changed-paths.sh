@@ -71,6 +71,8 @@ in_pg_group() {
   case "$1" in
     src/db/*|src/migrations*/*|src/__tests__/pg/*|src/__tests__/helpers/*) return 0 ;;
     vitest.pg*.config.ts|package.json|package-lock.json|.github/workflows/ci.yml) return 0 ;;
+    # the PostgreSQL restore drill and its test (the test lives under scripts/, outside the PG test directory)
+    scripts/pg-restore-drill.sh|scripts/__tests__/pg-restore-drill.pg.test.ts) return 0 ;;
   esac
   # the PORTED list of the PG harness, parsed from the BASE (a pull request cannot shorten its own list)
   if [ -z "${PORTED_LIST:-}" ]; then

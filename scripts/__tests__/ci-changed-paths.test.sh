@@ -96,6 +96,18 @@ HEAD_PG_PORTED="$(change src/__tests__/ported-example.test.ts)"
 cell true "pg: a PORTED test file runs the PG parity" pg "$BASE_SHA" "$HEAD_PG_PORTED"
 
 git -C "$REPO" reset -q --hard "$BASE_SHA"
+HEAD_PG_DRILL="$(change scripts/pg-restore-drill.sh)"
+cell true "pg: a change to the PostgreSQL restore drill runs the PG parity" pg "$BASE_SHA" "$HEAD_PG_DRILL"
+
+git -C "$REPO" reset -q --hard "$BASE_SHA"
+HEAD_PG_DRILL_T="$(change scripts/__tests__/pg-restore-drill.pg.test.ts)"
+cell true "pg: a change to the drill's PG test runs the PG parity" pg "$BASE_SHA" "$HEAD_PG_DRILL_T"
+
+git -C "$REPO" reset -q --hard "$BASE_SHA"
+HEAD_PG_OTHER_SCRIPT="$(change scripts/backup.sh)"
+cell false "pg: another script (backup.sh) does not run the PG parity" pg "$BASE_SHA" "$HEAD_PG_OTHER_SCRIPT"
+
+git -C "$REPO" reset -q --hard "$BASE_SHA"
 HEAD_PG_CI="$(change .github/workflows/ci.yml)"
 cell true "pg: a change to ci.yml runs the PG parity" pg "$BASE_SHA" "$HEAD_PG_CI"
 
