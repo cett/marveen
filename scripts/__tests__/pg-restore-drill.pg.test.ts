@@ -19,7 +19,7 @@
 // (the PR description lists them).
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -46,6 +46,21 @@ let host: string
 let port: string
 let maintDb: string
 let work: string
+// PATH of every spawned tool: the bin directory of the clients that MATCH the server's major version first. The runner's
+// default clients can be newer than the server (PostgreSQL 17 clients, 16 server), and a 17 pg_restore sets
+// transaction_timeout, which a 16 server rejects; the dump is also taken by the matching pg_dump.
+let toolPath = process.env.PATH ?? ''
+
+/** The bin directory of PostgreSQL <major> clients (Debian/Ubuntu, Homebrew), or undefined when none is installed there. */
+function matchingBinDir(major: number): string | undefined {
+  const candidates = [
+    process.env.PG_TEST_BIN_DIR,
+    `/usr/lib/postgresql/${major}/bin`,
+    `/opt/homebrew/opt/postgresql@${major}/bin`,
+    `/usr/local/opt/postgresql@${major}/bin`,
+  ]
+  return candidates.find((d) => d !== undefined && d !== '' && ['pg_dump', 'pg_restore', 'psql'].every((t) => existsSync(join(d, t))))
+}
 let backupPass: string
 let drillPass: string
 let nocreatedbPass: string
@@ -69,7 +84,7 @@ function makeDump(opts: { ageHours?: number; name?: string; sidecar?: 'ok' | 'wr
   dumpDirs.push(dir)
   const file = join(dir, opts.name ?? 'marveen-20261127-033014.dump')
   const r = spawnSync('pg_dump', ['-Fc', '-h', host, '-p', port, '-U', PG_TEST_BACKUP_ROLE, '-d', live.name, '-f', file], {
-    env: { PATH: process.env.PATH ?? '', PGPASSFILE: backupPass },
+    env: { PATH: toolPath, PGPASSFILE: backupPass },
     encoding: 'utf8',
   })
   if (r.status !== 0) throw new Error(`pg_dump failed: ${r.stderr}`)
@@ -91,7 +106,7 @@ interface Run { status: number | null; stdout: string; stderr: string }
 /** The drill, run the way the command task runs it. The overrides win over the defaults of this harness. */
 function runDrill(dumpDir: string, over: Record<string, string> = {}): Run {
   const env: Record<string, string> = {
-    PATH: process.env.PATH ?? '',
+    PATH: toolPath,
     HOME: work,
     PG_DRILL_DUMP_DIR: dumpDir,
     PG_DRILL_BIN_DIR: '', // empty: the tools come from PATH
@@ -147,6 +162,9 @@ beforeAll(async () => {
   work = mkdtempSync(join(tmpdir(), 'pg-restore-drill-'))
   admin = new pg.Client({ connectionString: pgTestUrl() })
   await admin.connect()
+  const serverMajor = Math.floor(Number((await admin.query('SHOW server_version_num')).rows[0].server_version_num) / 10000)
+  const bin = matchingBinDir(serverMajor)
+  if (bin) toolPath = `${bin}:${process.env.PATH ?? ''}`
   live = await createPgTestDb() // also makes sure the harness roles exist
   preexisting = new Set(await throwawayDatabases())
 
@@ -383,7 +401,7 @@ describe('pg-restore-drill.sh', () => {
     // a signal during the restore: SIGTERM the script as soon as a throwaway database shows up
     const p = spawn('bash', [script], {
       env: {
-        PATH: process.env.PATH ?? '', HOME: work, PG_DRILL_DUMP_DIR: dumpSeeded, PG_DRILL_BIN_DIR: '', PG_DRILL_HOST: host,
+        PATH: toolPath, HOME: work, PG_DRILL_DUMP_DIR: dumpSeeded, PG_DRILL_BIN_DIR: '', PG_DRILL_HOST: host,
         PG_DRILL_PORT: port, PG_DRILL_DB: live.name, PG_DRILL_MAINT_DB: maintDb, PG_DRILL_ROLE: DRILL,
         PG_DRILL_BACKUP_ROLE: PG_TEST_BACKUP_ROLE, PG_DRILL_TEMPLATE: TEMPLATE, PG_DRILL_PASSFILE: drillPass,
         PG_DRILL_BACKUP_PASSFILE: backupPass,
@@ -445,7 +463,7 @@ describe('pg-restore-drill.sh', () => {
 
   it('FAIL: under a GNU-like stat (-f is the filesystem status) an open password file is still refused, and an unreadable mode fails closed', async () => {
     const shim = gnuLikeStatShim()
-    const withShim = { PATH: `${shim}:${process.env.PATH ?? ''}` }
+    const withShim = { PATH: `${shim}:${toolPath}` }
     // GNU -c prints 644: the file is refused with the real mode (the old order asked -f first and got "?p")
     const open = runDrill(dumpSeeded, { ...withShim, STAT_SHIM_MODE: '644' })
     expect(open.status).toBe(1)
@@ -522,7 +540,7 @@ describe('pg-restore-drill.sh', () => {
     // A psql shim that refuses every DROP ... WITH (FORCE) the way PostgreSQL refuses a non-superuser that must terminate an
     // autovacuum worker, and passes everything else to the real psql. The drop must work through the plain DROP.
     const dir = mkdtempSync(join(work, 'psqlshim-'))
-    const real = spawnSync('sh', ['-c', 'command -v psql'], { encoding: 'utf8' }).stdout.trim()
+    const real = spawnSync('sh', ['-c', 'command -v psql'], { encoding: 'utf8', env: { PATH: toolPath } }).stdout.trim()
     expect(real).not.toBe('')
     const shim = join(dir, 'psql')
     writeFileSync(shim, [
@@ -536,9 +554,40 @@ describe('pg-restore-drill.sh', () => {
       '',
     ].join('\n'))
     chmodSync(shim, 0o755)
-    const r = runDrill(dumpSeeded, { PATH: `${dir}:${process.env.PATH ?? ''}`, REAL_PSQL: real })
+    const r = runDrill(dumpSeeded, { PATH: `${dir}:${toolPath}`, REAL_PSQL: real })
     expect(r.status, r.stderr).toBe(0)
     expect(r.stderr).toBe('')
     expect(await leftovers()).toEqual([])
+  }, 120000)
+
+  it('FAIL: a pg_restore newer than the server is refused with the fix named, before anything is created; an older one and an unreadable version are handled', async () => {
+    // a pg_restore shim whose --version says what SHIM_PG_RESTORE_VERSION says; everything else goes to the real pg_restore
+    const dir = mkdtempSync(join(work, 'restoreshim-'))
+    const real = spawnSync('sh', ['-c', 'command -v pg_restore'], { encoding: 'utf8', env: { PATH: toolPath } }).stdout.trim()
+    expect(real).not.toBe('')
+    const shim = join(dir, 'pg_restore')
+    writeFileSync(shim, [
+      '#!/bin/sh',
+      'if [ "$1" = "--version" ]; then echo "${SHIM_PG_RESTORE_VERSION}"; exit 0; fi',
+      'exec "${REAL_PG_RESTORE}" "$@"',
+      '',
+    ].join('\n'))
+    chmodSync(shim, 0o755)
+    const withShim = (version: string): Record<string, string> => ({ PATH: `${dir}:${toolPath}`, REAL_PG_RESTORE: real, SHIM_PG_RESTORE_VERSION: version })
+
+    const newer = runDrill(dumpSeeded, withShim('pg_restore (PostgreSQL) 99.1'))
+    expect(newer.status).toBe(1)
+    expect(lastLine(newer.stderr)).toContain('is PostgreSQL 99, newer than the server')
+    expect(lastLine(newer.stderr)).toContain('PG_DRILL_BIN_DIR')
+    expect(await leftovers()).toEqual([])
+
+    const garbage = runDrill(dumpSeeded, withShim('something else entirely'))
+    expect(garbage.status).toBe(1)
+    expect(lastLine(garbage.stderr)).toContain('cannot determine the server version')
+    expect(await leftovers()).toEqual([])
+
+    // an older (or the same) major is fine: the restore itself is the real one here
+    const older = runDrill(dumpSeeded, withShim('pg_restore (PostgreSQL) 12.0'))
+    expect(older.status, older.stderr).toBe(0)
   }, 120000)
 })

@@ -78,7 +78,8 @@ grep -q 'repo/store/claudeclaw.db' <<<"$LIST" && fail "R1 stale db" "no claudecl
 X="$ROOT/r1-x"; mkdir -p "$X"; tar -xzf "$A" -C "$X" 2>/dev/null
 DUMP="$X/repo/store/residual-gate-audit.sql"
 if [[ -f "$DUMP" ]]; then
-  MODE="$(stat -f '%Lp' "$DUMP" 2>/dev/null || stat -c '%a' "$DUMP")"
+  # GNU first: on Linux `stat -f` exits 0 with the filesystem report (a multi-line "File: ..." text), not the mode
+  MODE="$(stat -c '%a' "$DUMP" 2>/dev/null || stat -f '%Lp' "$DUMP")"
   [[ "$MODE" == "600" ]] && pass "R1: the dump file is mode 600 in the archive" || fail "R1 dump mode" "600" "$MODE"
   # replay into a fresh database: both tables, the known rows
   sqlite3 "$ROOT/r1-replay.db" < "$DUMP" 2>/dev/null
