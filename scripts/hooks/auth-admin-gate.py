@@ -1490,10 +1490,14 @@ def _stdin_texts(seg, state):
 
 # the lexer's word for a process substitution `<(...)` (its body is in seg.subs)
 _PROCSUB = '<(...)'
-# programs that pass a file on to the next pipeline stage as it is (the source of a script piped into an interpreter)
-_STDIN_FEEDERS = ('cat', 'tac', 'head', 'tail', 'sed', 'awk', 'pv', 'nl', 'bat', 'rev', 'zcat', 'gzcat')
-# a script word that means "read the script from standard input"
-_STDIN_SCRIPT_WORDS = ('-', '/dev/stdin', '/dev/fd/0', '/proc/self/fd/0')
+# a script word that means "read the script from standard input": `-`, or a path to descriptor 0 (/dev/stdin, /dev/fd/0, /proc/self/fd/0,
+# /proc/<pid>/fd/0), also written with `//`, `/./`, `..` or leading zeros
+_STDIN_SCRIPT_WORDS = ('-',)
+_STDIN_PATH = re.compile(r'^/(?:dev/(?:stdin|fd/0+)|proc/(?:self|thread-self|[0-9]+)/fd/0+)$')
+
+
+def _is_stdin_word(text):
+    return text in _STDIN_SCRIPT_WORDS or bool(_STDIN_PATH.match(os.path.normpath(text)))
 
 
 def _procsub_bodies(seg):
@@ -1526,11 +1530,16 @@ def _file_words_kinds(words, state):
 
 def _feeder_files(prod):
     """The file words a pipeline stage that passes a file on (cat, head ...) reads, and the files it has on its own stdin."""
+    # Not a list of programs that pass a file on (`cat`, `head` ... , and `dd if=FILE`, `git show HEAD:FILE`, `xxd -r FILE` are others):
+    # EVERY word of the stage counts, also the value of a `key=value` word.
     words = []
-    if prod.words:
-        name, _cw, a, _via = resolve_call(prod.words)
-        if name in _STDIN_FEEDERS:
-            words = [x for x in a if x.text and not x.text.startswith('-')]
+    for x in prod.words:
+        if not x.text:
+            continue
+        words.append(x)
+        _h, eq, val = x.text.partition('=')
+        if eq and val:
+            words.append(Word(val, x.dyn, [a.partition('=')[2] or a for a in x.alts]))
     return words + [Word(f) for f in prod.stdin_files if f != _PROCSUB]
 
 
@@ -1790,7 +1799,7 @@ def _handle_node(name, args, seg, state, depth):
     if stdin_kinds and not scripts:
         _cli_decision([], state, stdin_kinds)
     for w, after in scripts:
-        if stdin_kinds and w.text in _STDIN_SCRIPT_WORDS:
+        if stdin_kinds and _is_stdin_word(w.text):
             _cli_decision(_after_cli(_positional(after, _NODE_VALUE_FLAGS)), state, stdin_kinds)
         elif proc_kinds and w.text == _PROCSUB:
             _cli_decision(_after_cli(_positional(after, _NODE_VALUE_FLAGS)), state, proc_kinds)
@@ -2068,7 +2077,7 @@ _TMUX_CMDS = ('send-keys', 'send', 'run-shell', 'run', 'new-session', 'new', 'ne
 # tmux flags that take a value. `-d` is NOT one (`new-session -d`, `split-window -d` are "detached" / "do not select"): listed as one it
 # swallowed the command word of `tmux new-session -d "cmd"`. The few commands where it is a value (`display-popup -d dir`) leave the
 # directory in the command text, where the command is found by its markers all the same.
-_TMUX_VALUE_FLAGS = ('-t', '-c', '-F', '-n', '-x', '-y', '-e', '-s', '-N', '-f', '-l', '-L', '-S', '-T')
+_TMUX_VALUE_FLAGS = ('-t', '-c', '-F', '-n', '-x', '-y', '-e', '-s', '-N', '-f', '-L')
 
 
 def _handle_tmux(args, state, depth):
@@ -2077,12 +2086,23 @@ def _handle_tmux(args, state, depth):
         if sub.text not in _TMUX_CMDS:
             continue
         _charge(state, len(args) + 1)
-        rest = [w.text for w in _positional(_args_after(args, sub), _TMUX_VALUE_FLAGS)]
-        if rest:
+        after = _args_after(args, sub)
+        rest = [w.text for w in _positional(after, _TMUX_VALUE_FLAGS)]
+        # The table is a guess: a flag is a value for one tmux command and a boolean for another (`send-keys -l`, `new-window -S`,
+        # `split-window -l 20`), so the words are ALSO read with no value flag at all, as one text (and a quoted command by itself).
+        flat = [w.text for w in _positional(after, ())]
+        if rest or flat:
             state.dir_changed = True           # the pane / window has its own working directory
+        if rest:
             check_command(' '.join(rest), state, depth + 1)
             for r in rest:
                 check_command(r, state, depth + 1)
+        if flat and flat != rest:
+            _charge(state, sum(len(w) + 1 for w in flat))
+            check_command(' '.join(flat), state, depth + 1)
+            for r in flat:
+                if re.search(r'\s', r):
+                    check_command(r, state, depth + 1)
 
 
 def _handle_screen(args, seg, state, depth):
@@ -3161,6 +3181,10 @@ def check_words(words, seg, state, depth):
     if name in ('source', '.'):
         if args and args[0].text == _PROCSUB:       # source <(echo "npm run x"): the printed text is the script
             for t in _procsub_texts(seg or Seg(), state):
+                check_shell_script(t, state, depth)
+            return
+        if args and _is_stdin_word(args[0].text):   # source /dev/stdin <<< "npm run x": the standard input is the script
+            for t in _stdin_texts(seg or Seg(), state):
                 check_shell_script(t, state, depth)
             return
         if args:
