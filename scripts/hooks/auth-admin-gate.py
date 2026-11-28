@@ -63,15 +63,20 @@ an unreadable event: exit 2. Exit 0 only after a complete inspection found nothi
 
 HONEST LIMITS (good-faith protection against the same OS user, like the docs say):
   - RESIDUAL RISK, the denylist class: a script the agent CONSTRUCTS first is not seen. A copy of the CLI script made in
-    the same command (it does not exist yet when the gate looks), a HARD link that already exists (the same file under a
+    the same command by anything but `ln` / `link` / `cp` / `mv` / `install` / `rsync` / `ditto` (those ARE seen: the new name
+    does not exist yet when the gate looks, so it is remembered: `cat x > y`, `tee`, `dd of=`, a heredoc or a docstring written
+    out are NOT), a HARD link that already exists (the same file under a
     new name: the stem of its path is the new name; a hard link made by an `ln` in the same text IS seen), a one-off .ts
     written with the Write tool, a module
-    path or a function name built from strings, `npm --script-shell`, NODE_OPTIONS; likewise a COMMAND word that is itself
+    path or a function name built from strings, `npm --script-shell`, NODE_OPTIONS (`--import X` / `--require X` in it); likewise a COMMAND word that is itself
     built at run time (`$V run agent-tokens issue`, `{npm,yarn} run agent-tokens issue`: the package manager is not named). The
     gate is not a sandbox. What it does see is every form a normal operator or tool would type: package-manager wrappers
     (corepack, also with a pinned version, npx, pnpm, yarn, yarnpkg, bun), their workspace selectors (`pnpm --filter x`,
-    `yarn workspace x`; a word after a flag is read both as the flag's value and as the command), their run shorthands (`pnpm tsx scripts/x.ts`,
-    also a package manager or a path to a binary handed to them), runner binaries, a link that already exists or that an
+    `yarn workspace x`; a word after a flag is read both as the flag's value and as the command, and so it is on a node / tsx / bun
+    line: `tsx --any-flag value scripts/x.ts`), their run shorthands (`pnpm tsx scripts/x.ts`,
+    also a package manager or a path to a binary handed to them, `npm explore pkg -- cmd`, `npm exec --call=cmd`), runner binaries (also
+    by the path of their binary or package: `node node_modules/.bin/tsx`), a preload that names the CLI (`tsx --import
+    scripts/x.ts`), a link that already exists or that an
     `ln` of the same command makes (the stem of its real path counts, for the CLI scripts and for the config runner, by a
     bare name too), the config runner form, shells and shell script files.
   - A script FILE of another language (python/node) that an agent wrote and then runs is
@@ -1561,39 +1566,134 @@ _NODE_VALUE_FLAGS = ('-r', '--require', '--import', '--loader', '--experimental-
                      '--allow-read', '--allow-write', '--config', '-c')
 
 
-def _runner_script_hit(args, state):
-    """node/tsx/ts-node/bun/deno/...: the script word (first positionals) names the CLI. Returns (kinds, the
-    positionals after the CLI name) or None. `tsx scripts/with-config.ts agent-tokens ...` names it one word later:
-    with-config is the runner of the config-loading scripts and its first argument is the script it runs."""
-    pos = _positional(args, _NODE_VALUE_FLAGS)
-    # the script is the first positional; a runner sub-command (bun run X, deno run X, tsx watch X,
-    # vite-node X) puts it second. A later word that merely carries the name is an argument.
-    spots = [0]
-    if len(pos) > 1 and pos[0].text in ('run', 'watch', 'exec', 'task', 'x', 'serve'):
-        spots.append(1)
-    for k in spots:
-        if k >= len(pos):
+# a preload flag ALWAYS takes a value (the next word, or `--flag=value`): the module it names is loaded before the main script
+_PRELOAD_FLAGS = ('-r', '--require', '--import', '--loader', '--experimental-loader', '--preload')
+# runner sub-commands that put the script one word later (bun run X, deno run X, tsx watch X, vite-node X)
+_RUN_SUBS = ('run', 'watch', 'exec', 'task', 'x', 'serve')
+# the runners that are started by a path to their binary or to their package (`node node_modules/.bin/tsx`, `node node_modules/tsx/dist/cli.mjs`)
+_RUNNER_PKGS = ('tsx', 'ts-node', 'ts-node-esm', 'esno', 'swc-node', 'babel-node', 'jiti', 'vite-node')
+
+
+def _split_preloads(args):
+    """(the preload values, the other words): `--import X`, `--require=X`, `-r X`, `--loader X` ... A preload names a module that
+    node / tsx / bun runs BEFORE the main script, so a preload that names the CLI runs the CLI (`tsx --import scripts/agent-tokens.ts
+    /dev/null issue`): the value is read as a script name, and it is not a candidate for the main script."""
+    values, rest = [], []
+    i = 0
+    while i < len(args):
+        a = args[i]
+        head, eq, _val = a.text.partition('=')
+        if a.text in _PRELOAD_FLAGS and i + 1 < len(args):
+            values.append(args[i + 1])
+            i += 2
             continue
-        kinds = _word_hits_cli(pos[k], state)
-        if kinds:
-            return kinds, pos[k + 1:]
-        if _word_is_runner_script(pos[k], state) and k + 1 < len(pos):
-            target = pos[k + 1]
-            if target.dyn:
-                raise Deny('with-config.ts futasidoben kepzett script-nevvel: a kapu nem tudja eldonteni, hogy '
-                           'az agent-tokens / dashboard-user-e, ezert nem engedi at.')
-            kinds = _word_hits_cli(target, state)
-            if kinds:
-                return kinds, pos[k + 2:]
+        if eq and head in _PRELOAD_FLAGS:
+            values.append(Word(a.text.partition('=')[2], a.dyn, [x.partition('=')[2] for x in a.alts]))
+            i += 1
+            continue
+        rest.append(a)
+        i += 1
+    return values, rest
+
+
+def _script_words(args, state):
+    """Every (word, the arguments after it) that can be the main script of a node/tsx/bun/deno line, whatever its flags take. The
+    table _NODE_VALUE_FLAGS is only a guess (nobody lists every flag of every version: `tsx --disable-warning X script.ts`), so a
+    non-flag word after a flag is read both as that flag's value and as the script, as the package-manager line is (see
+    _command_candidates). After a runner sub-command (`tsx watch`, `bun run`) the script is looked for again, one word later."""
+    out = []
+
+    def walk(a, level):
+        for c in _command_candidates(a):
+            _charge(state, len(a) + 1)      # every candidate costs a pass over the line: a line of thousands of flag pairs ends at the work budget
+            after = _args_after(a, c)
+            out.append((c, after))
+            if level < 2 and c.text in _RUN_SUBS:
+                walk(after, level + 1)
+    walk(args, 0)
+    return out
+
+
+def _runner_binary(word):
+    """The runner a word names by a path to its binary or its package (`node_modules/.bin/tsx`, `node_modules/tsx/dist/cli.mjs`,
+    `../.bin/tsx`), or None. The last path word counts when it is an interpreter / runner name, and any path word counts when it is
+    the name of a runner package (the entry file of the package is called cli.mjs, bin.js ...)."""
+    for alt in word.alts:
+        parts = [p for p in re.split(r'[\\/]+', alt.lower()) if p]
+        if not parts:
+            continue
+        last = _unversioned(Word(_script_stem(parts[-1]))).text
+        if last in _NODEISH:
+            return last
+        for p in parts:
+            p = _unversioned(Word(p)).text
+            if p in _RUNNER_PKGS:
+                return p
     return None
+
+
+def _runner_target_hits(target, after, state):
+    """The script the config runner is given as its first argument: [(kinds, the positionals after it)] when it names a CLI."""
+    if target.dyn:
+        raise Deny('with-config.ts futasidoben kepzett script-nevvel: a kapu nem tudja eldonteni, hogy '
+                   'az agent-tokens / dashboard-user-e, ezert nem engedi at.')
+    kinds = _word_hits_cli(target, state)
+    if not kinds:
+        return []
+    return [(kinds, _positional(_args_after(after, target), _NODE_VALUE_FLAGS))]
+
+
+def _runner_hits(preloads, scripts, state):
+    """[(kinds, the positionals after the CLI name)] for every reading of a node/tsx/bun/deno line that runs one of the CLIs: the
+    script word names it, or it names the config runner and the word after it names it (`tsx scripts/with-config.ts agent-tokens
+    ...`: with-config is the runner of the config-loading scripts and its first argument is the script it runs), or a preload
+    names it (a preload runs before the main script, which is then any script: the verb is read after it)."""
+    hits = []
+    for w, after in scripts:
+        kinds = _word_hits_cli(w, state)
+        if kinds:
+            hits.append((kinds, _positional(after, _NODE_VALUE_FLAGS)))
+        elif _word_is_runner_script(w, state):
+            for t in _command_candidates(after)[:1]:
+                hits.extend(_runner_target_hits(t, after, state))
+    for p in preloads:
+        kinds = _word_hits_cli(p, state)
+        if kinds:
+            # the main script may be any of the candidates: the verb is read after each, and with no main script there is no verb
+            for _w, after in (scripts or [(None, [])]):
+                hits.append((kinds, _positional(after, _NODE_VALUE_FLAGS)))
+        elif _word_is_runner_script(p, state):
+            # with-config as a preload reads its script name from the first argument of the main script
+            for _w, after in scripts:
+                tail = _positional(after, _NODE_VALUE_FLAGS)
+                if tail:
+                    hits.extend(_runner_target_hits(tail[0], after, state))
+    return hits
+
+
+def _redispatch(words, seg, state, depth):
+    """Run a command line the gate found INSIDE another one (a runner started by the path of its binary) as a command of its own.
+    Every such step counts as an inspection and as a nesting level, so a line that only nests runners ends at the limits."""
+    state.budget.calls += 1
+    if state.budget.calls > MAX_CALLS:
+        raise InspectionLimit('more than %d nested inspections' % MAX_CALLS)
+    if depth + 1 > MAX_NEST:
+        raise InspectionLimit('nesting deeper than %d levels' % MAX_NEST)
+    check_words(words, seg, state, depth + 1)
 
 
 def _handle_node(name, args, seg, state, depth):
     if any(a.text in ('--check', '-c') for a in args) and name in ('node', 'nodejs'):
         return
-    hit = _runner_script_hit(args, state)
-    if hit is not None:
-        _cli_decision(_after_cli(hit[1]), state, hit[0])
+    preloads, rest_args = _split_preloads(args)
+    scripts = _script_words(rest_args, state)
+    for kinds, tail in _runner_hits(preloads, scripts, state):
+        _cli_decision(_after_cli(tail), state, kinds)
+    for w, after in scripts:
+        # `node node_modules/.bin/tsx scripts/agent-tokens.ts issue`: the word is a runner, the words after it are its command line
+        runner = _runner_binary(w)
+        if runner is not None:
+            _redispatch([Word(runner)] + after, seg, state, depth)
     if name == 'deno':          # deno eval "code": the code is the positional after the sub-command
         pos = _positional(args, ('--ext', '-c', '--config', '--import-map', '--tsconfig', '--location',
                                  '--seed', '--v8-flags', '--cert', '--env-file'))
@@ -1612,6 +1712,8 @@ _NPM_VALUE_FLAGS = ('--prefix', '-C', '-w', '--workspace', '--cwd', '--registry'
                     '--filter', '-F', '--filter-prod', '--dir')
 # yarn workspace(s) / pnpm recursive: the command is looked for at every positional up to this many; past it the gate denies
 _WORKSPACE_SCAN_MAX = 12
+# `npm explore` and the prefixes of it npm accepts as the one command (`explo`: `expl` is also `explain`)
+_EXPLORE_NAMES = ('explore', 'explor', 'explo')
 
 
 def _unversioned(word):
@@ -1639,9 +1741,15 @@ def _handle_npm_like(name, args, seg, state, depth):
         name = 'yarn'
     # npx -c "command string" / npm exec -c "..."
     for k, a in enumerate(args):
-        if a.text in ('-c', '--call') and k + 1 < len(args):
-            for alt in args[k + 1].alts:
-                check_command(alt, state, depth + 1)
+        head, eq, _val = a.text.partition('=')
+        # npm reads `--flag=value` like `--flag value` for every flag, and takes the shortest unique prefix of a long flag (`--cal`)
+        if head in ('-c', '--call', '--cal'):
+            if eq:                                  # `npm exec --call='tsx scripts/x.ts issue'`, `npx -c='...'`
+                for alt in a.alts:
+                    check_command(alt.partition('=')[2], state, depth + 1)
+            elif k + 1 < len(args):
+                for alt in args[k + 1].alts:
+                    check_command(alt, state, depth + 1)
     seen = set()
     for pos in [_positional(args, _NPM_VALUE_FLAGS)] + list(_pos_readings(args, state, 3)):
         key = tuple(id(w) for w in pos)
@@ -1715,6 +1823,15 @@ def _npm_like_once(name, args, pos, seg, state, depth):
             kinds = _word_hits_cli(w, state)
             if kinds:
                 _cli_decision(_after_cli(_args_after(args, w)), state, kinds)
+        return
+    elif pos and name == 'npm' and pos[0].text in _EXPLORE_NAMES:
+        # `npm explore <pkg> -- <cmd>` / `npm explore <pkg> <cmd>`: npm joins the words after the package into ONE shell command and
+        # runs it in the package folder, so they are checked as the text of a command of their own
+        if len(pos) > 1:
+            words = [a.text for a in _args_after(args, pos[1]) if a.text != '--']
+            if words:
+                _charge(state, sum(len(w) + 1 for w in words))
+                check_command(' '.join(words), state, depth + 1)
         return
     elif pos and pos[0].text in ('exec', 'x', 'dlx'):
         sub, rest = pos[0].text, pos[1:]
@@ -1953,16 +2070,80 @@ def _note_link(args, state):
         state.link_global = True
         return
     state.link_dests.append(dest.text)
-    # `ln [-s] SRC LINK`: when SRC is a CLI script or the config runner, the link will name it by the time a later command in the
-    # same text runs (`ln -s scripts/agent-tokens.ts /tmp/x.ts && npx tsx /tmp/x.ts issue`), although it does not exist yet now.
-    # The stem is read through links that exist or were made earlier in the text, so a chain of links is followed.
-    if len(pos) == 2 and dest is pos[1] and not pos[0].dyn and len(state.link_srcs) < MAX_LINK_DESTS:
-        stem = _link_stem(pos[0].text, state)
+
+
+# `ln` makes a link and these make a COPY: in both the new name does not exist yet when a later command of the same text is looked at
+_COPY_NAMES = ('ln', 'link', 'cp', 'mv', 'install', 'rsync', 'ditto')
+MAX_LINK_SRCS = 64            # names (link names, copy names) of a CLI script / the config runner followed exactly; more is denied
+
+
+def _copy_source_stems(word, state):
+    """[(script stem, file name)] of what a link / copy source stands for when it is a CLI script or the config runner: the stem of
+    the word itself, of the real path of a link that exists or was made earlier in the text (a chain of links is followed), or of
+    every match of a glob. Empty for anything else (and for a word built at run time: the gate cannot read it)."""
+    out = []
+    if word.dyn or _has_placeholder(word.text):
+        return out
+    for alt in word.alts[:MAX_BRACE_ALTS]:
+        if not alt:
+            continue
+        stem = _link_stem(alt, state)
         if stem is None:
-            stem = _script_stem(pos[0].text)
+            stem = _script_stem(alt)
         if _is_cli_name(stem) or stem == CLI_RUNNER_STEM:
-            for c in _cwds(state):
-                state.link_srcs[os.path.normpath(dest.text if os.path.isabs(dest.text) else os.path.join(c, dest.text))] = stem
+            out.append((stem, os.path.basename(alt)))
+        elif any(c in alt for c in '*?['):
+            try:
+                hits = glob.glob(alt if os.path.isabs(alt) else os.path.join(state.cwd, alt))
+            except Exception:
+                hits = []
+            for h in hits[:MAX_GLOB_HITS]:
+                st = _script_stem(h)
+                if os.path.islink(h):
+                    st = _script_stem(os.path.realpath(h)) if not (_is_cli_name(st) or st == CLI_RUNNER_STEM) else st
+                if _is_cli_name(st) or st == CLI_RUNNER_STEM:
+                    out.append((st, os.path.basename(h)))
+    return out
+
+
+def _record_link_src(name_text, stem, state):
+    """From now on `name_text` (read from the working directory and from every absolute `cd` target) names the script `stem`. More
+    names than MAX_LINK_SRCS are denied: a cap that only stopped looking would let the command hide behind enough other names."""
+    for c in _cwds(state):
+        key = os.path.normpath(name_text if os.path.isabs(name_text) else os.path.join(c, name_text))
+        if key not in state.link_srcs and len(state.link_srcs) >= MAX_LINK_SRCS:
+            raise InspectionLimit('more than %d link or copy names of a CLI script' % MAX_LINK_SRCS)
+        if state.link_srcs.get(key) != TOKEN_CLI_NAME:        # the stricter script (the token CLI) is not replaced by another
+            state.link_srcs[key] = stem
+
+
+def _note_copy(name, args, state):
+    """`ln [-s] SRC LINK`, `cp SRC COPY`, `mv`, `install`, `rsync`, `ditto` in the same text: when SRC is a CLI script or the config
+    runner, the new name will name it by the time a later command of the text runs (`ln -s scripts/agent-tokens.ts /tmp/x.ts && npx
+    tsx /tmp/x.ts issue`, `cp scripts/agent-tokens.ts scripts/zz.ts && tsx scripts/zz.ts issue`), although it does not exist yet now.
+    The stem is read through links that exist or were made earlier in the text, so a chain of links or copies is followed. When the
+    last word may be a directory (`cp SRC DIR`) the name inside it counts too, and so does the name under `-t DIR`."""
+    pos = _positional(args, _FW_VALUE_FLAGS.get(name, ()))
+    explicit = None
+    for k, a in enumerate(args):
+        if a.text in ('-t', '--target-directory') and k + 1 < len(args):
+            explicit = args[k + 1]
+        elif a.text.startswith('--target-directory='):
+            explicit = Word(a.text.split('=', 1)[1])
+    if explicit is not None:
+        sources, dests = pos, [explicit]
+    elif len(pos) >= 2:
+        sources, dests = pos[:-1], [pos[-1]]
+    else:
+        return
+    for d in dests:
+        if d.dyn or not d.text or _has_placeholder(d.text):
+            continue
+        for src in sources:
+            for stem, base in _copy_source_stems(src, state):
+                if explicit is None:
+                    _record_link_src(d.text, stem, state)
+                _record_link_src(os.path.join(d.text, base), stem, state)
 
 
 _CD_COMMANDS = ('cd', 'pushd', 'popd', 'chdir', 'chroot')
@@ -1995,6 +2176,8 @@ def _note_dir_changes(segs, state):
         if name in ('ln', 'link'):
             state.link_made = True
             _note_link(args, state)
+        if name in _COPY_NAMES:
+            _note_copy(name, args, state)
         if name == 'cd':
             pos = [a for a in args if a.text not in ('-P', '-L', '-e', '-@', '--')]
             tgt = pos[0] if len(pos) == 1 else None
