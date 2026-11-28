@@ -420,6 +420,7 @@ bash scripts/doctor.sh
 # 5. only now start the dashboard and the agents
 ```
 
+`agent-tokens` works on both backends. On a SQLite install it opens `store/claudeclaw.db`; on a PostgreSQL install it connects with the install's PostgreSQL URL as the application role (no migrate URL, no owner credential, no schema change) and runs the whole command as one system job, because the token table is under row-level security and a run without that context would see no rows. The commands, the output lines and the exit codes (0 ok, 1 failed, 2 usage) are the same on both. Each run writes one info line to stderr (backend, command, number of active tokens seen; no token, no name, no hash): "seen 0" on an install that has tokens means the run was blind, and `issue` must not be trusted then. The write verbs (`issue`, `issue-operator`, `rotate-shared`, `revoke`) are the owner's: the auth-admin gate refuses them in an agent session, and only `check`, `list` and `archive-shared-age` pass; run the write verbs yourself on the machine. Every write leaves one row in the config journal (actor `cli`, the agent id, `operator` or `shared`, never a token).
 `agent-tokens issue-operator` is also what the operator scripts (`fleet-safe-start`, `pre-pr-review`, `settings-verify`, `doctor.sh` and the like) tell you to run when `store/.operator-token` is missing: they take no other token.
 
 `agent-tokens check` is read-only and never prints a token. One line per file, `subject  status  role  path`, exit code 1 when anything is not `ok`:
@@ -583,6 +584,8 @@ The detection rules are in `scripts/pg-configured.sh`, which `backup.sh`, `verif
 function, so the scripts cannot drift apart. A `.env` that cannot be read while the marker is set counts as PostgreSQL.
 
 On a PostgreSQL install `backup.sh` does not open `store/claudeclaw.db` at all: the file is frozen, and the database is in the nightly PostgreSQL dump.
+
+After a PostgreSQL dump is restored and the files of the archive are back, the token files need the same four steps as on SQLite (see "After a restore: API tokens"), run by the operator on the machine, before the dashboard and the agents start: `npm run agent-tokens -- issue`, `issue-operator`, `rotate-shared`, then `check` and `scripts/doctor.sh`. They work on PostgreSQL. `verify-restore.sh` step 5b compares an old SQLite archive's shared token row with the LIVE PostgreSQL row on such an install (`predates` is a warning); an archive taken on a PostgreSQL install has no database inside, so that step is skipped for it.
 
 ### The weekly restore drill on PostgreSQL
 
