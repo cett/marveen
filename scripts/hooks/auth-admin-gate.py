@@ -6,8 +6,10 @@ WHY A HOOK: the dashboard routes that create users, tokens, device keys and brow
 enrolment codes are session-only (403 `human_session_required` for a bearer caller), but
 the machine's own break-glass paths do the same work with NO HTTP and NO auth gate:
   (1) the dashboard-user CLI (`npm run dashboard-user`, tsx/node on scripts/dashboard-user.*,
-      scripts/security-reset*), which talks to SQLite directly, and
-  (2) a direct write to the auth tables of the live store DB (sqlite3 / python / node).
+      scripts/security-reset*), which talks to SQLite directly,
+  (2) the per-agent token CLI (`npm run agent-tokens`, scripts/agent-tokens.*), which mints, rotates and revokes
+      the bearer tokens of the live store (SQLite or PostgreSQL) with no HTTP and no auth gate, and
+  (3) a direct write to the auth tables of the live store DB (sqlite3 / python / node).
 An agent that can run either can give itself a human session, and then a human-only
 approval (email_send, ...) is no longer a human decision. A hook runs regardless of the
 permission mode (see destructive-gate.py for why a settings.json deny list is not enough).
@@ -21,6 +23,12 @@ WHAT IS BLOCKED (exit 2):
      $(...) and backticks, `ssh host ...`, tmux send-keys / run-shell, osascript,
      shell variables assigned in the same command line, and a shell script file that
      contains such a call (bash x.sh, source x.sh, ./x.sh).
+     The token CLI follows the same shapes by a VERB rule: the first argument must be `check`, `list` or
+     `archive-shared-age` (none of them writes a token); `issue` (also with --rotate / --dry-run),
+     `issue-operator`, `rotate-shared`, `revoke`, any other verb, a flag in the verb's place and a missing verb are
+     denied (default-deny). The config runner form `tsx scripts/with-config.ts agent-tokens <verb>` is followed
+     (the name is the word after the runner; a name built at run time is denied). Interpreter code that names the CLI
+     module (scripts/agent-tokens, src/agent-tokens) or one of its token writers (issueAgentToken, ...) is denied.
   2. `--password-stdin` on any command (except docker/podman/buildah/skopeo/helm/crane
      login), also when the command is hidden behind a wrapper.
   3. A write (INSERT/UPDATE/DELETE/REPLACE/DROP/ALTER/RENAME TO/.import/.restore) on an
@@ -38,7 +46,13 @@ WHAT IS BLOCKED (exit 2):
      blocked too, and so is interpreter code that spawns the CLI.
   4. Base64/xxd/openssl-decoded text handed to a shell or eval (the decoded text cannot be
      inspected, so it is not let through).
-READS ARE ALLOWED: SELECT, `.dump`, `.schema`, `.tables`, `npm run dashboard-user -- list`.
+READS ARE ALLOWED: SELECT, `.dump`, `.schema`, `.tables`, `npm run dashboard-user -- list`,
+`npm run agent-tokens -- check|list|archive-shared-age`.
+The throw-away-store exemption: a MARVEEN_STORE_DIR that points away from the live store exempts the login CLI on
+SQLite, and the token CLI for `issue-operator`, `rotate-shared` and `revoke` (they write the database and files under
+the store dir). It does NOT exempt `issue`: that verb writes each agent's token file into the agent's own directory,
+outside the store dir. A PostgreSQL URL in any layer (command, environment, .env, secret mount, mode marker) voids the
+exemption for both CLIs, because on PostgreSQL the CLI reads its database from the install's URL, not from the store dir.
 
 BOUNDED AND FAIL-CLOSED (same rules as outgoing-copy-gate.py, #650): one linear lexer
 pass, hard limits (command size, heredoc openers, opener line length, nesting depth, a
@@ -91,6 +105,24 @@ MAX_GENERIC_MARKERS = 8      # marker hits followed per argument text in the gen
 
 CLI_NAMES = ('dashboard-user',)
 CLI_PREFIXES = ('security-reset',)
+# A second CLI kind: the per-agent token admin (`npm run agent-tokens`). It mints and revokes bearers of the live
+# store on both backends, so it is gated like the login CLI, but by a VERB rule (a read verb passes, anything else
+# is denied) instead of the login CLI's single `list` form.
+TOKEN_CLI_NAME = 'agent-tokens'
+# The verbs an agent may run: none of them writes an auth row (`check` and `list` read, `archive-shared-age` compares
+# an extracted archive with the live row). Every other verb, an unknown verb and a missing verb is denied (default-deny).
+TOKEN_CLI_READ_VERBS = ('check', 'list', 'archive-shared-age')
+# The write verbs a throw-away MARVEEN_STORE_DIR exempts: they change the database of the install and files UNDER the
+# store dir (store/.operator-token, store/.dashboard-token), so on a throw-away store they touch nothing live. `issue` is
+# NOT here: it writes the token file of each agent into the agent's own directory (agents/<name>/.agent-token, the
+# project root for the main agent), which is outside the store dir, so a throw-away store would still replace the file
+# of a live agent with a token the live database does not know (that agent would be locked out).
+TOKEN_CLI_STORE_ONLY_VERBS = ('issue-operator', 'rotate-shared', 'revoke')
+# the tag `_is_cli_name` returns: which rule `_cli_decision` applies
+KIND_LOGIN = 'login'
+KIND_TOKENS = 'tokens'
+# `tsx scripts/with-config.ts <name> ...` runs the named script: the CLI name is the positional after the runner script
+CLI_RUNNER_STEM = 'with-config'
 AUTH_TABLES = (
     'dashboard_users', 'auth_sessions', 'api_tokens', 'device_keys',
     'api_tokens_old', 'api_tokens_seq', 'device_keys_old', 'device_keys_seq',
@@ -881,7 +913,12 @@ def _dequote_flag_args(args):
 
 
 def _is_cli_name(base_no_ext):
-    return base_no_ext in CLI_NAMES or any(base_no_ext.startswith(p) for p in CLI_PREFIXES)
+    """The CLI kind a script stem names (KIND_LOGIN / KIND_TOKENS), or None."""
+    if base_no_ext in CLI_NAMES or any(base_no_ext.startswith(p) for p in CLI_PREFIXES):
+        return KIND_LOGIN
+    if base_no_ext == TOKEN_CLI_NAME:
+        return KIND_TOKENS
+    return None
 
 
 _EXTS = ('.ts', '.js', '.mjs', '.cjs', '.mts', '.cts', '.tsx', '.jsx', '.sh', '.bash', '.py')
@@ -897,36 +934,62 @@ def _script_stem(text):
 
 
 def _word_hits_cli(word, cwd):
-    """True when a script-position word names the CLI -- also through shell globs."""
+    """The CLI kinds a script-position word names, also through shell globs and brace alternatives: a tuple, empty
+    (falsy) when it names none. One word can name both kinds (`{dashboard-user,agent-tokens}`): every kind's rule applies."""
+    kinds = []
     for alt in word.alts:
-        if _is_cli_name(_script_stem(alt)):
-            return True
+        k = _is_cli_name(_script_stem(alt))
+        if k and k not in kinds:
+            kinds.append(k)
         if any(c in alt for c in '*?['):
             try:
                 hits = glob.glob(alt if os.path.isabs(alt) else os.path.join(cwd, alt))
             except Exception:
                 hits = []
             for h in hits[:MAX_GLOB_HITS]:
-                if _is_cli_name(_script_stem(h)):
-                    return True
-    return False
+                k = _is_cli_name(_script_stem(h))
+                if k and k not in kinds:
+                    kinds.append(k)
+    return tuple(kinds)
+
+
+def _word_is_runner_script(word):
+    """True when a script-position word is scripts/with-config.ts (any extension, any path): the CLI name follows it."""
+    return any(_script_stem(alt) == CLI_RUNNER_STEM for alt in word.alts)
 
 
 def _after_cli(args):
-    """The arguments after the CLI name; `list` alone is the one read-only form."""
+    """The arguments after the CLI name (the `--` separator dropped); the kind's rule reads the first one."""
     rest = [a.text for a in args if a.text != '--']
     return rest
 
 
-def _cli_decision(rest, state):
-    if len(rest) == 1 and rest[0] == 'list':
-        return
-    if state.isolated_cli:      # MARVEEN_STORE_DIR points at a throw-away store: not the live logins
-        return
+def _cli_decision(rest, state, kinds=(KIND_LOGIN,)):
+    """Apply the rule of every kind the CLI word names. Login CLI: `list` alone is the one read-only form. Token CLI:
+    the first argument must be one of TOKEN_CLI_READ_VERBS (a flag first, an unknown verb or no verb is denied). A
+    throw-away store (MARVEEN_STORE_DIR away from the live one, no PostgreSQL URL anywhere) exempts the login CLI
+    entirely, but the token CLI only for the verbs that write under the store dir (TOKEN_CLI_STORE_ONLY_VERBS), never
+    for `issue`, which writes into the agents' own directories."""
     sub = rest[0] if rest else '(nincs alparancs)'
-    raise Deny('dashboard-user / security-reset hivas (alparancs: %s). Ez a gep break-glass belepoje: '
-               'kozvetlenul SQLite-ot ir, HTTP es hitelesites nelkul, ezert agensnek nem engedett. '
-               'Egyedul a csak olvaso `list` engedett.' % sub[:40])
+    for kind in kinds:
+        if kind == KIND_TOKENS:
+            if rest and rest[0] in TOKEN_CLI_READ_VERBS:
+                continue
+            if state.isolated_cli and rest and rest[0] in TOKEN_CLI_STORE_ONLY_VERBS:
+                continue      # MARVEEN_STORE_DIR points at a throw-away store: its database and its store files, not the live ones
+            raise Deny('agent-tokens hivas (alparancs: %s). A parancs a futo telepites bearer-tokenjeit hozza letre, '
+                       'forgatja es vonja vissza kozvetlenul az adatbazisban, HTTP es hitelesites nelkul, ezert '
+                       'agensnek nem engedett. Csak a `check`, `list` es `archive-shared-age` engedett, minden mas '
+                       'alparancs (es az alparancs hianya) tiltott; az issue / issue-operator / rotate-shared / '
+                       'revoke a tulajdonos dolga a gepen. Az `issue` eldobhato store-on is tiltott: az agensek '
+                       'sajat konyvtarukba (nem a store-ba) irjak a token-fajlt.' % sub[:40])
+        if len(rest) == 1 and rest[0] == 'list':
+            continue
+        if state.isolated_cli:      # MARVEEN_STORE_DIR points at a throw-away store: not the live logins
+            continue
+        raise Deny('dashboard-user / security-reset hivas (alparancs: %s). Ez a gep break-glass belepoje: '
+                   'kozvetlenul SQLite-ot ir, HTTP es hitelesites nelkul, ezert agensnek nem engedett. '
+                   'Egyedul a csak olvaso `list` engedett.' % sub[:40])
 
 
 # ---- SQL / code ---------------------------------------------------------------------
@@ -964,10 +1027,17 @@ APP_MUTATORS = re.compile(
     r'|securityReset|insertDeviceKey|deleteDeviceKeyByHash|deleteDeviceKeyById|deleteAllDeviceKeys'
     r'|setDeviceKeyTenant|enrollDashboardApiToken|insertApiToken|revokeApiTokensForAgent'
     r'|revokeApiToken|rotateApiToken|revokeAllForUser|revokeAllSessions|issueEnrollCode'
-    r'|consumeEnrollCode|runDashboardUserCli)\b|password-hash(?:\.js)?[\'"]')
+    r'|consumeEnrollCode|runDashboardUserCli'
+    # the per-agent token admin: its module exports and the db writers it calls (the same functions the CLI verbs run)
+    r'|issueAgentToken|issueOperatorToken|rotateSharedToken|replaceActiveApiToken|rotateSharedDashboardToken'
+    r'|runAgentTokensCli)\b|password-hash(?:\.js)?[\'"]')
 # the CLI module itself: its exported entry runs every write verb, so naming its path in interpreter code is the same call.
 # Any case, repeated separators and `./` segments count (a file system may fold case, and `//` or `/./` name the same file).
 CLI_MODULE_PATH = re.compile(r'dashboard-user(?:[/\\]+(?:\.[/\\]+)*)cli(?:\.[jt]s)?(?![\w-])', re.I)
+# The token CLI: its entry script (scripts/agent-tokens), its body (src/agent-tokens/cli) and the module of the token
+# functions (src/agent-tokens). Named after a separator or a quote, so `agent-tokens.test.ts` and `x-agent-tokens` are not hits.
+TOKEN_MODULE_PATH = re.compile(
+    r"(?<=[/\\'\"`])agent-tokens(?:(?:[/\\]+(?:\.[/\\]+)*)cli)?(?:\.[cm]?[jt]s)?(?![\w.-])", re.I)
 EXEC_API = re.compile(
     r'subprocess|os\.(?:system|popen|exec\w*|spawn\w*)|child_process|execSync|spawnSync|execFileSync'
     r'|\bPopen\b|\bexecFile|Deno\.(?:run|Command)|Bun\.(?:spawn|\$)|\bsystem\s*\(|\bexec\s*\('
@@ -977,6 +1047,8 @@ EXEC_API = re.compile(
 CLI_MARKER = re.compile(
     r'(?:npm|pnpm|yarn|npx|tsx|ts-node|node|bun|bunx|deno)\b[^\n]{0,80}?dashboard[-_]user(?![\w-])'
     r'|scripts/dashboard-user(?![\w-])|[\'"]dashboard-user(?:\.[jt]s)?[\'"]'
+    r'|(?:npm|pnpm|yarn|npx|tsx|ts-node|node|bun|bunx|deno)\b[^\n]{0,80}?agent[-_]tokens(?![\w-])'
+    r'|scripts/agent-tokens(?![\w-])|[\'"]agent-tokens(?:\.[jt]s)?[\'"]'
     r'|security[-_:]reset|sessions:clear|--password-stdin')
 
 
@@ -1088,12 +1160,15 @@ def inspect_code(text, state, python=False):
                    '(olvasni szabad).')
     if not python and CLI_MODULE_PATH.search(text):
         raise Deny('interpreter-kod, ami a dashboard-user CLI modulja (src/dashboard-user/cli) betoltesevel hiv meg.')
+    if not python and TOKEN_MODULE_PATH.search(text):
+        raise Deny('interpreter-kod, ami az agent-tokens CLI vagy token-modulja (scripts/agent-tokens, '
+                   'src/agent-tokens) betoltesevel hiv meg.')
     m = None if python else APP_MUTATORS.search(text)
     if m:
         raise Deny('az alkalmazas hitelesitest modosito fuggvenye interpreter-kodbol (%s).'
                    % m.group()[:40])
     if CLI_MARKER.search(text) and EXEC_API.search(text):
-        raise Deny('interpreter-kod, ami a dashboard-user / security-reset parancsot inditja.')
+        raise Deny('interpreter-kod, ami a dashboard-user / security-reset / agent-tokens parancsot inditja.')
     # the code may also hold a plain shell line (osascript, perl system(...)): look at it as a command
     for mm in re.finditer(r'(?:do shell script|do script|keystroke)\s+"((?:\\.|[^"\\])*)"', text):
         check_command(mm.group(1).replace('\\"', '"').replace('\\\\', '\\'), state, 1)
@@ -1371,8 +1446,9 @@ def _handle_shell(name, args, seg, state, depth):
             check_command(alt, state, depth + 1)
         return
     if i < len(args):                       # bash FILE
-        if _word_hits_cli(args[i], state.cwd):          # bash scripts/security-reset.sh
-            _cli_decision(_after_cli(args[i + 1:]), state)
+        kinds = _word_hits_cli(args[i], state.cwd)      # bash scripts/security-reset.sh
+        if kinds:
+            _cli_decision(_after_cli(args[i + 1:]), state, kinds)
         txt = _read_text_file(args[i].text, state)
         if txt is not None:
             check_shell_script(txt, state, depth)
@@ -1428,7 +1504,9 @@ _NODE_VALUE_FLAGS = ('-r', '--require', '--import', '--loader', '--experimental-
 
 
 def _runner_script_hit(args, state):
-    """node/tsx/ts-node/bun/deno/...: the script word (first positionals) names the CLI."""
+    """node/tsx/ts-node/bun/deno/...: the script word (first positionals) names the CLI. Returns (kinds, the
+    positionals after the CLI name) or None. `tsx scripts/with-config.ts agent-tokens ...` names it one word later:
+    with-config is the runner of the config-loading scripts and its first argument is the script it runs."""
     pos = _positional(args, _NODE_VALUE_FLAGS)
     # the script is the first positional; a runner sub-command (bun run X, deno run X, tsx watch X,
     # vite-node X) puts it second. A later word that merely carries the name is an argument.
@@ -1436,17 +1514,28 @@ def _runner_script_hit(args, state):
     if len(pos) > 1 and pos[0].text in ('run', 'watch', 'exec', 'task', 'x', 'serve'):
         spots.append(1)
     for k in spots:
-        if k < len(pos) and _word_hits_cli(pos[k], state.cwd):
-            return pos[k + 1:]
+        if k >= len(pos):
+            continue
+        kinds = _word_hits_cli(pos[k], state.cwd)
+        if kinds:
+            return kinds, pos[k + 1:]
+        if _word_is_runner_script(pos[k]) and k + 1 < len(pos):
+            target = pos[k + 1]
+            if target.dyn:
+                raise Deny('with-config.ts futasidoben kepzett script-nevvel: a kapu nem tudja eldonteni, hogy '
+                           'az agent-tokens / dashboard-user-e, ezert nem engedi at.')
+            kinds = _word_hits_cli(target, state.cwd)
+            if kinds:
+                return kinds, pos[k + 2:]
     return None
 
 
 def _handle_node(name, args, seg, state, depth):
     if any(a.text in ('--check', '-c') for a in args) and name in ('node', 'nodejs'):
         return
-    rest = _runner_script_hit(args, state)
-    if rest is not None:
-        _cli_decision(_after_cli(rest), state)
+    hit = _runner_script_hit(args, state)
+    if hit is not None:
+        _cli_decision(_after_cli(hit[1]), state, hit[0])
     if name == 'deno':          # deno eval "code": the code is the positional after the sub-command
         pos = _positional(args, ('--ext', '-c', '--config', '--import-map', '--tsconfig', '--location',
                                  '--seed', '--v8-flags', '--cert', '--env-file'))
@@ -1475,21 +1564,24 @@ def _handle_npm_like(name, args, seg, state, depth):
             w = scr[0]
             if w.dyn and not name == 'bun':
                 raise Deny('npm run egy futasidoben kepzett script-nevvel: a kapu nem tudja eldonteni, '
-                           'hogy a dashboard-user-e, ezert nem engedi at.')
-            if _word_hits_cli(w, state.cwd):
-                _cli_decision(_after_cli(_args_after(args, w)), state)
+                           'hogy a dashboard-user / agent-tokens-e, ezert nem engedi at.')
+            kinds = _word_hits_cli(w, state.cwd)
+            if kinds:
+                _cli_decision(_after_cli(_args_after(args, w)), state, kinds)
         return
     elif pos and pos[0].text in ('exec', 'x', 'dlx'):
         sub, rest = pos[0].text, pos[1:]
     elif name in ('yarn', 'pnpm') and pos:
         # yarn dashboard-user / pnpm dashboard-user  (they run package scripts without "run")
-        if _word_hits_cli(pos[0], state.cwd):
-            _cli_decision(_after_cli(_args_after(args, pos[0])), state)
+        kinds = _word_hits_cli(pos[0], state.cwd)
+        if kinds:
+            _cli_decision(_after_cli(_args_after(args, pos[0])), state, kinds)
             return
         sub, rest = None, []
     elif name == 'bun' and pos:
-        if _word_hits_cli(pos[0], state.cwd):
-            _cli_decision(_after_cli(_args_after(args, pos[0])), state)
+        kinds = _word_hits_cli(pos[0], state.cwd)
+        if kinds:
+            _cli_decision(_after_cli(_args_after(args, pos[0])), state, kinds)
             return
         sub, rest = None, []
     else:
@@ -1497,8 +1589,9 @@ def _handle_npm_like(name, args, seg, state, depth):
     if not rest:
         return
     pkg = rest[0]
-    if _word_hits_cli(pkg, state.cwd):
-        _cli_decision(_after_cli(_args_after(args, pkg)), state)
+    kinds = _word_hits_cli(pkg, state.cwd)
+    if kinds:
+        _cli_decision(_after_cli(_args_after(args, pkg)), state, kinds)
         return
     # npx tsx scripts/dashboard-user.ts ...  -> the package is itself a runner / interpreter
     # the package's own arguments with their flags: `npx tsx -e "code"` must reach the interpreter check with its `-e` (the
@@ -2454,8 +2547,8 @@ _GIT_GLOBAL_VALUE_FLAGS = ('-c', '-C', '--git-dir', '--work-tree', '--namespace'
 
 _RUNNERS = r'(?:npm|pnpm|yarn|npx|pnpx|tsx|ts-node|node|nodejs|bun|bunx|deno|vite-node|corepack)'
 # The CLI named the way it is RUN, inside an argument that is itself a command string.
-GENERIC_RUNNER_MARKER = re.compile(_RUNNERS + r'\b[^\n]{0,80}?(?:dashboard[-_]user|security[-_]reset)(?![\w-])')
-GENERIC_PATH_MARKER = re.compile(r'(?<![\w./-])(?:\./|/)[\w./-]*(?:dashboard-user|security-reset)(?![\w-])')
+GENERIC_RUNNER_MARKER = re.compile(_RUNNERS + r'\b[^\n]{0,80}?(?:dashboard[-_]user|security[-_]reset|agent[-_]tokens)(?![\w-])')
+GENERIC_PATH_MARKER = re.compile(r'(?<![\w./-])(?:\./|/)[\w./-]*(?:dashboard-user|security-reset|agent-tokens)(?![\w-])')
 
 
 def _git_args_to_scan(args):
@@ -2646,9 +2739,19 @@ def check_words(words, seg, state, depth):
     _handle_live_args(name, args, seg, state)
     # a direct execution of the CLI or of a shell script by path: ./scripts/dashboard-user.ts, x.sh
     for alt in cmdword.alts:
-        if _is_cli_name(_script_stem(alt)):
-            _cli_decision(_after_cli(args), state)
+        kind = _is_cli_name(_script_stem(alt))
+        if kind:
+            _cli_decision(_after_cli(args), state, (kind,))
             return
+        if _script_stem(alt) == CLI_RUNNER_STEM and args:      # ./scripts/with-config.ts agent-tokens issue
+            target = args[0]
+            if target.dyn:
+                raise Deny('with-config.ts futasidoben kepzett script-nevvel: a kapu nem tudja eldonteni, hogy '
+                           'az agent-tokens / dashboard-user-e, ezert nem engedi at.')
+            kinds = _word_hits_cli(target, state.cwd)
+            if kinds:
+                _cli_decision(_after_cli(args[1:]), state, kinds)
+                return
         if '/' in alt and alt.lower().endswith(('.sh', '.bash')):
             txt = _read_text_file(alt, state)
             if txt is not None:

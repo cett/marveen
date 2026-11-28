@@ -17,6 +17,7 @@ import contextlib
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -86,9 +87,10 @@ class Fixture(object):
         os.makedirs(os.path.join(self.tmp, 'hardstore'))
         os.link(self.live, os.path.join(self.tmp, 'hardstore', 'claudeclaw.db'))   # a "throw-away" store that IS the live DB
         self.hardstore = os.path.realpath(os.path.join(self.tmp, 'hardstore'))
-        for name in ('dashboard-user.ts', 'dashboard-use1.ts', 'security-reset.sh'):
+        for name in ('dashboard-user.ts', 'dashboard-use1.ts', 'security-reset.sh', 'agent-tokens.ts', 'with-config.ts'):
             open(os.path.join(self.root, 'scripts', name), 'w').write('// fixture\n')
         open(os.path.join(self.root, 'bad.sh'), 'w').write('#!/bin/bash\nnpm run dashboard-user -- add bob\n')
+        open(os.path.join(self.root, 'bad-tokens.sh'), 'w').write('#!/bin/bash\nnpm run agent-tokens -- issue\n')
         open(os.path.join(self.root, 'ok.sh'), 'w').write('#!/bin/bash\necho hello\nnpm run build\n')
         open(os.path.join(self.root, 'bad.sql'), 'w').write("UPDATE dashboard_users SET role='admin';\n")
         open(os.path.join(self.root, 'ok.sql'), 'w').write('SELECT count(*) FROM dashboard_users;\n')
@@ -1031,6 +1033,149 @@ ALLOWED = [
 ]
 
 
+# ---------------------------------------------------------------------------------------------
+# the per-agent token CLI (`npm run agent-tokens`): a VERB rule. check / list / archive-shared-age pass, every other verb,
+# an unknown verb and a missing verb is denied. The wrappers are the login CLI's, so the wide table is DERIVED from the login
+# CLI rows (same shape, the other name, a write verb) instead of retyped; the hand-written rows add what is specific to it:
+# the verb split, `tsx scripts/with-config.ts agent-tokens ...`, the module / mutator names, the isolated-store exemption.
+# ---------------------------------------------------------------------------------------------
+_LOGIN_VERBS = re.compile(r'\b(?:reset-password|sessions:clear|security:reset|add|remove)\b(?: (?:bob|x)\b)?')
+# rows of the login table that cannot be carried over by a rename: they name its module, its entry function, its auth table,
+# its other script, or `list` (a verb the token CLI also allows)
+_NOT_DERIVED = ('src/dashboard-user', 'runDashboardUserCli', 'dashboard_users', 'security-reset', 'security:reset', 'list')
+
+
+def _as_token_row(label, cmd, verb='issue'):
+    if 'dashboard-user' not in cmd or any(m in cmd for m in _NOT_DERIVED):
+        return None
+    c = cmd.replace('dashboard-user', 'agent-tokens')
+    if verb:
+        c = _LOGIN_VERBS.sub(verb, c)
+    return ('tokens: ' + label, c)
+
+
+TOKEN_DERIVED_BLOCKED = [r for r in (_as_token_row(l, c) for l, c in BLOCKED) if r]
+TOKEN_DERIVED_ALLOWED = [r for r in (_as_token_row(l, c, verb='issue-operator' if 'MARVEEN_STORE_DIR' in c else False)
+                                     for l, c in ALLOWED) if r]
+
+_WRITE_VERBS = ('issue', 'issue --rotate', 'issue --dry-run alpha', 'issue alpha beta', 'issue-operator', 'issue-operator --rotate',
+                'rotate-shared', 'revoke alpha')
+_READ_VERBS = ('check', 'check alpha', 'list', 'archive-shared-age {O}/extracted.db')
+# one command line per way of running the CLI; {V} is the verb and its arguments
+_TOKEN_SHAPES = (
+    'npm run agent-tokens -- {V}',
+    'npm run agent-tokens {V}',
+    'npx tsx scripts/agent-tokens.ts {V}',
+    'tsx scripts/with-config.ts agent-tokens {V}',
+    'npx tsx scripts/with-config.ts agent-tokens {V}',
+    'node --import tsx scripts/with-config.ts agent-tokens {V}',
+    'node dist/scripts/agent-tokens.js {V}',
+    'bun scripts/with-config.ts agent-tokens {V}',
+    './scripts/agent-tokens.ts {V}',
+    'bash -c "npm run agent-tokens -- {V}"',
+)
+
+TOKEN_BLOCKED = [('tokens verb %s :: %s' % (v, s.split(' {V}')[0]), s.replace('{V}', v)) for v in _WRITE_VERBS for s in _TOKEN_SHAPES] + [
+    # `issue` writes the token file of each agent into the agent's own directory, outside the store dir: a throw-away store
+    # does not make it harmless (the live agent's file would be replaced by a token the live database does not know)
+    ('tokens: issue on a throw-away store', 'MARVEEN_STORE_DIR={O} npm run agent-tokens -- issue'),
+    ('tokens: issue alpha on a throw-away store', 'MARVEEN_STORE_DIR={O} npm run agent-tokens -- issue alpha'),
+    ('tokens: issue --rotate on a throw-away store', 'MARVEEN_STORE_DIR={O} npx tsx scripts/agent-tokens.ts issue --rotate'),
+    ('tokens: issue on a throw-away store, with-config', 'MARVEEN_STORE_DIR={O} tsx scripts/with-config.ts agent-tokens issue alpha'),
+    ('tokens: issue on a throw-away store, env form', 'env MARVEEN_STORE_DIR={O} npm run agent-tokens -- issue'),
+    ('tokens: issue on a throw-away store, exported earlier', 'export MARVEEN_STORE_DIR={O}; npm run agent-tokens -- issue alpha'),
+    ('tokens: issue on a throw-away store, under bash -c', 'MARVEEN_STORE_DIR={O} bash -c "npm run agent-tokens -- issue alpha"'),
+    ('tokens: a missing verb on a throw-away store', 'MARVEEN_STORE_DIR={O} npm run agent-tokens'),
+    ('tokens: an unknown verb on a throw-away store', 'MARVEEN_STORE_DIR={O} npm run agent-tokens -- wipe'),
+    # a missing verb, an unknown verb, a flag in the verb's place: default-deny (the CLI itself prints its usage for these)
+    ('tokens: no verb, npm run', 'npm run agent-tokens'),
+    ('tokens: no verb after --', 'npm run agent-tokens --'),
+    ('tokens: no verb, with-config', 'tsx scripts/with-config.ts agent-tokens'),
+    ('tokens: unknown verb', 'npm run agent-tokens -- wipe'),
+    ('tokens: verb in another case', 'npm run agent-tokens -- Issue'),
+    ('tokens: --help in the verb place', 'npm run agent-tokens -- --help'),
+    ('tokens: a flag before the write verb', 'npm run agent-tokens -- --rotate issue'),
+    ('tokens: a read verb as a later word does not make it a read', 'npm run agent-tokens -- issue list'),
+    ('tokens: a read verb after a write verb in a pipe', 'npm run agent-tokens -- issue | npm run agent-tokens -- list'),
+    # the config runner: the name is the word AFTER the script
+    ('tokens: with-config absolute path', 'tsx {R}/scripts/with-config.ts agent-tokens issue'),
+    ('tokens: with-config tsx watch', 'tsx watch scripts/with-config.ts agent-tokens issue'),
+    ('tokens: with-config name built at run time', 'tsx scripts/with-config.ts $UNSET_NAME issue'),
+    ('tokens: with-config direct exec', './scripts/with-config.ts agent-tokens issue'),
+    ('tokens: with-config direct exec, name built at run time', './scripts/with-config.ts $UNSET_NAME issue'),
+    ('tokens: with-config under a wrapper', 'env FOO=1 timeout 5 tsx scripts/with-config.ts agent-tokens revoke alpha'),
+    ('tokens: with-config in a heredoc to bash', 'bash <<EOF\ntsx scripts/with-config.ts agent-tokens issue\nEOF'),
+    ('tokens: with-config in a command substitution', 'echo "$(tsx scripts/with-config.ts agent-tokens issue)"'),
+    ('tokens: with-config through xargs', 'echo agent-tokens | xargs tsx scripts/with-config.ts'),
+    # the name through brace alternatives, a glob and a shell script file; both kinds on one word follow the stricter rule
+    ('tokens: brace alternative', 'npm run agent-{tokens,x} -- issue'),
+    ('tokens: both kinds on one word, a verb only the token CLI allows', 'npm run {dashboard-user,agent-tokens} -- check'),
+    ('tokens: glob of the script name', 'tsx scripts/agent-t*.ts issue'),
+    ('tokens: shell script file that runs it', 'bash {R}/bad-tokens.sh'),
+    ('tokens: shell script file, direct', '{R}/bad-tokens.sh'),
+    ('tokens: shell script file, sourced', 'source bad-tokens.sh'),
+    # command strings handed to a program the gate does not know: the generic markers follow them
+    ('tokens: unknown wrapper, runner marker', 'unknown-tool --cmd "npm run agent-tokens -- issue"'),
+    ('tokens: unknown wrapper, path marker', 'unknown-tool --cmd "./scripts/agent-tokens.ts issue"'),
+    ('tokens: unknown wrapper, with-config', 'unknown-tool --cmd "tsx scripts/with-config.ts agent-tokens issue"'),
+    # interpreter code: the module path, each exported name, a spawn of the CLI
+    ('tokens: interpreter imports the CLI body', 'npx tsx -e "import(\'./src/agent-tokens/cli.ts\').then(m=>m.default)"'),
+    ('tokens: interpreter imports the CLI body, other case', 'npx tsx -e "import(\'./src/Agent-Tokens//cli.ts\').then(m=>m.default)"'),
+    ('tokens: interpreter imports the CLI body with ./ segment', 'npx tsx -e "import(\'./src/agent-tokens/./cli.ts\').then(m=>m.default)"'),
+    ('tokens: interpreter imports the token module', 'npx tsx -e "import(\'./src/agent-tokens.ts\').then(m=>m.default)"'),
+    ('tokens: interpreter imports the entry script', 'npx tsx -e "import(\'./scripts/agent-tokens.ts\')"'),
+    ('tokens: interpreter requires the compiled module', 'node -e "require(\'./dist/src/agent-tokens.js\')"'),
+    ('tokens: interpreter spawns the CLI', 'node -e "require(\'child_process\').execSync(\'npm run agent-tokens -- issue\')"'),
+    ('tokens: python spawns the CLI', 'python3 -c "import os; os.system(\'npm run agent-tokens -- issue\')"'),
+    ('tokens: python spawns the script by path', 'python3 -c "import subprocess; subprocess.run([\'./scripts/agent-tokens.ts\', \'issue\'])"'),
+    ('tokens: python spawns the CLI by its quoted name', 'python3 -c "import subprocess; subprocess.run([\'launcher\', \'agent-tokens\', \'issue\'])"'),
+    ('tokens: python subprocess the CLI','python3 - <<PY\nimport subprocess\nsubprocess.run(["npm", "run", "agent-tokens", "--", "issue"])\nPY'),
+] + [
+    ('tokens: interpreter calls %s' % n, 'node -e "const m = require(process.env.X); m.%s()"' % n)
+    for n in ('issueAgentToken', 'issueOperatorToken', 'rotateSharedToken', 'replaceActiveApiToken', 'rotateSharedDashboardToken',
+              'runAgentTokensCli')
+] + TOKEN_DERIVED_BLOCKED
+
+TOKEN_ALLOWED = [('tokens read verb %s :: %s' % (v, s.split(' {V}')[0]), s.replace('{V}', v)) for v in _READ_VERBS for s in _TOKEN_SHAPES] + [
+    ('tokens: list piped', 'npm run agent-tokens -- list | head -5'),
+    ('tokens: check redirected', 'npm run agent-tokens -- check > {O}/out.txt 2>&1'),
+    ('tokens: list through a PG URL in the command', 'MARVEEN_PG_URL=' + 'postgres://marveen_app@127.0.0.1:5432/marveen' + ' npm run agent-tokens -- list'),
+    # a throw-away store exempts the verbs that write under the store dir (the database and store/.operator-token,
+    # store/.dashboard-token), on SQLite only
+    ('tokens: issue-operator on a throw-away store (SQLite)', 'MARVEEN_STORE_DIR={O} npm run agent-tokens -- issue-operator'),
+    ('tokens: rotate-shared on a throw-away store (SQLite)', 'MARVEEN_STORE_DIR={O} npm run agent-tokens -- rotate-shared'),
+    ('tokens: revoke on a throw-away store (SQLite)', 'MARVEEN_STORE_DIR={O} npm run agent-tokens -- revoke alpha'),
+    ('tokens: revoke on a throw-away store, with-config', 'MARVEEN_STORE_DIR={O} tsx scripts/with-config.ts agent-tokens revoke alpha'),
+    ('tokens: issue-operator on a throw-away store, exported earlier', 'export MARVEEN_STORE_DIR={O}; npx tsx scripts/agent-tokens.ts issue-operator --rotate'),
+    # naming the CLI is not running it
+    ('tokens: commit message', 'git commit -m "docs: the agent-tokens CLI now runs on PostgreSQL: npm run agent-tokens -- issue"'),
+    ('tokens: echo prose', 'echo "the owner runs npm run agent-tokens -- issue on the machine"'),
+    ('tokens: cat the entry script', 'cat scripts/agent-tokens.ts'),
+    ('tokens: cat the CLI body', 'cat src/agent-tokens/cli.ts'),
+    ('tokens: grep the module for an exported name', 'grep -n issueAgentToken src/agent-tokens.ts'),
+    ('tokens: git add the sources', 'git add src/agent-tokens/cli.ts src/agent-tokens.ts scripts/agent-tokens.ts'),
+    ('tokens: git diff the entry script', 'git diff -- scripts/agent-tokens.ts'),
+    ('tokens: vitest on the cells', 'npx vitest run src/__tests__/agent-tokens-cli-sqlite.test.ts'),
+    ('tokens: vitest on the PG cells', 'npx vitest run --config vitest.pg.config.ts src/__tests__/pg/agent-tokens-cli.pg.test.ts'),
+    ('tokens: vitest filter', 'npx vitest run agent-tokens'),
+    ('tokens: heredoc into a doc', 'cat > docs/x.md <<EOF\nRun npm run agent-tokens -- issue on the machine.\nEOF'),
+    # the other scripts of the config runner are not the token CLI
+    ('tokens: with-config, another script', 'tsx scripts/with-config.ts status'),
+    ('tokens: with-config, budget check', 'npx tsx scripts/with-config.ts budget-alert-check'),
+    ('tokens: with-config, no name', 'tsx scripts/with-config.ts'),
+    ('tokens: npm run status', 'npm run status'),
+    # interpreter code that merely carries a similar name
+    ('tokens: a script whose name only starts with the CLI name', 'node scripts/agent-tokens-helper.js issue'),
+    ('tokens: with-config direct exec, read verb', './scripts/with-config.ts agent-tokens list'),
+    ('tokens: node names a file that ends with the CLI name', 'node -e "console.log(\'my-agent-tokens\')"'),
+    ('tokens: node names a test file','node -e "console.log(\'./agent-tokens.test.ts\')"'),
+    ('tokens: node names a longer module', 'node -e "console.log(\'src/agent-tokens-cli-sqlite.test.ts\')"'),
+    ('tokens: python source edit naming an exported name', 'python3 - <<EOF\np = "src/agent-tokens.ts"\ns = open(p).read()\ns = s.replace("issueAgentToken", "issueAgentToken2")\nEOF'),
+] + TOKEN_DERIVED_ALLOWED
+BLOCKED.extend(TOKEN_BLOCKED)
+ALLOWED.extend(TOKEN_ALLOWED)
+
+
 # PostgreSQL install: the isolated-store exemption is void there (the CLI reads the install's URL, not the store dir).
 PG_URL_VALUE = 'postgres://marveen_app@127.0.0.1:5432/marveen'
 PG_ENV_BLOCKED = [
@@ -1039,6 +1184,13 @@ PG_ENV_BLOCKED = [
     ('PG env, isolated store, remove', 'MARVEEN_STORE_DIR={O} npm run dashboard-user -- remove bob'),
     ('PG env, isolated store, sessions:clear', 'MARVEEN_STORE_DIR={O} npm run dashboard-user -- sessions:clear'),
     ('PG env, isolated store, security:reset', 'MARVEEN_STORE_DIR={O} npx tsx scripts/dashboard-user.ts security:reset'),
+    ('PG env, isolated store, tokens issue', 'MARVEEN_STORE_DIR={O} npm run agent-tokens -- issue'),
+    ('PG env, isolated store, tokens revoke', 'MARVEEN_STORE_DIR={O} npm run agent-tokens -- revoke alpha'),
+    ('PG env, isolated store, tokens issue --rotate', 'MARVEEN_STORE_DIR={O} npx tsx scripts/agent-tokens.ts issue --rotate'),
+    ('PG env, isolated store, tokens revoke through with-config', 'MARVEEN_STORE_DIR={O} tsx scripts/with-config.ts agent-tokens revoke alpha'),
+    ('PG env, isolated store, tokens rotate-shared', 'MARVEEN_STORE_DIR={O} npm run agent-tokens -- rotate-shared'),
+    ('PG env, isolated store, tokens issue-operator', 'MARVEEN_STORE_DIR={O} npm run agent-tokens -- issue-operator'),
+    ('PG env, isolated store, tokens no verb', 'MARVEEN_STORE_DIR={O} npm run agent-tokens'),
 ]
 # a PostgreSQL URL variable named in the command itself: refused on a SQLite-mode gate too (the store dir is not the database)
 URL_NAMED_BLOCKED = [
@@ -1046,10 +1198,16 @@ URL_NAMED_BLOCKED = [
     ('migrate URL prefix, isolated store, add', 'MARVEEN_PG_MIGRATE_URL=' + PG_URL_VALUE + ' MARVEEN_STORE_DIR={O} npx tsx scripts/dashboard-user.ts add bob --password-stdin'),
     ('PG URL via env form, isolated store, remove', 'env MARVEEN_PG_URL=' + PG_URL_VALUE + ' MARVEEN_STORE_DIR={O} npm run dashboard-user -- remove bob'),
     ('PG URL exported earlier in the line, isolated store, remove', 'export MARVEEN_PG_URL=' + PG_URL_VALUE + '; MARVEEN_STORE_DIR={O} npm run dashboard-user -- remove bob'),
+    ('PG URL prefix, isolated store, tokens issue', 'MARVEEN_PG_URL=' + PG_URL_VALUE + ' MARVEEN_STORE_DIR={O} npm run agent-tokens -- issue'),
+    ('migrate URL prefix, isolated store, tokens revoke', 'MARVEEN_PG_MIGRATE_URL=' + PG_URL_VALUE + ' MARVEEN_STORE_DIR={O} tsx scripts/with-config.ts agent-tokens revoke alpha'),
+    ('PG URL via env form, isolated store, tokens rotate-shared', 'env MARVEEN_PG_URL=' + PG_URL_VALUE + ' MARVEEN_STORE_DIR={O} npm run agent-tokens -- rotate-shared'),
+    ('PG URL exported earlier in the line, isolated store, tokens issue-operator', 'export MARVEEN_PG_URL=' + PG_URL_VALUE + '; MARVEEN_STORE_DIR={O} npm run agent-tokens -- issue-operator'),
 ]
 # the mode cannot be read: fail closed, the isolated store does not exempt the command
 FAIL_CLOSED_BLOCKED = [
     ('mode unreadable, isolated store, reset-password', 'MARVEEN_STORE_DIR={O} npm run dashboard-user -- reset-password bob'),
+    ('mode unreadable, isolated store, tokens issue', 'MARVEEN_STORE_DIR={O} npm run agent-tokens -- issue'),
+    ('mode unreadable, isolated store, tokens revoke through with-config', 'MARVEEN_STORE_DIR={O} tsx scripts/with-config.ts agent-tokens revoke alpha'),
 ]
 
 
@@ -1158,6 +1316,30 @@ class TestTable(unittest.TestCase):
         with self.assertRaises(GATE.Deny) as cm:
             GATE.inspect('sqlite3 %s "DELETE FROM api_tokens"' % FX.live, FX.root)
         self.assertIn('api_tokens', cm.exception.reason)
+
+    def test_the_token_cli_message_names_the_verb_rule(self):
+        with self.assertRaises(GATE.Deny) as cm:
+            GATE.inspect('npm run agent-tokens -- revoke alpha', FX.root)
+        reason = cm.exception.reason
+        self.assertIn('agent-tokens', reason)
+        self.assertIn('revoke', reason)                         # the verb that was refused
+        for verb in GATE.TOKEN_CLI_READ_VERBS:
+            self.assertIn(verb, reason)                          # the verbs that pass are named
+        with self.assertRaises(GATE.Deny) as cm:
+            GATE.inspect('npm run agent-tokens', FX.root)
+        self.assertIn('nincs alparancs', cm.exception.reason)    # a missing verb is named as such
+
+    def test_the_token_read_verbs_are_exactly_these_three(self):
+        # a verb added to the allowlist is a protection change: this assertion makes it a deliberate one
+        self.assertEqual(GATE.TOKEN_CLI_READ_VERBS, ('check', 'list', 'archive-shared-age'))
+
+    def test_the_token_cli_exit_code_through_the_real_hook(self):
+        code, err = run_gate(bash_event('npm run agent-tokens -- issue alpha'))
+        self.assertEqual(code, 2)
+        self.assertIn('agent-tokens', err)
+        self.assertEqual(run_gate(bash_event('npm run agent-tokens -- list'))[0], 0)
+        self.assertEqual(run_gate(bash_event('tsx scripts/with-config.ts agent-tokens check'))[0], 0)
+        self.assertEqual(run_gate(bash_event('tsx scripts/with-config.ts agent-tokens rotate-shared'))[0], 2)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -1419,12 +1601,12 @@ MUTANTS = [
     ('PG URL name in the command does not void it', '    if any(_PG_URL_NAME.search(t) for t in texts):\n        return True', '    if False:\n        return True'),
     ('PG mode unreadable fails open', '    except Exception:\n        return True   # fail closed', '    except Exception:\n        return False   # fail open'),
     ('PG mode answer ignored', '        return bool(hook_pg_mode.pg_mode())', '        return False'),
-    ('CLI entry name not a mutator', "|consumeEnrollCode|runDashboardUserCli)\\b|password-hash", "|consumeEnrollCode)\\b|password-hash"),
+    ('CLI entry name not a mutator', "|consumeEnrollCode|runDashboardUserCli'", "|consumeEnrollCode'"),
     ('CLI module path pattern names another folder', "CLI_MODULE_PATH = re.compile(r'dashboard-user", "CLI_MODULE_PATH = re.compile(r'disabled-mutant"),
     ('npx drops the package flags before the interpreter check', '    inner = [pkg] + _args_after(args, pkg)', '    inner = [pkg] + rest[1:]'),
-    ('CLI decision never blocks', 'def _cli_decision(rest, state):\n    if len(rest) == 1', 'def _cli_decision(rest, state):\n    return\n    if len(rest) == 1'),
-    ('list exemption widened to anything', "if len(rest) == 1 and rest[0] == 'list':", "if rest and rest[0] == 'list':"),
-    ('list exemption removed', "if len(rest) == 1 and rest[0] == 'list':\n        return", "if False:\n        return"),
+    ('CLI decision never blocks', "    sub = rest[0] if rest else '(nincs alparancs)'\n    for kind in kinds:", "    return\n    sub = rest[0] if rest else '(nincs alparancs)'\n    for kind in kinds:"),
+    ('list exemption widened to anything', "        if len(rest) == 1 and rest[0] == 'list':\n            continue", "        if rest and rest[0] == 'list':\n            continue"),
+    ('list exemption removed', "        if len(rest) == 1 and rest[0] == 'list':\n            continue", "        if False:\n            continue"),
     ('SQL write check disabled on the live store', 'if live and (hit or SQL_DOT_WRITE.search(text)):', 'if False:'),
     ('SQL write check ignores the live flag', 'if live and (hit or SQL_DOT_WRITE.search(text)):', 'if (hit or SQL_DOT_WRITE.search(text)):'),
     ('block comments not stripped (comment hides the table)', "    if '/*' not in text:\n        return text\n    out = []", "    if True:\n        return text\n    out = []"),
@@ -1469,7 +1651,7 @@ MUTANTS = [
     ('script stem ignores extensions', "    for e in _EXTS:\n        if low.endswith(e):\n            return low[:-len(e)]\n    return low", "    return low"),
     ('security-reset prefix dropped', "CLI_PREFIXES = ('security-reset',)", "CLI_PREFIXES = ()"),
     ('shell script files not read', "        txt = _read_text_file(args[i].text, state)\n        if txt is not None:\n            check_shell_script(txt, state, depth)\n        return\n    for t in _stdin_texts", "        return\n    for t in _stdin_texts"),
-    ('bash FILE named like the CLI not checked', "        if _word_hits_cli(args[i], state.cwd):          # bash scripts/security-reset.sh", "        if False:          # bash scripts/security-reset.sh"),
+    ('bash FILE named like the CLI not checked', "        if kinds:\n            _cli_decision(_after_cli(args[i + 1:]), state, kinds)", "        if False:\n            _cli_decision(_after_cli(args[i + 1:]), state, kinds)"),
     ('.read not followed', "    while k < len(texts) and k < 64:       # .read FILE adds that file's text (nested, bounded)", "    while False:       # .read FILE adds that file's text (nested, bounded)"),
     ('session-wide live flag per text only', "    eff = live\n    for t in texts:\n        for m in SQL_DOT_OPEN", "    eff = live\n    for t in []:\n        for m in SQL_DOT_OPEN"),
     ('isolated store exemption always on', "    state.isolated_cli = _isolated_store(seg, words, cmdword, state)", "    state.isolated_cli = True"),
@@ -1544,6 +1726,46 @@ MUTANTS = [
     ('gate-audit spool entry removed', "    if SPOOL_DIR_RE.search(text) and SPOOL_CODE_WRITE_RE.search(text):", '    if False:'),
     ('gate-audit spool: directory name matched case-sensitively', "SPOOL_DIR_RE = re.compile(r'\\.gate-audit-spool', re.I)", "SPOOL_DIR_RE = re.compile(r'\\.gate-audit-spool')"),
     ('gate-audit spool: every code naming the directory is refused',"    if SPOOL_DIR_RE.search(text) and SPOOL_CODE_WRITE_RE.search(text):", '    if SPOOL_DIR_RE.search(text):'),
+    # ---- the per-agent token CLI (agent-tokens): the verb rule, the config runner form, the module and mutator names ----
+    ('tokens: any verb allowed', "            if rest and rest[0] in TOKEN_CLI_READ_VERBS:", "            if rest:"),
+    ('tokens: a missing verb allowed', "            if rest and rest[0] in TOKEN_CLI_READ_VERBS:", "            if not rest or rest[0] in TOKEN_CLI_READ_VERBS:"),
+    ('tokens: the LAST word decides the verb', "            if rest and rest[0] in TOKEN_CLI_READ_VERBS:", "            if rest and rest[-1] in TOKEN_CLI_READ_VERBS:"),
+    ('tokens: issue allowed', "TOKEN_CLI_READ_VERBS = ('check', 'list', 'archive-shared-age')", "TOKEN_CLI_READ_VERBS = ('check', 'list', 'archive-shared-age', 'issue')"),
+    ('tokens: issue-operator allowed', "TOKEN_CLI_READ_VERBS = ('check', 'list', 'archive-shared-age')", "TOKEN_CLI_READ_VERBS = ('check', 'list', 'archive-shared-age', 'issue-operator')"),
+    ('tokens: rotate-shared allowed', "TOKEN_CLI_READ_VERBS = ('check', 'list', 'archive-shared-age')", "TOKEN_CLI_READ_VERBS = ('check', 'list', 'archive-shared-age', 'rotate-shared')"),
+    ('tokens: revoke allowed', "TOKEN_CLI_READ_VERBS = ('check', 'list', 'archive-shared-age')", "TOKEN_CLI_READ_VERBS = ('check', 'list', 'archive-shared-age', 'revoke')"),
+    ('tokens: the name is not a CLI name', "    if base_no_ext == TOKEN_CLI_NAME:\n        return KIND_TOKENS", "    if False:\n        return KIND_TOKENS"),
+    ('tokens: the name matched as a prefix', "    if base_no_ext == TOKEN_CLI_NAME:\n        return KIND_TOKENS", "    if base_no_ext.startswith(TOKEN_CLI_NAME):\n        return KIND_TOKENS"),
+    ('tokens: the isolated-store exemption removed', "            if state.isolated_cli and rest and rest[0] in TOKEN_CLI_STORE_ONLY_VERBS:", "            if False:"),
+    ('tokens: the isolated-store exemption covers any verb', "            if state.isolated_cli and rest and rest[0] in TOKEN_CLI_STORE_ONLY_VERBS:", "            if state.isolated_cli:"),
+    ('tokens: the isolated-store exemption covers issue', "TOKEN_CLI_STORE_ONLY_VERBS = ('issue-operator', 'rotate-shared', 'revoke')", "TOKEN_CLI_STORE_ONLY_VERBS = ('issue', 'issue-operator', 'rotate-shared', 'revoke')"),
+    ('tokens: the isolated-store exemption lost issue-operator', "TOKEN_CLI_STORE_ONLY_VERBS = ('issue-operator', 'rotate-shared', 'revoke')", "TOKEN_CLI_STORE_ONLY_VERBS = ('rotate-shared', 'revoke')"),
+    ('tokens: the isolated-store exemption lost rotate-shared', "TOKEN_CLI_STORE_ONLY_VERBS = ('issue-operator', 'rotate-shared', 'revoke')", "TOKEN_CLI_STORE_ONLY_VERBS = ('issue-operator', 'revoke')"),
+    ('tokens: the isolated-store exemption lost revoke', "TOKEN_CLI_STORE_ONLY_VERBS = ('issue-operator', 'rotate-shared', 'revoke')", "TOKEN_CLI_STORE_ONLY_VERBS = ('issue-operator', 'rotate-shared')"),
+    ('login CLI: the isolated-store exemption removed', "        if state.isolated_cli:      # MARVEEN_STORE_DIR points at a throw-away store: not the live logins\n            continue", "        if False:\n            continue"),
+    ('tokens: only the last kind of a word applies', "    return tuple(kinds)", "    return tuple(kinds[-1:])"),
+    ('tokens: with-config runner form not followed', "        if _word_is_runner_script(pos[k]) and k + 1 < len(pos):", "        if False:"),
+    ('tokens: with-config name built at run time allowed', "            target = pos[k + 1]\n            if target.dyn:", "            target = pos[k + 1]\n            if False:"),
+    ('tokens: with-config verb position off by one', "                return kinds, pos[k + 2:]", "                return kinds, pos[k + 1:]"),
+    ('tokens: with-config direct exec not followed', "        if _script_stem(alt) == CLI_RUNNER_STEM and args:", "        if False:"),
+    ('tokens: with-config direct exec, name built at run time allowed', "            target = args[0]\n            if target.dyn:", "            target = args[0]\n            if False:"),
+    ('tokens: with-config direct exec verb position off by one', "                _cli_decision(_after_cli(args[1:]), state, kinds)\n                return", "                _cli_decision(_after_cli(args), state, kinds)\n                return"),
+    ('tokens: module path check removed', "    if not python and TOKEN_MODULE_PATH.search(text):", "    if False:"),
+    ('tokens: module path names another folder', "])agent-tokens(?:(?:", "])disabled-mutant(?:(?:"),
+    ('tokens: module path matched case-sensitively', "(?![\\w.-])\", re.I)", "(?![\\w.-])\")"),
+    ('tokens: module path not anchored on a separator', "(?<=[/\\\\'\\\"`])", ""),
+    ('tokens: module path matches a longer file name', "(?:\\.[cm]?[jt]s)?(?![\\w.-])", "(?:\\.[cm]?[jt]s)?(?![\\w-])"),
+    ('tokens: spawn marker (runner word) removed', "    r'|(?:npm|pnpm|yarn|npx|tsx|ts-node|node|bun|bunx|deno)\\b[^\\n]{0,80}?agent[-_]tokens(?![\\w-])'\n", ""),
+    ('tokens: spawn marker (scripts/ path) removed', "|scripts/agent-tokens(?![\\w-])", ""),
+    ('tokens: spawn marker (quoted name) removed', "|[\\'\"]agent-tokens(?:\\.[jt]s)?[\\'\"]'", "'"),
+    ('tokens: generic runner marker without the name', "|security[-_]reset|agent[-_]tokens)(?![\\w-])')", "|security[-_]reset)(?![\\w-])')"),
+    ('tokens: generic path marker without the name', "|security-reset|agent-tokens)(?![\\w-])')", "|security-reset)(?![\\w-])')"),
+    ('tokens: issueAgentToken not a mutator name', "|issueAgentToken|", "|"),
+    ('tokens: issueOperatorToken not a mutator name', "|issueOperatorToken|", "|"),
+    ('tokens: rotateSharedToken not a mutator name', "|rotateSharedToken|", "|"),
+    ('tokens: replaceActiveApiToken not a mutator name', "|replaceActiveApiToken|", "|"),
+    ('tokens: rotateSharedDashboardToken not a mutator name', "|rotateSharedDashboardToken'", "'"),
+    ('tokens: runAgentTokensCli not a mutator name', "|runAgentTokensCli)", ")"),
 ]
 
 
