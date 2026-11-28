@@ -583,3 +583,147 @@ describe('archive-shared-age: a SQLite archive against the live PostgreSQL row',
     expect((await run('archive-shared-age', archive(1000))).stdout).toBe('unknown\n')
   })
 })
+
+describe('audit rows of the write verbs (config_change_log, actor cli, a real write only)', () => {
+  const audit = async (db: PgTestDb) =>
+    (await db.pool.query("SELECT key, old_value, new_value, actor FROM config_change_log WHERE key LIKE 'security.cli_token_%' ORDER BY id")).rows as Array<{ key: string; old_value: string | null; new_value: string | null; actor: string }>
+  // the audit table refuses every insert: a trigger in the test database, made by the owner of the server
+  async function refuseAudit(db: PgTestDb): Promise<void> {
+    await db.pool.query("CREATE FUNCTION refuse_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'audit refused (test)'; END $$")
+    await db.pool.query('CREATE TRIGGER refuse_audit BEFORE INSERT ON config_change_log FOR EACH ROW EXECUTE FUNCTION refuse_audit()')
+  }
+
+  it('issue writes one row per agent that got a token, a rotation writes a rotate row, a kept run writes none', async () => {
+    const db = await freshDb()
+    expect((await run('issue', 'alpha', 'beta')).code).toBe(0)
+    expect(await audit(db)).toEqual([
+      { key: 'security.cli_token_issue', old_value: null, new_value: 'alpha', actor: 'cli' },
+      { key: 'security.cli_token_issue', old_value: null, new_value: 'beta', actor: 'cli' },
+    ])
+
+    // a second run keeps both tokens: nothing was written, so nothing is journalled
+    expect((await run('issue', 'alpha', 'beta')).stdout).toContain('\tkept\t')
+    expect(await audit(db)).toHaveLength(2)
+
+    // only the rotated agent gets a new row, and its key says rotate
+    expect((await run('issue', '--rotate', 'beta')).code).toBe(0)
+    expect((await audit(db)).slice(2)).toEqual([{ key: 'security.cli_token_rotate', old_value: null, new_value: 'beta', actor: 'cli' }])
+  })
+
+  it('issue without names journals the main agent and every agent that was written', async () => {
+    const db = await freshDb()
+    expect((await run('issue')).code).toBe(0)
+    expect((await audit(db)).map((r) => r.new_value)).toEqual(['main-agent', 'alpha', 'beta'])
+  })
+
+  it('issue-operator: an issue row, a rotate row on --rotate, none when the token is kept', async () => {
+    const db = await freshDb()
+    expect((await run('issue-operator')).code).toBe(0)
+    expect((await run('issue-operator')).stdout).toContain('\tkept\t')
+    expect((await run('issue-operator', '--rotate')).code).toBe(0)
+    expect(await audit(db)).toEqual([
+      { key: 'security.cli_token_issue', old_value: null, new_value: 'operator', actor: 'cli' },
+      { key: 'security.cli_token_rotate', old_value: null, new_value: 'operator', actor: 'cli' },
+    ])
+  })
+
+  it('rotate-shared: a rotate row naming shared when a row was replaced, an issue row when there was none', async () => {
+    const db = await freshDb()
+    expect((await run('rotate-shared')).stdout).toContain('shared\tissued\t')
+    expect((await run('rotate-shared')).stdout).toContain('shared\trotated\t')
+    expect(await audit(db)).toEqual([
+      { key: 'security.cli_token_issue', old_value: null, new_value: 'shared', actor: 'cli' },
+      { key: 'security.cli_token_rotate', old_value: null, new_value: 'shared', actor: 'cli' },
+    ])
+  })
+
+  it('revoke: one row when a token was revoked, none when the agent had no active token', async () => {
+    const db = await freshDb()
+    expect((await run('issue', 'alpha')).code).toBe(0)
+    expect((await run('revoke', 'alpha')).stdout).toBe('revoked 1 token(s) of alpha\n')
+    expect((await run('revoke', 'alpha')).stdout).toBe('revoked 0 token(s) of alpha\n')
+    expect((await run('revoke', 'unknown-agent')).stdout).toBe('revoked 0 token(s) of unknown-agent\n')
+    expect((await audit(db)).filter((r) => r.key === 'security.cli_token_revoke')).toEqual([
+      { key: 'security.cli_token_revoke', old_value: null, new_value: 'alpha', actor: 'cli' },
+    ])
+  })
+
+  it('no row for a dry run, a read verb, a usage error or a failed issue', async () => {
+    const db = await freshDb()
+    expect((await run('issue', '--dry-run', 'alpha')).code).toBe(0)
+    expect((await run('check')).code).toBe(1) // nothing issued yet: a finding, not a write
+    expect((await run('list')).code).toBe(0)
+    expect((await run('issue', 'no-such-agent')).code).toBe(1)
+    expect((await run('wipe')).code).toBe(2)
+    expect(await audit(db)).toEqual([])
+  })
+
+  it('a failed issue in a run journals the agents that were written and not the one that failed', async () => {
+    const db = await freshDb()
+    expect((await run('issue', 'alpha', 'no-such-agent', 'beta')).code).toBe(1)
+    expect((await audit(db)).map((r) => r.new_value)).toEqual(['alpha', 'beta'])
+  })
+
+  it('no token, hash or file path in a journal row (the whole row is checked against the value of the token)', async () => {
+    const db = await freshDb()
+    expect((await run('issue', 'alpha')).code).toBe(0)
+    expect((await run('issue-operator')).code).toBe(0)
+    expect((await run('rotate-shared')).code).toBe(0)
+    const tokens = [readTok(alphaFile()), readTok(operatorFile()), readTok(sharedFile())]
+    const dump = JSON.stringify((await db.pool.query('SELECT * FROM config_change_log')).rows)
+    for (const t of tokens) {
+      expect(dump).not.toContain(t)
+      expect(dump).not.toContain(sha(t))
+    }
+    expect(dump).not.toContain(state.root)
+  })
+
+  describe('the audit row is refused by the database: the write stays, its line is printed, the exit code is 1', () => {
+    it('issue: the token and its row exist, the line is on stdout, the audit failure is its own line, the next agent still gets its token', async () => {
+      const db = await freshDb()
+      await refuseAudit(db)
+      const r = await run('issue', 'alpha', 'beta')
+      expect(r.code).toBe(1)
+      expect(r.stdout).toContain('alpha\tissued\t')
+      expect(r.stdout).toContain('beta\tissued\t')
+      expect(r.stderr).toContain('alpha\tAUDIT FAILED\taudit refused (test)')
+      expect(r.stderr).toContain('beta\tAUDIT FAILED\taudit refused (test)')
+      expect(existsSync(alphaFile()) && existsSync(betaFile())).toBe(true)
+      expect((await activeRows(db, 'fleet-agent:alpha')).length + (await activeRows(db, 'fleet-agent:beta')).length).toBe(2)
+    })
+
+    it('issue-operator: the token exists, the line is on stdout, exit 1', async () => {
+      const db = await freshDb()
+      await refuseAudit(db)
+      const r = await run('issue-operator')
+      expect(r.code).toBe(1)
+      expect(r.stdout).toContain('operator\tissued\t')
+      expect(r.stderr).toContain('audit refused (test)')
+      expect((await activeRows(db, 'operator')).length).toBe(1)
+    })
+
+    it('rotate-shared: the new token is the live one, the line and the restart hint are printed, exit 1', async () => {
+      const db = await freshDb()
+      writeFileSync(sharedFile(), 'old-shared-fixture-value')
+      await seedRow(db, { hash: sha('old-shared-fixture-value'), name: 'dashboard', role: 'admin', createdAt: 5 })
+      await refuseAudit(db)
+      const r = await run('rotate-shared')
+      expect(r.code).toBe(1)
+      expect(r.stdout).toBe(`shared\trotated\tadmin\t${sharedFile()}\n`)
+      expect(r.stderr).toContain('The old shared token is revoked. Restart the dashboard')
+      expect(r.stderr).toContain('audit refused (test)')
+      expect((await activeRows(db, 'dashboard')).map((x) => x.token_hash)).toEqual([sha(readTok(sharedFile()))])
+    })
+
+    it('revoke: the tokens are revoked, the line is on stdout, exit 1', async () => {
+      const db = await freshDb()
+      expect((await run('issue', 'alpha')).code).toBe(0)
+      await refuseAudit(db)
+      const r = await run('revoke', 'alpha')
+      expect(r.code).toBe(1)
+      expect(r.stdout).toBe('revoked 1 token(s) of alpha\n')
+      expect(r.stderr).toContain('audit refused (test)')
+      expect((await activeRows(db, 'fleet-agent:alpha')).length).toBe(0)
+    })
+  })
+})

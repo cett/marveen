@@ -117,4 +117,34 @@ describe('agent-tokens on SQLite: one cell per verb', () => {
       expect(r.stdout).toBe('')
     }
   }, 60_000)
+
+  it('every write leaves one audit row (actor cli, the target only, no token); a kept run, a read and a revoke of nothing leave none', () => {
+    const journal = (): Array<{ key: string; new_value: string | null; actor: string }> => {
+      const db = new Database(join(storeDir, 'claudeclaw.db'), { readonly: true })
+      try {
+        return db.prepare("SELECT key, new_value, actor FROM config_change_log WHERE key LIKE 'security.cli_token_%' ORDER BY id").all() as never
+      } finally {
+        db.close()
+      }
+    }
+    expect(cli(['issue-operator']).status).toBe(0)
+    expect(cli(['issue-operator']).stdout).toContain('\tkept\t')
+    expect(cli(['issue-operator', '--rotate']).status).toBe(0)
+    expect(cli(['rotate-shared']).status).toBe(0)
+    expect(cli(['check']).status).toBe(1)
+    expect(cli(['list']).status).toBe(0)
+    expect(cli(['revoke', 'agent-without-file']).stdout).toBe('revoked 0 token(s) of agent-without-file\n')
+    expect(cli(['revoke', 'operator']).stdout).toContain('revoked 0 ')   // the operator token is named `operator`, not an agent id
+    expect(journal()).toEqual([
+      { key: 'security.cli_token_issue', new_value: 'operator', actor: 'cli' },
+      { key: 'security.cli_token_rotate', new_value: 'operator', actor: 'cli' },
+      { key: 'security.cli_token_issue', new_value: 'shared', actor: 'cli' },
+    ])
+    const dump = JSON.stringify(journal())
+    for (const f of [operatorFile(), sharedFile()]) {
+      const raw = readFileSync(f, 'utf-8').trim()
+      expect(dump).not.toContain(raw)
+      expect(dump).not.toContain(sha(raw))
+    }
+  }, 120_000)
 })

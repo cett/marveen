@@ -36,7 +36,7 @@ import { logger } from '../logger.js'
 import { MAIN_AGENT_ID } from '../config.js'
 import { resolvePgUrl } from '../db/pg/url.js'
 import { bootPgBackend, closePgBackend } from '../db/pg-boot.js'
-import { initDatabase, listApiTokenRows, revokeApiTokensForAgent } from '../db.js'
+import { initDatabase, listApiTokenRows, logConfigChange, revokeApiTokensForAgent } from '../db.js'
 import { systemJob } from '../db/background-jobs.js'
 import { listAgentNames } from '../web/agent-config.js'
 import {
@@ -107,6 +107,15 @@ function parse(argv: string[]): Parsed | undefined {
 
 const errMessage = (err: unknown): string => (err instanceof Error ? err.message : String(err))
 
+/**
+ * The audit row of one token write, the same trail the dashboard-user CLI leaves (journal table config_change_log, actor
+ * `cli`). The key says what happened, the value names the target only: an agent id, `operator` or `shared`. Never a token,
+ * a hash or a path. No channel ping (decided: the journal is the trace). Called AFTER the write and after its result line is
+ * on stdout, only for a real write: not for `kept`, a dry run, a failure or a revoke that found nothing.
+ */
+const auditTokenWrite = (status: 'issued' | 'rotated', target: string): Promise<void> =>
+  logConfigChange(status === 'rotated' ? 'security.cli_token_rotate' : 'security.cli_token_issue', null, target, 'cli')
+
 /** The main agent first, then every agent with a directory: the default target set of `issue` and `check`. */
 const allAgents = (): string[] => [MAIN_AGENT_ID, ...listAgentNames().filter((n) => n !== MAIN_AGENT_ID)]
 
@@ -126,41 +135,61 @@ async function command(p: Parsed, io: CliIo, backend: 'sqlite' | 'pg'): Promise<
           io.stdout(`${agent}\twould ${p.rotate ? 'rotate' : 'issue or keep'}\t${agentTokenPath(agent)}\n`)
           continue
         }
+        let r: Awaited<ReturnType<typeof issueAgentToken>>
         try {
-          const r = await issueAgentToken(agent, { rotate: p.rotate })
-          io.stdout(`${r.subject}\t${r.status}\t${r.role}\t${r.path}\n`)
+          r = await issueAgentToken(agent, { rotate: p.rotate })
         } catch (err) {
           failed++
           io.stderr(`${agent}\tFAILED\t${errMessage(err)}\n`)
+          continue
+        }
+        io.stdout(`${r.subject}\t${r.status}\t${r.role}\t${r.path}\n`)
+        if (r.status === 'kept') continue
+        // The token is written already: a refused audit row is reported on its own line and fails the run (exit 1), but it
+        // neither hides the write above nor stops the agents after this one.
+        try {
+          await auditTokenWrite(r.status, r.subject)
+        } catch (err) {
+          failed++
+          io.stderr(`${agent}\tAUDIT FAILED\t${errMessage(err)}\n`)
         }
       }
       if (failed > 0) throw new CliExit(1)
       break
     }
     case 'issue-operator': {
+      let r: Awaited<ReturnType<typeof issueOperatorToken>>
       try {
-        const r = await issueOperatorToken({ rotate: p.rotate })
-        io.stdout(`${r.subject}\t${r.status}\t${r.role}\t${r.path}\n`)
+        r = await issueOperatorToken({ rotate: p.rotate })
       } catch (err) {
         io.stderr(`operator\tFAILED\t${errMessage(err)}\n`)
         throw new CliExit(1)
       }
+      io.stdout(`${r.subject}\t${r.status}\t${r.role}\t${r.path}\n`)
+      // a refused audit row ends the run with exit 1 (the line above is already out); `kept` is not a write
+      if (r.status !== 'kept') await auditTokenWrite(r.status, 'operator')
       break
     }
     case 'rotate-shared': {
       // Always mints a new shared token (no `kept`), writes store/.dashboard-token and revokes the old row with its hash.
       // Refuses, changing nothing, when DASHBOARD_TOKEN is set (it would override the file).
+      let r: Awaited<ReturnType<typeof rotateSharedToken>>
       try {
-        const r = await rotateSharedToken()
-        io.stdout(`shared\t${r.status}\tadmin\t${r.path}\n`)
+        r = await rotateSharedToken()
+      } catch (err) {
+        io.stderr(`shared\tFAILED\t${errMessage(err)}\n`)
+        throw new CliExit(1)
+      }
+      io.stdout(`shared\t${r.status}\tadmin\t${r.path}\n`)
+      try {
+        await auditTokenWrite(r.status, 'shared')
+      } finally {
+        // the follow-up steps are printed even when the audit row is refused: the rotation happened and the operator needs them
         io.stderr(
           'The old shared token is revoked. Restart the dashboard so the in-memory copy is replaced, ' +
           're-enrol every browser that was enrolled with the shared token (npm run dashboard-url), and ' +
           'run `agent-tokens check` and doctor.sh.\n',
         )
-      } catch (err) {
-        io.stderr(`shared\tFAILED\t${errMessage(err)}\n`)
-        throw new CliExit(1)
       }
       break
     }
@@ -181,9 +210,13 @@ async function command(p: Parsed, io: CliIo, backend: 'sqlite' | 'pg'): Promise<
         io.stdout(`${t.id}\t${t.name}\t${t.role}\t${t.agent_id ?? '-'}\t${t.tenant_id}\t${new Date(t.created_at * 1000).toISOString()}\n`)
       }
       break
-    case 'revoke':
-      io.stdout(`revoked ${await revokeApiTokensForAgent(p.name, Math.floor(Date.now() / 1000))} token(s) of ${p.name}\n`)
+    case 'revoke': {
+      const revoked = await revokeApiTokensForAgent(p.name, Math.floor(Date.now() / 1000))
+      io.stdout(`revoked ${revoked} token(s) of ${p.name}\n`)
+      // a revoke that found nothing changed nothing: no row
+      if (revoked > 0) await logConfigChange('security.cli_token_revoke', null, p.name, 'cli')
       break
+    }
   }
 }
 
