@@ -1700,7 +1700,7 @@ def _npm_like_once(name, args, pos, seg, state, depth):
             if w.dyn and not name == 'bun':
                 raise Deny('npm run egy futasidoben kepzett script-nevvel: a kapu nem tudja eldonteni, '
                            'hogy a dashboard-user / agent-tokens-e, ezert nem engedi at.')
-            if _word_runs_command(w):   # pnpm run tsx scripts/agent-tokens.ts ... / pnpm run npx tsx ...: the program, then its command line
+            if name in ('pnpm', 'yarn') or _word_runs_command(w):   # pnpm run tsx scripts/agent-tokens.ts ... / pnpm run npx tsx ...: the program, then its command line
                 check_words([_unversioned(w)] + _args_after(args, w), seg, state, depth)
                 return
             kinds = _word_hits_cli(w, state)
@@ -1724,14 +1724,15 @@ def _npm_like_once(name, args, pos, seg, state, depth):
         return
     elif name in ('yarn', 'pnpm') and pos:
         # yarn dashboard-user / pnpm dashboard-user  (they run package scripts without "run")
-        if _word_runs_command(pos[0]):  # pnpm tsx scripts/agent-tokens.ts ... / yarn node scripts/x.js / pnpm npm run X: a binary run by name or path
-            check_words([_unversioned(pos[0])] + _args_after(args, pos[0]), seg, state, depth)
-            return
         kinds = _word_hits_cli(pos[0], state)
         if kinds:
             _cli_decision(_after_cli(_args_after(args, pos[0])), state, kinds)
             return
-        sub, rest = None, []
+        # pnpm tsx scripts/agent-tokens.ts ... / yarn node scripts/x.js / pnpm npm run X / pnpm bash -c "...": ANY word that is no CLI
+        # name is dispatched as a command of its own (a general rule, as for npx, not a list of programs): pnpm and yarn run a binary
+        # when the word is no command of theirs and no script, and the words after it are that program's command line
+        check_words([_unversioned(pos[0])] + _args_after(args, pos[0]), seg, state, depth)
+        return
     elif name == 'bun' and pos:
         kinds = _word_hits_cli(pos[0], state)
         if kinds:
