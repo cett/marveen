@@ -17,6 +17,7 @@ import contextlib
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -91,9 +92,26 @@ class Fixture(object):
         os.makedirs(os.path.join(self.tmp, 'hardstore'))
         os.link(self.live, os.path.join(self.tmp, 'hardstore', 'claudeclaw.db'))   # a "throw-away" store that IS the live DB
         self.hardstore = os.path.realpath(os.path.join(self.tmp, 'hardstore'))
-        for name in ('dashboard-user.ts', 'dashboard-use1.ts', 'security-reset.sh'):
+        for name in ('dashboard-user.ts', 'dashboard-use1.ts', 'security-reset.sh', 'agent-tokens.ts', 'with-config.ts'):
             open(os.path.join(self.root, 'scripts', name), 'w').write('// fixture\n')
+        os.symlink(os.path.join(self.root, 'scripts', 'agent-tokens.ts'), os.path.join(self.root, 'scripts', 'linked-tokens.ts'))
+        os.symlink(os.path.join(self.root, 'scripts', 'dashboard-user.ts'), os.path.join(self.root, 'scripts', 'linked-user.ts'))
+        open(os.path.join(self.root, 'scripts', 'plain.ts'), 'w').write('// fixture\n')
+        os.symlink(os.path.join(self.root, 'scripts', 'plain.ts'), os.path.join(self.root, 'scripts', 'linked-plain.ts'))
+        # links to the CONFIG RUNNER (scripts/with-config.ts) and to the token CLI from OUTSIDE the install, as `ln -s ... /tmp/w.ts` in
+        # an earlier command makes them; chain.ts is a link to a link
+        os.symlink(os.path.join(self.root, 'scripts', 'with-config.ts'), os.path.join(self.root, 'scripts', 'linked-config.ts'))
+        os.symlink(os.path.join(self.root, 'scripts', 'with-config.ts'), os.path.join(self.links, 'w.ts'))
+        os.symlink(os.path.join(self.root, 'scripts', 'linked-config.ts'), os.path.join(self.links, 'chain.ts'))
+        os.symlink(os.path.join(self.root, 'scripts', 'agent-tokens.ts'), os.path.join(self.links, 'lt.ts'))
+        os.symlink(os.path.join(self.root, 'scripts', 'agent-tokens.ts'), os.path.join(self.links, 'x.ts'))   # read after a `cd` into links
+        os.symlink(os.path.join(self.root, 'scripts', 'plain.ts'), os.path.join(self.links, 'y.ts'))
+        # links by a BARE name in the working directory (the install root): an interpreter reads `w-bare.ts` relative to there
+        os.symlink(os.path.join(self.root, 'scripts', 'with-config.ts'), os.path.join(self.root, 'w-bare.ts'))
+        os.symlink(os.path.join(self.root, 'scripts', 'agent-tokens.ts'), os.path.join(self.root, 't-bare.ts'))
+        os.symlink(os.path.join(self.root, 'scripts', 'plain.ts'), os.path.join(self.root, 'p-bare.ts'))
         open(os.path.join(self.root, 'bad.sh'), 'w').write('#!/bin/bash\nnpm run dashboard-user -- add bob\n')
+        open(os.path.join(self.root, 'bad-tokens.sh'), 'w').write('#!/bin/bash\nnpm run agent-tokens -- issue\n')
         open(os.path.join(self.root, 'ok.sh'), 'w').write('#!/bin/bash\necho hello\nnpm run build\n')
         open(os.path.join(self.root, 'bad.sql'), 'w').write("UPDATE dashboard_users SET role='admin';\n")
         open(os.path.join(self.root, 'ok.sql'), 'w').write('SELECT count(*) FROM dashboard_users;\n')
@@ -1036,6 +1054,704 @@ ALLOWED = [
 ]
 
 
+# ---------------------------------------------------------------------------------------------
+# the per-agent token CLI (`npm run agent-tokens`): a VERB rule. check / list / archive-shared-age pass, every other verb,
+# an unknown verb and a missing verb is denied. The wrappers are the login CLI's, so the wide table is DERIVED from the login
+# CLI rows (same shape, the other name, a write verb) instead of retyped; the hand-written rows add what is specific to it:
+# the verb split, `tsx scripts/with-config.ts agent-tokens ...`, the module / mutator names, the isolated-store exemption.
+# ---------------------------------------------------------------------------------------------
+_LOGIN_VERBS = re.compile(r'\b(?:reset-password|sessions:clear|security:reset|add|remove)\b(?: (?:bob|x)\b)?')
+# rows of the login table that cannot be carried over by a rename: they name its module, its entry function, its auth table,
+# its other script, or `list` (a verb the token CLI also allows)
+_NOT_DERIVED = ('src/dashboard-user', 'runDashboardUserCli', 'dashboard_users', 'security-reset', 'security:reset', 'list')
+
+
+def _as_token_row(label, cmd, verb='issue'):
+    if 'dashboard-user' not in cmd or any(m in cmd for m in _NOT_DERIVED):
+        return None
+    c = cmd.replace('dashboard-user', 'agent-tokens')
+    if verb:
+        c = _LOGIN_VERBS.sub(verb, c)
+    return ('tokens: ' + label, c)
+
+
+TOKEN_DERIVED_BLOCKED = [r for r in (_as_token_row(l, c) for l, c in BLOCKED) if r]
+TOKEN_DERIVED_ALLOWED = [r for r in (_as_token_row(l, c, verb='issue-operator' if 'MARVEEN_STORE_DIR' in c else False)
+                                     for l, c in ALLOWED) if r]
+
+# every verb an agent may NOT run: the write verbs, and `list` (it prints every tenant's token ids and names)
+_WRITE_VERBS = ('issue', 'issue --rotate', 'issue --dry-run alpha', 'issue alpha beta', 'issue-operator', 'issue-operator --rotate',
+                'rotate-shared', 'revoke alpha', 'list')
+_READ_VERBS = ('check', 'check alpha', 'archive-shared-age {O}/extracted.db')
+# one command line per way of running the CLI; {V} is the verb and its arguments
+_TOKEN_SHAPES = (
+    'npm run agent-tokens -- {V}',
+    'npm run agent-tokens {V}',
+    'npx tsx scripts/agent-tokens.ts {V}',
+    'tsx scripts/with-config.ts agent-tokens {V}',
+    'npx tsx scripts/with-config.ts agent-tokens {V}',
+    'node --import tsx scripts/with-config.ts agent-tokens {V}',
+    'node dist/scripts/agent-tokens.js {V}',
+    'bun scripts/with-config.ts agent-tokens {V}',
+    './scripts/agent-tokens.ts {V}',
+    'bash -c "npm run agent-tokens -- {V}"',
+)
+
+TOKEN_BLOCKED = [('tokens verb %s :: %s' % (v, s.split(' {V}')[0]), s.replace('{V}', v)) for v in _WRITE_VERBS for s in _TOKEN_SHAPES] + [
+    # `issue` writes the token file of each agent into the agent's own directory, outside the store dir: a throw-away store
+    # does not make it harmless (the live agent's file would be replaced by a token the live database does not know)
+    ('tokens: issue on a throw-away store', 'MARVEEN_STORE_DIR={O} npm run agent-tokens -- issue'),
+    ('tokens: issue alpha on a throw-away store', 'MARVEEN_STORE_DIR={O} npm run agent-tokens -- issue alpha'),
+    ('tokens: issue --rotate on a throw-away store', 'MARVEEN_STORE_DIR={O} npx tsx scripts/agent-tokens.ts issue --rotate'),
+    ('tokens: issue on a throw-away store, with-config', 'MARVEEN_STORE_DIR={O} tsx scripts/with-config.ts agent-tokens issue alpha'),
+    ('tokens: issue on a throw-away store, env form', 'env MARVEEN_STORE_DIR={O} npm run agent-tokens -- issue'),
+    ('tokens: issue on a throw-away store, exported earlier', 'export MARVEEN_STORE_DIR={O}; npm run agent-tokens -- issue alpha'),
+    ('tokens: issue on a throw-away store, under bash -c', 'MARVEEN_STORE_DIR={O} bash -c "npm run agent-tokens -- issue alpha"'),
+    ('tokens: a missing verb on a throw-away store', 'MARVEEN_STORE_DIR={O} npm run agent-tokens'),
+    ('tokens: an unknown verb on a throw-away store', 'MARVEEN_STORE_DIR={O} npm run agent-tokens -- wipe'),
+    # corepack and the package-manager run shorthands: the same command, for both CLIs
+    ('tokens: corepack npm run', 'corepack npm run agent-tokens -- issue-operator --rotate'),
+    ('tokens: corepack pnpm bare', 'corepack pnpm agent-tokens issue'),
+    ('tokens: corepack yarn bare', 'corepack yarn agent-tokens issue'),
+    ('tokens: corepack pnpm run', 'corepack pnpm run agent-tokens issue'),
+    ('tokens: corepack npx tsx', 'corepack npx tsx scripts/agent-tokens.ts issue'),
+    ('tokens: corepack npm exec with-config', 'corepack npm exec -- tsx scripts/with-config.ts agent-tokens revoke alpha'),
+    ('tokens: corepack with a flag first', 'corepack --silent npm run agent-tokens -- issue'),
+    ('tokens: corepack under a wrapper', 'env FOO=1 timeout 5 corepack pnpm agent-tokens issue'),
+    ('tokens: corepack in bash -c', 'bash -c "corepack npm run agent-tokens -- issue"'),
+    ('login: corepack npm run', 'corepack npm run dashboard-user -- add bob'),
+    ('login: corepack pnpm bare', 'corepack pnpm dashboard-user add bob'),
+    ('login: corepack yarn bare', 'corepack yarn dashboard-user add bob'),
+    ('login: corepack pnpm exec tsx', 'corepack pnpm exec tsx scripts/dashboard-user.ts add bob'),
+    ('tokens: pnpm tsx shorthand', 'pnpm tsx scripts/agent-tokens.ts issue'),
+    ('tokens: yarn tsx shorthand', 'yarn tsx scripts/agent-tokens.ts issue'),
+    ('tokens: pnpm node shorthand', 'pnpm node dist/scripts/agent-tokens.js issue'),
+    ('tokens: yarn node shorthand', 'yarn node dist/scripts/agent-tokens.js issue'),
+    ('tokens: pnpm run tsx', 'pnpm run tsx scripts/agent-tokens.ts issue'),
+    ('tokens: yarn tsx with-config', 'yarn tsx scripts/with-config.ts agent-tokens issue'),
+    ('tokens: pnpm ts-node shorthand', 'pnpm ts-node scripts/agent-tokens.ts revoke alpha'),
+    ('tokens: yarn bun shorthand', 'yarn bun scripts/agent-tokens.ts issue'),
+    ('login: pnpm tsx shorthand', 'pnpm tsx scripts/dashboard-user.ts add bob'),
+    ('login: yarn tsx shorthand', 'yarn tsx scripts/dashboard-user.ts add bob'),
+    ('login: pnpm run tsx', 'pnpm run tsx scripts/dashboard-user.ts add bob'),
+    ('login: yarn node shorthand', 'yarn node dist/scripts/dashboard-user.js add bob'),
+    # a link that exists when the command is looked at: the stem of its real path counts
+    ('tokens: npx tsx on a symlink of the CLI script', 'npx tsx scripts/linked-tokens.ts issue-operator --rotate'),
+    ('tokens: tsx abs path on a symlink', 'tsx {R}/scripts/linked-tokens.ts issue'),
+    ('tokens: node --import tsx on a symlink', 'node --import tsx scripts/linked-tokens.ts revoke alpha'),
+    ('login: tsx on a symlink of the login CLI', 'tsx scripts/linked-user.ts add bob'),
+    ('login: npx tsx on a symlink of the login CLI', 'npx tsx scripts/linked-user.ts add bob'),
+    # a link to the CONFIG RUNNER: the same helper reads its real path (the runner names the CLI one word later)
+    ('tokens: tsx on a symlink of with-config', 'tsx scripts/linked-config.ts agent-tokens issue'),
+    ('tokens: tsx on an outside symlink of with-config', 'tsx {K}/w.ts agent-tokens issue'),
+    ('tokens: npx tsx on an outside symlink of with-config', 'npx tsx {K}/w.ts agent-tokens issue-operator --rotate'),
+    ('tokens: pnpm tsx on an outside symlink of with-config', 'pnpm tsx {K}/w.ts agent-tokens issue'),
+    ('tokens: node --import tsx on a symlink of with-config', 'node --import tsx {K}/w.ts agent-tokens revoke alpha'),
+    ('tokens: tsx on a link to a link of with-config', 'tsx {K}/chain.ts agent-tokens issue'),
+    ('tokens: direct exec of a symlink of with-config', './scripts/linked-config.ts agent-tokens issue'),
+    ('tokens: direct exec of an outside symlink of with-config', '{K}/w.ts agent-tokens revoke alpha'),
+    ('login: tsx on an outside symlink of with-config', 'tsx {K}/w.ts dashboard-user add bob'),
+    ('login: direct exec of a symlink of with-config', './scripts/linked-config.ts dashboard-user add bob'),
+    ('tokens: direct exec of a symlink of the CLI script', './scripts/linked-tokens.ts issue'),
+    ('tokens: direct exec of an outside symlink of the CLI script', '{K}/lt.ts issue-operator --rotate'),
+    # pnpm / yarn selectors: the value of --filter / -F / --dir (or the workspace name) is not the command
+    ('tokens: pnpm --filter, tsx shorthand', 'pnpm --filter foo tsx scripts/agent-tokens.ts issue'),
+    ('tokens: pnpm -F, tsx shorthand', 'pnpm -F foo tsx scripts/agent-tokens.ts issue'),
+    ('tokens: pnpm --filter-prod, run', 'pnpm --filter-prod foo run agent-tokens issue'),
+    ('tokens: pnpm --filter, run', 'pnpm --filter foo run agent-tokens -- issue'),
+    ('tokens: pnpm --filter, bare script', 'pnpm --filter foo agent-tokens issue'),
+    ('tokens: pnpm --filter, exec tsx', 'pnpm --filter foo exec tsx scripts/agent-tokens.ts issue'),
+    ('tokens: pnpm --filter, run tsx', 'pnpm --filter foo run tsx scripts/agent-tokens.ts issue'),
+    ('tokens: pnpm --filter, with-config', 'pnpm --filter foo tsx scripts/with-config.ts agent-tokens issue'),
+    ('tokens: pnpm --dir, tsx shorthand', 'pnpm --dir sub tsx scripts/agent-tokens.ts issue'),
+    ('tokens: pnpm recursive exec', 'pnpm recursive exec tsx scripts/agent-tokens.ts issue'),
+    ('tokens: yarn workspace, tsx', 'yarn workspace foo tsx scripts/agent-tokens.ts issue'),
+    ('tokens: yarn workspace, run', 'yarn workspace foo run agent-tokens issue'),
+    ('tokens: yarn workspaces foreach, run', 'yarn workspaces foreach -A run agent-tokens issue'),
+    ('tokens: yarn workspaces foreach with a flag value, tsx', 'yarn workspaces foreach --include foo tsx scripts/agent-tokens.ts issue'),
+    ('tokens: corepack pnpm --filter', 'corepack pnpm --filter foo tsx scripts/agent-tokens.ts issue'),
+    ('login: pnpm --filter, tsx shorthand', 'pnpm --filter foo tsx scripts/dashboard-user.ts add bob'),
+    ('login: pnpm -F, run', 'pnpm -F foo run dashboard-user add bob'),
+    ('login: yarn workspace, run', 'yarn workspace foo run dashboard-user add bob'),
+    # corepack with a pinned version on the manager word: `corepack npm@10.2.0 run X` is npm run X
+    ('tokens: corepack npm@version run', 'corepack npm@10.2.0 run agent-tokens -- issue'),
+    ('tokens: corepack pnpm@version bare', 'corepack pnpm@8.15.0 agent-tokens issue'),
+    ('tokens: corepack yarn@version bare', 'corepack yarn@4.1.0 agent-tokens issue'),
+    ('tokens: corepack pnpm@major exec', 'corepack pnpm@9 exec tsx scripts/agent-tokens.ts issue'),
+    ('tokens: corepack npm@version exec with-config', 'corepack npm@10 exec -- tsx scripts/with-config.ts agent-tokens revoke alpha'),
+    ('tokens: corepack pnpm@tag', 'corepack pnpm@latest agent-tokens issue'),
+    ('tokens: corepack pnpm@version under a wrapper', 'env FOO=1 timeout 5 corepack pnpm@9.1.0 agent-tokens issue'),
+    ('tokens: corepack, a versioned brace-alternative script word', 'corepack ./scripts/{agent-tokens,plain}@1.ts issue'),
+    # a package manager (or another program that runs a command) given to pnpm / yarn as the binary to run: its command line is checked
+    ('tokens: pnpm npm run', 'pnpm npm run agent-tokens -- issue'),
+    ('tokens: pnpm pnpm bare', 'pnpm pnpm agent-tokens issue'),
+    ('tokens: pnpm npx tsx', 'pnpm npx tsx scripts/agent-tokens.ts issue'),
+    ('tokens: pnpm corepack pnpm', 'pnpm corepack pnpm agent-tokens issue'),
+    ('tokens: pnpm env npm run', 'pnpm env npm run agent-tokens -- issue'),
+    ('tokens: pnpm run npx tsx', 'pnpm run npx tsx scripts/agent-tokens.ts issue'),
+    ('tokens: yarn npm run', 'yarn npm run agent-tokens -- issue'),
+    ('tokens: yarn run pnpm', 'yarn run pnpm agent-tokens issue'),
+    ('tokens: pnpm bash -c', 'pnpm bash -c "npm run agent-tokens -- issue"'),
+    ('login: pnpm npm run', 'pnpm npm run dashboard-user -- add bob'),
+    ('login: yarn pnpm bare', 'yarn pnpm dashboard-user add bob'),
+    # the binary by a path, and with a pinned version
+    ('tokens: pnpm run, the script word is a glob of the CLI', 'pnpm run scripts/agent-tok*.ts issue'),
+    ('tokens: yarn run, the script word is a symlink of the CLI', 'yarn run scripts/linked-tokens.ts issue'),
+    ('tokens: pnpm run, a brace word whose later alternative is the verb', 'pnpm run {agent-tokens,issue} check'),
+    ('tokens: npm run, a brace word whose later alternative is the verb', 'npm run {agent-tokens,revoke} check'),
+    ('tokens: tsx, a brace word whose later alternative is the verb', 'tsx scripts/{agent-tokens.ts,issue} check'),
+    ('tokens: bun run tsx by a path', 'bun run node_modules/.bin/tsx scripts/agent-tokens.ts issue'),
+    ('tokens: npm run tsx@version', 'npm run tsx@4 scripts/agent-tokens.ts issue'),
+    ('tokens: npm run npx tsx', 'npm run npx tsx scripts/agent-tokens.ts issue'),
+    ('tokens: bun run npx tsx', 'bun run npx tsx scripts/agent-tokens.ts issue'),
+    # ANY word handed to pnpm / yarn / yarnpkg is dispatched as a command (a general rule, not a list of programs)
+    ('tokens: pnpm cross-env then tsx', 'pnpm cross-env A=1 tsx scripts/agent-tokens.ts issue'),
+    ('tokens: pnpm dotenv then npm run', 'pnpm dotenv -- npm run agent-tokens issue'),
+    ('tokens: pnpm run cross-env then tsx', 'pnpm run cross-env A=1 tsx scripts/agent-tokens.ts issue'),
+    ('tokens: yarnpkg cross-env then tsx', 'yarnpkg cross-env A=1 tsx scripts/agent-tokens.ts revoke alpha'),
+    ('login: yarn cross-env then tsx', 'yarn cross-env A=1 tsx scripts/dashboard-user.ts add bob'),
+    ('tokens: pnpm tsx by a relative node_modules path', 'pnpm node_modules/.bin/tsx scripts/agent-tokens.ts issue'),
+    ('tokens: pnpm tsx by a ./ path', 'pnpm ./node_modules/.bin/tsx scripts/agent-tokens.ts issue'),
+    ('tokens: yarn tsx by an absolute path', 'yarn {R}/node_modules/.bin/tsx scripts/agent-tokens.ts issue'),
+    ('tokens: pnpm run tsx by a path', 'pnpm run node_modules/.bin/tsx scripts/agent-tokens.ts issue'),
+    ('tokens: pnpm tsx@version', 'pnpm tsx@4.7.0 scripts/agent-tokens.ts issue'),
+    ('tokens: npx tsx@version', 'npx tsx@4.7.0 scripts/agent-tokens.ts issue'),
+    ('tokens: npx pnpm@version', 'npx pnpm@9 agent-tokens issue'),
+    ('tokens: pnpm dlx pnpm@version', 'pnpm dlx pnpm@9 agent-tokens issue'),
+    ('login: npx pnpm@version', 'npx pnpm@9 dashboard-user add bob'),
+    # yarnpkg is the other name of yarn
+    ('tokens: yarnpkg bare', 'yarnpkg agent-tokens issue'),
+    ('tokens: yarnpkg run', 'yarnpkg run agent-tokens issue'),
+    ('tokens: yarnpkg tsx', 'yarnpkg tsx scripts/agent-tokens.ts issue'),
+    ('tokens: corepack yarnpkg', 'corepack yarnpkg agent-tokens issue'),
+    ('tokens: npx yarnpkg', 'npx yarnpkg agent-tokens issue'),
+    ('login: yarnpkg bare', 'yarnpkg dashboard-user add bob'),
+    # a flag that is a boolean for one manager and a value for another, or one nobody listed: every reading is checked
+    ('tokens: pnpm -w, the script is the next word', 'pnpm -w agent-tokens issue'),
+    ('tokens: pnpm --workspace-root', 'pnpm --workspace-root agent-tokens issue'),
+    ('tokens: pnpm -w tsx', 'pnpm -w tsx scripts/agent-tokens.ts issue'),
+    ('tokens: pnpm --workspace, the script is the next word', 'pnpm --workspace agent-tokens issue'),
+    ('tokens: pnpm -c, the script is the next word', 'pnpm -c agent-tokens issue'),
+    ('tokens: pnpm --reporter (a value nobody listed)', 'pnpm --reporter silent agent-tokens issue'),
+    ('tokens: yarn --mutex (a value nobody listed)', 'yarn --mutex network agent-tokens issue'),
+    ('tokens: pnpm --reporter, tsx', 'pnpm --reporter silent tsx scripts/agent-tokens.ts issue'),
+    ('tokens: pnpm two unlisted value flags', 'pnpm --reporter silent --mutex network agent-tokens issue'),
+    ('tokens: yarn three unlisted value flags', 'yarn --a b --c d --e f agent-tokens issue'),
+    ('tokens: pnpm a mix of listed and unlisted flags', 'pnpm --reporter silent --filter foo -w agent-tokens issue'),
+    ('tokens: pnpm two unlisted value flags, tsx', 'pnpm --reporter silent --mutex network tsx scripts/agent-tokens.ts issue'),
+    ('tokens: pnpm an unlisted value flag, run', 'pnpm --reporter silent run agent-tokens issue'),
+    ('tokens: pnpm an unlisted value flag then --', 'pnpm --reporter silent -- agent-tokens issue'),
+    ('login: pnpm two unlisted value flags', 'pnpm --reporter silent --mutex network dashboard-user add bob'),
+    ('login: pnpm -w, the script is the next word', 'pnpm -w dashboard-user add bob'),
+    ('login: pnpm --reporter (a value nobody listed)', 'pnpm --reporter silent dashboard-user add bob'),
+    # a link made by an `ln` in the SAME text: it does not exist yet when the gate looks, it will when the command runs
+    ('tokens: ln -s the CLI then tsx on the link', 'ln -s {R}/scripts/agent-tokens.ts {K}/zz.ts && npx tsx {K}/zz.ts issue'),
+    ('tokens: ln the CLI (a hard link) then tsx on it', 'ln {R}/scripts/agent-tokens.ts {K}/h1.ts; tsx {K}/h1.ts revoke alpha'),
+    ('tokens: ln -s with-config then tsx on the link', 'ln -s {R}/scripts/with-config.ts {K}/zw.ts && tsx {K}/zw.ts agent-tokens issue'),
+    ('tokens: ln -s a chain of links', 'ln -s {R}/scripts/agent-tokens.ts {K}/c1.ts && ln -s {K}/c1.ts {K}/c2.ts && tsx {K}/c2.ts issue'),
+    ('tokens: ln -s then a direct execution of the link', 'ln -s {R}/scripts/agent-tokens.ts {K}/zd.ts && {K}/zd.ts issue'),
+    ('tokens: ln -s a relative link name then tsx on it', 'ln -s {R}/scripts/agent-tokens.ts zz2.ts && tsx zz2.ts issue'),
+    ('tokens: cd then ln -s a bare link name then tsx on it', 'cd {K} && ln -s {R}/scripts/agent-tokens.ts q.ts && tsx q.ts issue'),
+    ('tokens: ln -s then pnpm tsx on the link', 'ln -s {R}/scripts/agent-tokens.ts {K}/zp1.ts && pnpm tsx {K}/zp1.ts issue'),
+    ('login: ln -s the login CLI then tsx on the link', 'ln -s {R}/scripts/dashboard-user.ts {K}/zl.ts && tsx {K}/zl.ts add bob'),
+    # an existing link by a bare name, read after a `cd` into its directory
+    ('tokens: cd then tsx on a bare-name link there', 'cd {K} && tsx x.ts issue'),
+    ('tokens: cd then npx tsx on a bare-name link there', 'cd {K} && npx tsx x.ts issue'),
+    ('tokens: cd then a direct execution of a link there', 'cd {K} && ./x.ts issue'),
+    # a link by a bare name in the working directory
+    ('tokens: tsx on a bare-name symlink of with-config', 'tsx w-bare.ts agent-tokens issue'),
+    ('tokens: npx tsx on a bare-name symlink of with-config', 'npx tsx w-bare.ts agent-tokens issue-operator --rotate'),
+    ('tokens: tsx on a bare-name symlink of the CLI script', 'tsx t-bare.ts issue'),
+    ('tokens: node --import tsx on a bare-name symlink of the CLI script', 'node --import tsx t-bare.ts revoke alpha'),
+    ('tokens: pnpm tsx on a bare-name symlink of the CLI script', 'pnpm tsx t-bare.ts issue'),
+    # the pnpm selector flags are NOT value flags of npm, npx or yarn (an unknown flag is a boolean there): the next word is the command
+    ('tokens: npm run --filter, the script is the next word', 'npm run --filter agent-tokens issue'),
+    ('tokens: npm run -F, the script is the next word', 'npm run -F agent-tokens issue'),
+    ('tokens: npm run --filter-prod, the script is the next word', 'npm run --filter-prod agent-tokens issue'),
+    ('tokens: npm run --dir, the script is the next word', 'npm run --dir agent-tokens issue'),
+    ('tokens: npx --filter, the package is the next word', 'npx --filter agent-tokens issue'),
+    ('tokens: yarn --filter, the script is the next word', 'yarn --filter agent-tokens issue'),
+    ('tokens: yarn run --dir, the script is the next word', 'yarn run --dir agent-tokens issue'),
+    ('login: npm run --filter, the script is the next word', 'npm run --filter dashboard-user add bob'),
+    ('tokens: bun --filter, run', 'bun --filter foo run agent-tokens issue'),
+    ('tokens: bun -F, run', 'bun -F foo run agent-tokens issue'),
+    # yarn workspaces / pnpm recursive with more words than the scan covers: denied, not scanned in part
+    ('tokens: yarn workspaces foreach, many selectors then the command', 'yarn workspaces foreach ' + ' '.join('--include w%d' % i for i in range(12)) + ' run agent-tokens issue'),
+    ('tokens: yarn workspaces foreach, many selectors, a benign command (default-deny)', 'yarn workspaces foreach ' + ' '.join('--include w%d' % i for i in range(12)) + ' run build'),
+    ('login: corepack npm@version run','corepack npm@10.2.0 run dashboard-user -- add bob'),
+    ('login: corepack yarn@version bare', 'corepack yarn@4 dashboard-user add bob'),
+    # a missing verb, an unknown verb, a flag in the verb's place: default-deny (the CLI itself prints its usage for these)
+    ('tokens: no verb, npm run', 'npm run agent-tokens'),
+    ('tokens: no verb after --', 'npm run agent-tokens --'),
+    ('tokens: no verb, with-config', 'tsx scripts/with-config.ts agent-tokens'),
+    ('tokens: unknown verb', 'npm run agent-tokens -- wipe'),
+    ('tokens: verb in another case', 'npm run agent-tokens -- Issue'),
+    ('tokens: --help in the verb place', 'npm run agent-tokens -- --help'),
+    ('tokens: a flag before the write verb', 'npm run agent-tokens -- --rotate issue'),
+    ('tokens: a read verb as a later word does not make it a read', 'npm run agent-tokens -- issue list'),
+    ('tokens: a read verb after a write verb in a pipe', 'npm run agent-tokens -- issue | npm run agent-tokens -- list'),
+    # the config runner: the name is the word AFTER the script
+    ('tokens: with-config absolute path', 'tsx {R}/scripts/with-config.ts agent-tokens issue'),
+    ('tokens: with-config tsx watch', 'tsx watch scripts/with-config.ts agent-tokens issue'),
+    ('tokens: with-config name built at run time', 'tsx scripts/with-config.ts $UNSET_NAME issue'),
+    ('tokens: with-config direct exec', './scripts/with-config.ts agent-tokens issue'),
+    ('tokens: with-config direct exec, name built at run time', './scripts/with-config.ts $UNSET_NAME issue'),
+    ('tokens: with-config under a wrapper', 'env FOO=1 timeout 5 tsx scripts/with-config.ts agent-tokens revoke alpha'),
+    ('tokens: with-config in a heredoc to bash', 'bash <<EOF\ntsx scripts/with-config.ts agent-tokens issue\nEOF'),
+    ('tokens: with-config in a command substitution', 'echo "$(tsx scripts/with-config.ts agent-tokens issue)"'),
+    ('tokens: with-config through xargs', 'echo agent-tokens | xargs tsx scripts/with-config.ts'),
+    # the name through brace alternatives, a glob and a shell script file; both kinds on one word follow the stricter rule
+    ('tokens: brace alternative', 'npm run agent-{tokens,x} -- issue'),
+    ('tokens: both kinds on one word, a verb only the token CLI allows', 'npm run {dashboard-user,agent-tokens} -- check'),
+    ('tokens: glob of the script name', 'tsx scripts/agent-t*.ts issue'),
+    ('tokens: shell script file that runs it', 'bash {R}/bad-tokens.sh'),
+    ('tokens: shell script file, direct', '{R}/bad-tokens.sh'),
+    ('tokens: shell script file, sourced', 'source bad-tokens.sh'),
+    # command strings handed to a program the gate does not know: the generic markers follow them
+    ('tokens: unknown wrapper, runner marker', 'unknown-tool --cmd "npm run agent-tokens -- issue"'),
+    ('tokens: unknown wrapper, path marker', 'unknown-tool --cmd "./scripts/agent-tokens.ts issue"'),
+    ('tokens: unknown wrapper, with-config', 'unknown-tool --cmd "tsx scripts/with-config.ts agent-tokens issue"'),
+    # interpreter code: the module path, each exported name, a spawn of the CLI
+    ('tokens: interpreter imports the CLI body', 'npx tsx -e "import(\'./src/agent-tokens/cli.ts\').then(m=>m.default)"'),
+    ('tokens: interpreter imports the CLI body, other case', 'npx tsx -e "import(\'./src/Agent-Tokens//cli.ts\').then(m=>m.default)"'),
+    ('tokens: interpreter imports the CLI body with ./ segment', 'npx tsx -e "import(\'./src/agent-tokens/./cli.ts\').then(m=>m.default)"'),
+    ('tokens: interpreter imports the token module', 'npx tsx -e "import(\'./src/agent-tokens.ts\').then(m=>m.default)"'),
+    ('tokens: interpreter imports the entry script', 'npx tsx -e "import(\'./scripts/agent-tokens.ts\')"'),
+    ('tokens: interpreter requires the compiled module', 'node -e "require(\'./dist/src/agent-tokens.js\')"'),
+    ('tokens: interpreter spawns the CLI', 'node -e "require(\'child_process\').execSync(\'npm run agent-tokens -- issue\')"'),
+    ('tokens: python spawns the CLI', 'python3 -c "import os; os.system(\'npm run agent-tokens -- issue\')"'),
+    ('tokens: python spawns the script by path', 'python3 -c "import subprocess; subprocess.run([\'./scripts/agent-tokens.ts\', \'issue\'])"'),
+    ('tokens: python spawns the CLI by its quoted name', 'python3 -c "import subprocess; subprocess.run([\'launcher\', \'agent-tokens\', \'issue\'])"'),
+    ('tokens: python subprocess the CLI','python3 - <<PY\nimport subprocess\nsubprocess.run(["npm", "run", "agent-tokens", "--", "issue"])\nPY'),
+] + [
+    ('tokens: interpreter calls %s' % n, 'node -e "const m = require(process.env.X); m.%s()"' % n)
+    for n in ('issueAgentToken', 'issueOperatorToken', 'rotateSharedToken', 'replaceActiveApiToken', 'rotateSharedDashboardToken',
+              'runAgentTokensCli')
+] + TOKEN_DERIVED_BLOCKED
+
+TOKEN_ALLOWED = [('tokens read verb %s :: %s' % (v, s.split(' {V}')[0]), s.replace('{V}', v)) for v in _READ_VERBS for s in _TOKEN_SHAPES] + [
+    ('tokens: check piped', 'npm run agent-tokens -- check | head -5'),
+    ('tokens: check redirected', 'npm run agent-tokens -- check > {O}/out.txt 2>&1'),
+    ('tokens: list through a PG URL in the command', 'MARVEEN_PG_URL=' + 'postgres://marveen_app@127.0.0.1:5432/marveen' + ' npm run agent-tokens -- check'),
+    # a throw-away store exempts the verbs that write under the store dir (the database and store/.operator-token,
+    # store/.dashboard-token), on SQLite only
+    ('tokens: issue-operator on a throw-away store (SQLite)', 'MARVEEN_STORE_DIR={O} npm run agent-tokens -- issue-operator'),
+    ('tokens: rotate-shared on a throw-away store (SQLite)', 'MARVEEN_STORE_DIR={O} npm run agent-tokens -- rotate-shared'),
+    ('tokens: revoke on a throw-away store (SQLite)', 'MARVEEN_STORE_DIR={O} npm run agent-tokens -- revoke alpha'),
+    ('tokens: revoke on a throw-away store, with-config', 'MARVEEN_STORE_DIR={O} tsx scripts/with-config.ts agent-tokens revoke alpha'),
+    ('tokens: issue-operator on a throw-away store, exported earlier', 'export MARVEEN_STORE_DIR={O}; npx tsx scripts/agent-tokens.ts issue-operator --rotate'),
+    # naming the CLI is not running it
+    ('tokens: commit message', 'git commit -m "docs: the agent-tokens CLI now runs on PostgreSQL: npm run agent-tokens -- issue"'),
+    ('tokens: echo prose', 'echo "the owner runs npm run agent-tokens -- issue on the machine"'),
+    ('tokens: cat the entry script', 'cat scripts/agent-tokens.ts'),
+    ('tokens: cat the CLI body', 'cat src/agent-tokens/cli.ts'),
+    ('tokens: grep the module for an exported name', 'grep -n issueAgentToken src/agent-tokens.ts'),
+    ('tokens: git add the sources', 'git add src/agent-tokens/cli.ts src/agent-tokens.ts scripts/agent-tokens.ts'),
+    ('tokens: git diff the entry script', 'git diff -- scripts/agent-tokens.ts'),
+    ('tokens: vitest on the cells', 'npx vitest run src/__tests__/agent-tokens-cli-sqlite.test.ts'),
+    ('tokens: vitest on the PG cells', 'npx vitest run --config vitest.pg.config.ts src/__tests__/pg/agent-tokens-cli.pg.test.ts'),
+    ('tokens: vitest filter', 'npx vitest run agent-tokens'),
+    ('tokens: heredoc into a doc', 'cat > docs/x.md <<EOF\nRun npm run agent-tokens -- issue on the machine.\nEOF'),
+    # the other scripts of the config runner are not the token CLI
+    ('tokens: with-config, another script', 'tsx scripts/with-config.ts status'),
+    ('tokens: with-config, budget check', 'npx tsx scripts/with-config.ts budget-alert-check'),
+    ('tokens: with-config, no name', 'tsx scripts/with-config.ts'),
+    ('tokens: corepack, another script', 'corepack npm run build'),
+    ('tokens: corepack, install', 'corepack pnpm install'),
+    ('tokens: corepack, read verb', 'corepack npm run agent-tokens -- check'),
+    ('tokens: pnpm tsx, read verb', 'pnpm tsx scripts/agent-tokens.ts check'),
+    ('tokens: yarn tsx, another script', 'yarn tsx scripts/plain.ts'),
+    ('tokens: pnpm run tsx, another script', 'pnpm run tsx scripts/plain.ts'),
+    ('tokens: pnpm run build', 'pnpm run build'),
+    ('tokens: tsx on a symlink of an unrelated script', 'tsx scripts/linked-plain.ts'),
+    ('tokens: tsx on a symlink of the CLI script, read verb', 'tsx scripts/linked-tokens.ts check'),
+    ('tokens: tsx on a symlink of with-config, read verb', 'tsx {K}/w.ts agent-tokens check'),
+    ('tokens: tsx on a symlink of with-config, another script', 'tsx {K}/w.ts status'),
+    ('tokens: tsx on a link to a link of with-config, another script', 'tsx {K}/chain.ts budget-alert-check'),
+    ('tokens: direct exec of a symlink of with-config, read verb', './scripts/linked-config.ts agent-tokens check'),
+    ('tokens: direct exec of a symlink of with-config, another script', '{K}/w.ts status'),
+    ('tokens: direct exec of a symlink of the CLI script, read verb', './scripts/linked-tokens.ts check'),
+    ('tokens: pnpm cross-env then tsx, another script', 'pnpm cross-env A=1 tsx scripts/plain.ts'),
+    ('tokens: pnpm cross-env then tsx, read verb', 'pnpm cross-env A=1 tsx scripts/agent-tokens.ts check'),
+    ('tokens: pnpm install', 'pnpm install'),
+    ('tokens: pnpm test', 'pnpm test'),
+    ('tokens: pnpm vitest on a name filter', 'pnpm vitest run agent-tokens'),
+    ('tokens: pnpm env use', 'pnpm env use --global lts'),
+    ('tokens: yarn install', 'yarn install'),
+    ('tokens: yarnpkg install', 'yarnpkg install'),
+    ('tokens: yarnpkg, read verb', 'yarnpkg agent-tokens check'),
+    ('tokens: pnpm npm run, another script', 'pnpm npm run build'),
+    ('tokens: pnpm npm run, read verb', 'pnpm npm run agent-tokens -- check'),
+    ('tokens: pnpm tsx by a path, another script', 'pnpm node_modules/.bin/tsx scripts/plain.ts'),
+    ('tokens: pnpm tsx by a path, read verb', 'pnpm node_modules/.bin/tsx scripts/agent-tokens.ts check'),
+    ('tokens: npx pnpm@version, install', 'npx pnpm@9 install'),
+    ('tokens: pnpm -w, run build', 'pnpm -w run build'),
+    ('tokens: pnpm --reporter, run build', 'pnpm --reporter silent run build'),
+    ('tokens: pnpm two unlisted value flags, install', 'pnpm --reporter silent --mutex network install'),
+    ('tokens: pnpm two unlisted value flags, a name filter', 'pnpm --reporter silent --mutex network vitest run agent-tokens'),
+    ('tokens: pnpm a flag with = then a name filter', 'pnpm --reporter=silent vitest run agent-tokens'),
+    ('tokens: yarn --mutex, install', 'yarn --mutex network install'),
+    ('tokens: pnpm --filter, a name filter of vitest', 'pnpm --filter foo vitest run agent-tokens'),
+    ('tokens: ln -s an unrelated script then tsx on the link', 'ln -s {R}/scripts/plain.ts {K}/zq.ts && tsx {K}/zq.ts'),
+    ('tokens: ln -s the CLI then tsx on the link, read verb', 'ln -s {R}/scripts/agent-tokens.ts {K}/zz.ts && tsx {K}/zz.ts check'),
+    ('tokens: ln -s with-config then tsx on the link, another script', 'ln -s {R}/scripts/with-config.ts {K}/zw.ts && tsx {K}/zw.ts status'),
+    ('tokens: cd then tsx on a bare-name link of an unrelated script', 'cd {K} && tsx y.ts'),
+    ('tokens: tsx on a bare-name symlink of with-config, read verb', 'tsx w-bare.ts agent-tokens check'),
+    ('tokens: tsx on a bare-name symlink of with-config, another script', 'tsx w-bare.ts status'),
+    ('tokens: tsx on a bare-name symlink of the CLI script, read verb', 'tsx t-bare.ts check'),
+    ('tokens: tsx on a bare-name symlink of an unrelated script', 'tsx p-bare.ts'),
+    ('tokens: yarn workspaces foreach, a few selectors, run build', 'yarn workspaces foreach --include a --include b run build'),
+    ('tokens: bun --filter, run build', 'bun --filter foo run build'),
+    ('tokens: npm run --filter, a script that is not the CLI', 'npm run --filter foo build'),
+    ('tokens: pnpm --filter, build', 'pnpm --filter foo build'),
+    ('tokens: pnpm --filter, run build', 'pnpm --filter foo run build'),
+    ('tokens: pnpm -F, install', 'pnpm -F foo install'),
+    ('tokens: pnpm --filter, tsx, another script', 'pnpm --filter foo tsx scripts/plain.ts'),
+    ('tokens: pnpm --filter, tsx, read verb', 'pnpm --filter foo tsx scripts/agent-tokens.ts check'),
+    ('tokens: pnpm --dir, run build', 'pnpm --dir sub run build'),
+    ('tokens: pnpm recursive, run build', 'pnpm recursive run build'),
+    ('tokens: yarn workspace, run build', 'yarn workspace foo run build'),
+    ('tokens: yarn workspace, tsx, read verb', 'yarn workspace foo tsx scripts/agent-tokens.ts check'),
+    ('tokens: yarn workspaces foreach, run build', 'yarn workspaces foreach -A run build'),
+    ('tokens: yarn workspaces list', 'yarn workspaces list'),
+    ('tokens: corepack npm@version, another script', 'corepack npm@10.2.0 run build'),
+    ('tokens: corepack pnpm@version, install', 'corepack pnpm@9 install'),
+    ('tokens: corepack npm@version, read verb', 'corepack npm@10 run agent-tokens -- check'),
+    ('tokens: corepack use a pinned manager', 'corepack use pnpm@9.1.0'),
+    ('tokens: npm run status', 'npm run status'),
+    # interpreter code that merely carries a similar name
+    ('tokens: a script whose name only starts with the CLI name', 'node scripts/agent-tokens-helper.js issue'),
+    ('tokens: with-config direct exec, read verb', './scripts/with-config.ts agent-tokens check'),
+    ('tokens: node names a file that ends with the CLI name', 'node -e "console.log(\'my-agent-tokens\')"'),
+    ('tokens: node names a test file','node -e "console.log(\'./agent-tokens.test.ts\')"'),
+    ('tokens: node names a longer module', 'node -e "console.log(\'src/agent-tokens-cli-sqlite.test.ts\')"'),
+    ('tokens: python source edit naming an exported name', 'python3 - <<EOF\np = "src/agent-tokens.ts"\ns = open(p).read()\ns = s.replace("issueAgentToken", "issueAgentToken2")\nEOF'),
+] + TOKEN_DERIVED_ALLOWED
+BLOCKED.extend(TOKEN_BLOCKED)
+ALLOWED.extend(TOKEN_ALLOWED)
+
+# ---- round 4: a preload that names the CLI, a value flag the table does not list, a runner binary run by a path, `--call=`,
+# `npm explore`, and a copy made in the same command ----
+_R4_CLI = 'scripts/agent-tokens.ts'
+_R4_BLOCKED_SHAPES = (
+    # a preload (--import / --require / -r / --loader) that names the CLI runs it before the main script
+    ('preload --import', 'tsx --import ./' + _R4_CLI + ' /dev/null {V}'),
+    ('preload --import=', 'tsx --import=./' + _R4_CLI + ' /dev/null {V}'),
+    ('preload node --require', 'node --require ./' + _R4_CLI + ' /dev/null {V}'),
+    ('preload node --require=', 'node --require={R}/' + _R4_CLI + ' /dev/null {V}'),
+    ('preload node -r', 'node -r ./' + _R4_CLI + ' /dev/null {V}'),
+    ('preload node --loader', 'node --loader ./' + _R4_CLI + ' /dev/null {V}'),
+    ('preload node --experimental-loader=', 'node --experimental-loader=./' + _R4_CLI + ' /dev/null {V}'),
+    ('preload bun --preload', 'bun --preload ./' + _R4_CLI + ' /dev/null {V}'),
+    ('preload through npm x', 'npm x -- tsx --import ./' + _R4_CLI + ' /dev/null {V}'),
+    ('preload through npx', 'npx tsx --import ./' + _R4_CLI + ' /dev/null {V}'),
+    ('preload by a link', 'tsx --import {K}/lt.ts /dev/null {V}'),
+    ('preload and another preload', 'tsx --import tsx --import ./' + _R4_CLI + ' /dev/null {V}'),
+    ('preload after another flag', 'tsx --tsconfig x.json --import ./' + _R4_CLI + ' /dev/null {V}'),
+    ('preload by a glob', 'tsx --import ./scripts/agent-tok*.ts /dev/null {V}'),
+    # the config runner as the preload: its first argument (after the main script) is the script it runs
+    ('preload with-config', 'tsx --import ./scripts/with-config.ts /dev/null agent-tokens {V}'),
+    # a value flag that is not in the table shifts the script word one place
+    ('unlisted value flag --disable-warning', 'tsx --disable-warning ExperimentalWarning ' + _R4_CLI + ' {V}'),
+    ('unlisted value flag --env-file-if-exists', 'tsx --env-file-if-exists .env ' + _R4_CLI + ' {V}'),
+    ('unlisted value flag after watch', 'tsx watch --include src ' + _R4_CLI + ' {V}'),
+    ('unlisted value flag --watch-path', 'tsx --watch-path src ' + _R4_CLI + ' {V}'),
+    ('unlisted value flag, the config runner', 'tsx --disable-warning X scripts/with-config.ts agent-tokens {V}'),
+    ('unlisted value flag, node', 'node --disable-warning X ' + _R4_CLI + ' {V}'),
+    ('unlisted value flag, bun run', 'bun run --smol yes ' + _R4_CLI + ' {V}'),
+    ('unlisted value flag, two of them', 'tsx --foo a --bar b ' + _R4_CLI + ' {V}'),
+    # the tsx binary run by a path through node / bun
+    ('runner binary by .bin path', 'node node_modules/.bin/tsx ' + _R4_CLI + ' {V}'),
+    ('runner binary by .bin path, bun', 'bun node_modules/.bin/tsx ' + _R4_CLI + ' {V}'),
+    ('runner binary by package path', 'node node_modules/tsx/dist/cli.mjs ' + _R4_CLI + ' {V}'),
+    ('runner binary ts-node by package path', 'node node_modules/ts-node/dist/bin.js ' + _R4_CLI + ' {V}'),
+    ('runner binary by path, the config runner', 'node node_modules/tsx/dist/cli.mjs scripts/with-config.ts agent-tokens {V}'),
+    ('runner binary by path after a flag', 'node --no-warnings node_modules/.bin/tsx ' + _R4_CLI + ' {V}'),
+    ('runner binary by path, then a preload', 'node node_modules/.bin/tsx --import ./' + _R4_CLI + ' /dev/null {V}'),
+    ('runner binary by path, twice', 'node node_modules/.bin/tsx node_modules/.bin/tsx ' + _R4_CLI + ' {V}'),
+    ('runner binary by relative path', 'node ../.bin/tsx ../../' + _R4_CLI + ' {V}'),
+    # npm exec --call=
+    ('npm exec --call=', "npm exec --call='tsx " + _R4_CLI + " {V}'"),
+    ('npx --call=', "npx --call='tsx " + _R4_CLI + " {V}'"),
+    ('npm exec --cal= (the shortest unique prefix of --call)', "npm exec --cal='tsx " + _R4_CLI + " {V}'"),
+    ('npm exec --cal value', "npm exec --cal 'tsx " + _R4_CLI + " {V}'"),
+    ('npx -c= (the = form of a short flag)', "npx -c='tsx " + _R4_CLI + " {V}'"),
+    ('npx -c value', "npx -c 'tsx " + _R4_CLI + " {V}'"),
+    ('npm x --call=', "npm x --call='npm run agent-tokens -- {V}'"),
+    ('npm exec --call= with a package flag', "npm exec --package tsx --call='tsx " + _R4_CLI + " {V}'"),
+    # npm explore runs what follows the package as a shell command
+    ('npm explore --', 'npm explore foo -- tsx ' + _R4_CLI + ' {V}'),
+    ('npm explore without --', 'npm explore foo tsx ' + _R4_CLI + ' {V}'),
+    ('npm explore a quoted command', "npm explore foo -- 'tsx " + _R4_CLI + " {V}'"),
+    ('npm explore npm run', 'npm explore foo -- npm run agent-tokens -- {V}'),
+    ('npm explore the name by node and a path', 'npm explore tsx -- node ../.bin/tsx ../../' + _R4_CLI + ' {V}'),
+    ('npm explore a shell string', 'npm explore foo -- bash -c "tsx ' + _R4_CLI + ' {V}"'),
+    ('npm explore abbreviated', 'npm explo foo -- tsx ' + _R4_CLI + ' {V}'),
+    ('npm explore after a flag', 'npm --prefix x explore foo -- tsx ' + _R4_CLI + ' {V}'),
+    # a copy (or move, install, rsync, ditto) made in the SAME command: the copy does not exist yet when the gate looks
+    ('cp then tsx', 'cp ' + _R4_CLI + ' scripts/zz.ts && tsx scripts/zz.ts {V}'),
+    ('cp then direct exec', 'cp ' + _R4_CLI + ' {K}/zz.ts && {K}/zz.ts {V}'),
+    ('cp absolute then tsx', 'cp {R}/' + _R4_CLI + ' {K}/zz.ts && tsx {K}/zz.ts {V}'),
+    ('cp then tsx by a bare name', 'cp ' + _R4_CLI + ' zz.ts; tsx zz.ts {V}'),
+    ('mv then tsx', 'mv ' + _R4_CLI + ' scripts/zz.ts && tsx scripts/zz.ts {V}'),
+    ('install then tsx', 'install ' + _R4_CLI + ' scripts/zz.ts && tsx scripts/zz.ts {V}'),
+    ('install -m then tsx', 'install -m 644 ' + _R4_CLI + ' scripts/zz.ts && tsx scripts/zz.ts {V}'),
+    ('rsync then tsx', 'rsync -a ' + _R4_CLI + ' scripts/zz.ts && tsx scripts/zz.ts {V}'),
+    ('ditto then tsx', 'ditto ' + _R4_CLI + ' scripts/zz.ts && tsx scripts/zz.ts {V}'),
+    ('cp into a directory then tsx', 'cp ' + _R4_CLI + ' {K}/ && tsx {K}/agent-tokens.ts {V}'),
+    ('cp -t then tsx', 'cp -t {K} ' + _R4_CLI + ' && tsx {K}/agent-tokens.ts {V}'),
+    ('cp with a flag then tsx', 'cp -p ' + _R4_CLI + ' scripts/zz.ts && tsx scripts/zz.ts {V}'),
+    ('cp then a copy of the copy', 'cp ' + _R4_CLI + ' scripts/a.ts && cp scripts/a.ts scripts/b.ts && tsx scripts/b.ts {V}'),
+    ('cp the config runner then tsx', 'cp scripts/with-config.ts scripts/zw.ts && tsx scripts/zw.ts agent-tokens {V}'),
+    ('cp the config runner then direct exec', 'cp scripts/with-config.ts {K}/zw.ts && {K}/zw.ts agent-tokens {V}'),
+    ('cp then npx tsx', 'cp ' + _R4_CLI + ' scripts/zz.ts && npx tsx scripts/zz.ts {V}'),
+    ('cp then pnpm tsx', 'cp ' + _R4_CLI + ' scripts/zz.ts && pnpm tsx scripts/zz.ts {V}'),
+    ('cp then pnpm run', 'cp ' + _R4_CLI + ' scripts/zz.ts && pnpm run scripts/zz.ts {V}'),
+    ('cp by a glob source then tsx', 'cp scripts/agent-tok*.ts scripts/zz.ts && tsx scripts/zz.ts {V}'),
+    ('cp after a cd', 'cd {R} && cp ' + _R4_CLI + ' scripts/zz.ts && tsx scripts/zz.ts {V}'),
+    ('cp then a subshell', 'cp ' + _R4_CLI + ' scripts/zz.ts && (tsx scripts/zz.ts {V})'),
+    ('cp then bash -c', 'cp ' + _R4_CLI + ' scripts/zz.ts && bash -c "tsx scripts/zz.ts {V}"'),
+    ('link then tsx', 'link ' + _R4_CLI + ' scripts/zz.ts && tsx scripts/zz.ts {V}'),
+    ('ln (hard) then tsx', 'ln ' + _R4_CLI + ' scripts/zz.ts && tsx scripts/zz.ts {V}'),
+    ('cp of a link to the CLI into a directory, the name inside it', 'cp scripts/linked-tokens.ts {K}/ && tsx {K}/linked-tokens.ts {V}'),
+    ('cp -t of a link to the CLI, the name inside the directory', 'cp -t {K} scripts/linked-tokens.ts && tsx {K}/linked-tokens.ts {V}'),
+    ('cp --target-directory= of a link to the CLI', 'cp --target-directory={K} scripts/linked-tokens.ts && tsx {K}/linked-tokens.ts {V}'),
+    ('cp the token CLI and the login CLI, the stricter one stays', 'cp ' + _R4_CLI + ' scripts/dashboard-user.ts scripts/zz.ts && tsx scripts/zz.ts {V}'),
+    ('runner binary an interpreter by path', 'node /usr/local/bin/bun ' + _R4_CLI + ' {V}'),
+)
+R4_BLOCKED = [('r4 %s, verb %s' % (lbl, v), s.replace('{V}', v)) for lbl, s in _R4_BLOCKED_SHAPES for v in ('issue', 'list')] + [
+    # no verb at all, and a flag first: the CLI rule reads the first word after the name
+    ('r4 preload, no main script', 'tsx --import ./' + _R4_CLI),
+    ('r4 preload, no verb', 'tsx --import ./' + _R4_CLI + ' /dev/null'),
+    ('r4 preload, no verb, node', 'node -r ./' + _R4_CLI),
+    ('r4 unlisted value flag, no verb', 'tsx --disable-warning ExperimentalWarning ' + _R4_CLI),
+    ('r4 cp, no verb', 'cp ' + _R4_CLI + ' scripts/zz.ts && tsx scripts/zz.ts'),
+    ('r4 explore, no verb', 'npm explore foo -- tsx ' + _R4_CLI),
+    ('r4 --call=, no verb', "npm exec --call='tsx " + _R4_CLI + "'"),
+    # the login CLI by the same shapes
+    ('r4 login CLI as a preload', 'tsx --import ./scripts/dashboard-user.ts /dev/null add bob'),
+    ('r4 login CLI after an unlisted value flag', 'tsx --disable-warning X scripts/dashboard-user.ts add bob'),
+    ('r4 login CLI by a runner binary path', 'node node_modules/.bin/tsx scripts/dashboard-user.ts add bob'),
+    ('r4 login CLI by --call=', "npm exec --call='tsx scripts/dashboard-user.ts add bob'"),
+    ('r4 login CLI by npm explore', 'npm explore foo -- tsx scripts/dashboard-user.ts add bob'),
+    ('r4 login CLI by a copy', 'cp scripts/dashboard-user.ts scripts/zz.ts && tsx scripts/zz.ts add bob'),
+    # a runner started through nothing but runners: over the nesting limit the gate denies
+    ('r4 runner binaries nested over the limit', 'node' + ' node_modules/.bin/tsx' * 10 + ' scripts/plain.ts'),
+    # a line of thousands of flag pairs ends at the work budget (each candidate for the script costs a pass over the line)
+    ('r4 thousands of flag pairs', 'tsx ' + ' '.join('-f%d v%d' % (i, i) for i in range(3000)) + ' scripts/plain.ts'),
+    # more than the link-name cap: the gate denies instead of looking at only the first ones
+    ('r4 copies over the cap', ' && '.join('cp ' + _R4_CLI + ' scripts/c%d.ts' % i for i in range(40)) + ' && tsx scripts/c39.ts issue'),
+    ('r4 links over the cap', ' && '.join('ln -s ' + _R4_CLI + ' scripts/l%d.ts' % i for i in range(80)) + ' && tsx scripts/l79.ts issue'),
+]
+R4_ALLOWED = [
+    # a read verb stays allowed through every one of the new shapes
+    ('r4 read check through a preload', 'tsx --import ./' + _R4_CLI + ' /dev/null check'),
+    ('r4 read check through a node --require preload', 'node --require ./' + _R4_CLI + ' /dev/null check'),
+    ('r4 read check through a node --require= preload', 'node --require=./' + _R4_CLI + ' /dev/null check'),
+    ('r4 read check through a node -r preload', 'node -r ./' + _R4_CLI + ' /dev/null check'),
+    ('r4 read check through a --import= preload', 'tsx --import=./' + _R4_CLI + ' /dev/null check'),
+    ('r4 read check through a --loader preload', 'node --loader ./' + _R4_CLI + ' /dev/null check'),
+    ('r4 read check through an --experimental-loader preload', 'node --experimental-loader ./' + _R4_CLI + ' /dev/null check'),
+    ('r4 read check through an --experimental-loader= preload', 'node --experimental-loader=./' + _R4_CLI + ' /dev/null check'),
+    ('r4 read check through a preload and the config runner', 'tsx --import ./scripts/with-config.ts /dev/null agent-tokens check'),
+    ('r4 read check through an unlisted value flag', 'tsx --disable-warning ExperimentalWarning ' + _R4_CLI + ' check'),
+    ('r4 read check through watch and a value flag', 'tsx watch --include src ' + _R4_CLI + ' check'),
+    ('r4 read check through the config runner and a value flag', 'tsx --disable-warning X scripts/with-config.ts agent-tokens check'),
+    ('r4 read check, runner binary by path', 'node node_modules/.bin/tsx ' + _R4_CLI + ' check'),
+    ('r4 read check, runner binary by package path', 'node node_modules/tsx/dist/cli.mjs ' + _R4_CLI + ' check alpha'),
+    ('r4 read check, --call=', "npm exec --call='tsx " + _R4_CLI + " check'"),
+    ('r4 read check, --cal=', "npm exec --cal='tsx " + _R4_CLI + " check'"),
+    ('r4 read check, -c=', "npx -c='tsx " + _R4_CLI + " check'"),
+    ('r4 plain -c=', "npx -c='echo hi'"),
+    ('r4 plain --cal value', "npm exec --cal 'echo hi'"),
+    ('r4 read check, npm explore', 'npm explore foo -- tsx ' + _R4_CLI + ' check'),
+    ('r4 read check, cp of a link into a directory', 'cp scripts/linked-tokens.ts {K}/ && tsx {K}/linked-tokens.ts check'),
+    ('r4 read check, cp -t', 'cp -t {K} scripts/linked-tokens.ts && tsx {K}/linked-tokens.ts check'),
+    ('r4 read check, cp then tsx', 'cp ' + _R4_CLI + ' scripts/zz.ts && tsx scripts/zz.ts check'),
+    ('r4 read archive-shared-age, cp then tsx', 'cp ' + _R4_CLI + ' scripts/zz.ts && tsx scripts/zz.ts archive-shared-age {O}/x.db'),
+    ('r4 read check, mv then tsx', 'mv ' + _R4_CLI + ' scripts/zz.ts && tsx scripts/zz.ts check'),
+    ('r4 login list, a copy of the login CLI', 'cp scripts/dashboard-user.ts scripts/zz.ts && tsx scripts/zz.ts list'),
+    ('r4 login list, a login CLI preload', 'tsx --import ./scripts/dashboard-user.ts /dev/null list'),
+    # nothing that merely resembles them
+    ('r4 plain preload', 'tsx --import tsx scripts/plain.ts'),
+    ('r4 plain preload, node --require', 'node --require dotenv/config scripts/plain.ts'),
+    ('r4 plain preload, node -r', 'node -r ts-node/register scripts/plain.ts'),
+    ('r4 plain preload, bun --preload', 'bun --preload ./setup.ts scripts/plain.ts'),
+    ('r4 plain preload, a loader=', 'node --experimental-loader=tsx scripts/plain.ts'),
+    ('r4 plain unlisted value flag', 'tsx --disable-warning ExperimentalWarning scripts/plain.ts'),
+    ('r4 plain unlisted value flag, watch', 'tsx watch --include src scripts/plain.ts'),
+    ('r4 plain unlisted value flag, two', 'tsx --foo a --bar b scripts/plain.ts'),
+    ('r4 plain unlisted value flag, a CLI-named argument', 'tsx --foo a scripts/plain.ts agent-tokens'),
+    ('r4 plain runner binary by path', 'node node_modules/.bin/tsx scripts/plain.ts'),
+    ('r4 plain runner binary by package path', 'node node_modules/tsx/dist/cli.mjs scripts/plain.ts'),
+    ('r4 runner binary by path, a CLI-named argument', 'node node_modules/.bin/tsx scripts/plain.ts agent-tokens issue'),
+    ('r4 node, a CLI-named later argument', 'node scripts/plain.js agent-tokens issue'),
+    ('r4 plain --call=', "npm exec --call='echo hi'"),
+    ('r4 plain npx --call=', "npx --call='tsx scripts/plain.ts'"),
+    ('r4 plain npm explore', 'npm explore foo -- ls'),
+    ('r4 plain npm explore, a script', 'npm explore foo -- tsx scripts/plain.ts'),
+    ('r4 npm explore, no command', 'npm explore foo'),
+    ('r4 npm explore, a CLI-named package', 'npm explore agent-tokens -- ls'),
+    ('r4 plain cp then tsx', 'cp scripts/plain.ts scripts/zq.ts && tsx scripts/zq.ts'),
+    ('r4 plain mv then tsx', 'mv scripts/plain.ts scripts/zq.ts && tsx scripts/zq.ts'),
+    ('r4 plain install', 'install -m 644 scripts/plain.ts scripts/zq.ts'),
+    ('r4 cp of the CLI alone', 'cp ' + _R4_CLI + ' {O}/backup.ts'),
+    ('r4 cp of the CLI, then an unrelated script', 'cp ' + _R4_CLI + ' scripts/zz.ts && tsx scripts/plain.ts'),
+    ('r4 cp of the CLI into a directory, then an unrelated script', 'cp ' + _R4_CLI + ' {O}/ && tsx scripts/plain.ts'),
+    ('r4 cp and a tsx of another new name', 'cp ' + _R4_CLI + ' scripts/zz.ts && tsx scripts/other.ts'),
+    ('r4 build after a cp', 'cp .env.example .env && npm run build'),
+]
+BLOCKED.extend(R4_BLOCKED)
+ALLOWED.extend(R4_ALLOWED)
+
+# ---- round 5: the CLI source on stdin, detached screen / tmux, a process substitution as a script ----
+_R5_BLOCKED_SHAPES = (
+    # the CLI source piped / redirected into an interpreter that reads its script from stdin
+    ('stdin: cat | npx tsx -, after a cd', 'cd scripts && cat agent-tokens.ts | npx tsx - {V}'),
+    ('stdin: cat | node --import tsx -', 'cat ' + _R4_CLI + ' | node --import tsx - {V}'),
+    ('stdin: npx tsx - < file', 'npx tsx - {V} < ' + _R4_CLI),
+    ('stdin: cat | tsx -', 'cat ' + _R4_CLI + ' | tsx - {V}'),
+    ('stdin: cat | node -', 'cat ' + _R4_CLI + ' | node - {V}'),
+    ('stdin: cat | bun -', 'cat ' + _R4_CLI + ' | bun - {V}'),
+    ('stdin: node - < file', 'node - {V} < ' + _R4_CLI),
+    ('stdin: bun - < file', 'bun - {V} < ' + _R4_CLI),
+    ('stdin: the redirect first', '< ' + _R4_CLI + ' tsx - {V}'),
+    ('stdin: /dev/stdin', 'tsx /dev/stdin {V} < ' + _R4_CLI),
+    ('stdin: /dev/fd/0', 'cat ' + _R4_CLI + ' | tsx /dev/fd/0 {V}'),
+    ('stdin: /proc/self/fd/0', 'cat ' + _R4_CLI + ' | tsx /proc/self/fd/0 {V}'),
+    ('stdin: cat by a link', 'cat {K}/lt.ts | tsx - {V}'),
+    ('stdin: cat by a glob', 'cat scripts/agent-tok*.ts | tsx - {V}'),
+    ('stdin: head', 'head -n 400 ' + _R4_CLI + ' | tsx - {V}'),
+    ('stdin: tail', 'tail -n 400 ' + _R4_CLI + ' | tsx - {V}'),
+    ('stdin: sed', "sed 's/a/b/' " + _R4_CLI + ' | tsx - {V}'),
+    ('stdin: the CLI among other files', 'cat scripts/plain.ts ' + _R4_CLI + ' | tsx - {V}'),
+    ('stdin: a stage in between', 'cat ' + _R4_CLI + ' | tee {O}/x.ts | tsx - {V}'),
+    ('stdin: the redirect of an earlier stage', '< ' + _R4_CLI + ' cat | tsx - {V}'),
+    ('stdin: a copy of the CLI','cp ' + _R4_CLI + ' scripts/zz.ts && cat scripts/zz.ts | tsx - {V}'),
+    ('stdin: through npx tsx -', 'cat ' + _R4_CLI + ' | npx tsx - {V}'),
+    ('stdin: through pnpm tsx -', 'cat ' + _R4_CLI + ' | pnpm tsx - {V}'),
+    ('stdin: through bash -c', 'bash -c "cat ' + _R4_CLI + ' | tsx - {V}"'),
+    ('stdin: after a flag', 'cat ' + _R4_CLI + ' | tsx --no-warnings - {V}'),
+    ('stdin: the process substitution as stdin', 'tsx - {V} < <(cat ' + _R4_CLI + ')'),
+    ('stdin: the process substitution as the script', 'tsx <(cat ' + _R4_CLI + ') {V}'),
+    ('stdin: the process substitution as the script, node', 'node <(cat ' + _R4_CLI + ') {V}'),
+    # detached screen: the command is what follows the options
+    ('screen -dm', 'screen -dm npx tsx ' + _R4_CLI + ' {V}'),
+    ('screen -dmS name', 'screen -dmS w tsx ' + _R4_CLI + ' {V}'),
+    ('screen -S name -dm', 'screen -S w -dm npm run agent-tokens -- {V}'),
+    ('screen -d -m', 'screen -d -m npm run agent-tokens -- {V}'),
+    ('screen -dm quoted', 'screen -dm "npm run agent-tokens -- {V}"'),
+    ('screen -dm bash -c', 'screen -dm bash -c "npm run agent-tokens -- {V}"'),
+    # detached tmux: new-session / new / new-window / split-window carry the command
+    ('tmux new-session -d quoted', 'tmux new-session -d "npx tsx ' + _R4_CLI + ' {V}"'),
+    ('tmux new -d quoted', 'tmux new -d "npm run agent-tokens -- {V}"'),
+    ('tmux new-session -d -s name', 'tmux new-session -d -s w "npm run agent-tokens -- {V}"'),
+    ('tmux new-session -d unquoted', 'tmux new-session -d tsx ' + _R4_CLI + ' {V}'),
+    ('tmux new-session -d -c dir', 'tmux new-session -d -c /tmp "npm run agent-tokens -- {V}"'),
+    ('tmux new-window -d', 'tmux new-window -d "npm run agent-tokens -- {V}"'),
+    ('tmux split-window -d', 'tmux split-window -d "npm run agent-tokens -- {V}"'),
+    ('tmux with a global flag', 'tmux -L sock new-session -d "npm run agent-tokens -- {V}"'),
+    ('tmux with -f file', 'tmux -f /dev/null new -d "npm run agent-tokens -- {V}"'),
+    ('tmux display-popup -d dir', 'tmux display-popup -d /tmp "npm run agent-tokens -- {V}"'),
+    ('tmux send-keys -l (a boolean there)', 'tmux send-keys -l "npm run agent-tokens -- {V}"'),
+    ('tmux new-window -S (a boolean there)', 'tmux new-window -S "npm run agent-tokens -- {V}"'),
+    ('tmux split-window -l size', 'tmux split-window -l 20 "npm run agent-tokens -- {V}"'),
+    ('tmux split-window -f (a boolean there)', 'tmux split-window -f "npm run agent-tokens -- {V}"'),
+    ('stdin: dd if= a bare name', 'dd if=agent-tokens.ts | tsx - {V}'),
+    ('tmux new-window -t -S', 'tmux new-window -t w -S "npm run agent-tokens -- {V}"'),
+    ('stdin: /dev//stdin', 'tsx /dev//stdin {V} < ' + _R4_CLI),
+    ('stdin: /dev/./fd/0', 'tsx /dev/./fd/0 {V} < ' + _R4_CLI),
+    ('stdin: /dev/fd/00', 'tsx /dev/fd/00 {V} < ' + _R4_CLI),
+    ('stdin: /proc/<pid>/fd/0', 'tsx /proc/1234/fd/0 {V} < ' + _R4_CLI),
+    ('stdin: /proc/self/../self/fd/0', 'tsx /proc/self/../self/fd/0 {V} < ' + _R4_CLI),
+    ('stdin: dd if=', 'dd if=' + _R4_CLI + ' | tsx - {V}'),
+    ('stdin: git show REV:FILE', 'git show HEAD:' + _R4_CLI + ' | tsx - {V}'),
+    ('stdin: awk', "awk 1 " + _R4_CLI + ' | tsx - {V}'),
+    ('stdin: an option value', 'cat --number=' + _R4_CLI + ' | tsx - {V}'),
+    ('source /dev/stdin here-string', 'source /dev/stdin <<< "npm run agent-tokens -- {V}"'),
+    ('dot /dev/fd/0 here-string', '. /dev/fd/0 <<< "npm run agent-tokens -- {V}"'),
+    ('source /dev/stdin from a pipe', 'echo "npm run agent-tokens -- {V}" | source /dev/stdin'),
+    ('source /dev/stdin from a script file', 'source /dev/stdin < bad-tokens.sh'),
+    ('tmux send-keys (as before)', 'tmux send-keys -t w "npm run agent-tokens -- {V}" Enter'),
+    ('tmux run-shell (as before)', 'tmux run-shell "npm run agent-tokens -- {V}"'),
+    # process substitution: what it prints is the script
+    ('procsub: source', 'source <(echo "npm run agent-tokens -- {V}")'),
+    ('procsub: dot', '. <(echo "npm run agent-tokens -- {V}")'),
+    ('procsub: source printf', "source <(printf '%s\\n' \"npm run agent-tokens -- {V}\")"),
+    ('procsub: source cat of a script file', 'source <(cat bad-tokens.sh)'),
+    ('procsub: bash', 'bash <(echo "npm run agent-tokens -- {V}")'),
+    ('procsub: sh', 'sh <(echo "npm run agent-tokens -- {V}")'),
+    ('procsub: bash < <(...)', 'bash < <(echo "npm run agent-tokens -- {V}")'),
+    ('procsub: source, a second command', 'source <(echo "npm run agent-tokens -- {V}"; echo hi)'),
+)
+R5_BLOCKED = [('r5 %s, verb %s' % (lbl, v), s.replace('{V}', v)) for lbl, s in _R5_BLOCKED_SHAPES for v in ('issue', 'list')] + [
+    ('r5 stdin, no verb', 'cat ' + _R4_CLI + ' | tsx -'),
+    ('r5 stdin, no script word at all', 'cat ' + _R4_CLI + ' | tsx'),
+    ('r5 stdin, a flag only', 'cat ' + _R4_CLI + ' | node --import tsx'),
+    ('r5 stdin, the login CLI', 'cat scripts/dashboard-user.ts | tsx - add bob'),
+    ('r5 stdin, the login CLI redirected', 'tsx - add bob < scripts/dashboard-user.ts'),
+    ('r5 screen, the login CLI', 'screen -dm tsx scripts/dashboard-user.ts add bob'),
+    ('r5 tmux, the login CLI', 'tmux new-session -d "npm run dashboard-user -- add bob"'),
+    ('r5 procsub, the login CLI', 'source <(echo "npm run dashboard-user -- add bob")'),
+    ('r5 screen, no verb', 'screen -dm tsx ' + _R4_CLI),
+    ('r5 tmux, no verb', 'tmux new-session -d "npm run agent-tokens"'),
+]
+R5_ALLOWED = [
+    # the read verbs stay allowed through every new shape
+    ('r5 stdin check', 'cat ' + _R4_CLI + ' | tsx - check'),
+    ('r5 stdin check redirected', 'tsx - check < ' + _R4_CLI),
+    ('r5 stdin archive-shared-age', 'cat ' + _R4_CLI + ' | tsx - archive-shared-age {O}/x.db'),
+    ('r5 procsub script check', 'tsx <(cat ' + _R4_CLI + ') check'),
+    ('r5 screen check', 'screen -dm npm run agent-tokens -- check'),
+    ('r5 screen tsx check', 'screen -dm tsx ' + _R4_CLI + ' check'),
+    ('r5 tmux check', 'tmux new-session -d "npm run agent-tokens -- check"'),
+    ('r5 tmux new check', 'tmux new -d "tsx ' + _R4_CLI + ' check"'),
+    ('r5 procsub source check', 'source <(echo "npm run agent-tokens -- check")'),
+    # the controls of the reviewer
+    ('r5 cat of the CLI', 'cat ' + _R4_CLI),
+    ('r5 grep for the name', 'grep -n agent-tokens README.md'),
+    ('r5 tmux new-session build', 'tmux new-session -d "npm run build"'),
+    ('r5 screen build', 'screen -dm npm run build'),
+    ('r5 tmux new with a name', 'tmux new -d -s w "tsx scripts/plain.ts"'),
+    ('r5 tmux list', 'tmux list-sessions'),
+    ('r5 tmux ls', 'tmux ls'),
+    ('r5 screen -ls', 'screen -ls'),
+    ('r5 screen reattach', 'screen -r w'),
+    ('r5 tmux send-keys -l plain', 'tmux send-keys -l "echo hi"'),
+    ('r5 tmux send-keys -l check', 'tmux send-keys -l "npm run agent-tokens -- check"'),
+    ('r5 tmux split-window -l size build', 'tmux split-window -l 20 "npm run build"'),
+    ('r5 tmux new-window -S build', 'tmux new-window -S "npm run build"'),
+    ('r5 stdin dd of a plain script', 'dd if=scripts/plain.ts | tsx -'),
+    ('r5 stdin git show of a plain file', 'git show HEAD:README.md | tsx -'),
+    ('r5 stdin dd of the CLI, check', 'dd if=' + _R4_CLI + ' | tsx - check'),
+    ('r5 source /dev/stdin plain', 'source /dev/stdin <<< "echo hi"'),
+    ('r5 source /dev/stdin check', 'source /dev/stdin <<< "npm run agent-tokens -- check"'),
+    ('r5 tmux send-keys plain', 'tmux send-keys -t w "echo hi" Enter'),
+    ('r5 tmux attach', 'tmux attach -t w'),
+    # a pipe or a redirect that names the CLI but no interpreter reads it as a script
+    ('r5 cat of the CLI to grep', 'cat ' + _R4_CLI + ' | grep -c token'),
+    ('r5 cat of the CLI to wc', 'cat ' + _R4_CLI + ' | wc -l'),
+    ('r5 cat of the CLI, tsx runs another script', 'cat ' + _R4_CLI + ' | tsx scripts/plain.ts'),
+    ('r5 cat of the CLI, node -e', 'cat ' + _R4_CLI + ' | node -e "console.log(1)"'),
+    ('r5 a plain script on stdin', 'cat scripts/plain.ts | tsx - issue'),
+    ('r5 a plain script redirected', 'tsx - issue < scripts/plain.ts'),
+    ('r5 head of a plain script', 'head -n 5 scripts/plain.ts | tsx -'),
+    ('r5 echo into tsx', 'echo "console.log(1)" | tsx -'),
+    ('r5 tsx version after a cat', 'cat README.md | tsx --version'),
+    # process substitutions that are no script
+    ('r5 procsub source plain', 'source <(echo "echo hi")'),
+    ('r5 procsub dot build', '. <(echo "npm run build")'),
+    ('r5 procsub source cat of an ok script', 'source <(cat ok.sh)'),
+    ('r5 procsub bash plain', 'bash <(echo hi)'),
+    ('r5 procsub diff', 'diff <(echo a) <(echo b)'),
+    ('r5 procsub cat of the CLI as data', 'diff <(cat ' + _R4_CLI + ') scripts/plain.ts'),
+    ('r5 procsub tsx plain script', 'tsx <(cat scripts/plain.ts)'),
+    ('r5 procsub the CLI name only as an argument of a pipe', 'grep -c token <(cat ' + _R4_CLI + ')'),
+]
+BLOCKED.extend(R5_BLOCKED)
+ALLOWED.extend(R5_ALLOWED)
+
+
 # PostgreSQL install: the isolated-store exemption is void there (the CLI reads the install's URL, not the store dir).
 PG_URL_VALUE = 'postgres://marveen_app@127.0.0.1:5432/marveen'
 PG_ENV_BLOCKED = [
@@ -1044,6 +1760,13 @@ PG_ENV_BLOCKED = [
     ('PG env, isolated store, remove', 'MARVEEN_STORE_DIR={O} npm run dashboard-user -- remove bob'),
     ('PG env, isolated store, sessions:clear', 'MARVEEN_STORE_DIR={O} npm run dashboard-user -- sessions:clear'),
     ('PG env, isolated store, security:reset', 'MARVEEN_STORE_DIR={O} npx tsx scripts/dashboard-user.ts security:reset'),
+    ('PG env, isolated store, tokens issue', 'MARVEEN_STORE_DIR={O} npm run agent-tokens -- issue'),
+    ('PG env, isolated store, tokens revoke', 'MARVEEN_STORE_DIR={O} npm run agent-tokens -- revoke alpha'),
+    ('PG env, isolated store, tokens issue --rotate', 'MARVEEN_STORE_DIR={O} npx tsx scripts/agent-tokens.ts issue --rotate'),
+    ('PG env, isolated store, tokens revoke through with-config', 'MARVEEN_STORE_DIR={O} tsx scripts/with-config.ts agent-tokens revoke alpha'),
+    ('PG env, isolated store, tokens rotate-shared', 'MARVEEN_STORE_DIR={O} npm run agent-tokens -- rotate-shared'),
+    ('PG env, isolated store, tokens issue-operator', 'MARVEEN_STORE_DIR={O} npm run agent-tokens -- issue-operator'),
+    ('PG env, isolated store, tokens no verb', 'MARVEEN_STORE_DIR={O} npm run agent-tokens'),
 ]
 # a PostgreSQL URL variable named in the command itself: refused on a SQLite-mode gate too (the store dir is not the database)
 URL_NAMED_BLOCKED = [
@@ -1051,10 +1774,16 @@ URL_NAMED_BLOCKED = [
     ('migrate URL prefix, isolated store, add', 'MARVEEN_PG_MIGRATE_URL=' + PG_URL_VALUE + ' MARVEEN_STORE_DIR={O} npx tsx scripts/dashboard-user.ts add bob --password-stdin'),
     ('PG URL via env form, isolated store, remove', 'env MARVEEN_PG_URL=' + PG_URL_VALUE + ' MARVEEN_STORE_DIR={O} npm run dashboard-user -- remove bob'),
     ('PG URL exported earlier in the line, isolated store, remove', 'export MARVEEN_PG_URL=' + PG_URL_VALUE + '; MARVEEN_STORE_DIR={O} npm run dashboard-user -- remove bob'),
+    ('PG URL prefix, isolated store, tokens issue', 'MARVEEN_PG_URL=' + PG_URL_VALUE + ' MARVEEN_STORE_DIR={O} npm run agent-tokens -- issue'),
+    ('migrate URL prefix, isolated store, tokens revoke', 'MARVEEN_PG_MIGRATE_URL=' + PG_URL_VALUE + ' MARVEEN_STORE_DIR={O} tsx scripts/with-config.ts agent-tokens revoke alpha'),
+    ('PG URL via env form, isolated store, tokens rotate-shared', 'env MARVEEN_PG_URL=' + PG_URL_VALUE + ' MARVEEN_STORE_DIR={O} npm run agent-tokens -- rotate-shared'),
+    ('PG URL exported earlier in the line, isolated store, tokens issue-operator', 'export MARVEEN_PG_URL=' + PG_URL_VALUE + '; MARVEEN_STORE_DIR={O} npm run agent-tokens -- issue-operator'),
 ]
 # the mode cannot be read: fail closed, the isolated store does not exempt the command
 FAIL_CLOSED_BLOCKED = [
     ('mode unreadable, isolated store, reset-password', 'MARVEEN_STORE_DIR={O} npm run dashboard-user -- reset-password bob'),
+    ('mode unreadable, isolated store, tokens issue', 'MARVEEN_STORE_DIR={O} npm run agent-tokens -- issue'),
+    ('mode unreadable, isolated store, tokens revoke through with-config', 'MARVEEN_STORE_DIR={O} tsx scripts/with-config.ts agent-tokens revoke alpha'),
 ]
 
 
@@ -1164,6 +1893,31 @@ class TestTable(unittest.TestCase):
             GATE.inspect('sqlite3 %s "DELETE FROM api_tokens"' % FX.live, FX.root)
         self.assertIn('api_tokens', cm.exception.reason)
 
+    def test_the_token_cli_message_names_the_verb_rule(self):
+        with self.assertRaises(GATE.Deny) as cm:
+            GATE.inspect('npm run agent-tokens -- revoke alpha', FX.root)
+        reason = cm.exception.reason
+        self.assertIn('agent-tokens', reason)
+        self.assertIn('revoke', reason)                         # the verb that was refused
+        for verb in GATE.TOKEN_CLI_READ_VERBS:
+            self.assertIn(verb, reason)                          # the verbs that pass are named
+        with self.assertRaises(GATE.Deny) as cm:
+            GATE.inspect('npm run agent-tokens', FX.root)
+        self.assertIn('nincs alparancs', cm.exception.reason)    # a missing verb is named as such
+
+    def test_the_token_read_verbs_are_exactly_these_two(self):
+        # a verb added to the allowlist is a protection change: this assertion makes it a deliberate one
+        self.assertEqual(GATE.TOKEN_CLI_READ_VERBS, ('check', 'archive-shared-age'))
+
+    def test_the_token_cli_exit_code_through_the_real_hook(self):
+        code, err = run_gate(bash_event('npm run agent-tokens -- issue alpha'))
+        self.assertEqual(code, 2)
+        self.assertIn('agent-tokens', err)
+        self.assertEqual(run_gate(bash_event('npm run agent-tokens -- list'))[0], 2)      # every tenant's token ids and names
+        self.assertEqual(run_gate(bash_event('tsx scripts/with-config.ts agent-tokens check'))[0], 0)
+        self.assertEqual(run_gate(bash_event('corepack pnpm agent-tokens issue'))[0], 2)
+        self.assertEqual(run_gate(bash_event('tsx scripts/with-config.ts agent-tokens rotate-shared'))[0], 2)
+
 
 # ---------------------------------------------------------------------------------------------
 # the exit-code contract through a real subprocess
@@ -1267,6 +2021,14 @@ class TestBounds(unittest.TestCase):
             denied = True
         self.assertLess(time.time() - t0, limit_s, 'took too long for %d chars' % len(cmd))
         return denied
+
+    def test_flipped_flag_readings_are_charged_to_the_work_budget(self):
+        # every word after a flag may be that flag's value or the command, three words deep (command, sub-command, script), and each
+        # reading walks the whole line: 40 flag/value pairs are 64000 readings. The charge stops it at the work budget, and an
+        # inspection that ran out of budget is a denial, never a pass.
+        cmd = 'pnpm ' + ' '.join('-f%d v%d' % (i, i) for i in range(40)) + ' run build'
+        self.assertLess(len(cmd), GATE.MAX_CMD_CHARS)
+        self.assertTrue(self.deny_or_pass_fast(cmd, limit_s=5.0))
 
     def test_command_over_the_size_limit_is_denied(self):
         self.assertTrue(self.deny_or_pass_fast('echo ' + 'a' * (GATE.MAX_CMD_CHARS + 10)))
@@ -1424,12 +2186,12 @@ MUTANTS = [
     ('PG URL name in the command does not void it', '    if any(_PG_URL_NAME.search(t) for t in texts):\n        return True', '    if False:\n        return True'),
     ('PG mode unreadable fails open', '    except Exception:\n        return True   # fail closed', '    except Exception:\n        return False   # fail open'),
     ('PG mode answer ignored', '        return bool(hook_pg_mode.pg_mode())', '        return False'),
-    ('CLI entry name not a mutator', "|consumeEnrollCode|runDashboardUserCli)\\b|password-hash", "|consumeEnrollCode)\\b|password-hash"),
+    ('CLI entry name not a mutator', "|consumeEnrollCode|runDashboardUserCli'", "|consumeEnrollCode'"),
     ('CLI module path pattern names another folder', "CLI_MODULE_PATH = re.compile(r'dashboard-user", "CLI_MODULE_PATH = re.compile(r'disabled-mutant"),
-    ('npx drops the package flags before the interpreter check', '    inner = [pkg] + _args_after(args, pkg)', '    inner = [pkg] + rest[1:]'),
-    ('CLI decision never blocks', 'def _cli_decision(rest, state):\n    if len(rest) == 1', 'def _cli_decision(rest, state):\n    return\n    if len(rest) == 1'),
-    ('list exemption widened to anything', "if len(rest) == 1 and rest[0] == 'list':", "if rest and rest[0] == 'list':"),
-    ('list exemption removed', "if len(rest) == 1 and rest[0] == 'list':\n        return", "if False:\n        return"),
+    ('npx drops the package flags before the interpreter check', '    inner = [_unversioned(pkg)] + _args_after(args, pkg)', '    inner = [_unversioned(pkg)] + rest[1:]'),
+    ('CLI decision never blocks', "    sub = rest[0] if rest else '(nincs alparancs)'\n    for kind in kinds:", "    return\n    sub = rest[0] if rest else '(nincs alparancs)'\n    for kind in kinds:"),
+    ('list exemption widened to anything', "        if len(rest) == 1 and rest[0] == 'list':\n            continue", "        if rest and rest[0] == 'list':\n            continue"),
+    ('list exemption removed', "        if len(rest) == 1 and rest[0] == 'list':\n            continue", "        if False:\n            continue"),
     ('SQL write check disabled on the live store', 'if live and (hit or SQL_DOT_WRITE.search(text)):', 'if False:'),
     ('SQL write check ignores the live flag', 'if live and (hit or SQL_DOT_WRITE.search(text)):', 'if (hit or SQL_DOT_WRITE.search(text)):'),
     ('block comments not stripped (comment hides the table)', "    if '/*' not in text:\n        return text\n    out = []", "    if True:\n        return text\n    out = []"),
@@ -1460,7 +2222,7 @@ MUTANTS = [
     ('env -S not inspected', "    if name == 'env-S':\n        for alt in (args[0].alts if args else []):\n            check_command(alt, state, depth + 1)\n        return", "    if name == 'env-S':\n        return"),
     ('xargs producer words ignored', "            if pn in ('echo', 'printf'):\n                fed = ", "            if False:\n                fed = "),
     ('find -exec ignored', "    if name == 'find':\n        _handle_find(args, seg, state, depth)\n        return", "    if name == 'find':\n        return"),
-    ('tmux ignored', "    if name in ('tmux', 'screen'):\n        _handle_tmux(args, state, depth)", "    if name in ('tmux', 'screen'):\n        return\n        _handle_tmux(args, state, depth)"),
+    ('tmux ignored', "        if name == 'tmux':\n            _handle_tmux(args, state, depth)", "        if name == 'tmux':\n            pass"),
     ('ssh ignored', "    if name in ('ssh', 'mosh'):\n        _handle_ssh(args, seg, state, depth)\n        return", "    if name in ('ssh', 'mosh'):\n        return"),
     ('--password-stdin check removed', "    if (any(a.text == '--password-stdin' for a in args) and name not in _LOGIN_OK\n            and not state.isolated_cli):", "    if False:"),
     ('--password-stdin exempt for everything', "and name not in _LOGIN_OK\n", "and name in ('docker',)\n"),
@@ -1474,7 +2236,7 @@ MUTANTS = [
     ('script stem ignores extensions', "    for e in _EXTS:\n        if low.endswith(e):\n            return low[:-len(e)]\n    return low", "    return low"),
     ('security-reset prefix dropped', "CLI_PREFIXES = ('security-reset',)", "CLI_PREFIXES = ()"),
     ('shell script files not read', "        txt = _read_text_file(args[i].text, state)\n        if txt is not None:\n            check_shell_script(txt, state, depth)\n        return\n    for t in _stdin_texts", "        return\n    for t in _stdin_texts"),
-    ('bash FILE named like the CLI not checked', "        if _word_hits_cli(args[i], state.cwd):          # bash scripts/security-reset.sh", "        if False:          # bash scripts/security-reset.sh"),
+    ('bash FILE named like the CLI not checked', "        if kinds:\n            _cli_decision(_after_cli(args[i + 1:]), state, kinds)", "        if False:\n            _cli_decision(_after_cli(args[i + 1:]), state, kinds)"),
     ('.read not followed', "    while k < len(texts) and k < 64:       # .read FILE adds that file's text (nested, bounded)", "    while False:       # .read FILE adds that file's text (nested, bounded)"),
     ('session-wide live flag per text only', "    eff = live\n    for t in texts:\n        for m in SQL_DOT_OPEN", "    eff = live\n    for t in []:\n        for m in SQL_DOT_OPEN"),
     ('isolated store exemption always on', "    state.isolated_cli = _isolated_store(seg, words, cmdword, state)", "    state.isolated_cli = True"),
@@ -1549,6 +2311,153 @@ MUTANTS = [
     ('gate-audit spool entry removed', "    if SPOOL_DIR_RE.search(text) and SPOOL_CODE_WRITE_RE.search(text):", '    if False:'),
     ('gate-audit spool: directory name matched case-sensitively', "SPOOL_DIR_RE = re.compile(r'\\.gate-audit-spool', re.I)", "SPOOL_DIR_RE = re.compile(r'\\.gate-audit-spool')"),
     ('gate-audit spool: every code naming the directory is refused',"    if SPOOL_DIR_RE.search(text) and SPOOL_CODE_WRITE_RE.search(text):", '    if SPOOL_DIR_RE.search(text):'),
+    # ---- the per-agent token CLI (agent-tokens): the verb rule, the config runner form, the module and mutator names ----
+    ('tokens: list allowed', "TOKEN_CLI_READ_VERBS = ('check', 'archive-shared-age')", "TOKEN_CLI_READ_VERBS = ('check', 'list', 'archive-shared-age')"),
+    ('corepack not unwrapped', "    if name == 'corepack':\n        # `corepack npm run X`", "    if False:\n        # `corepack npm run X`"),
+    ('corepack unwrapped without its arguments', "            check_words([_unversioned(pos[0])] + _args_after(args, pos[0]), seg, state, depth)\n        return\n    if name in ('npx', 'pnpx', 'bunx'):", "            check_words([_unversioned(pos[0])], seg, state, depth)\n        return\n    if name in ('npx', 'pnpx', 'bunx'):"),
+    ('corepack: the pinned version stays on the manager word', "            check_words([_unversioned(pos[0])] + _args_after(args, pos[0]), seg, state, depth)\n        return\n    if name in ('npx', 'pnpx', 'bunx'):", "            check_words([pos[0]] + _args_after(args, pos[0]), seg, state, depth)\n        return\n    if name in ('npx', 'pnpx', 'bunx'):"),
+    ('corepack: the version is cut from the text only, not from the alternatives', "[cut(a) for a in word.alts]", "word.alts"),
+    ('symlink of the runner: the real path is not looked at', " or _link_stem(alt, state) == CLI_RUNNER_STEM for alt in word.alts)", " for alt in word.alts)"),
+    ('symlink: a direct exec of a linked CLI is not resolved', "        kind = _is_cli_name(_script_stem(alt)) or (_is_cli_name(linked) if linked is not None else None)", "        kind = _is_cli_name(_script_stem(alt))"),
+    ('symlink: a direct exec of a linked runner is not resolved', "        if (_script_stem(alt) == CLI_RUNNER_STEM or linked == CLI_RUNNER_STEM) and args:", "        if _script_stem(alt) == CLI_RUNNER_STEM and args:"),
+    ('symlink: the link stem helper returns the link name itself', "                return _script_stem(os.path.realpath(full))", "                return _script_stem(full)"),
+    # the value-flag table is read together with a flipped reading of every flag, so one flag missing from (or wrongly in) the table
+    # is covered by its flipped reading (equal in outcome, not a mutant); what the flipped readings themselves must do is below
+    ('flags: no candidate reading at all', "    for pos in [_positional(args, _NPM_VALUE_FLAGS)] + list(_pos_readings(args, state, 3)):", "    for pos in [_positional(args, _NPM_VALUE_FLAGS)]:"),
+    ('flags: only the command word is read both ways, not its sub-command and script', "list(_pos_readings(args, state, 3))", "list(_pos_readings(args, state, 1))"),
+    ('flags: a word after a flag is not a candidate for the command', "            after_flag = '=' not in t", "            after_flag = False"),
+    ('flags: the candidates do not stop at the command', "            if not after_flag:\n                break", "            if False:\n                break"),
+    # equal in outcome since every word after pnpm / yarn is dispatched (a general rule): the 400 nested inspections limit stops the
+    # candidate readings, the 12-word cap and `pnpm recursive` are covered by the candidate readings too. The code stays as depth.
+    ('npm-like: a program given to pnpm / yarn is recognised by its raw word, not its base name', "    n = _base(_unversioned(word))", "    n = word.text"),
+    ('npm-like: the pinned version stays on the program word', "    n = _base(_unversioned(word))", "    n = _base(word)"),
+    ('npm-like: only the node runners are programs to follow', "    return n in _COMMAND_RUNNERS or bool(_PY.match(n))", "    return n in _NODEISH"),
+    ('npm-like: the pinned version stays on the npx package', "    inner = [_unversioned(pkg)] + _args_after(args, pkg)", "    inner = [pkg] + _args_after(args, pkg)"),
+    ('yarnpkg is not a package manager', "    if name in ('npm', 'pnpm', 'yarn', 'yarnpkg', 'npx', 'pnpx', 'bunx', 'corepack'):", "    if name in ('npm', 'pnpm', 'yarn', 'npx', 'pnpx', 'bunx', 'corepack'):"),
+    ('yarnpkg is not read as yarn', "    if name == 'yarnpkg':       # the other name of yarn\n        name = 'yarn'", "    if False:\n        name = 'yarn'"),
+    ('symlink: an ln in the same text is not recorded', "_COPY_NAMES = ('ln', 'link', 'cp', 'mv', 'install', 'rsync', 'ditto')", "_COPY_NAMES = ('cp', 'mv', 'install', 'rsync', 'ditto')"),
+    ('copy: a link made by `link` is not recorded', "_COPY_NAMES = ('ln', 'link', 'cp', 'mv', 'install', 'rsync', 'ditto')", "_COPY_NAMES = ('ln', 'cp', 'mv', 'install', 'rsync', 'ditto')"),
+    ('copy: a cp in the same text is not recorded', "_COPY_NAMES = ('ln', 'link', 'cp', 'mv', 'install', 'rsync', 'ditto')", "_COPY_NAMES = ('ln', 'link', 'mv', 'install', 'rsync', 'ditto')"),
+    ('copy: a mv in the same text is not recorded', "_COPY_NAMES = ('ln', 'link', 'cp', 'mv', 'install', 'rsync', 'ditto')", "_COPY_NAMES = ('ln', 'link', 'cp', 'install', 'rsync', 'ditto')"),
+    ('copy: an install in the same text is not recorded', "_COPY_NAMES = ('ln', 'link', 'cp', 'mv', 'install', 'rsync', 'ditto')", "_COPY_NAMES = ('ln', 'link', 'cp', 'mv', 'rsync', 'ditto')"),
+    ('copy: an rsync in the same text is not recorded', "_COPY_NAMES = ('ln', 'link', 'cp', 'mv', 'install', 'rsync', 'ditto')", "_COPY_NAMES = ('ln', 'link', 'cp', 'mv', 'install', 'ditto')"),
+    ('copy: a ditto in the same text is not recorded', "_COPY_NAMES = ('ln', 'link', 'cp', 'mv', 'install', 'rsync', 'ditto')", "_COPY_NAMES = ('ln', 'link', 'cp', 'mv', 'install', 'rsync')"),
+    ('copy: the new name itself is not recorded', "                if explicit is None:\n                    _record_link_src(d.text, stem, state)\n", "                if False:\n                    _record_link_src(d.text, stem, state)\n"),
+    ('copy: the name inside a destination directory is not recorded', "                _record_link_src(os.path.join(d.text, base), stem, state)\n", "                pass\n"),
+    ('copy: the -t directory is not read', "        if a.text in ('-t', '--target-directory') and k + 1 < len(args):\n            explicit = args[k + 1]\n        elif a.text.startswith('--target-directory='):\n            explicit = Word(a.text.split('=', 1)[1])\n    if explicit is not None:\n        sources, dests", "        if False:\n            explicit = args[k + 1]\n        elif a.text.startswith('--target-directory='):\n            explicit = Word(a.text.split('=', 1)[1])\n    if explicit is not None:\n        sources, dests"),
+    ('copy: the --target-directory= form is not read', "        elif a.text.startswith('--target-directory='):\n            explicit = Word(a.text.split('=', 1)[1])\n    if explicit is not None:\n        sources, dests", "        elif False:\n            explicit = Word(a.text.split('=', 1)[1])\n    if explicit is not None:\n        sources, dests"),
+    ('copy: a glob source is not expanded', "        elif any(c in alt for c in '*?['):\n            try:\n                hits = glob.glob(alt if os.path.isabs(alt) else os.path.join(state.cwd, alt))\n            except Exception:\n                hits = []\n            for h in hits[:MAX_GLOB_HITS]:\n                st =", "        elif False:\n            try:\n                hits = glob.glob(alt if os.path.isabs(alt) else os.path.join(state.cwd, alt))\n            except Exception:\n                hits = []\n            for h in hits[:MAX_GLOB_HITS]:\n                st ="),
+    ('copy: the stricter token CLI stem is replaced by another', "        if state.link_srcs.get(key) != TOKEN_CLI_NAME:", "        if True:"),
+    ('copy: over the cap the gate only stops looking', "            raise InspectionLimit('more than %d link or copy names of a CLI script' % MAX_LINK_SRCS)", "            return"),
+    ('symlink: a recorded ln is not read back', "                if pending is not None:\n                    return pending", "                if False:\n                    return pending"),
+    ('symlink: the source of a chain of links is not followed', "        stem = _link_stem(alt, state)\n        if stem is None:\n            stem = _script_stem(alt)", "        stem = None\n        if stem is None:\n            stem = _script_stem(alt)"),
+    ('symlink: only a CLI source is recorded, not the config runner', "        if _is_cli_name(stem) or stem == CLI_RUNNER_STEM:\n            out.append((stem, os.path.basename(alt)))", "        if _is_cli_name(stem):\n            out.append((stem, os.path.basename(alt)))"),
+    ('symlink: the cd targets are not looked in', "    return [state.cwd] + list(state.cd_targets)", "    return [state.cwd]"),
+    ('yarn / pnpm workspace form not unwrapped', "    elif pos and ((name == 'yarn' and pos[0].text in ('workspace', 'workspaces'))", "    elif False and ((name == 'yarn' and pos[0].text in ('workspace', 'workspaces'))"),
+    ('yarn workspace: the command is looked for at the first positional only', "        for k in range(1, len(pos)):", "        for k in range(1, min(len(pos), 2)):"),
+    ('symlink: a bare name is not looked at', "    if alt and not any(c in alt for c in '*?['):\n        for c in _cwds(state):", "    if alt and '/' in alt and not any(c in alt for c in '*?['):\n        for c in _cwds(state):"),
+    ('yarn workspace: singular form not unwrapped', "pos[0].text in ('workspace', 'workspaces'))", "pos[0].text in ('workspaces',))"),
+    ('yarn workspaces: plural form not unwrapped', "pos[0].text in ('workspace', 'workspaces'))", "pos[0].text in ('workspace',))"),
+    ('pnpm run <script>: the CLI name is not checked before the word is dispatched', "            kinds = _word_hits_cli(w, state)        # the CLI by name, glob, brace or link first", "            kinds = ()        # the CLI by name, glob, brace or link first"),
+    ('brace word naming the CLI with other alternatives is read as one word', "    if kinds and len(word.alts) > 1:", "    if False:"),
+    ('pnpm run <runner> not followed', "            if name in ('pnpm', 'yarn') or _word_runs_command(w):   # pnpm run tsx", "            if False:   # pnpm run tsx"),
+    ('pnpm run <any word> only for known programs', "            if name in ('pnpm', 'yarn') or _word_runs_command(w):   # pnpm run tsx", "            if _word_runs_command(w):   # pnpm run tsx"),
+    ('yarn / pnpm <any word> is not dispatched', "        check_words([_unversioned(pos[0])] + _args_after(args, pos[0]), seg, state, depth)\n        return\n    elif name == 'bun' and pos:", "        pass\n        return\n    elif name == 'bun' and pos:"),
+    ('yarn / pnpm <any word> only for known programs', "        check_words([_unversioned(pos[0])] + _args_after(args, pos[0]), seg, state, depth)\n        return\n    elif name == 'bun' and pos:", "        if _word_runs_command(pos[0]):\n            check_words([_unversioned(pos[0])] + _args_after(args, pos[0]), seg, state, depth)\n        return\n    elif name == 'bun' and pos:"),
+    ('symlink: the real path is not looked at', "            if os.path.islink(full):", "            if False:"),
+    ('tokens: any verb allowed', "            if rest and rest[0] in TOKEN_CLI_READ_VERBS:", "            if rest:"),
+    ('tokens: a missing verb allowed', "            if rest and rest[0] in TOKEN_CLI_READ_VERBS:", "            if not rest or rest[0] in TOKEN_CLI_READ_VERBS:"),
+    ('tokens: the LAST word decides the verb', "            if rest and rest[0] in TOKEN_CLI_READ_VERBS:", "            if rest and rest[-1] in TOKEN_CLI_READ_VERBS:"),
+    ('tokens: issue allowed', "TOKEN_CLI_READ_VERBS = ('check', 'archive-shared-age')", "TOKEN_CLI_READ_VERBS = ('check', 'archive-shared-age', 'issue')"),
+    ('tokens: issue-operator allowed', "TOKEN_CLI_READ_VERBS = ('check', 'archive-shared-age')", "TOKEN_CLI_READ_VERBS = ('check', 'archive-shared-age', 'issue-operator')"),
+    ('tokens: rotate-shared allowed', "TOKEN_CLI_READ_VERBS = ('check', 'archive-shared-age')", "TOKEN_CLI_READ_VERBS = ('check', 'archive-shared-age', 'rotate-shared')"),
+    ('tokens: revoke allowed', "TOKEN_CLI_READ_VERBS = ('check', 'archive-shared-age')", "TOKEN_CLI_READ_VERBS = ('check', 'archive-shared-age', 'revoke')"),
+    ('tokens: the name is not a CLI name', "    if base_no_ext == TOKEN_CLI_NAME:\n        return KIND_TOKENS", "    if False:\n        return KIND_TOKENS"),
+    ('tokens: the name matched as a prefix', "    if base_no_ext == TOKEN_CLI_NAME:\n        return KIND_TOKENS", "    if base_no_ext.startswith(TOKEN_CLI_NAME):\n        return KIND_TOKENS"),
+    ('tokens: the isolated-store exemption removed', "            if state.isolated_cli and rest and rest[0] in TOKEN_CLI_STORE_ONLY_VERBS:", "            if False:"),
+    ('tokens: the isolated-store exemption covers any verb', "            if state.isolated_cli and rest and rest[0] in TOKEN_CLI_STORE_ONLY_VERBS:", "            if state.isolated_cli:"),
+    ('tokens: the isolated-store exemption covers issue', "TOKEN_CLI_STORE_ONLY_VERBS = ('issue-operator', 'rotate-shared', 'revoke')", "TOKEN_CLI_STORE_ONLY_VERBS = ('issue', 'issue-operator', 'rotate-shared', 'revoke')"),
+    ('tokens: the isolated-store exemption lost issue-operator', "TOKEN_CLI_STORE_ONLY_VERBS = ('issue-operator', 'rotate-shared', 'revoke')", "TOKEN_CLI_STORE_ONLY_VERBS = ('rotate-shared', 'revoke')"),
+    ('tokens: the isolated-store exemption lost rotate-shared', "TOKEN_CLI_STORE_ONLY_VERBS = ('issue-operator', 'rotate-shared', 'revoke')", "TOKEN_CLI_STORE_ONLY_VERBS = ('issue-operator', 'revoke')"),
+    ('tokens: the isolated-store exemption lost revoke', "TOKEN_CLI_STORE_ONLY_VERBS = ('issue-operator', 'rotate-shared', 'revoke')", "TOKEN_CLI_STORE_ONLY_VERBS = ('issue-operator', 'rotate-shared')"),
+    ('login CLI: the isolated-store exemption removed', "        if state.isolated_cli:      # MARVEEN_STORE_DIR points at a throw-away store: not the live logins\n            continue", "        if False:\n            continue"),
+    # (a mutant "only the last kind of a word applies" is equal in outcome now: a word with several alternatives that names the CLI is denied)
+    ('tokens: with-config runner form not followed', "        elif _word_is_runner_script(w, state):\n            for t in _command_candidates(after)[:1]:", "        elif False:\n            for t in _command_candidates(after)[:1]:"),
+    ('tokens: with-config name built at run time allowed', "    \"\"\"The script the config runner is given as its first argument: [(kinds, the positionals after it)] when it names a CLI.\"\"\"\n    if target.dyn:", "    \"\"\"The script the config runner is given as its first argument: [(kinds, the positionals after it)] when it names a CLI.\"\"\"\n    if False:"),
+    ('tokens: with-config verb position off by one', "    return [(kinds, _positional(_args_after(after, target), _NODE_VALUE_FLAGS))]", "    return [(kinds, _positional(after, _NODE_VALUE_FLAGS))]"),
+    # ---- round 4: node / tsx / bun lines (preloads, both readings of a flag, runner binaries), --call=, npm explore ----
+    ('preload: the preload values are not read as script names', "    for p in preloads:\n        kinds = _word_hits_cli(p, state)", "    for p in []:\n        kinds = _word_hits_cli(p, state)"),
+    ('preload: a preload is a candidate for the main script as well', "    return values, rest\n", "    return [], args\n"),
+    ('preload: the --flag=value form is not split', "        if eq and head in _PRELOAD_FLAGS:", "        if False:"),
+    ('preload: -r is not a preload flag', "_PRELOAD_FLAGS = ('-r', '--require', '--import', '--loader', '--experimental-loader', '--preload')", "_PRELOAD_FLAGS = ('--require', '--import', '--loader', '--experimental-loader', '--preload')"),
+    ('preload: --require is not a preload flag', "_PRELOAD_FLAGS = ('-r', '--require', '--import', '--loader', '--experimental-loader', '--preload')", "_PRELOAD_FLAGS = ('-r', '--import', '--loader', '--experimental-loader', '--preload')"),
+    ('preload: --import is not a preload flag', "_PRELOAD_FLAGS = ('-r', '--require', '--import', '--loader', '--experimental-loader', '--preload')", "_PRELOAD_FLAGS = ('-r', '--require', '--loader', '--experimental-loader', '--preload')"),
+    ('preload: --loader is not a preload flag', "_PRELOAD_FLAGS = ('-r', '--require', '--import', '--loader', '--experimental-loader', '--preload')", "_PRELOAD_FLAGS = ('-r', '--require', '--import', '--experimental-loader', '--preload')"),
+    ('preload: --experimental-loader is not a preload flag', "_PRELOAD_FLAGS = ('-r', '--require', '--import', '--loader', '--experimental-loader', '--preload')", "_PRELOAD_FLAGS = ('-r', '--require', '--import', '--loader', '--preload')"),
+    ('preload: with no main script there is no verb to read', "            for _w, after in (scripts or [(None, [])]):", "            for _w, after in scripts:"),
+    ('preload: the config runner as a preload is not followed', "        elif _word_is_runner_script(p, state):", "        elif False:"),
+    ('candidates: only the first word is the script', "        for c in _command_candidates(a):\n            _charge(state, len(a) + 1)", "        for c in _command_candidates(a)[:1]:\n            _charge(state, len(a) + 1)"),
+    ('candidates: the script is not looked for again after a runner sub-command', "            if level < 2 and c.text in _RUN_SUBS:", "            if False:"),
+    ('candidates: the candidates are not charged to the work budget', "            _charge(state, len(a) + 1)      # every candidate costs", "            pass      # every candidate costs"),
+    ('runner binary: a runner started by a path is not run as a command', "        if runner is not None:\n            _redispatch(", "        if False:\n            _redispatch("),
+    ('runner binary: the package folder in the path is not read', "        for p in parts:\n            p = _unversioned(Word(p)).text", "        for p in []:\n            p = _unversioned(Word(p)).text"),
+    ('runner binary: the binary name at the end of the path is not read', "        if last in _NODEISH:\n            return last", "        if False:\n            return last"),
+    ('runner binary: the nesting limit is not applied', "    if depth + 1 > MAX_NEST:\n        raise InspectionLimit('nesting deeper than %d levels' % MAX_NEST)\n    check_words(words, seg, state, depth + 1)", "    check_words(words, seg, state, depth + 1)"),
+    ('runner binary: run with the depth of the caller', "    check_words(words, seg, state, depth + 1)\n\n\ndef _handle_node", "    check_words(words, seg, state, 0)\n\n\ndef _handle_node"),
+    ('npm exec: the --flag=value form is not read', "            if eq:                                  # `npm exec --call='tsx scripts/x.ts issue'`, `npx -c='...'`", "            if False:                                  # `npm exec --call='tsx scripts/x.ts issue'`, `npx -c='...'`"),
+    ('npm exec: --cal is not a prefix of --call', "        if head in ('-c', '--call', '--cal'):", "        if head in ('-c', '--call'):"),
+    ('npm exec: -c is not read', "        if head in ('-c', '--call', '--cal'):", "        if head in ('--call', '--cal'):"),
+    ('npm exec: --call is not read', "        if head in ('-c', '--call', '--cal'):", "        if head in ('-c', '--cal'):"),
+    ('npm explore is not unwrapped', "    elif pos and name == 'npm' and pos[0].text in _EXPLORE_NAMES:", "    elif False and name == 'npm' and pos[0].text in _EXPLORE_NAMES:"),
+    ('npm explore: the command after the package is not checked', "                check_command(' '.join(words), state, depth + 1)", "                pass"),
+    ('npm explore: only the first word after the package is checked', "                check_command(' '.join(words), state, depth + 1)", "                check_command(words[0], state, depth + 1)"),
+    ('npm explore: the prefixes of the name are not accepted', "_EXPLORE_NAMES = ('explore', 'explor', 'explo')", "_EXPLORE_NAMES = ('explore',)"),
+    # ---- round 5: the CLI source on stdin, detached screen / tmux, process substitution ----
+    ('stdin: the files that feed stdin are not read', "    stdin_kinds = _stdin_cli_kinds(seg, state)\n", "    stdin_kinds = ()\n"),
+    ('stdin: an interpreter with no script word is not read', "    if stdin_kinds and not scripts:", "    if False:"),
+    ('stdin: `-` is not a script word for stdin', "_STDIN_SCRIPT_WORDS = ('-',)", "_STDIN_SCRIPT_WORDS = ()"),
+    ('stdin: /dev/stdin is not a descriptor path', "dev/(?:stdin|fd/0+)", "dev/(?:fd/0+)"),
+    ('stdin: /dev/fd/N is not a descriptor path', "dev/(?:stdin|fd/0+)", "dev/(?:stdin)"),
+    ('stdin: leading zeros of the descriptor are not read', "dev/(?:stdin|fd/0+)|proc/(?:self|thread-self|[0-9]+)/fd/0+)", "dev/(?:stdin|fd/0)|proc/(?:self|thread-self|[0-9]+)/fd/0)"),
+    ('stdin: /proc/self is not a descriptor path', "proc/(?:self|thread-self|[0-9]+)/fd/0+", "proc/(?:thread-self|[0-9]+)/fd/0+"),
+    ('stdin: /proc/<pid> is not a descriptor path', "proc/(?:self|thread-self|[0-9]+)/fd/0+", "proc/(?:self|thread-self)/fd/0+"),
+    ('stdin: the script word path is not normalised', "bool(_STDIN_PATH.match(os.path.normpath(text)))", "bool(_STDIN_PATH.match(text))"),
+    ('stdin: the words of an earlier stage are not read', "    for x in prod.words:\n        if not x.text:\n            continue\n        words.append(x)", "    for x in []:\n        if not x.text:\n            continue\n        words.append(x)"),
+    ('stdin: the value of a key=value word is not read', "        if eq and val:\n            words.append(Word(val,", "        if False:\n            words.append(Word(val,"),
+    ('source: /dev/stdin is not read as the script', "        if args and _is_stdin_word(args[0].text):   # source /dev/stdin", "        if False:   # source /dev/stdin"),
+    ('tmux: the words are not read with no value flag', "        if flat and flat != rest:", "        if False:"),
+    ('stdin: only the stage right before the interpreter is looked at', "        cur, hops = cur.prev, hops + 1", "        cur, hops = None, hops + 1"),
+    ('stdin: the own redirect is not read', "else [Word(f) for f in cur.stdin_files if f != _PROCSUB]\n        for k in _file_words_kinds(words, state):", "else []\n        for k in _file_words_kinds(words, state):"),
+    ('stdin: the redirect of an earlier stage is not read', "    return words + [Word(f) for f in prod.stdin_files if f != _PROCSUB]", "    return words"),
+    ('stdin: a process substitution as stdin is not read', "    if _PROCSUB in seg.stdin_files:\n        for k in _procsub_cli_kinds(seg, state):", "    if False:\n        for k in _procsub_cli_kinds(seg, state):"),
+    ('procsub: a process substitution as the script is not read', "        elif proc_kinds and w.text == _PROCSUB:", "        elif False:"),
+    ('procsub: source <(...) is not read', "        if args and args[0].text == _PROCSUB:       # source", "        if False:       # source"),
+    ('procsub: bash <(...) is not read', "    if i < len(args) and args[i].text == _PROCSUB:", "    if False:"),
+    ('procsub: bash < <(...) is not read', "        if f == _PROCSUB:           # `bash < <(", "        if False:           # `bash < <("),
+    ('procsub: what the process prints is not looked at', "                texts.extend(_seg_output_texts(s, state))\n    return texts\n\n\ndef _file_words_kinds", "                pass\n    return texts\n\n\ndef _file_words_kinds"),
+    ('screen: the command after the options is not checked', "            _handle_screen(args, seg or Seg(), state, depth)", "            pass"),
+    ('screen: only the first candidate is the command', "    for c in _command_candidates(args):\n        words = [c.text]", "    for c in _command_candidates(args)[:1]:\n        words = [c.text]"),
+    ('screen: the arguments go through the tmux reader as well', "        if name == 'tmux':\n            _handle_tmux(args, state, depth)", "        if name in ('tmux', 'screen'):\n            _handle_tmux(args, state, depth)"),
+    ('tmux: the command word is read one way only', "    for sub in _command_candidates(args):\n        if sub.text not in _TMUX_CMDS:", "    for sub in _command_candidates(args)[:1]:\n        if sub.text not in _TMUX_CMDS:"),
+    ('tokens: with-config direct exec not followed', "        if (_script_stem(alt) == CLI_RUNNER_STEM or linked == CLI_RUNNER_STEM) and args:", "        if False:"),
+    ('tokens: with-config direct exec, name built at run time allowed', "            target = args[0]\n            if target.dyn:", "            target = args[0]\n            if False:"),
+    ('tokens: with-config direct exec verb position off by one', "                _cli_decision(_after_cli(args[1:]), state, kinds)\n                return", "                _cli_decision(_after_cli(args), state, kinds)\n                return"),
+    ('tokens: module path check removed', "    if not python and TOKEN_MODULE_PATH.search(text):", "    if False:"),
+    ('tokens: module path names another folder', "])agent-tokens(?:(?:", "])disabled-mutant(?:(?:"),
+    ('tokens: module path matched case-sensitively', "(?![\\w.-])\", re.I)", "(?![\\w.-])\")"),
+    ('tokens: module path not anchored on a separator', "(?<=[/\\\\'\\\"`])", ""),
+    ('tokens: module path matches a longer file name', "(?:\\.[cm]?[jt]s)?(?![\\w.-])", "(?:\\.[cm]?[jt]s)?(?![\\w-])"),
+    ('tokens: spawn marker (runner word) removed', "    r'|(?:npm|pnpm|yarn|npx|tsx|ts-node|node|bun|bunx|deno)\\b[^\\n]{0,80}?agent[-_]tokens(?![\\w-])'\n", ""),
+    ('tokens: spawn marker (scripts/ path) removed', "|scripts/agent-tokens(?![\\w-])", ""),
+    ('tokens: spawn marker (quoted name) removed', "|[\\'\"]agent-tokens(?:\\.[jt]s)?[\\'\"]'", "'"),
+    ('tokens: generic runner marker without the name', "|security[-_]reset|agent[-_]tokens)(?![\\w-])')", "|security[-_]reset)(?![\\w-])')"),
+    ('tokens: generic path marker without the name', "|security-reset|agent-tokens)(?![\\w-])')", "|security-reset)(?![\\w-])')"),
+    ('tokens: issueAgentToken not a mutator name', "|issueAgentToken|", "|"),
+    ('tokens: issueOperatorToken not a mutator name', "|issueOperatorToken|", "|"),
+    ('tokens: rotateSharedToken not a mutator name', "|rotateSharedToken|", "|"),
+    ('tokens: replaceActiveApiToken not a mutator name', "|replaceActiveApiToken|", "|"),
+    ('tokens: rotateSharedDashboardToken not a mutator name', "|rotateSharedDashboardToken'", "'"),
+    ('tokens: runAgentTokensCli not a mutator name', "|runAgentTokensCli)", ")"),
 ]
 
 
@@ -1608,6 +2517,12 @@ class TestMutation(unittest.TestCase):
                 cmd = 'echo ' + ' '.join('$(echo %d)' % i for i in range(mod.MAX_SUBS + 20))
                 try:
                     mod.inspect(cmd, FX.root)
+                    return True
+                except mod.InspectionLimit:
+                    return False
+            if name == 'flags: the candidate readings are not charged to the work budget':
+                try:
+                    mod.inspect('pnpm ' + ' '.join('-f%d v%d' % (i, i) for i in range(40)) + ' run build', FX.root)
                     return True
                 except mod.InspectionLimit:
                     return False

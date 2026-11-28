@@ -269,11 +269,15 @@ fi
 # token valid again. A warning, not a failure: the archive is healthy, the operator must rotate again.
 echo "[5b] Shared token age..."
 # The comparison runs in the agent-tokens CLI (it opens the extracted copy and the live database), never
-# on the live database from here. Skipped when there is no live database yet (a fresh machine: running
-# the CLI would create one in front of the restore) or no node_modules.
+# on the live database from here. "A live database exists" is the install fact, not the frozen file: on a
+# PostgreSQL install the live database is PostgreSQL (PG_INSTALL, set at the top) and store/claudeclaw.db is
+# a frozen file, so an old SQLite archive verified there is compared with the LIVE PostgreSQL row. On SQLite
+# the file stands in for it (a fresh machine has none: running the CLI would create one in front of the
+# restore). An archive with no database (a PostgreSQL archive) has no extracted copy and stays SKIP. Also
+# skipped without node_modules.
 DB_PATH="${REPO_ROOT}/store/claudeclaw.db"
 SHARED_AGE="unknown"
-if [[ -n "${EXTRACTED_DB:-}" && -f "${EXTRACTED_DB}" && -f "${DB_PATH}" && -d "${REPO_ROOT}/node_modules" ]]; then
+if [[ -n "${EXTRACTED_DB:-}" && -f "${EXTRACTED_DB}" && ( ${PG_INSTALL} -eq 1 || -f "${DB_PATH}" ) && -d "${REPO_ROOT}/node_modules" ]]; then
   SHARED_AGE="$(cd "${REPO_ROOT}" && npm run --silent agent-tokens -- archive-shared-age "${EXTRACTED_DB}" 2>/dev/null | tail -1 || true)"
 fi
 case "${SHARED_AGE}" in

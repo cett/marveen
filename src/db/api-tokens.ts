@@ -3,6 +3,7 @@
 // feeds the auth gate lives in web/auth-gate.ts.
 
 import Database from 'better-sqlite3'
+import { readFileSync, statSync } from 'node:fs'
 import { dbx, type SqlOps, type Dbx, type Tx } from './facade.js'
 import { db } from './connection.js'
 import { advisoryKeyOf, advisoryLockKeyed } from './dialect.js'
@@ -251,14 +252,33 @@ export async function rotateSharedDashboardToken(tokenHash: string, now: number)
   }, { mode: 'immediate' })
 }
 
+const ARCHIVE_DB_MAX_BYTES = 1024 * 1024 * 1024
+
 /**
- * The creation time of the newest active `dashboard` token in a BACKUP database (a throwaway copy: only a
- * SELECT runs, but a database in WAL mode may get sidecar files next to it, so never point this at a live
- * database file). null when the archive has no such row. Throws when the file cannot be opened or has no
+ * The creation time of the newest active `dashboard` token in a BACKUP database (read from an in-memory copy of the
+ * file: the path is never opened for writing). null when the archive has no such row. Throws when the file cannot be opened or has no
  * api_tokens table; the caller decides what that means.
  */
 export function archiveDashboardTokenCreatedAt(archiveDbPath: string): number | null {
-  const archive = new Database(archiveDbPath, { fileMustExist: true })
+  // The file is READ INTO MEMORY and the database opened from that buffer: nothing is ever written to the path and no -wal /
+  // -shm / -journal sidecar can appear next to it, so even the live database file given by mistake stays byte for byte as it
+  // was. Neither of the file-based ways works: a plain `readonly: true` cannot open a WAL-mode file whose sidecars are gone
+  // (SQLITE_CANTOPEN), and better-sqlite3 does not take a `file:...?immutable=1` URI. The buffer is capped (an archive
+  // database is far smaller); a file over the cap or one that is missing throws, and the caller reads that as `unknown`.
+  // Only a REGULAR file is read: a character device (/dev/zero) or a FIFO reports size 0, so the cap below would never fire and the
+  // read would run to Node's own limit or block for ever on a pipe nobody writes to. Anything else throws, the caller says `unknown`.
+  const info = statSync(archiveDbPath)
+  if (!info.isFile()) throw new Error('archive path is not a regular file')
+  if (info.size > ARCHIVE_DB_MAX_BYTES) throw new Error(`archive database over ${ARCHIVE_DB_MAX_BYTES} bytes`)
+  const bytes = readFileSync(archiveDbPath)
+  // A WAL-mode file records the mode in its header (bytes 18 and 19 are 2): an in-memory database cannot run WAL and would
+  // refuse the buffer. The copy is read as a rollback-journal database (1, 1); the committed pages are in the main file
+  // after a checkpoint, and an archive taken from a quiescent store has none left in a -wal file. Only the COPY is patched.
+  if (bytes.length > 19 && bytes[18] === 2 && bytes[19] === 2) {
+    bytes[18] = 1
+    bytes[19] = 1
+  }
+  const archive = new Database(bytes)
   try {
     const row = archive.prepare("SELECT MAX(created_at) AS t FROM api_tokens WHERE name = 'dashboard' AND revoked_at IS NULL").get() as { t: number | null }
     return row.t

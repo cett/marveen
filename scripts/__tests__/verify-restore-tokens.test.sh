@@ -141,6 +141,49 @@ run_verify "$R" "$A"
 [ ! -e "$R/npm-stub-arg" ] && pass "no live database: the CLI is not run" || fail "the CLI ran without a live database"
 grep -q "skipping the shared token age check" <<<"$OUT" && pass "no live database: the age check is skipped" || fail "no live database: no skip line"
 
+# --- a PostgreSQL INSTALL: the frozen store/claudeclaw.db is not what "a live database exists" means ---
+# The live side of the comparison is the PostgreSQL row, which the agent-tokens CLI reads. The stub here prints the verdict
+# the CLI would (NPM_STUB_VERDICT) and records the path it was handed; what is tested is WHEN verify-restore.sh runs it.
+mkdir -p "$TMPDIR_BASE/bin-pg" "$TMPDIR_BASE/empty-secrets"
+cat > "$TMPDIR_BASE/bin-pg/npm" <<'STUB'
+#!/bin/bash
+db=""; for a in "$@"; do db="$a"; done
+echo "$db" > "$PWD/npm-stub-arg"
+echo "${NPM_STUB_VERDICT:-unknown}"
+STUB
+chmod +x "$TMPDIR_BASE/bin-pg/npm"
+run_verify_pg() {  # run_verify_pg <repo> <archive> <verdict>; sets OUT, RC. PG layer: the environment, nothing else
+  OUT="$(PATH="$TMPDIR_BASE/bin-pg:$PATH" NPM_STUB_VERDICT="$3" MARVEEN_PG_URL="postgres://app@127.0.0.1:1/x" SECRET_MOUNT_DIR="$TMPDIR_BASE/empty-secrets" bash "$1/scripts/verify-restore.sh" "$2" 2>&1)"; RC=$?
+}
+
+# the frozen file is GONE (a PostgreSQL install after the SQLite file was moved away): the CLI still runs, on the extracted archive copy
+R="$(new_repo pg-nofile 1000)"; rm -f "$R/store/claudeclaw.db"; A="$(make_archive pg-nofile 1000)"
+run_verify_pg "$R" "$A" predates
+[ "$RC" -eq 0 ] && pass "PG install, no frozen file, old SQLite archive predating a rotation: exit 0" || { fail "PG install predates: exit $RC"; echo "$OUT"; }
+case "$(cat "$R/npm-stub-arg" 2>/dev/null)" in
+  */repo/store/claudeclaw.db) pass "PG install, no frozen file: the CLI is run on the extracted archive copy" ;;
+  *) fail "PG install, no frozen file: the CLI was handed '$(cat "$R/npm-stub-arg" 2>/dev/null)'" ;;
+esac
+grep -q "\[WARN\] the archive predates the last rotation of the shared token" <<<"$OUT" && pass "PG install: the predating verdict is a WARN" || { fail "PG install: no WARN"; echo "$OUT"; }
+
+R="$(new_repo pg-current 1000)"; rm -f "$R/store/claudeclaw.db"; A="$(make_archive pg-current 1000)"
+run_verify_pg "$R" "$A" current
+grep -q "the archive's shared token is not older than the live one" <<<"$OUT" && pass "PG install: the current verdict is a pass line" || fail "PG install: no pass line for current"
+
+# the frozen file is still there (it is a frozen file, not the live database): same outcome
+R="$(new_repo pg-withfile 1000)"; A="$(make_archive pg-withfile 1000)"
+run_verify_pg "$R" "$A" predates
+grep -q "\[WARN\] the archive predates" <<<"$OUT" && [ -e "$R/npm-stub-arg" ] && pass "PG install with the frozen file present: the CLI is run too" || fail "PG install with the frozen file: CLI not run"
+
+# an archive with NO database (a PostgreSQL archive) has no extracted copy: the CLI is not run, the step says SKIP
+R="$(new_repo pg-archive 1000)"; rm -f "$R/store/claudeclaw.db"
+STAGE="$TMPDIR_BASE/stage-pgarchive"; mkdir -p "$STAGE/repo/store"
+printf 'manifest\ndatabase: not included (PostgreSQL install)\n' > "$STAGE/MANIFEST.txt"
+tar -czf "$TMPDIR_BASE/pgarchive.tar.gz" -C "$STAGE" MANIFEST.txt repo
+run_verify_pg "$R" "$TMPDIR_BASE/pgarchive.tar.gz" predates
+[ ! -e "$R/npm-stub-arg" ] && pass "PG archive (no database inside): the CLI is not run" || fail "the CLI ran for an archive with no database"
+grep -q "skipping the shared token age check" <<<"$OUT" && pass "PG archive: the age check is skipped" || fail "PG archive: no skip line"
+
 echo ""
 echo "verify-restore tokens: ${PASS} passed, ${FAIL} failed"
 [ "$FAIL" -eq 0 ]

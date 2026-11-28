@@ -6,8 +6,10 @@ WHY A HOOK: the dashboard routes that create users, tokens, device keys and brow
 enrolment codes are session-only (403 `human_session_required` for a bearer caller), but
 the machine's own break-glass paths do the same work with NO HTTP and NO auth gate:
   (1) the dashboard-user CLI (`npm run dashboard-user`, tsx/node on scripts/dashboard-user.*,
-      scripts/security-reset*), which talks to SQLite directly, and
-  (2) a direct write to the auth tables of the live store DB (sqlite3 / python / node).
+      scripts/security-reset*), which talks to SQLite directly,
+  (2) the per-agent token CLI (`npm run agent-tokens`, scripts/agent-tokens.*), which mints, rotates and revokes
+      the bearer tokens of the live store (SQLite or PostgreSQL) with no HTTP and no auth gate, and
+  (3) a direct write to the auth tables of the live store DB (sqlite3 / python / node).
 An agent that can run either can give itself a human session, and then a human-only
 approval (email_send, ...) is no longer a human decision. A hook runs regardless of the
 permission mode (see destructive-gate.py for why a settings.json deny list is not enough).
@@ -21,6 +23,12 @@ WHAT IS BLOCKED (exit 2):
      $(...) and backticks, `ssh host ...`, tmux send-keys / run-shell, osascript,
      shell variables assigned in the same command line, and a shell script file that
      contains such a call (bash x.sh, source x.sh, ./x.sh).
+     The token CLI follows the same shapes by a VERB rule: the first argument must be `check` or
+     `archive-shared-age` (none of them writes a token); `issue` (also with --rotate / --dry-run),
+     `issue-operator`, `rotate-shared`, `revoke`, any other verb, a flag in the verb's place and a missing verb are
+     denied (default-deny). The config runner form `tsx scripts/with-config.ts agent-tokens <verb>` is followed
+     (the name is the word after the runner; a name built at run time is denied). Interpreter code that names the CLI
+     module (scripts/agent-tokens, src/agent-tokens) or one of its token writers (issueAgentToken, ...) is denied.
   2. `--password-stdin` on any command (except docker/podman/buildah/skopeo/helm/crane
      login), also when the command is hidden behind a wrapper.
   3. A write (INSERT/UPDATE/DELETE/REPLACE/DROP/ALTER/RENAME TO/.import/.restore) on an
@@ -38,7 +46,13 @@ WHAT IS BLOCKED (exit 2):
      blocked too, and so is interpreter code that spawns the CLI.
   4. Base64/xxd/openssl-decoded text handed to a shell or eval (the decoded text cannot be
      inspected, so it is not let through).
-READS ARE ALLOWED: SELECT, `.dump`, `.schema`, `.tables`, `npm run dashboard-user -- list`.
+READS ARE ALLOWED: SELECT, `.dump`, `.schema`, `.tables`, `npm run dashboard-user -- list`,
+`npm run agent-tokens -- check|archive-shared-age` (`list` is not: it prints every tenant's token ids and names).
+The throw-away-store exemption: a MARVEEN_STORE_DIR that points away from the live store exempts the login CLI on
+SQLite, and the token CLI for `issue-operator`, `rotate-shared` and `revoke` (they write the database and files under
+the store dir). It does NOT exempt `issue`: that verb writes each agent's token file into the agent's own directory,
+outside the store dir. A PostgreSQL URL in any layer (command, environment, .env, secret mount, mode marker) voids the
+exemption for both CLIs, because on PostgreSQL the CLI reads its database from the install's URL, not from the store dir.
 
 BOUNDED AND FAIL-CLOSED (same rules as outgoing-copy-gate.py, #650): one linear lexer
 pass, hard limits (command size, heredoc openers, opener line length, nesting depth, a
@@ -48,6 +62,25 @@ hook still running at its timeout is NOT a deny. A wall-clock alarm (8 s, under 
 an unreadable event: exit 2. Exit 0 only after a complete inspection found nothing.
 
 HONEST LIMITS (good-faith protection against the same OS user, like the docs say):
+  - RESIDUAL RISK, the denylist class: a script the agent CONSTRUCTS first is not seen. A copy of the CLI script made in
+    the same command by anything but `ln` / `link` / `cp` / `mv` / `install` / `rsync` / `ditto` (those ARE seen: the new name
+    does not exist yet when the gate looks, so it is remembered: `cat x > y`, `tee`, `dd of=`, a heredoc or a docstring written
+    out are NOT), a HARD link that already exists (the same file under a
+    new name: the stem of its path is the new name; a hard link made by an `ln` in the same text IS seen), a one-off .ts
+    written with the Write tool, a module
+    path or a function name built from strings, `npm --script-shell`, NODE_OPTIONS (`--import X` / `--require X` in it); likewise a COMMAND word that is itself
+    built at run time (`$V run agent-tokens issue`, `{npm,yarn} run agent-tokens issue`: the package manager is not named). The
+    gate is not a sandbox. What it does see is every form a normal operator or tool would type: package-manager wrappers
+    (corepack, also with a pinned version, npx, pnpm, yarn, yarnpkg, bun), their workspace selectors (`pnpm --filter x`,
+    `yarn workspace x`; a word after a flag is read both as the flag's value and as the command, and so it is on a node / tsx / bun
+    line: `tsx --any-flag value scripts/x.ts`), their run shorthands (`pnpm tsx scripts/x.ts`,
+    also a package manager or a path to a binary handed to them, `npm explore pkg -- cmd`, `npm exec --call=cmd`), runner binaries (also
+    by the path of their binary or package: `node node_modules/.bin/tsx`), a preload that names the CLI (`tsx --import
+    scripts/x.ts`), the CLI source fed to an interpreter that reads its script from stdin (`cat scripts/x.ts | tsx - issue`, `tsx - <
+    scripts/x.ts`, `tsx /dev/stdin`, `tsx <(cat scripts/x.ts)`), a command line started by detached `screen -dm` / `tmux new-session
+    -d`, what a process substitution prints when it is sourced or run (`source <(echo "npm run x")`), a link that already exists or that an
+    `ln` of the same command makes (the stem of its real path counts, for the CLI scripts and for the config runner, by a
+    bare name too), the config runner form, shells and shell script files.
   - A script FILE of another language (python/node) that an agent wrote and then runs is
     not read: test fixtures in the repo legitimately contain INSERT INTO api_tokens ...
     and would be blocked. Shell script files ARE read (nothing in the repo calls the CLI).
@@ -91,6 +124,24 @@ MAX_GENERIC_MARKERS = 8      # marker hits followed per argument text in the gen
 
 CLI_NAMES = ('dashboard-user',)
 CLI_PREFIXES = ('security-reset',)
+# A second CLI kind: the per-agent token admin (`npm run agent-tokens`). It mints and revokes bearers of the live
+# store on both backends, so it is gated like the login CLI, but by a VERB rule (a read verb passes, anything else
+# is denied) instead of the login CLI's single `list` form.
+TOKEN_CLI_NAME = 'agent-tokens'
+# The verbs an agent may run: none of them writes an auth row (`check` reads, `archive-shared-age` compares
+# an extracted archive with the live row). Every other verb, an unknown verb and a missing verb is denied (default-deny).
+TOKEN_CLI_READ_VERBS = ('check', 'archive-shared-age')
+# The write verbs a throw-away MARVEEN_STORE_DIR exempts: they change the database of the install and files UNDER the
+# store dir (store/.operator-token, store/.dashboard-token), so on a throw-away store they touch nothing live. `issue` is
+# NOT here: it writes the token file of each agent into the agent's own directory (agents/<name>/.agent-token, the
+# project root for the main agent), which is outside the store dir, so a throw-away store would still replace the file
+# of a live agent with a token the live database does not know (that agent would be locked out).
+TOKEN_CLI_STORE_ONLY_VERBS = ('issue-operator', 'rotate-shared', 'revoke')
+# the tag `_is_cli_name` returns: which rule `_cli_decision` applies
+KIND_LOGIN = 'login'
+KIND_TOKENS = 'tokens'
+# `tsx scripts/with-config.ts <name> ...` runs the named script: the CLI name is the positional after the runner script
+CLI_RUNNER_STEM = 'with-config'
 AUTH_TABLES = (
     'dashboard_users', 'auth_sessions', 'api_tokens', 'device_keys',
     'api_tokens_old', 'api_tokens_seq', 'device_keys_old', 'device_keys_seq',
@@ -779,6 +830,7 @@ class State(object):
         self.link_made = False      # an `ln` in the inspected text: a link may not exist yet when we look
         self.link_global = False    # an `ln` whose link name the gate cannot tell: any path may be that link
         self.link_dests = []        # the link names (or link dirs) of the `ln` commands in the text
+        self.link_srcs = {}         # absolute link name -> script stem of what an `ln` in the text points it at (CLI / runner only)
         self.funcs = set()          # names of shell functions defined in the inspected texts
         self.store_dirs = None      # cache of _store_dirs
         self.live_inodes = None     # cache of _live_inodes
@@ -810,6 +862,12 @@ _WRAPPERS = {
     'script': ((), 0), 'watch': (('-n', '-d', '-w', '--interval'), 0),
 }
 _CODE_WRAPPER_FLAGS = ('-c', '--command')   # su -c / script -c / runuser -c  (a command STRING)
+
+
+# programs whose command line is checked as a command of its own when a package manager is told to run them
+_COMMAND_RUNNERS = frozenset(_NODEISH + _SCRIPT_LANGS + _SHELLS + tuple(_WRAPPERS) + (
+    'npm', 'pnpm', 'yarn', 'yarnpkg', 'npx', 'pnpx', 'bunx', 'corepack', 'env', 'eval', 'xargs', 'parallel',
+    'tmux', 'screen', 'ssh', 'mosh'))
 
 
 def _base(w):
@@ -881,7 +939,12 @@ def _dequote_flag_args(args):
 
 
 def _is_cli_name(base_no_ext):
-    return base_no_ext in CLI_NAMES or any(base_no_ext.startswith(p) for p in CLI_PREFIXES)
+    """The CLI kind a script stem names (KIND_LOGIN / KIND_TOKENS), or None."""
+    if base_no_ext in CLI_NAMES or any(base_no_ext.startswith(p) for p in CLI_PREFIXES):
+        return KIND_LOGIN
+    if base_no_ext == TOKEN_CLI_NAME:
+        return KIND_TOKENS
+    return None
 
 
 _EXTS = ('.ts', '.js', '.mjs', '.cjs', '.mts', '.cts', '.tsx', '.jsx', '.sh', '.bash', '.py')
@@ -896,37 +959,102 @@ def _script_stem(text):
     return low
 
 
-def _word_hits_cli(word, cwd):
-    """True when a script-position word names the CLI -- also through shell globs."""
+def _cwds(state):
+    """The directories a relative script word may be read from: the working directory and the absolute `cd` targets."""
+    return [state.cwd] + list(state.cd_targets)
+
+
+def _link_stem(alt, state):
+    """The script stem of what a script-position word points to when the word is a link, else None. ONE helper for every
+    rule that reads a script name (the CLIs AND the config runner). The link EXISTS when the command is looked at (made in an
+    earlier command: `ln -s scripts/agent-tokens.ts /tmp/x.ts` or `ln -s scripts/with-config.ts /tmp/w.ts`, then
+    `tsx /tmp/x.ts issue`, `tsx /tmp/w.ts agent-tokens issue`: the same file as the real path), or an `ln` in the SAME text
+    makes it (state.link_srcs: it does not exist yet, but it will have by the time the command runs). A bare name counts too
+    (`tsx w.ts agent-tokens issue` with the link in the working directory: an interpreter reads it relative to there), from the
+    working directory and from every absolute `cd` target of the text."""
+    if alt and not any(c in alt for c in '*?['):
+        for c in _cwds(state):
+            try:
+                full = alt if os.path.isabs(alt) else os.path.join(c, alt)
+                if os.path.islink(full):
+                    return _script_stem(os.path.realpath(full))
+                pending = state.link_srcs.get(os.path.normpath(full))
+                if pending is not None:
+                    return pending
+            except (OSError, ValueError):
+                pass
+    return None
+
+
+def _word_hits_cli(word, state):
+    """The CLI kinds a script-position word names, also through shell globs and brace alternatives: a tuple, empty
+    (falsy) when it names none. One word can name both kinds (`{dashboard-user,agent-tokens}`): every kind's rule applies."""
+    kinds = []
     for alt in word.alts:
-        if _is_cli_name(_script_stem(alt)):
-            return True
+        k = _is_cli_name(_script_stem(alt))
+        if k and k not in kinds:
+            kinds.append(k)
+        # a link or a copy-by-link that EXISTS when the command is looked at: the stem of what it points to counts too
+        linked = _link_stem(alt, state)
+        if linked is not None:
+            k = _is_cli_name(linked)
+            if k and k not in kinds:
+                kinds.append(k)
         if any(c in alt for c in '*?['):
             try:
-                hits = glob.glob(alt if os.path.isabs(alt) else os.path.join(cwd, alt))
+                hits = glob.glob(alt if os.path.isabs(alt) else os.path.join(state.cwd, alt))
             except Exception:
                 hits = []
             for h in hits[:MAX_GLOB_HITS]:
-                if _is_cli_name(_script_stem(h)):
-                    return True
-    return False
+                k = _is_cli_name(_script_stem(h))
+                if k and k not in kinds:
+                    kinds.append(k)
+    if kinds and len(word.alts) > 1:
+        # `pnpm run {agent-tokens,issue} check`: the shell expands the word into several arguments, so the verb is not the word the
+        # gate reads after it (`check`) but a later alternative (`issue`). The gate cannot tell: denied.
+        raise Deny('a CLI neve egy tobb alternativas (kapcsos zarojeles) szoban: a shell tobb argumentumga bontja, a kapu nem tudja '
+                   'eldonteni, melyik az alparancs, ezert nem engedi at.')
+    return tuple(kinds)
+
+
+def _word_is_runner_script(word, state):
+    """True when a script-position word is scripts/with-config.ts (any extension, any path), or an existing link to it:
+    the CLI name follows it."""
+    return any(_script_stem(alt) == CLI_RUNNER_STEM or _link_stem(alt, state) == CLI_RUNNER_STEM for alt in word.alts)
 
 
 def _after_cli(args):
-    """The arguments after the CLI name; `list` alone is the one read-only form."""
+    """The arguments after the CLI name (the `--` separator dropped); the kind's rule reads the first one."""
     rest = [a.text for a in args if a.text != '--']
     return rest
 
 
-def _cli_decision(rest, state):
-    if len(rest) == 1 and rest[0] == 'list':
-        return
-    if state.isolated_cli:      # MARVEEN_STORE_DIR points at a throw-away store: not the live logins
-        return
+def _cli_decision(rest, state, kinds=(KIND_LOGIN,)):
+    """Apply the rule of every kind the CLI word names. Login CLI: `list` alone is the one read-only form. Token CLI:
+    the first argument must be one of TOKEN_CLI_READ_VERBS (a flag first, an unknown verb or no verb is denied). A
+    throw-away store (MARVEEN_STORE_DIR away from the live one, no PostgreSQL URL anywhere) exempts the login CLI
+    entirely, but the token CLI only for the verbs that write under the store dir (TOKEN_CLI_STORE_ONLY_VERBS), never
+    for `issue`, which writes into the agents' own directories."""
     sub = rest[0] if rest else '(nincs alparancs)'
-    raise Deny('dashboard-user / security-reset hivas (alparancs: %s). Ez a gep break-glass belepoje: '
-               'kozvetlenul SQLite-ot ir, HTTP es hitelesites nelkul, ezert agensnek nem engedett. '
-               'Egyedul a csak olvaso `list` engedett.' % sub[:40])
+    for kind in kinds:
+        if kind == KIND_TOKENS:
+            if rest and rest[0] in TOKEN_CLI_READ_VERBS:
+                continue
+            if state.isolated_cli and rest and rest[0] in TOKEN_CLI_STORE_ONLY_VERBS:
+                continue      # MARVEEN_STORE_DIR points at a throw-away store: its database and its store files, not the live ones
+            raise Deny('agent-tokens hivas (alparancs: %s). A parancs a futo telepites bearer-tokenjeit hozza letre, '
+                       'forgatja es vonja vissza kozvetlenul az adatbazisban, HTTP es hitelesites nelkul, ezert '
+                       'agensnek nem engedett. Csak a `check` es `archive-shared-age` engedett (a `list` nem: minden tenant token-azonositojat es nevet kiirja), minden mas '
+                       'alparancs (es az alparancs hianya) tiltott; az issue / issue-operator / rotate-shared / '
+                       'revoke a tulajdonos dolga a gepen. Az `issue` eldobhato store-on is tiltott: az agensek '
+                       'sajat konyvtarukba (nem a store-ba) irjak a token-fajlt.' % sub[:40])
+        if len(rest) == 1 and rest[0] == 'list':
+            continue
+        if state.isolated_cli:      # MARVEEN_STORE_DIR points at a throw-away store: not the live logins
+            continue
+        raise Deny('dashboard-user / security-reset hivas (alparancs: %s). Ez a gep break-glass belepoje: '
+                   'kozvetlenul SQLite-ot ir, HTTP es hitelesites nelkul, ezert agensnek nem engedett. '
+                   'Egyedul a csak olvaso `list` engedett.' % sub[:40])
 
 
 # ---- SQL / code ---------------------------------------------------------------------
@@ -964,10 +1092,17 @@ APP_MUTATORS = re.compile(
     r'|securityReset|insertDeviceKey|deleteDeviceKeyByHash|deleteDeviceKeyById|deleteAllDeviceKeys'
     r'|setDeviceKeyTenant|enrollDashboardApiToken|insertApiToken|revokeApiTokensForAgent'
     r'|revokeApiToken|rotateApiToken|revokeAllForUser|revokeAllSessions|issueEnrollCode'
-    r'|consumeEnrollCode|runDashboardUserCli)\b|password-hash(?:\.js)?[\'"]')
+    r'|consumeEnrollCode|runDashboardUserCli'
+    # the per-agent token admin: its module exports and the db writers it calls (the same functions the CLI verbs run)
+    r'|issueAgentToken|issueOperatorToken|rotateSharedToken|replaceActiveApiToken|rotateSharedDashboardToken'
+    r'|runAgentTokensCli)\b|password-hash(?:\.js)?[\'"]')
 # the CLI module itself: its exported entry runs every write verb, so naming its path in interpreter code is the same call.
 # Any case, repeated separators and `./` segments count (a file system may fold case, and `//` or `/./` name the same file).
 CLI_MODULE_PATH = re.compile(r'dashboard-user(?:[/\\]+(?:\.[/\\]+)*)cli(?:\.[jt]s)?(?![\w-])', re.I)
+# The token CLI: its entry script (scripts/agent-tokens), its body (src/agent-tokens/cli) and the module of the token
+# functions (src/agent-tokens). Named after a separator or a quote, so `agent-tokens.test.ts` and `x-agent-tokens` are not hits.
+TOKEN_MODULE_PATH = re.compile(
+    r"(?<=[/\\'\"`])agent-tokens(?:(?:[/\\]+(?:\.[/\\]+)*)cli)?(?:\.[cm]?[jt]s)?(?![\w.-])", re.I)
 EXEC_API = re.compile(
     r'subprocess|os\.(?:system|popen|exec\w*|spawn\w*)|child_process|execSync|spawnSync|execFileSync'
     r'|\bPopen\b|\bexecFile|Deno\.(?:run|Command)|Bun\.(?:spawn|\$)|\bsystem\s*\(|\bexec\s*\('
@@ -977,6 +1112,8 @@ EXEC_API = re.compile(
 CLI_MARKER = re.compile(
     r'(?:npm|pnpm|yarn|npx|tsx|ts-node|node|bun|bunx|deno)\b[^\n]{0,80}?dashboard[-_]user(?![\w-])'
     r'|scripts/dashboard-user(?![\w-])|[\'"]dashboard-user(?:\.[jt]s)?[\'"]'
+    r'|(?:npm|pnpm|yarn|npx|tsx|ts-node|node|bun|bunx|deno)\b[^\n]{0,80}?agent[-_]tokens(?![\w-])'
+    r'|scripts/agent-tokens(?![\w-])|[\'"]agent-tokens(?:\.[jt]s)?[\'"]'
     r'|security[-_:]reset|sessions:clear|--password-stdin')
 
 
@@ -1088,12 +1225,15 @@ def inspect_code(text, state, python=False):
                    '(olvasni szabad).')
     if not python and CLI_MODULE_PATH.search(text):
         raise Deny('interpreter-kod, ami a dashboard-user CLI modulja (src/dashboard-user/cli) betoltesevel hiv meg.')
+    if not python and TOKEN_MODULE_PATH.search(text):
+        raise Deny('interpreter-kod, ami az agent-tokens CLI vagy token-modulja (scripts/agent-tokens, '
+                   'src/agent-tokens) betoltesevel hiv meg.')
     m = None if python else APP_MUTATORS.search(text)
     if m:
         raise Deny('az alkalmazas hitelesitest modosito fuggvenye interpreter-kodbol (%s).'
                    % m.group()[:40])
     if CLI_MARKER.search(text) and EXEC_API.search(text):
-        raise Deny('interpreter-kod, ami a dashboard-user / security-reset parancsot inditja.')
+        raise Deny('interpreter-kod, ami a dashboard-user / security-reset / agent-tokens parancsot inditja.')
     # the code may also hold a plain shell line (osascript, perl system(...)): look at it as a command
     for mm in re.finditer(r'(?:do shell script|do script|keystroke)\s+"((?:\\.|[^"\\])*)"', text):
         check_command(mm.group(1).replace('\\"', '"').replace('\\\\', '\\'), state, 1)
@@ -1294,14 +1434,11 @@ def _read_text_file(path, state, max_bytes=MAX_SCRIPT_BYTES):
         return None
 
 
-def _producer_text(seg, state):
-    """What the previous pipeline stage literally prints, when we can tell (echo / printf /
-    cat FILE). A decoder in front of the consumer is refused outright."""
+def _seg_output_texts(prod, state):
+    """What ONE command (a pipeline stage, the body of a process substitution) literally prints, when we can tell (echo / printf /
+    cat FILE and its here-documents). A decoder is refused outright."""
     texts = []
-    prev = seg.prev
-    if prev is None:
-        return texts
-    name, _cw, args, _via = resolve_call(prev.words)
+    name, _cw, args, _via = resolve_call(prod.words)
     if name in ('echo', 'printf', 'print'):
         words = [a.text for a in args if not a.text.startswith('-') or len(a.text) > 2]
         # printf prints its arguments on separate lines (format string aside): one line each
@@ -1312,10 +1449,20 @@ def _producer_text(seg, state):
                 t = _read_text_file(a.text, state)
                 if t:
                     texts.append(t)
-        for body, _q in prev.heredocs:
+        for body, _q in prod.heredocs:
             texts.append(body)
     elif name in _DECODERS:
         raise Opaque()
+    return texts
+
+
+def _producer_text(seg, state):
+    """What the previous pipeline stage literally prints, when we can tell (echo / printf /
+    cat FILE). A decoder in front of the consumer is refused outright."""
+    prev = seg.prev
+    if prev is None:
+        return []
+    texts = _seg_output_texts(prev, state)
     # a decoder further up the same pipeline
     p = prev.prev
     hops = 0
@@ -1331,11 +1478,100 @@ def _producer_text(seg, state):
 def _stdin_texts(seg, state):
     texts = [b for b, _q in seg.heredocs] + list(seg.herestr)
     for f in seg.stdin_files:
+        if f == _PROCSUB:           # `bash < <(echo "...")`: what the process prints is the script
+            texts.extend(_procsub_texts(seg, state))
+            continue
         t = _read_text_file(f, state)
         if t:
             texts.append(t)
     texts.extend(_producer_text(seg, state))
     return texts
+
+
+# the lexer's word for a process substitution `<(...)` (its body is in seg.subs)
+_PROCSUB = '<(...)'
+# a script word that means "read the script from standard input": `-`, or a path to descriptor 0 (/dev/stdin, /dev/fd/0, /proc/self/fd/0,
+# /proc/<pid>/fd/0), also written with `//`, `/./`, `..` or leading zeros
+_STDIN_SCRIPT_WORDS = ('-',)
+_STDIN_PATH = re.compile(r'^/(?:dev/(?:stdin|fd/0+)|proc/(?:self|thread-self|[0-9]+)/fd/0+)$')
+
+
+def _is_stdin_word(text):
+    return text in _STDIN_SCRIPT_WORDS or bool(_STDIN_PATH.match(os.path.normpath(text)))
+
+
+def _procsub_bodies(seg):
+    """The bodies of the process substitutions of a segment (the lexer keeps them with the $(...) bodies; all are looked at)."""
+    if seg is not None and (any(w.text == _PROCSUB for w in seg.words) or _PROCSUB in seg.stdin_files):
+        return list(seg.subs)
+    return []
+
+
+def _procsub_texts(seg, state):
+    """What the process substitutions of a segment literally print (`source <(echo "npm run x")`: the printed text IS the script)."""
+    texts = []
+    for body in _procsub_bodies(seg):
+        _charge(state, len(body) + 1)
+        for s in lex(body, state):
+            if s.words:
+                texts.extend(_seg_output_texts(s, state))
+    return texts
+
+
+def _file_words_kinds(words, state):
+    """The CLI kinds a list of file words names (by name, link, glob)."""
+    kinds = []
+    for w in words:
+        for k in _word_hits_cli(w, state):
+            if k not in kinds:
+                kinds.append(k)
+    return kinds
+
+
+def _feeder_files(prod):
+    """The file words a pipeline stage that passes a file on (cat, head ...) reads, and the files it has on its own stdin."""
+    # Not a list of programs that pass a file on (`cat`, `head` ... , and `dd if=FILE`, `git show HEAD:FILE`, `xxd -r FILE` are others):
+    # EVERY word of the stage counts, also the value of a `key=value` word.
+    words = []
+    for x in prod.words:
+        if not x.text:
+            continue
+        words.append(x)
+        _h, eq, val = x.text.partition('=')
+        if eq and val:
+            words.append(Word(val, x.dyn, [a.partition('=')[2] or a for a in x.alts]))
+    return words + [Word(f) for f in prod.stdin_files if f != _PROCSUB]
+
+
+def _procsub_cli_kinds(seg, state):
+    """The CLI kinds named by the files a process substitution of the segment passes on (`tsx <(cat scripts/agent-tokens.ts)`)."""
+    kinds = []
+    for body in _procsub_bodies(seg):
+        _charge(state, len(body) + 1)
+        for s in lex(body, state):
+            for k in _file_words_kinds(_feeder_files(s), state):
+                if k not in kinds:
+                    kinds.append(k)
+    return tuple(kinds)
+
+
+def _stdin_cli_kinds(seg, state):
+    """The CLI kinds named by the files that feed the standard input of a segment: its own `< FILE`, the stages of the pipeline in
+    front of it (`cat scripts/agent-tokens.ts | tsx - issue`), a process substitution as stdin. An interpreter that reads its script
+    from stdin runs that file."""
+    kinds = []
+    cur, hops = seg, 0
+    while cur is not None and hops < 16:
+        words = _feeder_files(cur) if cur is not seg else [Word(f) for f in cur.stdin_files if f != _PROCSUB]
+        for k in _file_words_kinds(words, state):
+            if k not in kinds:
+                kinds.append(k)
+        cur, hops = cur.prev, hops + 1
+    if _PROCSUB in seg.stdin_files:
+        for k in _procsub_cli_kinds(seg, state):
+            if k not in kinds:
+                kinds.append(k)
+    return tuple(kinds)
 
 
 def check_shell_script(text, state, depth):
@@ -1370,9 +1606,14 @@ def _handle_shell(name, args, seg, state, depth):
         for alt in script.alts:
             check_command(alt, state, depth + 1)
         return
+    if i < len(args) and args[i].text == _PROCSUB:      # bash <(echo "npm run x"): the printed text is the script
+        for t in _procsub_texts(seg, state):
+            check_shell_script(t, state, depth)
+        return
     if i < len(args):                       # bash FILE
-        if _word_hits_cli(args[i], state.cwd):          # bash scripts/security-reset.sh
-            _cli_decision(_after_cli(args[i + 1:]), state)
+        kinds = _word_hits_cli(args[i], state)      # bash scripts/security-reset.sh
+        if kinds:
+            _cli_decision(_after_cli(args[i + 1:]), state, kinds)
         txt = _read_text_file(args[i].text, state)
         if txt is not None:
             check_shell_script(txt, state, depth)
@@ -1427,26 +1668,146 @@ _NODE_VALUE_FLAGS = ('-r', '--require', '--import', '--loader', '--experimental-
                      '--allow-read', '--allow-write', '--config', '-c')
 
 
-def _runner_script_hit(args, state):
-    """node/tsx/ts-node/bun/deno/...: the script word (first positionals) names the CLI."""
-    pos = _positional(args, _NODE_VALUE_FLAGS)
-    # the script is the first positional; a runner sub-command (bun run X, deno run X, tsx watch X,
-    # vite-node X) puts it second. A later word that merely carries the name is an argument.
-    spots = [0]
-    if len(pos) > 1 and pos[0].text in ('run', 'watch', 'exec', 'task', 'x', 'serve'):
-        spots.append(1)
-    for k in spots:
-        if k < len(pos) and _word_hits_cli(pos[k], state.cwd):
-            return pos[k + 1:]
+# a preload flag ALWAYS takes a value (the next word, or `--flag=value`): the module it names is loaded before the main script
+_PRELOAD_FLAGS = ('-r', '--require', '--import', '--loader', '--experimental-loader', '--preload')
+# runner sub-commands that put the script one word later (bun run X, deno run X, tsx watch X, vite-node X)
+_RUN_SUBS = ('run', 'watch', 'exec', 'task', 'x', 'serve')
+# the runners that are started by a path to their binary or to their package (`node node_modules/.bin/tsx`, `node node_modules/tsx/dist/cli.mjs`)
+_RUNNER_PKGS = ('tsx', 'ts-node', 'ts-node-esm', 'esno', 'swc-node', 'babel-node', 'jiti', 'vite-node')
+
+
+def _split_preloads(args):
+    """(the preload values, the other words): `--import X`, `--require=X`, `-r X`, `--loader X` ... A preload names a module that
+    node / tsx / bun runs BEFORE the main script, so a preload that names the CLI runs the CLI (`tsx --import scripts/agent-tokens.ts
+    /dev/null issue`): the value is read as a script name, and it is not a candidate for the main script."""
+    values, rest = [], []
+    i = 0
+    while i < len(args):
+        a = args[i]
+        head, eq, _val = a.text.partition('=')
+        if a.text in _PRELOAD_FLAGS and i + 1 < len(args):
+            values.append(args[i + 1])
+            i += 2
+            continue
+        if eq and head in _PRELOAD_FLAGS:
+            values.append(Word(a.text.partition('=')[2], a.dyn, [x.partition('=')[2] for x in a.alts]))
+            i += 1
+            continue
+        rest.append(a)
+        i += 1
+    return values, rest
+
+
+def _script_words(args, state):
+    """Every (word, the arguments after it) that can be the main script of a node/tsx/bun/deno line, whatever its flags take. The
+    table _NODE_VALUE_FLAGS is only a guess (nobody lists every flag of every version: `tsx --disable-warning X script.ts`), so a
+    non-flag word after a flag is read both as that flag's value and as the script, as the package-manager line is (see
+    _command_candidates). After a runner sub-command (`tsx watch`, `bun run`) the script is looked for again, one word later."""
+    out = []
+
+    def walk(a, level):
+        for c in _command_candidates(a):
+            _charge(state, len(a) + 1)      # every candidate costs a pass over the line: a line of thousands of flag pairs ends at the work budget
+            after = _args_after(a, c)
+            out.append((c, after))
+            if level < 2 and c.text in _RUN_SUBS:
+                walk(after, level + 1)
+    walk(args, 0)
+    return out
+
+
+def _runner_binary(word):
+    """The runner a word names by a path to its binary or its package (`node_modules/.bin/tsx`, `node_modules/tsx/dist/cli.mjs`,
+    `../.bin/tsx`), or None. The last path word counts when it is an interpreter / runner name, and any path word counts when it is
+    the name of a runner package (the entry file of the package is called cli.mjs, bin.js ...)."""
+    for alt in word.alts:
+        parts = [p for p in re.split(r'[\\/]+', alt.lower()) if p]
+        if not parts:
+            continue
+        last = _unversioned(Word(_script_stem(parts[-1]))).text
+        if last in _NODEISH:
+            return last
+        for p in parts:
+            p = _unversioned(Word(p)).text
+            if p in _RUNNER_PKGS:
+                return p
     return None
+
+
+def _runner_target_hits(target, after, state):
+    """The script the config runner is given as its first argument: [(kinds, the positionals after it)] when it names a CLI."""
+    if target.dyn:
+        raise Deny('with-config.ts futasidoben kepzett script-nevvel: a kapu nem tudja eldonteni, hogy '
+                   'az agent-tokens / dashboard-user-e, ezert nem engedi at.')
+    kinds = _word_hits_cli(target, state)
+    if not kinds:
+        return []
+    return [(kinds, _positional(_args_after(after, target), _NODE_VALUE_FLAGS))]
+
+
+def _runner_hits(preloads, scripts, state):
+    """[(kinds, the positionals after the CLI name)] for every reading of a node/tsx/bun/deno line that runs one of the CLIs: the
+    script word names it, or it names the config runner and the word after it names it (`tsx scripts/with-config.ts agent-tokens
+    ...`: with-config is the runner of the config-loading scripts and its first argument is the script it runs), or a preload
+    names it (a preload runs before the main script, which is then any script: the verb is read after it)."""
+    hits = []
+    for w, after in scripts:
+        kinds = _word_hits_cli(w, state)
+        if kinds:
+            hits.append((kinds, _positional(after, _NODE_VALUE_FLAGS)))
+        elif _word_is_runner_script(w, state):
+            for t in _command_candidates(after)[:1]:
+                hits.extend(_runner_target_hits(t, after, state))
+    for p in preloads:
+        kinds = _word_hits_cli(p, state)
+        if kinds:
+            # the main script may be any of the candidates: the verb is read after each, and with no main script there is no verb
+            for _w, after in (scripts or [(None, [])]):
+                hits.append((kinds, _positional(after, _NODE_VALUE_FLAGS)))
+        elif _word_is_runner_script(p, state):
+            # with-config as a preload reads its script name from the first argument of the main script
+            for _w, after in scripts:
+                tail = _positional(after, _NODE_VALUE_FLAGS)
+                if tail:
+                    hits.extend(_runner_target_hits(tail[0], after, state))
+    return hits
+
+
+def _redispatch(words, seg, state, depth):
+    """Run a command line the gate found INSIDE another one (a runner started by the path of its binary) as a command of its own.
+    Every such step counts as an inspection and as a nesting level, so a line that only nests runners ends at the limits."""
+    state.budget.calls += 1
+    if state.budget.calls > MAX_CALLS:
+        raise InspectionLimit('more than %d nested inspections' % MAX_CALLS)
+    if depth + 1 > MAX_NEST:
+        raise InspectionLimit('nesting deeper than %d levels' % MAX_NEST)
+    check_words(words, seg, state, depth + 1)
 
 
 def _handle_node(name, args, seg, state, depth):
     if any(a.text in ('--check', '-c') for a in args) and name in ('node', 'nodejs'):
         return
-    rest = _runner_script_hit(args, state)
-    if rest is not None:
-        _cli_decision(_after_cli(rest), state)
+    preloads, rest_args = _split_preloads(args)
+    scripts = _script_words(rest_args, state)
+    for kinds, tail in _runner_hits(preloads, scripts, state):
+        _cli_decision(_after_cli(tail), state, kinds)
+    # the script on standard input (`cat scripts/agent-tokens.ts | tsx - issue`, `tsx - issue < scripts/agent-tokens.ts`, `tsx
+    # /dev/stdin`, no script word at all) or as a process substitution (`tsx <(cat scripts/agent-tokens.ts) issue`): the files that
+    # feed it are the script, so their names are the CLI's
+    stdin_kinds = _stdin_cli_kinds(seg, state)
+    proc_kinds = _procsub_cli_kinds(seg, state)
+    if stdin_kinds and not scripts:
+        _cli_decision([], state, stdin_kinds)
+    for w, after in scripts:
+        if stdin_kinds and _is_stdin_word(w.text):
+            _cli_decision(_after_cli(_positional(after, _NODE_VALUE_FLAGS)), state, stdin_kinds)
+        elif proc_kinds and w.text == _PROCSUB:
+            _cli_decision(_after_cli(_positional(after, _NODE_VALUE_FLAGS)), state, proc_kinds)
+    for w, after in scripts:
+        # `node node_modules/.bin/tsx scripts/agent-tokens.ts issue`: the word is a runner, the words after it are its command line
+        runner = _runner_binary(w)
+        if runner is not None:
+            _redispatch([Word(runner)] + after, seg, state, depth)
     if name == 'deno':          # deno eval "code": the code is the positional after the sub-command
         pos = _positional(args, ('--ext', '-c', '--config', '--import-map', '--tsconfig', '--location',
                                  '--seed', '--v8-flags', '--cert', '--env-file'))
@@ -1455,18 +1816,108 @@ def _handle_node(name, args, seg, state, depth):
     _handle_interp(name, args, seg, state, depth, 'node')
 
 
+# Whether a flag takes a value differs by manager and by version: `-w` is a value for npm and a boolean for pnpm; `--filter` /
+# `-F` / `--filter-prod` / `--dir` are values for pnpm (`pnpm --filter foo tsx ...`: a package selector, not the command) and
+# booleans for npm (`npm run --filter agent-tokens issue` runs the script agent-tokens). So no table is trusted alone:
+# _handle_npm_like reads every line once with this table and once more for each word that can be the command whatever the flags
+# take (_command_candidates), and denies when any reading finds the CLI.
 _NPM_VALUE_FLAGS = ('--prefix', '-C', '-w', '--workspace', '--cwd', '--registry', '--userconfig',
-                    '--loglevel', '--cache', '--script-shell', '-p', '--package', '-c', '--call')
+                    '--loglevel', '--cache', '--script-shell', '-p', '--package', '-c', '--call',
+                    '--filter', '-F', '--filter-prod', '--dir')
+# yarn workspace(s) / pnpm recursive: the command is looked for at every positional up to this many; past it the gate denies
+_WORKSPACE_SCAN_MAX = 12
+# `npm explore` and the prefixes of it npm accepts as the one command (`explo`: `expl` is also `explain`)
+_EXPLORE_NAMES = ('explore', 'explor', 'explo')
+
+
+def _unversioned(word):
+    """The word with an `@version` / `@tag` suffix cut off (`npm@10.2.0` -> `npm`): corepack runs `corepack pnpm@9 ...` as
+    pnpm. A leading `@` (a scoped package) stays; the cut word keeps its other fields."""
+    def cut(t):
+        i = t.find('@', 1)
+        return t[:i] if i > 0 else t
+    return Word(cut(word.text), word.dyn, [cut(a) for a in word.alts], word.quoted, word.assign)
+
+
+def _word_runs_command(word):
+    """True when a word handed to a package manager (`pnpm X ...`, `yarn run X ...`) is itself a program that runs a command:
+    a runner / interpreter (also by a path like node_modules/.bin/tsx, and with a pinned `@version`), a shell, a wrapper, or
+    another package manager (`pnpm npm run agent-tokens -- issue`). pnpm and yarn run any binary when the word is no command of
+    theirs and no script, so the words after it are that program's command line and are checked as one."""
+    n = _base(_unversioned(word))
+    return n in _COMMAND_RUNNERS or bool(_PY.match(n))
 
 
 def _handle_npm_like(name, args, seg, state, depth):
-    """npm / pnpm / yarn / bun run SCRIPT, npx / bunx / pnpm dlx|exec / npm exec|x PACKAGE ..."""
-    pos = _positional(args, _NPM_VALUE_FLAGS)
+    """npm / pnpm / yarn / bun run SCRIPT, npx / bunx / pnpm dlx|exec / npm exec|x PACKAGE ...
+    The line is read once with the value-flag table and once more for every word that can be the command (see the table)."""
+    if name == 'yarnpkg':       # the other name of yarn
+        name = 'yarn'
     # npx -c "command string" / npm exec -c "..."
     for k, a in enumerate(args):
-        if a.text in ('-c', '--call') and k + 1 < len(args):
-            for alt in args[k + 1].alts:
-                check_command(alt, state, depth + 1)
+        head, eq, _val = a.text.partition('=')
+        # npm reads `--flag=value` like `--flag value` for every flag, and takes the shortest unique prefix of a long flag (`--cal`)
+        if head in ('-c', '--call', '--cal'):
+            if eq:                                  # `npm exec --call='tsx scripts/x.ts issue'`, `npx -c='...'`
+                for alt in a.alts:
+                    check_command(alt.partition('=')[2], state, depth + 1)
+            elif k + 1 < len(args):
+                for alt in args[k + 1].alts:
+                    check_command(alt, state, depth + 1)
+    seen = set()
+    for pos in [_positional(args, _NPM_VALUE_FLAGS)] + list(_pos_readings(args, state, 3)):
+        key = tuple(id(w) for w in pos)
+        if key in seen:
+            continue
+        seen.add(key)
+        _npm_like_once(name, args, pos, seg, state, depth)
+
+
+def _pos_readings(args, state, levels):
+    """Every positional list a line can have, whatever its flags take: the first `levels` positional words (the command, its
+    sub-command, its script) are each any word _command_candidates allows, the rest is read with the flag table. Each reading is
+    charged to the work budget (the count multiplies with the flag/value pairs on the line)."""
+    if levels == 0 or not args:
+        yield _positional(args, _NPM_VALUE_FLAGS)
+        return
+    cands = _command_candidates(args)
+    if not cands:
+        yield []
+    for c in cands:
+        for tail in _pos_readings(_args_after(args, c), state, levels - 1):
+            _charge(state, len(args) + 1)
+            yield [c] + tail
+
+
+def _command_candidates(args):
+    """Every word that can be the command of a package-manager line, whatever its flags take. A flag may or may not have a value,
+    and the table of flags that do is only a guess (it differs by manager and version, and nobody lists every flag), so a
+    non-flag word that follows a flag is either that flag's value or the command: both are tried. The first non-flag word that does
+    NOT follow a flag (or follows `--`, or a flag written `--x=y`) is the command, and ends the list."""
+    out = []
+    after_flag = False
+    for a in args:
+        t = a.text
+        if t == '--':
+            after_flag = False
+        elif t.startswith('-') and len(t) > 1:
+            after_flag = '=' not in t
+        else:
+            out.append(a)
+            if not after_flag:
+                break
+            after_flag = False
+    return out
+
+
+def _npm_like_once(name, args, pos, seg, state, depth):
+    """One reading of an npm / pnpm / yarn / bun / npx command line: `pos` is its positional words under that reading."""
+    if name == 'corepack':
+        # `corepack npm run X`, `corepack pnpm X`, `corepack yarn X`: the package manager runs as if it led the command
+        if pos:
+            # `corepack npm@10.2.0 run X`, `corepack pnpm@9 X`: a pinned version rides on the word, the manager is the same
+            check_words([_unversioned(pos[0])] + _args_after(args, pos[0]), seg, state, depth)
+        return
     if name in ('npx', 'pnpx', 'bunx'):
         sub, rest = None, pos
     elif pos and pos[0].text in ('run', 'run-script', 'rum', 'urn'):
@@ -1475,21 +1926,57 @@ def _handle_npm_like(name, args, seg, state, depth):
             w = scr[0]
             if w.dyn and not name == 'bun':
                 raise Deny('npm run egy futasidoben kepzett script-nevvel: a kapu nem tudja eldonteni, '
-                           'hogy a dashboard-user-e, ezert nem engedi at.')
-            if _word_hits_cli(w, state.cwd):
-                _cli_decision(_after_cli(_args_after(args, w)), state)
+                           'hogy a dashboard-user / agent-tokens-e, ezert nem engedi at.')
+            kinds = _word_hits_cli(w, state)        # the CLI by name, glob, brace or link first (`pnpm run scripts/agent-tok*.ts issue`)
+            if kinds:
+                _cli_decision(_after_cli(_args_after(args, w)), state, kinds)
+                return
+            if name in ('pnpm', 'yarn') or _word_runs_command(w):   # pnpm run tsx scripts/agent-tokens.ts ... / pnpm run npx tsx ...: the program, then its command line
+                check_words([_unversioned(w)] + _args_after(args, w), seg, state, depth)
+                return
+            kinds = _word_hits_cli(w, state)
+            if kinds:
+                _cli_decision(_after_cli(_args_after(args, w)), state, kinds)
+        return
+    elif pos and name == 'npm' and pos[0].text in _EXPLORE_NAMES:
+        # `npm explore <pkg> -- <cmd>` / `npm explore <pkg> <cmd>`: npm joins the words after the package into ONE shell command and
+        # runs it in the package folder, so they are checked as the text of a command of their own
+        if len(pos) > 1:
+            words = [a.text for a in _args_after(args, pos[1]) if a.text != '--']
+            if words:
+                _charge(state, sum(len(w) + 1 for w in words))
+                check_command(' '.join(words), state, depth + 1)
         return
     elif pos and pos[0].text in ('exec', 'x', 'dlx'):
         sub, rest = pos[0].text, pos[1:]
+    elif pos and ((name == 'yarn' and pos[0].text in ('workspace', 'workspaces'))
+                  or (name == 'pnpm' and pos[0].text in ('recursive', 'multi', 'm'))):
+        # yarn workspace NAME <command> / yarn workspaces foreach [flags] <command> / pnpm recursive <command>: the command runs
+        # as if `yarn` / `pnpm` led it. A flag's value or the workspace name is a plain word here, so the command is looked for at
+        # every positional: `yarn <the rest from there>` is checked each time, and the one that is the command hits its rule;
+        # the others (`yarn foo tsx ...` with foo as the "command") find nothing. More than _WORKSPACE_SCAN_MAX words is
+        # denied rather than scanned in part (a cap that stops looking would let the command hide behind enough selectors).
+        if len(pos) > _WORKSPACE_SCAN_MAX:
+            raise Deny('yarn workspace / pnpm recursive tul sok szoval (%d felett): a kapu nem tudja eldonteni, melyik a '
+                       'parancs, ezert nem engedi at.' % _WORKSPACE_SCAN_MAX)
+        for k in range(1, len(pos)):
+            check_words([Word(name)] + _args_after(args, pos[k - 1]), seg, state, depth)
+        return
     elif name in ('yarn', 'pnpm') and pos:
         # yarn dashboard-user / pnpm dashboard-user  (they run package scripts without "run")
-        if _word_hits_cli(pos[0], state.cwd):
-            _cli_decision(_after_cli(_args_after(args, pos[0])), state)
+        kinds = _word_hits_cli(pos[0], state)
+        if kinds:
+            _cli_decision(_after_cli(_args_after(args, pos[0])), state, kinds)
             return
-        sub, rest = None, []
+        # pnpm tsx scripts/agent-tokens.ts ... / yarn node scripts/x.js / pnpm npm run X / pnpm bash -c "...": ANY word that is no CLI
+        # name is dispatched as a command of its own (a general rule, as for npx, not a list of programs): pnpm and yarn run a binary
+        # when the word is no command of theirs and no script, and the words after it are that program's command line
+        check_words([_unversioned(pos[0])] + _args_after(args, pos[0]), seg, state, depth)
+        return
     elif name == 'bun' and pos:
-        if _word_hits_cli(pos[0], state.cwd):
-            _cli_decision(_after_cli(_args_after(args, pos[0])), state)
+        kinds = _word_hits_cli(pos[0], state)
+        if kinds:
+            _cli_decision(_after_cli(_args_after(args, pos[0])), state, kinds)
             return
         sub, rest = None, []
     else:
@@ -1497,13 +1984,14 @@ def _handle_npm_like(name, args, seg, state, depth):
     if not rest:
         return
     pkg = rest[0]
-    if _word_hits_cli(pkg, state.cwd):
-        _cli_decision(_after_cli(_args_after(args, pkg)), state)
+    kinds = _word_hits_cli(pkg, state)
+    if kinds:
+        _cli_decision(_after_cli(_args_after(args, pkg)), state, kinds)
         return
     # npx tsx scripts/dashboard-user.ts ...  -> the package is itself a runner / interpreter
     # the package's own arguments with their flags: `npx tsx -e "code"` must reach the interpreter check with its `-e` (the
     # positional list above drops the flag and keeps its value as a plain word, so the code was never looked at)
-    inner = [pkg] + _args_after(args, pkg)
+    inner = [_unversioned(pkg)] + _args_after(args, pkg)      # `npx pnpm@9 agent-tokens issue`: the pinned version is not part of the name
     check_words(inner, seg, state, depth)
 
 
@@ -1586,16 +2074,44 @@ _TMUX_CMDS = ('send-keys', 'send', 'run-shell', 'run', 'new-session', 'new', 'ne
               'pipe-pane', 'pipep', 'if-shell', 'if', 'display-popup', 'popup')
 
 
+# tmux flags that take a value. `-d` is NOT one (`new-session -d`, `split-window -d` are "detached" / "do not select"): listed as one it
+# swallowed the command word of `tmux new-session -d "cmd"`. The few commands where it is a value (`display-popup -d dir`) leave the
+# directory in the command text, where the command is found by its markers all the same.
+_TMUX_VALUE_FLAGS = ('-t', '-c', '-F', '-n', '-x', '-y', '-e', '-s', '-N', '-f', '-L')
+
+
 def _handle_tmux(args, state, depth):
-    pos = _positional(args, ('-t', '-c', '-F', '-n', '-x', '-y', '-e', '-s', '-N', '-d', '-f'))
-    if not pos or pos[0].text not in _TMUX_CMDS:
-        return
-    rest = [w.text for w in pos[1:]]
-    if rest:
-        state.dir_changed = True           # the pane / window has its own working directory
-        check_command(' '.join(rest), state, depth + 1)
-        for r in rest:
-            check_command(r, state, depth + 1)
+    # the global flags of tmux itself (`-L sock`, `-f file`) take a value: the command word is read both ways
+    for sub in _command_candidates(args):
+        if sub.text not in _TMUX_CMDS:
+            continue
+        _charge(state, len(args) + 1)
+        after = _args_after(args, sub)
+        rest = [w.text for w in _positional(after, _TMUX_VALUE_FLAGS)]
+        # The table is a guess: a flag is a value for one tmux command and a boolean for another (`send-keys -l`, `new-window -S`,
+        # `split-window -l 20`), so the words are ALSO read with no value flag at all, as one text (and a quoted command by itself).
+        flat = [w.text for w in _positional(after, ())]
+        if rest or flat:
+            state.dir_changed = True           # the pane / window has its own working directory
+        if rest:
+            check_command(' '.join(rest), state, depth + 1)
+            for r in rest:
+                check_command(r, state, depth + 1)
+        if flat and flat != rest:
+            _charge(state, sum(len(w) + 1 for w in flat))
+            check_command(' '.join(flat), state, depth + 1)
+            for r in flat:
+                if re.search(r'\s', r):
+                    check_command(r, state, depth + 1)
+
+
+def _handle_screen(args, seg, state, depth):
+    """screen [-opts] CMD [ARGS]: the words after the options are a command line that screen starts (`screen -dm npx tsx x.ts`), also
+    in one quoted word. A word after an option is read both as its value (`-S name`) and as the command word."""
+    for c in _command_candidates(args):
+        words = [c.text] + [a.text for a in _args_after(args, c)]
+        _charge(state, sum(len(w) + 1 for w in words))
+        check_command(' '.join(words), state, depth + 1)
 
 
 def _handle_ssh(args, seg, state, depth):
@@ -1698,6 +2214,80 @@ def _note_link(args, state):
     state.link_dests.append(dest.text)
 
 
+# `ln` makes a link and these make a COPY: in both the new name does not exist yet when a later command of the same text is looked at
+_COPY_NAMES = ('ln', 'link', 'cp', 'mv', 'install', 'rsync', 'ditto')
+MAX_LINK_SRCS = 64            # names (link names, copy names) of a CLI script / the config runner followed exactly; more is denied
+
+
+def _copy_source_stems(word, state):
+    """[(script stem, file name)] of what a link / copy source stands for when it is a CLI script or the config runner: the stem of
+    the word itself, of the real path of a link that exists or was made earlier in the text (a chain of links is followed), or of
+    every match of a glob. Empty for anything else (and for a word built at run time: the gate cannot read it)."""
+    out = []
+    if word.dyn or _has_placeholder(word.text):
+        return out
+    for alt in word.alts[:MAX_BRACE_ALTS]:
+        if not alt:
+            continue
+        stem = _link_stem(alt, state)
+        if stem is None:
+            stem = _script_stem(alt)
+        if _is_cli_name(stem) or stem == CLI_RUNNER_STEM:
+            out.append((stem, os.path.basename(alt)))
+        elif any(c in alt for c in '*?['):
+            try:
+                hits = glob.glob(alt if os.path.isabs(alt) else os.path.join(state.cwd, alt))
+            except Exception:
+                hits = []
+            for h in hits[:MAX_GLOB_HITS]:
+                st = _script_stem(h)
+                if os.path.islink(h):
+                    st = _script_stem(os.path.realpath(h)) if not (_is_cli_name(st) or st == CLI_RUNNER_STEM) else st
+                if _is_cli_name(st) or st == CLI_RUNNER_STEM:
+                    out.append((st, os.path.basename(h)))
+    return out
+
+
+def _record_link_src(name_text, stem, state):
+    """From now on `name_text` (read from the working directory and from every absolute `cd` target) names the script `stem`. More
+    names than MAX_LINK_SRCS are denied: a cap that only stopped looking would let the command hide behind enough other names."""
+    for c in _cwds(state):
+        key = os.path.normpath(name_text if os.path.isabs(name_text) else os.path.join(c, name_text))
+        if key not in state.link_srcs and len(state.link_srcs) >= MAX_LINK_SRCS:
+            raise InspectionLimit('more than %d link or copy names of a CLI script' % MAX_LINK_SRCS)
+        if state.link_srcs.get(key) != TOKEN_CLI_NAME:        # the stricter script (the token CLI) is not replaced by another
+            state.link_srcs[key] = stem
+
+
+def _note_copy(name, args, state):
+    """`ln [-s] SRC LINK`, `cp SRC COPY`, `mv`, `install`, `rsync`, `ditto` in the same text: when SRC is a CLI script or the config
+    runner, the new name will name it by the time a later command of the text runs (`ln -s scripts/agent-tokens.ts /tmp/x.ts && npx
+    tsx /tmp/x.ts issue`, `cp scripts/agent-tokens.ts scripts/zz.ts && tsx scripts/zz.ts issue`), although it does not exist yet now.
+    The stem is read through links that exist or were made earlier in the text, so a chain of links or copies is followed. When the
+    last word may be a directory (`cp SRC DIR`) the name inside it counts too, and so does the name under `-t DIR`."""
+    pos = _positional(args, _FW_VALUE_FLAGS.get(name, ()))
+    explicit = None
+    for k, a in enumerate(args):
+        if a.text in ('-t', '--target-directory') and k + 1 < len(args):
+            explicit = args[k + 1]
+        elif a.text.startswith('--target-directory='):
+            explicit = Word(a.text.split('=', 1)[1])
+    if explicit is not None:
+        sources, dests = pos, [explicit]
+    elif len(pos) >= 2:
+        sources, dests = pos[:-1], [pos[-1]]
+    else:
+        return
+    for d in dests:
+        if d.dyn or not d.text or _has_placeholder(d.text):
+            continue
+        for src in sources:
+            for stem, base in _copy_source_stems(src, state):
+                if explicit is None:
+                    _record_link_src(d.text, stem, state)
+                _record_link_src(os.path.join(d.text, base), stem, state)
+
+
 _CD_COMMANDS = ('cd', 'pushd', 'popd', 'chdir', 'chroot')
 _DIR_FLAGS = ('-C', '--chdir', '--cwd', '--prefix', '--dir', '--directory', '-D', '-w', '--workspace',
               '--workspaces', '-F', '--filter')
@@ -1728,6 +2318,8 @@ def _note_dir_changes(segs, state):
         if name in ('ln', 'link'):
             state.link_made = True
             _note_link(args, state)
+        if name in _COPY_NAMES:
+            _note_copy(name, args, state)
         if name == 'cd':
             pos = [a for a in args if a.text not in ('-P', '-L', '-e', '-@', '--')]
             tgt = pos[0] if len(pos) == 1 else None
@@ -2452,10 +3044,10 @@ _GIT_SAFE_SUBS = frozenset((
 _GIT_GLOBAL_VALUE_FLAGS = ('-c', '-C', '--git-dir', '--work-tree', '--namespace', '--super-prefix',
                            '--config-env', '--exec-path')
 
-_RUNNERS = r'(?:npm|pnpm|yarn|npx|pnpx|tsx|ts-node|node|nodejs|bun|bunx|deno|vite-node|corepack)'
+_RUNNERS = r'(?:npm|pnpm|yarnpkg|yarn|npx|pnpx|tsx|ts-node|node|nodejs|bun|bunx|deno|vite-node|corepack)'
 # The CLI named the way it is RUN, inside an argument that is itself a command string.
-GENERIC_RUNNER_MARKER = re.compile(_RUNNERS + r'\b[^\n]{0,80}?(?:dashboard[-_]user|security[-_]reset)(?![\w-])')
-GENERIC_PATH_MARKER = re.compile(r'(?<![\w./-])(?:\./|/)[\w./-]*(?:dashboard-user|security-reset)(?![\w-])')
+GENERIC_RUNNER_MARKER = re.compile(_RUNNERS + r'\b[^\n]{0,80}?(?:dashboard[-_]user|security[-_]reset|agent[-_]tokens)(?![\w-])')
+GENERIC_PATH_MARKER = re.compile(r'(?<![\w./-])(?:\./|/)[\w./-]*(?:dashboard-user|security-reset|agent-tokens)(?![\w-])')
 
 
 def _git_args_to_scan(args):
@@ -2587,6 +3179,14 @@ def check_words(words, seg, state, depth):
         check_command(joined, state, depth + 1)
         return
     if name in ('source', '.'):
+        if args and args[0].text == _PROCSUB:       # source <(echo "npm run x"): the printed text is the script
+            for t in _procsub_texts(seg or Seg(), state):
+                check_shell_script(t, state, depth)
+            return
+        if args and _is_stdin_word(args[0].text):   # source /dev/stdin <<< "npm run x": the standard input is the script
+            for t in _stdin_texts(seg or Seg(), state):
+                check_shell_script(t, state, depth)
+            return
         if args:
             txt = _read_text_file(args[0].text, state)
             if txt is not None:
@@ -2620,7 +3220,7 @@ def check_words(words, seg, state, depth):
         _handle_interp(name, args, seg or Seg(), state, depth,
                        'osascript' if name == 'osascript' else name)
         return
-    if name in ('npm', 'pnpm', 'yarn', 'npx', 'pnpx', 'bunx', 'corepack'):
+    if name in ('npm', 'pnpm', 'yarn', 'yarnpkg', 'npx', 'pnpx', 'bunx', 'corepack'):
         _handle_npm_like(name, args, seg or Seg(), state, depth)
         return
     if name in _SQL_CLIENTS:
@@ -2630,8 +3230,10 @@ def check_words(words, seg, state, depth):
         _handle_find(args, seg, state, depth)
         return
     if name in ('tmux', 'screen'):
-        _handle_tmux(args, state, depth)
+        if name == 'tmux':
+            _handle_tmux(args, state, depth)
         if name == 'screen':
+            _handle_screen(args, seg or Seg(), state, depth)
             for k, a in enumerate(args):
                 if a.text == 'stuff' and k + 1 < len(args):
                     check_command(args[k + 1].text, state, depth + 1)
@@ -2646,9 +3248,21 @@ def check_words(words, seg, state, depth):
     _handle_live_args(name, args, seg, state)
     # a direct execution of the CLI or of a shell script by path: ./scripts/dashboard-user.ts, x.sh
     for alt in cmdword.alts:
-        if _is_cli_name(_script_stem(alt)):
-            _cli_decision(_after_cli(args), state)
+        # the name as typed, and the name of what an existing link points to (`./w.ts` made by `ln -s scripts/... w.ts`)
+        linked = _link_stem(alt, state)
+        kind = _is_cli_name(_script_stem(alt)) or (_is_cli_name(linked) if linked is not None else None)
+        if kind:
+            _cli_decision(_after_cli(args), state, (kind,))
             return
+        if (_script_stem(alt) == CLI_RUNNER_STEM or linked == CLI_RUNNER_STEM) and args:      # ./scripts/with-config.ts agent-tokens issue
+            target = args[0]
+            if target.dyn:
+                raise Deny('with-config.ts futasidoben kepzett script-nevvel: a kapu nem tudja eldonteni, hogy '
+                           'az agent-tokens / dashboard-user-e, ezert nem engedi at.')
+            kinds = _word_hits_cli(target, state)
+            if kinds:
+                _cli_decision(_after_cli(args[1:]), state, kinds)
+                return
         if '/' in alt and alt.lower().endswith(('.sh', '.bash')):
             txt = _read_text_file(alt, state)
             if txt is not None:

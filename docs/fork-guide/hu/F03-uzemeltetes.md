@@ -422,6 +422,8 @@ bash scripts/doctor.sh
 # 5. csak most indítsd a dashboardot és az ágenseket
 ```
 
+Az `agent-tokens` mindkét háttértáron működik. SQLite-telepítésen a `store/claudeclaw.db`-t nyitja meg; PostgreSQL-telepítésen a telepítés PostgreSQL URL-jével csatlakozik az alkalmazás-szerepkörként (nincs migrate URL, nincs tulajdonosi hitelesítő adat, nincs sémaváltoztatás), és az egész parancsot egyetlen rendszer-jobként futtatja, mert a token-tábla sor-szintű védelem alatt áll, és ilyen környezet nélkül a futás nem látna sorokat. A parancsok, a kimeneti sorok és a kilépési kódok (0 rendben, 1 hiba, 2 használat) mindkét helyen azonosak. Minden futás egy info-sort ír a stderr-re (háttértár, parancs, látott aktív tokenek száma; token, név és hash nélkül): ha egy tokenekkel rendelkező telepítésen "0" szerepel, a futás vak volt, és az `issue` eredményében nem szabad megbízni. Az író parancsok (`issue`, `issue-operator`, `rotate-shared`, `revoke`) a tulajdonosé: az auth-admin kapu ágens-munkamenetben elutasítja őket, csak a `check` és `archive-shared-age` megy át (a `list` minden tenant token-azonosítóját és nevét kiírja: futtasd a gépen); az író parancsokat te futtasd a gépen. Minden írás egy sort hagy a konfigurációs naplóban (aktor `cli`, az ágens azonosítója, `operator` vagy `shared`, soha nem token).
+
 Az `agent-tokens check` csak olvas és tokent soha nem ír ki. Fájlonként egy sor (`alany  állapot  szerep  útvonal`), a kilépési kód 1, ha bármi nem `ok`:
 
 | Állapot | Jelentés | Javítás |
@@ -547,6 +549,8 @@ Ha az adatbázis PostgreSQL (a `MARVEEN_PG_URL` megvan a secret mountban, a kör
 - **A PostgreSQL telepítési jelölő** `store/.pg-installed` az első PostgreSQL-indításkor íródik egyszer, és soha nem íródik újra. A shell-eszközök és a hook-ok tényként olvassák: a telepítés PostgreSQL, akkor is, ha az URL kikerült a `.env`-ből. Ha szándékosan vissza akarsz térni SQLite-ra (írásban rögzített döntés, nem javítás): töröld a `MARVEEN_PG_URL`-t, és töröld a `store/.pg-installed` fájlt. Automatikusan semmi nem törli. A PostgreSQL-telepítés biztonsági mentése archiválja a jelölőt, így a visszaállítás jelölve jön vissza.
 
 A felismerési szabály a `scripts/pg-configured.sh`-ban van; a `backup.sh` és a `restore-drill.sh` ezt a fájlt sourceolja, így egyetlen másolat van, és nem tud eltérni. Az olvashatatlan `.env` a jelölővel együtt PostgreSQL-nek számít. A shell-eszközök és a hook-ok a jelölőt mindkét helyen keresik: a `<install>/store` mappában, és ha a `MARVEEN_STORE_DIR` be van állítva, abban a store-ban is (bármelyik hely elég). Az app csak a saját store-ját olvassa, ezért izolált instance (saját `MARVEEN_STORE_DIR`) alatt a shell és a hook az élő install jelölőjét látja, nem a saját store-jában lévőt.
+
+Egy PostgreSQL-dump visszaállítása és az archívum fájljainak visszamásolása után a token-fájlokhoz ugyanaz a négy lépés kell, mint SQLite-on (lásd "Visszaállítás után: API tokenek"), az operátor futtatja a gépen, a dashboard és az ágensek indítása ELŐTT: `npm run agent-tokens -- issue`, `issue-operator`, `rotate-shared`, majd `check` és `scripts/doctor.sh`. PostgreSQL-en is működnek. A `verify-restore.sh` 5b lépése egy ilyen telepítésen a régi SQLite-archívum közös token sorát az ÉLŐ PostgreSQL sorral veti össze (a `predates` figyelmeztetés); a PostgreSQL-telepítésen készült archívumban nincs adatbázis, ott a lépést kihagyja.
 
 ## Lemezterület-védelem
 

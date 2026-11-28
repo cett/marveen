@@ -8,87 +8,23 @@
 //   npm run agent-tokens -- list
 //   npm run agent-tokens -- revoke <agent>
 //
-// It talks to SQLite directly (like dashboard-user.ts), so it works with the dashboard stopped. The
-// token files are written 0600 next to each agent's files; this command prints the agent, what
+// It talks to the database of this install directly (SQLite, or PostgreSQL when MARVEEN_PG_URL is set), so it works with the
+// dashboard stopped. The token files are written 0600 next to each agent's files; this command prints the agent, what
 // happened and the FILE, never a token.
-
+//
+// This file is a thin entry: the body (the commands, the boot, the system job, the exit code) is src/agent-tokens/cli.ts.
+// The config snapshot is loaded first, before the body is imported, because config.ts reads it at import on PostgreSQL. When
+// the script runs through scripts/with-config.ts the runner has loaded it already and this call is a no-op (the load runs
+// once per process).
 import './lib/log-to-stderr.js'
-import { MAIN_AGENT_ID } from '../src/config.js'
-import { initDatabase, listApiTokenRows, revokeApiTokensForAgent } from '../src/db.js'
-import { listAgentNames } from '../src/web/agent-config.js'
-import { agentTokenPath, archiveSharedTokenAge, checkAgentTokens, issueAgentToken, issueOperatorToken, rotateSharedToken } from '../src/agent-tokens.js'
+import { ensureConfigSnapshot } from '../src/config-bootstrap.js'
 
-function usage(): never {
-  process.stderr.write(
-    'Usage:\n' +
-    '  agent-tokens issue [--rotate] [--dry-run] [<agent>...]\n' +
-    '  agent-tokens issue-operator [--rotate]\n' +
-    '  agent-tokens rotate-shared\n' +
-    '  agent-tokens check [<agent>...]\n' +
-    '  agent-tokens archive-shared-age <extracted-archive.db>\n' +
-    '  agent-tokens list\n' +
-    '  agent-tokens revoke <agent>\n',
-  )
-  process.exit(2)
+try {
+  await ensureConfigSnapshot()
+} catch (err) {
+  // a failed snapshot load is a failed run: one line on stderr, exit 1, no stack for the operator
+  process.stderr.write(`Error: ${err instanceof Error ? err.message : String(err)}\n`)
+  process.exit(1)
 }
-
-const [cmd, ...rest] = process.argv.slice(2)
-const flags = new Set(rest.filter(a => a.startsWith('--')))
-const names = rest.filter(a => !a.startsWith('--'))
-
-initDatabase()
-
-if (cmd === 'issue') {
-  const rotate = flags.has('--rotate')
-  const targets = names.length > 0 ? names : [MAIN_AGENT_ID, ...listAgentNames().filter(n => n !== MAIN_AGENT_ID)]
-  let failed = 0
-  for (const agent of targets) {
-    if (flags.has('--dry-run')) {
-      process.stdout.write(`${agent}\twould ${rotate ? 'rotate' : 'issue or keep'}\t${agentTokenPath(agent)}\n`)
-      continue
-    }
-    try {
-      const r = await issueAgentToken(agent, { rotate })
-      process.stdout.write(`${r.subject}\t${r.status}\t${r.role}\t${r.path}\n`)
-    } catch (err) {
-      failed++
-      process.stderr.write(`${agent}\tFAILED\t${err instanceof Error ? err.message : String(err)}\n`)
-    }
-  }
-  process.exit(failed > 0 ? 1 : 0)
-} else if (cmd === 'issue-operator') {
-  const r = await issueOperatorToken({ rotate: flags.has('--rotate') })
-  process.stdout.write(`${r.subject}\t${r.status}\t${r.role}\t${r.path}\n`)
-} else if (cmd === 'rotate-shared') {
-  // Always mints a new shared token (no `kept`), writes store/.dashboard-token and revokes the old row
-  // with its hash. Refuses, changing nothing, when DASHBOARD_TOKEN is set (it would override the file).
-  try {
-    const r = await rotateSharedToken()
-    process.stdout.write(`shared\t${r.status}\tadmin\t${r.path}\n`)
-    process.stderr.write(
-      'The old shared token is revoked. Restart the dashboard so the in-memory copy is replaced, ' +
-      're-enrol every browser that was enrolled with the shared token (npm run dashboard-url), and ' +
-      'run `agent-tokens check` and doctor.sh.\n',
-    )
-  } catch (err) {
-    process.stderr.write(`shared\tFAILED\t${err instanceof Error ? err.message : String(err)}\n`)
-    process.exit(1)
-  }
-} else if (cmd === 'check') {
-  // Read-only: one line per expected token file, exit 1 when any is not `ok`.
-  const targets = names.length > 0 ? names : [MAIN_AGENT_ID, ...listAgentNames().filter(n => n !== MAIN_AGENT_ID)]
-  const { rows, ok } = await checkAgentTokens(targets)
-  for (const r of rows) process.stdout.write(`${r.subject}\t${r.status}\t${r.role}\t${r.path}${r.detail ? `\t${r.detail}` : ''}\n`)
-  process.exit(ok ? 0 : 1)
-} else if (cmd === 'archive-shared-age' && names.length === 1) {
-  // Used by verify-restore.sh on its extracted copy of an archive's database: predates | current | unknown.
-  process.stdout.write(`${await archiveSharedTokenAge(names[0]!)}\n`)
-} else if (cmd === 'list') {
-  for (const t of (await listApiTokenRows()).filter(r => r.revoked_at === null)) {
-    process.stdout.write(`${t.id}\t${t.name}\t${t.role}\t${t.agent_id ?? '-'}\t${t.tenant_id}\t${new Date(t.created_at * 1000).toISOString()}\n`)
-  }
-} else if (cmd === 'revoke' && names.length === 1) {
-  process.stdout.write(`revoked ${await revokeApiTokensForAgent(names[0]!, Math.floor(Date.now() / 1000))} token(s) of ${names[0]}\n`)
-} else {
-  usage()
-}
+const { runAgentTokensCli } = await import('../src/agent-tokens/cli.js')
+process.exit(await runAgentTokensCli(process.argv.slice(2)))
