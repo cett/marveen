@@ -63,14 +63,17 @@ an unreadable event: exit 2. Exit 0 only after a complete inspection found nothi
 
 HONEST LIMITS (good-faith protection against the same OS user, like the docs say):
   - RESIDUAL RISK, the denylist class: a script the agent CONSTRUCTS first is not seen. A copy of the CLI script made in
-    the same command (it does not exist yet when the gate looks), a one-off .ts written with the Write tool, a module
+    the same command (it does not exist yet when the gate looks), a HARD link that already exists (the same file under a
+    new name: the stem of its path is the new name; a hard link made by an `ln` in the same text IS seen), a one-off .ts
+    written with the Write tool, a module
     path or a function name built from strings, `npm --script-shell`, NODE_OPTIONS; likewise a COMMAND word that is itself
     built at run time (`$V run agent-tokens issue`, `{npm,yarn} run agent-tokens issue`: the package manager is not named). The
     gate is not a sandbox. What it does see is every form a normal operator or tool would type: package-manager wrappers
-    (corepack, also with a pinned version, npx, pnpm, yarn, bun), their workspace selectors (`pnpm --filter x`, `yarn
-    workspace x`), their run shorthands (`pnpm tsx scripts/x.ts`), runner binaries, a link that already exists (the stem
-    of its real path counts, for the CLI scripts and for the config runner), the config runner form, shells and shell
-    script files.
+    (corepack, also with a pinned version, npx, pnpm, yarn, yarnpkg, bun), their workspace selectors (`pnpm --filter x`,
+    `yarn workspace x`; every flag is read both as a value and as a boolean), their run shorthands (`pnpm tsx scripts/x.ts`,
+    also a package manager or a path to a binary handed to them), runner binaries, a link that already exists or that an
+    `ln` of the same command makes (the stem of its real path counts, for the CLI scripts and for the config runner, by a
+    bare name too), the config runner form, shells and shell script files.
   - A script FILE of another language (python/node) that an agent wrote and then runs is
     not read: test fixtures in the repo legitimately contain INSERT INTO api_tokens ...
     and would be blocked. Shell script files ARE read (nothing in the repo calls the CLI).
@@ -820,6 +823,7 @@ class State(object):
         self.link_made = False      # an `ln` in the inspected text: a link may not exist yet when we look
         self.link_global = False    # an `ln` whose link name the gate cannot tell: any path may be that link
         self.link_dests = []        # the link names (or link dirs) of the `ln` commands in the text
+        self.link_srcs = {}         # absolute link name -> script stem of what an `ln` in the text points it at (CLI / runner only)
         self.funcs = set()          # names of shell functions defined in the inspected texts
         self.store_dirs = None      # cache of _store_dirs
         self.live_inodes = None     # cache of _live_inodes
@@ -851,6 +855,12 @@ _WRAPPERS = {
     'script': ((), 0), 'watch': (('-n', '-d', '-w', '--interval'), 0),
 }
 _CODE_WRAPPER_FLAGS = ('-c', '--command')   # su -c / script -c / runuser -c  (a command STRING)
+
+
+# programs whose command line is checked as a command of its own when a package manager is told to run them
+_COMMAND_RUNNERS = frozenset(_NODEISH + _SCRIPT_LANGS + _SHELLS + tuple(_WRAPPERS) + (
+    'npm', 'pnpm', 'yarn', 'yarnpkg', 'npx', 'pnpx', 'bunx', 'corepack', 'env', 'eval', 'xargs', 'parallel',
+    'tmux', 'screen', 'ssh', 'mosh'))
 
 
 def _base(w):
@@ -942,23 +952,34 @@ def _script_stem(text):
     return low
 
 
-def _link_stem(alt, cwd):
-    """The script stem of what a script-position word points to when the word is a link that EXISTS when the command is
-    looked at, else None. ONE helper for every rule that reads a script name (the CLIs AND the config runner): a link made in
-    an earlier command (`ln -s scripts/agent-tokens.ts /tmp/x.ts` or `ln -s scripts/with-config.ts /tmp/w.ts`, then
-    `tsx /tmp/x.ts issue`, `tsx /tmp/w.ts agent-tokens issue`) names the same file as the real path does. A bare name counts
-    too (`tsx w.ts agent-tokens issue` with the link in the working directory: an interpreter reads it relative to there)."""
+def _cwds(state):
+    """The directories a relative script word may be read from: the working directory and the absolute `cd` targets."""
+    return [state.cwd] + list(state.cd_targets)
+
+
+def _link_stem(alt, state):
+    """The script stem of what a script-position word points to when the word is a link, else None. ONE helper for every
+    rule that reads a script name (the CLIs AND the config runner). The link EXISTS when the command is looked at (made in an
+    earlier command: `ln -s scripts/agent-tokens.ts /tmp/x.ts` or `ln -s scripts/with-config.ts /tmp/w.ts`, then
+    `tsx /tmp/x.ts issue`, `tsx /tmp/w.ts agent-tokens issue`: the same file as the real path), or an `ln` in the SAME text
+    makes it (state.link_srcs: it does not exist yet, but it will have by the time the command runs). A bare name counts too
+    (`tsx w.ts agent-tokens issue` with the link in the working directory: an interpreter reads it relative to there), from the
+    working directory and from every absolute `cd` target of the text."""
     if alt and not any(c in alt for c in '*?['):
-        try:
-            full = alt if os.path.isabs(alt) else os.path.join(cwd, alt)
-            if os.path.islink(full):
-                return _script_stem(os.path.realpath(full))
-        except (OSError, ValueError):
-            pass
+        for c in _cwds(state):
+            try:
+                full = alt if os.path.isabs(alt) else os.path.join(c, alt)
+                if os.path.islink(full):
+                    return _script_stem(os.path.realpath(full))
+                pending = state.link_srcs.get(os.path.normpath(full))
+                if pending is not None:
+                    return pending
+            except (OSError, ValueError):
+                pass
     return None
 
 
-def _word_hits_cli(word, cwd):
+def _word_hits_cli(word, state):
     """The CLI kinds a script-position word names, also through shell globs and brace alternatives: a tuple, empty
     (falsy) when it names none. One word can name both kinds (`{dashboard-user,agent-tokens}`): every kind's rule applies."""
     kinds = []
@@ -967,14 +988,14 @@ def _word_hits_cli(word, cwd):
         if k and k not in kinds:
             kinds.append(k)
         # a link or a copy-by-link that EXISTS when the command is looked at: the stem of what it points to counts too
-        linked = _link_stem(alt, cwd)
+        linked = _link_stem(alt, state)
         if linked is not None:
             k = _is_cli_name(linked)
             if k and k not in kinds:
                 kinds.append(k)
         if any(c in alt for c in '*?['):
             try:
-                hits = glob.glob(alt if os.path.isabs(alt) else os.path.join(cwd, alt))
+                hits = glob.glob(alt if os.path.isabs(alt) else os.path.join(state.cwd, alt))
             except Exception:
                 hits = []
             for h in hits[:MAX_GLOB_HITS]:
@@ -984,10 +1005,10 @@ def _word_hits_cli(word, cwd):
     return tuple(kinds)
 
 
-def _word_is_runner_script(word, cwd):
+def _word_is_runner_script(word, state):
     """True when a script-position word is scripts/with-config.ts (any extension, any path), or an existing link to it:
     the CLI name follows it."""
-    return any(_script_stem(alt) == CLI_RUNNER_STEM or _link_stem(alt, cwd) == CLI_RUNNER_STEM for alt in word.alts)
+    return any(_script_stem(alt) == CLI_RUNNER_STEM or _link_stem(alt, state) == CLI_RUNNER_STEM for alt in word.alts)
 
 
 def _after_cli(args):
@@ -1478,7 +1499,7 @@ def _handle_shell(name, args, seg, state, depth):
             check_command(alt, state, depth + 1)
         return
     if i < len(args):                       # bash FILE
-        kinds = _word_hits_cli(args[i], state.cwd)      # bash scripts/security-reset.sh
+        kinds = _word_hits_cli(args[i], state)      # bash scripts/security-reset.sh
         if kinds:
             _cli_decision(_after_cli(args[i + 1:]), state, kinds)
         txt = _read_text_file(args[i].text, state)
@@ -1548,15 +1569,15 @@ def _runner_script_hit(args, state):
     for k in spots:
         if k >= len(pos):
             continue
-        kinds = _word_hits_cli(pos[k], state.cwd)
+        kinds = _word_hits_cli(pos[k], state)
         if kinds:
             return kinds, pos[k + 1:]
-        if _word_is_runner_script(pos[k], state.cwd) and k + 1 < len(pos):
+        if _word_is_runner_script(pos[k], state) and k + 1 < len(pos):
             target = pos[k + 1]
             if target.dyn:
                 raise Deny('with-config.ts futasidoben kepzett script-nevvel: a kapu nem tudja eldonteni, hogy '
                            'az agent-tokens / dashboard-user-e, ezert nem engedi at.')
-            kinds = _word_hits_cli(target, state.cwd)
+            kinds = _word_hits_cli(target, state)
             if kinds:
                 return kinds, pos[k + 2:]
     return None
@@ -1576,14 +1597,14 @@ def _handle_node(name, args, seg, state, depth):
     _handle_interp(name, args, seg, state, depth, 'node')
 
 
+# Whether a flag takes a value differs by manager and by version: `-w` is a value for npm and a boolean for pnpm; `--filter` /
+# `-F` / `--filter-prod` / `--dir` are values for pnpm (`pnpm --filter foo tsx ...`: a package selector, not the command) and
+# booleans for npm (`npm run --filter agent-tokens issue` runs the script agent-tokens). So no table is trusted alone:
+# _handle_npm_like reads every line once with this table and once more for each flag with that ONE flag flipped (a value flag
+# read as a boolean, a boolean read as a value), and denies when any reading finds the CLI.
 _NPM_VALUE_FLAGS = ('--prefix', '-C', '-w', '--workspace', '--cwd', '--registry', '--userconfig',
-                    '--loglevel', '--cache', '--script-shell', '-p', '--package', '-c', '--call')
-# Value flags that only SOME managers have. pnpm: `pnpm --filter foo tsx ...` / `-F foo` / `--dir x`: the value is a package
-# selector, not the command. npm, npx and yarn do NOT take them (an unknown flag is a boolean there), so for them the next word
-# is the command: `npm run --filter agent-tokens issue` runs the script agent-tokens, and swallowing it would hide the name.
-_PNPM_VALUE_FLAGS = ('--filter', '-F', '--filter-prod', '--dir')
-_BUN_VALUE_FLAGS = ('--filter', '-F')
-_MANAGER_VALUE_FLAGS = {'pnpm': _PNPM_VALUE_FLAGS, 'bun': _BUN_VALUE_FLAGS}
+                    '--loglevel', '--cache', '--script-shell', '-p', '--package', '-c', '--call',
+                    '--filter', '-F', '--filter-prod', '--dir')
 # yarn workspace(s) / pnpm recursive: the command is looked for at every positional up to this many; past it the gate denies
 _WORKSPACE_SCAN_MAX = 12
 
@@ -1597,20 +1618,46 @@ def _unversioned(word):
     return Word(cut(word.text), word.dyn, [cut(a) for a in word.alts], word.quoted, word.assign)
 
 
+def _word_runs_command(word):
+    """True when a word handed to a package manager (`pnpm X ...`, `yarn run X ...`) is itself a program that runs a command:
+    a runner / interpreter (also by a path like node_modules/.bin/tsx, and with a pinned `@version`), a shell, a wrapper, or
+    another package manager (`pnpm npm run agent-tokens -- issue`). pnpm and yarn run any binary when the word is no command of
+    theirs and no script, so the words after it are that program's command line and are checked as one."""
+    n = _base(_unversioned(word))
+    return n in _COMMAND_RUNNERS or bool(_PY.match(n))
+
+
 def _handle_npm_like(name, args, seg, state, depth):
-    """npm / pnpm / yarn / bun run SCRIPT, npx / bunx / pnpm dlx|exec / npm exec|x PACKAGE ..."""
-    pos = _positional(args, _NPM_VALUE_FLAGS + _MANAGER_VALUE_FLAGS.get(name, ()))
+    """npm / pnpm / yarn / bun run SCRIPT, npx / bunx / pnpm dlx|exec / npm exec|x PACKAGE ...
+    The line is read once with the value-flag table and once more per distinct flag with that flag flipped (see the table)."""
+    if name == 'yarnpkg':       # the other name of yarn
+        name = 'yarn'
+    # npx -c "command string" / npm exec -c "..."
+    for k, a in enumerate(args):
+        if a.text in ('-c', '--call') and k + 1 < len(args):
+            for alt in args[k + 1].alts:
+                check_command(alt, state, depth + 1)
+    _npm_like_once(name, args, _positional(args, _NPM_VALUE_FLAGS), seg, state, depth)
+    seen = set()
+    for a in args:
+        t = a.text
+        if t == '--':
+            break
+        if t.startswith('-') and len(t) > 1 and '=' not in t and t not in seen:
+            seen.add(t)
+            _charge(state, len(args) + 1)
+            flipped = tuple(f for f in _NPM_VALUE_FLAGS if f != t) if t in _NPM_VALUE_FLAGS else _NPM_VALUE_FLAGS + (t,)
+            _npm_like_once(name, args, _positional(args, flipped), seg, state, depth)
+
+
+def _npm_like_once(name, args, pos, seg, state, depth):
+    """One reading of an npm / pnpm / yarn / bun / npx command line: `pos` is its positional words under that reading."""
     if name == 'corepack':
         # `corepack npm run X`, `corepack pnpm X`, `corepack yarn X`: the package manager runs as if it led the command
         if pos:
             # `corepack npm@10.2.0 run X`, `corepack pnpm@9 X`: a pinned version rides on the word, the manager is the same
             check_words([_unversioned(pos[0])] + _args_after(args, pos[0]), seg, state, depth)
         return
-    # npx -c "command string" / npm exec -c "..."
-    for k, a in enumerate(args):
-        if a.text in ('-c', '--call') and k + 1 < len(args):
-            for alt in args[k + 1].alts:
-                check_command(alt, state, depth + 1)
     if name in ('npx', 'pnpx', 'bunx'):
         sub, rest = None, pos
     elif pos and pos[0].text in ('run', 'run-script', 'rum', 'urn'):
@@ -1620,10 +1667,10 @@ def _handle_npm_like(name, args, seg, state, depth):
             if w.dyn and not name == 'bun':
                 raise Deny('npm run egy futasidoben kepzett script-nevvel: a kapu nem tudja eldonteni, '
                            'hogy a dashboard-user / agent-tokens-e, ezert nem engedi at.')
-            if w.text in _NODEISH:      # pnpm run tsx scripts/agent-tokens.ts ...: the runner binary, then its script
-                check_words([w] + _args_after(args, w), seg, state, depth)
+            if _word_runs_command(w):   # pnpm run tsx scripts/agent-tokens.ts ... / pnpm run npx tsx ...: the program, then its command line
+                check_words([_unversioned(w)] + _args_after(args, w), seg, state, depth)
                 return
-            kinds = _word_hits_cli(w, state.cwd)
+            kinds = _word_hits_cli(w, state)
             if kinds:
                 _cli_decision(_after_cli(_args_after(args, w)), state, kinds)
         return
@@ -1644,16 +1691,16 @@ def _handle_npm_like(name, args, seg, state, depth):
         return
     elif name in ('yarn', 'pnpm') and pos:
         # yarn dashboard-user / pnpm dashboard-user  (they run package scripts without "run")
-        if pos[0].text in _NODEISH:     # pnpm tsx scripts/agent-tokens.ts ... / yarn node scripts/x.js: a binary of node_modules/.bin
-            check_words([pos[0]] + _args_after(args, pos[0]), seg, state, depth)
+        if _word_runs_command(pos[0]):  # pnpm tsx scripts/agent-tokens.ts ... / yarn node scripts/x.js / pnpm npm run X: a binary run by name or path
+            check_words([_unversioned(pos[0])] + _args_after(args, pos[0]), seg, state, depth)
             return
-        kinds = _word_hits_cli(pos[0], state.cwd)
+        kinds = _word_hits_cli(pos[0], state)
         if kinds:
             _cli_decision(_after_cli(_args_after(args, pos[0])), state, kinds)
             return
         sub, rest = None, []
     elif name == 'bun' and pos:
-        kinds = _word_hits_cli(pos[0], state.cwd)
+        kinds = _word_hits_cli(pos[0], state)
         if kinds:
             _cli_decision(_after_cli(_args_after(args, pos[0])), state, kinds)
             return
@@ -1663,14 +1710,14 @@ def _handle_npm_like(name, args, seg, state, depth):
     if not rest:
         return
     pkg = rest[0]
-    kinds = _word_hits_cli(pkg, state.cwd)
+    kinds = _word_hits_cli(pkg, state)
     if kinds:
         _cli_decision(_after_cli(_args_after(args, pkg)), state, kinds)
         return
     # npx tsx scripts/dashboard-user.ts ...  -> the package is itself a runner / interpreter
     # the package's own arguments with their flags: `npx tsx -e "code"` must reach the interpreter check with its `-e` (the
     # positional list above drops the flag and keeps its value as a plain word, so the code was never looked at)
-    inner = [pkg] + _args_after(args, pkg)
+    inner = [_unversioned(pkg)] + _args_after(args, pkg)      # `npx pnpm@9 agent-tokens issue`: the pinned version is not part of the name
     check_words(inner, seg, state, depth)
 
 
@@ -1863,6 +1910,16 @@ def _note_link(args, state):
         state.link_global = True
         return
     state.link_dests.append(dest.text)
+    # `ln [-s] SRC LINK`: when SRC is a CLI script or the config runner, the link will name it by the time a later command in the
+    # same text runs (`ln -s scripts/agent-tokens.ts /tmp/x.ts && npx tsx /tmp/x.ts issue`), although it does not exist yet now.
+    # The stem is read through links that exist or were made earlier in the text, so a chain of links is followed.
+    if len(pos) == 2 and dest is pos[1] and not pos[0].dyn and len(state.link_srcs) < MAX_LINK_DESTS:
+        stem = _link_stem(pos[0].text, state)
+        if stem is None:
+            stem = _script_stem(pos[0].text)
+        if _is_cli_name(stem) or stem == CLI_RUNNER_STEM:
+            for c in _cwds(state):
+                state.link_srcs[os.path.normpath(dest.text if os.path.isabs(dest.text) else os.path.join(c, dest.text))] = stem
 
 
 _CD_COMMANDS = ('cd', 'pushd', 'popd', 'chdir', 'chroot')
@@ -2619,7 +2676,7 @@ _GIT_SAFE_SUBS = frozenset((
 _GIT_GLOBAL_VALUE_FLAGS = ('-c', '-C', '--git-dir', '--work-tree', '--namespace', '--super-prefix',
                            '--config-env', '--exec-path')
 
-_RUNNERS = r'(?:npm|pnpm|yarn|npx|pnpx|tsx|ts-node|node|nodejs|bun|bunx|deno|vite-node|corepack)'
+_RUNNERS = r'(?:npm|pnpm|yarnpkg|yarn|npx|pnpx|tsx|ts-node|node|nodejs|bun|bunx|deno|vite-node|corepack)'
 # The CLI named the way it is RUN, inside an argument that is itself a command string.
 GENERIC_RUNNER_MARKER = re.compile(_RUNNERS + r'\b[^\n]{0,80}?(?:dashboard[-_]user|security[-_]reset|agent[-_]tokens)(?![\w-])')
 GENERIC_PATH_MARKER = re.compile(r'(?<![\w./-])(?:\./|/)[\w./-]*(?:dashboard-user|security-reset|agent-tokens)(?![\w-])')
@@ -2787,7 +2844,7 @@ def check_words(words, seg, state, depth):
         _handle_interp(name, args, seg or Seg(), state, depth,
                        'osascript' if name == 'osascript' else name)
         return
-    if name in ('npm', 'pnpm', 'yarn', 'npx', 'pnpx', 'bunx', 'corepack'):
+    if name in ('npm', 'pnpm', 'yarn', 'yarnpkg', 'npx', 'pnpx', 'bunx', 'corepack'):
         _handle_npm_like(name, args, seg or Seg(), state, depth)
         return
     if name in _SQL_CLIENTS:
@@ -2814,7 +2871,7 @@ def check_words(words, seg, state, depth):
     # a direct execution of the CLI or of a shell script by path: ./scripts/dashboard-user.ts, x.sh
     for alt in cmdword.alts:
         # the name as typed, and the name of what an existing link points to (`./w.ts` made by `ln -s scripts/... w.ts`)
-        linked = _link_stem(alt, state.cwd)
+        linked = _link_stem(alt, state)
         kind = _is_cli_name(_script_stem(alt)) or (_is_cli_name(linked) if linked is not None else None)
         if kind:
             _cli_decision(_after_cli(args), state, (kind,))
@@ -2824,7 +2881,7 @@ def check_words(words, seg, state, depth):
             if target.dyn:
                 raise Deny('with-config.ts futasidoben kepzett script-nevvel: a kapu nem tudja eldonteni, hogy '
                            'az agent-tokens / dashboard-user-e, ezert nem engedi at.')
-            kinds = _word_hits_cli(target, state.cwd)
+            kinds = _word_hits_cli(target, state)
             if kinds:
                 _cli_decision(_after_cli(args[1:]), state, kinds)
                 return

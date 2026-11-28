@@ -99,6 +99,8 @@ class Fixture(object):
         os.symlink(os.path.join(self.root, 'scripts', 'with-config.ts'), os.path.join(self.links, 'w.ts'))
         os.symlink(os.path.join(self.root, 'scripts', 'linked-config.ts'), os.path.join(self.links, 'chain.ts'))
         os.symlink(os.path.join(self.root, 'scripts', 'agent-tokens.ts'), os.path.join(self.links, 'lt.ts'))
+        os.symlink(os.path.join(self.root, 'scripts', 'agent-tokens.ts'), os.path.join(self.links, 'x.ts'))   # read after a `cd` into links
+        os.symlink(os.path.join(self.root, 'scripts', 'plain.ts'), os.path.join(self.links, 'y.ts'))
         # links by a BARE name in the working directory (the install root): an interpreter reads `w-bare.ts` relative to there
         os.symlink(os.path.join(self.root, 'scripts', 'with-config.ts'), os.path.join(self.root, 'w-bare.ts'))
         os.symlink(os.path.join(self.root, 'scripts', 'agent-tokens.ts'), os.path.join(self.root, 't-bare.ts'))
@@ -1175,6 +1177,60 @@ TOKEN_BLOCKED = [('tokens verb %s :: %s' % (v, s.split(' {V}')[0]), s.replace('{
     ('tokens: corepack pnpm@tag', 'corepack pnpm@latest agent-tokens issue'),
     ('tokens: corepack pnpm@version under a wrapper', 'env FOO=1 timeout 5 corepack pnpm@9.1.0 agent-tokens issue'),
     ('tokens: corepack, a versioned brace-alternative script word', 'corepack ./scripts/{agent-tokens,plain}@1.ts issue'),
+    # a package manager (or another program that runs a command) given to pnpm / yarn as the binary to run: its command line is checked
+    ('tokens: pnpm npm run', 'pnpm npm run agent-tokens -- issue'),
+    ('tokens: pnpm pnpm bare', 'pnpm pnpm agent-tokens issue'),
+    ('tokens: pnpm npx tsx', 'pnpm npx tsx scripts/agent-tokens.ts issue'),
+    ('tokens: pnpm corepack pnpm', 'pnpm corepack pnpm agent-tokens issue'),
+    ('tokens: pnpm env npm run', 'pnpm env npm run agent-tokens -- issue'),
+    ('tokens: pnpm run npx tsx', 'pnpm run npx tsx scripts/agent-tokens.ts issue'),
+    ('tokens: yarn npm run', 'yarn npm run agent-tokens -- issue'),
+    ('tokens: yarn run pnpm', 'yarn run pnpm agent-tokens issue'),
+    ('tokens: pnpm bash -c', 'pnpm bash -c "npm run agent-tokens -- issue"'),
+    ('login: pnpm npm run', 'pnpm npm run dashboard-user -- add bob'),
+    ('login: yarn pnpm bare', 'yarn pnpm dashboard-user add bob'),
+    # the binary by a path, and with a pinned version
+    ('tokens: pnpm tsx by a relative node_modules path', 'pnpm node_modules/.bin/tsx scripts/agent-tokens.ts issue'),
+    ('tokens: pnpm tsx by a ./ path', 'pnpm ./node_modules/.bin/tsx scripts/agent-tokens.ts issue'),
+    ('tokens: yarn tsx by an absolute path', 'yarn {R}/node_modules/.bin/tsx scripts/agent-tokens.ts issue'),
+    ('tokens: pnpm run tsx by a path', 'pnpm run node_modules/.bin/tsx scripts/agent-tokens.ts issue'),
+    ('tokens: pnpm tsx@version', 'pnpm tsx@4.7.0 scripts/agent-tokens.ts issue'),
+    ('tokens: npx tsx@version', 'npx tsx@4.7.0 scripts/agent-tokens.ts issue'),
+    ('tokens: npx pnpm@version', 'npx pnpm@9 agent-tokens issue'),
+    ('tokens: pnpm dlx pnpm@version', 'pnpm dlx pnpm@9 agent-tokens issue'),
+    ('login: npx pnpm@version', 'npx pnpm@9 dashboard-user add bob'),
+    # yarnpkg is the other name of yarn
+    ('tokens: yarnpkg bare', 'yarnpkg agent-tokens issue'),
+    ('tokens: yarnpkg run', 'yarnpkg run agent-tokens issue'),
+    ('tokens: yarnpkg tsx', 'yarnpkg tsx scripts/agent-tokens.ts issue'),
+    ('tokens: corepack yarnpkg', 'corepack yarnpkg agent-tokens issue'),
+    ('tokens: npx yarnpkg', 'npx yarnpkg agent-tokens issue'),
+    ('login: yarnpkg bare', 'yarnpkg dashboard-user add bob'),
+    # a flag that is a boolean for one manager and a value for another, or one nobody listed: every reading is checked
+    ('tokens: pnpm -w, the script is the next word', 'pnpm -w agent-tokens issue'),
+    ('tokens: pnpm --workspace-root', 'pnpm --workspace-root agent-tokens issue'),
+    ('tokens: pnpm -w tsx', 'pnpm -w tsx scripts/agent-tokens.ts issue'),
+    ('tokens: pnpm --workspace, the script is the next word', 'pnpm --workspace agent-tokens issue'),
+    ('tokens: pnpm -c, the script is the next word', 'pnpm -c agent-tokens issue'),
+    ('tokens: pnpm --reporter (a value nobody listed)', 'pnpm --reporter silent agent-tokens issue'),
+    ('tokens: yarn --mutex (a value nobody listed)', 'yarn --mutex network agent-tokens issue'),
+    ('tokens: pnpm --reporter, tsx', 'pnpm --reporter silent tsx scripts/agent-tokens.ts issue'),
+    ('login: pnpm -w, the script is the next word', 'pnpm -w dashboard-user add bob'),
+    ('login: pnpm --reporter (a value nobody listed)', 'pnpm --reporter silent dashboard-user add bob'),
+    # a link made by an `ln` in the SAME text: it does not exist yet when the gate looks, it will when the command runs
+    ('tokens: ln -s the CLI then tsx on the link', 'ln -s {R}/scripts/agent-tokens.ts {K}/zz.ts && npx tsx {K}/zz.ts issue'),
+    ('tokens: ln the CLI (a hard link) then tsx on it', 'ln {R}/scripts/agent-tokens.ts {K}/h1.ts; tsx {K}/h1.ts revoke alpha'),
+    ('tokens: ln -s with-config then tsx on the link', 'ln -s {R}/scripts/with-config.ts {K}/zw.ts && tsx {K}/zw.ts agent-tokens issue'),
+    ('tokens: ln -s a chain of links', 'ln -s {R}/scripts/agent-tokens.ts {K}/c1.ts && ln -s {K}/c1.ts {K}/c2.ts && tsx {K}/c2.ts issue'),
+    ('tokens: ln -s then a direct execution of the link', 'ln -s {R}/scripts/agent-tokens.ts {K}/zd.ts && {K}/zd.ts issue'),
+    ('tokens: ln -s a relative link name then tsx on it', 'ln -s {R}/scripts/agent-tokens.ts zz2.ts && tsx zz2.ts issue'),
+    ('tokens: cd then ln -s a bare link name then tsx on it', 'cd {K} && ln -s {R}/scripts/agent-tokens.ts q.ts && tsx q.ts issue'),
+    ('tokens: ln -s then pnpm tsx on the link', 'ln -s {R}/scripts/agent-tokens.ts {K}/zp1.ts && pnpm tsx {K}/zp1.ts issue'),
+    ('login: ln -s the login CLI then tsx on the link', 'ln -s {R}/scripts/dashboard-user.ts {K}/zl.ts && tsx {K}/zl.ts add bob'),
+    # an existing link by a bare name, read after a `cd` into its directory
+    ('tokens: cd then tsx on a bare-name link there', 'cd {K} && tsx x.ts issue'),
+    ('tokens: cd then npx tsx on a bare-name link there', 'cd {K} && npx tsx x.ts issue'),
+    ('tokens: cd then a direct execution of a link there', 'cd {K} && ./x.ts issue'),
     # a link by a bare name in the working directory
     ('tokens: tsx on a bare-name symlink of with-config', 'tsx w-bare.ts agent-tokens issue'),
     ('tokens: npx tsx on a bare-name symlink of with-config', 'npx tsx w-bare.ts agent-tokens issue-operator --rotate'),
@@ -1288,6 +1344,26 @@ TOKEN_ALLOWED = [('tokens read verb %s :: %s' % (v, s.split(' {V}')[0]), s.repla
     ('tokens: direct exec of a symlink of with-config, read verb', './scripts/linked-config.ts agent-tokens check'),
     ('tokens: direct exec of a symlink of with-config, another script', '{K}/w.ts status'),
     ('tokens: direct exec of a symlink of the CLI script, read verb', './scripts/linked-tokens.ts check'),
+    ('tokens: pnpm install', 'pnpm install'),
+    ('tokens: pnpm test', 'pnpm test'),
+    ('tokens: pnpm vitest on a name filter', 'pnpm vitest run agent-tokens'),
+    ('tokens: pnpm env use', 'pnpm env use --global lts'),
+    ('tokens: yarn install', 'yarn install'),
+    ('tokens: yarnpkg install', 'yarnpkg install'),
+    ('tokens: yarnpkg, read verb', 'yarnpkg agent-tokens check'),
+    ('tokens: pnpm npm run, another script', 'pnpm npm run build'),
+    ('tokens: pnpm npm run, read verb', 'pnpm npm run agent-tokens -- check'),
+    ('tokens: pnpm tsx by a path, another script', 'pnpm node_modules/.bin/tsx scripts/plain.ts'),
+    ('tokens: pnpm tsx by a path, read verb', 'pnpm node_modules/.bin/tsx scripts/agent-tokens.ts check'),
+    ('tokens: npx pnpm@version, install', 'npx pnpm@9 install'),
+    ('tokens: pnpm -w, run build', 'pnpm -w run build'),
+    ('tokens: pnpm --reporter, run build', 'pnpm --reporter silent run build'),
+    ('tokens: yarn --mutex, install', 'yarn --mutex network install'),
+    ('tokens: pnpm --filter, a name filter of vitest', 'pnpm --filter foo vitest run agent-tokens'),
+    ('tokens: ln -s an unrelated script then tsx on the link', 'ln -s {R}/scripts/plain.ts {K}/zq.ts && tsx {K}/zq.ts'),
+    ('tokens: ln -s the CLI then tsx on the link, read verb', 'ln -s {R}/scripts/agent-tokens.ts {K}/zz.ts && tsx {K}/zz.ts check'),
+    ('tokens: ln -s with-config then tsx on the link, another script', 'ln -s {R}/scripts/with-config.ts {K}/zw.ts && tsx {K}/zw.ts status'),
+    ('tokens: cd then tsx on a bare-name link of an unrelated script', 'cd {K} && tsx y.ts'),
     ('tokens: tsx on a bare-name symlink of with-config, read verb', 'tsx w-bare.ts agent-tokens check'),
     ('tokens: tsx on a bare-name symlink of with-config, another script', 'tsx w-bare.ts status'),
     ('tokens: tsx on a bare-name symlink of the CLI script, read verb', 'tsx t-bare.ts check'),
@@ -1593,6 +1669,14 @@ class TestBounds(unittest.TestCase):
         self.assertLess(time.time() - t0, limit_s, 'took too long for %d chars' % len(cmd))
         return denied
 
+    def test_flipped_flag_readings_are_charged_to_the_work_budget(self):
+        # every distinct flag of a package-manager line is read once more with that flag flipped, and each reading walks the whole
+        # line: thousands of flags are millions of steps. The charge stops it at the work budget, and an inspection that ran out of
+        # budget is a denial, never a pass.
+        cmd = 'pnpm run build ' + ' '.join('-f%d' % i for i in range(4000))
+        self.assertLess(len(cmd), GATE.MAX_CMD_CHARS)
+        self.assertTrue(self.deny_or_pass_fast(cmd, limit_s=5.0))
+
     def test_command_over_the_size_limit_is_denied(self):
         self.assertTrue(self.deny_or_pass_fast('echo ' + 'a' * (GATE.MAX_CMD_CHARS + 10)))
 
@@ -1751,7 +1835,7 @@ MUTANTS = [
     ('PG mode answer ignored', '        return bool(hook_pg_mode.pg_mode())', '        return False'),
     ('CLI entry name not a mutator', "|consumeEnrollCode|runDashboardUserCli'", "|consumeEnrollCode'"),
     ('CLI module path pattern names another folder', "CLI_MODULE_PATH = re.compile(r'dashboard-user", "CLI_MODULE_PATH = re.compile(r'disabled-mutant"),
-    ('npx drops the package flags before the interpreter check', '    inner = [pkg] + _args_after(args, pkg)', '    inner = [pkg] + rest[1:]'),
+    ('npx drops the package flags before the interpreter check', '    inner = [_unversioned(pkg)] + _args_after(args, pkg)', '    inner = [_unversioned(pkg)] + rest[1:]'),
     ('CLI decision never blocks', "    sub = rest[0] if rest else '(nincs alparancs)'\n    for kind in kinds:", "    return\n    sub = rest[0] if rest else '(nincs alparancs)'\n    for kind in kinds:"),
     ('list exemption widened to anything', "        if len(rest) == 1 and rest[0] == 'list':\n            continue", "        if rest and rest[0] == 'list':\n            continue"),
     ('list exemption removed', "        if len(rest) == 1 and rest[0] == 'list':\n            continue", "        if False:\n            continue"),
@@ -1877,30 +1961,40 @@ MUTANTS = [
     # ---- the per-agent token CLI (agent-tokens): the verb rule, the config runner form, the module and mutator names ----
     ('tokens: list allowed', "TOKEN_CLI_READ_VERBS = ('check', 'archive-shared-age')", "TOKEN_CLI_READ_VERBS = ('check', 'list', 'archive-shared-age')"),
     ('corepack not unwrapped', "    if name == 'corepack':\n        # `corepack npm run X`", "    if False:\n        # `corepack npm run X`"),
-    ('corepack unwrapped without its arguments', "            check_words([_unversioned(pos[0])] + _args_after(args, pos[0]), seg, state, depth)\n        return\n    # npx -c", "            check_words([_unversioned(pos[0])], seg, state, depth)\n        return\n    # npx -c"),
-    ('corepack: the pinned version stays on the manager word', "            check_words([_unversioned(pos[0])] + _args_after(args, pos[0]), seg, state, depth)\n        return\n    # npx -c", "            check_words([pos[0]] + _args_after(args, pos[0]), seg, state, depth)\n        return\n    # npx -c"),
+    ('corepack unwrapped without its arguments', "            check_words([_unversioned(pos[0])] + _args_after(args, pos[0]), seg, state, depth)\n        return\n    if name in ('npx', 'pnpx', 'bunx'):", "            check_words([_unversioned(pos[0])], seg, state, depth)\n        return\n    if name in ('npx', 'pnpx', 'bunx'):"),
+    ('corepack: the pinned version stays on the manager word', "            check_words([_unversioned(pos[0])] + _args_after(args, pos[0]), seg, state, depth)\n        return\n    if name in ('npx', 'pnpx', 'bunx'):", "            check_words([pos[0]] + _args_after(args, pos[0]), seg, state, depth)\n        return\n    if name in ('npx', 'pnpx', 'bunx'):"),
     ('corepack: the version is cut from the text only, not from the alternatives', "[cut(a) for a in word.alts]", "word.alts"),
-    ('symlink of the runner: the real path is not looked at', " or _link_stem(alt, cwd) == CLI_RUNNER_STEM for alt in word.alts)", " for alt in word.alts)"),
+    ('symlink of the runner: the real path is not looked at', " or _link_stem(alt, state) == CLI_RUNNER_STEM for alt in word.alts)", " for alt in word.alts)"),
     ('symlink: a direct exec of a linked CLI is not resolved', "        kind = _is_cli_name(_script_stem(alt)) or (_is_cli_name(linked) if linked is not None else None)", "        kind = _is_cli_name(_script_stem(alt))"),
     ('symlink: a direct exec of a linked runner is not resolved', "        if (_script_stem(alt) == CLI_RUNNER_STEM or linked == CLI_RUNNER_STEM) and args:", "        if _script_stem(alt) == CLI_RUNNER_STEM and args:"),
     ('symlink: the link stem helper returns the link name itself', "                return _script_stem(os.path.realpath(full))", "                return _script_stem(full)"),
-    ('pnpm: --filter is not a value flag', "'--filter', '-F', '--filter-prod', '--dir')", "'-F', '--filter-prod', '--dir')"),
-    ('pnpm: -F is not a value flag', "'--filter', '-F', '--filter-prod', '--dir')", "'--filter', '--filter-prod', '--dir')"),
-    ('pnpm: --filter-prod is not a value flag', "'--filter', '-F', '--filter-prod', '--dir')", "'--filter', '-F', '--dir')"),
-    ('pnpm: --dir is not a value flag', "'--filter', '-F', '--filter-prod', '--dir')", "'--filter', '-F', '--filter-prod')"),
+    # the value-flag table is read together with a flipped reading of every flag, so one flag missing from (or wrongly in) the table
+    # is covered by its flipped reading (equal in outcome, not a mutant); what the flipped readings themselves must do is below
+    ('flags: no flipped reading at all', "            _npm_like_once(name, args, _positional(args, flipped), seg, state, depth)", "            pass"),
+    ('flags: a flag in the table is not read as a boolean', "            flipped = tuple(f for f in _NPM_VALUE_FLAGS if f != t) if t in _NPM_VALUE_FLAGS else _NPM_VALUE_FLAGS + (t,)", "            flipped = _NPM_VALUE_FLAGS + (t,)"),
+    ('flags: a flag outside the table is not read as a value', "            flipped = tuple(f for f in _NPM_VALUE_FLAGS if f != t) if t in _NPM_VALUE_FLAGS else _NPM_VALUE_FLAGS + (t,)", "            flipped = tuple(f for f in _NPM_VALUE_FLAGS if f != t)"),
+    ('flags: the flipped readings are not charged to the work budget', "            _charge(state, len(args) + 1)\n", "            pass\n"),
+    ('npm-like: a program given to pnpm / yarn is recognised by its raw word, not its base name', "    n = _base(_unversioned(word))", "    n = word.text"),
+    ('npm-like: the pinned version stays on the program word', "    n = _base(_unversioned(word))", "    n = _base(word)"),
+    ('npm-like: only the node runners are programs to follow', "    return n in _COMMAND_RUNNERS or bool(_PY.match(n))", "    return n in _NODEISH"),
+    ('npm-like: the pinned version stays on the npx package', "    inner = [_unversioned(pkg)] + _args_after(args, pkg)", "    inner = [pkg] + _args_after(args, pkg)"),
+    ('yarnpkg is not a package manager', "    if name in ('npm', 'pnpm', 'yarn', 'yarnpkg', 'npx', 'pnpx', 'bunx', 'corepack'):", "    if name in ('npm', 'pnpm', 'yarn', 'npx', 'pnpx', 'bunx', 'corepack'):"),
+    ('yarnpkg is not read as yarn', "    if name == 'yarnpkg':       # the other name of yarn\n        name = 'yarn'", "    if False:\n        name = 'yarn'"),
+    ('symlink: an ln in the same text is not recorded', "    if len(pos) == 2 and dest is pos[1] and not pos[0].dyn and len(state.link_srcs) < MAX_LINK_DESTS:", "    if False:"),
+    ('symlink: a recorded ln is not read back', "                if pending is not None:\n                    return pending", "                if False:\n                    return pending"),
+    ('symlink: the source of a chain of links is not followed', "        stem = _link_stem(pos[0].text, state)\n        if stem is None:", "        stem = None\n        if stem is None:"),
+    ('symlink: only a CLI source is recorded, not the config runner', "        if _is_cli_name(stem) or stem == CLI_RUNNER_STEM:\n            for c in _cwds(state):", "        if _is_cli_name(stem):\n            for c in _cwds(state):"),
+    ('symlink: the cd targets are not looked in', "    return [state.cwd] + list(state.cd_targets)", "    return [state.cwd]"),
     ('yarn / pnpm workspace form not unwrapped', "    elif pos and ((name == 'yarn' and pos[0].text in ('workspace', 'workspaces'))", "    elif False and ((name == 'yarn' and pos[0].text in ('workspace', 'workspaces'))"),
     ('yarn workspace: the command is looked for at the first positional only', "        for k in range(1, len(pos)):", "        for k in range(1, min(len(pos), 2)):"),
     ('yarn workspace: more words than the scan covers are not denied', "        if len(pos) > _WORKSPACE_SCAN_MAX:\n            raise Deny(", "        if False:\n            raise Deny("),
     ('yarn workspace: the scan stops at the cap instead of denying', "        if len(pos) > _WORKSPACE_SCAN_MAX:\n            raise Deny(", "        pos = pos[:_WORKSPACE_SCAN_MAX]\n        if False:\n            raise Deny("),
-    ('pnpm value flags apply to every manager', "_NPM_VALUE_FLAGS + _MANAGER_VALUE_FLAGS.get(name, ())", "_NPM_VALUE_FLAGS + _PNPM_VALUE_FLAGS"),
-    ('bun: --filter / -F are not value flags', "_MANAGER_VALUE_FLAGS = {'pnpm': _PNPM_VALUE_FLAGS, 'bun': _BUN_VALUE_FLAGS}", "_MANAGER_VALUE_FLAGS = {'pnpm': _PNPM_VALUE_FLAGS}"),
-    ('pnpm: the manager value flags are not applied at all', "_NPM_VALUE_FLAGS + _MANAGER_VALUE_FLAGS.get(name, ())", "_NPM_VALUE_FLAGS"),
-    ('symlink: a bare name is not looked at', "    if alt and not any(c in alt for c in '*?['):\n        try:\n            full", "    if alt and '/' in alt and not any(c in alt for c in '*?['):\n        try:\n            full"),
+    ('symlink: a bare name is not looked at', "    if alt and not any(c in alt for c in '*?['):\n        for c in _cwds(state):", "    if alt and '/' in alt and not any(c in alt for c in '*?['):\n        for c in _cwds(state):"),
     ('yarn workspace: singular form not unwrapped', "pos[0].text in ('workspace', 'workspaces'))", "pos[0].text in ('workspaces',))"),
     ('yarn workspaces: plural form not unwrapped', "pos[0].text in ('workspace', 'workspaces'))", "pos[0].text in ('workspace',))"),
     ('pnpm recursive not unwrapped', "                  or (name == 'pnpm' and pos[0].text in ('recursive', 'multi', 'm'))):", "                  or False):"),
-    ('pnpm run <runner> not followed', "            if w.text in _NODEISH:      # pnpm run tsx", "            if False:      # pnpm run tsx"),
-    ('yarn / pnpm <runner> shorthand not followed', "        if pos[0].text in _NODEISH:     # pnpm tsx scripts", "        if False:     # pnpm tsx scripts"),
+    ('pnpm run <runner> not followed', "            if _word_runs_command(w):   # pnpm run tsx", "            if False:   # pnpm run tsx"),
+    ('yarn / pnpm <runner> shorthand not followed', "        if _word_runs_command(pos[0]):  # pnpm tsx", "        if False:  # pnpm tsx"),
     ('symlink: the real path is not looked at', "            if os.path.islink(full):", "            if False:"),
     ('tokens: any verb allowed', "            if rest and rest[0] in TOKEN_CLI_READ_VERBS:", "            if rest:"),
     ('tokens: a missing verb allowed', "            if rest and rest[0] in TOKEN_CLI_READ_VERBS:", "            if not rest or rest[0] in TOKEN_CLI_READ_VERBS:"),
@@ -1919,7 +2013,7 @@ MUTANTS = [
     ('tokens: the isolated-store exemption lost revoke', "TOKEN_CLI_STORE_ONLY_VERBS = ('issue-operator', 'rotate-shared', 'revoke')", "TOKEN_CLI_STORE_ONLY_VERBS = ('issue-operator', 'rotate-shared')"),
     ('login CLI: the isolated-store exemption removed', "        if state.isolated_cli:      # MARVEEN_STORE_DIR points at a throw-away store: not the live logins\n            continue", "        if False:\n            continue"),
     ('tokens: only the last kind of a word applies', "    return tuple(kinds)", "    return tuple(kinds[-1:])"),
-    ('tokens: with-config runner form not followed', "        if _word_is_runner_script(pos[k], state.cwd) and k + 1 < len(pos):", "        if False:"),
+    ('tokens: with-config runner form not followed', "        if _word_is_runner_script(pos[k], state) and k + 1 < len(pos):", "        if False:"),
     ('tokens: with-config name built at run time allowed', "            target = pos[k + 1]\n            if target.dyn:", "            target = pos[k + 1]\n            if False:"),
     ('tokens: with-config verb position off by one', "                return kinds, pos[k + 2:]", "                return kinds, pos[k + 1:]"),
     ('tokens: with-config direct exec not followed', "        if (_script_stem(alt) == CLI_RUNNER_STEM or linked == CLI_RUNNER_STEM) and args:", "        if False:"),
@@ -2000,6 +2094,12 @@ class TestMutation(unittest.TestCase):
                 cmd = 'echo ' + ' '.join('$(echo %d)' % i for i in range(mod.MAX_SUBS + 20))
                 try:
                     mod.inspect(cmd, FX.root)
+                    return True
+                except mod.InspectionLimit:
+                    return False
+            if name == 'flags: the flipped readings are not charged to the work budget':
+                try:
+                    mod.inspect('pnpm run build ' + ' '.join('-f%d' % i for i in range(4000)), FX.root)
                     return True
                 except mod.InspectionLimit:
                     return False

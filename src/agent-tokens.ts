@@ -184,9 +184,10 @@ export type ArchiveSharedAge = 'predates' | 'current' | 'unknown'
  * `dashboard` token row and the token file, so restoring an archive taken before a rotation brings the
  * replaced shared token back to life: `predates` says so. `unknown` when either side has no active
  * `dashboard` row, or the archive database cannot be read (an older backup without the table).
- * `archiveDbPath` is a throwaway copy (verify-restore extracts it into a temp dir); only a SELECT runs
- * on it, but a database in WAL mode may get its sidecar files next to it, so never point this at a
- * live database file.
+ * `archiveDbPath` is normally a throwaway copy (verify-restore extracts it into a temp dir). The file is only
+ * READ (into memory, a regular file up to 1 GiB; the peak is about twice that, the buffer and the database's copy of it):
+ * nothing is written to the path and no sidecar file appears next to it, so even a live database file given by mistake stays
+ * untouched. A WAL-mode archive is read as it is on disk: pages still in an un-checkpointed -wal file are not seen.
  */
 export async function archiveSharedTokenAge(archiveDbPath: string): Promise<ArchiveSharedAge> {
   try {
