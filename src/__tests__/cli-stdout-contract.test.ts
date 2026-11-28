@@ -15,7 +15,7 @@ const TSX = join(ROOT, 'node_modules', '.bin', 'tsx')
 
 /**
  * Every non-test TypeScript file under scripts/ (not scripts/lib) that opens the database: the file calls initDatabase, or it
- * hands the database work to a body in src/ (runDashboardUserCli: the script boots the backend inside that body).
+ * hands the database work to a body in src/ (runDashboardUserCli, runAgentTokensCli: the script boots the backend inside that body).
  */
 function dbOpeningTools(dir = join(ROOT, 'scripts')): string[] {
   const found: string[] = []
@@ -24,7 +24,7 @@ function dbOpeningTools(dir = join(ROOT, 'scripts')): string[] {
     if (statSync(path).isDirectory()) {
       if (name === '__tests__' || name === 'lib' || name === 'node_modules') continue
       found.push(...dbOpeningTools(path))
-    } else if (name.endsWith('.ts') && /\binitDatabase\(|\brunDashboardUserCli\(/.test(readFileSync(path, 'utf-8'))) {
+    } else if (name.endsWith('.ts') && /\binitDatabase\(|\brunDashboardUserCli\(|\brunAgentTokensCli\(/.test(readFileSync(path, 'utf-8'))) {
       found.push(path)
     }
   }
