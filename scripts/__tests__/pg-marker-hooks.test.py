@@ -94,41 +94,65 @@ class TestPgModeMarker(Env):
 
 
 class TestGateAuditDriftDoesNotWrite(Env):
-    def test_a_drift_does_not_write_the_frozen_sqlite_file(self):
+    """P-E, the gate audit (PR 959 finding 5). The drift cell plants a REAL marker in a throwaway store (MARVEEN_STORE_DIR,
+    which the hooks read as the second place, decision 4); nothing is stubbed except the rule copy. Each mutant turns
+    exactly one of these cells red: the marker check always False (the drift cell), the db_path-is-None condition dropped
+    from the marker branch (the seam cell), the stderr-and-return-False branch removed (the drift cell)."""
+
+    def test_a_drift_with_a_real_marker_writes_nothing(self):
+        import contextlib
+        import io
         import gate_audit_lib as gal
-        root = make_root()
-        put_marker(root)
-        db = os.path.join(root, 'store', 'claudeclaw.db')
-        saved, saved_write, saved_marker = gal._pg_mode, gal._write, gal._marker_refuses_sqlite
+        env_store = make_root()
+        put_marker(env_store)
+        os.environ['MARVEEN_STORE_DIR'] = os.path.join(env_store, 'store')
+        saved_pg, saved_write = gal._pg_mode, gal._write
         calls = []
+        err = io.StringIO()
         try:
-            gal._pg_mode = lambda: False          # the copy of the rule says SQLite (the drift)
-            gal._marker_refuses_sqlite = lambda: True   # the marker is in this install (the hook reads its own install root)
+            gal._pg_mode = lambda: False                 # the copy of the rule says SQLite (the drift)
             gal._write = lambda *a, **k: calls.append(a)
-            # a known gate name: an unknown one returns False before any write, which would make this cell vacuous
-            result = gal.record('auth-admin-gate', 'allow', 'drift cell', 'agent-a', False)
+            with contextlib.redirect_stderr(err):
+                # a known gate name: an unknown one returns False before any write, which would make this cell vacuous
+                result = gal.record('auth-admin-gate', 'allow', 'drift cell', 'agent-a', False)
         finally:
-            gal._pg_mode = saved
-            gal._write = saved_write
-            gal._marker_refuses_sqlite = saved_marker
+            gal._pg_mode, gal._write = saved_pg, saved_write
         self.assertIs(result, False)
         self.assertEqual(calls, [], 'the frozen SQLite file was written on a marked install')
+        self.assertIn('store/.pg-installed', err.getvalue())
 
-    def test_without_a_marker_the_sqlite_arm_still_writes(self):
+    def test_control_without_a_marker_the_sqlite_arm_writes(self):
         import gate_audit_lib as gal
-        root = make_root()
-        db = os.path.join(root, 'store', 'claudeclaw.db')
-        saved, saved_write = gal._pg_mode, gal._write
+        empty_store = make_root()                        # no marker in the environment store, none in the install store
+        os.environ['MARVEEN_STORE_DIR'] = os.path.join(empty_store, 'store')
+        self.assertFalse(gal._marker_refuses_sqlite(), 'precondition: the marker must really be absent')
+        saved_pg, saved_write = gal._pg_mode, gal._write
         calls = []
         try:
             gal._pg_mode = lambda: False
             gal._write = lambda *a, **k: calls.append(a)
-            gal.record('auth-admin-gate', 'allow', 'no marker cell', 'agent-a', False, db_path=db)
+            result = gal.record('auth-admin-gate', 'allow', 'no marker cell', 'agent-a', False)
         finally:
-            gal._pg_mode = saved
-            gal._write = saved_write
-        # no marker: the SQLite arm is taken as before (the seam is the only writer here)
-        self.assertEqual(len(calls), 1)
+            gal._pg_mode, gal._write = saved_pg, saved_write
+        self.assertIs(result, True)
+        self.assertEqual(len(calls), 1, 'the SQLite arm did not write without a marker')
+
+    def test_an_explicit_db_path_is_the_test_seam_and_is_not_refused_by_the_marker(self):
+        import gate_audit_lib as gal
+        env_store = make_root()
+        put_marker(env_store)
+        os.environ['MARVEEN_STORE_DIR'] = os.path.join(env_store, 'store')
+        db = os.path.join(make_root(), 'store', 'claudeclaw.db')
+        saved_pg, saved_write = gal._pg_mode, gal._write
+        calls = []
+        try:
+            gal._pg_mode = lambda: False
+            gal._write = lambda *a, **k: calls.append(a)
+            result = gal.record('auth-admin-gate', 'allow', 'seam cell', 'agent-a', False, db_path=db)
+        finally:
+            gal._pg_mode, gal._write = saved_pg, saved_write
+        self.assertIs(result, True)
+        self.assertEqual(len(calls), 1, 'an explicit db_path (the test seam) must not be refused by the marker')
 
 
 class TestStoreMarkerEitherPlace(Env):
