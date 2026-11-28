@@ -1192,6 +1192,9 @@ TOKEN_BLOCKED = [('tokens verb %s :: %s' % (v, s.split(' {V}')[0]), s.replace('{
     # the binary by a path, and with a pinned version
     ('tokens: pnpm run, the script word is a glob of the CLI', 'pnpm run scripts/agent-tok*.ts issue'),
     ('tokens: yarn run, the script word is a symlink of the CLI', 'yarn run scripts/linked-tokens.ts issue'),
+    ('tokens: pnpm run, a brace word whose later alternative is the verb', 'pnpm run {agent-tokens,issue} check'),
+    ('tokens: npm run, a brace word whose later alternative is the verb', 'npm run {agent-tokens,revoke} check'),
+    ('tokens: tsx, a brace word whose later alternative is the verb', 'tsx scripts/{agent-tokens.ts,issue} check'),
     ('tokens: bun run tsx by a path', 'bun run node_modules/.bin/tsx scripts/agent-tokens.ts issue'),
     ('tokens: npm run tsx@version', 'npm run tsx@4 scripts/agent-tokens.ts issue'),
     ('tokens: npm run npx tsx', 'npm run npx tsx scripts/agent-tokens.ts issue'),
@@ -2017,6 +2020,7 @@ MUTANTS = [
     ('yarn workspace: singular form not unwrapped', "pos[0].text in ('workspace', 'workspaces'))", "pos[0].text in ('workspaces',))"),
     ('yarn workspaces: plural form not unwrapped', "pos[0].text in ('workspace', 'workspaces'))", "pos[0].text in ('workspace',))"),
     ('pnpm run <script>: the CLI name is not checked before the word is dispatched', "            kinds = _word_hits_cli(w, state)        # the CLI by name, glob, brace or link first", "            kinds = ()        # the CLI by name, glob, brace or link first"),
+    ('brace word naming the CLI with other alternatives is read as one word', "    if kinds and len(word.alts) > 1:", "    if False:"),
     ('pnpm run <runner> not followed', "            if name in ('pnpm', 'yarn') or _word_runs_command(w):   # pnpm run tsx", "            if False:   # pnpm run tsx"),
     ('pnpm run <any word> only for known programs', "            if name in ('pnpm', 'yarn') or _word_runs_command(w):   # pnpm run tsx", "            if _word_runs_command(w):   # pnpm run tsx"),
     ('yarn / pnpm <any word> is not dispatched', "        check_words([_unversioned(pos[0])] + _args_after(args, pos[0]), seg, state, depth)\n        return\n    elif name == 'bun' and pos:", "        pass\n        return\n    elif name == 'bun' and pos:"),
@@ -2038,7 +2042,7 @@ MUTANTS = [
     ('tokens: the isolated-store exemption lost rotate-shared', "TOKEN_CLI_STORE_ONLY_VERBS = ('issue-operator', 'rotate-shared', 'revoke')", "TOKEN_CLI_STORE_ONLY_VERBS = ('issue-operator', 'revoke')"),
     ('tokens: the isolated-store exemption lost revoke', "TOKEN_CLI_STORE_ONLY_VERBS = ('issue-operator', 'rotate-shared', 'revoke')", "TOKEN_CLI_STORE_ONLY_VERBS = ('issue-operator', 'rotate-shared')"),
     ('login CLI: the isolated-store exemption removed', "        if state.isolated_cli:      # MARVEEN_STORE_DIR points at a throw-away store: not the live logins\n            continue", "        if False:\n            continue"),
-    ('tokens: only the last kind of a word applies', "    return tuple(kinds)", "    return tuple(kinds[-1:])"),
+    # (a mutant "only the last kind of a word applies" is equal in outcome now: a word with several alternatives that names the CLI is denied)
     ('tokens: with-config runner form not followed', "        if _word_is_runner_script(pos[k], state) and k + 1 < len(pos):", "        if False:"),
     ('tokens: with-config name built at run time allowed', "            target = pos[k + 1]\n            if target.dyn:", "            target = pos[k + 1]\n            if False:"),
     ('tokens: with-config verb position off by one', "                return kinds, pos[k + 2:]", "                return kinds, pos[k + 1:]"),

@@ -1002,6 +1002,11 @@ def _word_hits_cli(word, state):
                 k = _is_cli_name(_script_stem(h))
                 if k and k not in kinds:
                     kinds.append(k)
+    if kinds and len(word.alts) > 1:
+        # `pnpm run {agent-tokens,issue} check`: the shell expands the word into several arguments, so the verb is not the word the
+        # gate reads after it (`check`) but a later alternative (`issue`). The gate cannot tell: denied.
+        raise Deny('a CLI neve egy tobb alternativas (kapcsos zarojeles) szoban: a shell tobb argumentumga bontja, a kapu nem tudja '
+                   'eldonteni, melyik az alparancs, ezert nem engedi at.')
     return tuple(kinds)
 
 
