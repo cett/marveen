@@ -175,6 +175,8 @@ if [[ "${PG_CONFIGURED}" -eq 0 ]]; then
   fi
 fi
 add_if "${REPOLIST}" "${REPO_ROOT}" store/vault.json
+# the PostgreSQL install marker (P-E): a restore of a PostgreSQL install onto a new machine comes up marked
+add_if "${REPOLIST}" "${REPO_ROOT}" store/.pg-installed
 add_if "${REPOLIST}" "${REPO_ROOT}" .env
 add_if "${REPOLIST}" "${REPO_ROOT}" scheduled-tasks.json
 add_if "${REPOLIST}" "${REPO_ROOT}" assets/meetings
