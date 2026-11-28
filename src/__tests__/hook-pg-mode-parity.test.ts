@@ -6,7 +6,7 @@
 // Privacy: neutral fixtures only (leakmarker, placeholder-pass).
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, existsSync, readFileSync, rmSync, writeFileSync, chmodSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, chmodSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -142,8 +142,9 @@ async function appAnswer(f: Fixture, mountDir: string, installRoot: string): Pro
   const url = await import('../db/pg/url.js')
   const resolved = url.resolvePgUrl() !== undefined
   const marker = process.env.MARVEEN_PG_CONFIGURED === '1'
-  // the store marker, the fifth layer: the classification of the app side (its boot does not refuse on it yet: decision D3)
-  const storeMarker = existsSync(join(installRoot, 'store', '.pg-installed'))
+  // the store marker, the fifth layer: the app's OWN reader (the same function its SQLite entry calls, decision D3),
+  // applied to the install's store dir (the parity cell measures the real reader, not a second existsSync)
+  const storeMarker = url.pgInstallMarkerPresentIn(join(installRoot, 'store'))
   return resolved || marker || storeMarker ? 'PG' : 'SQLite'
 }
 

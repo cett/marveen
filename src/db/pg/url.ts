@@ -125,8 +125,18 @@ export function assertSqliteEntryAllowed(entry: string): void {
 }
 
 function pgInstallMarkerPresent(): boolean {
+  return pgInstallMarkerPresentIn(STORE_DIR)
+}
+
+/**
+ * The store marker (P-E) is present in `storeDir`: the marker file can be stat'ed, or the stat fails for any reason other
+ * than "absent" (an unreadable store, a store that is a file). Doubt is PostgreSQL, the same rule as the shell reference
+ * (scripts/pg-configured.sh) and the hook side (scripts/hooks/hook_pg_mode.py). Exported so the parity cell calls THIS
+ * reader, not a copy of it.
+ */
+export function pgInstallMarkerPresentIn(storeDir: string): boolean {
   try {
-    statSync(join(STORE_DIR, PG_INSTALL_MARKER))
+    statSync(join(storeDir, PG_INSTALL_MARKER))
     return true
   } catch (err) {
     return (err as NodeJS.ErrnoException).code !== 'ENOENT'
