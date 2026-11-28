@@ -18,7 +18,10 @@ import tempfile
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-HOOKS = os.path.join(os.path.dirname(HERE), 'hooks')
+# the hooks come from an isolated install root (a copy with an empty store): a real marker in this checkout's store must not
+# change what these cells expect (pg_install_isolation.py, PR 959 test-only isolation)
+from pg_install_isolation import isolated_hooks_dir  # noqa: E402
+HOOKS = isolated_hooks_dir()
 sys.path.insert(0, HOOKS)
 
 import hook_pg_mode  # noqa: E402
