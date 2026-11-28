@@ -155,6 +155,53 @@ class TestGateAuditDriftDoesNotWrite(Env):
         self.assertEqual(len(calls), 1, 'an explicit db_path (the test seam) must not be refused by the marker')
 
 
+class TestContextWatchdogMarkerDrift(Env):
+    """P-E, nit 6: the context-watchdog on a rule drift (the rule says SQLite, the marker says PostgreSQL) exits 0 with its
+    telemetry dropped and never reaches sqlite3.connect. The control (no marker) shows the connect IS reached."""
+
+    def _run(self, pg_rule, marker_present):
+        import contextlib
+        import io
+        import sqlite3
+        wd = load_hook('context-watchdog')
+        saved = (wd._known_agent_cwd, wd.latest_usage_event, hook_pg_mode.pg_mode,
+                 hook_pg_mode.store_marker_present, sqlite3.connect, sys.stdin)
+        calls = []
+
+        def spy(*a, **k):
+            calls.append(a)
+            raise RuntimeError('spy: the SQLite file was reached')
+
+        wd._known_agent_cwd = lambda cwd: 'agent-a'
+        wd.latest_usage_event = lambda path: {'message': {'usage': {'input_tokens': 1}}}
+        hook_pg_mode.pg_mode = lambda *a, **k: pg_rule
+        hook_pg_mode.store_marker_present = lambda *a, **k: marker_present
+        sqlite3.connect = spy
+        sys.stdin = io.StringIO(json.dumps({'cwd': '/nonexistent/agent-a', 'session_id': 'session-a',
+                                            'transcript_path': '/nonexistent/transcript.jsonl', 'tool_name': 'Bash'}))
+        err = io.StringIO()
+        code = None
+        try:
+            with contextlib.redirect_stderr(err):
+                wd.main()
+        except SystemExit as exc:
+            code = exc.code
+        finally:
+            (wd._known_agent_cwd, wd.latest_usage_event, hook_pg_mode.pg_mode,
+             hook_pg_mode.store_marker_present, sqlite3.connect, sys.stdin) = saved
+        return code, calls, err.getvalue()
+
+    def test_drift_exits_0_and_never_opens_the_sqlite_file(self):
+        code, calls, err = self._run(pg_rule=False, marker_present=True)
+        self.assertEqual(code, 0)
+        self.assertEqual(calls, [], 'the SQLite file was opened on a marked install')
+        self.assertIn('.pg-installed', err)
+
+    def test_control_without_a_marker_the_sqlite_arm_is_reached(self):
+        _code, calls, _err = self._run(pg_rule=False, marker_present=False)
+        self.assertGreaterEqual(len(calls), 1, 'the spy was not reached: the drift cell would be vacuous')
+
+
 class TestStoreMarkerEitherPlace(Env):
     """P-E, decision 4: the hooks look for the store marker in <install>/store AND in $MARVEEN_STORE_DIR when it is set.
     The three cells: the marker only in the environment store, only in the install store, and neither."""
