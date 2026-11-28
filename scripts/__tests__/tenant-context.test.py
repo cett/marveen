@@ -18,7 +18,10 @@ import time
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-HOOKS = os.path.join(ROOT, "scripts", "hooks")
+# the hooks come from an isolated install root (a copy with an empty store): a real PostgreSQL marker in this checkout's
+# store must not turn the SQLite cells red (pg_install_isolation.py, test-only isolation)
+from pg_install_isolation import isolated_hooks_dir  # noqa: E402
+HOOKS = isolated_hooks_dir()
 sys.path.insert(0, HOOKS)
 _spec = importlib.util.spec_from_file_location("tenant_context_lib", os.path.join(HOOKS, "tenant_context_lib.py"))
 tcl = importlib.util.module_from_spec(_spec)

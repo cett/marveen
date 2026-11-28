@@ -34,7 +34,11 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 SCRIPTS = os.path.dirname(HERE)
 REPO = os.path.dirname(SCRIPTS)
-HOOKS = os.path.join(SCRIPTS, 'hooks')
+# the hooks come from an isolated install root (a copy with an empty store): a real PostgreSQL marker in this checkout's
+# store must not turn the SQLite cells red, and a PG-mode hook must not POST to the live dashboard (pg_install_isolation.py,
+# test-only isolation)
+from pg_install_isolation import isolated_hooks_dir  # noqa: E402
+HOOKS = isolated_hooks_dir()
 MIGRATIONS = os.path.join(REPO, 'src', 'migrations')
 
 sys.path.insert(0, HOOKS)
