@@ -86,7 +86,11 @@ pg_configured() {
 
   # 5. the store marker: the PostgreSQL boot writes <store>/.pg-installed once, and it outlives the environment (a lost .env
   #    or a shell without the marker variable does not erase it). Read from the install root's store, as the hooks read it.
+  # either place (P-E, decision 4): the install's store, and $MARVEEN_STORE_DIR when that variable is set
   if [[ -n "$root" ]] && pg_store_marker_at "$root/store"; then
+    return 0
+  fi
+  if [[ -n "${MARVEEN_STORE_DIR:-}" ]] && pg_store_marker_at "$MARVEEN_STORE_DIR"; then
     return 0
   fi
 

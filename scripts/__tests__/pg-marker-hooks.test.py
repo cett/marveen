@@ -23,7 +23,8 @@ sys.path.insert(0, HOOKS)
 
 import hook_pg_mode  # noqa: E402
 
-FOR_ENV = ('MARVEEN_PG_URL', 'MARVEEN_PG_CONFIGURED', 'LEDGER_DB_PATH', 'SECRET_MOUNT_DIR', 'CLAUDECLAW_ENV_DIR')
+FOR_ENV = ('MARVEEN_PG_URL', 'MARVEEN_PG_CONFIGURED', 'LEDGER_DB_PATH', 'SECRET_MOUNT_DIR', 'CLAUDECLAW_ENV_DIR',
+           'MARVEEN_STORE_DIR')
 
 
 def make_root():
@@ -128,6 +129,34 @@ class TestGateAuditDriftDoesNotWrite(Env):
             gal._write = saved_write
         # no marker: the SQLite arm is taken as before (the seam is the only writer here)
         self.assertEqual(len(calls), 1)
+
+
+class TestStoreMarkerEitherPlace(Env):
+    """P-E, decision 4: the hooks look for the store marker in <install>/store AND in $MARVEEN_STORE_DIR when it is set.
+    The three cells: the marker only in the environment store, only in the install store, and neither."""
+
+    def test_marker_only_in_the_environment_store_counts(self):
+        root = make_root()           # install store: no marker
+        env_root = make_root()
+        put_marker(env_root)         # the marker lives in the store the variable names
+        os.environ['MARVEEN_STORE_DIR'] = os.path.join(env_root, 'store')
+        self.assertTrue(hook_pg_mode.store_marker_present(root))
+        self.assertTrue(hook_pg_mode.pg_mode(root))
+
+    def test_marker_only_in_the_install_store_counts_with_the_variable_set(self):
+        root = make_root()
+        put_marker(root)
+        env_root = make_root()       # the variable names an empty store
+        os.environ['MARVEEN_STORE_DIR'] = os.path.join(env_root, 'store')
+        self.assertTrue(hook_pg_mode.store_marker_present(root))
+        self.assertTrue(hook_pg_mode.pg_mode(root))
+
+    def test_neither_place_has_the_marker_is_sqlite(self):
+        root = make_root()
+        env_root = make_root()
+        os.environ['MARVEEN_STORE_DIR'] = os.path.join(env_root, 'store')
+        self.assertFalse(hook_pg_mode.store_marker_present(root))
+        self.assertFalse(hook_pg_mode.pg_mode(root))
 
 
 def run_hook_main(mod, payload, pg_rule, marker_present, connect_owner, connect_name):

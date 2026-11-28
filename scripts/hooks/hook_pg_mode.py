@@ -82,18 +82,29 @@ def _marker_present(path):
         return True
 
 
+def store_marker_paths(install_root=None):
+    """The places the store marker is looked for (P-E, decision 4): <install>/store, and $MARVEEN_STORE_DIR/ when that
+    variable is set. EITHER place counts, which only tightens: a process that exports the variable cannot hide the live
+    install's marker, and a relocated store (a deployment that sets the variable) does not silently miss the layer."""
+    paths = [store_marker_path(install_root)]
+    env_store = (os.environ.get("MARVEEN_STORE_DIR") or "").strip()
+    if env_store:
+        paths.append(os.path.join(env_store, STORE_MARKER))
+    return paths
+
+
 def store_marker_present(install_root=None):
-    """The store marker exists (P-E). The SQLite arms of the hooks call this as a second check: a copy of the rule that says
-    SQLite while the marker is there is a drift, and the SQLite file is not opened (fail closed)."""
-    return _marker_present(store_marker_path(install_root))
+    """The store marker exists in either place (P-E). The SQLite arms of the hooks call this as a second check: a copy of the
+    rule that says SQLite while the marker is there is a drift, and the SQLite file is not opened (fail closed)."""
+    return any(_marker_present(p) for p in store_marker_paths(install_root))
 
 
 def pg_mode(install_root=None):
     """True when the install is configured for PostgreSQL: any of the four configuration layers (see the module text), or the
-    store marker, which outlives the configuration. Returns a boolean, never the URL or the marker content."""
+    store marker (either place), which outlives the configuration. Returns a boolean, never the URL or the marker content."""
     if _configured_by_layers(install_root):
         return True
-    return _marker_present(store_marker_path(install_root))
+    return store_marker_present(install_root)
 
 
 def _configured_by_layers(install_root=None):
