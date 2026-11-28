@@ -15,6 +15,19 @@
 #
 # Usage: pg_configured [install-root]   (returns 0 for TRUE, 1 for FALSE)
 
+# pg_store_marker_at <store-dir>: the store marker is present in this store dir (P-E). Present when the marker file can be
+# stat'ed, OR when the store dir exists and is not a traversable directory (an unreadable store, or a store that is a
+# file): doubt is PostgreSQL, the same rule as the app's reader (pgInstallMarkerPresentIn) and the hook side
+# (hook_pg_mode._marker_present). A store dir that does not exist at all is absent (a fresh SQLite install).
+pg_store_marker_at() {
+  local store="${1%/}"
+  [[ -e "$store/.pg-installed" ]] && return 0
+  if [[ -e "$store" ]]; then
+    [[ ! -d "$store" || ! -x "$store" ]] && return 0
+  fi
+  return 1
+}
+
 pg_configured() {
   local root="${1:-}"
   local mount_dir="${SECRET_MOUNT_DIR:-/run/secrets}"
@@ -73,7 +86,7 @@ pg_configured() {
 
   # 5. the store marker: the PostgreSQL boot writes <store>/.pg-installed once, and it outlives the environment (a lost .env
   #    or a shell without the marker variable does not erase it). Read from the install root's store, as the hooks read it.
-  if [[ -n "$root" && -e "$root/store/.pg-installed" ]]; then
+  if [[ -n "$root" ]] && pg_store_marker_at "$root/store"; then
     return 0
   fi
 

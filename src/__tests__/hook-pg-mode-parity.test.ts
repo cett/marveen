@@ -27,6 +27,12 @@ interface Fixture {
   storeMarker?: boolean
   /** the marker MARVEEN_PG_CONFIGURED=1 */
   marker?: boolean
+  /** the store dir holds the marker but has no search bit: the marker cannot be stat'ed (a chmod row: skipped as root) */
+  unreadableStore?: boolean
+  /** the store path is a regular file, not a directory */
+  storeIsFile?: boolean
+  /** the answer the app must give (a row that pins the rule, not only the agreement of the three readers) */
+  expect?: 'PG' | 'SQLite'
 }
 
 // The table of src/__tests__/backup-guard-parity.test.ts, row for row (a cell below pins that no row was dropped),
@@ -59,6 +65,10 @@ const FIXTURES: Fixture[] = [
   { name: 'store marker with a blank URL in the .env', storeMarker: true, dotenv: 'MARVEEN_PG_URL=   \n' },
   { name: 'store marker with an unreadable .env', storeMarker: true, unreadableDotenv: true },
   { name: 'store marker absent, nothing configured', storeMarker: false },
+  // one rule for an unreadable store (P-E, decision 3): the marker is PRESENT when its store cannot be read or is not a
+  // directory; a store that does not exist at all stays absent (the row above)
+  { name: 'store dir without the search bit (the marker inside cannot be read)', unreadableStore: true, expect: 'PG' },
+  { name: 'store path is a regular file, not a directory', storeIsFile: true, expect: 'PG' },
   // rows that are specific to the Python parser (not in the shell table)
   { name: 'py-only: a lone double quote as the value', dotenv: 'MARVEEN_PG_URL="\n' },
   { name: 'py-only: a value with a space inside the quotes only', dotenv: 'MARVEEN_PG_URL=" "\n' },
@@ -68,6 +78,10 @@ const FIXTURES: Fixture[] = [
 ]
 
 let root: string
+/** directories a fixture made unsearchable: restored before the cleanup (rmSync cannot enter them otherwise) */
+const toRestore: string[] = []
+/** root reads through a 0000 directory, so the chmod rows say nothing there (nit 8): they are skipped */
+const isRoot = typeof process.getuid === 'function' && process.getuid() === 0
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'hook-pg-parity-'))
@@ -78,6 +92,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllEnvs()
+  for (const p of toRestore.splice(0)) chmodSync(p, 0o755)
   rmSync(root, { recursive: true, force: true })
 })
 
@@ -93,10 +108,15 @@ function materialise(f: Fixture): { mountDir: string; installRoot: string } {
     writeFileSync(join(installRoot, '.env'), `MARVEEN_PG_URL=${URL}\n`)
     chmodSync(join(installRoot, '.env'), 0o000)
   }
-  if (f.storeMarker) {
+  if (f.storeMarker || f.unreadableStore) {
     mkdirSync(join(installRoot, 'store'))
     writeFileSync(join(installRoot, 'store', '.pg-installed'), 'pg-installed 2026-11-28T00:00:00.000Z\n')
   }
+  if (f.unreadableStore) {
+    chmodSync(join(installRoot, 'store'), 0o000)
+    toRestore.push(join(installRoot, 'store'))
+  }
+  if (f.storeIsFile) writeFileSync(join(installRoot, 'store'), 'not a directory\n')
   return { mountDir, installRoot }
 }
 
@@ -110,7 +130,8 @@ function childEnv(f: Fixture, mountDir: string): Record<string, string> {
 /** The shell reference: scripts/pg-configured.sh. */
 function shellAnswer(f: Fixture, mountDir: string, installRoot: string): string {
   const text = readFileSync(join(INSTALL, 'scripts', 'pg-configured.sh'), 'utf-8')
-  const script = `${text.slice(text.indexOf('pg_configured() {'))}\npg_configured "${installRoot}" && echo PG || echo SQLite\n`
+  // from the first helper on (pg_store_marker_at sits above pg_configured): the functions the answer needs
+  const script = `${text.slice(text.indexOf('pg_store_marker_at() {'))}\npg_configured "${installRoot}" && echo PG || echo SQLite\n`
   return spawnSync('bash', ['-c', script], { env: childEnv(f, mountDir), encoding: 'utf-8' }).stdout.trim()
 }
 
@@ -150,9 +171,10 @@ async function appAnswer(f: Fixture, mountDir: string, installRoot: string): Pro
 
 describe('the hook-side PostgreSQL switch: Python, the app and pg-configured.sh agree on every fixture', () => {
   for (const f of FIXTURES) {
-    it(`fixture "${f.name}"`, async () => {
+    it.skipIf(f.unreadableStore === true && isRoot)(`fixture "${f.name}"`, async () => {
       const { mountDir, installRoot } = materialise(f)
       const app = await appAnswer(f, mountDir, installRoot)
+      if (f.expect !== undefined) expect(app, `the app on "${f.name}"`).toBe(f.expect)
       expect(pythonAnswer(f, mountDir, installRoot), `python on "${f.name}"`).toBe(app)
       expect(shellAnswer(f, mountDir, installRoot), `pg-configured.sh on "${f.name}"`).toBe(app)
     })
