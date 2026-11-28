@@ -5,7 +5,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, truncateSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
@@ -146,5 +146,51 @@ describe('agent-tokens on SQLite: one cell per verb', () => {
       expect(dump).not.toContain(raw)
       expect(dump).not.toContain(sha(raw))
     }
+  }, 120_000)
+
+  it('archive-shared-age reads a WAL-mode archive without writing: predates / current, same bytes, no sidecar file, odd file names', () => {
+    const now = Math.floor(Date.now() / 1000)
+    // WAL mode is recorded in the file header: a plain read-only open of such a file with no -wal / -shm next to it fails
+    const wal = (name: string, createdAt: number): string => {
+      const path = join(storeDir, name)
+      const a = new Database(path)
+      a.pragma('journal_mode = WAL')
+      a.exec('CREATE TABLE api_tokens (id INTEGER PRIMARY KEY, token_hash TEXT, name TEXT, created_at INTEGER, revoked_at INTEGER)')
+      a.prepare("INSERT INTO api_tokens (token_hash, name, created_at, revoked_at) VALUES ('h', 'dashboard', ?, NULL)").run(createdAt)
+      a.close()   // the last connection checkpoints and removes the sidecars
+      return path
+    }
+    expect(cli(['rotate-shared']).status).toBe(0)   // the live side: a shared token enrolled now
+    for (const [name, createdAt, expected] of [['wal-old.db', 1, 'predates\n'], ['wal new (1)#2%.db', now + 3600, 'current\n']] as const) {
+      const path = wal(name, createdAt)
+      expect(readdirSync(storeDir).filter((f) => f.startsWith(name))).toEqual([name])   // no sidecar before the call
+      const before = readFileSync(path)
+      const listing = readdirSync(storeDir).sort()
+      const r = cli(['archive-shared-age', path])
+      expect(r.stdout, r.stderr).toBe(expected)
+      expect(readFileSync(path).equals(before)).toBe(true)
+      expect(readdirSync(storeDir).sort()).toEqual(listing)                              // no -wal / -shm / -journal appeared
+    }
+    // a directory nobody may write to: a plain open of a WAL-mode file would need to create its -shm there and fail
+    const roDir = join(storeDir, 'ro')
+    mkdirSync(roDir)
+    const inRo = join(roDir, 'wal-ro.db')
+    const a = new Database(inRo)
+    a.pragma('journal_mode = WAL')
+    a.exec('CREATE TABLE api_tokens (id INTEGER PRIMARY KEY, token_hash TEXT, name TEXT, created_at INTEGER, revoked_at INTEGER)')
+    a.prepare("INSERT INTO api_tokens (token_hash, name, created_at, revoked_at) VALUES ('h', 'dashboard', 1, NULL)").run()
+    a.close()
+    chmodSync(roDir, 0o555)
+    try {
+      expect(cli(['archive-shared-age', inRo]).stdout).toBe('predates\n')
+    } finally {
+      chmodSync(roDir, 0o755)
+    }
+    // a missing file, and a file over the size cap (a sparse file: it takes no disk)
+    expect(cli(['archive-shared-age', join(storeDir, 'no-such.db')]).stdout).toBe('unknown\n')
+    const huge = join(storeDir, 'huge.db')
+    writeFileSync(huge, '')
+    truncateSync(huge, 1024 * 1024 * 1024 + 1)
+    expect(cli(['archive-shared-age', huge]).stdout).toBe('unknown\n')
   }, 120_000)
 })
