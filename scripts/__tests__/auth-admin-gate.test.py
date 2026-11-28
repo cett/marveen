@@ -1190,6 +1190,8 @@ TOKEN_BLOCKED = [('tokens verb %s :: %s' % (v, s.split(' {V}')[0]), s.replace('{
     ('login: pnpm npm run', 'pnpm npm run dashboard-user -- add bob'),
     ('login: yarn pnpm bare', 'yarn pnpm dashboard-user add bob'),
     # the binary by a path, and with a pinned version
+    ('tokens: pnpm run, the script word is a glob of the CLI', 'pnpm run scripts/agent-tok*.ts issue'),
+    ('tokens: yarn run, the script word is a symlink of the CLI', 'yarn run scripts/linked-tokens.ts issue'),
     ('tokens: bun run tsx by a path', 'bun run node_modules/.bin/tsx scripts/agent-tokens.ts issue'),
     ('tokens: npm run tsx@version', 'npm run tsx@4 scripts/agent-tokens.ts issue'),
     ('tokens: npm run npx tsx', 'npm run npx tsx scripts/agent-tokens.ts issue'),
@@ -2014,6 +2016,7 @@ MUTANTS = [
     ('symlink: a bare name is not looked at', "    if alt and not any(c in alt for c in '*?['):\n        for c in _cwds(state):", "    if alt and '/' in alt and not any(c in alt for c in '*?['):\n        for c in _cwds(state):"),
     ('yarn workspace: singular form not unwrapped', "pos[0].text in ('workspace', 'workspaces'))", "pos[0].text in ('workspaces',))"),
     ('yarn workspaces: plural form not unwrapped', "pos[0].text in ('workspace', 'workspaces'))", "pos[0].text in ('workspace',))"),
+    ('pnpm run <script>: the CLI name is not checked before the word is dispatched', "            kinds = _word_hits_cli(w, state)        # the CLI by name, glob, brace or link first", "            kinds = ()        # the CLI by name, glob, brace or link first"),
     ('pnpm run <runner> not followed', "            if name in ('pnpm', 'yarn') or _word_runs_command(w):   # pnpm run tsx", "            if False:   # pnpm run tsx"),
     ('pnpm run <any word> only for known programs', "            if name in ('pnpm', 'yarn') or _word_runs_command(w):   # pnpm run tsx", "            if _word_runs_command(w):   # pnpm run tsx"),
     ('yarn / pnpm <any word> is not dispatched', "        check_words([_unversioned(pos[0])] + _args_after(args, pos[0]), seg, state, depth)\n        return\n    elif name == 'bun' and pos:", "        pass\n        return\n    elif name == 'bun' and pos:"),

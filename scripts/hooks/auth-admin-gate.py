@@ -1700,6 +1700,10 @@ def _npm_like_once(name, args, pos, seg, state, depth):
             if w.dyn and not name == 'bun':
                 raise Deny('npm run egy futasidoben kepzett script-nevvel: a kapu nem tudja eldonteni, '
                            'hogy a dashboard-user / agent-tokens-e, ezert nem engedi at.')
+            kinds = _word_hits_cli(w, state)        # the CLI by name, glob, brace or link first (`pnpm run scripts/agent-tok*.ts issue`)
+            if kinds:
+                _cli_decision(_after_cli(_args_after(args, w)), state, kinds)
+                return
             if name in ('pnpm', 'yarn') or _word_runs_command(w):   # pnpm run tsx scripts/agent-tokens.ts ... / pnpm run npx tsx ...: the program, then its command line
                 check_words([_unversioned(w)] + _args_after(args, w), seg, state, depth)
                 return
