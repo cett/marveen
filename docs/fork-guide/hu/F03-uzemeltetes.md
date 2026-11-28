@@ -544,6 +544,7 @@ Ha az adatbázis PostgreSQL (a `MARVEEN_PG_URL` megvan a secret mountban, a kör
 - A 24 órás visszatérési forrás az utolsó, az URL beállítása előtt készült archívum: átállás előtt névvel félre kell tenni.
   A tervezett visszaállási ablak 24 óra. Az archívum addig marad a forgásban, amíg a legfrissebb `BACKUP_KEEP` archívum
   megmarad (alapértelmezés 30, éjszakánként egy, nagyjából 30 nap), utána törlődik: ezért névvel félre kell tenni, ne a forgásra bízni.
+- **A PostgreSQL telepítési jelölő** `store/.pg-installed` az első PostgreSQL-indításkor íródik egyszer, és soha nem íródik újra. A shell-eszközök és a hook-ok tényként olvassák: a telepítés PostgreSQL, akkor is, ha az URL kikerült a `.env`-ből. Ha szándékosan vissza akarsz térni SQLite-ra (írásban rögzített döntés, nem javítás): töröld a `MARVEEN_PG_URL`-t, és töröld a `store/.pg-installed` fájlt. Automatikusan semmi nem törli. A PostgreSQL-telepítés biztonsági mentése archiválja a jelölőt, így a visszaállítás jelölve jön vissza.
 
 A felismerési szabály a `scripts/pg-configured.sh`-ban van; a `backup.sh` és a `restore-drill.sh` ezt a fájlt sourceolja, így egyetlen másolat van, és nem tud eltérni. Az olvashatatlan `.env` a jelölővel együtt PostgreSQL-nek számít.
 
