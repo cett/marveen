@@ -192,5 +192,16 @@ describe('agent-tokens on SQLite: one cell per verb', () => {
     writeFileSync(huge, '')
     truncateSync(huge, 1024 * 1024 * 1024 + 1)
     expect(cli(['archive-shared-age', huge]).stdout).toBe('unknown\n')
+    // not a regular file: a FIFO reports size 0 (the cap never fires) and a read of it blocks for ever when nobody writes; a
+    // directory is no archive either. Both end as `unknown`, and the call returns (the timeout makes a hang a red cell, not a stuck run).
+    const fifo = join(storeDir, 'archive.fifo')
+    expect(spawnSync('mkfifo', [fifo]).status).toBe(0)
+    const f = spawnSync(TSX, ['scripts/agent-tokens.ts', 'archive-shared-age', fifo], {
+      cwd: ROOT, encoding: 'utf-8', timeout: 20_000, stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, MARVEEN_STORE_DIR: storeDir, CLAUDECLAW_ENV_DIR: storeDir, DASHBOARD_TOKEN: '', MARVEEN_PG_URL: '' },
+    })
+    expect(f.error, 'the FIFO call must not hang').toBeUndefined()
+    expect(f.stdout).toBe('unknown\n')
+    expect(cli(['archive-shared-age', storeDir]).stdout).toBe('unknown\n')
   }, 120_000)
 })

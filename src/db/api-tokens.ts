@@ -265,7 +265,11 @@ export function archiveDashboardTokenCreatedAt(archiveDbPath: string): number | 
   // was. Neither of the file-based ways works: a plain `readonly: true` cannot open a WAL-mode file whose sidecars are gone
   // (SQLITE_CANTOPEN), and better-sqlite3 does not take a `file:...?immutable=1` URI. The buffer is capped (an archive
   // database is far smaller); a file over the cap or one that is missing throws, and the caller reads that as `unknown`.
-  if (statSync(archiveDbPath).size > ARCHIVE_DB_MAX_BYTES) throw new Error(`archive database over ${ARCHIVE_DB_MAX_BYTES} bytes`)
+  // Only a REGULAR file is read: a character device (/dev/zero) or a FIFO reports size 0, so the cap below would never fire and the
+  // read would run to Node's own limit or block for ever on a pipe nobody writes to. Anything else throws, the caller says `unknown`.
+  const info = statSync(archiveDbPath)
+  if (!info.isFile()) throw new Error('archive path is not a regular file')
+  if (info.size > ARCHIVE_DB_MAX_BYTES) throw new Error(`archive database over ${ARCHIVE_DB_MAX_BYTES} bytes`)
   const bytes = readFileSync(archiveDbPath)
   // A WAL-mode file records the mode in its header (bytes 18 and 19 are 2): an in-memory database cannot run WAL and would
   // refuse the buffer. The copy is read as a rollback-journal database (1, 1); the committed pages are in the main file

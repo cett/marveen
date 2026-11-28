@@ -64,10 +64,13 @@ an unreadable event: exit 2. Exit 0 only after a complete inspection found nothi
 HONEST LIMITS (good-faith protection against the same OS user, like the docs say):
   - RESIDUAL RISK, the denylist class: a script the agent CONSTRUCTS first is not seen. A copy of the CLI script made in
     the same command (it does not exist yet when the gate looks), a one-off .ts written with the Write tool, a module
-    path or a function name built from strings, `npm --script-shell`, NODE_OPTIONS. The gate is not a sandbox. What it
-    does see is every form a normal operator or tool would type: package-manager wrappers (corepack, npx, pnpm, yarn,
-    bun), their run shorthands (`pnpm tsx scripts/x.ts`), runner binaries, a link that already exists (the stem of its
-    real path counts), the config runner form, shells and shell script files.
+    path or a function name built from strings, `npm --script-shell`, NODE_OPTIONS; likewise a COMMAND word that is itself
+    built at run time (`$V run agent-tokens issue`, `{npm,yarn} run agent-tokens issue`: the package manager is not named). The
+    gate is not a sandbox. What it does see is every form a normal operator or tool would type: package-manager wrappers
+    (corepack, also with a pinned version, npx, pnpm, yarn, bun), their workspace selectors (`pnpm --filter x`, `yarn
+    workspace x`), their run shorthands (`pnpm tsx scripts/x.ts`), runner binaries, a link that already exists (the stem
+    of its real path counts, for the CLI scripts and for the config runner), the config runner form, shells and shell
+    script files.
   - A script FILE of another language (python/node) that an agent wrote and then runs is
     not read: test fixtures in the repo legitimately contain INSERT INTO api_tokens ...
     and would be blocked. Shell script files ARE read (nothing in the repo calls the CLI).
@@ -939,6 +942,21 @@ def _script_stem(text):
     return low
 
 
+def _link_stem(alt, cwd):
+    """The script stem of what a script-position word points to when the word is a link that EXISTS when the command is
+    looked at, else None. ONE helper for every rule that reads a script name (the CLIs AND the config runner): a link made in
+    an earlier command (`ln -s scripts/agent-tokens.ts /tmp/x.ts` or `ln -s scripts/with-config.ts /tmp/w.ts`, then
+    `tsx /tmp/x.ts issue`, `tsx /tmp/w.ts agent-tokens issue`) names the same file as the real path does."""
+    if alt and '/' in alt and not any(c in alt for c in '*?['):
+        try:
+            full = alt if os.path.isabs(alt) else os.path.join(cwd, alt)
+            if os.path.islink(full):
+                return _script_stem(os.path.realpath(full))
+        except OSError:
+            pass
+    return None
+
+
 def _word_hits_cli(word, cwd):
     """The CLI kinds a script-position word names, also through shell globs and brace alternatives: a tuple, empty
     (falsy) when it names none. One word can name both kinds (`{dashboard-user,agent-tokens}`): every kind's rule applies."""
@@ -948,16 +966,11 @@ def _word_hits_cli(word, cwd):
         if k and k not in kinds:
             kinds.append(k)
         # a link or a copy-by-link that EXISTS when the command is looked at: the stem of what it points to counts too
-        # (`ln -s scripts/agent-tokens.ts /tmp/x.ts` in an earlier command, then `tsx /tmp/x.ts issue`)
-        if alt and '/' in alt and not any(c in alt for c in '*?['):
-            try:
-                full = alt if os.path.isabs(alt) else os.path.join(cwd, alt)
-                if os.path.islink(full):
-                    k = _is_cli_name(_script_stem(os.path.realpath(full)))
-                    if k and k not in kinds:
-                        kinds.append(k)
-            except OSError:
-                pass
+        linked = _link_stem(alt, cwd)
+        if linked is not None:
+            k = _is_cli_name(linked)
+            if k and k not in kinds:
+                kinds.append(k)
         if any(c in alt for c in '*?['):
             try:
                 hits = glob.glob(alt if os.path.isabs(alt) else os.path.join(cwd, alt))
@@ -970,9 +983,10 @@ def _word_hits_cli(word, cwd):
     return tuple(kinds)
 
 
-def _word_is_runner_script(word):
-    """True when a script-position word is scripts/with-config.ts (any extension, any path): the CLI name follows it."""
-    return any(_script_stem(alt) == CLI_RUNNER_STEM for alt in word.alts)
+def _word_is_runner_script(word, cwd):
+    """True when a script-position word is scripts/with-config.ts (any extension, any path), or an existing link to it:
+    the CLI name follows it."""
+    return any(_script_stem(alt) == CLI_RUNNER_STEM or _link_stem(alt, cwd) == CLI_RUNNER_STEM for alt in word.alts)
 
 
 def _after_cli(args):
@@ -1536,7 +1550,7 @@ def _runner_script_hit(args, state):
         kinds = _word_hits_cli(pos[k], state.cwd)
         if kinds:
             return kinds, pos[k + 1:]
-        if _word_is_runner_script(pos[k]) and k + 1 < len(pos):
+        if _word_is_runner_script(pos[k], state.cwd) and k + 1 < len(pos):
             target = pos[k + 1]
             if target.dyn:
                 raise Deny('with-config.ts futasidoben kepzett script-nevvel: a kapu nem tudja eldonteni, hogy '
@@ -1562,7 +1576,18 @@ def _handle_node(name, args, seg, state, depth):
 
 
 _NPM_VALUE_FLAGS = ('--prefix', '-C', '-w', '--workspace', '--cwd', '--registry', '--userconfig',
-                    '--loglevel', '--cache', '--script-shell', '-p', '--package', '-c', '--call')
+                    '--loglevel', '--cache', '--script-shell', '-p', '--package', '-c', '--call',
+                    # pnpm: `pnpm --filter foo tsx ...` / `-F foo` / `--dir x`: the value is a package selector, not the command
+                    '--filter', '-F', '--filter-prod', '--dir')
+
+
+def _unversioned(word):
+    """The word with an `@version` / `@tag` suffix cut off (`npm@10.2.0` -> `npm`): corepack runs `corepack pnpm@9 ...` as
+    pnpm. A leading `@` (a scoped package) stays; the cut word keeps its other fields."""
+    def cut(t):
+        i = t.find('@', 1)
+        return t[:i] if i > 0 else t
+    return Word(cut(word.text), word.dyn, [cut(a) for a in word.alts], word.quoted, word.assign)
 
 
 def _handle_npm_like(name, args, seg, state, depth):
@@ -1571,7 +1596,8 @@ def _handle_npm_like(name, args, seg, state, depth):
     if name == 'corepack':
         # `corepack npm run X`, `corepack pnpm X`, `corepack yarn X`: the package manager runs as if it led the command
         if pos:
-            check_words([pos[0]] + _args_after(args, pos[0]), seg, state, depth)
+            # `corepack npm@10.2.0 run X`, `corepack pnpm@9 X`: a pinned version rides on the word, the manager is the same
+            check_words([_unversioned(pos[0])] + _args_after(args, pos[0]), seg, state, depth)
         return
     # npx -c "command string" / npm exec -c "..."
     for k, a in enumerate(args):
@@ -1596,6 +1622,15 @@ def _handle_npm_like(name, args, seg, state, depth):
         return
     elif pos and pos[0].text in ('exec', 'x', 'dlx'):
         sub, rest = pos[0].text, pos[1:]
+    elif pos and ((name == 'yarn' and pos[0].text in ('workspace', 'workspaces'))
+                  or (name == 'pnpm' and pos[0].text in ('recursive', 'multi', 'm'))):
+        # yarn workspace NAME <command> / yarn workspaces foreach [flags] <command> / pnpm recursive <command>: the command runs
+        # as if `yarn` / `pnpm` led it. A flag's value or the workspace name is a plain word here, so the command is looked for at
+        # every positional (the first dozen): `yarn <the rest from there>` is checked each time, and the one that is the
+        # command hits its rule; the others (`yarn foo tsx ...` with foo as the "command") find nothing.
+        for k in range(1, min(len(pos), 12)):
+            check_words([Word(name)] + _args_after(args, pos[k - 1]), seg, state, depth)
+        return
     elif name in ('yarn', 'pnpm') and pos:
         # yarn dashboard-user / pnpm dashboard-user  (they run package scripts without "run")
         if pos[0].text in _NODEISH:     # pnpm tsx scripts/agent-tokens.ts ... / yarn node scripts/x.js: a binary of node_modules/.bin
@@ -2767,11 +2802,13 @@ def check_words(words, seg, state, depth):
     _handle_live_args(name, args, seg, state)
     # a direct execution of the CLI or of a shell script by path: ./scripts/dashboard-user.ts, x.sh
     for alt in cmdword.alts:
-        kind = _is_cli_name(_script_stem(alt))
+        # the name as typed, and the name of what an existing link points to (`./w.ts` made by `ln -s scripts/... w.ts`)
+        linked = _link_stem(alt, state.cwd)
+        kind = _is_cli_name(_script_stem(alt)) or (_is_cli_name(linked) if linked is not None else None)
         if kind:
             _cli_decision(_after_cli(args), state, (kind,))
             return
-        if _script_stem(alt) == CLI_RUNNER_STEM and args:      # ./scripts/with-config.ts agent-tokens issue
+        if (_script_stem(alt) == CLI_RUNNER_STEM or linked == CLI_RUNNER_STEM) and args:      # ./scripts/with-config.ts agent-tokens issue
             target = args[0]
             if target.dyn:
                 raise Deny('with-config.ts futasidoben kepzett script-nevvel: a kapu nem tudja eldonteni, hogy '
