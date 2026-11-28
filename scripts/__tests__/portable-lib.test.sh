@@ -150,6 +150,7 @@ make_backup_tree() {
   local root="$1"
   mkdir -p "$root/scripts/lib" "$root/store"
   cp "$SRC_DIR/pre-modify-backup.sh" "$root/scripts/"
+  cp "$SRC_DIR/pg-configured.sh" "$root/scripts/"
   [ -f "$SRC_DIR/lib/portable.sh" ] && cp "$LIB" "$root/scripts/lib/portable.sh"
   printf 'echo mine\n' > "$root/scripts/mine.sh"
   printf 'scripts/mine.sh\n' > "$root/store/personal-scripts.txt"

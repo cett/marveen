@@ -579,22 +579,10 @@ that the app sets at start) the SQLite database is not the live data, so the bac
   The planned rollback window is 24 hours. The archive stays in the rotation only while the newest `BACKUP_KEEP` archives are
   kept (default 30, one a night, so about 30 days), and then it is pruned: copy it aside, do not rely on the rotation.
 
-The detection rules are in `scripts/pg-configured.sh`, which `backup.sh` and `restore-drill.sh` source: one copy of the
+The detection rules are in `scripts/pg-configured.sh`, which `backup.sh`, `verify-restore.sh`, `restore-drill.sh`, `pre-modify-backup.sh` and `migrate-main-agent-id.sh` source: one copy of the
 function, so the scripts cannot drift apart. A `.env` that cannot be read while the marker is set counts as PostgreSQL.
 
-### The residual SQLite tables in the archive
-
-After the cutover the gate hooks still write two tables into `store/claudeclaw.db`: `hook_audit_log` and
-`gate_decision_counts`. The archive of a PostgreSQL install leaves that file out, so `backup.sh` dumps those two tables
-as SQL text into `repo/store/residual-gate-audit.sql` (mode 600, listed in `MANIFEST.txt` with its row counts). The dump
-is one `.dump` of exactly those two tables (after one read of the catalog for their names), taken in one read transaction, so a hook write during the export cannot touch it; no copy of the whole file is made. The
-export writes nothing to the database file or the WAL (the `-shm` index is shared memory and may be touched): the helper
-opens the file read-write (`-readonly` fails on a WAL file with no `-shm`, and `immutable=1` would leave out the rows still
-in the WAL) with `.dbconfig no_ckpt_on_close on`, so a leftover `-wal` of a crashed hook is not checkpointed into the live
-file by the backup. An `sqlite3` too old to know that command still dumps, without the guard. A
-missing file, a missing table or a missing `sqlite3` is a warning, never an abort: the nightly archive is still written, and
-`MANIFEST.txt` says `residual-gate-audit: NOT included (<reason>)`. To read it back: `sqlite3 new.db < residual-gate-audit.sql`.
-`verify-restore.sh` passes an archive with and without this file. The block goes away when the hooks write to PostgreSQL.
+On a PostgreSQL install `backup.sh` does not open `store/claudeclaw.db` at all: the file is frozen, and the database is in the nightly PostgreSQL dump.
 
 ### The weekly restore drill on PostgreSQL
 

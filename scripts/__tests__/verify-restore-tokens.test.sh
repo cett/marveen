@@ -44,6 +44,7 @@ new_repo() {
   local r="$TMPDIR_BASE/$1"
   mkdir -p "$r/scripts" "$r/store" "$r/node_modules"
   cp "$INSTALL_DIR/scripts/verify-restore.sh" "$r/scripts/"
+  cp "$INSTALL_DIR/scripts/pg-configured.sh" "$r/scripts/"
   sqlite3 "$r/store/claudeclaw.db" "
     CREATE TABLE api_tokens (id INTEGER PRIMARY KEY, name TEXT, created_at INTEGER, revoked_at INTEGER);
     CREATE TABLE restore_log (archive_path TEXT, checksum TEXT, integrity_ok INTEGER, note TEXT);

@@ -51,6 +51,17 @@ if [ "$NEW_SLUG" = "marveen" ]; then
   exit 0
 fi
 
+# A PostgreSQL install: the rewrite below touches the frozen SQLite file only, then .env and the plists would change,
+# and the PostgreSQL rows would keep the old id (a split brain). Refuse BEFORE the prompt and every side effect. This
+# script has `set -e` here, so the helper is called inside `if` (its "not PostgreSQL" answer is status 1), and a
+# missing helper stops the script with an error instead of falling to the SQLite branch (fail closed).
+# shellcheck source=scripts/pg-configured.sh
+. "$INSTALL_DIR/scripts/pg-configured.sh"
+if pg_configured "$INSTALL_DIR"; then
+  echo "ERROR: this install runs on PostgreSQL; the main agent id rename rewrites the frozen SQLite file only and would split the database from MAIN_AGENT_ID. Not supported on PostgreSQL yet." >&2
+  exit 1
+fi
+
 echo "Migrating main agent id: marveen → $NEW_SLUG (BOT_NAME=\"$BOT_NAME\")"
 read -r -p "This will restart the launchd services and update the DB. Continue? (y/N) " ans
 case "$ans" in

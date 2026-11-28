@@ -22,6 +22,13 @@ DEST="$BKDIR/${TS}-${LABEL}"
 # portable_sha256 (sha256sum or shasum). A missing helper file only degrades the manifest to NOHASH entries.
 . "$REPO/scripts/lib/portable.sh" 2>/dev/null || echo "  WARN scripts/lib/portable.sh missing -- the manifest will carry NOHASH instead of hashes"
 
+# Is this install on PostgreSQL? Then store/claudeclaw.db is a frozen file and a sqlite3 snapshot of it would say
+# "consistent snapshot ok" about data the install no longer uses. The helper is REQUIRED: without it the script cannot
+# tell a PostgreSQL install from a SQLite one, and guessing SQLite is the false green this check exists to stop. This
+# script has no `set -e`, so a failed source must stop it by hand (backup.sh stops on its own through `set -e`).
+# shellcheck source=scripts/pg-configured.sh
+. "$REPO/scripts/pg-configured.sh" || { echo "pre-modify-backup: ERROR -- scripts/pg-configured.sh is missing or unreadable; refusing to guess whether this install runs on PostgreSQL" >&2; exit 1; }
+
 # The snapshot holds the database, the vault and its key: owner-only. umask 077 makes every new file and directory
 # private whatever the caller's umask is, and the directories are chmod 700 so a pre-existing one is tightened too.
 umask 077
@@ -29,8 +36,26 @@ mkdir -p "$BKDIR"
 chmod 700 "$BKDIR"
 mkdir -p "$DEST"
 
+# PostgreSQL install: the database is NOT captured here. No pg_dump from this helper (no credential handling in a
+# snapshot script): the restore point is the newest nightly dump, named below with its age.
+ON_PG=0
+if pg_configured "$REPO"; then
+  ON_PG=1
+  echo "  db: NOT captured (PostgreSQL install): the database is in PostgreSQL; the newest nightly dump is the restore point"
+  PG_DUMP_DIR="${PG_DRILL_DUMP_DIR:-$HOME/pg-backups}"
+  # Same pattern as scripts/pg-restore-drill.sh: marveen-<date>-<time>.dump only, never a probe dump.
+  NEWEST_DUMP="$(ls -1t "$PG_DUMP_DIR"/marveen-[0-9]*-[0-9]*.dump 2>/dev/null | head -1 || true)"
+  if [ -n "$NEWEST_DUMP" ]; then
+    if DUMP_AGE="$(portable_age "$NEWEST_DUMP" 2>/dev/null)"; then
+      echo "  newest dump: $(basename "$NEWEST_DUMP") ($((DUMP_AGE / 3600)) h old)"
+    else
+      echo "  newest dump: $(basename "$NEWEST_DUMP") (age unknown)"
+    fi
+  else
+    echo "  newest dump: none found in $PG_DUMP_DIR"
+  fi
 # Consistent SQLite snapshot (NOT a raw cp -- the live dashboard may be mid-write).
-if [ -f "$STORE/claudeclaw.db" ]; then
+elif [ -f "$STORE/claudeclaw.db" ]; then
   sqlite3 "$STORE/claudeclaw.db" ".backup '$DEST/claudeclaw.db'" \
     && echo "  db: consistent snapshot ok" \
     || echo "  db: WARNING snapshot failed"
@@ -113,4 +138,9 @@ if [ -d "$BKDIR" ]; then
 fi
 
 SIZE="$(du -sh "$DEST" 2>/dev/null | cut -f1)"
-echo "backup ok: $DEST ($SIZE, retain newest $KEEP)"
+# The last line is the one an operator reads: on PostgreSQL it must not say "ok" about a snapshot with no database.
+if [ "$ON_PG" -eq 1 ]; then
+  echo "backup ok: $DEST ($SIZE, retain newest $KEEP) -- DATABASE NOT INCLUDED (PostgreSQL install)"
+else
+  echo "backup ok: $DEST ($SIZE, retain newest $KEEP)"
+fi

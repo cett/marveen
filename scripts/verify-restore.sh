@@ -52,6 +52,15 @@ fi
 
 ARCHIVE="$(cd "$(dirname "${ARCHIVE}")" && pwd)/$(basename "${ARCHIVE}")"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Is the INSTALL (not the archive) on PostgreSQL? Then store/claudeclaw.db is a frozen file and restore_log is not
+# written to it at the end of the run. PG_ARCHIVE below answers a different question (does the ARCHIVE hold a
+# database). Same helper and same fail-closed rule as backup.sh: a missing helper stops the script (set -e).
+# shellcheck source=scripts/pg-configured.sh
+. "${REPO_ROOT}/scripts/pg-configured.sh"
+PG_INSTALL=0
+if pg_configured "${REPO_ROOT}"; then
+  PG_INSTALL=1
+fi
 
 PASS=0
 FAIL=0
@@ -304,9 +313,18 @@ if [[ ${NO_COUNTS:-0} -eq 1 ]]; then
   echo ""
   echo "verify-restore: WARNING -- this archive has no row counts in MANIFEST.txt (it was taken before the counts existed): the tables and rows in it were NOT compared against anything. A passing result only means the files are intact." >&2
 fi
+# A PostgreSQL archive has no database, so "ALL CHECKS PASSED" above says nothing about the data (a drill of it already
+# ends in NOT APPLICABLE, exit 3; this is the plain-mode counterpart).
+if [[ ${PG_ARCHIVE} -eq 1 && ${DRILL} -eq 0 ]]; then
+  echo ""
+  echo "verify-restore: NOTE -- this archive has no database (PostgreSQL install): the database was NOT checked or compared. A passing result only means the files are intact; the data restore point is the PostgreSQL dump." >&2
+fi
 
-# Write to restore_log (best-effort; never abort on failure; DB_PATH is set at step 5b)
-if command -v sqlite3 >/dev/null 2>&1 && [[ -f "${DB_PATH}" ]]; then
+# Write to restore_log (best-effort; never abort on failure; DB_PATH is set at step 5b). Never on a PostgreSQL install:
+# the SQLite file is frozen there, a row in it would be a log nobody reads.
+if [[ ${PG_INSTALL} -eq 1 ]]; then
+  echo "restore_log: not written (PostgreSQL install: the frozen SQLite file is not a log target)"
+elif command -v sqlite3 >/dev/null 2>&1 && [[ -f "${DB_PATH}" ]]; then
   # Compute checksum for the log
   CHECKSUM=""
   if command -v sha256sum >/dev/null 2>&1; then

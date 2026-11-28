@@ -81,6 +81,7 @@ echo "(e) pre-modify-backup.sh: the snapshot directory, the database copy and th
 # PRE_MODIFY_SH: another copy of the script (how a mutant is run against these checks)
 R="$(mkrepo e)"
 cp "${PRE_MODIFY_SH:-$INSTALL_DIR/scripts/pre-modify-backup.sh}" "$R/scripts/pre-modify-backup.sh"
+cp "$INSTALL_DIR/scripts/pg-configured.sh" "$R/scripts/"
 # loosely moded source files: cp -p would carry these modes into the copy
 echo 'token-fixture-0451' > "$R/store/.dashboard-token"; chmod 644 "$R/store/.dashboard-token" "$R/store/vault.json" "$R/store/.vault-key"
 mkdir -p "$R/store/backups"; chmod 755 "$R/store/backups"

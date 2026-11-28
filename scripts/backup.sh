@@ -17,9 +17,6 @@
 #     reports a missing or stale one.
 #     store/vault.json         (ENCRYPTED secret vault; the key is NOT in this archive)
 #     .env                     (project root secrets)
-#     store/residual-gate-audit.sql  (PostgreSQL install only: SQL dump of the two tables the gate hooks still write
-#       into the SQLite file, hook_audit_log and gate_decision_counts; absent, with a warning, when the file or a
-#       table is missing. See the block "PostgreSQL install: the two residual SQLite tables".)
 #     scheduled-tasks.json     (legacy, if present)
 #     assets/meetings/**       (meeting transcripts/memos)
 #     agents/*/CLAUDE.md, SOUL.md, .mcp.json
@@ -162,84 +159,6 @@ if [[ "${PG_CONFIGURED}" -eq 0 && -f store/claudeclaw.db ]]; then
   fi
 fi
 
-# --- PostgreSQL install: the two residual SQLite tables. -------------------------------------------------------
-# After the cutover store/claudeclaw.db is still written by the Python gate hooks (scripts/hooks/gate_audit_lib.py),
-# but only these two tables; everything else in the file is frozen at the cutover and is NOT archived (the stale
-# database must not come back on a restore). Those two tables are therefore in no other backup, so they are dumped
-# as SQL text into the archive. Nothing else is read from the live file: one catalog read for the two table names
-# and one .dump of exactly those tables (one read transaction, so a hook write meanwhile cannot touch it; no copy of
-# the whole file is made). A missing file, a missing table, a missing sqlite3 or a failing step is a WARNING, never an abort:
-# the nightly backup must still produce its archive. REMOVE this block when the hooks write to PostgreSQL (the
-# follow-up named in the CHANGELOG); until then it is the only copy of those rows.
-RESIDUAL_REL="store/residual-gate-audit.sql"
-RESIDUAL_TABLES="hook_audit_log gate_decision_counts"
-RESIDUAL_NOTE=""   # the MANIFEST.txt line, set only on a PostgreSQL install
-REPOLIST_RESIDUAL=0
-residual_warn() {  # residual_warn <reason>: the warning on stderr and the MANIFEST line
-  echo "backup: WARNING -- the residual gate-audit tables are not in this archive: $1" >&2
-  RESIDUAL_NOTE="residual-gate-audit: NOT included ($1)"
-}
-RESIDUAL_LIVE=store/claudeclaw.db
-# The only door to the live SQLite file in this block: read statements only (the catalog names of the two tables and one
-# .dump of them), and no write to the database file or the WAL (the -shm index is shared memory and may be touched).
-# Not -readonly on purpose: a read-only open of a WAL file that has no -shm yet fails (CANTOPEN); not immutable=1 either:
-# that ignores the WAL, so the rows still in it would be missing from the dump.
-# The open is read-write, and the last connection to close would checkpoint the WAL into the main file: a live file with a
-# leftover -wal (a crashed hook) would be changed by the backup. .dbconfig no_ckpt_on_close on keeps the close from doing that
-# (the main file stays byte-identical, the dump still carries the WAL rows). .dbconfig echoes the setting it just made to
-# stdout ("no_ckpt_on_close on"), which would land in the dump file and break its replay, so that one command runs with the
-# output sent to /dev/null. An sqlite3 CLI too old to know .dbconfig prints an error for it and carries on (stderr is
-# discarded by the callers), so only the guard is lost there, never the backup.
-residual_sql() {
-  sqlite3 -cmd '.timeout 5000' -cmd '.output /dev/null' -cmd '.dbconfig no_ckpt_on_close on' -cmd '.output stdout' "${RESIDUAL_LIVE}" "$@"
-}
-residual_export() {
-  local live="${RESIDUAL_LIVE}" out="${STAGE}/repo/${RESIDUAL_REL}"
-  local t n found present="" counts=""
-  if [[ ! -f "${live}" ]]; then residual_warn "${live} does not exist"; return 0; fi
-  if ! command -v sqlite3 >/dev/null 2>&1; then residual_warn "the sqlite3 CLI is missing"; return 0; fi
-  # Which of the two tables exist: a catalog read, no table content. A file that is not a database fails here.
-  if ! found="$(residual_sql "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('hook_audit_log','gate_decision_counts')" 2>/dev/null)"; then
-    residual_warn "cannot read ${live} (not a database, or locked past the 5 s timeout)"
-    return 0
-  fi
-  for t in ${RESIDUAL_TABLES}; do
-    if grep -qx "${t}" <<<"${found}"; then
-      present="${present} ${t}"
-    else
-      echo "backup: WARNING -- residual table ${t} is missing in ${live}, not archived" >&2
-    fi
-  done
-  if [[ -z "${present}" ]]; then
-    residual_warn "none of ${RESIDUAL_TABLES} exists in ${live}"
-    return 0
-  fi
-  mkdir -p "$(dirname "${out}")"
-  # One .dump of the present tables: it runs in ONE read transaction, so the two tables are one consistent snapshot, and
-  # a hook's write meanwhile (WAL mode: readers do not block it) cannot touch it. Only these tables are read.
-  # umask 077: the dump carries audit rows (agent ids, verdicts), so the file is owner-only like the archive.
-  # ${present} is word-split on purpose: one argument per table name for .dump.
-  # shellcheck disable=SC2086
-  if ! ( umask 077; residual_sql ".dump${present}" > "${out}" ) 2>/dev/null; then
-    rm -f "${out}"
-    residual_warn "the .dump of the two tables failed"
-    return 0
-  fi
-  chmod 600 "${out}"
-  # The row counts are those of the dump text itself (one INSERT line per row: the columns hold ids and fixed codes, no
-  # newline), so MANIFEST.txt states what is in the file, not a second read of the live table.
-  for t in ${present}; do
-    n="$(grep -c "^INSERT INTO \"\{0,1\}${t}\"\{0,1\} " "${out}" || true)"
-    counts="${counts}${counts:+, }${t}=${n:-0}"
-  done
-  RESIDUAL_NOTE="residual-gate-audit: ${RESIDUAL_REL} (rows: ${counts})"
-  REPOLIST_RESIDUAL=1
-  echo "backup: residual gate-audit tables dumped (${counts})"
-}
-if [[ "${PG_CONFIGURED}" -eq 1 ]]; then
-  residual_export
-fi
-
 # add_if <listfile> <base> <relpath>  -- append relpath when <base>/<relpath> exists.
 add_if() {
   local list="$1" base="$2" rel="$3"
@@ -255,8 +174,6 @@ if [[ "${PG_CONFIGURED}" -eq 0 ]]; then
     add_if "${REPOLIST}" "${REPO_ROOT}" store/claudeclaw.db-wal
   fi
 fi
-# The residual dump above is already staged (stage_group never copies over a staged file); it only needs its line.
-if [[ "${REPOLIST_RESIDUAL}" -eq 1 ]]; then echo "${RESIDUAL_REL}" >> "${REPOLIST}"; fi
 add_if "${REPOLIST}" "${REPO_ROOT}" store/vault.json
 add_if "${REPOLIST}" "${REPO_ROOT}" .env
 add_if "${REPOLIST}" "${REPO_ROOT}" scheduled-tasks.json
@@ -393,7 +310,6 @@ fi
   if [[ "${PG_CONFIGURED}" -eq 1 ]]; then
     # Read by scripts/verify-restore.sh: an archive with this line is checked for everything except the database.
     echo "database: not included (PostgreSQL install)"
-    [[ -z "${RESIDUAL_NOTE}" ]] || echo "${RESIDUAL_NOTE}"
   fi
 } > "${MANIFEST}"
 
