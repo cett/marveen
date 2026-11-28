@@ -76,7 +76,9 @@ HONEST LIMITS (good-faith protection against the same OS user, like the docs say
     line: `tsx --any-flag value scripts/x.ts`), their run shorthands (`pnpm tsx scripts/x.ts`,
     also a package manager or a path to a binary handed to them, `npm explore pkg -- cmd`, `npm exec --call=cmd`), runner binaries (also
     by the path of their binary or package: `node node_modules/.bin/tsx`), a preload that names the CLI (`tsx --import
-    scripts/x.ts`), a link that already exists or that an
+    scripts/x.ts`), the CLI source fed to an interpreter that reads its script from stdin (`cat scripts/x.ts | tsx - issue`, `tsx - <
+    scripts/x.ts`, `tsx /dev/stdin`, `tsx <(cat scripts/x.ts)`), a command line started by detached `screen -dm` / `tmux new-session
+    -d`, what a process substitution prints when it is sourced or run (`source <(echo "npm run x")`), a link that already exists or that an
     `ln` of the same command makes (the stem of its real path counts, for the CLI scripts and for the config runner, by a
     bare name too), the config runner form, shells and shell script files.
   - A script FILE of another language (python/node) that an agent wrote and then runs is
@@ -1432,14 +1434,11 @@ def _read_text_file(path, state, max_bytes=MAX_SCRIPT_BYTES):
         return None
 
 
-def _producer_text(seg, state):
-    """What the previous pipeline stage literally prints, when we can tell (echo / printf /
-    cat FILE). A decoder in front of the consumer is refused outright."""
+def _seg_output_texts(prod, state):
+    """What ONE command (a pipeline stage, the body of a process substitution) literally prints, when we can tell (echo / printf /
+    cat FILE and its here-documents). A decoder is refused outright."""
     texts = []
-    prev = seg.prev
-    if prev is None:
-        return texts
-    name, _cw, args, _via = resolve_call(prev.words)
+    name, _cw, args, _via = resolve_call(prod.words)
     if name in ('echo', 'printf', 'print'):
         words = [a.text for a in args if not a.text.startswith('-') or len(a.text) > 2]
         # printf prints its arguments on separate lines (format string aside): one line each
@@ -1450,10 +1449,20 @@ def _producer_text(seg, state):
                 t = _read_text_file(a.text, state)
                 if t:
                     texts.append(t)
-        for body, _q in prev.heredocs:
+        for body, _q in prod.heredocs:
             texts.append(body)
     elif name in _DECODERS:
         raise Opaque()
+    return texts
+
+
+def _producer_text(seg, state):
+    """What the previous pipeline stage literally prints, when we can tell (echo / printf /
+    cat FILE). A decoder in front of the consumer is refused outright."""
+    prev = seg.prev
+    if prev is None:
+        return []
+    texts = _seg_output_texts(prev, state)
     # a decoder further up the same pipeline
     p = prev.prev
     hops = 0
@@ -1469,11 +1478,91 @@ def _producer_text(seg, state):
 def _stdin_texts(seg, state):
     texts = [b for b, _q in seg.heredocs] + list(seg.herestr)
     for f in seg.stdin_files:
+        if f == _PROCSUB:           # `bash < <(echo "...")`: what the process prints is the script
+            texts.extend(_procsub_texts(seg, state))
+            continue
         t = _read_text_file(f, state)
         if t:
             texts.append(t)
     texts.extend(_producer_text(seg, state))
     return texts
+
+
+# the lexer's word for a process substitution `<(...)` (its body is in seg.subs)
+_PROCSUB = '<(...)'
+# programs that pass a file on to the next pipeline stage as it is (the source of a script piped into an interpreter)
+_STDIN_FEEDERS = ('cat', 'tac', 'head', 'tail', 'sed', 'awk', 'pv', 'nl', 'bat', 'rev', 'zcat', 'gzcat')
+# a script word that means "read the script from standard input"
+_STDIN_SCRIPT_WORDS = ('-', '/dev/stdin', '/dev/fd/0', '/proc/self/fd/0')
+
+
+def _procsub_bodies(seg):
+    """The bodies of the process substitutions of a segment (the lexer keeps them with the $(...) bodies; all are looked at)."""
+    if seg is not None and (any(w.text == _PROCSUB for w in seg.words) or _PROCSUB in seg.stdin_files):
+        return list(seg.subs)
+    return []
+
+
+def _procsub_texts(seg, state):
+    """What the process substitutions of a segment literally print (`source <(echo "npm run x")`: the printed text IS the script)."""
+    texts = []
+    for body in _procsub_bodies(seg):
+        _charge(state, len(body) + 1)
+        for s in lex(body, state):
+            if s.words:
+                texts.extend(_seg_output_texts(s, state))
+    return texts
+
+
+def _file_words_kinds(words, state):
+    """The CLI kinds a list of file words names (by name, link, glob)."""
+    kinds = []
+    for w in words:
+        for k in _word_hits_cli(w, state):
+            if k not in kinds:
+                kinds.append(k)
+    return kinds
+
+
+def _feeder_files(prod):
+    """The file words a pipeline stage that passes a file on (cat, head ...) reads, and the files it has on its own stdin."""
+    words = []
+    if prod.words:
+        name, _cw, a, _via = resolve_call(prod.words)
+        if name in _STDIN_FEEDERS:
+            words = [x for x in a if x.text and not x.text.startswith('-')]
+    return words + [Word(f) for f in prod.stdin_files if f != _PROCSUB]
+
+
+def _procsub_cli_kinds(seg, state):
+    """The CLI kinds named by the files a process substitution of the segment passes on (`tsx <(cat scripts/agent-tokens.ts)`)."""
+    kinds = []
+    for body in _procsub_bodies(seg):
+        _charge(state, len(body) + 1)
+        for s in lex(body, state):
+            for k in _file_words_kinds(_feeder_files(s), state):
+                if k not in kinds:
+                    kinds.append(k)
+    return tuple(kinds)
+
+
+def _stdin_cli_kinds(seg, state):
+    """The CLI kinds named by the files that feed the standard input of a segment: its own `< FILE`, the stages of the pipeline in
+    front of it (`cat scripts/agent-tokens.ts | tsx - issue`), a process substitution as stdin. An interpreter that reads its script
+    from stdin runs that file."""
+    kinds = []
+    cur, hops = seg, 0
+    while cur is not None and hops < 16:
+        words = _feeder_files(cur) if cur is not seg else [Word(f) for f in cur.stdin_files if f != _PROCSUB]
+        for k in _file_words_kinds(words, state):
+            if k not in kinds:
+                kinds.append(k)
+        cur, hops = cur.prev, hops + 1
+    if _PROCSUB in seg.stdin_files:
+        for k in _procsub_cli_kinds(seg, state):
+            if k not in kinds:
+                kinds.append(k)
+    return tuple(kinds)
 
 
 def check_shell_script(text, state, depth):
@@ -1507,6 +1596,10 @@ def _handle_shell(name, args, seg, state, depth):
     if script is not None:
         for alt in script.alts:
             check_command(alt, state, depth + 1)
+        return
+    if i < len(args) and args[i].text == _PROCSUB:      # bash <(echo "npm run x"): the printed text is the script
+        for t in _procsub_texts(seg, state):
+            check_shell_script(t, state, depth)
         return
     if i < len(args):                       # bash FILE
         kinds = _word_hits_cli(args[i], state)      # bash scripts/security-reset.sh
@@ -1689,6 +1782,18 @@ def _handle_node(name, args, seg, state, depth):
     scripts = _script_words(rest_args, state)
     for kinds, tail in _runner_hits(preloads, scripts, state):
         _cli_decision(_after_cli(tail), state, kinds)
+    # the script on standard input (`cat scripts/agent-tokens.ts | tsx - issue`, `tsx - issue < scripts/agent-tokens.ts`, `tsx
+    # /dev/stdin`, no script word at all) or as a process substitution (`tsx <(cat scripts/agent-tokens.ts) issue`): the files that
+    # feed it are the script, so their names are the CLI's
+    stdin_kinds = _stdin_cli_kinds(seg, state)
+    proc_kinds = _procsub_cli_kinds(seg, state)
+    if stdin_kinds and not scripts:
+        _cli_decision([], state, stdin_kinds)
+    for w, after in scripts:
+        if stdin_kinds and w.text in _STDIN_SCRIPT_WORDS:
+            _cli_decision(_after_cli(_positional(after, _NODE_VALUE_FLAGS)), state, stdin_kinds)
+        elif proc_kinds and w.text == _PROCSUB:
+            _cli_decision(_after_cli(_positional(after, _NODE_VALUE_FLAGS)), state, proc_kinds)
     for w, after in scripts:
         # `node node_modules/.bin/tsx scripts/agent-tokens.ts issue`: the word is a runner, the words after it are its command line
         runner = _runner_binary(w)
@@ -1960,16 +2065,33 @@ _TMUX_CMDS = ('send-keys', 'send', 'run-shell', 'run', 'new-session', 'new', 'ne
               'pipe-pane', 'pipep', 'if-shell', 'if', 'display-popup', 'popup')
 
 
+# tmux flags that take a value. `-d` is NOT one (`new-session -d`, `split-window -d` are "detached" / "do not select"): listed as one it
+# swallowed the command word of `tmux new-session -d "cmd"`. The few commands where it is a value (`display-popup -d dir`) leave the
+# directory in the command text, where the command is found by its markers all the same.
+_TMUX_VALUE_FLAGS = ('-t', '-c', '-F', '-n', '-x', '-y', '-e', '-s', '-N', '-f', '-l', '-L', '-S', '-T')
+
+
 def _handle_tmux(args, state, depth):
-    pos = _positional(args, ('-t', '-c', '-F', '-n', '-x', '-y', '-e', '-s', '-N', '-d', '-f'))
-    if not pos or pos[0].text not in _TMUX_CMDS:
-        return
-    rest = [w.text for w in pos[1:]]
-    if rest:
-        state.dir_changed = True           # the pane / window has its own working directory
-        check_command(' '.join(rest), state, depth + 1)
-        for r in rest:
-            check_command(r, state, depth + 1)
+    # the global flags of tmux itself (`-L sock`, `-f file`) take a value: the command word is read both ways
+    for sub in _command_candidates(args):
+        if sub.text not in _TMUX_CMDS:
+            continue
+        _charge(state, len(args) + 1)
+        rest = [w.text for w in _positional(_args_after(args, sub), _TMUX_VALUE_FLAGS)]
+        if rest:
+            state.dir_changed = True           # the pane / window has its own working directory
+            check_command(' '.join(rest), state, depth + 1)
+            for r in rest:
+                check_command(r, state, depth + 1)
+
+
+def _handle_screen(args, seg, state, depth):
+    """screen [-opts] CMD [ARGS]: the words after the options are a command line that screen starts (`screen -dm npx tsx x.ts`), also
+    in one quoted word. A word after an option is read both as its value (`-S name`) and as the command word."""
+    for c in _command_candidates(args):
+        words = [c.text] + [a.text for a in _args_after(args, c)]
+        _charge(state, sum(len(w) + 1 for w in words))
+        check_command(' '.join(words), state, depth + 1)
 
 
 def _handle_ssh(args, seg, state, depth):
@@ -3037,6 +3159,10 @@ def check_words(words, seg, state, depth):
         check_command(joined, state, depth + 1)
         return
     if name in ('source', '.'):
+        if args and args[0].text == _PROCSUB:       # source <(echo "npm run x"): the printed text is the script
+            for t in _procsub_texts(seg or Seg(), state):
+                check_shell_script(t, state, depth)
+            return
         if args:
             txt = _read_text_file(args[0].text, state)
             if txt is not None:
@@ -3080,8 +3206,10 @@ def check_words(words, seg, state, depth):
         _handle_find(args, seg, state, depth)
         return
     if name in ('tmux', 'screen'):
-        _handle_tmux(args, state, depth)
+        if name == 'tmux':
+            _handle_tmux(args, state, depth)
         if name == 'screen':
+            _handle_screen(args, seg or Seg(), state, depth)
             for k, a in enumerate(args):
                 if a.text == 'stuff' and k + 1 < len(args):
                     check_command(args[k + 1].text, state, depth + 1)
