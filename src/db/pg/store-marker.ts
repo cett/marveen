@@ -18,6 +18,8 @@ export const PG_MARKER_FILE = '.pg-installed'
 
 let warned = false
 
+// Two boots that race both see the marker absent and both rename into place: the last rename wins, and the two contents
+// differ only in the timestamp. Accepted (PR 959 nit 9): the marker's job is the fact that it exists, not its time.
 /** Writes the marker into `storeDir` when it is absent. Returns true when this call wrote it. Never throws. */
 export function writePgInstalledMarker(storeDir: string, now: Date = new Date()): boolean {
   const path = join(storeDir, PG_MARKER_FILE)

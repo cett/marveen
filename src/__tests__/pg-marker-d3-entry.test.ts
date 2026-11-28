@@ -55,7 +55,8 @@ describe('decision D3: the SQLite entry refuses on the install marker', () => {
     expect(message).not.toContain('postgres://')
   })
 
-  it('an unreadable store (the marker cannot be stat-ed) counts as present: refused', () => {
+  // root reads through a 0000 dir, so the chmod cell says nothing as root (nit 8): skipped there
+  it.skipIf(process.getuid?.() === 0)('an unreadable store (the marker cannot be stat-ed) counts as present: refused', () => {
     chmodSync(STORE, 0o000)
     try {
       expect(() => assertSqliteEntryAllowed('the test entry')).toThrow(SqliteEntryRefusedError)

@@ -74,7 +74,8 @@ describe('the PostgreSQL boot writes the install marker once, and only when aske
     expect(readFileSync(markerPath, 'utf-8')).toBe(first)
   })
 
-  it('a store dir that cannot be written does not stop the boot: the backend is up and no marker exists', async () => {
+  // root writes through a 0555 dir, so the chmod cell says nothing as root (nit 8): skipped there
+  it.skipIf(process.getuid?.() === 0)('a store dir that cannot be written does not stop the boot: the backend is up and no marker exists', async () => {
     const d = await db()
     chmodSync(STORE, 0o555)
     await bootPgBackend({ url: d.appUrl, migrateUrl: '', writeInstallMarker: true })

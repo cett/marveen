@@ -31,7 +31,8 @@ describe('writePgInstalledMarker', () => {
     expect(readFileSync(join(dir, PG_MARKER_FILE), 'utf-8')).toBe('pg-installed 2026-11-28T10:00:00.000Z\n')
   })
 
-  it('a store dir that cannot be written: false, no throw, and nothing is left behind', () => {
+  // root writes through a 0555 dir, so the chmod cell says nothing as root (nit 8): skipped there
+  it.skipIf(process.getuid?.() === 0)('a store dir that cannot be written: false, no throw, and nothing is left behind', () => {
     const store = join(dir, 'store')
     mkdirSync(store)
     chmodSync(store, 0o555)
