@@ -29,6 +29,8 @@
 // install. The ones that still matter on PostgreSQL (the claude-plans seed, the cost-budgets importer, the dashboard
 // token enrolment) are ported in 6c-2.
 import { logger } from '../logger.js'
+import { STORE_DIR } from '../paths.js'
+import { writePgInstalledMarker } from './pg/store-marker.js'
 import { applyPgMigrations, assertPgSchemaCurrent, loadPgMigrationFiles, type PgMigrationResult } from '../db-migrations-pg.js'
 import { loadSystemConfigCacheAsync } from './config-cache.js'
 import { loadModelProfileMapCacheAsync } from './model-profile-map-cache.js'
@@ -286,6 +288,10 @@ export async function bootPgBackend(opts: PgBootOptions = {}): Promise<PgBootRes
   } catch (err) {
     return refuse('caches', err)
   }
+
+  // the durable marker that this store belongs to PostgreSQL (P-E): written once, after the check passed; a failed write is
+  // logged and the boot goes on (writePgInstalledMarker never throws)
+  writePgInstalledMarker(STORE_DIR)
 
   const shippedHighest = Math.max(0, ...loadPgMigrationFiles(dirOptsForStatus).map((f) => f.version))
   if (migrations.state === 'NEWER' && migrations.newer) {

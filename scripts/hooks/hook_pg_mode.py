@@ -62,8 +62,36 @@ def _dotenv_value(text):
     return found
 
 
+STORE_MARKER = ".pg-installed"
+
+
+def store_marker_path(install_root=None):
+    """<install>/store/.pg-installed: written once by the PostgreSQL boot, the durable fifth layer (P-E). The install root is
+    this file's own (the LEDGER_DB_PATH test override does not move it)."""
+    return os.path.join(install_root or _install_root(), "store", STORE_MARKER)
+
+
+def _marker_present(path):
+    """The marker exists. A stat that fails for any other reason than 'absent' counts as present: doubt is PostgreSQL."""
+    try:
+        os.stat(path)
+        return True
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+
+
 def pg_mode(install_root=None):
-    """True when the install is configured for PostgreSQL (see the module text). Returns a boolean, never the URL."""
+    """True when the install is configured for PostgreSQL: any of the four configuration layers (see the module text), or the
+    store marker, which outlives the configuration. Returns a boolean, never the URL or the marker content."""
+    if _configured_by_layers(install_root):
+        return True
+    return _marker_present(store_marker_path(install_root))
+
+
+def _configured_by_layers(install_root=None):
+    """The four configuration layers: secret mount, environment, the install's .env, the app's marker variable."""
     mount_dir = (os.environ.get("SECRET_MOUNT_DIR") or "/run/secrets").rstrip("/") or "/"
     mounted = _read_text(os.path.join(mount_dir, PG_URL_KEY))
     if mounted is not None and mounted.strip():

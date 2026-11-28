@@ -6,7 +6,9 @@
 #   2. the environment variable MARVEEN_PG_URL, non-blank;
 #   3. the MARVEEN_PG_URL line of the install's .env (CLAUDECLAW_ENV_DIR overrides the directory, as env.ts does);
 #   4. the marker MARVEEN_PG_CONFIGURED=1, which the app sets at start so that a child process (a scheduled command
-#      task) can still tell that the install is PostgreSQL when it cannot read the URL.
+#      task) can still tell that the install is PostgreSQL when it cannot read the URL;
+#   5. the store marker <install>/store/.pg-installed, which the PostgreSQL boot writes once (P-E): durable, it survives a lost
+#      .env or a shell without the variable. A PostgreSQL install that lost its configuration is not read as SQLite.
 # Blank or whitespace-only counts as absent, as in the app. When the .env cannot be read but the marker is set, the
 # answer is TRUE: doubt means PostgreSQL, because a false FALSE is the false green this check exists to stop.
 # The URL is never printed, logged or stored here.
@@ -66,6 +68,12 @@ pg_configured() {
     fi
   elif [[ "${MARVEEN_PG_CONFIGURED:-}" == "1" ]]; then
     # the .env cannot be read and the marker says PostgreSQL: doubt is PostgreSQL
+    return 0
+  fi
+
+  # 5. the store marker: the PostgreSQL boot writes <store>/.pg-installed once, and it outlives the environment (a lost .env
+  #    or a shell without the marker variable does not erase it). Read from the install root's store, as the hooks read it.
+  if [[ -n "$root" && -e "$root/store/.pg-installed" ]]; then
     return 0
   fi
 
