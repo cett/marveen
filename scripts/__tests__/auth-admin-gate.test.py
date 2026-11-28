@@ -1215,6 +1215,13 @@ TOKEN_BLOCKED = [('tokens verb %s :: %s' % (v, s.split(' {V}')[0]), s.replace('{
     ('tokens: pnpm --reporter (a value nobody listed)', 'pnpm --reporter silent agent-tokens issue'),
     ('tokens: yarn --mutex (a value nobody listed)', 'yarn --mutex network agent-tokens issue'),
     ('tokens: pnpm --reporter, tsx', 'pnpm --reporter silent tsx scripts/agent-tokens.ts issue'),
+    ('tokens: pnpm two unlisted value flags', 'pnpm --reporter silent --mutex network agent-tokens issue'),
+    ('tokens: yarn three unlisted value flags', 'yarn --a b --c d --e f agent-tokens issue'),
+    ('tokens: pnpm a mix of listed and unlisted flags', 'pnpm --reporter silent --filter foo -w agent-tokens issue'),
+    ('tokens: pnpm two unlisted value flags, tsx', 'pnpm --reporter silent --mutex network tsx scripts/agent-tokens.ts issue'),
+    ('tokens: pnpm an unlisted value flag, run', 'pnpm --reporter silent run agent-tokens issue'),
+    ('tokens: pnpm an unlisted value flag then --', 'pnpm --reporter silent -- agent-tokens issue'),
+    ('login: pnpm two unlisted value flags', 'pnpm --reporter silent --mutex network dashboard-user add bob'),
     ('login: pnpm -w, the script is the next word', 'pnpm -w dashboard-user add bob'),
     ('login: pnpm --reporter (a value nobody listed)', 'pnpm --reporter silent dashboard-user add bob'),
     # a link made by an `ln` in the SAME text: it does not exist yet when the gate looks, it will when the command runs
@@ -1358,6 +1365,9 @@ TOKEN_ALLOWED = [('tokens read verb %s :: %s' % (v, s.split(' {V}')[0]), s.repla
     ('tokens: npx pnpm@version, install', 'npx pnpm@9 install'),
     ('tokens: pnpm -w, run build', 'pnpm -w run build'),
     ('tokens: pnpm --reporter, run build', 'pnpm --reporter silent run build'),
+    ('tokens: pnpm two unlisted value flags, install', 'pnpm --reporter silent --mutex network install'),
+    ('tokens: pnpm two unlisted value flags, a name filter', 'pnpm --reporter silent --mutex network vitest run agent-tokens'),
+    ('tokens: pnpm a flag with = then a name filter', 'pnpm --reporter=silent vitest run agent-tokens'),
     ('tokens: yarn --mutex, install', 'yarn --mutex network install'),
     ('tokens: pnpm --filter, a name filter of vitest', 'pnpm --filter foo vitest run agent-tokens'),
     ('tokens: ln -s an unrelated script then tsx on the link', 'ln -s {R}/scripts/plain.ts {K}/zq.ts && tsx {K}/zq.ts'),
@@ -1670,10 +1680,10 @@ class TestBounds(unittest.TestCase):
         return denied
 
     def test_flipped_flag_readings_are_charged_to_the_work_budget(self):
-        # every distinct flag of a package-manager line is read once more with that flag flipped, and each reading walks the whole
-        # line: thousands of flags are millions of steps. The charge stops it at the work budget, and an inspection that ran out of
-        # budget is a denial, never a pass.
-        cmd = 'pnpm run build ' + ' '.join('-f%d' % i for i in range(4000))
+        # every word after a flag may be that flag's value or the command, three words deep (command, sub-command, script), and each
+        # reading walks the whole line: 40 flag/value pairs are 64000 readings. The charge stops it at the work budget, and an
+        # inspection that ran out of budget is a denial, never a pass.
+        cmd = 'pnpm ' + ' '.join('-f%d v%d' % (i, i) for i in range(40)) + ' run build'
         self.assertLess(len(cmd), GATE.MAX_CMD_CHARS)
         self.assertTrue(self.deny_or_pass_fast(cmd, limit_s=5.0))
 
@@ -1970,10 +1980,11 @@ MUTANTS = [
     ('symlink: the link stem helper returns the link name itself', "                return _script_stem(os.path.realpath(full))", "                return _script_stem(full)"),
     # the value-flag table is read together with a flipped reading of every flag, so one flag missing from (or wrongly in) the table
     # is covered by its flipped reading (equal in outcome, not a mutant); what the flipped readings themselves must do is below
-    ('flags: no flipped reading at all', "            _npm_like_once(name, args, _positional(args, flipped), seg, state, depth)", "            pass"),
-    ('flags: a flag in the table is not read as a boolean', "            flipped = tuple(f for f in _NPM_VALUE_FLAGS if f != t) if t in _NPM_VALUE_FLAGS else _NPM_VALUE_FLAGS + (t,)", "            flipped = _NPM_VALUE_FLAGS + (t,)"),
-    ('flags: a flag outside the table is not read as a value', "            flipped = tuple(f for f in _NPM_VALUE_FLAGS if f != t) if t in _NPM_VALUE_FLAGS else _NPM_VALUE_FLAGS + (t,)", "            flipped = tuple(f for f in _NPM_VALUE_FLAGS if f != t)"),
-    ('flags: the flipped readings are not charged to the work budget', "            _charge(state, len(args) + 1)\n", "            pass\n"),
+    ('flags: no candidate reading at all', "    for pos in [_positional(args, _NPM_VALUE_FLAGS)] + list(_pos_readings(args, state, 3)):", "    for pos in [_positional(args, _NPM_VALUE_FLAGS)]:"),
+    ('flags: only the command word is read both ways, not its sub-command and script', "list(_pos_readings(args, state, 3))", "list(_pos_readings(args, state, 1))"),
+    ('flags: a word after a flag is not a candidate for the command', "            after_flag = '=' not in t", "            after_flag = False"),
+    ('flags: the candidates do not stop at the command', "            if not after_flag:\n                break", "            if False:\n                break"),
+    ('flags: the candidate readings are not charged to the work budget', "            _charge(state, len(args) + 1)\n            yield [c] + tail", "            yield [c] + tail"),
     ('npm-like: a program given to pnpm / yarn is recognised by its raw word, not its base name', "    n = _base(_unversioned(word))", "    n = word.text"),
     ('npm-like: the pinned version stays on the program word', "    n = _base(_unversioned(word))", "    n = _base(word)"),
     ('npm-like: only the node runners are programs to follow', "    return n in _COMMAND_RUNNERS or bool(_PY.match(n))", "    return n in _NODEISH"),
@@ -2097,9 +2108,9 @@ class TestMutation(unittest.TestCase):
                     return True
                 except mod.InspectionLimit:
                     return False
-            if name == 'flags: the flipped readings are not charged to the work budget':
+            if name == 'flags: the candidate readings are not charged to the work budget':
                 try:
-                    mod.inspect('pnpm run build ' + ' '.join('-f%d' % i for i in range(4000)), FX.root)
+                    mod.inspect('pnpm ' + ' '.join('-f%d v%d' % (i, i) for i in range(40)) + ' run build', FX.root)
                     return True
                 except mod.InspectionLimit:
                     return False

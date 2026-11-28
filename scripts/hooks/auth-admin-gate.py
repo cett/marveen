@@ -70,7 +70,7 @@ HONEST LIMITS (good-faith protection against the same OS user, like the docs say
     built at run time (`$V run agent-tokens issue`, `{npm,yarn} run agent-tokens issue`: the package manager is not named). The
     gate is not a sandbox. What it does see is every form a normal operator or tool would type: package-manager wrappers
     (corepack, also with a pinned version, npx, pnpm, yarn, yarnpkg, bun), their workspace selectors (`pnpm --filter x`,
-    `yarn workspace x`; every flag is read both as a value and as a boolean), their run shorthands (`pnpm tsx scripts/x.ts`,
+    `yarn workspace x`; a word after a flag is read both as the flag's value and as the command), their run shorthands (`pnpm tsx scripts/x.ts`,
     also a package manager or a path to a binary handed to them), runner binaries, a link that already exists or that an
     `ln` of the same command makes (the stem of its real path counts, for the CLI scripts and for the config runner, by a
     bare name too), the config runner form, shells and shell script files.
@@ -1600,8 +1600,8 @@ def _handle_node(name, args, seg, state, depth):
 # Whether a flag takes a value differs by manager and by version: `-w` is a value for npm and a boolean for pnpm; `--filter` /
 # `-F` / `--filter-prod` / `--dir` are values for pnpm (`pnpm --filter foo tsx ...`: a package selector, not the command) and
 # booleans for npm (`npm run --filter agent-tokens issue` runs the script agent-tokens). So no table is trusted alone:
-# _handle_npm_like reads every line once with this table and once more for each flag with that ONE flag flipped (a value flag
-# read as a boolean, a boolean read as a value), and denies when any reading finds the CLI.
+# _handle_npm_like reads every line once with this table and once more for each word that can be the command whatever the flags
+# take (_command_candidates), and denies when any reading finds the CLI.
 _NPM_VALUE_FLAGS = ('--prefix', '-C', '-w', '--workspace', '--cwd', '--registry', '--userconfig',
                     '--loglevel', '--cache', '--script-shell', '-p', '--package', '-c', '--call',
                     '--filter', '-F', '--filter-prod', '--dir')
@@ -1629,7 +1629,7 @@ def _word_runs_command(word):
 
 def _handle_npm_like(name, args, seg, state, depth):
     """npm / pnpm / yarn / bun run SCRIPT, npx / bunx / pnpm dlx|exec / npm exec|x PACKAGE ...
-    The line is read once with the value-flag table and once more per distinct flag with that flag flipped (see the table)."""
+    The line is read once with the value-flag table and once more for every word that can be the command (see the table)."""
     if name == 'yarnpkg':       # the other name of yarn
         name = 'yarn'
     # npx -c "command string" / npm exec -c "..."
@@ -1637,17 +1637,50 @@ def _handle_npm_like(name, args, seg, state, depth):
         if a.text in ('-c', '--call') and k + 1 < len(args):
             for alt in args[k + 1].alts:
                 check_command(alt, state, depth + 1)
-    _npm_like_once(name, args, _positional(args, _NPM_VALUE_FLAGS), seg, state, depth)
     seen = set()
+    for pos in [_positional(args, _NPM_VALUE_FLAGS)] + list(_pos_readings(args, state, 3)):
+        key = tuple(id(w) for w in pos)
+        if key in seen:
+            continue
+        seen.add(key)
+        _npm_like_once(name, args, pos, seg, state, depth)
+
+
+def _pos_readings(args, state, levels):
+    """Every positional list a line can have, whatever its flags take: the first `levels` positional words (the command, its
+    sub-command, its script) are each any word _command_candidates allows, the rest is read with the flag table. Each reading is
+    charged to the work budget (the count multiplies with the flag/value pairs on the line)."""
+    if levels == 0 or not args:
+        yield _positional(args, _NPM_VALUE_FLAGS)
+        return
+    cands = _command_candidates(args)
+    if not cands:
+        yield []
+    for c in cands:
+        for tail in _pos_readings(_args_after(args, c), state, levels - 1):
+            _charge(state, len(args) + 1)
+            yield [c] + tail
+
+
+def _command_candidates(args):
+    """Every word that can be the command of a package-manager line, whatever its flags take. A flag may or may not have a value,
+    and the table of flags that do is only a guess (it differs by manager and version, and nobody lists every flag), so a
+    non-flag word that follows a flag is either that flag's value or the command: both are tried. The first non-flag word that does
+    NOT follow a flag (or follows `--`, or a flag written `--x=y`) is the command, and ends the list."""
+    out = []
+    after_flag = False
     for a in args:
         t = a.text
         if t == '--':
-            break
-        if t.startswith('-') and len(t) > 1 and '=' not in t and t not in seen:
-            seen.add(t)
-            _charge(state, len(args) + 1)
-            flipped = tuple(f for f in _NPM_VALUE_FLAGS if f != t) if t in _NPM_VALUE_FLAGS else _NPM_VALUE_FLAGS + (t,)
-            _npm_like_once(name, args, _positional(args, flipped), seg, state, depth)
+            after_flag = False
+        elif t.startswith('-') and len(t) > 1:
+            after_flag = '=' not in t
+        else:
+            out.append(a)
+            if not after_flag:
+                break
+            after_flag = False
+    return out
 
 
 def _npm_like_once(name, args, pos, seg, state, depth):
