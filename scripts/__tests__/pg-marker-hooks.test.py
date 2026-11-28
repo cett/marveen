@@ -5,10 +5,13 @@
      LEDGER_DB_PATH test override; an absent marker with no layer is SQLite; a stat that fails is doubt = PostgreSQL.
   2. gate_audit_lib: a rule drift (pg_mode() says SQLite while the marker is there) does not write the frozen SQLite file.
      The mutant that writes anyway is caught by the file check.
+  3. tenant-context: on a drift the hook exits 2 and never reaches its SQLite connect (spy, with a no-marker control).
+  4. tenant-skill-gate: on a drift the gate blocks and never reaches sqlite3.connect (spy, with a no-marker control).
 
 Run: python3 scripts/__tests__/pg-marker-hooks.test.py  (neutral fixtures, throwaway install roots)
 """
 import importlib.util
+import json
 import os
 import sys
 import tempfile
@@ -125,6 +128,92 @@ class TestGateAuditDriftDoesNotWrite(Env):
             gal._write = saved_write
         # no marker: the SQLite arm is taken as before (the seam is the only writer here)
         self.assertEqual(len(calls), 1)
+
+
+def run_hook_main(mod, payload, pg_rule, marker_present, connect_owner, connect_name):
+    """Run a hook's main() with the rule and the marker set by hand, and with the SQLite connect replaced by a spy that
+    records every call and raises (so a SQLite arm that is reached is visible, and cannot write). Everything is restored.
+    Returns (exit code, spy calls, stderr text)."""
+    import contextlib
+    import io
+    saved = (hook_pg_mode.pg_mode, hook_pg_mode.store_marker_present, getattr(connect_owner, connect_name), sys.stdin)
+    calls = []
+
+    def spy(*a, **k):
+        calls.append(a)
+        raise RuntimeError('spy: the SQLite file was reached')
+
+    hook_pg_mode.pg_mode = lambda *a, **k: pg_rule
+    hook_pg_mode.store_marker_present = lambda *a, **k: marker_present
+    setattr(connect_owner, connect_name, spy)
+    sys.stdin = io.StringIO(json.dumps(payload))
+    err = io.StringIO()
+    code = None
+    try:
+        with contextlib.redirect_stderr(err):
+            mod.main()
+    except SystemExit as exc:
+        code = exc.code
+    finally:
+        hook_pg_mode.pg_mode, hook_pg_mode.store_marker_present = saved[0], saved[1]
+        setattr(connect_owner, connect_name, saved[2])
+        sys.stdin = saved[3]
+    return code, calls, err.getvalue()
+
+
+def load_hook(name):
+    """A hook file imported by path: its name has a hyphen, so a plain import does not work."""
+    spec = importlib.util.spec_from_file_location(name.replace('-', '_') + '_under_test', os.path.join(HOOKS, name + '.py'))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class TestTenantContextMarkerDrift(Env):
+    """P-E: tenant-context on a rule drift (the rule says SQLite, the marker says PostgreSQL) exits 2 without opening the
+    SQLite file. The control cell shows the spy IS reached when there is no marker, so the drift cell is not vacuous."""
+
+    PAYLOAD = {'cwd': '/nonexistent/agent-a', 'prompt': 'hello', 'session_id': 'session-a'}
+
+    def test_drift_exits_2_and_never_opens_the_sqlite_file(self):
+        import tenant_context_lib as tcl
+        tc = load_hook('tenant-context')
+        code, calls, err = run_hook_main(tc, self.PAYLOAD, pg_rule=False, marker_present=True,
+                                         connect_owner=tcl, connect_name='connect')
+        self.assertEqual(code, 2)
+        self.assertEqual(calls, [], 'the SQLite file was opened on a marked install')
+        self.assertIn('.pg-installed', err)
+
+    def test_control_without_a_marker_the_sqlite_arm_is_reached(self):
+        import tenant_context_lib as tcl
+        tc = load_hook('tenant-context')
+        code, calls, _err = run_hook_main(tc, self.PAYLOAD, pg_rule=False, marker_present=False,
+                                          connect_owner=tcl, connect_name='connect')
+        self.assertGreaterEqual(len(calls), 1, 'the spy was not reached: the drift cell would be vacuous')
+
+
+class TestTenantSkillGateMarkerDrift(Env):
+    """P-E: tenant-skill-gate on a rule drift blocks (exit 2) without opening the SQLite file (sqlite3.connect is the spy).
+    The control cell shows the connect IS reached without a marker."""
+
+    PAYLOAD = {'tool_name': 'Skill', 'tool_input': {'skill': 'agent-a-tenant-skill'}, 'cwd': '/nonexistent/agent-a',
+               'session_id': 'session-a'}
+
+    def test_drift_blocks_and_never_opens_the_sqlite_file(self):
+        import sqlite3
+        gate = load_hook('tenant-skill-gate')
+        code, calls, err = run_hook_main(gate, self.PAYLOAD, pg_rule=False, marker_present=True,
+                                         connect_owner=sqlite3, connect_name='connect')
+        self.assertEqual(code, 2)
+        self.assertEqual(calls, [], 'the SQLite file was opened on a marked install')
+        self.assertIn('.pg-installed', err)
+
+    def test_control_without_a_marker_the_sqlite_arm_is_reached(self):
+        import sqlite3
+        gate = load_hook('tenant-skill-gate')
+        _code, calls, _err = run_hook_main(gate, self.PAYLOAD, pg_rule=False, marker_present=False,
+                                           connect_owner=sqlite3, connect_name='connect')
+        self.assertGreaterEqual(len(calls), 1, 'the spy was not reached: the drift cell would be vacuous')
 
 
 if __name__ == '__main__':
