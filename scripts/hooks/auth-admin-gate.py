@@ -23,7 +23,7 @@ WHAT IS BLOCKED (exit 2):
      $(...) and backticks, `ssh host ...`, tmux send-keys / run-shell, osascript,
      shell variables assigned in the same command line, and a shell script file that
      contains such a call (bash x.sh, source x.sh, ./x.sh).
-     The token CLI follows the same shapes by a VERB rule: the first argument must be `check`, `list` or
+     The token CLI follows the same shapes by a VERB rule: the first argument must be `check` or
      `archive-shared-age` (none of them writes a token); `issue` (also with --rotate / --dry-run),
      `issue-operator`, `rotate-shared`, `revoke`, any other verb, a flag in the verb's place and a missing verb are
      denied (default-deny). The config runner form `tsx scripts/with-config.ts agent-tokens <verb>` is followed
@@ -47,7 +47,7 @@ WHAT IS BLOCKED (exit 2):
   4. Base64/xxd/openssl-decoded text handed to a shell or eval (the decoded text cannot be
      inspected, so it is not let through).
 READS ARE ALLOWED: SELECT, `.dump`, `.schema`, `.tables`, `npm run dashboard-user -- list`,
-`npm run agent-tokens -- check|list|archive-shared-age`.
+`npm run agent-tokens -- check|archive-shared-age` (`list` is not: it prints every tenant's token ids and names).
 The throw-away-store exemption: a MARVEEN_STORE_DIR that points away from the live store exempts the login CLI on
 SQLite, and the token CLI for `issue-operator`, `rotate-shared` and `revoke` (they write the database and files under
 the store dir). It does NOT exempt `issue`: that verb writes each agent's token file into the agent's own directory,
@@ -62,6 +62,12 @@ hook still running at its timeout is NOT a deny. A wall-clock alarm (8 s, under 
 an unreadable event: exit 2. Exit 0 only after a complete inspection found nothing.
 
 HONEST LIMITS (good-faith protection against the same OS user, like the docs say):
+  - RESIDUAL RISK, the denylist class: a script the agent CONSTRUCTS first is not seen. A copy of the CLI script made in
+    the same command (it does not exist yet when the gate looks), a one-off .ts written with the Write tool, a module
+    path or a function name built from strings, `npm --script-shell`, NODE_OPTIONS. The gate is not a sandbox. What it
+    does see is every form a normal operator or tool would type: package-manager wrappers (corepack, npx, pnpm, yarn,
+    bun), their run shorthands (`pnpm tsx scripts/x.ts`), runner binaries, a link that already exists (the stem of its
+    real path counts), the config runner form, shells and shell script files.
   - A script FILE of another language (python/node) that an agent wrote and then runs is
     not read: test fixtures in the repo legitimately contain INSERT INTO api_tokens ...
     and would be blocked. Shell script files ARE read (nothing in the repo calls the CLI).
@@ -109,9 +115,9 @@ CLI_PREFIXES = ('security-reset',)
 # store on both backends, so it is gated like the login CLI, but by a VERB rule (a read verb passes, anything else
 # is denied) instead of the login CLI's single `list` form.
 TOKEN_CLI_NAME = 'agent-tokens'
-# The verbs an agent may run: none of them writes an auth row (`check` and `list` read, `archive-shared-age` compares
+# The verbs an agent may run: none of them writes an auth row (`check` reads, `archive-shared-age` compares
 # an extracted archive with the live row). Every other verb, an unknown verb and a missing verb is denied (default-deny).
-TOKEN_CLI_READ_VERBS = ('check', 'list', 'archive-shared-age')
+TOKEN_CLI_READ_VERBS = ('check', 'archive-shared-age')
 # The write verbs a throw-away MARVEEN_STORE_DIR exempts: they change the database of the install and files UNDER the
 # store dir (store/.operator-token, store/.dashboard-token), so on a throw-away store they touch nothing live. `issue` is
 # NOT here: it writes the token file of each agent into the agent's own directory (agents/<name>/.agent-token, the
@@ -941,6 +947,17 @@ def _word_hits_cli(word, cwd):
         k = _is_cli_name(_script_stem(alt))
         if k and k not in kinds:
             kinds.append(k)
+        # a link or a copy-by-link that EXISTS when the command is looked at: the stem of what it points to counts too
+        # (`ln -s scripts/agent-tokens.ts /tmp/x.ts` in an earlier command, then `tsx /tmp/x.ts issue`)
+        if alt and '/' in alt and not any(c in alt for c in '*?['):
+            try:
+                full = alt if os.path.isabs(alt) else os.path.join(cwd, alt)
+                if os.path.islink(full):
+                    k = _is_cli_name(_script_stem(os.path.realpath(full)))
+                    if k and k not in kinds:
+                        kinds.append(k)
+            except OSError:
+                pass
         if any(c in alt for c in '*?['):
             try:
                 hits = glob.glob(alt if os.path.isabs(alt) else os.path.join(cwd, alt))
@@ -979,7 +996,7 @@ def _cli_decision(rest, state, kinds=(KIND_LOGIN,)):
                 continue      # MARVEEN_STORE_DIR points at a throw-away store: its database and its store files, not the live ones
             raise Deny('agent-tokens hivas (alparancs: %s). A parancs a futo telepites bearer-tokenjeit hozza letre, '
                        'forgatja es vonja vissza kozvetlenul az adatbazisban, HTTP es hitelesites nelkul, ezert '
-                       'agensnek nem engedett. Csak a `check`, `list` es `archive-shared-age` engedett, minden mas '
+                       'agensnek nem engedett. Csak a `check` es `archive-shared-age` engedett (a `list` nem: minden tenant token-azonositojat es nevet kiirja), minden mas '
                        'alparancs (es az alparancs hianya) tiltott; az issue / issue-operator / rotate-shared / '
                        'revoke a tulajdonos dolga a gepen. Az `issue` eldobhato store-on is tiltott: az agensek '
                        'sajat konyvtarukba (nem a store-ba) irjak a token-fajlt.' % sub[:40])
@@ -1551,6 +1568,11 @@ _NPM_VALUE_FLAGS = ('--prefix', '-C', '-w', '--workspace', '--cwd', '--registry'
 def _handle_npm_like(name, args, seg, state, depth):
     """npm / pnpm / yarn / bun run SCRIPT, npx / bunx / pnpm dlx|exec / npm exec|x PACKAGE ..."""
     pos = _positional(args, _NPM_VALUE_FLAGS)
+    if name == 'corepack':
+        # `corepack npm run X`, `corepack pnpm X`, `corepack yarn X`: the package manager runs as if it led the command
+        if pos:
+            check_words([pos[0]] + _args_after(args, pos[0]), seg, state, depth)
+        return
     # npx -c "command string" / npm exec -c "..."
     for k, a in enumerate(args):
         if a.text in ('-c', '--call') and k + 1 < len(args):
@@ -1565,6 +1587,9 @@ def _handle_npm_like(name, args, seg, state, depth):
             if w.dyn and not name == 'bun':
                 raise Deny('npm run egy futasidoben kepzett script-nevvel: a kapu nem tudja eldonteni, '
                            'hogy a dashboard-user / agent-tokens-e, ezert nem engedi at.')
+            if w.text in _NODEISH:      # pnpm run tsx scripts/agent-tokens.ts ...: the runner binary, then its script
+                check_words([w] + _args_after(args, w), seg, state, depth)
+                return
             kinds = _word_hits_cli(w, state.cwd)
             if kinds:
                 _cli_decision(_after_cli(_args_after(args, w)), state, kinds)
@@ -1573,6 +1598,9 @@ def _handle_npm_like(name, args, seg, state, depth):
         sub, rest = pos[0].text, pos[1:]
     elif name in ('yarn', 'pnpm') and pos:
         # yarn dashboard-user / pnpm dashboard-user  (they run package scripts without "run")
+        if pos[0].text in _NODEISH:     # pnpm tsx scripts/agent-tokens.ts ... / yarn node scripts/x.js: a binary of node_modules/.bin
+            check_words([pos[0]] + _args_after(args, pos[0]), seg, state, depth)
+            return
         kinds = _word_hits_cli(pos[0], state.cwd)
         if kinds:
             _cli_decision(_after_cli(_args_after(args, pos[0])), state, kinds)

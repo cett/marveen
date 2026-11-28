@@ -89,6 +89,10 @@ class Fixture(object):
         self.hardstore = os.path.realpath(os.path.join(self.tmp, 'hardstore'))
         for name in ('dashboard-user.ts', 'dashboard-use1.ts', 'security-reset.sh', 'agent-tokens.ts', 'with-config.ts'):
             open(os.path.join(self.root, 'scripts', name), 'w').write('// fixture\n')
+        os.symlink(os.path.join(self.root, 'scripts', 'agent-tokens.ts'), os.path.join(self.root, 'scripts', 'linked-tokens.ts'))
+        os.symlink(os.path.join(self.root, 'scripts', 'dashboard-user.ts'), os.path.join(self.root, 'scripts', 'linked-user.ts'))
+        open(os.path.join(self.root, 'scripts', 'plain.ts'), 'w').write('// fixture\n')
+        os.symlink(os.path.join(self.root, 'scripts', 'plain.ts'), os.path.join(self.root, 'scripts', 'linked-plain.ts'))
         open(os.path.join(self.root, 'bad.sh'), 'w').write('#!/bin/bash\nnpm run dashboard-user -- add bob\n')
         open(os.path.join(self.root, 'bad-tokens.sh'), 'w').write('#!/bin/bash\nnpm run agent-tokens -- issue\n')
         open(os.path.join(self.root, 'ok.sh'), 'w').write('#!/bin/bash\necho hello\nnpm run build\n')
@@ -1058,9 +1062,10 @@ TOKEN_DERIVED_BLOCKED = [r for r in (_as_token_row(l, c) for l, c in BLOCKED) if
 TOKEN_DERIVED_ALLOWED = [r for r in (_as_token_row(l, c, verb='issue-operator' if 'MARVEEN_STORE_DIR' in c else False)
                                      for l, c in ALLOWED) if r]
 
+# every verb an agent may NOT run: the write verbs, and `list` (it prints every tenant's token ids and names)
 _WRITE_VERBS = ('issue', 'issue --rotate', 'issue --dry-run alpha', 'issue alpha beta', 'issue-operator', 'issue-operator --rotate',
-                'rotate-shared', 'revoke alpha')
-_READ_VERBS = ('check', 'check alpha', 'list', 'archive-shared-age {O}/extracted.db')
+                'rotate-shared', 'revoke alpha', 'list')
+_READ_VERBS = ('check', 'check alpha', 'archive-shared-age {O}/extracted.db')
 # one command line per way of running the CLI; {V} is the verb and its arguments
 _TOKEN_SHAPES = (
     'npm run agent-tokens -- {V}',
@@ -1087,6 +1092,38 @@ TOKEN_BLOCKED = [('tokens verb %s :: %s' % (v, s.split(' {V}')[0]), s.replace('{
     ('tokens: issue on a throw-away store, under bash -c', 'MARVEEN_STORE_DIR={O} bash -c "npm run agent-tokens -- issue alpha"'),
     ('tokens: a missing verb on a throw-away store', 'MARVEEN_STORE_DIR={O} npm run agent-tokens'),
     ('tokens: an unknown verb on a throw-away store', 'MARVEEN_STORE_DIR={O} npm run agent-tokens -- wipe'),
+    # corepack and the package-manager run shorthands: the same command, for both CLIs
+    ('tokens: corepack npm run', 'corepack npm run agent-tokens -- issue-operator --rotate'),
+    ('tokens: corepack pnpm bare', 'corepack pnpm agent-tokens issue'),
+    ('tokens: corepack yarn bare', 'corepack yarn agent-tokens issue'),
+    ('tokens: corepack pnpm run', 'corepack pnpm run agent-tokens issue'),
+    ('tokens: corepack npx tsx', 'corepack npx tsx scripts/agent-tokens.ts issue'),
+    ('tokens: corepack npm exec with-config', 'corepack npm exec -- tsx scripts/with-config.ts agent-tokens revoke alpha'),
+    ('tokens: corepack with a flag first', 'corepack --silent npm run agent-tokens -- issue'),
+    ('tokens: corepack under a wrapper', 'env FOO=1 timeout 5 corepack pnpm agent-tokens issue'),
+    ('tokens: corepack in bash -c', 'bash -c "corepack npm run agent-tokens -- issue"'),
+    ('login: corepack npm run', 'corepack npm run dashboard-user -- add bob'),
+    ('login: corepack pnpm bare', 'corepack pnpm dashboard-user add bob'),
+    ('login: corepack yarn bare', 'corepack yarn dashboard-user add bob'),
+    ('login: corepack pnpm exec tsx', 'corepack pnpm exec tsx scripts/dashboard-user.ts add bob'),
+    ('tokens: pnpm tsx shorthand', 'pnpm tsx scripts/agent-tokens.ts issue'),
+    ('tokens: yarn tsx shorthand', 'yarn tsx scripts/agent-tokens.ts issue'),
+    ('tokens: pnpm node shorthand', 'pnpm node dist/scripts/agent-tokens.js issue'),
+    ('tokens: yarn node shorthand', 'yarn node dist/scripts/agent-tokens.js issue'),
+    ('tokens: pnpm run tsx', 'pnpm run tsx scripts/agent-tokens.ts issue'),
+    ('tokens: yarn tsx with-config', 'yarn tsx scripts/with-config.ts agent-tokens issue'),
+    ('tokens: pnpm ts-node shorthand', 'pnpm ts-node scripts/agent-tokens.ts revoke alpha'),
+    ('tokens: yarn bun shorthand', 'yarn bun scripts/agent-tokens.ts issue'),
+    ('login: pnpm tsx shorthand', 'pnpm tsx scripts/dashboard-user.ts add bob'),
+    ('login: yarn tsx shorthand', 'yarn tsx scripts/dashboard-user.ts add bob'),
+    ('login: pnpm run tsx', 'pnpm run tsx scripts/dashboard-user.ts add bob'),
+    ('login: yarn node shorthand', 'yarn node dist/scripts/dashboard-user.js add bob'),
+    # a link that exists when the command is looked at: the stem of its real path counts
+    ('tokens: npx tsx on a symlink of the CLI script', 'npx tsx scripts/linked-tokens.ts issue-operator --rotate'),
+    ('tokens: tsx abs path on a symlink', 'tsx {R}/scripts/linked-tokens.ts issue'),
+    ('tokens: node --import tsx on a symlink', 'node --import tsx scripts/linked-tokens.ts revoke alpha'),
+    ('login: tsx on a symlink of the login CLI', 'tsx scripts/linked-user.ts add bob'),
+    ('login: npx tsx on a symlink of the login CLI', 'npx tsx scripts/linked-user.ts add bob'),
     # a missing verb, an unknown verb, a flag in the verb's place: default-deny (the CLI itself prints its usage for these)
     ('tokens: no verb, npm run', 'npm run agent-tokens'),
     ('tokens: no verb after --', 'npm run agent-tokens --'),
@@ -1137,9 +1174,9 @@ TOKEN_BLOCKED = [('tokens verb %s :: %s' % (v, s.split(' {V}')[0]), s.replace('{
 ] + TOKEN_DERIVED_BLOCKED
 
 TOKEN_ALLOWED = [('tokens read verb %s :: %s' % (v, s.split(' {V}')[0]), s.replace('{V}', v)) for v in _READ_VERBS for s in _TOKEN_SHAPES] + [
-    ('tokens: list piped', 'npm run agent-tokens -- list | head -5'),
+    ('tokens: check piped', 'npm run agent-tokens -- check | head -5'),
     ('tokens: check redirected', 'npm run agent-tokens -- check > {O}/out.txt 2>&1'),
-    ('tokens: list through a PG URL in the command', 'MARVEEN_PG_URL=' + 'postgres://marveen_app@127.0.0.1:5432/marveen' + ' npm run agent-tokens -- list'),
+    ('tokens: list through a PG URL in the command', 'MARVEEN_PG_URL=' + 'postgres://marveen_app@127.0.0.1:5432/marveen' + ' npm run agent-tokens -- check'),
     # a throw-away store exempts the verbs that write under the store dir (the database and store/.operator-token,
     # store/.dashboard-token), on SQLite only
     ('tokens: issue-operator on a throw-away store (SQLite)', 'MARVEEN_STORE_DIR={O} npm run agent-tokens -- issue-operator'),
@@ -1163,10 +1200,19 @@ TOKEN_ALLOWED = [('tokens read verb %s :: %s' % (v, s.split(' {V}')[0]), s.repla
     ('tokens: with-config, another script', 'tsx scripts/with-config.ts status'),
     ('tokens: with-config, budget check', 'npx tsx scripts/with-config.ts budget-alert-check'),
     ('tokens: with-config, no name', 'tsx scripts/with-config.ts'),
+    ('tokens: corepack, another script', 'corepack npm run build'),
+    ('tokens: corepack, install', 'corepack pnpm install'),
+    ('tokens: corepack, read verb', 'corepack npm run agent-tokens -- check'),
+    ('tokens: pnpm tsx, read verb', 'pnpm tsx scripts/agent-tokens.ts check'),
+    ('tokens: yarn tsx, another script', 'yarn tsx scripts/plain.ts'),
+    ('tokens: pnpm run tsx, another script', 'pnpm run tsx scripts/plain.ts'),
+    ('tokens: pnpm run build', 'pnpm run build'),
+    ('tokens: tsx on a symlink of an unrelated script', 'tsx scripts/linked-plain.ts'),
+    ('tokens: tsx on a symlink of the CLI script, read verb', 'tsx scripts/linked-tokens.ts check'),
     ('tokens: npm run status', 'npm run status'),
     # interpreter code that merely carries a similar name
     ('tokens: a script whose name only starts with the CLI name', 'node scripts/agent-tokens-helper.js issue'),
-    ('tokens: with-config direct exec, read verb', './scripts/with-config.ts agent-tokens list'),
+    ('tokens: with-config direct exec, read verb', './scripts/with-config.ts agent-tokens check'),
     ('tokens: node names a file that ends with the CLI name', 'node -e "console.log(\'my-agent-tokens\')"'),
     ('tokens: node names a test file','node -e "console.log(\'./agent-tokens.test.ts\')"'),
     ('tokens: node names a longer module', 'node -e "console.log(\'src/agent-tokens-cli-sqlite.test.ts\')"'),
@@ -1329,16 +1375,17 @@ class TestTable(unittest.TestCase):
             GATE.inspect('npm run agent-tokens', FX.root)
         self.assertIn('nincs alparancs', cm.exception.reason)    # a missing verb is named as such
 
-    def test_the_token_read_verbs_are_exactly_these_three(self):
+    def test_the_token_read_verbs_are_exactly_these_two(self):
         # a verb added to the allowlist is a protection change: this assertion makes it a deliberate one
-        self.assertEqual(GATE.TOKEN_CLI_READ_VERBS, ('check', 'list', 'archive-shared-age'))
+        self.assertEqual(GATE.TOKEN_CLI_READ_VERBS, ('check', 'archive-shared-age'))
 
     def test_the_token_cli_exit_code_through_the_real_hook(self):
         code, err = run_gate(bash_event('npm run agent-tokens -- issue alpha'))
         self.assertEqual(code, 2)
         self.assertIn('agent-tokens', err)
-        self.assertEqual(run_gate(bash_event('npm run agent-tokens -- list'))[0], 0)
+        self.assertEqual(run_gate(bash_event('npm run agent-tokens -- list'))[0], 2)      # every tenant's token ids and names
         self.assertEqual(run_gate(bash_event('tsx scripts/with-config.ts agent-tokens check'))[0], 0)
+        self.assertEqual(run_gate(bash_event('corepack pnpm agent-tokens issue'))[0], 2)
         self.assertEqual(run_gate(bash_event('tsx scripts/with-config.ts agent-tokens rotate-shared'))[0], 2)
 
 
@@ -1727,13 +1774,19 @@ MUTANTS = [
     ('gate-audit spool: directory name matched case-sensitively', "SPOOL_DIR_RE = re.compile(r'\\.gate-audit-spool', re.I)", "SPOOL_DIR_RE = re.compile(r'\\.gate-audit-spool')"),
     ('gate-audit spool: every code naming the directory is refused',"    if SPOOL_DIR_RE.search(text) and SPOOL_CODE_WRITE_RE.search(text):", '    if SPOOL_DIR_RE.search(text):'),
     # ---- the per-agent token CLI (agent-tokens): the verb rule, the config runner form, the module and mutator names ----
+    ('tokens: list allowed', "TOKEN_CLI_READ_VERBS = ('check', 'archive-shared-age')", "TOKEN_CLI_READ_VERBS = ('check', 'list', 'archive-shared-age')"),
+    ('corepack not unwrapped', "    if name == 'corepack':\n        # `corepack npm run X`", "    if False:\n        # `corepack npm run X`"),
+    ('corepack unwrapped without its arguments', "            check_words([pos[0]] + _args_after(args, pos[0]), seg, state, depth)\n        return\n    # npx -c", "            check_words([pos[0]], seg, state, depth)\n        return\n    # npx -c"),
+    ('pnpm run <runner> not followed', "            if w.text in _NODEISH:      # pnpm run tsx", "            if False:      # pnpm run tsx"),
+    ('yarn / pnpm <runner> shorthand not followed', "        if pos[0].text in _NODEISH:     # pnpm tsx scripts", "        if False:     # pnpm tsx scripts"),
+    ('symlink: the real path is not looked at', "                if os.path.islink(full):", "                if False:"),
     ('tokens: any verb allowed', "            if rest and rest[0] in TOKEN_CLI_READ_VERBS:", "            if rest:"),
     ('tokens: a missing verb allowed', "            if rest and rest[0] in TOKEN_CLI_READ_VERBS:", "            if not rest or rest[0] in TOKEN_CLI_READ_VERBS:"),
     ('tokens: the LAST word decides the verb', "            if rest and rest[0] in TOKEN_CLI_READ_VERBS:", "            if rest and rest[-1] in TOKEN_CLI_READ_VERBS:"),
-    ('tokens: issue allowed', "TOKEN_CLI_READ_VERBS = ('check', 'list', 'archive-shared-age')", "TOKEN_CLI_READ_VERBS = ('check', 'list', 'archive-shared-age', 'issue')"),
-    ('tokens: issue-operator allowed', "TOKEN_CLI_READ_VERBS = ('check', 'list', 'archive-shared-age')", "TOKEN_CLI_READ_VERBS = ('check', 'list', 'archive-shared-age', 'issue-operator')"),
-    ('tokens: rotate-shared allowed', "TOKEN_CLI_READ_VERBS = ('check', 'list', 'archive-shared-age')", "TOKEN_CLI_READ_VERBS = ('check', 'list', 'archive-shared-age', 'rotate-shared')"),
-    ('tokens: revoke allowed', "TOKEN_CLI_READ_VERBS = ('check', 'list', 'archive-shared-age')", "TOKEN_CLI_READ_VERBS = ('check', 'list', 'archive-shared-age', 'revoke')"),
+    ('tokens: issue allowed', "TOKEN_CLI_READ_VERBS = ('check', 'archive-shared-age')", "TOKEN_CLI_READ_VERBS = ('check', 'archive-shared-age', 'issue')"),
+    ('tokens: issue-operator allowed', "TOKEN_CLI_READ_VERBS = ('check', 'archive-shared-age')", "TOKEN_CLI_READ_VERBS = ('check', 'archive-shared-age', 'issue-operator')"),
+    ('tokens: rotate-shared allowed', "TOKEN_CLI_READ_VERBS = ('check', 'archive-shared-age')", "TOKEN_CLI_READ_VERBS = ('check', 'archive-shared-age', 'rotate-shared')"),
+    ('tokens: revoke allowed', "TOKEN_CLI_READ_VERBS = ('check', 'archive-shared-age')", "TOKEN_CLI_READ_VERBS = ('check', 'archive-shared-age', 'revoke')"),
     ('tokens: the name is not a CLI name', "    if base_no_ext == TOKEN_CLI_NAME:\n        return KIND_TOKENS", "    if False:\n        return KIND_TOKENS"),
     ('tokens: the name matched as a prefix', "    if base_no_ext == TOKEN_CLI_NAME:\n        return KIND_TOKENS", "    if base_no_ext.startswith(TOKEN_CLI_NAME):\n        return KIND_TOKENS"),
     ('tokens: the isolated-store exemption removed', "            if state.isolated_cli and rest and rest[0] in TOKEN_CLI_STORE_ONLY_VERBS:", "            if False:"),
