@@ -35,8 +35,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
-HOOK = os.path.join(ROOT, "scripts", "hooks", "context-watchdog.py")
-CWD = os.path.join(ROOT, "agents", "agent-a")
+# isolated copy of the hook (empty store, no PG marker): PR 959 test-only isolation, see pg_install_isolation.py
+from pg_install_isolation import isolated_hooks_dir, isolated_install_root  # noqa: E402
+HOOK = os.path.join(isolated_hooks_dir(), "context-watchdog.py")
+# the agent is read from the cwd under the hook's own install root (the isolated one): same agent-a fixture, new root
+CWD = os.path.join(isolated_install_root(), "agents", "agent-a")
 FACTS = "/api/v1/hooks/watchdog-facts"
 RECORD = "/api/v1/hooks/watchdog-record"
 AUDIT = "/api/v1/hook-audit"

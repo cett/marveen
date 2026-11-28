@@ -36,8 +36,13 @@ _CANDIDATES = [
 ]
 GATE_PATH = next(p for p in _CANDIDATES if p and os.path.exists(p))
 GATE_SRC = open(GATE_PATH, encoding='utf-8').read()
-# the gate imports the PostgreSQL mode helper of its own folder (scripts/hooks/hook_pg_mode.py), as the other hooks do
-sys.path.insert(0, os.path.dirname(os.path.abspath(GATE_PATH)))
+# the gate imports the PostgreSQL mode helper of its own folder: the isolated copy (empty store, no PG marker), PR 959
+# test-only isolation, see pg_install_isolation.py. GATE_SRC above is still the real source text.
+from pg_install_isolation import isolated_hooks_dir, REAL_HOOKS  # noqa: E402
+sys.path.insert(0, isolated_hooks_dir())
+# subprocess cells run the copy of the gate too, so its hook_pg_mode import resolves to the isolated root
+GATE_RUN = (os.path.join(isolated_hooks_dir(), os.path.basename(GATE_PATH))
+            if os.path.dirname(os.path.abspath(GATE_PATH)) == REAL_HOOKS else GATE_PATH)
 
 os.environ['AUTH_ADMIN_GATE_NO_AUDIT'] = '1'
 
@@ -1163,7 +1168,7 @@ class TestTable(unittest.TestCase):
 # ---------------------------------------------------------------------------------------------
 # the exit-code contract through a real subprocess
 # ---------------------------------------------------------------------------------------------
-def run_gate(event, raw=None, env_extra=None, path=GATE_PATH, timeout=30):
+def run_gate(event, raw=None, env_extra=None, path=GATE_RUN, timeout=30):
     env = dict(os.environ)
     env.update(FX.env)
     env['AUTH_ADMIN_GATE_NO_AUDIT'] = '1'
