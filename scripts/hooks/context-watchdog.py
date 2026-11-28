@@ -1223,6 +1223,10 @@ def main():
     if hook_pg_mode.pg_mode():
         main_pg(agent_id, session_id, transcript_path, tool_name, cc_subagent_uuid, ev, tokens)
         sys.exit(0)
+    if hook_pg_mode.store_marker_present():
+        # a rule drift: the marker says PostgreSQL, the stale SQLite file is not opened (P-E); the telemetry is dropped
+        sys.stderr.write("context-watchdog: the PostgreSQL install marker (store/.pg-installed) is present; the SQLite file is not opened\n")
+        sys.exit(0)
 
     try:
         conn = sqlite3.connect(ledger_lib.db_path(), timeout=5)

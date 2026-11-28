@@ -82,6 +82,12 @@ def _marker_present(path):
         return True
 
 
+def store_marker_present(install_root=None):
+    """The store marker exists (P-E). The SQLite arms of the hooks call this as a second check: a copy of the rule that says
+    SQLite while the marker is there is a drift, and the SQLite file is not opened (fail closed)."""
+    return _marker_present(store_marker_path(install_root))
+
+
 def pg_mode(install_root=None):
     """True when the install is configured for PostgreSQL: any of the four configuration layers (see the module text), or the
     store marker, which outlives the configuration. Returns a boolean, never the URL or the marker content."""
