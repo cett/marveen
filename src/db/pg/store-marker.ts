@@ -3,7 +3,7 @@
 // It is the one durable fact about "this install runs on PostgreSQL" that lives outside the configuration: the URL, the
 // secret mount, the .env line and the MARVEEN_PG_CONFIGURED variable can all be lost, and when they are, every consumer
 // would read the install as SQLite and use the frozen file. The shell helper (scripts/pg-configured.sh) and the hook side
-// (scripts/hooks/hook_pg_mode.py) read this file as a fifth layer. The app itself does not refuse on it yet (decision D3).
+// (scripts/hooks/hook_pg_mode.py) read this file as a fifth layer. The app's SQLite entry refuses on it too (decision D3, assertSqliteEntryAllowed in url.ts).
 //
 // Rules: written only when absent (idempotent, never rewritten), mode 0644, atomic (temp file and rename), and best effort:
 // a failed write is logged once and the boot goes on (the marker is a safety net, not a boot condition). The content

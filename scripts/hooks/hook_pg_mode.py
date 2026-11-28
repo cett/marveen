@@ -1,6 +1,7 @@
 """Is this install configured for PostgreSQL? The hook side of the one rule.
 
-The same four layers as scripts/pg-configured.sh (the shell reference) and, for the URL, src/db/pg/url.ts +
+The same layers as scripts/pg-configured.sh (the shell reference: the four configuration layers, then the store marker as the
+fifth, in either place) and, for the URL, src/db/pg/url.ts +
 src/env.ts readEnvFile (the app). TRUE when ANY layer says PostgreSQL:
   1. the secret mount file ${SECRET_MOUNT_DIR:-/run/secrets}/MARVEEN_PG_URL, non-blank after trimming;
   2. the environment variable MARVEEN_PG_URL, non-blank;
