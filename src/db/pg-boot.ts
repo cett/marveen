@@ -97,6 +97,12 @@ export interface PgBootOptions {
   allowNewer?: boolean
   /** Pool limits (default: the DB_PG_* environment variables, then the adapter defaults). */
   pool?: PgPoolSettings
+  /**
+   * Write the PostgreSQL install marker (store/.pg-installed, P-E) into this process's store dir once the boot passed.
+   * Opt-in: only the real process boot (initDatabaseAsync) sets it. A test or a CLI helper that boots against a
+   * throwaway database must never mark the checkout it runs in (PR 959 adversarial review, finding 1).
+   */
+  writeInstallMarker?: boolean
 }
 
 export interface PgBootResult {
@@ -289,9 +295,9 @@ export async function bootPgBackend(opts: PgBootOptions = {}): Promise<PgBootRes
     return refuse('caches', err)
   }
 
-  // the durable marker that this store belongs to PostgreSQL (P-E): written once, after the check passed; a failed write is
-  // logged and the boot goes on (writePgInstalledMarker never throws)
-  writePgInstalledMarker(STORE_DIR)
+  // the durable marker that this store belongs to PostgreSQL (P-E): written once, after the check passed, and only when the
+  // caller is the real process boot (writeInstallMarker); a failed write is logged and the boot goes on (never throws)
+  if (opts.writeInstallMarker === true) writePgInstalledMarker(STORE_DIR)
 
   const shippedHighest = Math.max(0, ...loadPgMigrationFiles(dirOptsForStatus).map((f) => f.version))
   if (migrations.state === 'NEWER' && migrations.newer) {

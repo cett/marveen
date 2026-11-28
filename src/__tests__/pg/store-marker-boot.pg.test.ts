@@ -48,10 +48,17 @@ async function db(): Promise<PgTestDb> {
   return d
 }
 
-describe('the PostgreSQL boot writes the install marker once', () => {
-  it('the first boot writes it: one line, mode 0644, no URL in it', async () => {
+describe('the PostgreSQL boot writes the install marker once, and only when asked (opt-in)', () => {
+  it('a boot without the option writes no marker (a test or a CLI helper never marks the checkout it runs in)', async () => {
     const d = await db()
     await bootPgBackend({ url: d.appUrl, migrateUrl: '' })
+    expect((await d.pool.query('SELECT 1 AS one')).rows[0].one).toBe(1)
+    expect(() => readFileSync(markerPath, 'utf-8')).toThrow()
+  })
+
+  it('the first boot with the option writes it: one line, mode 0644, no URL in it', async () => {
+    const d = await db()
+    await bootPgBackend({ url: d.appUrl, migrateUrl: '', writeInstallMarker: true })
     expect(readFileSync(markerPath, 'utf-8')).toMatch(/^pg-installed \d{4}-\d{2}-\d{2}T/)
     expect(statSync(markerPath).mode & 0o777).toBe(0o644)
     expect(readFileSync(markerPath, 'utf-8')).not.toContain(d.appUrl)
@@ -59,18 +66,18 @@ describe('the PostgreSQL boot writes the install marker once', () => {
 
   it('a second boot keeps the first marker unchanged', async () => {
     const d = await db()
-    await bootPgBackend({ url: d.appUrl, migrateUrl: '' })
+    await bootPgBackend({ url: d.appUrl, migrateUrl: '', writeInstallMarker: true })
     const first = readFileSync(markerPath, 'utf-8')
     await closePgBackend()
     await new Promise((r) => setTimeout(r, 15))
-    await bootPgBackend({ url: d.appUrl, migrateUrl: '' })
+    await bootPgBackend({ url: d.appUrl, migrateUrl: '', writeInstallMarker: true })
     expect(readFileSync(markerPath, 'utf-8')).toBe(first)
   })
 
   it('a store dir that cannot be written does not stop the boot: the backend is up and no marker exists', async () => {
     const d = await db()
     chmodSync(STORE, 0o555)
-    await bootPgBackend({ url: d.appUrl, migrateUrl: '' })
+    await bootPgBackend({ url: d.appUrl, migrateUrl: '', writeInstallMarker: true })
     expect((await d.pool.query('SELECT 1 AS one')).rows[0].one).toBe(1)
     expect(() => readFileSync(markerPath, 'utf-8')).toThrow()
   })
