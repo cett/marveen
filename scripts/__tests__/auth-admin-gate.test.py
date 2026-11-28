@@ -99,6 +99,10 @@ class Fixture(object):
         os.symlink(os.path.join(self.root, 'scripts', 'with-config.ts'), os.path.join(self.links, 'w.ts'))
         os.symlink(os.path.join(self.root, 'scripts', 'linked-config.ts'), os.path.join(self.links, 'chain.ts'))
         os.symlink(os.path.join(self.root, 'scripts', 'agent-tokens.ts'), os.path.join(self.links, 'lt.ts'))
+        # links by a BARE name in the working directory (the install root): an interpreter reads `w-bare.ts` relative to there
+        os.symlink(os.path.join(self.root, 'scripts', 'with-config.ts'), os.path.join(self.root, 'w-bare.ts'))
+        os.symlink(os.path.join(self.root, 'scripts', 'agent-tokens.ts'), os.path.join(self.root, 't-bare.ts'))
+        os.symlink(os.path.join(self.root, 'scripts', 'plain.ts'), os.path.join(self.root, 'p-bare.ts'))
         open(os.path.join(self.root, 'bad.sh'), 'w').write('#!/bin/bash\nnpm run dashboard-user -- add bob\n')
         open(os.path.join(self.root, 'bad-tokens.sh'), 'w').write('#!/bin/bash\nnpm run agent-tokens -- issue\n')
         open(os.path.join(self.root, 'ok.sh'), 'w').write('#!/bin/bash\necho hello\nnpm run build\n')
@@ -1171,6 +1175,26 @@ TOKEN_BLOCKED = [('tokens verb %s :: %s' % (v, s.split(' {V}')[0]), s.replace('{
     ('tokens: corepack pnpm@tag', 'corepack pnpm@latest agent-tokens issue'),
     ('tokens: corepack pnpm@version under a wrapper', 'env FOO=1 timeout 5 corepack pnpm@9.1.0 agent-tokens issue'),
     ('tokens: corepack, a versioned brace-alternative script word', 'corepack ./scripts/{agent-tokens,plain}@1.ts issue'),
+    # a link by a bare name in the working directory
+    ('tokens: tsx on a bare-name symlink of with-config', 'tsx w-bare.ts agent-tokens issue'),
+    ('tokens: npx tsx on a bare-name symlink of with-config', 'npx tsx w-bare.ts agent-tokens issue-operator --rotate'),
+    ('tokens: tsx on a bare-name symlink of the CLI script', 'tsx t-bare.ts issue'),
+    ('tokens: node --import tsx on a bare-name symlink of the CLI script', 'node --import tsx t-bare.ts revoke alpha'),
+    ('tokens: pnpm tsx on a bare-name symlink of the CLI script', 'pnpm tsx t-bare.ts issue'),
+    # the pnpm selector flags are NOT value flags of npm, npx or yarn (an unknown flag is a boolean there): the next word is the command
+    ('tokens: npm run --filter, the script is the next word', 'npm run --filter agent-tokens issue'),
+    ('tokens: npm run -F, the script is the next word', 'npm run -F agent-tokens issue'),
+    ('tokens: npm run --filter-prod, the script is the next word', 'npm run --filter-prod agent-tokens issue'),
+    ('tokens: npm run --dir, the script is the next word', 'npm run --dir agent-tokens issue'),
+    ('tokens: npx --filter, the package is the next word', 'npx --filter agent-tokens issue'),
+    ('tokens: yarn --filter, the script is the next word', 'yarn --filter agent-tokens issue'),
+    ('tokens: yarn run --dir, the script is the next word', 'yarn run --dir agent-tokens issue'),
+    ('login: npm run --filter, the script is the next word', 'npm run --filter dashboard-user add bob'),
+    ('tokens: bun --filter, run', 'bun --filter foo run agent-tokens issue'),
+    ('tokens: bun -F, run', 'bun -F foo run agent-tokens issue'),
+    # yarn workspaces / pnpm recursive with more words than the scan covers: denied, not scanned in part
+    ('tokens: yarn workspaces foreach, many selectors then the command', 'yarn workspaces foreach ' + ' '.join('--include w%d' % i for i in range(12)) + ' run agent-tokens issue'),
+    ('tokens: yarn workspaces foreach, many selectors, a benign command (default-deny)', 'yarn workspaces foreach ' + ' '.join('--include w%d' % i for i in range(12)) + ' run build'),
     ('login: corepack npm@version run','corepack npm@10.2.0 run dashboard-user -- add bob'),
     ('login: corepack yarn@version bare', 'corepack yarn@4 dashboard-user add bob'),
     # a missing verb, an unknown verb, a flag in the verb's place: default-deny (the CLI itself prints its usage for these)
@@ -1264,6 +1288,13 @@ TOKEN_ALLOWED = [('tokens read verb %s :: %s' % (v, s.split(' {V}')[0]), s.repla
     ('tokens: direct exec of a symlink of with-config, read verb', './scripts/linked-config.ts agent-tokens check'),
     ('tokens: direct exec of a symlink of with-config, another script', '{K}/w.ts status'),
     ('tokens: direct exec of a symlink of the CLI script, read verb', './scripts/linked-tokens.ts check'),
+    ('tokens: tsx on a bare-name symlink of with-config, read verb', 'tsx w-bare.ts agent-tokens check'),
+    ('tokens: tsx on a bare-name symlink of with-config, another script', 'tsx w-bare.ts status'),
+    ('tokens: tsx on a bare-name symlink of the CLI script, read verb', 'tsx t-bare.ts check'),
+    ('tokens: tsx on a bare-name symlink of an unrelated script', 'tsx p-bare.ts'),
+    ('tokens: yarn workspaces foreach, a few selectors, run build', 'yarn workspaces foreach --include a --include b run build'),
+    ('tokens: bun --filter, run build', 'bun --filter foo run build'),
+    ('tokens: npm run --filter, a script that is not the CLI', 'npm run --filter foo build'),
     ('tokens: pnpm --filter, build', 'pnpm --filter foo build'),
     ('tokens: pnpm --filter, run build', 'pnpm --filter foo run build'),
     ('tokens: pnpm -F, install', 'pnpm -F foo install'),
@@ -1858,7 +1889,13 @@ MUTANTS = [
     ('pnpm: --filter-prod is not a value flag', "'--filter', '-F', '--filter-prod', '--dir')", "'--filter', '-F', '--dir')"),
     ('pnpm: --dir is not a value flag', "'--filter', '-F', '--filter-prod', '--dir')", "'--filter', '-F', '--filter-prod')"),
     ('yarn / pnpm workspace form not unwrapped', "    elif pos and ((name == 'yarn' and pos[0].text in ('workspace', 'workspaces'))", "    elif False and ((name == 'yarn' and pos[0].text in ('workspace', 'workspaces'))"),
-    ('yarn workspace: the command is looked for at the first positional only', "        for k in range(1, min(len(pos), 12)):", "        for k in range(1, min(len(pos), 2)):"),
+    ('yarn workspace: the command is looked for at the first positional only', "        for k in range(1, len(pos)):", "        for k in range(1, min(len(pos), 2)):"),
+    ('yarn workspace: more words than the scan covers are not denied', "        if len(pos) > _WORKSPACE_SCAN_MAX:\n            raise Deny(", "        if False:\n            raise Deny("),
+    ('yarn workspace: the scan stops at the cap instead of denying', "        if len(pos) > _WORKSPACE_SCAN_MAX:\n            raise Deny(", "        pos = pos[:_WORKSPACE_SCAN_MAX]\n        if False:\n            raise Deny("),
+    ('pnpm value flags apply to every manager', "_NPM_VALUE_FLAGS + _MANAGER_VALUE_FLAGS.get(name, ())", "_NPM_VALUE_FLAGS + _PNPM_VALUE_FLAGS"),
+    ('bun: --filter / -F are not value flags', "_MANAGER_VALUE_FLAGS = {'pnpm': _PNPM_VALUE_FLAGS, 'bun': _BUN_VALUE_FLAGS}", "_MANAGER_VALUE_FLAGS = {'pnpm': _PNPM_VALUE_FLAGS}"),
+    ('pnpm: the manager value flags are not applied at all', "_NPM_VALUE_FLAGS + _MANAGER_VALUE_FLAGS.get(name, ())", "_NPM_VALUE_FLAGS"),
+    ('symlink: a bare name is not looked at', "    if alt and not any(c in alt for c in '*?['):\n        try:\n            full", "    if alt and '/' in alt and not any(c in alt for c in '*?['):\n        try:\n            full"),
     ('yarn workspace: singular form not unwrapped', "pos[0].text in ('workspace', 'workspaces'))", "pos[0].text in ('workspaces',))"),
     ('yarn workspaces: plural form not unwrapped', "pos[0].text in ('workspace', 'workspaces'))", "pos[0].text in ('workspace',))"),
     ('pnpm recursive not unwrapped', "                  or (name == 'pnpm' and pos[0].text in ('recursive', 'multi', 'm'))):", "                  or False):"),

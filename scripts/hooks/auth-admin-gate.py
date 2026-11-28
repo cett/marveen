@@ -946,13 +946,14 @@ def _link_stem(alt, cwd):
     """The script stem of what a script-position word points to when the word is a link that EXISTS when the command is
     looked at, else None. ONE helper for every rule that reads a script name (the CLIs AND the config runner): a link made in
     an earlier command (`ln -s scripts/agent-tokens.ts /tmp/x.ts` or `ln -s scripts/with-config.ts /tmp/w.ts`, then
-    `tsx /tmp/x.ts issue`, `tsx /tmp/w.ts agent-tokens issue`) names the same file as the real path does."""
-    if alt and '/' in alt and not any(c in alt for c in '*?['):
+    `tsx /tmp/x.ts issue`, `tsx /tmp/w.ts agent-tokens issue`) names the same file as the real path does. A bare name counts
+    too (`tsx w.ts agent-tokens issue` with the link in the working directory: an interpreter reads it relative to there)."""
+    if alt and not any(c in alt for c in '*?['):
         try:
             full = alt if os.path.isabs(alt) else os.path.join(cwd, alt)
             if os.path.islink(full):
                 return _script_stem(os.path.realpath(full))
-        except OSError:
+        except (OSError, ValueError):
             pass
     return None
 
@@ -1576,9 +1577,15 @@ def _handle_node(name, args, seg, state, depth):
 
 
 _NPM_VALUE_FLAGS = ('--prefix', '-C', '-w', '--workspace', '--cwd', '--registry', '--userconfig',
-                    '--loglevel', '--cache', '--script-shell', '-p', '--package', '-c', '--call',
-                    # pnpm: `pnpm --filter foo tsx ...` / `-F foo` / `--dir x`: the value is a package selector, not the command
-                    '--filter', '-F', '--filter-prod', '--dir')
+                    '--loglevel', '--cache', '--script-shell', '-p', '--package', '-c', '--call')
+# Value flags that only SOME managers have. pnpm: `pnpm --filter foo tsx ...` / `-F foo` / `--dir x`: the value is a package
+# selector, not the command. npm, npx and yarn do NOT take them (an unknown flag is a boolean there), so for them the next word
+# is the command: `npm run --filter agent-tokens issue` runs the script agent-tokens, and swallowing it would hide the name.
+_PNPM_VALUE_FLAGS = ('--filter', '-F', '--filter-prod', '--dir')
+_BUN_VALUE_FLAGS = ('--filter', '-F')
+_MANAGER_VALUE_FLAGS = {'pnpm': _PNPM_VALUE_FLAGS, 'bun': _BUN_VALUE_FLAGS}
+# yarn workspace(s) / pnpm recursive: the command is looked for at every positional up to this many; past it the gate denies
+_WORKSPACE_SCAN_MAX = 12
 
 
 def _unversioned(word):
@@ -1592,7 +1599,7 @@ def _unversioned(word):
 
 def _handle_npm_like(name, args, seg, state, depth):
     """npm / pnpm / yarn / bun run SCRIPT, npx / bunx / pnpm dlx|exec / npm exec|x PACKAGE ..."""
-    pos = _positional(args, _NPM_VALUE_FLAGS)
+    pos = _positional(args, _NPM_VALUE_FLAGS + _MANAGER_VALUE_FLAGS.get(name, ()))
     if name == 'corepack':
         # `corepack npm run X`, `corepack pnpm X`, `corepack yarn X`: the package manager runs as if it led the command
         if pos:
@@ -1626,9 +1633,13 @@ def _handle_npm_like(name, args, seg, state, depth):
                   or (name == 'pnpm' and pos[0].text in ('recursive', 'multi', 'm'))):
         # yarn workspace NAME <command> / yarn workspaces foreach [flags] <command> / pnpm recursive <command>: the command runs
         # as if `yarn` / `pnpm` led it. A flag's value or the workspace name is a plain word here, so the command is looked for at
-        # every positional (the first dozen): `yarn <the rest from there>` is checked each time, and the one that is the
-        # command hits its rule; the others (`yarn foo tsx ...` with foo as the "command") find nothing.
-        for k in range(1, min(len(pos), 12)):
+        # every positional: `yarn <the rest from there>` is checked each time, and the one that is the command hits its rule;
+        # the others (`yarn foo tsx ...` with foo as the "command") find nothing. More than _WORKSPACE_SCAN_MAX words is
+        # denied rather than scanned in part (a cap that stops looking would let the command hide behind enough selectors).
+        if len(pos) > _WORKSPACE_SCAN_MAX:
+            raise Deny('yarn workspace / pnpm recursive tul sok szoval (%d felett): a kapu nem tudja eldonteni, melyik a '
+                       'parancs, ezert nem engedi at.' % _WORKSPACE_SCAN_MAX)
+        for k in range(1, len(pos)):
             check_words([Word(name)] + _args_after(args, pos[k - 1]), seg, state, depth)
         return
     elif name in ('yarn', 'pnpm') and pos:
