@@ -6,7 +6,7 @@
 // Privacy: neutral fixtures only (leakmarker, placeholder-pass).
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, chmodSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, chmodSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -31,6 +31,8 @@ interface Fixture {
   unreadableStore?: boolean
   /** the store path is a regular file, not a directory */
   storeIsFile?: boolean
+  /** the marker path is a symlink to itself (a loop: stat fails with ELOOP, the marker is still present) */
+  markerLoop?: boolean
   /** the MARVEEN_STORE_DIR environment variable names an env store: 'marker' (the marker is in it) or 'empty' (it is not) */
   envStore?: 'marker' | 'empty'
   /** the answer the app must give (a row that pins the rule, not only the agreement of the three readers) */
@@ -71,6 +73,8 @@ const FIXTURES: Fixture[] = [
   // directory; a store that does not exist at all stays absent (the row above)
   { name: 'store dir without the search bit (the marker inside cannot be read)', unreadableStore: true, expect: 'PG' },
   { name: 'store path is a regular file, not a directory', storeIsFile: true, expect: 'PG' },
+  // a symlink loop at the marker path: stat fails with ELOOP, which is not "absent" in any of the three readers
+  { name: 'marker path is a symlink loop (stat fails with ELOOP)', markerLoop: true, expect: 'PG' },
   // the second place (P-E, decision 4): the hooks and the shell look in <install>/store AND in $MARVEEN_STORE_DIR when it is
   // set; the app reads its own store only, so a row that names an env store compares the app against THAT store
   { name: 'store marker in the environment store alone (MARVEEN_STORE_DIR set)', envStore: 'marker', expect: 'PG' },
@@ -130,6 +134,10 @@ function materialise(f: Fixture): Case {
     toRestore.push(join(installRoot, 'store'))
   }
   if (f.storeIsFile) writeFileSync(join(installRoot, 'store'), 'not a directory\n')
+  if (f.markerLoop) {
+    mkdirSync(join(installRoot, 'store'))
+    symlinkSync(join(installRoot, 'store', '.pg-installed'), join(installRoot, 'store', '.pg-installed'))
+  }
   const envStoreDir = join(dir, 'env-store')
   mkdirSync(envStoreDir)
   if (f.envStore === 'marker') writeFileSync(join(envStoreDir, '.pg-installed'), 'pg-installed 2026-11-28T00:00:00.000Z\n')

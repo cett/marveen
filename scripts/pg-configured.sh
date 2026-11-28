@@ -7,8 +7,10 @@
 #   3. the MARVEEN_PG_URL line of the install's .env (CLAUDECLAW_ENV_DIR overrides the directory, as env.ts does);
 #   4. the marker MARVEEN_PG_CONFIGURED=1, which the app sets at start so that a child process (a scheduled command
 #      task) can still tell that the install is PostgreSQL when it cannot read the URL;
-#   5. the store marker <install>/store/.pg-installed, which the PostgreSQL boot writes once (P-E): durable, it survives a lost
-#      .env or a shell without the variable. A PostgreSQL install that lost its configuration is not read as SQLite.
+#   5. the store marker <install>/store/.pg-installed, or $MARVEEN_STORE_DIR/.pg-installed when that variable is set (either
+#      place counts), which the PostgreSQL boot writes once (P-E): durable, it survives a lost .env or a shell without the
+#      variable. A PostgreSQL install that lost its configuration is not read as SQLite. A store that cannot be read or is
+#      not a directory counts as present (pg_store_marker_at).
 # Blank or whitespace-only counts as absent, as in the app. When the .env cannot be read but the marker is set, the
 # answer is TRUE: doubt means PostgreSQL, because a false FALSE is the false green this check exists to stop.
 # The URL is never printed, logged or stored here.
@@ -21,7 +23,8 @@
 # (hook_pg_mode._marker_present). A store dir that does not exist at all is absent (a fresh SQLite install).
 pg_store_marker_at() {
   local store="${1%/}"
-  [[ -e "$store/.pg-installed" ]] && return 0
+  # -L as well: a symlink loop at the marker path fails -e (ELOOP) and is still a marker present (python and the app stat-fail to present)
+  [[ -e "$store/.pg-installed" || -L "$store/.pg-installed" ]] && return 0
   if [[ -e "$store" ]]; then
     [[ ! -d "$store" || ! -x "$store" ]] && return 0
   fi
