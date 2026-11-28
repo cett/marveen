@@ -36,7 +36,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
-HOOKS = os.path.join(ROOT, "scripts", "hooks")
+# isolated copy of the hooks (empty store, no PG marker): PR 959 test-only isolation, see pg_install_isolation.py
+from pg_install_isolation import isolated_hooks_dir, isolated_install_root  # noqa: E402
+HOOKS = isolated_hooks_dir()
 ROUTE = "/api/v1/hooks/gate-audit"
 TOKEN = "test-token-agent-a"
 
@@ -112,7 +114,7 @@ class PgModeCase(unittest.TestCase):
             "SECRET_MOUNT_DIR": os.path.join(self.tmp, "no-secrets"),
             "CLAUDECLAW_ENV_DIR": self.tmp,                      # an empty directory: no .env
             "LEDGER_DB_PATH": os.path.join(self.tmp, "store", "claudeclaw.db"),  # the store directory (the spool lives next to it)
-            "CLAUDE_CONFIG_DIR": os.path.join(ROOT, "agents", "agent-a", ".claude-config"),
+            "CLAUDE_CONFIG_DIR": os.path.join(isolated_install_root(), "agents", "agent-a", ".claude-config"),  # PR 959: under the isolated root
             "MARVEEN_AGENT_TOKEN_FILE": token,
         })
         self.dash = None

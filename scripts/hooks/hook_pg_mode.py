@@ -1,6 +1,7 @@
 """Is this install configured for PostgreSQL? The hook side of the one rule.
 
-The same four layers as scripts/pg-configured.sh (the shell reference) and, for the URL, src/db/pg/url.ts +
+The same layers as scripts/pg-configured.sh (the shell reference: the four configuration layers, then the store marker as the
+fifth, in either place) and, for the URL, src/db/pg/url.ts +
 src/env.ts readEnvFile (the app). TRUE when ANY layer says PostgreSQL:
   1. the secret mount file ${SECRET_MOUNT_DIR:-/run/secrets}/MARVEEN_PG_URL, non-blank after trimming;
   2. the environment variable MARVEEN_PG_URL, non-blank;
@@ -62,8 +63,53 @@ def _dotenv_value(text):
     return found
 
 
+STORE_MARKER = ".pg-installed"
+
+
+def store_marker_path(install_root=None):
+    """<install>/store/.pg-installed: written once by the PostgreSQL boot, the durable fifth layer (P-E). The install root is
+    this file's own (the LEDGER_DB_PATH test override does not move it)."""
+    return os.path.join(install_root or _install_root(), "store", STORE_MARKER)
+
+
+def _marker_present(path):
+    """The marker exists. A stat that fails for any other reason than 'absent' counts as present: doubt is PostgreSQL."""
+    try:
+        os.stat(path)
+        return True
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+
+
+def store_marker_paths(install_root=None):
+    """The places the store marker is looked for (P-E, decision 4): <install>/store, and $MARVEEN_STORE_DIR/ when that
+    variable is set. EITHER place counts, which only tightens: a process that exports the variable cannot hide the live
+    install's marker, and a relocated store (a deployment that sets the variable) does not silently miss the layer."""
+    paths = [store_marker_path(install_root)]
+    env_store = (os.environ.get("MARVEEN_STORE_DIR") or "").strip()
+    if env_store:
+        paths.append(os.path.join(env_store, STORE_MARKER))
+    return paths
+
+
+def store_marker_present(install_root=None):
+    """The store marker exists in either place (P-E). The SQLite arms of the hooks call this as a second check: a copy of the
+    rule that says SQLite while the marker is there is a drift, and the SQLite file is not opened (fail closed)."""
+    return any(_marker_present(p) for p in store_marker_paths(install_root))
+
+
 def pg_mode(install_root=None):
-    """True when the install is configured for PostgreSQL (see the module text). Returns a boolean, never the URL."""
+    """True when the install is configured for PostgreSQL: any of the four configuration layers (see the module text), or the
+    store marker (either place), which outlives the configuration. Returns a boolean, never the URL or the marker content."""
+    if _configured_by_layers(install_root):
+        return True
+    return store_marker_present(install_root)
+
+
+def _configured_by_layers(install_root=None):
+    """The four configuration layers: secret mount, environment, the install's .env, the app's marker variable."""
     mount_dir = (os.environ.get("SECRET_MOUNT_DIR") or "/run/secrets").rstrip("/") or "/"
     mounted = _read_text(os.path.join(mount_dir, PG_URL_KEY))
     if mounted is not None and mounted.strip():

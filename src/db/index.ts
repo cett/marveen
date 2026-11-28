@@ -86,7 +86,8 @@ export async function initDatabaseAsync(): Promise<'sqlite' | 'pg'> {
     initDatabase()
     return 'sqlite'
   }
-  await bootPgBackend()
+  // the real process boot is the only caller that writes the install marker (P-E, opt-in: see PgBootOptions)
+  await bootPgBackend({ writeInstallMarker: true })
   // The two importers of the sync chain that still matter on PostgreSQL (6c-2). Both are idempotent: the cost budgets
   // are ON CONFLICT DO NOTHING, the seed leaves a registry that already has rows alone.
   // The function's own system context: the cost budgets are inserted for the default tenant and the plans seed reads

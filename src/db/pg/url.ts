@@ -11,7 +11,13 @@
 //
 // This file is a leaf on purpose (env.ts and secret-resolver.ts only): db/connection.ts imports it for the SQLite
 // entry guard below, and connection.ts must stay acyclic (it never imports a domain module).
+import { statSync } from 'node:fs'
+import { join } from 'node:path'
+import { STORE_DIR } from '../../paths.js'
 import { readEnvFile } from '../../env.js'
+
+/** The PostgreSQL install marker's file name (store/.pg-installed, P-E). Kept here, not imported, so this module stays a leaf. */
+const PG_INSTALL_MARKER = '.pg-installed'
 import { resolveSecret } from '../../secret-resolver.js'
 
 export const PG_URL_KEY = 'MARVEEN_PG_URL'
@@ -81,10 +87,19 @@ export function resolvePgMigrateUrl(): string | undefined {
 
 /** Thrown by a SQLite-only entry point when the install is configured for PostgreSQL. */
 export class SqliteEntryRefusedError extends Error {
-  /** `unreadable`: the marker says PostgreSQL, but this process cannot read the URL (a child of the scrubbed process). */
-  constructor(entry: string, unreadable = false) {
+  /**
+   * `unreadable`: the marker says PostgreSQL, but this process cannot read the URL (a child of the scrubbed process).
+   * `marker`: the store holds the PostgreSQL install marker (store/.pg-installed, P-E): the install is PostgreSQL whatever
+   * the configuration says, and the way back is a written step (decision D3).
+   */
+  constructor(entry: string, unreadable: boolean | 'marker' = false) {
     super(
-      unreadable
+      unreadable === 'marker'
+        ? `${entry}: the store holds the PostgreSQL install marker (store/.pg-installed), so this install is PostgreSQL, ` +
+          'and this entry point refuses to open the stale SQLite file. ' +
+          'Put the URL where it lives (see docs/pg-provisioning.md, "Where the URLs live"). ' +
+          'To go back to SQLite on purpose: unset MARVEEN_PG_URL and delete store/.pg-installed by hand.'
+        : unreadable
         ? `${entry}: the install is configured for PostgreSQL (${PG_CONFIGURED_KEY}=1), but this process cannot read ${PG_URL_KEY}. ` +
           'It would open the stale SQLite file instead of the database the install is configured for. ' +
           'Put the URL in the secret mount or in the 0600 .env file of the install (see docs/pg-provisioning.md, "Where the URLs live").'
@@ -104,4 +119,26 @@ export class SqliteEntryRefusedError extends Error {
 export function assertSqliteEntryAllowed(entry: string): void {
   if (resolvePgUrl() !== undefined) throw new SqliteEntryRefusedError(entry)
   if (process.env[PG_CONFIGURED_KEY] === '1') throw new SqliteEntryRefusedError(entry, true)
+  // decision D3: the store marker of a PostgreSQL install refuses the SQLite entry even when every configuration layer is gone.
+  // An unreadable marker counts as present (doubt is PostgreSQL, as in the hooks).
+  if (pgInstallMarkerPresent()) throw new SqliteEntryRefusedError(entry, 'marker')
+}
+
+function pgInstallMarkerPresent(): boolean {
+  return pgInstallMarkerPresentIn(STORE_DIR)
+}
+
+/**
+ * The store marker (P-E) is present in `storeDir`: the marker file can be stat'ed, or the stat fails for any reason other
+ * than "absent" (an unreadable store, a store that is a file). Doubt is PostgreSQL, the same rule as the shell reference
+ * (scripts/pg-configured.sh) and the hook side (scripts/hooks/hook_pg_mode.py). Exported so the parity cell calls THIS
+ * reader, not a copy of it.
+ */
+export function pgInstallMarkerPresentIn(storeDir: string): boolean {
+  try {
+    statSync(join(storeDir, PG_INSTALL_MARKER))
+    return true
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code !== 'ENOENT'
+  }
 }

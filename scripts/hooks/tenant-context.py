@@ -76,6 +76,10 @@ def main():
     session_id = str(payload.get("session_id") or "")
     if hook_pg_mode.pg_mode():
         run_pg(agent_id, prompt, session_id)
+    if hook_pg_mode.store_marker_present():
+        # a rule drift: the marker says PostgreSQL, so the SQLite file is not opened here (fail closed, P-E)
+        sys.stderr.write("tenant-context: the PostgreSQL install marker (store/.pg-installed) is present; the SQLite file is not read\n")
+        sys.exit(2)
     con = None
     try:
         con = tcl.connect(ledger_lib.db_path())

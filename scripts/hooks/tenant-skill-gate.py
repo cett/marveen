@@ -278,6 +278,9 @@ def main():
         if hook_pg_mode.pg_mode():
             skills, ctx, serves = load_facts_pg(agent_id, targets, ev.get("session_id"))
         else:
+            if hook_pg_mode.store_marker_present():
+                # a rule drift: the marker says PostgreSQL; the stale SQLite file is never read (fail closed, P-E)
+                block("a PostgreSQL telepites jelolo (store/.pg-installed) el van helyezve, a SQLite fajl nem olvashato, ezert BLOKKOL.")
             con = sqlite3.connect("file:%s?mode=ro" % ledger_lib.db_path(), uri=True, timeout=3)
             try:
                 skills = tcl.load_tenant_skills(con)

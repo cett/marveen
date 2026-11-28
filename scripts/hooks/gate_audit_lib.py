@@ -268,6 +268,12 @@ def _pg_mode():
     return hook_pg_mode.pg_mode()
 
 
+def _marker_refuses_sqlite():
+    """The PostgreSQL install marker is present (P-E): the frozen SQLite file is not written, whatever the other rule says."""
+    import hook_pg_mode
+    return hook_pg_mode.store_marker_present()
+
+
 def _spool_paths(agent_id):
     """(deny spool, counts file, flush stamp) of one agent, in store/.gate-audit-spool/."""
     safe = ''.join(c if (c.isalnum() or c in '-_') else '_' for c in str(agent_id))
@@ -573,6 +579,10 @@ def record(gate, decision, reason, agent_id=None, deny_row=False, db_path=None, 
             # frozen file is not written: the gate asks the dashboard (see the module docstring).
             if db_path is None and _pg_mode():
                 return _record_pg(gate, decision, reason, agent_id, deny_row, session_id)
+            if db_path is None and _marker_refuses_sqlite():
+                # a rule drift (the marker says PostgreSQL, the SQLite arm was reached): the frozen file is not touched
+                sys.stderr.write('gate-audit: the PostgreSQL install marker (store/.pg-installed) is present; the SQLite file is not written\n')
+                return False
             _write(db_path or _db_path(), gate, decision, reason, agent_id, deny_row, session_id)
             return True
         finally:

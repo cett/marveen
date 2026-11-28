@@ -6,7 +6,7 @@
 // Privacy: neutral fixtures only (leakmarker, placeholder-pass).
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, chmodSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, chmodSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -23,8 +23,20 @@ interface Fixture {
   dotenv?: string | null
   /** the .env is present but cannot be read */
   unreadableDotenv?: boolean
+  /** the store marker <install>/store/.pg-installed is present (the fifth layer, P-E: durable, written by the PG boot) */
+  storeMarker?: boolean
   /** the marker MARVEEN_PG_CONFIGURED=1 */
   marker?: boolean
+  /** the store dir holds the marker but has no search bit: the marker cannot be stat'ed (a chmod row: skipped as root) */
+  unreadableStore?: boolean
+  /** the store path is a regular file, not a directory */
+  storeIsFile?: boolean
+  /** the marker path is a symlink to itself (a loop: stat fails with ELOOP, the marker is still present) */
+  markerLoop?: boolean
+  /** the MARVEEN_STORE_DIR environment variable names an env store: 'marker' (the marker is in it) or 'empty' (it is not) */
+  envStore?: 'marker' | 'empty'
+  /** the answer the app must give (a row that pins the rule, not only the agreement of the three readers) */
+  expect?: 'PG' | 'SQLite'
 }
 
 // The table of src/__tests__/backup-guard-parity.test.ts, row for row (a cell below pins that no row was dropped),
@@ -52,6 +64,21 @@ const FIXTURES: Fixture[] = [
   { name: 'unreadable .env with the marker', unreadableDotenv: true, marker: true },
   { name: 'unreadable .env without the marker', unreadableDotenv: true },
   { name: 'a URL in the mount and the marker', mount: `${URL}\n`, marker: true },
+  // the fifth layer: the store marker outlives the configuration (a lost .env, a shell without the variable)
+  { name: 'store marker alone (no URL anywhere, no variable)', storeMarker: true },
+  { name: 'store marker with a blank URL in the .env', storeMarker: true, dotenv: 'MARVEEN_PG_URL=   \n' },
+  { name: 'store marker with an unreadable .env', storeMarker: true, unreadableDotenv: true },
+  { name: 'store marker absent, nothing configured', storeMarker: false },
+  // one rule for an unreadable store (P-E, decision 3): the marker is PRESENT when its store cannot be read or is not a
+  // directory; a store that does not exist at all stays absent (the row above)
+  { name: 'store dir without the search bit (the marker inside cannot be read)', unreadableStore: true, expect: 'PG' },
+  { name: 'store path is a regular file, not a directory', storeIsFile: true, expect: 'PG' },
+  // a symlink loop at the marker path: stat fails with ELOOP, which is not "absent" in any of the three readers
+  { name: 'marker path is a symlink loop (stat fails with ELOOP)', markerLoop: true, expect: 'PG' },
+  // the second place (P-E, decision 4): the hooks and the shell look in <install>/store AND in $MARVEEN_STORE_DIR when it is
+  // set; the app reads its own store only, so a row that names an env store compares the app against THAT store
+  { name: 'store marker in the environment store alone (MARVEEN_STORE_DIR set)', envStore: 'marker', expect: 'PG' },
+  { name: 'environment store set and empty, no marker anywhere', envStore: 'empty', expect: 'SQLite' },
   // rows that are specific to the Python parser (not in the shell table)
   { name: 'py-only: a lone double quote as the value', dotenv: 'MARVEEN_PG_URL="\n' },
   { name: 'py-only: a value with a space inside the quotes only', dotenv: 'MARVEEN_PG_URL=" "\n' },
@@ -60,7 +87,18 @@ const FIXTURES: Fixture[] = [
   { name: 'py-only: another key that only contains the name', dotenv: `X_MARVEEN_PG_URL=${URL}\n` },
 ]
 
+/** One fixture on disk: the secret mount, the install root, and the env store (MARVEEN_STORE_DIR when a row sets it). */
+interface Case {
+  mountDir: string
+  installRoot: string
+  envStoreDir: string
+}
+
 let root: string
+/** directories a fixture made unsearchable: restored before the cleanup (rmSync cannot enter them otherwise) */
+const toRestore: string[] = []
+/** root reads through a 0000 directory, so the chmod rows say nothing there (nit 8): they are skipped */
+const isRoot = typeof process.getuid === 'function' && process.getuid() === 0
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'hook-pg-parity-'))
@@ -71,10 +109,11 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllEnvs()
+  for (const p of toRestore.splice(0)) chmodSync(p, 0o755)
   rmSync(root, { recursive: true, force: true })
 })
 
-function materialise(f: Fixture): { mountDir: string; installRoot: string } {
+function materialise(f: Fixture): Case {
   const dir = mkdtempSync(join(root, 'case-'))
   const mountDir = join(dir, 'secrets')
   mkdirSync(mountDir)
@@ -86,44 +125,62 @@ function materialise(f: Fixture): { mountDir: string; installRoot: string } {
     writeFileSync(join(installRoot, '.env'), `MARVEEN_PG_URL=${URL}\n`)
     chmodSync(join(installRoot, '.env'), 0o000)
   }
-  return { mountDir, installRoot }
+  if (f.storeMarker || f.unreadableStore) {
+    mkdirSync(join(installRoot, 'store'))
+    writeFileSync(join(installRoot, 'store', '.pg-installed'), 'pg-installed 2026-11-28T00:00:00.000Z\n')
+  }
+  if (f.unreadableStore) {
+    chmodSync(join(installRoot, 'store'), 0o000)
+    toRestore.push(join(installRoot, 'store'))
+  }
+  if (f.storeIsFile) writeFileSync(join(installRoot, 'store'), 'not a directory\n')
+  if (f.markerLoop) {
+    mkdirSync(join(installRoot, 'store'))
+    symlinkSync(join(installRoot, 'store', '.pg-installed'), join(installRoot, 'store', '.pg-installed'))
+  }
+  const envStoreDir = join(dir, 'env-store')
+  mkdirSync(envStoreDir)
+  if (f.envStore === 'marker') writeFileSync(join(envStoreDir, '.pg-installed'), 'pg-installed 2026-11-28T00:00:00.000Z\n')
+  return { mountDir, installRoot, envStoreDir }
 }
 
-function childEnv(f: Fixture, mountDir: string): Record<string, string> {
-  const env: Record<string, string> = { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '', SECRET_MOUNT_DIR: mountDir }
+function childEnv(f: Fixture, c: Case): Record<string, string> {
+  const env: Record<string, string> = { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '', SECRET_MOUNT_DIR: c.mountDir }
+  if (f.envStore !== undefined) env.MARVEEN_STORE_DIR = c.envStoreDir
   if (f.env !== undefined) env.MARVEEN_PG_URL = f.env
   if (f.marker) env.MARVEEN_PG_CONFIGURED = '1'
   return env
 }
 
 /** The shell reference: scripts/pg-configured.sh. */
-function shellAnswer(f: Fixture, mountDir: string, installRoot: string): string {
+function shellAnswer(f: Fixture, c: Case): string {
   const text = readFileSync(join(INSTALL, 'scripts', 'pg-configured.sh'), 'utf-8')
-  const script = `${text.slice(text.indexOf('pg_configured() {'))}\npg_configured "${installRoot}" && echo PG || echo SQLite\n`
-  return spawnSync('bash', ['-c', script], { env: childEnv(f, mountDir), encoding: 'utf-8' }).stdout.trim()
+  // from the first helper on (pg_store_marker_at sits above pg_configured): the functions the answer needs
+  const script = `${text.slice(text.indexOf('pg_store_marker_at() {'))}\npg_configured "${c.installRoot}" && echo PG || echo SQLite\n`
+  return spawnSync('bash', ['-c', script], { env: childEnv(f, c), encoding: 'utf-8' }).stdout.trim()
 }
 
-function pythonRun(f: Fixture, mountDir: string, installRoot: string, expr: string) {
+function pythonRun(f: Fixture, c: Case, expr: string) {
   const code = [
     'import sys',
     `sys.path.insert(0, ${JSON.stringify(join(INSTALL, 'scripts', 'hooks'))})`,
     'import hook_pg_mode',
-    `print(${expr.replace('ROOT', JSON.stringify(installRoot))})`,
+    `print(${expr.replace('ROOT', JSON.stringify(c.installRoot))})`,
   ].join('\n')
-  return spawnSync('python3', ['-I', '-c', code], { env: childEnv(f, mountDir), encoding: 'utf-8' })
+  return spawnSync('python3', ['-I', '-c', code], { env: childEnv(f, c), encoding: 'utf-8' })
 }
 
 /** The hook function, run in its own interpreter with the same environment the shell got. */
-function pythonAnswer(f: Fixture, mountDir: string, installRoot: string): string {
-  const run = pythonRun(f, mountDir, installRoot, '"PG" if hook_pg_mode.pg_mode(ROOT) else "SQLite"')
+function pythonAnswer(f: Fixture, c: Case): string {
+  const run = pythonRun(f, c, '"PG" if hook_pg_mode.pg_mode(ROOT) else "SQLite"')
   return run.stdout.trim() || `ERROR: ${run.stderr}`
 }
 
 /** The app's answer: a URL resolves through the app's own layers, or the marker. */
-async function appAnswer(f: Fixture, mountDir: string, installRoot: string): Promise<string> {
+async function appAnswer(f: Fixture, c: Case): Promise<string> {
   vi.resetModules()
-  process.env.SECRET_MOUNT_DIR = mountDir
-  process.env.CLAUDECLAW_ENV_DIR = installRoot
+  process.env.SECRET_MOUNT_DIR = c.mountDir
+  process.env.CLAUDECLAW_ENV_DIR = c.installRoot
   if (f.env !== undefined) process.env.MARVEEN_PG_URL = f.env
   else delete process.env.MARVEEN_PG_URL
   if (f.marker) process.env.MARVEEN_PG_CONFIGURED = '1'
@@ -131,24 +188,30 @@ async function appAnswer(f: Fixture, mountDir: string, installRoot: string): Pro
   const url = await import('../db/pg/url.js')
   const resolved = url.resolvePgUrl() !== undefined
   const marker = process.env.MARVEEN_PG_CONFIGURED === '1'
-  return resolved || marker ? 'PG' : 'SQLite'
+  // the store marker, the fifth layer: the app's OWN reader (the same function its SQLite entry calls, decision D3),
+  // applied to the install's store dir (the parity cell measures the real reader, not a second existsSync)
+  // the app reads its OWN store only: the env store when the row names one, else the install's store (P-E)
+  const appStore = f.envStore !== undefined ? c.envStoreDir : join(c.installRoot, 'store')
+  const storeMarker = url.pgInstallMarkerPresentIn(appStore)
+  return resolved || marker || storeMarker ? 'PG' : 'SQLite'
 }
 
 describe('the hook-side PostgreSQL switch: Python, the app and pg-configured.sh agree on every fixture', () => {
   for (const f of FIXTURES) {
-    it(`fixture "${f.name}"`, async () => {
-      const { mountDir, installRoot } = materialise(f)
-      const app = await appAnswer(f, mountDir, installRoot)
-      expect(pythonAnswer(f, mountDir, installRoot), `python on "${f.name}"`).toBe(app)
-      expect(shellAnswer(f, mountDir, installRoot), `pg-configured.sh on "${f.name}"`).toBe(app)
+    it.skipIf(f.unreadableStore === true && isRoot)(`fixture "${f.name}"`, async () => {
+      const c = materialise(f)
+      const app = await appAnswer(f, c)
+      if (f.expect !== undefined) expect(app, `the app on "${f.name}"`).toBe(f.expect)
+      expect(pythonAnswer(f, c), `python on "${f.name}"`).toBe(app)
+      expect(shellAnswer(f, c), `pg-configured.sh on "${f.name}"`).toBe(app)
     })
   }
 
   it('the fixture table is not vacuous: it contains both PostgreSQL and SQLite answers', () => {
     const answers = new Set<string>()
     for (const f of FIXTURES) {
-      const { mountDir, installRoot } = materialise(f)
-      answers.add(pythonAnswer(f, mountDir, installRoot))
+      const c = materialise(f)
+      answers.add(pythonAnswer(f, c))
     }
     expect([...answers].sort()).toEqual(['PG', 'SQLite'])
   })
@@ -163,8 +226,8 @@ describe('the hook-side PostgreSQL switch: Python, the app and pg-configured.sh 
 
   it('the function returns a boolean and leaks no part of the URL', () => {
     const f: Fixture = { name: 'leak', env: URL }
-    const { mountDir, installRoot } = materialise(f)
-    const run = pythonRun(f, mountDir, installRoot, 'repr(hook_pg_mode.pg_mode(ROOT))')
+    const c = materialise(f)
+    const run = pythonRun(f, c, 'repr(hook_pg_mode.pg_mode(ROOT))')
     expect(run.stdout.trim()).toBe('True')
     expect(run.stdout + run.stderr).not.toContain('leakmarker')
   })

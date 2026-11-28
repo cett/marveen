@@ -578,9 +578,13 @@ that the app sets at start) the SQLite database is not the live data, so the bac
 - The 24-hour return source is the last archive taken before the URL was set: keep it aside by name before the switch.
   The planned rollback window is 24 hours. The archive stays in the rotation only while the newest `BACKUP_KEEP` archives are
   kept (default 30, one a night, so about 30 days), and then it is pruned: copy it aside, do not rely on the rotation.
+- **The PostgreSQL install marker** `store/.pg-installed` is written once by the first PostgreSQL boot and never rewritten. The
+  shell tools and the hooks read it as a fact that the install is PostgreSQL, even when the URL is lost from the `.env`. To go
+  back to SQLite on purpose (a written decision, not a repair): unset `MARVEEN_PG_URL` and delete `store/.pg-installed`. Nothing
+  deletes it automatically. A backup of a PostgreSQL install archives the marker, so a restore comes up marked.
 
 The detection rules are in `scripts/pg-configured.sh`, which `backup.sh`, `verify-restore.sh`, `restore-drill.sh`, `pre-modify-backup.sh` and `migrate-main-agent-id.sh` source: one copy of the
-function, so the scripts cannot drift apart. A `.env` that cannot be read while the marker is set counts as PostgreSQL.
+function, so the scripts cannot drift apart. A `.env` that cannot be read while the marker is set counts as PostgreSQL. The shell tools and the hooks look for the marker in both places: `<install>/store`, and the store named by `MARVEEN_STORE_DIR` when that variable is set (either place counts). The app reads only its own store, so an isolated instance (its own `MARVEEN_STORE_DIR`) sees the live install's marker in the shell and the hooks, not in its own store.
 
 On a PostgreSQL install `backup.sh` does not open `store/claudeclaw.db` at all: the file is frozen, and the database is in the nightly PostgreSQL dump.
 

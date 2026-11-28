@@ -25,7 +25,9 @@ import tempfile
 import time
 import unittest
 
-_HOOKS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hooks")
+# isolated copy of the hooks (empty store, no PG marker): PR 959 test-only isolation, see pg_install_isolation.py
+from pg_install_isolation import isolated_hooks_dir  # noqa: E402
+_HOOKS_DIR = isolated_hooks_dir()
 _HOOK_PATH = os.path.join(_HOOKS_DIR, "context-watchdog.py")
 # Mirrors ledger_lib._install_dir(): two levels up from scripts/hooks/.
 _INSTALL_DIR = os.path.dirname(os.path.dirname(_HOOKS_DIR))
